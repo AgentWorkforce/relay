@@ -29,3 +29,5 @@ pnpm-debug.log*
 
 # Coverage output
 coverage/
+.npm-cache
+.tmp-supervisor-tests
