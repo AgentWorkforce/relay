@@ -12,9 +12,8 @@
     "dist/",
     "install.sh",
     "README.md",
-    "PROTOCOL.md",
-    "CHANGELOG.md",
-    "LICENSE"
+    "LICENSE",
+    "docs/"
   ],
   "publishConfig": {
     "access": "public"

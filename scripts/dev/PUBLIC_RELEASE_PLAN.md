@@ -14,7 +14,7 @@ Tasks:
   - Add GIF/video demo placeholder
   - Improve quick start section
   - Add "Common Use Cases" section
-- [ ] Create CONTRIBUTING.md
+- [ ] Create docs/CONTRIBUTING.md
 - [ ] Create examples/ directory with:
   - [ ] examples/basic-chat/ - Two agents chatting
   - [ ] examples/tic-tac-toe/ - Simple game
@@ -54,7 +54,7 @@ Tasks:
   - Test on clean systems
   - Improve error handling
 - [ ] Add LICENSE file (MIT)
-- [ ] Create CHANGELOG.md
+- [ ] Create docs/CHANGELOG.md
 - [ ] Test npm pack / npm publish --dry-run
 - [ ] Set up GitHub release automation
 

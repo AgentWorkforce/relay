@@ -131,12 +131,12 @@ npm test -- src/wrapper/parser.test.ts
 - Update README.md for user-facing changes
 - Add JSDoc comments for new public APIs
 - Update examples if adding new features
-- Keep PROTOCOL.md updated for protocol changes
+- Keep `docs/PROTOCOL.md` updated for protocol changes
 
 ## Release Process
 
 1. Update version in `package.json`
-2. Update CHANGELOG.md
+2. Update `docs/CHANGELOG.md`
 3. Create a GitHub release
 4. npm publish is automated via GitHub Actions
 

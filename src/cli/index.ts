@@ -76,54 +76,9 @@ program
   .description('Start daemon + dashboard')
   .option('--no-dashboard', 'Disable web dashboard')
   .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
-  .option('--stop', 'Stop the daemon', false)
-  .option('--status', 'Show daemon status', false)
   .action(async (options) => {
-    const { ensureProjectDir, getProjectPaths } = await import('../utils/project-namespace.js');
+    const { ensureProjectDir } = await import('../utils/project-namespace.js');
 
-    // Handle --status
-    if (options.status) {
-      const paths = getProjectPaths();
-      if (!fs.existsSync(paths.socketPath)) {
-        console.log('Status: STOPPED');
-        return;
-      }
-      const client = new RelayClient({
-        agentName: '__status__',
-        socketPath: paths.socketPath,
-        reconnect: false,
-      });
-      try {
-        await client.connect();
-        console.log('Status: RUNNING');
-        console.log(`Socket: ${paths.socketPath}`);
-        client.disconnect();
-      } catch {
-        console.log('Status: STOPPED');
-      }
-      return;
-    }
-
-    // Handle --stop
-    if (options.stop) {
-      const paths = getProjectPaths();
-      const pidPath = pidFilePathForSocket(paths.socketPath);
-      if (!fs.existsSync(pidPath)) {
-        console.log('Not running');
-        return;
-      }
-      const pid = Number(fs.readFileSync(pidPath, 'utf-8').trim());
-      try {
-        process.kill(pid, 'SIGTERM');
-        console.log('Stopped');
-      } catch {
-        fs.unlinkSync(pidPath);
-        console.log('Cleaned up stale pid');
-      }
-      return;
-    }
-
-    // Start daemon + dashboard
     const paths = ensureProjectDir();
     const socketPath = paths.socketPath;
     const dbPath = paths.dbPath;
@@ -166,6 +121,59 @@ program
     } catch (err) {
       console.error('Failed:', err);
       process.exit(1);
+    }
+  });
+
+// down - Stop daemon
+program
+  .command('down')
+  .description('Stop daemon')
+  .action(async () => {
+    const { getProjectPaths } = await import('../utils/project-namespace.js');
+    const paths = getProjectPaths();
+    const pidPath = pidFilePathForSocket(paths.socketPath);
+
+    if (!fs.existsSync(pidPath)) {
+      console.log('Not running');
+      return;
+    }
+
+    const pid = Number(fs.readFileSync(pidPath, 'utf-8').trim());
+    try {
+      process.kill(pid, 'SIGTERM');
+      console.log('Stopped');
+    } catch {
+      fs.unlinkSync(pidPath);
+      console.log('Cleaned up stale pid');
+    }
+  });
+
+// status - Check daemon status
+program
+  .command('status')
+  .description('Check daemon status')
+  .action(async () => {
+    const { getProjectPaths } = await import('../utils/project-namespace.js');
+    const paths = getProjectPaths();
+
+    if (!fs.existsSync(paths.socketPath)) {
+      console.log('Status: STOPPED');
+      return;
+    }
+
+    const client = new RelayClient({
+      agentName: '__status__',
+      socketPath: paths.socketPath,
+      reconnect: false,
+    });
+
+    try {
+      await client.connect();
+      console.log('Status: RUNNING');
+      console.log(`Socket: ${paths.socketPath}`);
+      client.disconnect();
+    } catch {
+      console.log('Status: STOPPED');
     }
   });
 

@@ -65,7 +65,7 @@ The new inbox commands need documentation:
 - `agent-relay inbox-write` - Write to agent inbox
 - `agent-relay inbox-agents` - List agents
 
-### 4. Create CONTRIBUTING.md
+### 4. Create docs/CONTRIBUTING.md
 Guide for contributors.
 
 ## Communication
@@ -204,7 +204,7 @@ Prepare agent-relay for npm publishing and improve CI/CD for public release.
 - Add npm publish workflow on GitHub release
 - Add test coverage badge
 
-### 4. Create CHANGELOG.md
+### 4. Create docs/CHANGELOG.md
 - Document the 0.1.0 release features
 
 ### 5. Test npm publish

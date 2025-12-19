@@ -28,7 +28,7 @@ relay read <id>        # Read full truncated message
 ## Files Changed
 - `src/cli/index.ts` - Simplified main CLI (was 1100+ lines, now ~200)
 - `src/cli/team.ts` - New team subcommand module
-- `AGENTS.md` - Updated documentation
+- `docs/AGENTS.md` - Updated documentation
 
 ## Beads Tasks Closed
 - agent-relay-cli-simplify (main issue)

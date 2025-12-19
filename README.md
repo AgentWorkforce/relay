@@ -99,10 +99,11 @@ agent-relay project --list   # List all projects
 
 ### Enable Your Agents
 
-Add agent-relay instructions to your project:
+Add agent-relay instructions to your project (docs live under `docs/`):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/khaliqgant/agent-relay/main/CLAUDE.md > CLAUDE.md
+mkdir -p docs
+curl -fsSL https://raw.githubusercontent.com/khaliqgant/agent-relay/main/docs/CLAUDE.md > docs/CLAUDE.md
 ```
 
 ## Common Use Cases
@@ -670,7 +671,7 @@ Custom: Use `-s` flag or `socketPath` config option.
 
 ## Protocol Specification
 
-See [PROTOCOL.md](./PROTOCOL.md) for the complete wire protocol specification including:
+See [PROTOCOL.md](./docs/PROTOCOL.md) for the complete wire protocol specification including:
 - Frame format (4-byte length prefix + JSON)
 - Message types (HELLO, SEND, DELIVER, ACK, etc.)
 - Handshake flow
