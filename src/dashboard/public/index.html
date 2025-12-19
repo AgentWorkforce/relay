@@ -4,166 +4,556 @@
   <title>Agent Relay</title>
   <style>
     :root {
-        --bg-color: #0d1117;
-        --card-bg: #161b22;
-        --border-color: #30363d;
-        --primary-color: #f78166; /* Orange */
-        --accent-color: #ffa657; /* Light Orange */
-        --text-color: #c9d1d9;
-        --text-muted: #8b949e;
-        --success: #238636;
-        --error: #da3633;
+        --bg-primary: #0a0a0f;
+        --bg-secondary: #12121a;
+        --bg-card: rgba(25, 20, 15, 0.8);
+        --border-color: rgba(251, 146, 60, 0.2);
+        --border-glow: rgba(251, 146, 60, 0.5);
+        --primary: #f97316;
+        --primary-light: #fb923c;
+        --accent: #eab308;
+        --accent-light: #facc15;
+        --text: #e2e8f0;
+        --text-muted: #94a3b8;
+        --success: #10b981;
+        --error: #ef4444;
+        --gradient-1: linear-gradient(135deg, #f97316 0%, #ea580c 100%);
+        --gradient-2: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
+        --gradient-3: linear-gradient(135deg, #fb923c 0%, #fbbf24 100%);
+        --gradient-hero: linear-gradient(135deg, #f97316 0%, #ea580c 50%, #eab308 100%);
     }
 
-    * { box-sizing: border-box; }
-    
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background: var(--bg-color);
-      color: var(--text-color);
-      margin: 0;
-      padding: 20px;
-      line-height: 1.5;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
     }
-    
-    h1, h2 { color: var(--primary-color); margin-top: 0; }
-    
-    .container { max-width: 1400px; margin: 0 auto; display: grid; grid-template-columns: 350px 1fr; gap: 24px; height: 95vh; }
-    
-    .sidebar { display: flex; flex-direction: column; gap: 20px; overflow-y: auto; padding-right: 10px; }
-    .main-content { display: flex; flex-direction: column; gap: 20px; overflow: hidden; }
 
-    .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 20px; margin-bottom: 0; }
-    
-    .agent-card { 
-        background: var(--card-bg); 
-        padding: 16px; 
-        border-radius: 6px; 
-        border: 1px solid var(--border-color);
-        border-left: 4px solid var(--border-color);
-        transition: all 0.2s;
+    /* Animated background */
+    body::before {
+      content: '';
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background:
+        radial-gradient(ellipse at 20% 20%, rgba(249, 115, 22, 0.15) 0%, transparent 50%),
+        radial-gradient(ellipse at 80% 80%, rgba(234, 179, 8, 0.15) 0%, transparent 50%),
+        radial-gradient(ellipse at 40% 60%, rgba(251, 191, 36, 0.1) 0%, transparent 40%);
+      animation: bgPulse 8s ease-in-out infinite;
+      pointer-events: none;
+      z-index: 0;
     }
-    .agent-card:hover { border-color: var(--primary-color); transform: translateX(2px); }
-    .agent-card.active { border-left-color: var(--primary-color); background: #1f1f2e; }
-    
-    .agent-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
-    .agent-name { font-weight: 600; color: #fff; font-size: 1.1em; }
-    .agent-role { color: var(--text-muted); font-size: 0.85em; margin-bottom: 12px; }
-    
-    .agent-status { 
-        background: #0d1117; 
-        padding: 8px 12px; 
-        border-radius: 4px; 
-        font-size: 0.9em;
-        color: var(--accent-color);
-        border: 1px solid var(--border-color);
+
+    @keyframes bgPulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.8; transform: scale(1.05); }
     }
-    
-    .badge { 
-        background: var(--primary-color); 
-        color: #0d1117; 
-        padding: 2px 8px; 
-        border-radius: 12px; 
-        font-size: 0.75em; 
-        font-weight: bold;
+
+    .container {
+      position: relative;
+      z-index: 1;
+      max-width: 1600px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 380px 1fr;
+      gap: 24px;
+      height: 100vh;
+      padding: 20px;
     }
-    
-    .activity-log { 
-        background: var(--card-bg); 
-        border-radius: 6px; 
-        border: 1px solid var(--border-color);
-        display: flex; flex-direction: column;
-        flex: 1;
-        overflow: hidden;
+
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      overflow-y: auto;
+      padding-right: 8px;
+    }
+
+    .main-content {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      overflow: hidden;
+    }
+
+    /* Glowing header */
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 20px 24px;
+      background: var(--bg-card);
+      border-radius: 16px;
+      border: 1px solid var(--border-color);
+      backdrop-filter: blur(20px);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .header::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: var(--gradient-hero);
+      animation: shimmer 3s linear infinite;
+    }
+
+    @keyframes shimmer {
+      0% { background-position: -200% 0; }
+      100% { background-position: 200% 0; }
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo-icon {
+      width: 44px;
+      height: 44px;
+      background: var(--gradient-1);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      animation: logoFloat 3s ease-in-out infinite;
+      box-shadow: 0 4px 20px rgba(249, 115, 22, 0.4);
+    }
+
+    @keyframes logoFloat {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-3px); }
+    }
+
+    h1 {
+      font-size: 1.5em;
+      font-weight: 700;
+      background: var(--gradient-hero);
+      background-size: 200% auto;
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      animation: gradientText 4s linear infinite;
+    }
+
+    @keyframes gradientText {
+      0% { background-position: 0% center; }
+      100% { background-position: 200% center; }
+    }
+
+    h2 {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    /* Agent Cards */
+    .agent-card {
+      background: var(--bg-card);
+      padding: 20px;
+      border-radius: 16px;
+      border: 1px solid var(--border-color);
+      backdrop-filter: blur(20px);
+      position: relative;
+      overflow: hidden;
+      transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+      animation: cardFadeIn 0.5s ease-out backwards;
+    }
+
+    .agent-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0;
+      width: 4px;
+      height: 100%;
+      background: var(--gradient-1);
+      opacity: 0.5;
+      transition: all 0.3s;
+    }
+
+    .agent-card:hover {
+      transform: translateX(8px) scale(1.02);
+      border-color: var(--border-glow);
+      box-shadow:
+        0 0 30px rgba(249, 115, 22, 0.2),
+        0 10px 40px rgba(0, 0, 0, 0.3);
+    }
+
+    .agent-card:hover::before {
+      opacity: 1;
+      width: 6px;
+    }
+
+    .agent-card.active {
+      border-color: var(--primary);
+      background: rgba(249, 115, 22, 0.1);
+    }
+
+    .agent-card.active::before {
+      opacity: 1;
+      animation: borderPulse 2s ease-in-out infinite;
+    }
+
+    @keyframes borderPulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    @keyframes cardFadeIn {
+      from { opacity: 0; transform: translateX(-20px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+
+    .agent-card:nth-child(1) { animation-delay: 0.1s; }
+    .agent-card:nth-child(2) { animation-delay: 0.2s; }
+    .agent-card:nth-child(3) { animation-delay: 0.3s; }
+    .agent-card:nth-child(4) { animation-delay: 0.4s; }
+
+    .agent-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .agent-name {
+      font-weight: 700;
+      color: #fff;
+      font-size: 1.15em;
+      letter-spacing: -0.02em;
+    }
+
+    .agent-role {
+      color: var(--text-muted);
+      font-size: 0.85em;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .agent-role .cli-badge {
+      background: rgba(6, 182, 212, 0.15);
+      color: var(--accent);
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-size: 0.8em;
+      font-weight: 500;
+    }
+
+    .agent-status {
+      background: rgba(0, 0, 0, 0.3);
+      padding: 12px 16px;
+      border-radius: 10px;
+      font-size: 0.9em;
+      color: var(--accent-light);
+      border: 1px solid rgba(6, 182, 212, 0.2);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      animation: statusPulse 2s ease-in-out infinite;
+    }
+
+    @keyframes statusPulse {
+      0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(6, 182, 212, 0.4); }
+      50% { opacity: 0.6; box-shadow: 0 0 0 6px rgba(6, 182, 212, 0); }
+    }
+
+    .badge {
+      background: var(--gradient-2);
+      color: #000;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 0.75em;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      animation: badgePulse 2s ease-in-out infinite;
+      box-shadow: 0 2px 10px rgba(251, 191, 36, 0.3);
+    }
+
+    @keyframes badgePulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.05); }
+    }
+
+    /* Activity Log */
+    .activity-log {
+      background: var(--bg-card);
+      border-radius: 20px;
+      border: 1px solid var(--border-color);
+      backdrop-filter: blur(20px);
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .activity-log::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--primary), var(--accent), transparent);
     }
 
     .log-header {
-        padding: 16px;
-        border-bottom: 1px solid var(--border-color);
-        display: flex; justify-content: space-between; align-items: center;
-        background: #1c2128;
+      padding: 20px 24px;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.2);
+    }
+
+    .log-header h2 {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .live-indicator {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.8em;
+      color: var(--text-muted);
+      background: rgba(0, 0, 0, 0.3);
+      padding: 6px 12px;
+      border-radius: 20px;
+    }
+
+    .live-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--success);
+      animation: livePulse 1.5s ease-in-out infinite;
+    }
+
+    @keyframes livePulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.8); }
     }
 
     .log-content {
-        overflow-y: auto;
-        padding: 0;
-        flex: 1;
-        display: flex; flex-direction: column-reverse; /* Scroll from bottom */
+      overflow-y: auto;
+      padding: 0;
+      flex: 1;
+      display: flex;
+      flex-direction: column-reverse;
     }
-    
-    .message { 
-        padding: 16px; 
-        border-bottom: 1px solid var(--border-color);
-        display: flex; gap: 16px;
-        animation: fadeIn 0.3s ease;
+
+    .message {
+      padding: 20px 24px;
+      border-bottom: 1px solid rgba(249, 115, 22, 0.1);
+      display: flex;
+      gap: 16px;
+      transition: background 0.3s;
     }
+
+    .message:hover {
+      background: rgba(249, 115, 22, 0.05);
+    }
+
+    @keyframes messageFadeIn {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
     .message:last-child { border-bottom: none; }
-    
+
     .msg-avatar {
-        width: 40px; height: 40px;
-        border-radius: 50%;
-        background: #21262d;
-        color: var(--primary-color);
-        display: flex; align-items: center; justify-content: center;
-        font-weight: bold;
-        flex-shrink: 0;
-        border: 2px solid var(--border-color);
+      width: 48px;
+      height: 48px;
+      border-radius: 14px;
+      background: var(--gradient-1);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 1.1em;
+      flex-shrink: 0;
+      box-shadow: 0 4px 15px rgba(249, 115, 22, 0.3);
+      transition: transform 0.3s, box-shadow 0.3s;
+    }
+
+    .message:hover .msg-avatar {
+      transform: scale(1.1) rotate(5deg);
+      box-shadow: 0 6px 25px rgba(249, 115, 22, 0.5);
     }
 
     .msg-body { flex: 1; min-width: 0; }
-    
-    .msg-meta { 
-        display: flex; align-items: baseline; gap: 10px; 
-        margin-bottom: 6px;
+
+    .msg-meta {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
     }
-    .msg-sender { color: #fff; font-weight: 600; }
-    .msg-target { color: var(--text-muted); font-size: 0.9em; }
-    .msg-time { color: var(--text-muted); font-size: 0.8em; margin-left: auto; }
-    
-    .msg-text { 
-        font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
-        font-size: 0.95em;
-        white-space: pre-wrap;
-        color: var(--text-color);
-        background: #0d1117;
-        padding: 12px;
-        border-radius: 6px;
-        border: 1px solid var(--border-color);
+
+    .msg-sender {
+      color: #fff;
+      font-weight: 700;
+      font-size: 1.05em;
     }
-    
-    .arrow { color: var(--primary-color); }
-    
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+    .msg-arrow {
+      color: var(--primary);
+      font-size: 1.2em;
+      animation: arrowBounce 1s ease-in-out infinite;
+    }
+
+    @keyframes arrowBounce {
+      0%, 100% { transform: translateX(0); }
+      50% { transform: translateX(3px); }
+    }
+
+    .msg-target {
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .msg-time {
+      color: var(--text-muted);
+      font-size: 0.8em;
+      margin-left: auto;
+      background: rgba(0, 0, 0, 0.2);
+      padding: 4px 10px;
+      border-radius: 12px;
+    }
+
+    .msg-text {
+      font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.9em;
+      white-space: pre-wrap;
+      color: var(--text);
+      background: rgba(0, 0, 0, 0.3);
+      padding: 16px;
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+      line-height: 1.6;
+    }
+
+    /* Connection Status */
+    #connection-status {
+      font-size: 0.85em;
+      font-weight: 600;
+      padding: 8px 16px;
+      border-radius: 24px;
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--success);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.3s;
+    }
+
+    #connection-status .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--success);
+      animation: connPulse 2s ease-in-out infinite;
+    }
+
+    @keyframes connPulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
+      50% { box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
+    }
+
+    .disconnected {
+      background: rgba(239, 68, 68, 0.15) !important;
+      color: var(--error) !important;
+      border-color: rgba(239, 68, 68, 0.3) !important;
+    }
+
+    .disconnected .dot {
+      background: var(--error) !important;
+      animation: none !important;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 60px 40px;
+      color: var(--text-muted);
+    }
+
+    .empty-state-icon {
+      font-size: 48px;
+      margin-bottom: 16px;
+      opacity: 0.5;
+    }
+
+    .empty-state-text {
+      font-size: 1.1em;
+      line-height: 1.6;
+    }
 
     /* Scrollbar */
-    ::-webkit-scrollbar { width: 10px; }
-    ::-webkit-scrollbar-track { background: var(--bg-color); }
-    ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 5px; border: 2px solid var(--bg-color); }
-    ::-webkit-scrollbar-thumb:hover { background: #565d66; }
+    ::-webkit-scrollbar { width: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb {
+      background: linear-gradient(180deg, var(--primary), var(--accent));
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: linear-gradient(180deg, var(--primary-light), var(--accent-light));
+    }
 
-    #connection-status { font-size: 0.8em; font-weight: 600; padding: 4px 12px; border-radius: 20px; background: rgba(35, 134, 54, 0.2); color: var(--success); border: 1px solid rgba(35, 134, 54, 0.4); }
-    .disconnected { background: rgba(218, 54, 51, 0.2) !important; color: var(--error) !important; border-color: rgba(218, 54, 51, 0.4) !important; }
-
-    .empty-state { text-align: center; padding: 40px; color: var(--text-muted); font-style: italic; }
+    .last-active {
+      margin-top: 12px;
+      font-size: 0.75em;
+      color: var(--text-muted);
+      text-align: right;
+      opacity: 0.7;
+    }
   </style>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 </head>
 <body>
   <div class="container">
     <div class="sidebar">
         <div class="header">
-            <h1 style="margin:0; font-size: 1.5em;">Agent Relay</h1>
-            <div id="connection-status">● Live</div>
+            <div class="logo">
+                <div class="logo-icon">⚡</div>
+                <h1>Agent Relay</h1>
+            </div>
+            <div id="connection-status">
+                <span class="dot"></span>
+                <span>Live</span>
+            </div>
         </div>
         <div id="agents">
            <!-- Agents injected here -->
         </div>
     </div>
-    
+
     <div class="main-content">
         <div class="activity-log">
             <div class="log-header">
-                <h2 style="margin:0; font-size: 1.2em;">Live Activity Feed</h2>
-                <span style="font-size: 0.8em; color: var(--text-muted)">Real-time | Port 3888</span>
+                <h2>
+                    <span>Live Activity</span>
+                </h2>
+                <div class="live-indicator">
+                    <span class="live-dot"></span>
+                    <span>Real-time • Port 3888</span>
+                </div>
             </div>
             <div class="log-content" id="log">
                 <!-- Messages injected here -->
@@ -176,64 +566,89 @@
     const agentsContainer = document.getElementById('agents');
     const logContainer = document.getElementById('log');
     const statusDiv = document.getElementById('connection-status');
-    
+
+    // Track last data hash to prevent unnecessary re-renders
+    let lastDataHash = '';
+
     function connect() {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
-        
+
         ws.onopen = () => {
-            statusDiv.innerHTML = '● Live';
+            statusDiv.innerHTML = '<span class="dot"></span><span>Live</span>';
             statusDiv.classList.remove('disconnected');
         };
-        
+
         ws.onclose = () => {
-            statusDiv.innerHTML = '○ Offline';
+            statusDiv.innerHTML = '<span class="dot"></span><span>Offline</span>';
             statusDiv.classList.add('disconnected');
             setTimeout(connect, 3000);
         };
-        
+
         ws.onmessage = (e) => {
+            // Skip re-render if data hasn't changed
+            const dataHash = e.data;
+            if (dataHash === lastDataHash) return;
+            lastDataHash = dataHash;
+
             const data = JSON.parse(e.data);
             render(data);
         };
     }
-    
+
     function render(data) {
         // Render Agents
         if (data.agents && data.agents.length > 0) {
-            agentsContainer.innerHTML = data.agents.map(a => `
+            const newAgentsHTML = data.agents.map((a, i) => `
                 <div class="agent-card ${a.messageCount > 0 ? 'active' : ''}">
                     <div class="agent-header">
                         <div class="agent-name">${a.name}</div>
                         ${a.messageCount > 0 ? `<span class="badge">${a.messageCount} NEW</span>` : ''}
                     </div>
-                    <div class="agent-role">${a.role} <span style="opacity:0.5">| ${a.cli}</span></div>
-                    <div class="agent-status" title="${a.status || 'Idle'}">
-                        ${a.status ? '► ' + a.status : '💤 Idle'}
+                    <div class="agent-role">
+                        ${a.role}
+                        <span class="cli-badge">${a.cli}</span>
                     </div>
-                    <div style="margin-top:8px; font-size:0.75em; color:#666; text-align:right">
-                        ${a.lastActive ? timeAgo(new Date(a.lastActive)) : 'No activity'}
+                    <div class="agent-status">
+                        <span class="status-dot"></span>
+                        ${a.status && a.status !== 'Idle' ? a.status : 'Ready'}
+                    </div>
+                    <div class="last-active">
+                        ${a.lastActive ? '⏱ ' + timeAgo(new Date(a.lastActive)) : '🌙 No recent activity'}
                     </div>
                 </div>
             `).join('');
-        } else {
-            agentsContainer.innerHTML = '<div class="empty-state">Waiting for team data...</div>';
+
+            if (agentsContainer.innerHTML !== newAgentsHTML) {
+                agentsContainer.innerHTML = newAgentsHTML;
+            }
+        } else if (!agentsContainer.querySelector('.empty-state')) {
+            agentsContainer.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">🤖</div>
+                    <div class="empty-state-text">Waiting for agents to connect...</div>
+                </div>
+            `;
         }
-        
+
         // Render Messages (Activity Log)
         if (data.messages && data.messages.length > 0) {
-            // Check if this is the first render or if we have new messages
-            const currentHTML = logContainer.innerHTML;
-            const newHTML = data.messages.map(m => createMessageHTML(m)).join('');
-            
-            if (currentHTML !== newHTML) {
-                 logContainer.innerHTML = newHTML;
+            const currentCount = logContainer.querySelectorAll('.message').length;
+            const newCount = data.messages.length;
+
+            if (currentCount !== newCount) {
+                logContainer.innerHTML = data.messages.map(m => createMessageHTML(m)).join('');
             }
-        } else {
-             logContainer.innerHTML = '<div class="empty-state">No messages exchanged yet.<br>Start the team to see activity!</div>';
+        } else if (!logContainer.querySelector('.empty-state')) {
+            logContainer.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">💬</div>
+                    <div class="empty-state-text">No messages yet.<br>Start your agents to see the conversation!</div>
+                </div>
+            `;
         }
     }
-    
+
     function createMessageHTML(m) {
         const initials = m.from.substring(0, 2).toUpperCase();
         return `
@@ -242,7 +657,7 @@
                 <div class="msg-body">
                     <div class="msg-meta">
                         <span class="msg-sender">${m.from}</span>
-                        <span class="arrow">➔</span>
+                        <span class="msg-arrow">→</span>
                         <span class="msg-target">${m.to}</span>
                         <span class="msg-time">${new Date(m.timestamp).toLocaleTimeString()}</span>
                     </div>
@@ -251,7 +666,7 @@
             </div>
         `;
     }
-    
+
     function escapeHtml(text) {
         if (!text) return '';
         const div = document.createElement('div');
@@ -265,9 +680,10 @@
         const minutes = Math.floor(seconds / 60);
         if (minutes < 60) return `${minutes}m ago`;
         const hours = Math.floor(minutes / 60);
-        return `${hours}h ago`;
+        if (hours < 24) return `${hours}h ago`;
+        return `${Math.floor(hours / 24)}d ago`;
     }
-    
+
     connect();
   </script>
 </body>
