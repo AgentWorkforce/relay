@@ -32,12 +32,6 @@ check_requirements() {
     info "Node.js $(node -v) detected"
 }
 
-install_npm() {
-    info "Installing agent-relay via npm..."
-    npm install -g agent-relay
-    success "Installed! Run 'agent-relay --help' to get started"
-}
-
 install_source() {
     info "Installing from source..."
     mkdir -p "$INSTALL_DIR" "$BIN_DIR"
@@ -59,13 +53,13 @@ install_source() {
 main() {
     echo -e "\n${YELLOW}⚡ Agent Relay${NC} Installer\n"
     check_requirements
-    [ "$1" = "--source" ] && install_source || install_npm
+    install_source
     echo -e "\nQuick Start:"
     echo -e "  # Start the daemon"
     echo -e "  agent-relay start -f"
     echo -e ""
-    echo -e "  # Wrap an agent with tmux (recommended)"
-    echo -e "  agent-relay wrap -n MyAgent --tmux2 \"claude\""
+    echo -e "  # Wrap an agent (tmux mode is default)"
+    echo -e "  agent-relay wrap -n MyAgent \"claude\""
     echo -e ""
     echo -e "  # Open the dashboard"
     echo -e "  agent-relay dashboard"
