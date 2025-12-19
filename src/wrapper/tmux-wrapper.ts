@@ -555,8 +555,9 @@ export class TmuxWrapper {
    */
   private async sendKeysLiteral(text: string): Promise<void> {
     // Escape for shell and use -l for literal
-    // Must escape: \ " $ ` !
+    // Must escape: \ " $ ` ! and remove any newlines
     const escaped = text
+      .replace(/[\r\n]+/g, ' ')  // Remove any newlines first
       .replace(/\\/g, '\\\\')
       .replace(/"/g, '\\"')
       .replace(/\$/g, '\\$')

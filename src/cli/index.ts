@@ -91,6 +91,7 @@ program
       socketPath,
       pidFilePath,
       storagePath: dbPath,
+      teamDir: paths.teamDir,
     });
 
     process.on('SIGINT', async () => {
