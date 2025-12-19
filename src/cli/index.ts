@@ -231,12 +231,12 @@ program
   .option('-n, --name <name>', 'Agent name (auto-generated if not provided)')
   .option('-s, --socket <path>', 'Socket path', DEFAULT_SOCKET_PATH)
   .option('-r, --raw', 'Raw mode - bypass parsing for terminal-heavy CLIs', false)
+  .option('--pty', 'Use direct PTY mode (legacy)', false)
   .option('-t, --tmux', 'Use tmux for message injection (old implementation)', false)
-  .option('--tmux2', 'Use new tmux wrapper (simpler, no PTY attachment)', false)
-  .option('--tmux2-quiet', 'Disable tmux2 debug logging', false)
-  .option('--tmux2-log-interval <ms>', 'Throttle tmux2 debug logs (ms)', (val) => parseInt(val, 10))
-  .option('--tmux2-inject-idle-ms <ms>', 'Idle time before injecting messages (ms)', (val) => parseInt(val, 10))
-  .option('--tmux2-inject-retry-ms <ms>', 'Retry interval while waiting to inject (ms)', (val) => parseInt(val, 10))
+  .option('-q, --quiet', 'Disable debug logging', false)
+  .option('--log-interval <ms>', 'Throttle debug logs (ms)', (val) => parseInt(val, 10))
+  .option('--inject-idle-ms <ms>', 'Idle time before injecting messages (ms)', (val) => parseInt(val, 10))
+  .option('--inject-retry-ms <ms>', 'Retry interval while waiting to inject (ms)', (val) => parseInt(val, 10))
   .option('-o, --osascript', 'Use osascript for OS-level keyboard simulation (macOS)', false)
   .option('-i, --inbox', 'Use file-based inbox (agent reads messages from file)', false)
   .option('--inbox-dir <path>', 'Custom inbox directory', '/tmp/agent-relay')
@@ -249,20 +249,23 @@ program
     // Auto-generate name if not provided
     const agentName = options.name ?? generateAgentName();
     process.stderr.write(`Agent name: ${agentName}\n`);
+    // Determine mode - tmux is now the default
+    const usePty = options.pty || options.tmux || options.osascript;
+
     if (options.inbox) {
       process.stderr.write(`Mode: inbox (file-based messaging)\n`);
     } else if (options.osascript) {
       process.stderr.write(`Mode: osascript (OS-level keyboard simulation)\n`);
-    } else if (options.tmux2) {
-      process.stderr.write(`Mode: tmux2 (new simplified tmux wrapper)\n`);
     } else if (options.tmux) {
       process.stderr.write(`Mode: tmux (old implementation)\n`);
+    } else if (options.pty) {
+      process.stderr.write(`Mode: direct PTY (legacy)\n`);
     } else {
-      process.stderr.write(`Mode: direct PTY\n`);
+      process.stderr.write(`Mode: tmux (default)\n`);
     }
 
-    // Use the new TmuxWrapper if --tmux2 is specified
-    if (options.tmux2) {
+    // Use the new TmuxWrapper by default (unless --pty, --tmux, or --osascript specified)
+    if (!usePty) {
       let TmuxWrapperClass: any;
       try {
         ({ TmuxWrapper: TmuxWrapperClass } = await import('../wrapper/tmux-wrapper.js'));
@@ -279,10 +282,10 @@ program
         socketPath: options.socket,
         useInbox: options.inbox,
         inboxDir: options.inboxDir,
-        debug: !options.tmux2Quiet,
-        debugLogIntervalMs: options.tmux2LogInterval,
-        idleBeforeInjectMs: options.tmux2InjectIdleMs,
-        injectRetryMs: options.tmux2InjectRetryMs,
+        debug: !options.quiet,
+        debugLogIntervalMs: options.logInterval,
+        idleBeforeInjectMs: options.injectIdleMs,
+        injectRetryMs: options.injectRetryMs,
       });
 
       // Handle shutdown

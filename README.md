@@ -319,8 +319,8 @@ npx agent-relay wrap "claude"
 # Wrap an agent with explicit name
 npx agent-relay wrap -n my-agent "claude"
 
-# Wrap with tmux mode (recommended for multi-agent sessions)
-npx agent-relay wrap --tmux2 -n PlayerX "claude"
+# Wrap with legacy PTY mode (if needed)
+npx agent-relay wrap --pty -n PlayerX "claude"
 
 # Check status
 npx agent-relay status
@@ -329,19 +329,19 @@ npx agent-relay status
 npx agent-relay send -t recipient -m "Hello"
 ```
 
-### Tmux Mode (`--tmux2`)
+### Tmux Mode (Default)
 
-The `--tmux2` flag wraps your agent in a tmux session, which provides better stability for multi-agent coordination:
+By default, `agent-relay wrap` uses tmux mode for better stability in multi-agent coordination:
 
 ```bash
 # Terminal 1: Start daemon
 agent-relay start -f
 
-# Terminal 2: Start first agent
-agent-relay wrap --tmux2 -n PlayerX -- claude
+# Terminal 2: Start first agent (tmux mode is default)
+agent-relay wrap -n PlayerX "claude"
 
 # Terminal 3: Start second agent
-agent-relay wrap --tmux2 -n PlayerO -- claude
+agent-relay wrap -n PlayerO "codex"
 ```
 
 **How it works:**
@@ -351,10 +351,16 @@ agent-relay wrap --tmux2 -n PlayerO -- claude
 - Incoming messages are injected via `tmux send-keys`
 
 **Tuning flags:**
-- `--tmux2-quiet` to silence debug logs (stderr)
-- `--tmux2-log-interval <ms>` to throttle debug output
-- `--tmux2-inject-idle-ms <ms>` to change the idle window before injecting messages (default 1500ms)
-- `--tmux2-inject-retry-ms <ms>` to adjust how often we re-check for an idle window (default 500ms)
+- `-q, --quiet` to silence debug logs (stderr)
+- `--log-interval <ms>` to throttle debug output
+- `--inject-idle-ms <ms>` to change the idle window before injecting messages (default 1500ms)
+- `--inject-retry-ms <ms>` to adjust how often we re-check for an idle window (default 500ms)
+
+**Legacy PTY mode:**
+If you need the old direct PTY mode, use the `--pty` flag:
+```bash
+agent-relay wrap --pty -n MyAgent "claude"
+```
 
 **Scrolling in tmux:**
 
@@ -472,7 +478,7 @@ agent-relay register -n AgentName -c "claude" -d /tmp/relay
 Web-based dashboard for monitoring agent communication:
 
 ```bash
-# Start dashboard on default port (3456)
+# Start dashboard on default port (3888)
 agent-relay dashboard -d /tmp/my-team
 
 # Start on custom port
