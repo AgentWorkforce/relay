@@ -4,6 +4,106 @@
 
 Store the complete "trajectory" of agent work on tasks - prompts, reasoning, inter-agent messages, tool calls, decisions, and retrospectives - as first-class artifacts that travel with the code and provide long-term value for debugging, code review, onboarding, and institutional memory.
 
+**Key principle: Platform agnostic.** Trajectories are a universal format - like Markdown for documentation. They work with any task system (Beads, Linear, Jira, GitHub Issues, plain text) and export to any reading format (Notion-like pages, Linear-like timelines, raw JSON).
+
+---
+
+## Vision: Notion/Linear for Agent Work
+
+Think of trajectories as **the document layer for agent work**:
+
+| Tool | For Humans | Trajectory Equivalent for Agents |
+|------|------------|----------------------------------|
+| Notion | Knowledge base, docs | Readable narrative of work |
+| Linear | Issue tracking, timelines | Task progress with full context |
+| Git | Version history | Decision history with reasoning |
+
+A trajectory is a **living document** that:
+- Agents write to as they work
+- Humans read to understand
+- Tools index for search and analysis
+- Systems import/export freely
+
+---
+
+## Reading Experience: Multiple Views
+
+The same trajectory data can be rendered in multiple ways for different audiences:
+
+### Notion-style Page (Human Documentation)
+
+A rich, readable document with collapsible sections:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ 🛤️ Implement User Authentication                               │
+│ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ │
+│                                                                 │
+│ 📋 Summary                                                      │
+│ JWT-based auth with refresh tokens. 2h 34m. Confidence: 85%    │
+│                                                                 │
+│ ▶ Key Decisions (3)                                            │
+│ ▶ Chapters (4)                                                 │
+│ ▶ Retrospective                                                │
+│                                                                 │
+│ 🔗 Links: ENG-456 • PR #123 • 3 commits                        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Linear-style Timeline (Progress Tracking)
+
+Chronological view with status:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  ● 10:00  Started: Implement User Authentication               │
+│  │                                                              │
+│  ├─ 10:05  Chapter: Research existing patterns                 │
+│  │         Found 3 auth approaches, chose JWT                  │
+│  │                                                              │
+│  ├─ 10:30  Decision: JWT over sessions                         │
+│  │         "Stateless scaling requirement"                     │
+│  │                                                              │
+│  ├─ 11:00  Chapter: Implementation                             │
+│  │         Modified 8 files                                    │
+│  │                                                              │
+│  ├─ 12:00  Message: @Bob review request                        │
+│  │                                                              │
+│  ○ 12:30  Completed with retrospective                         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Git-integrated View (Code Review)
+
+Embedded in PRs and commits:
+
+```markdown
+## 📍 Trajectory Context
+
+This PR implements [ENG-456] as part of trajectory `traj_abc123`.
+
+**Why this approach:** JWT chosen over sessions for stateless scaling.
+See [full trajectory](link) for decision history.
+
+**Agent confidence:** 85% - solid implementation, suggest load testing
+the refresh token rotation.
+```
+
+### CLI View (Agent/Developer)
+
+```bash
+$ agent-relay trajectory status
+
+Active Trajectory: traj_abc123
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Task:     Implement user authentication
+Source:   linear:ENG-456
+Started:  2h 34m ago
+Agents:   Alice (active), Bob (reviewing)
+Chapters: 4 (current: "Testing")
+Decisions: 3 recorded
+```
+
 ---
 
 ## The Problem
@@ -32,12 +132,15 @@ A **trajectory** is a structured record of an agent's work on a task:
 ```typescript
 interface Trajectory {
   id: string;                    // UUID
-  taskId: string;                // Beads task ID (bd-xxx)
-  taskTitle: string;             // Human-readable title
+  version: 1;                    // Schema version (for forward compat)
+
+  // Task reference (platform-agnostic)
+  task: TaskReference;
 
   // Timeline
   startedAt: string;             // ISO timestamp
   completedAt?: string;
+  status: 'active' | 'completed' | 'abandoned';
 
   // Participants
   agents: AgentParticipation[];  // Who worked on this
@@ -54,7 +157,27 @@ interface Trajectory {
 
   // Metadata
   projectId: string;
-  version: number;               // Schema version
+  tags: string[];                // User-defined tags
+}
+
+/**
+ * Platform-agnostic task reference.
+ * Trajectories work with ANY task system.
+ */
+interface TaskReference {
+  // Human-readable
+  title: string;
+  description?: string;
+
+  // External system reference (optional)
+  source?: {
+    system: 'beads' | 'linear' | 'jira' | 'github' | 'plain' | string;
+    id: string;                  // e.g., "bd-123", "ENG-456", "GH#789"
+    url?: string;                // Link to external system
+  };
+
+  // If no external system, trajectory IS the task
+  // (standalone mode - like a Notion page)
 }
 
 interface Chapter {
@@ -98,6 +221,169 @@ interface Decision {
   alternatives: string[];        // What was rejected
   reasoning: string;             // Why
 }
+```
+
+---
+
+## Universal File Format: `.trajectory`
+
+Trajectories are stored as **self-contained documents** in a simple, portable format:
+
+### File Structure
+
+```
+my-feature.trajectory.json     # Machine-readable (primary)
+my-feature.trajectory.md       # Human-readable (generated)
+```
+
+Or bundled:
+```
+my-feature.trajectory/
+├── trajectory.json            # Full data
+├── README.md                  # Human summary
+├── chapters/
+│   ├── 01-exploration.md      # Chapter narratives
+│   └── 02-implementation.md
+└── artifacts/                 # Referenced files (optional)
+```
+
+### JSON Format (Primary)
+
+```json
+{
+  "$schema": "https://agent-relay.dev/schemas/trajectory-v1.json",
+  "version": 1,
+  "id": "traj_abc123",
+  "task": {
+    "title": "Implement user authentication",
+    "source": {
+      "system": "linear",
+      "id": "ENG-456",
+      "url": "https://linear.app/team/issue/ENG-456"
+    }
+  },
+  "startedAt": "2024-01-15T10:00:00Z",
+  "status": "completed",
+  "agents": [...],
+  "chapters": [...],
+  "retrospective": {...}
+}
+```
+
+### Markdown Format (Human-Readable)
+
+Auto-generated, Notion-like document:
+
+```markdown
+# 🛤️ Trajectory: Implement user authentication
+
+> **Task:** [ENG-456](https://linear.app/team/issue/ENG-456)
+> **Status:** ✅ Completed
+> **Duration:** 2h 34m
+> **Agents:** Alice, Bob
+> **Confidence:** 85%
+
+---
+
+## 📋 Summary
+
+Implemented JWT-based authentication with refresh tokens. Chose JWTs over
+sessions for stateless scaling. Key challenge was fixing existing type
+definitions that were incorrect.
+
+---
+
+## 🎯 Key Decisions
+
+### JWT vs Sessions
+- **Chose:** JWT with refresh tokens
+- **Rejected:** Server-side sessions
+- **Why:** Stateless scaling requirement, multi-server deployment planned
+
+---
+
+## 📖 Chapters
+
+### 1. Initial Exploration (10:00 - 10:30)
+Researched existing auth patterns in codebase. Found 3 different approaches
+already in use. Decided to follow the pattern in `src/auth/oauth.ts`.
+
+### 2. Implementation (10:30 - 12:00)
+[Detailed narrative...]
+
+---
+
+## 🔄 Retrospective
+
+**What went well:** Clean implementation, good test coverage.
+**Challenges:** UserContext types were wrong, had to fix first.
+**Would do differently:** Check existing types earlier in process.
+```
+
+---
+
+## Task Source Adapters
+
+Trajectories are **decoupled from task systems**. Adapters translate between systems:
+
+```typescript
+interface TaskSourceAdapter {
+  name: string;  // 'beads', 'linear', 'github', etc.
+
+  // Detect if this source is available
+  detect(): Promise<boolean>;
+
+  // Get task details for trajectory
+  getTask(id: string): Promise<TaskReference>;
+
+  // Listen for task state changes (optional)
+  onTaskStart?(callback: (task: TaskReference) => void): void;
+  onTaskComplete?(callback: (taskId: string) => void): void;
+
+  // Sync trajectory status back to source (optional)
+  updateTaskStatus?(taskId: string, status: string): Promise<void>;
+}
+```
+
+### Built-in Adapters
+
+| Adapter | Detection | Features |
+|---------|-----------|----------|
+| `beads` | `.beads/` dir | Full sync, auto-start on `bd update` |
+| `github` | `.git` + `gh` CLI | Link to issues/PRs |
+| `linear` | `LINEAR_API_KEY` env | Two-way sync |
+| `jira` | `JIRA_URL` env | Read-only (start) |
+| `plain` | Always available | Manual task creation |
+
+### Example: Standalone Mode (No External System)
+
+```bash
+# Create a trajectory without any task system
+agent-relay trajectory new "Refactor payment module"
+
+# The trajectory IS the task - like a Notion page
+```
+
+### Example: Beads Integration
+
+```bash
+# Beads task triggers trajectory automatically
+bd update bd-123 --status=in_progress
+# → Trajectory starts, linked to bd-123
+
+bd close bd-123
+# → Trajectory completes, retrospective prompted
+```
+
+### Example: Linear/Jira Integration
+
+```bash
+# Explicit link to external task
+agent-relay trajectory start --linear ENG-456 "Implement feature"
+
+# Or auto-detect from branch name
+git checkout -b feature/ENG-456-auth
+agent-relay trajectory start  # Auto-links to ENG-456
 ```
 
 ---
@@ -223,12 +509,41 @@ project/
 
 ## Storage Architecture
 
-### New Table: `trajectories`
+### Storage Backends
+
+Trajectories support multiple storage backends:
+
+| Backend | Use Case | Notes |
+|---------|----------|-------|
+| **File system** | Default, git-friendly | `.trajectories/` in repo |
+| **SQLite** | Local indexing, search | Same DB as messages |
+| **PostgreSQL** | Multi-user, cloud | Shared team access |
+| **S3/GCS** | Archive, large teams | Cold storage for old trajectories |
+
+### File System (Default)
+
+```
+.trajectories/
+├── index.json                    # Quick lookup index
+├── active/                       # In-progress trajectories
+│   └── traj_abc123.json
+├── completed/                    # Finished trajectories
+│   ├── 2024-01/
+│   │   ├── traj_def456.json
+│   │   └── traj_def456.md        # Human-readable export
+│   └── 2024-02/
+└── archive/                      # Compressed old trajectories
+```
+
+### SQLite Schema
+
+For search and querying:
 
 ```sql
 CREATE TABLE trajectories (
   id TEXT PRIMARY KEY,
-  task_id TEXT NOT NULL,           -- Beads task ID
+  task_source TEXT,                -- 'beads', 'linear', 'github', etc.
+  task_id TEXT,                    -- External task ID (nullable for standalone)
   task_title TEXT NOT NULL,
   project_id TEXT NOT NULL,
 
@@ -364,17 +679,24 @@ router.on('message', (envelope) => {
 });
 ```
 
-### 4. Beads Integration
+### 4. Task System Integration
 
-Link trajectories to beads tasks:
+Trajectories link to external task systems via adapters:
 
 ```typescript
-// When agent runs: bd update <id> --status=in_progress
-trajectoryCapture.startTrajectory(taskId, taskTitle);
+// Any adapter can trigger trajectory lifecycle
+taskAdapter.onTaskStart((task: TaskReference) => {
+  trajectoryCapture.startTrajectory(task);
+});
 
-// When agent runs: bd close <id>
-trajectoryCapture.endTrajectory();
-promptForRetrospective();  // Ask agent to reflect
+taskAdapter.onTaskComplete((taskId: string) => {
+  trajectoryCapture.endTrajectory();
+  promptForRetrospective();
+});
+
+// Example: Beads adapter watches for 'bd update/close'
+// Example: Linear adapter polls API or uses webhooks
+// Example: GitHub adapter watches for issue state changes
 ```
 
 ---
@@ -385,7 +707,7 @@ Encourage agents to reflect by:
 
 ### 1. Automatic Prompting
 
-When an agent completes a task (closes a beads issue), inject:
+When an agent completes a task (via any task system or manually), inject:
 
 ```
 📝 RETROSPECTIVE REQUEST
@@ -543,24 +865,33 @@ git notes add -m "$(agent-relay trajectory export abc123 --format summary)" abc1
 ## Migration Path
 
 ### Phase 1: Foundation
-- Add trajectory storage schema
-- Implement basic capture in wrapper
-- CLI: `trajectory start`, `trajectory status`, `trajectory complete`
+- Define trajectory JSON schema (v1)
+- File-based storage (`.trajectories/` directory)
+- CLI: `trajectory new`, `trajectory status`, `trajectory complete`
+- Manual capture via `[[TRAJECTORY:*]]` blocks
 
-### Phase 2: Integration
-- Beads integration (auto-start on `bd update --status=in_progress`)
+### Phase 2: Task Adapters
+- Beads adapter (auto-start on `bd update --status=in_progress`)
+- GitHub adapter (link to issues/PRs)
+- Plain adapter (standalone trajectories)
+- Adapter plugin interface for custom systems
+
+### Phase 3: Automatic Capture
 - Message capture from router
-- Retrospective prompting
+- Retrospective prompting on task complete
+- SQLite indexing for search
 
-### Phase 3: Export & Search
-- Markdown export
-- Full-text search
-- Git integration
+### Phase 4: Human-Readable Layer
+- Markdown export (Notion-style pages)
+- Timeline view (Linear-style)
+- PR/commit integration
+- Trajectory viewer in dashboard
 
-### Phase 4: Intelligence
-- Auto-summarization (use LLM to summarize long trajectories)
-- Decision extraction (identify decisions from conversation)
-- Cross-trajectory analysis
+### Phase 5: Intelligence
+- Auto-summarization (LLM-generated summaries)
+- Decision extraction from conversation
+- Cross-trajectory search and analysis
+- Similarity detection ("how did we solve this before?")
 
 ---
 
