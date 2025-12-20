@@ -514,6 +514,93 @@ Together they create a complete memory stack.
 
 ---
 
+## Architecture: Separate Providers in a Stack
+
+Each layer is a **separate project** that can be used independently or together:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    AGENT INFRASTRUCTURE STACK                   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │  AGENT-WORKSPACE (Layer 4)                              │   │
+│  │  github.com/???/agent-workspace                         │   │
+│  │  Knowledge base, patterns, decisions                    │   │
+│  │  Extracts wisdom from trajectories                      │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                            ▲                                    │
+│                            │ extracts from                      │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │  AGENT-TRAJECTORIES (Layer 3)          ◄── THIS PROJECT │   │
+│  │  github.com/???/agent-trajectories                      │   │
+│  │  Task narratives, decisions, retrospectives             │   │
+│  │  Platform-agnostic .trajectory format                   │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                            ▲                                    │
+│                            │ aggregates                         │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │  CLAUDE-MEM (Layer 2)                                   │   │
+│  │  github.com/thedotmack/claude-mem                       │   │
+│  │  Tool observations, semantic concepts, sessions         │   │
+│  │  Already exists - we integrate with it                  │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                            ▲                                    │
+│                            │ captures                           │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │  AGENT-RELAY (Layer 1)                                  │   │
+│  │  github.com/khaliqgant/agent-relay                      │   │
+│  │  Real-time messaging, message persistence               │   │
+│  │  The communication substrate                            │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Each Project is Independent
+
+| Project | Can Use Alone? | Depends On |
+|---------|----------------|------------|
+| **agent-relay** | ✅ Yes | Nothing |
+| **claude-mem** | ✅ Yes | Nothing (Claude Code hooks) |
+| **agent-trajectories** | ✅ Yes | Nothing (but richer with relay/claude-mem) |
+| **agent-workspace** | ⚠️ Needs trajectories | agent-trajectories |
+
+### Integration Points
+
+```typescript
+// agent-trajectories can pull from multiple sources:
+
+// 1. Messages from agent-relay
+import { RelayClient } from 'agent-relay';
+const messages = await relay.getMessages({ topic: taskId });
+
+// 2. Observations from claude-mem
+import { ClaudeMemClient } from 'claude-mem';
+const observations = await claudeMem.search({ timeRange, types });
+
+// 3. Or work standalone with just explicit agent output
+// [[TRAJECTORY:decision]] ... [[/TRAJECTORY]]
+```
+
+### Why Separate Projects?
+
+1. **Independent adoption** - Use trajectories without relay, or relay without trajectories
+2. **Different maintainers** - claude-mem is already external
+3. **Different release cycles** - Each can evolve independently
+4. **Cleaner dependencies** - No monolith, composable pieces
+5. **Community contributions** - Easier to contribute to focused projects
+
+### The Glue
+
+agent-relay serves as the **communication substrate** - it's what agents use to talk to each other. The other layers build on top:
+
+- claude-mem hooks into Claude Code directly
+- agent-trajectories can consume relay messages as events
+- agent-workspace queries trajectories for patterns
+
+---
+
 ## Vision: Notion/Linear for Agent Work
 
 Think of trajectories as **the document layer for agent work**:
