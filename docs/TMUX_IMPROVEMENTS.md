@@ -55,7 +55,7 @@
 │   └─────────────────────────────────────────┘                       │
 │                                                                      │
 │   Messages: Separate system (filesystem + HTTP API)                  │
-│       └─► ~/.aimaestro/messages/inbox/{agent}/                      │
+│       └─► ~/.relay/messages/inbox/{agent}/                          │
 │       └─► Agent polls for new files or gets tmux notification       │
 │                                                                      │
 │   Dependencies: node-pty (native), ws, xterm.js                      │
@@ -252,9 +252,9 @@ private sentMessageHashes: Set<string> = new Set();
 
 ```javascript
 // Messages are sent via API/CLI, not terminal output
-send-aimaestro-message.sh Bob "Subject" "Body"
+send-relay-message.sh Bob "Subject" "Body"
 
-// Creates file in ~/.aimaestro/messages/inbox/Bob/
+// Creates file in ~/.relay/messages/inbox/Bob/
 // Agent's "subconscious" polls filesystem for new files
 ```
 
@@ -774,7 +774,7 @@ private scheduleReconnect(): void {
 The alternative stores agent metadata in a persistent registry:
 
 ```typescript
-// Their approach - ~/.aimaestro/agents/registry.json
+// Alternative approach - ~/.relay/agents/registry.json
 {
   "agents": {
     "agent-abc123": {
