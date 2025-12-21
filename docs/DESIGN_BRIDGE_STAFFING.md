@@ -75,39 +75,52 @@ This builds on the existing agent-relay infrastructure while adding:
 
 ## CLI Commands
 
+### Design Principle
+
+> **Tight surface area. Simple interfaces hiding complexity.**
+
 ### Start Bridge (Architect)
 
 ```bash
-# Bridge multiple projects with designated leads
-agent-relay bridge \
-  --as architect \
-  --projects ~/auth-service,~/frontend,~/api-service \
-  --lead auth-service:Alice \
-  --lead frontend:Bob \
-  --lead api-service:Carol \
-  claude
-
-# Auto-discover all active projects
-agent-relay bridge --as architect --all-projects claude
-
-# Short form
-agent-relay bridge -p ~/auth,~/frontend -l auth:Alice -l frontend:Bob claude
+# Bridge multiple projects - just list the paths
+agent-relay bridge ~/auth ~/frontend ~/api
 ```
 
-### Start Lead (with spawn capability)
+That's it. The system handles:
+- Socket discovery for each project
+- Multi-socket connections
+- Lead auto-detection (first registered agent per project)
+- Cross-project message routing
+
+### Start Lead
 
 ```bash
-# In the auth-service project directory
-cd ~/auth-service
-agent-relay --as lead --can-spawn -n Alice claude
-
-# Or with explicit project
-agent-relay --as lead --can-spawn -n Alice --project ~/auth-service claude
+# Be a lead - just your name
+agent-relay lead Alice
 ```
 
-### Workers (spawned by Leads, not started manually)
+That's it. The system handles:
+- Project detection from current directory
+- Spawn capability (automatic for leads)
+- Daemon registration
+- Worker management
 
-Workers are created via relay messages from Leads - see Spawn Protocol below.
+### Workers (spawned by Leads)
+
+Workers are created via relay messages - not CLI commands:
+
+```bash
+@relay:spawn Dev1 claude "Build the login page"
+@relay:release Dev1
+```
+
+### What's Hidden
+
+| User types | System handles |
+|------------|----------------|
+| `bridge ~/auth ~/frontend` | Socket discovery, multi-connection, lead detection |
+| `lead Alice` | Spawn capability, project detection, daemon registration |
+| `@relay:spawn Dev1 claude "task"` | Tmux window, agent launch, task injection |
 
 ---
 
@@ -533,32 +546,22 @@ import { MultiProjectClient } from '../wrapper/multi-project-client.js';
 export function bridgeCommand(program: Command): void {
   program
     .command('bridge')
-    .description('Bridge multiple projects as an orchestrator')
-    .option('--as <role>', 'Role: architect or principal', 'architect')
-    .option('-p, --projects <paths>', 'Comma-separated project paths')
-    .option('--all-projects', 'Auto-discover all active projects')
-    .option('-l, --lead <mapping>', 'Project lead mapping (project:name)', collect, [])
-    .argument('<cli>', 'Agent CLI to use (claude, codex, gemini)')
-    .action(async (cli, options) => {
-      const projects = options.allProjects
-        ? await discoverProjects()
-        : parseProjects(options.projects);
+    .description('Bridge multiple projects as orchestrator')
+    .argument('<projects...>', 'Project paths to bridge')
+    .action(async (projectPaths: string[]) => {
+      // Resolve and validate paths
+      const projects = await resolveProjects(projectPaths);
 
-      const leads = parseLeads(options.lead);
-
-      const client = new MultiProjectClient(
-        projects.map(p => ({
-          ...p,
-          lead: leads.get(p.id),
-        }))
-      );
-
+      // Connect to all project sockets
+      const client = new MultiProjectClient(projects);
       await client.connect();
 
-      // Start the agent wrapper with multi-project client
+      // Auto-detect leads (first registered agent per project)
+      await client.discoverLeads();
+
+      // Start wrapper with multi-project client
       const wrapper = new TmuxWrapper({
-        agentName: options.as,
-        cli,
+        agentName: 'Architect',
         client,
         isOrchestrator: true,
       });
@@ -566,9 +569,30 @@ export function bridgeCommand(program: Command): void {
       await wrapper.start();
     });
 }
+```
 
-function collect(value: string, previous: string[]): string[] {
-  return previous.concat([value]);
+**File: `src/cli/lead.ts`**
+
+```typescript
+export function leadCommand(program: Command): void {
+  program
+    .command('lead')
+    .description('Start as project lead with spawn capability')
+    .argument('<name>', 'Your name')
+    .action(async (name: string) => {
+      // Detect project from cwd
+      const project = await detectProject(process.cwd());
+
+      // Start as lead with spawn capability
+      const wrapper = new TmuxWrapper({
+        agentName: name,
+        projectRoot: project.root,
+        isLead: true,
+        canSpawn: true,
+      });
+
+      await wrapper.start();
+    });
 }
 ```
 
