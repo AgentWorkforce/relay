@@ -1,8 +1,21 @@
 # Agent Relay Federation: Cross-Server Communication Proposal
 
+**Status:** Draft v2 (revised after critical review)
+**Last Updated:** 2025-12-21
+
 ## Executive Summary
 
 This proposal extends agent-relay to support **federated multi-server deployments** while preserving the core differentiator: **automatic message injection via tmux**. Unlike polling-based systems (mcp_agent_mail OSS), federated agent-relay maintains real-time, interrupt-driven communication across server boundaries.
+
+### Key Design Decisions (v2)
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Transport | Pluggable (WebSocket default, NATS optional) | Start simple, scale up |
+| Delivery | End-to-end confirmation | Sender knows agent received |
+| Naming | Fleet-wide unique names | Avoid split-brain complexity |
+| Auth | Asymmetric keys (Ed25519) | Scales better than N² tokens |
+| Backpressure | Credit-based flow control | Prevent OOM on slow peers |
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -38,12 +51,16 @@ This proposal extends agent-relay to support **federated multi-server deployment
 4. [Protocol Specification](#4-protocol-specification)
 5. [Agent Discovery & Registry](#5-agent-discovery--registry)
 6. [Message Routing](#6-message-routing)
-7. [Security Model](#7-security-model)
-8. [Failure Handling & Resilience](#8-failure-handling--resilience)
-9. [Configuration](#9-configuration)
-10. [CLI Interface](#10-cli-interface)
-11. [Implementation Plan](#11-implementation-plan)
-12. [Migration Path](#12-migration-path)
+7. [Delivery Confirmation](#7-delivery-confirmation) *(NEW)*
+8. [Security Model](#8-security-model)
+9. [Flow Control & Backpressure](#9-flow-control--backpressure) *(NEW)*
+10. [Failure Handling & Resilience](#10-failure-handling--resilience)
+11. [Transport Abstraction (NATS Option)](#11-transport-abstraction-nats-option) *(NEW)*
+12. [Configuration](#12-configuration)
+13. [CLI Interface](#13-cli-interface)
+14. [Implementation Plan](#14-implementation-plan)
+15. [Migration Path](#15-migration-path)
+16. [Open Questions](#16-open-questions) *(NEW)*
 
 ---
 
@@ -471,30 +488,51 @@ Agents can be addressed in multiple ways:
 | `@relay:*@local` | Broadcast to local server only |
 | `@relay:*@nyc` | Broadcast to all agents on "nyc" |
 
-### 5.3 Name Collision Handling
+### 5.3 Name Collision Handling (v2: Fleet-Wide Uniqueness)
 
-If two agents have the same name on different servers:
+**Design Decision:** Agent names must be unique across the entire fleet.
 
-1. **Local preference**: Unqualified name routes to local agent first
-2. **First-registered wins**: For fleet-wide lookup, first to register owns the name
-3. **Explicit qualification**: Use `@relay:Bob@server-id` to disambiguate
-4. **Warning on collision**: Daemon logs warning when collision detected
+This is simpler than "first-registered wins" which has race conditions with async gossip. With fleet-wide uniqueness:
+- No split-brain scenarios
+- No ambiguous routing
+- Clear error on collision
 
 ```typescript
-// Resolution algorithm
-function resolveAgent(name: string, fromServer: string): AgentRecord | null {
-  // Check for explicit qualification
+// Registration flow
+async function registerAgent(name: string, serverId: string): Promise<Result> {
+  // Check fleet-wide registry
+  if (registry.exists(name)) {
+    const existing = registry.get(name);
+    return {
+      success: false,
+      error: `Name "${name}" already registered on ${existing.server_id}`,
+      suggestion: `${name}-${serverId.slice(0, 4)}` // e.g., "Bob-nyc1"
+    };
+  }
+
+  // Broadcast reservation with Lamport timestamp
+  await broadcastReservation(name, serverId, lamportClock.tick());
+
+  // Wait for quorum acknowledgment (majority of peers)
+  const acks = await waitForAcks(name, QUORUM_TIMEOUT_MS);
+  if (acks < quorumSize()) {
+    return { success: false, error: 'Failed to achieve quorum' };
+  }
+
+  registry.add(name, serverId);
+  return { success: true };
+}
+
+// Resolution is now simple
+function resolveAgent(name: string): AgentRecord | null {
+  // Check for explicit qualification (still supported)
   if (name.includes('@')) {
     const [agentName, serverSpec] = name.split('@');
     return registry.findOnServer(agentName, serverSpec);
   }
 
-  // Try local first
-  const local = registry.findLocal(name, fromServer);
-  if (local) return local;
-
-  // Fleet-wide lookup (first registered)
-  return registry.findAny(name);
+  // Fleet-wide lookup (guaranteed unique)
+  return registry.get(name);
 }
 ```
 
@@ -671,24 +709,203 @@ function handlePeerRoute(msg: PeerEnvelope<PeerRoutePayload>): void {
 
 ---
 
-## 7. Security Model
+## 7. Delivery Confirmation *(NEW)*
 
-### 7.1 Authentication
+### 7.1 The Problem
 
-**Pre-shared tokens** for simplicity:
+Without end-to-end confirmation, senders don't know if messages were actually received:
 
-```yaml
-# Server A config
-auth:
-  server_token: "server-a-secret-token"
-  peer_tokens:
-    server-b: "shared-secret-ab"
-    server-c: "shared-secret-ac"
+```
+Alice sends → Daemon A → Daemon B → tmux send-keys → ???
+                          ↑
+                          ACK (peer received)
+
+But: Did Bob's agent actually see it?
+     - tmux session might have crashed
+     - Agent might be blocked
+     - Injection might have failed silently
 ```
 
-Tokens are exchanged in PEER_HELLO and validated before PEER_WELCOME.
+### 7.2 Solution: DELIVERY_CONFIRMED Message
 
-### 7.2 Transport Security
+Add a new message type that confirms the message was injected into the agent's terminal:
+
+```typescript
+interface DeliveryConfirmedPayload {
+  original_message_id: string;  // ID of the message being confirmed
+  injected_at: number;          // Timestamp when send-keys completed
+  agent_status: 'active' | 'idle' | 'unknown';
+}
+```
+
+### 7.3 Confirmation Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         END-TO-END DELIVERY CONFIRMATION                     │
+│                                                                              │
+│  Alice@A                    Daemon A         Daemon B              Bob@B    │
+│     │                          │                │                    │       │
+│     │ ── @relay:Bob msg ────►  │                │                    │       │
+│     │                          │ ─ PEER_ROUTE ─►│                    │       │
+│     │                          │                │ ── send-keys ────► │       │
+│     │                          │                │    (inject msg)    │       │
+│     │                          │                │                    │       │
+│     │                          │                │ ◄── capture-pane ──│       │
+│     │                          │                │    (detect receipt)│       │
+│     │                          │                │                    │       │
+│     │                          │ ◄─ DELIVERY_ ──│                    │       │
+│     │                          │   CONFIRMED    │                    │       │
+│     │                          │                │                    │       │
+│     │ ◄─ inject confirmation ──│                │                    │       │
+│     │   "[✓] Bob received"     │                │                    │       │
+│     │                          │                │                    │       │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 7.4 Detection Mechanism
+
+After injecting a message, the TmuxWrapper watches for evidence the agent received it:
+
+```typescript
+async function confirmDelivery(messageId: string): Promise<boolean> {
+  // Wait for agent to echo/process the message
+  const startTime = Date.now();
+  const timeout = 5000; // 5 seconds
+
+  while (Date.now() - startTime < timeout) {
+    const output = await capturePane();
+
+    // Look for our injected message in output
+    if (output.includes(`Relay message from`) && output.includes(messageId.slice(0, 8))) {
+      return true;
+    }
+
+    await sleep(200);
+  }
+
+  return false; // Timeout - uncertain delivery
+}
+```
+
+### 7.5 Sender Notification
+
+Senders receive confirmation or timeout notification:
+
+```
+# Success case
+[relay:Alice] → Bob: Can you review auth.ts?
+[relay:Alice] ✓ Bob received (145ms)
+
+# Timeout case
+[relay:Alice] → Bob: Can you review auth.ts?
+[relay:Alice] ⚠ Delivery to Bob unconfirmed (timeout)
+```
+
+### 7.6 Configuration
+
+Delivery confirmation is optional (adds latency):
+
+```yaml
+federation:
+  delivery_confirmation:
+    enabled: true           # Enable end-to-end confirmation
+    timeout_ms: 5000        # How long to wait for confirmation
+    notify_sender: true     # Inject confirmation into sender's terminal
+```
+
+---
+
+## 8. Security Model
+
+### 8.1 Authentication (v2: Asymmetric Keys)
+
+**Design Decision:** Use Ed25519 keypairs instead of pre-shared tokens.
+
+Pre-shared tokens don't scale: N servers = N² tokens. With asymmetric keys:
+- Each server has one keypair
+- Servers exchange public keys once
+- Challenge-response authentication
+- Easy key rotation
+
+```typescript
+// Each server generates a keypair on first run
+interface ServerIdentity {
+  server_id: string;
+  public_key: string;   // Ed25519 public key (base64)
+  private_key: string;  // Ed25519 private key (stored securely)
+}
+
+// Handshake uses challenge-response
+interface PeerHelloPayload {
+  server_id: string;
+  public_key: string;
+  challenge: string;          // Random nonce
+  challenge_signature: string; // Sign our challenge with our private key
+}
+
+interface PeerWelcomePayload {
+  server_id: string;
+  challenge_response: string;  // Sign their challenge with our private key
+  // ... rest of welcome
+}
+```
+
+### 8.2 Key Distribution
+
+Options for distributing public keys:
+
+**Option A: Static Configuration (Simple)**
+```yaml
+auth:
+  private_key_path: /etc/agent-relay/server.key
+  known_peers:
+    london-prod-01: "ed25519:abc123..."  # Public key
+    tokyo-prod-01: "ed25519:def456..."
+```
+
+**Option B: Trust-on-First-Use (TOFU)**
+```yaml
+auth:
+  tofu_enabled: true      # Accept new peers, remember their keys
+  tofu_require_approval: true  # Require human approval for new peers
+```
+
+**Option C: Certificate Authority (Enterprise)**
+```yaml
+auth:
+  ca_cert: /etc/agent-relay/ca.pem
+  server_cert: /etc/agent-relay/server.pem
+  server_key: /etc/agent-relay/server.key
+```
+
+### 8.3 Message Signing
+
+Each peer-to-peer message is signed:
+
+```typescript
+interface PeerEnvelope<T> {
+  // ... existing fields
+  signature: string;  // Ed25519 signature of (type + id + ts + payload)
+}
+
+function signEnvelope(envelope: PeerEnvelope, privateKey: Key): string {
+  const payload = JSON.stringify({
+    type: envelope.type,
+    id: envelope.id,
+    ts: envelope.ts,
+    payload: envelope.payload
+  });
+  return ed25519.sign(payload, privateKey);
+}
+
+function verifyEnvelope(envelope: PeerEnvelope, publicKey: Key): boolean {
+  // Reject if signature invalid - prevents spoofing
+  return ed25519.verify(envelope.signature, publicKey);
+}
+```
+
+### 8.4 Transport Security
 
 **Mandatory TLS** for peer connections:
 
@@ -704,7 +921,7 @@ const ws = new WebSocket(peerUrl, {
 });
 ```
 
-### 7.3 Authorization
+### 8.5 Authorization
 
 Simple capability model:
 
@@ -717,7 +934,7 @@ interface ServerCapabilities {
 }
 ```
 
-### 7.4 Security Checklist
+### 8.6 Security Checklist
 
 | Control | Status | Notes |
 |---------|--------|-------|
@@ -730,9 +947,163 @@ interface ServerCapabilities {
 
 ---
 
-## 8. Failure Handling & Resilience
+## 9. Flow Control & Backpressure *(NEW)*
 
-### 8.1 Connection Failures
+### 15.1 The Problem
+
+Without flow control, a fast sender can overwhelm a slow receiver:
+
+```
+Server A: sends 1000 msgs/sec to Server B
+Server B: can only inject 10 msgs/sec (agents busy)
+Server B: queue grows → memory exhaustion → OOM crash
+```
+
+### 15.2 Credit-Based Flow Control
+
+Each peer connection has a credit window:
+
+```typescript
+interface FlowControl {
+  // Sender side
+  credits: number;          // How many messages we can send
+  pendingAcks: Map<string, Envelope>;  // Messages awaiting ACK
+
+  // Receiver side
+  windowSize: number;       // Max messages before ACK required
+  received: number;         // Messages received since last ACK
+}
+
+// Sender checks credits before sending
+function canSend(): boolean {
+  return this.credits > 0;
+}
+
+function send(envelope: Envelope): boolean {
+  if (!this.canSend()) {
+    this.queue.push(envelope);  // Queue locally
+    return false;
+  }
+
+  this.credits--;
+  this.pendingAcks.set(envelope.id, envelope);
+  this.peer.send(envelope);
+  return true;
+}
+
+// Receiver sends PEER_ACK to replenish credits
+function onReceive(envelope: Envelope): void {
+  this.received++;
+
+  if (this.received >= this.windowSize / 2) {
+    this.peer.send({
+      type: 'PEER_ACK',
+      payload: { credits: this.received }
+    });
+    this.received = 0;
+  }
+}
+
+// Sender receives ACK, replenishes credits
+function onAck(ack: PeerAckPayload): void {
+  this.credits += ack.credits;
+  this.flushQueue();  // Send queued messages
+}
+```
+
+### 15.3 Backpressure Signals
+
+When a receiver is overwhelmed, it sends PEER_BUSY:
+
+```typescript
+type PeerMessageType =
+  // ... existing types
+  | 'PEER_ACK'    // Replenish sender credits
+  | 'PEER_BUSY'   // Receiver overwhelmed, stop sending
+  | 'PEER_READY'; // Receiver recovered, resume
+
+interface PeerBusyPayload {
+  reason: 'queue_full' | 'agent_busy' | 'rate_limited';
+  retry_after_ms?: number;  // Suggested wait time
+}
+```
+
+### 9.4 Rate Limiting
+
+Per-peer and fleet-wide rate limits:
+
+```typescript
+interface RateLimiter {
+  // Token bucket algorithm
+  tokens: number;
+  maxTokens: number;
+  refillRate: number;  // tokens per second
+
+  tryConsume(count: number): boolean {
+    this.refill();
+    if (this.tokens >= count) {
+      this.tokens -= count;
+      return true;
+    }
+    return false;
+  }
+}
+
+// Applied at multiple levels
+const limits = {
+  perPeer: new RateLimiter({ maxTokens: 100, refillRate: 50 }),     // 50/sec per peer
+  perAgent: new RateLimiter({ maxTokens: 20, refillRate: 10 }),     // 10/sec per agent
+  fleetWide: new RateLimiter({ maxTokens: 1000, refillRate: 200 }), // 200/sec total
+};
+```
+
+### 9.5 Bounded Queues
+
+Queues have maximum sizes with drop policies:
+
+```typescript
+interface BoundedQueue<T> {
+  maxSize: number;
+  dropPolicy: 'oldest' | 'newest' | 'reject';
+
+  push(item: T): boolean {
+    if (this.items.length >= this.maxSize) {
+      switch (this.dropPolicy) {
+        case 'oldest':
+          this.items.shift();  // Drop oldest
+          break;
+        case 'newest':
+          return false;        // Reject new item
+        case 'reject':
+          throw new QueueFullError();
+      }
+    }
+    this.items.push(item);
+    return true;
+  }
+}
+```
+
+### 9.6 Configuration
+
+```yaml
+federation:
+  flow_control:
+    window_size: 100          # Messages before ACK required
+    max_queue_size: 1000      # Max queued messages per peer
+    queue_drop_policy: oldest # oldest | newest | reject
+
+  rate_limits:
+    per_peer_per_second: 50
+    per_agent_per_second: 10
+    fleet_wide_per_second: 200
+```
+
+---
+
+## 10. Failure Handling & Resilience
+
+### 13.1 Connection Failures
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -762,7 +1133,7 @@ interface ServerCapabilities {
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 8.2 Split Brain Prevention
+### 13.2 Split Brain Prevention
 
 If the fleet gets partitioned:
 
@@ -771,7 +1142,7 @@ If the fleet gets partitioned:
 3. **No automatic conflict resolution** - messages deliver in order received
 4. **TTL expiration** - queued messages expire after 1 hour (configurable)
 
-### 8.3 Graceful Degradation
+### 13.3 Graceful Degradation
 
 ```
 Fleet healthy:     A ◄──► B ◄──► C    (full connectivity)
@@ -782,7 +1153,7 @@ B goes down:       A ◄─X─► B ◄─X─► C
 B comes back:      A ◄──► B ◄──► C    (queued messages flush)
 ```
 
-### 8.4 Health Monitoring
+### 10.4 Health Monitoring
 
 ```typescript
 // Heartbeat every 30 seconds
@@ -804,9 +1175,158 @@ setInterval(() => {
 
 ---
 
-## 9. Configuration
+## 11. Transport Abstraction (NATS Option) *(NEW)*
 
-### 9.1 Configuration File
+### 14.1 Motivation
+
+The custom WebSocket protocol works for simple deployments, but production fleets may benefit from battle-tested message infrastructure. NATS JetStream provides:
+
+- ✅ Persistent message queues (survive restarts)
+- ✅ Exactly-once delivery semantics
+- ✅ Built-in clustering and HA
+- ✅ Backpressure and flow control
+- ✅ Rich observability (metrics, tracing)
+- ✅ Years of production hardening
+
+**Trade-off:** External dependency vs. implementation effort.
+
+### 14.2 Transport Interface
+
+Abstract the transport layer so implementations are swappable:
+
+```typescript
+interface PeerTransport {
+  // Lifecycle
+  connect(config: TransportConfig): Promise<void>;
+  disconnect(): Promise<void>;
+
+  // Messaging
+  send(serverId: string, envelope: PeerEnvelope): Promise<void>;
+  broadcast(envelope: PeerEnvelope): Promise<void>;
+  subscribe(handler: (from: string, envelope: PeerEnvelope) => void): void;
+
+  // Discovery
+  getConnectedPeers(): string[];
+  onPeerJoin(handler: (serverId: string) => void): void;
+  onPeerLeave(handler: (serverId: string) => void): void;
+}
+```
+
+### 14.3 WebSocket Implementation (Default)
+
+```typescript
+class WebSocketTransport implements PeerTransport {
+  private connections: Map<string, WebSocket>;
+
+  async connect(config: TransportConfig): Promise<void> {
+    for (const peer of config.peers) {
+      const ws = new WebSocket(peer.url);
+      // ... handshake, auth
+      this.connections.set(peer.serverId, ws);
+    }
+  }
+
+  async send(serverId: string, envelope: PeerEnvelope): Promise<void> {
+    const ws = this.connections.get(serverId);
+    ws?.send(JSON.stringify(envelope));
+  }
+
+  // ... rest of implementation
+}
+```
+
+### 11.4 NATS Implementation (Optional)
+
+```typescript
+class NatsTransport implements PeerTransport {
+  private nc: NatsConnection;
+  private js: JetStreamClient;
+
+  async connect(config: TransportConfig): Promise<void> {
+    this.nc = await connect({ servers: config.natsUrl });
+    this.js = this.nc.jetstream();
+
+    // Create stream for fleet messages
+    await this.js.streams.add({
+      name: 'RELAY_FLEET',
+      subjects: ['relay.>'],
+      retention: RetentionPolicy.Limits,
+      max_age: 3600 * 1e9, // 1 hour
+    });
+  }
+
+  async send(serverId: string, envelope: PeerEnvelope): Promise<void> {
+    // Publish to server-specific subject
+    await this.js.publish(`relay.server.${serverId}`, encode(envelope));
+  }
+
+  async broadcast(envelope: PeerEnvelope): Promise<void> {
+    // Publish to broadcast subject
+    await this.js.publish('relay.broadcast', encode(envelope));
+  }
+
+  subscribe(handler: (from: string, envelope: PeerEnvelope) => void): void {
+    // Subscribe to our server subject + broadcast
+    const sub = this.nc.subscribe(`relay.server.${this.serverId}`);
+    const broadcastSub = this.nc.subscribe('relay.broadcast');
+
+    (async () => {
+      for await (const msg of sub) {
+        const envelope = decode(msg.data);
+        handler(envelope.from_server, envelope);
+      }
+    })();
+  }
+}
+```
+
+### 11.5 Configuration
+
+```yaml
+federation:
+  # Transport selection
+  transport: websocket  # websocket | nats
+
+  # WebSocket config (if transport: websocket)
+  websocket:
+    peers:
+      - url: wss://london.example.com:8765
+        server_id: london
+
+  # NATS config (if transport: nats)
+  nats:
+    url: nats://nats.example.com:4222
+    credentials: /etc/agent-relay/nats.creds
+    stream_name: RELAY_FLEET
+```
+
+### 11.6 When to Use Which
+
+| Scenario | Recommended Transport | Rationale |
+|----------|----------------------|-----------|
+| 2-5 servers, simple setup | WebSocket | No external deps |
+| Development/testing | WebSocket | Easy to run locally |
+| 10+ servers | NATS | Better scaling |
+| High reliability required | NATS | Persistence, HA |
+| Already have NATS | NATS | Leverage existing |
+| Air-gapped/restricted | WebSocket | No external deps |
+
+### 11.7 Migration Path
+
+Start with WebSocket, migrate to NATS when needed:
+
+1. Deploy NATS cluster
+2. Update config: `transport: nats`
+3. Restart daemons (one at a time)
+4. Messages route through NATS immediately
+
+No changes to agents or injection logic.
+
+---
+
+## 12. Configuration
+
+### 15.1 Configuration File
 
 ```yaml
 # /etc/agent-relay/config.yaml (or ~/.agent-relay/config.yaml)
@@ -879,7 +1399,7 @@ dashboard:
   show_fleet: true                    # Show all fleet agents
 ```
 
-### 9.2 Environment Variables
+### 15.2 Environment Variables
 
 All config can be overridden via environment:
 
@@ -896,7 +1416,7 @@ AGENT_RELAY_PEER_london-prod-01_TOKEN=london-token
 AGENT_RELAY_PEER_london-prod-01_URL=wss://london.example.com:8765
 ```
 
-### 9.3 Minimal Configuration
+### 15.3 Minimal Configuration
 
 For simple two-server setup:
 
@@ -932,9 +1452,9 @@ federation:
 
 ---
 
-## 10. CLI Interface
+## 13. CLI Interface
 
-### 10.1 New Commands
+### 13.1 New Commands
 
 ```bash
 # Start daemon with federation
@@ -963,7 +1483,7 @@ agent-relay fleet ping <server-id>     # Ping a peer
 agent-relay fleet trace <agent>        # Trace route to agent
 ```
 
-### 10.2 Example Session
+### 13.2 Example Session
 
 ```bash
 # On Server NYC
@@ -1000,7 +1520,7 @@ $ agent-relay -n Alice claude
 # "Relay message from Alice@nyc [abc123]: Can you help with the auth module?"
 ```
 
-### 10.3 Addressing Examples
+### 13.3 Addressing Examples
 
 ```bash
 # From Alice on NYC server:
@@ -1016,9 +1536,9 @@ $ agent-relay -n Alice claude
 
 ---
 
-## 11. Implementation Plan
+## 14. Implementation Plan
 
-### 11.1 Phases
+### 14.1 Phases
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -1086,7 +1606,7 @@ $ agent-relay -n Alice claude
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 11.2 File Structure
+### 14.2 File Structure
 
 ```
 src/
@@ -1112,22 +1632,45 @@ src/
     └── index.ts                   # Modified: new commands
 ```
 
-### 11.3 Estimated Effort
+### 14.3 Estimated Effort (Revised)
 
-| Phase | Effort | Dependencies |
-|-------|--------|--------------|
-| Phase 1: Foundation | 3-4 days | None |
-| Phase 2: Registry | 3-4 days | Phase 1 |
-| Phase 3: Routing | 3-4 days | Phase 2 |
-| Phase 4: Resilience | 3-4 days | Phase 3 |
-| Phase 5: Security | 3-4 days | Phase 4 |
-| **Total** | **~4-5 weeks** | |
+**Original estimate was too optimistic.** Distributed systems are hard. Realistic timeline:
+
+| Phase | Optimistic | Realistic | Notes |
+|-------|------------|-----------|-------|
+| Phase 1: Foundation | 1 week | 1.5-2 weeks | WebSocket edge cases |
+| Phase 2: Registry | 1 week | 2 weeks | Consistency is hard |
+| Phase 3: Routing | 1 week | 1.5 weeks | Broadcast complexity |
+| Phase 4: Resilience | 1 week | 2-3 weeks | Reconnection, testing |
+| Phase 5: Security | 1 week | 2 weeks | TLS setup, key mgmt |
+| Phase 6: Stabilization | - | 2 weeks | Bug fixes, edge cases |
+| **Total** | 4-5 weeks | **8-10 weeks** | |
+
+### 14.4 MVP Option
+
+To ship faster, consider a reduced-scope MVP:
+
+**MVP Scope (4 weeks):**
+- Static peer list only (no hub)
+- No TLS (rely on VPN/private network)
+- Single fleet token (not per-pair)
+- Require unique names (no conflict resolution)
+- Memory-only queues (no persistence)
+- No message priorities
+
+**Post-MVP (add incrementally):**
+- TLS + asymmetric key auth
+- Hub for discovery
+- Queue persistence
+- Delivery confirmation
+- NATS transport option
+- Observability
 
 ---
 
-## 12. Migration Path
+## 15. Migration Path
 
-### 12.1 Backward Compatibility
+### 15.1 Backward Compatibility
 
 Existing single-server deployments work without changes:
 
@@ -1137,14 +1680,14 @@ local:
   socket_path: /tmp/agent-relay/relay.sock
 ```
 
-### 12.2 Upgrade Path
+### 15.2 Upgrade Path
 
 1. **Update agent-relay** to federation-capable version
 2. **Add federation config** to enable cross-server
 3. **Start daemons** - they auto-connect to peers
 4. **Agents just work** - no changes needed
 
-### 12.3 Rollback
+### 15.3 Rollback
 
 If issues arise:
 1. Set `federation.enabled: false`
@@ -1179,8 +1722,97 @@ This proposal extends agent-relay to support federated multi-server deployments 
 
 ---
 
+## 16. Open Questions *(NEW)*
+
+These questions remain unresolved and need input before/during implementation:
+
+### Architecture
+
+1. **Hub vs. Mesh for MVP?**
+   - Hub is simpler but single point of failure
+   - Mesh is resilient but more complex
+   - Recommendation: Start with mesh (static peers), add hub later
+
+2. **Queue persistence?**
+   - Memory-only: Simple, but loses messages on crash
+   - SQLite: Survives restarts, but adds complexity
+   - Recommendation: Memory for MVP, SQLite for v2
+
+3. **NATS priority?**
+   - Implement WebSocket first, NATS later?
+   - Or start with NATS to avoid reimplementing?
+   - Recommendation: WebSocket MVP, NATS for production scale
+
+### Protocol
+
+4. **Message ordering guarantees?**
+   - Per-agent FIFO? Global ordering? Best-effort?
+   - Strict ordering adds latency and complexity
+   - Recommendation: Document best-effort, no guarantees
+
+5. **Broadcast scalability?**
+   - O(n) messages for n agents - acceptable?
+   - Need gossip-style fan-out for large fleets?
+   - Recommendation: Direct broadcast for <50 agents, revisit at scale
+
+### Security
+
+6. **Key distribution method?**
+   - Static config, TOFU, or CA?
+   - Trade-off: security vs. operational simplicity
+   - Recommendation: TOFU with approval for dev, CA for enterprise
+
+7. **mTLS required?**
+   - Adds complexity but strong authentication
+   - Alternative: TLS + Ed25519 challenge-response
+   - Recommendation: TLS + challenge-response for MVP
+
+### Operations
+
+8. **Testing strategy?**
+   - How to test multi-server locally?
+   - Need chaos testing framework?
+   - Recommendation: Docker Compose for integration tests
+
+9. **Observability from day one?**
+   - Add Prometheus metrics in MVP?
+   - Or defer to post-MVP?
+   - Recommendation: Basic metrics (connections, messages) in MVP
+
+10. **NAT traversal?**
+    - Support servers behind NAT?
+    - Requires connection reversal or TURN relay
+    - Recommendation: Document requirement for direct connectivity, defer NAT to v2
+
+---
+
+## Summary (v2)
+
+This revised proposal addresses the critical issues identified in review:
+
+| Issue | Resolution |
+|-------|------------|
+| No end-to-end ACK | Added delivery confirmation (Section 7) |
+| Registry split-brain | Fleet-wide unique names + quorum (Section 5.3) |
+| Token scaling | Asymmetric keys (Section 8.1) |
+| No backpressure | Credit-based flow control (Section 9) |
+| Timeline unrealistic | Revised to 8-10 weeks (Section 14.3) |
+| NATS consideration | Pluggable transport layer (Section 11) |
+
+**Key additions in v2:**
+- End-to-end delivery confirmation
+- Fleet-wide unique name enforcement
+- Ed25519 authentication (scales better)
+- Credit-based flow control + rate limiting
+- Transport abstraction for NATS option
+- Realistic timeline with MVP option
+- Open questions for discussion
+
+---
+
 ## Next Steps
 
-1. Review and approve this proposal
-2. Create implementation tasks in Beads
-3. Begin Phase 1: Foundation
+1. Review v2 proposal, discuss open questions
+2. Decide on MVP scope
+3. Create implementation tasks in Beads
+4. Begin Phase 1: Foundation
