@@ -36,8 +36,14 @@ interface SessionInfo {
   duration?: string;
   messageCount: number;
   summary?: string;
-  /** true if session is still active (no endedAt) */
+  /**
+   * true if session is still active (endedAt is not set).
+   * Note: This is determined solely by endedAt, regardless of how the session
+   * was closed (agent explicit close, disconnect, or error via closedBy field).
+   */
   isActive: boolean;
+  /** How the session was closed: 'agent' (explicit), 'disconnect', 'error', or undefined */
+  closedBy?: 'agent' | 'disconnect' | 'error';
 }
 
 interface AgentSummary {
@@ -202,6 +208,7 @@ export async function startDashboard(port: number, dataDir: string, dbPath?: str
         messageCount: s.messageCount,
         summary: s.summary,
         isActive: !s.endedAt, // Active if no end time
+        closedBy: s.closedBy,
       }));
     }
     return [];

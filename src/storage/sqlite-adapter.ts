@@ -310,6 +310,14 @@ export class SqliteStorageAdapter implements StorageAdapter {
     );
   }
 
+  /**
+   * End a session and optionally set a summary.
+   *
+   * Note: The summary uses COALESCE(?, summary) - if a summary was previously
+   * set (e.g., during startSession or a prior endSession call), passing null/undefined
+   * for summary will preserve the existing value rather than clearing it.
+   * To explicitly clear a summary, pass an empty string.
+   */
   async endSession(
     sessionId: string,
     options?: { summary?: string; closedBy?: 'agent' | 'disconnect' | 'error' }

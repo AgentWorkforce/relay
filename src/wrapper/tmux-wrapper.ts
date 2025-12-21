@@ -79,6 +79,7 @@ export class TmuxWrapper {
   private parser: OutputParser;
   private inbox?: InboxManager;
   private storage?: SqliteStorageAdapter;
+  private storageReady: Promise<boolean>; // Resolves true if storage initialized, false if failed
   private running = false;
   private pollTimer?: NodeJS.Timeout;
   private attachProcess?: ChildProcess;
@@ -96,6 +97,7 @@ export class TmuxWrapper {
   private cliType: 'claude' | 'codex' | 'gemini' | 'other';
   private relayPrefix: string;
   private lastSummaryHash = ''; // Dedup summary saves
+  private sessionEndProcessed = false; // Track if we've already processed session end
 
   constructor(config: TmuxWrapperConfig) {
     this.config = {
@@ -150,10 +152,11 @@ export class TmuxWrapper {
     // Initialize storage for session/summary persistence
     const projectPaths = getProjectPaths();
     this.storage = new SqliteStorageAdapter({ dbPath: projectPaths.dbPath });
-    // Initialize asynchronously (don't block constructor)
-    this.storage.init().catch(err => {
+    // Initialize asynchronously (don't block constructor) - methods await storageReady
+    this.storageReady = this.storage.init().then(() => true).catch(err => {
       this.logStderr(`Failed to initialize storage: ${err.message}`, true);
       this.storage = undefined;
+      return false;
     });
 
     // Handle incoming messages from relay
@@ -638,28 +641,29 @@ export class TmuxWrapper {
     if (summaryHash === this.lastSummaryHash) return;
     this.lastSummaryHash = summaryHash;
 
-    if (!this.storage) {
-      this.logStderr('Cannot save summary: storage not initialized');
-      return;
-    }
+    // Wait for storage to be ready before saving
+    this.storageReady.then(ready => {
+      if (!ready || !this.storage) {
+        this.logStderr('Cannot save summary: storage not initialized');
+        return;
+      }
 
-    const projectPaths = getProjectPaths();
-    this.storage.saveAgentSummary({
-      agentName: this.config.name,
-      projectId: projectPaths.projectId,
-      currentTask: summary.currentTask,
-      completedTasks: summary.completedTasks,
-      decisions: summary.decisions,
-      context: summary.context,
-      files: summary.files,
-    }).then(() => {
-      this.logStderr(`Saved agent summary: ${summary.currentTask || 'updated context'}`);
-    }).catch(err => {
-      this.logStderr(`Failed to save summary: ${err.message}`, true);
+      const projectPaths = getProjectPaths();
+      this.storage.saveAgentSummary({
+        agentName: this.config.name,
+        projectId: projectPaths.projectId,
+        currentTask: summary.currentTask,
+        completedTasks: summary.completedTasks,
+        decisions: summary.decisions,
+        context: summary.context,
+        files: summary.files,
+      }).then(() => {
+        this.logStderr(`Saved agent summary: ${summary.currentTask || 'updated context'}`);
+      }).catch(err => {
+        this.logStderr(`Failed to save summary: ${err.message}`, true);
+      });
     });
   }
-
-  private sessionEndProcessed = false; // Track if we've already processed session end
 
   /**
    * Parse [[SESSION_END]] blocks from output and close session explicitly.
@@ -670,32 +674,36 @@ export class TmuxWrapper {
    * [[/SESSION_END]]
    */
   private parseSessionEndAndClose(content: string): void {
-    if (this.sessionEndProcessed) return; // Only process once
+    if (this.sessionEndProcessed) return; // Only process once per session
 
     const sessionEnd = parseSessionEndFromOutput(content);
     if (!sessionEnd) return;
 
-    this.sessionEndProcessed = true;
-
-    if (!this.storage) {
-      this.logStderr('Cannot close session: storage not initialized');
-      return;
-    }
-
-    // Get session ID from client connection
+    // Get session ID from client connection - if not available yet, don't set flag
+    // so we can retry when sessionId becomes available
     const sessionId = this.client.currentSessionId;
     if (!sessionId) {
-      this.logStderr('Cannot close session: no session ID');
+      this.logStderr('Cannot close session: no session ID yet, will retry');
       return;
     }
 
-    this.storage.endSession(sessionId, {
-      summary: sessionEnd.summary,
-      closedBy: 'agent',
-    }).then(() => {
-      this.logStderr(`Session closed by agent: ${sessionEnd.summary || 'complete'}`);
-    }).catch(err => {
-      this.logStderr(`Failed to close session: ${err.message}`, true);
+    this.sessionEndProcessed = true;
+
+    // Wait for storage to be ready before attempting to close session
+    this.storageReady.then(ready => {
+      if (!ready || !this.storage) {
+        this.logStderr('Cannot close session: storage not initialized');
+        return;
+      }
+
+      this.storage.endSession(sessionId, {
+        summary: sessionEnd.summary,
+        closedBy: 'agent',
+      }).then(() => {
+        this.logStderr(`Session closed by agent: ${sessionEnd.summary || 'complete'}`);
+      }).catch(err => {
+        this.logStderr(`Failed to close session: ${err.message}`, true);
+      });
     });
   }
 
@@ -846,12 +854,24 @@ export class TmuxWrapper {
   }
 
   /**
+   * Reset session-specific state for wrapper reuse.
+   * Call this when starting a new session with the same wrapper instance.
+   */
+  resetSessionState(): void {
+    this.sessionEndProcessed = false;
+    this.lastSummaryHash = '';
+  }
+
+  /**
    * Stop and cleanup
    */
   stop(): void {
     if (!this.running) return;
     this.running = false;
     this.activityState = 'disconnected';
+
+    // Reset session state for potential reuse
+    this.resetSessionState();
 
     // Stop polling
     if (this.pollTimer) {
