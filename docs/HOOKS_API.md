@@ -622,6 +622,221 @@ export default {
 
 **Default is locked down.** Users must explicitly opt-in to dangerous capabilities.
 
+---
+
+## Examples
+
+### Example 1: Memory Integration (Complete)
+
+Load memories at session start, prompt to save at session end.
+
+```typescript
+// relay.config.ts
+import type { RelayConfig } from 'agent-relay';
+
+export default {
+  hooks: {
+    onSessionStart: async (ctx) => {
+      // Inject project context from memory
+      return {
+        inject: `[CONTEXT] Working in ${ctx.projectName} (${ctx.workingDir})`,
+        log: `Session started for ${ctx.agentName}`
+      };
+    },
+
+    onSessionEnd: async (ctx) => {
+      return {
+        inject: `[SESSION END] Save learnings with @memory:save <insight>`
+      };
+    },
+
+    onIdle: async (ctx) => {
+      // Only prompt if idle for extended period
+      if (ctx.idleSeconds > 60) {
+        return {
+          inject: '[STATUS] Are you blocked? Need help?'
+        };
+      }
+    }
+  }
+} satisfies RelayConfig;
+```
+
+---
+
+### Example 2: Error Detection and Alerting
+
+Detect errors in output and notify another agent.
+
+```typescript
+// relay.config.ts
+export default {
+  hooks: {
+    onOutput: async (output, ctx) => {
+      // Check for error patterns
+      if (output.includes('Error:') || output.includes('FAILED')) {
+        return {
+          sendMessage: {
+            to: 'Coordinator',
+            content: `Alert: ${ctx.agentName} encountered error in ${ctx.projectName}`
+          },
+          log: `Error detected: ${output.slice(0, 100)}`
+        };
+      }
+      // No injection - just observing
+    }
+  }
+};
+```
+
+---
+
+### Example 3: Message Filtering
+
+Suppress low-priority messages, format high-priority ones.
+
+```typescript
+// relay.config.ts
+export default {
+  hooks: {
+    onMessageReceived: async (msg, ctx) => {
+      // Suppress status broadcasts while busy
+      if (msg.from === '*' && msg.content.startsWith('STATUS:')) {
+        return { suppress: true, log: `Suppressed broadcast from ${msg.from}` };
+      }
+
+      // Highlight urgent messages
+      if (msg.content.includes('URGENT')) {
+        return {
+          inject: `\n>>> URGENT from ${msg.from}: ${msg.content} <<<\n`
+        };
+      }
+
+      // Default formatting (return nothing to use default)
+    }
+  }
+};
+```
+
+---
+
+### Example 4: Custom Pattern Handler
+
+Define `@ticket:` pattern to create tickets.
+
+```typescript
+// relay.config.ts
+export default {
+  patterns: {
+    ticket: {
+      handler: async (target, message, ctx) => {
+        // target = priority (high, medium, low)
+        // message = ticket description
+
+        // Just log and acknowledge - no external calls in default sandbox
+        return {
+          inject: `Ticket logged: [${target}] ${message.slice(0, 50)}...`,
+          log: `ticket:${target} - ${message}`
+        };
+      }
+    }
+  }
+};
+
+// Agent usage:
+// @ticket:high Fix authentication timeout in login flow
+// @ticket:low Update README with new CLI options
+```
+
+---
+
+### Example 5: Coordinator Agent Hooks
+
+Special hooks for a coordinating agent that manages others.
+
+```typescript
+// relay.config.ts
+export default {
+  hooks: {
+    onSessionStart: async (ctx) => {
+      if (ctx.agentName === 'Coordinator') {
+        return {
+          inject: `[COORDINATOR MODE]
+You are managing the following agents. Monitor their status.
+Use @relay:AgentName to communicate.
+Use @relay:* to broadcast.`,
+          sendMessage: {
+            to: '*',
+            content: 'Coordinator online. Report status.'
+          }
+        };
+      }
+    },
+
+    onMessageReceived: async (msg, ctx) => {
+      // Log all incoming messages for coordinator
+      if (ctx.agentName === 'Coordinator') {
+        return {
+          log: `[${msg.from}] ${msg.content.slice(0, 200)}`
+        };
+      }
+    }
+  }
+};
+```
+
+---
+
+### Example 6: Minimal Config (Just Memory Prompts)
+
+Simplest useful configuration.
+
+```typescript
+// relay.config.ts
+export default {
+  hooks: {
+    onSessionEnd: async () => ({
+      inject: 'Save anything important: @memory:save <what you learned>'
+    })
+  }
+};
+```
+
+---
+
+### Example 7: Debug Mode
+
+Log everything for troubleshooting.
+
+```typescript
+// relay.config.ts
+export default {
+  hooks: {
+    onSessionStart: async (ctx) => ({
+      log: `START: ${ctx.agentName} in ${ctx.workingDir}`
+    }),
+
+    onOutput: async (output, ctx) => ({
+      log: `OUTPUT[${ctx.agentName}]: ${output.slice(0, 100)}`
+    }),
+
+    onMessageReceived: async (msg, ctx) => ({
+      log: `MSG[${ctx.agentName}] from ${msg.from}: ${msg.content.slice(0, 100)}`
+    }),
+
+    onIdle: async (ctx) => ({
+      log: `IDLE: ${ctx.agentName} for ${ctx.idleSeconds}s`
+    }),
+
+    onSessionEnd: async (ctx) => ({
+      log: `END: ${ctx.agentName}`
+    })
+  }
+};
+```
+
+---
+
 ## Built-in Pattern Handlers
 
 ### @relay: (Messaging)
