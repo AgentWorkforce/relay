@@ -511,32 +511,116 @@ relay.on('sessionEnd', async (ctx) => {
 relay.wrap('claude');
 ```
 
-### Hook Context
+### Hook Context (Read-Only)
+
+Hooks receive a **read-only context** with limited information. They cannot take actions directly - they return a `HookResult` that the relay system interprets.
 
 ```typescript
 interface HookContext {
-  // Agent info
-  agentId: string;
-  agentName: string;
-  sessionId: string;
+  // Agent identity (read-only)
+  readonly agentId: string;
+  readonly agentName: string;
+  readonly sessionId: string;
 
-  // Environment
-  workingDir: string;
-  env: Record<string, string>;
+  // Environment (read-only)
+  readonly workingDir: string;
+  readonly projectName: string;
 
-  // Actions
-  inject(text: string): void;      // Inject text to agent stdin
-  send(to: string, msg: string): void;  // Send relay message
+  // Session state (read-only, last N items)
+  readonly recentOutput: readonly string[];  // Last 50 output chunks
+  readonly recentMessages: readonly Message[]; // Last 20 messages
 
-  // Built-in services
-  memory: MemoryService;           // Memory operations
-  relay: RelayService;             // Messaging operations
-
-  // Session state
-  output: string[];                // All output so far
-  messages: Message[];             // All relay messages
+  // Timing (read-only)
+  readonly sessionStartTime: number;
+  readonly lastOutputTime: number;
+  readonly idleSeconds: number;
 }
 ```
+
+### Hook Result (Allowed Actions)
+
+Hooks communicate intent via return value. The relay system executes allowed actions.
+
+```typescript
+interface HookResult {
+  // Text injection (max 2000 chars, sanitized)
+  inject?: string;
+
+  // Suppress default behavior (onMessageReceived only)
+  suppress?: boolean;
+
+  // Stop other handlers from running
+  stop?: boolean;
+
+  // Send relay message (limited to 1 per hook invocation)
+  sendMessage?: {
+    to: string;      // Agent name or "*" for broadcast
+    content: string; // Max 5000 chars
+  };
+
+  // Log to relay audit log (optional)
+  log?: string;
+}
+```
+
+### What Hooks CANNOT Do
+
+| Prohibited | Why |
+|------------|-----|
+| File system access | Use @pattern: handlers for controlled file ops |
+| Shell execution | Security risk - use dedicated patterns |
+| Network requests | Use @pattern: handlers with explicit config |
+| Modify env vars | Read-only context |
+| Access full output | Memory bounded - only recent chunks |
+| Unlimited injection | Max 2000 chars per injection |
+| Multiple messages | One sendMessage per invocation |
+
+### Sandboxing
+
+Hooks run in a restricted context:
+
+```typescript
+// Hooks are pure functions: context in, result out
+type HookHandler = (ctx: HookContext) => Promise<HookResult | void>;
+
+// The relay system enforces limits
+function executeHook(handler: HookHandler, ctx: HookContext): HookResult {
+  const result = await handler(Object.freeze(ctx)); // Immutable context
+
+  // Enforce limits
+  if (result?.inject && result.inject.length > 2000) {
+    result.inject = result.inject.slice(0, 2000) + '... [truncated]';
+  }
+
+  if (result?.sendMessage?.content.length > 5000) {
+    throw new HookError('Message exceeds 5000 char limit');
+  }
+
+  return result;
+}
+```
+
+### Capability Escalation
+
+For advanced use cases, users can enable additional capabilities in config:
+
+```typescript
+// relay.config.ts
+export default {
+  hooks: {
+    onSessionEnd: myHandler,
+  },
+
+  // Explicit capability grants (default: all false)
+  capabilities: {
+    allowNetworkInHooks: false,  // Permit fetch() in handlers
+    allowFileReadInHooks: false, // Permit fs.readFile()
+    unlimitedInjection: false,   // Remove 2000 char limit
+  }
+};
+```
+
+**Default is locked down.** Users must explicitly opt-in to dangerous capabilities.
 
 ## Built-in Pattern Handlers
 
