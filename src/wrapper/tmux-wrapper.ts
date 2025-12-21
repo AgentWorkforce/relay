@@ -22,6 +22,16 @@ import type { SendPayload } from '../protocol/types.js';
 const execAsync = promisify(exec);
 const escapeRegex = (str: string): string => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+// Constants for cursor stability detection in waitForClearInput
+/** Number of consecutive polls with stable cursor before assuming input is clear */
+const STABLE_CURSOR_THRESHOLD = 3;
+/** Maximum cursor X position that indicates a prompt (typical prompts are 1-4 chars) */
+const MAX_PROMPT_CURSOR_POSITION = 4;
+/** Maximum characters to show in debug log truncation */
+const DEBUG_LOG_TRUNCATE_LENGTH = 40;
+/** Maximum characters to show in relay command log truncation */
+const RELAY_LOG_TRUNCATE_LENGTH = 50;
+
 export interface TmuxWrapperConfig {
   name: string;
   command: string;
@@ -598,7 +608,8 @@ export class TmuxWrapper {
     const success = this.client.sendMessage(cmd.to, cmd.body, cmd.kind, cmd.data);
     if (success) {
       this.sentMessageHashes.add(msgHash);
-      this.logStderr(`→ ${cmd.to}: ${cmd.body.substring(0, 50)}...`);
+      const truncatedBody = cmd.body.substring(0, Math.min(RELAY_LOG_TRUNCATE_LENGTH, cmd.body.length));
+      this.logStderr(`→ ${cmd.to}: ${truncatedBody}...`);
     } else if (this.client.state !== 'READY') {
       // Only log failure once per state change
       this.logStderr(`Send failed (client ${this.client.state})`);
@@ -609,7 +620,8 @@ export class TmuxWrapper {
    * Handle incoming message from relay
    */
   private handleIncomingMessage(from: string, payload: SendPayload, messageId: string): void {
-    this.logStderr(`← ${from}: ${payload.body.substring(0, 40)}...`);
+    const truncatedBody = payload.body.substring(0, Math.min(DEBUG_LOG_TRUNCATE_LENGTH, payload.body.length));
+    this.logStderr(`← ${from}: ${truncatedBody}...`);
 
     // Queue for injection
     this.messageQueue.push({ from, body: payload.body, messageId });
@@ -776,7 +788,8 @@ export class TmuxWrapper {
       const isClear = pattern.test(lastLine);
 
       if (this.config.debug) {
-        this.logStderr(`isInputClear: lastLine="${lastLine.substring(0, 40)}", clear=${isClear}`);
+        const truncatedLine = lastLine.substring(0, Math.min(DEBUG_LOG_TRUNCATE_LENGTH, lastLine.length));
+        this.logStderr(`isInputClear: lastLine="${truncatedLine}", clear=${isClear}`);
       }
 
       return isClear;
@@ -824,9 +837,9 @@ export class TmuxWrapper {
       const cursorX = await this.getCursorX();
       if (cursorX === lastCursorX) {
         stableCursorCount++;
-        // If cursor has been stable for 3 polls and at typical prompt position (1-4),
+        // If cursor has been stable for enough polls and at typical prompt position,
         // the agent might be done but we just can't match the prompt pattern
-        if (stableCursorCount >= 3 && cursorX <= 4) {
+        if (stableCursorCount >= STABLE_CURSOR_THRESHOLD && cursorX <= MAX_PROMPT_CURSOR_POSITION) {
           this.logStderr(`waitForClearInput: cursor stable at x=${cursorX}, assuming clear`);
           return true;
         }
