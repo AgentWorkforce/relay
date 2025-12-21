@@ -1819,6 +1819,8 @@ Federation introduces storage requirements for **ephemeral message routing**. Du
 ```
 
 > **See:** [agent-trajectories](https://github.com/khaliqgant/agent-trajectories) for trajectory format, storage backends, and knowledge workspace.
+>
+> **Memory Layer:** agent-trajectories uses [Mem0](https://github.com/mem0ai/mem0) as the memory substrate. See [MEMORY_STACK_DECISION.md](./MEMORY_STACK_DECISION.md) for rationale.
 
 ### 17.2 Ephemeral Storage (Message Routing)
 
