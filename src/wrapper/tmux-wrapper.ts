@@ -47,6 +47,10 @@ export interface TmuxWrapperConfig {
   injectRetryMs?: number;
   /** How long with no output before marking session idle (ms) */
   activityIdleThresholdMs?: number;
+  /** Max time to wait for clear input before injecting (ms) */
+  inputWaitTimeoutMs?: number;
+  /** Polling interval when waiting for clear input (ms) */
+  inputWaitPollMs?: number;
   /** CLI type for special handling (auto-detected from command if not set) */
   cliType?: 'claude' | 'codex' | 'gemini' | 'other';
   /** Enable tmux mouse mode for scroll passthrough (default: true) */
@@ -667,6 +671,19 @@ export class TmuxWrapper {
         ? ` [TRUNCATED - run "agent-relay read ${msg.messageId}"]`
         : '';
 
+      // Wait for input to be clear before injecting
+      const waitTimeoutMs = this.config.inputWaitTimeoutMs ?? 5000;
+      const waitPollMs = this.config.inputWaitPollMs ?? 200;
+      const inputClear = await this.waitForClearInput(waitTimeoutMs, waitPollMs);
+      if (!inputClear) {
+        // Input still has text after timeout - clear it forcefully
+        this.logStderr('Input not clear after waiting, clearing forcefully');
+        await this.sendKeys('Escape');
+        await this.sleep(30);
+        await this.sendKeys('C-u');
+        await this.sleep(30);
+      }
+
       // Gemini CLI interprets input as shell commands, so we need special handling
       if (this.cliType === 'gemini') {
         // For Gemini: Use printf with %s to safely handle any characters
@@ -676,12 +693,6 @@ export class TmuxWrapper {
         const safeFrom = this.escapeForAnsiC(msg.from);
         const safeHint = this.escapeForAnsiC(truncationHint);
         const printfMsg = `printf '%s\\n' $'Relay message from ${safeFrom} ${idTag}: ${safeBody}${safeHint}'`;
-
-        // Clear any partial input
-        await this.sendKeys('Escape');
-        await this.sleep(30);
-        await this.sendKeys('C-u');
-        await this.sleep(30);
 
         // Send printf command to display the message
         await this.sendKeysLiteral(printfMsg);
@@ -693,12 +704,6 @@ export class TmuxWrapper {
         // Standard injection for Claude, Codex, etc.
         // Format: Relay message from Sender [abc12345]: content
         const injection = `Relay message from ${msg.from} ${idTag}: ${sanitizedBody}${truncationHint}`;
-
-        // Clear any partial input
-        await this.sendKeys('Escape');
-        await this.sleep(30);
-        await this.sendKeys('C-u');
-        await this.sleep(30);
 
         // Type the message
         await this.sendKeysLiteral(injection);
@@ -745,6 +750,96 @@ export class TmuxWrapper {
 
   private sleep(ms: number): Promise<void> {
     return new Promise(r => setTimeout(r, ms));
+  }
+
+  /**
+   * Check if the input line is clear (no user-typed text after the prompt).
+   * Returns true if the last visible line appears to be just a prompt.
+   */
+  private async isInputClear(): Promise<boolean> {
+    try {
+      const { stdout } = await execAsync(
+        `tmux capture-pane -t ${this.sessionName} -p -J 2>/dev/null`
+      );
+      const lines = stdout.split('\n').filter(l => l.length > 0);
+      const lastLine = lines[lines.length - 1] || '';
+
+      // CLI-specific prompt patterns (prompt char + optional whitespace, nothing else)
+      const promptPatterns: Record<string, RegExp> = {
+        claude: /^[>›»]\s*$/,           // Claude: "> " or similar
+        gemini: /^[>›»]\s*$/,           // Gemini: "> "
+        codex: /^[>›»]\s*$/,            // Codex: "> "
+        other: /^[>$%#➜›»]\s*$/,        // Shell or other: "$ ", "> ", etc.
+      };
+
+      const pattern = promptPatterns[this.cliType] || promptPatterns.other;
+      const isClear = pattern.test(lastLine);
+
+      if (this.config.debug) {
+        this.logStderr(`isInputClear: lastLine="${lastLine.substring(0, 40)}", clear=${isClear}`);
+      }
+
+      return isClear;
+    } catch {
+      // If we can't capture, assume not clear (safer)
+      return false;
+    }
+  }
+
+  /**
+   * Get cursor X position to detect input length.
+   * Returns the cursor column (0-indexed).
+   */
+  private async getCursorX(): Promise<number> {
+    try {
+      const { stdout } = await execAsync(
+        `tmux display-message -t ${this.sessionName} -p "#{cursor_x}" 2>/dev/null`
+      );
+      return parseInt(stdout.trim(), 10) || 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Wait for the input line to be clear before injecting.
+   * Polls until the input appears empty or timeout is reached.
+   *
+   * @param maxWaitMs Maximum time to wait (default 5000ms)
+   * @param pollIntervalMs How often to check (default 200ms)
+   * @returns true if input became clear, false if timed out
+   */
+  private async waitForClearInput(maxWaitMs = 5000, pollIntervalMs = 200): Promise<boolean> {
+    const startTime = Date.now();
+    let lastCursorX = -1;
+    let stableCursorCount = 0;
+
+    while (Date.now() - startTime < maxWaitMs) {
+      // Check if input line is just a prompt
+      if (await this.isInputClear()) {
+        return true;
+      }
+
+      // Also check cursor stability - if cursor is moving, agent is typing
+      const cursorX = await this.getCursorX();
+      if (cursorX === lastCursorX) {
+        stableCursorCount++;
+        // If cursor has been stable for 3 polls and at typical prompt position (1-4),
+        // the agent might be done but we just can't match the prompt pattern
+        if (stableCursorCount >= 3 && cursorX <= 4) {
+          this.logStderr(`waitForClearInput: cursor stable at x=${cursorX}, assuming clear`);
+          return true;
+        }
+      } else {
+        stableCursorCount = 0;
+        lastCursorX = cursorX;
+      }
+
+      await this.sleep(pollIntervalMs);
+    }
+
+    this.logStderr(`waitForClearInput: timed out after ${maxWaitMs}ms`);
+    return false;
   }
 
   /**
