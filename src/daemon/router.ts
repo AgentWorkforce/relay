@@ -12,11 +12,13 @@ import {
   PROTOCOL_VERSION,
 } from '../protocol/types.js';
 import type { StorageAdapter } from '../storage/adapter.js';
+import type { AgentRegistry } from './agent-registry.js';
 
 export interface RoutableConnection {
   id: string;
   agentName?: string;
   cli?: string;
+  workingDirectory?: string;
   sessionId: string;
   close(): void;
   send(envelope: Envelope): boolean;
@@ -53,10 +55,12 @@ export class Router {
   private subscriptions: Map<string, Set<string>> = new Map(); // topic -> Set<agentName>
   private pendingDeliveries: Map<string, PendingDelivery> = new Map(); // deliverId -> pending
   private deliveryOptions: DeliveryReliabilityOptions;
+  private registry?: AgentRegistry;
 
-  constructor(options: { storage?: StorageAdapter; delivery?: Partial<DeliveryReliabilityOptions> } = {}) {
+  constructor(options: { storage?: StorageAdapter; delivery?: Partial<DeliveryReliabilityOptions>; registry?: AgentRegistry } = {}) {
     this.storage = options.storage;
     this.deliveryOptions = { ...DEFAULT_DELIVERY_OPTIONS, ...options.delivery };
+    this.registry = options.registry;
   }
 
   /**
@@ -73,6 +77,11 @@ export class Router {
         this.connections.delete(existing.id);
       }
       this.agents.set(connection.agentName, connection);
+      this.registry?.registerOrUpdate({
+        name: connection.agentName,
+        cli: connection.cli,
+        workingDirectory: connection.workingDirectory,
+      });
     }
   }
 
@@ -131,6 +140,8 @@ export class Router {
       return;
     }
 
+    this.registry?.recordSend(senderName);
+
     const to = envelope.to;
     const topic = envelope.topic;
 
@@ -165,6 +176,7 @@ export class Router {
     this.persistDeliverEnvelope(deliver);
     if (sent) {
       this.trackDelivery(target, deliver);
+      this.registry?.recordReceive(to);
     }
     return sent;
   }
@@ -191,6 +203,7 @@ export class Router {
         this.persistDeliverEnvelope(deliver);
         if (sent) {
           this.trackDelivery(target, deliver);
+          this.registry?.recordReceive(agentName);
         }
       }
     }

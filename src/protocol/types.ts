@@ -49,6 +49,8 @@ export interface HelloPayload {
   };
   /** Optional hint about which CLI the agent is using (claude, codex, gemini, etc.) */
   cli?: string;
+  /** Optional working directory hint for registry/dashboard */
+  workingDirectory?: string;
   session?: {
     resume_token?: string;
   };
@@ -75,6 +77,8 @@ export interface SendPayload {
 export interface SendMeta {
   requires_ack?: boolean;
   ttl_ms?: number;
+  importance?: number; // 0-100, 100 is highest
+  replyTo?: string;    // Correlation ID for replies
 }
 
 export interface DeliveryInfo {

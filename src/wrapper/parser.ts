@@ -23,6 +23,7 @@ export interface ParsedCommand {
   /** Optional thread ID for grouping related messages */
   thread?: string;
   raw: string;
+  meta?: ParsedMessageMetadata;
 }
 
 export interface ParserOptions {
@@ -45,8 +46,9 @@ const DEFAULT_OPTIONS: Required<ParserOptions> = {
 
 // Static patterns (not prefix-dependent)
 const BLOCK_END = /\[\[\/RELAY\]\]/;
-const CODE_FENCE = /^```/;
-// Continuation helpers
+const BLOCK_METADATA_START = '[[RELAY_METADATA]]';
+const BLOCK_METADATA_END = /\[\[\/RELAY_METADATA\]\]/;
+const CODE_FENCE = /^```/;// Continuation helpers
 const BULLET_OR_NUMBERED_LIST = /^[ \t]*([\-*•◦‣⏺◆◇○□■]|[0-9]+[.)])\s+/;
 const PROMPTISH_LINE = /^[\s]*[>$%#➜›»][\s]*$/;
 const RELAY_INJECTION_PREFIX = /^\s*Relay message from /;
@@ -99,6 +101,8 @@ export class OutputParser {
   private inCodeFence = false;
   private inBlock = false;
   private blockBuffer = '';
+  private blockType: 'RELAY' | 'RELAY_METADATA' | null = null;
+  private lastParsedMetadata: ParsedMessageMetadata | null = null;
 
   // Dynamic patterns based on prefix configuration
   private inlineRelayPattern: RegExp;
@@ -133,17 +137,17 @@ export class OutputParser {
     let output = '';
 
     // If we're inside a block, accumulate until we see the end
-    if (this.inBlock) {
-      return this.parseInBlockMode(data, commands);
+    if (this.inBlock && this.blockType) {
+      return this.parseInBlockMode(data, commands, this.blockType);
     }
 
-    // Find [[RELAY]] that's at the start of a line (or start of input)
-    // and NOT inside a code fence
-    const blockStartIdx = this.findBlockStart(data);
+    // Find [[RELAY_METADATA]] or [[RELAY]] that's at the start of a line
+    const blockStart = this.findBlockStart(data);
 
-    if (this.options.enableBlock && blockStartIdx !== -1) {
-      const before = data.substring(0, blockStartIdx);
-      const after = data.substring(blockStartIdx + '[[RELAY]]'.length);
+    if (this.options.enableBlock && blockStart.index !== -1 && blockStart.identifier) {
+      const blockStartIdentifier = blockStart.identifier;
+      const before = data.substring(0, blockStart.index);
+      const after = data.substring(blockStart.index + blockStartIdentifier.length);
 
       // Output everything before the block start
       if (before) {
@@ -153,6 +157,7 @@ export class OutputParser {
 
       // Enter block mode
       this.inBlock = true;
+      this.blockType = blockStartIdentifier === BLOCK_METADATA_START ? 'RELAY_METADATA' : 'RELAY';
       this.blockBuffer = after;
 
       // Check size limit before processing
@@ -160,12 +165,14 @@ export class OutputParser {
         console.error('[parser] Block too large, discarding');
         this.inBlock = false;
         this.blockBuffer = '';
+        this.blockType = null;
         return { commands, output };
       }
 
       // Check if block ends in same chunk
-      if (BLOCK_END.test(this.blockBuffer)) {
-        const blockResult = this.finishBlock();
+      const blockEndPattern = this.blockType === 'RELAY_METADATA' ? BLOCK_METADATA_END : BLOCK_END;
+      if (blockEndPattern.test(this.blockBuffer)) {
+        const blockResult = this.finishBlock(this.blockType);
         if (blockResult.command) {
           commands.push(blockResult.command);
         }
@@ -186,66 +193,76 @@ export class OutputParser {
   }
 
   /**
-   * Find [[RELAY]] that's at the start of a line and not inside a code fence.
-   * Returns the index, or -1 if not found.
+   * Find [[RELAY_METADATA]] or [[RELAY]] that's at the start of a line and not inside a code fence.
+   * Returns the index and identifier, or -1 and null if not found.
    */
-  private findBlockStart(data: string): number {
+  private findBlockStart(data: string): { index: number; identifier: string | null } {
     // Track code fence state through the data
     let inFence = this.inCodeFence;
     let searchStart = 0;
 
-    while (searchStart < data.length) {
-      // Look for next [[RELAY]] or code fence
-      const relayIdx = data.indexOf('[[RELAY]]', searchStart);
-      const fenceIdx = data.indexOf('```', searchStart);
+    // Prioritize RELAY_METADATA over RELAY
+    const blockIdentifiers = [BLOCK_METADATA_START, '[[RELAY]]'];
 
-      // No more [[RELAY]] found
-      if (relayIdx === -1) {
-        // Still update code fence state for remaining data
-        while (fenceIdx !== -1) {
-          const nextFence = data.indexOf('```', searchStart);
-          if (nextFence === -1) break;
-          inFence = !inFence;
-          searchStart = nextFence + 3;
+    while (searchStart < data.length) {
+      let earliestBlockIdx = -1;
+      let earliestBlockIdentifier: string | null = null;
+
+      for (const identifier of blockIdentifiers) {
+        const currentBlockIdx = data.indexOf(identifier, searchStart);
+        if (currentBlockIdx !== -1 && (earliestBlockIdx === -1 || currentBlockIdx < earliestBlockIdx)) {
+          earliestBlockIdx = currentBlockIdx;
+          earliestBlockIdentifier = identifier;
         }
-        return -1;
       }
 
-      // Process any code fences before this [[RELAY]]
+      // No more blocks found
+      if (earliestBlockIdx === -1) {
+        // Still update code fence state for remaining data
+        let fenceIdx = data.indexOf('```', searchStart);
+        while (fenceIdx !== -1) {
+          inFence = !inFence;
+          searchStart = fenceIdx + 3;
+          fenceIdx = data.indexOf('```', searchStart);
+        }
+        return { index: -1, identifier: null };
+      }
+
+      // Process any code fences before this block
       let tempIdx = searchStart;
       while (true) {
         const nextFence = data.indexOf('```', tempIdx);
-        if (nextFence === -1 || nextFence >= relayIdx) break;
+        if (nextFence === -1 || nextFence >= earliestBlockIdx) break;
         inFence = !inFence;
         tempIdx = nextFence + 3;
       }
 
-      // If we're inside a code fence, skip this [[RELAY]]
+      // If we're inside a code fence, skip this block
       if (inFence) {
-        searchStart = relayIdx + 9; // Skip past [[RELAY]]
+        searchStart = earliestBlockIdx + (earliestBlockIdentifier?.length ?? 0); // Skip past the block
         continue;
       }
 
-      // Check if [[RELAY]] is at start of a line
-      if (relayIdx === 0) {
-        return 0; // At very start
+      // Check if block is at start of a line
+      if (earliestBlockIdx === 0) {
+        return { index: 0, identifier: earliestBlockIdentifier }; // At very start
       }
 
       // Look backwards for the start of line
-      const beforeRelay = data.substring(0, relayIdx);
-      const lastNewline = beforeRelay.lastIndexOf('\n');
-      const lineStart = beforeRelay.substring(lastNewline + 1);
+      const beforeBlock = data.substring(0, earliestBlockIdx);
+      const lastNewline = beforeBlock.lastIndexOf('\n');
+      const lineStart = beforeBlock.substring(lastNewline + 1);
 
-      // Must be only whitespace before [[RELAY]] on this line
+      // Must be only whitespace before block on this line
       if (/^\s*$/.test(lineStart)) {
-        return relayIdx;
+        return { index: earliestBlockIdx, identifier: earliestBlockIdentifier };
       }
 
       // Not at start of line, keep searching
-      searchStart = relayIdx + 9;
+      searchStart = earliestBlockIdx + (earliestBlockIdentifier?.length ?? 0);
     }
 
-    return -1;
+    return { index: -1, identifier: null };
   }
 
   /**
@@ -395,7 +412,7 @@ export class OutputParser {
   /**
    * Parse while inside a [[RELAY]] block - buffer until we see [[/RELAY]].
    */
-  private parseInBlockMode(data: string, commands: ParsedCommand[]): { commands: ParsedCommand[]; output: string } {
+  private parseInBlockMode(data: string, commands: ParsedCommand[], blockType: 'RELAY' | 'RELAY_METADATA'): { commands: ParsedCommand[]; output: string } {
     this.blockBuffer += data;
 
     // Check size limit
@@ -403,12 +420,14 @@ export class OutputParser {
       console.error('[parser] Block too large, discarding');
       this.inBlock = false;
       this.blockBuffer = '';
+      this.blockType = null;
       return { commands, output: '' };
     }
 
     // Check for block end
-    if (BLOCK_END.test(this.blockBuffer)) {
-      const result = this.finishBlock();
+    const blockEndPattern = blockType === 'RELAY_METADATA' ? BLOCK_METADATA_END : BLOCK_END;
+    if (blockEndPattern.test(this.blockBuffer)) {
+      const result = this.finishBlock(blockType);
       if (result.command) {
         commands.push(result.command);
       }
@@ -499,37 +518,59 @@ export class OutputParser {
    * Finish processing a block and extract command.
    * Returns the command (if valid) and any remaining content after [[/RELAY]].
    */
-  private finishBlock(): { command: ParsedCommand | null; remaining: string | null } {
-    const endIdx = this.blockBuffer.indexOf('[[/RELAY]]');
+  private finishBlock(blockType: 'RELAY' | 'RELAY_METADATA'): { command: ParsedCommand | null; remaining: string | null; metadata: ParsedMessageMetadata | null } {
+    const blockEndIdentifier = blockType === 'RELAY_METADATA' ? BLOCK_METADATA_END.source : BLOCK_END.source;
+    const endIdx = this.blockBuffer.indexOf(blockEndIdentifier.replace(/\\/g, '')); // Remove regex escapes for indexOf
     const jsonStr = this.blockBuffer.substring(0, endIdx).trim();
-    const remaining = this.blockBuffer.substring(endIdx + '[[/RELAY]]'.length) || null;
+    const remaining = this.blockBuffer.substring(endIdx + blockEndIdentifier.replace(/\\/g, '').length) || null;
 
     this.inBlock = false;
     this.blockBuffer = '';
+    this.blockType = null;
 
-    try {
-      const parsed = JSON.parse(jsonStr);
-
-      // Validate required fields
-      if (!parsed.to || !parsed.type) {
-        console.error('[parser] Block missing required fields (to, type)');
-        return { command: null, remaining };
+    if (blockType === 'RELAY_METADATA') {
+      try {
+        const metadata = JSON.parse(jsonStr) as ParsedMessageMetadata;
+        this.lastParsedMetadata = metadata;
+        return { command: null, remaining, metadata };
+      } catch (err) {
+        console.error('[parser] Invalid JSON in RELAY_METADATA block:', err);
+        this.lastParsedMetadata = null;
+        return { command: null, remaining, metadata: null };
       }
+    } else { // blockType === 'RELAY'
+      try {
+        const parsed = JSON.parse(jsonStr);
 
-      return {
-        command: {
+        // Validate required fields
+        if (!parsed.to || !parsed.type) {
+          console.error('[parser] Block missing required fields (to, type)');
+          this.lastParsedMetadata = null; // Clear metadata even if RELAY block is invalid
+          return { command: null, remaining, metadata: null };
+        }
+
+        const command: ParsedCommand = {
           to: parsed.to,
           kind: parsed.type as PayloadKind,
           body: parsed.body ?? parsed.text ?? '',
           data: parsed.data,
           thread: parsed.thread || undefined,
           raw: jsonStr,
-        },
-        remaining,
-      };
-    } catch (err) {
-      console.error('[parser] Invalid JSON in block:', err);
-      return { command: null, remaining };
+          meta: this.lastParsedMetadata || undefined, // Attach last parsed metadata
+        };
+
+        this.lastParsedMetadata = null; // Clear after use
+
+        return {
+          command,
+          remaining,
+          metadata: null,
+        };
+      } catch (err) {
+        console.error('[parser] Invalid JSON in RELAY block:', err);
+        this.lastParsedMetadata = null;
+        return { command: null, remaining, metadata: null };
+      }
     }
   }
 
@@ -540,6 +581,8 @@ export class OutputParser {
     const result = this.parse('\n');
     this.inBlock = false;
     this.blockBuffer = '';
+    this.blockType = null;
+    this.lastParsedMetadata = null;
     this.inCodeFence = false;
     return result;
   }
@@ -550,6 +593,8 @@ export class OutputParser {
   reset(): void {
     this.inBlock = false;
     this.blockBuffer = '';
+    this.blockType = null;
+    this.lastParsedMetadata = null;
     this.inCodeFence = false;
   }
 }
@@ -560,6 +605,57 @@ export class OutputParser {
 export function formatIncomingMessage(from: string, body: string, kind: PayloadKind = 'message'): string {
   const prefix = kind === 'thinking' ? '[THINKING]' : '[MSG]';
   return `\n${prefix} from ${from}: ${body}\n`;
+}
+
+/**
+ * Parsed message metadata block from agent output.
+ */
+export interface ParsedMessageMetadata {
+  subject?: string;
+  importance?: number;
+  replyTo?: string;
+  ackRequired?: boolean;
+}
+
+/**
+ * Result of attempting to parse a RELAY_METADATA block.
+ */
+export interface MetadataParseResult {
+  found: boolean;
+  valid: boolean;
+  metadata: ParsedMessageMetadata | null;
+  rawContent: string | null;  // Raw block content for deduplication
+}
+
+/**
+ * Parse [[RELAY_METADATA]]...[[/RELAY_METADATA]] blocks from agent output.
+ * Agents can output metadata to enhance messages.
+ *
+ * Format:
+ * [[RELAY_METADATA]]
+ * {
+ *   "subject": "Task update",
+ *   "importance": 80,
+ *   "replyTo": "msg-abc123",
+ *   "ackRequired": true
+ * }
+ * [[/RELAY_METADATA]]
+ */
+export function parseRelayMetadataFromOutput(output: string): MetadataParseResult {
+  const match = output.match(/\[\[RELAY_METADATA\]\]([\s\S]*?)\[\[\/RELAY_METADATA\]\]/);
+
+  if (!match) {
+    return { found: false, valid: false, metadata: null, rawContent: null };
+  }
+
+  const rawContent = match[1].trim();
+
+  try {
+    const metadata = JSON.parse(rawContent) as ParsedMessageMetadata;
+    return { found: true, valid: true, metadata, rawContent };
+  } catch {
+    return { found: true, valid: false, metadata: null, rawContent };
+  }
 }
 
 /**

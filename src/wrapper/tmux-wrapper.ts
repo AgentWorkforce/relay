@@ -15,7 +15,7 @@
 import { exec, execSync, spawn, ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { RelayClient } from './client.js';
-import { OutputParser, type ParsedCommand, parseSummaryWithDetails, parseSessionEndFromOutput } from './parser.js';
+import { OutputParser, type ParsedCommand, parseSummaryWithDetails, parseSessionEndFromOutput, ParsedMessageMetadata } from './parser.js';
 import { InboxManager } from './inbox.js';
 import type { SendPayload } from '../protocol/types.js';
 import { SqliteStorageAdapter } from '../storage/sqlite-adapter.js';

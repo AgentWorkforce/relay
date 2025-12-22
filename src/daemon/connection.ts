@@ -43,6 +43,7 @@ export class Connection {
   private _state: ConnectionState = 'CONNECTING';
   private _agentName?: string;
   private _cli?: string;
+  private _workingDirectory?: string;
   private _sessionId: string;
   private _resumeToken: string;
 
@@ -81,6 +82,10 @@ export class Connection {
 
   get cli(): string | undefined {
     return this._cli;
+  }
+
+  get workingDirectory(): string | undefined {
+    return this._workingDirectory;
   }
 
   get sessionId(): string {
@@ -139,6 +144,7 @@ export class Connection {
 
     this._agentName = envelope.payload.agent;
     this._cli = envelope.payload.cli;
+    this._workingDirectory = envelope.payload.workingDirectory;
 
     // Check for session resume
     if (envelope.payload.session?.resume_token) {

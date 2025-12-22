@@ -25,6 +25,8 @@ export interface ClientConfig {
   agentName: string;
   /** Optional CLI identifier to surface to the dashboard */
   cli?: string;
+  /** Optional working directory to surface in registry/dashboard */
+  workingDirectory?: string;
   reconnect: boolean;
   maxReconnectAttempts: number;
   reconnectDelayMs: number;
@@ -256,6 +258,7 @@ export class RelayClient {
       payload: {
         agent: this.config.agentName,
         cli: this.config.cli,
+        workingDirectory: this.config.workingDirectory,
         capabilities: {
           ack: true,
           resume: true,

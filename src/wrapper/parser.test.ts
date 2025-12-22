@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { OutputParser, formatIncomingMessage, parseSummaryFromOutput, parseSessionEndFromOutput } from './parser.js';
+import { OutputParser, formatIncomingMessage, parseSummaryFromOutput, parseSessionEndFromOutput, parseRelayMetadataFromOutput } from './parser.js';
 
 describe('OutputParser', () => {
   let parser: OutputParser;
@@ -734,5 +734,69 @@ Completed the following:
     const result = parseSessionEndFromOutput(output);
     expect(result?.summary).toContain('Completed the following:');
     expect(result?.summary).toContain('Feature A');
+  });
+});
+
+describe('parseRelayMetadataFromOutput', () => {
+  it('parses valid metadata block', () => {
+    const output = `Some output
+[[RELAY_METADATA]]
+{
+  "subject": "Task update",
+  "importance": 80,
+  "replyTo": "msg-abc123",
+  "ackRequired": true
+}
+[[/RELAY_METADATA]]
+More output`;
+
+    const result = parseRelayMetadataFromOutput(output);
+    expect(result.found).toBe(true);
+    expect(result.valid).toBe(true);
+    expect(result.metadata).toEqual({
+      subject: 'Task update',
+      importance: 80,
+      replyTo: 'msg-abc123',
+      ackRequired: true,
+    });
+    expect(result.rawContent).toContain('"subject"');
+  });
+
+  it('returns not found when no metadata block exists', () => {
+    const output = 'Regular output without any metadata block';
+
+    const result = parseRelayMetadataFromOutput(output);
+    expect(result.found).toBe(false);
+    expect(result.valid).toBe(false);
+    expect(result.metadata).toBeNull();
+    expect(result.rawContent).toBeNull();
+  });
+
+  it('returns invalid for malformed JSON', () => {
+    const output = '[[RELAY_METADATA]]not valid json[[/RELAY_METADATA]]';
+
+    const result = parseRelayMetadataFromOutput(output);
+    expect(result.found).toBe(true);
+    expect(result.valid).toBe(false);
+    expect(result.metadata).toBeNull();
+    expect(result.rawContent).toBe('not valid json');
+  });
+
+  it('handles empty metadata block', () => {
+    const output = '[[RELAY_METADATA]]{}[[/RELAY_METADATA]]';
+
+    const result = parseRelayMetadataFromOutput(output);
+    expect(result.found).toBe(true);
+    expect(result.valid).toBe(true);
+    expect(result.metadata).toEqual({});
+  });
+
+  it('parses metadata with partial fields', () => {
+    const output = '[[RELAY_METADATA]]{"subject":"Quick note"}[[/RELAY_METADATA]]';
+
+    const result = parseRelayMetadataFromOutput(output);
+    expect(result.found).toBe(true);
+    expect(result.valid).toBe(true);
+    expect(result.metadata).toEqual({ subject: 'Quick note' });
   });
 });
