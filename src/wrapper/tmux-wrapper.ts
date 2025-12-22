@@ -669,13 +669,8 @@ export class TmuxWrapper {
       // Short message ID for display (first 8 chars)
       const shortId = msg.messageId.substring(0, 8);
 
-      // Truncate very long messages to avoid display issues
-      const maxLen = 2000;
+      // Remove message truncation to allow full messages to pass through
       let wasTruncated = false;
-      if (sanitizedBody.length > maxLen) {
-        sanitizedBody = sanitizedBody.substring(0, maxLen) + '...';
-        wasTruncated = true;
-      }
 
       // Always include message ID; add lookup hint if truncated
       const idTag = `[${shortId}]`;
@@ -765,30 +760,56 @@ export class TmuxWrapper {
   }
 
   /**
-   * Check if the input line is clear (no user-typed text after the prompt).
-   * Returns true if the last visible line appears to be just a prompt.
+   * Get the prompt pattern for the current CLI type.
    */
-  private async isInputClear(): Promise<boolean> {
+  private getPromptPattern(): RegExp {
+    const promptPatterns: Record<string, RegExp> = {
+      claude: /^[>›»]\s*$/,           // Claude: "> " or similar
+      gemini: /^[>›»]\s*$/,           // Gemini: "> "
+      codex: /^[>›»]\s*$/,            // Codex: "> "
+      other: /^[>$%#➜›»]\s*$/,        // Shell or other: "$ ", "> ", etc.
+    };
+
+    return promptPatterns[this.cliType] || promptPatterns.other;
+  }
+
+  /**
+   * Capture the last non-empty line from the tmux pane.
+   */
+  private async getLastLine(): Promise<string> {
     try {
       const { stdout } = await execAsync(
         `tmux capture-pane -t ${this.sessionName} -p -J 2>/dev/null`
       );
       const lines = stdout.split('\n').filter(l => l.length > 0);
-      const lastLine = lines[lines.length - 1] || '';
+      return lines[lines.length - 1] || '';
+    } catch {
+      return '';
+    }
+  }
 
-      // CLI-specific prompt patterns (prompt char + optional whitespace, nothing else)
-      const promptPatterns: Record<string, RegExp> = {
-        claude: /^[>›»]\s*$/,           // Claude: "> " or similar
-        gemini: /^[>›»]\s*$/,           // Gemini: "> "
-        codex: /^[>›»]\s*$/,            // Codex: "> "
-        other: /^[>$%#➜›»]\s*$/,        // Shell or other: "$ ", "> ", etc.
-      };
+  /**
+   * Detect if the provided line contains visible user input (beyond the prompt).
+   */
+  private hasVisibleInput(line: string): boolean {
+    const cleanLine = this.stripAnsi(line).trimEnd();
+    if (cleanLine === '') return false;
 
-      const pattern = promptPatterns[this.cliType] || promptPatterns.other;
-      const isClear = pattern.test(lastLine);
+    return !this.getPromptPattern().test(cleanLine);
+  }
+
+  /**
+   * Check if the input line is clear (no user-typed text after the prompt).
+   * Returns true if the last visible line appears to be just a prompt.
+   */
+  private async isInputClear(lastLine?: string): Promise<boolean> {
+    try {
+      const lineToCheck = lastLine ?? await this.getLastLine();
+      const cleanLine = this.stripAnsi(lineToCheck).trimEnd();
+      const isClear = this.getPromptPattern().test(cleanLine);
 
       if (this.config.debug) {
-        const truncatedLine = lastLine.substring(0, Math.min(DEBUG_LOG_TRUNCATE_LENGTH, lastLine.length));
+        const truncatedLine = cleanLine.substring(0, Math.min(DEBUG_LOG_TRUNCATE_LENGTH, cleanLine.length));
         this.logStderr(`isInputClear: lastLine="${truncatedLine}", clear=${isClear}`);
       }
 
@@ -828,14 +849,18 @@ export class TmuxWrapper {
     let stableCursorCount = 0;
 
     while (Date.now() - startTime < maxWaitMs) {
+      const lastLine = await this.getLastLine();
+
       // Check if input line is just a prompt
-      if (await this.isInputClear()) {
+      if (await this.isInputClear(lastLine)) {
         return true;
       }
 
+      const hasInput = this.hasVisibleInput(lastLine);
+
       // Also check cursor stability - if cursor is moving, agent is typing
       const cursorX = await this.getCursorX();
-      if (cursorX === lastCursorX) {
+      if (!hasInput && cursorX === lastCursorX) {
         stableCursorCount++;
         // If cursor has been stable for enough polls and at typical prompt position,
         // the agent might be done but we just can't match the prompt pattern
