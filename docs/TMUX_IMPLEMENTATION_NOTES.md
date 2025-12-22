@@ -47,7 +47,7 @@ The previous tmux implementation had these issues:
 │  TmuxWrapper (this process)      │
 │  - Polls capture-pane @ 100ms    │
 │  - Detects new output (diff)     │
-│  - Parses @relay: commands       │
+│  - Parses ->relay: commands       │
 │  - Writes to stdout for user     │
 │  - Injects messages via send-keys│
 │  - Forwards user stdin to tmux   │
@@ -103,12 +103,12 @@ process.stdin.on('data', (data) => {
    - Solution: Use -S - to get full scrollback, diff against last capture
 
 2. **Binary/escape sequences**: Output might contain control characters
-   - Solution: Strip ANSI codes before parsing @relay:
+   - Solution: Strip ANSI codes before parsing ->relay:
 
 3. **Session death**: tmux session might exit
    - Solution: Monitor with `tmux has-session -t session`
 
-4. **Multiple messages**: Several @relay: in one capture
+4. **Multiple messages**: Several ->relay: in one capture
    - Solution: Track last processed line/position
 
 5. **Stdin race conditions**: User types while we inject
@@ -119,7 +119,7 @@ process.stdin.on('data', (data) => {
 1. **Basic session start**: Does claude actually launch in tmux?
 2. **Output capture**: Can we see claude's output?
 3. **Input injection**: Can we send text and get response?
-4. **@relay detection**: Does parser find @relay: commands?
+4. **->relay detection**: Does parser find ->relay: commands?
 5. **Full game**: Two agents playing tic-tac-toe
 
 ## Rollback Plan
@@ -194,10 +194,10 @@ node dist/cli/index.js send -f Coordinator -t PlayerX -m "Hello from Coordinator
 node dist/cli/index.js start -f
 
 # Terminal 2: PlayerX
-node dist/cli/index.js wrap --tmux2 -n PlayerX -- claude -p "You are PlayerX playing tic-tac-toe. Use @relay:PlayerO to send moves. Start with your first move."
+node dist/cli/index.js wrap --tmux2 -n PlayerX -- claude -p "You are PlayerX playing tic-tac-toe. Use ->relay:PlayerO to send moves. Start with your first move."
 
 # Terminal 3: PlayerO
-node dist/cli/index.js wrap --tmux2 -n PlayerO -- claude -p "You are PlayerO playing tic-tac-toe. Use @relay:PlayerX to send moves. Wait for PlayerX to start."
+node dist/cli/index.js wrap --tmux2 -n PlayerO -- claude -p "You are PlayerO playing tic-tac-toe. Use ->relay:PlayerX to send moves. Wait for PlayerX to start."
 ```
 
 ### Debugging
@@ -253,7 +253,7 @@ The message was successfully typed into the bash terminal via tmux send-keys.
 
 1. Test with Claude CLI (replace bash with claude)
 2. Test full tic-tac-toe game between two agents
-3. Verify @relay: command parsing works in both directions
+3. Verify ->relay: command parsing works in both directions
 4. Check if multi-round injection remains stable (previous implementations failed after 2-3 rounds)
 
 ### Critical Question
@@ -306,10 +306,10 @@ The critical test is whether injection remains stable over multiple rounds:
 node dist/cli/index.js start -f
 
 # Terminal 2: PlayerX
-node dist/cli/index.js wrap --tmux2 -n PlayerX -- claude -p "Play tic-tac-toe. Use @relay:PlayerO to send moves."
+node dist/cli/index.js wrap --tmux2 -n PlayerX -- claude -p "Play tic-tac-toe. Use ->relay:PlayerO to send moves."
 
 # Terminal 3: PlayerO
-node dist/cli/index.js wrap --tmux2 -n PlayerO -- claude -p "Play tic-tac-toe. Use @relay:PlayerX to send moves."
+node dist/cli/index.js wrap --tmux2 -n PlayerO -- claude -p "Play tic-tac-toe. Use ->relay:PlayerX to send moves."
 ```
 
 If this works for a full game (5-9 moves), we've solved the problem.

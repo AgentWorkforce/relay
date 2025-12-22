@@ -290,15 +290,15 @@ Client should send fresh HELLO.
 ### Inline Format (single line only)
 
 ```
-@relay:codex-1 Your turn to play
-@thinking:* Considering the Queen...
+->relay:codex-1 Your turn to play
+->thinking:* Considering the Queen...
 ```
 
 ### Rules
 
 1. Block: Only parse when `[[RELAY]]` at start of line
 2. Inline: Only at start of line, not in code fences
-3. Escape: `\@relay:` outputs literal `@relay:`
+3. Escape: `\->relay:` outputs literal `->relay:`
 
 ---
 

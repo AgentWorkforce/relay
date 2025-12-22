@@ -6,7 +6,7 @@ Agent Relay is a real-time messaging system that enables autonomous agent-to-age
 
 The system works by:
 1. Wrapping agent CLI processes in monitored tmux sessions
-2. Parsing agent output for `@relay:` commands
+2. Parsing agent output for `->relay:` commands
 3. Routing messages through a central daemon via Unix domain sockets
 4. Injecting incoming messages directly into agent terminal input
 
@@ -44,7 +44,7 @@ Agent Relay solves this by providing a communication layer that requires **zero 
 
 ### 1.2 Core Principle: Output Parsing, Not API Integration
 
-The fundamental insight is that AI agents already produce text output. By monitoring that output for specific patterns (`@relay:Target message`), we can extract communication intent without modifying the agent itself.
+The fundamental insight is that AI agents already produce text output. By monitoring that output for specific patterns (`->relay:Target message`), we can extract communication intent without modifying the agent itself.
 
 This approach:
 - Works with any CLI-based agent
@@ -113,7 +113,7 @@ Web UI for monitoring. Shows connected agents, message flow, real-time updates.
 │  Layer 2: Wrapper                                               │
 │  ┌───────────────┐ ┌───────────────┐ ┌───────────────┐        │
 │  │ TmuxWrapper   │ │ OutputParser  │ │ RelayClient   │        │
-│  │ (PTY mgmt)    │ │ (@relay:)     │ │ (Socket I/O)  │        │
+│  │ (PTY mgmt)    │ │ (->relay:)     │ │ (Socket I/O)  │        │
 │  └───────────────┘ └───────────────┘ └───────────────┘        │
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 3: Daemon                                                │
@@ -162,7 +162,7 @@ The TmuxWrapper is the most complex component. It bridges the gap between agent 
 │  │  │              Agent Process (claude, etc.)          │  │  │
 │  │  │                                                    │  │  │
 │  │  │  Output: "I'll send a message to Bob"             │  │  │
-│  │  │  Output: "@relay:Bob Can you review auth.ts?"     │  │  │
+│  │  │  Output: "->relay:Bob Can you review auth.ts?"     │  │  │
 │  │  │                                                    │  │  │
 │  │  └────────────────────────────────────────────────────┘  │  │
 │  └──────────────────────────────────────────────────────────┘  │
@@ -173,7 +173,7 @@ The TmuxWrapper is the most complex component. It bridges the gap between agent 
 │  │  OutputParser                                             │  │
 │  │  - Strip ANSI codes                                       │  │
 │  │  - Join continuation lines                                │  │
-│  │  - Extract @relay: commands                               │  │
+│  │  - Extract ->relay: commands                               │  │
 │  │  - Deduplicate (hash-based)                               │  │
 │  └──────────────────────────────────────────────────────────┘  │
 │                              │                                  │
@@ -214,9 +214,9 @@ return str.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
 ```
 
 **3. Continuation Line Joining**
-When TUIs wrap long lines, `@relay:` commands can span multiple lines:
+When TUIs wrap long lines, `->relay:` commands can span multiple lines:
 ```
-@relay:Bob This is a very long message that gets
+->relay:Bob This is a very long message that gets
     wrapped by the terminal and continues here
 ```
 The wrapper joins these back together.
@@ -252,8 +252,8 @@ Extracts relay commands from agent output.
 
 **1. Inline Format (Primary)**
 ```
-@relay:AgentName Your message here
-@relay:* Broadcast to everyone
+->relay:AgentName Your message here
+->relay:* Broadcast to everyone
 @thinking:AgentName Share reasoning (not displayed to user)
 ```
 
@@ -268,15 +268,15 @@ The parser handles real-world terminal output complexity:
 
 ```typescript
 // Allow common input prefixes: >, $, %, #, bullets, etc.
-const INLINE_RELAY = /^(?:\s*(?:[>$%#→➜›»●•◦‣⁃\-*⏺◆◇○□■]\s*)*)?@relay:(\S+)\s+(.+)$/;
+const INLINE_RELAY = /^(?:\s*(?:[>$%#→➜›»●•◦‣⁃\-*⏺◆◇○□■]\s*)*)?->relay:(\S+)\s+(.+)$/;
 ```
 
 This matches:
-- `@relay:Bob hello` (plain)
-- `  @relay:Bob hello` (indented)
-- `> @relay:Bob hello` (quoted)
-- `- @relay:Bob hello` (bullet point)
-- `⏺ @relay:Bob hello` (Claude's bullet)
+- `->relay:Bob hello` (plain)
+- `  ->relay:Bob hello` (indented)
+- `> ->relay:Bob hello` (quoted)
+- `- ->relay:Bob hello` (bullet point)
+- `⏺ ->relay:Bob hello` (Claude's bullet)
 
 #### Code Fence Awareness
 
@@ -601,7 +601,7 @@ Messages can have different semantic kinds:
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ 1. AGENT OUTPUT                                                         │
-│    Agent (Claude) produces text: "@relay:Bob Can you review auth.ts?"   │
+│    Agent (Claude) produces text: "->relay:Bob Can you review auth.ts?"   │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
@@ -617,7 +617,7 @@ Messages can have different semantic kinds:
 │    OutputParser:                                                        │
 │    - Strips ANSI escape codes                                           │
 │    - Joins continuation lines                                           │
-│    - Matches /^@relay:(\S+)\s+(.+)$/                                    │
+│    - Matches /^->relay:(\S+)\s+(.+)$/                                    │
 │    - Returns: { to: "Bob", body: "Can you review auth.ts?" }           │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
@@ -700,7 +700,7 @@ Messages can have different semantic kinds:
 
 ### 5.2 Broadcast Flow
 
-When sending to `@relay:*`:
+When sending to `->relay:*`:
 
 ```
 Alice                    Daemon                    Bob, Carol, Dave
@@ -800,7 +800,7 @@ Alice                    Daemon                    Bob, Carol, Dave
 │  └─────────────┘                                               │
 │                                                                 │
 │  State Tracking:                                                │
-│  - inCodeFence: boolean - ignore @relay inside code fences     │
+│  - inCodeFence: boolean - ignore ->relay inside code fences    │
 │  - inBlock: boolean - buffering [[RELAY]]...[[/RELAY]]         │
 │  - blockBuffer: string - accumulated block content             │
 │                                                                 │
@@ -958,7 +958,7 @@ For sensitive environments:
 
 ### 9.1 Why Output Parsing Instead of API Integration?
 
-**Decision**: Parse agent stdout for `@relay:` patterns instead of modifying agent code.
+**Decision**: Parse agent stdout for `->relay:` patterns instead of modifying agent code.
 
 **Rationale**:
 - Works with any CLI agent without modification
@@ -971,7 +971,7 @@ For sensitive environments:
 - ❌ Can miss messages in edge cases
 - ❌ No structured validation of message content
 - ✅ Zero changes to Claude, Codex, or other agents
-- ✅ Transparent - users see `@relay:` in agent output
+- ✅ Transparent - users see `->relay:` in agent output
 
 ### 9.2 Why Tmux Instead of Direct PTY?
 
@@ -1162,7 +1162,7 @@ agent-relay/
 │   ├── wrapper/
 │   │   ├── tmux-wrapper.ts       # Tmux session management
 │   │   ├── client.ts             # Daemon client connection
-│   │   ├── parser.ts             # Output parsing (@relay:)
+│   │   ├── parser.ts             # Output parsing (->relay:)
 │   │   ├── inbox.ts              # File-based inbox
 │   │   └── index.ts
 │   ├── protocol/
@@ -1217,10 +1217,10 @@ agent-relay -n Bob claude
 
 ```
 # Direct message
-@relay:Bob Please review the auth module
+->relay:Bob Please review the auth module
 
 # Broadcast
-@relay:* I've finished the database migration
+->relay:* I've finished the database migration
 
 # Structured (block format)
 [[RELAY]]{"to":"Bob","type":"action","body":"Run tests"}[[/RELAY]]

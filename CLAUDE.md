@@ -72,20 +72,20 @@ agent-relay -n Bob claude
 
 ## For Agents: How to Communicate
 
-When wrapped with `agent-relay`, agents communicate by outputting `@relay:` patterns.
+When wrapped with `agent-relay`, agents communicate by outputting `->relay:` patterns.
 
 ### Send a Message
 
 Output this in your response (not in a bash command):
 
 ```
-@relay:AgentName Your message here
+->relay:AgentName Your message here
 ```
 
 ### Broadcast to All
 
 ```
-@relay:* This message goes to everyone
+->relay:* This message goes to everyone
 ```
 
 ### Receiving Messages
@@ -115,24 +115,24 @@ agent-relay read abc12345...
 ## Communication Patterns
 
 ```
-@relay:* STATUS: Starting work on auth module
-@relay:* DONE: Auth module complete
-@relay:Developer TASK: Implement /api/register
-@relay:Reviewer REVIEW: Please check src/auth/*.ts
-@relay:Architect QUESTION: JWT or sessions?
+->relay:* STATUS: Starting work on auth module
+->relay:* DONE: Auth module complete
+->relay:Developer TASK: Implement /api/register
+->relay:Reviewer REVIEW: Please check src/auth/*.ts
+->relay:Architect QUESTION: JWT or sessions?
 ```
 
 ---
 
 ## Pattern Rules
 
-`@relay:` must be at the start of a line:
+`->relay:` must be at the start of a line:
 
 ```
-@relay:Name message           # Works
-  @relay:Name message         # Works (whitespace OK)
-- @relay:Name message         # Works (list OK)
-Some text @relay:Name msg     # Won't work
+->relay:Name message           # Works
+  ->relay:Name message         # Works (whitespace OK)
+- ->relay:Name message         # Works (list OK)
+Some text ->relay:Name msg     # Won't work
 ```
 
-Escape with `\@relay:` to output literally.
+Escape with `\->relay:` to output literally.

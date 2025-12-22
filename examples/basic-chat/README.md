@@ -23,7 +23,7 @@ npx agent-relay wrap -n Alice "claude"
 ```
 
 Once Claude starts, you can tell it:
-> "Your name is Alice. You're chatting with Bob via agent-relay. Say hello to Bob by typing: @relay:Bob Hello Bob! I'm Alice."
+> "Your name is Alice. You're chatting with Bob via agent-relay. Say hello to Bob by typing: ->relay:Bob Hello Bob! I'm Alice."
 
 ### Terminal 3: Agent Bob
 
@@ -37,13 +37,13 @@ Once Claude starts, you can tell it:
 ## How It Works
 
 1. Each agent is wrapped with `agent-relay wrap`, which:
-   - Intercepts terminal output looking for `@relay:` patterns
+   - Intercepts terminal output looking for `->relay:` patterns
    - Sends matched messages through the daemon to other agents
    - Injects received messages into the agent's terminal
 
 2. Messages use the inline format:
    ```
-   @relay:RecipientName Your message here
+   ->relay:RecipientName Your message here
    ```
 
 3. Received messages appear as:
@@ -71,6 +71,6 @@ agent-relay inbox-write -t Alice -f Bob -m "Hi Alice!" -d /tmp/chat
 
 ## Tips
 
-- Use `@relay:*` to broadcast to all connected agents
-- Use `\@relay:` to output literal text without triggering the relay
+- Use `->relay:*` to broadcast to all connected agents
+- Use `\->relay:` to output literal text without triggering the relay
 - Check daemon status with `npx agent-relay status`

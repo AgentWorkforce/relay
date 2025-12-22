@@ -22,7 +22,7 @@
 │       ├─► setInterval(200ms)                                        │
 │       │       └─► execAsync('tmux capture-pane -p -J -S -')         │
 │       │               └─► parser.parse(output)                      │
-│       │                       └─► detect @relay: patterns           │
+│       │                       └─► detect ->relay: patterns           │
 │       │                               └─► send to daemon            │
 │       │                                                              │
 │       └─► onMessage from daemon                                     │
@@ -234,7 +234,7 @@ tmux send-keys -t $SESSION -l "Message: $MSG"
 
 ```typescript
 // Parser handles real-world terminal mess
-const INLINE_RELAY = /^(?:\s*(?:[>$%#→➜›»●•◦‣⁃\-*⏺◆◇○□■]\s*)*)?@relay:(\S+)\s+(.+)$/;
+const INLINE_RELAY = /^(?:\s*(?:[>$%#→➜›»●•◦‣⁃\-*⏺◆◇○□■]\s*)*)?->relay:(\S+)\s+(.+)$/;
 
 // Strip ANSI codes
 const ANSI_PATTERN = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\].*?(?:\x07|\x1b\\)|\r/g;
@@ -263,7 +263,7 @@ send-relay-message.sh Bob "Subject" "Body"
 | Aspect | Pattern Parsing (Ours) | API-based (Theirs) |
 |--------|------------------------|-------------------|
 | **Agent effort** | Just output text | Call external script |
-| **Natural** | Yes (`@relay:Bob hi`) | No (shell command) |
+| **Natural** | Yes (`->relay:Bob hi`) | No (shell command) |
 | **Reliable** | ~95% (edge cases) | 100% (structured) |
 | **Multi-line** | Complex (continuation) | Easy (JSON body) |
 | **ANSI codes** | Must strip | N/A |
@@ -430,12 +430,14 @@ async function injectSafe(text: string): Promise<void> {
 Gemini CLI uses `@` for file references:
 ```bash
 gemini> @src/main.ts    # References a file
-gemini> @relay:Bob Hi   # Gemini might try to open file "relay:Bob"!
+gemini> ->relay:Bob Hi   # Gemini might try to open file "relay:Bob"!
 ```
 
 This could explain why Gemini agents have trouble sending relay messages - the CLI intercepts `@` before it reaches the terminal output.
 
-### Proposed Alternative Prefixes
+We've standardized on `->relay:` for all CLIs to keep a single mental model. Keep the prefix configurable so Gemini users can fall back to an alternative if their CLI mangles the arrow sequence.
+
+### Optional Alternative Prefixes
 
 | Prefix | Example | Pros | Cons |
 |--------|---------|------|------|
@@ -455,7 +457,7 @@ Support multiple prefixes with a default that works everywhere:
 ```typescript
 // In config
 {
-  "relayPrefix": "@relay:",     // Default (works for Claude, Codex)
+  "relayPrefix": "->relay:",     // Default (works across Claude/Codex/Gemini)
   // Alternatives:
   // "relayPrefix": ">>",        // For Gemini
   // "relayPrefix": "/relay",    // Slash command style
@@ -463,35 +465,38 @@ Support multiple prefixes with a default that works everywhere:
 }
 
 // In parser.ts
-const prefix = config.relayPrefix || '@relay:';
+const prefix = config.relayPrefix || '->relay:';
 const pattern = new RegExp(`^(?:\\s*)?${escapeRegex(prefix)}(\\S+)\\s+(.+)$`);
 ```
 
 ### Testing Gemini with Alternative Prefix
 
 ```bash
-# Start with alternative prefix
+# Default: unified arrow prefix
+agent-relay -n GeminiAgent gemini
+
+# If Gemini mangles ->relay:, try an alternative prefix
 agent-relay -n GeminiAgent --prefix=">>" gemini
 
 # Agent outputs:
 >>Bob: Can you review this code?
 
 # Instead of:
-@relay:Bob Can you review this code?
+->relay:Bob Can you review this code?
 ```
 
 ### Implementation: CLI Flag
 
 ```typescript
 // In cli/index.ts
-.option('--prefix <pattern>', 'Relay pattern prefix (default: @relay:)')
+.option('--prefix <pattern>', 'Relay pattern prefix (default: ->relay:)')
 
 // In wrapper config
 const wrapperConfig: TmuxWrapperConfig = {
   name: options.name,
   command: mainCommand,
   args: commandArgs,
-  relayPrefix: options.prefix || '@relay:',
+  relayPrefix: options.prefix || '->relay:',
   // ...
 };
 ```
@@ -505,7 +510,7 @@ export class OutputParser {
   private inlinePattern: RegExp;
 
   constructor(options: ParserOptions = {}) {
-    this.prefix = options.prefix || '@relay:';
+    this.prefix = options.prefix || '->relay:';
 
     // Build pattern dynamically
     const escaped = this.escapeRegex(this.prefix);
@@ -523,20 +528,14 @@ export class OutputParser {
 ### Recommendation
 
 1. **Short term:** Add `--prefix` flag to test with Gemini
-2. **Default for Gemini:** Auto-detect and use `>>` or `/relay`
-3. **Long term:** Document which prefix works best per CLI
+2. **Default for all CLIs:** Keep unified `->relay:` prefix; override only when needed
+3. **Long term:** Document recommended fallbacks per CLI if issues appear
 
 ```typescript
 // Auto-detect best prefix for CLI type
 function getDefaultPrefix(cliType: string): string {
-  switch (cliType) {
-    case 'gemini':
-      return '>>';        // Avoid @ conflict
-    case 'claude':
-    case 'codex':
-    default:
-      return '@relay:';   // Original, works fine
-  }
+  // Unified default; users can override via --prefix when necessary
+  return '->relay:';
 }
 ```
 
@@ -570,7 +569,7 @@ Our tmux wrapper uses an **attach-based polling architecture**:
 │                                                              │
 │  Background (every 200ms)                                    │
 │    └─ tmux capture-pane -p -J -S -                          │
-│         └─ Parse for @relay: patterns                       │
+│         └─ Parse for ->relay: patterns                       │
 │         └─ Send detected commands to daemon                 │
 │                                                              │
 │  Message Injection                                           │
@@ -664,12 +663,12 @@ We only need tmux and Node.js. No native compilation (node-pty), no browser comp
 
 ### 3. Pattern-Based Communication
 
-Agents just output `@relay:Name message`. No API calls, no special handling.
+Agents just output `->relay:Name message`. No API calls, no special handling.
 
 ```
 # Our approach - agent outputs text naturally
 Claude: I'll ask Bob for help.
-@relay:Bob Can you review the auth module?
+->relay:Bob Can you review the auth module?
 
 # Alternative - agent calls external script
 Claude: I'll ask Bob for help.

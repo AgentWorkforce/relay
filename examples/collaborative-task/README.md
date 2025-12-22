@@ -27,7 +27,7 @@ npx agent-relay wrap -n Architect "claude"
 ```
 
 Tell the agent:
-> "You are the Architect. Your job is to design a solution for adding user authentication. Once you have a plan, message Developer with the design using @relay:Developer"
+> "You are the Architect. Your job is to design a solution for adding user authentication. Once you have a plan, message Developer with the design using ->relay:Developer"
 
 ### Terminal 3: Developer
 ```bash
@@ -74,21 +74,21 @@ Agents use structured communication:
 
 ```bash
 # Architect assigns task
-@relay:Developer TASK: Implement user registration endpoint.
+->relay:Developer TASK: Implement user registration endpoint.
 Requirements: POST /api/register, validate email, hash password, return JWT.
 
 # Developer requests review
-@relay:Reviewer REVIEW REQUEST: Please review src/api/register.ts
+->relay:Reviewer REVIEW REQUEST: Please review src/api/register.ts
 
 # Reviewer provides feedback
-@relay:Developer FEEDBACK: Line 23: Use bcrypt instead of md5 for password hashing.
+->relay:Developer FEEDBACK: Line 23: Use bcrypt instead of md5 for password hashing.
 
 # Developer notifies completion
-@relay:Architect DONE: Registration endpoint implemented and reviewed.
+->relay:Architect DONE: Registration endpoint implemented and reviewed.
 ```
 
 ## Tips
 
 - Use clear prefixes (TASK:, REVIEW:, FEEDBACK:, DONE:) for structured communication
-- Broadcast status updates with `@relay:*`
+- Broadcast status updates with `->relay:*`
 - Keep messages concise - agents can read files for details

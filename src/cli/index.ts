@@ -47,7 +47,7 @@ program
 program
   .option('-n, --name <name>', 'Agent name (auto-generated if not set)')
   .option('-q, --quiet', 'Disable debug output', false)
-  .option('--prefix <pattern>', 'Relay prefix pattern (default: @relay: or >> for Gemini)')
+  .option('--prefix <pattern>', 'Relay prefix pattern (default: ->relay:)')
   .argument('[command...]', 'Command to wrap (e.g., claude)')
   .action(async (commandParts, options) => {
     // If no command provided, show help
@@ -72,8 +72,10 @@ program
       command: mainCommand,
       args: commandArgs,
       socketPath: paths.socketPath,
-      debug: !options.quiet,
+      debug: false,  // Use -q to keep quiet (debug off by default)
       relayPrefix: options.prefix,
+      useInbox: true,
+      inboxDir: paths.dataDir, // Use the project-specific data directory for the inbox
     });
 
     process.on('SIGINT', () => {

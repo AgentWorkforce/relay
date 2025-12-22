@@ -11,6 +11,7 @@ import {
   type WelcomePayload,
   type SendPayload,
   type DeliverEnvelope,
+  type ErrorPayload,
   type PayloadKind,
   PROTOCOL_VERSION,
 } from '../protocol/types.js';
@@ -307,7 +308,7 @@ export class RelayClient {
         break;
 
       case 'ERROR':
-        console.error('[client] Server error:', envelope.payload);
+        this.handleErrorFrame(envelope as Envelope<ErrorPayload>);
         break;
 
       case 'BUSY':
@@ -352,6 +353,19 @@ export class RelayClient {
       ts: Date.now(),
       payload: (envelope.payload as { nonce?: string }) ?? {},
     });
+  }
+
+  private handleErrorFrame(envelope: Envelope<ErrorPayload>): void {
+    console.error('[client] Server error:', envelope.payload);
+
+    if (envelope.payload.code === 'RESUME_TOO_OLD') {
+      if (this.resumeToken) {
+        console.warn('[client] Resume token rejected, clearing and requesting new session');
+      }
+      // Clear resume token so next HELLO starts a fresh session instead of looping on an invalid token
+      this.resumeToken = undefined;
+      this.sessionId = undefined;
+    }
   }
 
   private handleDisconnect(): void {

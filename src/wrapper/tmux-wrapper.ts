@@ -5,7 +5,7 @@
  * 1. Start agent in detached tmux session
  * 2. Attach user to tmux (they see real terminal)
  * 3. Background: poll capture-pane silently (no stdout writes)
- * 4. Background: parse @relay commands, send to daemon
+ * 4. Background: parse ->relay commands, send to daemon
  * 5. Background: inject messages via send-keys
  *
  * The key insight: user sees the REAL tmux session, not a proxy.
@@ -23,6 +23,16 @@ import { getProjectPaths } from '../utils/project-namespace.js';
 
 const execAsync = promisify(exec);
 const escapeRegex = (str: string): string => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Constants for cursor stability detection in waitForClearInput
+/** Number of consecutive polls with stable cursor before assuming input is clear */
+const STABLE_CURSOR_THRESHOLD = 3;
+/** Maximum cursor X position that indicates a prompt (typical prompts are 1-4 chars) */
+const MAX_PROMPT_CURSOR_POSITION = 4;
+/** Maximum characters to show in debug log truncation */
+const DEBUG_LOG_TRUNCATE_LENGTH = 40;
+/** Maximum characters to show in relay command log truncation */
+const RELAY_LOG_TRUNCATE_LENGTH = 50;
 
 export interface TmuxWrapperConfig {
   name: string;
@@ -49,27 +59,25 @@ export interface TmuxWrapperConfig {
   injectRetryMs?: number;
   /** How long with no output before marking session idle (ms) */
   activityIdleThresholdMs?: number;
+  /** Max time to wait for clear input before injecting (ms) */
+  inputWaitTimeoutMs?: number;
+  /** Polling interval when waiting for clear input (ms) */
+  inputWaitPollMs?: number;
   /** CLI type for special handling (auto-detected from command if not set) */
   cliType?: 'claude' | 'codex' | 'gemini' | 'other';
   /** Enable tmux mouse mode for scroll passthrough (default: true) */
   mouseMode?: boolean;
-  /** Relay prefix pattern (default: '@relay:' or '>>' for Gemini) */
+  /** Relay prefix pattern (default: '->relay:') */
   relayPrefix?: string;
 }
 
 /**
  * Get the default relay prefix for a given CLI type.
- * Gemini uses '>>' to avoid conflict with @ file references.
+ * All agents now use '->relay:' as the unified prefix.
  */
 export function getDefaultPrefix(cliType: 'claude' | 'codex' | 'gemini' | 'other'): string {
-  switch (cliType) {
-    case 'gemini':
-      return '>>'; // Avoid @ conflict with Gemini file references
-    case 'claude':
-    case 'codex':
-    default:
-      return '@relay:'; // Original, works fine
-  }
+  // Unified prefix for all agent types
+  return '->relay:';
 }
 
 export class TmuxWrapper {
@@ -106,7 +114,7 @@ export class TmuxWrapper {
       pollInterval: 200, // Slightly slower polling since we're not displaying
       idleBeforeInjectMs: 1500,
       injectRetryMs: 500,
-      debug: true,
+      debug: false,
       debugLogIntervalMs: 0,
       mouseMode: true, // Enable mouse scroll passthrough by default
       activityIdleThresholdMs: 30_000, // Consider idle after 30s with no output
@@ -176,7 +184,7 @@ export class TmuxWrapper {
    * Log to stderr (safe - doesn't interfere with tmux display)
    */
   private logStderr(msg: string, force = false): void {
-    if (!force && this.config.debug === false) return;
+    if (!force && !this.config.debug) return;
 
     const now = Date.now();
     if (!force && this.config.debugLogIntervalMs && this.config.debugLogIntervalMs > 0) {
@@ -430,7 +438,7 @@ export class TmuxWrapper {
   }
 
   /**
-   * Start silent polling for @relay commands
+   * Start silent polling for ->relay commands
    * Does NOT write to stdout - just parses and sends to daemon
    */
   private startSilentPolling(): void {
@@ -442,7 +450,7 @@ export class TmuxWrapper {
   }
 
   /**
-   * Poll for @relay commands in output (silent)
+   * Poll for ->relay commands in output (silent)
    */
   private async pollForRelayCommands(): Promise<void> {
     if (!this.running) return;
@@ -450,11 +458,11 @@ export class TmuxWrapper {
     try {
       // Capture scrollback
       const { stdout } = await execAsync(
-        // -J joins wrapped lines to avoid truncating @relay commands mid-line
+        // -J joins wrapped lines to avoid truncating ->relay commands mid-line
         `tmux capture-pane -t ${this.sessionName} -p -J -S - 2>/dev/null`
       );
 
-      // Always parse the FULL capture for @relay commands
+      // Always parse the FULL capture for ->relay commands
       // This handles terminal UIs that rewrite content in place
       const cleanContent = this.stripAnsi(stdout);
       // Join continuation lines that TUIs split across multiple lines
@@ -500,10 +508,10 @@ export class TmuxWrapper {
   }
 
   /**
-   * Join continuation lines after @relay commands.
+   * Join continuation lines after ->relay commands.
    * Claude Code and other TUIs insert real newlines in output, causing
-   * @relay messages to span multiple lines. This joins indented
-   * continuation lines back to the @relay line.
+   * ->relay messages to span multiple lines. This joins indented
+   * continuation lines back to the ->relay line.
    */
   private joinContinuationLines(content: string): string {
     const lines = content.split('\n');
@@ -523,7 +531,7 @@ export class TmuxWrapper {
     while (i < lines.length) {
       const line = lines[i];
 
-      // Check if this is a @relay line
+      // Check if this is a ->relay line
       if (relayPattern.test(line)) {
         let joined = line;
         let j = i + 1;
@@ -591,19 +599,6 @@ export class TmuxWrapper {
   }
 
   /**
-   * Escape string for ANSI-C quoting ($'...')
-   * This handles special characters more reliably than mixing quote styles
-   */
-  private escapeForAnsiC(str: string): string {
-    return str
-      .replace(/\\/g, '\\\\')     // Backslash
-      .replace(/'/g, "\\'")       // Single quote
-      .replace(/\n/g, '\\n')      // Newline
-      .replace(/\r/g, '\\r')      // Carriage return
-      .replace(/\t/g, '\\t');     // Tab
-  }
-
-  /**
    * Send relay command to daemon
    */
   private sendRelayCommand(cmd: ParsedCommand): void {
@@ -617,7 +612,8 @@ export class TmuxWrapper {
     const success = this.client.sendMessage(cmd.to, cmd.body, cmd.kind, cmd.data);
     if (success) {
       this.sentMessageHashes.add(msgHash);
-      this.logStderr(`→ ${cmd.to}: ${cmd.body.substring(0, 50)}...`);
+      const truncatedBody = cmd.body.substring(0, Math.min(RELAY_LOG_TRUNCATE_LENGTH, cmd.body.length));
+      this.logStderr(`→ ${cmd.to}: ${truncatedBody}...`);
     } else if (this.client.state !== 'READY') {
       // Only log failure once per state change
       this.logStderr(`Send failed (client ${this.client.state})`);
@@ -711,7 +707,8 @@ export class TmuxWrapper {
    * Handle incoming message from relay
    */
   private handleIncomingMessage(from: string, payload: SendPayload, messageId: string): void {
-    this.logStderr(`← ${from}: ${payload.body.substring(0, 40)}...`);
+    const truncatedBody = payload.body.substring(0, Math.min(DEBUG_LOG_TRUNCATE_LENGTH, payload.body.length));
+    this.logStderr(`← ${from}: ${truncatedBody}...`);
 
     // Queue for injection
     this.messageQueue.push({ from, body: payload.body, messageId });
@@ -755,17 +752,12 @@ export class TmuxWrapper {
     this.logStderr(`Injecting message from ${msg.from} (cli: ${this.cliType})`);
 
     try {
-      let sanitizedBody = msg.body.replace(/[\r\n]+/g, ' ').trim();
+      const sanitizedBody = msg.body.replace(/[\r\n]+/g, ' ').trim();
       // Short message ID for display (first 8 chars)
       const shortId = msg.messageId.substring(0, 8);
 
-      // Truncate very long messages to avoid display issues
-      const maxLen = 2000;
-      let wasTruncated = false;
-      if (sanitizedBody.length > maxLen) {
-        sanitizedBody = sanitizedBody.substring(0, maxLen) + '...';
-        wasTruncated = true;
-      }
+      // Remove message truncation to allow full messages to pass through
+      const wasTruncated = false;
 
       // Always include message ID; add lookup hint if truncated
       const idTag = `[${shortId}]`;
@@ -773,47 +765,30 @@ export class TmuxWrapper {
         ? ` [TRUNCATED - run "agent-relay read ${msg.messageId}"]`
         : '';
 
-      // Gemini CLI interprets input as shell commands, so we need special handling
-      if (this.cliType === 'gemini') {
-        // For Gemini: Use printf with %s to safely handle any characters
-        // printf '%s\n' 'message' - the %s treats the argument as literal string
-        // We use $'...' ANSI-C quoting which handles escapes more predictably
-        const safeBody = this.escapeForAnsiC(sanitizedBody);
-        const safeFrom = this.escapeForAnsiC(msg.from);
-        const safeHint = this.escapeForAnsiC(truncationHint);
-        const printfMsg = `printf '%s\\n' $'Relay message from ${safeFrom} ${idTag}: ${safeBody}${safeHint}'`;
-
-        // Clear any partial input
+      // Wait for input to be clear before injecting
+      const waitTimeoutMs = this.config.inputWaitTimeoutMs ?? 5000;
+      const waitPollMs = this.config.inputWaitPollMs ?? 200;
+      const inputClear = await this.waitForClearInput(waitTimeoutMs, waitPollMs);
+      if (!inputClear) {
+        // Input still has text after timeout - clear it forcefully
+        this.logStderr('Input not clear after waiting, clearing forcefully');
         await this.sendKeys('Escape');
         await this.sleep(30);
         await this.sendKeys('C-u');
         await this.sleep(30);
-
-        // Send printf command to display the message
-        await this.sendKeysLiteral(printfMsg);
-        await this.sleep(50);
-        await this.sendKeys('Enter');
-
-        this.logStderr(`Injection complete (gemini printf mode)`);
-      } else {
-        // Standard injection for Claude, Codex, etc.
-        // Format: Relay message from Sender [abc12345]: content
-        const injection = `Relay message from ${msg.from} ${idTag}: ${sanitizedBody}${truncationHint}`;
-
-        // Clear any partial input
-        await this.sendKeys('Escape');
-        await this.sleep(30);
-        await this.sendKeys('C-u');
-        await this.sleep(30);
-
-        // Type the message
-        await this.sendKeysLiteral(injection);
-        await this.sleep(50);
-
-        // Submit
-        await this.sendKeys('Enter');
-        this.logStderr(`Injection complete`);
       }
+
+      // Standard injection for all CLIs including Gemini
+      // Format: Relay message from Sender [abc12345]: content
+      const injection = `Relay message from ${msg.from} ${idTag}: ${sanitizedBody}${truncationHint}`;
+
+      // Type the message as literal text
+      await this.sendKeysLiteral(injection);
+      await this.sleep(50);
+
+      // Submit
+      await this.sendKeys('Enter');
+      this.logStderr(`Injection complete`);
 
     } catch (err: any) {
       this.logStderr(`Injection failed: ${err.message}`, true);
@@ -860,6 +835,127 @@ export class TmuxWrapper {
   resetSessionState(): void {
     this.sessionEndProcessed = false;
     this.lastSummaryHash = '';
+  }
+
+  /**
+   * Get the prompt pattern for the current CLI type.
+   */
+  private getPromptPattern(): RegExp {
+    const promptPatterns: Record<string, RegExp> = {
+      claude: /^[>›»]\s*$/,           // Claude: "> " or similar
+      gemini: /^[>›»]\s*$/,           // Gemini: "> "
+      codex: /^[>›»]\s*$/,            // Codex: "> "
+      other: /^[>$%#➜›»]\s*$/,        // Shell or other: "$ ", "> ", etc.
+    };
+
+    return promptPatterns[this.cliType] || promptPatterns.other;
+  }
+
+  /**
+   * Capture the last non-empty line from the tmux pane.
+   */
+  private async getLastLine(): Promise<string> {
+    try {
+      const { stdout } = await execAsync(
+        `tmux capture-pane -t ${this.sessionName} -p -J 2>/dev/null`
+      );
+      const lines = stdout.split('\n').filter(l => l.length > 0);
+      return lines[lines.length - 1] || '';
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * Detect if the provided line contains visible user input (beyond the prompt).
+   */
+  private hasVisibleInput(line: string): boolean {
+    const cleanLine = this.stripAnsi(line).trimEnd();
+    if (cleanLine === '') return false;
+
+    return !this.getPromptPattern().test(cleanLine);
+  }
+
+  /**
+   * Check if the input line is clear (no user-typed text after the prompt).
+   * Returns true if the last visible line appears to be just a prompt.
+   */
+  private async isInputClear(lastLine?: string): Promise<boolean> {
+    try {
+      const lineToCheck = lastLine ?? await this.getLastLine();
+      const cleanLine = this.stripAnsi(lineToCheck).trimEnd();
+      const isClear = this.getPromptPattern().test(cleanLine);
+
+      if (this.config.debug) {
+        const truncatedLine = cleanLine.substring(0, Math.min(DEBUG_LOG_TRUNCATE_LENGTH, cleanLine.length));
+        this.logStderr(`isInputClear: lastLine="${truncatedLine}", clear=${isClear}`);
+      }
+
+      return isClear;
+    } catch {
+      // If we can't capture, assume not clear (safer)
+      return false;
+    }
+  }
+
+  /**
+   * Get cursor X position to detect input length.
+   * Returns the cursor column (0-indexed).
+   */
+  private async getCursorX(): Promise<number> {
+    try {
+      const { stdout } = await execAsync(
+        `tmux display-message -t ${this.sessionName} -p "#{cursor_x}" 2>/dev/null`
+      );
+      return parseInt(stdout.trim(), 10) || 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Wait for the input line to be clear before injecting.
+   * Polls until the input appears empty or timeout is reached.
+   *
+   * @param maxWaitMs Maximum time to wait (default 5000ms)
+   * @param pollIntervalMs How often to check (default 200ms)
+   * @returns true if input became clear, false if timed out
+   */
+  private async waitForClearInput(maxWaitMs = 5000, pollIntervalMs = 200): Promise<boolean> {
+    const startTime = Date.now();
+    let lastCursorX = -1;
+    let stableCursorCount = 0;
+
+    while (Date.now() - startTime < maxWaitMs) {
+      const lastLine = await this.getLastLine();
+
+      // Check if input line is just a prompt
+      if (await this.isInputClear(lastLine)) {
+        return true;
+      }
+
+      const hasInput = this.hasVisibleInput(lastLine);
+
+      // Also check cursor stability - if cursor is moving, agent is typing
+      const cursorX = await this.getCursorX();
+      if (!hasInput && cursorX === lastCursorX) {
+        stableCursorCount++;
+        // If cursor has been stable for enough polls and at typical prompt position,
+        // the agent might be done but we just can't match the prompt pattern
+        if (stableCursorCount >= STABLE_CURSOR_THRESHOLD && cursorX <= MAX_PROMPT_CURSOR_POSITION) {
+          this.logStderr(`waitForClearInput: cursor stable at x=${cursorX}, assuming clear`);
+          return true;
+        }
+      } else {
+        stableCursorCount = 0;
+        lastCursorX = cursorX;
+      }
+
+      await this.sleep(pollIntervalMs);
+    }
+
+    this.logStderr(`waitForClearInput: timed out after ${maxWaitMs}ms`);
+    return false;
   }
 
   /**

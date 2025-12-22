@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import {
   type AgentSummary,
   type MessageQuery,
+  type MessageStatus,
   type SessionQuery,
   type StorageAdapter,
   type StoredMessage,
@@ -101,27 +102,59 @@ export class SqliteStorageAdapter implements StorageAdapter {
       );
     }
 
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS messages (
-        id TEXT PRIMARY KEY,
-        ts INTEGER NOT NULL,
-        sender TEXT NOT NULL,
-        recipient TEXT NOT NULL,
-        topic TEXT,
-        kind TEXT NOT NULL,
-        body TEXT NOT NULL,
-        data TEXT,
-        thread TEXT,
-        delivery_seq INTEGER,
-        delivery_session_id TEXT,
-        session_id TEXT
-      );
-      CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages (ts);
-      CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages (sender);
-      CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages (recipient);
-      CREATE INDEX IF NOT EXISTS idx_messages_topic ON messages (topic);
-      CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages (thread);
+    // Check if messages table exists for migration decisions
+    const messagesTableExists = this.db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
+    ).get() as { name: string } | undefined;
 
+    if (!messagesTableExists) {
+      // Fresh install: create messages table with all columns
+      this.db.exec(`
+        CREATE TABLE messages (
+          id TEXT PRIMARY KEY,
+          ts INTEGER NOT NULL,
+          sender TEXT NOT NULL,
+          recipient TEXT NOT NULL,
+          topic TEXT,
+          kind TEXT NOT NULL,
+          body TEXT NOT NULL,
+          data TEXT,
+          thread TEXT,
+          delivery_seq INTEGER,
+          delivery_session_id TEXT,
+          session_id TEXT,
+          status TEXT NOT NULL DEFAULT 'unread',
+          is_urgent INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX idx_messages_ts ON messages (ts);
+        CREATE INDEX idx_messages_sender ON messages (sender);
+        CREATE INDEX idx_messages_recipient ON messages (recipient);
+        CREATE INDEX idx_messages_topic ON messages (topic);
+        CREATE INDEX idx_messages_thread ON messages (thread);
+        CREATE INDEX idx_messages_status ON messages (status);
+        CREATE INDEX idx_messages_is_urgent ON messages (is_urgent);
+      `);
+    } else {
+      // Existing database: run migrations for missing columns
+      const columns = this.db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+      const columnNames = new Set(columns.map(c => c.name));
+
+      if (!columnNames.has('thread')) {
+        this.db.exec('ALTER TABLE messages ADD COLUMN thread TEXT');
+        this.db.exec('CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages (thread)');
+      }
+      if (!columnNames.has('status')) {
+        this.db.exec("ALTER TABLE messages ADD COLUMN status TEXT NOT NULL DEFAULT 'unread'");
+        this.db.exec('CREATE INDEX IF NOT EXISTS idx_messages_status ON messages (status)');
+      }
+      if (!columnNames.has('is_urgent')) {
+        this.db.exec("ALTER TABLE messages ADD COLUMN is_urgent INTEGER NOT NULL DEFAULT 0");
+        this.db.exec('CREATE INDEX IF NOT EXISTS idx_messages_is_urgent ON messages (is_urgent)');
+      }
+    }
+
+    // Create sessions table (IF NOT EXISTS is safe here - no new columns to migrate)
+    this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
         agent_name TEXT NOT NULL,
@@ -137,7 +170,10 @@ export class SqliteStorageAdapter implements StorageAdapter {
       CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions (agent_name);
       CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions (started_at);
       CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions (project_id);
+    `);
 
+    // Create agent_summaries table (IF NOT EXISTS is safe here - no new columns to migrate)
+    this.db.exec(`
       CREATE TABLE IF NOT EXISTS agent_summaries (
         agent_name TEXT PRIMARY KEY,
         project_id TEXT,
@@ -151,18 +187,10 @@ export class SqliteStorageAdapter implements StorageAdapter {
       CREATE INDEX IF NOT EXISTS idx_summaries_updated ON agent_summaries (last_updated);
     `);
 
-    // Migration: add thread column if missing (for existing databases)
-    const columns = this.db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
-    const hasThread = columns.some(c => c.name === 'thread');
-    if (!hasThread) {
-      this.db.exec('ALTER TABLE messages ADD COLUMN thread TEXT');
-      this.db.exec('CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages (thread)');
-    }
-
     this.insertStmt = this.db.prepare(`
       INSERT OR REPLACE INTO messages
-      (id, ts, sender, recipient, topic, kind, body, data, thread, delivery_seq, delivery_session_id, session_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, ts, sender, recipient, topic, kind, body, data, thread, delivery_seq, delivery_session_id, session_id, status, is_urgent)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
   }
 
@@ -183,7 +211,9 @@ export class SqliteStorageAdapter implements StorageAdapter {
       message.thread ?? null,
       message.deliverySeq ?? null,
       message.deliverySessionId ?? null,
-      message.sessionId ?? null
+      message.sessionId ?? null,
+      message.status,
+      message.is_urgent ? 1 : 0
     );
   }
 
@@ -215,13 +245,21 @@ export class SqliteStorageAdapter implements StorageAdapter {
       clauses.push('thread = ?');
       params.push(query.thread);
     }
+    if (query.unreadOnly) {
+      clauses.push('status = ?');
+      params.push('unread');
+    }
+    if (query.urgentOnly) {
+      clauses.push('is_urgent = ?');
+      params.push(1);
+    }
 
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     const order = query.order === 'asc' ? 'ASC' : 'DESC';
     const limit = query.limit ?? 200;
 
     const stmt = this.db.prepare(`
-      SELECT id, ts, sender, recipient, topic, kind, body, data, thread, delivery_seq, delivery_session_id, session_id
+      SELECT id, ts, sender, recipient, topic, kind, body, data, thread, delivery_seq, delivery_session_id, session_id, status, is_urgent
       FROM messages
       ${where}
       ORDER BY ts ${order}
@@ -242,7 +280,17 @@ export class SqliteStorageAdapter implements StorageAdapter {
       deliverySeq: row.delivery_seq ?? undefined,
       deliverySessionId: row.delivery_session_id ?? undefined,
       sessionId: row.session_id ?? undefined,
+      status: row.status,
+      is_urgent: row.is_urgent === 1,
     }));
+  }
+
+  async updateMessageStatus(id: string, status: MessageStatus): Promise<void> {
+    if (!this.db) {
+      throw new Error('SqliteStorageAdapter not initialized');
+    }
+    const stmt = this.db.prepare('UPDATE messages SET status = ? WHERE id = ?');
+    stmt.run(status, id);
   }
 
   async getMessageById(id: string): Promise<StoredMessage | null> {
@@ -252,7 +300,7 @@ export class SqliteStorageAdapter implements StorageAdapter {
 
     // Support both exact match and prefix match (for short IDs like "06eb33da")
     const stmt = this.db.prepare(`
-      SELECT id, ts, sender, recipient, topic, kind, body, data, delivery_seq, delivery_session_id, session_id
+      SELECT id, ts, sender, recipient, topic, kind, body, data, thread, delivery_seq, delivery_session_id, session_id, status, is_urgent
       FROM messages
       WHERE id = ? OR id LIKE ?
       ORDER BY ts DESC
@@ -271,9 +319,12 @@ export class SqliteStorageAdapter implements StorageAdapter {
       kind: row.kind,
       body: row.body,
       data: row.data ? JSON.parse(row.data) : undefined,
+      thread: row.thread ?? undefined,
       deliverySeq: row.delivery_seq ?? undefined,
       deliverySessionId: row.delivery_session_id ?? undefined,
       sessionId: row.session_id ?? undefined,
+      status: row.status ?? 'unread',
+      is_urgent: row.is_urgent === 1,
     };
   }
 

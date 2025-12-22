@@ -145,7 +145,7 @@ Let's separate "nice to have" from "essential":
 2. **Know who's busy vs idle** → Activity state in agents output
 3. **Message history** → `agent-relay history` (already proposed)
 4. **Quick attach** → `agent-relay attach Alice`
-5. **Group messaging** → `@relay:@backend` (already proposed)
+5. **Group messaging** → `->relay:@backend` (already proposed)
 
 ### Nice to Have (but complex)
 
@@ -228,7 +228,7 @@ The TUI dashboard is over-engineered. tmux already provides:
 ## Updated Design Recommendation
 
 ### Keep from Phase 5:
-- Agent groups (`@relay:@backend`)
+- Agent groups (`->relay:@backend`)
 - Message priority (`!`, `?`)
 - `agent-relay agents` command
 - `agent-relay history` command
@@ -262,7 +262,7 @@ watch -n2 agent-relay agents
 | See all agents | Open TUI, see list | `agent-relay agents` or `Ctrl+B w` |
 | Switch to Bob | Press 'a', select Bob | `Ctrl+B 1` or `agent-relay attach Bob` |
 | Check if Alice is busy | See "typing..." in TUI | Check status column in agents |
-| Send message to group | Same | Same (`@relay:@backend`) |
+| Send message to group | Same | Same (`->relay:@backend`) |
 | View history | Press 'h' in TUI | `agent-relay history` |
 
 **The simpler approach does everything the TUI does, with 80% less code.**
