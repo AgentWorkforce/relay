@@ -65,23 +65,17 @@ export interface TmuxWrapperConfig {
   cliType?: 'claude' | 'codex' | 'gemini' | 'other';
   /** Enable tmux mouse mode for scroll passthrough (default: true) */
   mouseMode?: boolean;
-  /** Relay prefix pattern (default: '@relay:' or '>>' for Gemini) */
+  /** Relay prefix pattern (default: '>>relay:') */
   relayPrefix?: string;
 }
 
 /**
  * Get the default relay prefix for a given CLI type.
- * Gemini uses '>>' to avoid conflict with @ file references.
+ * All agents now use '>>relay:' as the unified prefix.
  */
 export function getDefaultPrefix(cliType: 'claude' | 'codex' | 'gemini' | 'other'): string {
-  switch (cliType) {
-    case 'gemini':
-      return '>>'; // Avoid @ conflict with Gemini file references
-    case 'claude':
-    case 'codex':
-    default:
-      return '@relay:'; // Original, works fine
-  }
+  // Unified prefix for all agent types
+  return '>>relay:';
 }
 
 export class TmuxWrapper {
@@ -665,12 +659,12 @@ export class TmuxWrapper {
     this.logStderr(`Injecting message from ${msg.from} (cli: ${this.cliType})`);
 
     try {
-      let sanitizedBody = msg.body.replace(/[\r\n]+/g, ' ').trim();
+      const sanitizedBody = msg.body.replace(/[\r\n]+/g, ' ').trim();
       // Short message ID for display (first 8 chars)
       const shortId = msg.messageId.substring(0, 8);
 
       // Remove message truncation to allow full messages to pass through
-      let wasTruncated = false;
+      const wasTruncated = false;
 
       // Always include message ID; add lookup hint if truncated
       const idTag = `[${shortId}]`;

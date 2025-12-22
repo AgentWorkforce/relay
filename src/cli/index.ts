@@ -11,7 +11,7 @@
 
 import { Command } from 'commander';
 import { config as dotenvConfig } from 'dotenv';
-import { Daemon, DEFAULT_SOCKET_PATH } from '../daemon/server.js';
+import { Daemon } from '../daemon/server.js';
 import { RelayClient } from '../wrapper/client.js';
 import { generateAgentName } from '../utils/name-generator.js';
 import fs from 'node:fs';
@@ -47,7 +47,7 @@ program
 program
   .option('-n, --name <name>', 'Agent name (auto-generated if not set)')
   .option('-q, --quiet', 'Disable debug output', false)
-  .option('--prefix <pattern>', 'Relay prefix pattern (default: @relay: or >> for Gemini)')
+  .option('--prefix <pattern>', 'Relay prefix pattern (default: >>relay:)')
   .argument('[command...]', 'Command to wrap (e.g., claude)')
   .action(async (commandParts, options) => {
     // If no command provided, show help

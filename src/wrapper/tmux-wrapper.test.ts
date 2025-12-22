@@ -6,25 +6,22 @@ import { describe, it, expect } from 'vitest';
 import { getDefaultPrefix } from './tmux-wrapper.js';
 
 describe('TmuxWrapper constants', () => {
-  // Test that importing the module works and constants are defined
-  // Note: The constants are module-private, so we test their usage indirectly
-  // through the behaviors they control
-
+  // Unified prefix across all CLI types
   describe('getDefaultPrefix', () => {
-    it('returns >> for gemini CLI type', () => {
-      expect(getDefaultPrefix('gemini')).toBe('>>');
+    it('returns >>relay: for gemini CLI type', () => {
+      expect(getDefaultPrefix('gemini')).toBe('>>relay:');
     });
 
-    it('returns @relay: for claude CLI type', () => {
-      expect(getDefaultPrefix('claude')).toBe('@relay:');
+    it('returns >>relay: for claude CLI type', () => {
+      expect(getDefaultPrefix('claude')).toBe('>>relay:');
     });
 
-    it('returns @relay: for codex CLI type', () => {
-      expect(getDefaultPrefix('codex')).toBe('@relay:');
+    it('returns >>relay: for codex CLI type', () => {
+      expect(getDefaultPrefix('codex')).toBe('>>relay:');
     });
 
-    it('returns @relay: for other CLI type', () => {
-      expect(getDefaultPrefix('other')).toBe('@relay:');
+    it('returns >>relay: for other CLI type', () => {
+      expect(getDefaultPrefix('other')).toBe('>>relay:');
     });
   });
 });
