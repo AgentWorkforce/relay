@@ -46,6 +46,11 @@ const DEFAULT_OPTIONS: Required<ParserOptions> = {
 // Static patterns (not prefix-dependent)
 const BLOCK_END = /\[\[\/RELAY\]\]/;
 const CODE_FENCE = /^```/;
+// Continuation helpers
+const BULLET_OR_NUMBERED_LIST = /^[ \t]*([\-*•◦‣⏺◆◇○□■]|[0-9]+[.)])\s+/;
+const PROMPTISH_LINE = /^[\s]*[>$%#➜›»][\s]*$/;
+const RELAY_INJECTION_PREFIX = /^\s*Relay message from /;
+const MAX_INLINE_CONTINUATION_LINES = 30;
 
 /**
  * Escape special regex characters in a string
@@ -56,7 +61,7 @@ function escapeRegex(str: string): string {
 
 /**
  * Build inline pattern for a given prefix
- * Allow common input prefixes: >, $, %, #, →, ➜, bullets (●•◦‣⁃-*⏺◆◇○□■), and their variations
+ * Allow common input prefixes: >, $, %, #, →, ➜, bullets (●•◦‣⁃-*⏺◆◇○□■), box chars (│┃┆┇┊┋╎╏), and their variations
  *
  * Supports optional thread syntax: ->relay:Target [thread:id] message
  * Thread IDs can contain alphanumeric chars, hyphens, underscores
@@ -64,7 +69,8 @@ function escapeRegex(str: string): string {
 function buildInlinePattern(prefix: string): RegExp {
   const escaped = escapeRegex(prefix);
   // Group 1: target, Group 2: optional thread ID (without brackets), Group 3: message body
-  return new RegExp(`^(?:\\s*(?:[>$%#→➜›»●•◦‣⁃\\-*⏺◆◇○□■]\\s*)*)?${escaped}(\\S+)(?:\\s+\\[thread:([\\w-]+)\\])?\\s+(.+)$`);
+  // Includes box drawing characters (│┃┆┇┊┋╎╏) and sparkle (✦) for Gemini CLI output
+  return new RegExp(`^(?:\\s*(?:[>$%#→➜›»●•◦‣⁃\\-*⏺◆◇○□■│┃┆┇┊┋╎╏✦]\\s*)*)?${escaped}(\\S+)(?:\\s+\\[thread:([\\w-]+)\\])?\\s+(.+)$`);
 }
 
 /**
@@ -257,6 +263,41 @@ export class OutputParser {
     const lines = data.split('\n');
     const hasTrailingNewline = data.endsWith('\n');
 
+    const isInlineStart = (line: string): boolean => {
+      return this.inlineRelayPattern.test(line) || this.inlineThinkingPattern.test(line);
+    };
+
+    const isBlockMarker = (line: string): boolean => {
+      return CODE_FENCE.test(line) || line.includes('[[RELAY]]') || BLOCK_END.test(line);
+    };
+
+    const shouldStopContinuation = (line: string): boolean => {
+      const trimmed = line.trim();
+      if (trimmed === '') return true; // Blank line ends the message
+      if (isInlineStart(line)) return true;
+      if (isBlockMarker(line)) return true;
+      if (PROMPTISH_LINE.test(trimmed)) return true;
+      if (RELAY_INJECTION_PREFIX.test(line)) return true; // Avoid swallowing injected inbound messages
+      return false;
+    };
+
+    const isContinuationLine = (
+      original: string,
+      stripped: string,
+      prevStripped: string,
+      continuationCount: number
+    ): boolean => {
+      if (shouldStopContinuation(stripped)) return false;
+      if (/^[ \t]/.test(original)) return true; // Indented lines from TUI wrapping
+      if (BULLET_OR_NUMBERED_LIST.test(stripped)) return true; // Bullet/numbered lists after ->relay:
+      const prevTrimmed = prevStripped.trimEnd();
+      const prevSuggestsContinuation = prevTrimmed !== '' && /[:;,\-–—…]$/.test(prevTrimmed);
+      if (prevSuggestsContinuation) return true;
+      // If we've already continued once, allow subsequent lines until a stop condition
+      if (continuationCount > 0) return true;
+      return false;
+    };
+
     const outputLines: string[] = [];
     let strippedCount = 0;
 
@@ -284,6 +325,7 @@ export class OutputParser {
           let body = result.command.body;
           const rawLines = [result.command.raw];
           let consumed = 0;
+          let continuationLines = 0;
 
           while (i + 1 < lines.length) {
             const nextIsLast = i + 1 === lines.length - 1;
@@ -295,32 +337,25 @@ export class OutputParser {
             }
 
             const nextStripped = stripAnsi(nextLine);
+            const prevStripped = stripAnsi(rawLines[rawLines.length - 1] ?? '');
 
-            // Stop at empty lines - they end the continuation
-            if (nextStripped.trim() === '') {
+            // Stop if this line clearly marks a new block, prompt, or inline command
+            if (shouldStopContinuation(nextStripped)) {
               break;
             }
 
-            // Stop if the next line starts another inline command, code fence, or block marker
-            if (
-              this.inlineRelayPattern.test(nextStripped) ||
-              this.inlineThinkingPattern.test(nextStripped) ||
-              CODE_FENCE.test(nextStripped) ||
-              nextStripped.includes('[[RELAY]]') ||
-              BLOCK_END.test(nextStripped)
-            ) {
+            if (continuationLines >= MAX_INLINE_CONTINUATION_LINES) {
               break;
             }
 
-            // Only consume as continuation if the line is INDENTED (starts with whitespace)
-            // This handles TUI wrapping where continuation lines are indented
-            // Non-indented lines are regular output, not continuation
-            if (!/^[ \t]/.test(nextLine)) {
+            // Consume as continuation if it looks like it belongs to the ->relay message
+            if (!isContinuationLine(nextLine, nextStripped, prevStripped, continuationLines)) {
               break;
             }
 
             consumed++;
             i++; // Skip the consumed continuation line
+            continuationLines++;
             body += '\n' + nextLine;
             rawLines.push(nextLine);
           }

@@ -1,5 +1,7 @@
 import type { PayloadKind } from '../protocol/types.js';
 
+export type MessageStatus = 'unread' | 'read' | 'acked';
+
 export interface StoredMessage {
   id: string;
   ts: number;
@@ -14,6 +16,10 @@ export interface StoredMessage {
   deliverySeq?: number;
   deliverySessionId?: string;
   sessionId?: string;
+  /** Per-recipient message status */
+  status: MessageStatus;
+  /** Whether the message is marked as urgent */
+  is_urgent: boolean;
 }
 
 export interface MessageQuery {
@@ -25,6 +31,10 @@ export interface MessageQuery {
   /** Filter by thread ID */
   thread?: string;
   order?: 'asc' | 'desc';
+  /** Only include unread messages */
+  unreadOnly?: boolean;
+  /** Only include urgent messages */
+  urgentOnly?: boolean;
 }
 
 export interface StorageAdapter {

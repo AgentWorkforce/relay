@@ -239,6 +239,8 @@ export class Router {
       deliverySeq: envelope.delivery.seq,
       deliverySessionId: envelope.delivery.session_id,
       sessionId: envelope.delivery.session_id,
+      status: 'unread',
+      is_urgent: false,
     }).catch((err) => {
       console.error('[router] Failed to persist message', err);
     });

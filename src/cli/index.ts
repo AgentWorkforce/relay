@@ -72,7 +72,7 @@ program
       command: mainCommand,
       args: commandArgs,
       socketPath: paths.socketPath,
-      debug: !options.quiet,
+      debug: false,  // Use -q to keep quiet (debug off by default)
       relayPrefix: options.prefix,
     });
 

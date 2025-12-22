@@ -42,6 +42,14 @@ describe('OutputParser', () => {
       expect(result.commands[0].body).toBe('Indented message');
     });
 
+    it('handles Gemini sparkle prefix (✦)', () => {
+      const result = parser.parse('✦ ->relay:Lead STATUS: Gem is ready\n');
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].to).toBe('Lead');
+      expect(result.commands[0].body).toBe('STATUS: Gem is ready');
+    });
+
     it('does not match ->relay: in middle of line', () => {
       const result = parser.parse('This is text ->relay:agent2 should not match\n');
 
@@ -88,13 +96,31 @@ describe('OutputParser', () => {
       expect(result.output).toBe('');
     });
 
-    it('does not treat non-indented lines as continuation', () => {
-      // Non-indented lines after ->relay should be regular output
-      const result = parser.parse('->relay:agent2 Message\nRegular output\n');
+    it('captures bullet list continuation lines', () => {
+      const input = '->relay:agent2 Updates for mcl/2z1:\n- Task A\n- Task B\n\nAfter\n';
+      const result = parser.parse(input);
 
       expect(result.commands).toHaveLength(1);
-      expect(result.commands[0].body).toBe('Message');
-      expect(result.output).toBe('Regular output\n');
+      expect(result.commands[0].body).toBe('Updates for mcl/2z1:\n- Task A\n- Task B');
+      expect(result.output).toBe('\nAfter\n');
+    });
+
+    it('captures non-indented paragraph continuation until blank line', () => {
+      const input = '->relay:lead Signing off. Progress report:\nSummary line one.\nSummary line two.\n\nNext output\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].body).toBe('Signing off. Progress report:\nSummary line one.\nSummary line two.');
+      expect(result.output).toBe('\nNext output\n');
+    });
+
+    it('stops continuation at prompt-ish line', () => {
+      const input = '->relay:agent2 Message body\n> \nFollow-up\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].body).toBe('Message body');
+      expect(result.output).toBe('> \nFollow-up\n');
     });
 
     it('does not require spaces in target name', () => {

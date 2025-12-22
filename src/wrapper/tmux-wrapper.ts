@@ -108,7 +108,7 @@ export class TmuxWrapper {
       pollInterval: 200, // Slightly slower polling since we're not displaying
       idleBeforeInjectMs: 1500,
       injectRetryMs: 500,
-      debug: true,
+      debug: false,
       debugLogIntervalMs: 0,
       mouseMode: true, // Enable mouse scroll passthrough by default
       activityIdleThresholdMs: 30_000, // Consider idle after 30s with no output
@@ -168,7 +168,7 @@ export class TmuxWrapper {
    * Log to stderr (safe - doesn't interfere with tmux display)
    */
   private logStderr(msg: string, force = false): void {
-    if (!force && this.config.debug === false) return;
+    if (!force && !this.config.debug) return;
 
     const now = Date.now();
     if (!force && this.config.debugLogIntervalMs && this.config.debugLogIntervalMs > 0) {
@@ -576,19 +576,6 @@ export class TmuxWrapper {
   }
 
   /**
-   * Escape string for ANSI-C quoting ($'...')
-   * This handles special characters more reliably than mixing quote styles
-   */
-  private escapeForAnsiC(str: string): string {
-    return str
-      .replace(/\\/g, '\\\\')     // Backslash
-      .replace(/'/g, "\\'")       // Single quote
-      .replace(/\n/g, '\\n')      // Newline
-      .replace(/\r/g, '\\r')      // Carriage return
-      .replace(/\t/g, '\\t');     // Tab
-  }
-
-  /**
    * Send relay command to daemon
    */
   private sendRelayCommand(cmd: ParsedCommand): void {
@@ -685,35 +672,17 @@ export class TmuxWrapper {
         await this.sleep(30);
       }
 
-      // Gemini CLI interprets input as shell commands, so we need special handling
-      if (this.cliType === 'gemini') {
-        // For Gemini: Use printf with %s to safely handle any characters
-        // printf '%s\n' 'message' - the %s treats the argument as literal string
-        // We use $'...' ANSI-C quoting which handles escapes more predictably
-        const safeBody = this.escapeForAnsiC(sanitizedBody);
-        const safeFrom = this.escapeForAnsiC(msg.from);
-        const safeHint = this.escapeForAnsiC(truncationHint);
-        const printfMsg = `printf '%s\\n' $'Relay message from ${safeFrom} ${idTag}: ${safeBody}${safeHint}'`;
+      // Standard injection for all CLIs including Gemini
+      // Format: Relay message from Sender [abc12345]: content
+      const injection = `Relay message from ${msg.from} ${idTag}: ${sanitizedBody}${truncationHint}`;
 
-        // Send printf command to display the message
-        await this.sendKeysLiteral(printfMsg);
-        await this.sleep(50);
-        await this.sendKeys('Enter');
+      // Type the message as literal text
+      await this.sendKeysLiteral(injection);
+      await this.sleep(50);
 
-        this.logStderr(`Injection complete (gemini printf mode)`);
-      } else {
-        // Standard injection for Claude, Codex, etc.
-        // Format: Relay message from Sender [abc12345]: content
-        const injection = `Relay message from ${msg.from} ${idTag}: ${sanitizedBody}${truncationHint}`;
-
-        // Type the message
-        await this.sendKeysLiteral(injection);
-        await this.sleep(50);
-
-        // Submit
-        await this.sendKeys('Enter');
-        this.logStderr(`Injection complete`);
-      }
+      // Submit
+      await this.sendKeys('Enter');
+      this.logStderr(`Injection complete`);
 
     } catch (err: any) {
       this.logStderr(`Injection failed: ${err.message}`, true);
