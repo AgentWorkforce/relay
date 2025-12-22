@@ -47,6 +47,7 @@ describe('CLI', () => {
       expect(stdout).toContain('down');
       expect(stdout).toContain('status');
       expect(stdout).toContain('agents');
+      expect(stdout).toContain('who');
       // gc is hidden (agent-only command)
     });
 
@@ -83,11 +84,24 @@ describe('CLI', () => {
     it('should handle no agents file gracefully', async () => {
       const { stdout } = await runCli('agents');
       expect(stdout).toMatch(/(No agents|NAME)/i);
+      expect(stdout).toMatch(/STATUS/i);
     });
 
     it('should support --json flag', async () => {
       const { stdout } = await runCli('agents --json');
       // Should be valid JSON (empty array or agent list)
+      expect(() => JSON.parse(stdout)).not.toThrow();
+    });
+  });
+
+  describe('who', () => {
+    it('should handle no active agents gracefully', async () => {
+      const { stdout } = await runCli('who');
+      expect(stdout).toMatch(/(No active agents|NAME)/i);
+    });
+
+    it('should support --json flag', async () => {
+      const { stdout } = await runCli('who --json');
       expect(() => JSON.parse(stdout)).not.toThrow();
     });
   });

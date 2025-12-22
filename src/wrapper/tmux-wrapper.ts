@@ -298,6 +298,7 @@ export class TmuxWrapper {
         // Pass through mouse scroll to application in alternate screen mode
         'set -ga terminal-overrides ",xterm*:Tc"',
         'set -g status-left-length 100',      // Provide ample space for agent name in status bar
+        'set -g mode-keys vi',                // Predictable key table (avoid copy-mode surprises)
       ];
 
       // Add mouse mode if enabled (allows scroll passthrough to CLI apps)
@@ -311,6 +312,26 @@ export class TmuxWrapper {
           execSync(`tmux ${setting}`, { stdio: 'pipe' });
         } catch {
           // Some settings may not be available in older tmux versions
+        }
+      }
+
+      // Harden session against accidental copy-mode / mouse capture that interrupts agents
+      const tmuxCopyModeBlockers = [
+        'unbind -T prefix [',                 // Disable prefix-[ copy-mode
+        'unbind -T prefix PageUp',            // Disable PageUp copy-mode entry
+        'unbind -T root WheelUpPane',         // Stop wheel from entering copy-mode
+        'unbind -T root WheelDownPane',
+        'unbind -T root MouseDrag1Pane',
+        'bind -T root WheelUpPane send-keys -M',   // Pass wheel events through to app
+        'bind -T root WheelDownPane send-keys -M',
+        'bind -T root MouseDrag1Pane send-keys -M',
+      ];
+
+      for (const setting of tmuxCopyModeBlockers) {
+        try {
+          execSync(`tmux ${setting}`, { stdio: 'pipe' });
+        } catch {
+          // Ignore on older tmux versions lacking these key tables
         }
       }
 

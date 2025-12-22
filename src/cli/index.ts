@@ -8,6 +8,7 @@
  *   relay up            - Start daemon + dashboard
  *   relay read <id>     - Read full message by ID
  *   relay agents        - List connected agents
+ *   relay who           - Show currently active agents
  */
 
 import { Command } from 'commander';
@@ -216,7 +217,7 @@ program
       : allAgents.filter(a => a.name && !a.name.startsWith('__') && a.name !== 'cli');
 
     if (options.json) {
-      console.log(JSON.stringify(agents, null, 2));
+      console.log(JSON.stringify(agents.map(a => ({ ...a, status: getAgentStatus(a) })), null, 2));
       return;
     }
 
@@ -226,15 +227,54 @@ program
       return;
     }
 
-    console.log('NAME            CLI       SENT   RECV   LAST SEEN');
-    console.log('-------------------------------------------------');
+    console.log('NAME            STATUS   CLI       LAST SEEN');
+    console.log('---------------------------------------------');
     agents.forEach((agent) => {
       const name = (agent.name ?? 'unknown').padEnd(15);
+      const status = getAgentStatus(agent).padEnd(8);
       const cli = (agent.cli ?? '-').padEnd(8);
-      const sent = String(agent.messagesSent ?? 0).padStart(5);
-      const recv = String(agent.messagesReceived ?? 0).padStart(6);
       const lastSeen = formatRelativeTime(agent.lastSeen);
-      console.log(`${name} ${cli} ${sent} ${recv} ${lastSeen}`);
+      console.log(`${name} ${status} ${cli} ${lastSeen}`);
+    });
+  });
+
+// who - Show currently active agents (online within last 30s)
+program
+  .command('who')
+  .description('Show currently active agents (last seen within 30 seconds)')
+  .option('--all', 'Include internal/CLI agents')
+  .option('--json', 'Output as JSON')
+  .action(async (options) => {
+    const { getProjectPaths } = await import('../utils/project-namespace.js');
+    const paths = getProjectPaths();
+    const agentsPath = path.join(paths.teamDir, 'agents.json');
+
+    const allAgents = loadAgents(agentsPath);
+    const visibleAgents = options.all
+      ? allAgents
+      : allAgents.filter(a => a.name && !a.name.startsWith('__') && a.name !== 'cli');
+
+    const onlineAgents = visibleAgents.filter(isAgentOnline);
+
+    if (options.json) {
+      console.log(JSON.stringify(onlineAgents.map(a => ({ ...a, status: getAgentStatus(a) })), null, 2));
+      return;
+    }
+
+    if (!onlineAgents.length) {
+      const hint = options.all ? '' : ' (use --all to include internal/cli agents)';
+      console.log(`No active agents found${hint}.`);
+      return;
+    }
+
+    console.log('NAME            STATUS   CLI       LAST SEEN');
+    console.log('---------------------------------------------');
+    onlineAgents.forEach((agent) => {
+      const name = (agent.name ?? 'unknown').padEnd(15);
+      const status = getAgentStatus(agent).padEnd(8);
+      const cli = (agent.cli ?? '-').padEnd(8);
+      const lastSeen = formatRelativeTime(agent.lastSeen);
+      console.log(`${name} ${status} ${cli} ${lastSeen}`);
     });
   });
 
@@ -506,6 +546,19 @@ function loadAgents(agentsPath: string): RegistryAgent[] {
     console.error('Failed to read agents.json:', (err as Error).message);
     return [];
   }
+}
+
+const STALE_THRESHOLD_MS = 30_000;
+
+function getAgentStatus(agent: RegistryAgent): 'ONLINE' | 'STALE' | 'UNKNOWN' {
+  if (!agent.lastSeen) return 'UNKNOWN';
+  const ts = Date.parse(agent.lastSeen);
+  if (Number.isNaN(ts)) return 'UNKNOWN';
+  return Date.now() - ts < STALE_THRESHOLD_MS ? 'ONLINE' : 'STALE';
+}
+
+function isAgentOnline(agent: RegistryAgent): boolean {
+  return getAgentStatus(agent) === 'ONLINE';
 }
 
 function formatRelativeTime(iso?: string): string {

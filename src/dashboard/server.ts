@@ -18,6 +18,7 @@ interface AgentStatus {
   messageCount: number;
   status?: string;
   lastActive?: string;
+  lastSeen?: string;
 }
 
 interface Message {
@@ -170,10 +171,12 @@ export async function startDashboard(port: number, dataDir: string, teamDir: str
         const data = JSON.parse(fs.readFileSync(agentsPath, 'utf-8'));
         // Convert agents.json format to team.json format
         return {
-          agents: data.agents.map((a: { name: string; connectedAt?: string; cli?: string }) => ({
+          agents: data.agents.map((a: { name: string; connectedAt?: string; cli?: string; lastSeen?: string }) => ({
             name: a.name,
             role: 'Agent',
             cli: a.cli ?? 'Unknown',
+            lastSeen: a.lastSeen ?? a.connectedAt,
+            lastActive: a.lastSeen ?? a.connectedAt,
           })),
         };
       } catch (e) {
@@ -313,7 +316,9 @@ export async function startDashboard(port: number, dataDir: string, teamDir: str
         role: a.role,
         cli: a.cli ?? 'Unknown',
         messageCount: 0,
-        status: 'Idle'
+        status: 'Idle',
+        lastSeen: a.lastSeen,
+        lastActive: a.lastActive,
       });
     });
 
@@ -338,6 +343,7 @@ export async function startDashboard(port: number, dataDir: string, teamDir: str
       const agent = agentsMap.get(m.from);
       if (agent) {
         agent.lastActive = m.timestamp;
+        agent.lastSeen = m.timestamp;
         if (m.content.startsWith('STATUS:')) {
           agent.status = m.content.substring(7).trim(); // remove "STATUS:"
         }

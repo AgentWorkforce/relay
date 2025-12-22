@@ -2,6 +2,9 @@
 <html>
 <head>
   <title>Agent Relay</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
         --bg-primary: #09090b;
@@ -26,11 +29,25 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+      font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
       background: var(--bg-primary);
+      background-image:
+        linear-gradient(rgba(59, 130, 246, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(59, 130, 246, 0.03) 1px, transparent 1px);
+      background-size: 20px 20px;
       color: var(--text);
       min-height: 100vh;
       overflow-x: hidden;
+    }
+
+    @keyframes pulse-glow {
+      0%, 100% { box-shadow: 0 0 4px currentColor, 0 0 8px currentColor; }
+      50% { box-shadow: 0 0 8px currentColor, 0 0 16px currentColor; }
+    }
+
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateY(-8px); }
+      to { opacity: 1; transform: translateY(0); }
     }
 
     .container {
@@ -63,6 +80,7 @@
       align-items: center;
       padding: 16px 20px;
       border-bottom: 1px solid var(--border-color);
+      box-shadow: 0 1px 0 rgba(59, 130, 246, 0.2);
     }
 
     .logo {
@@ -115,8 +133,20 @@
       padding: 12px;
       border-radius: 8px;
       margin-bottom: 4px;
-      transition: background 0.15s;
+      transition: background 0.15s, border-color 0.3s, opacity 0.3s;
       cursor: default;
+      border-left: 3px solid var(--success);
+    }
+
+    .agent-card.disconnected {
+      border-left-color: var(--error);
+      opacity: 0.6;
+    }
+
+    .agent-card.disconnected .status-dot {
+      background: var(--error);
+      color: var(--error);
+      animation: none;
     }
 
     .agent-card:hover {
@@ -174,6 +204,8 @@
       height: 6px;
       border-radius: 50%;
       background: var(--success);
+      color: var(--success);
+      animation: pulse-glow 2s ease-in-out infinite;
     }
 
     .badge {
@@ -214,6 +246,8 @@
       height: 6px;
       border-radius: 50%;
       background: var(--success);
+      color: var(--success);
+      animation: pulse-glow 2s ease-in-out infinite;
     }
 
     .log-content {
@@ -229,6 +263,22 @@
       display: flex;
       gap: 12px;
       transition: background 0.15s;
+      animation: slideIn 0.2s ease-out;
+      border-left: 3px solid transparent;
+    }
+
+    .message.broadcast {
+      border-left-color: var(--warning);
+      background: var(--warning-muted);
+    }
+
+    .message.broadcast .msg-target {
+      color: var(--warning);
+      font-weight: 600;
+    }
+
+    .message.direct {
+      border-left-color: var(--primary);
     }
 
     .message:hover {
@@ -352,6 +402,36 @@
 
     .disconnected .dot {
       background: var(--error) !important;
+    }
+
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    #connection-status.reconnecting,
+    #connection-status.connecting {
+      background: var(--warning-muted);
+      color: var(--warning);
+    }
+
+    #connection-status.reconnecting .dot,
+    #connection-status.connecting .dot {
+      background: transparent;
+      border: 2px solid var(--warning);
+      border-top-color: transparent;
+      animation: spin 0.8s linear infinite;
+    }
+
+    #connection-status .dot {
+      color: inherit;
+      animation: pulse-glow 2s ease-in-out infinite;
+    }
+
+    #connection-status .uptime {
+      font-size: 0.65rem;
+      opacity: 0.7;
+      margin-left: 4px;
     }
 
     .empty-state {
@@ -708,23 +788,73 @@
     const threadFilter = document.getElementById('thread-filter');
 
     // Track last data hash to prevent unnecessary re-renders
+    const STALE_THRESHOLD_MS = 30_000;
     let lastDataHash = '';
     let currentAgents = [];
-    let currentThreads = [];
     let allMessages = [];
+    let connectionStart = null;
+    let uptimeInterval = null;
+    let isReconnect = false;
+
+    function isAgentOnline(lastSeen) {
+        if (!lastSeen) return false;
+        const ts = Date.parse(lastSeen);
+        if (Number.isNaN(ts)) return false;
+        return (Date.now() - ts) < STALE_THRESHOLD_MS;
+    }
+
+    function formatUptime(ms) {
+        const seconds = Math.floor(ms / 1000);
+        if (seconds < 60) return `${seconds}s`;
+        const minutes = Math.floor(seconds / 60);
+        if (minutes < 60) return `${minutes}m`;
+        const hours = Math.floor(minutes / 60);
+        return `${hours}h ${minutes % 60}m`;
+    }
+
+    function updateConnectionStatus(state, uptime = null) {
+        statusDiv.className = '';
+        if (state === 'connecting' || state === 'reconnecting') {
+            statusDiv.classList.add(state);
+            const label = state === 'reconnecting' ? 'Reconnecting...' : 'Connecting...';
+            statusDiv.innerHTML = `<span class="dot"></span><span>${label}</span>`;
+        } else if (state === 'connected') {
+            const uptimeStr = uptime ? `<span class="uptime">${formatUptime(uptime)}</span>` : '';
+            statusDiv.innerHTML = `<span class="dot"></span><span>Live</span>${uptimeStr}`;
+        } else {
+            statusDiv.classList.add('disconnected');
+            statusDiv.innerHTML = '<span class="dot"></span><span>Offline</span>';
+        }
+    }
 
     function connect() {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+
+        updateConnectionStatus(isReconnect ? 'reconnecting' : 'connecting');
+
         const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
 
         ws.onopen = () => {
-            statusDiv.innerHTML = '<span class="dot"></span><span>Live</span>';
-            statusDiv.classList.remove('disconnected');
+            connectionStart = Date.now();
+            updateConnectionStatus('connected');
+
+            // Start uptime counter
+            if (uptimeInterval) clearInterval(uptimeInterval);
+            uptimeInterval = setInterval(() => {
+                if (connectionStart) {
+                    updateConnectionStatus('connected', Date.now() - connectionStart);
+                }
+            }, 1000);
         };
 
         ws.onclose = () => {
-            statusDiv.innerHTML = '<span class="dot"></span><span>Offline</span>';
-            statusDiv.classList.add('disconnected');
+            if (uptimeInterval) {
+                clearInterval(uptimeInterval);
+                uptimeInterval = null;
+            }
+            connectionStart = null;
+            updateConnectionStatus('disconnected');
+            isReconnect = true;
             setTimeout(connect, 3000);
         };
 
@@ -742,8 +872,12 @@
     function render(data) {
         // Render Agents
         if (data.agents && data.agents.length > 0) {
-            const newAgentsHTML = data.agents.map((a, i) => `
-                <div class="agent-card ${a.messageCount > 0 ? 'active' : ''}">
+            const newAgentsHTML = data.agents.map((a, i) => {
+                const lastSeen = a.lastSeen ?? a.lastActive;
+                const online = isAgentOnline(lastSeen);
+                const disconnectedClass = online ? '' : 'disconnected';
+                return `
+                <div class="agent-card ${a.messageCount > 0 ? 'active' : ''} ${disconnectedClass}">
                     <div class="agent-header">
                         <div class="agent-name">${a.name}</div>
                         ${a.messageCount > 0 ? `<span class="badge">${a.messageCount}</span>` : ''}
@@ -759,7 +893,8 @@
                         ${a.lastActive ? timeAgo(new Date(a.lastActive)) : 'No activity'}
                     </div>
                 </div>
-            `).join('');
+                `;
+            }).join('');
 
             if (agentsContainer.innerHTML !== newAgentsHTML) {
                 agentsContainer.innerHTML = newAgentsHTML;
@@ -788,12 +923,8 @@
         if (data.messages && data.messages.length > 0) {
             allMessages = data.messages;
 
-            // Update thread filter dropdown
-            const threads = [...new Set(data.messages.filter(m => m.thread).map(m => m.thread))].sort();
-            if (JSON.stringify(threads) !== JSON.stringify(currentThreads)) {
-                currentThreads = threads;
-                updateThreadDropdown(threads);
-            }
+            // Update conversation filter dropdown
+            updateConversationDropdown();
 
             renderMessages();
         } else if (!logContainer.querySelector('.empty-state')) {
@@ -807,9 +938,9 @@
     }
 
     function renderMessages() {
-        const selectedThread = threadFilter.value;
-        const filtered = selectedThread
-            ? allMessages.filter(m => m.thread === selectedThread)
+        const selectedFilter = threadFilter.value;
+        const filtered = selectedFilter
+            ? allMessages.filter(m => getConversationKey(m) === selectedFilter)
             : allMessages;
 
         if (filtered.length > 0) {
@@ -817,23 +948,54 @@
         } else {
             logContainer.innerHTML = `
                 <div class="empty-state">
-                    <div class="empty-state-text">No messages${selectedThread ? ' in this thread' : ''}</div>
+                    <div class="empty-state-text">No messages${selectedFilter ? ' in this conversation' : ''}</div>
                 </div>
             `;
         }
     }
 
-    function updateThreadDropdown(threads) {
+    function getConversationKey(m) {
+        // For broadcasts, group under "Broadcasts"
+        if (m.to === '*') return 'broadcast:*';
+        // For direct messages, create a sorted pair key
+        const pair = [m.from, m.to].sort();
+        return `conv:${pair[0]}↔${pair[1]}`;
+    }
+
+    function updateConversationDropdown() {
         const currentValue = threadFilter.value;
+
+        // Build conversation map
+        const conversations = new Map();
+        allMessages.forEach(m => {
+            const key = getConversationKey(m);
+            if (!conversations.has(key)) {
+                conversations.set(key, { count: 0, label: '' });
+            }
+            conversations.get(key).count++;
+        });
+
+        // Create labels
+        conversations.forEach((data, key) => {
+            if (key === 'broadcast:*') {
+                data.label = '📢 Broadcasts';
+            } else {
+                data.label = key.replace('conv:', '');
+            }
+        });
+
+        // Sort by count descending
+        const sorted = [...conversations.entries()].sort((a, b) => b[1].count - a[1].count);
+
         threadFilter.innerHTML = `
-            <option value="">All threads (${allMessages.length})</option>
-            ${threads.map(t => {
-                const count = allMessages.filter(m => m.thread === t).length;
-                return `<option value="${escapeHtml(t)}">#${escapeHtml(t)} (${count})</option>`;
-            }).join('')}
+            <option value="">All messages (${allMessages.length})</option>
+            ${sorted.map(([key, data]) =>
+                `<option value="${escapeHtml(key)}">${escapeHtml(data.label)} (${data.count})</option>`
+            ).join('')}
         `;
+
         // Restore selection if still valid
-        if (currentValue && threads.includes(currentValue)) {
+        if (currentValue && conversations.has(currentValue)) {
             threadFilter.value = currentValue;
         }
     }
@@ -841,14 +1003,17 @@
     function createMessageHTML(m) {
         const initials = m.from.substring(0, 2).toUpperCase();
         const threadBadge = m.thread ? `<span class="thread-badge" title="Thread: ${escapeHtml(m.thread)}">#${escapeHtml(m.thread)}</span>` : '';
+        const isBroadcast = m.to === '*';
+        const msgClass = isBroadcast ? 'broadcast' : 'direct';
+        const targetDisplay = isBroadcast ? '* (all)' : m.to;
         return `
-            <div class="message" ${m.thread ? `data-thread="${escapeHtml(m.thread)}"` : ''}>
+            <div class="message ${msgClass}" ${m.thread ? `data-thread="${escapeHtml(m.thread)}"` : ''} data-from="${escapeHtml(m.from)}" data-to="${escapeHtml(m.to)}">
                 <div class="msg-avatar">${initials}</div>
                 <div class="msg-body">
                     <div class="msg-meta">
                         <span class="msg-sender">${m.from}</span>
                         <span class="msg-arrow">→</span>
-                        <span class="msg-target">${m.to}</span>
+                        <span class="msg-target">${targetDisplay}</span>
                         ${threadBadge}
                         <span class="msg-time">${new Date(m.timestamp).toLocaleTimeString()}</span>
                     </div>
