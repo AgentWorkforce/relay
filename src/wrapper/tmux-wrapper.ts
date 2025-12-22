@@ -5,7 +5,7 @@
  * 1. Start agent in detached tmux session
  * 2. Attach user to tmux (they see real terminal)
  * 3. Background: poll capture-pane silently (no stdout writes)
- * 4. Background: parse @relay commands, send to daemon
+ * 4. Background: parse >>relay commands, send to daemon
  * 5. Background: inject messages via send-keys
  *
  * The key insight: user sees the REAL tmux session, not a proxy.
@@ -421,7 +421,7 @@ export class TmuxWrapper {
   }
 
   /**
-   * Start silent polling for @relay commands
+   * Start silent polling for >>relay commands
    * Does NOT write to stdout - just parses and sends to daemon
    */
   private startSilentPolling(): void {
@@ -433,7 +433,7 @@ export class TmuxWrapper {
   }
 
   /**
-   * Poll for @relay commands in output (silent)
+   * Poll for >>relay commands in output (silent)
    */
   private async pollForRelayCommands(): Promise<void> {
     if (!this.running) return;
@@ -441,11 +441,11 @@ export class TmuxWrapper {
     try {
       // Capture scrollback
       const { stdout } = await execAsync(
-        // -J joins wrapped lines to avoid truncating @relay commands mid-line
+        // -J joins wrapped lines to avoid truncating >>relay commands mid-line
         `tmux capture-pane -t ${this.sessionName} -p -J -S - 2>/dev/null`
       );
 
-      // Always parse the FULL capture for @relay commands
+      // Always parse the FULL capture for >>relay commands
       // This handles terminal UIs that rewrite content in place
       const cleanContent = this.stripAnsi(stdout);
       // Join continuation lines that TUIs split across multiple lines
@@ -485,10 +485,10 @@ export class TmuxWrapper {
   }
 
   /**
-   * Join continuation lines after @relay commands.
+   * Join continuation lines after >>relay commands.
    * Claude Code and other TUIs insert real newlines in output, causing
-   * @relay messages to span multiple lines. This joins indented
-   * continuation lines back to the @relay line.
+   * >>relay messages to span multiple lines. This joins indented
+   * continuation lines back to the >>relay line.
    */
   private joinContinuationLines(content: string): string {
     const lines = content.split('\n');
@@ -508,7 +508,7 @@ export class TmuxWrapper {
     while (i < lines.length) {
       const line = lines[i];
 
-      // Check if this is a @relay line
+      // Check if this is a >>relay line
       if (relayPattern.test(line)) {
         let joined = line;
         let j = i + 1;

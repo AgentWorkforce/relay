@@ -12,22 +12,22 @@ describe('OutputParser', () => {
     parser = new OutputParser();
   });
 
-  describe('Inline format - @relay:target message', () => {
+  describe('Inline format - >>relay:target message', () => {
     it('parses basic inline relay command', () => {
-      const result = parser.parse('@relay:agent2 Hello there\n');
+      const result = parser.parse('>>relay:agent2 Hello there\n');
 
       expect(result.commands).toHaveLength(1);
       expect(result.commands[0]).toMatchObject({
         to: 'agent2',
         kind: 'message',
         body: 'Hello there',
-        raw: '@relay:agent2 Hello there',
+        raw: '>>relay:agent2 Hello there',
       });
       expect(result.output).toBe('');
     });
 
     it('extracts target and body correctly', () => {
-      const result = parser.parse('@relay:supervisor This is a longer message with multiple words\n');
+      const result = parser.parse('>>relay:supervisor This is a longer message with multiple words\n');
 
       expect(result.commands).toHaveLength(1);
       expect(result.commands[0].to).toBe('supervisor');
@@ -35,22 +35,22 @@ describe('OutputParser', () => {
     });
 
     it('only matches at start of line (after whitespace)', () => {
-      const result = parser.parse('  @relay:agent2 Indented message\n');
+      const result = parser.parse('  >>relay:agent2 Indented message\n');
 
       expect(result.commands).toHaveLength(1);
       expect(result.commands[0].to).toBe('agent2');
       expect(result.commands[0].body).toBe('Indented message');
     });
 
-    it('does not match @relay: in middle of line', () => {
-      const result = parser.parse('This is text @relay:agent2 should not match\n');
+    it('does not match >>relay: in middle of line', () => {
+      const result = parser.parse('This is text >>relay:agent2 should not match\n');
 
       expect(result.commands).toHaveLength(0);
-      expect(result.output).toBe('This is text @relay:agent2 should not match\n');
+      expect(result.output).toBe('This is text >>relay:agent2 should not match\n');
     });
 
-    it('handles @thinking: variant', () => {
-      const result = parser.parse('@thinking:agent2 Considering the options\n');
+    it('handles >>thinking: variant', () => {
+      const result = parser.parse('>>thinking:agent2 Considering the options\n');
 
       expect(result.commands).toHaveLength(1);
       expect(result.commands[0]).toMatchObject({
@@ -61,7 +61,7 @@ describe('OutputParser', () => {
     });
 
     it('parses multiple inline commands', () => {
-      const result = parser.parse('@relay:agent1 First message\n@relay:agent2 Second message\n');
+      const result = parser.parse('>>relay:agent1 First message\n>>relay:agent2 Second message\n');
 
       expect(result.commands).toHaveLength(2);
       expect(result.commands[0].to).toBe('agent1');
@@ -72,7 +72,7 @@ describe('OutputParser', () => {
 
     it('parses multi-line inline command with indented continuation', () => {
       // TUI wrapping indents continuation lines
-      const result = parser.parse('@relay:agent2 First line\n   Second line\n');
+      const result = parser.parse('>>relay:agent2 First line\n   Second line\n');
 
       expect(result.commands).toHaveLength(1);
       expect(result.commands[0].body).toBe('First line\n   Second line');
@@ -80,7 +80,7 @@ describe('OutputParser', () => {
     });
 
     it('does not swallow subsequent inline command after indented continuation', () => {
-      const result = parser.parse('@relay:agent1 First line\n   Second line\n@relay:agent2 Next\n');
+      const result = parser.parse('>>relay:agent1 First line\n   Second line\n>>relay:agent2 Next\n');
 
       expect(result.commands).toHaveLength(2);
       expect(result.commands[0].body).toBe('First line\n   Second line');
@@ -89,8 +89,8 @@ describe('OutputParser', () => {
     });
 
     it('does not treat non-indented lines as continuation', () => {
-      // Non-indented lines after @relay should be regular output
-      const result = parser.parse('@relay:agent2 Message\nRegular output\n');
+      // Non-indented lines after >>relay should be regular output
+      const result = parser.parse('>>relay:agent2 Message\nRegular output\n');
 
       expect(result.commands).toHaveLength(1);
       expect(result.commands[0].body).toBe('Message');
@@ -98,7 +98,7 @@ describe('OutputParser', () => {
     });
 
     it('does not require spaces in target name', () => {
-      const result = parser.parse('@relay:agent-with-dashes Message here\n');
+      const result = parser.parse('>>relay:agent-with-dashes Message here\n');
 
       expect(result.commands).toHaveLength(1);
       expect(result.commands[0].to).toBe('agent-with-dashes');
@@ -194,25 +194,25 @@ describe('OutputParser', () => {
   });
 
   describe('Code fence handling', () => {
-    it('ignores @relay: inside code fences', () => {
-      const input = '```\n@relay:agent2 This should be ignored\n```\n';
+    it('ignores >>relay: inside code fences', () => {
+      const input = '```\n>>relay:agent2 This should be ignored\n```\n';
       const result = parser.parse(input);
 
       expect(result.commands).toHaveLength(0);
-      expect(result.output).toBe('```\n@relay:agent2 This should be ignored\n```\n');
+      expect(result.output).toBe('```\n>>relay:agent2 This should be ignored\n```\n');
     });
 
     it('tracks code fence state correctly', () => {
-      const input = 'Before fence\n```\n@relay:agent2 Inside fence\n```\nAfter fence\n@relay:agent3 Outside fence\n';
+      const input = 'Before fence\n```\n>>relay:agent2 Inside fence\n```\nAfter fence\n>>relay:agent3 Outside fence\n';
       const result = parser.parse(input);
 
       expect(result.commands).toHaveLength(1);
       expect(result.commands[0].to).toBe('agent3');
-      expect(result.output).toContain('@relay:agent2 Inside fence');
+      expect(result.output).toContain('>>relay:agent2 Inside fence');
     });
 
     it('handles multiple code fences', () => {
-      const input = '```\n@relay:a1 First fence\n```\nBetween\n```\n@relay:a2 Second fence\n```\n@relay:a3 Outside\n';
+      const input = '```\n>>relay:a1 First fence\n```\nBetween\n```\n>>relay:a2 Second fence\n```\n>>relay:a3 Outside\n';
       const result = parser.parse(input);
 
       expect(result.commands).toHaveLength(1);
@@ -220,11 +220,11 @@ describe('OutputParser', () => {
     });
 
     it('handles code fence with language specifier', () => {
-      const input = '```javascript\n@relay:agent2 Code example\n```\n';
+      const input = '```javascript\n>>relay:agent2 Code example\n```\n';
       const result = parser.parse(input);
 
       expect(result.commands).toHaveLength(0);
-      expect(result.output).toContain('@relay:agent2 Code example');
+      expect(result.output).toContain('>>relay:agent2 Code example');
     });
 
     it('does not interfere with block format in code fence', () => {
@@ -237,32 +237,32 @@ describe('OutputParser', () => {
   });
 
   describe('Escaping', () => {
-    it('\\@relay: outputs as @relay: without triggering command', () => {
-      const result = parser.parse('\\@relay:agent2 This is escaped\n');
+    it('\\>>relay: outputs as >>relay: without triggering command', () => {
+      const result = parser.parse('\\>>relay:agent2 This is escaped\n');
 
       expect(result.commands).toHaveLength(0);
-      expect(result.output).toBe('@relay:agent2 This is escaped\n');
+      expect(result.output).toBe('>>relay:agent2 This is escaped\n');
     });
 
-    it('\\@thinking: outputs as @thinking: without triggering command', () => {
-      const result = parser.parse('\\@thinking:agent2 This is escaped\n');
+    it('\\>>thinking: outputs as >>thinking: without triggering command', () => {
+      const result = parser.parse('\\>>thinking:agent2 This is escaped\n');
 
       expect(result.commands).toHaveLength(0);
-      expect(result.output).toBe('@thinking:agent2 This is escaped\n');
+      expect(result.output).toBe('>>thinking:agent2 This is escaped\n');
     });
 
     it('escapes work with indentation', () => {
-      const result = parser.parse('  \\@relay:agent2 Indented escape\n');
+      const result = parser.parse('  \\>>relay:agent2 Indented escape\n');
 
       expect(result.commands).toHaveLength(0);
-      expect(result.output).toBe('  @relay:agent2 Indented escape\n');
+      expect(result.output).toBe('  >>relay:agent2 Indented escape\n');
     });
 
     it('only escapes at line start', () => {
-      const result = parser.parse('Text \\@relay:agent2 Not escaped\n');
+      const result = parser.parse('Text \\>>relay:agent2 Not escaped\n');
 
       expect(result.commands).toHaveLength(0);
-      expect(result.output).toBe('Text \\@relay:agent2 Not escaped\n');
+      expect(result.output).toBe('Text \\>>relay:agent2 Not escaped\n');
     });
   });
 
@@ -270,9 +270,9 @@ describe('OutputParser', () => {
     it('inline commands must be complete in single chunk (no cross-chunk buffering)', () => {
       // Inline relay commands split across chunks are NOT detected
       // This is intentional for minimal terminal interference
-      const result1 = parser.parse('@relay:agent2 Partial');
+      const result1 = parser.parse('>>relay:agent2 Partial');
       expect(result1.commands).toHaveLength(0);
-      expect(result1.output).toBe('@relay:agent2 Partial'); // Passed through
+      expect(result1.output).toBe('>>relay:agent2 Partial'); // Passed through
 
       const result2 = parser.parse(' line\n');
       expect(result2.commands).toHaveLength(0); // Not detected
@@ -290,18 +290,18 @@ describe('OutputParser', () => {
 
     it('flush() does not detect incomplete inline commands (no buffering)', () => {
       // Incomplete inline commands without newline are passed through, not buffered
-      const result1 = parser.parse('@relay:agent2 No newline');
-      expect(result1.output).toBe('@relay:agent2 No newline'); // Passed through
+      const result1 = parser.parse('>>relay:agent2 No newline');
+      expect(result1.output).toBe('>>relay:agent2 No newline'); // Passed through
 
       const result = parser.flush();
       expect(result.commands).toHaveLength(0); // Not detected
     });
 
     it('flush() clears all state', () => {
-      parser.parse('```\n@relay:agent2 In fence');
+      parser.parse('```\n>>relay:agent2 In fence');
       parser.flush();
 
-      const result = parser.parse('@relay:agent3 After flush\n');
+      const result = parser.parse('>>relay:agent3 After flush\n');
       expect(result.commands).toHaveLength(1);
       expect(result.commands[0].to).toBe('agent3');
     });
@@ -316,10 +316,10 @@ describe('OutputParser', () => {
     });
 
     it('reset() clears code fence state', () => {
-      parser.parse('```\n@relay:agent2 test');
+      parser.parse('```\n>>relay:agent2 test');
       parser.reset();
 
-      const result = parser.parse('@relay:agent3 After reset\n');
+      const result = parser.parse('>>relay:agent3 After reset\n');
       expect(result.commands).toHaveLength(1);
       expect(result.commands[0].to).toBe('agent3');
     });
@@ -355,7 +355,7 @@ describe('OutputParser', () => {
     });
 
     it('mixes relay commands with regular output', () => {
-      const input = 'Output 1\n@relay:agent2 Message\nOutput 2\n';
+      const input = 'Output 1\n>>relay:agent2 Message\nOutput 2\n';
       const result = parser.parse(input);
 
       expect(result.commands).toHaveLength(1);
@@ -370,7 +370,7 @@ describe('OutputParser', () => {
     });
 
     it('handles target with special characters', () => {
-      const result = parser.parse('@relay:agent_2-test.v1 Message\n');
+      const result = parser.parse('>>relay:agent_2-test.v1 Message\n');
 
       expect(result.commands).toHaveLength(1);
       expect(result.commands[0].to).toBe('agent_2-test.v1');
@@ -379,7 +379,7 @@ describe('OutputParser', () => {
     it('handles empty body in inline format', () => {
       // Note: The regex requires at least one character for the body (.+)
       // so this actually won't match as a command
-      const result = parser.parse('@relay:agent2 Test\n');
+      const result = parser.parse('>>relay:agent2 Test\n');
 
       expect(result.commands).toHaveLength(1);
       expect(result.commands[0].body).toBe('Test');
@@ -396,10 +396,10 @@ describe('OutputParser', () => {
   describe('Parser options', () => {
     it('disables inline format when enableInline is false', () => {
       const customParser = new OutputParser({ enableInline: false });
-      const result = customParser.parse('@relay:agent2 Message\n');
+      const result = customParser.parse('>>relay:agent2 Message\n');
 
       expect(result.commands).toHaveLength(0);
-      expect(result.output).toBe('@relay:agent2 Message\n');
+      expect(result.output).toBe('>>relay:agent2 Message\n');
     });
 
     it('disables block format when enableBlock is false', () => {
@@ -424,9 +424,9 @@ describe('OutputParser', () => {
 
   describe('Complex scenarios', () => {
     it('handles multiple commands in one parse call', () => {
-      const input = `@relay:agent1 First
+      const input = `>>relay:agent1 First
 Regular output
-@relay:agent2 Second
+>>relay:agent2 Second
 [[RELAY]]{"to":"agent3","type":"message","body":"Third"}[[/RELAY]]
 More output
 `;
@@ -442,9 +442,9 @@ More output
 
     it('handles incremental parsing with multiple parse calls', () => {
       parser.parse('Line 1\n');
-      parser.parse('@relay:agent1 Message 1\n');
+      parser.parse('>>relay:agent1 Message 1\n');
       parser.parse('Line 2\n');
-      const result = parser.parse('@relay:agent2 Message 2\n');
+      const result = parser.parse('>>relay:agent2 Message 2\n');
 
       // Only the last parse call returns commands from that call
       expect(result.commands).toHaveLength(1);
@@ -468,9 +468,9 @@ More output
 
     it('preserves order of commands and output', () => {
       const input = `Out1
-@relay:agent1 Msg1
+>>relay:agent1 Msg1
 Out2
-@relay:agent2 Msg2
+>>relay:agent2 Msg2
 Out3
 `;
       const result = parser.parse(input);
@@ -483,11 +483,11 @@ Out3
   });
 
   describe('Configurable prefix', () => {
-    it('uses default @relay: prefix', () => {
+    it('uses default >>relay: prefix', () => {
       const defaultParser = new OutputParser();
-      expect(defaultParser.prefix).toBe('@relay:');
+      expect(defaultParser.prefix).toBe('>>relay:');
 
-      const result = defaultParser.parse('@relay:agent2 Hello\n');
+      const result = defaultParser.parse('>>relay:agent2 Hello\n');
       expect(result.commands).toHaveLength(1);
       expect(result.commands[0].to).toBe('agent2');
     });
@@ -502,12 +502,12 @@ Out3
       expect(result.commands[0].body).toBe('Hello from Gemini');
     });
 
-    it('ignores @relay: when using >> prefix', () => {
-      const customParser = new OutputParser({ prefix: '>>' });
+    it('ignores >>relay: when using @msg: prefix', () => {
+      const customParser = new OutputParser({ prefix: '@msg:' });
 
-      const result = customParser.parse('@relay:agent2 Should not match\n');
+      const result = customParser.parse('>>relay:agent2 Should not match\n');
       expect(result.commands).toHaveLength(0);
-      expect(result.output).toBe('@relay:agent2 Should not match\n');
+      expect(result.output).toBe('>>relay:agent2 Should not match\n');
     });
 
     it('uses custom prefix /relay', () => {

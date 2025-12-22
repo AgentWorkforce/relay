@@ -17,7 +17,7 @@ How to integrate agent-relay, claude-mem, and agent-trajectories into a cohesive
 │  │  CLAUDE-MEM     │      │  AGENT-RELAY    │                  │
 │  │  (Observations) │      │  (Messaging)    │                  │
 │  │                 │      │                 │                  │
-│  │  • Tool calls   │      │  • @relay:Agent │                  │
+│  │  • Tool calls   │      │  • >>relay:Agent │                  │
 │  │  • Concepts     │      │  • Broadcasting │                  │
 │  │  • Sessions     │      │  • Persistence  │                  │
 │  └────────┬────────┘      └────────┬────────┘                  │
@@ -863,7 +863,7 @@ trajectory export ENG-456 --format markdown
 │        ├──────────────────┬───────────────────┐                 │
 │        ▼                  ▼                   ▼                 │
 │   ┌─────────┐      ┌───────────┐      ┌────────────┐           │
-│   │ Tool    │      │ @relay:   │      │[[TRAJECTORY│           │
+│   │ Tool    │      │ >>relay:   │      │[[TRAJECTORY│           │
 │   │ Calls   │      │ messages  │      │ :decision]]│           │
 │   └────┬────┘      └─────┬─────┘      └──────┬─────┘           │
 │        │                 │                   │                  │

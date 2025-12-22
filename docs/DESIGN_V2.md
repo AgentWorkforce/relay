@@ -4,7 +4,7 @@
 
 This document outlines improvements to agent-relay while preserving its core philosophy: **simple, transparent agent-to-agent communication via terminal output patterns**.
 
-The `@relay:` pattern is the killer feature. Agents communicate naturally by just printing text. No APIs, no SDKs, no special integrations. This must remain the foundation.
+The `>>relay:` pattern is the killer feature. Agents communicate naturally by just printing text. No APIs, no SDKs, no special integrations. This must remain the foundation.
 
 ---
 
@@ -38,7 +38,7 @@ The `@relay:` pattern is the killer feature. Agents communicate naturally by jus
 
 1. **Keep it simple** - Every feature must justify its complexity
 2. **Terminal-native** - Users stay in tmux, not a browser
-3. **Pattern-based** - `@relay:` is the API
+3. **Pattern-based** - `>>relay:` is the API
 4. **Zero config** - Works out of the box
 5. **Debuggable** - Easy to understand what's happening
 
@@ -362,7 +362,7 @@ src/
 │   └── router.ts             # Message routing + queue
 ├── wrapper/
 │   ├── tmux-wrapper.ts       # Agent wrapper
-│   ├── parser.ts             # @relay: pattern parser
+│   ├── parser.ts             # >>relay: pattern parser
 │   └── client.ts             # Relay client
 ├── protocol/
 │   └── types.ts              # Message types (reduced)
@@ -410,11 +410,11 @@ Group agents for targeted messaging:
 }
 
 # Send to group
-@relay:@backend We need to refactor the user service
+>>relay:@backend We need to refactor the user service
 # → Message delivered to ApiDev, DbAdmin, AuthService
 
 # Broadcast to all
-@relay:* Starting deployment in 5 minutes
+>>relay:* Starting deployment in 5 minutes
 ```
 
 **Implementation:**
@@ -506,9 +506,9 @@ One agent orchestrates the others:
 
 ```
 Coordinator
-    ├── @relay:ApiDev Implement /api/users endpoint
-    ├── @relay:DbAdmin Create users table
-    └── @relay:UiDev Build user profile page
+    ├── >>relay:ApiDev Implement /api/users endpoint
+    ├── >>relay:DbAdmin Create users table
+    └── >>relay:UiDev Build user profile page
 
 ApiDev → Coordinator: Done, endpoint at /api/users
 DbAdmin → Coordinator: Table created with schema...
@@ -524,11 +524,11 @@ Agents pass work sequentially:
 ```
 Developer → Reviewer → QA → Deployer
 
-@relay:Reviewer PR #123 ready for review
+>>relay:Reviewer PR #123 ready for review
           ↓
-@relay:QA Review passed, ready for testing
+>>relay:QA Review passed, ready for testing
           ↓
-@relay:Deployer Tests passed, deploy when ready
+>>relay:Deployer Tests passed, deploy when ready
 ```
 
 #### Pattern 3: Pub/Sub Topics
@@ -537,10 +537,10 @@ Agents subscribe to topics of interest:
 
 ```bash
 # Agent subscribes to topic
-@relay:subscribe security-alerts
+>>relay:subscribe security-alerts
 
 # Any agent can publish
-@relay:topic:security-alerts Found SQL injection in auth.ts
+>>relay:topic:security-alerts Found SQL injection in auth.ts
 
 # All subscribers receive the message
 ```
@@ -548,14 +548,14 @@ Agents subscribe to topics of interest:
 **Implementation:**
 ```typescript
 // Subscribe syntax
-@relay:+topic-name      # Subscribe
-@relay:-topic-name      # Unsubscribe
-@relay:#topic-name msg  # Publish to topic
+>>relay:+topic-name      # Subscribe
+>>relay:-topic-name      # Unsubscribe
+>>relay:#topic-name msg  # Publish to topic
 
 // In parser.ts
-const TOPIC_SUBSCRIBE = /^@relay:\+(\S+)$/;
-const TOPIC_UNSUBSCRIBE = /^@relay:-(\S+)$/;
-const TOPIC_PUBLISH = /^@relay:#(\S+)\s+(.+)$/;
+const TOPIC_SUBSCRIBE = /^>>relay:\+(\S+)$/;
+const TOPIC_UNSUBSCRIBE = /^>>relay:-(\S+)$/;
+const TOPIC_PUBLISH = /^>>relay:#(\S+)\s+(.+)$/;
 ```
 
 ### 5.4 Tmux Layout Helper
@@ -639,21 +639,21 @@ With more agents, message prioritization becomes important:
 
 ```bash
 # Urgent message (interrupts immediately)
-@relay:!ApiDev Production is down, check auth service
+>>relay:!ApiDev Production is down, check auth service
 
 # Normal message (waits for idle)
-@relay:ApiDev When you have time, review this PR
+>>relay:ApiDev When you have time, review this PR
 
 # Low priority (batched, delivered during quiet periods)
-@relay:?ApiDev FYI: Updated the style guide
+>>relay:?ApiDev FYI: Updated the style guide
 ```
 
 **Injection behavior:**
 | Priority | Syntax | Behavior |
 |----------|--------|----------|
-| Urgent | `@relay:!Name` | Inject immediately, even if busy |
-| Normal | `@relay:Name` | Wait for idle (current behavior) |
-| Low | `@relay:?Name` | Batch and deliver during long idle |
+| Urgent | `>>relay:!Name` | Inject immediately, even if busy |
+| Normal | `>>relay:Name` | Wait for idle (current behavior) |
+| Low | `>>relay:?Name` | Batch and deliver during long idle |
 
 ### 5.7 Status Broadcasts
 
@@ -661,9 +661,9 @@ Agents automatically announce state changes:
 
 ```typescript
 // Automatic status messages
-@relay:* STATUS: ApiDev is now idle
-@relay:* STATUS: Reviewer completed task (closed PR #123)
-@relay:* STATUS: QA disconnected
+>>relay:* STATUS: ApiDev is now idle
+>>relay:* STATUS: Reviewer completed task (closed PR #123)
+>>relay:* STATUS: QA disconnected
 
 // Agents can filter these
 // In wrapper config:
@@ -755,7 +755,7 @@ The goal: **Single pane of glass, but in the terminal**
 │  │              NATIVE TMUX SESSION                         │    │
 │  │                                                          │    │
 │  │  claude> Working on the API endpoint...                  │    │
-│  │  @relay:DbAdmin Need the users table schema              │    │
+│  │  >>relay:DbAdmin Need the users table schema              │    │
 │  │                                                          │    │
 │  └─────────────────────────────────────────────────────────┘    │
 │                           │                                      │
@@ -1055,7 +1055,7 @@ Key changes:
 
 | Feature | Effort | Priority |
 |---------|--------|----------|
-| Agent groups (`@relay:@groupname`) | 1 day | P1 |
+| Agent groups (`>>relay:@groupname`) | 1 day | P1 |
 | TUI dashboard (`agent-relay watch`) | 2 days | P1 |
 | Tmux layout helper | 0.5 day | P2 |
 | Message priority (`!`, `?`) | 0.5 day | P2 |

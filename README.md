@@ -23,11 +23,11 @@ agent-relay -n Alice claude
 agent-relay -n Bob codex
 ```
 
-Agents communicate by outputting `@relay:` patterns:
+Agents communicate by outputting `>>relay:` patterns:
 
 ```
-@relay:Bob Hey, can you review my changes?
-@relay:* Broadcasting to everyone
+>>relay:Bob Hey, can you review my changes?
+>>relay:* Broadcasting to everyone
 ```
 
 ## CLI
@@ -44,7 +44,7 @@ Agents communicate by outputting `@relay:` patterns:
 ## How It Works
 
 1. `agent-relay up` starts a daemon that routes messages via Unix socket
-2. `agent-relay <cmd>` wraps your agent in tmux, parsing output for `@relay:` patterns
+2. `agent-relay <cmd>` wraps your agent in tmux, parsing output for `>>relay:` patterns
 3. Messages are injected into recipient terminals in real-time
 
 ```
@@ -67,13 +67,13 @@ Agents communicate by outputting `@relay:` patterns:
 ### Send Message
 
 ```
-@relay:AgentName Your message here
+>>relay:AgentName Your message here
 ```
 
 ### Broadcast
 
 ```
-@relay:* Message to all agents
+>>relay:* Message to all agents
 ```
 
 ### Receive

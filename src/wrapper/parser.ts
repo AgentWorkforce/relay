@@ -3,13 +3,13 @@
  * Extracts relay commands from agent terminal output.
  *
  * Supports two formats:
- * 1. Inline: @relay:<target> <message> (single line, start of line only)
+ * 1. Inline: >>relay:<target> <message> (single line, start of line only)
  * 2. Block: [[RELAY]]{ json }[[/RELAY]] (multi-line, structured)
  *
  * Rules:
  * - Inline only matches at start of line (after whitespace)
  * - Ignores content inside code fences
- * - Escape with \@relay: to output literal
+ * - Escape with \>>relay: to output literal
  * - Block format is preferred for structured data
  */
 
@@ -29,9 +29,9 @@ export interface ParserOptions {
   maxBlockBytes?: number;
   enableInline?: boolean;
   enableBlock?: boolean;
-  /** Relay prefix pattern (default: '@relay:') */
+  /** Relay prefix pattern (default: '>>relay:') */
   prefix?: string;
-  /** Thinking prefix pattern (default: '@thinking:') */
+  /** Thinking prefix pattern (default: '>>thinking:') */
   thinkingPrefix?: string;
 }
 
@@ -39,8 +39,8 @@ const DEFAULT_OPTIONS: Required<ParserOptions> = {
   maxBlockBytes: 1024 * 1024, // 1 MiB
   enableInline: true,
   enableBlock: true,
-  prefix: '@relay:',
-  thinkingPrefix: '@thinking:',
+  prefix: '>>relay:',
+  thinkingPrefix: '>>thinking:',
 };
 
 // Static patterns (not prefix-dependent)
@@ -58,7 +58,7 @@ function escapeRegex(str: string): string {
  * Build inline pattern for a given prefix
  * Allow common input prefixes: >, $, %, #, →, ➜, bullets (●•◦‣⁃-*⏺◆◇○□■), and their variations
  *
- * Supports optional thread syntax: @relay:Target [thread:id] message
+ * Supports optional thread syntax: >>relay:Target [thread:id] message
  * Thread IDs can contain alphanumeric chars, hyphens, underscores
  */
 function buildInlinePattern(prefix: string): RegExp {
@@ -68,7 +68,7 @@ function buildInlinePattern(prefix: string): RegExp {
 }
 
 /**
- * Build escape pattern for a given prefix (e.g., \@relay: or \>>)
+ * Build escape pattern for a given prefix (e.g., \>>relay: or \>>)
  */
 function buildEscapePattern(prefix: string, thinkingPrefix: string): RegExp {
   // Extract the first character(s) that would be escaped

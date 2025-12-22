@@ -19,6 +19,7 @@
     "access": "public"
   },
   "scripts": {
+    "postinstall": "npm rebuild better-sqlite3",
     "build": "npm run clean && tsc",
     "postbuild": "cp -r src/dashboard/public dist/dashboard/ && chmod +x dist/cli/index.js",
     "dev": "tsc -w",

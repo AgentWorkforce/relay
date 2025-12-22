@@ -75,7 +75,7 @@
 │                     Tmux Session                            │
 │  ├─ Agent Process (claude, codex, gemini)                   │
 │  ├─ Silent Polling (capture-pane @ 200ms)                   │
-│  ├─ Pattern Detection (@relay:)                             │
+│  ├─ Pattern Detection (>>relay:)                             │
 │  └─ Message Injection (send-keys)                           │
 └────────────────────────────┬────────────────────────────────┘
                              │ Unix Socket IPC
@@ -112,8 +112,8 @@
 
 | Feature | mcp_agent_mail | agent-relay |
 |---------|----------------|-------------|
-| **API** | `send_message()` tool call | `@relay:Name message` pattern |
-| **Broadcast** | `to=["*"]` | `@relay:*` |
+| **API** | `send_message()` tool call | `>>relay:Name message` pattern |
+| **Broadcast** | `to=["*"]` | `>>relay:*` |
 | **Attachments** | Yes (images, files) | No |
 | **Threading** | Yes (`thread_id`) | No |
 | **Markdown** | Full GFM support | Plain text |
@@ -182,7 +182,7 @@
 |---------|----------------|-------------|
 | **Setup** | Python venv, pip install, .env | npm install, single binary |
 | **Integration** | MCP client required | Pattern in stdout |
-| **Learning Curve** | Steep (40+ tools) | Minimal (@relay:) |
+| **Learning Curve** | Steep (40+ tools) | Minimal (>>relay:) |
 | **Debugging** | Structured logging, metrics | Dashboard + logs |
 
 **Winner: agent-relay** - Much simpler to get started.
@@ -272,12 +272,12 @@
 
 1. **Add File Reservation System** (from mcp_agent_mail)
    - Advisory locks with TTL
-   - `@relay:lock src/**/*.ts` pattern
+   - `>>relay:lock src/**/*.ts` pattern
    - Pre-commit hook integration
    - Critical for multi-agent file editing
 
 2. **Add Message Threading**
-   - `@relay:Bob [thread:feature-123] message`
+   - `>>relay:Bob [thread:feature-123] message`
    - Group related messages
    - Better context tracking
 
@@ -294,12 +294,12 @@
 ### Medium Priority
 
 5. **Add Message Attachments**
-   - `@relay:Bob [attach:path/to/file]`
+   - `>>relay:Bob [attach:path/to/file]`
    - Inline small files
    - Reference large files
 
 6. **Add Cross-Project Messaging**
-   - `@relay:Bob@other-project message`
+   - `>>relay:Bob@other-project message`
    - Contact request system
    - Product grouping
 
@@ -321,7 +321,7 @@
    - Contact policies
 
 10. **Add Workflow Macros**
-    - `@relay:macro:start-session`
+    - `>>relay:macro:start-session`
     - Bundle common patterns
     - Reduce boilerplate
 
@@ -341,7 +341,7 @@ Consider a **hybrid architecture** that combines the best of both:
                              │
 ┌────────────────────────────▼────────────────────────────────┐
 │               PTY Wrapper (fast path)                       │
-│  ├─ Pattern Detection (@relay:)                             │
+│  ├─ Pattern Detection (>>relay:)                             │
 │  ├─ Message Injection                                       │
 │  └─ Direct daemon IPC (<5ms)                                │
 └────────────────────────────┬────────────────────────────────┘
