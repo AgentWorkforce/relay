@@ -187,6 +187,13 @@ export class Daemon {
       this.router.handleAck(connection, envelope);
     };
 
+    // Update lastSeen on successful heartbeat to keep agent status fresh
+    connection.onPong = () => {
+      if (connection.agentName) {
+        this.registry?.touch(connection.agentName);
+      }
+    };
+
     // Register agent when connection becomes active (after successful handshake)
     connection.onActive = () => {
         if (connection.agentName) {

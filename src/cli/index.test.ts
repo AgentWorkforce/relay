@@ -83,8 +83,8 @@ describe('CLI', () => {
   describe('agents', () => {
     it('should handle no agents file gracefully', async () => {
       const { stdout } = await runCli('agents');
-      expect(stdout).toMatch(/(No agents|NAME)/i);
-      expect(stdout).toMatch(/STATUS/i);
+      // Either shows "No agents" message OR a table with NAME/STATUS headers
+      expect(stdout).toMatch(/(No agents|NAME.*STATUS)/i);
     });
 
     it('should support --json flag', async () => {

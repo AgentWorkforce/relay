@@ -62,6 +62,7 @@ export class Connection {
   onError?: (error: Error) => void;
   onActive?: () => void; // Fires when connection transitions to ACTIVE state
   onAck?: (envelope: Envelope<AckPayload>) => void;
+  onPong?: () => void; // Fires on successful heartbeat response
 
   constructor(socket: net.Socket, config: Partial<ConnectionConfig> = {}) {
     this.id = uuid();
@@ -214,6 +215,9 @@ export class Connection {
   private handlePong(_envelope: Envelope<PongPayload>): void {
     // Note: envelope.payload.nonce could be used for RTT calculation in the future
     this.lastPongReceived = Date.now();
+    if (this.onPong) {
+      this.onPong();
+    }
   }
 
   private startHeartbeat(): void {

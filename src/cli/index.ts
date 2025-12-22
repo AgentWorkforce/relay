@@ -214,7 +214,7 @@ program
     const allAgents = loadAgents(agentsPath);
     const agents = options.all
       ? allAgents
-      : allAgents.filter(a => a.name && !a.name.startsWith('__') && a.name !== 'cli');
+      : allAgents.filter(isVisibleAgent);
 
     if (options.json) {
       console.log(JSON.stringify(agents.map(a => ({ ...a, status: getAgentStatus(a) })), null, 2));
@@ -252,7 +252,7 @@ program
     const allAgents = loadAgents(agentsPath);
     const visibleAgents = options.all
       ? allAgents
-      : allAgents.filter(a => a.name && !a.name.startsWith('__') && a.name !== 'cli');
+      : allAgents.filter(a => !isInternalAgent(a.name));
 
     const onlineAgents = visibleAgents.filter(isAgentOnline);
 
@@ -550,6 +550,15 @@ function loadAgents(agentsPath: string): RegistryAgent[] {
 
 const STALE_THRESHOLD_MS = 30_000;
 
+// Internal agents that should be hidden from `agents` and `who` by default
+const INTERNAL_AGENTS = new Set(['cli', 'Dashboard']);
+
+function isInternalAgent(name: string | undefined): boolean {
+  if (!name) return true;
+  if (name.startsWith('__')) return true;
+  return INTERNAL_AGENTS.has(name);
+}
+
 function getAgentStatus(agent: RegistryAgent): 'ONLINE' | 'STALE' | 'UNKNOWN' {
   if (!agent.lastSeen) return 'UNKNOWN';
   const ts = Date.parse(agent.lastSeen);
@@ -559,6 +568,13 @@ function getAgentStatus(agent: RegistryAgent): 'ONLINE' | 'STALE' | 'UNKNOWN' {
 
 function isAgentOnline(agent: RegistryAgent): boolean {
   return getAgentStatus(agent) === 'ONLINE';
+}
+
+// Visible agents: not internal and not stale (used by `agents` command)
+function isVisibleAgent(agent: RegistryAgent): boolean {
+  if (isInternalAgent(agent.name)) return false;
+  if (getAgentStatus(agent) === 'STALE') return false;
+  return true;
 }
 
 function formatRelativeTime(iso?: string): string {
