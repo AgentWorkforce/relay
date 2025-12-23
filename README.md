@@ -191,6 +191,54 @@ cd agent-relay
 npm install && npm run build
 ```
 
+## Why agent-relay?
+
+### The Composable Approach
+
+Most multi-agent tools try to be complete solutions - handling communication, memory, UI, workflows, and orchestration. agent-relay takes a different approach: **do one thing exceptionally well** (real-time messaging) and integrate with best-of-breed tools for everything else.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Your Agent System                        │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
+│  │   Mimir     │  │  Maestro    │  │    Beads    │         │
+│  │  (Memory)   │  │    (UI)     │  │ (Workflows) │         │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘         │
+│         └────────────────┼────────────────┘                 │
+│                ┌─────────▼─────────┐                        │
+│                │   agent-relay     │  ◄── Messaging layer   │
+│                │     <5ms P2P      │                        │
+│                └─────────┬─────────┘                        │
+│         ┌────────────────┼────────────────┐                 │
+│    ┌────▼────┐     ┌────▼────┐     ┌────▼────┐             │
+│    │ Claude  │     │  Codex  │     │  Gemini │             │
+│    └─────────┘     └─────────┘     └─────────┘             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Unix Philosophy
+
+- **Do one thing well**: Real-time agent messaging with <5ms latency
+- **Work with others**: Simple `->relay:` pattern, standard I/O
+- **Text streams**: Messages are just text, easy to parse/transform
+- **Composability**: Pipe into other tools, wrap any CLI
+
+### When to Use agent-relay
+
+| Use Case | agent-relay? |
+|----------|--------------|
+| Quick prototyping with multiple agents | **Yes** - 1 min setup |
+| Real-time agent collaboration | **Yes** - fastest option |
+| CLI-native workflows | **Yes** - no Electron/desktop needed |
+| Need persistent knowledge graph | Combine with Mimir |
+| Need rich desktop UI | Combine with Maestro |
+| Enterprise compliance | Combine with governance layer |
+
+See [docs/COMPETITIVE_ANALYSIS.md](docs/COMPETITIVE_ANALYSIS.md) for detailed comparisons with 16 other multi-agent tools.
+
+---
+
 ## Inspiration
 
 This project was inspired by some excellent work in the multi-agent coordination space:
