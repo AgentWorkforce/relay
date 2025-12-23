@@ -592,9 +592,9 @@ program
     console.log(`CLI: ${cli}`);
     console.log('');
     console.log('Spawn workers with:');
-    console.log('  @relay:spawn WorkerName cli "task"');
+    console.log('  ->relay:spawn WorkerName cli "task"');
     console.log('Release workers with:');
-    console.log('  @relay:release WorkerName');
+    console.log('  ->relay:release WorkerName');
     console.log('');
 
     // Create spawner for this project
@@ -609,10 +609,31 @@ program
       args: commandArgs.length > 0 ? commandArgs : undefined,
       socketPath: paths.socketPath,
       debug: true,
+      // Wire up spawn/release callbacks
+      onSpawn: async (workerName: string, workerCli: string, task: string) => {
+        console.log(`[lead] Spawning ${workerName} (${workerCli})...`);
+        const result = await spawner.spawn({
+          name: workerName,
+          cli: workerCli,
+          task,
+          requestedBy: name,
+        });
+        if (result.success) {
+          console.log(`[lead] ✓ Spawned ${workerName} in ${result.window}`);
+        } else {
+          console.error(`[lead] ✗ Failed to spawn ${workerName}: ${result.error}`);
+        }
+      },
+      onRelease: async (workerName: string) => {
+        console.log(`[lead] Releasing ${workerName}...`);
+        const released = await spawner.release(workerName);
+        if (released) {
+          console.log(`[lead] ✓ Released ${workerName}`);
+        } else {
+          console.error(`[lead] ✗ Worker ${workerName} not found`);
+        }
+      },
     });
-
-    // Extend wrapper to handle spawn/release commands
-    // This will be done via parser extension
 
     process.on('SIGINT', async () => {
       console.log('\nReleasing workers...');
