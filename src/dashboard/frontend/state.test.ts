@@ -131,13 +131,13 @@ describe('state', () => {
 
   describe('setCurrentChannel', () => {
     it('should update current channel', () => {
-      setCurrentChannel('broadcasts');
-      expect(state.currentChannel).toBe('broadcasts');
+      setCurrentChannel('Alice');
+      expect(state.currentChannel).toBe('Alice');
     });
 
     it('should accept agent names as channels', () => {
-      setCurrentChannel('Alice');
-      expect(state.currentChannel).toBe('Alice');
+      setCurrentChannel('Bob');
+      expect(state.currentChannel).toBe('Bob');
     });
   });
 
@@ -208,13 +208,6 @@ describe('state', () => {
       setCurrentChannel('general');
       const filtered = getFilteredMessages();
       expect(filtered).toHaveLength(4);
-    });
-
-    it('should return only broadcasts for broadcasts channel', () => {
-      setCurrentChannel('broadcasts');
-      const filtered = getFilteredMessages();
-      expect(filtered).toHaveLength(2);
-      expect(filtered.every((m) => m.to === '*')).toBe(true);
     });
 
     it('should return messages to/from agent for agent channel', () => {

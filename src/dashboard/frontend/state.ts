@@ -11,6 +11,7 @@ export const state: AppState = {
   agents: [],
   messages: [],
   currentChannel: 'general',
+  currentThread: null,
   isConnected: false,
   ws: null,
   reconnectAttempts: 0,
@@ -101,12 +102,29 @@ export function getFilteredMessages(): Message[] {
     return messages;
   }
 
-  if (currentChannel === 'broadcasts') {
-    return messages.filter((m) => m.to === '*');
-  }
-
   // Filter for specific agent - show messages to/from that agent
   return messages.filter(
     (m) => m.from === currentChannel || m.to === currentChannel
   );
+}
+
+/**
+ * Set current thread for thread panel
+ */
+export function setCurrentThread(thread: string | null): void {
+  state.currentThread = thread;
+}
+
+/**
+ * Get messages for a specific thread
+ */
+export function getThreadMessages(threadId: string): Message[] {
+  return state.messages.filter((m) => m.thread === threadId);
+}
+
+/**
+ * Get reply count for a thread
+ */
+export function getThreadReplyCount(threadId: string): number {
+  return state.messages.filter((m) => m.thread === threadId).length;
 }

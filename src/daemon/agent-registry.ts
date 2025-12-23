@@ -188,11 +188,12 @@ export class AgentRegistry {
 
   save(): void {
     try {
-      fs.writeFileSync(
-        this.registryPath,
-        JSON.stringify({ agents: this.getAgents() }, null, 2),
-        'utf-8'
-      );
+      const data = JSON.stringify({ agents: this.getAgents() }, null, 2);
+      // Write atomically: write to temp file first, then rename
+      // This prevents race conditions where readers see partial/empty data
+      const tempPath = `${this.registryPath}.tmp`;
+      fs.writeFileSync(tempPath, data, 'utf-8');
+      fs.renameSync(tempPath, this.registryPath);
     } catch (err) {
       console.error('[registry] Failed to write agents.json:', err);
     }

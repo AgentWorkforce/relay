@@ -377,6 +377,50 @@
       background: var(--status-busy);
     }
 
+    /* Needs Attention Indicator */
+    .channel-item.needs-attention {
+      background: rgba(232, 164, 39, 0.1);
+    }
+
+    .channel-item.needs-attention::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      right: 12px;
+      transform: translateY(-50%);
+      width: 8px;
+      height: 8px;
+      background: var(--accent-yellow);
+      border-radius: 50%;
+      animation: attentionPulse 1.5s ease-in-out infinite;
+    }
+
+    .attention-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 6px;
+      margin-left: 8px;
+      background: var(--accent-yellow);
+      color: #1a1d21;
+      font-size: 10px;
+      font-weight: 600;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+
+    @keyframes attentionPulse {
+      0%, 100% {
+        opacity: 1;
+        transform: translateY(-50%) scale(1);
+      }
+      50% {
+        opacity: 0.5;
+        transform: translateY(-50%) scale(1.2);
+      }
+    }
+
     /* ========================================
        Main Panel Components
        ======================================== */
@@ -714,34 +758,6 @@
       border-color: var(--accent-primary);
     }
 
-    .composer-target {
-      padding: 8px 12px;
-      border-bottom: 1px solid var(--border-divider);
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .composer-target label {
-      font-size: 13px;
-      color: var(--text-muted);
-    }
-
-    .composer-target select {
-      flex: 1;
-      background: transparent;
-      border: none;
-      color: var(--text-primary);
-      font-family: var(--font-family);
-      font-size: 14px;
-      cursor: pointer;
-      outline: none;
-    }
-
-    .composer-target select option {
-      background: var(--bg-modal);
-    }
-
     .composer-input-row {
       display: flex;
       align-items: flex-end;
@@ -835,6 +851,100 @@
       padding: 2px 5px;
       border-radius: 3px;
       font-size: 11px;
+    }
+
+    /* ========================================
+       @-Mention Autocomplete
+       ======================================== */
+    .mention-autocomplete {
+      position: absolute;
+      bottom: 100%;
+      left: 0;
+      right: 0;
+      margin-bottom: 4px;
+      background: var(--bg-modal);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      box-shadow: var(--shadow-modal);
+      max-height: 240px;
+      overflow-y: auto;
+      display: none;
+      z-index: 100;
+    }
+
+    .mention-autocomplete.visible {
+      display: block;
+      animation: autocompleteSlideIn 0.1s ease-out;
+    }
+
+    @keyframes autocompleteSlideIn {
+      from {
+        opacity: 0;
+        transform: translateY(4px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .mention-autocomplete-header {
+      padding: 8px 12px 4px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-bottom: 1px solid var(--border-divider);
+    }
+
+    .mention-autocomplete-item {
+      padding: 8px 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+      transition: background var(--transition-fast);
+    }
+
+    .mention-autocomplete-item:hover,
+    .mention-autocomplete-item.selected {
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .mention-autocomplete-item .agent-avatar {
+      width: 24px;
+      height: 24px;
+      font-size: 10px;
+    }
+
+    .mention-autocomplete-name {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+
+    .mention-autocomplete-role {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-left: auto;
+    }
+
+    .mention-autocomplete-hint {
+      padding: 6px 12px;
+      font-size: 11px;
+      color: var(--text-muted);
+      border-top: 1px solid var(--border-divider);
+      display: flex;
+      gap: 12px;
+    }
+
+    .mention-autocomplete-hint kbd {
+      font-family: var(--font-family);
+      background: rgba(255, 255, 255, 0.1);
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-size: 10px;
     }
 
     /* ========================================
@@ -964,6 +1074,227 @@
     }
 
     /* ========================================
+       Thread Panel
+       ======================================== */
+    .thread-panel-overlay {
+      position: fixed;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: 400px;
+      background: var(--bg-modal);
+      border-left: 1px solid var(--border-divider);
+      display: none;
+      flex-direction: column;
+      z-index: 100;
+      box-shadow: -4px 0 20px rgba(0, 0, 0, 0.3);
+      animation: threadSlideIn 0.2s ease-out;
+    }
+
+    .thread-panel-overlay.visible {
+      display: flex;
+    }
+
+    @keyframes threadSlideIn {
+      from {
+        transform: translateX(100%);
+        opacity: 0;
+      }
+      to {
+        transform: translateX(0);
+        opacity: 1;
+      }
+    }
+
+    .thread-panel {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+
+    .thread-panel-header {
+      padding: 16px;
+      border-bottom: 1px solid var(--border-divider);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+
+    .thread-panel-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .thread-panel-title .thread-id {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-link);
+      background: rgba(29, 155, 209, 0.1);
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+
+    .thread-panel-close {
+      width: 32px;
+      height: 32px;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      border-radius: 4px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all var(--transition-fast);
+    }
+
+    .thread-panel-close:hover {
+      background: rgba(255, 255, 255, 0.1);
+      color: var(--text-primary);
+    }
+
+    .thread-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+    }
+
+    .thread-message {
+      padding: 12px;
+      background: rgba(255, 255, 255, 0.02);
+      border-radius: 8px;
+      margin-bottom: 12px;
+    }
+
+    .thread-message:last-child {
+      margin-bottom: 0;
+    }
+
+    .thread-message-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+
+    .thread-message-avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 600;
+      font-size: 11px;
+      color: white;
+    }
+
+    .thread-message-sender {
+      font-weight: 600;
+      color: var(--text-primary);
+      font-size: 14px;
+    }
+
+    .thread-message-time {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .thread-message-body {
+      font-size: 14px;
+      color: var(--text-primary);
+      line-height: 1.4;
+      word-wrap: break-word;
+      white-space: pre-wrap;
+    }
+
+    .thread-composer {
+      padding: 16px;
+      border-top: 1px solid var(--border-divider);
+      display: flex;
+      gap: 8px;
+      align-items: flex-end;
+      flex-shrink: 0;
+    }
+
+    .thread-composer-input {
+      flex: 1;
+      padding: 10px 12px;
+      background: var(--bg-input);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      color: var(--text-primary);
+      font-family: var(--font-family);
+      font-size: 14px;
+      resize: none;
+      outline: none;
+      min-height: 40px;
+      max-height: 120px;
+    }
+
+    .thread-composer-input:focus {
+      border-color: var(--accent-primary);
+    }
+
+    .thread-composer-input::placeholder {
+      color: var(--text-muted);
+    }
+
+    .thread-send-btn {
+      width: 36px;
+      height: 36px;
+      border: none;
+      background: var(--accent-primary);
+      color: white;
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all var(--transition-fast);
+      flex-shrink: 0;
+    }
+
+    .thread-send-btn:hover {
+      background: #0b5d99;
+    }
+
+    .thread-empty {
+      text-align: center;
+      padding: 32px;
+      color: var(--text-muted);
+    }
+
+    /* Reply count badge on messages */
+    .reply-count-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      margin-top: 8px;
+      padding: 4px 8px;
+      background: rgba(29, 155, 209, 0.1);
+      border-radius: 4px;
+      font-size: 12px;
+      color: var(--text-link);
+      cursor: pointer;
+      transition: background var(--transition-fast);
+    }
+
+    .reply-count-badge:hover {
+      background: rgba(29, 155, 209, 0.2);
+    }
+
+    .reply-count-badge svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    /* ========================================
        Empty States
        ======================================== */
     .empty-state {
@@ -1074,10 +1405,6 @@
               <span class="channel-prefix">#</span>
               <span class="channel-name">general</span>
             </li>
-            <li class="channel-item" data-channel="broadcasts">
-              <span class="channel-prefix">#</span>
-              <span class="channel-name">broadcasts</span>
-            </li>
           </ul>
         </div>
 
@@ -1130,23 +1457,28 @@
       </div>
 
       <div class="composer">
-        <div class="composer-container">
-          <div class="composer-target">
-            <label for="target-select">To:</label>
-            <select id="target-select">
-              <option value="">Select recipient...</option>
-              <option value="*">Everyone (broadcast)</option>
-            </select>
+        <div class="composer-container" style="position: relative;">
+          <!-- @-Mention Autocomplete Dropdown -->
+          <div class="mention-autocomplete" id="mention-autocomplete">
+            <div class="mention-autocomplete-header">Agents</div>
+            <div id="mention-autocomplete-list">
+              <!-- Agent items will be injected here -->
+            </div>
+            <div class="mention-autocomplete-hint">
+              <span><kbd>Tab</kbd> or <kbd>Enter</kbd> to select</span>
+              <span><kbd>↑↓</kbd> to navigate</span>
+              <span><kbd>Esc</kbd> to close</span>
+            </div>
           </div>
           <div class="composer-input-row">
             <div class="composer-toolbar">
-              <button class="toolbar-btn" title="Add formatting">
+              <button class="toolbar-btn" id="bold-btn" title="Bold (Ctrl+B)">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M6 4h8a4 4 0 0 1 4 4 4 4 0 0 1-4 4H6z"/>
                   <path d="M6 12h9a4 4 0 0 1 4 4 4 4 0 0 1-4 4H6z"/>
                 </svg>
               </button>
-              <button class="toolbar-btn" title="Add emoji">
+              <button class="toolbar-btn" id="emoji-btn" title="Add emoji">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <circle cx="12" cy="12" r="10"/>
                   <path d="M8 14s1.5 2 4 2 4-2 4-2"/>
@@ -1158,7 +1490,7 @@
             <textarea
               id="message-input"
               class="composer-input"
-              placeholder="Message #general"
+              placeholder="@AgentName message... (or @* to broadcast)"
               rows="1"
             ></textarea>
             <div class="composer-send">
@@ -1231,6 +1563,23 @@
             </div>
           </div>
         </div>
+        <div class="palette-section" id="palette-channels-section">
+          <div class="palette-section-title">Channels</div>
+          <div class="palette-item" data-jump-channel="general">
+            <div class="palette-item-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M4 9l4-4 4 4"/>
+                <path d="M12 15l4 4 4-4"/>
+                <line x1="8" y1="5" x2="8" y2="19"/>
+                <line x1="16" y1="5" x2="16" y2="19"/>
+              </svg>
+            </div>
+            <div class="palette-item-content">
+              <div class="palette-item-title">#general</div>
+              <div class="palette-item-subtitle">All agent communications</div>
+            </div>
+          </div>
+        </div>
         <div class="palette-section" id="palette-agents-section">
           <div class="palette-section-title">Jump to Agent</div>
           <!-- Agents will be injected here -->
@@ -1239,6 +1588,44 @@
           <div class="palette-section-title">Recent Messages</div>
           <!-- Filtered messages will be injected here -->
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Thread Panel -->
+  <div class="thread-panel-overlay" id="thread-panel-overlay">
+    <div class="thread-panel">
+      <div class="thread-panel-header">
+        <div class="thread-panel-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+          </svg>
+          <span>Thread</span>
+          <span class="thread-id" id="thread-panel-id"></span>
+        </div>
+        <button class="thread-panel-close" id="thread-panel-close" title="Close thread">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+      <div class="thread-messages" id="thread-messages">
+        <!-- Thread messages will be injected here -->
+      </div>
+      <div class="thread-composer">
+        <textarea
+          id="thread-message-input"
+          class="thread-composer-input"
+          placeholder="Reply in thread..."
+          rows="1"
+        ></textarea>
+        <button class="thread-send-btn" id="thread-send-btn" title="Send reply">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="22" y1="2" x2="11" y2="13"/>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+          </svg>
+        </button>
       </div>
     </div>
   </div>

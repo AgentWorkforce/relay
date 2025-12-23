@@ -67,11 +67,13 @@ export class Daemon {
     // The registry persists on every update; this is a no-op helper for symmetry.
     const agents = this.registry.getAgents();
     try {
-      fs.writeFileSync(
-        path.join(this.config.teamDir ?? path.dirname(this.config.socketPath), 'agents.json'),
-        JSON.stringify({ agents }, null, 2),
-        'utf-8'
-      );
+      const targetPath = path.join(this.config.teamDir ?? path.dirname(this.config.socketPath), 'agents.json');
+      const data = JSON.stringify({ agents }, null, 2);
+      // Write atomically: write to temp file first, then rename
+      // This prevents race conditions where readers see partial/empty data
+      const tempPath = `${targetPath}.tmp`;
+      fs.writeFileSync(tempPath, data, 'utf-8');
+      fs.renameSync(tempPath, targetPath);
     } catch (err) {
       console.error('[daemon] Failed to write agents.json:', err);
     }
@@ -199,17 +201,15 @@ export class Daemon {
         if (connection.agentName) {
           this.router.register(connection);
           console.log(`[daemon] Agent registered: ${connection.agentName}`);
-          if (connection.agentName) {
-            this.registry?.registerOrUpdate({
-              name: connection.agentName,
-              cli: connection.cli,
-              program: connection.program,
-              model: connection.model,
-              task: connection.task,
-              workingDirectory: connection.workingDirectory,
-            });
-            this.writeAgentsFile();
-          }
+          // Registry handles persistence internally via save()
+          this.registry?.registerOrUpdate({
+            name: connection.agentName,
+            cli: connection.cli,
+            program: connection.program,
+            model: connection.model,
+            task: connection.task,
+            workingDirectory: connection.workingDirectory,
+          });
 
         // Record session start
         if (this.storage instanceof SqliteStorageAdapter) {
@@ -230,10 +230,10 @@ export class Daemon {
       console.log(`[daemon] Connection closed: ${connection.agentName ?? connection.id}`);
       this.connections.delete(connection);
       this.router.unregister(connection);
+      // Registry handles persistence internally via touch() -> save()
       if (connection.agentName) {
         this.registry?.touch(connection.agentName);
       }
-      this.writeAgentsFile();
 
       // Record session end (disconnect - agent may still mark it closed explicitly)
       if (this.storage instanceof SqliteStorageAdapter) {
@@ -246,10 +246,10 @@ export class Daemon {
       console.error(`[daemon] Connection error: ${error.message}`);
       this.connections.delete(connection);
       this.router.unregister(connection);
+      // Registry handles persistence internally via touch() -> save()
       if (connection.agentName) {
         this.registry?.touch(connection.agentName);
       }
-      this.writeAgentsFile();
 
       // Record session end on error
       if (this.storage instanceof SqliteStorageAdapter) {

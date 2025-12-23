@@ -97,5 +97,8 @@ export function formatMessageBody(content: string | undefined): string {
   escaped = escaped.replace(/```([\s\S]*?)```/g, '<pre>$1</pre>');
   escaped = escaped.replace(/`([^`]+)`/g, '<code>$1</code>');
 
+  // Convert newlines to <br> for proper multi-line display
+  escaped = escaped.replace(/\n/g, '<br>');
+
   return escaped;
 }

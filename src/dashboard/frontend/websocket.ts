@@ -62,7 +62,10 @@ export function connect(): void {
  * Handle incoming dashboard data
  */
 function handleData(data: DashboardData): void {
+  console.log('[WS] Received data:', { agentCount: data.agents?.length, messageCount: data.messages?.length });
+
   if (data.agents) {
+    console.log('[WS] Setting agents:', data.agents.map(a => a.name));
     setAgents(data.agents);
   }
 
@@ -80,13 +83,19 @@ function handleData(data: DashboardData): void {
  */
 export async function sendMessage(
   to: string,
-  message: string
+  message: string,
+  thread?: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const body: { to: string; message: string; thread?: string } = { to, message };
+    if (thread) {
+      body.thread = thread;
+    }
+
     const response = await fetch('/api/send', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to, message }),
+      body: JSON.stringify(body),
     });
 
     const result = await response.json();

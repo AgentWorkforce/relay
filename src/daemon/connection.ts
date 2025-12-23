@@ -27,11 +27,15 @@ export type ConnectionState = 'CONNECTING' | 'HANDSHAKING' | 'ACTIVE' | 'CLOSING
 export interface ConnectionConfig {
   maxFrameBytes: number;
   heartbeatMs: number;
+  /** Multiplier for heartbeat timeout (timeout = heartbeatMs * multiplier). Default: 6 (30s with 5s heartbeat) */
+  heartbeatTimeoutMultiplier: number;
 }
 
 export const DEFAULT_CONFIG: ConnectionConfig = {
   maxFrameBytes: 1024 * 1024,
   heartbeatMs: 5000,
+  // 6x multiplier = 30 second timeout, more tolerant for AI agents processing long responses
+  heartbeatTimeoutMultiplier: 6,
 };
 
 export class Connection {
@@ -226,9 +230,10 @@ export class Connection {
 
       const now = Date.now();
 
-      // Check for missed pong
-      if (this.lastPongReceived && now - this.lastPongReceived > this.config.heartbeatMs * 2) {
-        this.handleError(new Error('Heartbeat timeout'));
+      // Check for missed pong - use configurable timeout multiplier
+      const timeoutMs = this.config.heartbeatMs * this.config.heartbeatTimeoutMultiplier;
+      if (this.lastPongReceived && now - this.lastPongReceived > timeoutMs) {
+        this.handleError(new Error(`Heartbeat timeout (no pong in ${timeoutMs}ms)`));
         return;
       }
 

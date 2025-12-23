@@ -50,7 +50,6 @@ export {
   renderAgents,
   renderMessages,
   selectChannel,
-  updateTargetSelect,
   updateOnlineCount,
   openCommandPalette,
   closeCommandPalette,

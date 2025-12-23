@@ -435,7 +435,7 @@ program
       messages.forEach((msg) => {
         const ts = new Date(msg.ts).toISOString();
         const body = msg.body.length > 120 ? `${msg.body.slice(0, 117)}...` : msg.body;
-        console.log(`${ts} ${msg.from} -> ${msg.to}: ${body}`);
+        console.log(`${ts} ${msg.from} -> ${msg.to}:${body}`);
       });
     } finally {
       await adapter.close?.();

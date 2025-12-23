@@ -10,6 +10,7 @@ export interface Agent {
   status?: string;
   lastActive?: string;
   lastSeen?: string;
+  needsAttention?: boolean;
 }
 
 export interface Message {
@@ -50,12 +51,13 @@ export interface AgentSummary {
   context?: string;
 }
 
-export type ChannelType = 'general' | 'broadcasts' | string;
+export type ChannelType = 'general' | string;
 
 export interface AppState {
   agents: Agent[];
   messages: Message[];
   currentChannel: ChannelType;
+  currentThread: string | null;
   isConnected: boolean;
   ws: WebSocket | null;
   reconnectAttempts: number;
@@ -69,14 +71,24 @@ export interface DOMElements {
   currentChannelName: HTMLElement;
   channelTopic: HTMLElement;
   onlineCount: HTMLElement;
-  targetSelect: HTMLSelectElement;
   messageInput: HTMLTextAreaElement;
   sendBtn: HTMLButtonElement;
+  boldBtn: HTMLButtonElement;
+  emojiBtn: HTMLButtonElement;
   searchTrigger: HTMLElement;
   commandPaletteOverlay: HTMLElement;
   paletteSearch: HTMLInputElement;
   paletteResults: HTMLElement;
+  paletteChannelsSection: HTMLElement;
   paletteAgentsSection: HTMLElement;
   paletteMessagesSection: HTMLElement;
   typingIndicator: HTMLElement;
+  threadPanelOverlay: HTMLElement;
+  threadPanelId: HTMLElement;
+  threadPanelClose: HTMLButtonElement;
+  threadMessages: HTMLElement;
+  threadMessageInput: HTMLTextAreaElement;
+  threadSendBtn: HTMLButtonElement;
+  mentionAutocomplete: HTMLElement;
+  mentionAutocompleteList: HTMLElement;
 }

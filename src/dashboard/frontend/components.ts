@@ -3,7 +3,7 @@
  */
 
 import type { Agent, Message, DOMElements, ChannelType } from './types.js';
-import { state, getFilteredMessages, setCurrentChannel } from './state.js';
+import { state, getFilteredMessages, setCurrentChannel, setCurrentThread, getThreadMessages, getThreadReplyCount } from './state.js';
 import {
   escapeHtml,
   formatTime,
@@ -15,6 +15,7 @@ import {
 } from './utils.js';
 
 let elements: DOMElements;
+let paletteSelectedIndex = -1;
 
 /**
  * Initialize DOM element references
@@ -28,16 +29,26 @@ export function initElements(): DOMElements {
     currentChannelName: document.getElementById('current-channel-name')!,
     channelTopic: document.getElementById('channel-topic')!,
     onlineCount: document.getElementById('online-count')!,
-    targetSelect: document.getElementById('target-select') as HTMLSelectElement,
     messageInput: document.getElementById('message-input') as HTMLTextAreaElement,
     sendBtn: document.getElementById('send-btn') as HTMLButtonElement,
+    boldBtn: document.getElementById('bold-btn') as HTMLButtonElement,
+    emojiBtn: document.getElementById('emoji-btn') as HTMLButtonElement,
     searchTrigger: document.getElementById('search-trigger')!,
     commandPaletteOverlay: document.getElementById('command-palette-overlay')!,
     paletteSearch: document.getElementById('palette-search') as HTMLInputElement,
     paletteResults: document.getElementById('palette-results')!,
+    paletteChannelsSection: document.getElementById('palette-channels-section')!,
     paletteAgentsSection: document.getElementById('palette-agents-section')!,
     paletteMessagesSection: document.getElementById('palette-messages-section')!,
     typingIndicator: document.getElementById('typing-indicator')!,
+    threadPanelOverlay: document.getElementById('thread-panel-overlay')!,
+    threadPanelId: document.getElementById('thread-panel-id')!,
+    threadPanelClose: document.getElementById('thread-panel-close') as HTMLButtonElement,
+    threadMessages: document.getElementById('thread-messages')!,
+    threadMessageInput: document.getElementById('thread-message-input') as HTMLTextAreaElement,
+    threadSendBtn: document.getElementById('thread-send-btn') as HTMLButtonElement,
+    mentionAutocomplete: document.getElementById('mention-autocomplete')!,
+    mentionAutocompleteList: document.getElementById('mention-autocomplete-list')!,
   };
   return elements;
 }
@@ -64,19 +75,22 @@ export function updateConnectionStatus(): void {
  * Render agents list in sidebar
  */
 export function renderAgents(): void {
+  console.log('[UI] renderAgents called, agents:', state.agents.length, state.agents.map(a => a.name));
   const html = state.agents
     .map((agent) => {
       const online = isAgentOnline(agent.lastSeen || agent.lastActive);
       const presenceClass = online ? 'online' : '';
       const isActive = state.currentChannel === agent.name;
+      const needsAttentionClass = agent.needsAttention ? 'needs-attention' : '';
 
       return `
-      <li class="channel-item ${isActive ? 'active' : ''}" data-agent="${escapeHtml(agent.name)}">
+      <li class="channel-item ${isActive ? 'active' : ''} ${needsAttentionClass}" data-agent="${escapeHtml(agent.name)}">
         <div class="agent-avatar" style="background: ${getAvatarColor(agent.name)}">
           ${getInitials(agent.name)}
           <span class="presence-indicator ${presenceClass}"></span>
         </div>
         <span class="channel-name">${escapeHtml(agent.name)}</span>
+        ${agent.needsAttention ? '<span class="attention-badge">Needs Input</span>' : ''}
       </li>
     `;
     })
@@ -117,9 +131,7 @@ export function renderMessages(): void {
           ${
             state.currentChannel === 'general'
               ? 'Messages between agents will appear here'
-              : state.currentChannel === 'broadcasts'
-                ? 'Broadcast messages will appear here'
-                : `Messages with ${state.currentChannel} will appear here`
+              : `Messages with ${state.currentChannel} will appear here`
           }
         </div>
       </div>
@@ -145,6 +157,10 @@ export function renderMessages(): void {
 
     const isBroadcast = msg.to === '*';
     const avatarColor = getAvatarColor(msg.from);
+    const replyCount = getThreadReplyCount(msg.id);
+
+    // Format: @From → @To: message (like Slack)
+    const recipientDisplay = isBroadcast ? '@everyone' : `@${escapeHtml(msg.to)}`;
 
     html += `
       <div class="message ${isBroadcast ? 'broadcast' : ''}" data-id="${escapeHtml(msg.id)}">
@@ -153,9 +169,9 @@ export function renderMessages(): void {
         </div>
         <div class="message-content">
           <div class="message-header">
-            <span class="message-sender">${escapeHtml(msg.from)}</span>
+            <span class="message-sender">@${escapeHtml(msg.from)}</span>
             <span class="message-recipient">
-              to <span class="target">${isBroadcast ? 'everyone' : escapeHtml(msg.to)}</span>
+              → <span class="target">${recipientDisplay}</span>
             </span>
             <span class="message-timestamp">${formatTime(msg.timestamp)}</span>
           </div>
@@ -172,9 +188,21 @@ export function renderMessages(): void {
           `
               : ''
           }
+          ${
+            replyCount > 0
+              ? `
+            <div class="reply-count-badge" data-thread="${escapeHtml(msg.id)}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+              </svg>
+              ${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}
+            </div>
+          `
+              : ''
+          }
         </div>
         <div class="message-actions">
-          <button class="message-action-btn" title="Reply in thread">
+          <button class="message-action-btn" data-action="reply" title="Reply in thread">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
             </svg>
@@ -199,6 +227,9 @@ export function renderMessages(): void {
   if (container) {
     container.scrollTop = container.scrollHeight;
   }
+
+  // Attach thread click handlers
+  attachThreadHandlers();
 }
 
 /**
@@ -221,50 +252,21 @@ export function selectChannel(channel: ChannelType): void {
     elements.currentChannelName.innerHTML = 'general';
     elements.channelTopic.textContent = 'All agent communications';
     if (prefixEl) prefixEl.textContent = '#';
-  } else if (channel === 'broadcasts') {
-    elements.currentChannelName.innerHTML = 'broadcasts';
-    elements.channelTopic.textContent = 'Messages sent to everyone';
-    if (prefixEl) prefixEl.textContent = '#';
   } else {
     elements.currentChannelName.innerHTML = escapeHtml(channel);
     const agent = state.agents.find((a) => a.name === channel);
     elements.channelTopic.textContent = agent?.status || 'Direct messages';
     if (prefixEl) prefixEl.textContent = '@';
-
-    // Pre-select agent in composer
-    elements.targetSelect.value = channel;
   }
 
-  // Update composer placeholder
+  // Update composer placeholder with @mention format
   elements.messageInput.placeholder =
-    channel === 'general' || channel === 'broadcasts'
-      ? `Message #${channel}`
-      : `Message ${channel}`;
+    channel === 'general'
+      ? '@AgentName message... (or @* to broadcast)'
+      : `@${channel} your message here...`;
 
   // Re-render messages
   renderMessages();
-}
-
-/**
- * Update target select dropdown with agents
- */
-export function updateTargetSelect(): void {
-  const currentValue = elements.targetSelect.value;
-
-  const options = state.agents
-    .map((a) => `<option value="${escapeHtml(a.name)}">${escapeHtml(a.name)}</option>`)
-    .join('');
-
-  elements.targetSelect.innerHTML = `
-    <option value="">Select recipient...</option>
-    <option value="*">Everyone (broadcast)</option>
-    ${options}
-  `;
-
-  // Restore selection
-  if (currentValue && (currentValue === '*' || state.agents.some((a) => a.name === currentValue))) {
-    elements.targetSelect.value = currentValue;
-  }
 }
 
 /**
@@ -317,13 +319,143 @@ export function updatePaletteAgents(): void {
 }
 
 /**
+ * Initialize channel click handlers in command palette
+ */
+export function initPaletteChannels(): void {
+  elements.paletteChannelsSection
+    .querySelectorAll<HTMLElement>('.palette-item[data-jump-channel]')
+    .forEach((item) => {
+      item.addEventListener('click', () => {
+        const channelName = item.dataset.jumpChannel;
+        if (channelName) {
+          selectChannel(channelName);
+          closeCommandPalette();
+        }
+      });
+    });
+}
+
+/**
  * Open command palette
  */
 export function openCommandPalette(): void {
   elements.commandPaletteOverlay.classList.add('visible');
   elements.paletteSearch.value = '';
   elements.paletteSearch.focus();
+  paletteSelectedIndex = -1;
   filterPaletteResults('');
+}
+
+/**
+ * Get all visible palette items
+ */
+export function getVisiblePaletteItems(): HTMLElement[] {
+  const allItems = Array.from(
+    elements.paletteResults.querySelectorAll<HTMLElement>('.palette-item')
+  );
+  return allItems.filter((item) => item.style.display !== 'none');
+}
+
+/**
+ * Update the selected palette item visually
+ */
+export function updatePaletteSelection(): void {
+  const items = getVisiblePaletteItems();
+
+  // Remove selection from all items
+  items.forEach((item) => item.classList.remove('selected'));
+
+  // Add selection to current item
+  if (paletteSelectedIndex >= 0 && paletteSelectedIndex < items.length) {
+    const selectedItem = items[paletteSelectedIndex];
+    selectedItem.classList.add('selected');
+
+    // Scroll into view if needed
+    selectedItem.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+}
+
+/**
+ * Handle keyboard navigation in command palette
+ */
+export function handlePaletteKeydown(e: KeyboardEvent): void {
+  const items = getVisiblePaletteItems();
+
+  if (items.length === 0) return;
+
+  switch (e.key) {
+    case 'ArrowDown':
+      e.preventDefault();
+      paletteSelectedIndex = paletteSelectedIndex < items.length - 1
+        ? paletteSelectedIndex + 1
+        : 0;
+      updatePaletteSelection();
+      break;
+
+    case 'ArrowUp':
+      e.preventDefault();
+      paletteSelectedIndex = paletteSelectedIndex > 0
+        ? paletteSelectedIndex - 1
+        : items.length - 1;
+      updatePaletteSelection();
+      break;
+
+    case 'Enter':
+      e.preventDefault();
+      if (paletteSelectedIndex >= 0 && paletteSelectedIndex < items.length) {
+        executePaletteItem(items[paletteSelectedIndex]);
+      }
+      break;
+  }
+}
+
+/**
+ * Execute the action for a palette item
+ */
+export function executePaletteItem(item: HTMLElement): void {
+  // Check for command
+  const command = item.dataset.command;
+  if (command) {
+    if (command === 'broadcast') {
+      // Pre-fill message input with @* for broadcast
+      elements.messageInput.value = '@* ';
+      elements.messageInput.focus();
+    } else if (command === 'clear') {
+      elements.messagesList.innerHTML = '';
+    }
+    closeCommandPalette();
+    return;
+  }
+
+  // Check for channel jump
+  const channel = item.dataset.jumpChannel;
+  if (channel) {
+    selectChannel(channel);
+    closeCommandPalette();
+    return;
+  }
+
+  // Check for agent jump
+  const agent = item.dataset.jumpAgent;
+  if (agent) {
+    selectChannel(agent);
+    closeCommandPalette();
+    return;
+  }
+
+  // Check for message jump
+  const messageId = item.dataset.jumpMessage;
+  if (messageId) {
+    // Find and scroll to the message
+    const messageEl = elements.messagesList.querySelector(`[data-id="${messageId}"]`);
+    if (messageEl) {
+      messageEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      messageEl.classList.add('highlighted');
+      setTimeout(() => messageEl.classList.remove('highlighted'), 2000);
+    }
+    closeCommandPalette();
+    return;
+  }
 }
 
 /**
@@ -339,8 +471,18 @@ export function closeCommandPalette(): void {
 export function filterPaletteResults(query: string): void {
   const q = query.toLowerCase();
 
+  // Reset selection when filtering
+  paletteSelectedIndex = -1;
+
   // Filter command items
   document.querySelectorAll<HTMLElement>('.palette-item[data-command]').forEach((item) => {
+    const titleEl = item.querySelector('.palette-item-title');
+    const title = titleEl?.textContent?.toLowerCase() || '';
+    item.style.display = title.includes(q) ? 'flex' : 'none';
+  });
+
+  // Filter channel items
+  document.querySelectorAll<HTMLElement>('.palette-item[data-jump-channel]').forEach((item) => {
     const titleEl = item.querySelector('.palette-item-title');
     const title = titleEl?.textContent?.toLowerCase() || '';
     item.style.display = title.includes(q) ? 'flex' : 'none';
@@ -385,4 +527,256 @@ export function filterPaletteResults(query: string): void {
   } else {
     elements.paletteMessagesSection.style.display = 'none';
   }
+}
+
+/**
+ * Open thread panel for a specific thread
+ */
+export function openThreadPanel(threadId: string): void {
+  setCurrentThread(threadId);
+  elements.threadPanelId.textContent = threadId;
+  elements.threadPanelOverlay.classList.add('visible');
+  elements.threadMessageInput.value = '';
+  renderThreadMessages(threadId);
+  elements.threadMessageInput.focus();
+}
+
+/**
+ * Close thread panel
+ */
+export function closeThreadPanel(): void {
+  setCurrentThread(null);
+  elements.threadPanelOverlay.classList.remove('visible');
+}
+
+/**
+ * Render messages in thread panel
+ */
+export function renderThreadMessages(threadId: string): void {
+  const messages = getThreadMessages(threadId);
+
+  if (messages.length === 0) {
+    elements.threadMessages.innerHTML = `
+      <div class="thread-empty">
+        <p>No messages in this thread yet.</p>
+        <p style="font-size: 12px; margin-top: 8px;">Start the conversation below!</p>
+      </div>
+    `;
+    return;
+  }
+
+  const html = messages
+    .map((msg) => `
+      <div class="thread-message">
+        <div class="thread-message-header">
+          <div class="thread-message-avatar" style="background: ${getAvatarColor(msg.from)}">
+            ${getInitials(msg.from)}
+          </div>
+          <span class="thread-message-sender">${escapeHtml(msg.from)}</span>
+          <span class="thread-message-time">${formatTime(msg.timestamp)}</span>
+        </div>
+        <div class="thread-message-body">${formatMessageBody(msg.content)}</div>
+      </div>
+    `)
+    .join('');
+
+  elements.threadMessages.innerHTML = html;
+
+  // Scroll to bottom
+  elements.threadMessages.scrollTop = elements.threadMessages.scrollHeight;
+}
+
+/**
+ * Attach thread click handlers to messages (call after renderMessages)
+ */
+export function attachThreadHandlers(): void {
+  // Thread indicator clicks
+  elements.messagesList.querySelectorAll<HTMLElement>('.thread-indicator').forEach((el) => {
+    el.style.cursor = 'pointer';
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const threadId = el.dataset.thread;
+      if (threadId) {
+        openThreadPanel(threadId);
+      }
+    });
+  });
+
+  // Reply count badge clicks
+  elements.messagesList.querySelectorAll<HTMLElement>('.reply-count-badge').forEach((el) => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const threadId = el.dataset.thread;
+      if (threadId) {
+        openThreadPanel(threadId);
+      }
+    });
+  });
+
+  // Reply in thread button clicks
+  elements.messagesList.querySelectorAll<HTMLElement>('.message-action-btn[data-action="reply"]').forEach((el) => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const messageId = el.closest('.message')?.getAttribute('data-id');
+      if (messageId) {
+        // Use message ID as thread ID for new threads
+        openThreadPanel(messageId);
+      }
+    });
+  });
+}
+
+/**
+ * @-Mention Autocomplete State
+ */
+let mentionSelectedIndex = 0;
+let mentionFilteredAgents: typeof state.agents = [];
+
+/**
+ * Show mention autocomplete dropdown with filtered agents
+ */
+export function showMentionAutocomplete(filter: string): void {
+  const filterLower = filter.toLowerCase();
+
+  // Filter agents by name, include broadcast option
+  mentionFilteredAgents = state.agents.filter(agent =>
+    agent.name.toLowerCase().includes(filterLower)
+  );
+
+  // Reset selection
+  mentionSelectedIndex = 0;
+
+  // Build HTML for agent list
+  let html = '';
+
+  // Add broadcast option if filter matches
+  if ('*'.includes(filterLower) || 'everyone'.includes(filterLower) || 'all'.includes(filterLower) || 'broadcast'.includes(filterLower)) {
+    html += `
+      <div class="mention-autocomplete-item ${mentionSelectedIndex === 0 && mentionFilteredAgents.length === 0 ? 'selected' : ''}" data-mention="*">
+        <div class="agent-avatar" style="background: var(--accent-yellow);">*</div>
+        <span class="mention-autocomplete-name">@everyone</span>
+        <span class="mention-autocomplete-role">Broadcast to all</span>
+      </div>
+    `;
+  }
+
+  // Add agents
+  mentionFilteredAgents.forEach((agent, index) => {
+    const isSelected = index === mentionSelectedIndex;
+    html += `
+      <div class="mention-autocomplete-item ${isSelected ? 'selected' : ''}" data-mention="${escapeHtml(agent.name)}">
+        <div class="agent-avatar" style="background: ${getAvatarColor(agent.name)}">
+          ${getInitials(agent.name)}
+        </div>
+        <span class="mention-autocomplete-name">@${escapeHtml(agent.name)}</span>
+        <span class="mention-autocomplete-role">${escapeHtml(agent.role || 'Agent')}</span>
+      </div>
+    `;
+  });
+
+  if (html === '') {
+    html = '<div class="mention-autocomplete-item" style="color: var(--text-muted); cursor: default;">No matching agents</div>';
+  }
+
+  elements.mentionAutocompleteList.innerHTML = html;
+  elements.mentionAutocomplete.classList.add('visible');
+
+  // Add click handlers to items
+  elements.mentionAutocompleteList.querySelectorAll<HTMLElement>('.mention-autocomplete-item[data-mention]').forEach((item) => {
+    item.addEventListener('click', () => {
+      const mention = item.dataset.mention;
+      if (mention) {
+        completeMention(mention);
+      }
+    });
+  });
+}
+
+/**
+ * Hide mention autocomplete dropdown
+ */
+export function hideMentionAutocomplete(): void {
+  elements.mentionAutocomplete.classList.remove('visible');
+  mentionFilteredAgents = [];
+  mentionSelectedIndex = 0;
+}
+
+/**
+ * Check if mention autocomplete is visible
+ */
+export function isMentionAutocompleteVisible(): boolean {
+  return elements.mentionAutocomplete.classList.contains('visible');
+}
+
+/**
+ * Navigate mention autocomplete selection
+ */
+export function navigateMentionAutocomplete(direction: 'up' | 'down'): void {
+  const items = elements.mentionAutocompleteList.querySelectorAll<HTMLElement>('.mention-autocomplete-item[data-mention]');
+  if (items.length === 0) return;
+
+  // Remove current selection
+  items[mentionSelectedIndex]?.classList.remove('selected');
+
+  // Update index
+  if (direction === 'down') {
+    mentionSelectedIndex = (mentionSelectedIndex + 1) % items.length;
+  } else {
+    mentionSelectedIndex = (mentionSelectedIndex - 1 + items.length) % items.length;
+  }
+
+  // Add new selection
+  items[mentionSelectedIndex]?.classList.add('selected');
+  items[mentionSelectedIndex]?.scrollIntoView({ block: 'nearest' });
+}
+
+/**
+ * Complete the current mention selection
+ */
+export function completeMention(mention?: string): void {
+  const items = elements.mentionAutocompleteList.querySelectorAll<HTMLElement>('.mention-autocomplete-item[data-mention]');
+
+  // Use provided mention or get from selected item
+  let selectedMention = mention;
+  if (!selectedMention && items.length > 0) {
+    selectedMention = items[mentionSelectedIndex]?.dataset.mention;
+  }
+
+  if (!selectedMention) {
+    hideMentionAutocomplete();
+    return;
+  }
+
+  // Replace the @... text with the completed mention
+  const input = elements.messageInput;
+  const value = input.value;
+
+  // Find the @ position (should be at start or after whitespace)
+  const atMatch = value.match(/^@\S*/);
+  if (atMatch) {
+    // Replace the @partial with @CompletedName
+    const completedText = `@${selectedMention} `;
+    input.value = completedText + value.substring(atMatch[0].length);
+    input.selectionStart = input.selectionEnd = completedText.length;
+  }
+
+  hideMentionAutocomplete();
+  input.focus();
+}
+
+/**
+ * Get the current @mention being typed (if any)
+ */
+export function getCurrentMentionQuery(): string | null {
+  const input = elements.messageInput;
+  const value = input.value;
+  const cursorPos = input.selectionStart;
+
+  // Check if cursor is within an @mention at the start
+  const atMatch = value.match(/^@(\S*)/);
+  if (atMatch && cursorPos <= atMatch[0].length) {
+    return atMatch[1]; // Return the text after @
+  }
+
+  return null;
 }

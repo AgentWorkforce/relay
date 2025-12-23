@@ -76,8 +76,50 @@ export async function startDashboard(port: number, dataDir: string, teamDir: str
 
   const app = express();
   const server = http.createServer(app);
-  const wss = new WebSocketServer({ server, path: '/ws' });
-  const wssBridge = new WebSocketServer({ server, path: '/ws/bridge' });
+
+  // Use noServer mode to manually route upgrade requests
+  // This prevents the bug where multiple WebSocketServers attached to the same
+  // HTTP server cause conflicts - each one's upgrade handler fires and the ones
+  // that don't match the path call abortHandshake(400), writing raw HTTP to the socket
+  const wss = new WebSocketServer({
+    noServer: true,
+    perMessageDeflate: false,
+    skipUTF8Validation: true,
+    maxPayload: 100 * 1024 * 1024 // 100MB
+  });
+  const wssBridge = new WebSocketServer({
+    noServer: true,
+    perMessageDeflate: false,
+    skipUTF8Validation: true,
+    maxPayload: 100 * 1024 * 1024
+  });
+
+  // Manually handle upgrade requests and route to correct WebSocketServer
+  server.on('upgrade', (request, socket, head) => {
+    const pathname = new URL(request.url || '', `http://${request.headers.host}`).pathname;
+
+    if (pathname === '/ws') {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit('connection', ws, request);
+      });
+    } else if (pathname === '/ws/bridge') {
+      wssBridge.handleUpgrade(request, socket, head, (ws) => {
+        wssBridge.emit('connection', ws, request);
+      });
+    } else {
+      // Unknown path - destroy socket
+      socket.destroy();
+    }
+  });
+
+  // Server-level error handlers
+  wss.on('error', (err) => {
+    console.error('[dashboard] WebSocket server error:', err);
+  });
+
+  wssBridge.on('error', (err) => {
+    console.error('[dashboard] Bridge WebSocket server error:', err);
+  });
   if (storage) {
     await storage.init();
   }
@@ -127,7 +169,7 @@ export async function startDashboard(port: number, dataDir: string, teamDir: str
 
   // API endpoint to send messages
   app.post('/api/send', async (req, res) => {
-    const { to, message } = req.body;
+    const { to, message, thread } = req.body;
 
     if (!to || !message) {
       return res.status(400).json({ error: 'Missing "to" or "message" field' });
@@ -142,7 +184,7 @@ export async function startDashboard(port: number, dataDir: string, teamDir: str
     }
 
     try {
-      const sent = relayClient.sendMessage(to, message);
+      const sent = relayClient.sendMessage(to, message, 'message', undefined, thread);
       if (sent) {
         res.json({ success: true });
       } else {
@@ -245,7 +287,7 @@ export async function startDashboard(port: number, dataDir: string, teamDir: str
 
   const getMessages = async (agents: any[]): Promise<Message[]> => {
     if (storage) {
-      const rows = await storage.getMessages({ limit: 500, order: 'desc' });
+      const rows = await storage.getMessages({ limit: 100, order: 'desc' });
       // Dashboard expects oldest first
       return mapStoredMessages(rows).reverse();
     }
@@ -340,11 +382,13 @@ export async function startDashboard(port: number, dataDir: string, teamDir: str
 
     // Derive status from messages sent BY agents
     // We scan all messages; if M is from A, we check if it is a STATUS message
+    // Note: lastActive is updated from messages, but lastSeen comes from the registry
+    // (heartbeat-based) and should NOT be overwritten by message timestamps
     allMessages.forEach(m => {
       const agent = agentsMap.get(m.from);
       if (agent) {
         agent.lastActive = m.timestamp;
-        agent.lastSeen = m.timestamp;
+        // Don't overwrite lastSeen - it comes from registry (heartbeat/connection tracking)
         if (m.content.startsWith('STATUS:')) {
           agent.status = m.content.substring(7).trim(); // remove "STATUS:"
         }
@@ -357,8 +401,28 @@ export async function startDashboard(port: number, dataDir: string, teamDir: str
       getAgentSummaries(),
     ]);
 
+    // Filter agents:
+    // 1. Exclude "Dashboard" (internal agent, not a real team member)
+    // 2. Exclude offline agents (no lastSeen or lastSeen > 5 minutes ago)
+    const now = Date.now();
+    const OFFLINE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+    const filteredAgents = Array.from(agentsMap.values()).filter(agent => {
+      // Exclude Dashboard
+      if (agent.name === 'Dashboard') return false;
+
+      // Exclude agents starting with __ (internal/system agents)
+      if (agent.name.startsWith('__')) return false;
+
+      // Exclude offline agents (no lastSeen or too old)
+      if (!agent.lastSeen) return false;
+      const lastSeenTime = new Date(agent.lastSeen).getTime();
+      if (now - lastSeenTime > OFFLINE_THRESHOLD_MS) return false;
+
+      return true;
+    });
+
     return {
-      agents: Array.from(agentsMap.values()),
+      agents: filteredAgents,
       messages: allMessages,
       activity: allMessages, // For now, activity log is just the message log
       sessions,
@@ -366,17 +430,40 @@ export async function startDashboard(port: number, dataDir: string, teamDir: str
     };
   };
 
+  // Track clients that are still initializing (haven't received first data yet)
+  // This prevents race conditions where broadcastData sends before initial data is sent
+  const initializingClients = new WeakSet<WebSocket>();
+
   const broadcastData = async () => {
-    const data = await getAllData();
-    const payload = JSON.stringify(data);
-    wss.clients.forEach(client => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(payload);
+    try {
+      const data = await getAllData();
+      const payload = JSON.stringify(data);
+
+      // Guard against empty/invalid payloads
+      if (!payload || payload.length === 0) {
+        console.warn('[dashboard] Skipping broadcast - empty payload');
+        return;
       }
-    });
+
+      wss.clients.forEach(client => {
+        // Skip clients that are still being initialized by the connection handler
+        if (initializingClients.has(client)) {
+          return;
+        }
+        if (client.readyState === WebSocket.OPEN) {
+          try {
+            client.send(payload);
+          } catch (err) {
+            console.error('[dashboard] Failed to send to client:', err);
+          }
+        }
+      });
+    } catch (err) {
+      console.error('[dashboard] Failed to broadcast data:', err);
+    }
   };
 
-  // Bridge data broadcast for multi-project view
+  // Bridge data functions - defined before connection handlers
   const getBridgeData = async () => {
     const bridgeStatePath = path.join(dataDir, 'bridge-state.json');
     if (fs.existsSync(bridgeStatePath)) {
@@ -390,14 +477,92 @@ export async function startDashboard(port: number, dataDir: string, teamDir: str
   };
 
   const broadcastBridgeData = async () => {
-    const data = await getBridgeData();
-    const payload = JSON.stringify(data);
-    wssBridge.clients.forEach(client => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(payload);
+    try {
+      const data = await getBridgeData();
+      const payload = JSON.stringify(data);
+
+      // Guard against empty/invalid payloads
+      if (!payload || payload.length === 0) {
+        console.warn('[dashboard] Skipping bridge broadcast - empty payload');
+        return;
       }
-    });
+
+      wssBridge.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+          try {
+            client.send(payload);
+          } catch (err) {
+            console.error('[dashboard] Failed to send to bridge client:', err);
+          }
+        }
+      });
+    } catch (err) {
+      console.error('[dashboard] Failed to broadcast bridge data:', err);
+    }
   };
+
+  // Handle new WebSocket connections - send initial data immediately
+  wss.on('connection', async (ws, req) => {
+    console.log('[dashboard] WebSocket client connected from:', req.socket.remoteAddress);
+
+    // Mark as initializing to prevent broadcastData from sending before we do
+    initializingClients.add(ws);
+
+    try {
+      const data = await getAllData();
+      const payload = JSON.stringify(data);
+
+      // Guard against empty/invalid payloads
+      if (!payload || payload.length === 0) {
+        console.warn('[dashboard] Skipping initial send - empty payload');
+        return;
+      }
+
+      if (ws.readyState === WebSocket.OPEN) {
+        console.log('[dashboard] Sending initial data, size:', payload.length, 'first 200 chars:', payload.substring(0, 200));
+        ws.send(payload);
+        console.log('[dashboard] Initial data sent successfully');
+      } else {
+        console.warn('[dashboard] WebSocket not open, state:', ws.readyState);
+      }
+    } catch (err) {
+      console.error('[dashboard] Failed to send initial data:', err);
+    } finally {
+      // Now allow broadcastData to send to this client
+      initializingClients.delete(ws);
+    }
+
+    ws.on('error', (err) => {
+      console.error('[dashboard] WebSocket client error:', err);
+    });
+
+    ws.on('close', (code, reason) => {
+      console.log('[dashboard] WebSocket client disconnected, code:', code, 'reason:', reason?.toString() || 'none');
+    });
+  });
+
+  // Handle bridge WebSocket connections
+  wssBridge.on('connection', async (ws) => {
+    console.log('[dashboard] Bridge WebSocket client connected');
+
+    try {
+      const data = await getBridgeData();
+      const payload = JSON.stringify(data);
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(payload);
+      }
+    } catch (err) {
+      console.error('[dashboard] Failed to send initial bridge data:', err);
+    }
+
+    ws.on('error', (err) => {
+      console.error('[dashboard] Bridge WebSocket client error:', err);
+    });
+
+    ws.on('close', (code, reason) => {
+      console.log('[dashboard] Bridge WebSocket client disconnected, code:', code, 'reason:', reason?.toString() || 'none');
+    });
+  });
 
   app.get('/api/data', (req, res) => {
     getAllData().then((data) => res.json(data)).catch((err) => {

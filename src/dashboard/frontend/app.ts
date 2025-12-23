@@ -11,12 +11,22 @@ import {
   renderAgents,
   renderMessages,
   selectChannel,
-  updateTargetSelect,
   updateOnlineCount,
   openCommandPalette,
   closeCommandPalette,
   filterPaletteResults,
+  handlePaletteKeydown,
+  initPaletteChannels,
+  closeThreadPanel,
+  renderThreadMessages,
+  showMentionAutocomplete,
+  hideMentionAutocomplete,
+  isMentionAutocompleteVisible,
+  navigateMentionAutocomplete,
+  completeMention,
+  getCurrentMentionQuery,
 } from './components.js';
+import { state } from './state.js';
 
 /**
  * Initialize the dashboard application
@@ -29,7 +39,6 @@ export function initApp(): void {
     updateConnectionStatus();
     renderAgents();
     renderMessages();
-    updateTargetSelect();
     updateOnlineCount();
   });
 
@@ -59,17 +68,95 @@ function setupEventListeners(elements: ReturnType<typeof getElements>): void {
 
   // Keyboard shortcuts for composer
   elements.messageInput.addEventListener('keydown', (e: KeyboardEvent) => {
+    // Handle mention autocomplete keys first
+    if (isMentionAutocompleteVisible()) {
+      if (e.key === 'Tab' || e.key === 'Enter') {
+        e.preventDefault();
+        completeMention();
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        navigateMentionAutocomplete('up');
+        return;
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        navigateMentionAutocomplete('down');
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        hideMentionAutocomplete();
+        return;
+      }
+    }
+
+    // Ctrl+Enter to send
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       handleSend();
     }
   });
 
-  // Auto-resize textarea
+  // Auto-resize textarea and handle @-mention autocomplete
   elements.messageInput.addEventListener('input', () => {
     elements.messageInput.style.height = 'auto';
     elements.messageInput.style.height =
       Math.min(elements.messageInput.scrollHeight, 200) + 'px';
+
+    // Check for @-mention at start of input
+    const query = getCurrentMentionQuery();
+    if (query !== null) {
+      showMentionAutocomplete(query);
+    } else {
+      hideMentionAutocomplete();
+    }
+  });
+
+  // Hide mention autocomplete when input loses focus (with delay to allow clicks)
+  elements.messageInput.addEventListener('blur', () => {
+    setTimeout(() => {
+      hideMentionAutocomplete();
+    }, 150);
+  });
+
+  // Bold button - wrap selected text with ** or insert **bold**
+  elements.boldBtn.addEventListener('click', () => {
+    const input = elements.messageInput;
+    const start = input.selectionStart;
+    const end = input.selectionEnd;
+    const text = input.value;
+
+    if (start === end) {
+      // No selection - insert **bold** placeholder
+      const before = text.substring(0, start);
+      const after = text.substring(end);
+      input.value = before + '**bold**' + after;
+      input.selectionStart = start + 2;
+      input.selectionEnd = start + 6;
+    } else {
+      // Wrap selection with **
+      const before = text.substring(0, start);
+      const selected = text.substring(start, end);
+      const after = text.substring(end);
+      input.value = before + '**' + selected + '**' + after;
+      input.selectionStart = start;
+      input.selectionEnd = end + 4;
+    }
+    input.focus();
+  });
+
+  // Emoji button - insert common emojis via simple picker
+  elements.emojiBtn.addEventListener('click', () => {
+    const emojis = ['👍', '👎', '✅', '❌', '🎉', '🔥', '💡', '⚠️', '📝', '🚀'];
+    const emoji = emojis[Math.floor(Math.random() * emojis.length)];
+    const input = elements.messageInput;
+    const start = input.selectionStart;
+    const text = input.value;
+    input.value = text.substring(0, start) + emoji + text.substring(start);
+    input.selectionStart = input.selectionEnd = start + emoji.length;
+    input.focus();
   });
 
   // Command palette
@@ -101,13 +188,16 @@ function setupEventListeners(elements: ReturnType<typeof getElements>): void {
     filterPaletteResults(target.value);
   });
 
+  elements.paletteSearch.addEventListener('keydown', handlePaletteKeydown);
+
   // Command execution
   document.querySelectorAll<HTMLElement>('.palette-item[data-command]').forEach((item) => {
     item.addEventListener('click', () => {
       const command = item.dataset.command;
 
       if (command === 'broadcast') {
-        elements.targetSelect.value = '*';
+        // Pre-fill message input with @* for broadcast
+        elements.messageInput.value = '@* ';
         elements.messageInput.focus();
       } else if (command === 'clear') {
         elements.messagesList.innerHTML = '';
@@ -116,6 +206,52 @@ function setupEventListeners(elements: ReturnType<typeof getElements>): void {
       closeCommandPalette();
     });
   });
+
+  // Initialize palette channel click handlers
+  initPaletteChannels();
+
+  // Thread panel close button
+  elements.threadPanelClose.addEventListener('click', closeThreadPanel);
+
+  // Thread panel send button
+  elements.threadSendBtn.addEventListener('click', handleThreadSend);
+
+  // Thread message input keyboard shortcuts
+  elements.threadMessageInput.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      handleThreadSend();
+    }
+  });
+
+  // Close thread panel on Escape
+  document.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.key === 'Escape' && elements.threadPanelOverlay.classList.contains('visible')) {
+      closeThreadPanel();
+    }
+  });
+}
+
+/**
+ * Parse @mention from message text
+ * Formats: "@AgentName message" or "@* message" for broadcast
+ * Returns { to, message } or null if no valid mention found
+ */
+function parseMention(text: string): { to: string; message: string } | null {
+  const trimmed = text.trim();
+
+  // Match @mention at the start of the message
+  // @* for broadcast, @AgentName for direct message
+  const match = trimmed.match(/^@(\*|[^\s]+)\s+(.+)$/s);
+
+  if (!match) {
+    return null;
+  }
+
+  return {
+    to: match[1],
+    message: match[2].trim(),
+  };
 }
 
 /**
@@ -123,17 +259,21 @@ function setupEventListeners(elements: ReturnType<typeof getElements>): void {
  */
 async function handleSend(): Promise<void> {
   const elements = getElements();
-  const to = elements.targetSelect.value;
-  const message = elements.messageInput.value.trim();
+  const rawMessage = elements.messageInput.value.trim();
 
-  if (!to) {
-    alert('Please select a recipient');
+  if (!rawMessage) {
     return;
   }
 
-  if (!message) {
+  // Parse @mention from the message
+  const parsed = parseMention(rawMessage);
+
+  if (!parsed) {
+    alert('Message must start with @recipient (e.g., "@Lead hello" or "@* broadcast")');
     return;
   }
+
+  const { to, message } = parsed;
 
   elements.sendBtn.disabled = true;
 
@@ -147,6 +287,35 @@ async function handleSend(): Promise<void> {
   }
 
   elements.sendBtn.disabled = false;
+}
+
+/**
+ * Handle thread panel send button click
+ */
+async function handleThreadSend(): Promise<void> {
+  const elements = getElements();
+  const message = elements.threadMessageInput.value.trim();
+  const threadId = state.currentThread;
+
+  if (!message || !threadId) {
+    return;
+  }
+
+  // For thread replies, send to broadcast or use original recipient
+  // For now, send as broadcast with thread ID
+  elements.threadSendBtn.disabled = true;
+
+  const result = await sendMessage('*', message, threadId);
+
+  if (result.success) {
+    elements.threadMessageInput.value = '';
+    // Re-render thread messages to show the new message
+    renderThreadMessages(threadId);
+  } else {
+    alert(result.error);
+  }
+
+  elements.threadSendBtn.disabled = false;
 }
 
 // Auto-initialize when DOM is ready
