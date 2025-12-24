@@ -75,6 +75,8 @@ export interface TmuxWrapperConfig {
   mouseMode?: boolean;
   /** Relay prefix pattern (default: '->relay:') */
   relayPrefix?: string;
+  /** Run in detached mode (don't attach to tmux, run as background daemon) */
+  detached?: boolean;
 }
 
 /**
@@ -369,6 +371,15 @@ export class TmuxWrapper {
 
     // Start background polling (silent - no stdout writes)
     this.startSilentPolling();
+
+    // In detached mode, don't attach - just keep polling in background
+    if (this.config.detached) {
+      this.logStderr('Running in detached mode (daemon)', true);
+      this.logStderr(`Attach with: tmux attach -t ${this.sessionName}`, true);
+      // Keep the process alive
+      await new Promise(() => {}); // Never resolves - keeps daemon running
+      return;
+    }
 
     // Attach user to tmux session
     // This takes over stdin/stdout - user sees the real terminal
