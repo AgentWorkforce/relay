@@ -3,8 +3,8 @@
  */
 
 import { subscribe, state, setProjects, setMessages, setConnected, setWebSocket, setSelectedProject, getUptimeString, getConnectedProjects, getAllAgents, getProject } from './state.js';
-import type { BridgeDOMElements, Project, BridgeMessage } from './types.js';
-import { escapeHtml, formatTime, getAvatarColor, getInitials } from '../utils.js';
+import type { BridgeDOMElements } from './types.js';
+import { escapeHtml, formatTime } from '../utils.js';
 
 let elements: BridgeDOMElements;
 
