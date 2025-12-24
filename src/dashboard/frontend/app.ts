@@ -92,11 +92,12 @@ function setupEventListeners(elements: ReturnType<typeof getElements>): void {
       }
     }
 
-    // Ctrl+Enter to send
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    // Enter to send (Slack-style), Shift+Enter for newline
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
     }
+    // Shift+Enter allows default behavior (inserts newline)
   });
 
   // Auto-resize textarea and handle @-mention autocomplete
@@ -216,12 +217,13 @@ function setupEventListeners(elements: ReturnType<typeof getElements>): void {
   // Thread panel send button
   elements.threadSendBtn.addEventListener('click', handleThreadSend);
 
-  // Thread message input keyboard shortcuts
+  // Thread message input keyboard shortcuts (Slack-style)
   elements.threadMessageInput.addEventListener('keydown', (e: KeyboardEvent) => {
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleThreadSend();
     }
+    // Shift+Enter allows default behavior (inserts newline)
   });
 
   // Close thread panel on Escape

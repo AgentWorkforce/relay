@@ -757,6 +757,18 @@
       cursor: not-allowed;
     }
 
+    .composer-select option {
+      background: #222529;
+      color: #d1d2d3;
+      padding: 8px;
+    }
+
+    .composer-select option:hover,
+    .composer-select option:checked {
+      background: #1164a3;
+      color: #fff;
+    }
+
     .composer-input-row {
       display: flex;
       gap: 8px;
@@ -1333,10 +1345,22 @@
       const projects = currentData.projects || [];
       const connectedProjects = projects.filter(p => p.connected);
 
+      // Preserve current selection
+      const currentValue = composerProject.value;
+
       composerProject.innerHTML = '<option value="">Select a project...</option>' +
         connectedProjects.map(p =>
           `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name || p.id)}</option>`
         ).join('');
+
+      // Restore selection if still valid
+      if (currentValue && connectedProjects.some(p => p.id === currentValue)) {
+        composerProject.value = currentValue;
+      } else if (selectedProjectId && connectedProjects.some(p => p.id === selectedProjectId)) {
+        // Sync with card selection
+        composerProject.value = selectedProjectId;
+        updateComposerAgents();
+      }
     }
 
     function updateComposerAgents() {
@@ -1349,6 +1373,9 @@
         return;
       }
 
+      // Preserve current agent selection
+      const currentAgent = composerAgent.value;
+
       const project = (currentData.projects || []).find(p => p.id === projectId);
       const agents = project?.agents || [];
 
@@ -1360,6 +1387,14 @@
         ).join('');
 
       composerAgent.disabled = false;
+
+      // Restore agent selection if still valid
+      if (currentAgent) {
+        const validAgents = ['*', 'lead', ...agents.map(a => a.name)];
+        if (validAgents.includes(currentAgent)) {
+          composerAgent.value = currentAgent;
+        }
+      }
     }
 
     function updateComposerState() {
@@ -1505,7 +1540,7 @@
       document.getElementById('project-count').textContent = projects.length;
 
       projectList.innerHTML = projects.map(p => `
-        <li class="project-item ${p.connected ? 'connected' : ''}" data-project-id="${escapeHtml(p.id)}">
+        <li class="project-item ${p.connected ? 'connected' : ''} ${selectedProjectId === p.id ? 'active' : ''}" data-project-id="${escapeHtml(p.id)}">
           <span class="project-status-dot"></span>
           <span class="project-name">${escapeHtml(p.name || p.id)}</span>
         </li>
@@ -1535,8 +1570,9 @@
             `).join('')
           : '<div class="no-agents">No agents connected</div>';
 
+        const isSelected = selectedProjectId === p.id;
         return `
-          <div class="project-card ${p.connected ? '' : 'offline'}" data-project-id="${escapeHtml(p.id)}">
+          <div class="project-card ${p.connected ? '' : 'offline'} ${isSelected ? 'selected' : ''}" data-project-id="${escapeHtml(p.id)}">
             <div class="card-header">
               <div class="card-title-group">
                 <div class="card-icon">
@@ -1608,6 +1644,11 @@
       renderProjectCards(data.projects);
       renderMessages(data.messages);
       updateComposerProjects();
+      // Keep agent dropdown in sync if project is selected
+      if (composerProject.value) {
+        updateComposerAgents();
+        updateComposerState();
+      }
     }
 
     // WebSocket connection

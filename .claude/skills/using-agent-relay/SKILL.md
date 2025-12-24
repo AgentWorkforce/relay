@@ -114,7 +114,8 @@ relay bridge ~/auth ~/frontend ~/api
 
 # Spawn workers (lead mode)
 relay lead Alice
-@relay:spawn Dev1 claude "Implement login"
+->relay:spawn Dev1 claude "Implement login"
+->relay:release Dev1
 ```
 
 ## Common Mistakes

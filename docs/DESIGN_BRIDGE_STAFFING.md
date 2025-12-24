@@ -110,8 +110,8 @@ That's it. The system handles:
 Workers are created via relay messages - not CLI commands:
 
 ```bash
-@relay:spawn Dev1 claude "Build the login page"
-@relay:release Dev1
+->relay:spawn Dev1 claude "Build the login page"
+->relay:release Dev1
 ```
 
 ### What's Hidden
@@ -120,7 +120,7 @@ Workers are created via relay messages - not CLI commands:
 |------------|----------------|
 | `bridge ~/auth ~/frontend` | Socket discovery, multi-connection, lead detection |
 | `lead Alice` | Spawn capability, project detection, daemon registration |
-| `@relay:spawn Dev1 claude "task"` | Tmux window, agent launch, task injection |
+| `->relay:spawn Dev1 claude "task"` | Tmux window, agent launch, task injection |
 
 ---
 
@@ -159,17 +159,17 @@ Workers are created via relay messages - not CLI commands:
 
 ```bash
 # Lead spawns a worker
-@relay:spawn Dev1 claude "Implement login endpoint"
+->relay:spawn Dev1 claude "Implement login endpoint"
 
 # Lead spawns with specific model
-@relay:spawn SeniorDev claude:opus "Design the auth architecture"
-@relay:spawn QuickFix claude:haiku "Fix typos in error messages"
+->relay:spawn SeniorDev claude:opus "Design the auth architecture"
+->relay:spawn QuickFix claude:haiku "Fix typos in error messages"
 
 # Lead releases a worker
-@relay:release Dev1
+->relay:release Dev1
 
 # Lead releases all workers
-@relay:release *
+->relay:release *
 ```
 
 ---
@@ -179,7 +179,7 @@ Workers are created via relay messages - not CLI commands:
 ### Spawn Message Format
 
 ```
-@relay:spawn <name> <cli>[:<model>] "<initial_task>"
+->relay:spawn <name> <cli>[:<model>] "<initial_task>"
 ```
 
 | Field | Required | Description |
@@ -196,7 +196,7 @@ Workers are created via relay messages - not CLI commands:
 │  Lead   │         │ Daemon  │         │ Spawner │
 └────┬────┘         └────┬────┘         └────┬────┘
      │                   │                   │
-     │ @relay:spawn Dev1 │                   │
+     │ ->relay:spawn Dev1│                   │
      │ claude "task"     │                   │
      │──────────────────>│                   │
      │                   │                   │
@@ -317,15 +317,15 @@ export class AgentSpawner {
 │     @relay:api-service:lead APPROVED: Staff 3 devs for endpoints       │
 │                                                                        │
 │  5. LEADS STAFF THEIR TEAMS                                            │
-│     Alice: @relay:spawn Dev1 claude "Implement OAuth token flow"       │
-│            @relay:spawn Dev2 claude "Implement OAuth callback"         │
-│            @relay:spawn QA1 claude "Write OAuth integration tests"     │
+│     Alice: ->relay:spawn Dev1 claude "Implement OAuth token flow"      │
+│            ->relay:spawn Dev2 claude "Implement OAuth callback"        │
+│            ->relay:spawn QA1 claude "Write OAuth integration tests"    │
 │                                                                        │
-│     Bob:   @relay:spawn Reviewer claude "Review dashboard PR #42"      │
+│     Bob:   ->relay:spawn Reviewer claude "Review dashboard PR #42"     │
 │                                                                        │
-│     Carol: @relay:spawn Dev1 claude "POST /users endpoint"             │
-│            @relay:spawn Dev2 claude "GET /users/:id endpoint"          │
-│            @relay:spawn Dev3 claude "DELETE /users/:id endpoint"       │
+│     Carol: ->relay:spawn Dev1 claude "POST /users endpoint"            │
+│            ->relay:spawn Dev2 claude "GET /users/:id endpoint"         │
+│            ->relay:spawn Dev3 claude "DELETE /users/:id endpoint"      │
 │                                                                        │
 └────────────────────────────────────────────────────────────────────────┘
 ```
@@ -351,9 +351,9 @@ export class AgentSpawner {
 # Leads report and release workers
 @relay:architect STATUS: OAuth complete, PR #123 ready
                  RELEASING: Dev1, Dev2, QA1
-@relay:release Dev1
-@relay:release Dev2
-@relay:release QA1
+->relay:release Dev1
+->relay:release Dev2
+->relay:release QA1
 
 # Architect summarizes for dashboard/records
 @relay:*:lead Good work today. Tomorrow: auth integration testing
@@ -401,7 +401,7 @@ http://localhost:3888/bridge?projects=auth-service,frontend,api-service
 │ 09:02 api:Carol → Architect: STATUS: Spec complete...                   │
 │ 09:05 Architect → api:lead: Send spec to Alice                          │
 │ 09:06 api:Carol → auth:Alice: Here's the spec...                        │
-│ 09:10 auth:Alice: @relay:spawn Dev1 claude "OAuth token..."             │
+│ 09:10 auth:Alice: ->relay:spawn Dev1 claude "OAuth token..."            │
 └─────────────────────────────────────────────────────────────────────────┘
 
 │  [Click project to drill down]  [Click agent to attach]                 │
@@ -495,8 +495,8 @@ export class MultiProjectClient {
 ```typescript
 // Extended pattern for cross-project messaging
 const CROSS_PROJECT_PATTERN = /^@relay:([a-zA-Z0-9_-]+):([a-zA-Z0-9_*]+)\s+(.+)$/;
-const SPAWN_PATTERN = /^@relay:spawn\s+(\S+)\s+(\S+)\s+"([^"]+)"$/;
-const RELEASE_PATTERN = /^@relay:release\s+(\S+)$/;
+const SPAWN_PATTERN = /^->relay:spawn\s+(\S+)\s+(\S+)\s+"([^"]+)"$/;
+const RELEASE_PATTERN = /^->relay:release\s+(\S+)$/;
 
 export function parseRelayCommand(line: string): RelayCommand | null {
   // Check for spawn command
@@ -870,7 +870,7 @@ export interface CrossProjectEnvelope<T> extends Envelope<T> {
 The Bridge & Staffing feature enables:
 
 - **Architect/Principal** as cross-project orchestrator via `agent-relay bridge`
-- **Leads** who can dynamically spawn worker agents via `@relay:spawn`
+- **Leads** who can dynamically spawn worker agents via `->relay:spawn`
 - **Standup protocol** for daily work coordination
 - **Multi-project dashboard** for visibility across all projects
 - **SE vernacular** with familiar role hierarchy

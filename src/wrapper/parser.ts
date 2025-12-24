@@ -313,13 +313,33 @@ export class OutputParser {
       return CODE_FENCE.test(line) || line.includes('[[RELAY]]') || BLOCK_END.test(line);
     };
 
-    const shouldStopContinuation = (line: string): boolean => {
+    const shouldStopContinuation = (line: string, continuationCount: number, lines: string[], currentIndex: number): boolean => {
       const trimmed = line.trim();
-      if (trimmed === '') return true; // Blank line ends the message
       if (isInlineStart(line)) return true;
       if (isBlockMarker(line)) return true;
       if (PROMPTISH_LINE.test(trimmed)) return true;
       if (RELAY_INJECTION_PREFIX.test(line)) return true; // Avoid swallowing injected inbound messages
+
+      // Allow blank lines only in structured content like tables or between numbered sections
+      if (trimmed === '') {
+        // If we haven't started continuation yet, stop on blank
+        if (continuationCount === 0) return true;
+
+        // Look ahead to see if there's more content that looks like structured markdown
+        for (let j = currentIndex + 1; j < lines.length; j++) {
+          const nextLine = lines[j].trim();
+          if (nextLine === '') {
+            // Double blank line always stops
+            return true;
+          }
+          // Only continue for table rows or numbered list items after blank
+          if (/^\|/.test(nextLine)) return false; // Table row
+          if (/^\d+[.)]\s/.test(nextLine)) return false; // Numbered list like "1." or "2)"
+          // Stop for anything else after a blank line
+          return true;
+        }
+        return true; // No more content, stop
+      }
       return false;
     };
 
@@ -329,7 +349,7 @@ export class OutputParser {
       prevStripped: string,
       continuationCount: number
     ): boolean => {
-      if (shouldStopContinuation(stripped)) return false;
+      // Note: shouldStopContinuation is already checked in the main loop before calling this
       if (/^[ \t]/.test(original)) return true; // Indented lines from TUI wrapping
       if (BULLET_OR_NUMBERED_LIST.test(stripped)) return true; // Bullet/numbered lists after ->relay:
       const prevTrimmed = prevStripped.trimEnd();
@@ -382,7 +402,7 @@ export class OutputParser {
             const prevStripped = stripAnsi(rawLines[rawLines.length - 1] ?? '');
 
             // Stop if this line clearly marks a new block, prompt, or inline command
-            if (shouldStopContinuation(nextStripped)) {
+            if (shouldStopContinuation(nextStripped, continuationLines, lines, i + 1)) {
               break;
             }
 

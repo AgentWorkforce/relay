@@ -227,11 +227,7 @@ export function renderMessages(): void {
 
   elements.messagesList.innerHTML = html;
 
-  // Scroll to bottom
-  const container = elements.messagesList.parentElement;
-  if (container) {
-    container.scrollTop = container.scrollHeight;
-  }
+  // Note: Auto-scroll removed - interferes with manual scrolling through history
 
   // Attach thread click handlers
   attachThreadHandlers();
