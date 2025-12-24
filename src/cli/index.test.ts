@@ -114,6 +114,42 @@ describe('CLI', () => {
     });
   });
 
+  describe('attach', () => {
+    it('should show help for attach command', async () => {
+      const { stdout } = await runCli('attach --help');
+      expect(stdout).toContain('Attach to a running agent session');
+      expect(stdout).toContain('<name>');
+    });
+
+    it('should error when session does not exist', async () => {
+      const { stderr, code } = await runCli('attach nonexistent-agent');
+      expect(code).not.toBe(0);
+      expect(stderr).toContain('No session found');
+    });
+  });
+
+  describe('kill', () => {
+    it('should show help for kill command', async () => {
+      const { stdout } = await runCli('kill --help');
+      expect(stdout).toContain('Stop a detached agent');
+      expect(stdout).toContain('<name>');
+      expect(stdout).toContain('--force');
+    });
+
+    it('should handle killing nonexistent agent gracefully', async () => {
+      const { stdout } = await runCli('kill nonexistent-agent-12345');
+      expect(stdout).toContain('No running agent found');
+    });
+  });
+
+  describe('detach flag', () => {
+    it('should show -d/--detach in help', async () => {
+      const { stdout } = await runCli('--help');
+      expect(stdout).toContain('-d, --detach');
+      expect(stdout).toContain('background');
+    });
+  });
+
   describe('history', () => {
     it('should show history or empty message', async () => {
       const { stdout, code } = await runCli('history --limit 5');
