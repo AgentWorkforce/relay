@@ -63,7 +63,17 @@ interface AgentSummary {
   context?: string;
 }
 
-export async function startDashboard(port: number, dataDir: string, teamDir: string, dbPath?: string): Promise<number> {
+export interface DashboardOptions {
+  port: number;
+  dataDir: string;
+  teamDir: string;
+  dbPath?: string;
+  enableSpawner?: boolean;
+  projectRoot?: string;
+}
+
+export async function startDashboard(options: DashboardOptions): Promise<number> {
+  const { port, dataDir, teamDir, dbPath, enableSpawner, projectRoot } = options;
   console.log('Starting dashboard...');
   console.log('__dirname:', __dirname);
   const publicDir = path.join(__dirname, 'public');

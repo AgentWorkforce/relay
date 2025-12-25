@@ -49,6 +49,16 @@ export function initElements(): DOMElements {
     threadSendBtn: document.getElementById('thread-send-btn') as HTMLButtonElement,
     mentionAutocomplete: document.getElementById('mention-autocomplete')!,
     mentionAutocompleteList: document.getElementById('mention-autocomplete-list')!,
+    // Spawn modal elements
+    spawnAgentBtn: document.getElementById('spawn-agent-btn') as HTMLButtonElement,
+    spawnModalOverlay: document.getElementById('spawn-modal-overlay')!,
+    spawnModalClose: document.getElementById('spawn-modal-close') as HTMLButtonElement,
+    spawnAgentName: document.getElementById('spawn-agent-name') as HTMLInputElement,
+    spawnAgentCli: document.getElementById('spawn-agent-cli') as HTMLSelectElement,
+    spawnAgentModel: document.getElementById('spawn-agent-model') as HTMLInputElement,
+    spawnAgentTask: document.getElementById('spawn-agent-task') as HTMLTextAreaElement,
+    spawnModalCancel: document.getElementById('spawn-modal-cancel') as HTMLButtonElement,
+    spawnModalSubmit: document.getElementById('spawn-modal-submit') as HTMLButtonElement,
   };
   return elements;
 }
@@ -799,4 +809,95 @@ export function getCurrentMentionQuery(): string | null {
   }
 
   return null;
+}
+
+// Track spawned agents
+let spawnedAgents: string[] = [];
+
+/**
+ * Open the spawn agent modal
+ */
+export function openSpawnModal(): void {
+  elements.spawnModalOverlay.classList.add('visible');
+  elements.spawnAgentName.value = '';
+  elements.spawnAgentCli.value = 'claude';
+  elements.spawnAgentModel.value = '';
+  elements.spawnAgentTask.value = '';
+  elements.spawnAgentName.focus();
+}
+
+/**
+ * Close the spawn agent modal
+ */
+export function closeSpawnModal(): void {
+  elements.spawnModalOverlay.classList.remove('visible');
+}
+
+/**
+ * Spawn a new agent via the API
+ */
+export async function spawnAgent(): Promise<{ success: boolean; error?: string }> {
+  const name = elements.spawnAgentName.value.trim();
+  const cli = elements.spawnAgentCli.value || 'claude';
+  const model = elements.spawnAgentModel.value.trim();
+  const task = elements.spawnAgentTask.value.trim();
+
+  if (!name) {
+    return { success: false, error: 'Agent name is required' };
+  }
+
+  elements.spawnModalSubmit.disabled = true;
+
+  try {
+    const response = await fetch('/api/spawn', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, cli, model, task }),
+    });
+
+    const result = await response.json();
+
+    if (response.ok && result.success) {
+      // Refresh spawned agents list
+      await fetchSpawnedAgents();
+
+      // Close modal after brief delay
+      setTimeout(() => {
+        closeSpawnModal();
+      }, 500);
+
+      return { success: true };
+    } else {
+      throw new Error(result.error || 'Failed to spawn agent');
+    }
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  } finally {
+    elements.spawnModalSubmit.disabled = false;
+  }
+}
+
+/**
+ * Fetch list of spawned agents from API
+ */
+export async function fetchSpawnedAgents(): Promise<void> {
+  try {
+    const response = await fetch('/api/spawned');
+    const result = await response.json();
+
+    if (result.success && Array.isArray(result.agents)) {
+      spawnedAgents = result.agents.map((a: any) => a.name);
+      // Re-render agents to show spawned status
+      renderAgents();
+    }
+  } catch (err) {
+    console.error('[UI] Failed to fetch spawned agents:', err);
+  }
+}
+
+/**
+ * Check if an agent is spawned
+ */
+export function isSpawnedAgent(name: string): boolean {
+  return spawnedAgents.includes(name);
 }

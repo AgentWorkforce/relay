@@ -93,14 +93,15 @@ export interface DOMElements {
   mentionAutocomplete: HTMLElement;
   mentionAutocompleteList: HTMLElement;
   // Spawn modal elements
-  spawnBtn: HTMLButtonElement;
+  spawnAgentBtn: HTMLButtonElement;
   spawnModalOverlay: HTMLElement;
   spawnModalClose: HTMLButtonElement;
-  spawnNameInput: HTMLInputElement;
-  spawnCliInput: HTMLInputElement;
-  spawnTaskInput: HTMLTextAreaElement;
-  spawnSubmitBtn: HTMLButtonElement;
-  spawnStatus: HTMLElement;
+  spawnAgentName: HTMLInputElement;
+  spawnAgentCli: HTMLSelectElement;
+  spawnAgentModel: HTMLInputElement;
+  spawnAgentTask: HTMLTextAreaElement;
+  spawnModalCancel: HTMLButtonElement;
+  spawnModalSubmit: HTMLButtonElement;
 }
 
 export interface SpawnedAgent {
