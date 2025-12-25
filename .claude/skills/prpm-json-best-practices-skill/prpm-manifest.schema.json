@@ -1,0 +1,758 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://prpm.dev/schemas/manifest.json",
+  "title": "PRPM Package Manifest",
+  "description": "Schema for PRPM package manifest (prpm.json)",
+  "type": "object",
+  "required": [
+    "name",
+    "version",
+    "description",
+    "format"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Package name in format: package-name or @scope/package-name",
+      "pattern": "^(@[a-z0-9-]+\\/)?[a-z0-9-]+$",
+      "minLength": 1,
+      "maxLength": 214,
+      "examples": [
+        "react-rules",
+        "@community/testing-skills",
+        "@company/cursor-rules"
+      ]
+    },
+    "version": {
+      "type": "string",
+      "description": "Semantic version (semver)",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(-[a-zA-Z0-9.-]+)?(\\+[a-zA-Z0-9.-]+)?$",
+      "examples": [
+        "1.0.0",
+        "2.1.3",
+        "1.0.0-beta.1"
+      ]
+    },
+    "description": {
+      "type": "string",
+      "description": "Package description",
+      "minLength": 10,
+      "maxLength": 500
+    },
+    "format": {
+      "type": "string",
+      "description": "Package format - the AI tool/platform this package is for",
+      "enum": [
+        "cursor",
+        "claude",
+        "claude-plugin",
+        "continue",
+        "windsurf",
+        "copilot",
+        "kiro",
+        "agents.md",
+        "generic",
+        "mcp"
+      ]
+    },
+    "subtype": {
+      "type": "string",
+      "description": "Package subtype - the functional category (optional, defaults to 'rule')",
+      "enum": [
+        "rule",
+        "agent",
+        "skill",
+        "slash-command",
+        "prompt",
+        "workflow",
+        "tool",
+        "template",
+        "collection",
+        "chatmode",
+        "hook",
+        "plugin",
+        "server"
+      ]
+    },
+    "author": {
+      "description": "Package author",
+      "oneOf": [
+        {
+          "type": "string",
+          "examples": [
+            "John Doe",
+            "Jane Smith"
+          ]
+        },
+        {
+          "type": "object",
+          "required": [
+            "name"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Author name"
+            },
+            "email": {
+              "type": "string",
+              "format": "email",
+              "description": "Author email"
+            },
+            "url": {
+              "type": "string",
+              "format": "uri",
+              "description": "Author URL"
+            }
+          }
+        }
+      ]
+    },
+    "license": {
+      "type": "string",
+      "description": "SPDX license identifier",
+      "examples": [
+        "MIT",
+        "Apache-2.0",
+        "GPL-3.0",
+        "BSD-3-Clause"
+      ]
+    },
+    "license_text": {
+      "type": "string",
+      "description": "Full text of the license file for proper attribution"
+    },
+    "license_url": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL to the license file in the repository"
+    },
+    "repository": {
+      "type": "string",
+      "format": "uri",
+      "description": "Repository URL",
+      "examples": [
+        "https://github.com/username/repo"
+      ]
+    },
+    "homepage": {
+      "type": "string",
+      "format": "uri",
+      "description": "Package homepage URL"
+    },
+    "documentation": {
+      "type": "string",
+      "format": "uri",
+      "description": "Documentation URL"
+    },
+    "organization": {
+      "type": "string",
+      "description": "Organization name or ID to publish this package under. If not specified, publishes to personal account.",
+      "examples": [
+        "my-team",
+        "my-company"
+      ]
+    },
+    "private": {
+      "type": "boolean",
+      "description": "Whether the package is private. Private packages are only accessible to the owner/organization members. Defaults to false (public).",
+      "default": false
+    },
+    "eager": {
+      "type": "boolean",
+      "description": "Whether this package should be loaded eagerly (at session start) or lazily (on-demand). Only applies to skills and agents in progressive disclosure formats (AGENTS.md, GEMINI.md, etc.). Defaults to false (lazy loading).",
+      "default": false,
+      "examples": [true, false]
+    },
+    "scripts": {
+      "type": "object",
+      "description": "Lifecycle scripts that run during package operations. Only applies to multi-package manifests (prpm.json with packages array).",
+      "properties": {
+        "prepublishOnly": {
+          "type": "string",
+          "description": "Script to run before publishing (recommended - only runs on 'prpm publish')",
+          "examples": [
+            "npm run build",
+            "cd packages/hooks && npm run build",
+            "npm test && npm run build"
+          ]
+        },
+        "prepublish": {
+          "type": "string",
+          "description": "Script to run before publishing and on npm install (not recommended - use prepublishOnly instead)",
+          "examples": [
+            "npm run build"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "tags": {
+      "type": "array",
+      "description": "Package tags for categorization",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 10,
+      "uniqueItems": true,
+      "examples": [
+        [
+          "productivity",
+          "coding"
+        ],
+        [
+          "testing",
+          "quality"
+        ]
+      ]
+    },
+    "keywords": {
+      "type": "array",
+      "description": "Search keywords",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 20,
+      "uniqueItems": true,
+      "examples": [
+        [
+          "ai",
+          "prompts",
+          "development"
+        ]
+      ]
+    },
+    "category": {
+      "type": "string",
+      "description": "Package category",
+      "examples": [
+        "development",
+        "productivity",
+        "testing"
+      ]
+    },
+    "files": {
+      "description": "Files to include in package. Can be simple paths or enhanced file objects with metadata.",
+      "oneOf": [
+        {
+          "type": "array",
+          "description": "Simple format: array of file paths",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "examples": [
+            [
+              "skill.md",
+              "README.md"
+            ],
+            [
+              ".cursor/rules/react.mdc",
+              "LICENSE"
+            ]
+          ]
+        },
+        {
+          "type": "array",
+          "description": "Enhanced format: array of file objects with metadata",
+          "items": {
+            "type": "object",
+            "required": [
+              "path",
+              "format"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Relative path to file",
+                "examples": [
+                  ".claude/skills/tdd.md",
+                  ".cursor/rules/react.mdc",
+                  ".continue/rules/python.json"
+                ]
+              },
+              "format": {
+                "type": "string",
+                "description": "File format - the AI tool/platform this file is for",
+                "enum": [
+                  "cursor",
+                  "claude",
+                  "claude-plugin",
+                  "continue",
+                  "windsurf",
+                  "copilot",
+                  "kiro",
+                  "agents.md",
+                  "generic",
+                  "mcp"
+                ]
+              },
+              "subtype": {
+                "type": "string",
+                "description": "File subtype - the functional category",
+                "enum": [
+                  "rule",
+                  "agent",
+                  "skill",
+                  "slash-command",
+                  "prompt",
+                  "workflow",
+                  "tool",
+                  "template",
+                  "collection",
+                  "chatmode",
+                  "hook",
+                  "plugin",
+                  "server"
+                ]
+              },
+              "name": {
+                "type": "string",
+                "description": "Display name for this file",
+                "examples": [
+                  "React Rules",
+                  "Test-Driven Development"
+                ]
+              },
+              "description": {
+                "type": "string",
+                "description": "Description of what this file does"
+              },
+              "tags": {
+                "type": "array",
+                "description": "File-specific tags",
+                "items": {
+                  "type": "string"
+                },
+                "uniqueItems": true,
+                "examples": [
+                  [
+                    "react",
+                    "typescript"
+                  ],
+                  [
+                    "testing",
+                    "tdd"
+                  ]
+                ]
+              },
+              "eager": {
+                "type": "boolean",
+                "description": "File-level eager setting. Overrides package-level eager for this specific file.",
+                "default": false
+              }
+            },
+            "additionalProperties": false
+          },
+          "minItems": 1
+        }
+      ]
+    },
+    "main": {
+      "type": "string",
+      "description": "Main entry file (for single-file packages)",
+      "examples": [
+        "index.md",
+        "skill.md"
+      ]
+    },
+    "dependencies": {
+      "type": "object",
+      "description": "Package dependencies",
+      "patternProperties": {
+        "^(@[a-z0-9-]+\\/)?[a-z0-9-]+$": {
+          "type": "string",
+          "pattern": "^(\\^|~)?\\d+\\.\\d+\\.\\d+(-[a-zA-Z0-9.-]+)?(\\+[a-zA-Z0-9.-]+)?$"
+        }
+      },
+      "additionalProperties": false,
+      "examples": [
+        {
+          "@pr-pm/utils": "^1.0.0",
+          "common-rules": "~2.1.0"
+        }
+      ]
+    },
+    "peerDependencies": {
+      "type": "object",
+      "description": "Peer dependencies (packages that should be installed alongside)",
+      "patternProperties": {
+        "^(@[a-z0-9-]+\\/)?[a-z0-9-]+$": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "engines": {
+      "type": "object",
+      "description": "Required engine versions",
+      "properties": {
+        "prpm": {
+          "type": "string",
+          "description": "Required PRPM version"
+        },
+        "node": {
+          "type": "string",
+          "description": "Required Node.js version"
+        }
+      },
+      "additionalProperties": false,
+      "examples": [
+        {
+          "prpm": ">=1.0.0",
+          "node": ">=18.0.0"
+        }
+      ]
+    },
+    "packages": {
+      "type": "array",
+      "description": "Array of packages to publish from a single manifest (multi-package publishing). Packages inherit top-level fields unless overridden.",
+      "items": {
+        "$ref": "#"
+      },
+      "minItems": 1
+    },
+    "collections": {
+      "type": "array",
+      "description": "Array of collections to publish. Collections bundle multiple packages together for easier installation.",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "description", "packages"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique collection identifier (kebab-case)",
+            "pattern": "^[a-z0-9-]+$",
+            "minLength": 3,
+            "maxLength": 100,
+            "examples": ["nextjs-complete", "fullstack-setup", "react-essentials"]
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name of the collection",
+            "minLength": 3,
+            "maxLength": 100,
+            "examples": ["Next.js Complete", "Full Stack Setup"]
+          },
+          "description": {
+            "type": "string",
+            "description": "What this collection provides",
+            "minLength": 10,
+            "maxLength": 500
+          },
+          "version": {
+            "type": "string",
+            "description": "Semantic version of the collection",
+            "pattern": "^\\d+\\.\\d+\\.\\d+(-[a-zA-Z0-9.-]+)?(\\+[a-zA-Z0-9.-]+)?$",
+            "examples": ["1.0.0", "2.1.0"]
+          },
+          "category": {
+            "type": "string",
+            "description": "Collection category",
+            "enum": ["development", "testing", "deployment", "data-science", "devops", "design", "documentation", "security", "performance", "general"],
+            "examples": ["development", "testing"]
+          },
+          "tags": {
+            "type": "array",
+            "description": "Tags for discoverability (kebab-case)",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]+$"
+            },
+            "minItems": 1,
+            "maxItems": 10,
+            "examples": [["react", "typescript", "nextjs"], ["python", "data-science", "ml"]]
+          },
+          "icon": {
+            "type": "string",
+            "description": "Emoji or icon for the collection",
+            "maxLength": 10,
+            "examples": ["⚛️", "🚀", "📦"]
+          },
+          "packages": {
+            "type": "array",
+            "description": "Array of packages included in this collection",
+            "items": {
+              "type": "object",
+              "required": ["packageId"],
+              "properties": {
+                "packageId": {
+                  "type": "string",
+                  "description": "Package identifier to include",
+                  "minLength": 1,
+                  "examples": ["typescript-strict", "react-best-practices"]
+                },
+                "version": {
+                  "type": "string",
+                  "description": "Version range (semver) or 'latest'",
+                  "examples": ["^1.0.0", "~2.1.0", "1.0.0", "latest"]
+                },
+                "required": {
+                  "type": "boolean",
+                  "description": "Whether this package is required (true) or optional (false)",
+                  "default": true
+                },
+                "reason": {
+                  "type": "string",
+                  "description": "Explanation of why this package is included",
+                  "maxLength": 200,
+                  "examples": ["Enforces strict TypeScript type safety", "React component best practices"]
+                }
+              }
+            },
+            "minItems": 1
+          }
+        }
+      },
+      "minItems": 1
+    }
+  },
+  "additionalProperties": false,
+  "examples": [
+    {
+      "name": "@username/simple-package",
+      "version": "1.0.0",
+      "description": "A simple package with basic files",
+      "format": "claude", "subtype": "skill",
+      "author": "Your Name",
+      "license": "MIT",
+      "files": [
+        "skill.md",
+        "README.md"
+      ]
+    },
+    {
+      "name": "@company/coding-standards",
+      "version": "1.0.0",
+      "description": "Team coding standards that must be active in every session",
+      "format": "claude",
+      "subtype": "skill",
+      "author": "Company Team",
+      "organization": "my-company",
+      "license": "MIT",
+      "eager": true,
+      "files": [
+        ".claude/skills/coding-standards/SKILL.md"
+      ]
+    },
+    {
+      "name": "@company/team-package",
+      "version": "1.0.0",
+      "description": "A package published under organization account",
+      "format": "cursor",
+      "author": "Team Name",
+      "organization": "my-company",
+      "license": "MIT",
+      "files": [
+        ".cursor/rules/guidelines.mdc",
+        "README.md"
+      ]
+    },
+    {
+      "name": "@username/cursor-rules",
+      "version": "1.0.0",
+      "description": "Multiple Cursor rules for different languages",
+      "format": "cursor",
+      "author": {
+        "name": "Your Name",
+        "email": "you@example.com"
+      },
+      "license": "MIT",
+      "repository": "https://github.com/username/cursor-rules",
+      "tags": [
+        "cursor",
+        "rules",
+        "multi-language"
+      ],
+      "files": [
+        {
+          "path": ".cursor/rules/typescript.mdc",
+          "format": "cursor",
+          "name": "TypeScript Rules",
+          "tags": [
+            "typescript",
+            "frontend"
+          ]
+        },
+        {
+          "path": ".cursor/rules/python.mdc",
+          "format": "cursor",
+          "name": "Python Rules",
+          "tags": [
+            "python",
+            "backend"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "@community/testing-suite",
+      "version": "2.0.0",
+      "description": "Complete testing suite with skills and agents",
+      "format": "generic", "subtype": "collection",
+      "author": "Community",
+      "license": "MIT",
+      "tags": [
+        "testing",
+        "quality"
+      ],
+      "files": [
+        {
+          "path": ".claude/skills/tdd.md",
+          "format": "claude", "subtype": "skill",
+          "name": "Test-Driven Development"
+        },
+        {
+          "path": ".claude/agents/test-generator.md",
+          "format": "claude", "subtype": "agent",
+          "name": "Test Generator"
+        }
+      ]
+    },
+    {
+      "name": "@username/copilot-instructions",
+      "version": "1.0.0",
+      "description": "GitHub Copilot instructions for API development",
+      "format": "copilot",
+      "author": "Your Name",
+      "license": "MIT",
+      "tags": [
+        "copilot",
+        "api",
+        "backend"
+      ],
+      "files": [
+        "api-guidelines.md"
+      ]
+    },
+    {
+      "name": "@username/kiro-steering",
+      "version": "1.0.0",
+      "description": "Kiro steering file for testing standards",
+      "format": "kiro",
+      "author": "Your Name",
+      "license": "MIT",
+      "tags": [
+        "kiro",
+        "testing",
+        "quality"
+      ],
+      "files": [
+        "testing.md"
+      ]
+    },
+    {
+      "name": "@username/windsurf-rules",
+      "version": "1.0.0",
+      "description": "Windsurf coding rules for React projects",
+      "format": "windsurf",
+      "author": "Your Name",
+      "license": "MIT",
+      "tags": [
+        "windsurf",
+        "react",
+        "frontend"
+      ],
+      "files": [
+        ".windsurfrules"
+      ]
+    },
+    {
+      "name": "@company/private-package",
+      "version": "1.0.0",
+      "description": "A private package only accessible to organization members",
+      "format": "claude",
+      "subtype": "skill",
+      "author": "Company Team",
+      "organization": "my-company",
+      "private": true,
+      "license": "Proprietary",
+      "files": [
+        "internal-skill.md",
+        "README.md"
+      ]
+    },
+    {
+      "name": "@username/multi-package-example",
+      "version": "1.0.0",
+      "description": "Multi-package manifest example",
+      "author": "Your Name",
+      "license": "MIT",
+      "repository": "https://github.com/username/multi-package",
+      "packages": [
+        {
+          "name": "@username/package-one",
+          "version": "1.0.0",
+          "description": "First package in the multi-package manifest",
+          "format": "claude",
+          "subtype": "skill",
+          "files": [
+            "package-one/SKILL.md"
+          ]
+        },
+        {
+          "name": "@username/package-two",
+          "version": "1.0.0",
+          "description": "Second package with different settings",
+          "format": "cursor",
+          "private": true,
+          "files": [
+            "package-two/.cursor/rules/main.mdc"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "@username/multi-package-with-collection",
+      "version": "1.0.0",
+      "description": "Repository with both packages and a collection",
+      "author": "Your Name",
+      "license": "MIT",
+      "packages": [
+        {
+          "name": "typescript-rules",
+          "version": "1.0.0",
+          "description": "TypeScript coding standards",
+          "format": "cursor",
+          "subtype": "rule",
+          "tags": ["typescript", "cursor"],
+          "files": [".cursor/rules/typescript.mdc"]
+        },
+        {
+          "name": "react-patterns",
+          "version": "1.0.0",
+          "description": "React best practices",
+          "format": "claude",
+          "subtype": "skill",
+          "tags": ["react", "best-practices"],
+          "files": [".claude/skills/react-patterns/SKILL.md"]
+        }
+      ],
+      "collections": [
+        {
+          "id": "fullstack-setup",
+          "name": "Full Stack Setup",
+          "description": "Complete full-stack development setup with TypeScript and React",
+          "version": "1.0.0",
+          "category": "development",
+          "tags": ["typescript", "react", "fullstack"],
+          "icon": "🚀",
+          "packages": [
+            {
+              "packageId": "typescript-rules",
+              "version": "^1.0.0",
+              "required": true,
+              "reason": "TypeScript coding standards for the project"
+            },
+            {
+              "packageId": "react-patterns",
+              "version": "^1.0.0",
+              "required": true,
+              "reason": "React component best practices"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

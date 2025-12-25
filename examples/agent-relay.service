@@ -1,0 +1,43 @@
+# Systemd service file for agent-relay daemon
+#
+# Installation:
+#   1. Copy this file to /etc/systemd/system/agent-relay.service
+#   2. Edit the paths and user as needed
+#   3. Run: sudo systemctl daemon-reload
+#   4. Run: sudo systemctl enable agent-relay
+#   5. Run: sudo systemctl start agent-relay
+
+[Unit]
+Description=Agent Relay Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=your-username
+Group=your-username
+
+# Working directory (your project root)
+WorkingDirectory=/path/to/your/project
+
+# Environment configuration
+Environment=NODE_ENV=production
+Environment=AGENT_RELAY_DATA_DIR=/var/lib/agent-relay
+Environment=AGENT_RELAY_DASHBOARD_PORT=3888
+
+# Start the daemon
+ExecStart=/usr/bin/npx agent-relay up --port 3888
+
+# Graceful shutdown
+ExecStop=/usr/bin/npx agent-relay down
+
+# Restart on failure
+Restart=on-failure
+RestartSec=5
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=agent-relay
+
+[Install]
+WantedBy=multi-user.target

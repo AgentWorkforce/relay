@@ -8,6 +8,8 @@
 
 Agent Relay enables AI coding assistants (Claude, Codex, Gemini) running in separate terminals to **discover each other and communicate autonomously** - without any code changes to the AI systems.
 
+**Key differentiator:** agent-relay is a **composable messaging layer**, not a monolithic solution. It does one thing exceptionally well (<5ms real-time messaging) and integrates with best-of-breed tools for memory, UI, and workflows.
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                                                                         │
@@ -349,6 +351,7 @@ agent-relay/
 
 - **[ARCHITECTURE.md](./ARCHITECTURE.md)** - Complete technical deep-dive
 - **[README.md](./README.md)** - Quick start guide
+- **[docs/COMPETITIVE_ANALYSIS.md](./docs/COMPETITIVE_ANALYSIS.md)** - Comparison with 16 multi-agent tools
 
 ---
 

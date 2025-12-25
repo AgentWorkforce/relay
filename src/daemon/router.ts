@@ -153,7 +153,7 @@ export class Router {
     const to = envelope.to;
     const topic = envelope.topic;
 
-    console.log(`[router] ${senderName} -> ${to}: ${envelope.payload.body?.substring(0, 50)}...`);
+    console.log(`[router] ${senderName} -> ${to}:${envelope.payload.body?.substring(0, 50)}...`);
 
     if (to === '*') {
       // Broadcast to all (except sender)

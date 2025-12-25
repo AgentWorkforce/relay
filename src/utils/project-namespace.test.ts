@@ -145,9 +145,9 @@ describe('project-namespace', () => {
     it('should include current project if initialized', () => {
       // Get current project paths
       const currentPaths = getProjectPaths();
-
-      // Only test if .project marker exists (listProjects requires the marker, not just the dir)
       const markerPath = path.join(currentPaths.dataDir, '.project');
+
+      // Only test if project marker exists (project has been properly initialized)
       if (fs.existsSync(markerPath)) {
         const projects = listProjects();
         const found = projects.find(p => p.projectId === currentPaths.projectId);

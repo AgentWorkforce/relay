@@ -1,0 +1,29 @@
+{
+  "name": "prpm-packages",
+  "version": "1.0.0",
+  "author": "yourgithubusername",
+  "license": "MIT",
+  "repository": "https://github.com/yourgithubusername/repo",
+  "organization": "your-org",
+  "packages": [
+    {
+      "name": "package-one",
+      "version": "1.0.0",
+      "description": "Description of package one",
+      "private": true,
+      "format": "claude",
+      "subtype": "agent",
+      "tags": ["tag1", "tag2"],
+      "files": [".claude/agents/package-one.md"]
+    },
+    {
+      "name": "package-two",
+      "version": "1.0.0",
+      "description": "Description of package two",
+      "format": "cursor",
+      "subtype": "rule",
+      "tags": ["tag1", "tag3"],
+      "files": [".cursor/rules/package-two.mdc"]
+    }
+  ]
+}

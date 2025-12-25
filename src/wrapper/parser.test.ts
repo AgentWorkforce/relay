@@ -508,6 +508,109 @@ Out3
     });
   });
 
+  describe('Cross-project messaging syntax', () => {
+    it('parses project:agent syntax for cross-project messaging', () => {
+      const result = parser.parse('->relay:myproject:agent2 Hello from another project\n');
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0]).toMatchObject({
+        to: 'agent2',
+        project: 'myproject',
+        kind: 'message',
+        body: 'Hello from another project',
+      });
+    });
+
+    it('parses local agent without project', () => {
+      const result = parser.parse('->relay:agent2 Local message\n');
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].to).toBe('agent2');
+      expect(result.commands[0].project).toBeUndefined();
+    });
+
+    it('handles project names with dashes and underscores', () => {
+      const result = parser.parse('->relay:my-project_v2:some-agent Hello\n');
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].to).toBe('some-agent');
+      expect(result.commands[0].project).toBe('my-project_v2');
+    });
+
+    it('only splits on first colon to allow colons in agent names', () => {
+      const result = parser.parse('->relay:proj:agent:with:colons Message\n');
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].to).toBe('agent:with:colons');
+      expect(result.commands[0].project).toBe('proj');
+    });
+
+    it('handles cross-project with ->thinking: variant', () => {
+      const result = parser.parse('->thinking:otherproj:agent2 Thinking about something\n');
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0]).toMatchObject({
+        to: 'agent2',
+        project: 'otherproj',
+        kind: 'thinking',
+        body: 'Thinking about something',
+      });
+    });
+
+    it('handles cross-project broadcast', () => {
+      const result = parser.parse('->relay:prod-project:* Broadcast to all in prod\n');
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].to).toBe('*');
+      expect(result.commands[0].project).toBe('prod-project');
+    });
+
+    it('handles cross-project with thread syntax', () => {
+      const result = parser.parse('->relay:proj:agent [thread:abc123] Threaded cross-project message\n');
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0]).toMatchObject({
+        to: 'agent',
+        project: 'proj',
+        thread: 'abc123',
+        body: 'Threaded cross-project message',
+      });
+    });
+
+    it('parses cross-project in block format with explicit project field', () => {
+      const result = parser.parse('[[RELAY]]{"to":"agent2","project":"otherproj","type":"message","body":"Hello"}[[/RELAY]]\n');
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0]).toMatchObject({
+        to: 'agent2',
+        project: 'otherproj',
+        kind: 'message',
+        body: 'Hello',
+      });
+    });
+
+    it('parses cross-project in block format with colon syntax in to field', () => {
+      const result = parser.parse('[[RELAY]]{"to":"myproj:agent2","type":"message","body":"Hi"}[[/RELAY]]\n');
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0]).toMatchObject({
+        to: 'agent2',
+        project: 'myproj',
+        kind: 'message',
+        body: 'Hi',
+      });
+    });
+
+    it('explicit project field takes precedence over colon syntax in block format', () => {
+      const result = parser.parse('[[RELAY]]{"to":"ignored:agent2","project":"explicit","type":"message","body":"Test"}[[/RELAY]]\n');
+
+      expect(result.commands).toHaveLength(1);
+      // When explicit project is set, the to field is used as-is
+      expect(result.commands[0].to).toBe('ignored:agent2');
+      expect(result.commands[0].project).toBe('explicit');
+    });
+  });
+
   describe('Configurable prefix', () => {
     it('uses default ->relay: prefix', () => {
       const defaultParser = new OutputParser();

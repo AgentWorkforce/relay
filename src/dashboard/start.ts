@@ -13,4 +13,4 @@ console.log(`Starting dashboard for project: ${paths.projectRoot}`);
 console.log(`Data dir: ${paths.dataDir}`);
 console.log(`Database: ${paths.dbPath}`);
 
-startDashboard(port, paths.dataDir, paths.dbPath).catch(console.error);
+startDashboard(port, paths.dataDir, paths.teamDir, paths.dbPath).catch(console.error);

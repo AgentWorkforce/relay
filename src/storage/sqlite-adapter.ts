@@ -201,6 +201,30 @@ export class SqliteStorageAdapter implements StorageAdapter {
       CREATE INDEX IF NOT EXISTS idx_summaries_updated ON agent_summaries (last_updated);
     `);
 
+    // Create presence table for real-time status tracking
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS presence (
+        agent_name TEXT PRIMARY KEY,
+        status TEXT NOT NULL DEFAULT 'offline',
+        status_text TEXT,
+        last_activity INTEGER NOT NULL,
+        typing_in TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_presence_status ON presence (status);
+      CREATE INDEX IF NOT EXISTS idx_presence_activity ON presence (last_activity);
+    `);
+
+    // Create read_state table for tracking last read message per channel/conversation
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS read_state (
+        agent_name TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        last_read_ts INTEGER NOT NULL,
+        last_read_id TEXT,
+        PRIMARY KEY (agent_name, channel)
+      );
+    `);
+
     this.insertStmt = this.db.prepare(`
       INSERT OR REPLACE INTO messages
       (id, ts, sender, recipient, topic, kind, body, data, thread, delivery_seq, delivery_session_id, session_id, status, is_urgent)
@@ -618,5 +642,168 @@ export class SqliteStorageAdapter implements StorageAdapter {
       context: row.context ?? undefined,
       files: row.files ? JSON.parse(row.files) : undefined,
     }));
+  }
+
+  // ============ Presence Management ============
+
+  async updatePresence(presence: {
+    agentName: string;
+    status: 'online' | 'away' | 'busy' | 'offline';
+    statusText?: string;
+    typingIn?: string;
+  }): Promise<void> {
+    if (!this.db) {
+      throw new Error('SqliteStorageAdapter not initialized');
+    }
+
+    const stmt = this.db.prepare(`
+      INSERT OR REPLACE INTO presence
+      (agent_name, status, status_text, last_activity, typing_in)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+
+    stmt.run(
+      presence.agentName,
+      presence.status,
+      presence.statusText ?? null,
+      Date.now(),
+      presence.typingIn ?? null
+    );
+  }
+
+  async getPresence(agentName: string): Promise<{
+    agentName: string;
+    status: 'online' | 'away' | 'busy' | 'offline';
+    statusText?: string;
+    lastActivity: number;
+    typingIn?: string;
+  } | null> {
+    if (!this.db) {
+      throw new Error('SqliteStorageAdapter not initialized');
+    }
+
+    const stmt = this.db.prepare(`
+      SELECT agent_name, status, status_text, last_activity, typing_in
+      FROM presence
+      WHERE agent_name = ?
+    `);
+
+    const row: any = stmt.get(agentName);
+    if (!row) return null;
+
+    return {
+      agentName: row.agent_name,
+      status: row.status,
+      statusText: row.status_text ?? undefined,
+      lastActivity: row.last_activity,
+      typingIn: row.typing_in ?? undefined,
+    };
+  }
+
+  async getAllPresence(): Promise<Array<{
+    agentName: string;
+    status: 'online' | 'away' | 'busy' | 'offline';
+    statusText?: string;
+    lastActivity: number;
+    typingIn?: string;
+  }>> {
+    if (!this.db) {
+      throw new Error('SqliteStorageAdapter not initialized');
+    }
+
+    const stmt = this.db.prepare(`
+      SELECT agent_name, status, status_text, last_activity, typing_in
+      FROM presence
+      ORDER BY last_activity DESC
+    `);
+
+    const rows = stmt.all();
+    return rows.map((row: any) => ({
+      agentName: row.agent_name,
+      status: row.status,
+      statusText: row.status_text ?? undefined,
+      lastActivity: row.last_activity,
+      typingIn: row.typing_in ?? undefined,
+    }));
+  }
+
+  async setTypingIndicator(agentName: string, channel: string | null): Promise<void> {
+    if (!this.db) {
+      throw new Error('SqliteStorageAdapter not initialized');
+    }
+
+    const stmt = this.db.prepare(`
+      UPDATE presence
+      SET typing_in = ?, last_activity = ?
+      WHERE agent_name = ?
+    `);
+
+    stmt.run(channel, Date.now(), agentName);
+  }
+
+  // ============ Read State Management ============
+
+  async updateReadState(agentName: string, channel: string, lastReadTs: number, lastReadId?: string): Promise<void> {
+    if (!this.db) {
+      throw new Error('SqliteStorageAdapter not initialized');
+    }
+
+    const stmt = this.db.prepare(`
+      INSERT OR REPLACE INTO read_state
+      (agent_name, channel, last_read_ts, last_read_id)
+      VALUES (?, ?, ?, ?)
+    `);
+
+    stmt.run(agentName, channel, lastReadTs, lastReadId ?? null);
+  }
+
+  async getReadState(agentName: string, channel: string): Promise<{
+    lastReadTs: number;
+    lastReadId?: string;
+  } | null> {
+    if (!this.db) {
+      throw new Error('SqliteStorageAdapter not initialized');
+    }
+
+    const stmt = this.db.prepare(`
+      SELECT last_read_ts, last_read_id
+      FROM read_state
+      WHERE agent_name = ? AND channel = ?
+    `);
+
+    const row: any = stmt.get(agentName, channel);
+    if (!row) return null;
+
+    return {
+      lastReadTs: row.last_read_ts,
+      lastReadId: row.last_read_id ?? undefined,
+    };
+  }
+
+  async getUnreadCounts(agentName: string): Promise<Record<string, number>> {
+    if (!this.db) {
+      throw new Error('SqliteStorageAdapter not initialized');
+    }
+
+    // Get all read states for this agent
+    const readStates = this.db.prepare(`
+      SELECT channel, last_read_ts FROM read_state WHERE agent_name = ?
+    `).all(agentName) as Array<{ channel: string; last_read_ts: number }>;
+
+    const counts: Record<string, number> = {};
+
+    // Count unread messages for each channel (conversation with agent)
+    for (const { channel, last_read_ts } of readStates) {
+      const count = this.db.prepare(`
+        SELECT COUNT(*) as count FROM messages
+        WHERE recipient = ? AND ts > ?
+      `).get(channel, last_read_ts) as { count: number };
+
+      if (count.count > 0) {
+        counts[channel] = count.count;
+      }
+    }
+
+    return counts;
   }
 }

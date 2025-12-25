@@ -1,0 +1,51 @@
+{
+  "name": "@username/my-prompts-repo",
+  "author": "yourgithubusername",
+  "license": "MIT",
+  "repository": "https://github.com/username/my-collection",
+  "packages": [
+    {
+      "name": "tdd-skill",
+      "version": "1.0.0",
+      "description": "Guides you through TDD workflow",
+      "format": "claude",
+      "subtype": "skill",
+      "tags": ["testing", "tdd"],
+      "files": [".claude/skills/tdd.md"]
+    },
+    {
+      "name": "typescript-rules",
+      "version": "1.0.0",
+      "description": "Best practices for TypeScript development",
+      "format": "cursor",
+      "subtype": "rule",
+      "tags": ["typescript", "frontend"],
+      "files": [".cursor/rules/typescript.mdc"]
+    }
+  ],
+  "collections": [
+    {
+      "id": "testing-suite",
+      "name": "Complete Testing Suite",
+      "description": "A collection of testing tools and best practices for TDD",
+      "version": "1.0.0",
+      "category": "testing",
+      "tags": ["testing", "tdd", "productivity"],
+      "icon": "🧪",
+      "packages": [
+        {
+          "packageId": "tdd-skill",
+          "version": "^1.0.0",
+          "required": true,
+          "reason": "Essential TDD workflow guidance"
+        },
+        {
+          "packageId": "@external/test-runner",
+          "version": "^2.0.0",
+          "required": false,
+          "reason": "Optional external test runner"
+        }
+      ]
+    }
+  ]
+}

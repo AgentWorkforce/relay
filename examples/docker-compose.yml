@@ -1,0 +1,42 @@
+# Docker Compose example for agent-relay
+# Run with: docker-compose up
+
+version: '3.8'
+
+services:
+  relay-daemon:
+    image: node:20-slim
+    working_dir: /app
+    volumes:
+      - ..:/app
+      - relay-data:/data
+    environment:
+      - AGENT_RELAY_DATA_DIR=/data
+      - AGENT_RELAY_DASHBOARD_PORT=3888
+    ports:
+      - "3888:3888"
+    command: >
+      sh -c "npm install && npm run build && node dist/cli/index.js up --port 3888"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('net').connect(3888).on('error', () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Example agent container
+  agent-alice:
+    image: node:20-slim
+    working_dir: /app
+    volumes:
+      - ..:/app
+      - relay-data:/data
+    environment:
+      - AGENT_RELAY_DATA_DIR=/data
+    depends_on:
+      relay-daemon:
+        condition: service_healthy
+    command: >
+      sh -c "node dist/cli/index.js -n Alice echo 'Hello from Alice'"
+
+volumes:
+  relay-data:

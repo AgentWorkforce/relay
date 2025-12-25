@@ -1,0 +1,40 @@
+{
+  "name": "@prpm/collections",
+  "version": "1.0.0",
+  "description": "Official PRPM collections for popular development workflows",
+  "author": "PRPM Team",
+  "license": "MIT",
+  "repository": "https://github.com/prpm/collections",
+  "organization": "prpm",
+  "collections": [
+    {
+      "id": "nextjs-pro",
+      "name": "Next.js Professional Setup",
+      "description": "Complete Next.js development environment with TypeScript, React best practices, and modern tooling",
+      "version": "1.0.0",
+      "category": "development",
+      "tags": ["nextjs", "react", "typescript", "frontend"],
+      "icon": "⚡",
+      "packages": [
+        {
+          "packageId": "react-best-practices",
+          "version": "^2.0.0",
+          "required": true,
+          "reason": "Core React patterns and component guidelines"
+        },
+        {
+          "packageId": "typescript-strict",
+          "version": "latest",
+          "required": true,
+          "reason": "TypeScript strict mode for type safety"
+        },
+        {
+          "packageId": "tailwind-helper",
+          "version": "^1.5.0",
+          "required": false,
+          "reason": "Optional Tailwind CSS utilities"
+        }
+      ]
+    }
+  ]
+}

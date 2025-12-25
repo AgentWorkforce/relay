@@ -20,7 +20,8 @@
   },
   "scripts": {
     "postinstall": "npm rebuild better-sqlite3",
-    "build": "npm run clean && tsc",
+    "build": "npm run clean && tsc && npm run build:frontend",
+    "build:frontend": "esbuild src/dashboard/frontend/app.ts --bundle --outfile=src/dashboard/public/js/app.js --format=esm --target=es2022 --minify --sourcemap",
     "postbuild": "cp -r src/dashboard/public dist/dashboard/ && chmod +x dist/cli/index.js",
     "dev": "tsc -w",
     "dev:local": "npm run build && npm link && echo '✓ agent-relay linked globally'",
@@ -76,7 +77,9 @@
     "@typescript-eslint/eslint-plugin": "^8.18.2",
     "@typescript-eslint/parser": "^8.18.2",
     "@vitest/coverage-v8": "^2.1.8",
+    "esbuild": "^0.24.0",
     "eslint": "^8.57.1",
+    "jsdom": "^25.0.1",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   },

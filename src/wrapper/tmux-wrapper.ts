@@ -13,6 +13,7 @@
  */
 
 import { exec, execSync, spawn, ChildProcess } from 'node:child_process';
+import crypto from 'node:crypto';
 import { promisify } from 'node:util';
 import { RelayClient } from './client.js';
 import { OutputParser, type ParsedCommand, parseSummaryWithDetails, parseSessionEndFromOutput, ParsedMessageMetadata } from './parser.js';
@@ -77,6 +78,14 @@ export interface TmuxWrapperConfig {
   relayPrefix?: string;
   /** Run in detached mode (don't attach to tmux, run as background daemon) */
   detached?: boolean;
+  /** Callback for spawn commands (@relay:spawn WorkerName cli "task") */
+  onSpawn?: (name: string, cli: string, task: string) => Promise<void>;
+  /** Callback for release commands (@relay:release WorkerName) */
+  onRelease?: (name: string) => Promise<void>;
+  /** Max time to wait for stable pane output before injection (ms) */
+  outputStabilityTimeoutMs?: number;
+  /** Poll interval when checking pane stability before injection (ms) */
+  outputStabilityPollMs?: number;
 }
 
 /**
@@ -118,6 +127,8 @@ export class TmuxWrapper {
   private pendingRelayCommands: ParsedCommand[] = [];
   private queuedMessageHashes: Set<string> = new Set(); // For offline queue dedup
   private readonly MAX_PENDING_RELAY_COMMANDS = 50;
+  private processedSpawnCommands: Set<string> = new Set(); // Dedup spawn commands
+  private processedReleaseCommands: Set<string> = new Set(); // Dedup release commands
 
   constructor(config: TmuxWrapperConfig) {
     this.config = {
@@ -130,6 +141,8 @@ export class TmuxWrapper {
       debugLogIntervalMs: 0,
       mouseMode: true, // Enable mouse scroll passthrough by default
       activityIdleThresholdMs: 30_000, // Consider idle after 30s with no output
+      outputStabilityTimeoutMs: 2000,
+      outputStabilityPollMs: 200,
       ...config,
     };
 
@@ -317,19 +330,18 @@ export class TmuxWrapper {
         }
       }
 
-      // Harden session against accidental copy-mode / mouse capture that interrupts agents
-      const tmuxCopyModeBlockers = [
-        'unbind -T prefix [',                 // Disable prefix-[ copy-mode
-        'unbind -T prefix PageUp',            // Disable PageUp copy-mode entry
-        'unbind -T root WheelUpPane',         // Stop wheel from entering copy-mode
+      // Mouse scroll should work for both TUIs (alternate screen) and plain shells.
+      // If the pane is in alternate screen, pass scroll to the app; otherwise enter copy-mode and scroll tmux history.
+      const tmuxMouseBindings = [
+        'unbind -T root WheelUpPane',
         'unbind -T root WheelDownPane',
         'unbind -T root MouseDrag1Pane',
-        'bind -T root WheelUpPane send-keys -M',   // Pass wheel events through to app
-        'bind -T root WheelDownPane send-keys -M',
-        'bind -T root MouseDrag1Pane send-keys -M',
+        'bind -T root WheelUpPane if-shell -F "#{alternate_on}" "send-keys -M" "copy-mode -e; send-keys -X scroll-up"',
+        'bind -T root WheelDownPane if-shell -F "#{alternate_on}" "send-keys -M" "send-keys -X scroll-down"',
+        'bind -T root MouseDrag1Pane if-shell -F "#{alternate_on}" "send-keys -M" "copy-mode -e"',
       ];
 
-      for (const setting of tmuxCopyModeBlockers) {
+      for (const setting of tmuxMouseBindings) {
         try {
           execSync(`tmux ${setting}`, { stdio: 'pipe' });
         } catch {
@@ -542,6 +554,9 @@ export class TmuxWrapper {
 
       // Check for [[SESSION_END]] blocks to explicitly close session
       this.parseSessionEndAndClose(cleanContent);
+
+      // Check for @relay:spawn and @relay:release commands (lead mode)
+      this.parseSpawnReleaseCommands(cleanContent);
 
       this.updateActivityState();
 
@@ -818,6 +833,56 @@ export class TmuxWrapper {
   }
 
   /**
+   * Parse ->relay:spawn and ->relay:release commands from output.
+   * Format:
+   *   ->relay:spawn WorkerName cli "task description"
+   *   ->relay:release WorkerName
+   */
+  private parseSpawnReleaseCommands(content: string): void {
+    // Only process if callbacks are configured (lead mode)
+    if (!this.config.onSpawn && !this.config.onRelease) return;
+
+    const lines = content.split('\n');
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+
+      // Match ->relay:spawn WorkerName cli "task"
+      // Pattern: ->relay:spawn <name> <cli> "<task>" or ->relay:spawn <name> <cli> '<task>'
+      const spawnMatch = trimmed.match(/^->relay:spawn\s+(\S+)\s+(\S+)\s+["'](.+)["']$/);
+      if (spawnMatch && this.config.onSpawn) {
+        const [, name, cli, task] = spawnMatch;
+        const spawnKey = `${name}:${cli}:${task}`;
+
+        // Dedup - only process each spawn once
+        if (!this.processedSpawnCommands.has(spawnKey)) {
+          this.processedSpawnCommands.add(spawnKey);
+          this.logStderr(`Spawn command: ${name} (${cli}) - "${task.substring(0, 50)}..."`);
+          this.config.onSpawn(name, cli, task).catch(err => {
+            this.logStderr(`Spawn failed: ${err.message}`, true);
+          });
+        }
+        continue;
+      }
+
+      // Match ->relay:release WorkerName
+      const releaseMatch = trimmed.match(/^->relay:release\s+(\S+)$/);
+      if (releaseMatch && this.config.onRelease) {
+        const [, name] = releaseMatch;
+
+        // Dedup - only process each release once
+        if (!this.processedReleaseCommands.has(name)) {
+          this.processedReleaseCommands.add(name);
+          this.logStderr(`Release command: ${name}`);
+          this.config.onRelease(name).catch(err => {
+            this.logStderr(`Release failed: ${err.message}`, true);
+          });
+        }
+      }
+    }
+  }
+
+  /**
    * Handle incoming message from relay
    */
   private handleIncomingMessage(from: string, payload: SendPayload, messageId: string, meta?: SendMeta): void {
@@ -899,6 +964,19 @@ export class TmuxWrapper {
         await this.sleep(30);
       }
 
+      // Ensure pane output is stable to avoid interleaving with active generation
+      const stablePane = await this.waitForStablePane(
+        this.config.outputStabilityTimeoutMs ?? 2000,
+        this.config.outputStabilityPollMs ?? 200
+      );
+      if (!stablePane) {
+        this.logStderr('Output still active, re-queuing injection');
+        this.messageQueue.unshift(msg);
+        this.isInjecting = false;
+        setTimeout(() => this.checkForInjectionOpportunity(), this.config.injectRetryMs ?? 500);
+        return;
+      }
+
       // For Gemini: check if we're at a shell prompt ($) vs chat prompt (>)
       // If at shell prompt, skip injection to avoid shell command execution
       if (this.cliType === 'gemini') {
@@ -923,9 +1001,9 @@ export class TmuxWrapper {
                              msg.importance !== undefined && msg.importance > 50 ? ' [!]' : '';
       const injection = `Relay message from ${msg.from} ${idTag}${threadHint}${importanceHint}: ${sanitizedBody}${truncationHint}`;
 
-      // Type the message as literal text
-      await this.sendKeysLiteral(injection);
-      await this.sleep(50);
+      // Paste message as a bracketed paste to avoid interleaving with active output
+      await this.pasteLiteral(injection);
+      await this.sleep(30);
 
       // Submit
       await this.sendKeys('Enter');
@@ -963,6 +1041,24 @@ export class TmuxWrapper {
       .replace(/`/g, '\\`')
       .replace(/!/g, '\\!');
     await execAsync(`tmux send-keys -t ${this.sessionName} -l "${escaped}"`);
+  }
+
+  /**
+   * Paste text using tmux buffer with bracketed paste (-p) to avoid interleaving with ongoing output.
+   */
+  private async pasteLiteral(text: string): Promise<void> {
+    // Sanitize newlines to keep injection single-line inside paste buffer
+    const sanitized = text.replace(/[\r\n]+/g, ' ');
+    const escaped = sanitized
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\$/g, '\\$')
+      .replace(/`/g, '\\`')
+      .replace(/!/g, '\\!');
+
+    // Set tmux buffer then paste with -p (bracketed paste)
+    await execAsync(`tmux set-buffer -- "${escaped}"`);
+    await execAsync(`tmux paste-buffer -t ${this.sessionName} -p`);
   }
 
   private sleep(ms: number): Promise<void> {
@@ -1097,6 +1193,52 @@ export class TmuxWrapper {
     }
 
     this.logStderr(`waitForClearInput: timed out after ${maxWaitMs}ms`);
+    return false;
+  }
+
+  /**
+   * Capture a signature of the current pane content for stability checks.
+   * Uses hash+length to cheaply detect changes without storing full content.
+   */
+  private async capturePaneSignature(): Promise<string | null> {
+    try {
+      const { stdout } = await execAsync(
+        `tmux capture-pane -t ${this.sessionName} -p -J -S - 2>/dev/null`
+      );
+      const hash = crypto.createHash('sha1').update(stdout).digest('hex');
+      return `${stdout.length}:${hash}`;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Wait for pane output to stabilize before injecting to avoid interleaving with ongoing output.
+   */
+  private async waitForStablePane(maxWaitMs = 2000, pollIntervalMs = 200, requiredStablePolls = 2): Promise<boolean> {
+    const start = Date.now();
+    let lastSig = await this.capturePaneSignature();
+    if (!lastSig) return false;
+
+    let stableCount = 0;
+
+    while (Date.now() - start < maxWaitMs) {
+      await this.sleep(pollIntervalMs);
+      const sig = await this.capturePaneSignature();
+      if (!sig) continue;
+
+      if (sig === lastSig) {
+        stableCount++;
+        if (stableCount >= requiredStablePolls) {
+          return true;
+        }
+      } else {
+        stableCount = 0;
+        lastSig = sig;
+      }
+    }
+
+    this.logStderr(`waitForStablePane: timed out after ${maxWaitMs}ms`);
     return false;
   }
 

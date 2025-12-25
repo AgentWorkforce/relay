@@ -12,6 +12,12 @@ daemon.pid
 bd.sock
 bd.sock.startlock
 
+# Local version tracking (prevents upgrade notification spam after git ops)
+.local_version
+
+# Local interaction log (session-specific)
+interactions.jsonl
+
 # Legacy database files
 db.sqlite
 bd.db

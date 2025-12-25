@@ -1,0 +1,15 @@
+{
+  "name": "my-awesome-skill",
+  "version": "1.0.0",
+  "description": "Clear, concise description of what this package does",
+  "author": "yourgithubusername",
+  "license": "MIT",
+  "repository": "https://github.com/yourgithubusername/repo",
+  "organization": "your-org",
+  "format": "claude",
+  "subtype": "skill",
+  "tags": ["typescript", "best-practices", "code-quality"],
+  "files": [
+    ".claude/skills/my-awesome-skill/SKILL.md"
+  ]
+}

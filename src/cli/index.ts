@@ -59,7 +59,8 @@ program
       return;
     }
 
-    const { getProjectPaths, ensureProjectDir } = await import('../utils/project-namespace.js');
+    const { ensureProjectDir } = await import('../utils/project-namespace.js');
+    const { findAgentConfig, isClaudeCli, buildClaudeArgs } = await import('../utils/agent-config.js');
     const paths = ensureProjectDir();
 
     const [mainCommand, ...commandArgs] = commandParts;
@@ -102,12 +103,25 @@ program
     console.error(`Agent: ${agentName}`);
     console.error(`Project: ${paths.projectId}`);
 
+    // Auto-detect agent config and inject --model/--agent for Claude CLI
+    let finalArgs = commandArgs;
+    if (isClaudeCli(mainCommand)) {
+      const config = findAgentConfig(agentName, paths.projectRoot);
+      if (config) {
+        console.error(`Agent config: ${config.configPath}`);
+        if (config.model) {
+          console.error(`Model: ${config.model}`);
+        }
+        finalArgs = buildClaudeArgs(agentName, commandArgs, paths.projectRoot);
+      }
+    }
+
     const { TmuxWrapper } = await import('../wrapper/tmux-wrapper.js');
 
     const wrapper = new TmuxWrapper({
       name: agentName,
       command: mainCommand,
-      args: commandArgs,
+      args: finalArgs,
       socketPath: paths.socketPath,
       debug: false,  // Use -q to keep quiet (debug off by default)
       relayPrefix: options.prefix,
@@ -129,6 +143,90 @@ program
     await wrapper.start();
   });
 
+// Team config types
+interface TeamAgent {
+  name: string;
+  cli: string;
+  role?: string;
+}
+
+interface TeamConfig {
+  team?: string;
+  agents: TeamAgent[];
+  autoSpawn?: boolean;
+}
+
+// Load teams.json from project root or .agent-relay/
+function loadTeamConfig(projectRoot: string): TeamConfig | null {
+  const locations = [
+    path.join(projectRoot, 'teams.json'),
+    path.join(projectRoot, '.agent-relay', 'teams.json'),
+  ];
+
+  for (const configPath of locations) {
+    if (fs.existsSync(configPath)) {
+      try {
+        const content = fs.readFileSync(configPath, 'utf-8');
+        return JSON.parse(content) as TeamConfig;
+      } catch (err) {
+        console.error(`Failed to parse ${configPath}:`, err);
+      }
+    }
+  }
+  return null;
+}
+
+// Spawn agents from team config using tmux
+async function spawnTeamAgents(
+  agents: TeamAgent[],
+  socketPath: string,
+  dataDir: string,
+  projectRoot: string,
+  relayPrefix?: string
+): Promise<void> {
+  const { TmuxWrapper } = await import('../wrapper/tmux-wrapper.js');
+  const { findAgentConfig, isClaudeCli, buildClaudeArgs } = await import('../utils/agent-config.js');
+
+  for (const agent of agents) {
+    console.log(`Spawning agent: ${agent.name} (${agent.cli})`);
+
+    // Parse CLI - handle "claude:opus" format
+    const [mainCommand, ...cliArgs] = agent.cli.split(/\s+/);
+
+    // Auto-detect agent config and inject --model/--agent for Claude CLI
+    let finalArgs = cliArgs;
+    if (isClaudeCli(mainCommand)) {
+      const config = findAgentConfig(agent.name, projectRoot);
+      if (config) {
+        console.log(`  Agent config: ${config.configPath}`);
+        if (config.model) {
+          console.log(`  Model: ${config.model}`);
+        }
+        finalArgs = buildClaudeArgs(agent.name, cliArgs, projectRoot);
+      }
+    }
+
+    const wrapper = new TmuxWrapper({
+      name: agent.name,
+      command: mainCommand,
+      args: finalArgs,
+      socketPath,
+      debug: false,
+      relayPrefix,
+      useInbox: true,
+      inboxDir: dataDir,
+      // Note: agents run in tmux which is already background/detached
+    });
+
+    try {
+      await wrapper.start();
+      console.log(`  Started: ${agent.name}`);
+    } catch (err) {
+      console.error(`  Failed to start ${agent.name}:`, err);
+    }
+  }
+}
+
 // up - Start daemon + dashboard
 program
   .command('up')
@@ -136,7 +234,7 @@ program
   .option('--no-dashboard', 'Disable web dashboard')
   .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
   .action(async (options) => {
-    const { ensureProjectDir } = await import('../utils/project-namespace.js');
+    const { getProjectPaths, ensureProjectDir } = await import('../utils/project-namespace.js');
 
     const paths = ensureProjectDir();
     const socketPath = paths.socketPath;
@@ -172,7 +270,14 @@ program
       if (options.dashboard !== false) {
         const port = parseInt(options.port, 10);
         const { startDashboard } = await import('../dashboard/server.js');
-        const actualPort = await startDashboard(port, paths.dataDir, paths.teamDir, dbPath);
+        const actualPort = await startDashboard({
+          port,
+          dataDir: paths.dataDir,
+          teamDir: paths.teamDir,
+          dbPath,
+          enableSpawner: true,
+          projectRoot: paths.projectRoot,
+        });
         console.log(`Dashboard: http://localhost:${actualPort}`);
       }
 
@@ -480,7 +585,7 @@ program
       messages.forEach((msg) => {
         const ts = new Date(msg.ts).toISOString();
         const body = msg.body.length > 120 ? `${msg.body.slice(0, 117)}...` : msg.body;
-        console.log(`${ts} ${msg.from} -> ${msg.to}: ${body}`);
+        console.log(`${ts} ${msg.from} -> ${msg.to}:${body}`);
       });
     } finally {
       await adapter.close?.();
@@ -493,6 +598,336 @@ program
   .description('Show version information')
   .action(() => {
     console.log(`agent-relay v${VERSION}`);
+  });
+
+// bridge - Multi-project orchestration
+program
+  .command('bridge')
+  .description('Bridge multiple projects as orchestrator')
+  .argument('[projects...]', 'Project paths to bridge')
+  .option('--cli <tool>', 'CLI tool override for all projects')
+  .action(async (projectPaths: string[], options) => {
+    const { resolveProjects, validateDaemons } = await import('../bridge/config.js');
+    const { MultiProjectClient } = await import('../bridge/multi-project-client.js');
+    const { getProjectPaths } = await import('../utils/project-namespace.js');
+    const fs = await import('node:fs');
+    const pathModule = await import('node:path');
+
+    // Resolve projects from args or config
+    const projects = resolveProjects(projectPaths, options.cli);
+
+    if (projects.length === 0) {
+      console.error('No projects specified.');
+      console.error('Usage: agent-relay bridge ~/project1 ~/project2');
+      console.error('   or: Create ~/.agent-relay/bridge.json with project config');
+      process.exit(1);
+    }
+
+    console.log('Bridge Mode - Multi-Project Orchestration');
+    console.log('─'.repeat(40));
+
+    // Check which daemons are running
+    const { valid, missing } = validateDaemons(projects);
+
+    if (missing.length > 0) {
+      console.error('\nMissing daemons for:');
+      for (const p of missing) {
+        console.error(`  - ${p.path}`);
+        console.error(`    Run: cd "${p.path}" && agent-relay up`);
+      }
+      console.error('');
+    }
+
+    if (valid.length === 0) {
+      console.error('No projects have running daemons. Start them first.');
+      process.exit(1);
+    }
+
+    console.log('\nConnecting to projects:');
+    for (const p of valid) {
+      console.log(`  - ${p.id} (${p.path})`);
+      console.log(`    Lead: ${p.leadName}, CLI: ${p.cli}`);
+    }
+    console.log('');
+
+    // Get data directories for ALL bridged projects (so each project's dashboard can show bridge state)
+    const bridgeStatePaths: string[] = valid.map(p => {
+      const projectPaths = getProjectPaths(p.path);
+      // Ensure directory exists
+      if (!fs.existsSync(projectPaths.dataDir)) {
+        fs.mkdirSync(projectPaths.dataDir, { recursive: true });
+      }
+      return pathModule.join(projectPaths.dataDir, 'bridge-state.json');
+    });
+
+    // Bridge state tracking
+    interface BridgeProject {
+      id: string;
+      name: string;
+      path: string;
+      connected: boolean;
+      reconnecting?: boolean;
+      lead?: { name: string; connected: boolean };
+      agents: Array<{ name: string; status: string; task?: string }>;
+    }
+    interface BridgeMessage {
+      id: string;
+      from: string;
+      to: string;
+      body: string;
+      sourceProject: string;
+      targetProject?: string;
+      timestamp: string;
+    }
+    interface BridgeState {
+      projects: BridgeProject[];
+      messages: BridgeMessage[];
+      connected: boolean;
+      startedAt: string;
+    }
+
+    const bridgeState: BridgeState = {
+      projects: valid.map(p => ({
+        id: p.id,
+        name: pathModule.basename(p.path),
+        path: p.path,
+        connected: false,
+        lead: { name: p.leadName, connected: false },
+        agents: [],
+      })),
+      messages: [],
+      connected: false,
+      startedAt: new Date().toISOString(),
+    };
+
+    // Write bridge state to ALL project data directories
+    const writeBridgeState = (): void => {
+      const stateJson = JSON.stringify(bridgeState, null, 2);
+      for (const statePath of bridgeStatePaths) {
+        try {
+          fs.writeFileSync(statePath, stateJson);
+        } catch (err) {
+          console.error(`[bridge] Failed to write state to ${statePath}:`, err);
+        }
+      }
+    };
+
+    // Initial state write
+    writeBridgeState();
+    console.log(`Bridge state written to ${bridgeStatePaths.length} project(s)`);
+
+    // Connect to all project daemons
+    const client = new MultiProjectClient(valid);
+
+    // Track connection state changes (daemon connection, not agent registration)
+    // Also track "reconnecting" state for UI feedback
+    const wasConnected = new Map<string, boolean>();
+
+    client.onProjectStateChange = (projectId, connected) => {
+      const project = bridgeState.projects.find(p => p.id === projectId);
+      if (project) {
+        const hadConnection = wasConnected.get(projectId) || false;
+        project.connected = connected;
+        // Set reconnecting if we lost connection (had it before, now disconnected)
+        project.reconnecting = !connected && hadConnection;
+        wasConnected.set(projectId, connected);
+        // Note: lead.connected should only be true when an actual lead agent registers
+        // The bridge connecting to daemon doesn't mean a lead agent is active
+      }
+      bridgeState.connected = bridgeState.projects.some(p => p.connected);
+      writeBridgeState();
+    };
+
+    try {
+      await client.connect();
+    } catch (err) {
+      console.error('Failed to connect to all projects');
+      writeBridgeState(); // Write final state before exit
+      process.exit(1);
+    }
+
+    bridgeState.connected = true;
+    writeBridgeState();
+
+    console.log('Connected to all projects.');
+    console.log('');
+    console.log('Cross-project messaging:');
+    console.log('  @relay:projectId:agent Message');
+    console.log('  @relay:*:lead Broadcast to all leads');
+    console.log('');
+
+    // Handle messages from projects
+    client.onMessage = (projectId, from, payload, messageId) => {
+      console.log(`[${projectId}] ${from}: ${payload.body.substring(0, 80)}...`);
+
+      // Track message in bridge state
+      bridgeState.messages.push({
+        id: messageId,
+        from,
+        to: '*', // Incoming messages are from agents
+        body: payload.body,
+        sourceProject: projectId,
+        timestamp: new Date().toISOString(),
+      });
+
+      // Keep last 100 messages
+      if (bridgeState.messages.length > 100) {
+        bridgeState.messages = bridgeState.messages.slice(-100);
+      }
+
+      writeBridgeState();
+    };
+
+    // Clean up on exit
+    const cleanup = (): void => {
+      bridgeState.connected = false;
+      bridgeState.projects.forEach(p => {
+        p.connected = false;
+        if (p.lead) p.lead.connected = false;
+      });
+      writeBridgeState();
+    };
+
+    // Keep running
+    process.on('SIGINT', () => {
+      console.log('\nDisconnecting...');
+      cleanup();
+      client.disconnect();
+      process.exit(0);
+    });
+
+    // Start a simple REPL for sending messages
+    const readline = await import('node:readline');
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+
+    console.log('Enter messages as: projectId:agent message');
+    console.log('Or: *:lead message (broadcast to all leads)');
+    console.log('Type "quit" to exit.\n');
+
+    const promptForInput = (): void => {
+      rl.question('> ', (input) => {
+        if (input.toLowerCase() === 'quit') {
+          client.disconnect();
+          rl.close();
+          process.exit(0);
+        }
+
+        // Parse input: projectId:agent message
+        const match = input.match(/^(\S+):(\S+)\s+(.+)$/);
+        if (match) {
+          const [, projectId, agent, message] = match;
+          if (projectId === '*' && agent === 'lead') {
+            client.broadcastToLeads(message);
+            console.log('→ Broadcast to all leads');
+          } else if (projectId === '*') {
+            client.broadcastAll(message);
+            console.log('→ Broadcast to all');
+          } else {
+            const sent = client.sendToProject(projectId, agent, message);
+            if (sent) {
+              console.log(`→ ${projectId}:${agent}`);
+            }
+          }
+        } else {
+          console.log('Format: projectId:agent message');
+        }
+
+        promptForInput();
+      });
+    };
+
+    promptForInput();
+  });
+
+// lead - Start as project lead with spawn capability
+program
+  .command('lead')
+  .description('Start as project lead with spawn capability')
+  .argument('<name>', 'Your agent name')
+  .argument('[cli]', 'CLI tool to use', 'claude')
+  .action(async (name: string, cli: string) => {
+    const { getProjectPaths } = await import('../utils/project-namespace.js');
+    const { AgentSpawner } = await import('../bridge/spawner.js');
+    const { TmuxWrapper } = await import('../wrapper/tmux-wrapper.js');
+    const { findAgentConfig, isClaudeCli, buildClaudeArgs } = await import('../utils/agent-config.js');
+
+    const paths = getProjectPaths();
+
+    console.log('Lead Mode - Project Lead with Spawn Capability');
+    console.log('─'.repeat(40));
+    console.log(`Agent: ${name}`);
+    console.log(`Project: ${paths.projectId}`);
+    console.log(`CLI: ${cli}`);
+
+    // Create spawner for this project
+    const spawner = new AgentSpawner(paths.projectRoot);
+
+    // Parse CLI - split on whitespace for args
+    const [mainCommand, ...cliArgs] = cli.split(/\s+/);
+
+    // Auto-detect agent config and inject --model/--agent for Claude CLI
+    let finalArgs = cliArgs;
+    if (isClaudeCli(mainCommand)) {
+      const config = findAgentConfig(name, paths.projectRoot);
+      if (config) {
+        console.log(`Agent config: ${config.configPath}`);
+        if (config.model) {
+          console.log(`Model: ${config.model}`);
+        }
+        finalArgs = buildClaudeArgs(name, cliArgs, paths.projectRoot);
+      }
+    }
+
+    console.log('');
+    console.log('Spawn workers with:');
+    console.log('  ->relay:spawn WorkerName cli "task"');
+    console.log('Release workers with:');
+    console.log('  ->relay:release WorkerName');
+    console.log('');
+
+    const wrapper = new TmuxWrapper({
+      name,
+      command: mainCommand,
+      args: finalArgs.length > 0 ? finalArgs : undefined,
+      socketPath: paths.socketPath,
+      debug: true,
+      // Wire up spawn/release callbacks
+      onSpawn: async (workerName: string, workerCli: string, task: string) => {
+        console.log(`[lead] Spawning ${workerName} (${workerCli})...`);
+        const result = await spawner.spawn({
+          name: workerName,
+          cli: workerCli,
+          task,
+          requestedBy: name,
+        });
+        if (result.success) {
+          console.log(`[lead] ✓ Spawned ${workerName} in ${result.window}`);
+        } else {
+          console.error(`[lead] ✗ Failed to spawn ${workerName}: ${result.error}`);
+        }
+      },
+      onRelease: async (workerName: string) => {
+        console.log(`[lead] Releasing ${workerName}...`);
+        const released = await spawner.release(workerName);
+        if (released) {
+          console.log(`[lead] ✓ Released ${workerName}`);
+        } else {
+          console.error(`[lead] ✗ Worker ${workerName} not found`);
+        }
+      },
+    });
+
+    process.on('SIGINT', async () => {
+      console.log('\nReleasing workers...');
+      await spawner.releaseAll();
+      wrapper.stop();
+      process.exit(0);
+    });
+
+    await wrapper.start();
   });
 
 // gc - Clean up orphaned tmux sessions (hidden - for agent use)
@@ -730,5 +1165,256 @@ function parseSince(input?: string): number | undefined {
   if (Number.isNaN(parsed)) return undefined;
   return parsed;
 }
+
+// ============================================
+// Spawn/Worker debugging commands
+// ============================================
+
+const WORKER_SESSION = 'relay-workers';
+
+// workers - List spawned workers
+program
+  .command('workers')
+  .description('List spawned worker agents (from tmux)')
+  .option('--json', 'Output as JSON')
+  .action(async (options: { json?: boolean }) => {
+    try {
+      // Check if worker session exists
+      try {
+        await execAsync(`tmux has-session -t ${WORKER_SESSION} 2>/dev/null`);
+      } catch {
+        if (options.json) {
+          console.log(JSON.stringify({ workers: [], session: null }));
+        } else {
+          console.log('No spawned workers (session does not exist)');
+        }
+        return;
+      }
+
+      // List windows in the worker session
+      const { stdout } = await execAsync(
+        `tmux list-windows -t ${WORKER_SESSION} -F "#{window_index}|#{window_name}|#{pane_current_command}|#{window_activity}"`
+      );
+
+      const workers = stdout
+        .split('\n')
+        .filter(Boolean)
+        .map(line => {
+          const [index, name, command, activity] = line.split('|');
+          const activityTs = parseInt(activity, 10) * 1000;
+          const lastActive = isNaN(activityTs) ? undefined : new Date(activityTs).toISOString();
+          return {
+            index: parseInt(index, 10),
+            name,
+            command,
+            lastActive,
+            window: `${WORKER_SESSION}:${name}`,
+          };
+        })
+        // Filter out the default zsh window
+        .filter(w => w.name !== 'zsh' && w.command !== 'zsh');
+
+      if (options.json) {
+        console.log(JSON.stringify({ workers, session: WORKER_SESSION }, null, 2));
+        return;
+      }
+
+      if (!workers.length) {
+        console.log('No spawned workers');
+        return;
+      }
+
+      console.log('SPAWNED WORKERS');
+      console.log('─'.repeat(50));
+      console.log('NAME            COMMAND       WINDOW');
+      console.log('─'.repeat(50));
+      workers.forEach(w => {
+        const name = w.name.padEnd(15);
+        const cmd = (w.command || '-').padEnd(12);
+        console.log(`${name} ${cmd}  ${w.window}`);
+      });
+      console.log('');
+      console.log('Commands:');
+      console.log('  agent-relay workers:logs <name>   - View worker output');
+      console.log('  agent-relay workers:attach <name> - Attach to worker tmux');
+      console.log('  agent-relay workers:kill <name>   - Kill a worker');
+    } catch (err) {
+      console.error('Failed to list workers:', (err as Error).message);
+    }
+  });
+
+// workers:logs - Show tmux pane output for a worker
+program
+  .command('workers:logs')
+  .description('Show recent output from a spawned worker')
+  .argument('<name>', 'Worker name')
+  .option('-n, --lines <n>', 'Number of lines to show', '50')
+  .option('-f, --follow', 'Follow output (like tail -f)')
+  .action(async (name: string, options: { lines?: string; follow?: boolean }) => {
+    const window = `${WORKER_SESSION}:${name}`;
+
+    try {
+      // Check if window exists
+      await execAsync(`tmux has-session -t ${window} 2>/dev/null`);
+    } catch {
+      console.error(`Worker "${name}" not found`);
+      console.log(`Run 'agent-relay workers' to see available workers`);
+      process.exit(1);
+    }
+
+    if (options.follow) {
+      console.log(`Following output from ${window} (Ctrl+C to stop)...`);
+      console.log('─'.repeat(50));
+
+      // Use a polling approach to follow
+      let lastContent = '';
+      const poll = async () => {
+        try {
+          const { stdout } = await execAsync(`tmux capture-pane -t ${window} -p -S -100`);
+          if (stdout !== lastContent) {
+            // Print only new lines
+            const newContent = stdout.replace(lastContent, '');
+            if (newContent.trim()) {
+              process.stdout.write(newContent);
+            }
+            lastContent = stdout;
+          }
+        } catch {
+          console.error('\nWorker disconnected');
+          process.exit(1);
+        }
+      };
+
+      const interval = setInterval(poll, 500);
+      process.on('SIGINT', () => {
+        clearInterval(interval);
+        console.log('\nStopped following');
+        process.exit(0);
+      });
+
+      await poll(); // Initial fetch
+      await new Promise(() => {}); // Keep running
+    } else {
+      try {
+        const lines = parseInt(options.lines || '50', 10);
+        const { stdout } = await execAsync(`tmux capture-pane -t ${window} -p -S -${lines}`);
+        console.log(`Output from ${window} (last ${lines} lines):`);
+        console.log('─'.repeat(50));
+        console.log(stdout || '(empty)');
+      } catch (err) {
+        console.error('Failed to capture output:', (err as Error).message);
+      }
+    }
+  });
+
+// workers:attach - Attach to a worker's tmux window
+program
+  .command('workers:attach')
+  .description('Attach to a spawned worker tmux window')
+  .argument('<name>', 'Worker name')
+  .action(async (name: string) => {
+    const window = `${WORKER_SESSION}:${name}`;
+
+    try {
+      // Check if window exists
+      await execAsync(`tmux has-session -t ${window} 2>/dev/null`);
+    } catch {
+      console.error(`Worker "${name}" not found`);
+      console.log(`Run 'agent-relay workers' to see available workers`);
+      process.exit(1);
+    }
+
+    console.log(`Attaching to ${window}...`);
+    console.log('(Use Ctrl+B D to detach)');
+
+    // Spawn tmux attach as a child process with stdio inherited
+    const { spawn } = await import('child_process');
+    const child = spawn('tmux', ['attach-session', '-t', window], {
+      stdio: 'inherit',
+    });
+
+    child.on('exit', (code) => {
+      process.exit(code || 0);
+    });
+  });
+
+// workers:kill - Kill a spawned worker
+program
+  .command('workers:kill')
+  .description('Kill a spawned worker')
+  .argument('<name>', 'Worker name')
+  .option('--force', 'Skip graceful shutdown, kill immediately')
+  .action(async (name: string, options: { force?: boolean }) => {
+    const window = `${WORKER_SESSION}:${name}`;
+
+    try {
+      // Check if window exists
+      await execAsync(`tmux has-session -t ${window} 2>/dev/null`);
+    } catch {
+      console.error(`Worker "${name}" not found`);
+      console.log(`Run 'agent-relay workers' to see available workers`);
+      process.exit(1);
+    }
+
+    if (!options.force) {
+      // Try graceful shutdown first
+      console.log(`Sending /exit to ${name}...`);
+      try {
+        await execAsync(`tmux send-keys -t ${window} '/exit' Enter`);
+        // Wait for graceful shutdown
+        await new Promise(r => setTimeout(r, 2000));
+      } catch {
+        // Ignore errors, will force kill below
+      }
+    }
+
+    // Kill the window
+    try {
+      await execAsync(`tmux kill-window -t ${window}`);
+      console.log(`Killed worker: ${name}`);
+    } catch (err) {
+      console.error(`Failed to kill ${name}:`, (err as Error).message);
+      process.exit(1);
+    }
+  });
+
+// workers:session - Show tmux session info
+program
+  .command('workers:session')
+  .description('Show worker tmux session details')
+  .action(async () => {
+    try {
+      // Check if session exists
+      try {
+        await execAsync(`tmux has-session -t ${WORKER_SESSION} 2>/dev/null`);
+      } catch {
+        console.log(`Session "${WORKER_SESSION}" does not exist`);
+        console.log('Spawn a worker to create it.');
+        return;
+      }
+
+      console.log(`Session: ${WORKER_SESSION}`);
+      console.log('─'.repeat(50));
+
+      // Get session info
+      const { stdout: sessionInfo } = await execAsync(
+        `tmux display-message -t ${WORKER_SESSION} -p "Created: #{session_created_string}\\nWindows: #{session_windows}\\nAttached: #{?session_attached,yes,no}"`
+      );
+      console.log(sessionInfo);
+
+      // List windows
+      console.log('\nWindows:');
+      const { stdout: windows } = await execAsync(
+        `tmux list-windows -t ${WORKER_SESSION} -F "  #{window_index}: #{window_name} (#{pane_current_command})"`
+      );
+      console.log(windows || '  (none)');
+
+      console.log('\nQuick commands:');
+      console.log(`  tmux attach -t ${WORKER_SESSION}     # Attach to session`);
+      console.log(`  tmux kill-session -t ${WORKER_SESSION}  # Kill entire session`);
+    } catch (err) {
+      console.error('Failed:', (err as Error).message);
+    }
+  });
 
 program.parse();

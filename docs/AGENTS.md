@@ -79,6 +79,60 @@ relay wrap -n PlayerO claude
 
 ---
 
+## Agent Role Auto-Detection
+
+When you start an agent with `-n`, the name is matched against agent definitions in your project. If a matching agent file exists, the agent automatically assumes that role.
+
+**Supported locations:**
+- `.claude/agents/<name>.md` - Claude Code agents
+- `.openagents/<name>.md` - OpenAgents format
+
+### Example
+
+```bash
+# If .claude/agents/lead.md exists:
+relay wrap -n lead claude
+# → Agent automatically assumes the Lead role defined in lead.md
+
+# If .claude/agents/implementer.md exists:
+relay wrap -n implementer claude
+# → Agent assumes the Implementer role
+
+# No matching file? Agent starts with default behavior
+relay wrap -n CustomName claude
+# → Standard agent, no role injection
+```
+
+### How It Works
+
+1. Agent name from `-n` flag is matched **case-insensitively**
+2. System checks for `<project>/.claude/agents/<name>.md` or `<project>/.openagents/<name>.md`
+3. If found, the agent definition is injected into the agent's initial context
+4. Agent assumes the persona, instructions, and behaviors defined in the file
+
+**Case insensitive matching:**
+```bash
+relay wrap -n Lead claude      # matches lead.md
+relay wrap -n LEAD claude      # matches lead.md
+relay wrap -n lead claude      # matches lead.md
+```
+
+### Creating Role Agents
+
+Create agent files for your team roles:
+
+```
+.claude/agents/
+├── lead.md          # Coordinator, delegates work
+├── implementer.md   # Writes code, fixes bugs
+├── designer.md      # UI/UX, frontend work
+└── reviewer.md      # Code review, quality checks
+```
+
+Each file follows the standard Claude agent format with frontmatter and instructions.
+
+---
+
 ## Team Communication
 
 If you have an INSTRUCTIONS.md file in `/tmp/agent-relay-team/{YourName}/`, use these commands:

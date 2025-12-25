@@ -18,7 +18,7 @@ pnpm-debug.log*
 .DS_Store
 .vscode/
 .idea/
-.claude/
+.claude/settings.local.json
 
 # Relay runtime artifacts
 *.sock
@@ -31,3 +31,4 @@ pnpm-debug.log*
 coverage/
 .npm-cache
 .tmp-supervisor-tests
+.tmp-agent-relay-data

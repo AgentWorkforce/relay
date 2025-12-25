@@ -2,6 +2,16 @@
   "version": "1.0.0",
   "lockfileVersion": 1,
   "packages": {
+    "@prpm/creating-claude-hooks-skill#claude": {
+      "version": "1.0.0",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40prpm%2Fcreating-claude-hooks-skill/1.0.0.tar.gz",
+      "integrity": "sha256-2d10ad7a10204009d73b34172a9f54e5ad0858c76581a9f9579ee0e194f94505",
+      "format": "claude",
+      "subtype": "skill",
+      "sourceFormat": "claude",
+      "sourceSubtype": "skill",
+      "installedPath": ".claude/skills/creating-claude-hooks-skill/SKILL.md"
+    },
     "@anthropic/frontend-design#agents.md": {
       "version": "1.0.0",
       "resolved": "https://registry.prpm.dev/api/v1/packages/%40anthropic%2Ffrontend-design/1.0.0.tar.gz",
@@ -21,7 +31,47 @@
         "skillName": "frontend-design",
         "eager": false
       }
+    },
+    "@prpm/creating-skills-skill#claude": {
+      "version": "1.0.4",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40prpm%2Fcreating-skills-skill/1.0.4.tar.gz",
+      "integrity": "sha256-845d12bda6e5b37ed3177e2a867f57319327704b2206d58643d8e06cecb64241",
+      "format": "claude",
+      "subtype": "skill",
+      "sourceFormat": "claude",
+      "sourceSubtype": "skill",
+      "installedPath": ".claude/skills/creating-skills-skill/SKILL.md"
+    },
+    "@prpm/prpm-json-best-practices-skill#claude": {
+      "version": "1.2.0",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40prpm%2Fprpm-json-best-practices-skill/1.2.0.tar.gz",
+      "integrity": "sha256-13f5c9204ef0db4cd37ef2339fa9cc5743de993c73244230760e73612476d826",
+      "format": "claude",
+      "subtype": "skill",
+      "sourceFormat": "claude",
+      "sourceSubtype": "skill",
+      "installedPath": ".claude/skills/prpm-json-best-practices-skill"
+    },
+    "@prpm/creating-claude-rules-skill#claude": {
+      "version": "1.0.0",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40prpm%2Fcreating-claude-rules-skill/1.0.0.tar.gz",
+      "integrity": "sha256-5d348d29c6e9abe5b1f0328a3868094b47dddc60192fc6b8f0a364797ce62878",
+      "format": "claude",
+      "subtype": "skill",
+      "sourceFormat": "claude",
+      "sourceSubtype": "skill",
+      "installedPath": ".claude/skills/creating-claude-rules-skill/SKILL.md"
+    },
+    "@prpm/creating-claude-agents-skill#claude": {
+      "version": "1.0.0",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40prpm%2Fcreating-claude-agents-skill/1.0.0.tar.gz",
+      "integrity": "sha256-d1aca9da6acab91815edf1012c94936e151b9aad77adf8ab0e7fedad8b6b8fef",
+      "format": "claude",
+      "subtype": "skill",
+      "sourceFormat": "claude",
+      "sourceSubtype": "skill",
+      "installedPath": ".claude/skills/creating-claude-agents-skill/SKILL.md"
     }
   },
-  "generated": "2025-12-22T14:49:30.518Z"
+  "generated": "2025-12-22T21:13:52.096Z"
 }
