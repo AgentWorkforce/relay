@@ -3,8 +3,11 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import fs from 'node:fs';
 import { AgentSpawner } from './spawner.js';
 import { execAsync, sleep, escapeForTmux } from './utils.js';
+
+const PROJECT_ROOT = '/project/root';
 
 vi.mock('./utils.js', () => {
   const execAsync = vi.fn();
@@ -17,20 +20,42 @@ vi.mock('./utils.js', () => {
   };
 });
 
+vi.mock('../utils/project-namespace.js', () => {
+  return {
+    getProjectPaths: vi.fn(() => ({
+      dataDir: '/data',
+      teamDir: '/team',
+      dbPath: '/db',
+      socketPath: '/socket',
+      projectRoot: PROJECT_ROOT,
+      projectId: 'project-id',
+    })),
+  };
+});
+
 const execAsyncMock = vi.mocked(execAsync);
 const sleepMock = vi.mocked(sleep);
 const escapeForTmuxMock = vi.mocked(escapeForTmux);
+const existsSyncMock = vi.spyOn(fs, 'existsSync');
+const readFileSyncMock = vi.spyOn(fs, 'readFileSync');
+let waitForAgentRegistrationMock: vi.SpyInstance;
 
 describe('AgentSpawner', () => {
-  const projectRoot = '/project/root';
+  const projectRoot = PROJECT_ROOT;
   const session = 'relay-workers';
 
   beforeEach(() => {
+    vi.restoreAllMocks();
     vi.clearAllMocks();
     execAsyncMock.mockReset();
     sleepMock.mockReset();
     escapeForTmuxMock.mockReset();
+    existsSyncMock.mockReturnValue(true);
+    readFileSyncMock.mockReturnValue(JSON.stringify({ agents: [] }));
     escapeForTmuxMock.mockImplementation((str: string) => `escaped:${str}`);
+    waitForAgentRegistrationMock = vi
+      .spyOn(AgentSpawner.prototype as any, 'waitForAgentRegistration')
+      .mockResolvedValue(true);
   });
 
   it('creates tmux session when missing', async () => {
@@ -56,8 +81,9 @@ describe('AgentSpawner', () => {
   });
 
   it('spawns a worker and tracks it', async () => {
-    execAsyncMock.mockResolvedValue({ stdout: '', stderr: '' });
+    execAsyncMock.mockResolvedValue({ stdout: '/usr/local/bin/agent-relay', stderr: '' });
     sleepMock.mockResolvedValue();
+    waitForAgentRegistrationMock.mockResolvedValue(true);
 
     const spawner = new AgentSpawner(projectRoot, session);
     const result = await spawner.spawn({
@@ -75,11 +101,51 @@ describe('AgentSpawner', () => {
     expect(spawner.hasWorker('Dev1')).toBe(true);
     expect(execAsyncMock).toHaveBeenNthCalledWith(1, `tmux has-session -t ${session} 2>/dev/null`);
     expect(execAsyncMock).toHaveBeenNthCalledWith(2, `tmux new-window -t ${session} -n Dev1 -c "${projectRoot}"`);
-    expect(execAsyncMock).toHaveBeenNthCalledWith(3, `tmux send-keys -t ${session}:Dev1 'agent-relay -n Dev1 claude' Enter`);
-    expect(execAsyncMock).toHaveBeenNthCalledWith(4, `tmux send-keys -t ${session}:Dev1 -l "escaped:Finish the report"`);
-    expect(execAsyncMock).toHaveBeenNthCalledWith(5, `tmux send-keys -t ${session}:Dev1 Enter`);
-    expect(sleepMock).toHaveBeenNthCalledWith(1, 3000);
-    expect(sleepMock).toHaveBeenNthCalledWith(2, 100);
+    expect(execAsyncMock).toHaveBeenNthCalledWith(3, 'which agent-relay'); // Find full path
+    expect(execAsyncMock).toHaveBeenNthCalledWith(4, `tmux send-keys -t ${session}:Dev1 'unset TMUX && /usr/local/bin/agent-relay -n Dev1 claude --dangerously-skip-permissions' Enter`);
+    expect(execAsyncMock).toHaveBeenNthCalledWith(5, `tmux send-keys -t ${session}:Dev1 -l "escaped:Finish the report"`);
+    expect(execAsyncMock).toHaveBeenNthCalledWith(6, `tmux send-keys -t ${session}:Dev1 Enter`);
+    expect(sleepMock).toHaveBeenCalledWith(100);
+  });
+
+  it('adds --dangerously-skip-permissions for Claude variants', async () => {
+    execAsyncMock.mockResolvedValue({ stdout: '/usr/local/bin/agent-relay', stderr: '' });
+    sleepMock.mockResolvedValue();
+    waitForAgentRegistrationMock.mockResolvedValue(true);
+
+    const spawner = new AgentSpawner(projectRoot, session);
+    await spawner.spawn({
+      name: 'Opus1',
+      cli: 'claude:opus',
+      task: '',
+      requestedBy: 'Lead',
+    });
+
+    // Check that the command includes --dangerously-skip-permissions for claude:opus
+    expect(execAsyncMock).toHaveBeenNthCalledWith(
+      4,
+      `tmux send-keys -t ${session}:Opus1 'unset TMUX && /usr/local/bin/agent-relay -n Opus1 claude:opus --dangerously-skip-permissions' Enter`
+    );
+  });
+
+  it('does NOT add --dangerously-skip-permissions for non-Claude CLIs', async () => {
+    execAsyncMock.mockResolvedValue({ stdout: '/usr/local/bin/agent-relay', stderr: '' });
+    sleepMock.mockResolvedValue();
+    waitForAgentRegistrationMock.mockResolvedValue(true);
+
+    const spawner = new AgentSpawner(projectRoot, session);
+    await spawner.spawn({
+      name: 'Codex1',
+      cli: 'codex',
+      task: '',
+      requestedBy: 'Lead',
+    });
+
+    // Check that the command does NOT include --dangerously-skip-permissions for codex
+    expect(execAsyncMock).toHaveBeenNthCalledWith(
+      4,
+      `tmux send-keys -t ${session}:Codex1 'unset TMUX && /usr/local/bin/agent-relay -n Codex1 codex' Enter`
+    );
   });
 
   it('refuses to spawn a duplicate worker', async () => {
@@ -105,8 +171,9 @@ describe('AgentSpawner', () => {
   });
 
   it('returns failure when spawn command errors', async () => {
-    execAsyncMock.mockResolvedValueOnce({ stdout: '', stderr: '' }); // has-session
-    execAsyncMock.mockRejectedValueOnce(new Error('tmux new-window failed'));
+    execAsyncMock
+      .mockResolvedValueOnce({ stdout: '', stderr: '' }) // has-session
+      .mockRejectedValueOnce(new Error('tmux new-window failed')); // new-window fails
 
     const spawner = new AgentSpawner(projectRoot, session);
     const result = await spawner.spawn({
@@ -118,6 +185,24 @@ describe('AgentSpawner', () => {
 
     expect(result.success).toBe(false);
     expect(spawner.hasWorker('Dev2')).toBe(false);
+  });
+
+  it('cleans up when agent does not register', async () => {
+    execAsyncMock.mockResolvedValue({ stdout: '/usr/local/bin/agent-relay', stderr: '' });
+    waitForAgentRegistrationMock.mockResolvedValue(false);
+
+    const spawner = new AgentSpawner(projectRoot, session);
+    const result = await spawner.spawn({
+      name: 'Late',
+      cli: 'claude',
+      task: 'Task',
+      requestedBy: 'Lead',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('failed to register');
+    expect(execAsyncMock).toHaveBeenCalledWith(`tmux kill-window -t ${session}:Late`);
+    expect(spawner.hasWorker('Late')).toBe(false);
   });
 
   it('releases a worker and removes tracking', async () => {

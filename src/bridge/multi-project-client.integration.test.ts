@@ -189,7 +189,7 @@ describe('MultiProjectClient Integration', () => {
       // Wait for message delivery
       await new Promise(r => setTimeout(r, 100));
 
-      expect(receivedMessages).toContain('Architect: Hello Alice!');
+      expect(receivedMessages).toContain('__BridgeClient: Hello Alice!');
     });
 
     it('sends message to lead by alias', async () => {

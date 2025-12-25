@@ -13,6 +13,7 @@
  */
 
 import { exec, execSync, spawn, ChildProcess } from 'node:child_process';
+import crypto from 'node:crypto';
 import { promisify } from 'node:util';
 import { RelayClient } from './client.js';
 import { OutputParser, type ParsedCommand, parseSummaryWithDetails, parseSessionEndFromOutput, ParsedMessageMetadata } from './parser.js';
@@ -79,6 +80,10 @@ export interface TmuxWrapperConfig {
   onSpawn?: (name: string, cli: string, task: string) => Promise<void>;
   /** Callback for release commands (@relay:release WorkerName) */
   onRelease?: (name: string) => Promise<void>;
+  /** Max time to wait for stable pane output before injection (ms) */
+  outputStabilityTimeoutMs?: number;
+  /** Poll interval when checking pane stability before injection (ms) */
+  outputStabilityPollMs?: number;
 }
 
 /**
@@ -134,6 +139,8 @@ export class TmuxWrapper {
       debugLogIntervalMs: 0,
       mouseMode: true, // Enable mouse scroll passthrough by default
       activityIdleThresholdMs: 30_000, // Consider idle after 30s with no output
+      outputStabilityTimeoutMs: 2000,
+      outputStabilityPollMs: 200,
       ...config,
     };
 
@@ -946,6 +953,19 @@ export class TmuxWrapper {
         await this.sleep(30);
       }
 
+      // Ensure pane output is stable to avoid interleaving with active generation
+      const stablePane = await this.waitForStablePane(
+        this.config.outputStabilityTimeoutMs ?? 2000,
+        this.config.outputStabilityPollMs ?? 200
+      );
+      if (!stablePane) {
+        this.logStderr('Output still active, re-queuing injection');
+        this.messageQueue.unshift(msg);
+        this.isInjecting = false;
+        setTimeout(() => this.checkForInjectionOpportunity(), this.config.injectRetryMs ?? 500);
+        return;
+      }
+
       // For Gemini: check if we're at a shell prompt ($) vs chat prompt (>)
       // If at shell prompt, skip injection to avoid shell command execution
       if (this.cliType === 'gemini') {
@@ -970,9 +990,9 @@ export class TmuxWrapper {
                              msg.importance !== undefined && msg.importance > 50 ? ' [!]' : '';
       const injection = `Relay message from ${msg.from} ${idTag}${threadHint}${importanceHint}: ${sanitizedBody}${truncationHint}`;
 
-      // Type the message as literal text
-      await this.sendKeysLiteral(injection);
-      await this.sleep(50);
+      // Paste message as a bracketed paste to avoid interleaving with active output
+      await this.pasteLiteral(injection);
+      await this.sleep(30);
 
       // Submit
       await this.sendKeys('Enter');
@@ -1010,6 +1030,24 @@ export class TmuxWrapper {
       .replace(/`/g, '\\`')
       .replace(/!/g, '\\!');
     await execAsync(`tmux send-keys -t ${this.sessionName} -l "${escaped}"`);
+  }
+
+  /**
+   * Paste text using tmux buffer with bracketed paste (-p) to avoid interleaving with ongoing output.
+   */
+  private async pasteLiteral(text: string): Promise<void> {
+    // Sanitize newlines to keep injection single-line inside paste buffer
+    const sanitized = text.replace(/[\r\n]+/g, ' ');
+    const escaped = sanitized
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\$/g, '\\$')
+      .replace(/`/g, '\\`')
+      .replace(/!/g, '\\!');
+
+    // Set tmux buffer then paste with -p (bracketed paste)
+    await execAsync(`tmux set-buffer -- "${escaped}"`);
+    await execAsync(`tmux paste-buffer -t ${this.sessionName} -p`);
   }
 
   private sleep(ms: number): Promise<void> {
@@ -1144,6 +1182,52 @@ export class TmuxWrapper {
     }
 
     this.logStderr(`waitForClearInput: timed out after ${maxWaitMs}ms`);
+    return false;
+  }
+
+  /**
+   * Capture a signature of the current pane content for stability checks.
+   * Uses hash+length to cheaply detect changes without storing full content.
+   */
+  private async capturePaneSignature(): Promise<string | null> {
+    try {
+      const { stdout } = await execAsync(
+        `tmux capture-pane -t ${this.sessionName} -p -J -S - 2>/dev/null`
+      );
+      const hash = crypto.createHash('sha1').update(stdout).digest('hex');
+      return `${stdout.length}:${hash}`;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Wait for pane output to stabilize before injecting to avoid interleaving with ongoing output.
+   */
+  private async waitForStablePane(maxWaitMs = 2000, pollIntervalMs = 200, requiredStablePolls = 2): Promise<boolean> {
+    const start = Date.now();
+    let lastSig = await this.capturePaneSignature();
+    if (!lastSig) return false;
+
+    let stableCount = 0;
+
+    while (Date.now() - start < maxWaitMs) {
+      await this.sleep(pollIntervalMs);
+      const sig = await this.capturePaneSignature();
+      if (!sig) continue;
+
+      if (sig === lastSig) {
+        stableCount++;
+        if (stableCount >= requiredStablePolls) {
+          return true;
+        }
+      } else {
+        stableCount = 0;
+        lastSig = sig;
+      }
+    }
+
+    this.logStderr(`waitForStablePane: timed out after ${maxWaitMs}ms`);
     return false;
   }
 

@@ -30,6 +30,8 @@ interface ProjectConnection {
 }
 
 interface MultiProjectClientOptions {
+  /** Agent name to register as (default: '__BridgeClient'). Must be unique per daemon. */
+  agentName?: string;
   /** Enable automatic reconnection on disconnect (default: true) */
   reconnect?: boolean;
   /** Initial reconnection delay in ms (default: 1000) */
@@ -43,7 +45,7 @@ interface MultiProjectClientOptions {
 export class MultiProjectClient {
   private connections: Map<string, ProjectConnection> = new Map();
   private leads: Map<string, LeadInfo> = new Map();
-  private options: Required<MultiProjectClientOptions>;
+  private options: Required<Omit<MultiProjectClientOptions, 'agentName'>> & { agentName: string };
   private shuttingDown = false;
 
   /** Handler for incoming messages */
@@ -54,6 +56,7 @@ export class MultiProjectClient {
 
   constructor(private projects: ProjectConfig[], options: MultiProjectClientOptions = {}) {
     this.options = {
+      agentName: options.agentName ?? '__BridgeClient',
       reconnect: options.reconnect ?? true,
       reconnectDelay: options.reconnectDelay ?? 1000,
       maxReconnectDelay: options.maxReconnectDelay ?? 30000,
@@ -144,7 +147,7 @@ export class MultiProjectClient {
       id: uuid(),
       ts: Date.now(),
       payload: {
-        agent: 'Architect',
+        agent: this.options.agentName,
         cli: 'bridge',
         capabilities: {
           ack: true,

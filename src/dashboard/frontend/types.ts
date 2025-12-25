@@ -92,4 +92,22 @@ export interface DOMElements {
   threadSendBtn: HTMLButtonElement;
   mentionAutocomplete: HTMLElement;
   mentionAutocompleteList: HTMLElement;
+  // Spawn modal elements
+  spawnBtn: HTMLButtonElement;
+  spawnModalOverlay: HTMLElement;
+  spawnModalClose: HTMLButtonElement;
+  spawnNameInput: HTMLInputElement;
+  spawnCliInput: HTMLInputElement;
+  spawnTaskInput: HTMLTextAreaElement;
+  spawnSubmitBtn: HTMLButtonElement;
+  spawnStatus: HTMLElement;
+}
+
+export interface SpawnedAgent {
+  name: string;
+  cli: string;
+  task: string;
+  spawnedBy: string;
+  spawnedAt: number;
+  window: string;
 }

@@ -2,7 +2,7 @@
  * Dashboard Application Entry Point
  */
 
-import { subscribe } from './state.js';
+import { subscribe, state } from './state.js';
 import { connect, sendMessage } from './websocket.js';
 import {
   initElements,
@@ -25,6 +25,10 @@ import {
   navigateMentionAutocomplete,
   completeMention,
   getCurrentMentionQuery,
+  openSpawnModal,
+  closeSpawnModal,
+  spawnAgent,
+  fetchSpawnedAgents,
 } from './components.js';
 import { state } from './state.js';
 
@@ -108,6 +112,9 @@ export function initApp(): void {
 
   // Connect to WebSocket
   connect();
+
+  // Fetch initial spawned agents list
+  fetchSpawnedAgents();
 }
 
 /**
@@ -304,6 +311,39 @@ function setupEventListeners(elements: ReturnType<typeof getElements>): void {
       closeThreadPanel();
     }
   });
+
+  // Spawn modal event listeners
+  elements.spawnBtn.addEventListener('click', openSpawnModal);
+
+  elements.spawnModalClose.addEventListener('click', closeSpawnModal);
+
+  // Cancel button in spawn modal
+  document.getElementById('spawn-cancel-btn')?.addEventListener('click', closeSpawnModal);
+
+  // Close spawn modal on overlay click
+  elements.spawnModalOverlay.addEventListener('click', (e: MouseEvent) => {
+    if (e.target === elements.spawnModalOverlay) {
+      closeSpawnModal();
+    }
+  });
+
+  // Close spawn modal on Escape
+  document.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.key === 'Escape' && elements.spawnModalOverlay.classList.contains('visible')) {
+      closeSpawnModal();
+    }
+  });
+
+  // Submit spawn form
+  elements.spawnSubmitBtn.addEventListener('click', spawnAgent);
+
+  // Enter key in spawn name input triggers submit
+  elements.spawnNameInput.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      spawnAgent();
+    }
+  });
 }
 
 /**
@@ -339,15 +379,28 @@ async function handleSend(): Promise<void> {
     return;
   }
 
+  let to: string;
+  let message: string;
+
+  // Check if we're in a DM (not general channel)
+  const isInDM = state.currentChannel !== 'general';
+
   // Parse @mention from the message
   const parsed = parseMention(rawMessage);
 
-  if (!parsed) {
+  if (parsed) {
+    // Message has explicit @mention - use it
+    to = parsed.to;
+    message = parsed.message;
+  } else if (isInDM) {
+    // In DM context - send to current channel without requiring @
+    to = state.currentChannel;
+    message = rawMessage;
+  } else {
+    // In general channel without @mention - require it
     alert('Message must start with @recipient (e.g., "@Lead hello" or "@* broadcast")');
     return;
   }
-
-  const { to, message } = parsed;
 
   elements.sendBtn.disabled = true;
 

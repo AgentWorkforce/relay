@@ -4,6 +4,12 @@ node_modules/
 # Build output
 dist/
 
+# Frontend build artifacts (generated from TypeScript at build time)
+src/dashboard/public/js/app.js
+src/dashboard/public/js/app.js.map
+src/dashboard/public/js/bridge.js
+src/dashboard/public/js/bridge.js.map
+
 # TypeScript build info (if enabled later)
 *.tsbuildinfo
 
@@ -31,3 +37,4 @@ pnpm-debug.log*
 coverage/
 .npm-cache
 .tmp-supervisor-tests
+.tmp-agent-relay-data

@@ -144,7 +144,7 @@ agent-relay lead Alice
 ->relay:*:lead Broadcast to all project leads
 ```
 
-### Spawn Workers (Lead only)
+### Spawn Agents (Lead only)
 
 ```
 ->relay:spawn Dev1 claude "Implement login endpoint"
@@ -174,6 +174,43 @@ Copy [docs/AGENTS.md](docs/AGENTS.md) to your project's agent instructions file 
 `agent-relay up` starts a web dashboard at http://localhost:3888
 
 ![Agent Relay Dashboard](dashboard.png)
+
+## REST API for Spawning Agents
+
+The dashboard includes a REST API for programmatically spawning and managing agents.
+
+### Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/spawn` | Spawn a new agent |
+| `GET` | `/api/spawned` | List spawned agents |
+| `DELETE` | `/api/spawned/:name` | Release an agent |
+
+### Examples
+
+```bash
+# Spawn an agent
+curl -X POST http://localhost:3888/api/spawn \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Dev1", "cli": "claude", "task": "Implement login"}'
+
+# List spawned agents
+curl http://localhost:3888/api/spawned
+
+# Release an agent
+curl -X DELETE http://localhost:3888/api/spawned/Dev1
+```
+
+### Response Format
+
+```json
+{
+  "success": true,
+  "name": "Dev1",
+  "window": "relay-workers:Dev1"
+}
+```
 
 ## Troubleshooting
 

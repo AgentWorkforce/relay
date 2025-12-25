@@ -52,13 +52,36 @@ describe('computeNeedsAttention', () => {
     expect(result.has('Bob')).toBe(false);
   });
 
-  it('ignores broadcasts without thread', () => {
+  it('broadcasts clear attention (agent is actively participating)', () => {
     const messages: AttentionMessage[] = [
       msg({ from: 'Alice', to: 'Bob', timestamp: new Date(baseTs).toISOString() }),
       msg({ from: 'Bob', to: '*', timestamp: new Date(baseTs + 1000).toISOString() }),
     ];
 
     const result = computeNeedsAttention(messages);
+    // Broadcasting shows the agent is active and engaged
+    expect(result.has('Bob')).toBe(false);
+  });
+
+  it('ignores messages older than 30 minutes', () => {
+    const thirtyOneMinutesAgo = baseTs - 31 * 60 * 1000;
+    const messages: AttentionMessage[] = [
+      msg({ from: 'Alice', to: 'Bob', timestamp: new Date(thirtyOneMinutesAgo).toISOString() }),
+    ];
+
+    const result = computeNeedsAttention(messages);
+    // Old message should not trigger attention
+    expect(result.has('Bob')).toBe(false);
+  });
+
+  it('still flags recent messages within the time window', () => {
+    const fiveMinutesAgo = baseTs - 5 * 60 * 1000;
+    const messages: AttentionMessage[] = [
+      msg({ from: 'Alice', to: 'Bob', timestamp: new Date(fiveMinutesAgo).toISOString() }),
+    ];
+
+    const result = computeNeedsAttention(messages);
+    // Recent message should trigger attention
     expect(result.has('Bob')).toBe(true);
   });
 });

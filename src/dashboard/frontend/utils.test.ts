@@ -221,5 +221,18 @@ describe('utils', () => {
     it('should preserve plain text', () => {
       expect(formatMessageBody('Hello World')).toBe('Hello World');
     });
+
+    it('should convert newlines to <br> tags', () => {
+      expect(formatMessageBody('Hello\nWorld')).toBe('Hello<br>World');
+    });
+
+    it('should handle multiple newlines', () => {
+      expect(formatMessageBody('Line1\nLine2\nLine3')).toBe('Line1<br>Line2<br>Line3');
+    });
+
+    it('should handle newlines with other content', () => {
+      const result = formatMessageBody('Check this:\n- Item 1\n- Item 2');
+      expect(result).toBe('Check this:<br>- Item 1<br>- Item 2');
+    });
   });
 });
