@@ -102,7 +102,7 @@ describe('AgentSpawner', () => {
     expect(execAsyncMock).toHaveBeenNthCalledWith(1, `tmux has-session -t ${session} 2>/dev/null`);
     expect(execAsyncMock).toHaveBeenNthCalledWith(2, `tmux new-window -t ${session} -n Dev1 -c "${projectRoot}"`);
     expect(execAsyncMock).toHaveBeenNthCalledWith(3, 'which agent-relay'); // Find full path
-    expect(execAsyncMock).toHaveBeenNthCalledWith(4, `tmux send-keys -t ${session}:Dev1 'unset TMUX && /usr/local/bin/agent-relay -n Dev1 claude --dangerously-skip-permissions' Enter`);
+    expect(execAsyncMock).toHaveBeenNthCalledWith(4, `tmux send-keys -t ${session}:Dev1 'unset TMUX && /usr/local/bin/agent-relay -n Dev1 -- claude --dangerously-skip-permissions' Enter`);
     expect(execAsyncMock).toHaveBeenNthCalledWith(5, `tmux send-keys -t ${session}:Dev1 -l "escaped:Finish the report"`);
     expect(execAsyncMock).toHaveBeenNthCalledWith(6, `tmux send-keys -t ${session}:Dev1 Enter`);
     expect(sleepMock).toHaveBeenCalledWith(100);
@@ -124,7 +124,7 @@ describe('AgentSpawner', () => {
     // Check that the command includes --dangerously-skip-permissions for claude:opus
     expect(execAsyncMock).toHaveBeenNthCalledWith(
       4,
-      `tmux send-keys -t ${session}:Opus1 'unset TMUX && /usr/local/bin/agent-relay -n Opus1 claude:opus --dangerously-skip-permissions' Enter`
+      `tmux send-keys -t ${session}:Opus1 'unset TMUX && /usr/local/bin/agent-relay -n Opus1 -- claude:opus --dangerously-skip-permissions' Enter`
     );
   });
 
@@ -144,7 +144,7 @@ describe('AgentSpawner', () => {
     // Check that the command does NOT include --dangerously-skip-permissions for codex
     expect(execAsyncMock).toHaveBeenNthCalledWith(
       4,
-      `tmux send-keys -t ${session}:Codex1 'unset TMUX && /usr/local/bin/agent-relay -n Codex1 codex' Enter`
+      `tmux send-keys -t ${session}:Codex1 'unset TMUX && /usr/local/bin/agent-relay -n Codex1 -- codex' Enter`
     );
   });
 
