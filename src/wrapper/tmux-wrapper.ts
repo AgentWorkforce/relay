@@ -529,6 +529,14 @@ export class TmuxWrapper {
       const joinedContent = this.joinContinuationLines(cleanContent);
       const { commands } = this.parser.parse(joinedContent);
 
+      // Debug: log relay commands being parsed
+      if (commands.length > 0 && this.config.debug) {
+        for (const cmd of commands) {
+          const bodyPreview = cmd.body.substring(0, 80).replace(/\n/g, '\\n');
+          this.logStderr(`[RELAY_PARSED] to=${cmd.to}, body="${bodyPreview}...", lines=${cmd.body.split('\n').length}`);
+        }
+      }
+
       // Track last output time for injection timing
       if (stdout.length !== this.processedOutputLength) {
         this.lastOutputTime = Date.now();
