@@ -49,6 +49,7 @@ program
 program
   .option('-n, --name <name>', 'Agent name (auto-generated if not set)')
   .option('-q, --quiet', 'Disable debug output', false)
+  .option('-d, --detach', 'Start agent in background (detached mode)')
   .option('--prefix <pattern>', 'Relay prefix pattern (default: ->relay:)')
   .argument('[command...]', 'Command to wrap (e.g., claude)')
   .action(async (commandParts, options) => {
@@ -58,12 +59,46 @@ program
       return;
     }
 
-    const { getProjectPaths } = await import('../utils/project-namespace.js');
+    const { ensureProjectDir } = await import('../utils/project-namespace.js');
     const { findAgentConfig, isClaudeCli, buildClaudeArgs } = await import('../utils/agent-config.js');
-    const paths = getProjectPaths();
+    const paths = ensureProjectDir();
 
     const [mainCommand, ...commandArgs] = commandParts;
     const agentName = options.name ?? generateAgentName();
+
+    // Handle detached mode - spawn daemon and exit
+    const isDaemonProcess = process.argv.includes('--_daemon');
+    if (options.detach && !isDaemonProcess) {
+      const { spawn } = await import('node:child_process');
+
+      // Build args for the daemon process
+      const daemonArgs = [
+        ...process.argv.slice(2).filter(a => a !== '-d' && a !== '--detach'),
+        '--_daemon',
+        '-n', agentName, // Ensure same name is used
+      ];
+
+      // Spawn detached process
+      const child = spawn(process.argv[0], [process.argv[1], ...daemonArgs], {
+        detached: true,
+        stdio: 'ignore',
+        cwd: process.cwd(),
+        env: process.env,
+      });
+
+      // Write PID file for the wrapper
+      const wrapperPidPath = path.join(paths.dataDir, `wrapper-${agentName}.pid`);
+      fs.writeFileSync(wrapperPidPath, String(child.pid));
+
+      child.unref();
+
+      console.log(`Agent: ${agentName}`);
+      console.log(`Project: ${paths.projectId}`);
+      console.log(`Started in detached mode (PID: ${child.pid})`);
+      console.log(`Attach with: agent-relay attach ${agentName}`);
+      console.log(`Stop with:   agent-relay kill ${agentName}`);
+      return;
+    }
 
     console.error(`Agent: ${agentName}`);
     console.error(`Project: ${paths.projectId}`);
@@ -92,9 +127,15 @@ program
       relayPrefix: options.prefix,
       useInbox: true,
       inboxDir: paths.dataDir, // Use the project-specific data directory for the inbox
+      detached: isDaemonProcess, // Don't attach if running as daemon
     });
 
     process.on('SIGINT', () => {
+      wrapper.stop();
+      process.exit(0);
+    });
+
+    process.on('SIGTERM', () => {
       wrapper.stop();
       process.exit(0);
     });
@@ -302,6 +343,81 @@ program
     } catch {
       console.log('Status: STOPPED');
       logRelaySessions(relaySessions);
+    }
+  });
+
+// attach - Attach to a running agent's tmux session
+program
+  .command('attach')
+  .description('Attach to a running agent session')
+  .argument('<name>', 'Agent name to attach to')
+  .action(async (name) => {
+    const sessionName = `relay-${name}`;
+
+    // Check if session exists
+    try {
+      await execAsync(`tmux has-session -t ${sessionName} 2>/dev/null`);
+    } catch {
+      console.error(`No session found for agent: ${name}`);
+      console.error(`Run 'agent-relay status' to see available sessions.`);
+      process.exit(1);
+    }
+
+    // Attach to the session
+    const { spawn } = await import('node:child_process');
+    const attach = spawn('tmux', ['attach-session', '-t', sessionName], {
+      stdio: 'inherit',
+    });
+
+    attach.on('exit', (code) => {
+      process.exit(code ?? 0);
+    });
+
+    attach.on('error', (err) => {
+      console.error(`Failed to attach: ${err.message}`);
+      process.exit(1);
+    });
+  });
+
+// kill - Stop a detached agent
+program
+  .command('kill')
+  .description('Stop a detached agent and its tmux session')
+  .argument('<name>', 'Agent name to kill')
+  .option('--force', 'Force kill without confirmation')
+  .action(async (name, options) => {
+    const { getProjectPaths } = await import('../utils/project-namespace.js');
+    const paths = getProjectPaths();
+
+    const sessionName = `relay-${name}`;
+    const wrapperPidPath = path.join(paths.dataDir, `wrapper-${name}.pid`);
+
+    let killed = false;
+
+    // Kill the wrapper process if PID file exists
+    if (fs.existsSync(wrapperPidPath)) {
+      const pid = Number(fs.readFileSync(wrapperPidPath, 'utf-8').trim());
+      try {
+        process.kill(pid, 'SIGTERM');
+        console.log(`Stopped wrapper process (PID: ${pid})`);
+        killed = true;
+      } catch {
+        // Process may already be dead
+      }
+      fs.unlinkSync(wrapperPidPath);
+    }
+
+    // Kill the tmux session
+    try {
+      await execAsync(`tmux kill-session -t ${sessionName}`);
+      console.log(`Killed tmux session: ${sessionName}`);
+      killed = true;
+    } catch {
+      // Session may not exist
+    }
+
+    if (!killed) {
+      console.log(`No running agent found: ${name}`);
     }
   });
 
