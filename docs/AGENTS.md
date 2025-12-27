@@ -165,6 +165,15 @@ relay team status
 ->relay:* Broadcast to all agents
 ```
 
+**Fenced format** (multi-line with blank lines/code):
+```
+->relay:AgentName <<<
+Multi-line message here.
+
+Can include blank lines and code.
+>>>
+```
+
 **Block format** (structured data):
 ```
 [[RELAY]]{"to":"AgentName","type":"message","body":"Your message"}[[/RELAY]]

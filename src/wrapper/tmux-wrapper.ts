@@ -399,6 +399,7 @@ export class TmuxWrapper {
     const instructions = [
       `[Agent Relay] You are "${this.config.name}" - connected for real-time messaging.`,
       `SEND: ${this.relayPrefix}AgentName message (or ${this.relayPrefix}* to broadcast)`,
+      `MULTI-LINE: ${this.relayPrefix}AgentName <<< ... >>> for messages with blank lines`,
       `RECEIVE: Messages appear as "Relay message from X [id]: content"`,
       `SUMMARY: Periodically output [[SUMMARY]]{"currentTask":"...","context":"..."}[[/SUMMARY]] to track progress`,
       `END: Output [[SESSION_END]]{"summary":"..."}[[/SESSION_END]] when your task is complete`,

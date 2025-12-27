@@ -23,6 +23,7 @@ Real-time agent-to-agent messaging. Two modes: **tmux wrapper** (real-time, sub-
 | Pattern | Description |
 |---------|-------------|
 | `->relay:Name message` | Direct message (output as text) |
+| `->relay:Name <<<`...`>>>` | Multi-line message with blank lines/code |
 | `->relay:* message` | Broadcast to all |
 | `[[RELAY]]{"to":"Name","body":"msg"}[[/RELAY]]` | Structured JSON |
 | `\->relay:` | Escape (literal output) |
@@ -56,6 +57,28 @@ relay team status                     # Show team
 ->relay:BlueLake I've finished the API refactor.
 ->relay:* STATUS: Starting auth module.
 ```
+
+### Multi-line Messages (Fenced Format)
+
+For messages with blank lines, code blocks, or complex content:
+
+```
+->relay:Reviewer <<<
+REVIEW REQUEST: Auth Module
+
+Please check:
+- src/auth/login.ts
+- src/auth/session.ts
+
+Key changes:
+1. Added JWT validation
+2. Fixed session expiry
+>>>
+```
+
+The `<<<` opens the block, `>>>` closes it. Everything between is captured exactly.
+
+### Pattern Rules
 
 Pattern must be at line start (whitespace/prefixes OK):
 
