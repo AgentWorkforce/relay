@@ -219,6 +219,155 @@ describe('OutputParser', () => {
     });
   });
 
+  describe('Fenced inline format - ->relay:Target <<< ... >>>', () => {
+    it('parses basic fenced inline message', () => {
+      const input = '->relay:agent2 <<<\nHello there\n>>>\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0]).toMatchObject({
+        to: 'agent2',
+        kind: 'message',
+        body: 'Hello there',
+      });
+      expect(result.output).toBe('');
+    });
+
+    it('preserves blank lines within fenced message', () => {
+      const input = '->relay:agent2 <<<\nFirst paragraph\n\nSecond paragraph\n>>>\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].body).toBe('First paragraph\n\nSecond paragraph');
+    });
+
+    it('handles multi-line message with complex content', () => {
+      const input = `->relay:Lead <<<
+Here's my analysis:
+
+1. First point
+2. Second point
+
+The conclusion is...
+>>>
+`;
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].to).toBe('Lead');
+      expect(result.commands[0].body).toContain('First point');
+      expect(result.commands[0].body).toContain('Second point');
+      expect(result.commands[0].body).toContain('The conclusion is...');
+    });
+
+    it('handles fenced message with code blocks inside', () => {
+      const input = `->relay:Dev <<<
+Here's the code:
+
+\`\`\`typescript
+function hello() {
+  console.log('Hi');
+}
+\`\`\`
+
+Let me know if that works.
+>>>
+`;
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].body).toContain('```typescript');
+      expect(result.commands[0].body).toContain('function hello()');
+    });
+
+    it('handles fenced thinking variant', () => {
+      const input = '->thinking:agent2 <<<\nConsidering options:\n- Option A\n- Option B\n>>>\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0]).toMatchObject({
+        to: 'agent2',
+        kind: 'thinking',
+      });
+      expect(result.commands[0].body).toContain('Option A');
+    });
+
+    it('handles thread syntax in fenced messages', () => {
+      const input = '->relay:agent2 [thread:review-123] <<<\nMulti-line\nreview comments\n>>>\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].thread).toBe('review-123');
+      expect(result.commands[0].body).toBe('Multi-line\nreview comments');
+    });
+
+    it('handles cross-project syntax in fenced messages', () => {
+      const input = '->relay:other-project:agent2 <<<\nCross-project message\n>>>\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].to).toBe('agent2');
+      expect(result.commands[0].project).toBe('other-project');
+    });
+
+    it('processes content after fenced block closes', () => {
+      const input = '->relay:agent1 <<<\nFenced content\n>>>\n->relay:agent2 Regular inline\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(2);
+      expect(result.commands[0].to).toBe('agent1');
+      expect(result.commands[0].body).toBe('Fenced content');
+      expect(result.commands[1].to).toBe('agent2');
+      expect(result.commands[1].body).toBe('Regular inline');
+    });
+
+    it('accumulates across multiple parse calls (streaming)', () => {
+      const result1 = parser.parse('->relay:agent2 <<<\nFirst part\n');
+      expect(result1.commands).toHaveLength(0);
+      expect(result1.output).toBe('');
+
+      const result2 = parser.parse('Second part\n');
+      expect(result2.commands).toHaveLength(0);
+
+      const result3 = parser.parse('>>>\n');
+      expect(result3.commands).toHaveLength(1);
+      expect(result3.commands[0].body).toBe('First part\nSecond part');
+    });
+
+    it('handles >>> with leading/trailing whitespace', () => {
+      const input = '->relay:agent2 <<<\nContent\n  >>>  \n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].body).toBe('Content');
+    });
+
+    it('trims leading/trailing whitespace from body', () => {
+      const input = '->relay:agent2 <<<\n\n  Content here  \n\n>>>\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      // Leading blank lines should be trimmed, content preserved
+      expect(result.commands[0].body).toBe('Content here');
+    });
+
+    it('handles fenced message with only blank lines', () => {
+      const input = '->relay:agent2 <<<\n\n\n>>>\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].body).toBe('');
+    });
+
+    it('handles prefixes like bullets before fenced start', () => {
+      const input = '- ->relay:agent2 <<<\nContent from list\n>>>\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].body).toBe('Content from list');
+    });
+  });
+
   describe('Code fence handling', () => {
     it('ignores ->relay: inside code fences', () => {
       const input = '```\n->relay:agent2 This should be ignored\n```\n';
