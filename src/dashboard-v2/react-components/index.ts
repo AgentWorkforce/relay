@@ -8,6 +8,7 @@
 // Core Components
 export { AgentCard, agentCardStyles, type AgentCardProps } from './AgentCard';
 export { AgentList, agentListStyles, type AgentListProps } from './AgentList';
+export { ThinkingIndicator, ThinkingDot, thinkingIndicatorStyles, type ThinkingIndicatorProps } from './ThinkingIndicator';
 export { MessageList, messageListStyles, type MessageListProps } from './MessageList';
 export { CommandPalette, commandPaletteStyles, type CommandPaletteProps, type Command } from './CommandPalette';
 export { SpawnModal, spawnModalStyles, type SpawnModalProps, type SpawnConfig } from './SpawnModal';

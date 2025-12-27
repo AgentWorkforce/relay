@@ -92,11 +92,12 @@ const FALLBACK_COLORS: ColorScheme[] = [
 
 // Status colors
 export const STATUS_COLORS = {
-  online: '#22c55e',   // Green
-  offline: '#6b7280',  // Gray
-  busy: '#eab308',     // Yellow
-  error: '#ef4444',    // Red
-  attention: '#ef4444', // Red (for badge)
+  online: '#22c55e',      // Green
+  offline: '#6b7280',     // Gray
+  busy: '#eab308',        // Yellow
+  processing: '#6366f1',  // Indigo (thinking/processing)
+  error: '#ef4444',       // Red
+  attention: '#ef4444',   // Red (for badge)
 } as const;
 
 export type AgentStatus = keyof typeof STATUS_COLORS;

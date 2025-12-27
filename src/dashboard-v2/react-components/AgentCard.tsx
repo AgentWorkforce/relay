@@ -14,6 +14,7 @@ import {
   type AgentStatus,
 } from '../lib/colors';
 import { getAgentDisplayName, getAgentBreadcrumb } from '../lib/hierarchy';
+import { ThinkingIndicator, ThinkingDot } from './ThinkingIndicator';
 
 export interface AgentCardProps {
   agent: Agent;
@@ -60,7 +61,11 @@ export function AgentCard({
           <span style={{ color: colors.text }}>{initials}</span>
         </div>
         <span className="agent-name">{agent.name}</span>
-        <div className="agent-status-dot" style={{ backgroundColor: statusColor }} />
+        {agent.isProcessing ? (
+          <ThinkingDot isProcessing={true} />
+        ) : (
+          <div className="agent-status-dot" style={{ backgroundColor: statusColor }} />
+        )}
         {agent.needsAttention && <div className="attention-badge" />}
       </div>
     );
@@ -96,7 +101,19 @@ export function AgentCard({
         </div>
       </div>
 
-      {agent.currentTask && (
+      {agent.isProcessing && (
+        <div className="agent-thinking">
+          <ThinkingIndicator
+            isProcessing={true}
+            processingStartedAt={agent.processingStartedAt}
+            size="medium"
+            showElapsed={true}
+          />
+          <span className="thinking-label">Thinking...</span>
+        </div>
+      )}
+
+      {agent.currentTask && !agent.isProcessing && (
         <div className="agent-task">
           <span className="task-label">Working on:</span>
           <span className="task-text">{agent.currentTask}</span>
@@ -337,5 +354,23 @@ export const agentCardStyles = `
   width: 8px;
   height: 8px;
   margin-left: auto;
+}
+
+/* Thinking indicator section */
+.agent-thinking {
+  margin-top: 8px;
+  padding: 8px;
+  background: #eef2ff;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #c7d2fe;
+}
+
+.thinking-label {
+  font-size: 12px;
+  color: #6366f1;
+  font-weight: 500;
 }
 `;

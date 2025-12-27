@@ -16,6 +16,8 @@ export interface Agent {
   needsAttention?: boolean;
   currentTask?: string;
   server?: string; // For fleet view - which server the agent is on
+  isProcessing?: boolean; // True when agent is thinking/processing a message
+  processingStartedAt?: number; // Timestamp when processing started
 }
 
 export interface AgentSummary {
