@@ -23,6 +23,7 @@ Real-time agent-to-agent messaging. Two modes: **tmux wrapper** (real-time, sub-
 | Pattern | Description |
 |---------|-------------|
 | `->relay:Name message` | Direct message (output as text) |
+| `->relay:Name <<<`...`>>>` | Multi-line message with blank lines/code |
 | `->relay:* message` | Broadcast to all |
 | `[[RELAY]]{"to":"Name","body":"msg"}[[/RELAY]]` | Structured JSON |
 | `\->relay:` | Escape (literal output) |
@@ -56,6 +57,32 @@ relay team status                     # Show team
 ->relay:BlueLake I've finished the API refactor.
 ->relay:* STATUS: Starting auth module.
 ```
+
+### Multi-line Messages (Fenced Format)
+
+For messages with blank lines, code blocks, or complex content:
+
+```
+->relay:Reviewer <<<
+REVIEW REQUEST: Auth Module
+
+Please check:
+- src/auth/login.ts
+- src/auth/session.ts
+
+Key changes:
+1. Added JWT validation
+2. Fixed session expiry
+>>>
+```
+
+**CRITICAL:** Always end with `>>>` on its own line! The `<<<` opens, `>>>` closes.
+
+**Limits:** Fenced messages max 200 lines. For longer content, send summary with reference ID.
+
+**Fallback:** If you forget `>>>`, message auto-closes on double blank line.
+
+### Pattern Rules
 
 Pattern must be at line start (whitespace/prefixes OK):
 
@@ -102,6 +129,24 @@ relay read abc123
 ->relay:* BLOCKED: Need DB credentials
 ```
 
+## Spawning Agents
+
+Any agent can spawn worker agents to delegate tasks:
+
+```
+# Spawn a worker
+->relay:spawn WorkerName cli "task description"
+
+# Examples
+->relay:spawn Dev1 claude "Implement the login endpoint"
+->relay:spawn Tester claude "Write unit tests for auth module"
+
+# Release when done
+->relay:release WorkerName
+```
+
+Workers run in separate tmux windows and can communicate back via `->relay:` patterns.
+
 ## Multi-Project Bridge
 
 ```bash
@@ -111,11 +156,6 @@ relay bridge ~/auth ~/frontend ~/api
 # Cross-project messaging
 @relay:projectId:agent Message
 @relay:*:lead Broadcast to leads
-
-# Spawn workers (lead mode)
-relay lead Alice
-->relay:spawn Dev1 claude "Implement login"
-->relay:release Dev1
 ```
 
 ## Common Mistakes

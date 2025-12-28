@@ -1,0 +1,584 @@
+/**
+ * Dashboard V2 - Main Application Component
+ *
+ * Root component that combines sidebar, header, and main content area.
+ * Manages global state via hooks and provides context to child components.
+ */
+
+import React, { useState, useCallback, useRef } from 'react';
+import type { Agent } from '../types';
+import { Sidebar } from './layout/Sidebar';
+import { Header } from './layout/Header';
+import { MessageList } from './MessageList';
+import { CommandPalette } from './CommandPalette';
+import { SpawnModal, type SpawnConfig } from './SpawnModal';
+import { SettingsPanel, defaultSettings, type Settings } from './SettingsPanel';
+import { MentionAutocomplete, getMentionQuery, completeMentionInValue } from './MentionAutocomplete';
+import { useWebSocket } from './hooks/useWebSocket';
+import { useAgents } from './hooks/useAgents';
+import { useMessages } from './hooks/useMessages';
+import { api } from '../lib/api';
+
+export interface AppProps {
+  /** Initial WebSocket URL (optional, defaults to current host) */
+  wsUrl?: string;
+}
+
+export function App({ wsUrl }: AppProps) {
+  // WebSocket connection for real-time data
+  const { data, isConnected, error: wsError } = useWebSocket({ url: wsUrl });
+
+  // View mode state
+  const [viewMode, setViewMode] = useState<'local' | 'fleet'>('local');
+
+  // Spawn modal state
+  const [isSpawnModalOpen, setIsSpawnModalOpen] = useState(false);
+  const [isSpawning, setIsSpawning] = useState(false);
+  const [spawnError, setSpawnError] = useState<string | null>(null);
+
+  // Command palette state
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+
+  // Settings panel state
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settings, setSettings] = useState<Settings>(defaultSettings);
+
+  // Agent state management
+  const {
+    agents,
+    groups,
+    selectedAgent,
+    selectAgent,
+    searchQuery,
+    setSearchQuery,
+    totalCount,
+    onlineCount,
+    needsAttentionCount,
+  } = useAgents({
+    agents: data?.agents ?? [],
+  });
+
+  // Message state management
+  const {
+    messages,
+    currentChannel,
+    setCurrentChannel,
+    currentThread,
+    setCurrentThread,
+    sendMessage,
+    isSending,
+    sendError,
+  } = useMessages({
+    messages: data?.messages ?? [],
+  });
+
+  // Check if fleet view is available
+  const isFleetAvailable = Boolean(data?.fleet?.servers?.length);
+
+  // Handle agent selection
+  const handleAgentSelect = useCallback((agent: Agent) => {
+    selectAgent(agent.name);
+    setCurrentChannel(agent.name);
+  }, [selectAgent, setCurrentChannel]);
+
+  // Handle spawn button click
+  const handleSpawnClick = useCallback(() => {
+    setSpawnError(null);
+    setIsSpawnModalOpen(true);
+  }, []);
+
+  // Handle settings click
+  const handleSettingsClick = useCallback(() => {
+    setIsSettingsOpen(true);
+  }, []);
+
+  // Handle spawn agent
+  const handleSpawn = useCallback(async (config: SpawnConfig): Promise<boolean> => {
+    setIsSpawning(true);
+    setSpawnError(null);
+    try {
+      const result = await api.spawnAgent({ name: config.name, cli: config.command });
+      if (!result.success) {
+        setSpawnError(result.error || 'Failed to spawn agent');
+        return false;
+      }
+      return true;
+    } catch (err) {
+      setSpawnError(err instanceof Error ? err.message : 'Failed to spawn agent');
+      return false;
+    } finally {
+      setIsSpawning(false);
+    }
+  }, []);
+
+  // Handle command palette
+  const handleCommandPaletteOpen = useCallback(() => {
+    setIsCommandPaletteOpen(true);
+  }, []);
+
+  // Keyboard shortcuts
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Cmd/Ctrl + K for command palette
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setIsCommandPaletteOpen(true);
+      }
+
+      // Escape to close modals
+      if (e.key === 'Escape') {
+        setIsCommandPaletteOpen(false);
+        setIsSpawnModalOpen(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  return (
+    <div className="dashboard-app">
+      {/* Sidebar */}
+      <Sidebar
+        agents={agents}
+        selectedAgent={selectedAgent?.name}
+        viewMode={viewMode}
+        isFleetAvailable={isFleetAvailable}
+        isConnected={isConnected}
+        onAgentSelect={handleAgentSelect}
+        onViewModeChange={setViewMode}
+        onSpawnClick={handleSpawnClick}
+      />
+
+      {/* Main Content */}
+      <main className="dashboard-main">
+        {/* Header */}
+        <Header
+          currentChannel={currentChannel}
+          selectedAgent={selectedAgent}
+          onCommandPaletteOpen={handleCommandPaletteOpen}
+          onSettingsClick={handleSettingsClick}
+        />
+
+        {/* Content Area */}
+        <div className="dashboard-content">
+          {wsError ? (
+            <div className="error-state">
+              <ErrorIcon />
+              <h2>Connection Error</h2>
+              <p>{wsError.message}</p>
+              <button onClick={() => window.location.reload()}>
+                Retry Connection
+              </button>
+            </div>
+          ) : !data ? (
+            <div className="loading-state">
+              <LoadingSpinner />
+              <p>Connecting to dashboard...</p>
+            </div>
+          ) : (
+            <div className="messages-container">
+              <MessageList
+                messages={messages}
+                currentChannel={currentChannel}
+                onThreadClick={(messageId) => setCurrentThread(messageId)}
+                highlightedMessageId={currentThread ?? undefined}
+              />
+            </div>
+          )}
+        </div>
+
+        {/* Message Composer */}
+        <div className="message-composer">
+          <MessageComposer
+            recipient={currentChannel === 'general' ? '*' : currentChannel}
+            agents={agents}
+            onSend={sendMessage}
+            isSending={isSending}
+            error={sendError}
+          />
+        </div>
+      </main>
+
+      {/* Command Palette */}
+      <CommandPalette
+        isOpen={isCommandPaletteOpen}
+        onClose={() => setIsCommandPaletteOpen(false)}
+        agents={agents}
+        onAgentSelect={handleAgentSelect}
+        onSpawnClick={handleSpawnClick}
+      />
+
+      {/* Spawn Modal */}
+      <SpawnModal
+        isOpen={isSpawnModalOpen}
+        onClose={() => setIsSpawnModalOpen(false)}
+        onSpawn={handleSpawn}
+        existingAgents={agents.map((a) => a.name)}
+        isSpawning={isSpawning}
+        error={spawnError}
+      />
+
+      {/* Settings Panel */}
+      <SettingsPanel
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        settings={settings}
+        onSettingsChange={setSettings}
+        onResetSettings={() => setSettings(defaultSettings)}
+      />
+    </div>
+  );
+}
+
+/**
+ * Message Composer Component with @-mention autocomplete
+ */
+interface MessageComposerProps {
+  recipient: string;
+  agents: Agent[];
+  onSend: (to: string, content: string) => Promise<boolean>;
+  isSending: boolean;
+  error: string | null;
+}
+
+function MessageComposer({ recipient, agents, onSend, isSending, error }: MessageComposerProps) {
+  const [message, setMessage] = useState('');
+  const [cursorPosition, setCursorPosition] = useState(0);
+  const [showMentions, setShowMentions] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Check for @mention on input change
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    const cursorPos = e.target.selectionStart || 0;
+    setMessage(value);
+    setCursorPosition(cursorPos);
+
+    // Show autocomplete if typing @mention at start
+    const query = getMentionQuery(value, cursorPos);
+    setShowMentions(query !== null);
+  };
+
+  // Handle mention selection
+  const handleMentionSelect = (mention: string, newValue: string) => {
+    setMessage(newValue);
+    setShowMentions(false);
+    // Focus input and set cursor after the mention
+    setTimeout(() => {
+      if (inputRef.current) {
+        inputRef.current.focus();
+        const pos = newValue.indexOf(' ') + 1;
+        inputRef.current.setSelectionRange(pos, pos);
+      }
+    }, 0);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!message.trim() || isSending) return;
+
+    const success = await onSend(recipient, message);
+    if (success) {
+      setMessage('');
+      setShowMentions(false);
+    }
+  };
+
+  return (
+    <form className="composer-form" onSubmit={handleSubmit}>
+      <div className="composer-input-wrapper">
+        <MentionAutocomplete
+          agents={agents}
+          inputValue={message}
+          cursorPosition={cursorPosition}
+          onSelect={handleMentionSelect}
+          onClose={() => setShowMentions(false)}
+          isVisible={showMentions}
+        />
+        <input
+          ref={inputRef}
+          type="text"
+          className="composer-input"
+          placeholder={`Message ${recipient === '*' ? 'everyone' : '@' + recipient}... (type @ to mention)`}
+          value={message}
+          onChange={handleInputChange}
+          onSelect={(e) => setCursorPosition((e.target as HTMLInputElement).selectionStart || 0)}
+          disabled={isSending}
+        />
+      </div>
+      <button
+        type="submit"
+        className="composer-send"
+        disabled={!message.trim() || isSending}
+      >
+        {isSending ? 'Sending...' : 'Send'}
+      </button>
+      {error && <span className="composer-error">{error}</span>}
+    </form>
+  );
+}
+
+function LoadingSpinner() {
+  return (
+    <svg className="spinner" width="24" height="24" viewBox="0 0 24 24">
+      <circle
+        cx="12"
+        cy="12"
+        r="10"
+        stroke="currentColor"
+        strokeWidth="2"
+        fill="none"
+        strokeDasharray="32"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function ErrorIcon() {
+  return (
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <circle cx="12" cy="12" r="10" />
+      <line x1="12" y1="8" x2="12" y2="12" />
+      <line x1="12" y1="16" x2="12.01" y2="16" />
+    </svg>
+  );
+}
+
+/**
+ * CSS styles for the main app
+ */
+export const appStyles = `
+.dashboard-app {
+  display: flex;
+  height: 100vh;
+  background: #f5f5f5;
+}
+
+.dashboard-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.dashboard-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+.loading-state,
+.error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #666;
+  text-align: center;
+}
+
+.loading-state .spinner {
+  animation: spin 1s linear infinite;
+  margin-bottom: 16px;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.error-state svg {
+  color: #ef4444;
+  margin-bottom: 16px;
+}
+
+.error-state h2 {
+  margin: 0 0 8px;
+  color: #1a1a1a;
+}
+
+.error-state button {
+  margin-top: 16px;
+  padding: 8px 16px;
+  background: #1264a3;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.messages-placeholder {
+  background: white;
+  border-radius: 8px;
+  padding: 20px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.agent-summary {
+  margin-top: 16px;
+  padding: 12px;
+  background: #f9f9f9;
+  border-radius: 4px;
+}
+
+.agent-summary p {
+  margin: 4px 0;
+  font-size: 13px;
+}
+
+.message-composer {
+  padding: 16px;
+  background: white;
+  border-top: 1px solid #e8e8e8;
+}
+
+.composer-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.composer-input-wrapper {
+  flex: 1;
+  position: relative;
+}
+
+.composer-input {
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid #e8e8e8;
+  border-radius: 6px;
+  font-size: 14px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.composer-input:focus {
+  border-color: #1264a3;
+}
+
+/* Mention Autocomplete Styles */
+.mention-autocomplete {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  max-height: 200px;
+  overflow-y: auto;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.1);
+  z-index: 100;
+  margin-bottom: 4px;
+}
+
+.mention-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.mention-item:hover,
+.mention-item.selected {
+  background: #f3f4f6;
+}
+
+.mention-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.mention-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mention-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: #1f2937;
+}
+
+.mention-description {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.composer-send {
+  padding: 10px 20px;
+  background: #1264a3;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.composer-send:hover:not(:disabled) {
+  background: #0d4f82;
+}
+
+.composer-send:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.composer-error {
+  color: #ef4444;
+  font-size: 12px;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal {
+  background: white;
+  border-radius: 8px;
+  padding: 24px;
+  min-width: 400px;
+  max-width: 90vw;
+}
+
+.modal h2 {
+  margin: 0 0 16px;
+}
+
+.command-palette {
+  background: white;
+  border-radius: 8px;
+  padding: 8px;
+  width: 500px;
+  max-width: 90vw;
+}
+
+.command-palette input {
+  width: 100%;
+  padding: 12px 16px;
+  border: none;
+  font-size: 16px;
+  outline: none;
+}
+`;

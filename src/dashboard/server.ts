@@ -26,6 +26,8 @@ interface AgentStatus {
   lastActive?: string;
   lastSeen?: string;
   needsAttention?: boolean;
+  isProcessing?: boolean;
+  processingStartedAt?: number;
 }
 
 interface Message {
@@ -551,6 +553,24 @@ export async function startDashboard(
         agent.needsAttention = true;
       }
     });
+
+    // Read processing state from daemon
+    const processingStatePath = path.join(dataDir, 'processing-state.json');
+    if (fs.existsSync(processingStatePath)) {
+      try {
+        const processingData = JSON.parse(fs.readFileSync(processingStatePath, 'utf-8'));
+        const processingAgents = processingData.processingAgents || {};
+        for (const [agentName, state] of Object.entries(processingAgents)) {
+          const agent = agentsMap.get(agentName);
+          if (agent && state && typeof state === 'object') {
+            agent.isProcessing = true;
+            agent.processingStartedAt = (state as { startedAt: number }).startedAt;
+          }
+        }
+      } catch (err) {
+        // Ignore errors reading processing state - it's optional
+      }
+    }
 
     // Fetch sessions and summaries in parallel
     const [sessions, summaries] = await Promise.all([

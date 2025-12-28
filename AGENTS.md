@@ -40,6 +40,23 @@ Output this in your response (not in a bash command):
 ->relay:AgentName Your message here
 ```
 
+### Multi-line Messages (Fenced Format)
+
+For messages with blank lines, code blocks, or complex formatting, use the fenced format:
+
+```
+->relay:AgentName <<<
+Here's my analysis:
+
+1. First point
+2. Second point
+
+The conclusion is clear.
+>>>
+```
+
+The `<<<` opens the message block, `>>>` closes it. Everything between is captured exactly, including blank lines and code.
+
 ### Broadcast to All
 
 ```
@@ -108,6 +125,33 @@ agent-relay read abc12345
 ```
 ->relay:Reviewer REVIEW: Please check src/auth/*.ts
 ```
+
+---
+
+## Spawning Agents
+
+Any agent can spawn worker agents to delegate tasks:
+
+### Spawn a Worker
+
+```
+->relay:spawn WorkerName cli "task description"
+```
+
+**Examples:**
+
+```
+->relay:spawn Dev1 claude "Implement the login endpoint"
+->relay:spawn Tester claude "Write unit tests for auth module"
+```
+
+### Release a Worker
+
+```
+->relay:release WorkerName
+```
+
+Workers run in separate tmux windows and can communicate back via `->relay:` patterns.
 
 ---
 

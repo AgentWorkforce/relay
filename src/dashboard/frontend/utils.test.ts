@@ -16,8 +16,8 @@ import {
 
 describe('utils', () => {
   describe('STALE_THRESHOLD_MS', () => {
-    it('should be 30 seconds', () => {
-      expect(STALE_THRESHOLD_MS).toBe(30000);
+    it('should be 45 seconds (1.5x heartbeat timeout for flickering prevention)', () => {
+      expect(STALE_THRESHOLD_MS).toBe(45000);
     });
   });
 

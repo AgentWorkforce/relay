@@ -42,6 +42,10 @@ export class Daemon {
   private storage?: StorageAdapter;
   private storageInitialized = false;
   private registry?: AgentRegistry;
+  private processingStateInterval?: NodeJS.Timeout;
+
+  /** Interval for writing processing state file (500ms for responsive UI) */
+  private static readonly PROCESSING_STATE_INTERVAL_MS = 500;
 
   constructor(config: Partial<DaemonConfig> = {}) {
     this.config = { ...DEFAULT_DAEMON_CONFIG, ...config };
@@ -76,6 +80,23 @@ export class Daemon {
       fs.renameSync(tempPath, targetPath);
     } catch (err) {
       console.error('[daemon] Failed to write agents.json:', err);
+    }
+  }
+
+  /**
+   * Write processing state to processing-state.json for dashboard consumption.
+   * This file contains agents currently processing/thinking after receiving a message.
+   */
+  private writeProcessingStateFile(): void {
+    try {
+      const processingAgents = this.router.getProcessingAgents();
+      const targetPath = path.join(this.config.teamDir ?? path.dirname(this.config.socketPath), 'processing-state.json');
+      const data = JSON.stringify({ processingAgents, updatedAt: Date.now() }, null, 2);
+      const tempPath = `${targetPath}.tmp`;
+      fs.writeFileSync(tempPath, data, 'utf-8');
+      fs.renameSync(tempPath, targetPath);
+    } catch (err) {
+      console.error('[daemon] Failed to write processing-state.json:', err);
     }
   }
 
@@ -132,6 +153,12 @@ export class Daemon {
         // Set restrictive permissions
         fs.chmodSync(this.config.socketPath, 0o600);
         fs.writeFileSync(this.config.pidFilePath, `${process.pid}\n`, 'utf-8');
+
+        // Start periodic processing state updates for dashboard
+        this.processingStateInterval = setInterval(() => {
+          this.writeProcessingStateFile();
+        }, Daemon.PROCESSING_STATE_INTERVAL_MS);
+
         console.log(`[daemon] Listening on ${this.config.socketPath}`);
         resolve();
       });
@@ -143,6 +170,12 @@ export class Daemon {
    */
   async stop(): Promise<void> {
     if (!this.running) return;
+
+    // Stop processing state updates
+    if (this.processingStateInterval) {
+      clearInterval(this.processingStateInterval);
+      this.processingStateInterval = undefined;
+    }
 
     // Close all active connections
     for (const connection of this.connections) {

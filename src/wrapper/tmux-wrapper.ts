@@ -71,7 +71,7 @@ export interface TmuxWrapperConfig {
   /** Polling interval when waiting for clear input (ms) */
   inputWaitPollMs?: number;
   /** CLI type for special handling (auto-detected from command if not set) */
-  cliType?: 'claude' | 'codex' | 'gemini' | 'other';
+  cliType?: 'claude' | 'codex' | 'gemini' | 'droid' | 'other';
   /** Enable tmux mouse mode for scroll passthrough (default: true) */
   mouseMode?: boolean;
   /** Relay prefix pattern (default: '->relay:') */
@@ -90,7 +90,7 @@ export interface TmuxWrapperConfig {
  * Get the default relay prefix for a given CLI type.
  * All agents now use '->relay:' as the unified prefix.
  */
-export function getDefaultPrefix(cliType: 'claude' | 'codex' | 'gemini' | 'other'): string {
+export function getDefaultPrefix(cliType: 'claude' | 'codex' | 'gemini' | 'droid' | 'other'): string {
   // Unified prefix for all agent types
   return '->relay:';
 }
@@ -117,7 +117,7 @@ export class TmuxWrapper {
   // Track processed output to avoid re-parsing
   private processedOutputLength = 0;
   private lastDebugLog = 0;
-  private cliType: 'claude' | 'codex' | 'gemini' | 'other';
+  private cliType: 'claude' | 'codex' | 'gemini' | 'droid' | 'other';
   private relayPrefix: string;
   private lastSummaryHash = ''; // Dedup summary saves
   private lastSummaryRawContent = ''; // Dedup invalid JSON error logging
@@ -157,6 +157,8 @@ export class TmuxWrapper {
       this.cliType = 'codex';
     } else if (cmdLower.includes('claude')) {
       this.cliType = 'claude';
+    } else if (cmdLower.includes('droid')) {
+      this.cliType = 'droid';
     } else {
       this.cliType = 'other';
     }
@@ -396,12 +398,13 @@ export class TmuxWrapper {
   private async injectInstructions(): Promise<void> {
     if (!this.running) return;
 
+    // Use escaped prefix (\->relay:) in examples to prevent parser from treating them as real commands
+    const escapedPrefix = '\\' + this.relayPrefix;
     const instructions = [
       `[Agent Relay] You are "${this.config.name}" - connected for real-time messaging.`,
-      `SEND: ${this.relayPrefix}AgentName message (or ${this.relayPrefix}* to broadcast)`,
-      `RECEIVE: Messages appear as "Relay message from X [id]: content"`,
-      `SUMMARY: Periodically output [[SUMMARY]]{"currentTask":"...","context":"..."}[[/SUMMARY]] to track progress`,
-      `END: Output [[SESSION_END]]{"summary":"..."}[[/SESSION_END]] when your task is complete`,
+      `SEND: ${escapedPrefix}AgentName message`,
+      `MULTI-LINE: ${escapedPrefix}AgentName <<<(newline)content(newline)>>> - ALWAYS end with >>> on its own line!`,
+      `RECEIVE: Messages appear as "Relay message from X [id]: content" - use "agent-relay read <id>" for long messages`,
     ].join(' | ');
 
     try {
@@ -529,6 +532,14 @@ export class TmuxWrapper {
       const joinedContent = this.joinContinuationLines(cleanContent);
       const { commands } = this.parser.parse(joinedContent);
 
+      // Debug: log relay commands being parsed
+      if (commands.length > 0 && this.config.debug) {
+        for (const cmd of commands) {
+          const bodyPreview = cmd.body.substring(0, 80).replace(/\n/g, '\\n');
+          this.logStderr(`[RELAY_PARSED] to=${cmd.to}, body="${bodyPreview}...", lines=${cmd.body.split('\n').length}`);
+        }
+      }
+
       // Track last output time for injection timing
       if (stdout.length !== this.processedOutputLength) {
         this.lastOutputTime = Date.now();
@@ -547,7 +558,7 @@ export class TmuxWrapper {
       // Check for [[SESSION_END]] blocks to explicitly close session
       this.parseSessionEndAndClose(cleanContent);
 
-      // Check for ->relay:spawn and ->relay:release commands (lead mode)
+      // Check for ->relay:spawn and ->relay:release commands (any agent can spawn)
       // Use joinedContent to handle multi-line output from TUIs like Claude Code
       this.parseSpawnReleaseCommands(joinedContent);
 
@@ -612,8 +623,8 @@ export class TmuxWrapper {
 
           // Check if it looks like a continuation (indented text)
           if (continuationPattern.test(nextLine)) {
-            // Join with space, trimming the indentation
-            joined += ' ' + nextLine.trim();
+            // Join with newline to preserve multi-line message content
+            joined += '\n' + nextLine.trim();
             j++;
           } else {
             break;
@@ -832,7 +843,7 @@ export class TmuxWrapper {
    *   ->relay:release WorkerName
    */
   private parseSpawnReleaseCommands(content: string): void {
-    // Only process if callbacks are configured (lead mode)
+    // Only process if callbacks are configured
     if (!this.config.onSpawn && !this.config.onRelease) return;
 
     const lines = content.split('\n');
@@ -1062,7 +1073,8 @@ export class TmuxWrapper {
   }
 
   /**
-   * Paste text using tmux buffer with bracketed paste (-p) to avoid interleaving with ongoing output.
+   * Paste text using tmux buffer with optional bracketed paste to avoid interleaving with ongoing output.
+   * Some CLIs (like droid) don't handle bracketed paste sequences properly, so we skip -p for them.
    */
   private async pasteLiteral(text: string): Promise<void> {
     // Sanitize newlines to keep injection single-line inside paste buffer
@@ -1074,9 +1086,15 @@ export class TmuxWrapper {
       .replace(/`/g, '\\`')
       .replace(/!/g, '\\!');
 
-    // Set tmux buffer then paste with -p (bracketed paste)
+    // Set tmux buffer then paste
+    // Skip bracketed paste (-p) for CLIs that don't handle it properly (droid, other)
     await execAsync(`tmux set-buffer -- "${escaped}"`);
-    await execAsync(`tmux paste-buffer -t ${this.sessionName} -p`);
+    const useBracketedPaste = this.cliType === 'claude' || this.cliType === 'codex' || this.cliType === 'gemini';
+    if (useBracketedPaste) {
+      await execAsync(`tmux paste-buffer -t ${this.sessionName} -p`);
+    } else {
+      await execAsync(`tmux paste-buffer -t ${this.sessionName}`);
+    }
   }
 
   private sleep(ms: number): Promise<void> {

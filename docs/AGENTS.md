@@ -165,6 +165,15 @@ relay team status
 ->relay:* Broadcast to all agents
 ```
 
+**Fenced format** (multi-line with blank lines/code):
+```
+->relay:AgentName <<<
+Multi-line message here.
+
+Can include blank lines and code.
+>>>
+```
+
 **Block format** (structured data):
 ```
 [[RELAY]]{"to":"AgentName","type":"message","body":"Your message"}[[/RELAY]]
@@ -406,6 +415,48 @@ Requirements:
 # Developer confirms fix
 ->relay:Reviewer FIXED: Updated to cursor-based pagination, please re-review
 ```
+
+---
+
+## Spawning Agents
+
+Any agent can spawn worker agents to delegate tasks. Workers run in separate tmux windows and can communicate via relay.
+
+### Spawn a Worker
+
+Output this pattern to spawn a new agent:
+```
+->relay:spawn WorkerName cli "task description"
+```
+
+**Examples:**
+```
+->relay:spawn Dev1 claude "Implement the login endpoint with JWT auth"
+->relay:spawn Reviewer claude "Review the auth module in src/auth/"
+->relay:spawn Tester claude "Write unit tests for the user service"
+```
+
+### Release a Worker
+
+When a worker is done, release it:
+```
+->relay:release WorkerName
+```
+
+### How It Works
+
+1. The spawn command creates a new tmux window
+2. Launches `agent-relay -n WorkerName cli --dangerously-skip-permissions`
+3. Waits for the agent to register with the daemon
+4. Injects the task as the initial prompt
+5. Worker can communicate back via `->relay:` patterns
+
+### Best Practices
+
+- Give workers specific, well-scoped tasks
+- Use descriptive names that indicate the worker's purpose
+- Release workers when they complete their tasks
+- Workers can spawn their own workers if needed (nested spawning)
 
 ---
 

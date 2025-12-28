@@ -53,14 +53,24 @@ interface PendingDelivery {
   timer?: NodeJS.Timeout;
 }
 
+interface ProcessingState {
+  startedAt: number;
+  messageId: string;
+  timer?: NodeJS.Timeout;
+}
+
 export class Router {
   private storage?: StorageAdapter;
   private connections: Map<string, RoutableConnection> = new Map(); // connectionId -> Connection
   private agents: Map<string, RoutableConnection> = new Map(); // agentName -> Connection
   private subscriptions: Map<string, Set<string>> = new Map(); // topic -> Set<agentName>
   private pendingDeliveries: Map<string, PendingDelivery> = new Map(); // deliverId -> pending
+  private processingAgents: Map<string, ProcessingState> = new Map(); // agentName -> processing state
   private deliveryOptions: DeliveryReliabilityOptions;
   private registry?: AgentRegistry;
+
+  /** Default timeout for processing indicator (30 seconds) */
+  private static readonly PROCESSING_TIMEOUT_MS = 30_000;
 
   constructor(options: { storage?: StorageAdapter; delivery?: Partial<DeliveryReliabilityOptions>; registry?: AgentRegistry } = {}) {
     this.storage = options.storage;
@@ -108,6 +118,9 @@ export class Router {
       for (const subscribers of this.subscriptions.values()) {
         subscribers.delete(connection.agentName);
       }
+
+      // Clear processing state
+      this.clearProcessing(connection.agentName);
     }
 
     this.clearPendingForConnection(connection.id);
@@ -148,6 +161,9 @@ export class Router {
       return;
     }
 
+    // Agent is responding - clear their processing state
+    this.clearProcessing(senderName);
+
     this.registry?.recordSend(senderName);
 
     const to = envelope.to;
@@ -185,6 +201,8 @@ export class Router {
     if (sent) {
       this.trackDelivery(target, deliver);
       this.registry?.recordReceive(to);
+      // Mark recipient as processing
+      this.setProcessing(to, deliver.id);
     }
     return sent;
   }
@@ -212,6 +230,8 @@ export class Router {
         if (sent) {
           this.trackDelivery(target, deliver);
           this.registry?.recordReceive(agentName);
+          // Mark recipient as processing
+          this.setProcessing(agentName, deliver.id);
         }
       }
     }
@@ -294,6 +314,59 @@ export class Router {
 
   get pendingDeliveryCount(): number {
     return this.pendingDeliveries.size;
+  }
+
+  /**
+   * Get list of agents currently processing (thinking).
+   * Returns an object with agent names as keys and processing info as values.
+   */
+  getProcessingAgents(): Record<string, { startedAt: number; messageId: string }> {
+    const result: Record<string, { startedAt: number; messageId: string }> = {};
+    for (const [name, state] of this.processingAgents.entries()) {
+      result[name] = { startedAt: state.startedAt, messageId: state.messageId };
+    }
+    return result;
+  }
+
+  /**
+   * Check if a specific agent is processing.
+   */
+  isAgentProcessing(agentName: string): boolean {
+    return this.processingAgents.has(agentName);
+  }
+
+  /**
+   * Mark an agent as processing (called when they receive a message).
+   */
+  private setProcessing(agentName: string, messageId: string): void {
+    // Clear any existing processing state
+    this.clearProcessing(agentName);
+
+    const timer = setTimeout(() => {
+      this.clearProcessing(agentName);
+      console.log(`[router] Processing timeout for ${agentName}`);
+    }, Router.PROCESSING_TIMEOUT_MS);
+
+    this.processingAgents.set(agentName, {
+      startedAt: Date.now(),
+      messageId,
+      timer,
+    });
+    console.log(`[router] ${agentName} started processing (message: ${messageId})`);
+  }
+
+  /**
+   * Clear processing state for an agent (called when they send a message).
+   */
+  private clearProcessing(agentName: string): void {
+    const state = this.processingAgents.get(agentName);
+    if (state) {
+      if (state.timer) {
+        clearTimeout(state.timer);
+      }
+      this.processingAgents.delete(agentName);
+      console.log(`[router] ${agentName} finished processing`);
+    }
   }
 
   /**

@@ -82,6 +82,27 @@ Output this in your response (not in a bash command):
 ->relay:AgentName Your message here
 ```
 
+### Multi-line Messages (Fenced Format)
+
+For messages with blank lines, code blocks, or complex formatting, use the fenced format:
+
+```
+->relay:AgentName <<<
+Here's my analysis:
+
+1. First point
+2. Second point
+
+The conclusion is clear.
+>>>
+```
+
+**CRITICAL: Always end with `>>>` on its own line!** The `<<<` opens the message block, `>>>` closes it. You MUST include the closing `>>>` or your message may not be sent correctly.
+
+**Limits:** Fenced messages are limited to 200 lines. For longer content, send a brief summary with a reference ID and tell the recipient to run `agent-relay read <id>` to get the full content.
+
+**Fallback:** If you forget `>>>`, the message will auto-close on a double blank line, but this is a fallback - always include `>>>`.
+
 ### Broadcast to All
 
 ```
@@ -114,6 +135,7 @@ agent-relay read abc12345...
 
 ## Communication Patterns
 
+### Simple Messages
 ```
 ->relay:* STATUS: Starting work on auth module
 ->relay:* DONE: Auth module complete
@@ -121,6 +143,48 @@ agent-relay read abc12345...
 ->relay:Reviewer REVIEW: Please check src/auth/*.ts
 ->relay:Architect QUESTION: JWT or sessions?
 ```
+
+### Multi-line (Fenced) Messages
+```
+->relay:Reviewer <<<
+REVIEW REQUEST: Authentication Module
+
+Please check these files:
+- src/auth/login.ts
+- src/auth/session.ts
+
+Key changes:
+1. Added JWT validation
+2. Fixed session expiry bug
+>>>
+```
+
+---
+
+## Spawning Agents
+
+Any agent can spawn worker agents to delegate tasks:
+
+### Spawn a Worker
+
+```
+->relay:spawn WorkerName cli "task description"
+```
+
+**Examples:**
+
+```
+->relay:spawn Dev1 claude "Implement the login endpoint"
+->relay:spawn Tester claude "Write unit tests for auth module"
+```
+
+### Release a Worker
+
+```
+->relay:release WorkerName
+```
+
+Workers run in separate tmux windows and can communicate back via `->relay:` patterns.
 
 ---
 

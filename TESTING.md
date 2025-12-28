@@ -23,8 +23,8 @@ agent-relay up
 ```
 
 ```bash
-# Terminal 2: Start as Lead
-agent-relay lead Alice
+# Terminal 2: Start an agent
+agent-relay -n Alice claude
 ```
 
 ### Test Spawning
@@ -104,18 +104,18 @@ agent-relay bridge /tmp/project-a /tmp/project-b
 - Bridge connects to both project sockets
 - Dashboard shows both projects (if enabled)
 
-### Start Leads in Each Project
+### Start Agents in Each Project
 
 ```bash
-# Terminal 4: Lead in Project A
+# Terminal 4: Agent in Project A
 cd /tmp/project-a
-agent-relay lead Alice
+agent-relay -n Alice claude
 ```
 
 ```bash
-# Terminal 5: Lead in Project B
+# Terminal 5: Agent in Project B
 cd /tmp/project-b
-agent-relay lead Bob
+agent-relay -n Bob claude
 ```
 
 ### Test Cross-Project Messaging

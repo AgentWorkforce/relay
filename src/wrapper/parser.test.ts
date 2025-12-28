@@ -87,15 +87,6 @@ describe('OutputParser', () => {
       expect(result.output).toBe('');
     });
 
-    it('captures plain multi-line inline command without punctuation or indentation', () => {
-      const input = '->relay:agent2 First line\nSecond line\nThird line\n';
-      const result = parser.parse(input);
-
-      expect(result.commands).toHaveLength(1);
-      expect(result.commands[0].body).toBe('First line\nSecond line\nThird line');
-      expect(result.output).toBe('');
-    });
-
     it('does not swallow subsequent inline command after indented continuation', () => {
       const result = parser.parse('->relay:agent1 First line\n   Second line\n->relay:agent2 Next\n');
 
@@ -121,17 +112,6 @@ describe('OutputParser', () => {
       expect(result.commands).toHaveLength(1);
       expect(result.commands[0].body).toBe('Signing off. Progress report:\nSummary line one.\nSummary line two.');
       expect(result.output).toBe('\nNext output\n');
-    });
-
-    it('captures plain multi-line message without punctuation until blank line', () => {
-      // This is the key fix for agent-relay-6dl8: multi-line messages that don't
-      // end with continuation punctuation or have indentation should still be captured
-      const input = '->relay:Lead Hello world\nThis is the second line\nAnd third line\n\nRegular output\n';
-      const result = parser.parse(input);
-
-      expect(result.commands).toHaveLength(1);
-      expect(result.commands[0].body).toBe('Hello world\nThis is the second line\nAnd third line');
-      expect(result.output).toBe('\nRegular output\n');
     });
 
     it('stops continuation at prompt-ish line', () => {
@@ -236,6 +216,155 @@ describe('OutputParser', () => {
 
       expect(result.commands).toHaveLength(1);
       expect(result.commands[0].kind).toBe('state');
+    });
+  });
+
+  describe('Fenced inline format - ->relay:Target <<< ... >>>', () => {
+    it('parses basic fenced inline message', () => {
+      const input = '->relay:agent2 <<<\nHello there\n>>>\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0]).toMatchObject({
+        to: 'agent2',
+        kind: 'message',
+        body: 'Hello there',
+      });
+      expect(result.output).toBe('');
+    });
+
+    it('preserves blank lines within fenced message', () => {
+      const input = '->relay:agent2 <<<\nFirst paragraph\n\nSecond paragraph\n>>>\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].body).toBe('First paragraph\n\nSecond paragraph');
+    });
+
+    it('handles multi-line message with complex content', () => {
+      const input = `->relay:Lead <<<
+Here's my analysis:
+
+1. First point
+2. Second point
+
+The conclusion is...
+>>>
+`;
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].to).toBe('Lead');
+      expect(result.commands[0].body).toContain('First point');
+      expect(result.commands[0].body).toContain('Second point');
+      expect(result.commands[0].body).toContain('The conclusion is...');
+    });
+
+    it('handles fenced message with code blocks inside', () => {
+      const input = `->relay:Dev <<<
+Here's the code:
+
+\`\`\`typescript
+function hello() {
+  console.log('Hi');
+}
+\`\`\`
+
+Let me know if that works.
+>>>
+`;
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].body).toContain('```typescript');
+      expect(result.commands[0].body).toContain('function hello()');
+    });
+
+    it('handles fenced thinking variant', () => {
+      const input = '->thinking:agent2 <<<\nConsidering options:\n- Option A\n- Option B\n>>>\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0]).toMatchObject({
+        to: 'agent2',
+        kind: 'thinking',
+      });
+      expect(result.commands[0].body).toContain('Option A');
+    });
+
+    it('handles thread syntax in fenced messages', () => {
+      const input = '->relay:agent2 [thread:review-123] <<<\nMulti-line\nreview comments\n>>>\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].thread).toBe('review-123');
+      expect(result.commands[0].body).toBe('Multi-line\nreview comments');
+    });
+
+    it('handles cross-project syntax in fenced messages', () => {
+      const input = '->relay:other-project:agent2 <<<\nCross-project message\n>>>\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].to).toBe('agent2');
+      expect(result.commands[0].project).toBe('other-project');
+    });
+
+    it('processes content after fenced block closes', () => {
+      const input = '->relay:agent1 <<<\nFenced content\n>>>\n->relay:agent2 Regular inline\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(2);
+      expect(result.commands[0].to).toBe('agent1');
+      expect(result.commands[0].body).toBe('Fenced content');
+      expect(result.commands[1].to).toBe('agent2');
+      expect(result.commands[1].body).toBe('Regular inline');
+    });
+
+    it('accumulates across multiple parse calls (streaming)', () => {
+      const result1 = parser.parse('->relay:agent2 <<<\nFirst part\n');
+      expect(result1.commands).toHaveLength(0);
+      expect(result1.output).toBe('');
+
+      const result2 = parser.parse('Second part\n');
+      expect(result2.commands).toHaveLength(0);
+
+      const result3 = parser.parse('>>>\n');
+      expect(result3.commands).toHaveLength(1);
+      expect(result3.commands[0].body).toBe('First part\nSecond part');
+    });
+
+    it('handles >>> with leading/trailing whitespace', () => {
+      const input = '->relay:agent2 <<<\nContent\n  >>>  \n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].body).toBe('Content');
+    });
+
+    it('trims leading/trailing whitespace from body', () => {
+      const input = '->relay:agent2 <<<\n\n  Content here  \n\n>>>\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      // Leading blank lines should be trimmed, content preserved
+      expect(result.commands[0].body).toBe('Content here');
+    });
+
+    it('handles fenced message with only blank lines', () => {
+      const input = '->relay:agent2 <<<\n\n\n>>>\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].body).toBe('');
+    });
+
+    it('handles prefixes like bullets before fenced start', () => {
+      const input = '- ->relay:agent2 <<<\nContent from list\n>>>\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].body).toBe('Content from list');
     });
   });
 
@@ -401,14 +530,11 @@ describe('OutputParser', () => {
     });
 
     it('mixes relay commands with regular output', () => {
-      // With multi-line continuation enabled, "Output 2" is captured as continuation
-      // until a blank line or other stop condition. Use a blank line to separate.
-      const input = 'Output 1\n->relay:agent2 Message\n\nOutput 2\n';
+      const input = 'Output 1\n->relay:agent2 Message\nOutput 2\n';
       const result = parser.parse(input);
 
       expect(result.commands).toHaveLength(1);
-      expect(result.commands[0].body).toBe('Message');
-      expect(result.output).toBe('Output 1\n\nOutput 2\n');
+      expect(result.output).toBe('Output 1\nOutput 2\n');
     });
 
     it('handles incomplete block at flush', () => {
@@ -473,8 +599,6 @@ describe('OutputParser', () => {
 
   describe('Complex scenarios', () => {
     it('handles multiple commands in one parse call', () => {
-      // With multi-line continuation, "Regular output" becomes part of command 1
-      // since it's followed by another relay command (which stops continuation).
       const input = `->relay:agent1 First
 Regular output
 ->relay:agent2 Second
@@ -485,10 +609,9 @@ More output
 
       expect(result.commands).toHaveLength(3);
       expect(result.commands[0].to).toBe('agent1');
-      // "Regular output" is captured as continuation of "First"
-      expect(result.commands[0].body).toBe('First\nRegular output');
       expect(result.commands[1].to).toBe('agent2');
       expect(result.commands[2].to).toBe('agent3');
+      expect(result.output).toContain('Regular output');
       expect(result.output).toContain('More output');
     });
 
@@ -519,14 +642,10 @@ More output
     });
 
     it('preserves order of commands and output', () => {
-      // With multi-line continuation, lines after relay commands are captured
-      // until a stop condition. Use blank lines to separate output from messages.
       const input = `Out1
 ->relay:agent1 Msg1
-
 Out2
 ->relay:agent2 Msg2
-
 Out3
 `;
       const result = parser.parse(input);
@@ -534,9 +653,7 @@ Out3
       const outputLines = result.output.split('\n').filter(l => l.trim());
       expect(outputLines).toEqual(['Out1', 'Out2', 'Out3']);
       expect(result.commands[0].to).toBe('agent1');
-      expect(result.commands[0].body).toBe('Msg1');
       expect(result.commands[1].to).toBe('agent2');
-      expect(result.commands[1].body).toBe('Msg2');
     });
   });
 

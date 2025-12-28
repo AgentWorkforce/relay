@@ -2,8 +2,10 @@
  * Dashboard Utility Functions
  */
 
-/** Threshold for considering an agent offline (30 seconds) */
-export const STALE_THRESHOLD_MS = 30000;
+/** Threshold for considering an agent offline (45 seconds)
+ * This is intentionally 1.5x the heartbeat timeout (30s) to prevent flickering
+ * when heartbeats are slightly delayed */
+export const STALE_THRESHOLD_MS = 45000;
 
 /**
  * Check if an agent is online based on last seen timestamp

@@ -50,11 +50,25 @@ const DEFAULT_OPTIONS: Required<ParserOptions> = {
 const BLOCK_END = /\[\[\/RELAY\]\]/;
 const BLOCK_METADATA_START = '[[RELAY_METADATA]]';
 const BLOCK_METADATA_END = /\[\[\/RELAY_METADATA\]\]/;
-const CODE_FENCE = /^```/;// Continuation helpers
+const CODE_FENCE = /^```/;
+
+// Fenced inline patterns: ->relay:Target <<< ... >>>
+// FENCE_END is lenient - matches >>> at start of line regardless of trailing content
+// This prevents stuck fenced mode when >>> has trailing text like ">>> done"
+const FENCE_END = /^(?:\s*)?>>>/;
+
+// Maximum lines in a fenced block before assuming it's stuck
+const MAX_FENCED_LINES = 200;
+
+// Continuation helpers
 const BULLET_OR_NUMBERED_LIST = /^[ \t]*([\-*•◦‣⏺◆◇○□■]|[0-9]+[.)])\s+/;
 const PROMPTISH_LINE = /^[\s]*[>$%#➜›»][\s]*$/;
 const RELAY_INJECTION_PREFIX = /^\s*Relay message from /;
 const MAX_INLINE_CONTINUATION_LINES = 30;
+
+// Claude extended thinking block markers - skip content inside these
+const THINKING_START = /<antml:thinking>/;
+const THINKING_END = /<\/thinking>/;
 
 /**
  * Escape special regex characters in a string
@@ -75,6 +89,16 @@ function buildInlinePattern(prefix: string): RegExp {
   // Group 1: target, Group 2: optional thread ID (without brackets), Group 3: message body
   // Includes box drawing characters (│┃┆┇┊┋╎╏) and sparkle (✦) for Gemini CLI output
   return new RegExp(`^(?:\\s*(?:[>$%#→➜›»●•◦‣⁃\\-*⏺◆◇○□■│┃┆┇┊┋╎╏✦]\\s*)*)?${escaped}(\\S+)(?:\\s+\\[thread:([\\w-]+)\\])?\\s+(.+)$`);
+}
+
+/**
+ * Build fenced inline pattern for multi-line messages: ->relay:Target <<<
+ * This opens a fenced block that continues until >>> is seen on its own line.
+ * Group 1: target, Group 2: optional thread ID
+ */
+function buildFencedInlinePattern(prefix: string): RegExp {
+  const escaped = escapeRegex(prefix);
+  return new RegExp(`^(?:\\s*(?:[>$%#→➜›»●•◦‣⁃\\-*⏺◆◇○□■│┃┆┇┊┋╎╏✦]\\s*)*)?${escaped}(\\S+)(?:\\s+\\[thread:([\\w-]+)\\])?\\s+<<<\\s*$`);
 }
 
 /**
@@ -129,9 +153,23 @@ export class OutputParser {
   private blockType: 'RELAY' | 'RELAY_METADATA' | null = null;
   private lastParsedMetadata: ParsedMessageMetadata | null = null;
 
+  // Claude extended thinking block state - skip content inside <thinking>...</thinking>
+  private inThinkingBlock = false;
+
+  // Fenced inline state: ->relay:Target <<< ... >>>
+  private inFencedInline = false;
+  private fencedInlineBuffer = '';
+  private fencedInlineTarget = '';
+  private fencedInlineThread: string | undefined = undefined;
+  private fencedInlineProject: string | undefined = undefined;
+  private fencedInlineRaw: string[] = [];
+  private fencedInlineKind: 'message' | 'thinking' = 'message';
+
   // Dynamic patterns based on prefix configuration
   private inlineRelayPattern: RegExp;
   private inlineThinkingPattern: RegExp;
+  private fencedRelayPattern: RegExp;
+  private fencedThinkingPattern: RegExp;
   private escapePattern: RegExp;
 
   constructor(options: ParserOptions = {}) {
@@ -140,6 +178,8 @@ export class OutputParser {
     // Build patterns based on configured prefixes
     this.inlineRelayPattern = buildInlinePattern(this.options.prefix);
     this.inlineThinkingPattern = buildInlinePattern(this.options.thinkingPrefix);
+    this.fencedRelayPattern = buildFencedInlinePattern(this.options.prefix);
+    this.fencedThinkingPattern = buildFencedInlinePattern(this.options.thinkingPrefix);
     this.escapePattern = buildEscapePattern(this.options.prefix, this.options.thinkingPrefix);
   }
 
@@ -160,6 +200,11 @@ export class OutputParser {
   parse(data: string): { commands: ParsedCommand[]; output: string } {
     const commands: ParsedCommand[] = [];
     let output = '';
+
+    // If we're inside a fenced inline block, accumulate until we see >>>
+    if (this.inFencedInline) {
+      return this.parseFencedInlineMode(data, commands);
+    }
 
     // If we're inside a block, accumulate until we see the end
     if (this.inBlock && this.blockType) {
@@ -309,6 +354,23 @@ export class OutputParser {
       return this.inlineRelayPattern.test(line) || this.inlineThinkingPattern.test(line);
     };
 
+    const isFencedInlineStart = (line: string): { target: string; thread?: string; project?: string; kind: 'message' | 'thinking' } | null => {
+      const stripped = stripAnsi(line);
+      const relayMatch = stripped.match(this.fencedRelayPattern);
+      if (relayMatch) {
+        const [, target, threadId] = relayMatch;
+        const { to, project } = parseTarget(target);
+        return { target: to, thread: threadId || undefined, project, kind: 'message' };
+      }
+      const thinkingMatch = stripped.match(this.fencedThinkingPattern);
+      if (thinkingMatch) {
+        const [, target, threadId] = thinkingMatch;
+        const { to, project } = parseTarget(target);
+        return { target: to, thread: threadId || undefined, project, kind: 'thinking' };
+      }
+      return null;
+    };
+
     const isBlockMarker = (line: string): boolean => {
       return CODE_FENCE.test(line) || line.includes('[[RELAY]]') || BLOCK_END.test(line);
     };
@@ -316,6 +378,7 @@ export class OutputParser {
     const shouldStopContinuation = (line: string, continuationCount: number, lines: string[], currentIndex: number): boolean => {
       const trimmed = line.trim();
       if (isInlineStart(line)) return true;
+      if (isFencedInlineStart(line)) return true;
       if (isBlockMarker(line)) return true;
       if (PROMPTISH_LINE.test(trimmed)) return true;
       if (RELAY_INJECTION_PREFIX.test(line)) return true; // Avoid swallowing injected inbound messages
@@ -357,9 +420,6 @@ export class OutputParser {
       if (prevSuggestsContinuation) return true;
       // If we've already continued once, allow subsequent lines until a stop condition
       if (continuationCount > 0) return true;
-      // Allow plain non-empty lines as continuation so multi-line messages
-      // without indentation or trailing punctuation are captured fully.
-      if (stripped.trim() !== '') return true;
       return false;
     };
 
@@ -380,6 +440,67 @@ export class OutputParser {
       if (isLastLine && !hasTrailingNewline) {
         outputLines.push(line);
         continue;
+      }
+
+      // Skip Claude extended thinking blocks - don't parse or output their content
+      // Check for thinking end first (to handle end tag on same line as start)
+      if (this.inThinkingBlock) {
+        if (THINKING_END.test(line)) {
+          this.inThinkingBlock = false;
+        }
+        // Skip this line - don't output thinking content
+        strippedCount++;
+        continue;
+      }
+      // Check for thinking start
+      if (THINKING_START.test(line)) {
+        this.inThinkingBlock = true;
+        // Also check if it ends on the same line (inline thinking block)
+        if (THINKING_END.test(line)) {
+          this.inThinkingBlock = false;
+        }
+        // Skip this line - don't output thinking content
+        strippedCount++;
+        continue;
+      }
+
+      // Check for fenced inline start: ->relay:Target <<<
+      const fencedStart = isFencedInlineStart(line);
+      if (fencedStart && this.options.enableInline) {
+        // Enter fenced inline mode
+        this.inFencedInline = true;
+        this.fencedInlineTarget = fencedStart.target;
+        this.fencedInlineThread = fencedStart.thread;
+        this.fencedInlineProject = fencedStart.project;
+        this.fencedInlineKind = fencedStart.kind;
+        this.fencedInlineBuffer = '';
+        this.fencedInlineRaw = [line];
+
+        // Process remaining lines in fenced mode
+        if (i + 1 < lines.length) {
+          // Don't double-add trailing newline - the empty string at end of lines array
+          // already accounts for it when we join
+          const remainingLines = lines.slice(i + 1);
+          const remaining = remainingLines.join('\n') + (hasTrailingNewline && remainingLines[remainingLines.length - 1] !== '' ? '\n' : '');
+          const result = this.parseFencedInlineMode(remaining, commands);
+          strippedCount++;
+
+          // Combine output
+          let output = outputLines.join('\n');
+          if (hasTrailingNewline && outputLines.length > 0 && !this.inFencedInline) {
+            output += '\n';
+          }
+          output += result.output;
+          return output;
+        }
+
+        // No more lines - waiting for more data
+        strippedCount++;
+        let output = outputLines.join('\n');
+        if (hasTrailingNewline && outputLines.length > 0) {
+          output += '\n';
+        }
+        return output;
       }
 
       if (line.length > 0) {
@@ -640,6 +761,165 @@ export class OutputParser {
   }
 
   /**
+   * Parse while inside a fenced inline block (->relay:Target <<< ... >>>).
+   * Accumulates lines until >>> is seen on its own line.
+   */
+  private parseFencedInlineMode(data: string, commands: ParsedCommand[]): { commands: ParsedCommand[]; output: string } {
+    const lines = data.split('\n');
+    const hasTrailingNewline = data.endsWith('\n');
+    let output = '';
+    let consecutiveBlankLines = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const isLastLine = i === lines.length - 1;
+      const stripped = stripAnsi(line);
+
+      // Track consecutive blank lines for auto-close
+      if (stripped === '') {
+        consecutiveBlankLines++;
+      } else {
+        consecutiveBlankLines = 0;
+      }
+
+      // Auto-close on double blank line (agent forgot >>>)
+      // Only if we have actual content to send
+      if (consecutiveBlankLines >= 2 && this.fencedInlineBuffer.trim().length > 0) {
+        const body = this.fencedInlineBuffer.trim();
+        const command: ParsedCommand = {
+          to: this.fencedInlineTarget,
+          kind: this.fencedInlineKind,
+          body,
+          thread: this.fencedInlineThread,
+          project: this.fencedInlineProject,
+          raw: this.fencedInlineRaw.join('\n'),
+        };
+        commands.push(command);
+
+        // Reset fenced inline state
+        this.inFencedInline = false;
+        this.fencedInlineBuffer = '';
+        this.fencedInlineTarget = '';
+        this.fencedInlineThread = undefined;
+        this.fencedInlineProject = undefined;
+        this.fencedInlineRaw = [];
+        this.fencedInlineKind = 'message';
+
+        // Process remaining lines in normal mode
+        const remainingLines = lines.slice(i);
+        const remaining = remainingLines.join('\n') + (hasTrailingNewline ? '\n' : '');
+        const result = this.parse(remaining);
+        commands.push(...result.commands);
+        return { commands, output: result.output };
+      }
+
+      // Check if a new relay command started (means previous fenced block was never closed)
+      // This prevents a stuck fenced block from swallowing all subsequent messages
+      // Note: This is an expected recovery path, not an error - don't log to avoid noise
+      if (this.inlineRelayPattern.test(stripped) || this.fencedRelayPattern.test(stripped)) {
+        // Discard the incomplete fenced block
+        this.inFencedInline = false;
+        this.fencedInlineBuffer = '';
+        this.fencedInlineTarget = '';
+        this.fencedInlineThread = undefined;
+        this.fencedInlineProject = undefined;
+        this.fencedInlineRaw = [];
+        this.fencedInlineKind = 'message';
+
+        // Process remaining lines (including this one) in normal mode
+        const remainingLines = lines.slice(i);
+        const remaining = remainingLines.join('\n') + (hasTrailingNewline ? '\n' : '');
+        const result = this.parse(remaining);
+        commands.push(...result.commands);
+        return { commands, output: result.output };
+      }
+
+      // Check if this line closes the fenced block
+      if (FENCE_END.test(stripped)) {
+        // Complete the fenced inline command
+        const body = this.fencedInlineBuffer.trim();
+        this.fencedInlineRaw.push(line);
+
+        const command: ParsedCommand = {
+          to: this.fencedInlineTarget,
+          kind: this.fencedInlineKind,
+          body,
+          thread: this.fencedInlineThread,
+          project: this.fencedInlineProject,
+          raw: this.fencedInlineRaw.join('\n'),
+        };
+        commands.push(command);
+
+        // Reset fenced inline state
+        this.inFencedInline = false;
+        this.fencedInlineBuffer = '';
+        this.fencedInlineTarget = '';
+        this.fencedInlineThread = undefined;
+        this.fencedInlineProject = undefined;
+        this.fencedInlineRaw = [];
+        this.fencedInlineKind = 'message';
+
+        // Process remaining lines after the fence close
+        // Only process if there's actual content after the closing fence
+        const remainingLines = lines.slice(i + 1);
+        // Filter out trailing empty string from split
+        const hasContent = remainingLines.some((l, idx) =>
+          l.trim() !== '' || (idx < remainingLines.length - 1));
+
+        if (hasContent) {
+          const remaining = remainingLines.join('\n') + (hasTrailingNewline ? '\n' : '');
+          const result = this.parse(remaining);
+          commands.push(...result.commands);
+          output += result.output;
+        }
+        return { commands, output };
+      }
+
+      // Accumulate this line into the buffer (preserving blank lines within content)
+      // But skip trailing empty line from split (when input ends with \n)
+      const isTrailingEmpty = isLastLine && line === '' && hasTrailingNewline;
+      if (!isTrailingEmpty) {
+        if (this.fencedInlineBuffer.length > 0) {
+          this.fencedInlineBuffer += '\n' + line;
+        } else if (line.trim() !== '') {
+          // Start accumulating from first non-blank line
+          this.fencedInlineBuffer = line;
+        }
+        this.fencedInlineRaw.push(line);
+      }
+
+      // Check size limit
+      if (this.fencedInlineBuffer.length > this.options.maxBlockBytes) {
+        console.error('[parser] Fenced inline block too large, discarding');
+        this.inFencedInline = false;
+        this.fencedInlineBuffer = '';
+        this.fencedInlineTarget = '';
+        this.fencedInlineThread = undefined;
+        this.fencedInlineProject = undefined;
+        this.fencedInlineRaw = [];
+        this.fencedInlineKind = 'message';
+        return { commands, output: '' };
+      }
+
+      // Check line count limit - prevents stuck fenced mode from blocking all messages
+      if (this.fencedInlineRaw.length > MAX_FENCED_LINES) {
+        console.error('[parser] Fenced inline block exceeded max lines, discarding');
+        this.inFencedInline = false;
+        this.fencedInlineBuffer = '';
+        this.fencedInlineTarget = '';
+        this.fencedInlineThread = undefined;
+        this.fencedInlineProject = undefined;
+        this.fencedInlineRaw = [];
+        this.fencedInlineKind = 'message';
+        return { commands, output: '' };
+      }
+    }
+
+    // Still waiting for >>> - return empty output (content is buffered)
+    return { commands, output: '' };
+  }
+
+  /**
    * Flush any remaining buffer (call on stream end).
    */
   flush(): { commands: ParsedCommand[]; output: string } {
@@ -649,6 +929,14 @@ export class OutputParser {
     this.blockType = null;
     this.lastParsedMetadata = null;
     this.inCodeFence = false;
+    this.inThinkingBlock = false;
+    this.inFencedInline = false;
+    this.fencedInlineBuffer = '';
+    this.fencedInlineTarget = '';
+    this.fencedInlineThread = undefined;
+    this.fencedInlineProject = undefined;
+    this.fencedInlineRaw = [];
+    this.fencedInlineKind = 'message';
     return result;
   }
 
@@ -661,6 +949,14 @@ export class OutputParser {
     this.blockType = null;
     this.lastParsedMetadata = null;
     this.inCodeFence = false;
+    this.inThinkingBlock = false;
+    this.inFencedInline = false;
+    this.fencedInlineBuffer = '';
+    this.fencedInlineTarget = '';
+    this.fencedInlineThread = undefined;
+    this.fencedInlineProject = undefined;
+    this.fencedInlineRaw = [];
+    this.fencedInlineKind = 'message';
   }
 }
 
