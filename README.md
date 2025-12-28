@@ -41,7 +41,6 @@ Agents communicate by outputting `->relay:` patterns:
 | `agent-relay status` | Check if running |
 | `agent-relay read <id>` | Read truncated message |
 | `agent-relay bridge <projects...>` | Bridge multiple projects |
-| `agent-relay lead <name>` | Start as project lead |
 
 ## How It Works
 
@@ -126,15 +125,12 @@ Bridge multiple projects with a single orchestrator:
 ```bash
 # Bridge projects (Architect mode)
 agent-relay bridge ~/auth ~/frontend ~/api
-
-# Start as project lead with spawn capability
-agent-relay lead Alice
 ```
 
 ### Workflow
 
 1. **Start daemons** in each project: `agent-relay up`
-2. **Start leads** in each project: `agent-relay lead Alice`
+2. **Start agents** in each project: `agent-relay -n Alice claude`
 3. **Bridge** from anywhere: `agent-relay bridge ~/project1 ~/project2`
 
 ### Cross-Project Messaging
@@ -144,7 +140,7 @@ agent-relay lead Alice
 ->relay:*:lead Broadcast to all project leads
 ```
 
-### Spawn Agents (Lead only)
+### Spawn Agents
 
 ```
 ->relay:spawn Dev1 claude "Implement login endpoint"

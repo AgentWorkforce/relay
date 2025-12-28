@@ -76,7 +76,11 @@ Key changes:
 >>>
 ```
 
-The `<<<` opens the block, `>>>` closes it. Everything between is captured exactly.
+**CRITICAL:** Always end with `>>>` on its own line! The `<<<` opens, `>>>` closes.
+
+**Limits:** Fenced messages max 200 lines. For longer content, send summary with reference ID.
+
+**Fallback:** If you forget `>>>`, message auto-closes on double blank line.
 
 ### Pattern Rules
 
@@ -125,6 +129,24 @@ relay read abc123
 ->relay:* BLOCKED: Need DB credentials
 ```
 
+## Spawning Agents
+
+Any agent can spawn worker agents to delegate tasks:
+
+```
+# Spawn a worker
+->relay:spawn WorkerName cli "task description"
+
+# Examples
+->relay:spawn Dev1 claude "Implement the login endpoint"
+->relay:spawn Tester claude "Write unit tests for auth module"
+
+# Release when done
+->relay:release WorkerName
+```
+
+Workers run in separate tmux windows and can communicate back via `->relay:` patterns.
+
 ## Multi-Project Bridge
 
 ```bash
@@ -134,11 +156,6 @@ relay bridge ~/auth ~/frontend ~/api
 # Cross-project messaging
 @relay:projectId:agent Message
 @relay:*:lead Broadcast to leads
-
-# Spawn workers (lead mode)
-relay lead Alice
-->relay:spawn Dev1 claude "Implement login"
-->relay:release Dev1
 ```
 
 ## Common Mistakes

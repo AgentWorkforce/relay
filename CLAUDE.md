@@ -161,6 +161,33 @@ Key changes:
 
 ---
 
+## Spawning Agents
+
+Any agent can spawn worker agents to delegate tasks:
+
+### Spawn a Worker
+
+```
+->relay:spawn WorkerName cli "task description"
+```
+
+**Examples:**
+
+```
+->relay:spawn Dev1 claude "Implement the login endpoint"
+->relay:spawn Tester claude "Write unit tests for auth module"
+```
+
+### Release a Worker
+
+```
+->relay:release WorkerName
+```
+
+Workers run in separate tmux windows and can communicate back via `->relay:` patterns.
+
+---
+
 ## Pattern Rules
 
 `->relay:` must be at the start of a line:

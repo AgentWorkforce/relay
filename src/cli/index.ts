@@ -82,6 +82,10 @@ program
     }
 
     const { TmuxWrapper } = await import('../wrapper/tmux-wrapper.js');
+    const { AgentSpawner } = await import('../bridge/spawner.js');
+
+    // Create spawner so any agent can spawn workers
+    const spawner = new AgentSpawner(paths.projectRoot);
 
     const wrapper = new TmuxWrapper({
       name: agentName,
@@ -92,9 +96,34 @@ program
       relayPrefix: options.prefix,
       useInbox: true,
       inboxDir: paths.dataDir, // Use the project-specific data directory for the inbox
+      // Wire up spawn/release callbacks so any agent can spawn workers
+      onSpawn: async (workerName: string, workerCli: string, task: string) => {
+        console.error(`[${agentName}] Spawning ${workerName} (${workerCli})...`);
+        const result = await spawner.spawn({
+          name: workerName,
+          cli: workerCli,
+          task,
+          requestedBy: agentName,
+        });
+        if (result.success) {
+          console.error(`[${agentName}] ✓ Spawned ${workerName} in ${result.window}`);
+        } else {
+          console.error(`[${agentName}] ✗ Failed to spawn ${workerName}: ${result.error}`);
+        }
+      },
+      onRelease: async (workerName: string) => {
+        console.error(`[${agentName}] Releasing ${workerName}...`);
+        const released = await spawner.release(workerName);
+        if (released) {
+          console.error(`[${agentName}] ✓ Released ${workerName}`);
+        } else {
+          console.error(`[${agentName}] ✗ Worker ${workerName} not found`);
+        }
+      },
     });
 
-    process.on('SIGINT', () => {
+    process.on('SIGINT', async () => {
+      await spawner.releaseAll();
       wrapper.stop();
       process.exit(0);
     });
@@ -145,6 +174,10 @@ async function spawnTeamAgents(
 ): Promise<void> {
   const { TmuxWrapper } = await import('../wrapper/tmux-wrapper.js');
   const { findAgentConfig, isClaudeCli, buildClaudeArgs } = await import('../utils/agent-config.js');
+  const { AgentSpawner } = await import('../bridge/spawner.js');
+
+  // Create spawner so all team agents can spawn workers
+  const spawner = new AgentSpawner(projectRoot);
 
   for (const agent of agents) {
     console.log(`Spawning agent: ${agent.name} (${agent.cli})`);
@@ -174,7 +207,30 @@ async function spawnTeamAgents(
       relayPrefix,
       useInbox: true,
       inboxDir: dataDir,
-      // Note: agents run in tmux which is already background/detached
+      // Wire up spawn/release callbacks so any agent can spawn workers
+      onSpawn: async (workerName: string, workerCli: string, task: string) => {
+        console.log(`[${agent.name}] Spawning ${workerName} (${workerCli})...`);
+        const result = await spawner.spawn({
+          name: workerName,
+          cli: workerCli,
+          task,
+          requestedBy: agent.name,
+        });
+        if (result.success) {
+          console.log(`[${agent.name}] ✓ Spawned ${workerName} in ${result.window}`);
+        } else {
+          console.error(`[${agent.name}] ✗ Failed to spawn ${workerName}: ${result.error}`);
+        }
+      },
+      onRelease: async (workerName: string) => {
+        console.log(`[${agent.name}] Releasing ${workerName}...`);
+        const released = await spawner.release(workerName);
+        if (released) {
+          console.log(`[${agent.name}] ✓ Released ${workerName}`);
+        } else {
+          console.error(`[${agent.name}] ✗ Worker ${workerName} not found`);
+        }
+      },
     });
 
     try {
@@ -724,94 +780,6 @@ program
     };
 
     promptForInput();
-  });
-
-// lead - Start as project lead with spawn capability
-program
-  .command('lead')
-  .description('Start as project lead with spawn capability')
-  .argument('<name>', 'Your agent name')
-  .argument('[cli]', 'CLI tool to use', 'claude')
-  .action(async (name: string, cli: string) => {
-    const { getProjectPaths } = await import('../utils/project-namespace.js');
-    const { AgentSpawner } = await import('../bridge/spawner.js');
-    const { TmuxWrapper } = await import('../wrapper/tmux-wrapper.js');
-    const { findAgentConfig, isClaudeCli, buildClaudeArgs } = await import('../utils/agent-config.js');
-
-    const paths = getProjectPaths();
-
-    console.log('Lead Mode - Project Lead with Spawn Capability');
-    console.log('─'.repeat(40));
-    console.log(`Agent: ${name}`);
-    console.log(`Project: ${paths.projectId}`);
-    console.log(`CLI: ${cli}`);
-
-    // Create spawner for this project
-    const spawner = new AgentSpawner(paths.projectRoot);
-
-    // Parse CLI - split on whitespace for args
-    const [mainCommand, ...cliArgs] = cli.split(/\s+/);
-
-    // Auto-detect agent config and inject --model/--agent for Claude CLI
-    let finalArgs = cliArgs;
-    if (isClaudeCli(mainCommand)) {
-      const config = findAgentConfig(name, paths.projectRoot);
-      if (config) {
-        console.log(`Agent config: ${config.configPath}`);
-        if (config.model) {
-          console.log(`Model: ${config.model}`);
-        }
-        finalArgs = buildClaudeArgs(name, cliArgs, paths.projectRoot);
-      }
-    }
-
-    console.log('');
-    console.log('Spawn workers with:');
-    console.log('  ->relay:spawn WorkerName cli "task"');
-    console.log('Release workers with:');
-    console.log('  ->relay:release WorkerName');
-    console.log('');
-
-    const wrapper = new TmuxWrapper({
-      name,
-      command: mainCommand,
-      args: finalArgs.length > 0 ? finalArgs : undefined,
-      socketPath: paths.socketPath,
-      debug: true,
-      // Wire up spawn/release callbacks
-      onSpawn: async (workerName: string, workerCli: string, task: string) => {
-        console.log(`[lead] Spawning ${workerName} (${workerCli})...`);
-        const result = await spawner.spawn({
-          name: workerName,
-          cli: workerCli,
-          task,
-          requestedBy: name,
-        });
-        if (result.success) {
-          console.log(`[lead] ✓ Spawned ${workerName} in ${result.window}`);
-        } else {
-          console.error(`[lead] ✗ Failed to spawn ${workerName}: ${result.error}`);
-        }
-      },
-      onRelease: async (workerName: string) => {
-        console.log(`[lead] Releasing ${workerName}...`);
-        const released = await spawner.release(workerName);
-        if (released) {
-          console.log(`[lead] ✓ Released ${workerName}`);
-        } else {
-          console.error(`[lead] ✗ Worker ${workerName} not found`);
-        }
-      },
-    });
-
-    process.on('SIGINT', async () => {
-      console.log('\nReleasing workers...');
-      await spawner.releaseAll();
-      wrapper.stop();
-      process.exit(0);
-    });
-
-    await wrapper.start();
   });
 
 // gc - Clean up orphaned tmux sessions (hidden - for agent use)

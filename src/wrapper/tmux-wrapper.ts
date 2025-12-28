@@ -558,7 +558,7 @@ export class TmuxWrapper {
       // Check for [[SESSION_END]] blocks to explicitly close session
       this.parseSessionEndAndClose(cleanContent);
 
-      // Check for ->relay:spawn and ->relay:release commands (lead mode)
+      // Check for ->relay:spawn and ->relay:release commands (any agent can spawn)
       // Use joinedContent to handle multi-line output from TUIs like Claude Code
       this.parseSpawnReleaseCommands(joinedContent);
 
@@ -843,7 +843,7 @@ export class TmuxWrapper {
    *   ->relay:release WorkerName
    */
   private parseSpawnReleaseCommands(content: string): void {
-    // Only process if callbacks are configured (lead mode)
+    // Only process if callbacks are configured
     if (!this.config.onSpawn && !this.config.onRelease) return;
 
     const lines = content.split('\n');

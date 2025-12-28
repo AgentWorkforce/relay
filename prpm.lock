@@ -71,7 +71,17 @@
       "sourceFormat": "claude",
       "sourceSubtype": "skill",
       "installedPath": ".claude/skills/creating-claude-agents-skill/SKILL.md"
+    },
+    "@my-senior-dev/implementing-command-palettes#claude": {
+      "version": "1.0.0",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40my-senior-dev%2Fimplementing-command-palettes/1.0.0.tar.gz",
+      "integrity": "sha256-3f3a75beab22156810ca7a1d57311c71c79e5b5368f02032b43e84912c0e9d85",
+      "format": "claude",
+      "subtype": "skill",
+      "sourceFormat": "claude",
+      "sourceSubtype": "skill",
+      "installedPath": ".claude/skills/implementing-command-palettes/SKILL.md"
     }
   },
-  "generated": "2025-12-22T21:13:52.096Z"
+  "generated": "2025-12-28T16:52:12.488Z"
 }

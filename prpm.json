@@ -3,9 +3,10 @@
   "version": "1.0.0",
   "description": "Real-time agent-to-agent communication system for CLI agents (Claude Code, Codex, Cursor)",
   "author": "khaliqgant",
+  "organization": "agent-relay",
   "license": "MIT",
   "repository": "https://github.com/khaliqgant/agent-relay",
-  "homepage": "https://github.com/khaliqgant/agent-relay",
+  "homepage": "https://agent-relay.com",
   "packages": [
     {
       "name": "using-agent-relay",
@@ -26,36 +27,19 @@
       ]
     },
     {
-      "name": "agent-relay-inbox-hook",
+      "name": "agent-relay-snippet",
       "version": "1.0.0",
-      "description": "Hook that checks agent inbox on Stop events - enables file-based inter-agent messaging for Claude Code",
-      "format": "claude",
-      "subtype": "hook",
-      "tags": [
-        "multi-agent",
-        "inbox",
-        "hook",
-        "stop-event",
-        "messaging"
-      ],
+      "description": "AGENTS.md / CLAUDE.md snippet for agents on how to use agent-relay",
+      "format": "generic",
+      "subtype": "snippet",
+      "snippet": {
+        "target": "AGENTS.md",
+        "position": "append",
+        "header": "My Custom Section"
+      },
       "files": [
-        "dist/hooks/inbox-check/hook.js",
-        "dist/hooks/inbox-check/types.js",
-        "dist/hooks/inbox-check/utils.js"
-      ],
-      "hook_event": "Stop",
-      "env": {
-        "AGENT_RELAY_NAME": {
-          "description": "Agent name for relay identification",
-          "required": false,
-          "default": null
-        },
-        "AGENT_RELAY_INBOX_DIR": {
-          "description": "Directory for inbox files",
-          "required": false,
-          "default": "/tmp/agent-relay"
-        }
-      }
+        "docs/agent-relay-snippet.md"
+      ]
     }
   ]
 }
