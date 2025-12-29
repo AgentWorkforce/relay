@@ -21,6 +21,7 @@ import { InboxManager } from './inbox.js';
 import type { SendPayload, SendMeta } from '../protocol/types.js';
 import { SqliteStorageAdapter } from '../storage/sqlite-adapter.js';
 import { getProjectPaths } from '../utils/project-namespace.js';
+import { getTmuxPath, TmuxNotFoundError } from '../utils/tmux-resolver.js';
 
 const execAsync = promisify(exec);
 const escapeRegex = (str: string): string => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -130,6 +131,7 @@ export class TmuxWrapper {
   private receivedMessageIdSet: Set<string> = new Set();
   private receivedMessageIdOrder: string[] = [];
   private readonly MAX_RECEIVED_MESSAGES = 2000;
+  private tmuxPath: string; // Resolved path to tmux binary (system or bundled)
 
   constructor(config: TmuxWrapperConfig) {
     this.config = {
@@ -168,6 +170,9 @@ export class TmuxWrapper {
 
     // Session name (one agent per name - starting a duplicate kills the existing one)
     this.sessionName = `relay-${config.name}`;
+
+    // Resolve tmux path early so we fail fast if tmux isn't available
+    this.tmuxPath = getTmuxPath();
 
     this.client = new RelayClient({
       agentName: config.name,
@@ -264,7 +269,7 @@ export class TmuxWrapper {
    */
   private async sessionExists(): Promise<boolean> {
     try {
-      await execAsync(`tmux has-session -t ${this.sessionName} 2>/dev/null`);
+      await execAsync(`"${this.tmuxPath}" has-session -t ${this.sessionName} 2>/dev/null`);
       return true;
     } catch {
       return false;
@@ -290,7 +295,7 @@ export class TmuxWrapper {
 
     // Kill any existing session with this name
     try {
-      execSync(`tmux kill-session -t ${this.sessionName} 2>/dev/null`);
+      execSync(`"${this.tmuxPath}" kill-session -t ${this.sessionName} 2>/dev/null`);
     } catch {
       // Session doesn't exist, that's fine
     }
@@ -302,7 +307,7 @@ export class TmuxWrapper {
 
     // Create tmux session
     try {
-      execSync(`tmux new-session -d -s ${this.sessionName} -x ${this.config.cols} -y ${this.config.rows}`, {
+      execSync(`"${this.tmuxPath}" new-session -d -s ${this.sessionName} -x ${this.config.cols} -y ${this.config.rows}`, {
         cwd: this.config.cwd ?? process.cwd(),
         stdio: 'pipe',
       });
@@ -327,7 +332,7 @@ export class TmuxWrapper {
 
       for (const setting of tmuxSettings) {
         try {
-          execSync(`tmux ${setting}`, { stdio: 'pipe' });
+          execSync(`"${this.tmuxPath}" ${setting}`, { stdio: 'pipe' });
         } catch {
           // Some settings may not be available in older tmux versions
         }
@@ -346,7 +351,7 @@ export class TmuxWrapper {
 
       for (const setting of tmuxMouseBindings) {
         try {
-          execSync(`tmux ${setting}`, { stdio: 'pipe' });
+          execSync(`"${this.tmuxPath}" ${setting}`, { stdio: 'pipe' });
         } catch {
           // Ignore on older tmux versions lacking these key tables
         }
@@ -359,7 +364,7 @@ export class TmuxWrapper {
         TERM: 'xterm-256color',
       })) {
         const escaped = value.replace(/"/g, '\\"');
-        execSync(`tmux setenv -t ${this.sessionName} ${key} "${escaped}"`);
+        execSync(`"${this.tmuxPath}" setenv -t ${this.sessionName} ${key} "${escaped}"`);
       }
 
       // Wait for shell to be ready (look for prompt)
@@ -447,7 +452,7 @@ export class TmuxWrapper {
       try {
         const { stdout } = await execAsync(
           // -J joins wrapped lines so long prompts/messages stay intact
-          `tmux capture-pane -t ${this.sessionName} -p -J 2>/dev/null`
+          `"${this.tmuxPath}" capture-pane -t ${this.sessionName} -p -J 2>/dev/null`
         );
 
         // Check if the last non-empty line looks like a prompt
@@ -476,7 +481,7 @@ export class TmuxWrapper {
    * This spawns tmux attach and lets it take over stdin/stdout
    */
   private attachToSession(): void {
-    this.attachProcess = spawn('tmux', ['attach-session', '-t', this.sessionName], {
+    this.attachProcess = spawn(this.tmuxPath, ['attach-session', '-t', this.sessionName], {
       stdio: 'inherit', // User's terminal connects directly to tmux
     });
 
@@ -522,7 +527,7 @@ export class TmuxWrapper {
       // Capture scrollback
       const { stdout } = await execAsync(
         // -J joins wrapped lines to avoid truncating ->relay commands mid-line
-        `tmux capture-pane -t ${this.sessionName} -p -J -S - 2>/dev/null`
+        `"${this.tmuxPath}" capture-pane -t ${this.sessionName} -p -J -S - 2>/dev/null`
       );
 
       // Always parse the FULL capture for ->relay commands
@@ -1053,7 +1058,7 @@ export class TmuxWrapper {
    * Send special keys to tmux
    */
   private async sendKeys(keys: string): Promise<void> {
-    await execAsync(`tmux send-keys -t ${this.sessionName} ${keys}`);
+    await execAsync(`"${this.tmuxPath}" send-keys -t ${this.sessionName} ${keys}`);
   }
 
   /**
@@ -1069,7 +1074,7 @@ export class TmuxWrapper {
       .replace(/\$/g, '\\$')
       .replace(/`/g, '\\`')
       .replace(/!/g, '\\!');
-    await execAsync(`tmux send-keys -t ${this.sessionName} -l "${escaped}"`);
+    await execAsync(`"${this.tmuxPath}" send-keys -t ${this.sessionName} -l "${escaped}"`);
   }
 
   /**
@@ -1088,12 +1093,12 @@ export class TmuxWrapper {
 
     // Set tmux buffer then paste
     // Skip bracketed paste (-p) for CLIs that don't handle it properly (droid, other)
-    await execAsync(`tmux set-buffer -- "${escaped}"`);
+    await execAsync(`"${this.tmuxPath}" set-buffer -- "${escaped}"`);
     const useBracketedPaste = this.cliType === 'claude' || this.cliType === 'codex' || this.cliType === 'gemini';
     if (useBracketedPaste) {
-      await execAsync(`tmux paste-buffer -t ${this.sessionName} -p`);
+      await execAsync(`"${this.tmuxPath}" paste-buffer -t ${this.sessionName} -p`);
     } else {
-      await execAsync(`tmux paste-buffer -t ${this.sessionName}`);
+      await execAsync(`"${this.tmuxPath}" paste-buffer -t ${this.sessionName}`);
     }
   }
 
@@ -1131,7 +1136,7 @@ export class TmuxWrapper {
   private async getLastLine(): Promise<string> {
     try {
       const { stdout } = await execAsync(
-        `tmux capture-pane -t ${this.sessionName} -p -J 2>/dev/null`
+        `"${this.tmuxPath}" capture-pane -t ${this.sessionName} -p -J 2>/dev/null`
       );
       const lines = stdout.split('\n').filter(l => l.length > 0);
       return lines[lines.length - 1] || '';
@@ -1179,7 +1184,7 @@ export class TmuxWrapper {
   private async getCursorX(): Promise<number> {
     try {
       const { stdout } = await execAsync(
-        `tmux display-message -t ${this.sessionName} -p "#{cursor_x}" 2>/dev/null`
+        `"${this.tmuxPath}" display-message -t ${this.sessionName} -p "#{cursor_x}" 2>/dev/null`
       );
       return parseInt(stdout.trim(), 10) || 0;
     } catch {
@@ -1239,7 +1244,7 @@ export class TmuxWrapper {
   private async capturePaneSignature(): Promise<string | null> {
     try {
       const { stdout } = await execAsync(
-        `tmux capture-pane -t ${this.sessionName} -p -J -S - 2>/dev/null`
+        `"${this.tmuxPath}" capture-pane -t ${this.sessionName} -p -J -S - 2>/dev/null`
       );
       const hash = crypto.createHash('sha1').update(stdout).digest('hex');
       return `${stdout.length}:${hash}`;
@@ -1297,7 +1302,7 @@ export class TmuxWrapper {
 
     // Kill tmux session
     try {
-      execSync(`tmux kill-session -t ${this.sessionName} 2>/dev/null`);
+      execSync(`"${this.tmuxPath}" kill-session -t ${this.sessionName} 2>/dev/null`);
     } catch {
       // Ignore
     }

@@ -4,6 +4,9 @@ node_modules/
 # Build output
 dist/
 
+# Bundled tmux binary (downloaded at install time)
+bin/tmux
+
 # TypeScript build info (if enabled later)
 *.tsbuildinfo
 

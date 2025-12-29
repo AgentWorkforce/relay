@@ -16,6 +16,7 @@ import { config as dotenvConfig } from 'dotenv';
 import { Daemon } from '../daemon/server.js';
 import { RelayClient } from '../wrapper/client.js';
 import { generateAgentName } from '../utils/name-generator.js';
+import { getTmuxPath } from '../utils/tmux-resolver.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -540,6 +541,34 @@ program
     console.log(`agent-relay v${VERSION}`);
   });
 
+// check-tmux - Check tmux availability (hidden - for diagnostics)
+program
+  .command('check-tmux', { hidden: true })
+  .description('Check tmux availability and version')
+  .action(async () => {
+    const { resolveTmux, checkTmuxVersion } = await import('../utils/tmux-resolver.js');
+
+    const info = resolveTmux();
+    if (!info) {
+      console.log('tmux: NOT FOUND');
+      console.log('');
+      console.log('Install tmux, then reinstall agent-relay:');
+      console.log('  brew install tmux          # macOS');
+      console.log('  apt install tmux           # Ubuntu/Debian');
+      console.log('  npm install agent-relay    # Reinstall to bundle tmux');
+      process.exit(1);
+    }
+
+    console.log(`tmux: ${info.path}`);
+    console.log(`Version: ${info.version}`);
+    console.log(`Source: ${info.isBundled ? 'bundled' : 'system'}`);
+
+    const versionCheck = checkTmuxVersion();
+    if (!versionCheck.ok) {
+      console.log(`Warning: tmux ${versionCheck.minimum}+ recommended`);
+    }
+  });
+
 // bridge - Multi-project orchestration
 program
   .command('bridge')
@@ -839,9 +868,10 @@ program
 
     // Kill orphaned sessions
     let killed = 0;
+    const tmuxPath = getTmuxPath();
     for (const session of orphaned) {
       try {
-        await execAsync(`tmux kill-session -t ${session.sessionName}`);
+        await execAsync(`"${tmuxPath}" kill-session -t ${session.sessionName}`);
         killed++;
         console.log(`Killed: ${session.sessionName}`);
       } catch (err) {
@@ -860,7 +890,8 @@ interface RelaySessionInfo {
 
 async function discoverRelaySessions(): Promise<RelaySessionInfo[]> {
   try {
-    const { stdout } = await execAsync('tmux list-sessions -F "#{session_name}"');
+    const tmuxPath = getTmuxPath();
+    const { stdout } = await execAsync(`"${tmuxPath}" list-sessions -F "#{session_name}"`);
     const sessionNames = stdout
       .split('\n')
       .map(s => s.trim())
@@ -879,7 +910,7 @@ async function discoverRelaySessions(): Promise<RelaySessionInfo[]> {
         let cwd: string | undefined;
         try {
           const { stdout: cwdOut } = await execAsync(
-            `tmux display-message -t ${session.sessionName} -p '#{pane_current_path}'`
+            `"${tmuxPath}" display-message -t ${session.sessionName} -p '#{pane_current_path}'`
           );
           cwd = cwdOut.trim() || undefined;
         } catch {
@@ -1031,9 +1062,10 @@ program
   .option('--json', 'Output as JSON')
   .action(async (options: { json?: boolean }) => {
     try {
+      const tmuxPath = getTmuxPath();
       // Check if worker session exists
       try {
-        await execAsync(`tmux has-session -t ${WORKER_SESSION} 2>/dev/null`);
+        await execAsync(`"${tmuxPath}" has-session -t ${WORKER_SESSION} 2>/dev/null`);
       } catch {
         if (options.json) {
           console.log(JSON.stringify({ workers: [], session: null }));
@@ -1045,7 +1077,7 @@ program
 
       // List windows in the worker session
       const { stdout } = await execAsync(
-        `tmux list-windows -t ${WORKER_SESSION} -F "#{window_index}|#{window_name}|#{pane_current_command}|#{window_activity}"`
+        `"${tmuxPath}" list-windows -t ${WORKER_SESSION} -F "#{window_index}|#{window_name}|#{pane_current_command}|#{window_activity}"`
       );
 
       const workers = stdout
@@ -1103,11 +1135,12 @@ program
   .option('-n, --lines <n>', 'Number of lines to show', '50')
   .option('-f, --follow', 'Follow output (like tail -f)')
   .action(async (name: string, options: { lines?: string; follow?: boolean }) => {
+    const tmuxPath = getTmuxPath();
     const window = `${WORKER_SESSION}:${name}`;
 
     try {
       // Check if window exists
-      await execAsync(`tmux has-session -t ${window} 2>/dev/null`);
+      await execAsync(`"${tmuxPath}" has-session -t ${window} 2>/dev/null`);
     } catch {
       console.error(`Worker "${name}" not found`);
       console.log(`Run 'agent-relay workers' to see available workers`);
@@ -1122,7 +1155,7 @@ program
       let lastContent = '';
       const poll = async () => {
         try {
-          const { stdout } = await execAsync(`tmux capture-pane -t ${window} -p -S -100`);
+          const { stdout } = await execAsync(`"${tmuxPath}" capture-pane -t ${window} -p -S -100`);
           if (stdout !== lastContent) {
             // Print only new lines
             const newContent = stdout.replace(lastContent, '');
@@ -1149,7 +1182,7 @@ program
     } else {
       try {
         const lines = parseInt(options.lines || '50', 10);
-        const { stdout } = await execAsync(`tmux capture-pane -t ${window} -p -S -${lines}`);
+        const { stdout } = await execAsync(`"${tmuxPath}" capture-pane -t ${window} -p -S -${lines}`);
         console.log(`Output from ${window} (last ${lines} lines):`);
         console.log('─'.repeat(50));
         console.log(stdout || '(empty)');
@@ -1165,11 +1198,12 @@ program
   .description('Attach to a spawned worker tmux window')
   .argument('<name>', 'Worker name')
   .action(async (name: string) => {
+    const tmuxPath = getTmuxPath();
     const window = `${WORKER_SESSION}:${name}`;
 
     try {
       // Check if window exists
-      await execAsync(`tmux has-session -t ${window} 2>/dev/null`);
+      await execAsync(`"${tmuxPath}" has-session -t ${window} 2>/dev/null`);
     } catch {
       console.error(`Worker "${name}" not found`);
       console.log(`Run 'agent-relay workers' to see available workers`);
@@ -1181,7 +1215,7 @@ program
 
     // Spawn tmux attach as a child process with stdio inherited
     const { spawn } = await import('child_process');
-    const child = spawn('tmux', ['attach-session', '-t', window], {
+    const child = spawn(tmuxPath, ['attach-session', '-t', window], {
       stdio: 'inherit',
     });
 
@@ -1197,11 +1231,12 @@ program
   .argument('<name>', 'Worker name')
   .option('--force', 'Skip graceful shutdown, kill immediately')
   .action(async (name: string, options: { force?: boolean }) => {
+    const tmuxPath = getTmuxPath();
     const window = `${WORKER_SESSION}:${name}`;
 
     try {
       // Check if window exists
-      await execAsync(`tmux has-session -t ${window} 2>/dev/null`);
+      await execAsync(`"${tmuxPath}" has-session -t ${window} 2>/dev/null`);
     } catch {
       console.error(`Worker "${name}" not found`);
       console.log(`Run 'agent-relay workers' to see available workers`);
@@ -1212,7 +1247,7 @@ program
       // Try graceful shutdown first
       console.log(`Sending /exit to ${name}...`);
       try {
-        await execAsync(`tmux send-keys -t ${window} '/exit' Enter`);
+        await execAsync(`"${tmuxPath}" send-keys -t ${window} '/exit' Enter`);
         // Wait for graceful shutdown
         await new Promise(r => setTimeout(r, 2000));
       } catch {
@@ -1222,7 +1257,7 @@ program
 
     // Kill the window
     try {
-      await execAsync(`tmux kill-window -t ${window}`);
+      await execAsync(`"${tmuxPath}" kill-window -t ${window}`);
       console.log(`Killed worker: ${name}`);
     } catch (err) {
       console.error(`Failed to kill ${name}:`, (err as Error).message);
@@ -1236,9 +1271,10 @@ program
   .description('Show worker tmux session details')
   .action(async () => {
     try {
+      const tmuxPath = getTmuxPath();
       // Check if session exists
       try {
-        await execAsync(`tmux has-session -t ${WORKER_SESSION} 2>/dev/null`);
+        await execAsync(`"${tmuxPath}" has-session -t ${WORKER_SESSION} 2>/dev/null`);
       } catch {
         console.log(`Session "${WORKER_SESSION}" does not exist`);
         console.log('Spawn a worker to create it.');
@@ -1250,14 +1286,14 @@ program
 
       // Get session info
       const { stdout: sessionInfo } = await execAsync(
-        `tmux display-message -t ${WORKER_SESSION} -p "Created: #{session_created_string}\\nWindows: #{session_windows}\\nAttached: #{?session_attached,yes,no}"`
+        `"${tmuxPath}" display-message -t ${WORKER_SESSION} -p "Created: #{session_created_string}\\nWindows: #{session_windows}\\nAttached: #{?session_attached,yes,no}"`
       );
       console.log(sessionInfo);
 
       // List windows
       console.log('\nWindows:');
       const { stdout: windows } = await execAsync(
-        `tmux list-windows -t ${WORKER_SESSION} -F "  #{window_index}: #{window_name} (#{pane_current_command})"`
+        `"${tmuxPath}" list-windows -t ${WORKER_SESSION} -F "  #{window_index}: #{window_name} (#{pane_current_command})"`
       );
       console.log(windows || '  (none)');
 

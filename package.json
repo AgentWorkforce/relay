@@ -1,6 +1,6 @@
 {
   "name": "agent-relay",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "Real-time agent-to-agent communication system",
   "type": "module",
   "main": "dist/index.js",
@@ -10,6 +10,8 @@
   },
   "files": [
     "dist/",
+    "bin/",
+    "scripts/",
     "install.sh",
     "README.md",
     "LICENSE",
@@ -19,7 +21,7 @@
     "access": "public"
   },
   "scripts": {
-    "postinstall": "npm rebuild better-sqlite3",
+    "postinstall": "npm rebuild better-sqlite3 && node scripts/postinstall.js",
     "build": "npm run clean && tsc && npm run build:frontend",
     "build:frontend": "esbuild src/dashboard/frontend/app.ts --bundle --outfile=src/dashboard/public/js/app.js --format=esm --target=es2022 --minify --sourcemap",
     "postbuild": "cp -r src/dashboard/public dist/dashboard/ && chmod +x dist/cli/index.js",

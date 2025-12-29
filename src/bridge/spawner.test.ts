@@ -33,6 +33,12 @@ vi.mock('../utils/project-namespace.js', () => {
   };
 });
 
+vi.mock('../utils/tmux-resolver.js', () => {
+  return {
+    getTmuxPath: vi.fn(() => 'tmux'),
+  };
+});
+
 const execAsyncMock = vi.mocked(execAsync);
 const sleepMock = vi.mocked(sleep);
 const escapeForTmuxMock = vi.mocked(escapeForTmux);
@@ -66,8 +72,8 @@ describe('AgentSpawner', () => {
     await spawner.ensureSession();
 
     expect(execAsyncMock).toHaveBeenCalledTimes(2);
-    expect(execAsyncMock.mock.calls[0][0]).toBe(`tmux has-session -t ${session} 2>/dev/null`);
-    expect(execAsyncMock.mock.calls[1][0]).toBe(`tmux new-session -d -s ${session} -c "${projectRoot}"`);
+    expect(execAsyncMock.mock.calls[0][0]).toBe(`"tmux" has-session -t ${session} 2>/dev/null`);
+    expect(execAsyncMock.mock.calls[1][0]).toBe(`"tmux" new-session -d -s ${session} -c "${projectRoot}"`);
   });
 
   it('does nothing when tmux session already exists', async () => {
@@ -77,7 +83,7 @@ describe('AgentSpawner', () => {
     await spawner.ensureSession();
 
     expect(execAsyncMock).toHaveBeenCalledTimes(1);
-    expect(execAsyncMock).toHaveBeenCalledWith(`tmux has-session -t ${session} 2>/dev/null`);
+    expect(execAsyncMock).toHaveBeenCalledWith(`"tmux" has-session -t ${session} 2>/dev/null`);
   });
 
   it('spawns a worker and tracks it', async () => {
@@ -99,12 +105,12 @@ describe('AgentSpawner', () => {
       window: `${session}:Dev1`,
     });
     expect(spawner.hasWorker('Dev1')).toBe(true);
-    expect(execAsyncMock).toHaveBeenNthCalledWith(1, `tmux has-session -t ${session} 2>/dev/null`);
-    expect(execAsyncMock).toHaveBeenNthCalledWith(2, `tmux new-window -t ${session} -n Dev1 -c "${projectRoot}"`);
+    expect(execAsyncMock).toHaveBeenNthCalledWith(1, `"tmux" has-session -t ${session} 2>/dev/null`);
+    expect(execAsyncMock).toHaveBeenNthCalledWith(2, `"tmux" new-window -t ${session} -n Dev1 -c "${projectRoot}"`);
     expect(execAsyncMock).toHaveBeenNthCalledWith(3, 'which agent-relay'); // Find full path
-    expect(execAsyncMock).toHaveBeenNthCalledWith(4, `tmux send-keys -t ${session}:Dev1 'unset TMUX && /usr/local/bin/agent-relay -n Dev1 -- claude --dangerously-skip-permissions' Enter`);
-    expect(execAsyncMock).toHaveBeenNthCalledWith(5, `tmux send-keys -t ${session}:Dev1 -l "escaped:Finish the report"`);
-    expect(execAsyncMock).toHaveBeenNthCalledWith(6, `tmux send-keys -t ${session}:Dev1 Enter`);
+    expect(execAsyncMock).toHaveBeenNthCalledWith(4, `"tmux" send-keys -t ${session}:Dev1 'unset TMUX && /usr/local/bin/agent-relay -n Dev1 -- claude --dangerously-skip-permissions' Enter`);
+    expect(execAsyncMock).toHaveBeenNthCalledWith(5, `"tmux" send-keys -t ${session}:Dev1 -l "escaped:Finish the report"`);
+    expect(execAsyncMock).toHaveBeenNthCalledWith(6, `"tmux" send-keys -t ${session}:Dev1 Enter`);
     expect(sleepMock).toHaveBeenCalledWith(100);
   });
 
@@ -124,7 +130,7 @@ describe('AgentSpawner', () => {
     // Check that the command includes --dangerously-skip-permissions for claude:opus
     expect(execAsyncMock).toHaveBeenNthCalledWith(
       4,
-      `tmux send-keys -t ${session}:Opus1 'unset TMUX && /usr/local/bin/agent-relay -n Opus1 -- claude:opus --dangerously-skip-permissions' Enter`
+      `"tmux" send-keys -t ${session}:Opus1 'unset TMUX && /usr/local/bin/agent-relay -n Opus1 -- claude:opus --dangerously-skip-permissions' Enter`
     );
   });
 
@@ -144,7 +150,7 @@ describe('AgentSpawner', () => {
     // Check that the command does NOT include --dangerously-skip-permissions for codex
     expect(execAsyncMock).toHaveBeenNthCalledWith(
       4,
-      `tmux send-keys -t ${session}:Codex1 'unset TMUX && /usr/local/bin/agent-relay -n Codex1 -- codex' Enter`
+      `"tmux" send-keys -t ${session}:Codex1 'unset TMUX && /usr/local/bin/agent-relay -n Codex1 -- codex' Enter`
     );
   });
 
@@ -201,7 +207,7 @@ describe('AgentSpawner', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('failed to register');
-    expect(execAsyncMock).toHaveBeenCalledWith(`tmux kill-window -t ${session}:Late`);
+    expect(execAsyncMock).toHaveBeenCalledWith(`"tmux" kill-window -t ${session}:Late`);
     expect(spawner.hasWorker('Late')).toBe(false);
   });
 
@@ -223,8 +229,8 @@ describe('AgentSpawner', () => {
 
     expect(result).toBe(true);
     expect(spawner.hasWorker('Worker')).toBe(false);
-    expect(execAsyncMock).toHaveBeenNthCalledWith(1, `tmux send-keys -t ${session}:Worker '/exit' Enter`);
-    expect(execAsyncMock).toHaveBeenNthCalledWith(2, `tmux kill-window -t ${session}:Worker`);
+    expect(execAsyncMock).toHaveBeenNthCalledWith(1, `"tmux" send-keys -t ${session}:Worker '/exit' Enter`);
+    expect(execAsyncMock).toHaveBeenNthCalledWith(2, `"tmux" kill-window -t ${session}:Worker`);
     expect(sleepMock).toHaveBeenCalledWith(2000);
   });
 
@@ -256,8 +262,8 @@ describe('AgentSpawner', () => {
     expect(result).toBe(true);
     expect(spawner.hasWorker('Failing')).toBe(false);
     expect(execAsyncMock).toHaveBeenCalledTimes(2);
-    expect(execAsyncMock.mock.calls[0][0]).toBe(`tmux send-keys -t ${session}:Failing '/exit' Enter`);
-    expect(execAsyncMock.mock.calls[1][0]).toBe(`tmux kill-window -t ${session}:Failing`);
+    expect(execAsyncMock.mock.calls[0][0]).toBe(`"tmux" send-keys -t ${session}:Failing '/exit' Enter`);
+    expect(execAsyncMock.mock.calls[1][0]).toBe(`"tmux" kill-window -t ${session}:Failing`);
     expect(sleepMock).toHaveBeenCalledWith(2000);
   });
 
