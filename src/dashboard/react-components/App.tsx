@@ -5,8 +5,8 @@
  * Manages global state via hooks and provides context to child components.
  */
 
-import React, { useState, useCallback, useRef } from 'react';
-import type { Agent } from '../types';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
+import type { Agent, Project } from '../types';
 import { Sidebar } from './layout/Sidebar';
 import { Header } from './layout/Header';
 import { MessageList } from './MessageList';
@@ -31,6 +31,10 @@ export function App({ wsUrl }: AppProps) {
   // View mode state
   const [viewMode, setViewMode] = useState<'local' | 'fleet'>('local');
 
+  // Project state for unified navigation
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [currentProject, setCurrentProject] = useState<string | undefined>();
+
   // Spawn modal state
   const [isSpawnModalOpen, setIsSpawnModalOpen] = useState(false);
   const [isSpawning, setIsSpawning] = useState(false);
@@ -42,6 +46,16 @@ export function App({ wsUrl }: AppProps) {
   // Settings panel state
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settings, setSettings] = useState<Settings>(defaultSettings);
+
+  // Mobile sidebar state
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
+  // Close sidebar when selecting an agent or project on mobile
+  const closeSidebarOnMobile = useCallback(() => {
+    if (window.innerWidth <= 768) {
+      setIsSidebarOpen(false);
+    }
+  }, []);
 
   // Agent state management
   const {
@@ -75,11 +89,50 @@ export function App({ wsUrl }: AppProps) {
   // Check if fleet view is available
   const isFleetAvailable = Boolean(data?.fleet?.servers?.length);
 
+  // Fetch bridge/project data when fleet is available
+  useEffect(() => {
+    if (!isFleetAvailable) return;
+
+    const fetchProjects = async () => {
+      const result = await api.getBridgeData();
+      if (result.success && result.data) {
+        // Destructure to avoid non-null assertion in closure
+        const { servers, agents } = result.data;
+        // Convert fleet servers to projects
+        const projectList: Project[] = servers.map((server) => ({
+          id: server.id,
+          path: server.url,
+          name: server.name || server.url.split('/').pop(),
+          agents: agents.filter((a) => a.server === server.id),
+          lead: undefined, // Could be enhanced to detect lead agent
+        }));
+        setProjects(projectList);
+      }
+    };
+
+    fetchProjects();
+    // Refresh periodically
+    const interval = setInterval(fetchProjects, 30000);
+    return () => clearInterval(interval);
+  }, [isFleetAvailable]);
+
+  // Handle project selection
+  const handleProjectSelect = useCallback((project: Project) => {
+    setCurrentProject(project.id);
+    // Optionally navigate to project's first agent or general channel
+    if (project.agents.length > 0) {
+      selectAgent(project.agents[0].name);
+      setCurrentChannel(project.agents[0].name);
+    }
+    closeSidebarOnMobile();
+  }, [selectAgent, setCurrentChannel, closeSidebarOnMobile]);
+
   // Handle agent selection
   const handleAgentSelect = useCallback((agent: Agent) => {
     selectAgent(agent.name);
     setCurrentChannel(agent.name);
-  }, [selectAgent, setCurrentChannel]);
+    closeSidebarOnMobile();
+  }, [selectAgent, setCurrentChannel, closeSidebarOnMobile]);
 
   // Handle spawn button click
   const handleSpawnClick = useCallback(() => {
@@ -97,7 +150,7 @@ export function App({ wsUrl }: AppProps) {
     setIsSpawning(true);
     setSpawnError(null);
     try {
-      const result = await api.spawnAgent({ name: config.name, cli: config.command });
+      const result = await api.spawnAgent({ name: config.name, cli: config.command, team: config.team });
       if (!result.success) {
         setSpawnError(result.error || 'Failed to spawn agent');
         return false;
@@ -189,17 +242,28 @@ export function App({ wsUrl }: AppProps) {
 
   return (
     <div className="dashboard-app">
+      {/* Mobile Sidebar Overlay */}
+      <div
+        className={`sidebar-overlay ${isSidebarOpen ? 'visible' : ''}`}
+        onClick={() => setIsSidebarOpen(false)}
+      />
+
       {/* Sidebar */}
       <Sidebar
         agents={agents}
+        projects={projects}
+        currentProject={currentProject}
         selectedAgent={selectedAgent?.name}
         viewMode={viewMode}
         isFleetAvailable={isFleetAvailable}
         isConnected={isConnected}
+        isOpen={isSidebarOpen}
         onAgentSelect={handleAgentSelect}
+        onProjectSelect={handleProjectSelect}
         onViewModeChange={setViewMode}
         onSpawnClick={handleSpawnClick}
         onReleaseClick={handleReleaseAgent}
+        onClose={() => setIsSidebarOpen(false)}
       />
 
       {/* Main Content */}
@@ -210,6 +274,7 @@ export function App({ wsUrl }: AppProps) {
           selectedAgent={selectedAgent}
           onCommandPaletteOpen={handleCommandPaletteOpen}
           onSettingsClick={handleSettingsClick}
+          onMenuClick={() => setIsSidebarOpen(true)}
         />
 
         {/* Content Area */}
@@ -257,7 +322,10 @@ export function App({ wsUrl }: AppProps) {
         isOpen={isCommandPaletteOpen}
         onClose={() => setIsCommandPaletteOpen(false)}
         agents={agents}
+        projects={projects}
+        currentProject={currentProject}
         onAgentSelect={handleAgentSelect}
+        onProjectSelect={handleProjectSelect}
         onSpawnClick={handleSpawnClick}
         onGeneralClick={() => {
           selectAgent(null);
@@ -302,10 +370,10 @@ function MessageComposer({ recipient, agents, onSend, isSending, error }: Messag
   const [message, setMessage] = useState('');
   const [cursorPosition, setCursorPosition] = useState(0);
   const [showMentions, setShowMentions] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Check for @mention on input change
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value;
     const cursorPos = e.target.selectionStart || 0;
     setMessage(value);
@@ -316,16 +384,26 @@ function MessageComposer({ recipient, agents, onSend, isSending, error }: Messag
     setShowMentions(query !== null);
   };
 
+  // Handle keyboard events - Enter to send, Shift+Enter for new line
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (message.trim() && !isSending) {
+        handleSubmit(e as unknown as React.FormEvent);
+      }
+    }
+  };
+
   // Handle mention selection
   const handleMentionSelect = (mention: string, newValue: string) => {
     setMessage(newValue);
     setShowMentions(false);
-    // Focus input and set cursor after the mention
+    // Focus textarea and set cursor after the mention
     setTimeout(() => {
-      if (inputRef.current) {
-        inputRef.current.focus();
+      if (textareaRef.current) {
+        textareaRef.current.focus();
         const pos = newValue.indexOf(' ') + 1;
-        inputRef.current.setSelectionRange(pos, pos);
+        textareaRef.current.setSelectionRange(pos, pos);
       }
     }, 0);
   };
@@ -377,23 +455,35 @@ function MessageComposer({ recipient, agents, onSend, isSending, error }: Messag
           onClose={() => setShowMentions(false)}
           isVisible={showMentions}
         />
-        <input
-          ref={inputRef}
-          type="text"
+        <textarea
+          ref={textareaRef}
           className="composer-input"
-          placeholder={`Message ${recipient === '*' ? 'everyone' : '@' + recipient}... (type @ to mention)`}
+          placeholder={`Message ${recipient === '*' ? 'everyone' : '@' + recipient}... (Shift+Enter for new line)`}
           value={message}
           onChange={handleInputChange}
-          onSelect={(e) => setCursorPosition((e.target as HTMLInputElement).selectionStart || 0)}
+          onKeyDown={handleKeyDown}
+          onSelect={(e) => setCursorPosition((e.target as HTMLTextAreaElement).selectionStart || 0)}
           disabled={isSending}
+          rows={1}
         />
       </div>
       <button
         type="submit"
         className="composer-send"
         disabled={!message.trim() || isSending}
+        title={isSending ? 'Sending...' : 'Send message'}
       >
-        {isSending ? 'Sending...' : 'Send'}
+        {isSending ? (
+          <span className="composer-send-text">Sending...</span>
+        ) : (
+          <>
+            <span className="composer-send-text">Send</span>
+            <svg className="composer-send-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="22" y1="2" x2="11" y2="13"></line>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            </svg>
+          </>
+        )}
       </button>
       {error && <span className="composer-error">{error}</span>}
     </form>
@@ -550,10 +640,15 @@ export const appStyles = `
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 6px;
   font-size: 14px;
+  font-family: inherit;
   color: #d1d2d3;
   outline: none;
   box-sizing: border-box;
   transition: border-color 0.2s;
+  resize: none;
+  min-height: 40px;
+  max-height: 120px;
+  overflow-y: auto;
 }
 
 .composer-input::placeholder {

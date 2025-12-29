@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Connection, type ConnectionConfig, DEFAULT_CONFIG } from './connection.js';
 import { Router } from './router.js';
-import type { Envelope, SendPayload } from '../protocol/types.js';
+import type { Envelope, SendPayload, ShadowBindPayload, ShadowUnbindPayload } from '../protocol/types.js';
 import { createStorageAdapter, type StorageAdapter, type StorageConfig } from '../storage/adapter.js';
 import { SqliteStorageAdapter } from '../storage/sqlite-adapter.js';
 import { getProjectPaths } from '../utils/project-namespace.js';
@@ -234,7 +234,10 @@ export class Daemon {
         }
       : undefined;
 
-    const connection = new Connection(socket, { ...this.config, resumeHandler });
+    // Provide processing state callback for heartbeat exemption
+    const isProcessing = (agentName: string) => this.router.isAgentProcessing(agentName);
+
+    const connection = new Connection(socket, { ...this.config, resumeHandler, isProcessing });
     this.connections.add(connection);
 
     connection.onMessage = (envelope: Envelope) => {
@@ -354,6 +357,28 @@ export class Daemon {
       case 'UNSUBSCRIBE':
         if (connection.agentName && envelope.topic) {
           this.router.unsubscribe(connection.agentName, envelope.topic);
+        }
+        break;
+
+      case 'SHADOW_BIND':
+        if (connection.agentName) {
+          const payload = envelope.payload as ShadowBindPayload;
+          this.router.bindShadow(connection.agentName, payload.primaryAgent, {
+            speakOn: payload.speakOn,
+            receiveIncoming: payload.receiveIncoming,
+            receiveOutgoing: payload.receiveOutgoing,
+          });
+        }
+        break;
+
+      case 'SHADOW_UNBIND':
+        if (connection.agentName) {
+          const payload = envelope.payload as ShadowUnbindPayload;
+          // Verify the shadow is actually bound to the specified primary
+          const currentPrimary = this.router.getPrimaryForShadow(connection.agentName);
+          if (currentPrimary === payload.primaryAgent) {
+            this.router.unbindShadow(connection.agentName);
+          }
         }
         break;
     }

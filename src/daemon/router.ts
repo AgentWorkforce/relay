@@ -9,6 +9,8 @@ import {
   type SendEnvelope,
   type DeliverEnvelope,
   type AckPayload,
+  type ShadowConfig,
+  type SpeakOnTrigger,
   PROTOCOL_VERSION,
 } from '../protocol/types.js';
 import type { StorageAdapter } from '../storage/adapter.js';
@@ -57,6 +59,11 @@ interface ProcessingState {
   timer?: NodeJS.Timeout;
 }
 
+/** Internal shadow relationship with resolved defaults */
+interface ShadowRelationship extends ShadowConfig {
+  shadowAgent: string;
+}
+
 export class Router {
   private storage?: StorageAdapter;
   private connections: Map<string, RoutableConnection> = new Map(); // connectionId -> Connection
@@ -66,6 +73,11 @@ export class Router {
   private processingAgents: Map<string, ProcessingState> = new Map(); // agentName -> processing state
   private deliveryOptions: DeliveryReliabilityOptions;
   private registry?: AgentRegistry;
+
+  /** Shadow relationships: primaryAgent -> list of shadow configs */
+  private shadowsByPrimary: Map<string, ShadowRelationship[]> = new Map();
+  /** Reverse lookup: shadowAgent -> primaryAgent (for cleanup) */
+  private primaryByShadow: Map<string, string> = new Map();
 
   /** Default timeout for processing indicator (30 seconds) */
   private static readonly PROCESSING_TIMEOUT_MS = 30_000;
@@ -117,6 +129,9 @@ export class Router {
         subscribers.delete(connection.agentName);
       }
 
+      // Clean up shadow relationships
+      this.unbindShadow(connection.agentName);
+
       // Clear processing state
       this.clearProcessing(connection.agentName);
     }
@@ -150,6 +165,157 @@ export class Router {
   }
 
   /**
+   * Bind a shadow agent to a primary agent.
+   * The shadow will receive copies of messages to/from the primary.
+   */
+  bindShadow(
+    shadowAgent: string,
+    primaryAgent: string,
+    options: {
+      speakOn?: SpeakOnTrigger[];
+      receiveIncoming?: boolean;
+      receiveOutgoing?: boolean;
+    } = {}
+  ): void {
+    // Clean up any existing shadow binding for this shadow
+    this.unbindShadow(shadowAgent);
+
+    const relationship: ShadowRelationship = {
+      shadowAgent,
+      primaryAgent,
+      speakOn: options.speakOn ?? ['EXPLICIT_ASK'],
+      receiveIncoming: options.receiveIncoming ?? true,
+      receiveOutgoing: options.receiveOutgoing ?? true,
+    };
+
+    // Add to primary's shadow list
+    let shadows = this.shadowsByPrimary.get(primaryAgent);
+    if (!shadows) {
+      shadows = [];
+      this.shadowsByPrimary.set(primaryAgent, shadows);
+    }
+    shadows.push(relationship);
+
+    // Set reverse lookup
+    this.primaryByShadow.set(shadowAgent, primaryAgent);
+
+    console.log(`[router] Shadow bound: ${shadowAgent} -> ${primaryAgent} (speakOn: ${relationship.speakOn.join(', ')})`);
+  }
+
+  /**
+   * Unbind a shadow agent from its primary.
+   */
+  unbindShadow(shadowAgent: string): void {
+    const primaryAgent = this.primaryByShadow.get(shadowAgent);
+    if (!primaryAgent) return;
+
+    // Remove from primary's shadow list
+    const shadows = this.shadowsByPrimary.get(primaryAgent);
+    if (shadows) {
+      const updatedShadows = shadows.filter(s => s.shadowAgent !== shadowAgent);
+      if (updatedShadows.length === 0) {
+        this.shadowsByPrimary.delete(primaryAgent);
+      } else {
+        this.shadowsByPrimary.set(primaryAgent, updatedShadows);
+      }
+    }
+
+    // Remove reverse lookup
+    this.primaryByShadow.delete(shadowAgent);
+
+    console.log(`[router] Shadow unbound: ${shadowAgent} from ${primaryAgent}`);
+  }
+
+  /**
+   * Get all shadows for a primary agent.
+   */
+  getShadowsForPrimary(primaryAgent: string): ShadowRelationship[] {
+    return this.shadowsByPrimary.get(primaryAgent) ?? [];
+  }
+
+  /**
+   * Get the primary agent for a shadow, if any.
+   */
+  getPrimaryForShadow(shadowAgent: string): string | undefined {
+    return this.primaryByShadow.get(shadowAgent);
+  }
+
+  /**
+   * Emit a trigger event for an agent's shadows.
+   * Shadows configured to speakOn this trigger will receive a notification.
+   * @param primaryAgent The agent whose shadows should be notified
+   * @param trigger The trigger event that occurred
+   * @param context Optional context data about the trigger
+   */
+  emitShadowTrigger(
+    primaryAgent: string,
+    trigger: SpeakOnTrigger,
+    context?: Record<string, unknown>
+  ): void {
+    const shadows = this.shadowsByPrimary.get(primaryAgent);
+    if (!shadows || shadows.length === 0) return;
+
+    for (const shadow of shadows) {
+      // Check if this shadow is configured to speak on this trigger
+      if (!shadow.speakOn.includes(trigger) && !shadow.speakOn.includes('ALL_MESSAGES')) {
+        continue;
+      }
+
+      const target = this.agents.get(shadow.shadowAgent);
+      if (!target) continue;
+
+      // Create a trigger notification envelope
+      const triggerEnvelope: SendEnvelope = {
+        v: PROTOCOL_VERSION,
+        type: 'SEND',
+        id: uuid(),
+        ts: Date.now(),
+        from: primaryAgent,
+        to: shadow.shadowAgent,
+        payload: {
+          kind: 'action',
+          body: `SHADOW_TRIGGER:${trigger}`,
+          data: {
+            _shadowTrigger: trigger,
+            _shadowOf: primaryAgent,
+            _triggerContext: context,
+          },
+        },
+      };
+
+      const deliver = this.createDeliverEnvelope(
+        primaryAgent,
+        shadow.shadowAgent,
+        triggerEnvelope,
+        target
+      );
+      const sent = target.send(deliver);
+      if (sent) {
+        this.trackDelivery(target, deliver);
+        console.log(`[router] Shadow trigger ${trigger} sent to ${shadow.shadowAgent} (primary: ${primaryAgent})`);
+        // Set processing state for triggered shadows - they're expected to respond
+        this.setProcessing(shadow.shadowAgent, deliver.id);
+      }
+    }
+  }
+
+  /**
+   * Check if a shadow should speak based on a specific trigger.
+   */
+  shouldShadowSpeak(shadowAgent: string, trigger: SpeakOnTrigger): boolean {
+    const primaryAgent = this.primaryByShadow.get(shadowAgent);
+    if (!primaryAgent) return true; // Not a shadow, can always speak
+
+    const shadows = this.shadowsByPrimary.get(primaryAgent);
+    if (!shadows) return true;
+
+    const relationship = shadows.find(s => s.shadowAgent === shadowAgent);
+    if (!relationship) return true;
+
+    return relationship.speakOn.includes(trigger) || relationship.speakOn.includes('ALL_MESSAGES');
+  }
+
+  /**
    * Route a SEND message to its destination(s).
    */
   route(from: RoutableConnection, envelope: SendEnvelope): void {
@@ -175,6 +341,70 @@ export class Router {
     } else if (to) {
       // Direct message
       this.sendDirect(senderName, to, envelope);
+    }
+
+    // Route copies to shadows of the sender (outgoing messages)
+    this.routeToShadows(senderName, envelope, 'outgoing');
+
+    // Route copies to shadows of the recipient (incoming messages)
+    if (to && to !== '*') {
+      this.routeToShadows(to, envelope, 'incoming', senderName);
+    }
+  }
+
+  /**
+   * Route a copy of a message to shadows of an agent.
+   * @param primaryAgent The primary agent whose shadows should receive the message
+   * @param envelope The original message envelope
+   * @param direction Whether this is an 'incoming' or 'outgoing' message for the primary
+   * @param actualFrom Override the 'from' field (for incoming messages, use original sender)
+   */
+  private routeToShadows(
+    primaryAgent: string,
+    envelope: SendEnvelope,
+    direction: 'incoming' | 'outgoing',
+    actualFrom?: string
+  ): void {
+    const shadows = this.shadowsByPrimary.get(primaryAgent);
+    if (!shadows || shadows.length === 0) return;
+
+    for (const shadow of shadows) {
+      // Check if shadow wants this direction
+      if (direction === 'incoming' && shadow.receiveIncoming === false) continue;
+      if (direction === 'outgoing' && shadow.receiveOutgoing === false) continue;
+
+      // Don't send to self
+      if (shadow.shadowAgent === (actualFrom ?? primaryAgent)) continue;
+
+      const target = this.agents.get(shadow.shadowAgent);
+      if (!target) continue;
+
+      // Create a shadow copy envelope with metadata indicating it's a shadow copy
+      const shadowEnvelope: SendEnvelope = {
+        ...envelope,
+        payload: {
+          ...envelope.payload,
+          data: {
+            ...envelope.payload.data,
+            _shadowCopy: true,
+            _shadowOf: primaryAgent,
+            _shadowDirection: direction,
+          },
+        },
+      };
+
+      const deliver = this.createDeliverEnvelope(
+        actualFrom ?? primaryAgent,
+        shadow.shadowAgent,
+        shadowEnvelope,
+        target
+      );
+      const sent = target.send(deliver);
+      if (sent) {
+        this.trackDelivery(target, deliver);
+        console.log(`[router] Shadow copy to ${shadow.shadowAgent} (${direction} from ${primaryAgent})`);
+        // Note: Don't set processing state for shadow copies - shadow stays passive
+      }
     }
   }
 

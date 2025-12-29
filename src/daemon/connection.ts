@@ -35,6 +35,8 @@ export interface ConnectionConfig {
     resumeToken?: string;
     seedSequences?: Array<{ topic?: string; peer: string; seq: number }>;
   } | null>;
+  /** Optional callback to check if agent is currently processing (exempts from heartbeat timeout) */
+  isProcessing?: (agentName: string) => boolean;
 }
 
 export const DEFAULT_CONFIG: ConnectionConfig = {
@@ -273,8 +275,15 @@ export class Connection {
       // Check for missed pong - use configurable timeout multiplier
       const timeoutMs = this.config.heartbeatMs * this.config.heartbeatTimeoutMultiplier;
       if (this.lastPongReceived && now - this.lastPongReceived > timeoutMs) {
-        this.handleError(new Error(`Heartbeat timeout (no pong in ${timeoutMs}ms)`));
-        return;
+        // Exempt agents that are actively processing (long tool calls, thinking, etc.)
+        if (this._agentName && this.config.isProcessing?.(this._agentName)) {
+          // Agent is processing - reset the pong timer to avoid timeout
+          // but don't kill the connection
+          console.log(`[connection] Heartbeat timeout exemption for ${this._agentName} (processing)`);
+        } else {
+          this.handleError(new Error(`Heartbeat timeout (no pong in ${timeoutMs}ms)`));
+          return;
+        }
       }
 
       // Send ping

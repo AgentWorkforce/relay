@@ -8,7 +8,7 @@
 import React, { useState, useMemo } from 'react';
 import type { Agent } from '../types';
 import { AgentCard } from './AgentCard';
-import { groupAgents, getGroupStats, filterAgents, type AgentGroup } from '../lib/hierarchy';
+import { groupAgents, getGroupStats, filterAgents, getAgentDisplayName, type AgentGroup } from '../lib/hierarchy';
 import { STATUS_COLORS } from '../lib/colors';
 
 export interface AgentListProps {
@@ -187,6 +187,7 @@ function AgentGroupComponent({
               agent={agent}
               isSelected={agent.name === selectedAgent}
               compact={compact}
+              displayNameOverride={getAgentDisplayName(agent.name)}
               onClick={onAgentSelect}
               onMessageClick={onAgentMessage}
               onReleaseClick={onReleaseClick}

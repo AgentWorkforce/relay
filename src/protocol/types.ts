@@ -23,7 +23,9 @@ export type MessageType =
   | 'SYNC_SNAPSHOT'
   | 'SYNC_DELTA'
   | 'SUBSCRIBE'
-  | 'UNSUBSCRIBE';
+  | 'UNSUBSCRIBE'
+  | 'SHADOW_BIND'
+  | 'SHADOW_UNBIND';
 
 export type PayloadKind = 'message' | 'action' | 'state' | 'thinking';
 
@@ -157,3 +159,41 @@ export type PongEnvelope = Envelope<PongPayload>;
 export type ErrorEnvelope = Envelope<ErrorPayload>;
 export type BusyEnvelope = Envelope<BusyPayload>;
 export type SyncEnvelope = Envelope<SyncPayload>;
+
+// Shadow agent types
+export type SpeakOnTrigger =
+  | 'SESSION_END'
+  | 'CODE_WRITTEN'
+  | 'REVIEW_REQUEST'
+  | 'EXPLICIT_ASK'    // Shadow only speaks when explicitly asked
+  | 'ALL_MESSAGES';   // Shadow speaks on every message (fully active)
+
+export interface ShadowConfig {
+  /** The primary agent this shadow is attached to */
+  primaryAgent: string;
+  /** When the shadow should speak (default: EXPLICIT_ASK) */
+  speakOn: SpeakOnTrigger[];
+  /** Whether to receive copies of messages TO the primary (default: true) */
+  receiveIncoming?: boolean;
+  /** Whether to receive copies of messages FROM the primary (default: true) */
+  receiveOutgoing?: boolean;
+}
+
+export interface ShadowBindPayload {
+  /** The primary agent to shadow */
+  primaryAgent: string;
+  /** When the shadow should speak (optional, defaults to EXPLICIT_ASK) */
+  speakOn?: SpeakOnTrigger[];
+  /** Whether to receive incoming messages to primary (default: true) */
+  receiveIncoming?: boolean;
+  /** Whether to receive outgoing messages from primary (default: true) */
+  receiveOutgoing?: boolean;
+}
+
+export interface ShadowUnbindPayload {
+  /** The primary agent to stop shadowing */
+  primaryAgent: string;
+}
+
+export type ShadowBindEnvelope = Envelope<ShadowBindPayload>;
+export type ShadowUnbindEnvelope = Envelope<ShadowUnbindPayload>;

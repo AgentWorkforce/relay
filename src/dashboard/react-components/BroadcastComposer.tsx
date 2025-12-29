@@ -220,7 +220,7 @@ export function BroadcastComposer({
               onClick={() => setShowTemplates(!showTemplates)}
             >
               <TemplateIcon />
-              Templates
+              <span className="broadcast-template-text">Templates</span>
             </button>
             {showTemplates && (
               <div className="broadcast-templates-menu">
@@ -245,7 +245,7 @@ export function BroadcastComposer({
               (targetType === 'server' ? selectedServers.size === 0 : selectedAgents.size === 0))}
           >
             {isSending ? <Spinner /> : <SendIcon />}
-            {isSending ? 'Sending...' : 'Broadcast'}
+            <span className="broadcast-send-text">{isSending ? 'Sending...' : 'Broadcast'}</span>
           </button>
         </div>
       </div>
@@ -647,5 +647,44 @@ export const broadcastComposerStyles = `
   border-top: 1px solid #fecaca;
   color: #dc2626;
   font-size: 13px;
+}
+
+/* Responsive styles */
+@media (max-width: 768px) {
+  .broadcast-input-actions {
+    gap: 8px;
+  }
+
+  .broadcast-send-btn {
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+
+  .broadcast-template-btn {
+    padding: 6px 10px;
+  }
+}
+
+@media (max-width: 480px) {
+  .broadcast-input-wrapper {
+    padding: 12px;
+  }
+
+  .broadcast-send-btn {
+    padding: 8px;
+    min-width: auto;
+  }
+
+  .broadcast-send-text {
+    display: none;
+  }
+
+  .broadcast-template-text {
+    display: none;
+  }
+
+  .broadcast-template-btn {
+    padding: 8px;
+  }
 }
 `;

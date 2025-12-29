@@ -21,6 +21,7 @@ export interface AgentCardProps {
   isSelected?: boolean;
   showBreadcrumb?: boolean;
   compact?: boolean;
+  displayNameOverride?: string; // Override the displayed name (e.g., strip team prefix)
   onClick?: (agent: Agent) => void;
   onMessageClick?: (agent: Agent) => void;
   onReleaseClick?: (agent: Agent) => void;
@@ -31,13 +32,14 @@ export function AgentCard({
   isSelected = false,
   showBreadcrumb = false,
   compact = false,
+  displayNameOverride,
   onClick,
   onMessageClick,
   onReleaseClick,
 }: AgentCardProps) {
   const colors = getAgentColor(agent.name);
   const initials = getAgentInitials(agent.name);
-  const displayName = getAgentDisplayName(agent.name);
+  const displayName = displayNameOverride || getAgentDisplayName(agent.name);
   const statusColor = STATUS_COLORS[agent.status] || STATUS_COLORS.offline;
 
   const handleClick = () => {
@@ -69,7 +71,10 @@ export function AgentCard({
         </div>
         <div className="agent-compact-info">
           <span className="agent-name">{displayName}</span>
-          <span className="agent-breadcrumb-compact">{getAgentBreadcrumb(agent.name)}</span>
+          {/* Hide breadcrumb when displayNameOverride is set (e.g., inside team groups) */}
+          {!displayNameOverride && (
+            <span className="agent-breadcrumb-compact">{getAgentBreadcrumb(agent.name)}</span>
+          )}
         </div>
         <div className="agent-compact-actions">
           {agent.isSpawned && onReleaseClick && (
@@ -187,7 +192,7 @@ function MessageIcon() {
 }
 
 /**
- * Release/kill icon SVG (X in circle)
+ * Release/kill icon SVG - Power/terminate symbol
  */
 function ReleaseIcon() {
   return (
@@ -196,14 +201,31 @@ function ReleaseIcon() {
       height="16"
       viewBox="0 0 24 24"
       fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
+      className="release-icon"
     >
-      <circle cx="12" cy="12" r="10" />
-      <line x1="15" y1="9" x2="9" y2="15" />
-      <line x1="9" y1="9" x2="15" y2="15" />
+      {/* Outer ring with gap at top */}
+      <path
+        d="M12 22c5.523 0 10-4.477 10-10a9.96 9.96 0 0 0-3-7.141"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M12 22C6.477 22 2 17.523 2 12a9.96 9.96 0 0 1 3-7.141"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      {/* Vertical line (power symbol stem) */}
+      <line
+        x1="12"
+        y1="2"
+        x2="12"
+        y2="12"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }
@@ -378,21 +400,70 @@ export const agentCardStyles = `
   gap: 6px;
 }
 
+/* Kill Agent Button - Industrial control panel aesthetic */
 .release-btn {
-  background: var(--color-error, #e01e5a);
-  color: white;
-  border: none;
-  border-radius: 4px;
-  padding: 4px 8px;
+  position: relative;
+  background: linear-gradient(180deg, #3a1a1a 0%, #2a0f0f 100%);
+  color: #ff6b6b;
+  border: 1px solid #4a2020;
+  border-radius: 6px;
+  padding: 6px 10px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: opacity 0.2s;
+  gap: 4px;
+  transition: all 0.2s ease;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 107, 107, 0.1),
+    0 2px 4px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
 }
 
+/* Subtle scanline texture */
+.release-btn::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.1) 2px,
+    rgba(0, 0, 0, 0.1) 4px
+  );
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+/* Warning glow on hover */
 .release-btn:hover {
-  opacity: 0.9;
+  background: linear-gradient(180deg, #4a2020 0%, #3a1515 100%);
+  border-color: #ff4444;
+  color: #ff4444;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 68, 68, 0.2),
+    0 0 12px rgba(255, 68, 68, 0.4),
+    0 2px 8px rgba(0, 0, 0, 0.4);
+  transform: scale(1.05);
+}
+
+/* Icon animation on hover */
+.release-btn:hover .release-icon {
+  animation: killPulse 0.6s ease-in-out infinite;
+}
+
+@keyframes killPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* Active/pressed state */
+.release-btn:active {
+  transform: scale(0.98);
+  box-shadow:
+    inset 0 2px 4px rgba(0, 0, 0, 0.4),
+    0 0 8px rgba(255, 68, 68, 0.3);
 }
 
 .agent-spawned-badge {
@@ -457,27 +528,51 @@ export const agentCardStyles = `
   flex-shrink: 0;
 }
 
+/* Compact Kill Button - Minimal but distinctive */
 .release-btn-compact {
+  position: relative;
   background: transparent;
-  border: none;
+  border: 1px solid transparent;
   color: #666;
-  padding: 4px;
+  padding: 5px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 4px;
-  transition: all 0.2s;
+  border-radius: 5px;
+  transition: all 0.25s ease;
   opacity: 0;
 }
 
 .agent-card-compact:hover .release-btn-compact {
-  opacity: 1;
+  opacity: 0.7;
 }
 
+/* Hover: Transform into danger state */
 .release-btn-compact:hover {
-  background: rgba(239, 68, 68, 0.15);
-  color: #ef4444;
+  opacity: 1 !important;
+  background: linear-gradient(180deg, rgba(255, 68, 68, 0.15) 0%, rgba(180, 40, 40, 0.2) 100%);
+  border-color: rgba(255, 68, 68, 0.5);
+  color: #ff5555;
+  box-shadow: 0 0 10px rgba(255, 68, 68, 0.3);
+  transform: scale(1.1);
+}
+
+/* Pulsing glow effect on hover */
+.release-btn-compact:hover .release-icon {
+  animation: killPulseCompact 0.5s ease-in-out infinite;
+  filter: drop-shadow(0 0 3px rgba(255, 68, 68, 0.6));
+}
+
+@keyframes killPulseCompact {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+}
+
+/* Active state */
+.release-btn-compact:active {
+  transform: scale(0.95);
+  background: rgba(255, 68, 68, 0.25);
 }
 
 .agent-card-compact .attention-badge {

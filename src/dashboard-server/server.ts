@@ -28,6 +28,8 @@ interface AgentStatus {
   needsAttention?: boolean;
   isProcessing?: boolean;
   processingStartedAt?: number;
+  isSpawned?: boolean;
+  team?: string;
 }
 
 interface Message {
@@ -586,6 +588,20 @@ export async function startDashboard(
         }
       } catch (_err) {
         // Ignore errors reading processing state - it's optional
+      }
+    }
+
+    // Mark spawned agents with isSpawned flag and team
+    if (spawner) {
+      const activeWorkers = spawner.getActiveWorkers();
+      for (const worker of activeWorkers) {
+        const agent = agentsMap.get(worker.name);
+        if (agent) {
+          agent.isSpawned = true;
+          if (worker.team) {
+            agent.team = worker.team;
+          }
+        }
       }
     }
 

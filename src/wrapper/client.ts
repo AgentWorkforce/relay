@@ -15,6 +15,7 @@ import {
   type DeliverEnvelope,
   type ErrorPayload,
   type PayloadKind,
+  type SpeakOnTrigger,
   PROTOCOL_VERSION,
 } from '../protocol/types.js';
 import { encodeFrame, FrameParser } from '../protocol/framing.js';
@@ -255,6 +256,57 @@ export class RelayClient {
       ts: Date.now(),
       topic,
       payload: {},
+    });
+  }
+
+  /**
+   * Bind this agent as a shadow to a primary agent.
+   * As a shadow, this agent will receive copies of messages to/from the primary.
+   * @param primaryAgent - The agent to shadow
+   * @param options - Shadow configuration options
+   */
+  bindAsShadow(
+    primaryAgent: string,
+    options: {
+      /** When this shadow should speak (default: ['EXPLICIT_ASK']) */
+      speakOn?: SpeakOnTrigger[];
+      /** Receive copies of messages TO the primary (default: true) */
+      receiveIncoming?: boolean;
+      /** Receive copies of messages FROM the primary (default: true) */
+      receiveOutgoing?: boolean;
+    } = {}
+  ): boolean {
+    if (this._state !== 'READY') return false;
+
+    return this.send({
+      v: PROTOCOL_VERSION,
+      type: 'SHADOW_BIND',
+      id: uuid(),
+      ts: Date.now(),
+      payload: {
+        primaryAgent,
+        speakOn: options.speakOn,
+        receiveIncoming: options.receiveIncoming,
+        receiveOutgoing: options.receiveOutgoing,
+      },
+    });
+  }
+
+  /**
+   * Unbind this agent from a primary agent (stop shadowing).
+   * @param primaryAgent - The agent to stop shadowing
+   */
+  unbindAsShadow(primaryAgent: string): boolean {
+    if (this._state !== 'READY') return false;
+
+    return this.send({
+      v: PROTOCOL_VERSION,
+      type: 'SHADOW_UNBIND',
+      id: uuid(),
+      ts: Date.now(),
+      payload: {
+        primaryAgent,
+      },
     });
   }
 

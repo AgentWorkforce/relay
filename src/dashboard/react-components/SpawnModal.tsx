@@ -12,6 +12,7 @@ export interface SpawnConfig {
   name: string;
   command: string;
   cwd?: string;
+  team?: string;
 }
 
 export interface SpawnModalProps {
@@ -70,6 +71,7 @@ export function SpawnModal({
   const [name, setName] = useState('');
   const [customCommand, setCustomCommand] = useState('');
   const [cwd, setCwd] = useState('');
+  const [team, setTeam] = useState('');
   const [localError, setLocalError] = useState<string | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
 
@@ -90,6 +92,7 @@ export function SpawnModal({
       setName('');
       setCustomCommand('');
       setCwd('');
+      setTeam('');
       setLocalError(null);
       setTimeout(() => nameInputRef.current?.focus(), 100);
     }
@@ -134,6 +137,7 @@ export function SpawnModal({
       name: finalName,
       command: command.trim(),
       cwd: cwd.trim() || undefined,
+      team: team.trim() || undefined,
     });
 
     if (success) {
@@ -260,6 +264,22 @@ export function SpawnModal({
               placeholder="Current directory"
               value={cwd}
               onChange={(e) => setCwd(e.target.value)}
+              disabled={isSpawning}
+            />
+          </div>
+
+          {/* Team Assignment (optional) */}
+          <div className="spawn-modal-section">
+            <label className="spawn-modal-label" htmlFor="agent-team">
+              Team <span className="spawn-modal-optional">(optional)</span>
+            </label>
+            <input
+              id="agent-team"
+              type="text"
+              className="spawn-modal-input"
+              placeholder="e.g., frontend, backend, infra"
+              value={team}
+              onChange={(e) => setTeam(e.target.value)}
               disabled={isSpawning}
             />
           </div>

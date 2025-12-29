@@ -149,8 +149,12 @@ program
   .description('Start daemon + dashboard')
   .option('--no-dashboard', 'Disable web dashboard')
   .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
+  .option('--spawn', 'Force spawn all agents from teams.json')
+  .option('--no-spawn', 'Do not auto-spawn agents (just start daemon)')
   .action(async (options) => {
     const { ensureProjectDir } = await import('../utils/project-namespace.js');
+    const { loadTeamsConfig } = await import('../bridge/teams-config.js');
+    const { AgentSpawner } = await import('../bridge/spawner.js');
 
     const paths = ensureProjectDir();
     const socketPath = paths.socketPath;
@@ -160,6 +164,12 @@ program
     console.log(`Project: ${paths.projectRoot}`);
     console.log(`Socket:  ${socketPath}`);
 
+    // Load teams.json if present
+    const teamsConfig = loadTeamsConfig(paths.projectRoot);
+    if (teamsConfig) {
+      console.log(`Team: ${teamsConfig.team} (${teamsConfig.agents.length} agents defined)`);
+    }
+
     const daemon = new Daemon({
       socketPath,
       pidFilePath,
@@ -167,13 +177,22 @@ program
       teamDir: paths.teamDir,
     });
 
+    // Create spawner for auto-spawn (will be initialized after dashboard starts)
+    let spawner: InstanceType<typeof AgentSpawner> | null = null;
+
     process.on('SIGINT', async () => {
       console.log('\nStopping...');
+      if (spawner) {
+        await spawner.releaseAll();
+      }
       await daemon.stop();
       process.exit(0);
     });
 
     process.on('SIGTERM', async () => {
+      if (spawner) {
+        await spawner.releaseAll();
+      }
       await daemon.stop();
       process.exit(0);
     });
@@ -182,11 +201,13 @@ program
       await daemon.start();
       console.log('Daemon started.');
 
+      let dashboardPort: number | undefined;
+
       // Dashboard starts by default (use --no-dashboard to disable)
       if (options.dashboard !== false) {
         const port = parseInt(options.port, 10);
         const { startDashboard } = await import('../dashboard-server/server.js');
-        const actualPort = await startDashboard({
+        dashboardPort = await startDashboard({
           port,
           dataDir: paths.dataDir,
           teamDir: paths.teamDir,
@@ -194,7 +215,43 @@ program
           enableSpawner: true,
           projectRoot: paths.projectRoot,
         });
-        console.log(`Dashboard: http://localhost:${actualPort}`);
+        console.log(`Dashboard: http://localhost:${dashboardPort}`);
+      }
+
+      // Determine if we should auto-spawn agents
+      // --spawn: force spawn
+      // --no-spawn: never spawn
+      // Neither: check teamsConfig.autoSpawn
+      const shouldSpawn = options.spawn === true
+        ? true
+        : options.spawn === false
+          ? false
+          : teamsConfig?.autoSpawn ?? false;
+
+      if (shouldSpawn && teamsConfig && teamsConfig.agents.length > 0) {
+        console.log('');
+        console.log('Auto-spawning agents from teams.json...');
+
+        spawner = new AgentSpawner(paths.projectRoot, undefined, dashboardPort);
+
+        for (const agent of teamsConfig.agents) {
+          console.log(`  Spawning ${agent.name} (${agent.cli})...`);
+          const result = await spawner.spawn({
+            name: agent.name,
+            cli: agent.cli,
+            task: agent.task ?? '',
+            team: teamsConfig.team,
+          });
+
+          if (result.success) {
+            console.log(`  ✓ ${agent.name} started [pid: ${result.pid}]`);
+          } else {
+            console.error(`  ✗ ${agent.name} failed: ${result.error}`);
+          }
+        }
+        console.log('');
+      } else if (options.spawn === true && !teamsConfig) {
+        console.warn('Warning: --spawn specified but no teams.json found');
       }
 
       console.log('Press Ctrl+C to stop.');

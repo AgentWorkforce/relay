@@ -19,6 +19,7 @@ export interface Agent {
   isProcessing?: boolean; // True when agent is thinking/processing a message
   processingStartedAt?: number; // Timestamp when processing started
   isSpawned?: boolean; // True if agent was spawned via dashboard (can be killed)
+  team?: string; // Optional user-defined team grouping (e.g., "frontend-team", "backend-team")
 }
 
 export interface AgentSummary {
@@ -175,6 +176,7 @@ export interface SpawnAgentRequest {
   name: string;
   cli?: string;
   task?: string;
+  team?: string;
 }
 
 export interface SpawnAgentResponse {

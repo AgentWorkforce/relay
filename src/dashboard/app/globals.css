@@ -489,6 +489,10 @@ button:focus-visible {
   cursor: not-allowed;
 }
 
+.composer-send-icon {
+  display: none;
+}
+
 .composer-error {
   color: var(--color-error);
   font-size: var(--text-xs);
@@ -681,6 +685,46 @@ button:focus-visible {
   background: #4a4a5e;
 }
 
+/* Metrics Link - Button style matching spawn button */
+.sidebar-footer .metrics-link,
+a.metrics-link {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 16px;
+  margin-bottom: 8px;
+  background: #3a3a4e;
+  border: 1px solid #4a4a5e;
+  border-radius: 6px;
+  color: #e8e8e8;
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-sizing: border-box;
+}
+
+.sidebar-footer .metrics-link:hover,
+a.metrics-link:hover {
+  background: #4a4a5e;
+  border-color: #5a5a6e;
+  color: #fff;
+}
+
+.sidebar-footer .metrics-link:visited,
+a.metrics-link:visited {
+  color: #e8e8e8;
+}
+
+.metrics-link svg {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+}
+
 /* =====================
    Header Styles
    ===================== */
@@ -792,6 +836,15 @@ button:focus-visible {
 
 .icon-btn svg {
   display: block;
+}
+
+/* Anchor buttons in header */
+a.header-btn {
+  text-decoration: none;
+}
+
+a.header-btn:visited {
+  color: var(--color-text-secondary);
 }
 
 /* =====================
@@ -1072,6 +1125,77 @@ button:focus-visible {
   opacity: 0.9;
 }
 
+.agent-actions {
+  display: flex;
+  gap: 6px;
+}
+
+/* Kill Agent Button - Industrial control panel aesthetic */
+.release-btn {
+  position: relative;
+  background: linear-gradient(180deg, #3a1a1a 0%, #2a0f0f 100%);
+  color: #ff6b6b;
+  border: 1px solid #4a2020;
+  border-radius: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  transition: all 0.2s ease;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 107, 107, 0.1),
+    0 2px 4px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+}
+
+/* Subtle scanline texture */
+.release-btn::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.1) 2px,
+    rgba(0, 0, 0, 0.1) 4px
+  );
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+/* Warning glow on hover */
+.release-btn:hover {
+  background: linear-gradient(180deg, #4a2020 0%, #3a1515 100%);
+  border-color: #ff4444;
+  color: #ff4444;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 68, 68, 0.2),
+    0 0 12px rgba(255, 68, 68, 0.4),
+    0 2px 8px rgba(0, 0, 0, 0.4);
+  transform: scale(1.05);
+}
+
+/* Icon animation on hover */
+.release-btn:hover .release-icon {
+  animation: killPulse 0.6s ease-in-out infinite;
+}
+
+@keyframes killPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* Active/pressed state */
+.release-btn:active {
+  transform: scale(0.98);
+  box-shadow:
+    inset 0 2px 4px rgba(0, 0, 0, 0.4),
+    0 0 8px rgba(255, 68, 68, 0.3);
+}
+
 /* Compact variant */
 .agent-card-compact {
   display: flex;
@@ -1105,6 +1229,60 @@ button:focus-visible {
   width: 8px;
   height: 8px;
   margin-left: auto;
+}
+
+.agent-compact-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Compact Kill Button - Minimal but distinctive */
+.release-btn-compact {
+  position: relative;
+  background: transparent;
+  border: 1px solid transparent;
+  color: #666;
+  padding: 5px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  transition: all 0.25s ease;
+  opacity: 0;
+}
+
+.agent-card-compact:hover .release-btn-compact {
+  opacity: 0.7;
+}
+
+/* Hover: Transform into danger state */
+.release-btn-compact:hover {
+  opacity: 1 !important;
+  background: linear-gradient(180deg, rgba(255, 68, 68, 0.15) 0%, rgba(180, 40, 40, 0.2) 100%);
+  border-color: rgba(255, 68, 68, 0.5);
+  color: #ff5555;
+  box-shadow: 0 0 10px rgba(255, 68, 68, 0.3);
+  transform: scale(1.1);
+}
+
+/* Pulsing glow effect on hover */
+.release-btn-compact:hover .release-icon {
+  animation: killPulseCompact 0.5s ease-in-out infinite;
+  filter: drop-shadow(0 0 3px rgba(255, 68, 68, 0.6));
+}
+
+@keyframes killPulseCompact {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+}
+
+/* Active state */
+.release-btn-compact:active {
+  transform: scale(0.95);
+  background: rgba(255, 68, 68, 0.25);
 }
 
 /* =====================
@@ -1974,4 +2152,682 @@ button:focus-visible {
 
 .settings-done-btn:hover {
   background: #0d4f82;
+}
+
+/* =====================
+   Mobile Responsive Styles
+   ===================== */
+
+/* Mobile breakpoints:
+   - xs: 320px (small phones)
+   - sm: 480px (phones)
+   - md: 768px (tablets)
+   - lg: 1024px (desktops)
+*/
+
+/* Touch target minimum size */
+.touch-target {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+/* Mobile hamburger menu button */
+.mobile-menu-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  background: transparent;
+  border: none;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  border-radius: var(--radius-md);
+  transition: background var(--transition-fast);
+}
+
+.mobile-menu-btn:hover {
+  background: var(--color-bg-hover);
+}
+
+.mobile-menu-btn svg {
+  width: 24px;
+  height: 24px;
+}
+
+/* Mobile overlay for sidebar */
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 999;
+  animation: fadeIn var(--transition-fast);
+}
+
+.sidebar-overlay.visible {
+  display: block;
+}
+
+/* =====================
+   Tablet Breakpoint (768px)
+   ===================== */
+@media (max-width: 768px) {
+  /* Show hamburger menu */
+  .mobile-menu-btn {
+    display: flex;
+  }
+
+  /* Sidebar becomes overlay drawer */
+  .sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 1000;
+    transform: translateX(-100%);
+    transition: transform var(--transition-normal);
+    width: 280px;
+    max-width: 85vw;
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+  }
+
+  .sidebar-overlay {
+    display: none;
+  }
+
+  .sidebar-overlay.visible {
+    display: block;
+  }
+
+  /* Main content takes full width */
+  .dashboard-app {
+    flex-direction: column;
+  }
+
+  .dashboard-main {
+    width: 100%;
+  }
+
+  /* Header adjustments */
+  .header {
+    padding: 0 12px;
+  }
+
+  .header-left {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .channel-name {
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .channel-topic,
+  .channel-breadcrumb {
+    display: none;
+  }
+
+  .header-btn span {
+    display: none;
+  }
+
+  .header-btn kbd {
+    display: none;
+  }
+
+  .command-palette-btn {
+    padding: 8px;
+  }
+
+  /* Command Palette - larger on tablet */
+  .command-palette {
+    width: 90vw;
+    max-height: 70vh;
+  }
+
+  .command-palette-item {
+    padding: 12px;
+    min-height: 44px;
+  }
+
+  /* Spawn Modal adjustments */
+  .spawn-modal {
+    width: 95vw;
+    max-height: 85vh;
+  }
+
+  .spawn-modal-templates {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .spawn-modal-template {
+    padding: 10px 6px;
+    min-height: 44px;
+  }
+
+  /* Settings Panel */
+  .settings-panel {
+    width: 95vw;
+    max-height: 85vh;
+  }
+
+  .settings-tabs {
+    overflow-x: auto;
+    padding: 12px;
+    gap: 8px;
+  }
+
+  .settings-tab {
+    min-height: 44px;
+    white-space: nowrap;
+  }
+
+  .settings-theme-options {
+    flex-direction: column;
+  }
+
+  .settings-theme-btn {
+    flex-direction: row;
+    justify-content: flex-start;
+    padding: 12px 16px;
+    min-height: 44px;
+  }
+
+  /* Message Composer */
+  .message-composer {
+    padding: 12px;
+  }
+
+  .composer-form {
+    flex-wrap: wrap;
+  }
+
+  .composer-input-wrapper {
+    width: 100%;
+    order: 1;
+  }
+
+  .composer-send {
+    order: 2;
+    width: 44px;
+    min-height: 44px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .composer-send-text {
+    display: none;
+  }
+
+  .composer-send-icon {
+    display: block;
+  }
+
+  /* Message List */
+  .message-list {
+    padding: 12px;
+  }
+
+  .message-item {
+    padding: 12px 8px;
+  }
+
+  .message-avatar {
+    width: 32px;
+    height: 32px;
+  }
+
+  /* Agent Cards */
+  .agent-card {
+    padding: 16px;
+  }
+
+  .agent-card-compact {
+    padding: 12px;
+    min-height: 44px;
+  }
+
+  .agent-avatar {
+    width: 36px;
+    height: 36px;
+  }
+
+  /* Agent List */
+  .agent-group-header {
+    padding: 12px;
+    min-height: 44px;
+  }
+
+  .agent-group-content {
+    padding: 8px 0 8px 8px;
+  }
+
+  /* Fleet Overview */
+  .fleet-grid {
+    grid-template-columns: 1fr;
+  }
+
+  /* Decision Queue */
+  .decision-item {
+    padding: 16px;
+  }
+
+  /* Trajectory Viewer */
+  .trajectory-step {
+    padding: 12px;
+  }
+
+  /* Server Card */
+  .server-card {
+    padding: 16px;
+  }
+
+  /* Notification Toast */
+  .notification-toast {
+    width: calc(100vw - 24px);
+    max-width: 400px;
+    left: 12px;
+    right: 12px;
+    margin: 0 auto;
+  }
+
+  /* Project List */
+  .project-header {
+    padding: 12px;
+    min-height: 44px;
+  }
+
+  .project-agents {
+    padding: 8px 0 8px 12px;
+  }
+}
+
+/* =====================
+   Phone Breakpoint (480px)
+   ===================== */
+@media (max-width: 480px) {
+  /* Sidebar full width on phones */
+  .sidebar {
+    width: 100vw;
+    max-width: 100vw;
+  }
+
+  .sidebar-header {
+    padding: 12px;
+  }
+
+  .sidebar-title h1 {
+    font-size: 16px;
+  }
+
+  .sidebar-search {
+    margin: 8px;
+    padding: 10px 12px;
+  }
+
+  .sidebar-footer {
+    padding: 12px;
+  }
+
+  .spawn-btn {
+    min-height: 44px;
+  }
+
+  /* Header compact */
+  .header {
+    height: 48px;
+    padding: 0 8px;
+  }
+
+  .header-left {
+    gap: 6px;
+  }
+
+  .channel-name {
+    font-size: 14px;
+    max-width: 120px;
+  }
+
+  .agent-avatar-small {
+    width: 24px;
+    height: 24px;
+    font-size: 10px;
+  }
+
+  /* Command Palette full screen */
+  .command-palette-overlay {
+    padding-top: 0;
+    align-items: stretch;
+  }
+
+  .command-palette {
+    width: 100vw;
+    max-width: 100vw;
+    height: 100vh;
+    max-height: 100vh;
+    border-radius: 0;
+  }
+
+  .command-palette-input-wrapper {
+    padding: 12px;
+  }
+
+  .command-palette-input {
+    font-size: 16px; /* Prevents zoom on iOS */
+  }
+
+  .command-palette-item {
+    padding: 14px 12px;
+  }
+
+  /* Spawn Modal full screen */
+  .spawn-modal-overlay {
+    align-items: stretch;
+    padding: 0;
+  }
+
+  .spawn-modal {
+    width: 100vw;
+    max-width: 100vw;
+    height: 100vh;
+    max-height: 100vh;
+    border-radius: 0;
+  }
+
+  .spawn-modal-header {
+    padding: 16px;
+  }
+
+  .spawn-modal form {
+    padding: 16px;
+  }
+
+  .spawn-modal-templates {
+    grid-template-columns: 1fr;
+  }
+
+  .spawn-modal-template {
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 12px;
+    padding: 14px;
+  }
+
+  .spawn-modal-template-icon {
+    font-size: 20px;
+  }
+
+  .spawn-modal-name-input {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .spawn-modal-name-preview {
+    display: none;
+  }
+
+  .spawn-modal-input {
+    font-size: 16px; /* Prevents zoom on iOS */
+    min-height: 44px;
+  }
+
+  .spawn-modal-name-suggestions {
+    flex-wrap: wrap;
+  }
+
+  .spawn-modal-suggestion {
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+  }
+
+  .spawn-modal-actions {
+    flex-direction: column-reverse;
+  }
+
+  .spawn-modal-btn {
+    width: 100%;
+    justify-content: center;
+    min-height: 44px;
+  }
+
+  /* Settings Panel full screen */
+  .settings-overlay {
+    align-items: stretch;
+    padding: 0;
+  }
+
+  .settings-panel {
+    width: 100vw;
+    max-width: 100vw;
+    height: 100vh;
+    max-height: 100vh;
+    border-radius: 0;
+  }
+
+  .settings-header {
+    padding: 16px;
+  }
+
+  .settings-tabs {
+    padding: 8px 12px;
+  }
+
+  .settings-tab {
+    padding: 10px 12px;
+    font-size: 12px;
+  }
+
+  .settings-content {
+    padding: 16px;
+  }
+
+  .settings-toggle-option {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .settings-toggle {
+    align-self: flex-end;
+  }
+
+  .settings-footer {
+    flex-direction: column-reverse;
+    gap: 8px;
+    padding: 16px;
+  }
+
+  .settings-reset-btn,
+  .settings-done-btn {
+    width: 100%;
+    min-height: 44px;
+    justify-content: center;
+  }
+
+  /* Message Composer */
+  .composer-input {
+    font-size: 16px; /* Prevents zoom on iOS */
+    min-height: 44px;
+  }
+
+  .composer-send {
+    width: 44px;
+  }
+
+  /* Message List */
+  .message-list {
+    padding: 8px;
+  }
+
+  .message-item {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .message-avatar {
+    width: 28px;
+    height: 28px;
+  }
+
+  .message-header {
+    flex-wrap: wrap;
+  }
+
+  .message-time {
+    width: 100%;
+    margin-left: 0;
+    margin-top: 4px;
+  }
+
+  /* Agent Cards */
+  .agent-card-compact .agent-name {
+    font-size: 14px;
+  }
+
+  .agent-compact-info {
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* Mention autocomplete */
+  .mention-autocomplete {
+    max-height: 50vh;
+  }
+
+  .mention-item {
+    padding: 12px;
+    min-height: 44px;
+  }
+
+  /* Notification Toast */
+  .notification-toast {
+    bottom: 12px;
+    left: 8px;
+    right: 8px;
+    width: auto;
+  }
+
+  .toast-content {
+    padding: 14px 16px;
+  }
+
+  .toast-close {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+/* =====================
+   Small Phone Breakpoint (320px)
+   ===================== */
+@media (max-width: 320px) {
+  .header {
+    height: 44px;
+  }
+
+  .mobile-menu-btn {
+    width: 40px;
+    height: 40px;
+  }
+
+  .channel-name {
+    font-size: 13px;
+    max-width: 100px;
+  }
+
+  .sidebar-title h1 {
+    font-size: 14px;
+  }
+
+  .spawn-modal-header h2,
+  .settings-header h2 {
+    font-size: 16px;
+  }
+
+  .command-palette-input {
+    font-size: 14px;
+  }
+
+  .agent-card-compact {
+    padding: 10px;
+  }
+}
+
+/* =====================
+   Landscape Phone
+   ===================== */
+@media (max-width: 768px) and (orientation: landscape) {
+  .sidebar {
+    width: 300px;
+  }
+
+  .command-palette {
+    max-height: 90vh;
+  }
+
+  .spawn-modal,
+  .settings-panel {
+    max-height: 95vh;
+  }
+}
+
+/* =====================
+   High DPI / Retina
+   ===================== */
+@media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {
+  .connection-indicator,
+  .stat-dot,
+  .agent-status-dot {
+    /* Sharper borders on retina */
+    box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.1);
+  }
+}
+
+/* =====================
+   Reduced Motion
+   ===================== */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .sidebar {
+    transition: none;
+  }
+}
+
+/* =====================
+   Safe Area Insets (iPhone X+)
+   ===================== */
+@supports (padding: env(safe-area-inset-bottom)) {
+  .sidebar-footer {
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+
+  .message-composer {
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  }
+
+  .spawn-modal-actions,
+  .settings-footer {
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+
+  .notification-toast {
+    bottom: calc(12px + env(safe-area-inset-bottom));
+  }
 }

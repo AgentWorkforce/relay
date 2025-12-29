@@ -15,6 +15,8 @@ export interface HeaderProps {
   selectedAgent?: Agent | null;
   onCommandPaletteOpen?: () => void;
   onSettingsClick?: () => void;
+  /** Mobile: open sidebar handler */
+  onMenuClick?: () => void;
 }
 
 export function Header({
@@ -22,12 +24,22 @@ export function Header({
   selectedAgent,
   onCommandPaletteOpen,
   onSettingsClick,
+  onMenuClick,
 }: HeaderProps) {
   const isGeneral = currentChannel === 'general';
   const colors = selectedAgent ? getAgentColor(selectedAgent.name) : null;
 
   return (
     <header className="header">
+      {/* Mobile hamburger menu button */}
+      <button
+        className="mobile-menu-btn"
+        onClick={onMenuClick}
+        aria-label="Open menu"
+      >
+        <MenuIcon />
+      </button>
+
       <div className="header-left">
         {isGeneral ? (
           <>
@@ -74,6 +86,14 @@ export function Header({
           <kbd>⌘K</kbd>
         </button>
 
+        <a
+          href="/metrics"
+          className="header-btn icon-btn"
+          title="Metrics"
+        >
+          <MetricsIcon />
+        </a>
+
         <button
           className="header-btn icon-btn"
           onClick={onSettingsClick}
@@ -95,11 +115,32 @@ function SearchIcon() {
   );
 }
 
+function MetricsIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 3v18h18" />
+      <path d="M18 17V9" />
+      <path d="M13 17V5" />
+      <path d="M8 17v-3" />
+    </svg>
+  );
+}
+
 function SettingsIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <circle cx="12" cy="12" r="3" />
       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  );
+}
+
+function MenuIcon() {
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="3" y1="12" x2="21" y2="12" />
+      <line x1="3" y1="6" x2="21" y2="6" />
+      <line x1="3" y1="18" x2="21" y2="18" />
     </svg>
   );
 }

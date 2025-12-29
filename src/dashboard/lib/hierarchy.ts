@@ -114,25 +114,27 @@ export function flattenTree(
 }
 
 /**
- * Group agents by their prefix for simpler grouped display
+ * Group agents by their team (if set) or prefix for simpler grouped display.
+ * User-defined teams take priority over auto-extracted prefixes.
  */
 export function groupAgents(agents: Agent[]): AgentGroup[] {
   const groups: Map<string, AgentGroup> = new Map();
 
   for (const agent of agents) {
-    const prefix = getAgentPrefix(agent.name);
+    // Use team if set, otherwise fall back to prefix from name
+    const groupKey = agent.team || getAgentPrefix(agent.name);
     const color = getAgentColor(agent.name);
 
-    let group = groups.get(prefix);
+    let group = groups.get(groupKey);
     if (!group) {
       group = {
-        prefix,
-        displayName: capitalizeFirst(prefix),
+        prefix: groupKey,
+        displayName: capitalizeFirst(groupKey),
         color,
         agents: [],
         isExpanded: true,
       };
-      groups.set(prefix, group);
+      groups.set(groupKey, group);
     }
 
     group.agents.push(agent);

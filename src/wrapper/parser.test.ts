@@ -366,6 +366,56 @@ Let me know if that works.
       expect(result.commands).toHaveLength(1);
       expect(result.commands[0].body).toBe('Content from list');
     });
+
+    it('handles >>> at end of content line (agent-relay-9igw)', () => {
+      // Agents often put >>> at end of message rather than on its own line
+      const input = '->relay:agent2 <<<\nMessage content>>>\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].to).toBe('agent2');
+      expect(result.commands[0].body).toBe('Message content');
+    });
+
+    it('handles >>> at end of multi-line content', () => {
+      const input = '->relay:Lead <<<\nFirst line\nSecond line>>>\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].body).toBe('First line\nSecond line');
+    });
+
+    it('auto-closes and sends incomplete fenced block when new relay starts', () => {
+      // Previously this would DISCARD the first message - now it should SEND it
+      const input = '->relay:Alice <<<\nImportant content\n->relay:Bob Hello\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(2);
+      expect(result.commands[0].to).toBe('Alice');
+      expect(result.commands[0].body).toBe('Important content');
+      expect(result.commands[1].to).toBe('Bob');
+      expect(result.commands[1].body).toBe('Hello');
+    });
+
+    it('auto-closes fenced block when new fenced block starts', () => {
+      const input = '->relay:Agent1 <<<\nFirst message\n->relay:Agent2 <<<\nSecond message\n>>>\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(2);
+      expect(result.commands[0].to).toBe('Agent1');
+      expect(result.commands[0].body).toBe('First message');
+      expect(result.commands[1].to).toBe('Agent2');
+      expect(result.commands[1].body).toBe('Second message');
+    });
+
+    it('does not send empty incomplete fenced block', () => {
+      const input = '->relay:Agent1 <<<\n\n->relay:Agent2 Hello\n';
+      const result = parser.parse(input);
+
+      // Only Agent2's message should be sent (Agent1's was empty)
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].to).toBe('Agent2');
+    });
   });
 
   describe('Code fence handling', () => {
