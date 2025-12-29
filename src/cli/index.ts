@@ -18,6 +18,7 @@ import { RelayClient } from '../wrapper/client.js';
 import { generateAgentName } from '../utils/name-generator.js';
 import { getTmuxPath, isTmuxAvailable } from '../utils/tmux-resolver.js';
 import { readWorkersMetadata, getWorkerLogsDir } from '../bridge/spawner.js';
+import { checkForUpdatesInBackground, checkForUpdates } from '../utils/update-checker.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -35,6 +36,15 @@ const packageJsonPath = path.resolve(__dirname, '../../package.json');
 const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
 const VERSION = packageJson.version;
 const execAsync = promisify(exec);
+
+// Check for updates in background (non-blocking)
+// Only show notification for interactive commands, not when wrapping agents or running update
+const interactiveCommands = ['up', 'down', 'status', 'agents', 'who', 'version', '--version', '-V', '--help', '-h'];
+const shouldCheckUpdates = process.argv.length > 2 &&
+  interactiveCommands.includes(process.argv[2]);
+if (shouldCheckUpdates) {
+  checkForUpdatesInBackground(VERSION);
+}
 
 const program = new Command();
 
@@ -590,6 +600,47 @@ program
   .description('Show version information')
   .action(() => {
     console.log(`agent-relay v${VERSION}`);
+  });
+
+// update - Check for updates and optionally install
+program
+  .command('update')
+  .description('Check for updates and install if available')
+  .option('--check', 'Only check for updates, do not install')
+  .action(async (options: { check?: boolean }) => {
+    console.log(`Current version: ${VERSION}`);
+    console.log('Checking for updates...');
+
+    const info = await checkForUpdates(VERSION);
+
+    if (info.error) {
+      console.error(`Failed to check for updates: ${info.error}`);
+      process.exit(1);
+    }
+
+    if (!info.updateAvailable) {
+      console.log('You are running the latest version.');
+      return;
+    }
+
+    console.log(`New version available: ${info.latestVersion}`);
+
+    if (options.check) {
+      console.log('Run `agent-relay update` to install.');
+      return;
+    }
+
+    console.log('Installing update...');
+    try {
+      const { stdout, stderr } = await execAsync('npm install -g agent-relay@latest');
+      if (stdout) console.log(stdout);
+      if (stderr) console.error(stderr);
+      console.log(`Successfully updated to ${info.latestVersion}`);
+    } catch (err) {
+      console.error('Failed to install update:', (err as Error).message);
+      console.log('Try running manually: npm install -g agent-relay@latest');
+      process.exit(1);
+    }
   });
 
 // check-tmux - Check tmux availability (hidden - for diagnostics)

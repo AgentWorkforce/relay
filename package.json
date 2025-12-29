@@ -64,6 +64,7 @@
     "better-sqlite3": "^9.4.3",
     "chokidar": "^5.0.0",
     "commander": "^12.1.0",
+    "compare-versions": "^6.1.1",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "http-proxy-middleware": "^3.0.5",
