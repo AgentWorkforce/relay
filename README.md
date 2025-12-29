@@ -10,6 +10,11 @@ npm install -g agent-relay
 
 **Requirements:** Node.js 20+, tmux
 
+**Linux/Server:** Install build tools first (required for node-pty):
+```bash
+sudo apt-get update && sudo apt-get install -y build-essential
+```
+
 ## Quick Start
 
 ```bash
