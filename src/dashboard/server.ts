@@ -99,6 +99,20 @@ export async function startDashboard(
   console.log('__dirname:', __dirname);
   const publicDir = path.join(__dirname, 'public');
   console.log('Public dir:', publicDir);
+
+  // Verify public directory exists and contains expected files
+  if (!fs.existsSync(publicDir)) {
+    console.error(`[dashboard] ERROR: Public directory not found: ${publicDir}`);
+  } else {
+    const files = fs.readdirSync(publicDir);
+    console.log('Public dir contents:', files.join(', '));
+    if (!files.includes('metrics.html')) {
+      console.error('[dashboard] WARNING: metrics.html not found in public directory');
+    }
+    if (!files.includes('bridge.html')) {
+      console.error('[dashboard] WARNING: bridge.html not found in public directory');
+    }
+  }
   const storage: StorageAdapter | undefined = dbPath
     ? new SqliteStorageAdapter({ dbPath })
     : undefined;
@@ -889,12 +903,24 @@ export async function startDashboard(
 
   // Metrics view route - serves metrics.html
   app.get('/metrics', (req, res) => {
-    res.sendFile(path.join(publicDir, 'metrics.html'));
+    const filePath = path.join(publicDir, 'metrics.html');
+    res.sendFile(filePath, (err) => {
+      if (err) {
+        console.error(`[dashboard] Failed to serve metrics.html from ${filePath}:`, err.message);
+        res.status(404).send('Metrics page not found');
+      }
+    });
   });
 
   // Bridge view route - serves bridge.html
   app.get('/bridge', (req, res) => {
-    res.sendFile(path.join(publicDir, 'bridge.html'));
+    const filePath = path.join(publicDir, 'bridge.html');
+    res.sendFile(filePath, (err) => {
+      if (err) {
+        console.error(`[dashboard] Failed to serve bridge.html from ${filePath}:`, err.message);
+        res.status(404).send('Bridge page not found');
+      }
+    });
   });
 
   // Bridge API endpoint - returns multi-project data

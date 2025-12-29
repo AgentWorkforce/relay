@@ -7,12 +7,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execAsync, sleep, escapeForTmux } from './utils.js';
 import { getProjectPaths } from '../utils/project-namespace.js';
+import { getTmuxPath } from '../utils/tmux-resolver.js';
 import type { SpawnRequest, SpawnResult, WorkerInfo } from './types.js';
 
 export class AgentSpawner {
   private activeWorkers: Map<string, WorkerInfo> = new Map();
   private tmuxSession: string;
   private agentsPath: string;
+  private projectRoot: string;
+  private tmuxPath: string; // Resolved path to tmux binary
 
   constructor(
     projectRoot: string,
@@ -22,21 +25,23 @@ export class AgentSpawner {
     this.projectRoot = paths.projectRoot;
     this.agentsPath = path.join(paths.teamDir, 'agents.json');
 
+    // Resolve tmux path (will throw TmuxNotFoundError if tmux unavailable)
+    this.tmuxPath = getTmuxPath();
+
     // Default session name based on project
     this.tmuxSession = tmuxSession || 'relay-workers';
   }
-  private projectRoot: string;
 
   /**
    * Ensure the worker tmux session exists
    */
   async ensureSession(): Promise<void> {
     try {
-      await execAsync(`tmux has-session -t ${this.tmuxSession} 2>/dev/null`);
+      await execAsync(`"${this.tmuxPath}" has-session -t ${this.tmuxSession} 2>/dev/null`);
     } catch {
       // Session doesn't exist, create it
       await execAsync(
-        `tmux new-session -d -s ${this.tmuxSession} -c "${this.projectRoot}"`
+        `"${this.tmuxPath}" new-session -d -s ${this.tmuxSession} -c "${this.projectRoot}"`
       );
       console.log(`[spawner] Created session ${this.tmuxSession}`);
     }
@@ -64,7 +69,7 @@ export class AgentSpawner {
 
       // Create new window for worker
       const windowName = name;
-      const newWindowCmd = `tmux new-window -t ${this.tmuxSession} -n ${windowName} -c "${this.projectRoot}"`;
+      const newWindowCmd = `"${this.tmuxPath}" new-window -t ${this.tmuxSession} -n ${windowName} -c "${this.projectRoot}"`;
       if (debug) console.log(`[spawner:debug] Creating window: ${newWindowCmd}`);
       await execAsync(newWindowCmd);
 
@@ -90,7 +95,7 @@ export class AgentSpawner {
       if (debug) console.log(`[spawner:debug] Agent command: ${cmd}`);
 
       // Send the command
-      const sendCmd = `tmux send-keys -t ${this.tmuxSession}:${windowName} '${cmd}' Enter`;
+      const sendCmd = `"${this.tmuxPath}" send-keys -t ${this.tmuxSession}:${windowName} '${cmd}' Enter`;
       if (debug) console.log(`[spawner:debug] Sending: ${sendCmd}`);
       await execAsync(sendCmd);
 
@@ -100,7 +105,7 @@ export class AgentSpawner {
         const error = `Worker ${name} failed to register within 30s`;
         console.error(`[spawner] ${error}`);
         // Clean up the tmux window to avoid orphaned workers
-        await execAsync(`tmux kill-window -t ${this.tmuxSession}:${windowName}`).catch(() => {});
+        await execAsync(`"${this.tmuxPath}" kill-window -t ${this.tmuxSession}:${windowName}`).catch(() => {});
         return {
           success: false,
           name,
@@ -113,11 +118,11 @@ export class AgentSpawner {
         const escapedTask = escapeForTmux(task);
         if (debug) console.log(`[spawner:debug] Injecting task: ${escapedTask.substring(0, 50)}...`);
         await execAsync(
-          `tmux send-keys -t ${this.tmuxSession}:${windowName} -l "${escapedTask}"`
+          `"${this.tmuxPath}" send-keys -t ${this.tmuxSession}:${windowName} -l "${escapedTask}"`
         );
         await sleep(100);
         await execAsync(
-          `tmux send-keys -t ${this.tmuxSession}:${windowName} Enter`
+          `"${this.tmuxPath}" send-keys -t ${this.tmuxSession}:${windowName} Enter`
         );
       }
 
@@ -163,7 +168,7 @@ export class AgentSpawner {
     try {
       // Send exit command gracefully
       await execAsync(
-        `tmux send-keys -t ${worker.window} '/exit' Enter`
+        `"${this.tmuxPath}" send-keys -t ${worker.window} '/exit' Enter`
       ).catch(() => {});
 
       // Wait a bit for graceful shutdown
@@ -171,7 +176,7 @@ export class AgentSpawner {
 
       // Kill the window
       await execAsync(
-        `tmux kill-window -t ${worker.window}`
+        `"${this.tmuxPath}" kill-window -t ${worker.window}`
       ).catch(() => {});
 
       this.activeWorkers.delete(name);
