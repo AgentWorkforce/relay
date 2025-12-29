@@ -34,17 +34,27 @@ export class AgentSpawner {
   private socketPath?: string;
   private logsDir: string;
   private workersPath: string;
+  private dashboardPort?: number;
 
-  constructor(projectRoot: string, _tmuxSession?: string) {
+  constructor(projectRoot: string, _tmuxSession?: string, dashboardPort?: number) {
     const paths = getProjectPaths(projectRoot);
     this.projectRoot = paths.projectRoot;
     this.agentsPath = path.join(paths.teamDir, 'agents.json');
     this.socketPath = paths.socketPath;
     this.logsDir = path.join(paths.teamDir, 'worker-logs');
     this.workersPath = path.join(paths.teamDir, 'workers.json');
+    this.dashboardPort = dashboardPort;
 
     // Ensure logs directory exists
     fs.mkdirSync(this.logsDir, { recursive: true });
+  }
+
+  /**
+   * Set the dashboard port (for nested spawn API calls).
+   * Called after the dashboard server starts and we know the actual port.
+   */
+  setDashboardPort(port: number): void {
+    this.dashboardPort = port;
   }
 
   /**
@@ -84,6 +94,8 @@ export class AgentSpawner {
       if (debug) console.log(`[spawner:debug] Spawning ${name} with: ${command} ${args.join(' ')}`);
 
       // Create PtyWrapper config
+      // Use dashboardPort for nested spawns (API-based, works in non-TTY contexts)
+      // Fall back to callbacks only if no dashboardPort is set
       const ptyConfig: PtyWrapperConfig = {
         name,
         command,
@@ -91,8 +103,10 @@ export class AgentSpawner {
         socketPath: this.socketPath,
         cwd: this.projectRoot,
         logsDir: this.logsDir,
-        onSpawn: async (workerName, workerCli, workerTask) => {
-          // Handle nested spawn requests
+        dashboardPort: this.dashboardPort,
+        // Only use callbacks if dashboardPort is not set (for backwards compatibility)
+        onSpawn: this.dashboardPort ? undefined : async (workerName, workerCli, workerTask) => {
+          // Handle nested spawn requests (legacy path, may fail in non-TTY)
           if (debug) console.log(`[spawner:debug] Nested spawn: ${workerName}`);
           await this.spawn({
             name: workerName,
@@ -101,8 +115,8 @@ export class AgentSpawner {
             requestedBy: name,
           });
         },
-        onRelease: async (workerName) => {
-          // Handle release requests from workers
+        onRelease: this.dashboardPort ? undefined : async (workerName) => {
+          // Handle release requests from workers (legacy path)
           if (debug) console.log(`[spawner:debug] Release request: ${workerName}`);
           await this.release(workerName);
         },

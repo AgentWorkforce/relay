@@ -1099,6 +1099,12 @@ export async function startDashboard(
     server.listen(availablePort, () => {
       console.log(`Dashboard running at http://localhost:${availablePort}`);
       console.log(`Monitoring: ${dataDir}`);
+
+      // Set the dashboard port on spawner so spawned agents can use the API for nested spawns
+      if (spawner) {
+        spawner.setDashboardPort(availablePort);
+      }
+
       resolve(availablePort);
     });
 

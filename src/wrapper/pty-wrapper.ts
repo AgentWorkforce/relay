@@ -28,9 +28,11 @@ export interface PtyWrapperConfig {
   relayPrefix?: string;
   /** Directory to write log files (optional) */
   logsDir?: string;
-  /** Callback for spawn commands */
+  /** Dashboard port for spawn/release API calls (enables nested spawning from spawned agents) */
+  dashboardPort?: number;
+  /** Callback for spawn commands (fallback if dashboardPort not set) */
   onSpawn?: (name: string, cli: string, task: string) => Promise<void>;
-  /** Callback for release commands */
+  /** Callback for release commands (fallback if dashboardPort not set) */
   onRelease?: (name: string) => Promise<void>;
   /** Callback when agent exits */
   onExit?: (code: number) => void;
@@ -321,10 +323,14 @@ export class PtyWrapper extends EventEmitter {
 
   /**
    * Parse spawn/release commands from output
-   * Uses string-based parsing for robustness with PTY output
+   * Uses string-based parsing for robustness with PTY output.
+   * Delegates to dashboard API if dashboardPort is set (for nested spawns).
    */
   private parseSpawnReleaseCommands(content: string): void {
-    if (!this.config.onSpawn && !this.config.onRelease) return;
+    // Need either API port or callbacks to handle spawn/release
+    const canSpawn = this.config.dashboardPort || this.config.onSpawn;
+    const canRelease = this.config.dashboardPort || this.config.onRelease;
+    if (!canSpawn && !canRelease) return;
 
     const lines = content.split('\n');
     const spawnPrefix = '->relay:spawn';
@@ -333,7 +339,7 @@ export class PtyWrapper extends EventEmitter {
     for (const line of lines) {
       // Check for spawn command
       const spawnIdx = line.indexOf(spawnPrefix);
-      if (spawnIdx !== -1 && this.config.onSpawn) {
+      if (spawnIdx !== -1 && canSpawn) {
         const afterSpawn = line.substring(spawnIdx + spawnPrefix.length).trim();
         // Parse: WorkerName cli "task" or WorkerName cli 'task'
         const parts = afterSpawn.split(/\s+/);
@@ -350,9 +356,7 @@ export class PtyWrapper extends EventEmitter {
             const spawnKey = `${name}:${cli}:${task}`;
             if (!this.processedSpawnCommands.has(spawnKey)) {
               this.processedSpawnCommands.add(spawnKey);
-              this.config.onSpawn(name, cli, task).catch(err => {
-                console.error(`[pty:${this.config.name}] Spawn failed: ${err.message}`);
-              });
+              this.executeSpawn(name, cli, task);
             }
           }
         }
@@ -361,16 +365,74 @@ export class PtyWrapper extends EventEmitter {
 
       // Check for release command
       const releaseIdx = line.indexOf(releasePrefix);
-      if (releaseIdx !== -1 && this.config.onRelease) {
+      if (releaseIdx !== -1 && canRelease) {
         const afterRelease = line.substring(releaseIdx + releasePrefix.length).trim();
         const name = afterRelease.split(/\s+/)[0];
 
         if (name && !this.processedReleaseCommands.has(name)) {
           this.processedReleaseCommands.add(name);
-          this.config.onRelease(name).catch(err => {
-            console.error(`[pty:${this.config.name}] Release failed: ${err.message}`);
-          });
+          this.executeRelease(name);
         }
+      }
+    }
+  }
+
+  /**
+   * Execute spawn via API or callback
+   */
+  private async executeSpawn(name: string, cli: string, task: string): Promise<void> {
+    if (this.config.dashboardPort) {
+      // Use dashboard API for spawning (works from spawned agents)
+      try {
+        const response = await fetch(`http://localhost:${this.config.dashboardPort}/api/spawn`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, cli, task }),
+        });
+        const result = await response.json() as { success: boolean; error?: string };
+        if (result.success) {
+          console.log(`[pty:${this.config.name}] Spawned ${name} via API`);
+        } else {
+          console.error(`[pty:${this.config.name}] Spawn failed: ${result.error}`);
+        }
+      } catch (err: any) {
+        console.error(`[pty:${this.config.name}] Spawn API call failed: ${err.message}`);
+      }
+    } else if (this.config.onSpawn) {
+      // Fall back to callback
+      try {
+        await this.config.onSpawn(name, cli, task);
+      } catch (err: any) {
+        console.error(`[pty:${this.config.name}] Spawn failed: ${err.message}`);
+      }
+    }
+  }
+
+  /**
+   * Execute release via API or callback
+   */
+  private async executeRelease(name: string): Promise<void> {
+    if (this.config.dashboardPort) {
+      // Use dashboard API for releasing
+      try {
+        const response = await fetch(`http://localhost:${this.config.dashboardPort}/api/spawned/${name}`, {
+          method: 'DELETE',
+        });
+        const result = await response.json() as { success: boolean; error?: string };
+        if (result.success) {
+          console.log(`[pty:${this.config.name}] Released ${name} via API`);
+        } else {
+          console.error(`[pty:${this.config.name}] Release failed: ${result.error}`);
+        }
+      } catch (err: any) {
+        console.error(`[pty:${this.config.name}] Release API call failed: ${err.message}`);
+      }
+    } else if (this.config.onRelease) {
+      // Fall back to callback
+      try {
+        await this.config.onRelease(name);
+      } catch (err: any) {
+        console.error(`[pty:${this.config.name}] Release failed: ${err.message}`);
       }
     }
   }
