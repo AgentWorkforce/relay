@@ -11,25 +11,48 @@ import { AgentCard } from './AgentCard';
 import { STATUS_COLORS, getAgentColor } from '../lib/colors';
 
 /**
- * Strips the team prefix from an agent name for cleaner display within team groups.
- * E.g., "frontend-dev" with team "frontend-team" -> "dev"
+ * Gets the simple display name for an agent within a team group.
+ * Since the team header already shows context, just show the agent's role/name.
+ *
+ * Examples:
+ * - "Frontend-Lead" in team "Frontend" → "Lead"
+ * - "Lead" in team "Lead" → "Lead"
+ * - "backend-api" in team "backend" → "Api"
  */
 function stripTeamPrefix(agentName: string, teamName: string): string {
-  // Try common patterns: team-name -> name, teamName -> name
-  // Pattern 1: If team is "frontend-team", strip "frontend-" from agent name
-  const teamPrefix = teamName.replace(/-?team$/i, '');
-  if (teamPrefix && agentName.toLowerCase().startsWith(teamPrefix.toLowerCase() + '-')) {
-    return agentName.substring(teamPrefix.length + 1);
+  const lowerAgent = agentName.toLowerCase();
+  const lowerTeam = teamName.toLowerCase().replace(/-?team$/i, '');
+
+  // Pattern 1: Team prefix with dash separator (e.g., "frontend-lead" → "lead")
+  if (lowerTeam && lowerAgent.startsWith(lowerTeam + '-')) {
+    const stripped = agentName.substring(lowerTeam.length + 1);
+    return capitalizeWords(stripped);
   }
-  if (teamPrefix && agentName.toLowerCase().startsWith(teamPrefix.toLowerCase())) {
-    const stripped = agentName.substring(teamPrefix.length);
-    // Only use if there's something left and it starts reasonably
-    if (stripped.length > 0 && /^[-_]/.test(stripped)) {
-      return stripped.substring(1); // Remove the separator
-    }
+
+  // Pattern 2: Team prefix with underscore separator
+  if (lowerTeam && lowerAgent.startsWith(lowerTeam + '_')) {
+    const stripped = agentName.substring(lowerTeam.length + 1);
+    return capitalizeWords(stripped);
   }
-  // No prefix match, return original
-  return agentName;
+
+  // Pattern 3: Last segment of hyphenated name (e.g., "LeadFrontend-Dev" → "Dev")
+  const parts = agentName.split('-');
+  if (parts.length > 1) {
+    return capitalizeWords(parts[parts.length - 1]);
+  }
+
+  // No prefix to strip, return capitalized original
+  return capitalizeWords(agentName);
+}
+
+/**
+ * Capitalizes words in a string (handles dash and underscore separators)
+ */
+function capitalizeWords(str: string): string {
+  return str
+    .split(/[-_]/)
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
 }
 
 export interface ProjectListProps {

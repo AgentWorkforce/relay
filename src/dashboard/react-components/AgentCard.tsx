@@ -71,7 +71,10 @@ export function AgentCard({
         </div>
         <div className="agent-compact-info">
           <span className="agent-name">{displayName}</span>
-          <span className="agent-breadcrumb-compact">{getAgentBreadcrumb(agent.name)}</span>
+          {/* Hide breadcrumb when displayNameOverride is set (e.g., inside team groups) */}
+          {!displayNameOverride && (
+            <span className="agent-breadcrumb-compact">{getAgentBreadcrumb(agent.name)}</span>
+          )}
         </div>
         <div className="agent-compact-actions">
           {agent.isSpawned && onReleaseClick && (
