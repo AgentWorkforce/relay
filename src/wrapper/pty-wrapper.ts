@@ -112,13 +112,9 @@ export class PtyWrapper extends EventEmitter {
     console.log(`[pty:${this.config.name}] Spawning: ${this.config.command} ${args.join(' ')}`);
     console.log(`[pty:${this.config.name}] CWD: ${cwd}`);
 
-    // Spawn the process through a shell to avoid posix_spawnp issues
-    // This handles symlinks, scripts, and environment setup more robustly
-    const fullCommand = [this.config.command, ...args].join(' ');
-    const shell = process.env.SHELL || '/bin/bash';
-
+    // Spawn the process with error handling
     try {
-      this.ptyProcess = pty.spawn(shell, ['-c', fullCommand], {
+      this.ptyProcess = pty.spawn(this.config.command, args, {
         name: 'xterm-256color',
         cols: 120,
         rows: 40,
@@ -132,8 +128,8 @@ export class PtyWrapper extends EventEmitter {
       });
     } catch (spawnError: any) {
       console.error(`[pty:${this.config.name}] Failed to spawn process:`, spawnError.message);
-      console.error(`[pty:${this.config.name}] Shell: ${shell}`);
-      console.error(`[pty:${this.config.name}] Command: ${fullCommand}`);
+      console.error(`[pty:${this.config.name}] Command: ${this.config.command}`);
+      console.error(`[pty:${this.config.name}] Args: ${args.join(' ')}`);
       throw spawnError;
     }
 

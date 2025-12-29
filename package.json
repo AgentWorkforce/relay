@@ -1,6 +1,6 @@
 {
   "name": "agent-relay",
-  "version": "1.0.17",
+  "version": "1.0.18",
   "description": "Real-time agent-to-agent communication system",
   "type": "module",
   "main": "dist/index.js",
@@ -68,7 +68,7 @@
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "http-proxy-middleware": "^3.0.5",
-    "node-pty": "^1.0.0",
+    "node-pty": "1.0.0",
     "uuid": "^10.0.0",
     "ws": "^8.18.3"
   },
