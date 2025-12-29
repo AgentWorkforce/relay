@@ -17,7 +17,8 @@ interface WorkerMeta {
   name: string;
   cli: string;
   task: string;
-  spawnedBy: string;
+  /** Optional team name this agent belongs to */
+  team?: string;
   spawnedAt: number;
   pid?: number;
   logFile?: string;
@@ -62,7 +63,7 @@ export class AgentSpawner {
    * Spawn a new worker agent using node-pty
    */
   async spawn(request: SpawnRequest): Promise<SpawnResult> {
-    const { name, cli, task, requestedBy } = request;
+    const { name, cli, task, team } = request;
     const debug = process.env.DEBUG_SPAWN === '1';
 
     // Check if worker already exists
@@ -121,7 +122,7 @@ export class AgentSpawner {
             name: workerName,
             cli: workerCli,
             task: workerTask,
-            requestedBy: name,
+            // Nested spawns don't inherit team - they're flat by default
           });
         },
         onRelease: this.dashboardPort ? undefined : async (workerName) => {
@@ -166,7 +167,7 @@ export class AgentSpawner {
         name,
         cli,
         task,
-        spawnedBy: requestedBy,
+        team,
         spawnedAt: Date.now(),
         pid: pty.pid,
         pty,
@@ -175,7 +176,8 @@ export class AgentSpawner {
       this.activeWorkers.set(name, workerInfo);
       this.saveWorkersMetadata();
 
-      console.log(`[spawner] Spawned ${name} (${cli}) for ${requestedBy} [pid: ${pty.pid}]`);
+      const teamInfo = team ? ` [team: ${team}]` : '';
+      console.log(`[spawner] Spawned ${name} (${cli})${teamInfo} [pid: ${pty.pid}]`);
 
       return {
         success: true,
@@ -247,7 +249,7 @@ export class AgentSpawner {
       name: w.name,
       cli: w.cli,
       task: w.task,
-      spawnedBy: w.spawnedBy,
+      team: w.team,
       spawnedAt: w.spawnedAt,
       pid: w.pid,
     }));
@@ -270,7 +272,7 @@ export class AgentSpawner {
       name: worker.name,
       cli: worker.cli,
       task: worker.task,
-      spawnedBy: worker.spawnedBy,
+      team: worker.team,
       spawnedAt: worker.spawnedAt,
       pid: worker.pid,
     };
@@ -343,7 +345,7 @@ export class AgentSpawner {
         name: w.name,
         cli: w.cli,
         task: w.task,
-        spawnedBy: w.spawnedBy,
+        team: w.team,
         spawnedAt: w.spawnedAt,
         pid: w.pid,
         logFile: w.logFile,

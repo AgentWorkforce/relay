@@ -932,7 +932,7 @@ export async function startDashboard(
 
   /**
    * POST /api/spawn - Spawn a new agent
-   * Body: { name: string, cli?: string, task?: string }
+   * Body: { name: string, cli?: string, task?: string, team?: string }
    */
   app.post('/api/spawn', async (req, res) => {
     if (!spawner) {
@@ -942,7 +942,7 @@ export async function startDashboard(
       });
     }
 
-    const { name, cli = 'claude', task = '' } = req.body;
+    const { name, cli = 'claude', task = '', team } = req.body;
 
     if (!name || typeof name !== 'string') {
       return res.status(400).json({
@@ -956,7 +956,7 @@ export async function startDashboard(
         name,
         cli,
         task,
-        requestedBy: 'api',
+        team: team || undefined, // Optional team name
       };
       const result = await spawner.spawn(request);
 

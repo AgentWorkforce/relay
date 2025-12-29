@@ -6,16 +6,17 @@
  */
 
 import { execSync } from 'node:child_process';
+import fs from 'node:fs';
 
 /**
- * Resolve the full path of a command using 'which'
+ * Resolve the full path of a command using 'which' and resolve any symlinks
  * Returns the full path if found, or the original command if not found
  * (letting the spawn fail with a clearer error)
  */
 export function resolveCommand(command: string): string {
-  // If already an absolute path, return as-is
+  // If already an absolute path, just resolve symlinks
   if (command.startsWith('/')) {
-    return command;
+    return resolveSymlinks(command);
   }
 
   try {
@@ -30,7 +31,9 @@ export function resolveCommand(command: string): string {
     });
     const resolvedPath = output.trim();
     if (resolvedPath) {
-      return resolvedPath;
+      // Resolve any symlinks to get the actual binary path
+      // This fixes posix_spawnp issues with symlinked binaries
+      return resolveSymlinks(resolvedPath);
     }
   } catch (err: any) {
     // Command not found in PATH - log for debugging
@@ -39,6 +42,24 @@ export function resolveCommand(command: string): string {
 
   // Return original command - spawn will fail with a clearer error
   return command;
+}
+
+/**
+ * Resolve symlinks to get the actual file path
+ * Uses fs.realpathSync which handles all symlink levels
+ */
+function resolveSymlinks(filePath: string): string {
+  try {
+    const resolved = fs.realpathSync(filePath);
+    if (resolved !== filePath) {
+      console.log(`[command-resolver] Resolved symlink: ${filePath} -> ${resolved}`);
+    }
+    return resolved;
+  } catch (err: any) {
+    // If realpath fails, return original (spawn will give clearer error)
+    console.warn(`[command-resolver] realpath failed for ${filePath}:`, err.message);
+    return filePath;
+  }
 }
 
 /**

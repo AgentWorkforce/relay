@@ -83,7 +83,7 @@ describe('AgentSpawner', () => {
       name: 'Dev1',
       cli: 'claude',
       task: 'Finish the report',
-      requestedBy: 'Lead',
+      // team is optional - agents are flat by default
     });
 
     expect(result).toMatchObject({
@@ -105,7 +105,7 @@ describe('AgentSpawner', () => {
       name: 'Opus1',
       cli: 'claude:opus',
       task: '',
-      requestedBy: 'Lead',
+      // team is optional - agents are flat by default
     });
 
     // Check the PtyWrapper was constructed with --dangerously-skip-permissions
@@ -123,7 +123,7 @@ describe('AgentSpawner', () => {
       name: 'Codex1',
       cli: 'codex',
       task: '',
-      requestedBy: 'Lead',
+      // team is optional - agents are flat by default
     });
 
     // Check the PtyWrapper was constructed without --dangerously-skip-permissions
@@ -139,7 +139,7 @@ describe('AgentSpawner', () => {
       name: 'Dev1',
       cli: 'claude',
       task: 'First task',
-      requestedBy: 'Lead',
+      // team is optional - agents are flat by default
     });
 
     // Second spawn with same name should fail
@@ -147,7 +147,7 @@ describe('AgentSpawner', () => {
       name: 'Dev1',
       cli: 'claude',
       task: 'New task',
-      requestedBy: 'Lead',
+      // team is optional - agents are flat by default
     });
 
     expect(result.success).toBe(false);
@@ -162,7 +162,7 @@ describe('AgentSpawner', () => {
       name: 'Dev2',
       cli: 'claude',
       task: 'Task',
-      requestedBy: 'Lead',
+      // team is optional - agents are flat by default
     });
 
     expect(result.success).toBe(false);
@@ -178,7 +178,7 @@ describe('AgentSpawner', () => {
       name: 'Late',
       cli: 'claude',
       task: 'Task',
-      requestedBy: 'Lead',
+      // team is optional - agents are flat by default
     });
 
     expect(result.success).toBe(false);
@@ -197,7 +197,7 @@ describe('AgentSpawner', () => {
       name: 'Worker',
       cli: 'claude',
       task: 'Task',
-      requestedBy: 'Lead',
+      // team is optional - agents are flat by default
     });
 
     mockPtyWrapper.isRunning = false; // Simulate graceful stop
@@ -219,7 +219,7 @@ describe('AgentSpawner', () => {
       name: 'Stubborn',
       cli: 'claude',
       task: 'Task',
-      requestedBy: 'Lead',
+      // team is optional - agents are flat by default
     });
 
     mockPtyWrapper.isRunning = true; // Still running after stop
@@ -261,7 +261,7 @@ describe('AgentSpawner', () => {
       name: 'Worker1',
       cli: 'claude',
       task: 'Task',
-      requestedBy: 'Lead',
+      // team is optional - agents are flat by default
     });
 
     expect(writeFileSyncMock).toHaveBeenCalled();

@@ -115,7 +115,7 @@ program
           name: workerName,
           cli: workerCli,
           task,
-          requestedBy: agentName,
+          // No team by default - agents are flat unless team is specified
         });
         if (result.success) {
           console.error(`[${agentName}] ✓ Spawned ${workerName} [pid: ${result.pid}]`);
@@ -288,7 +288,7 @@ program
       status: string;
       cli: string;
       lastSeen?: string;
-      spawnedBy?: string;
+      team?: string;
       pid?: number;
     }
 
@@ -302,7 +302,7 @@ program
         status: getAgentStatus(agent),
         cli: agent.cli ?? '-',
         lastSeen: agent.lastSeen,
-        spawnedBy: worker?.spawnedBy,
+        team: worker?.team,
         pid: worker?.pid,
       });
     });
@@ -315,7 +315,7 @@ program
           name: worker.name || 'unknown',
           status: 'ONLINE',
           cli: worker.cli || '-',
-          spawnedBy: worker.spawnedBy,
+          team: worker.team,
           pid: worker.pid,
         });
       }
@@ -332,14 +332,14 @@ program
       return;
     }
 
-    console.log('NAME            STATUS   CLI       PARENT');
+    console.log('NAME            STATUS   CLI       TEAM');
     console.log('─'.repeat(50));
     combined.forEach((agent) => {
       const name = agent.name.padEnd(15);
       const status = agent.status.padEnd(8);
       const cli = agent.cli.padEnd(9);
-      const parent = agent.spawnedBy ?? '-';
-      console.log(`${name} ${status} ${cli} ${parent}`);
+      const team = agent.team ?? '-';
+      console.log(`${name} ${status} ${cli} ${team}`);
     });
 
     if (workers.length > 0) {

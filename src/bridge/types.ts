@@ -39,8 +39,8 @@ export interface SpawnRequest {
   cli: string;
   /** Initial task to inject */
   task: string;
-  /** Who requested the spawn */
-  requestedBy: string;
+  /** Optional team name to organize agents under */
+  team?: string;
 }
 
 export interface SpawnResult {
@@ -55,7 +55,8 @@ export interface WorkerInfo {
   name: string;
   cli: string;
   task: string;
-  spawnedBy: string;
+  /** Optional team name this agent belongs to */
+  team?: string;
   spawnedAt: number;
   /** PID of the pty process */
   pid?: number;
