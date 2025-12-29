@@ -253,7 +253,7 @@ function ProjectSection({
     if (isExpanded && expandedTeams.size === 0 && teams.length > 0) {
       setExpandedTeams(new Set(teams.map((t) => t.name)));
     }
-  }, [isExpanded, teams]);
+  }, [isExpanded, teams, expandedTeams]);
 
   const projectColor = getAgentColor(project.name || project.id);
   const displayName = project.name || project.path.split('/').pop() || project.id;

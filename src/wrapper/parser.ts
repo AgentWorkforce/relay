@@ -53,9 +53,12 @@ const BLOCK_METADATA_END = /\[\[\/RELAY_METADATA\]\]/;
 const CODE_FENCE = /^```/;
 
 // Fenced inline patterns: ->relay:Target <<< ... >>>
-// FENCE_END is lenient - matches >>> at start OR end of line regardless of surrounding content
-// This handles both ">>>" on its own line and "content>>>" at end of message
-const FENCE_END = /^(?:\s*)?>>>|>>>\s*$/;
+// Two patterns for fence end detection:
+// - FENCE_END_START: ">>>" at the start of a line (with optional leading whitespace)
+// - FENCE_END_LINE: ">>>" at the end of a line (content followed by >>>)
+const FENCE_END_START = /^(?:\s*)?>>>/;
+const FENCE_END_LINE = />>>\s*$/;
+const FENCE_END = new RegExp(`${FENCE_END_START.source}|${FENCE_END_LINE.source}`);
 
 // Maximum lines in a fenced block before assuming it's stuck
 const MAX_FENCED_LINES = 200;

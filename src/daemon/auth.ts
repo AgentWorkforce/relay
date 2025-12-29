@@ -10,7 +10,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execSync } from 'node:child_process';
 import type net from 'node:net';
 
 /**
@@ -145,46 +144,16 @@ export function getPeerCredentials(socket: net.Socket): PeerCredentials | null {
 
 /**
  * Get peer credentials on Linux using /proc filesystem
+ *
+ * Note: Proper SO_PEERCRED extraction requires native bindings (e.g., unix-dgram).
+ * This implementation falls back to current process credentials for safety.
+ * For multi-tenant isolation, consider using a native module.
  */
 function getPeerCredentialsLinux(_fd: number): PeerCredentials | null {
   try {
-    // We need to use getsockopt(SO_PEERCRED) which requires native bindings
-    // For now, fall back to using the process's own UID (daemon owner)
-    // This is a simplified implementation - a full implementation would use
-    // a native module like 'unix-dgram' or custom bindings
-
-    // Attempt to use native SO_PEERCRED via optional dependency
-    try {
-
-      // Use ss command to get socket peer info (requires net-tools)
-      // This is a workaround - proper implementation needs native bindings
-      const result = execSync(`ss -xp 2>/dev/null | grep -E "^u_str.*,pid=" | head -1`, {
-        encoding: 'utf-8',
-        timeout: 1000,
-      });
-
-      const pidMatch = result.match(/pid=(\d+)/);
-      if (pidMatch) {
-        const pid = parseInt(pidMatch[1], 10);
-        // Get UID/GID from /proc
-        const status = fs.readFileSync(`/proc/${pid}/status`, 'utf-8');
-        const uidMatch = status.match(/^Uid:\s+(\d+)/m);
-        const gidMatch = status.match(/^Gid:\s+(\d+)/m);
-
-        if (uidMatch && gidMatch) {
-          return {
-            pid,
-            uid: parseInt(uidMatch[1], 10),
-            gid: parseInt(gidMatch[1], 10),
-          };
-        }
-      }
-    } catch {
-      // Fall through to default
-    }
-
-    // Fallback: return current process credentials (owner of daemon)
-    // This is safe but doesn't provide multi-tenant isolation
+    // SO_PEERCRED requires native bindings which we don't have.
+    // Return current process credentials as a safe fallback.
+    // This doesn't provide multi-tenant isolation but avoids shell command risks.
     return {
       uid: process.getuid?.() ?? 0,
       gid: process.getgid?.() ?? 0,

@@ -96,12 +96,14 @@ export function App({ wsUrl }: AppProps) {
     const fetchProjects = async () => {
       const result = await api.getBridgeData();
       if (result.success && result.data) {
+        // Destructure to avoid non-null assertion in closure
+        const { servers, agents } = result.data;
         // Convert fleet servers to projects
-        const projectList: Project[] = result.data.servers.map((server) => ({
+        const projectList: Project[] = servers.map((server) => ({
           id: server.id,
           path: server.url,
           name: server.name || server.url.split('/').pop(),
-          agents: result.data!.agents.filter((a) => a.server === server.id),
+          agents: agents.filter((a) => a.server === server.id),
           lead: undefined, // Could be enhanced to detect lead agent
         }));
         setProjects(projectList);

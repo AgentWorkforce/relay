@@ -212,12 +212,11 @@ export class Router {
     // Remove from primary's shadow list
     const shadows = this.shadowsByPrimary.get(primaryAgent);
     if (shadows) {
-      const idx = shadows.findIndex(s => s.shadowAgent === shadowAgent);
-      if (idx !== -1) {
-        shadows.splice(idx, 1);
-      }
-      if (shadows.length === 0) {
+      const updatedShadows = shadows.filter(s => s.shadowAgent !== shadowAgent);
+      if (updatedShadows.length === 0) {
         this.shadowsByPrimary.delete(primaryAgent);
+      } else {
+        this.shadowsByPrimary.set(primaryAgent, updatedShadows);
       }
     }
 
