@@ -17,6 +17,7 @@ import { Daemon } from '../daemon/server.js';
 import { RelayClient } from '../wrapper/client.js';
 import { generateAgentName } from '../utils/name-generator.js';
 import { getTmuxPath } from '../utils/tmux-resolver.js';
+import { readWorkersMetadata, getWorkerLogsDir } from '../bridge/spawner.js';
 import { checkForUpdatesInBackground, checkForUpdates } from '../utils/update-checker.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -117,7 +118,7 @@ program
           requestedBy: agentName,
         });
         if (result.success) {
-          console.error(`[${agentName}] ✓ Spawned ${workerName} in ${result.window}`);
+          console.error(`[${agentName}] ✓ Spawned ${workerName} [pid: ${result.pid}]`);
         } else {
           console.error(`[${agentName}] ✗ Failed to spawn ${workerName}: ${result.error}`);
         }
@@ -142,117 +143,6 @@ program
     await wrapper.start();
   });
 
-// Team config types
-interface TeamAgent {
-  name: string;
-  cli: string;
-  role?: string;
-}
-
-interface TeamConfig {
-  team?: string;
-  agents: TeamAgent[];
-  autoSpawn?: boolean;
-}
-
-// Load teams.json from project root or .agent-relay/
-function loadTeamConfig(projectRoot: string): TeamConfig | null {
-  const locations = [
-    path.join(projectRoot, 'teams.json'),
-    path.join(projectRoot, '.agent-relay', 'teams.json'),
-  ];
-
-  for (const configPath of locations) {
-    if (fs.existsSync(configPath)) {
-      try {
-        const content = fs.readFileSync(configPath, 'utf-8');
-        return JSON.parse(content) as TeamConfig;
-      } catch (err) {
-        console.error(`Failed to parse ${configPath}:`, err);
-      }
-    }
-  }
-  return null;
-}
-
-// Spawn agents from team config using tmux
-async function spawnTeamAgents(
-  agents: TeamAgent[],
-  socketPath: string,
-  dataDir: string,
-  projectRoot: string,
-  relayPrefix?: string
-): Promise<void> {
-  const { TmuxWrapper } = await import('../wrapper/tmux-wrapper.js');
-  const { findAgentConfig, isClaudeCli, buildClaudeArgs } = await import('../utils/agent-config.js');
-  const { AgentSpawner } = await import('../bridge/spawner.js');
-
-  // Create spawner so all team agents can spawn workers
-  const spawner = new AgentSpawner(projectRoot);
-
-  for (const agent of agents) {
-    console.log(`Spawning agent: ${agent.name} (${agent.cli})`);
-
-    // Parse CLI - handle "claude:opus" format
-    const [mainCommand, ...cliArgs] = agent.cli.split(/\s+/);
-
-    // Auto-detect agent config and inject --model/--agent for Claude CLI
-    let finalArgs = cliArgs;
-    if (isClaudeCli(mainCommand)) {
-      const config = findAgentConfig(agent.name, projectRoot);
-      if (config) {
-        console.log(`  Agent config: ${config.configPath}`);
-        if (config.model) {
-          console.log(`  Model: ${config.model}`);
-        }
-        finalArgs = buildClaudeArgs(agent.name, cliArgs, projectRoot);
-      }
-    }
-
-    const wrapper = new TmuxWrapper({
-      name: agent.name,
-      command: mainCommand,
-      args: finalArgs,
-      socketPath,
-      debug: false,
-      relayPrefix,
-      useInbox: true,
-      inboxDir: dataDir,
-      // Wire up spawn/release callbacks so any agent can spawn workers
-      onSpawn: async (workerName: string, workerCli: string, task: string) => {
-        console.log(`[${agent.name}] Spawning ${workerName} (${workerCli})...`);
-        const result = await spawner.spawn({
-          name: workerName,
-          cli: workerCli,
-          task,
-          requestedBy: agent.name,
-        });
-        if (result.success) {
-          console.log(`[${agent.name}] ✓ Spawned ${workerName} in ${result.window}`);
-        } else {
-          console.error(`[${agent.name}] ✗ Failed to spawn ${workerName}: ${result.error}`);
-        }
-      },
-      onRelease: async (workerName: string) => {
-        console.log(`[${agent.name}] Releasing ${workerName}...`);
-        const released = await spawner.release(workerName);
-        if (released) {
-          console.log(`[${agent.name}] ✓ Released ${workerName}`);
-        } else {
-          console.error(`[${agent.name}] ✗ Worker ${workerName} not found`);
-        }
-      },
-    });
-
-    try {
-      await wrapper.start();
-      console.log(`  Started: ${agent.name}`);
-    } catch (err) {
-      console.error(`  Failed to start ${agent.name}:`, err);
-    }
-  }
-}
-
 // up - Start daemon + dashboard
 program
   .command('up')
@@ -260,7 +150,7 @@ program
   .option('--no-dashboard', 'Disable web dashboard')
   .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
   .action(async (options) => {
-    const { getProjectPaths, ensureProjectDir } = await import('../utils/project-namespace.js');
+    const { ensureProjectDir } = await import('../utils/project-namespace.js');
 
     const paths = ensureProjectDir();
     const socketPath = paths.socketPath;
@@ -295,7 +185,7 @@ program
       // Dashboard starts by default (use --no-dashboard to disable)
       if (options.dashboard !== false) {
         const port = parseInt(options.port, 10);
-        const { startDashboard } = await import('../dashboard/server.js');
+        const { startDashboard } = await import('../dashboard-server/server.js');
         const actualPort = await startDashboard({
           port,
           dataDir: paths.dataDir,
@@ -372,10 +262,10 @@ program
     }
   });
 
-// agents - List connected agents (from registry file)
+// agents - List connected agents (from registry file) and spawned workers
 program
   .command('agents')
-  .description('List connected agents')
+  .description('List connected agents and spawned workers')
   .option('--all', 'Include internal/CLI agents')
   .option('--json', 'Output as JSON')
   .action(async (options) => {
@@ -383,31 +273,81 @@ program
     const paths = getProjectPaths();
     const agentsPath = path.join(paths.teamDir, 'agents.json');
 
+    // Load registered agents
     const allAgents = loadAgents(agentsPath);
     const agents = options.all
       ? allAgents
       : allAgents.filter(isVisibleAgent);
 
+    // Load spawned workers
+    const workers = readWorkersMetadata(paths.projectRoot);
+
+    // Merge agents and workers
+    interface CombinedAgent {
+      name: string;
+      status: string;
+      cli: string;
+      lastSeen?: string;
+      spawnedBy?: string;
+      pid?: number;
+    }
+
+    const combined: CombinedAgent[] = [];
+
+    // Add registered agents
+    agents.forEach((agent) => {
+      const worker = workers.find(w => w.name === agent.name);
+      combined.push({
+        name: agent.name ?? 'unknown',
+        status: getAgentStatus(agent),
+        cli: agent.cli ?? '-',
+        lastSeen: agent.lastSeen,
+        spawnedBy: worker?.spawnedBy,
+        pid: worker?.pid,
+      });
+    });
+
+    // Add workers not in registry (orphaned or not yet registered)
+    workers.forEach((worker) => {
+      const existsInAgents = agents.some(a => a.name === worker.name);
+      if (!existsInAgents) {
+        combined.push({
+          name: worker.name || 'unknown',
+          status: 'ONLINE',
+          cli: worker.cli || '-',
+          spawnedBy: worker.spawnedBy,
+          pid: worker.pid,
+        });
+      }
+    });
+
     if (options.json) {
-      console.log(JSON.stringify(agents.map(a => ({ ...a, status: getAgentStatus(a) })), null, 2));
+      console.log(JSON.stringify(combined, null, 2));
       return;
     }
 
-    if (!agents.length) {
+    if (!combined.length) {
       const hint = options.all ? '' : ' (use --all to include internal/cli agents)';
       console.log(`No agents found. Ensure the daemon is running and agents are connected${hint}.`);
       return;
     }
 
-    console.log('NAME            STATUS   CLI       LAST SEEN');
-    console.log('---------------------------------------------');
-    agents.forEach((agent) => {
-      const name = (agent.name ?? 'unknown').padEnd(15);
-      const status = getAgentStatus(agent).padEnd(8);
-      const cli = (agent.cli ?? '-').padEnd(8);
-      const lastSeen = formatRelativeTime(agent.lastSeen);
-      console.log(`${name} ${status} ${cli} ${lastSeen}`);
+    console.log('NAME            STATUS   CLI       PARENT');
+    console.log('─'.repeat(50));
+    combined.forEach((agent) => {
+      const name = agent.name.padEnd(15);
+      const status = agent.status.padEnd(8);
+      const cli = agent.cli.padEnd(9);
+      const parent = agent.spawnedBy ?? '-';
+      console.log(`${name} ${status} ${cli} ${parent}`);
     });
+
+    if (workers.length > 0) {
+      console.log('');
+      console.log('Commands:');
+      console.log('  agent-relay agents:logs <name>   - View spawned agent output');
+      console.log('  agent-relay agents:kill <name>   - Kill a spawned agent');
+    }
   });
 
 // who - Show currently active agents (online within last 30s)
@@ -760,7 +700,7 @@ program
 
     try {
       await client.connect();
-    } catch (err) {
+    } catch (_err) {
       console.error('Failed to connect to all projects');
       writeBridgeState(); // Write final state before exit
       process.exit(1);
@@ -1101,258 +1041,114 @@ function parseSince(input?: string): number | undefined {
 }
 
 // ============================================
-// Spawn/Worker debugging commands
+// Spawned agent debugging commands
 // ============================================
 
-const WORKER_SESSION = 'relay-workers';
-
-// workers - List spawned workers
+// agents:logs - Show log file output for a spawned agent
 program
-  .command('workers')
-  .description('List spawned worker agents (from tmux)')
-  .option('--json', 'Output as JSON')
-  .action(async (options: { json?: boolean }) => {
-    try {
-      const tmuxPath = getTmuxPath();
-      // Check if worker session exists
-      try {
-        await execAsync(`"${tmuxPath}" has-session -t ${WORKER_SESSION} 2>/dev/null`);
-      } catch {
-        if (options.json) {
-          console.log(JSON.stringify({ workers: [], session: null }));
-        } else {
-          console.log('No spawned workers (session does not exist)');
-        }
-        return;
-      }
-
-      // List windows in the worker session
-      const { stdout } = await execAsync(
-        `"${tmuxPath}" list-windows -t ${WORKER_SESSION} -F "#{window_index}|#{window_name}|#{pane_current_command}|#{window_activity}"`
-      );
-
-      const workers = stdout
-        .split('\n')
-        .filter(Boolean)
-        .map(line => {
-          const [index, name, command, activity] = line.split('|');
-          const activityTs = parseInt(activity, 10) * 1000;
-          const lastActive = isNaN(activityTs) ? undefined : new Date(activityTs).toISOString();
-          return {
-            index: parseInt(index, 10),
-            name,
-            command,
-            lastActive,
-            window: `${WORKER_SESSION}:${name}`,
-          };
-        })
-        // Filter out the default zsh window
-        .filter(w => w.name !== 'zsh' && w.command !== 'zsh');
-
-      if (options.json) {
-        console.log(JSON.stringify({ workers, session: WORKER_SESSION }, null, 2));
-        return;
-      }
-
-      if (!workers.length) {
-        console.log('No spawned workers');
-        return;
-      }
-
-      console.log('SPAWNED WORKERS');
-      console.log('─'.repeat(50));
-      console.log('NAME            COMMAND       WINDOW');
-      console.log('─'.repeat(50));
-      workers.forEach(w => {
-        const name = w.name.padEnd(15);
-        const cmd = (w.command || '-').padEnd(12);
-        console.log(`${name} ${cmd}  ${w.window}`);
-      });
-      console.log('');
-      console.log('Commands:');
-      console.log('  agent-relay workers:logs <name>   - View worker output');
-      console.log('  agent-relay workers:attach <name> - Attach to worker tmux');
-      console.log('  agent-relay workers:kill <name>   - Kill a worker');
-    } catch (err) {
-      console.error('Failed to list workers:', (err as Error).message);
-    }
-  });
-
-// workers:logs - Show tmux pane output for a worker
-program
-  .command('workers:logs')
-  .description('Show recent output from a spawned worker')
-  .argument('<name>', 'Worker name')
+  .command('agents:logs')
+  .description('Show recent output from a spawned agent')
+  .argument('<name>', 'Agent name')
   .option('-n, --lines <n>', 'Number of lines to show', '50')
   .option('-f, --follow', 'Follow output (like tail -f)')
   .action(async (name: string, options: { lines?: string; follow?: boolean }) => {
-    const tmuxPath = getTmuxPath();
-    const window = `${WORKER_SESSION}:${name}`;
+    const { getProjectPaths } = await import('../utils/project-namespace.js');
+    const paths = getProjectPaths();
+    const logsDir = getWorkerLogsDir(paths.projectRoot);
+    const logFile = path.join(logsDir, `${name}.log`);
 
-    try {
-      // Check if window exists
-      await execAsync(`"${tmuxPath}" has-session -t ${window} 2>/dev/null`);
-    } catch {
-      console.error(`Worker "${name}" not found`);
-      console.log(`Run 'agent-relay workers' to see available workers`);
+    if (!fs.existsSync(logFile)) {
+      console.error(`No logs found for agent "${name}"`);
+      console.log(`Log file not found: ${logFile}`);
+      console.log(`Run 'agent-relay agents' to see available agents`);
       process.exit(1);
     }
 
     if (options.follow) {
-      console.log(`Following output from ${window} (Ctrl+C to stop)...`);
+      console.log(`Following logs for ${name} (Ctrl+C to stop)...`);
       console.log('─'.repeat(50));
 
-      // Use a polling approach to follow
-      let lastContent = '';
-      const poll = async () => {
-        try {
-          const { stdout } = await execAsync(`"${tmuxPath}" capture-pane -t ${window} -p -S -100`);
-          if (stdout !== lastContent) {
-            // Print only new lines
-            const newContent = stdout.replace(lastContent, '');
-            if (newContent.trim()) {
-              process.stdout.write(newContent);
-            }
-            lastContent = stdout;
-          }
-        } catch {
-          console.error('\nWorker disconnected');
-          process.exit(1);
-        }
-      };
+      // Use tail -f approach
+      const { spawn } = await import('child_process');
+      const child = spawn('tail', ['-f', logFile], {
+        stdio: ['ignore', 'inherit', 'inherit'],
+      });
 
-      const interval = setInterval(poll, 500);
       process.on('SIGINT', () => {
-        clearInterval(interval);
+        child.kill();
         console.log('\nStopped following');
         process.exit(0);
       });
 
-      await poll(); // Initial fetch
-      await new Promise(() => {}); // Keep running
+      child.on('exit', () => {
+        process.exit(0);
+      });
     } else {
       try {
         const lines = parseInt(options.lines || '50', 10);
-        const { stdout } = await execAsync(`"${tmuxPath}" capture-pane -t ${window} -p -S -${lines}`);
-        console.log(`Output from ${window} (last ${lines} lines):`);
+        const { stdout } = await execAsync(`tail -n ${lines} "${logFile}"`);
+        console.log(`Logs for ${name} (last ${lines} lines):`);
         console.log('─'.repeat(50));
         console.log(stdout || '(empty)');
       } catch (err) {
-        console.error('Failed to capture output:', (err as Error).message);
+        console.error('Failed to read logs:', (err as Error).message);
       }
     }
   });
 
-// workers:attach - Attach to a worker's tmux window
+// agents:kill - Kill a spawned agent by PID
 program
-  .command('workers:attach')
-  .description('Attach to a spawned worker tmux window')
-  .argument('<name>', 'Worker name')
-  .action(async (name: string) => {
-    const tmuxPath = getTmuxPath();
-    const window = `${WORKER_SESSION}:${name}`;
-
-    try {
-      // Check if window exists
-      await execAsync(`"${tmuxPath}" has-session -t ${window} 2>/dev/null`);
-    } catch {
-      console.error(`Worker "${name}" not found`);
-      console.log(`Run 'agent-relay workers' to see available workers`);
-      process.exit(1);
-    }
-
-    console.log(`Attaching to ${window}...`);
-    console.log('(Use Ctrl+B D to detach)');
-
-    // Spawn tmux attach as a child process with stdio inherited
-    const { spawn } = await import('child_process');
-    const child = spawn(tmuxPath, ['attach-session', '-t', window], {
-      stdio: 'inherit',
-    });
-
-    child.on('exit', (code) => {
-      process.exit(code || 0);
-    });
-  });
-
-// workers:kill - Kill a spawned worker
-program
-  .command('workers:kill')
-  .description('Kill a spawned worker')
-  .argument('<name>', 'Worker name')
+  .command('agents:kill')
+  .description('Kill a spawned agent')
+  .argument('<name>', 'Agent name')
   .option('--force', 'Skip graceful shutdown, kill immediately')
   .action(async (name: string, options: { force?: boolean }) => {
-    const tmuxPath = getTmuxPath();
-    const window = `${WORKER_SESSION}:${name}`;
+    const { getProjectPaths } = await import('../utils/project-namespace.js');
+    const paths = getProjectPaths();
+    const workers = readWorkersMetadata(paths.projectRoot);
+    const worker = workers.find(w => w.name === name);
 
-    try {
-      // Check if window exists
-      await execAsync(`"${tmuxPath}" has-session -t ${window} 2>/dev/null`);
-    } catch {
-      console.error(`Worker "${name}" not found`);
-      console.log(`Run 'agent-relay workers' to see available workers`);
+    if (!worker) {
+      console.error(`Spawned agent "${name}" not found`);
+      console.log(`Run 'agent-relay agents' to see available agents`);
       process.exit(1);
     }
 
-    if (!options.force) {
-      // Try graceful shutdown first
-      console.log(`Sending /exit to ${name}...`);
-      try {
-        await execAsync(`"${tmuxPath}" send-keys -t ${window} '/exit' Enter`);
+    if (!worker.pid) {
+      console.error(`Agent "${name}" has no PID recorded`);
+      process.exit(1);
+    }
+
+    try {
+      if (!options.force) {
+        // Try graceful shutdown first (SIGTERM)
+        console.log(`Sending SIGTERM to ${name} (pid: ${worker.pid})...`);
+        process.kill(worker.pid, 'SIGTERM');
         // Wait for graceful shutdown
         await new Promise(r => setTimeout(r, 2000));
-      } catch {
-        // Ignore errors, will force kill below
-      }
-    }
 
-    // Kill the window
-    try {
-      await execAsync(`"${tmuxPath}" kill-window -t ${window}`);
-      console.log(`Killed worker: ${name}`);
-    } catch (err) {
-      console.error(`Failed to kill ${name}:`, (err as Error).message);
-      process.exit(1);
-    }
-  });
-
-// workers:session - Show tmux session info
-program
-  .command('workers:session')
-  .description('Show worker tmux session details')
-  .action(async () => {
-    try {
-      const tmuxPath = getTmuxPath();
-      // Check if session exists
-      try {
-        await execAsync(`"${tmuxPath}" has-session -t ${WORKER_SESSION} 2>/dev/null`);
-      } catch {
-        console.log(`Session "${WORKER_SESSION}" does not exist`);
-        console.log('Spawn a worker to create it.');
-        return;
+        // Check if still running
+        try {
+          process.kill(worker.pid, 0); // Check if process exists
+          console.log(`Agent still running, sending SIGKILL...`);
+          process.kill(worker.pid, 'SIGKILL');
+        } catch {
+          // Process no longer exists, graceful shutdown worked
+        }
+      } else {
+        // Force kill immediately
+        console.log(`Force killing ${name} (pid: ${worker.pid})...`);
+        process.kill(worker.pid, 'SIGKILL');
       }
 
-      console.log(`Session: ${WORKER_SESSION}`);
-      console.log('─'.repeat(50));
-
-      // Get session info
-      const { stdout: sessionInfo } = await execAsync(
-        `"${tmuxPath}" display-message -t ${WORKER_SESSION} -p "Created: #{session_created_string}\\nWindows: #{session_windows}\\nAttached: #{?session_attached,yes,no}"`
-      );
-      console.log(sessionInfo);
-
-      // List windows
-      console.log('\nWindows:');
-      const { stdout: windows } = await execAsync(
-        `"${tmuxPath}" list-windows -t ${WORKER_SESSION} -F "  #{window_index}: #{window_name} (#{pane_current_command})"`
-      );
-      console.log(windows || '  (none)');
-
-      console.log('\nQuick commands:');
-      console.log(`  tmux attach -t ${WORKER_SESSION}     # Attach to session`);
-      console.log(`  tmux kill-session -t ${WORKER_SESSION}  # Kill entire session`);
-    } catch (err) {
-      console.error('Failed:', (err as Error).message);
+      console.log(`Killed agent: ${name}`);
+    } catch (err: any) {
+      if (err.code === 'ESRCH') {
+        console.log(`Agent ${name} is no longer running (pid: ${worker.pid})`);
+      } else {
+        console.error(`Failed to kill ${name}:`, err.message);
+        process.exit(1);
+      }
     }
   });
 

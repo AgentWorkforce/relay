@@ -10,7 +10,7 @@
   "packages": [
     {
       "name": "using-agent-relay",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Skill for coordinating multiple AI agents - enables real-time inter-agent messaging via PTY wrapper or file-based inbox system",
       "format": "claude",
       "subtype": "skill",
@@ -28,7 +28,7 @@
     },
     {
       "name": "agent-relay-snippet",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "AGENTS.md / CLAUDE.md snippet for agents on how to use agent-relay",
       "format": "generic",
       "subtype": "snippet",

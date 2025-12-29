@@ -12,7 +12,7 @@ import { computeNeedsAttention } from './needs-attention.js';
 import { computeSystemMetrics, formatPrometheusMetrics } from './metrics.js';
 import { MultiProjectClient } from '../bridge/multi-project-client.js';
 import { AgentSpawner } from '../bridge/spawner.js';
-import type { ProjectConfig, SpawnRequest, WorkerInfo } from '../bridge/types.js';
+import type { ProjectConfig, SpawnRequest } from '../bridge/types.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -96,23 +96,7 @@ export async function startDashboard(
   const { port, dataDir, teamDir, dbPath, enableSpawner, projectRoot, tmuxSession } = options;
 
   console.log('Starting dashboard...');
-  console.log('__dirname:', __dirname);
-  const publicDir = path.join(__dirname, 'public');
-  console.log('Public dir:', publicDir);
 
-  // Verify public directory exists and contains expected files
-  if (!fs.existsSync(publicDir)) {
-    console.error(`[dashboard] ERROR: Public directory not found: ${publicDir}`);
-  } else {
-    const files = fs.readdirSync(publicDir);
-    console.log('Public dir contents:', files.join(', '));
-    if (!files.includes('metrics.html')) {
-      console.error('[dashboard] WARNING: metrics.html not found in public directory');
-    }
-    if (!files.includes('bridge.html')) {
-      console.error('[dashboard] WARNING: bridge.html not found in public directory');
-    }
-  }
   const storage: StorageAdapter | undefined = dbPath
     ? new SqliteStorageAdapter({ dbPath })
     : undefined;
@@ -180,9 +164,28 @@ export async function startDashboard(
     await storage.init();
   }
 
-  // Serve static files from public directory
-  app.use(express.static(publicDir));
   app.use(express.json());
+
+  // Serve dashboard static files at root (built with `next build` in src/dashboard)
+  // __dirname is dist/dashboard-server, dashboard is at ../dashboard/out (relative to dist)
+  // But in source it's at ../dashboard/out (relative to src/dashboard-server)
+  const dashboardDistDir = path.join(__dirname, '..', 'dashboard', 'out');
+  const dashboardSourceDir = path.join(__dirname, '..', '..', 'src', 'dashboard', 'out');
+
+  // Check which path exists (dist or src)
+  const dashboardDir = fs.existsSync(dashboardDistDir) ? dashboardDistDir : dashboardSourceDir;
+  if (fs.existsSync(dashboardDir)) {
+    console.log(`[dashboard] Serving from: ${dashboardDir}`);
+    // Serve Next.js static export with .html extension handling
+    app.use(express.static(dashboardDir, { extensions: ['html'] }));
+
+    // Fallback for Next.js pages (e.g., /metrics -> /metrics.html)
+    app.get('/metrics', (req, res) => {
+      res.sendFile(path.join(dashboardDir, 'metrics.html'));
+    });
+  } else {
+    console.error('[dashboard] Dashboard not found at:', dashboardDistDir, 'or', dashboardSourceDir);
+  }
 
   // Relay client for sending messages from dashboard
   const socketPath = path.join(dataDir, 'relay.sock');
@@ -581,7 +584,7 @@ export async function startDashboard(
             agent.processingStartedAt = (state as { startedAt: number }).startedAt;
           }
         }
-      } catch (err) {
+      } catch (_err) {
         // Ignore errors reading processing state - it's optional
       }
     }
@@ -899,28 +902,6 @@ export async function startDashboard(
       console.error('Failed to compute Prometheus metrics', err);
       res.status(500).send('# Error computing metrics\n');
     }
-  });
-
-  // Metrics view route - serves metrics.html
-  app.get('/metrics', (req, res) => {
-    const filePath = path.join(publicDir, 'metrics.html');
-    res.sendFile(filePath, (err) => {
-      if (err) {
-        console.error(`[dashboard] Failed to serve metrics.html from ${filePath}:`, err.message);
-        res.status(404).send('Metrics page not found');
-      }
-    });
-  });
-
-  // Bridge view route - serves bridge.html
-  app.get('/bridge', (req, res) => {
-    const filePath = path.join(publicDir, 'bridge.html');
-    res.sendFile(filePath, (err) => {
-      if (err) {
-        console.error(`[dashboard] Failed to serve bridge.html from ${filePath}:`, err.message);
-        res.status(404).send('Bridge page not found');
-      }
-    });
   });
 
   // Bridge API endpoint - returns multi-project data

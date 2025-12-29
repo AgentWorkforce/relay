@@ -95,7 +95,7 @@ export function useMessages({
 
         setSendError(result.error || 'Failed to send message');
         return false;
-      } catch (error) {
+      } catch (_error) {
         setSendError('Network error');
         return false;
       } finally {

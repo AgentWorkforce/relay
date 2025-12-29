@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { Envelope, ErrorPayload, WelcomePayload, SendPayload, DeliverEnvelope } from '../protocol/types.js';
-import { RelayClient, type RelayClientConfig } from './client.js';
+import { describe, it, expect } from 'vitest';
+import type { Envelope, ErrorPayload, WelcomePayload, DeliverEnvelope } from '../protocol/types.js';
+import { RelayClient } from './client.js';
 
 describe('RelayClient', () => {
   describe('configuration', () => {

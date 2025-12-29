@@ -37,3 +37,5 @@ coverage/
 .tmp-agent-relay-data
 
 .next
+
+src/dashboard/out

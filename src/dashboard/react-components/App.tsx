@@ -111,10 +111,55 @@ export function App({ wsUrl }: AppProps) {
     }
   }, []);
 
+  // Handle release/kill agent
+  const handleReleaseAgent = useCallback(async (agent: Agent) => {
+    if (!agent.isSpawned) return;
+
+    const confirmed = window.confirm(`Are you sure you want to release agent "${agent.name}"?`);
+    if (!confirmed) return;
+
+    try {
+      const result = await api.releaseAgent(agent.name);
+      if (!result.success) {
+        console.error('Failed to release agent:', result.error);
+      }
+    } catch (err) {
+      console.error('Failed to release agent:', err);
+    }
+  }, []);
+
   // Handle command palette
   const handleCommandPaletteOpen = useCallback(() => {
     setIsCommandPaletteOpen(true);
   }, []);
+
+  // Apply theme to document
+  React.useEffect(() => {
+    const applyTheme = (theme: 'light' | 'dark' | 'system') => {
+      let effectiveTheme: 'light' | 'dark';
+
+      if (theme === 'system') {
+        // Check system preference
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        effectiveTheme = prefersDark ? 'dark' : 'light';
+      } else {
+        effectiveTheme = theme;
+      }
+
+      // Apply theme to document root
+      document.documentElement.setAttribute('data-theme', effectiveTheme);
+    };
+
+    applyTheme(settings.theme);
+
+    // Listen for system theme changes when in 'system' mode
+    if (settings.theme === 'system') {
+      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+      const handleChange = () => applyTheme('system');
+      mediaQuery.addEventListener('change', handleChange);
+      return () => mediaQuery.removeEventListener('change', handleChange);
+    }
+  }, [settings.theme]);
 
   // Keyboard shortcuts
   React.useEffect(() => {
@@ -123,6 +168,12 @@ export function App({ wsUrl }: AppProps) {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
         setIsCommandPaletteOpen(true);
+      }
+
+      // Cmd/Ctrl + Shift + S for spawn agent
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 's') {
+        e.preventDefault();
+        handleSpawnClick();
       }
 
       // Escape to close modals
@@ -134,7 +185,7 @@ export function App({ wsUrl }: AppProps) {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [handleSpawnClick]);
 
   return (
     <div className="dashboard-app">
@@ -148,6 +199,7 @@ export function App({ wsUrl }: AppProps) {
         onAgentSelect={handleAgentSelect}
         onViewModeChange={setViewMode}
         onSpawnClick={handleSpawnClick}
+        onReleaseClick={handleReleaseAgent}
       />
 
       {/* Main Content */}
@@ -207,6 +259,10 @@ export function App({ wsUrl }: AppProps) {
         agents={agents}
         onAgentSelect={handleAgentSelect}
         onSpawnClick={handleSpawnClick}
+        onGeneralClick={() => {
+          selectAgent(null);
+          setCurrentChannel('general');
+        }}
       />
 
       {/* Spawn Modal */}
@@ -278,7 +334,32 @@ function MessageComposer({ recipient, agents, onSend, isSending, error }: Messag
     e.preventDefault();
     if (!message.trim() || isSending) return;
 
-    const success = await onSend(recipient, message);
+    // Parse message to determine target
+    // If message starts with @AgentName, extract the target and message content
+    const mentionMatch = message.match(/^@(\S+)\s*([\s\S]*)/);
+    let target: string;
+    let content: string;
+
+    if (mentionMatch) {
+      // User explicitly mentioned someone - route to that agent
+      const mentionedName = mentionMatch[1];
+      content = mentionMatch[2] || '';
+
+      // Check if it's a broadcast mention (@everyone, @*, @all)
+      if (mentionedName === '*' || mentionedName.toLowerCase() === 'everyone' || mentionedName.toLowerCase() === 'all') {
+        target = '*';
+      } else {
+        target = mentionedName;
+      }
+    } else {
+      // No @mention - use context-aware routing
+      // If in general channel, broadcast to everyone
+      // If in a DM, stay in that DM
+      target = recipient;
+      content = message;
+    }
+
+    const success = await onSend(target, content || message);
     if (success) {
       setMessage('');
       setShowMentions(false);
@@ -347,13 +428,13 @@ function ErrorIcon() {
 }
 
 /**
- * CSS styles for the main app
+ * CSS styles for the main app - Dark mode styling matching v1 dashboard
  */
 export const appStyles = `
 .dashboard-app {
   display: flex;
   height: 100vh;
-  background: #f5f5f5;
+  background: #1a1d21;
 }
 
 .dashboard-main {
@@ -361,12 +442,17 @@ export const appStyles = `
   display: flex;
   flex-direction: column;
   min-width: 0;
+  background: #222529;
 }
 
 .dashboard-content {
   flex: 1;
   overflow-y: auto;
-  padding: 20px;
+  padding: 0;
+}
+
+.messages-container {
+  height: 100%;
 }
 
 .loading-state,
@@ -376,13 +462,14 @@ export const appStyles = `
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: #666;
+  color: #8d8d8e;
   text-align: center;
 }
 
 .loading-state .spinner {
   animation: spin 1s linear infinite;
   margin-bottom: 16px;
+  color: #00ffc8;
 }
 
 @keyframes spin {
@@ -391,13 +478,17 @@ export const appStyles = `
 }
 
 .error-state svg {
-  color: #ef4444;
+  color: #e01e5a;
   margin-bottom: 16px;
 }
 
 .error-state h2 {
   margin: 0 0 8px;
-  color: #1a1a1a;
+  color: #d1d2d3;
+}
+
+.error-state p {
+  color: #8d8d8e;
 }
 
 .error-state button {
@@ -408,31 +499,37 @@ export const appStyles = `
   border: none;
   border-radius: 4px;
   cursor: pointer;
+  transition: background 0.2s;
+}
+
+.error-state button:hover {
+  background: #0d4f82;
 }
 
 .messages-placeholder {
-  background: white;
+  background: #1a1d21;
   border-radius: 8px;
   padding: 20px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .agent-summary {
   margin-top: 16px;
   padding: 12px;
-  background: #f9f9f9;
+  background: rgba(255, 255, 255, 0.04);
   border-radius: 4px;
 }
 
 .agent-summary p {
   margin: 4px 0;
   font-size: 13px;
+  color: #ababad;
 }
 
 .message-composer {
-  padding: 16px;
-  background: white;
-  border-top: 1px solid #e8e8e8;
+  padding: 16px 20px;
+  background: #222529;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .composer-form {
@@ -449,18 +546,25 @@ export const appStyles = `
 .composer-input {
   width: 100%;
   padding: 10px 14px;
-  border: 1px solid #e8e8e8;
+  background: #222529;
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 6px;
   font-size: 14px;
+  color: #d1d2d3;
   outline: none;
   box-sizing: border-box;
+  transition: border-color 0.2s;
+}
+
+.composer-input::placeholder {
+  color: #8d8d8e;
 }
 
 .composer-input:focus {
   border-color: #1264a3;
 }
 
-/* Mention Autocomplete Styles */
+/* Mention Autocomplete Styles - Dark mode */
 .mention-autocomplete {
   position: absolute;
   bottom: 100%;
@@ -468,10 +572,10 @@ export const appStyles = `
   right: 0;
   max-height: 200px;
   overflow-y: auto;
-  background: #ffffff;
-  border: 1px solid #e5e7eb;
+  background: #1a1d21;
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
-  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.4);
   z-index: 100;
   margin-bottom: 4px;
 }
@@ -487,7 +591,7 @@ export const appStyles = `
 
 .mention-item:hover,
 .mention-item.selected {
-  background: #f3f4f6;
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .mention-avatar {
@@ -511,12 +615,12 @@ export const appStyles = `
 .mention-name {
   font-size: 14px;
   font-weight: 500;
-  color: #1f2937;
+  color: #d1d2d3;
 }
 
 .mention-description {
   font-size: 12px;
-  color: #6b7280;
+  color: #8d8d8e;
 }
 
 .composer-send {
@@ -540,14 +644,14 @@ export const appStyles = `
 }
 
 .composer-error {
-  color: #ef4444;
+  color: #e01e5a;
   font-size: 12px;
 }
 
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(0, 0, 0, 0.6);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -555,19 +659,23 @@ export const appStyles = `
 }
 
 .modal {
-  background: white;
+  background: #1a1d21;
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
   padding: 24px;
   min-width: 400px;
   max-width: 90vw;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
 }
 
 .modal h2 {
   margin: 0 0 16px;
+  color: #d1d2d3;
 }
 
 .command-palette {
-  background: white;
+  background: #1a1d21;
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
   padding: 8px;
   width: 500px;
@@ -577,8 +685,14 @@ export const appStyles = `
 .command-palette input {
   width: 100%;
   padding: 12px 16px;
+  background: transparent;
   border: none;
   font-size: 16px;
+  color: #d1d2d3;
   outline: none;
+}
+
+.command-palette input::placeholder {
+  color: #8d8d8e;
 }
 `;

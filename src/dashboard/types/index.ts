@@ -18,6 +18,7 @@ export interface Agent {
   server?: string; // For fleet view - which server the agent is on
   isProcessing?: boolean; // True when agent is thinking/processing a message
   processingStartedAt?: number; // Timestamp when processing started
+  isSpawned?: boolean; // True if agent was spawned via dashboard (can be killed)
 }
 
 export interface AgentSummary {
@@ -39,6 +40,7 @@ export interface Message {
   thread?: string;
   isBroadcast?: boolean;
   isRead?: boolean;
+  replyCount?: number;
 }
 
 export interface Thread {

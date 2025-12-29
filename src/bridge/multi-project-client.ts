@@ -5,12 +5,10 @@
 
 import net from 'node:net';
 import fs from 'node:fs';
-import path from 'node:path';
 import { v4 as uuid } from 'uuid';
 import {
   type Envelope,
   type HelloPayload,
-  type WelcomePayload,
   type SendPayload,
   type DeliverEnvelope,
   PROTOCOL_VERSION,
@@ -293,7 +291,7 @@ export class MultiProjectClient {
    * Broadcast to all agents in all projects
    */
   broadcastAll(body: string): void {
-    for (const [projectId, conn] of this.connections) {
+    for (const [_projectId, conn] of this.connections) {
       if (conn.ready) {
         const envelope: Envelope<SendPayload> = {
           v: PROTOCOL_VERSION,

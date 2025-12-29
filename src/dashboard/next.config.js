@@ -1,13 +1,14 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Output as standalone for easier deployment
-  output: 'standalone',
+  // Static export - generates HTML/JS/CSS that can be served by any server
+  output: 'export',
+  distDir: 'out',
 
   // Disable strict mode for now during development
   reactStrictMode: true,
 
-  // Configure for dashboard subdirectory
-  basePath: '/v2',
+  // V2 is now the default dashboard at root path
+  // Legacy v1 dashboard is available at /v1
 
   // Proxy API requests to the main dashboard server
   async rewrites() {

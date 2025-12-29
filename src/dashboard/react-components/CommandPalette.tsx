@@ -26,6 +26,7 @@ export interface CommandPaletteProps {
   onAgentSelect: (agent: Agent) => void;
   onSpawnClick: () => void;
   onSettingsClick?: () => void;
+  onGeneralClick?: () => void;
   customCommands?: Command[];
 }
 
@@ -36,6 +37,7 @@ export function CommandPalette({
   onAgentSelect,
   onSpawnClick,
   onSettingsClick,
+  onGeneralClick,
   customCommands = [],
 }: CommandPaletteProps) {
   const [query, setQuery] = useState('');
@@ -65,7 +67,7 @@ export function CommandPalette({
         description: 'Launch a new agent instance',
         category: 'actions',
         icon: <PlusIcon />,
-        shortcut: '⌘N',
+        shortcut: '⌘⇧S',
         action: () => {
           onSpawnClick();
           onClose();
@@ -90,6 +92,7 @@ export function CommandPalette({
         category: 'navigation',
         icon: <HashIcon />,
         action: () => {
+          onGeneralClick?.();
           onClose();
         },
       },
@@ -114,7 +117,7 @@ export function CommandPalette({
       ...customCommands,
     ];
     return cmds;
-  }, [agents, onAgentSelect, onSpawnClick, onSettingsClick, onClose, customCommands]);
+  }, [agents, onAgentSelect, onSpawnClick, onSettingsClick, onGeneralClick, onClose, customCommands]);
 
   // Filter commands based on query
   const filteredCommands = useMemo(() => {
@@ -331,13 +334,13 @@ function SettingsIcon() {
 }
 
 /**
- * CSS styles for the command palette
+ * CSS styles for the command palette - Dark mode
  */
 export const commandPaletteStyles = `
 .command-palette-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(0, 0, 0, 0.6);
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -347,14 +350,15 @@ export const commandPaletteStyles = `
 }
 
 .command-palette {
-  background: #ffffff;
+  background: #1a1a2e;
+  border: 1px solid #2a2a3e;
   border-radius: 12px;
   width: 560px;
   max-width: 90vw;
   max-height: 60vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 16px 70px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 16px 70px rgba(0, 0, 0, 0.5);
   animation: slideDown 0.2s ease;
 }
 
@@ -363,7 +367,7 @@ export const commandPaletteStyles = `
   align-items: center;
   gap: 12px;
   padding: 16px;
-  border-bottom: 1px solid #e8e8e8;
+  border-bottom: 1px solid #2a2a3e;
 }
 
 .command-palette-input-wrapper svg {
@@ -378,15 +382,16 @@ export const commandPaletteStyles = `
   font-family: inherit;
   outline: none;
   background: transparent;
+  color: #e8e8e8;
 }
 
 .command-palette-input::placeholder {
-  color: #aaa;
+  color: #666;
 }
 
 .command-palette-kbd {
-  background: #f5f5f5;
-  border: 1px solid #e0e0e0;
+  background: #2a2a3e;
+  border: 1px solid #3a3a4e;
   border-radius: 4px;
   padding: 2px 6px;
   font-size: 11px;
@@ -435,13 +440,13 @@ export const commandPaletteStyles = `
   transition: background 0.1s;
 }
 
-.command-palette-item:hover,
-.command-palette-item.selected {
-  background: #f5f5f5;
+.command-palette-item:hover {
+  background: #2a2a3e;
 }
 
 .command-palette-item.selected {
-  background: #e8f4fd;
+  background: rgba(74, 158, 255, 0.15);
+  border: 1px solid rgba(74, 158, 255, 0.3);
 }
 
 .command-palette-item-icon {
@@ -450,7 +455,7 @@ export const commandPaletteStyles = `
   justify-content: center;
   width: 28px;
   height: 28px;
-  color: #666;
+  color: #888;
 }
 
 .command-palette-agent-icon {
@@ -475,7 +480,7 @@ export const commandPaletteStyles = `
 .command-palette-item-label {
   font-size: 14px;
   font-weight: 500;
-  color: #1a1a1a;
+  color: #e8e8e8;
 }
 
 .command-palette-item-desc {
@@ -487,12 +492,12 @@ export const commandPaletteStyles = `
 }
 
 .command-palette-item-shortcut {
-  background: #f0f0f0;
-  border: 1px solid #e0e0e0;
+  background: #2a2a3e;
+  border: 1px solid #3a3a4e;
   border-radius: 4px;
   padding: 2px 6px;
   font-size: 11px;
-  color: #666;
+  color: #888;
   font-family: inherit;
 }
 

@@ -22,9 +22,8 @@ Real-time agent-to-agent messaging. Two modes: **tmux wrapper** (real-time, sub-
 
 | Pattern | Description |
 |---------|-------------|
-| `->relay:Name message` | Direct message (output as text) |
-| `->relay:Name <<<`...`>>>` | Multi-line message with blank lines/code |
-| `->relay:* message` | Broadcast to all |
+| `->relay:Name <<<`...`>>>` | **Default format** - always use fenced format |
+| `->relay:* <<<`...`>>>` | Broadcast to all agents |
 | `[[RELAY]]{"to":"Name","body":"msg"}[[/RELAY]]` | Structured JSON |
 | `\->relay:` | Escape (literal output) |
 | `relay read <id>` | Read truncated message |
@@ -51,16 +50,19 @@ relay team status                     # Show team
 
 ## Sending Messages (Tmux Mode)
 
-**Output the pattern directly** - don't use bash commands:
+**Output the pattern directly** - don't use bash commands. Always use the fenced format:
 
 ```
-->relay:BlueLake I've finished the API refactor.
-->relay:* STATUS: Starting auth module.
+->relay:BlueLake <<<
+I've finished the API refactor.>>>
+
+->relay:* <<<
+STATUS: Starting auth module.>>>
 ```
 
-### Multi-line Messages (Fenced Format)
+### Fenced Format (Default)
 
-For messages with blank lines, code blocks, or complex content:
+The fenced format is the default for all messages:
 
 ```
 ->relay:Reviewer <<<
@@ -72,11 +74,10 @@ Please check:
 
 Key changes:
 1. Added JWT validation
-2. Fixed session expiry
->>>
+2. Fixed session expiry>>>
 ```
 
-**CRITICAL:** Always end with `>>>` on its own line! The `<<<` opens, `>>>` closes.
+**CRITICAL:** Always end with `>>>` at the end of the last line of content! The `<<<` opens, `>>>` closes.
 
 **Limits:** Fenced messages max 200 lines. For longer content, send summary with reference ID.
 
@@ -113,20 +114,27 @@ relay read abc123
 
 ```
 # Task assignment
-->relay:Developer TASK: Implement /api/register
+->relay:Developer <<<
+TASK: Implement /api/register>>>
 
 # Status broadcast
-->relay:* STATUS: Starting auth module
-->relay:* DONE: Auth complete
+->relay:* <<<
+STATUS: Starting auth module>>>
+
+->relay:* <<<
+DONE: Auth complete>>>
 
 # Review request
-->relay:Reviewer REVIEW: src/auth/*.ts
+->relay:Reviewer <<<
+REVIEW: src/auth/*.ts>>>
 
 # Question
-->relay:Architect QUESTION: JWT or sessions?
+->relay:Architect <<<
+QUESTION: JWT or sessions?>>>
 
 # Blocked
-->relay:* BLOCKED: Need DB credentials
+->relay:* <<<
+BLOCKED: Need DB credentials>>>
 ```
 
 ## Spawning Agents

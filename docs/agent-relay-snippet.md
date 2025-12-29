@@ -4,24 +4,19 @@ Real-time agent-to-agent messaging. Output `->relay:` patterns to communicate.
 
 ## Sending Messages
 
-```
-->relay:AgentName Your message here
-->relay:* Broadcast to all agents
-```
-
-### Multi-line Messages
-
-For messages with blank lines or code:
+**Always use the fenced format** for reliable message delivery:
 
 ```
 ->relay:AgentName <<<
-Your multi-line message here.
-
-Can include blank lines and code.
->>>
+Your message here.>>>
 ```
 
-**CRITICAL:** Always end with `>>>` on its own line!
+```
+->relay:* <<<
+Broadcast to all agents.>>>
+```
+
+**CRITICAL:** Always end with `>>>` at the end of the last line of content!
 
 ## Receiving Messages
 
@@ -47,11 +42,20 @@ Spawn workers to delegate tasks:
 ## Common Patterns
 
 ```
-->relay:* STATUS: Starting work on auth module
-->relay:* DONE: Auth module complete
-->relay:Developer TASK: Implement /api/register
-->relay:Reviewer REVIEW: Please check src/auth/*.ts
-->relay:Architect QUESTION: JWT or sessions?
+->relay:* <<<
+STATUS: Starting work on auth module>>>
+
+->relay:* <<<
+DONE: Auth module complete>>>
+
+->relay:Developer <<<
+TASK: Implement /api/register>>>
+
+->relay:Reviewer <<<
+REVIEW: Please check src/auth/*.ts>>>
+
+->relay:Architect <<<
+QUESTION: JWT or sessions?>>>
 ```
 
 ## Rules

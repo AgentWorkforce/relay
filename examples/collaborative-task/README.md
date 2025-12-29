@@ -27,7 +27,7 @@ npx agent-relay wrap -n Architect "claude"
 ```
 
 Tell the agent:
-> "You are the Architect. Your job is to design a solution for adding user authentication. Once you have a plan, message Developer with the design using ->relay:Developer"
+> "You are the Architect. Your job is to design a solution for adding user authentication. Once you have a plan, message Developer with the design using the fenced format: ->relay:Developer <<< your message >>>"
 
 ### Terminal 3: Developer
 ```bash
@@ -70,25 +70,30 @@ Architect                Developer                Reviewer
 
 ## Message Protocol
 
-Agents use structured communication:
+Agents use structured communication with the fenced format:
 
 ```bash
 # Architect assigns task
-->relay:Developer TASK: Implement user registration endpoint.
-Requirements: POST /api/register, validate email, hash password, return JWT.
+->relay:Developer <<<
+TASK: Implement user registration endpoint.
+Requirements: POST /api/register, validate email, hash password, return JWT.>>>
 
 # Developer requests review
-->relay:Reviewer REVIEW REQUEST: Please review src/api/register.ts
+->relay:Reviewer <<<
+REVIEW REQUEST: Please review src/api/register.ts>>>
 
 # Reviewer provides feedback
-->relay:Developer FEEDBACK: Line 23: Use bcrypt instead of md5 for password hashing.
+->relay:Developer <<<
+FEEDBACK: Line 23: Use bcrypt instead of md5 for password hashing.>>>
 
 # Developer notifies completion
-->relay:Architect DONE: Registration endpoint implemented and reviewed.
+->relay:Architect <<<
+DONE: Registration endpoint implemented and reviewed.>>>
 ```
 
 ## Tips
 
+- Always use the fenced format: `->relay:Name <<<` ... `>>>`
+- End with `>>>` at the end of the last line of content
 - Use clear prefixes (TASK:, REVIEW:, FEEDBACK:, DONE:) for structured communication
-- Broadcast status updates with `->relay:*`
 - Keep messages concise - agents can read files for details

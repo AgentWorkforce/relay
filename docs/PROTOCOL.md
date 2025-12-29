@@ -279,7 +279,19 @@ Client should send fresh HELLO.
 
 ## 9. PTY Pattern Extractor
 
-### Block Format (preferred)
+### Fenced Format (default, recommended)
+
+```
+->relay:codex-1 <<<
+Your turn to play>>>
+
+->relay:* <<<
+Hello everyone>>>
+```
+
+**Always use the fenced format** for reliable message delivery. The `<<<` opens, `>>>` closes at end of last line.
+
+### Block Format (structured data)
 
 ```
 [[RELAY]]
@@ -287,18 +299,12 @@ Client should send fresh HELLO.
 [[/RELAY]]
 ```
 
-### Inline Format (single line only)
-
-```
-->relay:codex-1 Your turn to play
-->thinking:* Considering the Queen...
-```
-
 ### Rules
 
-1. Block: Only parse when `[[RELAY]]` at start of line
-2. Inline: Only at start of line, not in code fences
-3. Escape: `\->relay:` outputs literal `->relay:`
+1. Fenced: `->relay:AgentName <<<` starts message, `>>>` ends it
+2. Block: Only parse when `[[RELAY]]` at start of line
+3. Pattern must be at start of line, not in code fences
+4. Escape: `\->relay:` outputs literal `->relay:`
 
 ---
 

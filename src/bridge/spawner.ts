@@ -1,54 +1,54 @@
 /**
  * Agent Spawner
- * Handles spawning and releasing worker agents via tmux.
+ * Handles spawning and releasing worker agents via node-pty.
+ * Workers run headlessly with output capture for logs.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { execAsync, sleep, escapeForTmux } from './utils.js';
+import { sleep } from './utils.js';
 import { getProjectPaths } from '../utils/project-namespace.js';
-import { getTmuxPath } from '../utils/tmux-resolver.js';
+import { PtyWrapper, type PtyWrapperConfig } from '../wrapper/pty-wrapper.js';
 import type { SpawnRequest, SpawnResult, WorkerInfo } from './types.js';
 
+/** Worker metadata stored in workers.json */
+interface WorkerMeta {
+  name: string;
+  cli: string;
+  task: string;
+  spawnedBy: string;
+  spawnedAt: number;
+  pid?: number;
+  logFile?: string;
+}
+
+interface ActiveWorker extends WorkerInfo {
+  pty: PtyWrapper;
+  logFile?: string;
+}
+
 export class AgentSpawner {
-  private activeWorkers: Map<string, WorkerInfo> = new Map();
-  private tmuxSession: string;
+  private activeWorkers: Map<string, ActiveWorker> = new Map();
   private agentsPath: string;
   private projectRoot: string;
-  private tmuxPath: string; // Resolved path to tmux binary
+  private socketPath?: string;
+  private logsDir: string;
+  private workersPath: string;
 
-  constructor(
-    projectRoot: string,
-    tmuxSession?: string
-  ) {
+  constructor(projectRoot: string, _tmuxSession?: string) {
     const paths = getProjectPaths(projectRoot);
     this.projectRoot = paths.projectRoot;
     this.agentsPath = path.join(paths.teamDir, 'agents.json');
+    this.socketPath = paths.socketPath;
+    this.logsDir = path.join(paths.teamDir, 'worker-logs');
+    this.workersPath = path.join(paths.teamDir, 'workers.json');
 
-    // Resolve tmux path (will throw TmuxNotFoundError if tmux unavailable)
-    this.tmuxPath = getTmuxPath();
-
-    // Default session name based on project
-    this.tmuxSession = tmuxSession || 'relay-workers';
+    // Ensure logs directory exists
+    fs.mkdirSync(this.logsDir, { recursive: true });
   }
 
   /**
-   * Ensure the worker tmux session exists
-   */
-  async ensureSession(): Promise<void> {
-    try {
-      await execAsync(`"${this.tmuxPath}" has-session -t ${this.tmuxSession} 2>/dev/null`);
-    } catch {
-      // Session doesn't exist, create it
-      await execAsync(
-        `"${this.tmuxPath}" new-session -d -s ${this.tmuxSession} -c "${this.projectRoot}"`
-      );
-      console.log(`[spawner] Created session ${this.tmuxSession}`);
-    }
-  }
-
-  /**
-   * Spawn a new worker agent
+   * Spawn a new worker agent using node-pty
    */
   async spawn(request: SpawnRequest): Promise<SpawnResult> {
     const { name, cli, task, requestedBy } = request;
@@ -64,48 +64,67 @@ export class AgentSpawner {
     }
 
     try {
-      await this.ensureSession();
-      if (debug) console.log(`[spawner:debug] Session ${this.tmuxSession} ready`);
+      // Parse CLI command
+      const cliParts = cli.split(' ');
+      const command = cliParts[0];
+      const args = cliParts.slice(1);
 
-      // Create new window for worker
-      const windowName = name;
-      const newWindowCmd = `"${this.tmuxPath}" new-window -t ${this.tmuxSession} -n ${windowName} -c "${this.projectRoot}"`;
-      if (debug) console.log(`[spawner:debug] Creating window: ${newWindowCmd}`);
-      await execAsync(newWindowCmd);
-
-      // Build the agent-relay command
-      // Unset TMUX to allow Claude to run inside tmux (it refuses to nest by default)
-      // Use full path to agent-relay to avoid PATH issues with nvm/shell init
-      let agentRelayPath: string;
-      try {
-        const { stdout } = await execAsync('which agent-relay');
-        agentRelayPath = stdout.trim();
-        if (debug) console.log(`[spawner:debug] Found agent-relay at: ${agentRelayPath}`);
-      } catch {
-        // Fallback to npx if which fails
-        agentRelayPath = 'npx agent-relay';
-        if (debug) console.log(`[spawner:debug] Using npx fallback`);
+      // Add --dangerously-skip-permissions for Claude agents
+      const isClaudeCli = command.startsWith('claude');
+      if (isClaudeCli && !args.includes('--dangerously-skip-permissions')) {
+        args.push('--dangerously-skip-permissions');
       }
 
-      // Add --dangerously-skip-permissions for Claude agents to avoid permission dialogs
-      // Use -- to separate agent-relay options from the wrapped command
-      const isClaudeCli = cli.startsWith('claude');
-      const cliWithFlags = isClaudeCli ? `${cli} --dangerously-skip-permissions` : cli;
-      const cmd = `unset TMUX && ${agentRelayPath} -n ${name} -- ${cliWithFlags}`;
-      if (debug) console.log(`[spawner:debug] Agent command: ${cmd}`);
+      // Add --dangerously-bypass-approvals-and-sandbox for Codex agents
+      const isCodexCli = command.startsWith('codex');
+      if (isCodexCli && !args.includes('--dangerously-bypass-approvals-and-sandbox')) {
+        args.push('--dangerously-bypass-approvals-and-sandbox');
+      }
 
-      // Send the command
-      const sendCmd = `"${this.tmuxPath}" send-keys -t ${this.tmuxSession}:${windowName} '${cmd}' Enter`;
-      if (debug) console.log(`[spawner:debug] Sending: ${sendCmd}`);
-      await execAsync(sendCmd);
+      if (debug) console.log(`[spawner:debug] Spawning ${name} with: ${command} ${args.join(' ')}`);
 
-      // Wait for the agent to register with the daemon before injecting tasks
+      // Create PtyWrapper config
+      const ptyConfig: PtyWrapperConfig = {
+        name,
+        command,
+        args,
+        socketPath: this.socketPath,
+        cwd: this.projectRoot,
+        logsDir: this.logsDir,
+        onSpawn: async (workerName, workerCli, workerTask) => {
+          // Handle nested spawn requests
+          if (debug) console.log(`[spawner:debug] Nested spawn: ${workerName}`);
+          await this.spawn({
+            name: workerName,
+            cli: workerCli,
+            task: workerTask,
+            requestedBy: name,
+          });
+        },
+        onRelease: async (workerName) => {
+          // Handle release requests from workers
+          if (debug) console.log(`[spawner:debug] Release request: ${workerName}`);
+          await this.release(workerName);
+        },
+        onExit: (code) => {
+          if (debug) console.log(`[spawner:debug] Worker ${name} exited with code ${code}`);
+          this.activeWorkers.delete(name);
+          this.saveWorkersMetadata();
+        },
+      };
+
+      // Create and start the pty wrapper
+      const pty = new PtyWrapper(ptyConfig);
+      await pty.start();
+
+      if (debug) console.log(`[spawner:debug] PTY started, pid: ${pty.pid}`);
+
+      // Wait for the agent to register with the daemon
       const registered = await this.waitForAgentRegistration(name, 30_000, 500);
       if (!registered) {
         const error = `Worker ${name} failed to register within 30s`;
         console.error(`[spawner] ${error}`);
-        // Clean up the tmux window to avoid orphaned workers
-        await execAsync(`"${this.tmuxPath}" kill-window -t ${this.tmuxSession}:${windowName}`).catch(() => {});
+        pty.kill();
         return {
           success: false,
           name,
@@ -115,34 +134,30 @@ export class AgentSpawner {
 
       // Inject the initial task if provided
       if (task && task.trim()) {
-        const escapedTask = escapeForTmux(task);
-        if (debug) console.log(`[spawner:debug] Injecting task: ${escapedTask.substring(0, 50)}...`);
-        await execAsync(
-          `"${this.tmuxPath}" send-keys -t ${this.tmuxSession}:${windowName} -l "${escapedTask}"`
-        );
-        await sleep(100);
-        await execAsync(
-          `"${this.tmuxPath}" send-keys -t ${this.tmuxSession}:${windowName} Enter`
-        );
+        if (debug) console.log(`[spawner:debug] Injecting task: ${task.substring(0, 50)}...`);
+        pty.write(task + '\r');
       }
 
       // Track the worker
-      const workerInfo: WorkerInfo = {
+      const workerInfo: ActiveWorker = {
         name,
         cli,
         task,
         spawnedBy: requestedBy,
         spawnedAt: Date.now(),
-        window: `${this.tmuxSession}:${windowName}`,
+        pid: pty.pid,
+        pty,
+        logFile: pty.logPath,
       };
       this.activeWorkers.set(name, workerInfo);
+      this.saveWorkersMetadata();
 
-      console.log(`[spawner] Spawned ${name} (${cli}) for ${requestedBy}`);
+      console.log(`[spawner] Spawned ${name} (${cli}) for ${requestedBy} [pid: ${pty.pid}]`);
 
       return {
         success: true,
         name,
-        window: workerInfo.window,
+        pid: pty.pid,
       };
     } catch (err: any) {
       console.error(`[spawner] Failed to spawn ${name}:`, err.message);
@@ -166,20 +181,19 @@ export class AgentSpawner {
     }
 
     try {
-      // Send exit command gracefully
-      await execAsync(
-        `"${this.tmuxPath}" send-keys -t ${worker.window} '/exit' Enter`
-      ).catch(() => {});
+      // Stop the pty process gracefully
+      worker.pty.stop();
 
-      // Wait a bit for graceful shutdown
+      // Wait for graceful shutdown
       await sleep(2000);
 
-      // Kill the window
-      await execAsync(
-        `"${this.tmuxPath}" kill-window -t ${worker.window}`
-      ).catch(() => {});
+      // Force kill if still running
+      if (worker.pty.isRunning) {
+        worker.pty.kill();
+      }
 
       this.activeWorkers.delete(name);
+      this.saveWorkersMetadata();
       console.log(`[spawner] Released ${name}`);
 
       return true;
@@ -187,6 +201,7 @@ export class AgentSpawner {
       console.error(`[spawner] Failed to release ${name}:`, err.message);
       // Still remove from tracking
       this.activeWorkers.delete(name);
+      this.saveWorkersMetadata();
       return false;
     }
   }
@@ -202,10 +217,17 @@ export class AgentSpawner {
   }
 
   /**
-   * Get all active workers
+   * Get all active workers (returns WorkerInfo without pty reference)
    */
   getActiveWorkers(): WorkerInfo[] {
-    return Array.from(this.activeWorkers.values());
+    return Array.from(this.activeWorkers.values()).map((w) => ({
+      name: w.name,
+      cli: w.cli,
+      task: w.task,
+      spawnedBy: w.spawnedBy,
+      spawnedAt: w.spawnedAt,
+      pid: w.pid,
+    }));
   }
 
   /**
@@ -219,7 +241,34 @@ export class AgentSpawner {
    * Get worker info
    */
   getWorker(name: string): WorkerInfo | undefined {
-    return this.activeWorkers.get(name);
+    const worker = this.activeWorkers.get(name);
+    if (!worker) return undefined;
+    return {
+      name: worker.name,
+      cli: worker.cli,
+      task: worker.task,
+      spawnedBy: worker.spawnedBy,
+      spawnedAt: worker.spawnedAt,
+      pid: worker.pid,
+    };
+  }
+
+  /**
+   * Get output logs from a worker
+   */
+  getWorkerOutput(name: string, limit?: number): string[] | null {
+    const worker = this.activeWorkers.get(name);
+    if (!worker) return null;
+    return worker.pty.getOutput(limit);
+  }
+
+  /**
+   * Get raw output from a worker
+   */
+  getWorkerRawOutput(name: string): string | null {
+    const worker = this.activeWorkers.get(name);
+    if (!worker) return null;
+    return worker.pty.getRawOutput();
   }
 
   /**
@@ -261,4 +310,66 @@ export class AgentSpawner {
       return false;
     }
   }
+
+  /**
+   * Save workers metadata to disk for CLI access
+   */
+  private saveWorkersMetadata(): void {
+    try {
+      const workers: WorkerMeta[] = Array.from(this.activeWorkers.values()).map((w) => ({
+        name: w.name,
+        cli: w.cli,
+        task: w.task,
+        spawnedBy: w.spawnedBy,
+        spawnedAt: w.spawnedAt,
+        pid: w.pid,
+        logFile: w.logFile,
+      }));
+
+      fs.writeFileSync(this.workersPath, JSON.stringify({ workers }, null, 2));
+    } catch (err: any) {
+      console.error('[spawner] Failed to save workers metadata:', err.message);
+    }
+  }
+
+  /**
+   * Get path to logs directory
+   */
+  getLogsDir(): string {
+    return this.logsDir;
+  }
+
+  /**
+   * Get path to workers metadata file
+   */
+  getWorkersPath(): string {
+    return this.workersPath;
+  }
+}
+
+/**
+ * Read workers metadata from disk (for CLI use)
+ */
+export function readWorkersMetadata(projectRoot: string): WorkerMeta[] {
+  const paths = getProjectPaths(projectRoot);
+  const workersPath = path.join(paths.teamDir, 'workers.json');
+
+  if (!fs.existsSync(workersPath)) {
+    return [];
+  }
+
+  try {
+    const raw = JSON.parse(fs.readFileSync(workersPath, 'utf-8'));
+    return Array.isArray(raw?.workers) ? raw.workers : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Get the worker logs directory path
+ */
+export function getWorkerLogsDir(projectRoot: string): string {
+  const paths = getProjectPaths(projectRoot);
+  return path.join(paths.teamDir, 'worker-logs');
 }

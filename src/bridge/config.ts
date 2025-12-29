@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { getProjectPaths } from '../utils/project-namespace.js';
-import type { ProjectConfig, BridgeConfig } from './types.js';
+import type { ProjectConfig } from './types.js';
 
 const CONFIG_PATHS = [
   path.join(os.homedir(), '.agent-relay', 'bridge.json'),

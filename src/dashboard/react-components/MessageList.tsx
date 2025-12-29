@@ -98,7 +98,7 @@ function MessageItem({ message, isHighlighted, onThreadClick }: MessageItemProps
             </>
           )}
           <span className="message-time">{timestamp}</span>
-          {message.isBroadcast && (
+          {message.to === '*' && (
             <span className="message-badge broadcast">broadcast</span>
           )}
         </div>
@@ -125,8 +125,14 @@ function MessageItem({ message, isHighlighted, onThreadClick }: MessageItemProps
  * Format message body with newline preservation and link detection
  */
 function formatMessageBody(content: string): React.ReactNode {
+  // Normalize line endings: handle \r\n, literal \\n strings, and \n
+  let normalizedContent = content
+    .replace(/\\n/g, '\n')  // Convert literal \n strings to actual newlines
+    .replace(/\r\n/g, '\n') // Normalize Windows line endings
+    .replace(/\r/g, '\n');  // Handle standalone \r
+
   // Split by newlines and render each line
-  const lines = content.split('\n');
+  const lines = normalizedContent.split('\n');
 
   return lines.map((line, i) => (
     <React.Fragment key={i}>
@@ -206,7 +212,7 @@ function ThreadIcon() {
 }
 
 /**
- * CSS styles for the message list
+ * CSS styles for the message list - Dark mode styling matching v1 dashboard
  */
 export const messageListStyles = `
 .message-list {
@@ -214,6 +220,7 @@ export const messageListStyles = `
   flex-direction: column;
   gap: 4px;
   padding: 16px;
+  background: #222529;
 }
 
 .message-list-empty {
@@ -222,24 +229,26 @@ export const messageListStyles = `
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: #888;
+  color: #8d8d8e;
   text-align: center;
 }
 
 .message-list-empty svg {
   margin-bottom: 16px;
   opacity: 0.5;
+  color: #5f6368;
 }
 
 .message-list-empty h3 {
   margin: 0 0 8px;
   font-size: 16px;
-  color: #666;
+  color: #ababad;
 }
 
 .message-list-empty p {
   margin: 0;
   font-size: 13px;
+  color: #8d8d8e;
 }
 
 .message-item {
@@ -251,12 +260,12 @@ export const messageListStyles = `
 }
 
 .message-item:hover {
-  background: #f9f9f9;
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .message-item.highlighted {
-  background: #fffbeb;
-  border-left: 3px solid #f59e0b;
+  background: rgba(232, 164, 39, 0.1);
+  border-left: 3px solid #e8a427;
   padding-left: 9px;
 }
 
@@ -270,6 +279,7 @@ export const messageListStyles = `
   justify-content: center;
   font-weight: 600;
   font-size: 12px;
+  color: white;
 }
 
 .message-content {
@@ -287,22 +297,22 @@ export const messageListStyles = `
 .message-sender {
   font-weight: 600;
   font-size: 14px;
-  color: #1a1a1a;
+  color: #d1d2d3;
 }
 
 .message-arrow {
-  color: #888;
+  color: #8d8d8e;
   font-size: 12px;
 }
 
 .message-recipient {
   font-weight: 500;
   font-size: 13px;
-  color: #666;
+  color: #1d9bd1;
 }
 
 .message-time {
-  color: #888;
+  color: #8d8d8e;
   font-size: 11px;
   margin-left: auto;
 }
@@ -316,25 +326,47 @@ export const messageListStyles = `
 }
 
 .message-badge.broadcast {
-  background: #dbeafe;
-  color: #1d4ed8;
+  background: rgba(232, 164, 39, 0.15);
+  color: #e8a427;
 }
 
 .message-body {
   font-size: 14px;
   line-height: 1.5;
-  color: #333;
+  color: #d1d2d3;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
+.message-body code {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 2px 4px;
+  border-radius: 3px;
+  color: #00ffc8;
+}
+
+.message-body pre {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 13px;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 12px;
+  border-radius: 4px;
+  margin: 8px 0;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
 .message-link {
-  color: #1264a3;
+  color: #1d9bd1;
   text-decoration: none;
 }
 
 .message-link:hover {
   text-decoration: underline;
+  color: #4ab8e8;
 }
 
 .message-thread-btn {
@@ -343,19 +375,19 @@ export const messageListStyles = `
   gap: 4px;
   margin-top: 8px;
   padding: 4px 8px;
-  background: transparent;
-  border: 1px solid #e8e8e8;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 4px;
-  color: #666;
+  color: #1d9bd1;
   font-size: 12px;
   cursor: pointer;
   transition: all 0.15s;
 }
 
 .message-thread-btn:hover {
-  background: #f5f5f5;
-  border-color: #d0d0d0;
-  color: #333;
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: #4ab8e8;
 }
 
 .message-thread-btn svg {

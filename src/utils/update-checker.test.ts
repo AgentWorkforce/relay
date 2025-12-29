@@ -170,7 +170,7 @@ describe('update-checker', () => {
 
   describe('UpdateInfo interface', () => {
     it('has correct shape', async () => {
-      const { checkForUpdates } = await import('./update-checker.js');
+      const { checkForUpdates: _checkForUpdates } = await import('./update-checker.js');
 
       // Type check - this verifies the interface at compile time
       const mockInfo = {

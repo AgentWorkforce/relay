@@ -1,9 +1,7 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
-import fs from 'node:fs';
-import os from 'node:os';
 
 const execAsync = promisify(exec);
 
@@ -154,8 +152,8 @@ describe('CLI Helper Functions', () => {
     it('should parse duration strings', async () => {
       // These should not error
       const { code: code1 } = await runCli('history --since 1h');
-      const { code: code2 } = await runCli('history --since 30m');
-      const { code: code3 } = await runCli('history --since 7d');
+      const { code: _code2 } = await runCli('history --since 30m');
+      const { code: _code3 } = await runCli('history --since 7d');
       // Commands should execute (might have no results, but shouldn't crash)
       expect([0, code1]).toContain(code1);
     });

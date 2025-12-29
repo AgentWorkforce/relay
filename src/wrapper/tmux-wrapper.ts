@@ -16,12 +16,12 @@ import { exec, execSync, spawn, ChildProcess } from 'node:child_process';
 import crypto from 'node:crypto';
 import { promisify } from 'node:util';
 import { RelayClient } from './client.js';
-import { OutputParser, type ParsedCommand, parseSummaryWithDetails, parseSessionEndFromOutput, ParsedMessageMetadata } from './parser.js';
+import { OutputParser, type ParsedCommand, parseSummaryWithDetails, parseSessionEndFromOutput } from './parser.js';
 import { InboxManager } from './inbox.js';
 import type { SendPayload, SendMeta } from '../protocol/types.js';
 import { SqliteStorageAdapter } from '../storage/sqlite-adapter.js';
 import { getProjectPaths } from '../utils/project-namespace.js';
-import { getTmuxPath, TmuxNotFoundError } from '../utils/tmux-resolver.js';
+import { getTmuxPath } from '../utils/tmux-resolver.js';
 
 const execAsync = promisify(exec);
 const escapeRegex = (str: string): string => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -91,7 +91,7 @@ export interface TmuxWrapperConfig {
  * Get the default relay prefix for a given CLI type.
  * All agents now use '->relay:' as the unified prefix.
  */
-export function getDefaultPrefix(cliType: 'claude' | 'codex' | 'gemini' | 'droid' | 'other'): string {
+export function getDefaultPrefix(_cliType: 'claude' | 'codex' | 'gemini' | 'droid' | 'other'): string {
   // Unified prefix for all agent types
   return '->relay:';
 }

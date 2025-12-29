@@ -199,10 +199,39 @@ async function installTmux() {
 }
 
 /**
+ * Install dashboard dependencies
+ */
+function installDashboardDeps() {
+  const dashboardDir = path.join(getPackageRoot(), 'src', 'dashboard');
+
+  if (!fs.existsSync(dashboardDir)) {
+    info('Dashboard directory not found, skipping');
+    return;
+  }
+
+  const dashboardNodeModules = path.join(dashboardDir, 'node_modules');
+  if (fs.existsSync(dashboardNodeModules)) {
+    info('Dashboard dependencies already installed');
+    return;
+  }
+
+  info('Installing dashboard dependencies...');
+  try {
+    execSync('npm install', { cwd: dashboardDir, stdio: 'inherit' });
+    success('Dashboard dependencies installed');
+  } catch (err) {
+    error(`Failed to install dashboard dependencies: ${err.message}`);
+  }
+}
+
+/**
  * Main postinstall routine
  */
 async function main() {
-  // Skip in CI environments where tmux isn't needed
+  // Always install dashboard dependencies (needed for build)
+  installDashboardDeps();
+
+  // Skip tmux install in CI environments where tmux isn't needed
   if (process.env.CI === 'true') {
     info('Skipping tmux install in CI environment');
     return;

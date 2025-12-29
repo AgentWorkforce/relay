@@ -23,6 +23,7 @@ export interface AgentCardProps {
   compact?: boolean;
   onClick?: (agent: Agent) => void;
   onMessageClick?: (agent: Agent) => void;
+  onReleaseClick?: (agent: Agent) => void;
 }
 
 export function AgentCard({
@@ -32,6 +33,7 @@ export function AgentCard({
   compact = false,
   onClick,
   onMessageClick,
+  onReleaseClick,
 }: AgentCardProps) {
   const colors = getAgentColor(agent.name);
   const initials = getAgentInitials(agent.name);
@@ -47,6 +49,11 @@ export function AgentCard({
     onMessageClick?.(agent);
   };
 
+  const handleReleaseClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onReleaseClick?.(agent);
+  };
+
   if (compact) {
     return (
       <div
@@ -60,13 +67,27 @@ export function AgentCard({
         <div className="agent-avatar-small" style={{ backgroundColor: colors.primary }}>
           <span style={{ color: colors.text }}>{initials}</span>
         </div>
-        <span className="agent-name">{agent.name}</span>
-        {agent.isProcessing ? (
-          <ThinkingDot isProcessing={true} />
-        ) : (
-          <div className="agent-status-dot" style={{ backgroundColor: statusColor }} />
-        )}
-        {agent.needsAttention && <div className="attention-badge" />}
+        <div className="agent-compact-info">
+          <span className="agent-name">{displayName}</span>
+          <span className="agent-breadcrumb-compact">{getAgentBreadcrumb(agent.name)}</span>
+        </div>
+        <div className="agent-compact-actions">
+          {agent.isSpawned && onReleaseClick && (
+            <button
+              className="release-btn-compact"
+              onClick={handleReleaseClick}
+              title="Kill agent"
+            >
+              <ReleaseIcon />
+            </button>
+          )}
+          {agent.isProcessing ? (
+            <ThinkingDot isProcessing={true} />
+          ) : (
+            <div className="agent-status-dot" style={{ backgroundColor: statusColor }} />
+          )}
+          {agent.needsAttention && <div className="attention-badge" />}
+        </div>
       </div>
     );
   }
@@ -126,12 +147,20 @@ export function AgentCard({
           {agent.messageCount !== undefined && agent.messageCount > 0 && (
             <span className="message-count">{agent.messageCount} msgs</span>
           )}
+          {agent.isSpawned && <span className="agent-spawned-badge">spawned</span>}
         </div>
-        {onMessageClick && (
-          <button className="message-btn" onClick={handleMessageClick} title="Send message">
-            <MessageIcon />
-          </button>
-        )}
+        <div className="agent-actions">
+          {agent.isSpawned && onReleaseClick && (
+            <button className="release-btn" onClick={handleReleaseClick} title="Release agent">
+              <ReleaseIcon />
+            </button>
+          )}
+          {onMessageClick && (
+            <button className="message-btn" onClick={handleMessageClick} title="Send message">
+              <MessageIcon />
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -153,6 +182,28 @@ function MessageIcon() {
       strokeLinejoin="round"
     >
       <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
+  );
+}
+
+/**
+ * Release/kill icon SVG (X in circle)
+ */
+function ReleaseIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="12" cy="12" r="10" />
+      <line x1="15" y1="9" x2="9" y2="15" />
+      <line x1="9" y1="9" x2="15" y2="15" />
     </svg>
   );
 }
@@ -322,38 +373,116 @@ export const agentCardStyles = `
   opacity: 0.9;
 }
 
+.agent-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.release-btn {
+  background: var(--color-error, #e01e5a);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.2s;
+}
+
+.release-btn:hover {
+  opacity: 0.9;
+}
+
+.agent-spawned-badge {
+  background: var(--color-accent-light, rgba(18, 100, 163, 0.15));
+  color: var(--color-accent, #1264a3);
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  font-weight: 500;
+}
+
 /* Compact variant */
 .agent-card-compact {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
   transition: background 0.2s;
 }
 
 .agent-card-compact:hover {
-  background: var(--agent-light);
+  background: rgba(74, 158, 255, 0.08);
 }
 
 .agent-card-compact.selected {
-  background: var(--agent-light);
+  background: rgba(74, 158, 255, 0.12);
   border-left: 3px solid var(--agent-primary);
 }
 
-.agent-card-compact .agent-name {
+.agent-compact-info {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.agent-card-compact .agent-name {
   font-size: 13px;
+  font-weight: 600;
+  color: #e8e8e8;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+.agent-breadcrumb-compact {
+  font-size: 10px;
+  color: #888;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-compact-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.release-btn-compact {
+  background: transparent;
+  border: none;
+  color: #666;
+  padding: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: all 0.2s;
+  opacity: 0;
+}
+
+.agent-card-compact:hover .release-btn-compact {
+  opacity: 1;
+}
+
+.release-btn-compact:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
 .agent-card-compact .attention-badge {
   width: 8px;
   height: 8px;
-  margin-left: auto;
 }
 
 /* Thinking indicator section */

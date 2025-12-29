@@ -6,8 +6,6 @@
 import { v4 as uuid } from 'uuid';
 import {
   type Envelope,
-  type SendPayload,
-  type SendMeta,
   type SendEnvelope,
   type DeliverEnvelope,
   type AckPayload,

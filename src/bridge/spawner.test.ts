@@ -1,23 +1,36 @@
 /**
- * Unit tests for AgentSpawner
+ * Unit tests for AgentSpawner (node-pty based)
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import fs from 'node:fs';
-import { AgentSpawner } from './spawner.js';
-import { execAsync, sleep, escapeForTmux } from './utils.js';
+import { AgentSpawner, readWorkersMetadata, getWorkerLogsDir } from './spawner.js';
 
 const PROJECT_ROOT = '/project/root';
 
-vi.mock('./utils.js', () => {
-  const execAsync = vi.fn();
-  const sleep = vi.fn();
-  const escapeForTmux = vi.fn((str: string) => `escaped:${str}`);
+// Mock PtyWrapper
+const mockPtyWrapper = {
+  start: vi.fn(),
+  stop: vi.fn(),
+  kill: vi.fn(),
+  write: vi.fn(),
+  getOutput: vi.fn(() => []),
+  getRawOutput: vi.fn(() => ''),
+  isRunning: true,
+  pid: 12345,
+  logPath: '/team/worker-logs/test.log',
+  name: 'TestWorker',
+};
+
+vi.mock('../wrapper/pty-wrapper.js', () => {
   return {
-    execAsync,
-    sleep,
-    escapeForTmux,
+    PtyWrapper: vi.fn().mockImplementation(() => mockPtyWrapper),
   };
+});
+
+vi.mock('./utils.js', () => {
+  const sleep = vi.fn();
+  return { sleep };
 });
 
 vi.mock('../utils/project-namespace.js', () => {
@@ -33,65 +46,31 @@ vi.mock('../utils/project-namespace.js', () => {
   };
 });
 
-vi.mock('../utils/tmux-resolver.js', () => {
-  return {
-    getTmuxPath: vi.fn(() => 'tmux'),
-  };
-});
-
-const execAsyncMock = vi.mocked(execAsync);
-const sleepMock = vi.mocked(sleep);
-const escapeForTmuxMock = vi.mocked(escapeForTmux);
 const existsSyncMock = vi.spyOn(fs, 'existsSync');
 const readFileSyncMock = vi.spyOn(fs, 'readFileSync');
-let waitForAgentRegistrationMock: vi.SpyInstance;
+const writeFileSyncMock = vi.spyOn(fs, 'writeFileSync');
+const mkdirSyncMock = vi.spyOn(fs, 'mkdirSync');
+let waitForAgentRegistrationMock: ReturnType<typeof vi.spyOn>;
 
 describe('AgentSpawner', () => {
   const projectRoot = PROJECT_ROOT;
-  const session = 'relay-workers';
 
   beforeEach(() => {
-    vi.restoreAllMocks();
     vi.clearAllMocks();
-    execAsyncMock.mockReset();
-    sleepMock.mockReset();
-    escapeForTmuxMock.mockReset();
     existsSyncMock.mockReturnValue(true);
     readFileSyncMock.mockReturnValue(JSON.stringify({ agents: [] }));
-    escapeForTmuxMock.mockImplementation((str: string) => `escaped:${str}`);
+    writeFileSyncMock.mockImplementation(() => {});
+    mkdirSyncMock.mockImplementation(() => undefined);
+    mockPtyWrapper.start.mockResolvedValue(undefined);
+    mockPtyWrapper.isRunning = true;
+    mockPtyWrapper.pid = 12345;
     waitForAgentRegistrationMock = vi
       .spyOn(AgentSpawner.prototype as any, 'waitForAgentRegistration')
       .mockResolvedValue(true);
   });
 
-  it('creates tmux session when missing', async () => {
-    execAsyncMock.mockRejectedValueOnce(new Error('missing'));
-    execAsyncMock.mockResolvedValue({ stdout: '', stderr: '' });
-
-    const spawner = new AgentSpawner(projectRoot, session);
-    await spawner.ensureSession();
-
-    expect(execAsyncMock).toHaveBeenCalledTimes(2);
-    expect(execAsyncMock.mock.calls[0][0]).toBe(`"tmux" has-session -t ${session} 2>/dev/null`);
-    expect(execAsyncMock.mock.calls[1][0]).toBe(`"tmux" new-session -d -s ${session} -c "${projectRoot}"`);
-  });
-
-  it('does nothing when tmux session already exists', async () => {
-    execAsyncMock.mockResolvedValue({ stdout: '', stderr: '' });
-
-    const spawner = new AgentSpawner(projectRoot, session);
-    await spawner.ensureSession();
-
-    expect(execAsyncMock).toHaveBeenCalledTimes(1);
-    expect(execAsyncMock).toHaveBeenCalledWith(`"tmux" has-session -t ${session} 2>/dev/null`);
-  });
-
-  it('spawns a worker and tracks it', async () => {
-    execAsyncMock.mockResolvedValue({ stdout: '/usr/local/bin/agent-relay', stderr: '' });
-    sleepMock.mockResolvedValue();
-    waitForAgentRegistrationMock.mockResolvedValue(true);
-
-    const spawner = new AgentSpawner(projectRoot, session);
+  it('spawns a worker and tracks it with PID', async () => {
+    const spawner = new AgentSpawner(projectRoot);
     const result = await spawner.spawn({
       name: 'Dev1',
       cli: 'claude',
@@ -102,24 +81,18 @@ describe('AgentSpawner', () => {
     expect(result).toMatchObject({
       success: true,
       name: 'Dev1',
-      window: `${session}:Dev1`,
+      pid: 12345,
     });
     expect(spawner.hasWorker('Dev1')).toBe(true);
-    expect(execAsyncMock).toHaveBeenNthCalledWith(1, `"tmux" has-session -t ${session} 2>/dev/null`);
-    expect(execAsyncMock).toHaveBeenNthCalledWith(2, `"tmux" new-window -t ${session} -n Dev1 -c "${projectRoot}"`);
-    expect(execAsyncMock).toHaveBeenNthCalledWith(3, 'which agent-relay'); // Find full path
-    expect(execAsyncMock).toHaveBeenNthCalledWith(4, `"tmux" send-keys -t ${session}:Dev1 'unset TMUX && /usr/local/bin/agent-relay -n Dev1 -- claude --dangerously-skip-permissions' Enter`);
-    expect(execAsyncMock).toHaveBeenNthCalledWith(5, `"tmux" send-keys -t ${session}:Dev1 -l "escaped:Finish the report"`);
-    expect(execAsyncMock).toHaveBeenNthCalledWith(6, `"tmux" send-keys -t ${session}:Dev1 Enter`);
-    expect(sleepMock).toHaveBeenCalledWith(100);
+    expect(mockPtyWrapper.start).toHaveBeenCalled();
+    expect(mockPtyWrapper.write).toHaveBeenCalledWith('Finish the report\r');
   });
 
   it('adds --dangerously-skip-permissions for Claude variants', async () => {
-    execAsyncMock.mockResolvedValue({ stdout: '/usr/local/bin/agent-relay', stderr: '' });
-    sleepMock.mockResolvedValue();
-    waitForAgentRegistrationMock.mockResolvedValue(true);
+    const { PtyWrapper } = await import('../wrapper/pty-wrapper.js');
+    const PtyWrapperMock = PtyWrapper as Mock;
 
-    const spawner = new AgentSpawner(projectRoot, session);
+    const spawner = new AgentSpawner(projectRoot);
     await spawner.spawn({
       name: 'Opus1',
       cli: 'claude:opus',
@@ -127,19 +100,17 @@ describe('AgentSpawner', () => {
       requestedBy: 'Lead',
     });
 
-    // Check that the command includes --dangerously-skip-permissions for claude:opus
-    expect(execAsyncMock).toHaveBeenNthCalledWith(
-      4,
-      `"tmux" send-keys -t ${session}:Opus1 'unset TMUX && /usr/local/bin/agent-relay -n Opus1 -- claude:opus --dangerously-skip-permissions' Enter`
-    );
+    // Check the PtyWrapper was constructed with --dangerously-skip-permissions
+    const constructorCall = PtyWrapperMock.mock.calls[0][0];
+    expect(constructorCall.command).toBe('claude:opus');
+    expect(constructorCall.args).toContain('--dangerously-skip-permissions');
   });
 
   it('does NOT add --dangerously-skip-permissions for non-Claude CLIs', async () => {
-    execAsyncMock.mockResolvedValue({ stdout: '/usr/local/bin/agent-relay', stderr: '' });
-    sleepMock.mockResolvedValue();
-    waitForAgentRegistrationMock.mockResolvedValue(true);
+    const { PtyWrapper } = await import('../wrapper/pty-wrapper.js');
+    const PtyWrapperMock = PtyWrapper as Mock;
 
-    const spawner = new AgentSpawner(projectRoot, session);
+    const spawner = new AgentSpawner(projectRoot);
     await spawner.spawn({
       name: 'Codex1',
       cli: 'codex',
@@ -147,24 +118,23 @@ describe('AgentSpawner', () => {
       requestedBy: 'Lead',
     });
 
-    // Check that the command does NOT include --dangerously-skip-permissions for codex
-    expect(execAsyncMock).toHaveBeenNthCalledWith(
-      4,
-      `"tmux" send-keys -t ${session}:Codex1 'unset TMUX && /usr/local/bin/agent-relay -n Codex1 -- codex' Enter`
-    );
+    // Check the PtyWrapper was constructed without --dangerously-skip-permissions
+    const constructorCall = PtyWrapperMock.mock.calls[0][0];
+    expect(constructorCall.command).toBe('codex');
+    expect(constructorCall.args).not.toContain('--dangerously-skip-permissions');
   });
 
   it('refuses to spawn a duplicate worker', async () => {
-    const spawner = new AgentSpawner(projectRoot, session);
-    spawner['activeWorkers'].set('Dev1', {
+    const spawner = new AgentSpawner(projectRoot);
+    // First spawn succeeds
+    await spawner.spawn({
       name: 'Dev1',
       cli: 'claude',
-      task: 'Existing task',
-      spawnedBy: 'Lead',
-      spawnedAt: Date.now(),
-      window: `${session}:Dev1`,
+      task: 'First task',
+      requestedBy: 'Lead',
     });
 
+    // Second spawn with same name should fail
     const result = await spawner.spawn({
       name: 'Dev1',
       cli: 'claude',
@@ -173,15 +143,13 @@ describe('AgentSpawner', () => {
     });
 
     expect(result.success).toBe(false);
-    expect(execAsyncMock).not.toHaveBeenCalled();
+    expect(result.error).toContain('already exists');
   });
 
-  it('returns failure when spawn command errors', async () => {
-    execAsyncMock
-      .mockResolvedValueOnce({ stdout: '', stderr: '' }) // has-session
-      .mockRejectedValueOnce(new Error('tmux new-window failed')); // new-window fails
+  it('returns failure when PtyWrapper.start() throws', async () => {
+    mockPtyWrapper.start.mockRejectedValueOnce(new Error('PTY spawn failed'));
 
-    const spawner = new AgentSpawner(projectRoot, session);
+    const spawner = new AgentSpawner(projectRoot);
     const result = await spawner.spawn({
       name: 'Dev2',
       cli: 'claude',
@@ -190,14 +158,14 @@ describe('AgentSpawner', () => {
     });
 
     expect(result.success).toBe(false);
+    expect(result.error).toBe('PTY spawn failed');
     expect(spawner.hasWorker('Dev2')).toBe(false);
   });
 
   it('cleans up when agent does not register', async () => {
-    execAsyncMock.mockResolvedValue({ stdout: '/usr/local/bin/agent-relay', stderr: '' });
     waitForAgentRegistrationMock.mockResolvedValue(false);
 
-    const spawner = new AgentSpawner(projectRoot, session);
+    const spawner = new AgentSpawner(projectRoot);
     const result = await spawner.spawn({
       name: 'Late',
       cli: 'claude',
@@ -207,91 +175,159 @@ describe('AgentSpawner', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('failed to register');
-    expect(execAsyncMock).toHaveBeenCalledWith(`"tmux" kill-window -t ${session}:Late`);
+    expect(mockPtyWrapper.kill).toHaveBeenCalled();
     expect(spawner.hasWorker('Late')).toBe(false);
   });
 
   it('releases a worker and removes tracking', async () => {
-    execAsyncMock.mockResolvedValue({ stdout: '', stderr: '' });
-    sleepMock.mockResolvedValue();
+    const { sleep } = await import('./utils.js');
+    const sleepMock = sleep as Mock;
+    sleepMock.mockResolvedValue(undefined);
 
-    const spawner = new AgentSpawner(projectRoot, session);
-    spawner['activeWorkers'].set('Worker', {
+    const spawner = new AgentSpawner(projectRoot);
+    await spawner.spawn({
       name: 'Worker',
       cli: 'claude',
       task: 'Task',
-      spawnedBy: 'Lead',
-      spawnedAt: Date.now(),
-      window: `${session}:Worker`,
+      requestedBy: 'Lead',
     });
+
+    mockPtyWrapper.isRunning = false; // Simulate graceful stop
 
     const result = await spawner.release('Worker');
 
     expect(result).toBe(true);
     expect(spawner.hasWorker('Worker')).toBe(false);
-    expect(execAsyncMock).toHaveBeenNthCalledWith(1, `"tmux" send-keys -t ${session}:Worker '/exit' Enter`);
-    expect(execAsyncMock).toHaveBeenNthCalledWith(2, `"tmux" kill-window -t ${session}:Worker`);
-    expect(sleepMock).toHaveBeenCalledWith(2000);
+    expect(mockPtyWrapper.stop).toHaveBeenCalled();
+  });
+
+  it('force kills worker if still running after stop', async () => {
+    const { sleep } = await import('./utils.js');
+    const sleepMock = sleep as Mock;
+    sleepMock.mockResolvedValue(undefined);
+
+    const spawner = new AgentSpawner(projectRoot);
+    await spawner.spawn({
+      name: 'Stubborn',
+      cli: 'claude',
+      task: 'Task',
+      requestedBy: 'Lead',
+    });
+
+    mockPtyWrapper.isRunning = true; // Still running after stop
+
+    const result = await spawner.release('Stubborn');
+
+    expect(result).toBe(true);
+    expect(mockPtyWrapper.stop).toHaveBeenCalled();
+    expect(mockPtyWrapper.kill).toHaveBeenCalled();
   });
 
   it('returns false when releasing a missing worker', async () => {
-    const spawner = new AgentSpawner(projectRoot, session);
+    const spawner = new AgentSpawner(projectRoot);
 
     const result = await spawner.release('Missing');
 
     expect(result).toBe(false);
-    expect(execAsyncMock).not.toHaveBeenCalled();
-  });
-
-  it('clears worker even when release fails', async () => {
-    execAsyncMock.mockRejectedValue(new Error('tmux error'));
-    sleepMock.mockResolvedValue();
-
-    const spawner = new AgentSpawner(projectRoot, session);
-    spawner['activeWorkers'].set('Failing', {
-      name: 'Failing',
-      cli: 'claude',
-      task: 'Task',
-      spawnedBy: 'Lead',
-      spawnedAt: Date.now(),
-      window: `${session}:Failing`,
-    });
-
-    const result = await spawner.release('Failing');
-
-    expect(result).toBe(true);
-    expect(spawner.hasWorker('Failing')).toBe(false);
-    expect(execAsyncMock).toHaveBeenCalledTimes(2);
-    expect(execAsyncMock.mock.calls[0][0]).toBe(`"tmux" send-keys -t ${session}:Failing '/exit' Enter`);
-    expect(execAsyncMock.mock.calls[1][0]).toBe(`"tmux" kill-window -t ${session}:Failing`);
-    expect(sleepMock).toHaveBeenCalledWith(2000);
   });
 
   it('releases all workers', async () => {
-    execAsyncMock.mockResolvedValue({ stdout: '', stderr: '' });
-    sleepMock.mockResolvedValue();
+    const { sleep } = await import('./utils.js');
+    const sleepMock = sleep as Mock;
+    sleepMock.mockResolvedValue(undefined);
 
-    const spawner = new AgentSpawner(projectRoot, session);
-    spawner['activeWorkers'].set('A', {
-      name: 'A',
-      cli: 'claude',
-      task: 'Task A',
-      spawnedBy: 'Lead',
-      spawnedAt: Date.now(),
-      window: `${session}:A`,
-    });
-    spawner['activeWorkers'].set('B', {
-      name: 'B',
-      cli: 'claude',
-      task: 'Task B',
-      spawnedBy: 'Lead',
-      spawnedAt: Date.now(),
-      window: `${session}:B`,
-    });
+    const spawner = new AgentSpawner(projectRoot);
+    await spawner.spawn({ name: 'A', cli: 'claude', task: 'Task A', requestedBy: 'Lead' });
+    await spawner.spawn({ name: 'B', cli: 'claude', task: 'Task B', requestedBy: 'Lead' });
+
+    mockPtyWrapper.isRunning = false;
 
     await spawner.releaseAll();
 
     expect(spawner.getActiveWorkers()).toHaveLength(0);
-    expect(execAsyncMock).toHaveBeenCalledTimes(4); // two send-keys and two kill-window
+  });
+
+  it('saves workers metadata to disk', async () => {
+    const spawner = new AgentSpawner(projectRoot);
+    await spawner.spawn({
+      name: 'Worker1',
+      cli: 'claude',
+      task: 'Task',
+      requestedBy: 'Lead',
+    });
+
+    expect(writeFileSyncMock).toHaveBeenCalled();
+    const [filePath, content] = writeFileSyncMock.mock.calls[0];
+    expect(filePath).toBe('/team/workers.json');
+    const parsed = JSON.parse(content as string);
+    expect(parsed.workers).toHaveLength(1);
+    expect(parsed.workers[0].name).toBe('Worker1');
+    expect(parsed.workers[0].pid).toBe(12345);
+  });
+
+  it('getWorkerOutput returns output from PtyWrapper', async () => {
+    mockPtyWrapper.getOutput.mockReturnValue(['line1', 'line2', 'line3']);
+
+    const spawner = new AgentSpawner(projectRoot);
+    await spawner.spawn({ name: 'Dev', cli: 'claude', task: '', requestedBy: 'Lead' });
+
+    const output = spawner.getWorkerOutput('Dev', 2);
+
+    expect(output).toEqual(['line1', 'line2', 'line3']);
+    expect(mockPtyWrapper.getOutput).toHaveBeenCalledWith(2);
+  });
+
+  it('getWorkerOutput returns null for unknown worker', async () => {
+    const spawner = new AgentSpawner(projectRoot);
+    const output = spawner.getWorkerOutput('Unknown');
+    expect(output).toBeNull();
+  });
+});
+
+describe('readWorkersMetadata', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns empty array when file does not exist', () => {
+    existsSyncMock.mockReturnValue(false);
+
+    const workers = readWorkersMetadata(PROJECT_ROOT);
+
+    expect(workers).toEqual([]);
+  });
+
+  it('returns workers from file', () => {
+    existsSyncMock.mockReturnValue(true);
+    readFileSyncMock.mockReturnValue(
+      JSON.stringify({
+        workers: [
+          { name: 'W1', cli: 'claude', pid: 123 },
+          { name: 'W2', cli: 'codex', pid: 456 },
+        ],
+      })
+    );
+
+    const workers = readWorkersMetadata(PROJECT_ROOT);
+
+    expect(workers).toHaveLength(2);
+    expect(workers[0].name).toBe('W1');
+    expect(workers[1].name).toBe('W2');
+  });
+
+  it('returns empty array on parse error', () => {
+    existsSyncMock.mockReturnValue(true);
+    readFileSyncMock.mockReturnValue('invalid json');
+
+    const workers = readWorkersMetadata(PROJECT_ROOT);
+
+    expect(workers).toEqual([]);
+  });
+});
+
+describe('getWorkerLogsDir', () => {
+  it('returns correct logs directory path', () => {
+    const logsDir = getWorkerLogsDir(PROJECT_ROOT);
+    expect(logsDir).toBe('/team/worker-logs');
   });
 });

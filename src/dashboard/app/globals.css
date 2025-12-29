@@ -13,36 +13,41 @@
   padding: 0;
 }
 
-/* CSS Custom Properties */
+/* CSS Custom Properties - Default to Dark Mode */
 :root {
-  /* Colors */
-  --color-bg-primary: #f5f5f5;
-  --color-bg-secondary: #ffffff;
-  --color-bg-tertiary: #fafafa;
-  --color-bg-hover: #f0f0f0;
-  --color-bg-active: #e8e8e8;
+  /* Colors - Dark Theme (default) */
+  --color-bg-primary: #1a1d21;
+  --color-bg-secondary: #222529;
+  --color-bg-tertiary: #19171d;
+  --color-bg-hover: rgba(255, 255, 255, 0.06);
+  --color-bg-active: rgba(255, 255, 255, 0.1);
 
-  --color-text-primary: #1a1a1a;
-  --color-text-secondary: #666666;
-  --color-text-muted: #888888;
-  --color-text-inverse: #ffffff;
+  --color-text-primary: #d1d2d3;
+  --color-text-secondary: #ababad;
+  --color-text-muted: #8d8d8e;
+  --color-text-inverse: #1a1d21;
 
-  --color-border: #e8e8e8;
-  --color-border-light: #f0f0f0;
-  --color-border-dark: #d0d0d0;
+  --color-border: rgba(255, 255, 255, 0.1);
+  --color-border-light: rgba(255, 255, 255, 0.06);
+  --color-border-dark: rgba(255, 255, 255, 0.15);
 
   --color-accent: #1264a3;
   --color-accent-hover: #0d4f82;
-  --color-accent-light: #e8f4fd;
+  --color-accent-light: rgba(18, 100, 163, 0.15);
 
   --color-success: #2bac76;
-  --color-success-light: #ecfdf5;
+  --color-success-light: rgba(43, 172, 118, 0.15);
 
-  --color-warning: #f59e0b;
-  --color-warning-light: #fffbeb;
+  --color-warning: #e8a427;
+  --color-warning-light: rgba(232, 164, 39, 0.15);
 
-  --color-error: #ef4444;
-  --color-error-light: #fef2f2;
+  --color-error: #e01e5a;
+  --color-error-light: rgba(224, 30, 90, 0.15);
+
+  /* Sidebar colors */
+  --sidebar-bg: #1a1a2e;
+  --sidebar-border: #2a2a3e;
+  --sidebar-hover: #3a3a4e;
 
   /* Typography */
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
@@ -207,6 +212,68 @@ button:focus-visible {
   }
 }
 
+/* =====================
+   Light Theme
+   ===================== */
+[data-theme="light"] {
+  --color-bg-primary: #ffffff;
+  --color-bg-secondary: #f8f9fa;
+  --color-bg-tertiary: #f1f3f5;
+  --color-bg-hover: rgba(0, 0, 0, 0.04);
+  --color-bg-active: rgba(0, 0, 0, 0.08);
+
+  --color-text-primary: #1a1d21;
+  --color-text-secondary: #616061;
+  --color-text-muted: #868686;
+  --color-text-inverse: #ffffff;
+
+  --color-border: rgba(0, 0, 0, 0.1);
+  --color-border-light: rgba(0, 0, 0, 0.06);
+  --color-border-dark: rgba(0, 0, 0, 0.15);
+
+  --color-accent: #1264a3;
+  --color-accent-hover: #0d4f82;
+  --color-accent-light: rgba(18, 100, 163, 0.1);
+
+  --color-success: #2bac76;
+  --color-success-light: rgba(43, 172, 118, 0.1);
+
+  --color-warning: #e8a427;
+  --color-warning-light: rgba(232, 164, 39, 0.1);
+
+  --color-error: #e01e5a;
+  --color-error-light: rgba(224, 30, 90, 0.1);
+
+  /* Sidebar colors - light theme */
+  --sidebar-bg: #3f0e40;
+  --sidebar-border: #522653;
+  --sidebar-hover: #4a154b;
+}
+
+/* Light theme sidebar text adjustments */
+[data-theme="light"] .sidebar {
+  background: var(--sidebar-bg);
+  border-right-color: var(--sidebar-border);
+}
+
+[data-theme="light"] .sidebar-search {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+[data-theme="light"] .view-mode-toggle {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+[data-theme="light"] .toggle-btn.active {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Light theme message list */
+[data-theme="light"] .message-badge.broadcast {
+  background: rgba(232, 164, 39, 0.15);
+  color: #b47e1a;
+}
+
 /* Dashboard Layout */
 .dashboard-app {
   display: flex;
@@ -322,6 +389,12 @@ button:focus-visible {
   outline: none;
   transition: border-color var(--transition-fast);
   box-sizing: border-box;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.composer-input::placeholder {
+  color: var(--color-text-muted);
 }
 
 .composer-input:focus {
@@ -613,8 +686,8 @@ button:focus-visible {
    ===================== */
 .header {
   height: 52px;
-  background: #ffffff;
-  border-bottom: 1px solid #e8e8e8;
+  background: var(--color-bg-secondary);
+  border-bottom: 1px solid var(--color-border);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -628,23 +701,23 @@ button:focus-visible {
 }
 
 .channel-prefix {
-  color: #888;
+  color: var(--color-text-muted);
   font-size: 16px;
 }
 
 .channel-name {
   font-weight: 600;
   font-size: 15px;
-  color: #1a1a1a;
+  color: var(--color-text-primary);
 }
 
 .channel-topic,
 .channel-breadcrumb {
-  color: #888;
+  color: var(--color-text-muted);
   font-size: 13px;
   margin-left: 8px;
   padding-left: 8px;
-  border-left: 1px solid #e8e8e8;
+  border-left: 1px solid var(--color-border);
 }
 
 .channel-info {
@@ -671,8 +744,8 @@ button:focus-visible {
 }
 
 .agent-status-badge {
-  background: #f0f0f0;
-  color: #666;
+  background: var(--color-bg-hover);
+  color: var(--color-text-secondary);
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 4px;
@@ -690,27 +763,27 @@ button:focus-visible {
   align-items: center;
   gap: 6px;
   padding: 6px 12px;
-  background: #f5f5f5;
-  border: 1px solid #e8e8e8;
+  background: var(--color-bg-hover);
+  border: 1px solid var(--color-border);
   border-radius: 6px;
-  color: #666;
+  color: var(--color-text-secondary);
   font-size: 13px;
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .header-btn:hover {
-  background: #ebebeb;
-  color: #333;
+  background: var(--color-bg-active);
+  color: var(--color-text-primary);
 }
 
 .header-btn kbd {
-  background: #fff;
-  border: 1px solid #ddd;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
   border-radius: 3px;
   padding: 1px 4px;
   font-size: 11px;
-  color: #888;
+  color: var(--color-text-muted);
 }
 
 .icon-btn {
@@ -916,13 +989,13 @@ button:focus-visible {
 .agent-display-name {
   font-weight: 600;
   font-size: 14px;
-  color: #1a1a1a;
+  color: var(--color-text-primary);
 }
 
 .agent-full-name,
 .agent-breadcrumb {
   font-size: 12px;
-  color: #666;
+  color: var(--color-text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -944,18 +1017,18 @@ button:focus-visible {
 .agent-task {
   margin-top: 8px;
   padding: 8px;
-  background: rgba(0, 0, 0, 0.03);
+  background: var(--color-bg-hover);
   border-radius: 4px;
   font-size: 12px;
 }
 
 .task-label {
-  color: #666;
+  color: var(--color-text-secondary);
   margin-right: 4px;
 }
 
 .task-text {
-  color: #1a1a1a;
+  color: var(--color-text-primary);
 }
 
 .agent-card-footer {
@@ -973,7 +1046,7 @@ button:focus-visible {
 }
 
 .agent-cli {
-  background: #f0f0f0;
+  background: var(--color-bg-hover);
   padding: 2px 6px;
   border-radius: 4px;
 }
@@ -1062,7 +1135,7 @@ button:focus-visible {
 .message-list-empty h3 {
   margin: 0 0 8px;
   font-size: 16px;
-  color: #666;
+  color: var(--color-text-secondary);
 }
 
 .message-list-empty p {
@@ -1079,12 +1152,12 @@ button:focus-visible {
 }
 
 .message-item:hover {
-  background: #f9f9f9;
+  background: var(--color-bg-hover);
 }
 
 .message-item.highlighted {
-  background: #fffbeb;
-  border-left: 3px solid #f59e0b;
+  background: var(--color-warning-light);
+  border-left: 3px solid var(--color-warning);
   padding-left: 9px;
 }
 
@@ -1115,18 +1188,18 @@ button:focus-visible {
 .message-sender {
   font-weight: 600;
   font-size: 14px;
-  color: #1a1a1a;
+  color: var(--color-text-primary);
 }
 
 .message-arrow {
-  color: #888;
+  color: var(--color-text-muted);
   font-size: 12px;
 }
 
 .message-recipient {
   font-weight: 500;
   font-size: 13px;
-  color: #666;
+  color: var(--color-text-secondary);
 }
 
 .message-time {
@@ -1151,7 +1224,7 @@ button:focus-visible {
 .message-body {
   font-size: 14px;
   line-height: 1.5;
-  color: #333;
+  color: var(--color-text-primary);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -1172,18 +1245,18 @@ button:focus-visible {
   margin-top: 8px;
   padding: 4px 8px;
   background: transparent;
-  border: 1px solid #e8e8e8;
+  border: 1px solid var(--color-border);
   border-radius: 4px;
-  color: #666;
+  color: var(--color-text-secondary);
   font-size: 12px;
   cursor: pointer;
   transition: all 0.15s;
 }
 
 .message-thread-btn:hover {
-  background: #f5f5f5;
-  border-color: #d0d0d0;
-  color: #333;
+  background: var(--color-bg-hover);
+  border-color: var(--color-border-dark);
+  color: var(--color-text-primary);
 }
 
 .message-thread-btn svg {
@@ -1206,14 +1279,14 @@ button:focus-visible {
 }
 
 .command-palette {
-  background: #ffffff;
+  background: var(--color-bg-secondary);
   border-radius: 12px;
   width: 560px;
   max-width: 90vw;
   max-height: 60vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 16px 70px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 16px 70px rgba(0, 0, 0, 0.5);
   animation: slideDown 0.2s ease;
 }
 
@@ -1222,11 +1295,11 @@ button:focus-visible {
   align-items: center;
   gap: 12px;
   padding: 16px;
-  border-bottom: 1px solid #e8e8e8;
+  border-bottom: 1px solid var(--color-border);
 }
 
 .command-palette-input-wrapper svg {
-  color: #888;
+  color: var(--color-text-muted);
   flex-shrink: 0;
 }
 
@@ -1237,19 +1310,20 @@ button:focus-visible {
   font-family: inherit;
   outline: none;
   background: transparent;
+  color: var(--color-text-primary);
 }
 
 .command-palette-input::placeholder {
-  color: #aaa;
+  color: var(--color-text-muted);
 }
 
 .command-palette-kbd {
-  background: #f5f5f5;
-  border: 1px solid #e0e0e0;
+  background: var(--color-bg-hover);
+  border: 1px solid var(--color-border);
   border-radius: 4px;
   padding: 2px 6px;
   font-size: 11px;
-  color: #888;
+  color: var(--color-text-muted);
   font-family: inherit;
 }
 
@@ -1296,11 +1370,11 @@ button:focus-visible {
 
 .command-palette-item:hover,
 .command-palette-item.selected {
-  background: #f5f5f5;
+  background: var(--color-bg-hover);
 }
 
 .command-palette-item.selected {
-  background: #e8f4fd;
+  background: var(--color-accent-light);
 }
 
 .command-palette-item-icon {
@@ -1309,7 +1383,7 @@ button:focus-visible {
   justify-content: center;
   width: 28px;
   height: 28px;
-  color: #666;
+  color: var(--color-text-secondary);
 }
 
 .command-palette-agent-icon {
@@ -1334,24 +1408,24 @@ button:focus-visible {
 .command-palette-item-label {
   font-size: 14px;
   font-weight: 500;
-  color: #1a1a1a;
+  color: var(--color-text-primary);
 }
 
 .command-palette-item-desc {
   font-size: 12px;
-  color: #888;
+  color: var(--color-text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .command-palette-item-shortcut {
-  background: #f0f0f0;
-  border: 1px solid #e0e0e0;
+  background: var(--color-bg-hover);
+  border: 1px solid var(--color-border);
   border-radius: 4px;
   padding: 2px 6px;
   font-size: 11px;
-  color: #666;
+  color: var(--color-text-secondary);
   font-family: inherit;
 }
 
@@ -1370,13 +1444,13 @@ button:focus-visible {
 }
 
 .spawn-modal {
-  background: #ffffff;
+  background: var(--color-bg-secondary);
   border-radius: 12px;
   width: 480px;
   max-width: 90vw;
   max-height: 90vh;
   overflow-y: auto;
-  box-shadow: 0 16px 70px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 16px 70px rgba(0, 0, 0, 0.5);
   animation: slideUp 0.2s ease;
 }
 
@@ -1385,7 +1459,7 @@ button:focus-visible {
   align-items: center;
   justify-content: space-between;
   padding: 20px 24px;
-  border-bottom: 1px solid #e8e8e8;
+  border-bottom: 1px solid var(--color-border);
 }
 
 .spawn-modal-header h2 {
@@ -1403,14 +1477,14 @@ button:focus-visible {
   background: transparent;
   border: none;
   border-radius: 6px;
-  color: #666;
+  color: var(--color-text-secondary);
   cursor: pointer;
   transition: all 0.15s;
 }
 
 .spawn-modal-close:hover {
-  background: #f5f5f5;
-  color: #333;
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
 }
 
 .spawn-modal form {
@@ -1425,13 +1499,13 @@ button:focus-visible {
   display: block;
   font-size: 13px;
   font-weight: 600;
-  color: #333;
+  color: var(--color-text-primary);
   margin-bottom: 8px;
 }
 
 .spawn-modal-optional {
   font-weight: 400;
-  color: #888;
+  color: var(--color-text-muted);
 }
 
 .spawn-modal-templates {
@@ -1446,7 +1520,7 @@ button:focus-visible {
   align-items: center;
   gap: 4px;
   padding: 12px 8px;
-  background: #f9f9f9;
+  background: var(--color-bg-hover);
   border: 2px solid transparent;
   border-radius: 8px;
   cursor: pointer;
@@ -1455,12 +1529,12 @@ button:focus-visible {
 }
 
 .spawn-modal-template:hover {
-  background: #f0f0f0;
+  background: var(--color-bg-active);
 }
 
 .spawn-modal-template.selected {
-  background: #e8f4fd;
-  border-color: #1264a3;
+  background: var(--color-accent-light);
+  border-color: var(--color-accent);
 }
 
 .spawn-modal-template-icon {
@@ -1470,12 +1544,12 @@ button:focus-visible {
 .spawn-modal-template-name {
   font-size: 13px;
   font-weight: 600;
-  color: #333;
+  color: var(--color-text-primary);
 }
 
 .spawn-modal-template-desc {
   font-size: 11px;
-  color: #888;
+  color: var(--color-text-muted);
   text-align: center;
 }
 
@@ -1500,21 +1574,23 @@ button:focus-visible {
 .spawn-modal-input {
   flex: 1;
   padding: 10px 14px;
-  border: 1px solid #e8e8e8;
+  border: 1px solid var(--color-border);
   border-radius: 6px;
   font-size: 14px;
   font-family: inherit;
   outline: none;
   transition: border-color 0.15s;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
 }
 
 .spawn-modal-input:focus {
-  border-color: #1264a3;
+  border-color: var(--color-accent);
 }
 
 .spawn-modal-input:disabled {
-  background: #f9f9f9;
-  color: #888;
+  background: var(--color-bg-hover);
+  color: var(--color-text-muted);
 }
 
 .spawn-modal-name-suggestions {
@@ -1525,19 +1601,19 @@ button:focus-visible {
 
 .spawn-modal-suggestion {
   padding: 4px 8px;
-  background: #f5f5f5;
-  border: 1px solid #e8e8e8;
+  background: var(--color-bg-hover);
+  border: 1px solid var(--color-border);
   border-radius: 4px;
   font-size: 12px;
-  color: #666;
+  color: var(--color-text-secondary);
   cursor: pointer;
   font-family: inherit;
   transition: all 0.15s;
 }
 
 .spawn-modal-suggestion:hover {
-  background: #e8e8e8;
-  color: #333;
+  background: var(--color-bg-active);
+  color: var(--color-text-primary);
 }
 
 .spawn-modal-error {
@@ -1562,7 +1638,7 @@ button:focus-visible {
   justify-content: flex-end;
   gap: 8px;
   padding-top: 8px;
-  border-top: 1px solid #e8e8e8;
+  border-top: 1px solid var(--color-border);
 }
 
 .spawn-modal-btn {
@@ -1585,13 +1661,13 @@ button:focus-visible {
 }
 
 .spawn-modal-btn-secondary {
-  background: #f5f5f5;
-  color: #666;
+  background: var(--color-bg-hover);
+  color: var(--color-text-secondary);
 }
 
 .spawn-modal-btn-secondary:hover:not(:disabled) {
-  background: #e8e8e8;
-  color: #333;
+  background: var(--color-bg-active);
+  color: var(--color-text-primary);
 }
 
 .spawn-modal-btn-primary {
@@ -1622,14 +1698,14 @@ button:focus-visible {
 }
 
 .settings-panel {
-  background: #ffffff;
+  background: var(--color-bg-secondary);
   border-radius: 12px;
   width: 500px;
   max-width: 90vw;
   max-height: 80vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 16px 70px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 16px 70px rgba(0, 0, 0, 0.5);
   animation: slideUp 0.2s ease;
 }
 
@@ -1638,7 +1714,7 @@ button:focus-visible {
   align-items: center;
   justify-content: space-between;
   padding: 20px 24px;
-  border-bottom: 1px solid #e8e8e8;
+  border-bottom: 1px solid var(--color-border);
 }
 
 .settings-header h2 {
@@ -1656,22 +1732,22 @@ button:focus-visible {
   background: transparent;
   border: none;
   border-radius: 6px;
-  color: #666;
+  color: var(--color-text-secondary);
   cursor: pointer;
   transition: all 0.15s;
 }
 
 .settings-close:hover {
-  background: #f5f5f5;
-  color: #333;
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
 }
 
 .settings-tabs {
   display: flex;
   gap: 4px;
   padding: 12px 24px;
-  border-bottom: 1px solid #e8e8e8;
-  background: #fafafa;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg-tertiary);
 }
 
 .settings-tab {
@@ -1683,15 +1759,15 @@ button:focus-visible {
   border: none;
   border-radius: 6px;
   font-size: 13px;
-  color: #666;
+  color: var(--color-text-secondary);
   cursor: pointer;
   font-family: inherit;
   transition: all 0.15s;
 }
 
 .settings-tab:hover {
-  background: #f0f0f0;
-  color: #333;
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
 }
 
 .settings-tab.active {
@@ -1736,11 +1812,11 @@ button:focus-visible {
   align-items: center;
   gap: 6px;
   padding: 16px 20px;
-  background: #fafafa;
+  background: var(--color-bg-hover);
   border: 2px solid transparent;
   border-radius: 8px;
   font-size: 12px;
-  color: #666;
+  color: var(--color-text-secondary);
   cursor: pointer;
   font-family: inherit;
   transition: all 0.15s;
@@ -1748,13 +1824,13 @@ button:focus-visible {
 }
 
 .settings-theme-btn:hover {
-  background: #f0f0f0;
+  background: var(--color-bg-active);
 }
 
 .settings-theme-btn.active {
-  background: #e8f4fd;
-  border-color: #1264a3;
-  color: #1264a3;
+  background: var(--color-accent-light);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
 }
 
 .settings-toggle-option {
@@ -1762,7 +1838,7 @@ button:focus-visible {
   align-items: center;
   justify-content: space-between;
   padding: 12px;
-  background: #fafafa;
+  background: var(--color-bg-hover);
   border-radius: 8px;
 }
 
@@ -1779,12 +1855,12 @@ button:focus-visible {
 .settings-toggle-label {
   font-size: 14px;
   font-weight: 500;
-  color: #333;
+  color: var(--color-text-primary);
 }
 
 .settings-toggle-desc {
   font-size: 12px;
-  color: #888;
+  color: var(--color-text-muted);
 }
 
 .settings-toggle {
@@ -1827,33 +1903,35 @@ button:focus-visible {
   flex-direction: column;
   gap: 6px;
   padding: 12px;
-  background: #fafafa;
+  background: var(--color-bg-hover);
   border-radius: 8px;
 }
 
 .settings-input-group label {
   font-size: 14px;
   font-weight: 500;
-  color: #333;
+  color: var(--color-text-primary);
 }
 
 .settings-input {
   padding: 8px 12px;
-  border: 1px solid #e8e8e8;
+  border: 1px solid var(--color-border);
   border-radius: 6px;
   font-size: 14px;
   font-family: inherit;
   outline: none;
   transition: border-color 0.15s;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
 }
 
 .settings-input:focus {
-  border-color: #1264a3;
+  border-color: var(--color-accent);
 }
 
 .settings-input:disabled {
-  background: #f5f5f5;
-  color: #888;
+  background: var(--color-bg-hover);
+  color: var(--color-text-muted);
 }
 
 .settings-footer {
@@ -1861,24 +1939,24 @@ button:focus-visible {
   align-items: center;
   justify-content: space-between;
   padding: 16px 24px;
-  border-top: 1px solid #e8e8e8;
+  border-top: 1px solid var(--color-border);
 }
 
 .settings-reset-btn {
   padding: 8px 16px;
   background: transparent;
-  border: 1px solid #e8e8e8;
+  border: 1px solid var(--color-border);
   border-radius: 6px;
   font-size: 13px;
-  color: #666;
+  color: var(--color-text-secondary);
   cursor: pointer;
   font-family: inherit;
   transition: all 0.15s;
 }
 
 .settings-reset-btn:hover {
-  background: #f5f5f5;
-  color: #333;
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
 }
 
 .settings-done-btn {

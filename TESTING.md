@@ -35,6 +35,13 @@ Inside Alice's terminal, output these patterns:
 ->relay:spawn Dev1 claude "Write unit tests for the auth module"
 ```
 
+Or using the fenced format for messages:
+
+```
+->relay:Dev1 <<<
+Write unit tests for the auth module>>>
+```
+
 **Expected:**
 - New tmux window created in `relay-workers` session
 - Dev1 agent starts with the task injected
@@ -122,14 +129,16 @@ agent-relay -n Bob claude
 
 From Alice (Project A):
 ```
-->relay:project-b:Bob Hey Bob, can you review my changes?
+->relay:project-b:Bob <<<
+Hey Bob, can you review my changes?>>>
 ```
 
 **Expected:** Bob receives the message in Project B.
 
 From Bob (Project B):
 ```
-->relay:project-a:Alice Sure, sending review now.
+->relay:project-a:Alice <<<
+Sure, sending review now.>>>
 ```
 
 **Expected:** Alice receives the message in Project A.
@@ -138,7 +147,8 @@ From Bob (Project B):
 
 From the bridge/architect:
 ```
-->relay:*:lead Standup time - report your status
+->relay:*:lead <<<
+Standup time - report your status>>>
 ```
 
 **Expected:** Both Alice and Bob receive the message.

@@ -46,7 +46,8 @@ export interface SpawnRequest {
 export interface SpawnResult {
   success: boolean;
   name: string;
-  window?: string;
+  /** PID of the spawned process (for pty-based workers) */
+  pid?: number;
   error?: string;
 }
 
@@ -56,5 +57,6 @@ export interface WorkerInfo {
   task: string;
   spawnedBy: string;
   spawnedAt: number;
-  window: string;
+  /** PID of the pty process */
+  pid?: number;
 }

@@ -23,11 +23,14 @@ agent-relay -n Alice claude
 agent-relay -n Bob codex
 ```
 
-Agents communicate by outputting `->relay:` patterns:
+Agents communicate by outputting `->relay:` patterns. Always use the fenced format:
 
 ```
-->relay:Bob Hey, can you review my changes?
-->relay:* Broadcasting to everyone
+->relay:Bob <<<
+Hey, can you review my changes?>>>
+
+->relay:* <<<
+Broadcasting to everyone>>>
 ```
 
 ## CLI
@@ -68,13 +71,15 @@ Agents communicate by outputting `->relay:` patterns:
 ### Send Message
 
 ```
-->relay:AgentName Your message here
+->relay:AgentName <<<
+Your message here>>>
 ```
 
 ### Broadcast
 
 ```
-->relay:* Message to all agents
+->relay:* <<<
+Message to all agents>>>
 ```
 
 ### Receive
@@ -136,8 +141,11 @@ agent-relay bridge ~/auth ~/frontend ~/api
 ### Cross-Project Messaging
 
 ```
-->relay:projectId:agent Message to specific agent
-->relay:*:lead Broadcast to all project leads
+->relay:projectId:agent <<<
+Message to specific agent>>>
+
+->relay:*:lead <<<
+Broadcast to all project leads>>>
 ```
 
 ### Spawn Agents

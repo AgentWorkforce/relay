@@ -40,34 +40,40 @@ When delegating, match tasks to roles:
 
 ## Communication Patterns
 
+**Always use the fenced format** for reliable message delivery.
+
 ### Assigning Work
 ```
-->relay:Implementer **TASK:** [Clear task name]
+->relay:Implementer <<<
+**TASK:** [Clear task name]
 
 **Files:** [Specific files to modify]
 **Requirements:** [Bullet points of what's needed]
 **Acceptance:** [How to know it's done]
 
-**Claim:** `bd update <issue-id> --status=in_progress`
+**Claim:** `bd update <issue-id> --status=in_progress`>>>
 ```
 
 ### Status Checks
 ```
-->relay:Implementer Status check - how's [task] coming?
+->relay:Implementer <<<
+Status check - how's [task] coming?>>>
 ```
 
 ### Priority Changes
 ```
-->relay:* **PRIORITY CHANGE:** [New priority]
+->relay:* <<<
+**PRIORITY CHANGE:** [New priority]
 
 Previous task: [What they were doing]
 New task: [What they should do now]
-Reason: [Why the change]
+Reason: [Why the change]>>>
 ```
 
 ### Acknowledging Completion
 ```
-->relay:Implementer Confirmed. [Brief feedback]. Next task: [or "stand by"]
+->relay:Implementer <<<
+Confirmed. [Brief feedback]. Next task: [or "stand by"]>>>
 ```
 
 ## Anti-Patterns (What NOT To Do)
@@ -75,13 +81,15 @@ Reason: [Why the change]
 ### Don't Get Deep
 ```
 ❌ BAD: "Let me read through this 500-line file and understand the architecture..."
-✅ GOOD: "->relay:Implementer Read src/complex.ts and summarize the key functions."
+✅ GOOD: "->relay:Implementer <<<
+Read src/complex.ts and summarize the key functions.>>>"
 ```
 
 ### Don't Implement
 ```
 ❌ BAD: Writing code, editing files, running tests yourself
-✅ GOOD: "->relay:Implementer Fix the failing test in parser.test.ts"
+✅ GOOD: "->relay:Implementer <<<
+Fix the failing test in parser.test.ts>>>"
 ```
 
 ### Don't Over-Explain
@@ -115,11 +123,12 @@ bd create --title="Add feature X" --type=feature --priority=P2
 
 ### 4. Delegate
 ```
-->relay:Implementer **TASK:** Add feature X
+->relay:Implementer <<<
+**TASK:** Add feature X
 
 **Issue:** agent-relay-xxx
 **Requirements:** [2-3 bullet points]
-**Claim:** `bd update agent-relay-xxx --status=in_progress`
+**Claim:** `bd update agent-relay-xxx --status=in_progress`>>>
 ```
 
 ### 5. Monitor & Unblock
@@ -132,7 +141,8 @@ bd create --title="Add feature X" --type=feature --priority=P2
 bd close agent-relay-xxx --reason "Feature complete"
 ```
 ```
-->relay:Implementer Task closed. Next: [next task or "stand by"]
+->relay:Implementer <<<
+Task closed. Next: [next task or "stand by"]>>>
 ```
 
 ## Decision Framework
@@ -149,7 +159,8 @@ When facing a decision:
 Periodically broadcast status:
 
 ```
-->relay:* **STATUS UPDATE:**
+->relay:* <<<
+**STATUS UPDATE:**
 
 | Agent | Task | Status |
 |-------|------|--------|
@@ -157,7 +168,7 @@ Periodically broadcast status:
 | Designer | Dashboard UI | ✅ Complete |
 
 **Blockers:** None
-**Next:** [What's coming next]
+**Next:** [What's coming next]>>>
 ```
 
 ## Session Summary Pattern

@@ -17,6 +17,7 @@ export interface AgentListProps {
   searchQuery?: string;
   onAgentSelect?: (agent: Agent) => void;
   onAgentMessage?: (agent: Agent) => void;
+  onReleaseClick?: (agent: Agent) => void;
   compact?: boolean;
   showGroupStats?: boolean;
 }
@@ -27,6 +28,7 @@ export function AgentList({
   searchQuery = '',
   onAgentSelect,
   onAgentMessage,
+  onReleaseClick,
   compact = false,
   showGroupStats = true,
 }: AgentListProps) {
@@ -112,6 +114,7 @@ export function AgentList({
           onToggle={() => toggleGroup(group.prefix)}
           onAgentSelect={onAgentSelect}
           onAgentMessage={onAgentMessage}
+          onReleaseClick={onReleaseClick}
         />
       ))}
     </div>
@@ -127,6 +130,7 @@ interface AgentGroupComponentProps {
   onToggle: () => void;
   onAgentSelect?: (agent: Agent) => void;
   onAgentMessage?: (agent: Agent) => void;
+  onReleaseClick?: (agent: Agent) => void;
 }
 
 function AgentGroupComponent({
@@ -138,6 +142,7 @@ function AgentGroupComponent({
   onToggle,
   onAgentSelect,
   onAgentMessage,
+  onReleaseClick,
 }: AgentGroupComponentProps) {
   const stats = showStats ? getGroupStats(group.agents) : null;
 
@@ -184,6 +189,7 @@ function AgentGroupComponent({
               compact={compact}
               onClick={onAgentSelect}
               onMessageClick={onAgentMessage}
+              onReleaseClick={onReleaseClick}
             />
           ))}
         </div>
@@ -331,7 +337,7 @@ export const agentListStyles = `
 
 .group-name {
   font-weight: 600;
-  color: #1a1a1a;
+  color: #e8e8e8;
 }
 
 .group-count {

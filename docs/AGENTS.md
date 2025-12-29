@@ -159,20 +159,19 @@ relay team status
 
 ### Sending Messages (Real-Time Mode)
 
-**Inline format** (simple messages):
-```
-->relay:AgentName Your message here
-->relay:* Broadcast to all agents
-```
+**Always use the fenced format** for reliable message delivery:
 
-**Fenced format** (multi-line with blank lines/code):
 ```
 ->relay:AgentName <<<
-Multi-line message here.
-
-Can include blank lines and code.
->>>
+Your message here.>>>
 ```
+
+```
+->relay:* <<<
+Broadcast to all agents.>>>
+```
+
+**CRITICAL:** Always end with `>>>` at the end of the last line of content!
 
 **Block format** (structured data):
 ```
@@ -200,11 +199,12 @@ Use this when you're wrapped with `relay wrap`.
 
 ### CRITICAL: How to Send Messages
 
-**You (the AI agent) must OUTPUT the ->relay pattern as part of your response.** Do not wait for user input. The pattern is detected from your terminal output.
+**You (the AI agent) must OUTPUT the ->relay pattern as part of your response.** Do not wait for user input. The pattern is detected from your terminal output. **Always use the fenced format.**
 
 **Correct - Output this directly:**
 ```
-->relay:PlayerO I've finished the API refactor. Ready for your review.
+->relay:PlayerO <<<
+I've finished the API refactor. Ready for your review.>>>
 ```
 
 **Wrong - Don't use bash commands for real-time messaging:**
@@ -218,25 +218,26 @@ relay team send -n MyName -t PlayerO -m "message"
 The `->relay:` pattern must appear on its own line. It can have common terminal/markdown prefixes:
 
 ```
-->relay:AgentName message          Works
-  ->relay:AgentName message        Works (leading whitespace OK)
-> ->relay:AgentName message        Works (input prompt OK)
-$ ->relay:AgentName message        Works (shell prompt OK)
-- ->relay:AgentName message        Works (list items OK)
-* ->relay:AgentName message        Works (asterisk lists OK)
-Some text ->relay:AgentName msg    Won't work (not at line start)
+->relay:AgentName <<<             Works
+  ->relay:AgentName <<<           Works (leading whitespace OK)
+> ->relay:AgentName <<<           Works (input prompt OK)
+$ ->relay:AgentName <<<           Works (shell prompt OK)
+- ->relay:AgentName <<<           Works (list items OK)
+Some text ->relay:AgentName <<<   Won't work (not at line start)
 ```
 
 ### Examples
 
 **Direct message:**
 ```
-->relay:PlayerO Your turn! I played X at center.
+->relay:PlayerO <<<
+Your turn! I played X at center.>>>
 ```
 
 **Broadcast to all agents:**
 ```
-->relay:* I've completed the authentication module. Ready for review.
+->relay:* <<<
+I've completed the authentication module. Ready for review.>>>
 ```
 
 **Structured data:**
@@ -380,40 +381,52 @@ Just 4 commands:
 ### Task Handoff
 
 ```
-->relay:Developer TASK: Implement user registration endpoint
+->relay:Developer <<<
+TASK: Implement user registration endpoint
 Requirements:
 - POST /api/register
 - Validate email format
 - Hash password with bcrypt
-- Return JWT token
+- Return JWT token>>>
 ```
 
 ### Status Updates
 
 ```
-->relay:* STATUS: Starting work on authentication module
-->relay:* DONE: Authentication module complete, ready for review
-->relay:Reviewer REVIEW: Please review src/auth/*.ts
+->relay:* <<<
+STATUS: Starting work on authentication module>>>
+
+->relay:* <<<
+DONE: Authentication module complete, ready for review>>>
+
+->relay:Reviewer <<<
+REVIEW: Please review src/auth/*.ts>>>
 ```
 
 ### Requesting Help
 
 ```
-->relay:Architect QUESTION: Should we use JWT or session-based auth?
-->relay:* BLOCKED: Need database credentials to proceed
+->relay:Architect <<<
+QUESTION: Should we use JWT or session-based auth?>>>
+
+->relay:* <<<
+BLOCKED: Need database credentials to proceed>>>
 ```
 
 ### Code Review Flow
 
 ```
 # Developer requests review
-->relay:Reviewer REVIEW: src/api/users.ts - Added pagination support
+->relay:Reviewer <<<
+REVIEW: src/api/users.ts - Added pagination support>>>
 
 # Reviewer provides feedback
-->relay:Developer FEEDBACK: Line 45 - Consider using cursor-based pagination for better performance
+->relay:Developer <<<
+FEEDBACK: Line 45 - Consider using cursor-based pagination for better performance>>>
 
 # Developer confirms fix
-->relay:Reviewer FIXED: Updated to cursor-based pagination, please re-review
+->relay:Reviewer <<<
+FIXED: Updated to cursor-based pagination, please re-review>>>
 ```
 
 ---

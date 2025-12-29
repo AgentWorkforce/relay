@@ -67,15 +67,16 @@ export function SettingsPanel({
   const [activeTab, setActiveTab] = useState<'appearance' | 'notifications' | 'connection'>('appearance');
 
   const updateSetting = useCallback(
-    <K extends keyof Settings>(
-      category: K,
-      key: keyof Settings[K],
-      value: Settings[K][keyof Settings[K]]
+    (
+      category: 'notifications' | 'display' | 'connection',
+      key: string,
+      value: boolean | number
     ) => {
+      const categorySettings = settings[category];
       onSettingsChange({
         ...settings,
         [category]: {
-          ...settings[category],
+          ...categorySettings,
           [key]: value,
         },
       });

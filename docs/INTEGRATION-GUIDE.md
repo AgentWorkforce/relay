@@ -17,7 +17,7 @@ How to integrate agent-relay, claude-mem, and agent-trajectories into a cohesive
 │  │  CLAUDE-MEM     │      │  AGENT-RELAY    │                  │
 │  │  (Observations) │      │  (Messaging)    │                  │
 │  │                 │      │                 │                  │
-│  │  • Tool calls   │      │  • ->relay:Agent │                  │
+│  │  • Tool calls   │      │  • ->relay: <<< │                  │
 │  │  • Concepts     │      │  • Broadcasting │                  │
 │  │  • Sessions     │      │  • Persistence  │                  │
 │  └────────┬────────┘      └────────┬────────┘                  │
