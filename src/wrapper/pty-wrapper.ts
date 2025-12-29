@@ -59,6 +59,7 @@ export class PtyWrapper extends EventEmitter {
   private isInjecting = false;
   private logFilePath?: string;
   private logStream?: fs.WriteStream;
+  private hasAcceptedPrompt = false;
 
   constructor(config: PtyWrapperConfig) {
     super();
@@ -167,6 +168,10 @@ export class PtyWrapper extends EventEmitter {
     // Emit for external listeners
     this.emit('output', data);
 
+    // Auto-accept Claude's first-run prompt for --dangerously-skip-permissions
+    // The prompt shows: "2. Yes, I accept" - we send "2" to accept
+    this.handleAutoAcceptPrompts(data);
+
     // Store in line buffer for logs
     const lines = data.split('\n');
     for (const line of lines) {
@@ -182,6 +187,29 @@ export class PtyWrapper extends EventEmitter {
 
     // Parse for relay commands
     this.parseRelayCommands();
+  }
+
+  /**
+   * Auto-accept Claude's first-run prompts for --dangerously-skip-permissions
+   * Detects the acceptance prompt and sends "2" to select "Yes, I accept"
+   */
+  private handleAutoAcceptPrompts(data: string): void {
+    if (this.hasAcceptedPrompt) return;
+    if (!this.ptyProcess || !this.running) return;
+
+    // Check for the permission acceptance prompt
+    // Pattern: "2. Yes, I accept" in the output
+    const cleanData = this.stripAnsi(data);
+    if (cleanData.includes('Yes, I accept') && cleanData.includes('No, exit')) {
+      console.log(`[pty:${this.config.name}] Detected permission prompt, auto-accepting...`);
+      this.hasAcceptedPrompt = true;
+      // Send "2" to select "Yes, I accept" and Enter to confirm
+      setTimeout(() => {
+        if (this.ptyProcess && this.running) {
+          this.ptyProcess.write('2');
+        }
+      }, 100);
+    }
   }
 
   /**
