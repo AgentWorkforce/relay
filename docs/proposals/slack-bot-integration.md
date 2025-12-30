@@ -15,7 +15,7 @@ This proposal outlines a plan to integrate agent-relay messaging with Slack, fol
 - Humans to interact with agents via @mentions and slash commands
 - Real-time bidirectional sync between relay daemon and Slack
 - Thread preservation across both systems
-- **Cloud-managed OAuth and credentials** via the encrypted vault
+- **Cloud-managed OAuth and credentials** via Nango integration platform
 - **Multi-workspace support** through the daemon orchestrator
 - **Plan-based access** (Pro/Team/Enterprise tiers)
 
@@ -84,12 +84,12 @@ This proposal outlines a plan to integrate agent-relay messaging with Slack, fol
 │  ┌────────────────────────────────────────────────────────────────────────┐ │
 │  │                        src/cloud/                                      │ │
 │  │  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐    │ │
-│  │  │ api/integrations │  │ services/slack   │  │ vault/           │    │ │
-│  │  │ /slack.ts        │  │ SlackService     │  │ (encrypted)      │    │ │
+│  │  │ api/integrations │  │ services/slack   │  │ Nango            │    │ │
+│  │  │ /slack.ts        │  │ SlackService     │  │ (external)       │    │ │
 │  │  │                  │  │                  │  │                  │    │ │
-│  │  │ • OAuth callback │  │ • Token refresh  │  │ • bot_token      │    │ │
-│  │  │ • Disconnect     │  │ • Workspace sync │  │ • app_token      │    │ │
-│  │  │ • Status         │  │ • Health check   │  │ • signing_secret │    │ │
+│  │  │ • OAuth trigger  │  │ • Token fetch    │  │ • OAuth flow     │    │ │
+│  │  │ • Disconnect     │  │ • Workspace sync │  │ • Token storage  │    │ │
+│  │  │ • Status         │  │ • Health check   │  │ • Auto refresh   │    │ │
 │  │  └──────────────────┘  └──────────────────┘  └──────────────────┘    │ │
 │  │                                                                        │ │
 │  │  ┌──────────────────┐  ┌──────────────────┐                           │ │
@@ -151,19 +151,52 @@ This follows the same pattern as provider credentials (Claude API keys, etc.) es
 
 ## 3. Cloud Components
 
-### 3.1 API Routes (`src/cloud/api/integrations/slack.ts`)
+### 3.1 Nango Integration
+
+[Nango](https://www.nango.dev/) handles all OAuth complexity:
+- OAuth flow (authorization URL, token exchange)
+- Secure token storage (encrypted at rest)
+- Automatic token refresh before expiry
+- Connection status monitoring
+
+**Nango Setup:**
+```yaml
+# nango.yaml - Integration configuration
+integrations:
+  slack:
+    provider: slack
+    syncs: []
+    actions:
+      - name: post-message
+      - name: list-channels
+    scopes:
+      - app_mentions:read
+      - channels:history
+      - channels:read
+      - chat:write
+      - groups:history
+      - groups:read
+      - im:history
+      - im:read
+      - im:write
+      - users:read
+```
+
+### 3.2 API Routes (`src/cloud/api/integrations/slack.ts`)
 
 ```typescript
 // src/cloud/api/integrations/slack.ts
 
 import { Router } from 'express';
+import { Nango } from '@nangohq/node';
 import { requireAuth } from '../middleware/auth';
 import { requirePlan } from '../middleware/planLimits';
 import { SlackService } from '../../services/slack';
-import { vault } from '../../vault';
-import { db } from '../../db';
+import { db, eq } from '../../db';
+import { slackIntegrations } from '../../db/schema';
 
 const router = Router();
+const nango = new Nango({ secretKey: process.env.NANGO_SECRET_KEY });
 
 // All Slack routes require Pro+ plan
 router.use(requireAuth, requirePlan('pro'));
@@ -183,82 +216,99 @@ router.get('/status', async (req, res) => {
     return res.json({ connected: false });
   }
 
-  // Check token validity without exposing it
-  const isValid = await SlackService.validateToken(integration.id);
-
-  res.json({
-    connected: true,
-    valid: isValid,
-    slackWorkspace: integration.slackWorkspaceName,
-    slackTeamId: integration.slackTeamId,
-    channels: {
-      broadcast: integration.broadcastChannel,
-      alerts: integration.alertsChannel,
-    },
-    connectedAt: integration.createdAt,
-    connectedBy: integration.connectedByUserId,
-  });
-});
-
-/**
- * GET /api/integrations/slack/oauth/start
- * Initiate Slack OAuth flow
- */
-router.get('/oauth/start', async (req, res) => {
-  const { workspaceId, redirectUri } = req.query;
-
-  // Generate state token for CSRF protection
-  const state = await SlackService.generateOAuthState({
-    workspaceId,
-    userId: req.user.id,
-    redirectUri,
-  });
-
-  const slackAuthUrl = SlackService.buildOAuthUrl(state);
-
-  res.json({ authUrl: slackAuthUrl, state });
-});
-
-/**
- * GET /api/integrations/slack/oauth/callback
- * Handle Slack OAuth callback
- */
-router.get('/oauth/callback', async (req, res) => {
-  const { code, state } = req.query;
-
+  // Check Nango connection status
   try {
-    // Validate state and exchange code for tokens
-    const { workspaceId, userId } = await SlackService.validateOAuthState(state);
-    const tokens = await SlackService.exchangeCodeForTokens(code);
+    const connection = await nango.getConnection('slack', integration.nangoConnectionId);
 
-    // Store tokens in encrypted vault
-    const vaultKey = `slack:${workspaceId}`;
-    await vault.store(vaultKey, {
-      botToken: tokens.access_token,
-      appToken: tokens.app_token,  // For Socket Mode
-      teamId: tokens.team.id,
-      teamName: tokens.team.name,
+    res.json({
+      connected: true,
+      valid: connection.credentials?.access_token != null,
+      slackWorkspace: integration.slackWorkspaceName,
+      slackTeamId: integration.slackTeamId,
+      channels: {
+        broadcast: integration.broadcastChannel,
+        alerts: integration.alertsChannel,
+      },
+      connectedAt: integration.createdAt,
+      connectedBy: integration.connectedByUserId,
     });
+  } catch (error) {
+    res.json({ connected: true, valid: false, error: 'Token expired' });
+  }
+});
 
-    // Create integration record
-    await db.insert(slackIntegrations).values({
-      id: generateId(),
-      workspaceId,
-      slackTeamId: tokens.team.id,
-      slackWorkspaceName: tokens.team.name,
-      vaultKeyId: vaultKey,
-      connectedByUserId: userId,
-      broadcastChannel: null,  // Configured later
-      alertsChannel: null,
-    });
+/**
+ * GET /api/integrations/slack/connect
+ * Get Nango connect URL for Slack OAuth
+ */
+router.get('/connect', async (req, res) => {
+  const { workspaceId } = req.query;
+
+  // Generate unique connection ID for this workspace
+  const connectionId = `workspace-${workspaceId}-slack`;
+
+  // Nango handles the entire OAuth flow
+  const connectUrl = await nango.auth('slack', connectionId, {
+    detectClosedAuthWindow: true,
+  });
+
+  // Store pending connection
+  await db.insert(slackIntegrations).values({
+    id: generateId(),
+    workspaceId,
+    nangoConnectionId: connectionId,
+    status: 'pending',
+    connectedByUserId: req.user.id,
+  }).onConflictDoUpdate({
+    target: slackIntegrations.workspaceId,
+    set: { status: 'pending', updatedAt: new Date() },
+  });
+
+  res.json({ connectUrl });
+});
+
+/**
+ * POST /api/integrations/slack/webhook
+ * Nango webhook for connection events
+ */
+router.post('/webhook', async (req, res) => {
+  const { type, connectionId, provider } = req.body;
+
+  if (provider !== 'slack') {
+    return res.json({ ok: true });
+  }
+
+  // Extract workspaceId from connectionId
+  const match = connectionId.match(/^workspace-(.+)-slack$/);
+  if (!match) {
+    return res.status(400).json({ error: 'Invalid connection ID' });
+  }
+  const workspaceId = match[1];
+
+  if (type === 'auth') {
+    // OAuth completed - fetch team info
+    const connection = await nango.getConnection('slack', connectionId);
+    const teamInfo = connection.connection_config?.team;
+
+    await db.update(slackIntegrations)
+      .set({
+        status: 'connected',
+        slackTeamId: teamInfo?.id,
+        slackWorkspaceName: teamInfo?.name,
+        updatedAt: new Date(),
+      })
+      .where(eq(slackIntegrations.workspaceId, workspaceId));
 
     // Notify daemon to connect
     await SlackService.notifyDaemonConnect(workspaceId);
-
-    res.redirect(`/app/workspace/${workspaceId}/integrations?slack=connected`);
-  } catch (error) {
-    res.redirect(`/app/workspace/${workspaceId}/integrations?slack=error&message=${error.message}`);
   }
+
+  if (type === 'token_refreshed') {
+    // Token was refreshed - notify daemon to reconnect
+    await SlackService.notifyDaemonReconnect(workspaceId);
+  }
+
+  res.json({ ok: true });
 });
 
 /**
@@ -276,11 +326,8 @@ router.post('/disconnect', async (req, res) => {
     return res.status(404).json({ error: 'No Slack integration found' });
   }
 
-  // Revoke Slack token
-  await SlackService.revokeToken(integration.id);
-
-  // Remove from vault
-  await vault.delete(integration.vaultKeyId);
+  // Delete connection from Nango (revokes token)
+  await nango.deleteConnection('slack', integration.nangoConnectionId);
 
   // Delete integration record
   await db.delete(slackIntegrations)
@@ -322,112 +369,41 @@ router.get('/channels', async (req, res) => {
   const { workspaceId } = req.query;
 
   const channels = await SlackService.listChannels(workspaceId);
-
   res.json({ channels });
 });
 
 export default router;
 ```
 
-### 3.2 Slack Service (`src/cloud/services/slack.ts`)
+### 3.3 Slack Service (`src/cloud/services/slack.ts`)
 
 ```typescript
 // src/cloud/services/slack.ts
 
+import { Nango } from '@nangohq/node';
 import { WebClient } from '@slack/web-api';
-import { vault } from '../vault';
 import { db, eq } from '../db';
 import { slackIntegrations } from '../db/schema';
 
-const SLACK_CLIENT_ID = process.env.SLACK_CLIENT_ID;
-const SLACK_CLIENT_SECRET = process.env.SLACK_CLIENT_SECRET;
-const SLACK_REDIRECT_URI = process.env.SLACK_REDIRECT_URI;
+const nango = new Nango({ secretKey: process.env.NANGO_SECRET_KEY });
 
 export class SlackService {
   /**
-   * Build OAuth authorization URL
+   * Get Slack access token from Nango
+   * Nango automatically refreshes expired tokens
    */
-  static buildOAuthUrl(state: string): string {
-    const scopes = [
-      'app_mentions:read',
-      'channels:history',
-      'channels:read',
-      'chat:write',
-      'groups:history',
-      'groups:read',
-      'im:history',
-      'im:read',
-      'im:write',
-      'users:read',
-    ].join(',');
-
-    return `https://slack.com/oauth/v2/authorize?` +
-      `client_id=${SLACK_CLIENT_ID}&` +
-      `scope=${scopes}&` +
-      `redirect_uri=${encodeURIComponent(SLACK_REDIRECT_URI)}&` +
-      `state=${state}`;
-  }
-
-  /**
-   * Exchange OAuth code for tokens
-   */
-  static async exchangeCodeForTokens(code: string): Promise<SlackOAuthResponse> {
-    const client = new WebClient();
-
-    const response = await client.oauth.v2.access({
-      client_id: SLACK_CLIENT_ID,
-      client_secret: SLACK_CLIENT_SECRET,
-      code,
-      redirect_uri: SLACK_REDIRECT_URI,
-    });
-
-    if (!response.ok) {
-      throw new Error(`Slack OAuth failed: ${response.error}`);
-    }
-
-    return response as SlackOAuthResponse;
-  }
-
-  /**
-   * Validate stored token is still valid
-   */
-  static async validateToken(integrationId: string): Promise<boolean> {
+  static async getAccessToken(workspaceId: string): Promise<string | null> {
     const integration = await db.query.slackIntegrations.findFirst({
-      where: eq(slackIntegrations.id, integrationId),
+      where: eq(slackIntegrations.workspaceId, workspaceId),
     });
 
-    if (!integration) return false;
-
-    const credentials = await vault.retrieve(integration.vaultKeyId);
-    if (!credentials) return false;
+    if (!integration?.nangoConnectionId) return null;
 
     try {
-      const client = new WebClient(credentials.botToken);
-      await client.auth.test();
-      return true;
+      const connection = await nango.getConnection('slack', integration.nangoConnectionId);
+      return connection.credentials?.access_token || null;
     } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Revoke Slack token
-   */
-  static async revokeToken(integrationId: string): Promise<void> {
-    const integration = await db.query.slackIntegrations.findFirst({
-      where: eq(slackIntegrations.id, integrationId),
-    });
-
-    if (!integration) return;
-
-    const credentials = await vault.retrieve(integration.vaultKeyId);
-    if (!credentials) return;
-
-    try {
-      const client = new WebClient(credentials.botToken);
-      await client.auth.revoke();
-    } catch (error) {
-      console.error('Failed to revoke Slack token:', error);
+      return null;
     }
   }
 
@@ -435,27 +411,20 @@ export class SlackService {
    * List channels the bot can access
    */
   static async listChannels(workspaceId: string): Promise<SlackChannel[]> {
-    const integration = await db.query.slackIntegrations.findFirst({
-      where: eq(slackIntegrations.workspaceId, workspaceId),
-    });
+    const token = await this.getAccessToken(workspaceId);
+    if (!token) throw new Error('No Slack connection found');
 
-    if (!integration) {
-      throw new Error('No Slack integration found');
-    }
-
-    const credentials = await vault.retrieve(integration.vaultKeyId);
-    const client = new WebClient(credentials.botToken);
-
+    const client = new WebClient(token);
     const result = await client.conversations.list({
       types: 'public_channel,private_channel',
       exclude_archived: true,
     });
 
     return result.channels?.map(ch => ({
-      id: ch.id,
-      name: ch.name,
-      isPrivate: ch.is_private,
-      isMember: ch.is_member,
+      id: ch.id!,
+      name: ch.name!,
+      isPrivate: ch.is_private || false,
+      isMember: ch.is_member || false,
     })) || [];
   }
 
@@ -468,28 +437,32 @@ export class SlackService {
       where: eq(slackIntegrations.workspaceId, workspaceId),
     });
 
-    if (!integration) return null;
+    if (!integration?.nangoConnectionId) return null;
 
-    const credentials = await vault.retrieve(integration.vaultKeyId);
-    if (!credentials) return null;
+    try {
+      const connection = await nango.getConnection('slack', integration.nangoConnectionId);
 
-    return {
-      botToken: credentials.botToken,
-      appToken: credentials.appToken,
-      teamId: integration.slackTeamId,
-      teamName: integration.slackWorkspaceName,
-      broadcastChannel: integration.broadcastChannel,
-      alertsChannel: integration.alertsChannel,
-      config: integration.config,
-    };
+      if (!connection.credentials?.access_token) return null;
+
+      return {
+        botToken: connection.credentials.access_token,
+        // App token for Socket Mode - stored in connection metadata or env
+        appToken: process.env.SLACK_APP_TOKEN,
+        teamId: integration.slackTeamId!,
+        teamName: integration.slackWorkspaceName!,
+        broadcastChannel: integration.broadcastChannel,
+        alertsChannel: integration.alertsChannel,
+        config: integration.config || {},
+      };
+    } catch {
+      return null;
+    }
   }
 
   /**
-   * Notify daemon of Slack connection change
+   * Notify daemon of Slack connection changes
    */
   static async notifyDaemonConnect(workspaceId: string): Promise<void> {
-    // Send via WebSocket to connected daemon orchestrator
-    // or queue for next sync
     await this.sendDaemonNotification(workspaceId, 'slack:connect');
   }
 
@@ -501,23 +474,14 @@ export class SlackService {
     await this.sendDaemonNotification(workspaceId, 'slack:config-update');
   }
 
+  static async notifyDaemonReconnect(workspaceId: string): Promise<void> {
+    await this.sendDaemonNotification(workspaceId, 'slack:reconnect');
+  }
+
   private static async sendDaemonNotification(workspaceId: string, event: string): Promise<void> {
     // Implementation depends on daemon connection method
     // Could be WebSocket push, Redis pub/sub, or polling
   }
-}
-
-interface SlackOAuthResponse {
-  ok: boolean;
-  access_token: string;
-  app_token?: string;
-  token_type: string;
-  scope: string;
-  bot_user_id: string;
-  team: {
-    id: string;
-    name: string;
-  };
 }
 
 interface SlackChannel {
@@ -538,6 +502,25 @@ interface SlackDaemonConfig {
     showAgentToAgent?: boolean;
     showThinking?: boolean;
   };
+}
+```
+
+### 3.4 Why Nango?
+
+| Concern | Without Nango | With Nango |
+|---------|---------------|------------|
+| OAuth flow | Custom implementation | Hosted UI, handles edge cases |
+| Token storage | Custom vault, encryption | Encrypted at rest, compliant |
+| Token refresh | Manual refresh logic | Automatic, before expiry |
+| Multiple providers | Per-provider code | Unified API |
+| Maintenance | Security updates needed | Managed service |
+
+**Dependencies:**
+```json
+{
+  "dependencies": {
+    "@nangohq/node": "^0.40.0"
+  }
 }
 ```
 
@@ -1005,12 +988,13 @@ export const slackIntegrations = pgTable('slack_integrations', {
   id: text('id').primaryKey(),
   workspaceId: text('workspace_id').notNull().references(() => workspaces.id, { onDelete: 'cascade' }),
 
-  // Slack workspace info
-  slackTeamId: text('slack_team_id').notNull(),
-  slackWorkspaceName: text('slack_workspace_name').notNull(),
+  // Nango connection (handles OAuth, token storage, refresh)
+  nangoConnectionId: text('nango_connection_id').notNull(),
+  status: text('status').notNull().default('pending'), // pending, connected, error
 
-  // Credentials stored in vault
-  vaultKeyId: text('vault_key_id').notNull(),
+  // Slack workspace info (populated after OAuth)
+  slackTeamId: text('slack_team_id'),
+  slackWorkspaceName: text('slack_workspace_name'),
 
   // Channel configuration
   broadcastChannel: text('broadcast_channel'),
@@ -1054,9 +1038,10 @@ export const slackIntegrationsWorkspaceIdx = index('slack_integrations_workspace
 CREATE TABLE slack_integrations (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-  slack_team_id TEXT NOT NULL,
-  slack_workspace_name TEXT NOT NULL,
-  vault_key_id TEXT NOT NULL,
+  nango_connection_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  slack_team_id TEXT,
+  slack_workspace_name TEXT,
   broadcast_channel TEXT,
   alerts_channel TEXT,
   config JSONB DEFAULT '{}',
@@ -1367,12 +1352,13 @@ Response:
 | Team | ✅ 1 Slack workspace per relay workspace |
 | Enterprise | ✅ Multiple + Enterprise Grid |
 
-### 9.2 Credential Security
+### 9.2 Credential Security (via Nango)
 
-- **Vault encryption**: AES-256-GCM for all Slack tokens
-- **Token refresh**: Automatic refresh before expiry
-- **Revocation**: Tokens revoked on disconnect
-- **No local storage**: Credentials never written to disk in plain text
+- **Encrypted storage**: Nango encrypts all tokens at rest (SOC 2 compliant)
+- **Token refresh**: Automatic refresh before expiry, no manual logic needed
+- **Revocation**: `nango.deleteConnection()` revokes and removes tokens
+- **No local storage**: Credentials fetched on-demand, never written to disk
+- **Audit logging**: Nango provides connection activity logs
 
 ### 9.3 Plan Limit Middleware
 
@@ -1460,12 +1446,12 @@ This revised proposal aligns Slack integration with the **cloud-first architectu
 | Component | Location | Purpose |
 |-----------|----------|---------|
 | OAuth & API | `src/cloud/api/integrations/slack.ts` | Cloud endpoints |
-| Slack Service | `src/cloud/services/slack.ts` | Token management |
-| Credentials | `src/cloud/vault/` | Encrypted storage |
-| Database | `src/cloud/db/schema.ts` | Integration records |
+| Slack Service | `src/cloud/services/slack.ts` | Token retrieval via Nango |
+| Credentials | Nango (external) | OAuth, storage, refresh |
+| Database | `src/cloud/db/schema.ts` | Integration config (channels, settings) |
 | Daemon Bridge | `src/daemon/slack-bridge.ts` | Message routing |
 | Orchestrator | `src/daemon/orchestrator.ts` | Lifecycle management |
 | Cloud Sync | `src/daemon/cloud-sync.ts` | Credential retrieval |
 | Dashboard | `src/dashboard/react-components/` | Configuration UI |
 
-The integration follows the same patterns as provider credentials, ensuring consistency across the codebase.
+The integration uses Nango for OAuth/credentials (same pattern planned for other providers like Discord, Teams), keeping our code focused on the Slack ↔ Relay bridge logic.
