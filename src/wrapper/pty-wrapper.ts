@@ -13,6 +13,15 @@ import { EventEmitter } from 'node:events';
 import { RelayClient } from './client.js';
 import type { ParsedCommand } from './parser.js';
 import type { SendPayload, SpeakOnTrigger } from '../protocol/types.js';
+import { getProjectPaths } from '../utils/project-namespace.js';
+import {
+  TrajectoryIntegration,
+  getTrajectoryIntegration,
+  getTrailEnvVars,
+  getCompactTrailInstructions,
+  detectPhaseFromContent,
+  type PDEROPhase,
+} from '../trajectory/integration.js';
 
 /** Maximum lines to keep in output buffer */
 const MAX_BUFFER_LINES = 10000;
@@ -42,6 +51,8 @@ export interface PtyWrapperConfig {
   shadowSpeakOn?: SpeakOnTrigger[];
   /** Stream output to daemon for dashboard log viewing (default: true) */
   streamLogs?: boolean;
+  /** Task/role description for trajectory tracking */
+  task?: string;
 }
 
 export interface PtyWrapperEvents {
@@ -67,6 +78,8 @@ export class PtyWrapper extends EventEmitter {
   private logFilePath?: string;
   private logStream?: fs.WriteStream;
   private hasAcceptedPrompt = false;
+  private trajectory?: TrajectoryIntegration; // Trajectory tracking via trail
+  private lastDetectedPhase?: PDEROPhase;
 
   constructor(config: PtyWrapperConfig) {
     super();
@@ -80,6 +93,10 @@ export class PtyWrapper extends EventEmitter {
       workingDirectory: config.cwd ?? process.cwd(),
       quiet: true,
     });
+
+    // Initialize trajectory tracking
+    const projectPaths = getProjectPaths();
+    this.trajectory = getTrajectoryIntegration(projectPaths.projectId, config.name);
 
     // Handle incoming messages
     this.client.onMessage = (from: string, payload: SendPayload, messageId: string) => {
@@ -131,6 +148,10 @@ export class PtyWrapper extends EventEmitter {
     console.log(`[pty:${this.config.name}] Spawning: ${this.config.command} ${args.join(' ')}`);
     console.log(`[pty:${this.config.name}] CWD: ${cwd}`);
 
+    // Get trail environment variables
+    const projectPaths = getProjectPaths();
+    const trailEnvVars = getTrailEnvVars(projectPaths.projectId, this.config.name, projectPaths.dataDir);
+
     // Spawn the process with error handling
     try {
       this.ptyProcess = pty.spawn(this.config.command, args, {
@@ -141,6 +162,7 @@ export class PtyWrapper extends EventEmitter {
         env: {
           ...process.env,
           ...this.config.env,
+          ...trailEnvVars,
           AGENT_RELAY_NAME: this.config.name,
           TERM: 'xterm-256color',
         },
@@ -150,6 +172,15 @@ export class PtyWrapper extends EventEmitter {
       console.error(`[pty:${this.config.name}] Command: ${this.config.command}`);
       console.error(`[pty:${this.config.name}] Args: ${args.join(' ')}`);
       throw spawnError;
+    }
+
+    // Initialize trajectory (auto-start if task provided)
+    if (this.config.task) {
+      this.trajectory?.initialize(this.config.task).then(success => {
+        if (success) {
+          console.log(`[pty:${this.config.name}] Trajectory started for task: ${this.config.task}`);
+        }
+      });
     }
 
     this.running = true;
@@ -215,6 +246,24 @@ export class PtyWrapper extends EventEmitter {
 
     // Parse for relay commands
     this.parseRelayCommands();
+
+    // Auto-detect phase transitions from output
+    this.detectAndTransitionPhase(data);
+  }
+
+  /**
+   * Detect PDERO phase from output and transition if needed
+   */
+  private detectAndTransitionPhase(data: string): void {
+    if (!this.trajectory) return;
+
+    const cleanData = this.stripAnsi(data);
+    const detectedPhase = detectPhaseFromContent(cleanData);
+
+    if (detectedPhase && detectedPhase !== this.lastDetectedPhase) {
+      this.lastDetectedPhase = detectedPhase;
+      this.trajectory.transition(detectedPhase, 'Auto-detected from output');
+    }
   }
 
   /**
@@ -386,6 +435,9 @@ export class PtyWrapper extends EventEmitter {
     const success = this.client.sendMessage(cmd.to, cmd.body, cmd.kind, cmd.data, cmd.thread);
     if (success) {
       this.sentMessageHashes.add(msgHash);
+
+      // Record outgoing message in trajectory
+      this.trajectory?.message('sent', this.config.name, cmd.to, cmd.body);
     }
   }
 
@@ -514,6 +566,9 @@ export class PtyWrapper extends EventEmitter {
   private handleIncomingMessage(from: string, payload: SendPayload, messageId: string): void {
     this.messageQueue.push({ from, body: payload.body, messageId });
     this.processMessageQueue();
+
+    // Record incoming message in trajectory
+    this.trajectory?.message('received', from, this.config.name, payload.body);
   }
 
   /**
@@ -562,7 +617,14 @@ export class PtyWrapper extends EventEmitter {
     if (!this.running || !this.ptyProcess) return;
 
     const escapedPrefix = '\\' + this.relayPrefix;
-    const instructions = `[Agent Relay] You are "${this.config.name}" - connected for real-time messaging. SEND: ${escapedPrefix}AgentName message`;
+    const relayInstruction = `[Agent Relay] You are "${this.config.name}" - connected for real-time messaging. SEND: ${escapedPrefix}AgentName message`;
+
+    // Include trail instructions if available
+    const trailInstruction = this.trajectory?.isTrailInstalledSync()
+      ? ` ${getCompactTrailInstructions()}`
+      : '';
+
+    const instructions = relayInstruction + trailInstruction;
 
     try {
       this.ptyProcess.write(instructions + '\r');
@@ -604,6 +666,11 @@ export class PtyWrapper extends EventEmitter {
     if (!this.running) return;
     this.running = false;
 
+    // Complete trajectory with summary
+    this.trajectory?.complete({
+      summary: `Agent ${this.config.name} stopped gracefully`,
+    });
+
     if (this.ptyProcess) {
       // Try graceful termination first
       this.ptyProcess.write('\x03'); // Ctrl+C
@@ -623,6 +690,10 @@ export class PtyWrapper extends EventEmitter {
    */
   kill(): void {
     this.running = false;
+
+    // Abandon trajectory (forced termination)
+    this.trajectory?.abandon(`Agent ${this.config.name} killed`);
+
     if (this.ptyProcess) {
       this.ptyProcess.kill();
     }

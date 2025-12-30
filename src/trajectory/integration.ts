@@ -6,9 +6,15 @@
  *
  * This module provides a bridge between agent-relay and the
  * external `trail` CLI / agent-trajectories library.
+ *
+ * Key integration points:
+ * - Auto-starts trajectory when agent is instantiated with a task
+ * - Records all inter-agent messages
+ * - Auto-detects PDERO phase transitions from output
+ * - Provides hooks for key agent lifecycle events
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
 import { getProjectPaths } from '../utils/project-namespace.js';
 
 /**
@@ -280,12 +286,21 @@ export function detectPhaseFromContent(content: string): PDEROPhase | undefined 
 
 /**
  * TrajectoryIntegration class for managing trajectory state
+ *
+ * This class enforces trajectory tracking during agent lifecycle:
+ * - Auto-starts trajectory when agent is instantiated with a task
+ * - Records all inter-agent messages
+ * - Auto-detects PDERO phase transitions
+ * - Provides lifecycle hooks for tmux/pty wrappers
  */
 export class TrajectoryIntegration {
   private projectId: string;
   private agentName: string;
   private trailAvailable: boolean | null = null;
   private currentPhase: PDEROPhase | null = null;
+  private trajectoryId: string | null = null;
+  private initialized = false;
+  private task: string | null = null;
 
   constructor(projectId: string, agentName: string) {
     this.projectId = projectId;
@@ -300,6 +315,43 @@ export class TrajectoryIntegration {
       this.trailAvailable = await isTrailAvailable();
     }
     return this.trailAvailable;
+  }
+
+  /**
+   * Check if trail CLI is installed synchronously
+   */
+  isTrailInstalledSync(): boolean {
+    try {
+      execSync('which trail', { stdio: 'pipe' });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Initialize trajectory tracking for agent lifecycle
+   * Called automatically when agent starts with a task
+   */
+  async initialize(task?: string, taskId?: string, source?: string): Promise<boolean> {
+    if (this.initialized) return true;
+
+    if (!(await this.isAvailable())) {
+      return false;
+    }
+
+    // If task provided, auto-start trajectory
+    if (task) {
+      const success = await this.start(task, taskId, source);
+      if (success) {
+        this.initialized = true;
+        this.task = task;
+      }
+      return success;
+    }
+
+    this.initialized = true;
+    return true;
   }
 
   /**
@@ -318,9 +370,32 @@ export class TrajectoryIntegration {
 
     if (result.success) {
       this.currentPhase = 'plan';
+      this.trajectoryId = result.trajectoryId || null;
+      this.task = task;
     }
 
     return result.success;
+  }
+
+  /**
+   * Check if there's an active trajectory
+   */
+  hasActiveTrajectory(): boolean {
+    return this.currentPhase !== null;
+  }
+
+  /**
+   * Get the current task
+   */
+  getTask(): string | null {
+    return this.task;
+  }
+
+  /**
+   * Get trajectory ID
+   */
+  getTrajectoryId(): string | null {
+    return this.trajectoryId;
   }
 
   /**
@@ -432,4 +507,64 @@ export function getTrajectoryIntegration(projectId: string, agentName: string): 
     instances.set(key, instance);
   }
   return instance;
+}
+
+/**
+ * Generate trail usage instructions for agents
+ */
+export function getTrailInstructions(): string[] {
+  return [
+    '📍 TRAJECTORY TRACKING (PDERO Paradigm)',
+    '',
+    'You MUST use trail commands to track your work:',
+    '',
+    'PHASES: plan → design → execute → review → observe',
+    '',
+    'COMMANDS:',
+    '  trail start "task"           Start trajectory for a task',
+    '  trail phase <phase>          Transition to new phase',
+    '  trail decision "choice"      Record key decisions',
+    '  trail event "what happened"  Log significant events',
+    '  trail complete               Complete with summary',
+    '',
+    'WHEN TO USE:',
+    '  - Start: At beginning of any task',
+    '  - Phase: When shifting focus (planning→implementing, etc.)',
+    '  - Decision: For architecture/approach choices',
+    '  - Event: For tool calls, errors, milestones',
+    '  - Complete: When task is done',
+    '',
+    'Example workflow:',
+    '  trail start "Implement auth feature"',
+    '  trail phase design',
+    '  trail decision "Use JWT" --reasoning "Stateless, scalable"',
+    '  trail phase execute',
+    '  trail event "Created auth middleware"',
+    '  trail phase review',
+    '  trail event "All tests passing"',
+    '  trail complete --summary "Auth implemented" --confidence 0.9',
+  ];
+}
+
+/**
+ * Get a compact trail instruction string for injection
+ */
+export function getCompactTrailInstructions(): string {
+  return [
+    '[TRAIL] Track work with PDERO: plan→design→execute→review→observe.',
+    'Commands: trail start "task" | trail phase <phase> | trail decision "choice" | trail event "log" | trail complete',
+    'Use trail often to document your thought process.',
+  ].join(' ');
+}
+
+/**
+ * Get environment variables for trail CLI
+ */
+export function getTrailEnvVars(projectId: string, agentName: string, dataDir: string): Record<string, string> {
+  return {
+    TRAJECTORIES_PROJECT: projectId,
+    TRAJECTORIES_DATA_DIR: dataDir,
+    TRAJECTORIES_AGENT: agentName,
+    TRAIL_AUTO_PHASE: '1', // Enable auto phase detection
+  };
 }
