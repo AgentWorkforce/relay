@@ -105,6 +105,7 @@ authRouter.get('/github/callback', async (req: Request, res: Response) => {
       githubId: String(userData.id),
       githubUsername: userData.login,
       email,
+      avatarUrl: userData.avatar_url,
     });
 
     // Store GitHub token as a credential
@@ -170,11 +171,17 @@ authRouter.get('/me', async (req: Request, res: Response) => {
       connectedAt: c.createdAt,
     }));
 
+    // Get pending invites
+    const pendingInvites = await db.workspaceMembers.getPendingInvites(user.id);
+
     res.json({
       id: user.id,
       githubUsername: user.githubUsername,
       email: user.email,
+      avatarUrl: user.avatarUrl,
+      plan: user.plan,
       connectedProviders,
+      pendingInvites: pendingInvites.length,
       onboardingCompleted: !!user.onboardingCompletedAt,
     });
   } catch (error) {

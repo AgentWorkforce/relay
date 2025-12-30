@@ -26,6 +26,7 @@ export interface User {
   githubId: string;
   githubUsername: string;
   email?: string;
+  avatarUrl?: string;
   plan: PlanType;
   onboardingCompletedAt?: Date;
   createdAt: Date;
@@ -69,6 +70,24 @@ export interface WorkspaceConfig {
   maxAgents: number;
 }
 
+export type WorkspaceMemberRole = 'owner' | 'admin' | 'member' | 'viewer';
+
+export interface WorkspaceMember {
+  id: string;
+  workspaceId: string;
+  userId: string;
+  role: WorkspaceMemberRole;
+  invitedBy?: string;
+  invitedAt: Date;
+  acceptedAt?: Date;
+  // Denormalized for easy display
+  user?: {
+    githubUsername: string;
+    email?: string;
+    avatarUrl?: string;
+  };
+}
+
 export interface Repository {
   id: string;
   userId: string;
@@ -101,20 +120,38 @@ export const users = {
     return rows[0] ? mapUser(rows[0]) : null;
   },
 
+  async findByGithubUsername(username: string): Promise<User | null> {
+    const { rows } = await getPool().query(
+      'SELECT * FROM users WHERE github_username = $1',
+      [username]
+    );
+    return rows[0] ? mapUser(rows[0]) : null;
+  },
+
+  async findByEmail(email: string): Promise<User | null> {
+    const { rows } = await getPool().query(
+      'SELECT * FROM users WHERE email = $1',
+      [email]
+    );
+    return rows[0] ? mapUser(rows[0]) : null;
+  },
+
   async upsert(data: {
     githubId: string;
     githubUsername: string;
     email?: string;
+    avatarUrl?: string;
   }): Promise<User> {
     const { rows } = await getPool().query(
-      `INSERT INTO users (github_id, github_username, email)
-       VALUES ($1, $2, $3)
+      `INSERT INTO users (github_id, github_username, email, avatar_url)
+       VALUES ($1, $2, $3, $4)
        ON CONFLICT (github_id) DO UPDATE SET
          github_username = EXCLUDED.github_username,
          email = COALESCE(EXCLUDED.email, users.email),
+         avatar_url = COALESCE(EXCLUDED.avatar_url, users.avatar_url),
          updated_at = NOW()
        RETURNING *`,
-      [data.githubId, data.githubUsername, data.email]
+      [data.githubId, data.githubUsername, data.email, data.avatarUrl]
     );
     return mapUser(rows[0]);
   },
@@ -302,6 +339,118 @@ export const workspaces = {
   },
 };
 
+// Workspace member queries
+export const workspaceMembers = {
+  async findByWorkspaceId(workspaceId: string): Promise<WorkspaceMember[]> {
+    const { rows } = await getPool().query(
+      `SELECT wm.*, u.github_username, u.email
+       FROM workspace_members wm
+       JOIN users u ON u.id = wm.user_id
+       WHERE wm.workspace_id = $1
+       ORDER BY wm.role, wm.invited_at`,
+      [workspaceId]
+    );
+    return rows.map(mapWorkspaceMember);
+  },
+
+  async findByUserId(userId: string): Promise<WorkspaceMember[]> {
+    const { rows } = await getPool().query(
+      `SELECT wm.*, u.github_username, u.email
+       FROM workspace_members wm
+       JOIN users u ON u.id = wm.user_id
+       WHERE wm.user_id = $1 AND wm.accepted_at IS NOT NULL`,
+      [userId]
+    );
+    return rows.map(mapWorkspaceMember);
+  },
+
+  async findMembership(workspaceId: string, userId: string): Promise<WorkspaceMember | null> {
+    const { rows } = await getPool().query(
+      `SELECT wm.*, u.github_username, u.email
+       FROM workspace_members wm
+       JOIN users u ON u.id = wm.user_id
+       WHERE wm.workspace_id = $1 AND wm.user_id = $2`,
+      [workspaceId, userId]
+    );
+    return rows[0] ? mapWorkspaceMember(rows[0]) : null;
+  },
+
+  async addMember(data: {
+    workspaceId: string;
+    userId: string;
+    role: WorkspaceMemberRole;
+    invitedBy: string;
+  }): Promise<WorkspaceMember> {
+    const { rows } = await getPool().query(
+      `INSERT INTO workspace_members (workspace_id, user_id, role, invited_by)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [data.workspaceId, data.userId, data.role, data.invitedBy]
+    );
+    return mapWorkspaceMember(rows[0]);
+  },
+
+  async acceptInvite(workspaceId: string, userId: string): Promise<void> {
+    await getPool().query(
+      `UPDATE workspace_members SET accepted_at = NOW() WHERE workspace_id = $1 AND user_id = $2`,
+      [workspaceId, userId]
+    );
+  },
+
+  async updateRole(workspaceId: string, userId: string, role: WorkspaceMemberRole): Promise<void> {
+    await getPool().query(
+      `UPDATE workspace_members SET role = $3 WHERE workspace_id = $1 AND user_id = $2`,
+      [workspaceId, userId, role]
+    );
+  },
+
+  async removeMember(workspaceId: string, userId: string): Promise<void> {
+    await getPool().query(
+      `DELETE FROM workspace_members WHERE workspace_id = $1 AND user_id = $2`,
+      [workspaceId, userId]
+    );
+  },
+
+  async getPendingInvites(userId: string): Promise<WorkspaceMember[]> {
+    const { rows } = await getPool().query(
+      `SELECT wm.*, w.name as workspace_name, u.github_username as inviter_username
+       FROM workspace_members wm
+       JOIN workspaces w ON w.id = wm.workspace_id
+       JOIN users u ON u.id = wm.invited_by
+       WHERE wm.user_id = $1 AND wm.accepted_at IS NULL`,
+      [userId]
+    );
+    return rows.map(mapWorkspaceMember);
+  },
+
+  async isOwner(workspaceId: string, userId: string): Promise<boolean> {
+    const { rows } = await getPool().query(
+      `SELECT 1 FROM workspace_members WHERE workspace_id = $1 AND user_id = $2 AND role = 'owner'`,
+      [workspaceId, userId]
+    );
+    return rows.length > 0;
+  },
+
+  async canEdit(workspaceId: string, userId: string): Promise<boolean> {
+    const { rows } = await getPool().query(
+      `SELECT 1 FROM workspace_members
+       WHERE workspace_id = $1 AND user_id = $2 AND role IN ('owner', 'admin', 'member')
+       AND accepted_at IS NOT NULL`,
+      [workspaceId, userId]
+    );
+    return rows.length > 0;
+  },
+
+  async canView(workspaceId: string, userId: string): Promise<boolean> {
+    const { rows } = await getPool().query(
+      `SELECT 1 FROM workspace_members
+       WHERE workspace_id = $1 AND user_id = $2 AND accepted_at IS NOT NULL`,
+      [workspaceId, userId]
+    );
+    return rows.length > 0;
+  },
+};
+
 // Repository queries
 export const repositories = {
   async findByUserId(userId: string): Promise<Repository[]> {
@@ -375,10 +524,28 @@ function mapUser(row: any): User {
     githubId: row.github_id,
     githubUsername: row.github_username,
     email: row.email,
+    avatarUrl: row.avatar_url,
     plan: row.plan || 'free',
     onboardingCompletedAt: row.onboarding_completed_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function mapWorkspaceMember(row: any): WorkspaceMember {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    userId: row.user_id,
+    role: row.role,
+    invitedBy: row.invited_by,
+    invitedAt: row.invited_at,
+    acceptedAt: row.accepted_at,
+    user: row.github_username ? {
+      githubUsername: row.github_username,
+      email: row.email,
+      avatarUrl: row.avatar_url,
+    } : undefined,
   };
 }
 
@@ -442,6 +609,7 @@ export async function initializeDatabase(): Promise<void> {
         github_id VARCHAR(255) UNIQUE NOT NULL,
         github_username VARCHAR(255) NOT NULL,
         email VARCHAR(255),
+        avatar_url VARCHAR(512),
         plan VARCHAR(50) NOT NULL DEFAULT 'free',
         onboarding_completed_at TIMESTAMP,
         created_at TIMESTAMP DEFAULT NOW(),
@@ -494,11 +662,24 @@ export async function initializeDatabase(): Promise<void> {
         UNIQUE(user_id, github_full_name)
       );
 
+      CREATE TABLE IF NOT EXISTS workspace_members (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        role VARCHAR(50) NOT NULL DEFAULT 'member',
+        invited_by UUID REFERENCES users(id),
+        invited_at TIMESTAMP DEFAULT NOW(),
+        accepted_at TIMESTAMP,
+        UNIQUE(workspace_id, user_id)
+      );
+
       CREATE INDEX IF NOT EXISTS idx_credentials_user_id ON credentials(user_id);
       CREATE INDEX IF NOT EXISTS idx_workspaces_user_id ON workspaces(user_id);
       CREATE INDEX IF NOT EXISTS idx_workspaces_custom_domain ON workspaces(custom_domain) WHERE custom_domain IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_repositories_user_id ON repositories(user_id);
       CREATE INDEX IF NOT EXISTS idx_repositories_workspace_id ON repositories(workspace_id);
+      CREATE INDEX IF NOT EXISTS idx_workspace_members_workspace_id ON workspace_members(workspace_id);
+      CREATE INDEX IF NOT EXISTS idx_workspace_members_user_id ON workspace_members(user_id);
     `);
   } finally {
     client.release();
@@ -510,6 +691,7 @@ export const db = {
   users,
   credentials,
   workspaces,
+  workspaceMembers,
   repositories,
   initialize: initializeDatabase,
   getPool,
