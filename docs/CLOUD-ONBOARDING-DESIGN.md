@@ -97,56 +97,134 @@ Agent Relay Cloud (fully hosted) provides:
 
 ## Self-Hosted Mode
 
-For users running agent-relay on their own infrastructure. Authentication still happens via Agent Relay Cloud.
+For users running agent-relay on their own infrastructure. **Authentication happens via Agent Relay Cloud servers** - users connect to our infrastructure to run the browser-based auth flows.
+
+### Why Self-Hosted Has More Friction (Intentional)
+
+Self-hosted requires extra steps compared to cloud-hosted:
+
+| Step | Cloud Hosted | Self-Hosted |
+|------|--------------|-------------|
+| 1. Sign up | GitHub OAuth | GitHub OAuth |
+| 2. Connect providers | Click "Login with X" | Connect to cloud server, then "Login with X" |
+| 3. Select repos | Select from list | Clone repos locally |
+| 4. Start agents | Automatic | Install agent-relay, configure, start |
+| 5. View dashboard | Just visit URL | Logs sync to cloud dashboard |
+
+**This is intentional** - cloud-hosted should be the path of least resistance.
+
+### Self-Hosted Auth Flow
+
+Since Claude Code and Codex require browser-based OAuth, self-hosted users must connect to our cloud to authenticate:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  SELF-HOSTED AUTHENTICATION                                      │
+│                                                                  │
+│  User's Server                    Agent Relay Cloud              │
+│  ─────────────                    ─────────────────              │
+│                                                                  │
+│  1. agent-relay cloud login                                     │
+│           │                                                      │
+│           │ ──────────────────────────────────────────────────> │
+│           │         Connect to cloud auth service               │
+│           │                                                      │
+│           │                       2. Cloud opens browser         │
+│           │                          to provider (Anthropic)    │
+│           │                               │                      │
+│           │                               ▼                      │
+│           │                       3. User logs in,               │
+│           │                          authorizes                  │
+│           │                               │                      │
+│           │                               ▼                      │
+│           │                       4. Tokens stored               │
+│           │                          in cloud vault              │
+│           │                                                      │
+│           │ <────────────────────────────────────────────────── │
+│           │         Sync encrypted credentials                  │
+│           ▼                                                      │
+│  5. Credentials cached locally                                  │
+│     (encrypted, auto-refresh via cloud)                         │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ### Setup Flow
 
 ```bash
-# Install agent-relay on your server
+# On user's server
 npm install -g agent-relay
 
-# Link to your Agent Relay Cloud account (device flow)
+# Connect to cloud - opens browser on YOUR machine (not server)
+# via a temporary secure tunnel
 agent-relay cloud login
+# → Opens: https://relay.cloud/auth/remote?session=abc123
+# → You authenticate in your browser
+# → Credentials sync to your server
 
-# Connect AI providers via cloud (device flow for each)
+# Connect providers (each opens browser via cloud)
 agent-relay cloud connect anthropic
 agent-relay cloud connect openai
 
 # Start daemon - credentials synced from cloud
 agent-relay up
-agent-relay -n Alice claude "Start working on the feature"
 ```
 
-### CLI Onboarding Flow
+### CLI Experience
 
 ```
 $ agent-relay cloud login
 
-  Opening browser to authenticate...
+  To authenticate, open this URL in your browser:
 
   ┌────────────────────────────────────────────────────────────┐
-  │  If browser doesn't open, visit:                           │
-  │  https://relay.cloud/cli/auth?code=ABCD-1234              │
+  │  https://relay.cloud/auth/remote?session=xK9mPq2R         │
   └────────────────────────────────────────────────────────────┘
 
+  Or scan this QR code:
+  ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+  █ ▄▄▄▄▄ █ █ ▄▄█
+  █ █   █ █▄▄  ▀█
+  █ █▄▄▄█ █ ▄▀▀▄█
+  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+
   ⏳ Waiting for authentication...
+     Session expires in 9:45
 
   ✅ Authenticated as user@example.com
 
-  Your agent-relay instance is now linked to Agent Relay Cloud.
-
   Connected providers:
-  • Anthropic (Claude)  ✅ Ready
+  • Anthropic (Claude)  ❌ Not connected
   • OpenAI (Codex)      ❌ Not connected
-  • Google (Gemini)     ❌ Not connected
 
-  To connect more providers:
-    agent-relay cloud connect openai
-    agent-relay cloud connect google
+  To connect providers:
+    agent-relay cloud connect anthropic
 
-  To start the daemon:
-    agent-relay up
+$ agent-relay cloud connect anthropic
+
+  To connect Anthropic, open this URL in your browser:
+
+  ┌────────────────────────────────────────────────────────────┐
+  │  https://relay.cloud/connect/anthropic?session=yL8nQr3S   │
+  └────────────────────────────────────────────────────────────┘
+
+  ⏳ Waiting for authorization...
+
+  ✅ Anthropic connected!
+     Logged in as: claude-user@example.com
+     Plan: Claude Pro
+
+  Credentials synced to this server.
+  Run 'agent-relay up' to start.
 ```
+
+### Why This Approach
+
+1. **Auth happens on cloud** - Browser-based OAuth works because it runs on our servers
+2. **Credentials sync down** - Encrypted tokens pushed to user's server
+3. **More steps than cloud** - Intentional friction encourages cloud adoption
+4. **Still requires cloud** - Users can't fully disconnect from our service
+5. **Refresh via cloud** - Token refresh happens through our service, maintaining dependency
 
 ### Credential Sync Architecture
 
