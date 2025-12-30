@@ -22,6 +22,8 @@ export { NotificationToast, notificationToastStyles, useToasts, type Notificatio
 export { ThemeProvider, ThemeToggle, themeStyles, themeToggleStyles, useTheme, type ThemeProviderProps, type Theme, type ResolvedTheme } from './ThemeProvider';
 export { App, appStyles, type AppProps } from './App';
 export { MentionAutocomplete, mentionAutocompleteStyles, useMentionAutocomplete, getMentionQuery, completeMentionInValue, type MentionAutocompleteProps } from './MentionAutocomplete';
+export { WorkspaceSelector, workspaceSelectorStyles, type WorkspaceSelectorProps, type Workspace } from './WorkspaceSelector';
+export { AddWorkspaceModal, addWorkspaceModalStyles, type AddWorkspaceModalProps } from './AddWorkspaceModal';
 
 // Layout Components
 export { Sidebar, sidebarStyles, type SidebarProps } from './layout/Sidebar';
@@ -32,14 +34,19 @@ export {
   useWebSocket,
   useAgents,
   useMessages,
+  useOrchestrator,
   type UseWebSocketOptions,
   type UseWebSocketReturn,
   type UseAgentsOptions,
   type UseAgentsReturn,
   type UseMessagesOptions,
   type UseMessagesReturn,
+  type UseOrchestratorOptions,
+  type UseOrchestratorResult,
   type DashboardData,
   type AgentWithColor,
+  type OrchestratorAgent,
+  type OrchestratorEvent,
 } from './hooks';
 
 // Combined styles for easy import
