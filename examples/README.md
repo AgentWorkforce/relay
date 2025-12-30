@@ -13,6 +13,8 @@ This folder contains examples for configuring agent-relay in different environme
 | `slack-claude-standalone.ts` | Standalone Slack + Claude Code bot (no relay) |
 | `discord-claude-bot.ts` | Discord bot with Claude Code via agent-relay |
 | `discord-claude-standalone.ts` | Standalone Discord + Claude Code bot (no relay) |
+| `slack-codex-standalone.ts` | Standalone Slack + Codex CLI bot |
+| `discord-codex-standalone.ts` | Standalone Discord + Codex CLI bot |
 | `docker-compose.yml` | Docker Compose setup for containerized deployment |
 | `agent-relay.service` | Systemd service file for Linux servers |
 | `team-config.json` | Team configuration with multiple agents |
@@ -130,6 +132,31 @@ DISCORD_TOKEN=... npx ts-node examples/discord-claude-bot.ts
 4. **OAuth2** → URL Generator → select `bot` scope
 5. Select permissions: `Send Messages`, `Read Message History`
 6. Use generated URL to invite bot to your server
+
+## Codex Bot Examples
+
+Codex CLI examples for both Slack and Discord (uses OpenAI Codex subscription).
+
+### Setup Codex CLI
+
+```bash
+npm install -g @openai/codex
+codex auth login
+```
+
+### Slack + Codex
+
+```bash
+npm install @slack/bolt
+SLACK_BOT_TOKEN=xoxb-... SLACK_APP_TOKEN=xapp-... npx ts-node examples/slack-codex-standalone.ts
+```
+
+### Discord + Codex
+
+```bash
+npm install discord.js
+DISCORD_TOKEN=... npx ts-node examples/discord-codex-standalone.ts
+```
 
 ## Configuration Priority
 
