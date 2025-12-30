@@ -19,11 +19,14 @@ function getPool(): Pool {
 }
 
 // Types
+export type PlanType = 'free' | 'pro' | 'team' | 'enterprise';
+
 export interface User {
   id: string;
   githubId: string;
   githubUsername: string;
   email?: string;
+  plan: PlanType;
   onboardingCompletedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
@@ -372,6 +375,7 @@ function mapUser(row: any): User {
     githubId: row.github_id,
     githubUsername: row.github_username,
     email: row.email,
+    plan: row.plan || 'free',
     onboardingCompletedAt: row.onboarding_completed_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -438,6 +442,7 @@ export async function initializeDatabase(): Promise<void> {
         github_id VARCHAR(255) UNIQUE NOT NULL,
         github_username VARCHAR(255) NOT NULL,
         email VARCHAR(255),
+        plan VARCHAR(50) NOT NULL DEFAULT 'free',
         onboarding_completed_at TIMESTAMP,
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()

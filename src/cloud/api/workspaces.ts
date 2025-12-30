@@ -302,7 +302,7 @@ workspacesRouter.post('/:id/repos', async (req: Request, res: Response) => {
 
 /**
  * POST /api/workspaces/:id/domain
- * Add or update custom domain
+ * Add or update custom domain (Premium feature - Team/Enterprise only)
  */
 workspacesRouter.post('/:id/domain', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
@@ -328,6 +328,16 @@ workspacesRouter.post('/:id/domain', async (req: Request, res: Response) => {
 
     if (workspace.userId !== userId) {
       return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    // Check if user has premium plan (Team/Enterprise)
+    const user = await db.users.findById(userId);
+    const hasPremium = user?.plan === 'team' || user?.plan === 'enterprise';
+    if (!hasPremium) {
+      return res.status(402).json({
+        error: 'Custom domains require Team or Enterprise plan',
+        upgrade: '/settings/billing',
+      });
     }
 
     // Check if domain is already in use
