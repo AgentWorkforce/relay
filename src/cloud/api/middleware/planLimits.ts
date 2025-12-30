@@ -5,19 +5,25 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
-import { canCreateWorkspace, canSpawnAgent } from '../../services/planLimits.js';
+import {
+  canCreateWorkspace,
+  canAddRepo,
+  canSpawnAgent,
+  canUseCoordinator,
+} from '../../services/planLimits.js';
 
 /**
  * Error response for plan limit violations
  */
 interface PlanLimitError {
   error: string;
-  code: 'PLAN_LIMIT_EXCEEDED';
+  code: 'PLAN_LIMIT_EXCEEDED' | 'FEATURE_NOT_AVAILABLE';
   details: {
     plan: string;
     resource: string;
-    limit: number;
-    current: number;
+    limit?: number;
+    current?: number;
+    requiredPlan?: string;
   };
   upgrade: {
     message: string;
@@ -74,10 +80,59 @@ export async function checkWorkspaceLimit(
 }
 
 /**
- * Middleware to check agent spawn limit
+ * Middleware to check repository limit
  *
- * Use this middleware on agent creation endpoints.
- * Requires userId in session and currentAgentCount in request body or params.
+ * Use this middleware on repo connection endpoints.
+ * Requires userId in session (use after requireAuth).
+ */
+export async function checkRepoLimit(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  const userId = req.session.userId;
+
+  if (!userId) {
+    res.status(401).json({ error: 'Authentication required' });
+    return;
+  }
+
+  try {
+    const check = await canAddRepo(userId);
+
+    if (!check.allowed) {
+      const response: PlanLimitError = {
+        error: check.reason || 'Repository limit exceeded',
+        code: 'PLAN_LIMIT_EXCEEDED',
+        details: {
+          plan: 'current',
+          resource: 'repos',
+          limit: check.limit || 0,
+          current: check.current || 0,
+        },
+        upgrade: {
+          message: 'Upgrade your plan to connect more repositories',
+          url: '/settings/billing',
+        },
+      };
+
+      res.status(402).json(response);
+      return;
+    }
+
+    next();
+  } catch (error) {
+    console.error('Error checking repo limit:', error);
+    res.status(500).json({ error: 'Failed to check repository limit' });
+  }
+}
+
+/**
+ * Middleware to check concurrent agent limit
+ *
+ * Use this middleware on agent spawn endpoints.
+ * Requires userId in session (use after requireAuth).
+ * Optionally pass currentRunningAgents in request body for accurate count.
  */
 export async function checkAgentLimit(
   req: Request,
@@ -85,34 +140,28 @@ export async function checkAgentLimit(
   next: NextFunction
 ): Promise<void> {
   const userId = req.session.userId;
-  const workspaceId = req.params.id || req.body.workspaceId;
-  const currentAgentCount = req.body.currentAgentCount || 0;
+  const currentRunningAgents = req.body.currentRunningAgents;
 
   if (!userId) {
     res.status(401).json({ error: 'Authentication required' });
     return;
   }
 
-  if (!workspaceId) {
-    res.status(400).json({ error: 'Workspace ID required' });
-    return;
-  }
-
   try {
-    const check = await canSpawnAgent(userId, workspaceId, currentAgentCount);
+    const check = await canSpawnAgent(userId, currentRunningAgents);
 
     if (!check.allowed) {
       const response: PlanLimitError = {
-        error: check.reason || 'Agent limit exceeded',
+        error: check.reason || 'Concurrent agent limit exceeded',
         code: 'PLAN_LIMIT_EXCEEDED',
         details: {
           plan: 'current',
-          resource: 'agents',
+          resource: 'concurrentAgents',
           limit: check.limit || 0,
           current: check.current || 0,
         },
         upgrade: {
-          message: 'Upgrade your plan to spawn more agents',
+          message: 'Upgrade your plan to run more concurrent agents',
           url: '/settings/billing',
         },
       };
@@ -125,5 +174,52 @@ export async function checkAgentLimit(
   } catch (error) {
     console.error('Error checking agent limit:', error);
     res.status(500).json({ error: 'Failed to check agent limit' });
+  }
+}
+
+/**
+ * Middleware to check coordinator access
+ *
+ * Use this middleware on coordinator-related endpoints.
+ * Coordinators are only available on Pro plan and above.
+ */
+export async function checkCoordinatorAccess(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  const userId = req.session.userId;
+
+  if (!userId) {
+    res.status(401).json({ error: 'Authentication required' });
+    return;
+  }
+
+  try {
+    const check = await canUseCoordinator(userId);
+
+    if (!check.allowed) {
+      const response: PlanLimitError = {
+        error: check.reason || 'Coordinator agents not available',
+        code: 'FEATURE_NOT_AVAILABLE',
+        details: {
+          plan: 'current',
+          resource: 'coordinators',
+          requiredPlan: check.requiredPlan,
+        },
+        upgrade: {
+          message: 'Upgrade to Pro to use coordinator agents',
+          url: '/settings/billing',
+        },
+      };
+
+      res.status(402).json(response);
+      return;
+    }
+
+    next();
+  } catch (error) {
+    console.error('Error checking coordinator access:', error);
+    res.status(500).json({ error: 'Failed to check coordinator access' });
   }
 }

@@ -30,32 +30,35 @@ usageRouter.get('/', async (req: Request, res: Response) => {
     const plan = (user.plan as PlanType) || 'free';
     const quota = await getRemainingQuota(userId);
 
+    const calcPercent = (current: number, limit: number) =>
+      limit === Infinity ? 0 : Math.round((current / limit) * 100);
+
     res.json({
       plan,
       limits: {
         workspaces: quota.limits.maxWorkspaces,
-        agentsPerWorkspace: quota.limits.maxAgentsPerWorkspace,
+        repos: quota.limits.maxRepos,
+        concurrentAgents: quota.limits.maxConcurrentAgents,
         computeHoursPerMonth: quota.limits.maxComputeHoursPerMonth,
+        coordinatorsEnabled: quota.limits.coordinatorsEnabled,
       },
       usage: {
         workspaces: quota.usage.workspaceCount,
+        repos: quota.usage.repoCount,
+        concurrentAgents: quota.usage.concurrentAgents,
         computeHoursThisMonth: quota.usage.computeHoursThisMonth,
       },
       remaining: {
         workspaces: quota.remaining.workspaces,
+        repos: quota.remaining.repos,
+        concurrentAgents: quota.remaining.concurrentAgents,
         computeHours: quota.remaining.computeHours,
       },
       percentUsed: {
-        workspaces:
-          quota.limits.maxWorkspaces === Infinity
-            ? 0
-            : Math.round((quota.usage.workspaceCount / quota.limits.maxWorkspaces) * 100),
-        computeHours:
-          quota.limits.maxComputeHoursPerMonth === Infinity
-            ? 0
-            : Math.round(
-                (quota.usage.computeHoursThisMonth / quota.limits.maxComputeHoursPerMonth) * 100
-              ),
+        workspaces: calcPercent(quota.usage.workspaceCount, quota.limits.maxWorkspaces),
+        repos: calcPercent(quota.usage.repoCount, quota.limits.maxRepos),
+        concurrentAgents: calcPercent(quota.usage.concurrentAgents, quota.limits.maxConcurrentAgents),
+        computeHours: calcPercent(quota.usage.computeHoursThisMonth, quota.limits.maxComputeHoursPerMonth),
       },
     });
   } catch (error) {
@@ -81,34 +84,28 @@ usageRouter.get('/summary', async (req: Request, res: Response) => {
     const limits = getPlanLimits(plan);
     const usage = await getUserUsage(userId);
 
-    // Calculate warnings
+    // Calculate warnings (when at 80%+ of limit)
     const warnings = [];
-    if (
-      limits.maxWorkspaces !== Infinity &&
-      usage.workspaceCount >= limits.maxWorkspaces * 0.8
-    ) {
-      warnings.push({
-        resource: 'workspaces',
-        message: 'Approaching workspace limit',
-        current: usage.workspaceCount,
-        limit: limits.maxWorkspaces,
-      });
-    }
 
-    if (
-      limits.maxComputeHoursPerMonth !== Infinity &&
-      usage.computeHoursThisMonth >= limits.maxComputeHoursPerMonth * 0.8
-    ) {
-      warnings.push({
-        resource: 'compute_hours',
-        message: 'Approaching compute hours limit',
-        current: usage.computeHoursThisMonth,
-        limit: limits.maxComputeHoursPerMonth,
-      });
-    }
+    const checkLimit = (
+      resource: string,
+      message: string,
+      current: number,
+      limit: number
+    ) => {
+      if (limit !== Infinity && current >= limit * 0.8) {
+        warnings.push({ resource, message, current, limit });
+      }
+    };
+
+    checkLimit('workspaces', 'Approaching workspace limit', usage.workspaceCount, limits.maxWorkspaces);
+    checkLimit('repos', 'Approaching repository limit', usage.repoCount, limits.maxRepos);
+    checkLimit('concurrentAgents', 'Approaching concurrent agent limit', usage.concurrentAgents, limits.maxConcurrentAgents);
+    checkLimit('computeHours', 'Approaching compute hours limit', usage.computeHoursThisMonth, limits.maxComputeHoursPerMonth);
 
     res.json({
       plan,
+      coordinatorsEnabled: limits.coordinatorsEnabled,
       status: warnings.length > 0 ? 'warning' : 'healthy',
       warnings,
     });
