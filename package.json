@@ -61,6 +61,7 @@
   },
   "homepage": "https://github.com/khaliqgant/agent-relay#readme",
   "dependencies": {
+    "agent-trajectories": "^0.1.0",
     "better-sqlite3": "^9.4.3",
     "chokidar": "^5.0.0",
     "commander": "^12.1.0",

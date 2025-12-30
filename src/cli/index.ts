@@ -1412,4 +1412,63 @@ program
     }
   });
 
+// ============================================================================
+// TRAJECTORY COMMANDS (trail proxy)
+// ============================================================================
+
+// trail - Proxy to trail CLI for trajectory tracking
+program
+  .command('trail')
+  .description('Trajectory tracking commands (proxies to trail CLI)')
+  .argument('[args...]', 'Arguments to pass to trail CLI')
+  .allowUnknownOption()
+  .action(async (args: string[]) => {
+    const { spawn } = await import('node:child_process');
+    const { getProjectPaths } = await import('../utils/project-namespace.js');
+
+    const paths = getProjectPaths();
+
+    // Check if trail is available
+    const trailCheck = spawn('which', ['trail'], { stdio: 'pipe' });
+    const trailExists = await new Promise<boolean>((resolve) => {
+      trailCheck.on('close', (code) => resolve(code === 0));
+      trailCheck.on('error', () => resolve(false));
+    });
+
+    if (!trailExists) {
+      console.error('trail CLI not found. Install with: npm install -g agent-trajectories');
+      console.log('');
+      console.log('The trail CLI provides trajectory tracking for agent work:');
+      console.log('  trail start "<task>"         Start tracking a new trajectory');
+      console.log('  trail status                 Show current trajectory status');
+      console.log('  trail phase <phase>          Transition to PDERO phase');
+      console.log('  trail decision "<choice>"    Record a decision');
+      console.log('  trail complete               Complete the trajectory');
+      console.log('  trail list                   List all trajectories');
+      console.log('');
+      console.log('PDERO phases: plan, design, execute, review, observe');
+      process.exit(1);
+    }
+
+    // Spawn trail with the provided arguments
+    const trailProc = spawn('trail', args, {
+      cwd: paths.projectRoot,
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        TRAJECTORIES_PROJECT: paths.projectId,
+        TRAJECTORIES_DATA_DIR: paths.dataDir,
+      },
+    });
+
+    trailProc.on('close', (code) => {
+      process.exit(code ?? 0);
+    });
+
+    trailProc.on('error', (err) => {
+      console.error(`Failed to run trail: ${err.message}`);
+      process.exit(1);
+    });
+  });
+
 program.parse();
