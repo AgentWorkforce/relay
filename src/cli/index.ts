@@ -1412,4 +1412,294 @@ program
     }
   });
 
+// ============================================================================
+// Cloud commands
+// ============================================================================
+
+const cloudCommand = program
+  .command('cloud')
+  .description('Cloud account and sync commands');
+
+cloudCommand
+  .command('link')
+  .description('Link this machine to your Agent Relay Cloud account')
+  .option('--name <name>', 'Name for this machine')
+  .option('--cloud-url <url>', 'Cloud API URL', process.env.AGENT_RELAY_CLOUD_URL || 'https://api.agent-relay.com')
+  .action(async (options) => {
+    const os = await import('node:os');
+    const crypto = await import('node:crypto');
+    const readline = await import('node:readline');
+
+    const cloudUrl = options.cloudUrl;
+    const machineName = options.name || os.hostname();
+
+    // Generate machine ID
+    const dataDir = process.env.AGENT_RELAY_DATA_DIR ||
+      path.join(os.homedir(), '.local', 'share', 'agent-relay');
+    const machineIdPath = path.join(dataDir, 'machine-id');
+    const configPath = path.join(dataDir, 'cloud-config.json');
+
+    let machineId: string;
+    if (fs.existsSync(machineIdPath)) {
+      machineId = fs.readFileSync(machineIdPath, 'utf-8').trim();
+    } else {
+      machineId = `${os.hostname()}-${crypto.randomBytes(8).toString('hex')}`;
+      fs.mkdirSync(dataDir, { recursive: true });
+      fs.writeFileSync(machineIdPath, machineId);
+    }
+
+    console.log('');
+    console.log('🔗 Agent Relay Cloud - Link Machine');
+    console.log('');
+    console.log(`Machine: ${machineName}`);
+    console.log(`ID: ${machineId}`);
+    console.log('');
+
+    // Generate a temporary code for the browser auth flow
+    const tempCode = crypto.randomBytes(16).toString('hex');
+
+    // Store temp code for callback
+    const tempCodePath = path.join(dataDir, '.link-code');
+    fs.writeFileSync(tempCodePath, tempCode);
+
+    const authUrl = `${cloudUrl.replace('/api', '')}/cloud/link?code=${tempCode}&machine=${encodeURIComponent(machineId)}&name=${encodeURIComponent(machineName)}`;
+
+    console.log('Open this URL in your browser to authenticate:');
+    console.log('');
+    console.log(`  ${authUrl}`);
+    console.log('');
+
+    // Try to open browser automatically
+    try {
+      const openCommand = process.platform === 'darwin' ? 'open' :
+                          process.platform === 'win32' ? 'start' : 'xdg-open';
+      await execAsync(`${openCommand} "${authUrl}"`);
+      console.log('(Browser opened automatically)');
+    } catch {
+      console.log('(Copy the URL above and paste it in your browser)');
+    }
+
+    console.log('');
+    console.log('After authenticating, paste your API key here:');
+
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+
+    const apiKey = await new Promise<string>((resolve) => {
+      rl.question('API Key: ', (answer) => {
+        rl.close();
+        resolve(answer.trim());
+      });
+    });
+
+    if (!apiKey || !apiKey.startsWith('ar_live_')) {
+      console.error('');
+      console.error('Invalid API key format. Expected ar_live_...');
+      process.exit(1);
+    }
+
+    // Verify the API key works
+    console.log('');
+    console.log('Verifying API key...');
+
+    try {
+      const response = await fetch(`${cloudUrl}/api/daemons/heartbeat`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          agents: [],
+          metrics: { linkedAt: new Date().toISOString() },
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        console.error(`Failed to verify API key: ${error}`);
+        process.exit(1);
+      }
+
+      // Save config
+      const config = {
+        apiKey,
+        cloudUrl,
+        machineId,
+        machineName,
+        linkedAt: new Date().toISOString(),
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      fs.chmodSync(configPath, 0o600); // Secure the file
+
+      // Clean up temp code
+      if (fs.existsSync(tempCodePath)) {
+        fs.unlinkSync(tempCodePath);
+      }
+
+      console.log('');
+      console.log('✓ Machine linked successfully!');
+      console.log('');
+      console.log('Your daemon will now sync with Agent Relay Cloud.');
+      console.log('Run `agent-relay up` to start with cloud sync enabled.');
+      console.log('');
+    } catch (err: any) {
+      console.error(`Failed to connect to cloud: ${err.message}`);
+      process.exit(1);
+    }
+  });
+
+cloudCommand
+  .command('unlink')
+  .description('Unlink this machine from Agent Relay Cloud')
+  .action(async () => {
+    const os = await import('node:os');
+
+    const dataDir = process.env.AGENT_RELAY_DATA_DIR ||
+      path.join(os.homedir(), '.local', 'share', 'agent-relay');
+    const configPath = path.join(dataDir, 'cloud-config.json');
+
+    if (!fs.existsSync(configPath)) {
+      console.log('This machine is not linked to Agent Relay Cloud.');
+      return;
+    }
+
+    // Read current config
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+
+    // Delete config file
+    fs.unlinkSync(configPath);
+
+    console.log('');
+    console.log('✓ Machine unlinked from Agent Relay Cloud');
+    console.log('');
+    console.log(`Machine ID: ${config.machineId}`);
+    console.log(`Was linked since: ${config.linkedAt}`);
+    console.log('');
+    console.log('Note: The API key has been removed locally. To fully revoke access,');
+    console.log('visit your Agent Relay Cloud dashboard and remove this machine.');
+    console.log('');
+  });
+
+cloudCommand
+  .command('status')
+  .description('Show cloud sync status')
+  .action(async () => {
+    const os = await import('node:os');
+
+    const dataDir = process.env.AGENT_RELAY_DATA_DIR ||
+      path.join(os.homedir(), '.local', 'share', 'agent-relay');
+    const configPath = path.join(dataDir, 'cloud-config.json');
+
+    if (!fs.existsSync(configPath)) {
+      console.log('');
+      console.log('Cloud sync: Not configured');
+      console.log('');
+      console.log('Run `agent-relay cloud link` to connect to Agent Relay Cloud.');
+      console.log('');
+      return;
+    }
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+
+    console.log('');
+    console.log('Cloud sync: Enabled');
+    console.log('');
+    console.log(`  Machine: ${config.machineName}`);
+    console.log(`  ID: ${config.machineId}`);
+    console.log(`  Cloud URL: ${config.cloudUrl}`);
+    console.log(`  Linked: ${new Date(config.linkedAt).toLocaleString()}`);
+    console.log('');
+
+    // Check if daemon is running and connected
+    const { getProjectPaths } = await import('../utils/project-namespace.js');
+    const paths = getProjectPaths();
+
+    if (fs.existsSync(paths.socketPath)) {
+      console.log('  Daemon: Running');
+
+      // Try to get cloud sync status from daemon
+      try {
+        const response = await fetch(`${config.cloudUrl}/api/daemons/heartbeat`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${config.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ agents: [], metrics: {} }),
+        });
+
+        if (response.ok) {
+          console.log('  Cloud connection: Online');
+        } else {
+          console.log('  Cloud connection: Error (API key may be invalid)');
+        }
+      } catch (err: any) {
+        console.log(`  Cloud connection: Offline (${err.message})`);
+      }
+    } else {
+      console.log('  Daemon: Not running');
+      console.log('  Cloud connection: Offline (daemon not started)');
+    }
+
+    console.log('');
+  });
+
+cloudCommand
+  .command('sync')
+  .description('Manually sync credentials from cloud')
+  .action(async () => {
+    const os = await import('node:os');
+
+    const dataDir = process.env.AGENT_RELAY_DATA_DIR ||
+      path.join(os.homedir(), '.local', 'share', 'agent-relay');
+    const configPath = path.join(dataDir, 'cloud-config.json');
+
+    if (!fs.existsSync(configPath)) {
+      console.error('Not linked to cloud. Run `agent-relay cloud link` first.');
+      process.exit(1);
+    }
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+
+    console.log('Syncing credentials from cloud...');
+
+    try {
+      const response = await fetch(`${config.cloudUrl}/api/daemons/credentials`, {
+        headers: {
+          'Authorization': `Bearer ${config.apiKey}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        console.error(`Failed to sync: ${error}`);
+        process.exit(1);
+      }
+
+      const data = await response.json() as { credentials: Array<{ provider: string; accessToken: string }> };
+
+      console.log('');
+      console.log(`Synced ${data.credentials.length} provider credentials:`);
+      for (const cred of data.credentials) {
+        console.log(`  - ${cred.provider}`);
+      }
+
+      // Save credentials locally for daemon to use
+      const credentialsPath = path.join(dataDir, 'cloud-credentials.json');
+      fs.writeFileSync(credentialsPath, JSON.stringify(data.credentials, null, 2));
+      fs.chmodSync(credentialsPath, 0o600);
+
+      console.log('');
+      console.log('✓ Credentials synced successfully');
+      console.log('');
+    } catch (err: any) {
+      console.error(`Failed to sync: ${err.message}`);
+      process.exit(1);
+    }
+  });
+
 program.parse();

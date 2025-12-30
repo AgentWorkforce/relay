@@ -395,9 +395,9 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
       />
 
       {/* Sidebar with Workspace Selector */}
-      <div className={`sidebar-container ${isSidebarOpen ? 'open' : ''}`}>
+      <div className="flex flex-col w-[280px] h-screen bg-sidebar-bg">
         {/* Workspace Selector */}
-        <div className="workspace-selector-container">
+        <div className="p-3 border-b border-sidebar-border">
           <WorkspaceSelector
             workspaces={workspaces}
             activeWorkspaceId={activeWorkspaceId}
@@ -720,38 +720,7 @@ function ErrorIcon() {
 }
 
 /**
- * CSS styles for workspace components
+ * Legacy CSS styles export - kept for backwards compatibility
+ * @deprecated Use Tailwind classes directly instead
  */
-export const appStyles = `
-.sidebar-container {
-  display: flex;
-  flex-direction: column;
-  width: 280px;
-  height: 100vh;
-  background: #1a1a2e;
-  border-right: 1px solid #2a2a3e;
-}
-
-.workspace-selector-container {
-  padding: 12px;
-  border-bottom: 1px solid #2a2a3e;
-}
-
-.sidebar-container .sidebar {
-  width: 100%;
-  border-right: none;
-}
-
-@media (max-width: 768px) {
-  .sidebar-container {
-    position: fixed;
-    left: -280px;
-    z-index: 1000;
-    transition: left 0.3s ease;
-  }
-
-  .sidebar-container.open {
-    left: 0;
-  }
-}
-`;
+export const appStyles = '';
