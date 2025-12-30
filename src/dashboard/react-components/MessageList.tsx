@@ -1,19 +1,50 @@
 /**
- * MessageList Component
+ * MessageList Component - Mission Control Theme
  *
  * Displays a list of messages with threading support,
- * sender avatars, and timestamp formatting.
+ * provider-colored icons, and From → To format.
  */
 
 import React, { useRef, useEffect } from 'react';
-import type { Message } from '../types';
-import { getAgentColor, getAgentInitials } from '../lib/colors';
+import type { Message, Agent } from '../types';
+import { MessageStatusIndicator } from './MessageStatusIndicator';
+import { ThinkingIndicator } from './ThinkingIndicator';
+
+// Provider icons and colors matching landing page
+const PROVIDER_CONFIG: Record<string, { icon: string; color: string }> = {
+  claude: { icon: '◈', color: '#00d9ff' },
+  codex: { icon: '⬡', color: '#ff6b35' },
+  gemini: { icon: '◇', color: '#a855f7' },
+  openai: { icon: '◆', color: '#10a37f' },
+  default: { icon: '●', color: '#00d9ff' },
+};
+
+// Get provider config from agent name (heuristic-based)
+function getProviderConfig(agentName: string): { icon: string; color: string } {
+  const nameLower = agentName.toLowerCase();
+  if (nameLower.includes('claude') || nameLower.includes('anthropic')) {
+    return PROVIDER_CONFIG.claude;
+  }
+  if (nameLower.includes('codex') || nameLower.includes('openai') || nameLower.includes('gpt')) {
+    return PROVIDER_CONFIG.codex;
+  }
+  if (nameLower.includes('gemini') || nameLower.includes('google') || nameLower.includes('bard')) {
+    return PROVIDER_CONFIG.gemini;
+  }
+  // Default: cycle through colors based on name hash
+  const hash = agentName.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  const providers = Object.keys(PROVIDER_CONFIG).filter((k) => k !== 'default');
+  const provider = providers[hash % providers.length];
+  return PROVIDER_CONFIG[provider];
+}
 
 export interface MessageListProps {
   messages: Message[];
   currentChannel: string;
   onThreadClick?: (messageId: string) => void;
   highlightedMessageId?: string;
+  /** Agents list for checking processing state */
+  agents?: Agent[];
 }
 
 export function MessageList({
@@ -21,7 +52,18 @@ export function MessageList({
   currentChannel,
   onThreadClick,
   highlightedMessageId,
+  agents = [],
 }: MessageListProps) {
+  // Build a map of agent name -> processing state for quick lookup
+  const processingAgents = new Map<string, { isProcessing: boolean; processingStartedAt?: number }>();
+  for (const agent of agents) {
+    if (agent.isProcessing) {
+      processingAgents.set(agent.name, {
+        isProcessing: true,
+        processingStartedAt: agent.processingStartedAt,
+      });
+    }
+  }
   const listRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const prevFilteredLengthRef = useRef<number>(0);
@@ -41,10 +83,15 @@ export function MessageList({
 
     // Only scroll if new messages were added (not on initial render or channel switch)
     if (currentLength > prevLength && prevLength > 0) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+      // Use setTimeout to ensure DOM has fully updated before scrolling
+      setTimeout(() => {
+        bottomRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
+      }, 0);
     } else if (currentLength > 0 && prevLength === 0) {
       // Initial load or channel switch - scroll immediately without animation
-      bottomRef.current?.scrollIntoView({ behavior: 'auto' });
+      setTimeout(() => {
+        bottomRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
+      }, 0);
     }
 
     prevFilteredLengthRef.current = currentLength;
@@ -60,7 +107,7 @@ export function MessageList({
     return (
       <div className="flex flex-col items-center justify-center h-full text-text-muted text-center">
         <EmptyIcon />
-        <h3 className="m-0 mb-2 text-base text-text-secondary">No messages yet</h3>
+        <h3 className="m-0 mb-2 text-base font-display text-text-secondary">No messages yet</h3>
         <p className="m-0 text-sm">
           {currentChannel === 'general'
             ? 'Broadcast messages will appear here'
@@ -72,14 +119,23 @@ export function MessageList({
 
   return (
     <div className="flex flex-col gap-1 p-4 bg-bg-secondary" ref={listRef}>
-      {filteredMessages.map((message) => (
-        <MessageItem
-          key={message.id}
-          message={message}
-          isHighlighted={message.id === highlightedMessageId}
-          onThreadClick={onThreadClick}
-        />
-      ))}
+      {filteredMessages.map((message) => {
+        // Check if the recipient is currently processing
+        // Only show thinking indicator for messages from Dashboard to a specific agent
+        const recipientProcessing = message.from === 'Dashboard' && message.to !== '*'
+          ? processingAgents.get(message.to)
+          : undefined;
+
+        return (
+          <MessageItem
+            key={message.id}
+            message={message}
+            isHighlighted={message.id === highlightedMessageId}
+            onThreadClick={onThreadClick}
+            recipientProcessing={recipientProcessing}
+          />
+        );
+      })}
       <div ref={bottomRef} />
     </div>
   );
@@ -89,69 +145,109 @@ interface MessageItemProps {
   message: Message;
   isHighlighted?: boolean;
   onThreadClick?: (messageId: string) => void;
+  /** Processing state of the recipient agent (for showing thinking indicator) */
+  recipientProcessing?: { isProcessing: boolean; processingStartedAt?: number };
 }
 
-function MessageItem({ message, isHighlighted, onThreadClick }: MessageItemProps) {
-  const colors = getAgentColor(message.from);
+function MessageItem({ message, isHighlighted, onThreadClick, recipientProcessing }: MessageItemProps) {
+  const provider = getProviderConfig(message.from);
   const timestamp = formatTimestamp(message.timestamp);
   const hasReplies = message.replyCount && message.replyCount > 0;
+
+  // Show thinking indicator when:
+  // 1. Message is from Dashboard (user sent it)
+  // 2. Message has been delivered (acked)
+  // 3. Recipient is currently processing
+  const showThinking = message.from === 'Dashboard' &&
+    (message.status === 'acked' || message.status === 'read') &&
+    recipientProcessing?.isProcessing;
 
   return (
     <div
       className={`
-        group flex gap-3 py-2 px-3 rounded-md transition-colors duration-150
-        hover:bg-white/[0.03]
-        ${isHighlighted ? 'bg-warning-light border-l-[3px] border-l-warning pl-[9px]' : ''}
+        group flex gap-3 py-3 px-4 rounded-xl transition-all duration-150
+        hover:bg-bg-card/50
+        ${isHighlighted ? 'bg-warning-light/20 border-l-2 border-l-warning pl-3' : ''}
       `}
     >
+      {/* Provider Icon */}
       <div
-        className="shrink-0 w-9 h-9 rounded-lg flex items-center justify-center font-semibold text-xs text-white"
-        style={{ backgroundColor: colors.primary }}
+        className="shrink-0 w-10 h-10 rounded-xl flex items-center justify-center text-lg font-medium border-2"
+        style={{
+          backgroundColor: `${provider.color}15`,
+          borderColor: provider.color,
+          color: provider.color,
+          boxShadow: `0 0 16px ${provider.color}30`,
+        }}
       >
-        <span style={{ color: colors.text }}>
-          {getAgentInitials(message.from)}
-        </span>
+        {provider.icon}
       </div>
 
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5 mb-1">
-          <span className="font-semibold text-sm text-text-primary">{message.from}</span>
+        {/* Message Header */}
+        <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+          <span
+            className="font-display font-semibold text-sm"
+            style={{ color: provider.color }}
+          >
+            {message.from}
+          </span>
+
           {message.to !== '*' && (
             <>
-              <span className="text-text-muted text-xs">→</span>
-              <span className="font-medium text-sm text-accent">{message.to}</span>
+              <span className="text-text-dim text-xs">→</span>
+              <span className="font-medium text-sm text-accent-cyan">{message.to}</span>
             </>
           )}
+
           {message.thread && (
-            <span className="text-[10px] py-0.5 px-1.5 rounded font-medium bg-accent-light text-accent ml-1">
+            <span className="text-xs py-0.5 px-2 rounded-full font-mono font-medium bg-accent-purple/20 text-accent-purple">
               {message.thread}
             </span>
           )}
+
           {message.to === '*' && (
-            <span className="text-[10px] py-0.5 px-1.5 rounded uppercase font-medium bg-warning-light text-warning ml-1">
+            <span className="text-xs py-0.5 px-2 rounded-full uppercase font-medium bg-warning/20 text-warning">
               broadcast
             </span>
           )}
-          <span className="text-text-muted text-xs ml-auto">{timestamp}</span>
 
-          {/* Thread/Reply button - icon on far right */}
+          <span className="text-text-dim text-xs ml-auto font-mono">{timestamp}</span>
+
+          {/* Message status indicator - show for messages sent from Dashboard */}
+          {message.from === 'Dashboard' && (
+            <MessageStatusIndicator status={message.status} size="small" />
+          )}
+
+          {/* Thinking indicator - show when recipient is processing */}
+          {showThinking && (
+            <ThinkingIndicator
+              isProcessing={true}
+              processingStartedAt={recipientProcessing?.processingStartedAt}
+              size="small"
+              showLabel={true}
+            />
+          )}
+
+          {/* Thread/Reply button */}
           <button
             className={`
-              inline-flex items-center gap-1 p-1 rounded transition-all duration-150 cursor-pointer
-              ${hasReplies
-                ? 'text-accent hover:bg-bg-hover'
-                : 'text-text-muted opacity-0 group-hover:opacity-100 hover:text-accent hover:bg-bg-hover'}
+              inline-flex items-center gap-1.5 p-1.5 rounded-lg transition-all duration-150 cursor-pointer border-none
+              ${hasReplies || message.thread
+                ? 'text-accent-cyan bg-accent-cyan/10 hover:bg-accent-cyan/20'
+                : 'text-text-muted bg-transparent opacity-0 group-hover:opacity-100 hover:text-accent-cyan hover:bg-accent-cyan/10'}
             `}
-            onClick={() => onThreadClick?.(message.id)}
-            title={hasReplies ? `${message.replyCount} ${message.replyCount === 1 ? 'reply' : 'replies'}` : 'Reply in thread'}
+            onClick={() => onThreadClick?.(message.thread || message.id)}
+            title={message.thread ? `View thread: ${message.thread}` : (hasReplies ? `${message.replyCount} ${message.replyCount === 1 ? 'reply' : 'replies'}` : 'Reply in thread')}
           >
             <ThreadIcon />
             {hasReplies && (
-              <span className="text-xs">{message.replyCount}</span>
+              <span className="text-xs font-medium">{message.replyCount}</span>
             )}
           </button>
         </div>
 
+        {/* Message Content */}
         <div className="text-sm leading-relaxed text-text-primary whitespace-pre-wrap break-words">
           {formatMessageBody(message.content)}
         </div>
@@ -164,7 +260,6 @@ function MessageItem({ message, isHighlighted, onThreadClick }: MessageItemProps
  * Check if a line looks like part of a table (has pipe characters)
  */
 function isTableLine(line: string): boolean {
-  // Line has multiple pipe characters or starts/ends with pipe
   const pipeCount = (line.match(/\|/g) || []).length;
   return pipeCount >= 2 || (line.trim().startsWith('|') && line.trim().endsWith('|'));
 }
@@ -238,7 +333,7 @@ function formatMessageBody(content: string): React.ReactNode {
       return (
         <pre
           key={sectionIndex}
-          className="font-mono text-xs leading-relaxed whitespace-pre overflow-x-auto my-2 p-3 bg-black/20 rounded border border-white/5"
+          className="font-mono text-xs leading-relaxed whitespace-pre overflow-x-auto my-2 p-3 bg-bg-tertiary/50 rounded-lg border border-border-subtle"
         >
           {section.content}
         </pre>
@@ -275,7 +370,7 @@ function formatLine(line: string): React.ReactNode {
           href={part}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-accent no-underline hover:underline hover:text-accent-hover"
+          className="text-accent-cyan no-underline hover:underline"
         >
           {part}
         </a>
@@ -323,9 +418,8 @@ function EmptyIcon() {
 
 function ThreadIcon() {
   return (
-    <svg className="opacity-70" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
     </svg>
   );
 }
-

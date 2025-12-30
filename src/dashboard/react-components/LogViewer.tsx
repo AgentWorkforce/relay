@@ -89,16 +89,21 @@ export function LogViewer({
     }
   }, [logs, autoScroll]);
 
-  // Handle scroll to detect manual scroll (disable auto-scroll)
+  // Handle scroll to detect manual scroll (disable/enable auto-scroll)
   const handleScroll = useCallback(() => {
-    if (scrollContainerRef.current && autoScroll) {
-      const container = scrollContainerRef.current;
-      const isAtBottom =
-        container.scrollHeight - container.scrollTop - container.clientHeight < 50;
+    if (!scrollContainerRef.current) return;
 
-      if (!isAtBottom) {
-        setAutoScroll(false);
-      }
+    const container = scrollContainerRef.current;
+    const isAtBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight < 50;
+
+    // Re-enable auto-scroll when user scrolls to bottom
+    if (isAtBottom && !autoScroll) {
+      setAutoScroll(true);
+    }
+    // Disable auto-scroll when user scrolls away from bottom
+    else if (!isAtBottom && autoScroll) {
+      setAutoScroll(false);
     }
   }, [autoScroll]);
 
@@ -529,13 +534,43 @@ function ConnectionBadge({
   );
 }
 
+/**
+ * Strip non-color ANSI escape sequences that we don't want to display.
+ * This includes cursor movement, screen clearing, window title, etc.
+ * We preserve color codes (ending in 'm') for parseAnsiColors to handle.
+ */
+function stripNonColorAnsi(text: string): string {
+  // Remove OSC sequences (like window title): \x1b]...(\x07|\x1b\\)
+  let result = text.replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '');
+
+  // Remove CSI sequences that are NOT color codes (don't end in 'm')
+  // This includes: cursor movement, clear screen, scroll, etc.
+  result = result.replace(/\x1b\[[0-9;?]*[A-LNS-Zsu]/gi, '');
+
+  // Remove other escape sequences
+  // - \x1b followed by single char (like \x1b7, \x1b8 for save/restore cursor)
+  // - \x1b( and \x1b) for charset switching
+  result = result.replace(/\x1b[78()]/g, '');
+
+  // Remove carriage returns (often used with escape sequences for cursor control)
+  result = result.replace(/\r/g, '');
+
+  // Remove orphaned CSI sequences that lost their escape byte (common in PTY output)
+  result = result.replace(/^\[\??\d+[hlKJHfABCDGPXsu]/gm, '');
+
+  return result;
+}
+
 // ANSI color parser (basic implementation)
 function parseAnsiColors(text: string): React.ReactNode {
+  // First strip non-color escape sequences
+  const cleanedText = stripNonColorAnsi(text);
+
   // Basic ANSI color code patterns
   const ansiPattern = /\x1b\[(\d+(?:;\d+)*)m/g;
 
-  if (!ansiPattern.test(text)) {
-    return text;
+  if (!ansiPattern.test(cleanedText)) {
+    return cleanedText;
   }
 
   // Reset pattern position
@@ -546,12 +581,12 @@ function parseAnsiColors(text: string): React.ReactNode {
   let currentStyle: Record<string, string> = {};
   let match;
 
-  while ((match = ansiPattern.exec(text)) !== null) {
+  while ((match = ansiPattern.exec(cleanedText)) !== null) {
     // Add text before this match
     if (match.index > lastIndex) {
       parts.push(
         <span key={`text-${lastIndex}`} style={currentStyle}>
-          {text.slice(lastIndex, match.index)}
+          {cleanedText.slice(lastIndex, match.index)}
         </span>
       );
     }
@@ -564,15 +599,15 @@ function parseAnsiColors(text: string): React.ReactNode {
   }
 
   // Add remaining text
-  if (lastIndex < text.length) {
+  if (lastIndex < cleanedText.length) {
     parts.push(
       <span key={`text-${lastIndex}`} style={currentStyle}>
-        {text.slice(lastIndex)}
+        {cleanedText.slice(lastIndex)}
       </span>
     );
   }
 
-  return parts.length > 0 ? <>{parts}</> : text;
+  return parts.length > 0 ? <>{parts}</> : cleanedText;
 }
 
 function ansiCodesToStyle(codes: number[]): Record<string, string> {

@@ -1,5 +1,5 @@
 /**
- * Header Component
+ * Header Component - Mission Control Theme
  *
  * Top navigation bar with current context, quick actions,
  * and command palette trigger.
@@ -19,6 +19,8 @@ export interface HeaderProps {
   onNewConversationClick?: () => void;
   /** Mobile: open sidebar handler */
   onMenuClick?: () => void;
+  /** Show notification badge on mobile menu button */
+  hasUnreadNotifications?: boolean;
 }
 
 export function Header({
@@ -29,65 +31,77 @@ export function Header({
   onHistoryClick,
   onNewConversationClick,
   onMenuClick,
+  hasUnreadNotifications,
 }: HeaderProps) {
   const isGeneral = currentChannel === 'general';
   const colors = selectedAgent ? getAgentColor(selectedAgent.name) : null;
 
   return (
-    <header className="h-[52px] bg-bg-secondary border-b border-border flex items-center justify-between px-4">
+    <header className="h-[52px] bg-bg-secondary border-b border-border-subtle flex items-center justify-between px-4">
       {/* Mobile hamburger menu button */}
       <button
-        className="hidden max-md:flex items-center justify-center w-11 h-11 bg-transparent border-none text-text-primary cursor-pointer rounded-md transition-colors hover:bg-bg-hover"
+        className="hidden max-md:flex items-center justify-center w-11 h-11 bg-transparent border-none text-text-primary cursor-pointer rounded-lg transition-colors hover:bg-bg-hover relative"
         onClick={onMenuClick}
         aria-label="Open menu"
       >
         <MenuIcon />
+        {hasUnreadNotifications && (
+          <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-error rounded-full animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.6)]" />
+        )}
       </button>
 
-      <div className="flex items-center gap-2 flex-1 min-w-0">
+      <div className="flex items-center gap-3 flex-1 min-w-0">
         {isGeneral ? (
           <>
-            <span className="text-text-muted text-base">#</span>
-            <span className="font-semibold text-[15px] text-text-primary max-md:max-w-[150px] max-md:truncate">general</span>
-            <span className="text-text-muted text-sm ml-2 pl-2 border-l border-border max-md:hidden">
+            <span className="text-accent-cyan text-lg font-mono">#</span>
+            <span className="font-display font-semibold text-base text-text-primary max-md:max-w-[150px] max-md:truncate">general</span>
+            <span className="text-text-muted text-sm ml-2 pl-3 border-l border-border-subtle max-md:hidden">
               All agent communications
             </span>
           </>
         ) : selectedAgent ? (
           <>
             <div
-              className="w-7 h-7 rounded-md flex items-center justify-center font-semibold text-xs"
-              style={{ backgroundColor: colors?.primary }}
+              className="w-8 h-8 rounded-lg flex items-center justify-center font-semibold text-xs border-2"
+              style={{
+                backgroundColor: colors?.primary,
+                borderColor: colors?.primary,
+                boxShadow: `0 0 12px ${colors?.primary}40`,
+              }}
             >
               <span style={{ color: colors?.text }}>
                 {getAgentInitials(selectedAgent.name)}
               </span>
             </div>
             <div className="flex flex-col">
-              <span className="font-semibold text-[15px] text-text-primary max-md:max-w-[150px] max-md:truncate">
+              <span className="font-display font-semibold text-base text-text-primary max-md:max-w-[150px] max-md:truncate">
                 {selectedAgent.name}
               </span>
-              <span className="text-text-muted text-xs max-md:hidden">
+              <span className="text-text-muted text-xs font-mono max-md:hidden">
                 {getAgentBreadcrumb(selectedAgent.name)}
               </span>
             </div>
             {selectedAgent.status && (
-              <span className="bg-bg-hover text-text-secondary text-xs py-0.5 px-2 rounded ml-2">
+              <span className={`text-xs py-1 px-2.5 rounded-full font-medium ml-2 ${
+                selectedAgent.status === 'online'
+                  ? 'bg-success/20 text-success'
+                  : 'bg-bg-tertiary text-text-muted'
+              }`}>
                 {selectedAgent.status}
               </span>
             )}
           </>
         ) : (
           <>
-            <span className="text-text-muted text-base">@</span>
-            <span className="font-semibold text-[15px] text-text-primary">{currentChannel}</span>
+            <span className="text-accent-cyan text-lg font-mono">@</span>
+            <span className="font-display font-semibold text-base text-text-primary">{currentChannel}</span>
           </>
         )}
       </div>
 
       <div className="flex items-center gap-2">
         <button
-          className="flex items-center gap-1.5 py-1.5 px-3 bg-accent text-white border-none rounded-md text-sm cursor-pointer transition-all duration-200 hover:bg-accent-hover"
+          className="flex items-center gap-2 py-2 px-4 bg-gradient-to-r from-accent-cyan to-[#00b8d9] text-bg-deep font-semibold border-none rounded-lg text-sm cursor-pointer transition-all duration-150 hover:shadow-glow-cyan hover:-translate-y-0.5"
           onClick={onNewConversationClick}
           title="Start new conversation (⌘N)"
         >
@@ -96,35 +110,35 @@ export function Header({
         </button>
 
         <button
-          className="flex items-center gap-1.5 py-1.5 px-3 bg-bg-hover border border-border rounded-md text-text-secondary text-sm cursor-pointer transition-all duration-200 hover:bg-bg-active hover:text-text-primary"
+          className="flex items-center gap-2 py-2 px-3 bg-bg-tertiary border border-border-subtle rounded-lg text-text-secondary text-sm cursor-pointer transition-all duration-150 hover:bg-bg-elevated hover:border-border-medium hover:text-text-primary"
           onClick={onCommandPaletteOpen}
           title="Command Palette (⌘K)"
         >
           <SearchIcon />
           <span className="max-md:hidden">Search</span>
-          <kbd className="bg-bg-tertiary border border-border rounded px-1 py-0.5 text-xs text-text-muted max-md:hidden">
+          <kbd className="bg-bg-card border border-border-subtle rounded px-1.5 py-0.5 text-xs text-text-muted font-mono max-md:hidden">
             ⌘K
           </kbd>
         </button>
 
         <button
-          className="flex items-center justify-center p-1.5 bg-bg-hover border border-border rounded-md text-text-secondary cursor-pointer transition-all duration-200 hover:bg-bg-active hover:text-text-primary"
+          className="flex items-center justify-center p-2 bg-bg-tertiary border border-border-subtle rounded-lg text-text-secondary cursor-pointer transition-all duration-150 hover:bg-bg-elevated hover:border-border-medium hover:text-accent-cyan"
           onClick={onHistoryClick}
-          title="Message History - View past conversations"
+          title="Message History"
         >
           <HistoryIcon />
         </button>
 
         <a
           href="/metrics"
-          className="flex items-center justify-center p-1.5 bg-bg-hover border border-border rounded-md text-text-secondary cursor-pointer transition-all duration-200 hover:bg-bg-active hover:text-text-primary no-underline"
-          title="Fleet Metrics - View agent activity and statistics"
+          className="flex items-center justify-center p-2 bg-bg-tertiary border border-border-subtle rounded-lg text-text-secondary cursor-pointer transition-all duration-150 hover:bg-bg-elevated hover:border-border-medium hover:text-accent-orange no-underline"
+          title="Fleet Metrics"
         >
           <MetricsIcon />
         </a>
 
         <button
-          className="flex items-center justify-center p-1.5 bg-bg-hover border border-border rounded-md text-text-secondary cursor-pointer transition-all duration-200 hover:bg-bg-active hover:text-text-primary"
+          className="flex items-center justify-center p-2 bg-bg-tertiary border border-border-subtle rounded-lg text-text-secondary cursor-pointer transition-all duration-150 hover:bg-bg-elevated hover:border-border-medium hover:text-accent-purple"
           onClick={onSettingsClick}
           title="Settings"
         >
@@ -137,7 +151,7 @@ export function Header({
 
 function NewMessageIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
       <path d="M12 20h9" />
       <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
     </svg>

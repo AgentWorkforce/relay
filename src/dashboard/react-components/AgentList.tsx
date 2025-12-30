@@ -18,6 +18,7 @@ export interface AgentListProps {
   onAgentSelect?: (agent: Agent) => void;
   onAgentMessage?: (agent: Agent) => void;
   onReleaseClick?: (agent: Agent) => void;
+  onLogsClick?: (agent: Agent) => void;
   compact?: boolean;
   showGroupStats?: boolean;
 }
@@ -29,6 +30,7 @@ export function AgentList({
   onAgentSelect,
   onAgentMessage,
   onReleaseClick,
+  onLogsClick,
   compact = false,
   showGroupStats = true,
 }: AgentListProps) {
@@ -118,6 +120,7 @@ export function AgentList({
           onAgentSelect={onAgentSelect}
           onAgentMessage={onAgentMessage}
           onReleaseClick={onReleaseClick}
+          onLogsClick={onLogsClick}
         />
       ))}
     </div>
@@ -134,6 +137,7 @@ interface AgentGroupComponentProps {
   onAgentSelect?: (agent: Agent) => void;
   onAgentMessage?: (agent: Agent) => void;
   onReleaseClick?: (agent: Agent) => void;
+  onLogsClick?: (agent: Agent) => void;
 }
 
 function AgentGroupComponent({
@@ -146,8 +150,34 @@ function AgentGroupComponent({
   onAgentSelect,
   onAgentMessage,
   onReleaseClick,
+  onLogsClick,
 }: AgentGroupComponentProps) {
   const stats = showStats ? getGroupStats(group.agents) : null;
+
+  // Check if this is a "solo" agent - single agent in group where name matches prefix
+  // (e.g., "Lead" agent with no team set creates a "lead" group)
+  const isSoloAgent =
+    group.agents.length === 1 &&
+    group.agents[0].name.toLowerCase() === group.prefix.toLowerCase();
+
+  // For solo agents, render just the card without a group header
+  if (isSoloAgent) {
+    const agent = group.agents[0];
+    return (
+      <div className="mb-1 py-1 px-2">
+        <AgentCard
+          key={agent.name}
+          agent={agent}
+          isSelected={agent.name === selectedAgent}
+          compact={compact}
+          onClick={onAgentSelect}
+          onMessageClick={onAgentMessage}
+          onReleaseClick={onReleaseClick}
+          onLogsClick={onLogsClick}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="mb-1">
@@ -186,7 +216,7 @@ function AgentGroupComponent({
       </button>
 
       {isExpanded && (
-        <div className="py-1 pl-4 flex flex-col gap-2">
+        <div className="py-1 pl-4 flex flex-col gap-1">
           {group.agents.map((agent) => (
             <AgentCard
               key={agent.name}
@@ -197,6 +227,7 @@ function AgentGroupComponent({
               onClick={onAgentSelect}
               onMessageClick={onAgentMessage}
               onReleaseClick={onReleaseClick}
+              onLogsClick={onLogsClick}
             />
           ))}
         </div>
