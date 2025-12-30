@@ -159,7 +159,7 @@ docker run -d \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v ~/.agent-relay:/root/.agent-relay \
   -v ~/repos:/workspace \
-  ghcr.io/khaliqgant/agent-relay:latest
+  ghcr.io/agentworkforce/agent-relay:latest
 ```
 
 ### Docker Compose
@@ -169,7 +169,7 @@ version: '3.8'
 
 services:
   agent-relay:
-    image: ghcr.io/khaliqgant/agent-relay:latest
+    image: ghcr.io/agentworkforce/agent-relay:latest
     ports:
       - "3888:3888"
     volumes:
@@ -228,7 +228,7 @@ spec:
     spec:
       containers:
       - name: agent-relay
-        image: ghcr.io/khaliqgant/agent-relay:latest
+        image: ghcr.io/agentworkforce/agent-relay:latest
         ports:
         - containerPort: 3888
         volumeMounts:
@@ -449,7 +449,7 @@ agent-relay down && agent-relay up
 ### Docker
 
 ```bash
-docker pull ghcr.io/khaliqgant/agent-relay:latest
+docker pull ghcr.io/agentworkforce/agent-relay:latest
 docker-compose down && docker-compose up -d
 ```
 

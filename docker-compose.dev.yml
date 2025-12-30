@@ -99,7 +99,7 @@ services:
 
   # Optional: Example workspace for testing
   workspace:
-    image: ghcr.io/khaliqgant/agent-relay-workspace:latest
+    image: ghcr.io/agentworkforce/agent-relay-workspace:latest
     build:
       context: ./deploy/workspace
       dockerfile: Dockerfile
