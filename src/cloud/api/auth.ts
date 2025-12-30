@@ -193,7 +193,7 @@ authRouter.get('/me', async (req: Request, res: Response) => {
 /**
  * Middleware to require authentication
  */
-export function requireAuth(req: Request, res: Response, next: Function) {
+export function requireAuth(req: Request, res: Response, next: () => void) {
   if (!req.session.userId) {
     return res.status(401).json({ error: 'Authentication required' });
   }

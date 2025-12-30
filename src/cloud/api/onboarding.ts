@@ -111,12 +111,12 @@ onboardingRouter.post('/cli/:provider/start', async (req: Request, res: Response
     });
 
     session.process = proc;
-    let output = '';
+    let _output = '';
 
     // Capture stdout/stderr for auth URL
     const handleOutput = (data: Buffer) => {
       const text = data.toString();
-      output += text;
+      _output += text;
 
       // Look for auth URL
       const match = text.match(config.urlPattern);
@@ -392,8 +392,6 @@ async function extractCredentials(
   try {
     const fs = await import('fs/promises');
     const os = await import('os');
-    const path = await import('path');
-
     const credPath = config.credentialPath.replace('~', os.homedir());
     const content = await fs.readFile(credPath, 'utf8');
     const creds = JSON.parse(content);

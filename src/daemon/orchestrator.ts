@@ -569,7 +569,7 @@ export class Orchestrator extends EventEmitter {
   /**
    * Handle WebSocket connection
    */
-  private handleWebSocket(ws: WebSocket, req: http.IncomingMessage): void {
+  private handleWebSocket(ws: WebSocket, _req: http.IncomingMessage): void {
     logger.info('WebSocket client connected');
 
     const session: UserSession = {
@@ -776,6 +776,7 @@ export class Orchestrator extends EventEmitter {
    */
   private getGitInfo(workspacePath: string): { gitRemote?: string; gitBranch?: string } {
     try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { execSync } = require('child_process');
       const branch = execSync('git branch --show-current', {
         cwd: workspacePath,

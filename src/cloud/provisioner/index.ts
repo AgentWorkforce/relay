@@ -5,7 +5,7 @@
  */
 
 import { getConfig } from '../config';
-import { db, Workspace, WorkspaceConfig } from '../db';
+import { db, Workspace } from '../db';
 import { vault } from '../vault';
 
 export interface ProvisionConfig {

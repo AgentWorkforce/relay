@@ -4,7 +4,7 @@
  * PostgreSQL database access for users, credentials, workspaces, and repos.
  */
 
-import { Pool, PoolClient } from 'pg';
+import { Pool } from 'pg';
 import { getConfig } from '../config';
 
 // Initialize pool lazily

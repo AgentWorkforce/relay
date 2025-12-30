@@ -6,7 +6,7 @@
 
 import Stripe from 'stripe';
 import { getConfig } from '../config';
-import { BILLING_PLANS, getPlan } from './plans';
+import { getPlan } from './plans';
 import type {
   SubscriptionTier,
   BillingCustomer,
@@ -132,7 +132,8 @@ export class BillingService {
     cancelUrl: string
   ): Promise<CheckoutSession> {
     const config = getConfig();
-    const plan = getPlan(tier);
+    // Validate tier exists
+    getPlan(tier);
 
     // Get the appropriate price ID
     let priceId: string | undefined;

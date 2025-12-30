@@ -8,7 +8,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import { createClient } from 'redis';
 import RedisStore from 'connect-redis';
-import { getConfig, CloudConfig } from './config';
+import { getConfig } from './config';
 
 // API routers
 import { authRouter } from './api/auth';
@@ -73,7 +73,7 @@ export async function createServer(): Promise<CloudServer> {
   app.use('/api/billing', billingRouter);
 
   // Error handler
-  app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
+  app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
     console.error('Error:', err);
     res.status(500).json({
       error: 'Internal server error',

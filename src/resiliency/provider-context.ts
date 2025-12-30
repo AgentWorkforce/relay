@@ -267,7 +267,7 @@ export class CodexContextHandler extends ProviderContextHandler {
     });
   }
 
-  async injectContext(handoff: Handoff): Promise<void> {
+  async injectContext(_handoff: Handoff): Promise<void> {
     if (!this.codexConfig.systemPromptPath) return;
 
     // Generate resumption context
@@ -370,7 +370,7 @@ export class GeminiContextHandler extends ProviderContextHandler {
     });
   }
 
-  async injectContext(handoff: Handoff): Promise<void> {
+  async injectContext(_handoff: Handoff): Promise<void> {
     const resumptionContext = this.persistence.generateResumptionContext(this.config.agentName);
 
     if (!resumptionContext) return;

@@ -7,7 +7,7 @@
 import { Router, Request, Response } from 'express';
 import { requireAuth } from './auth';
 import { db, Workspace } from '../db';
-import { getProvisioner, ProvisionConfig } from '../provisioner';
+import { getProvisioner } from '../provisioner';
 
 export const workspacesRouter = Router();
 
@@ -423,7 +423,7 @@ workspacesRouter.post('/:id/domain/verify', async (req: Request, res: Response) 
           found: records,
         });
       }
-    } catch (dnsError) {
+    } catch (_dnsError) {
       res.status(400).json({
         success: false,
         status: 'pending',

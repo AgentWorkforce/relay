@@ -207,7 +207,7 @@ reposRouter.post('/bulk', async (req: Request, res: Response) => {
       });
 
       results.push({ fullName, success: true });
-    } catch (error) {
+    } catch (_error) {
       results.push({ fullName, success: false, error: 'Import failed' });
     }
   }

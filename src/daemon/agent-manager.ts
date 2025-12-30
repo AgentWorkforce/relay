@@ -7,14 +7,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { EventEmitter } from 'events';
 import { createLogger } from '../resiliency/logger.js';
-import { getSupervisor, type SupervisedAgent } from '../resiliency/supervisor.js';
-import { getContextPersistence } from '../resiliency/context-persistence.js';
+import { getSupervisor } from '../resiliency/supervisor.js';
 import { detectProvider } from '../resiliency/provider-context.js';
 import { PtyWrapper, type PtyWrapperConfig } from '../wrapper/pty-wrapper.js';
 import { resolveCommand } from '../utils/command-resolver.js';
 import type {
   Agent,
-  AgentStatus,
   ProviderType,
   DaemonEvent,
   SpawnAgentRequest,

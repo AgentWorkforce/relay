@@ -6,7 +6,7 @@
 
 import crypto from 'crypto';
 import { getConfig } from '../config';
-import { db, Credential } from '../db';
+import { db } from '../db';
 
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 12;
