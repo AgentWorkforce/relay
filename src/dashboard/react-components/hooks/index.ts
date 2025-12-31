@@ -20,3 +20,4 @@ export {
   type SessionError,
   type CloudUser,
 } from './useSession';
+export { useTrajectory } from './useTrajectory';

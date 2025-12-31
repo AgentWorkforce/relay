@@ -13,6 +13,7 @@ import { computeSystemMetrics, formatPrometheusMetrics } from './metrics.js';
 import { MultiProjectClient } from '../bridge/multi-project-client.js';
 import { AgentSpawner } from '../bridge/spawner.js';
 import type { ProjectConfig, SpawnRequest } from '../bridge/types.js';
+import { listTrajectorySteps, getTrajectoryStatus } from '../trajectory/integration.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1978,6 +1979,55 @@ export async function startDashboard(
       res.status(500).json({
         success: false,
         name,
+        error: err.message,
+      });
+    }
+  });
+
+  /**
+   * GET /api/trajectory - Get current trajectory status
+   */
+  app.get('/api/trajectory', async (_req, res) => {
+    try {
+      const status = await getTrajectoryStatus();
+      res.json({
+        success: true,
+        ...status,
+      });
+    } catch (err: any) {
+      console.error('[api] Trajectory status error:', err);
+      res.status(500).json({
+        success: false,
+        error: err.message,
+      });
+    }
+  });
+
+  /**
+   * GET /api/trajectory/steps - List trajectory steps
+   */
+  app.get('/api/trajectory/steps', async (req, res) => {
+    try {
+      const trajectoryId = req.query.trajectoryId as string | undefined;
+      const result = await listTrajectorySteps(trajectoryId);
+
+      if (result.success) {
+        res.json({
+          success: true,
+          steps: result.steps,
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          steps: [],
+          error: result.error,
+        });
+      }
+    } catch (err: any) {
+      console.error('[api] Trajectory steps error:', err);
+      res.status(500).json({
+        success: false,
+        steps: [],
         error: err.message,
       });
     }

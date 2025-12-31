@@ -260,6 +260,109 @@ export async function abandonTrajectory(reason?: string): Promise<{ success: boo
 }
 
 /**
+ * Trajectory step for dashboard display
+ */
+export interface TrajectoryStepData {
+  id: string;
+  timestamp: string | number;
+  type: 'tool_call' | 'decision' | 'message' | 'state_change' | 'error' | 'phase_transition';
+  phase?: PDEROPhase;
+  title: string;
+  description?: string;
+  metadata?: Record<string, unknown>;
+  duration?: number;
+  status?: 'pending' | 'running' | 'success' | 'error';
+}
+
+/**
+ * List trajectory steps/events
+ * Returns steps for the current or specified trajectory
+ */
+export async function listTrajectorySteps(trajectoryId?: string): Promise<{
+  success: boolean;
+  steps: TrajectoryStepData[];
+  error?: string;
+}> {
+  const args = ['list', '--json'];
+  if (trajectoryId) {
+    args.push('--trajectory', trajectoryId);
+  }
+
+  const result = await runTrail(args);
+  if (result.success) {
+    try {
+      const data = JSON.parse(result.output);
+      const steps: TrajectoryStepData[] = (data.events || data.entries || []).map((e: any, i: number) => ({
+        id: e.id || `step-${i}`,
+        timestamp: e.timestamp || e.createdAt || Date.now(),
+        type: mapEventType(e.type || e.eventType),
+        phase: e.phase,
+        title: e.title || e.content?.slice(0, 50) || e.type || 'Event',
+        description: e.content || e.description,
+        metadata: e.metadata || e.data,
+        duration: e.duration,
+        status: mapEventStatus(e.status),
+      }));
+      return { success: true, steps };
+    } catch (err) {
+      // If trail list doesn't work, return empty
+      return { success: true, steps: [] };
+    }
+  }
+  return { success: false, steps: [], error: result.error };
+}
+
+/**
+ * Map trail event type to dashboard type
+ */
+function mapEventType(type?: string): TrajectoryStepData['type'] {
+  switch (type?.toLowerCase()) {
+    case 'tool':
+    case 'tool_call':
+    case 'tool_use':
+      return 'tool_call';
+    case 'decision':
+    case 'choice':
+      return 'decision';
+    case 'message':
+    case 'observation':
+      return 'message';
+    case 'phase':
+    case 'phase_change':
+    case 'phase_transition':
+      return 'phase_transition';
+    case 'error':
+    case 'failure':
+      return 'error';
+    default:
+      return 'state_change';
+  }
+}
+
+/**
+ * Map trail status to dashboard status
+ */
+function mapEventStatus(status?: string): TrajectoryStepData['status'] | undefined {
+  switch (status?.toLowerCase()) {
+    case 'running':
+    case 'in_progress':
+      return 'running';
+    case 'success':
+    case 'completed':
+    case 'done':
+      return 'success';
+    case 'error':
+    case 'failed':
+      return 'error';
+    case 'pending':
+    case 'queued':
+      return 'pending';
+    default:
+      return undefined;
+  }
+}
+
+/**
  * Detect PDERO phase from content
  */
 export function detectPhaseFromContent(content: string): PDEROPhase | undefined {

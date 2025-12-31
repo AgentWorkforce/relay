@@ -21,10 +21,12 @@ import { FileAutocomplete, getFileQuery, completeFileInValue } from './FileAutoc
 import { WorkspaceSelector, type Workspace } from './WorkspaceSelector';
 import { AddWorkspaceModal } from './AddWorkspaceModal';
 import { LogViewerPanel } from './LogViewerPanel';
+import { TrajectoryViewer } from './TrajectoryViewer';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAgents } from './hooks/useAgents';
 import { useMessages } from './hooks/useMessages';
 import { useOrchestrator } from './hooks/useOrchestrator';
+import { useTrajectory } from './hooks/useTrajectory';
 import { api } from '../lib/api';
 
 export interface AppProps {
@@ -85,6 +87,12 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
 
   // Log viewer panel state
   const [logViewerAgent, setLogViewerAgent] = useState<Agent | null>(null);
+
+  // Trajectory panel state
+  const [isTrajectoryOpen, setIsTrajectoryOpen] = useState(false);
+  const { steps: trajectorySteps, status: trajectoryStatus, isLoading: isTrajectoryLoading } = useTrajectory({
+    autoPoll: isTrajectoryOpen, // Only poll when panel is open
+  });
 
   // Mobile sidebar state
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -661,6 +669,43 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           availableAgents={agents}
           onAgentChange={setLogViewerAgent}
         />
+      )}
+
+      {/* Trajectory Panel */}
+      {isTrajectoryOpen && (
+        <div className="fixed right-4 bottom-4 w-[400px] max-h-[500px] z-50 shadow-modal">
+          <div className="relative">
+            <button
+              onClick={() => setIsTrajectoryOpen(false)}
+              className="absolute -top-2 -right-2 w-6 h-6 bg-bg-elevated border border-border rounded-full flex items-center justify-center text-text-muted hover:text-text-primary hover:bg-bg-hover z-10"
+              title="Close trajectory"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M18 6L6 18M6 6l12 12" />
+              </svg>
+            </button>
+            <TrajectoryViewer
+              agentName={trajectoryStatus?.task?.slice(0, 30) || 'Current'}
+              steps={trajectorySteps}
+              isLoading={isTrajectoryLoading}
+              maxHeight="400px"
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Trajectory Toggle Button (bottom-right when panel is closed) */}
+      {!isTrajectoryOpen && trajectoryStatus?.active && (
+        <button
+          onClick={() => setIsTrajectoryOpen(true)}
+          className="fixed right-4 bottom-4 w-12 h-12 bg-accent text-bg-deep rounded-full shadow-glow-cyan flex items-center justify-center hover:scale-105 transition-transform z-50"
+          title={`Trajectory: ${trajectoryStatus.phase || 'active'}`}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="10" />
+            <polyline points="12 6 12 12 16 14" />
+          </svg>
+        </button>
       )}
     </div>
   );
