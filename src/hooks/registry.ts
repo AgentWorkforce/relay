@@ -219,6 +219,7 @@ export class HookRegistry {
         maxStartMemories: config.maxStartMemories,
         promptOnEnd: config.promptOnEnd,
         autoSave: config.autoSave,
+        autoSaveOnEnd: config.autoSaveOnEnd,
       });
 
       this.registerLifecycleHooks(hooks);
@@ -236,6 +237,7 @@ export class HookRegistry {
     injectOnStart?: boolean;
     promptOnEnd?: boolean;
     autoSave?: boolean;
+    autoSaveOnEnd?: boolean;
   }): Promise<void> {
     await this.registerMemoryHooksFromConfig(options ?? {});
   }

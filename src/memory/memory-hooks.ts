@@ -43,6 +43,8 @@ export interface MemoryHooksOptions {
   promptOnEnd?: boolean;
   /** Whether to auto-save important learnings from output */
   autoSave?: boolean;
+  /** Whether to auto-save session summary on graceful end */
+  autoSaveOnEnd?: boolean;
   /** Patterns that indicate content worth saving */
   savePatterns?: RegExp[];
 }
@@ -57,16 +59,47 @@ interface MemoryHooksState {
     config?: Partial<MemoryConfig>;
   };
   sessionId?: string;
+  /** Collected learnings from output during session */
+  sessionLearnings: string[];
 }
 
 /**
  * Default patterns that indicate content worth auto-saving
+ *
+ * Categories:
+ * - Learnings: discoveries, realizations, insights
+ * - Decisions: significant choices made
+ * - Breakthroughs: problems solved, aha moments
+ * - Failures: things that went wrong, errors encountered
+ * - Preferences: user/project preferences
+ * - Retrospectives: end-of-task reflections
  */
 const DEFAULT_SAVE_PATTERNS = [
+  // Learnings and discoveries
   /(?:learned|discovered|found out|realized|important|remember|note to self)/i,
+  /(?:key insight|takeaway|lesson learned|now I understand)/i,
+
+  // Significant decisions
+  /(?:decided to|decision:|chose to|going with|settled on|approach:|strategy:)/i,
+  /(?:trade-?off|weighing|considering|opting for)/i,
+
+  // Breakthroughs and solutions
+  /(?:breakthrough|finally|solved|figured out|the fix was|root cause)/i,
+  /(?:aha|eureka|that's why|the issue was|problem was)/i,
+
+  // Failures and problems
+  /(?:failed because|mistake was|should have|shouldn't have|next time)/i,
+  /(?:went wrong|broke because|error was due to|caused by)/i,
+  /(?:avoid|don't repeat|pitfall|gotcha|watch out)/i,
+
+  // User/project preferences
   /(?:user prefers?|preference|always use|never use|don't use)/i,
   /(?:project uses?|codebase uses?|this repo|this project)/i,
-  /(?:key insight|takeaway|lesson learned)/i,
+  /(?:convention|pattern|style guide|best practice)/i,
+
+  // Retrospectives
+  /(?:in retrospect|looking back|reflecting|summary:|recap:)/i,
+  /(?:what worked|what didn't|improvements for next time)/i,
 ];
 
 /**
@@ -87,14 +120,16 @@ export function createMemoryHooks(options: MemoryHooksOptions = {}): LifecycleHo
   const state: MemoryHooksState = {
     adapter: options.adapter ?? null,
     adapterPromise: null,
+    sessionLearnings: [],
     options: {
       agentId: options.agentId ?? 'default',
       projectId: options.projectId ?? 'default',
       injectOnStart: options.injectOnStart ?? true,
       maxStartMemories: options.maxStartMemories ?? 5,
       startSearchQuery: options.startSearchQuery ?? '',
-      promptOnEnd: options.promptOnEnd ?? true,
-      autoSave: options.autoSave ?? false,
+      promptOnEnd: options.promptOnEnd ?? false,
+      autoSave: options.autoSave ?? true,
+      autoSaveOnEnd: options.autoSaveOnEnd ?? true,
       savePatterns: options.savePatterns ?? DEFAULT_SAVE_PATTERNS,
       config: options.config,
     },
@@ -174,16 +209,25 @@ function createSessionStartHook(state: MemoryHooksState) {
 }
 
 /**
- * Session end hook - prompts for memory save
+ * Session end hook - logs learnings summary and optionally prompts for more
  */
 function createSessionEndHook(state: MemoryHooksState) {
   return async (ctx: SessionEndContext): Promise<HookResult | void> => {
-    if (!state.options.promptOnEnd || !ctx.graceful) {
-      return;
+    // Log session summary (learnings were already saved immediately during output)
+    if (state.options.autoSaveOnEnd && ctx.graceful && state.sessionLearnings.length > 0) {
+      const uniqueLearnings = [...new Set(state.sessionLearnings)];
+      console.log(
+        `[memory-hooks] Session captured ${uniqueLearnings.length} learnings (saved during session)`
+      );
+
+      // Clear for next session
+      state.sessionLearnings = [];
     }
 
-    return {
-      inject: `
+    // Optional prompt for additional saves
+    if (state.options.promptOnEnd && ctx.graceful) {
+      return {
+        inject: `
 [SESSION ENDING]
 If you learned anything important, save it for future sessions:
   @memory:save <what you learned>
@@ -193,7 +237,8 @@ Examples:
   @memory:save This project uses Prisma for database access
   @memory:save Auth tokens stored in httpOnly cookies
 `,
-    };
+      };
+    }
   };
 }
 
@@ -204,22 +249,28 @@ function createOutputHook(state: MemoryHooksState) {
   return async (ctx: OutputContext): Promise<HookResult | void> => {
     const { content } = ctx;
 
-    // Handle @memory: patterns
+    // Handle @memory: patterns (explicit saves)
     const memoryMatch = content.match(/@memory:(\w+)\s+(.+)/);
     if (memoryMatch) {
       const [, action, payload] = memoryMatch;
       return handleMemoryCommand(state, action, payload.trim());
     }
 
-    // Auto-save if enabled and content matches save patterns
+    // Auto-detect and save learnings
     if (state.options.autoSave) {
       for (const pattern of state.options.savePatterns) {
         if (pattern.test(content)) {
-          const adapter = await getAdapter(state);
-          if (adapter) {
-            // Extract the relevant sentence/phrase
-            const relevantContent = extractRelevantContent(content, pattern);
-            if (relevantContent) {
+          // Extract the relevant sentence/phrase
+          const relevantContent = extractRelevantContent(content, pattern);
+          if (relevantContent && relevantContent.length > 10) {
+            // Collect for session-end retrospective
+            if (state.options.autoSaveOnEnd) {
+              state.sessionLearnings.push(relevantContent);
+            }
+
+            // Also save immediately (ensures persistence even on crash)
+            const adapter = await getAdapter(state);
+            if (adapter) {
               await adapter.add(relevantContent, {
                 source: 'auto-detected',
                 sessionId: state.sessionId,

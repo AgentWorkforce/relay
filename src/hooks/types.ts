@@ -315,8 +315,10 @@ export interface HooksMemoryConfig {
   maxStartMemories?: number;
   /** Whether to prompt for memory save on session end */
   promptOnEnd?: boolean;
-  /** Whether to auto-save detected learnings */
+  /** Whether to auto-save detected learnings (default: true) */
   autoSave?: boolean;
+  /** Whether to track learnings for session-end summary (default: true) */
+  autoSaveOnEnd?: boolean;
 }
 
 /**
