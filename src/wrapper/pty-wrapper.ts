@@ -886,30 +886,33 @@ export class PtyWrapper extends EventEmitter {
   /**
    * Stop the agent process
    */
-  stop(): void {
+  async stop(): Promise<void> {
     if (!this.running) return;
     this.running = false;
 
     // Auto-save continuity state before stopping
     if (this.continuity) {
-      this.continuity.autoSave(this.config.name, 'session_end').catch((err) => {
+      try {
+        await this.continuity.autoSave(this.config.name, 'session_end');
+      } catch (err) {
         console.error(`[pty:${this.config.name}] Continuity auto-save failed:`, err);
-      });
+      }
     }
 
     // Dispatch session end hook (handles trajectory completion)
-    this.hookRegistry.dispatchSessionEnd(0, true).catch(err => {
+    try {
+      await this.hookRegistry.dispatchSessionEnd(0, true);
+    } catch (err) {
       console.error(`[pty:${this.config.name}] Session end hook error:`, err);
-    });
+    }
 
     if (this.ptyProcess) {
       // Try graceful termination first
       this.ptyProcess.write('\x03'); // Ctrl+C
-      setTimeout(() => {
-        if (this.ptyProcess) {
-          this.ptyProcess.kill();
-        }
-      }, 1000);
+      await this.sleep(1000);
+      if (this.ptyProcess) {
+        this.ptyProcess.kill();
+      }
     }
 
     this.closeLogStream();
@@ -920,20 +923,30 @@ export class PtyWrapper extends EventEmitter {
   /**
    * Kill the process immediately
    */
-  kill(): void {
+  async kill(): Promise<void> {
     this.running = false;
 
-    // Auto-save continuity state before killing (best effort)
+    // Auto-save continuity state before killing (with timeout to avoid hanging)
     if (this.continuity) {
-      this.continuity.autoSave(this.config.name, 'crash').catch((err) => {
+      try {
+        await Promise.race([
+          this.continuity.autoSave(this.config.name, 'crash'),
+          this.sleep(2000), // 2s timeout for crash saves
+        ]);
+      } catch (err) {
         console.error(`[pty:${this.config.name}] Continuity auto-save failed:`, err);
-      });
+      }
     }
 
-    // Dispatch session end hook (forced termination)
-    this.hookRegistry.dispatchSessionEnd(undefined, false).catch(err => {
+    // Dispatch session end hook (forced termination, with timeout)
+    try {
+      await Promise.race([
+        this.hookRegistry.dispatchSessionEnd(undefined, false),
+        this.sleep(1000), // 1s timeout for hooks on kill
+      ]);
+    } catch (err) {
       console.error(`[pty:${this.config.name}] Session end hook error:`, err);
-    });
+    }
 
     if (this.ptyProcess) {
       this.ptyProcess.kill();

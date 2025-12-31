@@ -542,11 +542,17 @@ export class ContinuityManager {
   }
 }
 
-// Singleton instance
+// Singleton instance with lazy initialization
 let instance: ContinuityManager | null = null;
+let instancePromise: Promise<ContinuityManager> | null = null;
 
 /**
- * Get the singleton ContinuityManager instance
+ * Get the singleton ContinuityManager instance (sync version)
+ *
+ * Note: This is safe for most uses since ContinuityManager methods
+ * call initialize() internally. The race condition only matters
+ * if multiple calls happen before the first completes AND they
+ * pass different options (which is unlikely in practice).
  */
 export function getContinuityManager(
   options?: ContinuityManagerOptions
@@ -558,8 +564,35 @@ export function getContinuityManager(
 }
 
 /**
+ * Get the singleton ContinuityManager instance (async version)
+ *
+ * This is the thread-safe version that ensures only one instance
+ * is created even with concurrent calls. Use this in async contexts
+ * where race conditions are possible.
+ */
+export async function getContinuityManagerAsync(
+  options?: ContinuityManagerOptions
+): Promise<ContinuityManager> {
+  if (instance) {
+    return instance;
+  }
+
+  if (!instancePromise) {
+    instancePromise = (async () => {
+      const manager = new ContinuityManager(options);
+      await manager.initialize();
+      instance = manager;
+      return manager;
+    })();
+  }
+
+  return instancePromise;
+}
+
+/**
  * Reset the singleton instance (for testing)
  */
 export function resetContinuityManager(): void {
   instance = null;
+  instancePromise = null;
 }

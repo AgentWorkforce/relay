@@ -140,7 +140,7 @@ program
 
     process.on('SIGINT', async () => {
       await spawner.releaseAll();
-      wrapper.stop();
+      await wrapper.stop();
       process.exit(0);
     });
 

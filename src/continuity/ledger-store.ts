@@ -573,16 +573,22 @@ export class LedgerStore {
    */
   async rebuildIndex(): Promise<void> {
     await this.initialize();
-    this.index = {};
+    const releaseIndexLock = await this.acquireIndexLock();
 
-    const agents = await this.listAgents();
-    for (const agentName of agents) {
-      const ledger = await this.load(agentName);
-      if (ledger?.agentId) {
-        this.index[ledger.agentId] = agentName;
+    try {
+      this.index = {};
+
+      const agents = await this.listAgents();
+      for (const agentName of agents) {
+        const ledger = await this.load(agentName);
+        if (ledger?.agentId) {
+          this.index[ledger.agentId] = agentName;
+        }
       }
-    }
 
-    await this.saveIndex();
+      await this.saveIndex();
+    } finally {
+      releaseIndexLock();
+    }
   }
 }

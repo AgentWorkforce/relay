@@ -203,7 +203,7 @@ export class AgentSpawner {
       if (!registered) {
         const error = `Worker ${name} failed to register within 30s`;
         console.error(`[spawner] ${error}`);
-        pty.kill();
+        await pty.kill();
         return {
           success: false,
           name,
@@ -425,15 +425,12 @@ export class AgentSpawner {
     }
 
     try {
-      // Stop the pty process gracefully
-      worker.pty.stop();
-
-      // Wait for graceful shutdown
-      await sleep(2000);
+      // Stop the pty process gracefully (handles auto-save internally)
+      await worker.pty.stop();
 
       // Force kill if still running
       if (worker.pty.isRunning) {
-        worker.pty.kill();
+        await worker.pty.kill();
       }
 
       this.activeWorkers.delete(name);

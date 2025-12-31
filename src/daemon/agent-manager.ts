@@ -205,16 +205,13 @@ export class AgentManager extends EventEmitter {
       // Remove from supervisor
       this.supervisor.unsupervise(agent.name);
 
-      // Stop PTY
+      // Stop PTY (handles auto-save internally)
       if (agent.pty) {
-        agent.pty.stop();
-
-        // Wait for graceful shutdown
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+        await agent.pty.stop();
 
         // Force kill if still running
         if (agent.pty.isRunning) {
-          agent.pty.kill();
+          await agent.pty.kill();
         }
       }
 
