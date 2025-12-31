@@ -133,6 +133,17 @@ interface AgentStatus {
   team?: string;
 }
 
+interface Attachment {
+  id: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  url: string;
+  width?: number;
+  height?: number;
+  data?: string;
+}
+
 interface Message {
   from: string;
   to: string;
@@ -142,6 +153,7 @@ interface Message {
   thread?: string;
   isBroadcast?: boolean;
   status?: string;
+  attachments?: Attachment[];
 }
 
 interface SessionInfo {
@@ -286,7 +298,21 @@ export async function startDashboard(
     await storage.init();
   }
 
-  app.use(express.json());
+  // Increase JSON body limit for base64 image uploads (10MB)
+  app.use(express.json({ limit: '10mb' }));
+
+  // Create uploads directory for attachments
+  const uploadsDir = path.join(dataDir, 'uploads');
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+
+  // Serve uploaded files statically
+  app.use('/uploads', express.static(uploadsDir));
+
+  // In-memory attachment registry (for current session)
+  // Attachments are also stored on disk, so this is just for quick lookups
+  const attachmentRegistry = new Map<string, Attachment>();
 
   // Serve dashboard static files at root (built with `next build` in src/dashboard)
   // __dirname is dist/dashboard-server, dashboard is at ../dashboard/out (relative to dist)
@@ -440,7 +466,7 @@ export async function startDashboard(
 
   // API endpoint to send messages
   app.post('/api/send', async (req, res) => {
-    const { to, message, thread } = req.body;
+    const { to, message, thread, attachments: attachmentIds } = req.body;
 
     if (!to || !message) {
       return res.status(400).json({ error: 'Missing "to" or "message" field' });
@@ -460,7 +486,24 @@ export async function startDashboard(
     }
 
     try {
-      const sent = relayClient.sendMessage(to, message, 'message', undefined, thread);
+      // Resolve attachments if provided
+      let attachments: Attachment[] | undefined;
+      if (attachmentIds && Array.isArray(attachmentIds) && attachmentIds.length > 0) {
+        attachments = [];
+        for (const id of attachmentIds) {
+          const attachment = attachmentRegistry.get(id);
+          if (attachment) {
+            attachments.push(attachment);
+          }
+        }
+      }
+
+      // Include attachments in the message data field
+      const messageData = attachments && attachments.length > 0
+        ? { attachments }
+        : undefined;
+
+      const sent = relayClient.sendMessage(to, message, 'message', messageData, thread);
       if (sent) {
         res.json({ success: true });
       } else {
@@ -499,6 +542,97 @@ export async function startDashboard(
       console.error('[dashboard] Failed to send bridge message:', err);
       res.status(500).json({ error: 'Failed to send bridge message' });
     }
+  });
+
+  // API endpoint to upload attachments (images/screenshots)
+  app.post('/api/upload', async (req, res) => {
+    const { filename, mimeType, data } = req.body;
+
+    // Validate required fields
+    if (!filename || !mimeType || !data) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: filename, mimeType, data',
+      });
+    }
+
+    // Validate mime type (only allow images for now)
+    const allowedTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml'];
+    if (!allowedTypes.includes(mimeType)) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid file type. Allowed types: ${allowedTypes.join(', ')}`,
+      });
+    }
+
+    try {
+      // Decode base64 data
+      const base64Data = data.replace(/^data:[^;]+;base64,/, '');
+      const buffer = Buffer.from(base64Data, 'base64');
+
+      // Generate unique ID for the attachment
+      const attachmentId = crypto.randomUUID();
+      const ext = mimeType.split('/')[1].replace('svg+xml', 'svg');
+      const safeFilename = `${attachmentId}.${ext}`;
+      const filePath = path.join(uploadsDir, safeFilename);
+
+      // Write file to disk
+      fs.writeFileSync(filePath, buffer);
+
+      // Create attachment record
+      const attachment: Attachment = {
+        id: attachmentId,
+        filename: filename,
+        mimeType: mimeType,
+        size: buffer.length,
+        url: `/uploads/${safeFilename}`,
+        // Include base64 data for agents that can't access the URL
+        data: data,
+      };
+
+      // Store in registry for lookup when sending messages
+      attachmentRegistry.set(attachmentId, attachment);
+
+      console.log(`[dashboard] Uploaded attachment: ${filename} (${buffer.length} bytes) -> ${safeFilename}`);
+
+      res.json({
+        success: true,
+        attachment: {
+          id: attachment.id,
+          filename: attachment.filename,
+          mimeType: attachment.mimeType,
+          size: attachment.size,
+          url: attachment.url,
+        },
+      });
+    } catch (err) {
+      console.error('[dashboard] Upload failed:', err);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to upload file',
+      });
+    }
+  });
+
+  // API endpoint to get attachment by ID
+  app.get('/api/attachment/:id', (req, res) => {
+    const { id } = req.params;
+    const attachment = attachmentRegistry.get(id);
+
+    if (!attachment) {
+      return res.status(404).json({ error: 'Attachment not found' });
+    }
+
+    res.json({
+      success: true,
+      attachment: {
+        id: attachment.id,
+        filename: attachment.filename,
+        mimeType: attachment.mimeType,
+        size: attachment.size,
+        url: attachment.url,
+      },
+    });
   });
 
   const getTeamData = () => {
@@ -581,17 +715,26 @@ export async function startDashboard(
   };
 
   const mapStoredMessages = (rows: StoredMessage[]): Message[] => rows
-    .map((row) => ({
-      from: row.from,
-      to: row.to,
-      content: row.body,
-      timestamp: new Date(row.ts).toISOString(),
-      id: row.id,
-      thread: row.thread,
-      isBroadcast: row.is_broadcast,
-      replyCount: row.replyCount,
-      status: row.status,
-    }));
+    .map((row) => {
+      // Extract attachments from the data field if present
+      let attachments: Attachment[] | undefined;
+      if (row.data && typeof row.data === 'object' && 'attachments' in row.data) {
+        attachments = (row.data as { attachments: Attachment[] }).attachments;
+      }
+
+      return {
+        from: row.from,
+        to: row.to,
+        content: row.body,
+        timestamp: new Date(row.ts).toISOString(),
+        id: row.id,
+        thread: row.thread,
+        isBroadcast: row.is_broadcast,
+        replyCount: row.replyCount,
+        status: row.status,
+        attachments,
+      };
+    });
 
   const getMessages = async (agents: any[]): Promise<Message[]> => {
     if (storage) {

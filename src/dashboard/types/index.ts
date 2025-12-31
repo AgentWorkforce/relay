@@ -34,6 +34,26 @@ export interface AgentSummary {
 // Message Status
 export type MessageStatus = 'unread' | 'read' | 'acked' | 'sending';
 
+// Attachment Types
+export interface Attachment {
+  /** Unique identifier for the attachment */
+  id: string;
+  /** Original filename */
+  filename: string;
+  /** MIME type (e.g., 'image/png', 'image/jpeg') */
+  mimeType: string;
+  /** Size in bytes */
+  size: number;
+  /** URL to access the attachment */
+  url: string;
+  /** Width for images */
+  width?: number;
+  /** Height for images */
+  height?: number;
+  /** Base64-encoded data (for inline display, optional) */
+  data?: string;
+}
+
 // Message Types
 export interface Message {
   id: string;
@@ -47,6 +67,8 @@ export interface Message {
   replyCount?: number;
   /** Message delivery status: sending → acked (received by agent) */
   status?: MessageStatus;
+  /** Attachments (images, files) */
+  attachments?: Attachment[];
 }
 
 export interface Thread {
@@ -175,6 +197,8 @@ export interface SendMessageRequest {
   to: string;
   message: string;
   thread?: string;
+  /** Attachment IDs to include with the message */
+  attachments?: string[];
 }
 
 export type SpeakOnTrigger = 'SESSION_END' | 'CODE_WRITTEN' | 'REVIEW_REQUEST' | 'EXPLICIT_ASK' | 'ALL_MESSAGES';

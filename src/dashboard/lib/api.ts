@@ -15,6 +15,7 @@ import type {
   SpawnAgentRequest,
   SpawnAgentResponse,
   ApiResponse,
+  Attachment,
 } from '../types';
 
 // API base URL - relative in browser, can be configured for SSR
@@ -186,6 +187,56 @@ export const api = {
       }
 
       return { success: false, error: result.error || 'Failed to send message' };
+    } catch (_error) {
+      return { success: false, error: 'Network error' };
+    }
+  },
+
+  /**
+   * Upload an attachment (image/screenshot)
+   * @param file - File object or { filename, mimeType, data } for base64 uploads
+   */
+  async uploadAttachment(
+    file: File | { filename: string; mimeType: string; data: string }
+  ): Promise<ApiResponse<{ attachment: Omit<Attachment, 'data'> }>> {
+    try {
+      let filename: string;
+      let mimeType: string;
+      let data: string;
+
+      if (file instanceof File) {
+        // Convert File to base64
+        filename = file.name;
+        mimeType = file.type;
+        data = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+      } else {
+        filename = file.filename;
+        mimeType = file.mimeType;
+        data = file.data;
+      }
+
+      const response = await fetch(`${API_BASE}/api/upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename, mimeType, data }),
+      });
+
+      const result = await response.json() as {
+        success?: boolean;
+        attachment?: Omit<Attachment, 'data'>;
+        error?: string;
+      };
+
+      if (response.ok && result.success && result.attachment) {
+        return { success: true, data: { attachment: result.attachment } };
+      }
+
+      return { success: false, error: result.error || 'Failed to upload attachment' };
     } catch (_error) {
       return { success: false, error: 'Network error' };
     }

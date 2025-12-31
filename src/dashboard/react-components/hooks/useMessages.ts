@@ -38,7 +38,7 @@ export interface UseMessagesReturn {
   totalUnreadThreadCount: number;
 
   // Message actions
-  sendMessage: (to: string, content: string, thread?: string) => Promise<boolean>;
+  sendMessage: (to: string, content: string, thread?: string, attachmentIds?: string[]) => Promise<boolean>;
   isSending: boolean;
   sendError: string | null;
 
@@ -188,7 +188,7 @@ export function useMessages({
 
   // Send message function
   const sendMessage = useCallback(
-    async (to: string, content: string, thread?: string): Promise<boolean> => {
+    async (to: string, content: string, thread?: string, attachmentIds?: string[]): Promise<boolean> => {
       setIsSending(true);
       setSendError(null);
 
@@ -197,6 +197,7 @@ export function useMessages({
           to,
           message: content,
           thread,
+          attachments: attachmentIds,
         };
 
         const response = await fetch('/api/send', {

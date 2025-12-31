@@ -667,12 +667,24 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
 }
 
 /**
- * Message Composer Component with @-mention autocomplete
+ * Pending attachment interface for UI state
+ */
+interface PendingAttachment {
+  id: string;
+  file: File;
+  preview: string;
+  isUploading: boolean;
+  uploadedId?: string;
+  error?: string;
+}
+
+/**
+ * Message Composer Component with @-mention autocomplete and image attachments
  */
 interface MessageComposerProps {
   recipient: string;
   agents: Agent[];
-  onSend: (to: string, content: string) => Promise<boolean>;
+  onSend: (to: string, content: string, thread?: string, attachmentIds?: string[]) => Promise<boolean>;
   isSending: boolean;
   error: string | null;
 }
@@ -682,7 +694,89 @@ function MessageComposer({ recipient, agents, onSend, isSending, error }: Messag
   const [cursorPosition, setCursorPosition] = useState(0);
   const [showMentions, setShowMentions] = useState(false);
   const [showFiles, setShowFiles] = useState(false);
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Handle file selection
+  const handleFileSelect = useCallback(async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+
+    const imageFiles = Array.from(files).filter(file =>
+      file.type.startsWith('image/')
+    );
+
+    for (const file of imageFiles) {
+      const id = crypto.randomUUID();
+      const preview = URL.createObjectURL(file);
+
+      // Add to pending attachments
+      setAttachments(prev => [...prev, {
+        id,
+        file,
+        preview,
+        isUploading: true,
+      }]);
+
+      // Upload the file
+      try {
+        const result = await api.uploadAttachment(file);
+        if (result.success && result.data) {
+          setAttachments(prev => prev.map(a =>
+            a.id === id
+              ? { ...a, isUploading: false, uploadedId: result.data!.attachment.id }
+              : a
+          ));
+        } else {
+          setAttachments(prev => prev.map(a =>
+            a.id === id
+              ? { ...a, isUploading: false, error: result.error || 'Upload failed' }
+              : a
+          ));
+        }
+      } catch (err) {
+        setAttachments(prev => prev.map(a =>
+          a.id === id
+            ? { ...a, isUploading: false, error: 'Upload failed' }
+            : a
+        ));
+      }
+    }
+  }, []);
+
+  // Handle paste for clipboard images
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    const imageItems = Array.from(items).filter(item =>
+      item.type.startsWith('image/')
+    );
+
+    if (imageItems.length > 0) {
+      e.preventDefault();
+      const files = imageItems
+        .map(item => item.getAsFile())
+        .filter((f): f is File => f !== null);
+
+      if (files.length > 0) {
+        const dataTransfer = new DataTransfer();
+        files.forEach(f => dataTransfer.items.add(f));
+        handleFileSelect(dataTransfer.files);
+      }
+    }
+  }, [handleFileSelect]);
+
+  // Remove an attachment
+  const removeAttachment = useCallback((id: string) => {
+    setAttachments(prev => {
+      const attachment = prev.find(a => a.id === id);
+      if (attachment) {
+        URL.revokeObjectURL(attachment.preview);
+      }
+      return prev.filter(a => a.id !== id);
+    });
+  }, []);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value;
@@ -719,7 +813,7 @@ function MessageComposer({ recipient, agents, onSend, isSending, error }: Messag
 
     if (e.key === 'Enter' && !e.shiftKey && !showMentions && !showFiles) {
       e.preventDefault();
-      if (message.trim() && !isSending) {
+      if ((message.trim() || attachments.length > 0) && !isSending) {
         handleSubmit(e as unknown as React.FormEvent);
       }
     }
@@ -738,7 +832,7 @@ function MessageComposer({ recipient, agents, onSend, isSending, error }: Messag
     }, 0);
   };
 
-  const handleFileSelect = (filePath: string, newValue: string) => {
+  const handleFilePathSelect = (filePath: string, newValue: string) => {
     setMessage(newValue);
     setShowFiles(false);
     setShowMentions(false);
@@ -753,7 +847,20 @@ function MessageComposer({ recipient, agents, onSend, isSending, error }: Messag
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!message.trim() || isSending) return;
+
+    // Need either message or attachments
+    const hasMessage = message.trim().length > 0;
+    const hasAttachments = attachments.length > 0;
+    if ((!hasMessage && !hasAttachments) || isSending) return;
+
+    // Check if any attachments are still uploading
+    const stillUploading = attachments.some(a => a.isUploading);
+    if (stillUploading) return;
+
+    // Get uploaded attachment IDs
+    const attachmentIds = attachments
+      .filter(a => a.uploadedId)
+      .map(a => a.uploadedId!);
 
     const mentionMatch = message.match(/^@(\S+)\s*([\s\S]*)/);
     let target: string;
@@ -780,65 +887,153 @@ function MessageComposer({ recipient, agents, onSend, isSending, error }: Messag
       content = message;
     }
 
-    const success = await onSend(target, content || message);
+    // If no message but has attachments, send with default text
+    if (!content.trim() && attachmentIds.length > 0) {
+      content = '[Screenshot attached]';
+    }
+
+    const success = await onSend(
+      target,
+      content || message,
+      undefined,
+      attachmentIds.length > 0 ? attachmentIds : undefined
+    );
+
     if (success) {
+      // Clean up previews
+      attachments.forEach(a => URL.revokeObjectURL(a.preview));
       setMessage('');
+      setAttachments([]);
       setShowMentions(false);
       setShowFiles(false);
     }
   };
 
+  // Check if we can send (have content or attachments, not uploading)
+  const canSend = (message.trim() || attachments.length > 0) &&
+    !isSending &&
+    !attachments.some(a => a.isUploading);
+
   return (
-    <form className="flex items-center gap-3" onSubmit={handleSubmit}>
-      <div className="flex-1 relative">
-        {/* Agent mention autocomplete */}
-        <MentionAutocomplete
-          agents={agents}
-          inputValue={message}
-          cursorPosition={cursorPosition}
-          onSelect={handleMentionSelect}
-          onClose={() => setShowMentions(false)}
-          isVisible={showMentions}
+    <form className="flex flex-col gap-2" onSubmit={handleSubmit}>
+      {/* Attachment previews */}
+      {attachments.length > 0 && (
+        <div className="flex flex-wrap gap-2 p-2 bg-bg-card rounded-lg border border-border-subtle">
+          {attachments.map(attachment => (
+            <div
+              key={attachment.id}
+              className="relative group"
+            >
+              <img
+                src={attachment.preview}
+                alt={attachment.file.name}
+                className={`h-16 w-auto rounded-lg object-cover ${attachment.isUploading ? 'opacity-50' : ''} ${attachment.error ? 'border-2 border-error' : ''}`}
+              />
+              {attachment.isUploading && (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <svg className="animate-spin h-5 w-5 text-accent-cyan" viewBox="0 0 24 24">
+                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" fill="none" strokeDasharray="32" strokeLinecap="round" />
+                  </svg>
+                </div>
+              )}
+              {attachment.error && (
+                <div className="absolute bottom-0 left-0 right-0 bg-error/90 text-white text-[10px] px-1 py-0.5 truncate">
+                  {attachment.error}
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={() => removeAttachment(attachment.id)}
+                className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-bg-tertiary border border-border-subtle rounded-full flex items-center justify-center text-text-muted hover:text-error hover:border-error transition-colors opacity-0 group-hover:opacity-100"
+                title="Remove"
+              >
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Input row */}
+      <div className="flex items-center gap-3">
+        {/* Image upload button */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          className="hidden"
+          onChange={(e) => handleFileSelect(e.target.files)}
         />
-        {/* File path autocomplete */}
-        <FileAutocomplete
-          inputValue={message}
-          cursorPosition={cursorPosition}
-          onSelect={handleFileSelect}
-          onClose={() => setShowFiles(false)}
-          isVisible={showFiles}
-        />
-        <textarea
-          ref={textareaRef}
-          className="w-full py-3 px-4 bg-bg-card border border-border-subtle rounded-xl text-sm font-sans text-text-primary outline-none transition-all duration-200 resize-none min-h-[44px] max-h-[120px] overflow-y-auto focus:border-accent-cyan/50 focus:shadow-[0_0_0_3px_rgba(0,217,255,0.1)] placeholder:text-text-muted"
-          placeholder={`Message ${recipient === '*' ? 'everyone' : '@' + recipient}... (@ for agents or files)`}
-          value={message}
-          onChange={handleInputChange}
-          onKeyDown={handleKeyDown}
-          onSelect={(e) => setCursorPosition((e.target as HTMLTextAreaElement).selectionStart || 0)}
-          disabled={isSending}
-          rows={1}
-        />
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          className="p-2.5 bg-bg-card border border-border-subtle rounded-xl text-text-muted hover:text-accent-cyan hover:border-accent-cyan/50 transition-colors"
+          title="Attach screenshot (or paste from clipboard)"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+            <circle cx="8.5" cy="8.5" r="1.5" />
+            <polyline points="21 15 16 10 5 21" />
+          </svg>
+        </button>
+
+        <div className="flex-1 relative">
+          {/* Agent mention autocomplete */}
+          <MentionAutocomplete
+            agents={agents}
+            inputValue={message}
+            cursorPosition={cursorPosition}
+            onSelect={handleMentionSelect}
+            onClose={() => setShowMentions(false)}
+            isVisible={showMentions}
+          />
+          {/* File path autocomplete */}
+          <FileAutocomplete
+            inputValue={message}
+            cursorPosition={cursorPosition}
+            onSelect={handleFilePathSelect}
+            onClose={() => setShowFiles(false)}
+            isVisible={showFiles}
+          />
+          <textarea
+            ref={textareaRef}
+            className="w-full py-3 px-4 bg-bg-card border border-border-subtle rounded-xl text-sm font-sans text-text-primary outline-none transition-all duration-200 resize-none min-h-[44px] max-h-[120px] overflow-y-auto focus:border-accent-cyan/50 focus:shadow-[0_0_0_3px_rgba(0,217,255,0.1)] placeholder:text-text-muted"
+            placeholder={`Message ${recipient === '*' ? 'everyone' : '@' + recipient}... (@ for agents/files)`}
+            value={message}
+            onChange={handleInputChange}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            onSelect={(e) => setCursorPosition((e.target as HTMLTextAreaElement).selectionStart || 0)}
+            disabled={isSending}
+            rows={1}
+          />
+        </div>
+        <button
+          type="submit"
+          className="py-3 px-5 bg-gradient-to-r from-accent-cyan to-[#00b8d9] text-bg-deep font-semibold border-none rounded-xl text-sm cursor-pointer transition-all duration-150 hover:shadow-glow-cyan hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:shadow-none"
+          disabled={!canSend}
+          title={isSending ? 'Sending...' : attachments.some(a => a.isUploading) ? 'Uploading...' : 'Send message'}
+        >
+          {isSending ? (
+            <span>Sending...</span>
+          ) : attachments.some(a => a.isUploading) ? (
+            <span>Uploading...</span>
+          ) : (
+            <span className="flex items-center gap-2">
+              Send
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              </svg>
+            </span>
+          )}
+        </button>
+        {error && <span className="text-error text-xs ml-2">{error}</span>}
       </div>
-      <button
-        type="submit"
-        className="py-3 px-5 bg-gradient-to-r from-accent-cyan to-[#00b8d9] text-bg-deep font-semibold border-none rounded-xl text-sm cursor-pointer transition-all duration-150 hover:shadow-glow-cyan hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:shadow-none"
-        disabled={!message.trim() || isSending}
-        title={isSending ? 'Sending...' : 'Send message'}
-      >
-        {isSending ? (
-          <span>Sending...</span>
-        ) : (
-          <span className="flex items-center gap-2">
-            Send
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="22" y1="2" x2="11" y2="13"></line>
-              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-            </svg>
-          </span>
-        )}
-      </button>
-      {error && <span className="text-error text-xs ml-2">{error}</span>}
     </form>
   );
 }
