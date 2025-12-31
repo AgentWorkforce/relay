@@ -13,9 +13,19 @@ import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import type { Agent } from '../types';
 import { getAgentColor, getAgentInitials } from '../lib/colors';
 
+/** Human user info for autocomplete */
+export interface HumanUser {
+  /** Username (GitHub username) */
+  username: string;
+  /** Optional avatar URL */
+  avatarUrl?: string;
+}
+
 export interface MentionAutocompleteProps {
   /** List of available agents */
   agents: Agent[];
+  /** List of human users (extracted from recent messages) */
+  humanUsers?: HumanUser[];
   /** Current input value */
   inputValue: string;
   /** Cursor position in input */
@@ -34,6 +44,8 @@ interface MentionOption {
   description: string;
   isBroadcast?: boolean;
   isTeam?: boolean;
+  isHuman?: boolean;
+  avatarUrl?: string;
   memberCount?: number;
 }
 
@@ -67,6 +79,7 @@ export function completeMentionInValue(
 
 export function MentionAutocomplete({
   agents,
+  humanUsers = [],
   inputValue,
   cursorPosition,
   onSelect,
@@ -144,6 +157,23 @@ export function MentionAutocomplete({
       });
     }
 
+    // Filter human users by username
+    const agentNames = new Set(agents.map(a => a.name.toLowerCase()));
+    const matchingHumans = humanUsers.filter((user) =>
+      user.username.toLowerCase().includes(queryLower) &&
+      !agentNames.has(user.username.toLowerCase()) // Don't show if they're also an agent name
+    );
+
+    matchingHumans.forEach((user) => {
+      result.push({
+        name: user.username,
+        displayName: `@${user.username}`,
+        description: 'Human user',
+        isHuman: true,
+        avatarUrl: user.avatarUrl,
+      });
+    });
+
     // Filter agents by name
     const matchingAgents = agents.filter((agent) =>
       agent.name.toLowerCase().includes(queryLower)
@@ -158,7 +188,7 @@ export function MentionAutocomplete({
     });
 
     return result;
-  }, [query, agents, teams]);
+  }, [query, agents, humanUsers, teams]);
 
   // Reset selection when options change
   useEffect(() => {
@@ -242,25 +272,41 @@ export function MentionAutocomplete({
           onClick={() => handleClick(option)}
           onMouseEnter={() => setSelectedIndex(index)}
         >
-          <div
-            className="w-7 h-7 rounded-md flex items-center justify-center text-white text-[11px] font-semibold"
-            style={{
-              background: option.isBroadcast
-                ? 'var(--color-warning, #f59e0b)'
-                : option.isTeam
-                ? 'var(--color-accent-purple, #a855f7)'
-                : getAgentColor(option.name).primary,
-            }}
-          >
-            {option.isBroadcast ? '*' : option.isTeam ? (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                <circle cx="9" cy="7" r="4" />
-                <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-              </svg>
-            ) : getAgentInitials(option.name)}
-          </div>
+          {/* Avatar/Icon */}
+          {option.isHuman && option.avatarUrl ? (
+            <img
+              src={option.avatarUrl}
+              alt={option.name}
+              className="w-7 h-7 rounded-md object-cover"
+            />
+          ) : (
+            <div
+              className="w-7 h-7 rounded-md flex items-center justify-center text-white text-[11px] font-semibold"
+              style={{
+                background: option.isBroadcast
+                  ? 'var(--color-warning, #f59e0b)'
+                  : option.isTeam
+                  ? 'var(--color-accent-purple, #a855f7)'
+                  : option.isHuman
+                  ? '#a855f7' // Purple for human users
+                  : getAgentColor(option.name).primary,
+              }}
+            >
+              {option.isBroadcast ? '*' : option.isTeam ? (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                  <circle cx="9" cy="7" r="4" />
+                  <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                  <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                </svg>
+              ) : option.isHuman ? (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                  <circle cx="12" cy="7" r="4" />
+                </svg>
+              ) : getAgentInitials(option.name)}
+            </div>
+          )}
           <div className="flex flex-col gap-0.5 min-w-0 flex-1">
             <span className="text-sm font-medium text-[#d1d2d3]">{option.displayName}</span>
             <span className="text-xs text-[#8d8d8e] truncate">{option.description}</span>

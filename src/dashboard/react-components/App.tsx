@@ -5,7 +5,7 @@
  * Manages global state via hooks and provides context to child components.
  */
 
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import type { Agent, Project } from '../types';
 import { Sidebar } from './layout/Sidebar';
 import { Header } from './layout/Header';
@@ -16,7 +16,7 @@ import { SpawnModal, type SpawnConfig } from './SpawnModal';
 import { NewConversationModal } from './NewConversationModal';
 import { SettingsPanel, defaultSettings, type Settings } from './SettingsPanel';
 import { ConversationHistory } from './ConversationHistory';
-import { MentionAutocomplete, getMentionQuery, completeMentionInValue } from './MentionAutocomplete';
+import { MentionAutocomplete, getMentionQuery, completeMentionInValue, type HumanUser } from './MentionAutocomplete';
 import { FileAutocomplete, getFileQuery, completeFileInValue } from './FileAutocomplete';
 import { WorkspaceSelector, type Workspace } from './WorkspaceSelector';
 import { AddWorkspaceModal } from './AddWorkspaceModal';
@@ -146,6 +146,45 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     messages: data?.messages ?? [],
     senderName: currentUser?.displayName,
   });
+
+  // Extract human users from messages (users who are not agents)
+  // This enables @ mentioning other human users in cloud mode
+  const humanUsers = useMemo((): HumanUser[] => {
+    const agentNames = new Set(agents.map((a) => a.name.toLowerCase()));
+    const seenUsers = new Map<string, HumanUser>();
+
+    // Include current user if in cloud mode
+    if (currentUser) {
+      seenUsers.set(currentUser.displayName.toLowerCase(), {
+        username: currentUser.displayName,
+        avatarUrl: currentUser.avatarUrl,
+      });
+    }
+
+    // Extract unique human users from message senders
+    // A human user is someone who:
+    // - Is not "Dashboard" (generic non-cloud sender)
+    // - Is not an agent name
+    // - Is not a broadcast target (*)
+    for (const msg of data?.messages ?? []) {
+      const sender = msg.from;
+      if (
+        sender &&
+        sender !== 'Dashboard' &&
+        sender !== '*' &&
+        !agentNames.has(sender.toLowerCase()) &&
+        !seenUsers.has(sender.toLowerCase())
+      ) {
+        seenUsers.set(sender.toLowerCase(), {
+          username: sender,
+          // Note: We don't have avatar URLs for users from messages
+          // unless we fetch them separately
+        });
+      }
+    }
+
+    return Array.from(seenUsers.values());
+  }, [data?.messages, agents, currentUser]);
 
   // Track unread messages when sidebar is closed on mobile
   useEffect(() => {
@@ -1006,6 +1045,7 @@ function MessageComposer({ recipient, agents, onSend, isSending, error }: Messag
           {/* Agent mention autocomplete */}
           <MentionAutocomplete
             agents={agents}
+            humanUsers={humanUsers}
             inputValue={message}
             cursorPosition={cursorPosition}
             onSelect={handleMentionSelect}
