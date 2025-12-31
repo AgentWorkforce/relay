@@ -144,6 +144,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     sendError,
   } = useMessages({
     messages: data?.messages ?? [],
+    senderName: currentUser?.displayName,
   });
 
   // Track unread messages when sidebar is closed on mobile

@@ -335,44 +335,59 @@ export async function startDashboard(
     console.error('[dashboard] Dashboard not found at:', dashboardDistDir, 'or', dashboardSourceDir);
   }
 
-  // Relay client for sending messages from dashboard
+  // Relay clients for sending messages from dashboard
+  // Map of senderName -> RelayClient for per-user connections
   const socketPath = path.join(dataDir, 'relay.sock');
-  let relayClient: RelayClient | undefined;
+  const relayClients = new Map<string, RelayClient>();
 
-  const connectRelayClient = async (): Promise<void> => {
+  // Get or create a relay client for a specific sender
+  const getRelayClient = async (senderName: string = 'Dashboard'): Promise<RelayClient | undefined> => {
+    // Check if we already have a connected client for this sender
+    const existing = relayClients.get(senderName);
+    if (existing && existing.state === 'READY') {
+      return existing;
+    }
+
     // Only attempt connection if socket exists (daemon is running)
     if (!fs.existsSync(socketPath)) {
       console.log('[dashboard] Relay socket not found, messaging disabled');
-      return;
+      return undefined;
     }
 
-    relayClient = new RelayClient({
+    // Create new client for this sender
+    const client = new RelayClient({
       socketPath,
-      agentName: 'Dashboard',
+      agentName: senderName,
       cli: 'dashboard',
       reconnect: true,
       maxReconnectAttempts: 5,
     });
 
-    relayClient.onError = (err) => {
-      console.error('[dashboard] Relay client error:', err.message);
+    client.onError = (err) => {
+      console.error(`[dashboard] Relay client error for ${senderName}:`, err.message);
     };
 
-    relayClient.onStateChange = (state) => {
-      console.log(`[dashboard] Relay client state: ${state}`);
+    client.onStateChange = (state) => {
+      console.log(`[dashboard] Relay client for ${senderName} state: ${state}`);
+      // Clean up disconnected clients
+      if (state === 'DISCONNECTED') {
+        relayClients.delete(senderName);
+      }
     };
 
     try {
-      await relayClient.connect();
-      console.log('[dashboard] Connected to relay daemon');
+      await client.connect();
+      relayClients.set(senderName, client);
+      console.log(`[dashboard] Connected to relay daemon as ${senderName}`);
+      return client;
     } catch (err) {
-      console.error('[dashboard] Failed to connect to relay daemon:', err);
-      relayClient = undefined;
+      console.error(`[dashboard] Failed to connect to relay daemon as ${senderName}:`, err);
+      return undefined;
     }
   };
 
-  // Start relay client connection (non-blocking)
-  connectRelayClient().catch(() => {});
+  // Start default relay client connection (non-blocking)
+  getRelayClient('Dashboard').catch(() => {});
 
   // Bridge client for cross-project messaging
   let bridgeClient: MultiProjectClient | undefined;
@@ -482,7 +497,7 @@ export async function startDashboard(
 
   // API endpoint to send messages
   app.post('/api/send', async (req, res) => {
-    const { to, message, thread, attachments: attachmentIds } = req.body;
+    const { to, message, thread, attachments: attachmentIds, from: senderName } = req.body;
 
     if (!to || !message) {
       return res.status(400).json({ error: 'Missing "to" or "message" field' });
@@ -511,12 +526,10 @@ export async function startDashboard(
       targets = [to];
     }
 
+    // Get or create relay client for this sender (defaults to 'Dashboard' for non-cloud mode)
+    const relayClient = await getRelayClient(senderName || 'Dashboard');
     if (!relayClient || relayClient.state !== 'READY') {
-      // Try to reconnect
-      await connectRelayClient();
-      if (!relayClient || relayClient.state !== 'READY') {
-        return res.status(503).json({ error: 'Relay daemon not connected' });
-      }
+      return res.status(503).json({ error: 'Relay daemon not connected' });
     }
 
     try {
@@ -1346,8 +1359,9 @@ export async function startDashboard(
     const memUsage = process.memoryUsage();
     const socketExists = fs.existsSync(socketPath);
 
-    // Check relay client connectivity
-    const relayConnected = relayClient?.state === 'READY';
+    // Check relay client connectivity (check if default Dashboard client is connected)
+    const defaultClient = relayClients.get('Dashboard');
+    const relayConnected = defaultClient?.state === 'READY';
 
     // If socket doesn't exist, daemon may not be running properly
     if (!socketExists) {
@@ -1375,7 +1389,8 @@ export async function startDashboard(
     const uptime = process.uptime();
     const memUsage = process.memoryUsage();
     const socketExists = fs.existsSync(socketPath);
-    const relayConnected = relayClient?.state === 'READY';
+    const defaultClient = relayClients.get('Dashboard');
+    const relayConnected = defaultClient?.state === 'READY';
 
     if (!socketExists) {
       return res.status(503).json({

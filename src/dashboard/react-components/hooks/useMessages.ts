@@ -11,6 +11,8 @@ import type { Message, SendMessageRequest } from '../../types';
 export interface UseMessagesOptions {
   messages: Message[];
   currentChannel?: string;
+  /** Optional sender name for cloud mode (GitHub username). Falls back to 'Dashboard' if not provided. */
+  senderName?: string;
 }
 
 export interface ThreadInfo {
@@ -50,6 +52,7 @@ export interface UseMessagesReturn {
 export function useMessages({
   messages,
   currentChannel: initialChannel = 'general',
+  senderName,
 }: UseMessagesOptions): UseMessagesReturn {
   const [currentChannel, setCurrentChannel] = useState(initialChannel);
   const [currentThreadInternal, setCurrentThreadInternal] = useState<string | null>(null);
@@ -193,12 +196,17 @@ export function useMessages({
       setSendError(null);
 
       try {
-        const request: SendMessageRequest = {
+        const request: SendMessageRequest & { from?: string } = {
           to,
           message: content,
           thread,
           attachments: attachmentIds,
         };
+
+        // Include sender name for cloud mode (GitHub username)
+        if (senderName) {
+          request.from = senderName;
+        }
 
         const response = await fetch('/api/send', {
           method: 'POST',
@@ -221,7 +229,7 @@ export function useMessages({
         setIsSending(false);
       }
     },
-    []
+    [senderName]
   );
 
   return {
