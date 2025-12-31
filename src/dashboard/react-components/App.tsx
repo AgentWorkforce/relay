@@ -25,7 +25,9 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { useAgents } from './hooks/useAgents';
 import { useMessages } from './hooks/useMessages';
 import { useOrchestrator } from './hooks/useOrchestrator';
+import { useCloudSessionOptional } from './CloudSessionProvider';
 import { api } from '../lib/api';
+import type { CurrentUser } from './MessageList';
 
 export interface AppProps {
   /** Initial WebSocket URL (optional, defaults to current host) */
@@ -52,6 +54,17 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     spawnAgent: orchestratorSpawnAgent,
     stopAgent: orchestratorStopAgent,
   } = useOrchestrator({ apiUrl: orchestratorUrl });
+
+  // Cloud session for user info (GitHub avatar/username)
+  const cloudSession = useCloudSessionOptional();
+
+  // Derive current user from cloud session (falls back to undefined in non-cloud mode)
+  const currentUser: CurrentUser | undefined = cloudSession?.user
+    ? {
+        displayName: cloudSession.user.githubUsername,
+        avatarUrl: cloudSession.user.avatarUrl,
+      }
+    : undefined;
 
   // View mode state
   const [viewMode, setViewMode] = useState<'local' | 'fleet'>('local');
@@ -534,6 +547,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
                 onThreadClick={(messageId) => setCurrentThread(messageId)}
                 highlightedMessageId={currentThread ?? undefined}
                 agents={data?.agents}
+                currentUser={currentUser}
               />
             )}
           </div>
@@ -562,15 +576,18 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
                     // For topic threads, broadcast to all; for reply chains, reply to the other participant
                     let recipient = '*';
                     if (!isTopicThread && originalMessage) {
-                      // If Dashboard sent the original message, reply to the recipient
+                      // If current user sent the original message, reply to the recipient
                       // If someone else sent it, reply to the sender
-                      recipient = originalMessage.from === 'Dashboard'
+                      const isFromCurrentUser = originalMessage.from === 'Dashboard' ||
+                        (currentUser && originalMessage.from === currentUser.displayName);
+                      recipient = isFromCurrentUser
                         ? originalMessage.to
                         : originalMessage.from;
                     }
                     return sendMessage(recipient, content, currentThread);
                   }}
                   isSending={isSending}
+                  currentUser={currentUser}
                 />
               </div>
             );

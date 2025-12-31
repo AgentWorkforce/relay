@@ -38,6 +38,12 @@ function getProviderConfig(agentName: string): { icon: string; color: string } {
   return PROVIDER_CONFIG[provider];
 }
 
+/** Current user info for displaying avatar/username */
+export interface CurrentUser {
+  displayName: string;
+  avatarUrl?: string;
+}
+
 export interface MessageListProps {
   messages: Message[];
   currentChannel: string;
@@ -45,6 +51,8 @@ export interface MessageListProps {
   highlightedMessageId?: string;
   /** Agents list for checking processing state */
   agents?: Agent[];
+  /** Current user info (for cloud mode - shows avatar/username instead of "Dashboard") */
+  currentUser?: CurrentUser;
 }
 
 export function MessageList({
@@ -53,6 +61,7 @@ export function MessageList({
   onThreadClick,
   highlightedMessageId,
   agents = [],
+  currentUser,
 }: MessageListProps) {
   // Build a map of agent name -> processing state for quick lookup
   const processingAgents = new Map<string, { isProcessing: boolean; processingStartedAt?: number }>();
@@ -141,9 +150,13 @@ export function MessageList({
       onScroll={handleScroll}
     >
       {filteredMessages.map((message) => {
+        // Check if message is from current user (Dashboard or GitHub username)
+        const isFromCurrentUser = message.from === 'Dashboard' ||
+          (currentUser && message.from === currentUser.displayName);
+
         // Check if the recipient is currently processing
-        // Only show thinking indicator for messages from Dashboard to a specific agent
-        const recipientProcessing = message.from === 'Dashboard' && message.to !== '*'
+        // Only show thinking indicator for messages from current user to a specific agent
+        const recipientProcessing = isFromCurrentUser && message.to !== '*'
           ? processingAgents.get(message.to)
           : undefined;
 
@@ -154,6 +167,7 @@ export function MessageList({
             isHighlighted={message.id === highlightedMessageId}
             onThreadClick={onThreadClick}
             recipientProcessing={recipientProcessing}
+            currentUser={currentUser}
           />
         );
       })}
@@ -167,18 +181,33 @@ interface MessageItemProps {
   onThreadClick?: (messageId: string) => void;
   /** Processing state of the recipient agent (for showing thinking indicator) */
   recipientProcessing?: { isProcessing: boolean; processingStartedAt?: number };
+  /** Current user info for displaying avatar/username */
+  currentUser?: CurrentUser;
 }
 
-function MessageItem({ message, isHighlighted, onThreadClick, recipientProcessing }: MessageItemProps) {
-  const provider = getProviderConfig(message.from);
+function MessageItem({ message, isHighlighted, onThreadClick, recipientProcessing, currentUser }: MessageItemProps) {
   const timestamp = formatTimestamp(message.timestamp);
+
+  // Check if this message is from the current user (Dashboard or their GitHub username)
+  const isFromCurrentUser = message.from === 'Dashboard' ||
+    (currentUser && message.from === currentUser.displayName);
+
+  // Get provider config for agent messages, or use user styling for current user
+  const provider = isFromCurrentUser && currentUser
+    ? { icon: '', color: '#a855f7' } // Purple for user messages
+    : getProviderConfig(message.from);
+
+  // Display name: use GitHub username if available, otherwise message.from
+  const displayName = isFromCurrentUser && currentUser
+    ? currentUser.displayName
+    : message.from;
   const hasReplies = message.replyCount && message.replyCount > 0;
 
   // Show thinking indicator when:
-  // 1. Message is from Dashboard (user sent it)
+  // 1. Message is from Dashboard or current user (user sent it)
   // 2. Message has been delivered (acked)
   // 3. Recipient is currently processing
-  const showThinking = message.from === 'Dashboard' &&
+  const showThinking = isFromCurrentUser &&
     (message.status === 'acked' || message.status === 'read') &&
     recipientProcessing?.isProcessing;
 
@@ -190,18 +219,30 @@ function MessageItem({ message, isHighlighted, onThreadClick, recipientProcessin
         ${isHighlighted ? 'bg-warning-light/20 border-l-2 border-l-warning pl-3' : ''}
       `}
     >
-      {/* Provider Icon */}
-      <div
-        className="shrink-0 w-10 h-10 rounded-xl flex items-center justify-center text-lg font-medium border-2"
-        style={{
-          backgroundColor: `${provider.color}15`,
-          borderColor: provider.color,
-          color: provider.color,
-          boxShadow: `0 0 16px ${provider.color}30`,
-        }}
-      >
-        {provider.icon}
-      </div>
+      {/* Avatar/Icon */}
+      {isFromCurrentUser && currentUser?.avatarUrl ? (
+        <img
+          src={currentUser.avatarUrl}
+          alt={displayName}
+          className="shrink-0 w-10 h-10 rounded-xl border-2 object-cover"
+          style={{
+            borderColor: provider.color,
+            boxShadow: `0 0 16px ${provider.color}30`,
+          }}
+        />
+      ) : (
+        <div
+          className="shrink-0 w-10 h-10 rounded-xl flex items-center justify-center text-lg font-medium border-2"
+          style={{
+            backgroundColor: `${provider.color}15`,
+            borderColor: provider.color,
+            color: provider.color,
+            boxShadow: `0 0 16px ${provider.color}30`,
+          }}
+        >
+          {provider.icon}
+        </div>
+      )}
 
       <div className="flex-1 min-w-0">
         {/* Message Header */}
@@ -210,7 +251,7 @@ function MessageItem({ message, isHighlighted, onThreadClick, recipientProcessin
             className="font-display font-semibold text-sm"
             style={{ color: provider.color }}
           >
-            {message.from}
+            {displayName}
           </span>
 
           {message.to !== '*' && (
@@ -234,8 +275,8 @@ function MessageItem({ message, isHighlighted, onThreadClick, recipientProcessin
 
           <span className="text-text-dim text-xs ml-auto font-mono">{timestamp}</span>
 
-          {/* Message status indicator - show for messages sent from Dashboard */}
-          {message.from === 'Dashboard' && (
+          {/* Message status indicator - show for messages sent by current user */}
+          {isFromCurrentUser && (
             <MessageStatusIndicator status={message.status} size="small" />
           )}
 
