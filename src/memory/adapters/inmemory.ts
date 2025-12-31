@@ -192,7 +192,7 @@ export class InMemoryAdapter implements MemoryAdapter {
     projectId?: string;
     before?: number;
   }): Promise<MemoryResult> {
-    let count = 0;
+    let _count = 0;
     const toDelete: string[] = [];
 
     for (const [id, entry] of this.memories.entries()) {
@@ -215,7 +215,7 @@ export class InMemoryAdapter implements MemoryAdapter {
 
     for (const id of toDelete) {
       this.memories.delete(id);
-      count++;
+      _count++;
     }
 
     return { success: true };

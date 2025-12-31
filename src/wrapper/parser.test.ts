@@ -438,7 +438,7 @@ Let me know if that works.
       }
       lines += 'Output after message\n';
 
-      const result = parser.parse(lines);
+      const _result = parser.parse(lines);
 
       // Message should be auto-closed and sent (discarded due to exceeding limit)
       // Parser should not be stuck in fenced mode

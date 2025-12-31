@@ -131,7 +131,7 @@ class FlyProvisioner implements ComputeProvisioner {
     const appName = `ar-${workspace.id.substring(0, 8)}`;
 
     // Create Fly app
-    const createResponse = await fetchWithRetry('https://api.machines.dev/v1/apps', {
+    const _createResponse = await fetchWithRetry('https://api.machines.dev/v1/apps', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${this.apiToken}`,

@@ -74,8 +74,8 @@ const RELAY_INJECTION_PREFIX = /^\s*Relay message from /;
 const MAX_INLINE_CONTINUATION_LINES = 30;
 
 // Spawn/release command patterns - these should NOT be parsed as relay messages
-const SPAWN_COMMAND_PATTERN = /->relay:spawn\s+\S+/i;
-const RELEASE_COMMAND_PATTERN = /->relay:release\s+\S+/i;
+const _SPAWN_COMMAND_PATTERN = /->relay:spawn\s+\S+/i;
+const _RELEASE_COMMAND_PATTERN = /->relay:release\s+\S+/i;
 
 // Claude extended thinking block markers - skip content inside these
 const THINKING_START = /<antml:thinking>/;
