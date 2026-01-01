@@ -119,8 +119,10 @@ export function useMessages({
 
       // Count unread messages in thread
       // Consider messages as "read" if they arrived before we last viewed this thread
+      // Exclude messages from "Dashboard" - users shouldn't get notifications for their own messages
       const seenTimestamp = seenThreads.get(threadId);
       const unreadCount = threadMsgs.filter((m) => {
+        if (m.from === 'Dashboard') return false; // Don't count own messages as unread
         if (m.isRead) return false; // Already marked as read
         if (seenTimestamp) {
           // If we've seen this thread, only count messages after that time

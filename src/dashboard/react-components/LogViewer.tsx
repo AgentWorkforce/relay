@@ -134,19 +134,28 @@ export function LogViewer({
         className={`log-viewer-inline rounded-lg overflow-hidden border border-[#2a2d35] ${className}`}
         style={{
           background: 'linear-gradient(180deg, #0d0f14 0%, #12151c 100%)',
+          boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.02), 0 4px 12px rgba(0,0,0,0.3)',
         }}
       >
-        <div className="flex items-center justify-between px-3 py-2 border-b border-[#2a2d35] bg-[#0a0c10]">
+        <div
+          className="flex items-center justify-between px-3 py-2 border-b border-[#2a2d35]"
+          style={{
+            background: 'linear-gradient(180deg, #161b22 0%, #0d1117 100%)',
+          }}
+        >
           <div className="flex items-center gap-2">
             <TerminalIcon />
-            <span className="text-xs font-medium text-[#8b949e]">
+            <span
+              className="text-xs font-medium"
+              style={{ color: colors.primary }}
+            >
               Live logs
             </span>
             <ConnectionBadge isConnected={isConnected} isConnecting={isConnecting} />
           </div>
           <div className="flex items-center gap-1">
             <button
-              className="p-1 rounded hover:bg-[#21262d] text-[#8b949e] hover:text-[#c9d1d9] transition-colors"
+              className="p-1.5 rounded-lg hover:bg-[#21262d] text-[#8b949e] hover:text-accent-cyan transition-all duration-200 hover:shadow-[0_0_8px_rgba(0,217,255,0.15)]"
               onClick={onExpand}
               title="Expand"
             >
@@ -164,7 +173,10 @@ export function LogViewer({
             <LogLineItem key={log.id} log={log} compact />
           ))}
           {filteredLogs.length === 0 && (
-            <div className="text-[#484f58] italic">Waiting for output...</div>
+            <div className="text-[#484f58] italic flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#484f58] animate-pulse" />
+              Waiting for output...
+            </div>
           )}
         </div>
       </div>
@@ -177,7 +189,7 @@ export function LogViewer({
       className={`log-viewer-panel flex flex-col rounded-xl overflow-hidden border border-[#2a2d35] shadow-2xl ${className}`}
       style={{
         background: 'linear-gradient(180deg, #0d0f14 0%, #0a0c10 100%)',
-        boxShadow: `0 0 60px -15px ${colors.primary}15, 0 25px 50px -12px rgba(0, 0, 0, 0.8)`,
+        boxShadow: `0 0 60px -15px ${colors.primary}25, 0 25px 50px -12px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255,255,255,0.02)`,
       }}
     >
       {/* Header */}
@@ -190,27 +202,37 @@ export function LogViewer({
         >
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
+              {/* Traffic light buttons with glow */}
               <div className="flex gap-1.5">
-                <div className="w-3 h-3 rounded-full bg-[#ff5f56] border border-[#e0443e]" />
-                <div className="w-3 h-3 rounded-full bg-[#ffbd2e] border border-[#dea123]" />
-                <div className="w-3 h-3 rounded-full bg-[#27c93f] border border-[#1aab29]" />
+                <div
+                  className="w-3 h-3 rounded-full bg-[#ff5f56] border border-[#e0443e] transition-shadow hover:shadow-[0_0_8px_rgba(255,95,86,0.5)]"
+                />
+                <div
+                  className="w-3 h-3 rounded-full bg-[#ffbd2e] border border-[#dea123] transition-shadow hover:shadow-[0_0_8px_rgba(255,189,46,0.5)]"
+                />
+                <div
+                  className="w-3 h-3 rounded-full bg-[#27c93f] border border-[#1aab29] transition-shadow hover:shadow-[0_0_8px_rgba(39,201,63,0.5)]"
+                />
               </div>
             </div>
             <div className="w-px h-4 bg-[#30363d]" />
             <div className="flex items-center gap-2">
               <TerminalIcon />
-              <span className="text-sm font-semibold text-[#c9d1d9]">
+              <span
+                className="text-sm font-semibold"
+                style={{ color: colors.primary }}
+              >
                 {agentName}
               </span>
               <ConnectionBadge isConnected={isConnected} isConnecting={isConnecting} />
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             {/* Search toggle */}
             <button
-              className={`p-1.5 rounded-md transition-colors ${
+              className={`p-1.5 rounded-lg transition-all duration-200 ${
                 isSearchOpen
-                  ? 'bg-[#238636] text-white'
+                  ? 'bg-accent-cyan/20 text-accent-cyan shadow-[0_0_12px_rgba(0,217,255,0.25)]'
                   : 'hover:bg-[#21262d] text-[#8b949e] hover:text-[#c9d1d9]'
               }`}
               onClick={() => {
@@ -225,7 +247,7 @@ export function LogViewer({
             </button>
             {/* Clear logs */}
             <button
-              className="p-1.5 rounded-md hover:bg-[#21262d] text-[#8b949e] hover:text-[#c9d1d9] transition-colors"
+              className="p-1.5 rounded-lg hover:bg-[#21262d] text-[#8b949e] hover:text-[#c9d1d9] transition-all duration-200 hover:shadow-[0_0_8px_rgba(255,255,255,0.1)]"
               onClick={clear}
               title="Clear logs"
             >
@@ -233,9 +255,9 @@ export function LogViewer({
             </button>
             {/* Auto-scroll toggle */}
             <button
-              className={`p-1.5 rounded-md transition-colors ${
+              className={`p-1.5 rounded-lg transition-all duration-200 ${
                 autoScroll
-                  ? 'bg-[#238636] text-white'
+                  ? 'bg-[#3fb950]/20 text-[#3fb950] shadow-[0_0_12px_rgba(63,185,80,0.25)]'
                   : 'hover:bg-[#21262d] text-[#8b949e] hover:text-[#c9d1d9]'
               }`}
               onClick={() => setAutoScroll(!autoScroll)}
@@ -245,10 +267,10 @@ export function LogViewer({
             </button>
             {/* Connection toggle */}
             <button
-              className={`p-1.5 rounded-md transition-colors ${
+              className={`p-1.5 rounded-lg transition-all duration-200 ${
                 isConnected
-                  ? 'hover:bg-[#21262d] text-[#8b949e] hover:text-[#c9d1d9]'
-                  : 'bg-[#238636] text-white'
+                  ? 'hover:bg-[#f85149]/10 text-[#8b949e] hover:text-[#f85149] hover:shadow-[0_0_8px_rgba(248,81,73,0.2)]'
+                  : 'bg-[#3fb950]/20 text-[#3fb950] shadow-[0_0_12px_rgba(63,185,80,0.25)]'
               }`}
               onClick={isConnected ? disconnect : connect}
               title={isConnected ? 'Disconnect' : 'Connect'}
@@ -260,7 +282,7 @@ export function LogViewer({
               <>
                 <div className="w-px h-4 bg-[#30363d] mx-1" />
                 <button
-                  className="p-1.5 rounded-md hover:bg-[#21262d] text-[#8b949e] hover:text-[#c9d1d9] transition-colors"
+                  className="p-1.5 rounded-lg hover:bg-[#f85149]/10 text-[#8b949e] hover:text-[#f85149] transition-all duration-200 hover:shadow-[0_0_8px_rgba(248,81,73,0.2)]"
                   onClick={onClose}
                   title="Close"
                 >
@@ -362,12 +384,17 @@ export function LogViewer({
       </div>
 
       {/* Footer status bar */}
-      <div className="flex items-center justify-between px-4 py-2 border-t border-[#21262d] bg-[#0d1117] text-xs text-[#484f58]">
+      <div
+        className="flex items-center justify-between px-4 py-2.5 border-t border-[#21262d] text-xs"
+        style={{
+          background: 'linear-gradient(180deg, #0d1117 0%, #0a0c10 100%)',
+        }}
+      >
         <div className="flex items-center gap-3">
-          <span className="tabular-nums">{logs.length} lines</span>
+          <span className="tabular-nums font-mono text-[#6e7681]">{logs.length} lines</span>
           {!autoScroll && (
             <button
-              className="flex items-center gap-1 px-2 py-0.5 rounded bg-[#21262d] text-[#8b949e] hover:text-[#c9d1d9] transition-colors"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-accent-cyan/10 text-accent-cyan transition-all duration-200 hover:bg-accent-cyan/20 hover:shadow-[0_0_8px_rgba(0,217,255,0.2)]"
               onClick={() => {
                 setAutoScroll(true);
                 if (scrollContainerRef.current) {
@@ -377,20 +404,23 @@ export function LogViewer({
               }}
             >
               <ArrowDownIcon />
-              <span>Jump to bottom</span>
+              <span className="font-medium">Jump to bottom</span>
             </button>
           )}
         </div>
         <div className="flex items-center gap-2">
-          <span>PTY stream</span>
+          <span className="text-[#6e7681] font-mono uppercase tracking-wider text-[10px]">PTY stream</span>
           <div
-            className={`w-2 h-2 rounded-full ${
+            className={`w-2 h-2 rounded-full transition-all duration-300 ${
               isConnected
-                ? 'bg-[#3fb950] shadow-[0_0_6px_rgba(63,185,80,0.5)]'
+                ? 'bg-[#3fb950]'
                 : isConnecting
                 ? 'bg-[#d29922] animate-pulse'
                 : 'bg-[#484f58]'
             }`}
+            style={{
+              boxShadow: isConnected ? '0 0 8px rgba(63,185,80,0.6)' : 'none',
+            }}
           />
         </div>
       </div>
@@ -470,29 +500,35 @@ function LogLineItem({
 
   return (
     <div
-      className={`group flex gap-2 py-0.5 px-2 -mx-2 rounded transition-colors ${
+      className={`group flex gap-2 py-1 px-2 -mx-2 rounded-md transition-all duration-150 ${
         isHighlighted
-          ? 'bg-[#634d00]/20'
-          : 'hover:bg-[#161b22]'
+          ? 'bg-[#634d00]/30 border-l-2 border-[#ffdf5d]'
+          : 'hover:bg-[#161b22]/80 border-l-2 border-transparent'
       }`}
     >
       {lineNumber !== undefined && (
-        <span className="w-10 text-right text-[#484f58] select-none shrink-0 tabular-nums">
+        <span className="w-10 text-right text-[#484f58] select-none shrink-0 tabular-nums font-mono text-[11px] opacity-60 group-hover:opacity-100 transition-opacity">
           {lineNumber}
         </span>
       )}
       {showTimestamp && (
-        <span className="text-[#484f58] select-none shrink-0 tabular-nums">
+        <span className="text-[#484f58] select-none shrink-0 tabular-nums font-mono text-[11px] opacity-80 group-hover:opacity-100 transition-opacity">
           {timestamp}
         </span>
       )}
       <span
-        className={`flex-1 whitespace-pre-wrap break-all ${getTypeStyles()}`}
+        className={`flex-1 whitespace-pre-wrap break-all leading-relaxed ${getTypeStyles()}`}
       >
         {highlightContent(log.content)}
       </span>
       {log.type === 'stderr' && (
-        <span className="shrink-0 text-[10px] text-[#f85149]/60 uppercase tracking-wider">
+        <span
+          className="shrink-0 text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded"
+          style={{
+            color: '#f85149',
+            background: 'rgba(248, 81, 73, 0.15)',
+          }}
+        >
           err
         </span>
       )}

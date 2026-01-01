@@ -3,6 +3,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import http from 'http';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { SqliteStorageAdapter } from '../storage/sqlite-adapter.js';
@@ -13,6 +14,7 @@ import { computeSystemMetrics, formatPrometheusMetrics } from './metrics.js';
 import { MultiProjectClient } from '../bridge/multi-project-client.js';
 import { AgentSpawner } from '../bridge/spawner.js';
 import type { ProjectConfig, SpawnRequest } from '../bridge/types.js';
+import { loadTeamsConfig } from '../bridge/teams-config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -139,6 +141,8 @@ interface Attachment {
   mimeType: string;
   size: number;
   url: string;
+  /** Absolute file path for agents to read the file directly */
+  filePath?: string;
   width?: number;
   height?: number;
   data?: string;
@@ -301,14 +305,61 @@ export async function startDashboard(
   // Increase JSON body limit for base64 image uploads (10MB)
   app.use(express.json({ limit: '10mb' }));
 
-  // Create uploads directory for attachments
+  // Create attachments directory in user's home directory (~/.relay/attachments)
+  // This keeps attachments out of source control while still accessible to agents
+  const attachmentsDir = path.join(os.homedir(), '.relay', 'attachments');
+  if (!fs.existsSync(attachmentsDir)) {
+    fs.mkdirSync(attachmentsDir, { recursive: true });
+  }
+
+  // Also keep uploads dir for backwards compatibility (URL-based serving)
   const uploadsDir = path.join(dataDir, 'uploads');
   if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
   }
 
+  // Auto-evict old attachments (older than 7 days)
+  const ATTACHMENT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+  const evictOldAttachments = async () => {
+    try {
+      const files = await fs.promises.readdir(attachmentsDir);
+      const now = Date.now();
+      let evictedCount = 0;
+
+      for (const file of files) {
+        const filePath = path.join(attachmentsDir, file);
+        try {
+          const stat = await fs.promises.stat(filePath);
+          if (stat.isFile() && (now - stat.mtimeMs) > ATTACHMENT_MAX_AGE_MS) {
+            await fs.promises.unlink(filePath);
+            evictedCount++;
+          }
+        } catch (err) {
+          // Ignore errors for individual files (may have been deleted)
+        }
+      }
+
+      if (evictedCount > 0) {
+        console.log(`[dashboard] Evicted ${evictedCount} old attachment(s)`);
+      }
+    } catch (err) {
+      console.error('[dashboard] Failed to evict old attachments:', err);
+    }
+  };
+
+  // Run eviction on startup and every hour
+  evictOldAttachments();
+  const evictionInterval = setInterval(evictOldAttachments, 60 * 60 * 1000); // 1 hour
+
+  // Clean up interval on process exit
+  process.on('beforeExit', () => {
+    clearInterval(evictionInterval);
+  });
+
   // Serve uploaded files statically
   app.use('/uploads', express.static(uploadsDir));
+  // Serve attachments from ~/.relay/attachments
+  app.use('/attachments', express.static(attachmentsDir));
 
   // In-memory attachment registry (for current session)
   // Attachments are also stored on disk, so this is just for quick lookups
@@ -464,11 +515,19 @@ export async function startDashboard(
     }
   };
 
-  // Helper to get team members from agents.json and spawner's active workers
+  // Helper to get team members from teams.json, agents.json, and spawner's active workers
   const getTeamMembers = (teamName: string): string[] => {
     const members = new Set<string>();
 
-    // Check spawner's active workers first (they have accurate team info)
+    // Check teams.json first - this is the source of truth for team definitions
+    const teamsConfig = loadTeamsConfig(projectRoot || dataDir);
+    if (teamsConfig && teamsConfig.team === teamName) {
+      for (const agent of teamsConfig.agents) {
+        members.add(agent.name);
+      }
+    }
+
+    // Check spawner's active workers (they have accurate team info for spawned agents)
     if (spawner) {
       const activeWorkers = spawner.getActiveWorkers();
       for (const worker of activeWorkers) {
@@ -629,30 +688,34 @@ export async function startDashboard(
       const base64Data = data.replace(/^data:[^;]+;base64,/, '');
       const buffer = Buffer.from(base64Data, 'base64');
 
-      // Generate unique ID for the attachment
+      // Generate unique ID and filename for the attachment
       const attachmentId = crypto.randomUUID();
+      const timestamp = Date.now();
       const ext = mimeType.split('/')[1].replace('svg+xml', 'svg');
-      const safeFilename = `${attachmentId}.${ext}`;
-      const filePath = path.join(uploadsDir, safeFilename);
+      // Use format: {messageId}-{timestamp}.{ext} for unique, identifiable filenames
+      const safeFilename = `${attachmentId.substring(0, 8)}-${timestamp}.${ext}`;
 
-      // Write file to disk
-      fs.writeFileSync(filePath, buffer);
+      // Save to ~/.relay/attachments/ directory for agents to access
+      const attachmentFilePath = path.join(attachmentsDir, safeFilename);
+      fs.writeFileSync(attachmentFilePath, buffer);
 
-      // Create attachment record
+      // Create attachment record with file path for agents
       const attachment: Attachment = {
         id: attachmentId,
         filename: filename,
         mimeType: mimeType,
         size: buffer.length,
-        url: `/uploads/${safeFilename}`,
-        // Include base64 data for agents that can't access the URL
+        url: `/attachments/${safeFilename}`,
+        // Include absolute file path so agents can read the file directly
+        filePath: attachmentFilePath,
+        // Include base64 data for agents that can't access the file
         data: data,
       };
 
       // Store in registry for lookup when sending messages
       attachmentRegistry.set(attachmentId, attachment);
 
-      console.log(`[dashboard] Uploaded attachment: ${filename} (${buffer.length} bytes) -> ${safeFilename}`);
+      console.log(`[dashboard] Uploaded attachment: ${filename} (${buffer.length} bytes) -> ${attachmentFilePath}`);
 
       res.json({
         success: true,
@@ -662,6 +725,7 @@ export async function startDashboard(
           mimeType: attachment.mimeType,
           size: attachment.size,
           url: attachment.url,
+          filePath: attachment.filePath,
         },
       });
     } catch (err) {
@@ -690,6 +754,7 @@ export async function startDashboard(
         mimeType: attachment.mimeType,
         size: attachment.size,
         url: attachment.url,
+        filePath: attachment.filePath,
       },
     });
   });
@@ -952,6 +1017,19 @@ export async function startDashboard(
           if (worker.team) {
             agent.team = worker.team;
           }
+        }
+      }
+    }
+
+    // Set team from teams.json for agents that don't have a team yet
+    // This ensures agents defined in teams.json are associated with their team
+    // even if they weren't spawned via auto-spawn
+    const teamsConfig = loadTeamsConfig(projectRoot || dataDir);
+    if (teamsConfig) {
+      for (const teamAgent of teamsConfig.agents) {
+        const agent = agentsMap.get(teamAgent.name);
+        if (agent && !agent.team) {
+          agent.team = teamsConfig.team;
         }
       }
     }

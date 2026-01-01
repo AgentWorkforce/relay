@@ -5,12 +5,14 @@
  * and quick actions. Redesigned to match landing page aesthetic.
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import type { Agent, Project } from '../../types';
 import type { ThreadInfo } from '../hooks/useMessages';
 import { AgentList } from '../AgentList';
 import { ProjectList } from '../ProjectList';
 import { ThreadList } from '../ThreadList';
+
+const THREADS_COLLAPSED_KEY = 'agent-relay-threads-collapsed';
 
 export interface SidebarProps {
   agents: Agent[];
@@ -61,6 +63,24 @@ export function Sidebar({
   onClose,
 }: SidebarProps) {
   const [searchQuery, setSearchQuery] = useState('');
+  const [isThreadsCollapsed, setIsThreadsCollapsed] = useState(() => {
+    // Initialize from localStorage
+    try {
+      const stored = localStorage.getItem(THREADS_COLLAPSED_KEY);
+      return stored === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  // Persist collapsed state to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(THREADS_COLLAPSED_KEY, String(isThreadsCollapsed));
+    } catch {
+      // localStorage not available
+    }
+  }, [isThreadsCollapsed]);
 
   // Determine if we should show unified project view
   const hasProjects = projects.length > 0;
@@ -142,6 +162,8 @@ export function Sidebar({
             currentThread={currentThread}
             onThreadSelect={(threadId) => onThreadSelect?.(threadId)}
             totalUnreadCount={totalUnreadThreadCount}
+            isCollapsed={isThreadsCollapsed}
+            onToggleCollapse={() => setIsThreadsCollapsed(!isThreadsCollapsed)}
           />
         </div>
       )}

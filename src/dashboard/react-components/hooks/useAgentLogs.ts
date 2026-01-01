@@ -89,8 +89,14 @@ export function useAgentLogs(options: UseAgentLogsOptions): UseAgentLogsReturn {
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const agentNameRef = useRef(agentName);
-  const manualCloseRef = useRef(false);
   const shouldReconnectRef = useRef(true);
+  const isConnectingRef = useRef(false);
+  // Track manual close state per-WebSocket instance to avoid race conditions
+  // when React remounts quickly (e.g., StrictMode). Using WeakMap ensures
+  // each WebSocket tracks its own "was this a manual close" state.
+  const manualCloseMapRef = useRef(new WeakMap<WebSocket, boolean>());
+  // Track if we've successfully received data per-WebSocket instance
+  const hasReceivedDataMapRef = useRef(new WeakMap<WebSocket, boolean>());
 
   // Keep agent name ref updated
   agentNameRef.current = agentName;
@@ -98,13 +104,15 @@ export function useAgentLogs(options: UseAgentLogsOptions): UseAgentLogsReturn {
   const connect = useCallback(() => {
     // Ensure reconnects are allowed for this session
     shouldReconnectRef.current = true;
-    manualCloseRef.current = false;
 
-    // Prevent multiple connections
-    if (wsRef.current?.readyState === WebSocket.OPEN || isConnecting) {
+    // Prevent multiple connections - use ref to avoid dependency on state
+    if (wsRef.current?.readyState === WebSocket.OPEN ||
+        wsRef.current?.readyState === WebSocket.CONNECTING ||
+        isConnectingRef.current) {
       return;
     }
 
+    isConnectingRef.current = true;
     setIsConnecting(true);
     setError(null);
 
@@ -113,8 +121,12 @@ export function useAgentLogs(options: UseAgentLogsOptions): UseAgentLogsReturn {
     try {
       const ws = new WebSocket(url);
       wsRef.current = ws;
+      // Initialize per-WebSocket state
+      manualCloseMapRef.current.set(ws, false);
+      hasReceivedDataMapRef.current.set(ws, false);
 
       ws.onopen = () => {
+        isConnectingRef.current = false;
         setIsConnected(true);
         setIsConnecting(false);
         setError(null);
@@ -134,8 +146,11 @@ export function useAgentLogs(options: UseAgentLogsOptions): UseAgentLogsReturn {
       };
 
       ws.onclose = (event) => {
-        const wasManualClose = manualCloseRef.current;
+        // Read per-WebSocket state (isolated from other connections)
+        const wasManualClose = manualCloseMapRef.current.get(ws) ?? false;
+        const hadReceivedData = hasReceivedDataMapRef.current.get(ws) ?? false;
 
+        isConnectingRef.current = false;
         setIsConnected(false);
         setIsConnecting(false);
         wsRef.current = null;
@@ -146,16 +161,23 @@ export function useAgentLogs(options: UseAgentLogsOptions): UseAgentLogsReturn {
           reconnectTimeoutRef.current = null;
         }
 
-        // Reset manual close flag after handling this close
-        manualCloseRef.current = false;
-
         // Skip logging/reconnecting for intentional disconnects (cleanup, user toggle)
         if (wasManualClose) {
           return;
         }
 
-        // Add system message for disconnection
-        if (!event.wasClean) {
+        // Don't reconnect if agent was not found (custom close code 4404)
+        // This prevents infinite reconnect loops for non-existent agents
+        if (event.code === 4404) {
+          return;
+        }
+
+        // Add system message for disconnection, but only if:
+        // 1. The close was not clean (code 1006 or similar)
+        // 2. We had actually received data (to avoid false positives from transient connection issues)
+        // Code 1006 is very common and happens during normal operations (React remounts,
+        // network hiccups, etc.) - only show error if we had an established data stream
+        if (!event.wasClean && hadReceivedData) {
           const willReconnect =
             shouldReconnectRef.current &&
             reconnect &&
@@ -173,12 +195,6 @@ export function useAgentLogs(options: UseAgentLogsOptions): UseAgentLogsReturn {
               agentName: agentNameRef.current,
             },
           ]);
-        }
-
-        // Don't reconnect if agent was not found (custom close code 4404)
-        // This prevents infinite reconnect loops for non-existent agents
-        if (event.code === 4404) {
-          return;
         }
 
         // Schedule reconnect if enabled
@@ -200,6 +216,7 @@ export function useAgentLogs(options: UseAgentLogsOptions): UseAgentLogsReturn {
       };
 
       ws.onerror = () => {
+        isConnectingRef.current = false;
         setError(new Error('WebSocket connection error'));
         setIsConnecting(false);
       };
@@ -232,6 +249,10 @@ export function useAgentLogs(options: UseAgentLogsOptions): UseAgentLogsReturn {
 
           // Handle history (initial log dump)
           if (data.type === 'history' && Array.isArray(data.lines)) {
+            // Mark as having received data - connection is established
+            if (data.lines.length > 0) {
+              hasReceivedDataMapRef.current.set(ws, true);
+            }
             setLogs((prev) => {
               const historyLines: LogLine[] = data.lines.map((line: string) => ({
                 id: generateLogId(),
@@ -245,9 +266,10 @@ export function useAgentLogs(options: UseAgentLogsOptions): UseAgentLogsReturn {
             return;
           }
 
-          // Handle different message formats
+          // Handle different message formats - mark as having received data for all actual log messages
           if (typeof data === 'string') {
             // Simple string message
+            hasReceivedDataMapRef.current.set(ws, true);
             setLogs((prev) => {
               const newLogs = [
                 ...prev,
@@ -263,6 +285,7 @@ export function useAgentLogs(options: UseAgentLogsOptions): UseAgentLogsReturn {
             });
           } else if (data.type === 'log' || data.type === 'output') {
             // Structured log message
+            hasReceivedDataMapRef.current.set(ws, true);
             setLogs((prev) => {
               const logType: LogLine['type'] = data.stream === 'stderr' ? 'stderr' : 'stdout';
               const newLogs: LogLine[] = [
@@ -279,6 +302,7 @@ export function useAgentLogs(options: UseAgentLogsOptions): UseAgentLogsReturn {
             });
           } else if (data.lines && Array.isArray(data.lines)) {
             // Batch of lines
+            hasReceivedDataMapRef.current.set(ws, true);
             setLogs((prev) => {
               const newLines: LogLine[] = data.lines.map((line: string | { content: string; type?: string }) => {
                 const lineType: LogLine['type'] = (typeof line === 'object' && line.type === 'stderr') ? 'stderr' : 'stdout';
@@ -296,6 +320,7 @@ export function useAgentLogs(options: UseAgentLogsOptions): UseAgentLogsReturn {
         } catch {
           // Handle plain text messages
           if (typeof event.data === 'string') {
+            hasReceivedDataMapRef.current.set(ws, true);
             setLogs((prev) => {
               const newLogs = [
                 ...prev,
@@ -313,15 +338,15 @@ export function useAgentLogs(options: UseAgentLogsOptions): UseAgentLogsReturn {
         }
       };
     } catch (e) {
+      isConnectingRef.current = false;
       setError(e instanceof Error ? e : new Error('Failed to create WebSocket'));
       setIsConnecting(false);
     }
-  }, [isConnecting, maxLines, reconnect, maxReconnectAttempts]);
+  }, [maxLines, reconnect, maxReconnectAttempts]);
 
   const disconnect = useCallback(() => {
     // Prevent reconnection attempts after an intentional disconnect
     shouldReconnectRef.current = false;
-    manualCloseRef.current = true;
 
     // Clear any pending reconnect
     if (reconnectTimeoutRef.current) {
@@ -329,12 +354,15 @@ export function useAgentLogs(options: UseAgentLogsOptions): UseAgentLogsReturn {
       reconnectTimeoutRef.current = null;
     }
 
-    // Close WebSocket
+    // Mark this WebSocket as manually closed before closing it
+    // This prevents the false positive error message on close
     if (wsRef.current) {
+      manualCloseMapRef.current.set(wsRef.current, true);
       wsRef.current.close();
       wsRef.current = null;
     }
 
+    isConnectingRef.current = false;
     setIsConnected(false);
     setIsConnecting(false);
   }, []);

@@ -61,7 +61,7 @@ export class PtyWrapper extends EventEmitter {
   private sentMessageHashes: Set<string> = new Set();
   private processedSpawnCommands: Set<string> = new Set();
   private processedReleaseCommands: Set<string> = new Set();
-  private messageQueue: Array<{ from: string; body: string; messageId: string; thread?: string; importance?: number }> = [];
+  private messageQueue: Array<{ from: string; body: string; messageId: string; thread?: string; importance?: number; data?: Record<string, unknown> }> = [];
   private isInjecting = false;
   private readyForMessages = false;
   private logFilePath?: string;
@@ -582,7 +582,7 @@ export class PtyWrapper extends EventEmitter {
    * Handle incoming message from relay
    */
   private handleIncomingMessage(from: string, payload: SendPayload, messageId: string, meta?: SendMeta): void {
-    this.messageQueue.push({ from, body: payload.body, messageId, thread: payload.thread, importance: meta?.importance });
+    this.messageQueue.push({ from, body: payload.body, messageId, thread: payload.thread, importance: meta?.importance, data: payload.data });
     this.processMessageQueue();
   }
 
@@ -611,7 +611,19 @@ export class PtyWrapper extends EventEmitter {
       const threadHint = msg.thread ? ` [thread:${msg.thread}]` : '';
       const importanceHint = msg.importance !== undefined && msg.importance > 75 ? ' [!!]' :
                              msg.importance !== undefined && msg.importance > 50 ? ' [!]' : '';
-      const injection = `Relay message from ${msg.from} [${shortId}]${threadHint}${importanceHint}: ${sanitizedBody}`;
+
+      // Extract attachment file paths if present
+      let attachmentHint = '';
+      if (msg.data?.attachments && Array.isArray(msg.data.attachments)) {
+        const filePaths = msg.data.attachments
+          .map((att: { filePath?: string }) => att.filePath)
+          .filter((p): p is string => typeof p === 'string');
+        if (filePaths.length > 0) {
+          attachmentHint = ` [Attachments: ${filePaths.join(', ')}]`;
+        }
+      }
+
+      const injection = `Relay message from ${msg.from} [${shortId}]${threadHint}${importanceHint}${attachmentHint}: ${sanitizedBody}`;
 
       // Write message to PTY, then send Enter separately after a small delay
       // This matches how TmuxWrapper does it for better CLI compatibility

@@ -1,8 +1,8 @@
 /**
  * AgentCard Component
  *
- * Displays an agent with hierarchical color coding, status indicator,
- * and attention badge. Inspired by AI Maestro's visual design.
+ * Displays an agent with a distinctive neural/holographic design language.
+ * Features gradient backgrounds, animated status indicators, and depth effects.
  */
 
 import React from 'react';
@@ -43,6 +43,7 @@ export function AgentCard({
   const initials = getAgentInitials(agent.name);
   const displayName = displayNameOverride || getAgentDisplayName(agent.name);
   const statusColor = STATUS_COLORS[agent.status] || STATUS_COLORS.offline;
+  const isOnline = agent.status === 'online';
 
   const handleClick = () => {
     onClick?.(agent);
@@ -67,31 +68,80 @@ export function AgentCard({
     return (
       <div
         className={`
-          flex items-center gap-2 py-2 px-3 rounded-md cursor-pointer transition-colors duration-200
-          hover:bg-[rgba(74,158,255,0.08)]
-          ${isSelected ? 'bg-[rgba(74,158,255,0.12)] border-l-[3px]' : ''}
+          group relative flex items-center gap-3 py-2.5 px-3 rounded-lg cursor-pointer
+          transition-all duration-300 ease-out
+          hover:bg-gradient-to-r hover:from-[rgba(255,255,255,0.03)] hover:to-transparent
+          ${isSelected
+            ? 'bg-gradient-to-r from-[rgba(255,255,255,0.06)] to-transparent'
+            : ''
+          }
         `}
         onClick={handleClick}
         style={{
-          borderLeftColor: isSelected ? colors.primary : 'transparent',
+          borderLeft: isSelected ? `2px solid ${colors.primary}` : '2px solid transparent',
+          boxShadow: isSelected ? `inset 4px 0 12px -4px ${colors.primary}40` : 'none',
         }}
       >
-        <div
-          className="w-6 h-6 rounded flex items-center justify-center font-semibold text-[10px]"
-          style={{ backgroundColor: colors.primary }}
-        >
-          <span style={{ color: colors.text }}>{initials}</span>
-        </div>
-        <div className="flex-1 min-w-0 flex flex-col gap-0.5">
-          <span className="text-sm font-semibold text-text-primary truncate">{displayName}</span>
-          {!displayNameOverride && (
-            <span className="text-[10px] text-text-muted truncate">{getAgentBreadcrumb(agent.name)}</span>
+        {/* Agent Avatar with Glow */}
+        <div className="relative">
+          <div
+            className={`
+              w-8 h-8 rounded-lg flex items-center justify-center font-bold text-[11px] tracking-wide
+              transition-all duration-300 relative overflow-hidden
+              ${isOnline ? 'shadow-lg' : 'opacity-60'}
+            `}
+            style={{
+              background: `linear-gradient(135deg, ${colors.primary}, ${colors.primary}99)`,
+              boxShadow: isOnline ? `0 2px 12px ${colors.primary}50` : 'none',
+            }}
+          >
+            {/* Subtle shine effect */}
+            <div
+              className="absolute inset-0 opacity-30"
+              style={{
+                background: 'linear-gradient(135deg, rgba(255,255,255,0.3) 0%, transparent 50%)',
+              }}
+            />
+            <span className="relative z-10" style={{ color: colors.text }}>{initials}</span>
+          </div>
+          {/* Status Ring */}
+          {isOnline && (
+            <div
+              className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-bg-primary"
+              style={{
+                backgroundColor: statusColor,
+                boxShadow: `0 0 8px ${statusColor}`,
+              }}
+            />
           )}
         </div>
-        <div className="flex items-center gap-1.5 shrink-0">
+
+        {/* Agent Info */}
+        <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+          <span
+            className={`
+              text-[13px] font-semibold tracking-tight truncate transition-colors duration-200
+              ${isOnline ? 'text-text-primary' : 'text-text-secondary'}
+            `}
+          >
+            {displayName}
+          </span>
+          {!displayNameOverride && (
+            <span className="text-[10px] text-text-muted truncate font-mono opacity-70">
+              {getAgentBreadcrumb(agent.name)}
+            </span>
+          )}
+        </div>
+
+        {/* Actions & Status */}
+        <div className="flex items-center gap-2 shrink-0">
           {agent.isSpawned && onLogsClick && (
             <button
-              className="relative bg-transparent border border-transparent text-text-muted p-1 cursor-pointer flex items-center justify-center rounded transition-all duration-200 opacity-0 group-hover:opacity-70 hover:!opacity-100 hover:bg-[rgba(0,217,255,0.1)] hover:border-accent-cyan/30 hover:text-accent-cyan hover:shadow-[0_0_10px_rgba(0,217,255,0.3)] hover:scale-110"
+              className="relative bg-transparent border border-transparent text-text-dim p-1.5 cursor-pointer
+                         flex items-center justify-center rounded-md transition-all duration-200
+                         opacity-0 group-hover:opacity-100
+                         hover:bg-accent-cyan/10 hover:border-accent-cyan/30 hover:text-accent-cyan
+                         hover:shadow-[0_0_12px_rgba(0,217,255,0.25)]"
               onClick={handleLogsClick}
               title="View logs"
             >
@@ -100,7 +150,11 @@ export function AgentCard({
           )}
           {agent.isSpawned && onReleaseClick && (
             <button
-              className="relative bg-transparent border border-transparent text-text-muted p-1 cursor-pointer flex items-center justify-center rounded transition-all duration-200 opacity-0 group-hover:opacity-70 hover:!opacity-100 hover:bg-gradient-to-b hover:from-error-light hover:to-[rgba(180,40,40,0.2)] hover:border-error/50 hover:text-error hover:shadow-[0_0_10px_rgba(255,68,68,0.3)] hover:scale-110"
+              className="relative bg-transparent border border-transparent text-text-dim p-1.5 cursor-pointer
+                         flex items-center justify-center rounded-md transition-all duration-200
+                         opacity-0 group-hover:opacity-100
+                         hover:bg-error/10 hover:border-error/30 hover:text-error
+                         hover:shadow-[0_0_12px_rgba(255,68,68,0.25)]"
               onClick={handleReleaseClick}
               title="Kill agent"
             >
@@ -110,9 +164,20 @@ export function AgentCard({
           {agent.isProcessing ? (
             <ThinkingDot isProcessing={true} />
           ) : (
-            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: statusColor }} />
+            <div
+              className={`
+                w-2 h-2 rounded-full transition-all duration-300
+                ${isOnline ? 'animate-pulse' : ''}
+              `}
+              style={{
+                backgroundColor: statusColor,
+                boxShadow: isOnline ? `0 0 6px ${statusColor}` : 'none',
+              }}
+            />
           )}
-          {agent.needsAttention && <div className="w-2 h-2 rounded-full bg-red-500" />}
+          {agent.needsAttention && (
+            <div className="w-2 h-2 rounded-full bg-warning animate-pulse shadow-[0_0_8px_rgba(255,107,53,0.5)]" />
+          )}
         </div>
       </div>
     );

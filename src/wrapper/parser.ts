@@ -58,9 +58,15 @@ const CODE_FENCE = /^```/;
 // Two patterns for fence end detection:
 // - FENCE_END_START: ">>>" at the start of a line (with optional leading whitespace)
 // - FENCE_END_LINE: ">>>" at the end of a line (content followed by >>>)
+// Note: Escaped \>>> should NOT trigger fence end (see isEscapedFenceEnd)
 const FENCE_END_START = /^(?:\s*)?>>>/;
 const FENCE_END_LINE = />>>\s*$/;
 const FENCE_END = new RegExp(`${FENCE_END_START.source}|${FENCE_END_LINE.source}`);
+
+// Escape patterns for literal <<< and >>> in content
+// Use \<<< to output literal <<<, use \>>> to output literal >>>
+const ESCAPED_FENCE_START = /\\<<</g;
+const ESCAPED_FENCE_END = /\\>>>/g;
 
 // Maximum lines in a fenced block before assuming it's stuck
 // Lower value (30) ensures messages get sent even if agent forgets >>>
@@ -165,6 +171,32 @@ function stripAnsi(str: string): string {
   // Strip orphaned CSI sequences at the start of the string
   result = result.replace(ORPHANED_CSI_PATTERN, '');
   return result;
+}
+
+/**
+ * Check if a line contains an escaped fence end (\>>>) that should NOT trigger fence close.
+ * Returns true if the >>> is escaped (preceded by backslash).
+ */
+function isEscapedFenceEnd(line: string): boolean {
+  // Check if >>> at end of line is escaped
+  if (/\\>>>\s*$/.test(line)) {
+    return true;
+  }
+  // Check if >>> at start of line is escaped
+  if (/^(?:\s*)?\\>>>/.test(line)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Unescape fence markers in content.
+ * Converts \<<< to <<< and \>>> to >>>
+ */
+function unescapeFenceMarkers(content: string): string {
+  return content
+    .replace(ESCAPED_FENCE_START, '<<<')
+    .replace(ESCAPED_FENCE_END, '>>>');
 }
 
 export class OutputParser {
@@ -811,7 +843,7 @@ export class OutputParser {
       // Auto-close on double blank line (agent forgot >>>)
       // Only if we have actual content to send
       if (consecutiveBlankLines >= 2 && this.fencedInlineBuffer.trim().length > 0) {
-        const body = stripAnsi(this.fencedInlineBuffer.trim());
+        const body = unescapeFenceMarkers(stripAnsi(this.fencedInlineBuffer.trim()));
         const command: ParsedCommand = {
           to: this.fencedInlineTarget,
           kind: this.fencedInlineKind,
@@ -847,7 +879,7 @@ export class OutputParser {
       if (this.inlineRelayPattern.test(stripped) || this.fencedRelayPattern.test(stripped)) {
         // Auto-close and send the incomplete fenced block (if it has content)
         if (this.fencedInlineBuffer.trim().length > 0) {
-          const body = stripAnsi(this.fencedInlineBuffer.trim());
+          const body = unescapeFenceMarkers(stripAnsi(this.fencedInlineBuffer.trim()));
           const command: ParsedCommand = {
             to: this.fencedInlineTarget,
             kind: this.fencedInlineKind,
@@ -879,7 +911,8 @@ export class OutputParser {
       }
 
       // Check if this line closes the fenced block
-      if (FENCE_END.test(stripped)) {
+      // Skip if the >>> is escaped (\>>>)
+      if (FENCE_END.test(stripped) && !isEscapedFenceEnd(stripped)) {
         // If >>> is at end of line (not start), extract content before it
         const endsWithFence = />>>\s*$/.test(stripped) && !/^(?:\s*)?>>>/.test(stripped);
         if (endsWithFence) {
@@ -893,8 +926,8 @@ export class OutputParser {
           }
         }
 
-        // Complete the fenced inline command
-        const body = stripAnsi(this.fencedInlineBuffer.trim());
+        // Complete the fenced inline command - unescape any \<<< and \>>> in content
+        const body = unescapeFenceMarkers(stripAnsi(this.fencedInlineBuffer.trim()));
         this.fencedInlineRaw.push(line);
 
         const command: ParsedCommand = {

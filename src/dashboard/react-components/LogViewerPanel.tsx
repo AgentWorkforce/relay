@@ -131,37 +131,50 @@ export function LogViewerPanel({
           }}
         >
           <div className="flex items-center gap-4">
-            {/* Agent avatar */}
+            {/* Agent avatar with shine effect */}
             <div
-              className="w-10 h-10 rounded-lg flex items-center justify-center text-sm font-bold"
+              className="relative w-11 h-11 rounded-xl flex items-center justify-center text-sm font-bold overflow-hidden"
               style={{
                 backgroundColor: colors.primary,
                 color: colors.text,
-                boxShadow: `0 0 20px ${colors.primary}40`,
+                boxShadow: `0 0 24px ${colors.primary}50, inset 0 1px 0 rgba(255,255,255,0.2)`,
               }}
             >
-              {getAgentInitials(agent.name)}
+              {/* Shine overlay */}
+              <div
+                className="absolute inset-0 opacity-30"
+                style={{
+                  background: 'linear-gradient(135deg, rgba(255,255,255,0.35) 0%, transparent 50%)',
+                }}
+              />
+              <span className="relative z-10">{getAgentInitials(agent.name)}</span>
             </div>
 
             <div className="flex flex-col">
-              <div className="flex items-center gap-2">
-                <h2 className="text-lg font-semibold text-[#c9d1d9] m-0">
+              <div className="flex items-center gap-2.5">
+                <h2
+                  className="text-lg font-semibold m-0"
+                  style={{ color: colors.primary }}
+                >
                   {agent.name}
                 </h2>
                 <span
-                  className={`px-2 py-0.5 rounded text-[10px] uppercase tracking-wider ${
+                  className={`px-2.5 py-0.5 rounded-md text-[10px] uppercase tracking-wider font-medium ${
                     agent.status === 'online'
-                      ? 'bg-[#238636]/20 text-[#3fb950]'
+                      ? 'bg-[#3fb950]/15 text-[#3fb950]'
                       : agent.status === 'busy'
-                      ? 'bg-[#d29922]/20 text-[#d29922]'
-                      : 'bg-[#484f58]/20 text-[#484f58]'
+                      ? 'bg-[#d29922]/15 text-[#d29922]'
+                      : 'bg-[#484f58]/15 text-[#484f58]'
                   }`}
+                  style={{
+                    boxShadow: agent.status === 'online' ? '0 0 8px rgba(63,185,80,0.2)' : 'none',
+                  }}
                 >
                   {agent.status}
                 </span>
               </div>
               {agent.currentTask && (
-                <span className="text-sm text-[#8b949e] truncate max-w-[300px]">
+                <span className="text-sm text-[#8b949e] truncate max-w-[300px] mt-0.5">
                   {agent.currentTask}
                 </span>
               )}
@@ -179,32 +192,32 @@ export function LogViewerPanel({
             )}
 
             {/* Position toggle buttons */}
-            <div className="flex items-center gap-1 bg-[#21262d] rounded-lg p-1">
+            <div className="flex items-center gap-1 bg-[#21262d]/80 rounded-lg p-1 border border-[#30363d]/50">
               <button
-                className={`p-1.5 rounded-md transition-colors ${
+                className={`p-1.5 rounded-md transition-all duration-200 ${
                   position === 'right'
-                    ? 'bg-[#30363d] text-[#c9d1d9]'
-                    : 'text-[#8b949e] hover:text-[#c9d1d9]'
+                    ? 'bg-accent-cyan/15 text-accent-cyan shadow-[0_0_8px_rgba(0,217,255,0.15)]'
+                    : 'text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#30363d]'
                 }`}
                 title="Sidebar view"
               >
                 <SidebarIcon />
               </button>
               <button
-                className={`p-1.5 rounded-md transition-colors ${
+                className={`p-1.5 rounded-md transition-all duration-200 ${
                   position === 'bottom'
-                    ? 'bg-[#30363d] text-[#c9d1d9]'
-                    : 'text-[#8b949e] hover:text-[#c9d1d9]'
+                    ? 'bg-accent-cyan/15 text-accent-cyan shadow-[0_0_8px_rgba(0,217,255,0.15)]'
+                    : 'text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#30363d]'
                 }`}
                 title="Bottom panel"
               >
                 <BottomPanelIcon />
               </button>
               <button
-                className={`p-1.5 rounded-md transition-colors ${
+                className={`p-1.5 rounded-md transition-all duration-200 ${
                   position === 'fullscreen'
-                    ? 'bg-[#30363d] text-[#c9d1d9]'
-                    : 'text-[#8b949e] hover:text-[#c9d1d9]'
+                    ? 'bg-accent-cyan/15 text-accent-cyan shadow-[0_0_8px_rgba(0,217,255,0.15)]'
+                    : 'text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#30363d]'
                 }`}
                 title="Fullscreen"
               >
@@ -214,7 +227,7 @@ export function LogViewerPanel({
 
             {/* Close button */}
             <button
-              className="p-2 rounded-lg hover:bg-[#21262d] text-[#8b949e] hover:text-[#c9d1d9] transition-colors"
+              className="p-2 rounded-lg text-[#8b949e] hover:text-[#f85149] hover:bg-[#f85149]/10 transition-all duration-200 hover:shadow-[0_0_8px_rgba(248,81,73,0.2)]"
               onClick={onClose}
             >
               <CloseIcon />

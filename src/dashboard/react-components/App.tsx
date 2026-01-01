@@ -698,14 +698,8 @@ function MessageComposer({ recipient, agents, onSend, isSending, error }: Messag
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Handle file selection
-  const handleFileSelect = useCallback(async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-
-    const imageFiles = Array.from(files).filter(file =>
-      file.type.startsWith('image/')
-    );
-
+  // Process image files (used by both paste and file input)
+  const processImageFiles = useCallback(async (imageFiles: File[]) => {
     for (const file of imageFiles) {
       const id = crypto.randomUUID();
       const preview = URL.createObjectURL(file);
@@ -744,45 +738,55 @@ function MessageComposer({ recipient, agents, onSend, isSending, error }: Messag
     }
   }, []);
 
-  // Handle paste for clipboard images
-  const handlePaste = useCallback((e: React.ClipboardEvent) => {
-    // First, check clipboardData.files (more reliable for file pastes)
-    const files = e.clipboardData?.files;
-    if (files && files.length > 0) {
-      const imageFiles = Array.from(files).filter(file =>
-        file.type.startsWith('image/')
-      );
-      if (imageFiles.length > 0) {
-        e.preventDefault();
-        const dataTransfer = new DataTransfer();
-        imageFiles.forEach(f => dataTransfer.items.add(f));
-        handleFileSelect(dataTransfer.files);
-        return;
-      }
-    }
+  // Handle file selection from file input
+  const handleFileSelect = useCallback((files: FileList | null) => {
+    if (!files || files.length === 0) return;
 
-    // Fall back to checking items (for screenshots and copied images)
-    const items = e.clipboardData?.items;
-    if (!items) return;
-
-    // Look for items that are files with image type, or have image kind
-    const imageItems = Array.from(items).filter(item =>
-      item.kind === 'file' && item.type.startsWith('image/')
+    const imageFiles = Array.from(files).filter(file =>
+      file.type.startsWith('image/')
     );
 
-    if (imageItems.length > 0) {
-      e.preventDefault();
-      const imageFiles = imageItems
-        .map(item => item.getAsFile())
-        .filter((f): f is File => f !== null);
+    if (imageFiles.length > 0) {
+      processImageFiles(imageFiles);
+    }
+  }, [processImageFiles]);
 
-      if (imageFiles.length > 0) {
-        const dataTransfer = new DataTransfer();
-        imageFiles.forEach(f => dataTransfer.items.add(f));
-        handleFileSelect(dataTransfer.files);
+  // Handle paste for clipboard images
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const clipboardData = e.clipboardData;
+    if (!clipboardData) return;
+
+    // Collect image files from both sources
+    let imageFiles: File[] = [];
+
+    // Method 1: Check clipboardData.files (works for file pastes)
+    if (clipboardData.files && clipboardData.files.length > 0) {
+      imageFiles = Array.from(clipboardData.files).filter(file =>
+        file.type.startsWith('image/')
+      );
+    }
+
+    // Method 2: Check clipboardData.items (works for screenshots/copied images)
+    // This is the primary method for pasted images from clipboard
+    if (imageFiles.length === 0 && clipboardData.items) {
+      const items = Array.from(clipboardData.items);
+      for (const item of items) {
+        // Check if this item is an image
+        if (item.kind === 'file' && item.type.startsWith('image/')) {
+          const file = item.getAsFile();
+          if (file) {
+            imageFiles.push(file);
+          }
+        }
       }
     }
-  }, [handleFileSelect]);
+
+    // Process any found images
+    if (imageFiles.length > 0) {
+      e.preventDefault();
+      processImageFiles(imageFiles);
+    }
+  }, [processImageFiles]);
 
   // Remove an attachment
   const removeAttachment = useCallback((id: string) => {

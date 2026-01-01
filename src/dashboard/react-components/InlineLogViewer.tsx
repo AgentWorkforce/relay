@@ -86,39 +86,52 @@ export function InlineLogViewer({
 
   return (
     <div
-      className="inline-log-viewer rounded-lg overflow-hidden border border-[#2a2d35] my-2"
+      className="inline-log-viewer rounded-xl overflow-hidden border border-[#2a2d35] my-2"
       style={{
         background: 'linear-gradient(135deg, #0d0f14 0%, #12151c 50%, #0d0f14 100%)',
         boxShadow: `
           inset 0 1px 0 rgba(255,255,255,0.03),
-          0 4px 20px rgba(0,0,0,0.4)
+          0 4px 20px rgba(0,0,0,0.4),
+          0 0 30px -10px ${colors.primary}20
         `,
       }}
     >
       {/* Header */}
       <div
-        className="flex items-center justify-between px-3 py-2 cursor-pointer select-none border-b border-[#21262d]"
+        className="flex items-center justify-between px-3 py-2.5 cursor-pointer select-none border-b border-[#21262d]"
         onClick={() => setIsCollapsed(!isCollapsed)}
         style={{
-          background: 'linear-gradient(180deg, rgba(22,27,34,0.8) 0%, rgba(13,17,23,0.9) 100%)',
+          background: 'linear-gradient(180deg, rgba(22,27,34,0.95) 0%, rgba(13,17,23,0.98) 100%)',
         }}
       >
         <div className="flex items-center gap-2.5">
-          {/* Agent indicator */}
+          {/* Agent indicator with shine */}
           <div
-            className="w-5 h-5 rounded flex items-center justify-center text-[9px] font-bold"
+            className="relative w-6 h-6 rounded-lg flex items-center justify-center text-[9px] font-bold overflow-hidden"
             style={{
               backgroundColor: colors.primary,
               color: colors.text,
-              boxShadow: `0 0 8px ${colors.primary}50`,
+              boxShadow: `0 0 12px ${colors.primary}50`,
             }}
           >
-            {getAgentInitials(agentName)}
+            {/* Shine overlay */}
+            <div
+              className="absolute inset-0 opacity-30"
+              style={{
+                background: 'linear-gradient(135deg, rgba(255,255,255,0.3) 0%, transparent 50%)',
+              }}
+            />
+            <span className="relative z-10">{getAgentInitials(agentName)}</span>
           </div>
 
           {/* Title and status */}
           <div className="flex items-center gap-2">
-            <span className="text-xs font-medium text-[#c9d1d9]">{title}</span>
+            <span
+              className="text-xs font-semibold tracking-tight"
+              style={{ color: colors.primary }}
+            >
+              {title}
+            </span>
             {showStatus && (
               <StatusIndicator
                 isConnected={isConnected}
@@ -129,13 +142,13 @@ export function InlineLogViewer({
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1">
           {/* Connection toggle */}
           <button
-            className={`p-1 rounded transition-colors ${
+            className={`p-1.5 rounded-lg transition-all duration-200 ${
               isConnected
-                ? 'text-[#3fb950] hover:bg-[#238636]/20'
-                : 'text-[#8b949e] hover:bg-[#21262d]'
+                ? 'text-[#3fb950] hover:bg-[#3fb950]/15 hover:shadow-[0_0_8px_rgba(63,185,80,0.2)]'
+                : 'text-[#8b949e] hover:bg-[#21262d] hover:text-[#c9d1d9]'
             }`}
             onClick={(e) => {
               e.stopPropagation();
@@ -149,7 +162,7 @@ export function InlineLogViewer({
           {/* Expand button */}
           {onExpand && (
             <button
-              className="p-1 rounded text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d] transition-colors"
+              className="p-1.5 rounded-lg text-[#8b949e] hover:text-accent-cyan hover:bg-accent-cyan/10 transition-all duration-200 hover:shadow-[0_0_8px_rgba(0,217,255,0.15)]"
               onClick={(e) => {
                 e.stopPropagation();
                 onExpand();
@@ -162,7 +175,7 @@ export function InlineLogViewer({
 
           {/* Collapse toggle */}
           <button
-            className="p-1 rounded text-[#8b949e] hover:text-[#c9d1d9] transition-colors"
+            className="p-1.5 rounded-lg text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d] transition-all duration-200"
             onClick={(e) => {
               e.stopPropagation();
               setIsCollapsed(!isCollapsed);
@@ -250,13 +263,24 @@ function InlineLogLine({ log }: { log: LogLine }) {
 
   return (
     <div
-      className={`leading-5 px-1 py-px rounded hover:bg-[#21262d]/50 ${getTypeColor()}`}
+      className={`group leading-5 px-1.5 py-0.5 rounded-md transition-all duration-150 border-l-2 border-transparent hover:bg-[#21262d]/60 hover:border-[#30363d] ${getTypeColor()}`}
       style={{
         wordBreak: 'break-all',
         whiteSpace: 'pre-wrap',
       }}
     >
       {log.content}
+      {log.type === 'stderr' && (
+        <span
+          className="ml-2 text-[8px] uppercase tracking-wider px-1 py-0.5 rounded opacity-70"
+          style={{
+            color: '#f85149',
+            background: 'rgba(248, 81, 73, 0.15)',
+          }}
+        >
+          err
+        </span>
+      )}
     </div>
   );
 }

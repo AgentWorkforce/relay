@@ -46,6 +46,8 @@ export interface Attachment {
   size: number;
   /** URL to access the attachment */
   url: string;
+  /** Absolute file path for agents to read the file directly */
+  filePath?: string;
   /** Width for images */
   width?: number;
   /** Height for images */

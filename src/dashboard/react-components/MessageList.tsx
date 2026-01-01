@@ -5,7 +5,7 @@
  * provider-colored icons, and From → To format.
  */
 
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useLayoutEffect, useState, useCallback } from 'react';
 import type { Message, Agent, Attachment } from '../types';
 import { MessageStatusIndicator } from './MessageStatusIndicator';
 import { ThinkingIndicator } from './ThinkingIndicator';
@@ -68,8 +68,10 @@ export function MessageList({
   const [autoScroll, setAutoScroll] = useState(true);
   const prevFilteredLengthRef = useRef<number>(0);
   const prevChannelRef = useRef<string>(currentChannel);
-  // Track when we're doing a programmatic scroll to prevent handleScroll from disabling autoScroll
-  const isProgrammaticScrollRef = useRef(false);
+  // Track if we should scroll on next render (set before DOM updates)
+  const shouldScrollRef = useRef(false);
+  // Track if a scroll is in progress to prevent race conditions
+  const isScrollingRef = useRef(false);
 
   // Filter messages for current channel
   const filteredMessages = messages.filter((msg) => {
@@ -79,68 +81,87 @@ export function MessageList({
     return msg.from === currentChannel || msg.to === currentChannel;
   });
 
+  // Check if we need to scroll BEFORE the DOM updates
+  // This runs during render, before useLayoutEffect
+  const currentLength = filteredMessages.length;
+  if (currentLength > prevFilteredLengthRef.current) {
+    // Check if the latest message is from the user (Dashboard)
+    // Always scroll for user's own messages, regardless of autoScroll state
+    const latestMessage = filteredMessages[filteredMessages.length - 1];
+    const latestIsFromUser = latestMessage?.from === 'Dashboard';
+
+    if (latestIsFromUser || autoScroll) {
+      shouldScrollRef.current = true;
+      // Re-enable auto-scroll if we're scrolling for user's message
+      // This ensures continued auto-scroll after user sends a message
+      if (latestIsFromUser && !autoScroll) {
+        setAutoScroll(true);
+      }
+    }
+  }
+  prevFilteredLengthRef.current = currentLength;
+
   // Handle scroll to detect manual scroll (disable/enable auto-scroll)
   const handleScroll = useCallback(() => {
     if (!scrollContainerRef.current) return;
-    // Skip if this is a programmatic scroll (from auto-scroll or new messages)
-    if (isProgrammaticScrollRef.current) return;
+    // Skip scroll events that happen during programmatic scrolling
+    if (isScrollingRef.current) return;
 
     const container = scrollContainerRef.current;
-    const isAtBottom =
-      container.scrollHeight - container.scrollTop - container.clientHeight < 50;
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    const isAtBottom = distanceFromBottom < 50;
 
     // Re-enable auto-scroll when user scrolls to bottom
     if (isAtBottom && !autoScroll) {
       setAutoScroll(true);
     }
-    // Disable auto-scroll when user scrolls away from bottom
-    else if (!isAtBottom && autoScroll) {
+    // Disable auto-scroll when user scrolls significantly away from bottom
+    // Use a larger threshold to avoid false disables from small layout shifts
+    else if (distanceFromBottom > 150 && autoScroll) {
       setAutoScroll(false);
     }
   }, [autoScroll]);
 
-  // Auto-scroll to bottom when new messages arrive
-  useEffect(() => {
-    if (autoScroll && scrollContainerRef.current) {
-      // Mark that we're doing a programmatic scroll
-      isProgrammaticScrollRef.current = true;
-      // Use requestAnimationFrame to ensure DOM has been updated
-      // before scrolling to the new content
+  // Auto-scroll to bottom when new messages arrive - use useLayoutEffect for immediate execution
+  useLayoutEffect(() => {
+    if (shouldScrollRef.current && scrollContainerRef.current) {
+      shouldScrollRef.current = false;
+      isScrollingRef.current = true;
+
+      const container = scrollContainerRef.current;
+      container.scrollTop = container.scrollHeight;
+
+      // Clear the scrolling flag after the scroll event has been processed
       requestAnimationFrame(() => {
-        if (scrollContainerRef.current) {
-          const container = scrollContainerRef.current;
-          container.scrollTop = container.scrollHeight;
-        }
-        // Clear the flag after scroll is complete
-        // Use setTimeout to ensure scroll event has been processed
         setTimeout(() => {
-          isProgrammaticScrollRef.current = false;
-        }, 100);
+          isScrollingRef.current = false;
+        }, 50);
       });
     }
-  }, [filteredMessages.length, autoScroll]);
+  }, [filteredMessages.length]);
 
   // Reset scroll position and auto-scroll when channel changes
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (currentChannel !== prevChannelRef.current) {
       prevChannelRef.current = currentChannel;
-      prevFilteredLengthRef.current = 0;
+      prevFilteredLengthRef.current = filteredMessages.length;
       setAutoScroll(true);
+
       // Scroll to bottom on channel change
       if (scrollContainerRef.current) {
-        isProgrammaticScrollRef.current = true;
+        isScrollingRef.current = true;
         const container = scrollContainerRef.current;
-        // Use setTimeout to ensure DOM has updated
-        setTimeout(() => {
-          container.scrollTop = container.scrollHeight;
-          // Clear the flag after scroll is complete
+        container.scrollTop = container.scrollHeight;
+
+        // Clear the scrolling flag after the scroll event has been processed
+        requestAnimationFrame(() => {
           setTimeout(() => {
-            isProgrammaticScrollRef.current = false;
-          }, 100);
-        }, 0);
+            isScrollingRef.current = false;
+          }, 50);
+        });
       }
     }
-  }, [currentChannel]);
+  }, [currentChannel, filteredMessages.length]);
 
   if (filteredMessages.length === 0) {
     return (
@@ -332,7 +353,7 @@ function MessageAttachments({ attachments }: MessageAttachmentsProps) {
             title={`View ${attachment.filename}`}
           >
             <img
-              src={attachment.url}
+              src={attachment.data || attachment.url}
               alt={attachment.filename}
               className="max-h-48 max-w-xs rounded-lg border border-border-subtle object-cover transition-all duration-150 group-hover:border-accent-cyan/50 group-hover:shadow-[0_0_8px_rgba(0,217,255,0.2)]"
               loading="lazy"
@@ -365,7 +386,7 @@ function MessageAttachments({ attachments }: MessageAttachmentsProps) {
         >
           <div className="relative max-w-[90vw] max-h-[90vh]">
             <img
-              src={lightboxImage.url}
+              src={lightboxImage.data || lightboxImage.url}
               alt={lightboxImage.filename}
               className="max-w-full max-h-[90vh] rounded-lg shadow-2xl"
               onClick={(e) => e.stopPropagation()}
