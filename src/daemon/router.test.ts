@@ -992,4 +992,276 @@ describe('Router', () => {
       expect(recipients).toEqual(['agentB', 'agentC']);
     });
   });
+
+  describe('Cross-machine routing', () => {
+    it('should set cross-machine handler via constructor', () => {
+      const mockHandler = {
+        sendCrossMachineMessage: vi.fn().mockResolvedValue(true),
+        isRemoteAgent: vi.fn().mockReturnValue(undefined),
+      };
+
+      const routerWithHandler = new Router({
+        storage,
+        crossMachineHandler: mockHandler,
+      });
+
+      const sender = new MockConnection('conn-1', 'agent1');
+      routerWithHandler.register(sender);
+
+      const envelope = createSendEnvelope('agent1', 'unknown-agent');
+      routerWithHandler.route(sender, envelope);
+
+      // Should have checked if agent is remote
+      expect(mockHandler.isRemoteAgent).toHaveBeenCalledWith('unknown-agent');
+    });
+
+    it('should set cross-machine handler via setCrossMachineHandler', () => {
+      const mockHandler = {
+        sendCrossMachineMessage: vi.fn().mockResolvedValue(true),
+        isRemoteAgent: vi.fn().mockReturnValue(undefined),
+      };
+
+      router.setCrossMachineHandler(mockHandler);
+
+      const sender = new MockConnection('conn-1', 'agent1');
+      router.register(sender);
+
+      const envelope = createSendEnvelope('agent1', 'unknown-agent');
+      router.route(sender, envelope);
+
+      expect(mockHandler.isRemoteAgent).toHaveBeenCalledWith('unknown-agent');
+    });
+
+    it('should route to remote agent when local agent not found', async () => {
+      const mockHandler = {
+        sendCrossMachineMessage: vi.fn().mockResolvedValue(true),
+        isRemoteAgent: vi.fn().mockReturnValue({
+          name: 'remote-agent',
+          status: 'online',
+          daemonId: 'daemon-123',
+          daemonName: 'remote-machine',
+          machineId: 'machine-456',
+        }),
+      };
+
+      router.setCrossMachineHandler(mockHandler);
+
+      const sender = new MockConnection('conn-1', 'local-agent');
+      router.register(sender);
+
+      const envelope = createSendEnvelope('local-agent', 'remote-agent');
+      router.route(sender, envelope);
+
+      // Wait for async cross-machine send
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      expect(mockHandler.isRemoteAgent).toHaveBeenCalledWith('remote-agent');
+      expect(mockHandler.sendCrossMachineMessage).toHaveBeenCalledWith(
+        'daemon-123',
+        'remote-agent',
+        'local-agent',
+        'test message',
+        expect.objectContaining({
+          kind: 'message',
+        })
+      );
+    });
+
+    it('should prefer local routing over remote when agent is local', () => {
+      const mockHandler = {
+        sendCrossMachineMessage: vi.fn().mockResolvedValue(true),
+        isRemoteAgent: vi.fn().mockReturnValue({
+          name: 'agent2',
+          status: 'online',
+          daemonId: 'daemon-123',
+          daemonName: 'remote-machine',
+          machineId: 'machine-456',
+        }),
+      };
+
+      router.setCrossMachineHandler(mockHandler);
+
+      const sender = new MockConnection('conn-1', 'agent1');
+      const localAgent = new MockConnection('conn-2', 'agent2');
+      router.register(sender);
+      router.register(localAgent);
+
+      const envelope = createSendEnvelope('agent1', 'agent2');
+      router.route(sender, envelope);
+
+      // Should route locally, not check remote
+      expect(mockHandler.isRemoteAgent).not.toHaveBeenCalled();
+      expect(mockHandler.sendCrossMachineMessage).not.toHaveBeenCalled();
+      expect(localAgent.sendMock).toHaveBeenCalledOnce();
+    });
+
+    it('should not route remotely if no cross-machine handler configured', () => {
+      const sender = new MockConnection('conn-1', 'agent1');
+      router.register(sender);
+
+      const envelope = createSendEnvelope('agent1', 'unknown-remote');
+      router.route(sender, envelope);
+
+      // Should just fail silently, no error thrown
+      expect(sender.sendMock).not.toHaveBeenCalled();
+    });
+
+    it('should not route remotely if agent not found in remote lookup', () => {
+      const mockHandler = {
+        sendCrossMachineMessage: vi.fn().mockResolvedValue(true),
+        isRemoteAgent: vi.fn().mockReturnValue(undefined), // Not found
+      };
+
+      router.setCrossMachineHandler(mockHandler);
+
+      const sender = new MockConnection('conn-1', 'agent1');
+      router.register(sender);
+
+      const envelope = createSendEnvelope('agent1', 'nonexistent');
+      router.route(sender, envelope);
+
+      expect(mockHandler.isRemoteAgent).toHaveBeenCalledWith('nonexistent');
+      expect(mockHandler.sendCrossMachineMessage).not.toHaveBeenCalled();
+    });
+
+    it('should pass message metadata to cross-machine handler', async () => {
+      const mockHandler = {
+        sendCrossMachineMessage: vi.fn().mockResolvedValue(true),
+        isRemoteAgent: vi.fn().mockReturnValue({
+          name: 'remote-agent',
+          status: 'online',
+          daemonId: 'daemon-123',
+          daemonName: 'remote-machine',
+          machineId: 'machine-456',
+        }),
+      };
+
+      router.setCrossMachineHandler(mockHandler);
+
+      const sender = new MockConnection('conn-1', 'local-agent');
+      router.register(sender);
+
+      const envelope: Envelope<SendPayload> = {
+        v: 1,
+        type: 'SEND',
+        id: 'msg-with-metadata',
+        ts: Date.now(),
+        from: 'local-agent',
+        to: 'remote-agent',
+        topic: 'important-topic',
+        payload: {
+          kind: 'action',
+          body: 'do something',
+          thread: 'thread-123',
+          data: { custom: 'data' },
+        },
+      };
+      router.route(sender, envelope);
+
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      expect(mockHandler.sendCrossMachineMessage).toHaveBeenCalledWith(
+        'daemon-123',
+        'remote-agent',
+        'local-agent',
+        'do something',
+        expect.objectContaining({
+          topic: 'important-topic',
+          thread: 'thread-123',
+          kind: 'action',
+          data: { custom: 'data' },
+          originalId: 'msg-with-metadata',
+        })
+      );
+    });
+
+    it('should handle cross-machine send failure gracefully', async () => {
+      const mockHandler = {
+        sendCrossMachineMessage: vi.fn().mockResolvedValue(false),
+        isRemoteAgent: vi.fn().mockReturnValue({
+          name: 'remote-agent',
+          status: 'online',
+          daemonId: 'daemon-123',
+          daemonName: 'remote-machine',
+          machineId: 'machine-456',
+        }),
+      };
+
+      router.setCrossMachineHandler(mockHandler);
+
+      const sender = new MockConnection('conn-1', 'local-agent');
+      router.register(sender);
+
+      const envelope = createSendEnvelope('local-agent', 'remote-agent');
+
+      // Should not throw
+      expect(() => {
+        router.route(sender, envelope);
+      }).not.toThrow();
+
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      expect(mockHandler.sendCrossMachineMessage).toHaveBeenCalled();
+    });
+
+    it('should handle cross-machine send error gracefully', async () => {
+      const mockHandler = {
+        sendCrossMachineMessage: vi.fn().mockRejectedValue(new Error('Network error')),
+        isRemoteAgent: vi.fn().mockReturnValue({
+          name: 'remote-agent',
+          status: 'online',
+          daemonId: 'daemon-123',
+          daemonName: 'remote-machine',
+          machineId: 'machine-456',
+        }),
+      };
+
+      router.setCrossMachineHandler(mockHandler);
+
+      const sender = new MockConnection('conn-1', 'local-agent');
+      router.register(sender);
+
+      const envelope = createSendEnvelope('local-agent', 'remote-agent');
+
+      // Should not throw
+      expect(() => {
+        router.route(sender, envelope);
+      }).not.toThrow();
+
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      expect(mockHandler.sendCrossMachineMessage).toHaveBeenCalled();
+    });
+
+    it('should persist cross-machine messages when storage is available', async () => {
+      const mockHandler = {
+        sendCrossMachineMessage: vi.fn().mockResolvedValue(true),
+        isRemoteAgent: vi.fn().mockReturnValue({
+          name: 'remote-agent',
+          status: 'online',
+          daemonId: 'daemon-123',
+          daemonName: 'remote-machine',
+          machineId: 'machine-456',
+        }),
+      };
+
+      router.setCrossMachineHandler(mockHandler);
+
+      const sender = new MockConnection('conn-1', 'local-agent');
+      router.register(sender);
+
+      const envelope = createSendEnvelope('local-agent', 'remote-agent');
+      router.route(sender, envelope);
+
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Should have saved the cross-machine message
+      expect(saved.length).toBeGreaterThanOrEqual(1);
+      const savedMsg = saved.find(m => m.to === 'remote-agent');
+      expect(savedMsg).toBeDefined();
+      expect(savedMsg?.data?._crossMachine).toBe(true);
+      expect(savedMsg?.data?._targetDaemon).toBe('daemon-123');
+      expect(savedMsg?.data?._targetDaemonName).toBe('remote-machine');
+    });
+  });
 });

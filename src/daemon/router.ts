@@ -30,6 +30,25 @@ export interface RoutableConnection {
   getNextSeq(topic: string, peer: string): number;
 }
 
+export interface RemoteAgentInfo {
+  name: string;
+  status: string;
+  daemonId: string;
+  daemonName: string;
+  machineId: string;
+}
+
+export interface CrossMachineHandler {
+  sendCrossMachineMessage(
+    targetDaemonId: string,
+    targetAgent: string,
+    fromAgent: string,
+    content: string,
+    metadata?: Record<string, unknown>
+  ): Promise<boolean>;
+  isRemoteAgent(agentName: string): RemoteAgentInfo | undefined;
+}
+
 export interface DeliveryReliabilityOptions {
   /** How long to wait for an ACK before retrying (ms) */
   ackTimeoutMs: number;
@@ -73,6 +92,7 @@ export class Router {
   private processingAgents: Map<string, ProcessingState> = new Map(); // agentName -> processing state
   private deliveryOptions: DeliveryReliabilityOptions;
   private registry?: AgentRegistry;
+  private crossMachineHandler?: CrossMachineHandler;
 
   /** Shadow relationships: primaryAgent -> list of shadow configs */
   private shadowsByPrimary: Map<string, ShadowRelationship[]> = new Map();
@@ -85,11 +105,25 @@ export class Router {
   /** Callback when processing state changes (for real-time dashboard updates) */
   private onProcessingStateChange?: () => void;
 
-  constructor(options: { storage?: StorageAdapter; delivery?: Partial<DeliveryReliabilityOptions>; registry?: AgentRegistry; onProcessingStateChange?: () => void } = {}) {
+  constructor(options: {
+    storage?: StorageAdapter;
+    delivery?: Partial<DeliveryReliabilityOptions>;
+    registry?: AgentRegistry;
+    onProcessingStateChange?: () => void;
+    crossMachineHandler?: CrossMachineHandler;
+  } = {}) {
     this.storage = options.storage;
     this.deliveryOptions = { ...DEFAULT_DELIVERY_OPTIONS, ...options.delivery };
     this.registry = options.registry;
     this.onProcessingStateChange = options.onProcessingStateChange;
+    this.crossMachineHandler = options.crossMachineHandler;
+  }
+
+  /**
+   * Set or update the cross-machine handler.
+   */
+  setCrossMachineHandler(handler: CrossMachineHandler): void {
+    this.crossMachineHandler = handler;
   }
 
   /**
@@ -421,7 +455,14 @@ export class Router {
     envelope: SendEnvelope
   ): boolean {
     const target = this.agents.get(to);
+
+    // If agent not found locally, check if it's on a remote machine
     if (!target) {
+      const remoteAgent = this.crossMachineHandler?.isRemoteAgent(to);
+      if (remoteAgent) {
+        console.log(`[router] Routing to remote agent: ${to} on ${remoteAgent.daemonName}`);
+        return this.sendToRemoteAgent(from, to, envelope, remoteAgent);
+      }
       console.log(`[router] Target "${to}" not found. Available agents: ${Array.from(this.agents.keys()).join(', ')}`);
       return false;
     }
@@ -437,6 +478,67 @@ export class Router {
       this.setProcessing(to, deliver.id);
     }
     return sent;
+  }
+
+  /**
+   * Send a message to an agent on a remote machine via cloud.
+   */
+  private sendToRemoteAgent(
+    from: string,
+    to: string,
+    envelope: SendEnvelope,
+    remoteAgent: RemoteAgentInfo
+  ): boolean {
+    if (!this.crossMachineHandler) {
+      console.log(`[router] Cross-machine handler not available`);
+      return false;
+    }
+
+    // Send asynchronously via cloud
+    this.crossMachineHandler.sendCrossMachineMessage(
+      remoteAgent.daemonId,
+      to,
+      from,
+      envelope.payload.body,
+      {
+        topic: envelope.topic,
+        thread: envelope.payload.thread,
+        kind: envelope.payload.kind,
+        data: envelope.payload.data,
+        originalId: envelope.id,
+      }
+    ).then((sent) => {
+      if (sent) {
+        console.log(`[router] Cross-machine message sent to ${to} on ${remoteAgent.daemonName}`);
+        // Persist as cross-machine message
+        this.storage?.saveMessage({
+          id: envelope.id || `cross-${Date.now()}`,
+          ts: Date.now(),
+          from,
+          to,
+          topic: envelope.topic,
+          kind: envelope.payload.kind,
+          body: envelope.payload.body,
+          data: {
+            ...envelope.payload.data,
+            _crossMachine: true,
+            _targetDaemon: remoteAgent.daemonId,
+            _targetDaemonName: remoteAgent.daemonName,
+          },
+          thread: envelope.payload.thread,
+          status: 'unread',
+          is_urgent: false,
+          is_broadcast: false,
+        }).catch(err => console.error('[router] Failed to persist cross-machine message:', err));
+      } else {
+        console.error(`[router] Failed to send cross-machine message to ${to}`);
+      }
+    }).catch(err => {
+      console.error(`[router] Cross-machine send error:`, err);
+    });
+
+    // Return true immediately - message is queued
+    return true;
   }
 
   /**
