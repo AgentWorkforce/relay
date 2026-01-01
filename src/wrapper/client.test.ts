@@ -50,7 +50,7 @@ describe('RelayClient', () => {
     it('should call onMessage when DELIVER received', () => {
       const client = new RelayClient({ reconnect: false });
       const messages: any[] = [];
-      client.onMessage = (from, payload, id) => messages.push({ from, payload, id });
+      client.onMessage = (from, payload, id, meta, originalTo) => messages.push({ from, payload, id, originalTo });
 
       // DELIVER envelope has delivery info and from at envelope level
       const deliverEnvelope: DeliverEnvelope = {
@@ -60,13 +60,12 @@ describe('RelayClient', () => {
         ts: Date.now(),
         from: 'Alice',
         payload: {
-          from: 'Alice',
-          to: 'Bob',
+          kind: 'message',
           body: 'Hello!',
         },
         delivery: {
-          topic: 'dm',
           seq: 1,
+          session_id: 'session-1',
         },
       };
 
@@ -75,6 +74,39 @@ describe('RelayClient', () => {
       expect(messages).toHaveLength(1);
       expect(messages[0].from).toBe('Alice');
       expect(messages[0].payload.body).toBe('Hello!');
+      expect(messages[0].originalTo).toBeUndefined();
+    });
+
+    it('should pass originalTo for broadcast messages', () => {
+      const client = new RelayClient({ reconnect: false });
+      const messages: any[] = [];
+      client.onMessage = (from, payload, id, meta, originalTo) => messages.push({ from, payload, id, originalTo });
+
+      // DELIVER envelope for a broadcast message includes originalTo: '*'
+      const deliverEnvelope: DeliverEnvelope = {
+        v: 1,
+        type: 'DELIVER',
+        id: 'msg-2',
+        ts: Date.now(),
+        from: 'Dashboard',
+        to: 'Bob',
+        payload: {
+          kind: 'message',
+          body: 'Hello everyone!',
+        },
+        delivery: {
+          seq: 1,
+          session_id: 'session-1',
+          originalTo: '*', // This was a broadcast
+        },
+      };
+
+      (client as any).processFrame(deliverEnvelope);
+
+      expect(messages).toHaveLength(1);
+      expect(messages[0].from).toBe('Dashboard');
+      expect(messages[0].payload.body).toBe('Hello everyone!');
+      expect(messages[0].originalTo).toBe('*');
     });
 
     it('should handle WELCOME and transition to READY', () => {

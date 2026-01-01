@@ -94,6 +94,8 @@ export interface SendMeta {
 export interface DeliveryInfo {
   seq: number;
   session_id: string;
+  /** Original 'to' field from SEND (preserved for broadcasts) - '*' indicates broadcast */
+  originalTo?: string;
 }
 
 // ACK/NACK payloads

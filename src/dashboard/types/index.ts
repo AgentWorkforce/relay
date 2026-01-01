@@ -71,6 +71,8 @@ export interface Message {
   status?: MessageStatus;
   /** Attachments (images, files) */
   attachments?: Attachment[];
+  /** Channel context for routing (e.g., 'general' for broadcasts) */
+  channel?: string;
 }
 
 export interface Thread {

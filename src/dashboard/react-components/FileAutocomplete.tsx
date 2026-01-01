@@ -30,8 +30,9 @@ interface FileOption {
 }
 
 /**
- * Check if the input has an @-file path being typed
+ * Check if the input has an @-file path being typed at the cursor position.
  * Returns the query if it looks like a file path.
+ * Works for @ at any position in the text, not just the start.
  *
  * Trigger conditions (to avoid conflict with agent mentions):
  * - Contains `/` (path separator) - e.g., @src/components
@@ -43,10 +44,14 @@ interface FileOption {
  * - Names with trailing dot like @config. (user still typing)
  */
 export function getFileQuery(value: string, cursorPos: number): string | null {
-  // Check if cursor is within an @mention at the start
-  const atMatch = value.match(/^@(\S*)/);
-  if (atMatch && cursorPos <= atMatch[0].length) {
-    const query = atMatch[1];
+  // Search backwards from cursor to find @
+  const textBeforeCursor = value.substring(0, cursorPos);
+
+  // Find the last @ before cursor that starts a mention
+  // A mention starts after whitespace, at start of string, or after certain punctuation
+  const mentionMatch = textBeforeCursor.match(/(?:^|[\s(])@(\S*)$/);
+  if (mentionMatch) {
+    const query = mentionMatch[1];
 
     // Trigger file autocomplete only for unambiguous file patterns:
     // 1. Contains path separator: @src/components, @./file
@@ -64,17 +69,28 @@ export function getFileQuery(value: string, cursorPos: number): string | null {
 }
 
 /**
- * Complete a file path in the input value
+ * Complete a file path in the input value at the cursor position.
  */
 export function completeFileInValue(
   value: string,
-  filePath: string
+  filePath: string,
+  cursorPos: number
 ): string {
-  const atMatch = value.match(/^@\S*/);
-  if (atMatch) {
-    // Replace the @partial with @path/to/file
-    const completedText = `@${filePath} `;
-    return completedText + value.substring(atMatch[0].length);
+  const textBeforeCursor = value.substring(0, cursorPos);
+  const textAfterCursor = value.substring(cursorPos);
+
+  // Find the @ and partial text before cursor
+  const mentionMatch = textBeforeCursor.match(/(?:^|[\s(])@(\S*)$/);
+  if (mentionMatch) {
+    // Calculate where the @ starts (accounting for whitespace/punctuation before it)
+    const matchStart = mentionMatch.index || 0;
+    const prefixChar = mentionMatch[0].charAt(0);
+    const atStart = prefixChar === '@' ? matchStart : matchStart + 1;
+
+    // Build the new value
+    const beforeMention = value.substring(0, atStart);
+    const completedFile = `@${filePath} `;
+    return beforeMention + completedFile + textAfterCursor;
   }
   return value;
 }
@@ -203,7 +219,7 @@ export function FileAutocomplete({
           e.preventDefault();
           const selected = files[selectedIndex];
           if (selected) {
-            const newValue = completeFileInValue(inputValue, selected.path);
+            const newValue = completeFileInValue(inputValue, selected.path, cursorPosition);
             onSelect(selected.path, newValue);
           }
           break;
@@ -213,7 +229,7 @@ export function FileAutocomplete({
           break;
       }
     },
-    [isVisible, files, selectedIndex, inputValue, onSelect, onClose]
+    [isVisible, files, selectedIndex, inputValue, cursorPosition, onSelect, onClose]
   );
 
   // Register keyboard listener
@@ -227,10 +243,10 @@ export function FileAutocomplete({
   // Handle click on option
   const handleClick = useCallback(
     (file: FileOption) => {
-      const newValue = completeFileInValue(inputValue, file.path);
+      const newValue = completeFileInValue(inputValue, file.path, cursorPosition);
       onSelect(file.path, newValue);
     },
-    [inputValue, onSelect]
+    [inputValue, cursorPosition, onSelect]
   );
 
   if (!isVisible || (files.length === 0 && !isLoading && !error)) {

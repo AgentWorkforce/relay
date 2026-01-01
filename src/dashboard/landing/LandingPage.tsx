@@ -6,6 +6,7 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
+import { Logo, LogoIcon, LogoHero } from '../react-components/Logo';
 
 // Agent providers with their signature colors
 const PROVIDERS = {
@@ -65,7 +66,7 @@ function Navigation() {
     <nav className={`nav ${scrolled ? 'scrolled' : ''}`}>
       <div className="nav-inner">
         <a href="/" className="nav-logo">
-          <span className="logo-icon">⬢</span>
+          <LogoIcon size={28} withGlow={true} />
           <span className="logo-text">Agent Relay</span>
         </a>
 
@@ -530,7 +531,7 @@ function Footer() {
       <div className="footer-inner">
         <div className="footer-brand">
           <a href="/" className="footer-logo">
-            <span className="logo-icon">⬢</span>
+            <LogoIcon size={24} withGlow={true} />
             <span className="logo-text">Agent Relay</span>
           </a>
           <p>Orchestrate AI agents like a symphony.</p>

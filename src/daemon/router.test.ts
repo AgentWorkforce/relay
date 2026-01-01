@@ -592,6 +592,40 @@ describe('Router', () => {
       expect(delivered2.from).toBe('agent1');
       expect(delivered2.to).toBe('agent3');
     });
+
+    it('should include originalTo=* in broadcast DELIVER envelopes for channel routing', () => {
+      const sender = new MockConnection('conn-1', 'agent1');
+      const recipient = new MockConnection('conn-2', 'agent2');
+
+      router.register(sender);
+      router.register(recipient);
+
+      // Broadcast message - originalTo should preserve '*' so agents can reply to channel
+      const envelope = createSendEnvelope('agent1', '*');
+      router.route(sender, envelope);
+
+      const delivered = recipient.sentEnvelopes[0] as DeliverEnvelope;
+      expect(delivered.from).toBe('agent1');
+      expect(delivered.to).toBe('agent2'); // Specific recipient
+      expect(delivered.delivery.originalTo).toBe('*'); // Original target was broadcast
+    });
+
+    it('should not include originalTo for direct messages', () => {
+      const sender = new MockConnection('conn-1', 'agent1');
+      const recipient = new MockConnection('conn-2', 'agent2');
+
+      router.register(sender);
+      router.register(recipient);
+
+      // Direct message - originalTo should be undefined (same as 'to')
+      const envelope = createSendEnvelope('agent1', 'agent2');
+      router.route(sender, envelope);
+
+      const delivered = recipient.sentEnvelopes[0] as DeliverEnvelope;
+      expect(delivered.from).toBe('agent1');
+      expect(delivered.to).toBe('agent2');
+      expect(delivered.delivery.originalTo).toBeUndefined(); // Not needed for direct messages
+    });
   });
 
   describe('Topic subscriptions', () => {

@@ -87,7 +87,10 @@ export function MessageList({
   // Filter messages for current channel
   const filteredMessages = messages.filter((msg) => {
     if (currentChannel === 'general') {
-      return msg.to === '*' || msg.isBroadcast;
+      // Show messages that are broadcasts (to='*' or isBroadcast flag)
+      // Also show messages that have channel='general' in their metadata
+      // This includes agent replies to broadcasts that preserve the channel context
+      return msg.to === '*' || msg.isBroadcast || msg.channel === 'general';
     }
     return msg.from === currentChannel || msg.to === currentChannel;
   });

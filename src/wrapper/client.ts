@@ -73,7 +73,15 @@ export class RelayClient {
   private readonly deliveredCacheLimit = 2000;
 
   // Event handlers
-  onMessage?: (from: string, payload: SendPayload, messageId: string, meta?: SendMeta) => void;
+  /**
+   * Handler for incoming messages.
+   * @param from - The sender agent name
+   * @param payload - The message payload
+   * @param messageId - Unique message ID
+   * @param meta - Optional message metadata
+   * @param originalTo - Original 'to' field from sender (e.g., '*' for broadcasts)
+   */
+  onMessage?: (from: string, payload: SendPayload, messageId: string, meta?: SendMeta, originalTo?: string) => void;
   onStateChange?: (state: ClientState) => void;
   onError?: (error: Error) => void;
 
@@ -447,8 +455,9 @@ export class RelayClient {
     }
 
     // Notify handler
+    // Pass originalTo from delivery info so handlers know if this was a broadcast
     if (this.onMessage && envelope.from) {
-      this.onMessage(envelope.from, envelope.payload, envelope.id, envelope.payload_meta);
+      this.onMessage(envelope.from, envelope.payload, envelope.id, envelope.payload_meta, envelope.delivery.originalTo);
     }
   }
 

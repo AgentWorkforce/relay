@@ -11,6 +11,7 @@ import type { ThreadInfo } from '../hooks/useMessages';
 import { AgentList } from '../AgentList';
 import { ProjectList } from '../ProjectList';
 import { ThreadList } from '../ThreadList';
+import { LogoIcon } from '../Logo';
 
 const THREADS_COLLAPSED_KEY = 'agent-relay-threads-collapsed';
 
@@ -92,7 +93,7 @@ export function Sidebar({
       {/* Header */}
       <div className="p-4 border-b border-border-subtle">
         <div className="flex items-center gap-3 mb-3">
-          <span className="text-2xl text-accent-cyan drop-shadow-[0_0_8px_rgba(0,217,255,0.5)]">⬢</span>
+          <LogoIcon size={28} withGlow={true} />
           <h1 className="text-lg font-display font-semibold m-0 text-text-primary">Agent Relay</h1>
           <ConnectionIndicator isConnected={isConnected} />
           {/* Mobile close button */}

@@ -136,6 +136,8 @@ bd create --title="Add feature X" --type=feature --priority=P2
 ```
 
 ### 4. Delegate
+* If the user mentions to create an agent they probably mean for you to spawn an agent using 
+the agent-relay api and not create a sub agent. If you are unsure then ask for clarification.
 ```
 ->relay:Implementer <<<
 **TASK:** Add feature X

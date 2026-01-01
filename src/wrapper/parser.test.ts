@@ -586,6 +586,56 @@ Let me know if that works.
     });
   });
 
+  describe('Spawn and release command filtering', () => {
+    it('does not parse spawn command as relay message', () => {
+      // Spawn commands should be handled by the wrapper's spawn subsystem, not parsed as messages
+      const result = parser.parse('->relay:spawn Developer claude "task description"\n');
+
+      // Should NOT be parsed as a relay message to target "spawn"
+      expect(result.commands).toHaveLength(0);
+      // Should be passed through for the wrapper to handle
+      expect(result.output).toBe('->relay:spawn Developer claude "task description"\n');
+    });
+
+    it('does not parse spawn command without task as relay message', () => {
+      const result = parser.parse('->relay:spawn Worker codex\n');
+
+      expect(result.commands).toHaveLength(0);
+      expect(result.output).toBe('->relay:spawn Worker codex\n');
+    });
+
+    it('does not parse release command as relay message', () => {
+      const result = parser.parse('->relay:release Developer\n');
+
+      expect(result.commands).toHaveLength(0);
+      expect(result.output).toBe('->relay:release Developer\n');
+    });
+
+    it('does not parse spawn command with prefixes as relay message', () => {
+      // TUI output may have bullet prefixes
+      const result = parser.parse('• ->relay:spawn Worker claude "task"\n');
+
+      expect(result.commands).toHaveLength(0);
+      expect(result.output).toBe('• ->relay:spawn Worker claude "task"\n');
+    });
+
+    it('still parses regular relay messages to spawn-like agent names', () => {
+      // An agent named "spawner" should still receive messages
+      const result = parser.parse('->relay:spawner Please do something\n');
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].to).toBe('spawner');
+      expect(result.commands[0].body).toBe('Please do something');
+    });
+
+    it('handles spawn command case-insensitively', () => {
+      const result = parser.parse('->relay:SPAWN Worker claude\n');
+
+      expect(result.commands).toHaveLength(0);
+      expect(result.output).toBe('->relay:SPAWN Worker claude\n');
+    });
+  });
+
   describe('Edge cases', () => {
     it('inline commands must be complete in single chunk (no cross-chunk buffering)', () => {
       // Inline relay commands split across chunks are NOT detected

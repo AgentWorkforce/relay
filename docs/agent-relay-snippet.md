@@ -43,6 +43,27 @@ Messages appear as:
 Relay message from Alice [abc123]: Message content here
 ```
 
+### Channel Routing (Important!)
+
+Messages from #general (broadcast channel) include a `[#general]` indicator:
+```
+Relay message from Alice [abc123] [#general]: Hello everyone!
+```
+
+**When you see `[#general]`**: Reply to `*` (broadcast), NOT to the sender directly.
+
+```
+# Correct - responds to #general channel
+->relay:* <<<
+Response to the group message.>>>
+
+# Wrong - sends as DM to sender instead of to the channel
+->relay:Alice <<<
+Response to the group message.>>>
+```
+
+This ensures your response appears in the same channel as the original message.
+
 If truncated, read full message:
 ```bash
 agent-relay read abc123

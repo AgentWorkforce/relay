@@ -580,6 +580,9 @@ export class Router {
     original: SendEnvelope,
     target: RoutableConnection
   ): DeliverEnvelope {
+    // Preserve the original 'to' field for broadcasts so agents know to reply to '*'
+    const originalTo = original.to;
+
     return {
       v: PROTOCOL_VERSION,
       type: 'DELIVER',
@@ -593,6 +596,7 @@ export class Router {
       delivery: {
         seq: target.getNextSeq(original.topic ?? 'default', from),
         session_id: target.sessionId,
+        originalTo: originalTo !== to ? originalTo : undefined, // Only include if different
       },
     };
   }

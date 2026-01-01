@@ -28,7 +28,7 @@
     },
     {
       "name": "agent-relay-snippet",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "description": "AGENTS.md / CLAUDE.md snippet for agents on how to use agent-relay",
       "format": "generic",
       "subtype": "snippet",

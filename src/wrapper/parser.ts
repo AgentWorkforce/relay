@@ -80,8 +80,17 @@ const RELAY_INJECTION_PREFIX = /^\s*Relay message from /;
 const MAX_INLINE_CONTINUATION_LINES = 30;
 
 // Spawn/release command patterns - these should NOT be parsed as relay messages
+// They are handled separately by the wrappers (pty-wrapper.ts, tmux-wrapper.ts)
 const SPAWN_COMMAND_PATTERN = /->relay:spawn\s+\S+/i;
 const RELEASE_COMMAND_PATTERN = /->relay:release\s+\S+/i;
+
+/**
+ * Check if a line is a spawn or release command that should be handled
+ * by the wrapper's spawn subsystem, not parsed as a relay message.
+ */
+function isSpawnOrReleaseCommand(line: string): boolean {
+  return SPAWN_COMMAND_PATTERN.test(line) || RELEASE_COMMAND_PATTERN.test(line);
+}
 
 // Claude extended thinking block markers - skip content inside these
 const THINKING_START = /<antml:thinking>/;
@@ -725,6 +734,12 @@ export class OutputParser {
       // Output with escape removed (remove the backslash before the prefix)
       const unescaped = line.replace(/\\/, '');
       return { command: null, output: unescaped };
+    }
+
+    // Skip spawn/release commands - they are handled by the wrapper's spawn subsystem
+    // These should not be parsed as regular relay messages
+    if (isSpawnOrReleaseCommand(stripped)) {
+      return { command: null, output: line };
     }
 
     // Check for inline relay (on stripped text)

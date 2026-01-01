@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Relay - Logo Concepts</title>
+    <style>
+        body {
+            background-color: #0a0a0f;
+            color: #ffffff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 40px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        h1 {
+            color: #00d9ff;
+            text-shadow: 0 0 10px rgba(0, 217, 255, 0.5);
+            margin-bottom: 10px;
+            font-weight: 300;
+            letter-spacing: 2px;
+        }
+
+        p.subtitle {
+            color: #889;
+            margin-bottom: 50px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 40px;
+            width: 100%;
+            max-width: 1200px;
+        }
+
+        .card {
+            background: #0d0d14;
+            border: 1px solid #1a1a2e;
+            border-radius: 12px;
+            padding: 30px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 30px rgba(0, 217, 255, 0.1);
+            border-color: #00d9ff;
+        }
+
+        .card h2 {
+            font-size: 1.2rem;
+            color: #e0e0e0;
+            margin-top: 20px;
+            margin-bottom: 5px;
+        }
+
+        .card p {
+            color: #889;
+            font-size: 0.9rem;
+            text-align: center;
+        }
+
+        svg {
+            width: 120px;
+            height: 120px;
+            filter: drop-shadow(0 0 8px rgba(0, 217, 255, 0.2));
+        }
+
+        /* Color Palette Classes for Reference */
+        .c-cyan { color: #00d9ff; fill: #00d9ff; stroke: #00d9ff; }
+        .c-orange { color: #ff6b35; fill: #ff6b35; stroke: #ff6b35; }
+        .c-purple { color: #a855f7; fill: #a855f7; stroke: #a855f7; }
+        .c-teal { color: #00ffc8; fill: #00ffc8; stroke: #00ffc8; }
+
+    </style>
+</head>
+<body>
+
+    <h1>AGENT RELAY</h1>
+    <p class="subtitle">Mission Control // Identity Concepts</p>
+
+    <div class="grid">
+        <!-- Concept 1: Network Nodes -->
+        <div class="card">
+            <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <!-- Connections -->
+                <line x1="50" y1="50" x2="20" y2="30" stroke="#00d9ff" stroke-width="2" opacity="0.5" />
+                <line x1="50" y1="50" x2="80" y2="30" stroke="#00d9ff" stroke-width="2" opacity="0.5" />
+                <line x1="50" y1="50" x2="20" y2="70" stroke="#00d9ff" stroke-width="2" opacity="0.5" />
+                <line x1="50" y1="50" x2="80" y2="70" stroke="#00d9ff" stroke-width="2" opacity="0.5" />
+                
+                <!-- Satellite Nodes -->
+                <circle cx="20" cy="30" r="6" fill="#1a1a2e" stroke="#ff6b35" stroke-width="2" />
+                <circle cx="80" cy="30" r="6" fill="#1a1a2e" stroke="#a855f7" stroke-width="2" />
+                <circle cx="20" cy="70" r="6" fill="#1a1a2e" stroke="#00ffc8" stroke-width="2" />
+                <circle cx="80" cy="70" r="6" fill="#1a1a2e" stroke="#00d9ff" stroke-width="2" />
+                
+                <!-- Central Node -->
+                <circle cx="50" cy="50" r="12" fill="#0a0a0f" stroke="#00d9ff" stroke-width="3" />
+                <circle cx="50" cy="50" r="4" fill="#00d9ff" />
+            </svg>
+            <h2>The Nexus</h2>
+            <p>Represents central coordination of distributed agents.</p>
+        </div>
+
+        <!-- Concept 2: Signal Waves -->
+        <div class="card">
+            <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <!-- Waves -->
+                <path d="M50 80 Q 20 50 50 20" stroke="#00d9ff" stroke-width="3" stroke-linecap="round" />
+                <path d="M50 80 Q 80 50 50 20" stroke="#00d9ff" stroke-width="3" stroke-linecap="round" />
+                
+                <path d="M50 70 Q 35 50 50 30" stroke="#a855f7" stroke-width="2" stroke-linecap="round" opacity="0.8"/>
+                <path d="M50 70 Q 65 50 50 30" stroke="#a855f7" stroke-width="2" stroke-linecap="round" opacity="0.8"/>
+
+                <path d="M50 60 Q 45 50 50 40" stroke="#ff6b35" stroke-width="2" stroke-linecap="round" opacity="0.6"/>
+                <path d="M50 60 Q 55 50 50 40" stroke="#ff6b35" stroke-width="2" stroke-linecap="round" opacity="0.6"/>
+
+                <!-- Core -->
+                <circle cx="50" cy="50" r="3" fill="#ffffff" />
+            </svg>
+            <h2>Pulse Relay</h2>
+            <p>Visualizes transmission and constant communication.</p>
+        </div>
+
+        <!-- Concept 3: Abstract AR -->
+        <div class="card">
+            <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <!-- A shape -->
+                <path d="M30 80 L 50 20 L 70 80" stroke="#00d9ff" stroke-width="4" stroke-linejoin="round" />
+                <line x1="40" y1="50" x2="60" y2="50" stroke="#00d9ff" stroke-width="4" />
+                
+                <!-- R overlay style -->
+                <path d="M50 20 L 50 80" stroke="#00ffc8" stroke-width="2" opacity="0.7" />
+                <path d="M50 20 C 80 20 80 50 50 50 L 80 80" stroke="#00ffc8" stroke-width="2" fill="none" opacity="0.7"/>
+            </svg>
+            <h2>Monogram AR</h2>
+            <p>Interwoven letters symbolising structure and flow.</p>
+        </div>
+
+        <!-- Concept 4: Orbital -->
+        <div class="card">
+            <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <!-- Orbits -->
+                <ellipse cx="50" cy="50" rx="40" ry="15" stroke="#a855f7" stroke-width="2" transform="rotate(-30 50 50)" opacity="0.6" />
+                <ellipse cx="50" cy="50" rx="40" ry="15" stroke="#ff6b35" stroke-width="2" transform="rotate(30 50 50)" opacity="0.6" />
+                
+                <!-- Planet -->
+                <circle cx="50" cy="50" r="15" fill="url(#grad1)" />
+                <defs>
+                    <radialGradient id="grad1" cx="50%" cy="50%" r="50%" fx="30%" fy="30%">
+                        <stop offset="0%" style="stop-color:#00d9ff;stop-opacity:1" />
+                        <stop offset="100%" style="stop-color:#005577;stop-opacity:1" />
+                    </radialGradient>
+                </defs>
+                
+                <!-- Orbiting bit -->
+                <circle cx="85" cy="50" r="3" fill="#ffffff" transform="rotate(-30 50 50)"/>
+            </svg>
+            <h2>Mission Control</h2>
+            <p>Deep space aesthetic with orbital mechanics.</p>
+        </div>
+    </div>
+
+</body>
+</html>

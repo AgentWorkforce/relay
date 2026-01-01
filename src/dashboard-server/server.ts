@@ -688,15 +688,25 @@ export async function startDashboard(
         }
       }
 
-      // Include attachments in the message data field
-      const messageData = attachments && attachments.length > 0
-        ? { attachments }
-        : undefined;
+      // Include attachments and channel context in the message data field
+      // For broadcasts (to='*'), include channel: 'general' so replies can be routed back
+      const isBroadcast = targets.length === 1 && targets[0] === '*';
+      const messageData: Record<string, unknown> = {};
+
+      if (attachments && attachments.length > 0) {
+        messageData.attachments = attachments;
+      }
+
+      if (isBroadcast) {
+        messageData.channel = 'general';
+      }
+
+      const hasMessageData = Object.keys(messageData).length > 0;
 
       // Send to all targets (single agent, team members, or broadcast)
       let allSent = true;
       for (const target of targets) {
-        const sent = relayClient.sendMessage(target, message, 'message', messageData, thread);
+        const sent = relayClient.sendMessage(target, message, 'message', hasMessageData ? messageData : undefined, thread);
         if (!sent) {
           allSent = false;
           console.error(`[dashboard] Failed to send message to ${target}`);
@@ -920,12 +930,26 @@ export async function startDashboard(
     }
   };
 
+  // Helper to check if an agent name is internal/system (should be hidden from UI)
+  // Convention: agent names starting with __ are internal (e.g., __spawner__, __DashboardBridge__)
+  const isInternalAgent = (name: string): boolean => {
+    return name.startsWith('__');
+  };
+
   const mapStoredMessages = (rows: StoredMessage[]): Message[] => rows
+    // Filter out messages from/to internal system agents (e.g., __spawner__)
+    .filter((row) => !isInternalAgent(row.from) && !isInternalAgent(row.to))
     .map((row) => {
-      // Extract attachments from the data field if present
+      // Extract attachments and channel from the data field if present
       let attachments: Attachment[] | undefined;
-      if (row.data && typeof row.data === 'object' && 'attachments' in row.data) {
-        attachments = (row.data as { attachments: Attachment[] }).attachments;
+      let channel: string | undefined;
+      if (row.data && typeof row.data === 'object') {
+        if ('attachments' in row.data) {
+          attachments = (row.data as { attachments: Attachment[] }).attachments;
+        }
+        if ('channel' in row.data) {
+          channel = (row.data as { channel: string }).channel;
+        }
       }
 
       return {
@@ -939,6 +963,7 @@ export async function startDashboard(
         replyCount: row.replyCount,
         status: row.status,
         attachments,
+        channel,
       };
     });
 
@@ -1986,6 +2011,9 @@ export async function startDashboard(
 
       let messages = await storage.getMessages(query);
 
+      // Filter out messages from/to internal system agents (e.g., __spawner__)
+      messages = messages.filter(m => !isInternalAgent(m.from) && !isInternalAgent(m.to));
+
       // Client-side search filter (basic substring match)
       const searchTerm = req.query.search as string | undefined;
       if (searchTerm && searchTerm.trim()) {
@@ -2040,6 +2068,9 @@ export async function startDashboard(
       for (const msg of messages) {
         // Skip broadcasts for conversation pairing
         if (msg.to === '*' || msg.is_broadcast) continue;
+
+        // Skip messages from/to internal system agents (e.g., __spawner__)
+        if (isInternalAgent(msg.from) || isInternalAgent(msg.to)) continue;
 
         // Create normalized key (sorted participants)
         const participants = [msg.from, msg.to].sort();
