@@ -96,10 +96,12 @@ export function MessageList({
   // This runs during render, before useLayoutEffect
   const currentLength = filteredMessages.length;
   if (currentLength > prevFilteredLengthRef.current) {
-    // Check if the latest message is from the user (Dashboard)
+    // Check if the latest message is from the current user
+    // This includes both "Dashboard" (local mode) and GitHub username (cloud mode)
     // Always scroll for user's own messages, regardless of autoScroll state
     const latestMessage = filteredMessages[filteredMessages.length - 1];
-    const latestIsFromUser = latestMessage?.from === 'Dashboard';
+    const latestIsFromUser = latestMessage?.from === 'Dashboard' ||
+      (currentUser && latestMessage?.from === currentUser.displayName);
 
     if (latestIsFromUser || autoScroll) {
       shouldScrollRef.current = true;

@@ -28,6 +28,31 @@ export interface AgentCardProps {
   onLogsClick?: (agent: Agent) => void;
 }
 
+/**
+ * Get a descriptive tooltip for an agent's connection status.
+ */
+function getStatusTooltip(status: AgentStatus, isProcessing?: boolean): string {
+  if (isProcessing) {
+    return 'Processing - Agent is actively working';
+  }
+  switch (status) {
+    case 'online':
+      return 'Connected - Agent is online and ready';
+    case 'offline':
+      return 'Disconnected - Agent is not connected';
+    case 'busy':
+      return 'Busy - Agent is occupied with a task';
+    case 'processing':
+      return 'Processing - Agent is actively working';
+    case 'error':
+      return 'Error - Agent encountered an error';
+    case 'attention':
+      return 'Attention - Agent requires user input';
+    default:
+      return `Status: ${status}`;
+  }
+}
+
 export function AgentCard({
   agent,
   isSelected = false,
@@ -44,6 +69,7 @@ export function AgentCard({
   const displayName = displayNameOverride || getAgentDisplayName(agent.name);
   const statusColor = STATUS_COLORS[agent.status] || STATUS_COLORS.offline;
   const isOnline = agent.status === 'online';
+  const statusTooltip = getStatusTooltip(agent.status, agent.isProcessing);
 
   const handleClick = () => {
     onClick?.(agent);
@@ -112,6 +138,7 @@ export function AgentCard({
                 backgroundColor: statusColor,
                 boxShadow: `0 0 8px ${statusColor}`,
               }}
+              title={statusTooltip}
             />
           )}
         </div>
@@ -162,7 +189,9 @@ export function AgentCard({
             </button>
           )}
           {agent.isProcessing ? (
-            <ThinkingDot isProcessing={true} />
+            <div title={statusTooltip}>
+              <ThinkingDot isProcessing={true} />
+            </div>
           ) : (
             <div
               className={`
@@ -173,10 +202,14 @@ export function AgentCard({
                 backgroundColor: statusColor,
                 boxShadow: isOnline ? `0 0 6px ${statusColor}` : 'none',
               }}
+              title={statusTooltip}
             />
           )}
           {agent.needsAttention && (
-            <div className="w-2 h-2 rounded-full bg-warning animate-pulse shadow-[0_0_8px_rgba(255,107,53,0.5)]" />
+            <div
+              className="w-2 h-2 rounded-full bg-warning animate-pulse shadow-[0_0_8px_rgba(255,107,53,0.5)]"
+              title="Needs Attention - Agent requires user input or has pending decisions"
+            />
           )}
         </div>
       </div>
@@ -205,13 +238,14 @@ export function AgentCard({
           <div
             className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white"
             style={{ backgroundColor: statusColor }}
+            title={statusTooltip}
           />
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="font-semibold text-sm text-text-primary">{displayName}</span>
             {agent.needsAttention && (
-              <span className="bg-red-500 text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center" title="Needs attention">!</span>
+              <span className="bg-red-500 text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center" title="Needs Attention - Agent requires user input or has pending decisions">!</span>
             )}
           </div>
           {showBreadcrumb ? (

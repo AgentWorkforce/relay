@@ -428,6 +428,10 @@ export function LogViewer({
   );
 }
 
+// Threshold for collapsible content (characters)
+const COLLAPSE_THRESHOLD = 200;
+const COLLAPSED_PREVIEW_LENGTH = 150;
+
 // Log line component
 interface LogLineItemProps {
   log: LogLine;
@@ -446,12 +450,16 @@ function LogLineItem({
   searchQuery = '',
   lineNumber,
 }: LogLineItemProps) {
+  const [isExpanded, setIsExpanded] = useState(false);
   const timestamp = new Date(log.timestamp).toLocaleTimeString('en-US', {
     hour12: false,
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
   });
+
+  // Determine if content should be collapsible
+  const isCollapsible = !compact && log.content.length > COLLAPSE_THRESHOLD;
 
   const getTypeStyles = () => {
     switch (log.type) {
@@ -498,6 +506,11 @@ function LogLineItem({
     );
   }
 
+  // Get the content to display based on collapsed state
+  const displayContent = isCollapsible && !isExpanded
+    ? log.content.slice(0, COLLAPSED_PREVIEW_LENGTH) + '...'
+    : log.content;
+
   return (
     <div
       className={`group flex gap-2 py-1 px-2 -mx-2 rounded-md transition-all duration-150 ${
@@ -516,11 +529,21 @@ function LogLineItem({
           {timestamp}
         </span>
       )}
-      <span
-        className={`flex-1 min-w-0 overflow-hidden whitespace-pre-wrap break-all leading-relaxed ${getTypeStyles()}`}
-      >
-        {highlightContent(log.content)}
-      </span>
+      <div className="flex-1 min-w-0 overflow-hidden">
+        <span
+          className={`whitespace-pre-wrap break-all leading-relaxed ${getTypeStyles()}`}
+        >
+          {highlightContent(displayContent)}
+        </span>
+        {isCollapsible && (
+          <button
+            className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-[#21262d] text-[#8b949e] hover:text-accent-cyan hover:bg-[#30363d] transition-all duration-200"
+            onClick={() => setIsExpanded(!isExpanded)}
+          >
+            {isExpanded ? '▲ Collapse' : `▼ Show more (${log.content.length} chars)`}
+          </button>
+        )}
+      </div>
       {log.type === 'stderr' && (
         <span
           className="shrink-0 text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded"
