@@ -885,6 +885,7 @@ program
   .description('Bridge multiple projects as orchestrator')
   .argument('[projects...]', 'Project paths to bridge')
   .option('--cli <tool>', 'CLI tool override for all projects')
+  .option('--architect [cli]', 'Spawn an architect agent to coordinate all projects (default: claude)')
   .action(async (projectPaths: string[], options) => {
     const { resolveProjects, validateDaemons } = await import('../bridge/config.js');
     const { MultiProjectClient } = await import('../bridge/multi-project-client.js');
@@ -1031,9 +1032,114 @@ program
     console.log('Connected to all projects.');
     console.log('');
     console.log('Cross-project messaging:');
-    console.log('  @relay:projectId:agent Message');
-    console.log('  @relay:*:lead Broadcast to all leads');
+    console.log('  ->relay:projectId:agent Message');
+    console.log('  ->relay:*:lead Broadcast to all leads');
     console.log('');
+
+    // Spawn architect agent if --architect flag is set
+    let architectWrapper: any = null;
+    if (options.architect !== undefined) {
+      const { TmuxWrapper } = await import('../wrapper/tmux-wrapper.js');
+
+      // Determine CLI to use (default to claude)
+      const architectCli = typeof options.architect === 'string' ? options.architect : 'claude';
+
+      // Use first project as the base for the architect
+      const baseProject = valid[0];
+      const basePaths = getProjectPaths(baseProject.path);
+
+      // Build project context for the architect
+      const projectContext = valid.map(p => `- ${p.id}: ${p.path} (Lead: ${p.leadName})`).join('\n');
+
+      // Create architect system prompt
+      const architectPrompt = `You are the Architect, a cross-project coordinator overseeing multiple codebases.
+
+## Connected Projects
+${projectContext}
+
+## Your Role
+- Coordinate high-level work across all projects
+- Assign tasks to project leads
+- Ensure consistency and resolve cross-project dependencies
+- Review overall architecture decisions
+
+## Cross-Project Messaging
+
+Use this syntax to message agents in specific projects:
+
+\`\`\`
+->relay:${valid[0].id}:${valid[0].leadName} <<<
+Your message to this project's lead>>>
+
+->relay:${valid.length > 1 ? valid[1].id : valid[0].id}:* <<<
+Broadcast to all agents in a project>>>
+
+->relay:*:* <<<
+Broadcast to ALL agents in ALL projects>>>
+\`\`\`
+
+Format: \`->relay:project-id:agent-name\`
+
+## Getting Started
+1. Check in with each project lead to understand current status
+2. Identify cross-project dependencies
+3. Coordinate work across teams
+
+Start by greeting the project leads and asking for status updates.`;
+
+      console.log('Spawning Architect agent...');
+      console.log(`  CLI: ${architectCli}`);
+      console.log(`  Base project: ${baseProject.path}`);
+      console.log('');
+
+      // Determine command and args based on CLI
+      let command: string;
+      let args: string[] = [];
+
+      if (architectCli === 'claude' || architectCli.startsWith('claude:')) {
+        command = 'claude';
+        args = ['--dangerously-skip-permissions'];
+        // Add model if specified (e.g., claude:opus)
+        if (architectCli.includes(':')) {
+          const model = architectCli.split(':')[1];
+          args.push('--model', model);
+        }
+      } else if (architectCli === 'codex') {
+        command = 'codex';
+        args = ['--dangerously-skip-permissions'];
+      } else {
+        command = architectCli;
+      }
+
+      try {
+        architectWrapper = new TmuxWrapper({
+          name: 'Architect',
+          command,
+          args,
+          socketPath: basePaths.socketPath,
+          debug: false,
+          useInbox: true,
+          inboxDir: basePaths.dataDir,
+        });
+
+        await architectWrapper.start();
+
+        // Wait for agent to be ready, then inject the prompt
+        setTimeout(async () => {
+          try {
+            await architectWrapper.injectMessage(architectPrompt);
+            console.log('Architect agent started and initialized.');
+            console.log('Attach to session: tmux attach -t relay-Architect');
+            console.log('');
+          } catch (err) {
+            console.error('Failed to inject architect prompt:', err);
+          }
+        }, 3000);
+
+      } catch (err) {
+        console.error('Failed to spawn Architect agent:', err);
+      }
+    }
 
     // Handle messages from projects
     client.onMessage = (projectId, from, payload, messageId) => {

@@ -55,7 +55,19 @@ export async function createServer(): Promise<CloudServer> {
   await (redisClient as any).connect();
 
   // Middleware
-  app.use(helmet());
+  // Configure helmet to allow Next.js inline scripts
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        fontSrc: ["'self'", "https://fonts.gstatic.com"],
+        imgSrc: ["'self'", "data:", "https:"],
+        connectSrc: ["'self'", "wss:", "ws:", "https:"],
+      },
+    },
+  }));
   app.use(
     cors({
       origin: config.publicUrl,

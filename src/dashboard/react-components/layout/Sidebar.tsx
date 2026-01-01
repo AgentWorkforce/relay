@@ -17,6 +17,8 @@ const THREADS_COLLAPSED_KEY = 'agent-relay-threads-collapsed';
 
 export interface SidebarProps {
   agents: Agent[];
+  /** Bridge-level agents like Architect that span multiple projects */
+  bridgeAgents?: Agent[];
   projects?: Project[];
   currentProject?: string;
   selectedAgent?: string;
@@ -44,6 +46,7 @@ export interface SidebarProps {
 
 export function Sidebar({
   agents,
+  bridgeAgents = [],
   projects = [],
   currentProject,
   selectedAgent,
@@ -175,6 +178,7 @@ export function Sidebar({
           <ProjectList
             projects={projects}
             localAgents={agents}
+            bridgeAgents={bridgeAgents}
             currentProject={currentProject}
             selectedAgent={selectedAgent}
             searchQuery={searchQuery}

@@ -6,6 +6,8 @@
  */
 
 import { db, ProjectGroup, Repository, CoordinatorAgentConfig } from '../db/index.js';
+import { createClient, RedisClientType } from 'redis';
+import { getConfig } from '../config.js';
 
 /**
  * Coordinator agent state
@@ -166,39 +168,280 @@ async function listActive(): Promise<CoordinatorState[]> {
 }
 
 /**
+ * Redis pub/sub for cross-workspace messaging
+ */
+let pubClient: RedisClientType | null = null;
+let subClient: RedisClientType | null = null;
+const messageHandlers = new Map<string, (message: CrossWorkspaceMessage) => void>();
+
+interface CrossWorkspaceMessage {
+  type: 'relay' | 'status' | 'command';
+  from: string;
+  fromWorkspace: string;
+  to: string;
+  toWorkspace?: string;
+  body: string;
+  thread?: string;
+  timestamp: string;
+}
+
+/**
+ * Initialize Redis pub/sub clients
+ */
+async function initRedisClients(): Promise<void> {
+  if (pubClient && subClient) return;
+
+  const config = getConfig();
+
+  pubClient = createClient({ url: config.redisUrl });
+  subClient = createClient({ url: config.redisUrl });
+
+  await pubClient.connect();
+  await subClient.connect();
+
+  // Subscribe to coordinator channel
+  await subClient.subscribe('coordinator:messages', (message) => {
+    try {
+      const parsed = JSON.parse(message) as CrossWorkspaceMessage;
+      const handler = messageHandlers.get(parsed.toWorkspace || '*');
+      if (handler) {
+        handler(parsed);
+      }
+    } catch (error) {
+      console.error('Failed to parse coordinator message:', error);
+    }
+  });
+
+  console.log('[coordinator] Redis pub/sub initialized');
+}
+
+/**
+ * Send a message from coordinator to a workspace
+ */
+export async function sendToWorkspace(
+  coordinatorGroupId: string,
+  targetWorkspaceId: string,
+  agentName: string,
+  message: string,
+  thread?: string
+): Promise<void> {
+  if (!pubClient) {
+    await initRedisClients();
+  }
+
+  const crossMessage: CrossWorkspaceMessage = {
+    type: 'relay',
+    from: 'Coordinator',
+    fromWorkspace: `coordinator:${coordinatorGroupId}`,
+    to: agentName,
+    toWorkspace: targetWorkspaceId,
+    body: message,
+    thread,
+    timestamp: new Date().toISOString(),
+  };
+
+  await pubClient!.publish('workspace:messages', JSON.stringify(crossMessage));
+  console.log(`[coordinator] Sent message to ${targetWorkspaceId}:${agentName}`);
+}
+
+/**
+ * Broadcast a message to all workspaces in a project group
+ */
+export async function broadcastToGroup(
+  coordinatorGroupId: string,
+  message: string,
+  thread?: string
+): Promise<void> {
+  if (!pubClient) {
+    await initRedisClients();
+  }
+
+  const group = await db.projectGroups.findById(coordinatorGroupId);
+  if (!group) {
+    throw new Error('Project group not found');
+  }
+
+  const repositories = await db.repositories.findByProjectGroupId(coordinatorGroupId);
+
+  // Get all workspaces containing these repositories
+  const workspaceIds = new Set<string>();
+  for (const repo of repositories) {
+    if (repo.workspaceId) {
+      workspaceIds.add(repo.workspaceId);
+    }
+  }
+
+  const crossMessage: CrossWorkspaceMessage = {
+    type: 'relay',
+    from: 'Coordinator',
+    fromWorkspace: `coordinator:${coordinatorGroupId}`,
+    to: '*',
+    body: message,
+    thread,
+    timestamp: new Date().toISOString(),
+  };
+
+  // Broadcast to each workspace
+  for (const workspaceId of workspaceIds) {
+    crossMessage.toWorkspace = workspaceId;
+    await pubClient!.publish('workspace:messages', JSON.stringify(crossMessage));
+  }
+
+  console.log(`[coordinator] Broadcast to ${workspaceIds.size} workspace(s)`);
+}
+
+/**
  * Spawn the actual coordinator agent
- * This is a placeholder for the actual implementation
  */
 async function spawnCoordinatorAgent(
   group: ProjectGroup,
   config: CoordinatorAgentConfig,
   repositories: Repository[]
 ): Promise<void> {
+  // Initialize Redis for cross-workspace messaging
+  await initRedisClients();
+
   // Build system prompt for the coordinator
   const systemPrompt = buildCoordinatorSystemPrompt(group, config, repositories);
 
-  // In a real implementation, this would use one of:
-  // 1. agent-relay spawn command via daemon
-  // 2. Cloud workspace agent spawning API
-  // 3. Direct Agent SDK integration
+  // Get workspaces for the repositories
+  const workspaceIds = new Set<string>();
+  for (const repo of repositories) {
+    if (repo.workspaceId) {
+      workspaceIds.add(repo.workspaceId);
+    }
+  }
 
-  console.log(`Spawning coordinator agent: ${config.name || group.name}`);
-  console.log(`Model: ${config.model || 'claude-sonnet-4-5'}`);
-  console.log(`Repositories: ${repositories.map((r) => r.githubFullName).join(', ')}`);
-  console.log(`System prompt: ${systemPrompt}`);
+  const workspaces = await Promise.all(
+    Array.from(workspaceIds).map(id => db.workspaces.findById(id))
+  );
 
-  // Simulate async spawn operation
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  console.log(`[coordinator] Spawning coordinator agent: ${config.name || group.name}`);
+  console.log(`[coordinator] Model: ${config.model || 'claude-sonnet-4-5'}`);
+  console.log(`[coordinator] Repositories: ${repositories.map((r) => r.githubFullName).join(', ')}`);
+  console.log(`[coordinator] Connected workspaces: ${workspaces.filter(Boolean).length}`);
+
+  // Register message handler for this coordinator
+  messageHandlers.set(`coordinator:${group.id}`, async (message) => {
+    console.log(`[coordinator:${group.id}] Received: ${message.body.substring(0, 100)}...`);
+
+    // In a full implementation, this would:
+    // 1. Parse the message for coordinator commands
+    // 2. Route to appropriate workspace(s)
+    // 3. Track conversation state
+  });
+
+  // Store coordinator connection info in Redis for workspace discovery
+  if (pubClient) {
+    await pubClient.hSet(`coordinator:${group.id}`, {
+      groupId: group.id,
+      groupName: group.name,
+      agentName: config.name || `${group.name} Coordinator`,
+      model: config.model || 'claude-sonnet-4-5',
+      startedAt: new Date().toISOString(),
+      workspaces: JSON.stringify(Array.from(workspaceIds)),
+      systemPrompt,
+    });
+    await pubClient.expire(`coordinator:${group.id}`, 86400); // 24h TTL
+  }
 }
 
 /**
  * Stop the actual coordinator agent
  */
 async function stopCoordinatorAgent(groupId: string, state: CoordinatorState): Promise<void> {
-  console.log(`Stopping coordinator agent for group ${groupId}: ${state.agentName}`);
+  console.log(`[coordinator] Stopping coordinator agent for group ${groupId}: ${state.agentName}`);
 
-  // Simulate async stop operation
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  // Remove message handler
+  messageHandlers.delete(`coordinator:${groupId}`);
+
+  // Remove from Redis
+  if (pubClient) {
+    await pubClient.del(`coordinator:${groupId}`);
+  }
+}
+
+/**
+ * Route a message from a workspace to the coordinator
+ */
+export async function routeToCoordinator(
+  workspaceId: string,
+  agentName: string,
+  message: string,
+  thread?: string
+): Promise<void> {
+  if (!pubClient) {
+    await initRedisClients();
+  }
+
+  // Find which coordinator is managing this workspace
+  // by scanning all coordinator keys
+  const coordinatorKeys = await pubClient!.keys('coordinator:*');
+
+  for (const key of coordinatorKeys) {
+    if (key === 'coordinator:messages') continue; // Skip the channel
+
+    const data = await pubClient!.hGetAll(key);
+    if (data.workspaces) {
+      const workspaces = JSON.parse(data.workspaces) as string[];
+      if (workspaces.includes(workspaceId)) {
+        // Found the coordinator for this workspace
+        const crossMessage: CrossWorkspaceMessage = {
+          type: 'relay',
+          from: agentName,
+          fromWorkspace: workspaceId,
+          to: 'Coordinator',
+          toWorkspace: key,
+          body: message,
+          thread,
+          timestamp: new Date().toISOString(),
+        };
+
+        await pubClient!.publish('coordinator:messages', JSON.stringify(crossMessage));
+        console.log(`[coordinator] Routed message from ${workspaceId}:${agentName} to ${key}`);
+        return;
+      }
+    }
+  }
+
+  console.warn(`[coordinator] No coordinator found for workspace ${workspaceId}`);
+}
+
+/**
+ * Get all active coordinators
+ */
+export async function getActiveCoordinators(): Promise<Array<{
+  groupId: string;
+  groupName: string;
+  agentName: string;
+  model: string;
+  startedAt: string;
+  workspaces: string[];
+}>> {
+  if (!pubClient) {
+    await initRedisClients();
+  }
+
+  const coordinatorKeys = await pubClient!.keys('coordinator:*');
+  const coordinators = [];
+
+  for (const key of coordinatorKeys) {
+    if (key === 'coordinator:messages') continue;
+
+    const data = await pubClient!.hGetAll(key);
+    if (data.groupId) {
+      coordinators.push({
+        groupId: data.groupId,
+        groupName: data.groupName,
+        agentName: data.agentName,
+        model: data.model,
+        startedAt: data.startedAt,
+        workspaces: data.workspaces ? JSON.parse(data.workspaces) : [],
+      });
+    }
+  }
+
+  return coordinators;
 }
 
 /**

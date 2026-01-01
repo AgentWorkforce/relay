@@ -2314,6 +2314,104 @@ export async function startDashboard(
   });
 
   /**
+   * POST /api/spawn/architect - Spawn an Architect agent for bridge mode
+   * Body: { cli?: string }
+   */
+  app.post('/api/spawn/architect', async (req, res) => {
+    if (!spawner) {
+      return res.status(503).json({
+        success: false,
+        error: 'Spawner not enabled. Start dashboard with enableSpawner: true',
+      });
+    }
+
+    const { cli = 'claude' } = req.body;
+
+    // Check if Architect already exists
+    const activeWorkers = spawner.getActiveWorkers();
+    if (activeWorkers.some(w => w.name.toLowerCase() === 'architect')) {
+      return res.status(409).json({
+        success: false,
+        error: 'Architect agent already running',
+      });
+    }
+
+    // Get bridge state for project context
+    const bridgeStatePath = path.join(dataDir, 'bridge-state.json');
+    let projectContext = 'No bridge projects connected.';
+
+    if (fs.existsSync(bridgeStatePath)) {
+      try {
+        const bridgeState = JSON.parse(fs.readFileSync(bridgeStatePath, 'utf-8'));
+        if (bridgeState.projects && bridgeState.projects.length > 0) {
+          projectContext = bridgeState.projects
+            .map((p: { id: string; path: string; name?: string; lead?: { name: string } }) =>
+              `- ${p.id}: ${p.path} (Lead: ${p.lead?.name || 'none'})`
+            )
+            .join('\n');
+        }
+      } catch (e) {
+        console.error('[api] Failed to read bridge state:', e);
+      }
+    }
+
+    // Build the architect prompt
+    const architectPrompt = `You are the Architect, a cross-project coordinator overseeing multiple codebases.
+
+## Connected Projects
+${projectContext}
+
+## Your Role
+- Coordinate high-level work across all projects
+- Assign tasks to project leads
+- Ensure consistency and resolve cross-project dependencies
+- Review overall architecture decisions
+
+## Cross-Project Messaging
+
+Use this syntax to message agents in specific projects:
+
+\`\`\`
+->relay:project-id:AgentName <<<
+Your message to this agent>>>
+
+->relay:project-id:* <<<
+Broadcast to all agents in a project>>>
+
+->relay:*:* <<<
+Broadcast to ALL agents in ALL projects>>>
+\`\`\`
+
+## Getting Started
+1. Check in with each project lead to understand current status
+2. Identify cross-project dependencies
+3. Coordinate work across teams
+
+Start by greeting the project leads and asking for status updates.`;
+
+    try {
+      const result = await spawner.spawn({
+        name: 'Architect',
+        cli,
+        task: architectPrompt,
+      });
+
+      if (result.success) {
+        broadcastData().catch(() => {});
+      }
+
+      res.json(result);
+    } catch (err: any) {
+      console.error('[api] Architect spawn error:', err);
+      res.status(500).json({
+        success: false,
+        name: 'Architect',
+        error: err.message,
+      });
+    }
+  });
+
+  /**
    * GET /api/spawned - List active spawned agents
    */
   app.get('/api/spawned', (req, res) => {

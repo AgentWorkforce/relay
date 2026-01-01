@@ -24,6 +24,7 @@ import { LogViewerPanel } from './LogViewerPanel';
 import { TypingIndicator } from './TypingIndicator';
 import { OnlineUsersIndicator } from './OnlineUsersIndicator';
 import { UserProfilePanel } from './UserProfilePanel';
+import { CoordinatorPanel } from './CoordinatorPanel';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAgents } from './hooks/useAgents';
 import { useMessages } from './hooks/useMessages';
@@ -122,6 +123,9 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
 
   // Log viewer panel state
   const [logViewerAgent, setLogViewerAgent] = useState<Agent | null>(null);
+
+  // Coordinator panel state
+  const [isCoordinatorOpen, setIsCoordinatorOpen] = useState(false);
 
   // Mobile sidebar state
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -260,30 +264,115 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     }
   }, [workspaces, orchestratorAgents, activeWorkspaceId]);
 
-  // Fallback: Fetch bridge/project data when fleet is available (legacy)
+  // Fetch bridge/project data for multi-project mode
   useEffect(() => {
     if (workspaces.length > 0) return; // Skip if using orchestrator
-    if (!data?.fleet?.servers?.length) return;
 
     const fetchProjects = async () => {
       const result = await api.getBridgeData();
       if (result.success && result.data) {
-        const { servers, agents } = result.data;
-        const projectList: Project[] = servers.map((server) => ({
-          id: server.id,
-          path: server.url,
-          name: server.name || server.url.split('/').pop(),
-          agents: agents.filter((a) => a.server === server.id),
-          lead: undefined,
-        }));
-        setProjects(projectList);
+        // Bridge data returns { projects, messages, connected }
+        const bridgeData = result.data as {
+          projects?: Array<{
+            id: string;
+            name?: string;
+            path: string;
+            connected?: boolean;
+            agents?: Array<{ name: string; status: string; task?: string; cli?: string }>;
+            lead?: { name: string; connected: boolean };
+          }>;
+          connected?: boolean;
+          currentProjectPath?: string;
+        };
+
+        if (bridgeData.projects && bridgeData.projects.length > 0) {
+          const projectList: Project[] = bridgeData.projects.map((p) => ({
+            id: p.id,
+            path: p.path,
+            name: p.name || p.path.split('/').pop(),
+            agents: (p.agents || []).map((a) => ({
+              name: a.name,
+              status: a.status === 'online' || a.status === 'active' ? 'online' : 'offline',
+              currentTask: a.task,
+              cli: a.cli,
+            })) as Agent[],
+            lead: p.lead,
+          }));
+          setProjects(projectList);
+          // Set first project as current if none selected
+          if (!currentProject && projectList.length > 0) {
+            setCurrentProject(projectList[0].id);
+          }
+        }
       }
     };
 
+    // Fetch immediately on mount
     fetchProjects();
-    const interval = setInterval(fetchProjects, 30000);
+    // Poll for updates
+    const interval = setInterval(fetchProjects, 5000);
     return () => clearInterval(interval);
-  }, [data?.fleet?.servers?.length, workspaces.length]);
+  }, [workspaces.length, currentProject]);
+
+  // Bridge-level agents (like Architect) that should be shown separately
+  const BRIDGE_AGENT_NAMES = ['architect'];
+
+  // Separate bridge-level agents from regular project agents
+  const { bridgeAgents, projectAgents } = useMemo(() => {
+    const bridge: Agent[] = [];
+    const project: Agent[] = [];
+
+    for (const agent of agents) {
+      if (BRIDGE_AGENT_NAMES.includes(agent.name.toLowerCase())) {
+        bridge.push(agent);
+      } else {
+        project.push(agent);
+      }
+    }
+
+    return { bridgeAgents: bridge, projectAgents: project };
+  }, [agents]);
+
+  // Merge local daemon agents into their project when we have bridge projects
+  // This prevents agents from appearing under "Local" instead of their project folder
+  const mergedProjects = useMemo(() => {
+    if (projects.length === 0) return projects;
+
+    // Get local agent names (excluding bridge agents)
+    const localAgentNames = new Set(projectAgents.map((a) => a.name.toLowerCase()));
+    if (localAgentNames.size === 0) return projects;
+
+    // Find the current project (the one whose daemon we're connected to)
+    // This is typically the first project or the one marked as current
+    return projects.map((project, index) => {
+      // Merge local agents into the current/first project
+      // Local agents should appear in their actual project, not "Local"
+      const isCurrentDaemonProject = index === 0 || project.id === currentProject;
+
+      if (isCurrentDaemonProject) {
+        // Merge local agents with project agents, avoiding duplicates
+        const existingNames = new Set(project.agents.map((a) => a.name.toLowerCase()));
+        const newAgents = projectAgents.filter((a) => !existingNames.has(a.name.toLowerCase()));
+
+        return {
+          ...project,
+          agents: [...project.agents, ...newAgents],
+        };
+      }
+
+      return project;
+    });
+  }, [projects, projectAgents, currentProject]);
+
+  // Determine if local agents should be shown separately
+  // Only show "Local" folder if we don't have bridge projects to merge them into
+  const localAgentsForSidebar = useMemo(() => {
+    if (mergedProjects.length > 0) {
+      // Don't show local agents separately - they're merged into projects
+      return [];
+    }
+    return projectAgents;
+  }, [mergedProjects, projectAgents]);
 
   // Handle workspace selection
   const handleWorkspaceSelect = useCallback(async (workspace: Workspace) => {
@@ -353,6 +442,11 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   // Handle new conversation click
   const handleNewConversationClick = useCallback(() => {
     setIsNewConversationOpen(true);
+  }, []);
+
+  // Handle coordinator click
+  const handleCoordinatorClick = useCallback(() => {
+    setIsCoordinatorOpen(true);
   }, []);
 
   // Handle send from new conversation modal - select the channel after sending
@@ -535,8 +629,9 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
 
         {/* Sidebar */}
         <Sidebar
-          agents={agents}
-          projects={projects}
+          agents={localAgentsForSidebar}
+          bridgeAgents={bridgeAgents}
+          projects={mergedProjects}
           currentProject={currentProject}
           selectedAgent={selectedAgent?.name}
           viewMode={viewMode}
@@ -564,10 +659,13 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           <Header
           currentChannel={currentChannel}
           selectedAgent={selectedAgent}
+          projects={mergedProjects}
+          currentProject={mergedProjects.find(p => p.id === currentProject) || null}
           onCommandPaletteOpen={handleCommandPaletteOpen}
           onSettingsClick={handleSettingsClick}
           onHistoryClick={handleHistoryClick}
           onNewConversationClick={handleNewConversationClick}
+          onCoordinatorClick={handleCoordinatorClick}
           onMenuClick={() => setIsSidebarOpen(true)}
           hasUnreadNotifications={hasUnreadMessages}
         />
@@ -760,6 +858,19 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           // TODO: Focus composer and insert @username
           // For now, just close the panel
           setSelectedUserProfile(null);
+        }}
+      />
+
+      {/* Coordinator Panel */}
+      <CoordinatorPanel
+        isOpen={isCoordinatorOpen}
+        onClose={() => setIsCoordinatorOpen(false)}
+        projects={mergedProjects}
+        isCloudMode={!!currentUser}
+        hasArchitect={bridgeAgents.some(a => a.name.toLowerCase() === 'architect')}
+        onArchitectSpawned={() => {
+          // Architect will appear via WebSocket update
+          setIsCoordinatorOpen(false);
         }}
       />
     </div>

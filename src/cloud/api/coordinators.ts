@@ -9,7 +9,13 @@ import { Router, Request, Response } from 'express';
 import { requireAuth } from './auth.js';
 import { checkCoordinatorAccess } from './middleware/planLimits.js';
 import { db, CoordinatorAgentConfig } from '../db/index.js';
-import { getCoordinatorService } from '../services/coordinator.js';
+import {
+  getCoordinatorService,
+  sendToWorkspace,
+  broadcastToGroup,
+  routeToCoordinator,
+  getActiveCoordinators,
+} from '../services/coordinator.js';
 
 export const coordinatorsRouter = Router();
 
@@ -199,5 +205,213 @@ coordinatorsRouter.post('/:groupId/coordinator/disable', async (req: Request, re
   } catch (error) {
     console.error('Error disabling coordinator:', error);
     res.status(500).json({ error: 'Failed to disable coordinator agent' });
+  }
+});
+
+/**
+ * GET /api/project-groups/coordinators/active
+ * List all active coordinators for the user
+ */
+coordinatorsRouter.get('/coordinators/active', async (req: Request, res: Response) => {
+  const userId = req.session.userId!;
+
+  try {
+    // Get all coordinators
+    const activeCoordinators = await getActiveCoordinators();
+
+    // Filter to only user's project groups
+    const userGroups = await db.projectGroups.findByUserId(userId);
+    const userGroupIds = new Set(userGroups.map((g) => g.id));
+
+    const userCoordinators = activeCoordinators.filter((c) =>
+      userGroupIds.has(c.groupId)
+    );
+
+    res.json({
+      coordinators: userCoordinators,
+    });
+  } catch (error) {
+    console.error('Error listing active coordinators:', error);
+    res.status(500).json({ error: 'Failed to list coordinators' });
+  }
+});
+
+/**
+ * POST /api/project-groups/:groupId/coordinator/message
+ * Send a message from coordinator to a specific workspace/agent
+ */
+coordinatorsRouter.post('/:groupId/coordinator/message', async (req: Request, res: Response) => {
+  const userId = req.session.userId!;
+  const { groupId } = req.params;
+  const { workspaceId, agentName, message, thread } = req.body;
+
+  if (!workspaceId || !agentName || !message) {
+    return res.status(400).json({
+      error: 'workspaceId, agentName, and message are required',
+    });
+  }
+
+  try {
+    const group = await db.projectGroups.findById(groupId);
+
+    if (!group) {
+      return res.status(404).json({ error: 'Project group not found' });
+    }
+
+    if (group.userId !== userId) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    if (!group.coordinatorAgent?.enabled) {
+      return res.status(400).json({ error: 'Coordinator is not enabled' });
+    }
+
+    await sendToWorkspace(groupId, workspaceId, agentName, message, thread);
+
+    res.json({
+      success: true,
+      message: 'Message sent',
+    });
+  } catch (error) {
+    console.error('Error sending coordinator message:', error);
+    res.status(500).json({ error: 'Failed to send message' });
+  }
+});
+
+/**
+ * POST /api/project-groups/:groupId/coordinator/broadcast
+ * Broadcast a message from coordinator to all workspaces in the group
+ */
+coordinatorsRouter.post('/:groupId/coordinator/broadcast', async (req: Request, res: Response) => {
+  const userId = req.session.userId!;
+  const { groupId } = req.params;
+  const { message, thread } = req.body;
+
+  if (!message) {
+    return res.status(400).json({ error: 'message is required' });
+  }
+
+  try {
+    const group = await db.projectGroups.findById(groupId);
+
+    if (!group) {
+      return res.status(404).json({ error: 'Project group not found' });
+    }
+
+    if (group.userId !== userId) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    if (!group.coordinatorAgent?.enabled) {
+      return res.status(400).json({ error: 'Coordinator is not enabled' });
+    }
+
+    await broadcastToGroup(groupId, message, thread);
+
+    res.json({
+      success: true,
+      message: 'Broadcast sent',
+    });
+  } catch (error) {
+    console.error('Error broadcasting coordinator message:', error);
+    res.status(500).json({ error: 'Failed to broadcast message' });
+  }
+});
+
+/**
+ * POST /api/project-groups/coordinator/route
+ * Route a message from a workspace to its coordinator
+ * (Called by workspace daemons)
+ */
+coordinatorsRouter.post('/coordinator/route', async (req: Request, res: Response) => {
+  const { workspaceId, agentName, message, thread } = req.body;
+
+  if (!workspaceId || !agentName || !message) {
+    return res.status(400).json({
+      error: 'workspaceId, agentName, and message are required',
+    });
+  }
+
+  try {
+    // Verify workspace exists and get its owner
+    const workspace = await db.workspaces.findById(workspaceId);
+    if (!workspace) {
+      return res.status(404).json({ error: 'Workspace not found' });
+    }
+
+    await routeToCoordinator(workspaceId, agentName, message, thread);
+
+    res.json({
+      success: true,
+      message: 'Message routed to coordinator',
+    });
+  } catch (error) {
+    console.error('Error routing to coordinator:', error);
+    res.status(500).json({ error: 'Failed to route message' });
+  }
+});
+
+/**
+ * GET /api/project-groups/:groupId/coordinator/status
+ * Get detailed coordinator status including connected workspaces
+ */
+coordinatorsRouter.get('/:groupId/coordinator/status', async (req: Request, res: Response) => {
+  const userId = req.session.userId!;
+  const { groupId } = req.params;
+
+  try {
+    const group = await db.projectGroups.findById(groupId);
+
+    if (!group) {
+      return res.status(404).json({ error: 'Project group not found' });
+    }
+
+    if (group.userId !== userId) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    const coordinatorService = getCoordinatorService();
+    const status = await coordinatorService.getStatus(groupId);
+
+    // Get connected workspaces info
+    const repositories = await db.repositories.findByProjectGroupId(groupId);
+    const workspaceIds = new Set<string>();
+    for (const repo of repositories) {
+      if (repo.workspaceId) {
+        workspaceIds.add(repo.workspaceId);
+      }
+    }
+
+    const workspaces = await Promise.all(
+      Array.from(workspaceIds).map(async (id) => {
+        const ws = await db.workspaces.findById(id);
+        return ws
+          ? {
+              id: ws.id,
+              name: ws.name,
+              status: ws.status,
+              publicUrl: ws.publicUrl,
+            }
+          : null;
+      })
+    );
+
+    res.json({
+      groupId,
+      groupName: group.name,
+      coordinator: {
+        enabled: group.coordinatorAgent?.enabled || false,
+        name: group.coordinatorAgent?.name,
+        model: group.coordinatorAgent?.model,
+        status: status?.status || 'stopped',
+        startedAt: status?.startedAt,
+        error: status?.error,
+      },
+      workspaces: workspaces.filter(Boolean),
+      repositoryCount: repositories.length,
+    });
+  } catch (error) {
+    console.error('Error getting coordinator status:', error);
+    res.status(500).json({ error: 'Failed to get coordinator status' });
   }
 });

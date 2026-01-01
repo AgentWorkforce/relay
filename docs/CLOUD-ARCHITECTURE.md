@@ -470,3 +470,183 @@ SESSION_SECRET=xxx
 - Auto-sleep inactive workspaces (cost optimization)
 - Wake on webhook or API call
 - Regional deployment for latency
+
+---
+
+## Cloud Coordinators (Project Groups)
+
+Coordinators are high-level AI agents that oversee multiple projects (repositories). They enable cross-workspace communication and coordination at scale.
+
+### Workspace vs Project Group
+
+**Workspace** = A single compute instance (Fly.io VM) that can hold multiple repos:
+```
+┌─────────────────────────────────────────────┐
+│           Workspace (1 Fly.io VM)           │
+│  /repos/                                    │
+│   ├── frontend-app/     ← Repo 1           │
+│   ├── backend-api/      ← Repo 2           │
+│   └── shared-libs/      ← Repo 3           │
+│                                             │
+│  agent-relay daemon (1 per workspace)      │
+│  Agents communicate via local Unix socket  │
+└─────────────────────────────────────────────┘
+```
+
+**Project Group** = A logical grouping of repos that may span multiple workspaces:
+- Repos in the **same workspace** → agents talk via local daemon (fast)
+- Repos in **different workspaces** → need Redis pub/sub (cross-VM messaging)
+- The **Coordinator** oversees all repos regardless of which workspace they're in
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────┐
+│               Cloud Dashboard                    │
+│  (User creates Project Group, selects repos)    │
+└──────────────────┬──────────────────────────────┘
+                   │ Creates Project Group
+                   ▼
+┌─────────────────────────────────────────────────┐
+│            Project Group                         │
+│  ├─ Repo 1 (connected via Cloud Worker)         │
+│  ├─ Repo 2 (connected via Cloud Worker)         │
+│  └─ Coordinator Agent (cloud-hosted)            │
+└──────────────────┬──────────────────────────────┘
+                   │ Redis Pub/Sub
+                   ▼
+┌─────────────────────────────────────────────────┐
+│    Per-Workspace Workers (Fly.io Machines)      │
+│  Each maintains connection to local project     │
+│  daemon and relays messages to/from cloud       │
+└─────────────────────────────────────────────────┘
+```
+
+### Local vs Cloud Comparison
+
+| Feature | Local Bridge (`relay bridge`) | Cloud Coordinator |
+|---------|-------------------------------|-------------------|
+| Spawning | tmux sessions on local machine | Cloud-hosted process (Fly.io) |
+| Messaging | Direct Unix socket connections | Redis pub/sub across workspaces |
+| State | `bridge-state.json` file | PostgreSQL (project_groups table) |
+| Scaling | Single machine | Multi-tenant, horizontal scaling |
+| Dashboard | Local dashboard server | Cloud dashboard with auth |
+
+### Database Schema
+
+```sql
+-- Project Groups (collection of repos with optional coordinator)
+CREATE TABLE project_groups (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES users(id),
+  name TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Repos in a Project Group
+CREATE TABLE project_group_repos (
+  project_group_id UUID REFERENCES project_groups(id),
+  repository_id UUID REFERENCES repositories(id),
+  PRIMARY KEY (project_group_id, repository_id)
+);
+
+-- Coordinator Agents (one per project group)
+CREATE TABLE coordinators (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_group_id UUID REFERENCES project_groups(id) UNIQUE,
+  name TEXT DEFAULT 'Architect',
+  model TEXT DEFAULT 'claude-sonnet',
+  status TEXT DEFAULT 'stopped', -- stopped, starting, running, error
+  compute_id TEXT, -- Fly.io machine ID
+  started_at TIMESTAMP,
+  stopped_at TIMESTAMP
+);
+```
+
+### API Endpoints
+
+```
+# Project Groups
+GET  /api/project-groups              # List user's project groups
+POST /api/project-groups              # Create project group
+GET  /api/project-groups/:id          # Get project group details
+DELETE /api/project-groups/:id        # Delete project group
+
+# Coordinators
+POST /api/project-groups/:id/coordinator/enable   # Start coordinator
+POST /api/project-groups/:id/coordinator/disable  # Stop coordinator
+GET  /api/project-groups/:id/coordinator/status   # Get coordinator status
+POST /api/project-groups/:id/coordinator/message  # Send message to coordinator
+```
+
+### Cross-Workspace Messaging
+
+Coordinators use Redis pub/sub for cross-workspace communication:
+
+```typescript
+// Publish to a workspace
+redis.publish(`workspace:${workspaceId}:messages`, JSON.stringify({
+  from: 'Architect',
+  to: 'Lead',
+  content: 'Please prioritize the auth module',
+  timestamp: Date.now()
+}));
+
+// Subscribe to messages for a workspace
+redis.subscribe(`workspace:${workspaceId}:messages`, (message) => {
+  // Route to local agent via daemon
+});
+```
+
+### Message Routing
+
+```
+Coordinator → Redis → Workspace Worker → Local Daemon → Agent
+     ↑                                                    │
+     └────────────────────────────────────────────────────┘
+                        (response path)
+```
+
+### Coordinator Prompt Template
+
+When a coordinator is started, it receives context about its project group:
+
+```
+You are the Architect, a cross-project coordinator overseeing multiple codebases.
+
+## Connected Projects
+- project-1: /repos/frontend (Lead: FrontendLead)
+- project-2: /repos/backend (Lead: BackendLead)
+
+## Your Role
+- Coordinate high-level work across all projects
+- Assign tasks to project leads
+- Ensure consistency and resolve cross-project dependencies
+- Review overall architecture decisions
+
+## Cross-Project Messaging
+
+Use this syntax to message agents in specific projects:
+->relay:project-id:AgentName <<<
+Your message>>>
+
+->relay:project-id:* <<<
+Broadcast to all agents in a project>>>
+
+->relay:*:* <<<
+Broadcast to ALL agents in ALL projects>>>
+```
+
+### Dashboard UI (CoordinatorPanel)
+
+The dashboard provides a UI for managing coordinators:
+
+1. **Create Project Group** - Select repositories to group together
+2. **Enable Coordinator** - Start the coordinator agent
+3. **Disable Coordinator** - Stop the coordinator agent
+4. **Delete Project Group** - Remove the group and stop coordinator
+
+For local bridge mode, the panel shows:
+- "Spawn Architect" button (when in bridge mode with multiple projects)
+- CLI selector (Claude, Claude Opus, Sonnet, Codex)
+- Instructions for using `relay bridge --architect` flag
