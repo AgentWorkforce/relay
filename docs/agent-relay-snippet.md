@@ -133,6 +133,34 @@ REVIEW: Please check src/auth/*.ts>>>
 QUESTION: JWT or sessions?>>>
 ```
 
+## Cross-Project Messaging
+
+When running in bridge mode (multiple projects connected), use `project:agent` format:
+
+```
+->relay:frontend:Designer <<<
+Please update the login UI for the new auth flow>>>
+
+->relay:backend:lead <<<
+API question - should we use REST or GraphQL?>>>
+
+->relay:shared-lib:* <<<
+New utility functions available, please pull latest>>>
+```
+
+**Format:** `->relay:project-id:agent-name`
+
+**Special targets:**
+- `->relay:project:lead` - Message the lead agent of that project
+- `->relay:project:*` - Broadcast to all agents in that project
+- `->relay:*:*` - Broadcast to ALL agents in ALL projects
+
+**Cross-project threads:**
+```
+->relay:frontend:Designer [thread:auth-feature] <<<
+UI mockups ready for review>>>
+```
+
 ## Rules
 
 - Pattern must be at line start (whitespace OK)

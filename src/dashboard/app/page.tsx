@@ -20,6 +20,7 @@ function detectCloudMode(): boolean {
   // Cloud URL patterns
   if (hostname.includes('agent-relay.com')) return true;
   if (hostname.includes('agentrelay.dev')) return true;
+  if (hostname.includes('.fly.dev')) return true;
 
   // Cloud mode flag in meta tags
   const cloudMeta = document.querySelector('meta[name="agent-relay-cloud"]');
