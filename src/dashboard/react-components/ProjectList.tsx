@@ -58,6 +58,8 @@ function capitalizeWords(str: string): string {
 export interface ProjectListProps {
   projects: Project[];
   localAgents?: Agent[];
+  /** Bridge-level agents like Architect that span all projects */
+  bridgeAgents?: Agent[];
   currentProject?: string;
   selectedAgent?: string;
   searchQuery?: string;
@@ -71,6 +73,7 @@ export interface ProjectListProps {
 export function ProjectList({
   projects,
   localAgents = [],
+  bridgeAgents = [],
   currentProject,
   selectedAgent,
   searchQuery = '',
@@ -88,11 +91,18 @@ export function ProjectList({
   const filteredData = useMemo(() => {
     const query = searchQuery.toLowerCase().trim();
     if (!query) {
-      return { projects, localAgents };
+      return { projects, localAgents, bridgeAgents };
     }
 
     // Filter local agents
     const filteredLocal = localAgents.filter(
+      (a) =>
+        a.name.toLowerCase().includes(query) ||
+        a.currentTask?.toLowerCase().includes(query)
+    );
+
+    // Filter bridge agents
+    const filteredBridge = bridgeAgents.filter(
       (a) =>
         a.name.toLowerCase().includes(query) ||
         a.currentTask?.toLowerCase().includes(query)
@@ -122,8 +132,8 @@ export function ProjectList({
       })
       .filter(Boolean) as Project[];
 
-    return { projects: filteredProjects, localAgents: filteredLocal };
-  }, [projects, localAgents, searchQuery]);
+    return { projects: filteredProjects, localAgents: filteredLocal, bridgeAgents: filteredBridge };
+  }, [projects, localAgents, bridgeAgents, searchQuery]);
 
   const toggleProject = (projectId: string) => {
     setExpandedProjects((prev) => {
@@ -159,10 +169,25 @@ export function ProjectList({
     );
   }
 
+  // Only show bridge section when in bridge mode (multiple projects)
+  const isInBridgeMode = filteredData.projects.length > 1;
+
   return (
     <div className="flex flex-col gap-1">
-      {/* Local agents section (current project) */}
-      {filteredData.localAgents.length > 0 && (
+      {/* Bridge-level agents section (Architect, etc.) - only in bridge mode */}
+      {isInBridgeMode && filteredData.bridgeAgents.length > 0 && (
+        <BridgeSection
+          agents={filteredData.bridgeAgents}
+          selectedAgent={selectedAgent}
+          compact={compact}
+          onAgentSelect={(agent) => onAgentSelect?.(agent)}
+          onReleaseClick={onReleaseClick}
+          onLogsClick={onLogsClick}
+        />
+      )}
+
+      {/* Local agents section (current project) - only when not in bridge mode */}
+      {!isInBridgeMode && filteredData.localAgents.length > 0 && (
         <ProjectSection
           project={{
             id: '__local__',
@@ -190,6 +215,7 @@ export function ProjectList({
           isCurrentProject={project.id === currentProject}
           selectedAgent={selectedAgent}
           compact={compact}
+          isBridgeMode={isInBridgeMode}
           onToggle={() => toggleProject(project.id)}
           onProjectSelect={() => onProjectSelect?.(project)}
           onAgentSelect={(agent) => onAgentSelect?.(agent, project)}
@@ -207,6 +233,8 @@ interface ProjectSectionProps {
   isCurrentProject: boolean;
   selectedAgent?: string;
   compact?: boolean;
+  /** Is this project part of a multi-project bridge setup */
+  isBridgeMode?: boolean;
   onToggle: () => void;
   onProjectSelect?: () => void;
   onAgentSelect?: (agent: Agent) => void;
@@ -225,6 +253,7 @@ function ProjectSection({
   isCurrentProject,
   selectedAgent,
   compact,
+  isBridgeMode = false,
   onToggle,
   onProjectSelect,
   onAgentSelect,
@@ -290,7 +319,7 @@ function ProjectSection({
   return (
     <div className="mb-1">
       <button
-        className={`flex items-center gap-2 w-full py-2.5 px-3 bg-none border-none cursor-pointer text-[13px] text-left rounded-md transition-colors duration-200 relative text-[#e8e8e8] hover:bg-[var(--project-light)] ${
+        className={`group flex items-center gap-2 w-full py-2.5 px-3 bg-none border-none cursor-pointer text-[13px] text-left rounded-md transition-colors duration-200 relative text-[#e8e8e8] hover:bg-[var(--project-light)] ${
           isCurrentProject ? 'bg-[rgba(0,255,200,0.08)]' : ''
         }`}
         onClick={onToggle}
@@ -334,6 +363,20 @@ function ProjectSection({
           <span className="text-[#ffd700] text-xs ml-1" title={`Lead: ${project.lead.name}`}>
             ★
           </span>
+        )}
+
+        {/* Switch button - shown in bridge mode for non-current projects */}
+        {isBridgeMode && !isCurrentProject && onProjectSelect && (
+          <button
+            className="ml-2 py-1 px-2 text-[10px] font-medium bg-accent-cyan/20 text-accent-cyan rounded border-none cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity hover:bg-accent-cyan/30"
+            onClick={(e) => {
+              e.stopPropagation();
+              onProjectSelect();
+            }}
+            title="Switch to this project"
+          >
+            Switch
+          </button>
         )}
       </button>
 
@@ -385,6 +428,89 @@ function ProjectSection({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Bridge Section - displays bridge-level agents (Architect, etc.)
+ */
+interface BridgeSectionProps {
+  agents: Agent[];
+  selectedAgent?: string;
+  compact?: boolean;
+  onAgentSelect?: (agent: Agent) => void;
+  onReleaseClick?: (agent: Agent) => void;
+  onLogsClick?: (agent: Agent) => void;
+}
+
+function BridgeSection({
+  agents,
+  selectedAgent,
+  compact,
+  onAgentSelect,
+  onReleaseClick,
+  onLogsClick,
+}: BridgeSectionProps) {
+  const [isExpanded, setIsExpanded] = useState(true);
+
+  return (
+    <div className="mb-2">
+      <button
+        className="flex items-center gap-2 w-full py-2.5 px-3 bg-none border-none cursor-pointer text-[13px] text-left rounded-md transition-colors duration-200 relative text-[#e8e8e8] hover:bg-[rgba(168,85,247,0.1)]"
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
+        <div
+          className="absolute left-0 top-1 bottom-1 w-[3px] rounded-sm"
+          style={{ background: '#a855f7' }}
+        />
+        <ChevronIcon expanded={isExpanded} />
+        <BridgeIcon />
+        <span className="font-semibold text-[#e8e8e8]">Bridge</span>
+        <span className="text-[#888] font-normal flex-shrink-0">({agents.length})</span>
+      </button>
+
+      {isExpanded && (
+        <div className="py-1 pl-5 flex flex-col gap-1">
+          {agents.map((agent) => (
+            <AgentCard
+              key={agent.name}
+              agent={agent}
+              isSelected={agent.name === selectedAgent}
+              compact={compact}
+              onClick={onAgentSelect}
+              onReleaseClick={onReleaseClick}
+              onLogsClick={onLogsClick}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BridgeIcon() {
+  return (
+    <svg
+      className="flex-shrink-0 text-[#a855f7]"
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="12" cy="12" r="3" />
+      <circle cx="5" cy="5" r="2" />
+      <circle cx="19" cy="5" r="2" />
+      <circle cx="5" cy="19" r="2" />
+      <circle cx="19" cy="19" r="2" />
+      <line x1="9.5" y1="9.5" x2="6.5" y2="6.5" />
+      <line x1="14.5" y1="9.5" x2="17.5" y2="6.5" />
+      <line x1="9.5" y1="14.5" x2="6.5" y2="17.5" />
+      <line x1="14.5" y1="14.5" x2="17.5" y2="17.5" />
+    </svg>
   );
 }
 

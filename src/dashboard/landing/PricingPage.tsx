@@ -8,6 +8,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
+import './styles.css';
 import { LogoIcon } from '../react-components/Logo';
 
 // Plan data with full details

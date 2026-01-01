@@ -6,6 +6,7 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
+import './styles.css';
 import { Logo, LogoIcon, LogoHero } from '../react-components/Logo';
 
 // Agent providers with their signature colors
@@ -55,6 +56,7 @@ export function LandingPage() {
 
 function Navigation() {
   const [scrolled, setScrolled] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   useEffect(() => {
     const handleScroll = () => setScrolled(window.scrollY > 50);
@@ -62,8 +64,35 @@ function Navigation() {
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
+  // Close mobile menu on resize to desktop
+  useEffect(() => {
+    const handleResize = () => {
+      if (window.innerWidth > 768) {
+        setMobileMenuOpen(false);
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // Prevent body scroll when mobile menu is open
+  useEffect(() => {
+    if (mobileMenuOpen) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [mobileMenuOpen]);
+
+  const handleNavClick = () => {
+    setMobileMenuOpen(false);
+  };
+
   return (
-    <nav className={`nav ${scrolled ? 'scrolled' : ''}`}>
+    <nav className={`nav ${scrolled ? 'scrolled' : ''} ${mobileMenuOpen ? 'menu-open' : ''}`}>
       <div className="nav-inner">
         <a href="/" className="nav-logo">
           <LogoIcon size={28} withGlow={true} />
@@ -80,6 +109,37 @@ function Navigation() {
         <div className="nav-actions">
           <a href="/login" className="btn-ghost">Sign In</a>
           <a href="/signup" className="btn-primary">Get Started</a>
+        </div>
+
+        <button
+          className="mobile-menu-toggle"
+          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+          aria-label={mobileMenuOpen ? 'Close menu' : 'Open menu'}
+        >
+          <span className={`hamburger ${mobileMenuOpen ? 'open' : ''}`}>
+            <span className="hamburger-line" />
+            <span className="hamburger-line" />
+            <span className="hamburger-line" />
+          </span>
+        </button>
+      </div>
+
+      {/* Mobile Menu Overlay */}
+      <div className={`mobile-menu-overlay ${mobileMenuOpen ? 'open' : ''}`} onClick={handleNavClick} />
+
+      {/* Mobile Menu */}
+      <div className={`mobile-menu ${mobileMenuOpen ? 'open' : ''}`}>
+        <div className="mobile-menu-content">
+          <div className="mobile-nav-links">
+            <a href="#demo" onClick={handleNavClick}>Demo</a>
+            <a href="#features" onClick={handleNavClick}>Features</a>
+            <a href="#pricing" onClick={handleNavClick}>Pricing</a>
+            <a href="/docs" onClick={handleNavClick}>Documentation</a>
+          </div>
+          <div className="mobile-nav-actions">
+            <a href="/login" className="btn-ghost btn-full" onClick={handleNavClick}>Sign In</a>
+            <a href="/signup" className="btn-primary btn-full" onClick={handleNavClick}>Get Started</a>
+          </div>
         </div>
       </div>
     </nav>

@@ -49,13 +49,17 @@ const DEFAULT_OPTIONS: Required<UseWebSocketOptions> = {
  * In production, everything runs on the same port.
  */
 function getDefaultUrl(): string {
+  const isDev = process.env.NODE_ENV === 'development';
+
   if (typeof window === 'undefined') {
     return 'ws://localhost:3889/ws';
   }
 
-  // Dev mode: Next.js on 3888, dashboard server on 3889
-  if (window.location.port === '3888' && window.location.hostname === 'localhost') {
-    return 'ws://localhost:3889/ws';
+  // Dev mode only: Next.js on 3888, dashboard server on 3889
+  // In production (static export), use same host regardless of port
+  if (isDev && window.location.port === '3888') {
+    const host = window.location.hostname || 'localhost';
+    return `ws://${host}:3889/ws`;
   }
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';

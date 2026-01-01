@@ -405,7 +405,7 @@ function ProvidersSection() {
         <div className="provider-card coming-soon">
           <div className="provider-icon">◎</div>
           <div className="provider-name">More Coming</div>
-          <div className="provider-status">2025</div>
+          <div className="provider-status">2026</div>
         </div>
       </div>
     </section>
@@ -558,12 +558,12 @@ function Footer() {
       </div>
 
       <div className="footer-bottom">
-        <p>© 2025 Agent Relay. All rights reserved.</p>
+        <p>© 2026 Agent Relay. All rights reserved.</p>
         <div className="social-links">
-          <a href="https://github.com/agent-relay" aria-label="GitHub">
+          <a href="https://github.com/agentworkforce/relay" aria-label="GitHub">
             <GitHubIcon />
           </a>
-          <a href="https://twitter.com/agentrelay" aria-label="Twitter">
+          <a href="https://twitter.com/agent_relay" aria-label="Twitter">
             <TwitterIcon />
           </a>
           <a href="https://discord.gg/agentrelay" aria-label="Discord">

@@ -1,0 +1,52 @@
+# Fly.io configuration for Agent Relay Cloud
+# Main app: API + Landing Page + Dashboard
+
+app = "agent-relay"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3000"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 250
+    soft_limit = 200
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 512
+
+[checks]
+  [checks.health]
+    grace_period = "10s"
+    interval = "30s"
+    method = "get"
+    path = "/health"
+    port = 3000
+    timeout = "5s"
+    type = "http"
+
+# Secrets to set via `fly secrets set`:
+# - SESSION_SECRET (openssl rand -hex 32)
+# - DATABASE_URL (Neon or Fly Postgres connection string)
+# - REDIS_URL (Upstash Redis URL)
+# - GITHUB_CLIENT_ID
+# - GITHUB_CLIENT_SECRET
+# - VAULT_ENCRYPTION_KEY (openssl rand -hex 32)
+# - STRIPE_SECRET_KEY
+# - STRIPE_PUBLISHABLE_KEY
+# - STRIPE_WEBHOOK_SECRET
+# - FLY_API_TOKEN (for workspace provisioning)

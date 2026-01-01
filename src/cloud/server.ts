@@ -7,9 +7,14 @@ import session from 'express-session';
 import cors from 'cors';
 import helmet from 'helmet';
 import crypto from 'crypto';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createClient } from 'redis';
-import RedisStore from 'connect-redis';
+import { RedisStore } from 'connect-redis';
 import { getConfig } from './config.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 declare module 'express-session' {
   interface SessionData {
@@ -50,7 +55,19 @@ export async function createServer(): Promise<CloudServer> {
   await (redisClient as any).connect();
 
   // Middleware
-  app.use(helmet());
+  // Configure helmet to allow Next.js inline scripts
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        fontSrc: ["'self'", "https://fonts.gstatic.com"],
+        imgSrc: ["'self'", "data:", "https:"],
+        connectSrc: ["'self'", "wss:", "ws:", "https:"],
+      },
+    },
+  }));
   app.use(
     cors({
       origin: config.publicUrl,
@@ -62,7 +79,7 @@ export async function createServer(): Promise<CloudServer> {
   // Session middleware
   app.use(
     session({
-      store: new (RedisStore as any)({ client: redisClient }),
+      store: new RedisStore({ client: redisClient }),
       secret: config.sessionSecret,
       resave: false,
       saveUninitialized: false,
@@ -160,6 +177,21 @@ export async function createServer(): Promise<CloudServer> {
   app.use('/api/usage', usageRouter);
   app.use('/api/project-groups', coordinatorsRouter);
   // TODO: Add authenticated agent/daemon channels when remote sockets are supported
+
+  // Serve static dashboard files (Next.js static export)
+  // Path: dist/cloud/server.js -> ../../src/dashboard/out
+  const dashboardPath = path.join(__dirname, '../../src/dashboard/out');
+  app.use(express.static(dashboardPath));
+
+  // SPA fallback - serve index.html for all non-API routes
+  // Express 5 requires named wildcard params instead of bare '*'
+  app.get('/{*splat}', (req, res, next) => {
+    // Don't serve index.html for API routes
+    if (req.path.startsWith('/api/')) {
+      return next();
+    }
+    res.sendFile(path.join(dashboardPath, 'index.html'));
+  });
 
   // Error handler
   app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {

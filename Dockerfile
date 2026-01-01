@@ -12,9 +12,10 @@ RUN apt-get update && apt-get install -y \
     g++ \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy package files
+# Copy package files and scripts needed for postinstall
 COPY package*.json ./
 COPY src/dashboard/package*.json ./src/dashboard/
+COPY scripts ./scripts/
 
 # Install dependencies
 RUN npm ci --include=dev
