@@ -5,7 +5,7 @@
  * Manages global state via hooks and provides context to child components.
  */
 
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import type { Agent, Project } from '../types';
 import { Sidebar } from './layout/Sidebar';
 import { Header } from './layout/Header';
@@ -16,16 +16,32 @@ import { SpawnModal, type SpawnConfig } from './SpawnModal';
 import { NewConversationModal } from './NewConversationModal';
 import { SettingsPanel, defaultSettings, type Settings } from './SettingsPanel';
 import { ConversationHistory } from './ConversationHistory';
-import { MentionAutocomplete, getMentionQuery, completeMentionInValue } from './MentionAutocomplete';
+import { MentionAutocomplete, getMentionQuery, completeMentionInValue, type HumanUser } from './MentionAutocomplete';
 import { FileAutocomplete, getFileQuery, completeFileInValue } from './FileAutocomplete';
 import { WorkspaceSelector, type Workspace } from './WorkspaceSelector';
 import { AddWorkspaceModal } from './AddWorkspaceModal';
 import { LogViewerPanel } from './LogViewerPanel';
+import { TypingIndicator } from './TypingIndicator';
+import { OnlineUsersIndicator } from './OnlineUsersIndicator';
+import { UserProfilePanel } from './UserProfilePanel';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAgents } from './hooks/useAgents';
 import { useMessages } from './hooks/useMessages';
 import { useOrchestrator } from './hooks/useOrchestrator';
+import { usePresence, type UserPresence } from './hooks/usePresence';
+import { useCloudSessionOptional } from './CloudSessionProvider';
 import { api } from '../lib/api';
+import type { CurrentUser } from './MessageList';
+
+/**
+ * Check if a sender is a human user (not an agent or system name)
+ * Extracts the logic for identifying human users to avoid duplication
+ */
+function isHumanSender(sender: string, agentNames: Set<string>): boolean {
+  return sender !== 'Dashboard' &&
+    sender !== '*' &&
+    !agentNames.has(sender.toLowerCase());
+}
 
 export interface AppProps {
   /** Initial WebSocket URL (optional, defaults to current host) */
@@ -52,6 +68,27 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     spawnAgent: orchestratorSpawnAgent,
     stopAgent: orchestratorStopAgent,
   } = useOrchestrator({ apiUrl: orchestratorUrl });
+
+  // Cloud session for user info (GitHub avatar/username)
+  const cloudSession = useCloudSessionOptional();
+
+  // Derive current user from cloud session (falls back to undefined in non-cloud mode)
+  const currentUser: CurrentUser | undefined = cloudSession?.user
+    ? {
+        displayName: cloudSession.user.githubUsername,
+        avatarUrl: cloudSession.user.avatarUrl,
+      }
+    : undefined;
+
+  // Presence tracking for online users and typing indicators
+  const { onlineUsers, typingUsers, sendTyping, isConnected: isPresenceConnected } = usePresence({
+    currentUser: currentUser
+      ? { username: currentUser.displayName, avatarUrl: currentUser.avatarUrl }
+      : undefined,
+  });
+
+  // User profile panel state
+  const [selectedUserProfile, setSelectedUserProfile] = useState<UserPresence | null>(null);
 
   // View mode state
   const [viewMode, setViewMode] = useState<'local' | 'fleet'>('local');
@@ -131,7 +168,37 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     sendError,
   } = useMessages({
     messages: data?.messages ?? [],
+    senderName: currentUser?.displayName,
   });
+
+  // Extract human users from messages (users who are not agents)
+  // This enables @ mentioning other human users in cloud mode
+  const humanUsers = useMemo((): HumanUser[] => {
+    const agentNames = new Set(agents.map((a) => a.name.toLowerCase()));
+    const seenUsers = new Map<string, HumanUser>();
+
+    // Include current user if in cloud mode
+    if (currentUser) {
+      seenUsers.set(currentUser.displayName.toLowerCase(), {
+        username: currentUser.displayName,
+        avatarUrl: currentUser.avatarUrl,
+      });
+    }
+
+    // Extract unique human users from message senders
+    for (const msg of data?.messages ?? []) {
+      const sender = msg.from;
+      if (sender && isHumanSender(sender, agentNames) && !seenUsers.has(sender.toLowerCase())) {
+        seenUsers.set(sender.toLowerCase(), {
+          username: sender,
+          // Note: We don't have avatar URLs for users from messages
+          // unless we fetch them separately
+        });
+      }
+    }
+
+    return Array.from(seenUsers.values());
+  }, [data?.messages, agents, currentUser]);
 
   // Track unread messages when sidebar is closed on mobile
   useEffect(() => {
@@ -504,6 +571,15 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           onMenuClick={() => setIsSidebarOpen(true)}
           hasUnreadNotifications={hasUnreadMessages}
         />
+        {/* Online users indicator - only show in cloud mode */}
+        {currentUser && onlineUsers.length > 0 && (
+          <div className="flex items-center justify-end px-4 py-1 bg-bg-tertiary/80 border-b border-border-subtle">
+            <OnlineUsersIndicator
+              onlineUsers={onlineUsers}
+              onUserClick={setSelectedUserProfile}
+            />
+          </div>
+        )}
         </div>
 
         {/* Content Area */}
@@ -534,6 +610,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
                 onThreadClick={(messageId) => setCurrentThread(messageId)}
                 highlightedMessageId={currentThread ?? undefined}
                 agents={data?.agents}
+                currentUser={currentUser}
               />
             )}
           </div>
@@ -562,27 +639,39 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
                     // For topic threads, broadcast to all; for reply chains, reply to the other participant
                     let recipient = '*';
                     if (!isTopicThread && originalMessage) {
-                      // If Dashboard sent the original message, reply to the recipient
+                      // If current user sent the original message, reply to the recipient
                       // If someone else sent it, reply to the sender
-                      recipient = originalMessage.from === 'Dashboard'
+                      const isFromCurrentUser = originalMessage.from === 'Dashboard' ||
+                        (currentUser && originalMessage.from === currentUser.displayName);
+                      recipient = isFromCurrentUser
                         ? originalMessage.to
                         : originalMessage.from;
                     }
                     return sendMessage(recipient, content, currentThread);
                   }}
                   isSending={isSending}
+                  currentUser={currentUser}
                 />
               </div>
             );
           })()}
         </div>
 
+        {/* Typing Indicator */}
+        {typingUsers.length > 0 && (
+          <div className="px-4 bg-bg-tertiary border-t border-border-subtle">
+            <TypingIndicator typingUsers={typingUsers} />
+          </div>
+        )}
+
         {/* Message Composer */}
         <div className="p-4 bg-bg-tertiary border-t border-border-subtle">
           <MessageComposer
             recipient={currentChannel === 'general' ? '*' : currentChannel}
             agents={agents}
+            humanUsers={humanUsers}
             onSend={sendMessage}
+            onTyping={sendTyping}
             isSending={isSending}
             error={sendError}
           />
@@ -662,6 +751,17 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           onAgentChange={setLogViewerAgent}
         />
       )}
+
+      {/* User Profile Panel */}
+      <UserProfilePanel
+        user={selectedUserProfile}
+        onClose={() => setSelectedUserProfile(null)}
+        onMention={(username) => {
+          // TODO: Focus composer and insert @username
+          // For now, just close the panel
+          setSelectedUserProfile(null);
+        }}
+      />
     </div>
   );
 }
@@ -684,12 +784,14 @@ interface PendingAttachment {
 interface MessageComposerProps {
   recipient: string;
   agents: Agent[];
+  humanUsers: HumanUser[];
   onSend: (to: string, content: string, thread?: string, attachmentIds?: string[]) => Promise<boolean>;
+  onTyping?: (isTyping: boolean) => void;
   isSending: boolean;
   error: string | null;
 }
 
-function MessageComposer({ recipient, agents, onSend, isSending, error }: MessageComposerProps) {
+function MessageComposer({ recipient, agents, humanUsers, onSend, onTyping, isSending, error }: MessageComposerProps) {
   const [message, setMessage] = useState('');
   const [cursorPosition, setCursorPosition] = useState(0);
   const [showMentions, setShowMentions] = useState(false);
@@ -783,6 +885,9 @@ function MessageComposer({ recipient, agents, onSend, isSending, error }: Messag
     const cursorPos = e.target.selectionStart || 0;
     setMessage(value);
     setCursorPosition(cursorPos);
+
+    // Send typing indicator when user has content
+    onTyping?.(value.trim().length > 0);
 
     // Check for file autocomplete first (@ followed by path-like pattern)
     const fileQuery = getFileQuery(value, cursorPos);
@@ -988,6 +1093,7 @@ function MessageComposer({ recipient, agents, onSend, isSending, error }: Messag
           {/* Agent mention autocomplete */}
           <MentionAutocomplete
             agents={agents}
+            humanUsers={humanUsers}
             inputValue={message}
             cursorPosition={cursorPosition}
             onSelect={handleMentionSelect}
