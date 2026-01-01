@@ -13,6 +13,7 @@ import { createStorageAdapter, type StorageAdapter, type StorageConfig } from '.
 import { SqliteStorageAdapter } from '../storage/sqlite-adapter.js';
 import { getProjectPaths } from '../utils/project-namespace.js';
 import { AgentRegistry } from './agent-registry.js';
+import { daemonLog as log } from '../utils/logger.js';
 
 export interface DaemonConfig extends ConnectionConfig {
   socketPath: string;
@@ -82,7 +83,7 @@ export class Daemon {
       fs.writeFileSync(tempPath, data, 'utf-8');
       fs.renameSync(tempPath, targetPath);
     } catch (err) {
-      console.error('[daemon] Failed to write agents.json:', err);
+      log.error('Failed to write agents.json', { error: String(err) });
     }
   }
 
@@ -99,7 +100,7 @@ export class Daemon {
       fs.writeFileSync(tempPath, data, 'utf-8');
       fs.renameSync(tempPath, targetPath);
     } catch (err) {
-      console.error('[daemon] Failed to write processing-state.json:', err);
+      log.error('Failed to write processing-state.json', { error: String(err) });
     }
   }
 
@@ -166,7 +167,7 @@ export class Daemon {
           this.writeProcessingStateFile();
         }, Daemon.PROCESSING_STATE_INTERVAL_MS);
 
-        console.log(`[daemon] Listening on ${this.config.socketPath}`);
+        log.info('Listening', { socketPath: this.config.socketPath });
         resolve();
       });
     });
@@ -203,10 +204,10 @@ export class Daemon {
         }
         if (this.storage?.close) {
           this.storage.close().catch((err) => {
-            console.error('[daemon] Failed to close storage', err);
+            log.error('Failed to close storage', { error: String(err) });
           });
         }
-        console.log('[daemon] Stopped');
+        log.info('Stopped');
         resolve();
       });
     });
@@ -216,7 +217,7 @@ export class Daemon {
    * Handle new connection.
    */
   private handleConnection(socket: net.Socket): void {
-    console.log('[daemon] New connection');
+    log.debug('New connection');
 
     const resumeHandler = this.storage?.getSessionByResumeToken
       ? async ({ agent, resumeToken }: { agent: string; resumeToken: string }) => {
@@ -266,7 +267,7 @@ export class Daemon {
     connection.onActive = () => {
       if (connection.agentName) {
         this.router.register(connection);
-        console.log(`[daemon] Agent registered: ${connection.agentName}`);
+        log.info('Agent registered', { agent: connection.agentName });
         // Registry handles persistence internally via save()
         this.registry?.registerOrUpdate({
           name: connection.agentName,
@@ -301,20 +302,20 @@ export class Daemon {
             });
           };
 
-          persistSession().catch(err => console.error('[daemon] Failed to record session start:', err));
+          persistSession().catch(err => log.error('Failed to record session start', { error: String(err) }));
         }
       }
 
       // Replay pending deliveries for resumed sessions
       if (connection.isResumed) {
         this.router.replayPending(connection).catch(err => {
-          console.error('[daemon] Failed to replay pending messages', err);
+          log.error('Failed to replay pending messages', { error: String(err) });
         });
       }
     };
 
     connection.onClose = () => {
-      console.log(`[daemon] Connection closed: ${connection.agentName ?? connection.id}`);
+      log.debug('Connection closed', { agent: connection.agentName ?? connection.id });
       this.connections.delete(connection);
       this.router.unregister(connection);
       // Registry handles persistence internally via touch() -> save()
@@ -325,12 +326,12 @@ export class Daemon {
       // Record session end (disconnect - agent may still mark it closed explicitly)
       if (this.storage instanceof SqliteStorageAdapter) {
         this.storage.endSession(connection.sessionId, { closedBy: 'disconnect' })
-          .catch(err => console.error('[daemon] Failed to record session end:', err));
+          .catch(err => log.error('Failed to record session end', { error: String(err) }));
       }
     };
 
     connection.onError = (error: Error) => {
-      console.error(`[daemon] Connection error: ${error.message}`);
+      log.error('Connection error', { error: error.message });
       this.connections.delete(connection);
       this.router.unregister(connection);
       // Registry handles persistence internally via touch() -> save()
@@ -341,7 +342,7 @@ export class Daemon {
       // Record session end on error
       if (this.storage instanceof SqliteStorageAdapter) {
         this.storage.endSession(connection.sessionId, { closedBy: 'error' })
-          .catch(err => console.error('[daemon] Failed to record session end:', err));
+          .catch(err => log.error('Failed to record session end', { error: String(err) }));
       }
     };
   }
@@ -431,18 +432,19 @@ if (isMainModule) {
   const daemon = new Daemon();
 
   process.on('SIGINT', async () => {
-    console.log('\n[daemon] Shutting down...');
+    log.info('Shutting down (SIGINT)');
     await daemon.stop();
     process.exit(0);
   });
 
   process.on('SIGTERM', async () => {
+    log.info('Shutting down (SIGTERM)');
     await daemon.stop();
     process.exit(0);
   });
 
   daemon.start().catch((err) => {
-    console.error('[daemon] Failed to start:', err);
+    log.error('Failed to start', { error: String(err) });
     process.exit(1);
   });
 }
