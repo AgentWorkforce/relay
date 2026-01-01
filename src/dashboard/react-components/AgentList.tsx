@@ -200,13 +200,13 @@ function AgentGroupComponent({
         {showStats && stats && (
           <div className="ml-auto flex gap-2">
             {stats.online > 0 && (
-              <span className="flex items-center gap-1 text-xs text-text-muted">
+              <span className="flex items-center gap-1 text-xs text-text-muted" title={`${stats.online} agent${stats.online > 1 ? 's' : ''} online`}>
                 <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: STATUS_COLORS.online }} />
                 {stats.online}
               </span>
             )}
             {stats.needsAttention > 0 && (
-              <span className="flex items-center gap-1 text-xs text-text-muted">
+              <span className="flex items-center gap-1 text-xs text-text-muted" title={`${stats.needsAttention} agent${stats.needsAttention > 1 ? 's' : ''} need${stats.needsAttention === 1 ? 's' : ''} attention`}>
                 <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: STATUS_COLORS.attention }} />
                 {stats.needsAttention}
               </span>

@@ -88,6 +88,31 @@ const THINKING_START = /<antml:thinking>/;
 const THINKING_END = /<\/thinking>/;
 
 /**
+ * Patterns that indicate instructional/example text that should NOT be parsed as actual commands.
+ * These are common in system prompts, documentation, and injected instructions.
+ */
+const INSTRUCTIONAL_MARKERS = [
+  /\bSEND:\s*$/i,                    // "SEND:" at end of body (instruction prefix)
+  /\bPROTOCOL:\s*\(\d+\)/i,          // "PROTOCOL: (1)" - numbered protocol instructions
+  /\bExample:/i,                      // "Example:" marker
+  /\\->relay:/,                       // Escaped relay prefix in body (documentation)
+  /\\->thinking:/,                    // Escaped thinking prefix in body (documentation)
+  /^AgentName\s+/,                    // Body starting with "AgentName" (placeholder in examples)
+  /^Target\s+/,                       // Body starting with "Target" (placeholder in examples)
+  /\[Agent Relay\]/,                  // Injected instruction header
+  /MULTI-LINE:/i,                     // Multi-line format instruction
+  /RECEIVE:/i,                        // Receive instruction marker
+];
+
+/**
+ * Check if a parsed relay command body looks like instructional/example text.
+ * These patterns commonly appear in system prompts and documentation.
+ */
+function isInstructionalText(body: string): boolean {
+  return INSTRUCTIONAL_MARKERS.some(pattern => pattern.test(body));
+}
+
+/**
  * Escape special regex characters in a string
  */
 function escapeRegex(str: string): string {
@@ -707,6 +732,12 @@ export class OutputParser {
       const relayMatch = stripped.match(this.inlineRelayPattern);
       if (relayMatch) {
         const [raw, target, threadProject, threadId, body] = relayMatch;
+
+        // Skip instructional/example text (common in system prompts)
+        if (isInstructionalText(body)) {
+          return { command: null, output: line };
+        }
+
         const { to, project } = parseTarget(target);
         return {
           command: {
@@ -725,6 +756,12 @@ export class OutputParser {
       const thinkingMatch = stripped.match(this.inlineThinkingPattern);
       if (thinkingMatch) {
         const [raw, target, threadProject, threadId, body] = thinkingMatch;
+
+        // Skip instructional/example text (common in system prompts)
+        if (isInstructionalText(body)) {
+          return { command: null, output: line };
+        }
+
         const { to, project } = parseTarget(target);
         return {
           command: {
