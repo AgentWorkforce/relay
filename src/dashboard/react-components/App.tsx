@@ -33,6 +33,16 @@ import { useCloudSessionOptional } from './CloudSessionProvider';
 import { api } from '../lib/api';
 import type { CurrentUser } from './MessageList';
 
+/**
+ * Check if a sender is a human user (not an agent or system name)
+ * Extracts the logic for identifying human users to avoid duplication
+ */
+function isHumanSender(sender: string, agentNames: Set<string>): boolean {
+  return sender !== 'Dashboard' &&
+    sender !== '*' &&
+    !agentNames.has(sender.toLowerCase());
+}
+
 export interface AppProps {
   /** Initial WebSocket URL (optional, defaults to current host) */
   wsUrl?: string;
@@ -176,19 +186,9 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     }
 
     // Extract unique human users from message senders
-    // A human user is someone who:
-    // - Is not "Dashboard" (generic non-cloud sender)
-    // - Is not an agent name
-    // - Is not a broadcast target (*)
     for (const msg of data?.messages ?? []) {
       const sender = msg.from;
-      if (
-        sender &&
-        sender !== 'Dashboard' &&
-        sender !== '*' &&
-        !agentNames.has(sender.toLowerCase()) &&
-        !seenUsers.has(sender.toLowerCase())
-      ) {
+      if (sender && isHumanSender(sender, agentNames) && !seenUsers.has(sender.toLowerCase())) {
         seenUsers.set(sender.toLowerCase(), {
           username: sender,
           // Note: We don't have avatar URLs for users from messages

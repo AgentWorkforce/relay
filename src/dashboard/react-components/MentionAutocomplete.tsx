@@ -159,10 +159,11 @@ export function MentionAutocomplete({
 
     // Filter human users by username
     const agentNames = new Set(agents.map(a => a.name.toLowerCase()));
-    const matchingHumans = humanUsers.filter((user) =>
-      user.username.toLowerCase().includes(queryLower) &&
-      !agentNames.has(user.username.toLowerCase()) // Don't show if they're also an agent name
-    );
+    const matchingHumans = humanUsers.filter((user) => {
+      const usernameLower = user.username.toLowerCase();
+      return usernameLower.includes(queryLower) &&
+        !agentNames.has(usernameLower); // Don't show if they're also an agent name
+    });
 
     matchingHumans.forEach((user) => {
       result.push({

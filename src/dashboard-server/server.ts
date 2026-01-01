@@ -265,15 +265,41 @@ export async function startDashboard(
   // Track log subscriptions: agentName -> Set of WebSocket clients
   const logSubscriptions = new Map<string, Set<WebSocket>>();
 
-  // Track online users for presence: username -> UserPresence
-  interface UserPresence {
+  // Track online users for presence with multi-tab support
+  // username -> { connections: Set<WebSocket>, userInfo }
+  interface UserPresenceInfo {
     username: string;
     avatarUrl?: string;
     connectedAt: string;
     lastSeen: string;
-    ws: WebSocket;
   }
-  const onlineUsers = new Map<string, UserPresence>();
+  interface UserPresenceState {
+    info: UserPresenceInfo;
+    connections: Set<WebSocket>;
+  }
+  const onlineUsers = new Map<string, UserPresenceState>();
+
+  // Validation helpers for presence
+  const isValidUsername = (username: unknown): username is string => {
+    if (typeof username !== 'string') return false;
+    // Username should be 1-39 chars, alphanumeric with hyphens (GitHub username rules)
+    return /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$/.test(username);
+  };
+
+  const isValidAvatarUrl = (url: unknown): url is string | undefined => {
+    if (url === undefined || url === null) return true;
+    if (typeof url !== 'string') return false;
+    // Must be a valid HTTPS URL from GitHub or similar known providers
+    try {
+      const parsed = new URL(url);
+      return parsed.protocol === 'https:' &&
+        (parsed.hostname === 'avatars.githubusercontent.com' ||
+         parsed.hostname === 'github.com' ||
+         parsed.hostname.endsWith('.githubusercontent.com'));
+    } catch {
+      return false;
+    }
+  };
 
   // Manually handle upgrade requests and route to correct WebSocketServer
   server.on('upgrade', (request, socket, head) => {
@@ -363,6 +389,8 @@ export async function startDashboard(
   // Map of senderName -> RelayClient for per-user connections
   const socketPath = path.join(dataDir, 'relay.sock');
   const relayClients = new Map<string, RelayClient>();
+  // Track pending client connections to prevent race conditions
+  const pendingConnections = new Map<string, Promise<RelayClient | undefined>>();
 
   // Get or create a relay client for a specific sender
   const getRelayClient = async (senderName: string = 'Dashboard'): Promise<RelayClient | undefined> => {
@@ -372,42 +400,58 @@ export async function startDashboard(
       return existing;
     }
 
+    // Check if there's already a pending connection for this sender
+    const pending = pendingConnections.get(senderName);
+    if (pending) {
+      return pending;
+    }
+
     // Only attempt connection if socket exists (daemon is running)
     if (!fs.existsSync(socketPath)) {
       console.log('[dashboard] Relay socket not found, messaging disabled');
       return undefined;
     }
 
-    // Create new client for this sender
-    const client = new RelayClient({
-      socketPath,
-      agentName: senderName,
-      cli: 'dashboard',
-      reconnect: true,
-      maxReconnectAttempts: 5,
-    });
+    // Create connection promise to prevent race conditions
+    const connectionPromise = (async (): Promise<RelayClient | undefined> => {
+      // Create new client for this sender
+      const client = new RelayClient({
+        socketPath,
+        agentName: senderName,
+        cli: 'dashboard',
+        reconnect: true,
+        maxReconnectAttempts: 5,
+      });
 
-    client.onError = (err) => {
-      console.error(`[dashboard] Relay client error for ${senderName}:`, err.message);
-    };
+      client.onError = (err) => {
+        console.error(`[dashboard] Relay client error for ${senderName}:`, err.message);
+      };
 
-    client.onStateChange = (state) => {
-      console.log(`[dashboard] Relay client for ${senderName} state: ${state}`);
-      // Clean up disconnected clients
-      if (state === 'DISCONNECTED') {
-        relayClients.delete(senderName);
+      client.onStateChange = (state) => {
+        console.log(`[dashboard] Relay client for ${senderName} state: ${state}`);
+        // Clean up disconnected clients
+        if (state === 'DISCONNECTED') {
+          relayClients.delete(senderName);
+        }
+      };
+
+      try {
+        await client.connect();
+        relayClients.set(senderName, client);
+        console.log(`[dashboard] Connected to relay daemon as ${senderName}`);
+        return client;
+      } catch (err) {
+        console.error(`[dashboard] Failed to connect to relay daemon as ${senderName}:`, err);
+        return undefined;
+      } finally {
+        // Clean up pending connection
+        pendingConnections.delete(senderName);
       }
-    };
+    })();
 
-    try {
-      await client.connect();
-      relayClients.set(senderName, client);
-      console.log(`[dashboard] Connected to relay daemon as ${senderName}`);
-      return client;
-    } catch (err) {
-      console.error(`[dashboard] Failed to connect to relay daemon as ${senderName}:`, err);
-      return undefined;
-    }
+    // Store the pending connection
+    pendingConnections.set(senderName, connectionPromise);
+    return connectionPromise;
   };
 
   // Start default relay client connection (non-blocking)
@@ -1378,9 +1422,9 @@ export async function startDashboard(
     });
   };
 
-  // Helper to get online users list (without ws reference)
-  const getOnlineUsersList = () => {
-    return Array.from(onlineUsers.values()).map(({ ws, ...user }) => user);
+  // Helper to get online users list (without ws references)
+  const getOnlineUsersList = (): UserPresenceInfo[] => {
+    return Array.from(onlineUsers.values()).map((state) => state.info);
   };
 
   wssPresence.on('connection', (ws) => {
@@ -1393,20 +1437,54 @@ export async function startDashboard(
 
         if (msg.type === 'presence') {
           if (msg.action === 'join' && msg.user?.username) {
-            const now = new Date().toISOString();
-            const username: string = msg.user.username;
+            const username = msg.user.username;
+            const avatarUrl = msg.user.avatarUrl;
+
+            // Validate inputs
+            if (!isValidUsername(username)) {
+              console.warn(`[dashboard] Invalid username rejected: ${username}`);
+              return;
+            }
+            if (!isValidAvatarUrl(avatarUrl)) {
+              console.warn(`[dashboard] Invalid avatar URL rejected for user ${username}`);
+              return;
+            }
+
             clientUsername = username;
+            const now = new Date().toISOString();
 
-            // Store user presence
-            onlineUsers.set(username, {
-              username,
-              avatarUrl: msg.user.avatarUrl,
-              connectedAt: now,
-              lastSeen: now,
-              ws,
-            });
+            // Check if user already has connections (multi-tab support)
+            const existing = onlineUsers.get(username);
+            if (existing) {
+              // Add this connection to existing user
+              existing.connections.add(ws);
+              existing.info.lastSeen = now;
+              console.log(`[dashboard] User ${username} opened new tab (${existing.connections.size} connections)`);
+            } else {
+              // New user - create presence state
+              onlineUsers.set(username, {
+                info: {
+                  username,
+                  avatarUrl,
+                  connectedAt: now,
+                  lastSeen: now,
+                },
+                connections: new Set([ws]),
+              });
 
-            console.log(`[dashboard] User ${clientUsername} came online`);
+              console.log(`[dashboard] User ${username} came online`);
+
+              // Broadcast join to all other clients (only for truly new users)
+              broadcastPresence({
+                type: 'presence_join',
+                user: {
+                  username,
+                  avatarUrl,
+                  connectedAt: now,
+                  lastSeen: now,
+                },
+              }, ws);
+            }
 
             // Send current online users list to the new client
             ws.send(JSON.stringify({
@@ -1414,39 +1492,62 @@ export async function startDashboard(
               users: getOnlineUsersList(),
             }));
 
-            // Broadcast join to all other clients
-            broadcastPresence({
-              type: 'presence_join',
-              user: {
-                username,
-                avatarUrl: msg.user.avatarUrl,
-                connectedAt: now,
-                lastSeen: now,
-              },
-            }, ws);
+          } else if (msg.action === 'leave') {
+            // Security: Only allow leaving your own username
+            // Must have authenticated first
+            if (!clientUsername) {
+              console.warn(`[dashboard] Security: Unauthenticated leave attempt`);
+              return;
+            }
+            if (msg.username !== clientUsername) {
+              console.warn(`[dashboard] Security: User ${clientUsername} tried to remove ${msg.username}`);
+              return;
+            }
 
-          } else if (msg.action === 'leave' && msg.username) {
-            onlineUsers.delete(msg.username);
-            console.log(`[dashboard] User ${msg.username} went offline`);
+            // Remove this connection from the user's set
+            const username = clientUsername; // Narrow type for TypeScript
+            const userState = onlineUsers.get(username);
+            if (userState) {
+              userState.connections.delete(ws);
 
-            // Broadcast leave to all clients
-            broadcastPresence({
-              type: 'presence_leave',
-              username: msg.username,
-            });
+              // Only broadcast leave if no more connections
+              if (userState.connections.size === 0) {
+                onlineUsers.delete(username);
+                console.log(`[dashboard] User ${username} went offline`);
+
+                broadcastPresence({
+                  type: 'presence_leave',
+                  username,
+                });
+              } else {
+                console.log(`[dashboard] User ${username} closed tab (${userState.connections.size} remaining)`);
+              }
+            }
           }
         } else if (msg.type === 'typing') {
+          // Must have authenticated first
+          if (!clientUsername) {
+            console.warn(`[dashboard] Security: Unauthenticated typing attempt`);
+            return;
+          }
+          // Validate typing message comes from authenticated user
+          if (msg.username !== clientUsername) {
+            console.warn(`[dashboard] Security: Typing message username mismatch`);
+            return;
+          }
+
           // Update last seen
-          if (clientUsername && onlineUsers.has(clientUsername)) {
-            const user = onlineUsers.get(clientUsername)!;
-            user.lastSeen = new Date().toISOString();
+          const username = clientUsername; // Narrow type for TypeScript
+          const userState = onlineUsers.get(username);
+          if (userState) {
+            userState.info.lastSeen = new Date().toISOString();
           }
 
           // Broadcast typing indicator to all other clients
           broadcastPresence({
             type: 'typing',
-            username: msg.username,
-            avatarUrl: msg.avatarUrl,
+            username,
+            avatarUrl: userState?.info.avatarUrl,
             isTyping: msg.isTyping,
           }, ws);
         }
@@ -1460,16 +1561,25 @@ export async function startDashboard(
     });
 
     ws.on('close', () => {
-      // Clean up on disconnect
+      // Clean up on disconnect with multi-tab support
       if (clientUsername) {
-        onlineUsers.delete(clientUsername);
-        console.log(`[dashboard] User ${clientUsername} disconnected`);
+        const userState = onlineUsers.get(clientUsername);
+        if (userState) {
+          userState.connections.delete(ws);
 
-        // Broadcast leave
-        broadcastPresence({
-          type: 'presence_leave',
-          username: clientUsername,
-        });
+          // Only broadcast leave if no more connections
+          if (userState.connections.size === 0) {
+            onlineUsers.delete(clientUsername);
+            console.log(`[dashboard] User ${clientUsername} disconnected`);
+
+            broadcastPresence({
+              type: 'presence_leave',
+              username: clientUsername,
+            });
+          } else {
+            console.log(`[dashboard] User ${clientUsername} closed connection (${userState.connections.size} remaining)`);
+          }
+        }
       }
     });
   });

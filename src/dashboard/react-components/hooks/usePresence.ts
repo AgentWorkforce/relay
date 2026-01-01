@@ -222,6 +222,12 @@ export function usePresence(options: UsePresenceOptions = {}): UsePresenceReturn
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     if (!currentUser) return;
 
+    // Clear any existing timeout first
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = null;
+    }
+
     wsRef.current.send(JSON.stringify({
       type: 'typing',
       isTyping,
@@ -229,12 +235,10 @@ export function usePresence(options: UsePresenceOptions = {}): UsePresenceReturn
       avatarUrl: currentUser.avatarUrl,
     }));
 
-    // Auto-clear typing after 3 seconds
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current);
-    }
+    // Only set auto-clear timeout when starting to type
     if (isTyping) {
       typingTimeoutRef.current = setTimeout(() => {
+        typingTimeoutRef.current = null;
         sendTyping(false);
       }, 3000);
     }

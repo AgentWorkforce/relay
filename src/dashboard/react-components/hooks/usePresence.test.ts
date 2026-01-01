@@ -190,8 +190,8 @@ describe('usePresence message handling', () => {
       handleMessage(JSON.stringify({ type: 'typing', username: 'alice', isTyping: true }));
       const firstStartedAt = typingUsers[0].startedAt;
 
-      // Wait a bit for time to pass
-      await new Promise(resolve => setTimeout(resolve, 10));
+      // Wait sufficient time for timestamp differentiation (50ms is reliable across systems)
+      await new Promise(resolve => setTimeout(resolve, 50));
 
       handleMessage(JSON.stringify({ type: 'typing', username: 'alice', isTyping: true }));
 

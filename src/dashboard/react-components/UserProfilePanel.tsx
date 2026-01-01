@@ -35,20 +35,32 @@ export function UserProfilePanel({ user, onClose, onMention }: UserProfilePanelP
   }, [user, onClose]);
 
   // Close on outside click
+  // Use a ref to track if the panel just opened to avoid closing on the same click
+  const justOpenedRef = useRef(false);
+
+  useEffect(() => {
+    if (user) {
+      // Mark as just opened
+      justOpenedRef.current = true;
+    }
+  }, [user]);
+
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
+      // Skip if panel just opened (same event loop tick that opened it)
+      if (justOpenedRef.current) {
+        justOpenedRef.current = false;
+        return;
+      }
+
       if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
         onClose();
       }
     };
 
     if (user) {
-      // Delay to prevent immediate close from the click that opened it
-      const timer = setTimeout(() => {
-        document.addEventListener('mousedown', handleClickOutside);
-      }, 0);
+      document.addEventListener('mousedown', handleClickOutside);
       return () => {
-        clearTimeout(timer);
         document.removeEventListener('mousedown', handleClickOutside);
       };
     }
