@@ -8,18 +8,6 @@ export const NANGO_INTEGRATIONS = {
   GITHUB_APP: 'github-app-oauth',
 } as const;
 
-export interface NangoAuthWebhook {
-  type: 'auth' | 'sync';
-  connectionId: string;
-  providerConfigKey: string;
-  endUser?: {
-    id?: string;
-    email?: string;
-  };
-  metadata?: Record<string, unknown>;
-  [key: string]: unknown;
-}
-
 export interface GithubUserProfile {
   id: number;
   login: string;
@@ -100,26 +88,6 @@ class NangoService {
       throw new Error(`Failed to list installation repositories: ${text}`);
     }
     return response.json() as Promise<{ repositories: Array<{ id: number; full_name: string; private: boolean; default_branch: string }> }>;
-  }
-
-  /**
-   * Try to resolve installation id from a Nango connection.
-   */
-  async getGithubAppInstallationId(connectionId: string): Promise<string | undefined> {
-    const connection = await this.client.getConnection(
-      NANGO_INTEGRATIONS.GITHUB_APP,
-      connectionId,
-      false,
-      false,
-      true
-    );
-    const credentials = (connection as any)?.credentials ?? {};
-    return (
-      credentials.installation_id ||
-      credentials.installationId ||
-      (connection as any)?.connection_config?.installation_id ||
-      (connection as any)?.metadata?.installation_id
-    );
   }
 
   /**

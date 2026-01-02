@@ -22,17 +22,12 @@ githubAppRouter.use(requireAuth);
  * GET /api/github-app/status
  * Check if Nango GitHub App OAuth is configured
  */
-githubAppRouter.get('/status', async (req: Request, res: Response) => {
-  try {
-    res.json({
-      configured: true,
-      integrations: NANGO_INTEGRATIONS,
-      connectUrl: '/connect-repos',
-    });
-  } catch (error) {
-    console.error('Error getting GitHub App status:', error);
-    res.status(500).json({ error: 'Failed to get GitHub App status' });
-  }
+githubAppRouter.get('/status', (_req: Request, res: Response) => {
+  res.json({
+    configured: true,
+    integrations: NANGO_INTEGRATIONS,
+    connectUrl: '/connect-repos',
+  });
 });
 
 /**
