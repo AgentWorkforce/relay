@@ -40,6 +40,22 @@
       "files": [
         "docs/agent-relay-snippet.md"
       ]
+    },
+    {
+      "name": "agent-relay-protocol",
+      "version": "1.0.0",
+      "description": "Internal protocol snippet with session persistence, continuity, and trajectory tracking for dashboard integration",
+      "format": "generic",
+      "subtype": "snippet",
+      "private": true,
+      "snippet": {
+        "target": "AGENTS.md",
+        "position": "append",
+        "header": "Agent Relay Protocol"
+      },
+      "files": [
+        "docs/agent-relay-protocol.md"
+      ]
     }
   ]
 }
