@@ -98,7 +98,17 @@
           "position": "append"
         }
       }
+    },
+    "@my-senior-dev/github-oauth-nango-integration#claude": {
+      "version": "1.0.0",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40my-senior-dev%2Fgithub-oauth-nango-integration/1.0.0.tar.gz",
+      "integrity": "sha256-71a1a37a07f18a475f6aa21b68a0ca785ebb3b86547ac9140ddf4e6cdda57b2f",
+      "format": "claude",
+      "subtype": "skill",
+      "sourceFormat": "claude",
+      "sourceSubtype": "skill",
+      "installedPath": ".claude/skills/github-oauth-nango-integration/SKILL.md"
     }
   },
-  "generated": "2025-12-28T23:37:18.122Z"
+  "generated": "2026-01-02T19:13:05.911Z"
 }
