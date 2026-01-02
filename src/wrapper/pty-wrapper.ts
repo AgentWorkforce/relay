@@ -11,7 +11,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { RelayClient } from './client.js';
-import type { ParsedCommand } from './parser.js';
+import type { ParsedCommand, ParsedSummary, SessionEndMarker } from './parser.js';
+import { parseSummaryWithDetails, parseSessionEndFromOutput } from './parser.js';
 import type { SendPayload, SendMeta, SpeakOnTrigger } from '../protocol/types.js';
 import {
   type QueuedMessage,
@@ -67,11 +68,25 @@ export interface InjectionFailedEvent {
   attempts: number;
 }
 
+export interface SummaryEvent {
+  agentName: string;
+  summary: ParsedSummary;
+}
+
+export interface SessionEndEvent {
+  agentName: string;
+  marker: SessionEndMarker;
+}
+
 export interface PtyWrapperEvents {
   output: (data: string) => void;
   exit: (code: number) => void;
   error: (error: Error) => void;
   'injection-failed': (event: InjectionFailedEvent) => void;
+  /** Emitted when agent outputs a [[SUMMARY]] block. Cloud services can persist this. */
+  'summary': (event: SummaryEvent) => void;
+  /** Emitted when agent outputs a [[SESSION_END]] block. Cloud services can handle session closure. */
+  'session-end': (event: SessionEndEvent) => void;
 }
 
 export class PtyWrapper extends EventEmitter {
@@ -94,6 +109,8 @@ export class PtyWrapper extends EventEmitter {
   private logFilePath?: string;
   private logStream?: fs.WriteStream;
   private hasAcceptedPrompt = false;
+  private lastSummaryRawContent = ''; // Dedup summary event emissions
+  private sessionEndProcessed = false; // Track if we've already emitted session-end
 
   constructor(config: PtyWrapperConfig) {
     super();
@@ -251,6 +268,12 @@ export class PtyWrapper extends EventEmitter {
 
     // Parse for relay commands
     this.parseRelayCommands();
+
+    // Check for [[SUMMARY]] and [[SESSION_END]] blocks and emit events
+    // This allows cloud services to handle persistence without hardcoding storage
+    const cleanContent = stripAnsi(this.rawBuffer);
+    this.checkForSummaryAndEmit(cleanContent);
+    this.checkForSessionEndAndEmit(cleanContent);
   }
 
   /**
@@ -902,6 +925,61 @@ export class PtyWrapper extends EventEmitter {
 
   get logPath(): string | undefined {
     return this.logFilePath;
+  }
+
+  /**
+   * Check for [[SUMMARY]] blocks and emit 'summary' event.
+   * Allows cloud services to persist summaries without hardcoding storage.
+   */
+  private checkForSummaryAndEmit(content: string): void {
+    const result = parseSummaryWithDetails(content);
+
+    // No SUMMARY block found
+    if (!result.found) return;
+
+    // Dedup based on raw content - prevents repeated event emissions for same summary
+    if (result.rawContent === this.lastSummaryRawContent) return;
+    this.lastSummaryRawContent = result.rawContent || '';
+
+    // Invalid JSON - log warning
+    if (!result.valid) {
+      console.warn(`[pty:${this.config.name}] Invalid JSON in SUMMARY block`);
+      return;
+    }
+
+    // Emit event for external handlers (cloud services, dashboard, etc.)
+    this.emit('summary', {
+      agentName: this.config.name,
+      summary: result.summary!,
+    });
+  }
+
+  /**
+   * Check for [[SESSION_END]] blocks and emit 'session-end' event.
+   * Allows cloud services to handle session closure without hardcoding storage.
+   */
+  private checkForSessionEndAndEmit(content: string): void {
+    if (this.sessionEndProcessed) return; // Only emit once per session
+
+    const sessionEnd = parseSessionEndFromOutput(content);
+    if (!sessionEnd) return;
+
+    this.sessionEndProcessed = true;
+
+    // Emit event for external handlers
+    this.emit('session-end', {
+      agentName: this.config.name,
+      marker: sessionEnd,
+    });
+  }
+
+  /**
+   * Reset session-specific state for wrapper reuse.
+   * Call this when starting a new session with the same wrapper instance.
+   */
+  resetSessionState(): void {
+    this.sessionEndProcessed = false;
+    this.lastSummaryRawContent = '';
   }
 
   /**
