@@ -60,6 +60,16 @@ export interface PtyWrapperConfig {
   shadowSpeakOn?: SpeakOnTrigger[];
   /** Stream output to daemon for dashboard log viewing (default: true) */
   streamLogs?: boolean;
+  /**
+   * Summary reminder configuration. Set to false to disable.
+   * Default: { intervalMinutes: 15, minOutputs: 50 }
+   */
+  summaryReminder?: {
+    /** Minutes of activity before reminding (default: 15) */
+    intervalMinutes?: number;
+    /** Minimum significant outputs before reminding (default: 50) */
+    minOutputs?: number;
+  } | false;
 }
 
 export interface InjectionFailedEvent {
@@ -111,6 +121,8 @@ export class PtyWrapper extends EventEmitter {
   private hasAcceptedPrompt = false;
   private lastSummaryRawContent = ''; // Dedup summary event emissions
   private sessionEndProcessed = false; // Track if we've already emitted session-end
+  private lastSummaryTime = Date.now(); // Track when last summary was output
+  private outputsSinceSummary = 0; // Count outputs since last summary
 
   constructor(config: PtyWrapperConfig) {
     super();
@@ -274,6 +286,9 @@ export class PtyWrapper extends EventEmitter {
     const cleanContent = stripAnsi(this.rawBuffer);
     this.checkForSummaryAndEmit(cleanContent);
     this.checkForSessionEndAndEmit(cleanContent);
+
+    // Track outputs and potentially remind about summaries
+    this.trackOutputAndRemind(data);
   }
 
   /**
@@ -934,6 +949,47 @@ export class PtyWrapper extends EventEmitter {
   }
 
   /**
+   * Track significant outputs and inject summary reminder if needed.
+   * Works with any CLI (Claude, Gemini, Codex, etc.)
+   */
+  private trackOutputAndRemind(data: string): void {
+    // Disabled if config.summaryReminder === false
+    if (this.config.summaryReminder === false) return;
+
+    const config = this.config.summaryReminder ?? {};
+    const intervalMinutes = config.intervalMinutes ?? 15;
+    const minOutputs = config.minOutputs ?? 50;
+
+    // Only count "significant" outputs (more than just whitespace/control chars)
+    const cleanData = stripAnsi(data).trim();
+    if (cleanData.length > 20) {
+      this.outputsSinceSummary++;
+    }
+
+    // Check if we should remind
+    const minutesSinceSummary = (Date.now() - this.lastSummaryTime) / (1000 * 60);
+    const shouldRemind =
+      minutesSinceSummary >= intervalMinutes &&
+      this.outputsSinceSummary >= minOutputs;
+
+    if (shouldRemind && this.running && this.ptyProcess) {
+      // Reset counters before injecting (prevent spam)
+      this.lastSummaryTime = Date.now();
+      this.outputsSinceSummary = 0;
+
+      // Inject reminder as a relay-style message
+      const reminder = `\n[Agent Relay] It's been ${Math.round(minutesSinceSummary)} minutes. Please output a [[SUMMARY]] block to checkpoint your progress:\n[[SUMMARY]]\n{"currentTask": "...", "completedTasks": [...], "context": "..."}\n[[/SUMMARY]]\n`;
+
+      // Delay slightly to not interrupt current output
+      setTimeout(() => {
+        if (this.ptyProcess && this.running) {
+          this.ptyProcess.write(reminder + '\r');
+        }
+      }, 1000);
+    }
+  }
+
+  /**
    * Check for [[SUMMARY]] blocks and emit 'summary' event.
    * Allows cloud services to persist summaries without hardcoding storage.
    */
@@ -946,6 +1002,10 @@ export class PtyWrapper extends EventEmitter {
     // Dedup based on raw content - prevents repeated event emissions for same summary
     if (result.rawContent === this.lastSummaryRawContent) return;
     this.lastSummaryRawContent = result.rawContent || '';
+
+    // Reset reminder counters on any summary (even invalid JSON)
+    this.lastSummaryTime = Date.now();
+    this.outputsSinceSummary = 0;
 
     // Invalid JSON - log warning
     if (!result.valid) {
