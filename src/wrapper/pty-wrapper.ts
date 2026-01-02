@@ -16,6 +16,7 @@ import { parseSummaryWithDetails, parseSessionEndFromOutput } from './parser.js'
 import type { SendPayload, SendMeta, SpeakOnTrigger } from '../protocol/types.js';
 import { getProjectPaths } from '../utils/project-namespace.js';
 import { getTrailEnvVars } from '../trajectory/integration.js';
+import { findAgentConfig } from '../utils/agent-config.js';
 import { HookRegistry, createTrajectoryHooks, type LifecycleHooks } from '../hooks/index.js';
 import { getContinuityManager, parseContinuityCommand, hasContinuityCommand, type ContinuityManager } from '../continuity/index.js';
 import {
@@ -140,6 +141,7 @@ export class PtyWrapper extends EventEmitter {
   private sessionEndProcessed = false; // Track if we've already emitted session-end
   private lastSummaryTime = Date.now(); // Track when last summary was output
   private outputsSinceSummary = 0; // Count outputs since last summary
+  private detectedTask?: string; // Auto-detected task from agent config
 
   constructor(config: PtyWrapperConfig) {
     super();
@@ -149,10 +151,23 @@ export class PtyWrapper extends EventEmitter {
     // Detect CLI type from command for special handling
     this.cliType = config.cliType ?? detectCliType(config.command);
 
+    // Auto-detect agent role from .claude/agents/ or .openagents/ if task not provided
+    let detectedTask = config.task;
+    if (!detectedTask) {
+      const agentConfig = findAgentConfig(config.name, config.cwd);
+      if (agentConfig?.description) {
+        detectedTask = agentConfig.description;
+        console.log(`[pty:${config.name}] Auto-detected role: ${detectedTask.substring(0, 60)}...`);
+      }
+    }
+    // Store detected task for use in hook registry
+    this.detectedTask = detectedTask;
+
     this.client = new RelayClient({
       agentName: config.name,
       socketPath: config.socketPath,
       cli: this.cliType,
+      task: detectedTask,
       workingDirectory: config.cwd ?? process.cwd(),
       quiet: true,
     });
@@ -163,7 +178,7 @@ export class PtyWrapper extends EventEmitter {
       agentName: config.name,
       workingDir: config.cwd ?? process.cwd(),
       projectId: projectPaths.projectId,
-      task: config.task,
+      task: this.detectedTask,
       env: config.env,
       inject: (text) => this.write(text + '\r'),
       send: async (to, body) => {
@@ -171,8 +186,8 @@ export class PtyWrapper extends EventEmitter {
       },
     });
 
-    // Register trajectory hooks if enabled (default: true if task provided)
-    const enableTrajectory = config.trajectoryTracking ?? !!config.task;
+    // Register trajectory hooks if enabled (default: true if task provided or auto-detected)
+    const enableTrajectory = config.trajectoryTracking ?? !!this.detectedTask;
     if (enableTrajectory) {
       const trajectoryHooks = createTrajectoryHooks({
         projectId: projectPaths.projectId,
@@ -741,6 +756,23 @@ export class PtyWrapper extends EventEmitter {
           }
 
           if (name && cli) {
+            // Validate the parsed values are not fence markers or corrupted
+            // This handles cases where agents use fenced format: ->relay:spawn Worker cli <<<
+            if (cli === '<<<' || cli === '>>>' || name === '<<<' || name === '>>>') {
+              console.warn(`[pty:${this.config.name}] Invalid spawn command (fence markers in name/cli), skipping: name=${name}, cli=${cli}`);
+              continue;
+            }
+            // Reject if task starts with <<< (fenced format not supported for spawn)
+            if (task.startsWith('<<<')) {
+              console.warn(`[pty:${this.config.name}] Spawn command uses fenced format (not supported), using empty task: name=${name}, cli=${cli}`);
+              task = ''; // Use empty task instead of "<<<..."
+            }
+            // Reject suspiciously short agent names (likely parsing corruption)
+            if (name.length < 2) {
+              console.warn(`[pty:${this.config.name}] Spawn command has suspiciously short name, skipping: name=${name}`);
+              continue;
+            }
+
             const spawnKey = `${name}:${cli}`;
             if (!this.processedSpawnCommands.has(spawnKey)) {
               this.processedSpawnCommands.add(spawnKey);

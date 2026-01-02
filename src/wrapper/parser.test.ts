@@ -634,6 +634,34 @@ Let me know if that works.
       expect(result.commands).toHaveLength(0);
       expect(result.output).toBe('->relay:SPAWN Worker claude\n');
     });
+
+    it('does not parse spawn command with fenced format as relay message (agent-relay-312)', () => {
+      // Bug fix: spawn with fenced format should be passed through, not parsed as message to "spawn"
+      // Previously this would match the fenced pattern and send to target "spawn"
+      const result = parser.parse('->relay:spawn Backend claude <<<\n');
+
+      // Should NOT create a command to target "spawn"
+      expect(result.commands).toHaveLength(0);
+      // Should be passed through for wrapper to handle
+      expect(result.output).toBe('->relay:spawn Backend claude <<<\n');
+    });
+
+    it('does not enter fenced mode for spawn command with fence markers', () => {
+      // Multi-line spawn with fenced format - should all be passed through
+      const result1 = parser.parse('->relay:spawn Worker claude <<<\n');
+      expect(result1.commands).toHaveLength(0);
+      expect(result1.output).toBe('->relay:spawn Worker claude <<<\n');
+
+      // Parser should NOT be in fenced mode, so this line is independent
+      const result2 = parser.parse('Task description here\n');
+      expect(result2.commands).toHaveLength(0);
+      expect(result2.output).toBe('Task description here\n');
+
+      // Fence close should also be passed through
+      const result3 = parser.parse('>>>\n');
+      expect(result3.commands).toHaveLength(0);
+      expect(result3.output).toBe('>>>\n');
+    });
   });
 
   describe('Edge cases', () => {

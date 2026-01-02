@@ -553,6 +553,14 @@ export class OutputParser {
         continue;
       }
 
+      // Skip spawn/release commands BEFORE checking fenced format
+      // This prevents ->relay:spawn Worker cli <<< from being parsed as a message to "spawn"
+      const strippedForSpawnCheck = stripAnsi(line);
+      if (isSpawnOrReleaseCommand(strippedForSpawnCheck)) {
+        outputLines.push(line);
+        continue;
+      }
+
       // Check for fenced inline start: ->relay:Target <<<
       const fencedStart = isFencedInlineStart(line);
       if (fencedStart && this.options.enableInline) {

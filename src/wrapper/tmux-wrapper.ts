@@ -22,6 +22,7 @@ import type { SendPayload, SendMeta } from '../protocol/types.js';
 import { SqliteStorageAdapter } from '../storage/sqlite-adapter.js';
 import { getProjectPaths } from '../utils/project-namespace.js';
 import { getTmuxPath } from '../utils/tmux-resolver.js';
+import { findAgentConfig } from '../utils/agent-config.js';
 import {
   TrajectoryIntegration,
   getTrajectoryIntegration,
@@ -39,9 +40,13 @@ import {
 import {
   type QueuedMessage,
   type CliType,
+  type InjectionResult,
+  type InjectionMetrics,
   stripAnsi,
   sleep,
   getDefaultRelayPrefix,
+  createInjectionMetrics,
+  INJECTION_CONSTANTS,
   CLI_QUIRKS,
 } from './shared.js';
 
@@ -207,13 +212,23 @@ export class TmuxWrapper {
     // Resolve tmux path early so we fail fast if tmux isn't available
     this.tmuxPath = getTmuxPath();
 
+    // Auto-detect agent role from .claude/agents/ or .openagents/ if task not provided
+    let detectedTask = this.config.task;
+    if (!detectedTask) {
+      const agentConfig = findAgentConfig(config.name, this.config.cwd);
+      if (agentConfig?.description) {
+        detectedTask = agentConfig.description;
+        this.logStderr(`Auto-detected role: ${detectedTask.substring(0, 60)}...`, true);
+      }
+    }
+
     this.client = new RelayClient({
       agentName: config.name,
       socketPath: config.socketPath,
       cli: this.cliType,
       program: this.config.program,
       model: this.config.model,
-      task: this.config.task,
+      task: detectedTask,
       workingDirectory: this.config.cwd ?? process.cwd(),
       quiet: true, // Keep stdout clean; we log to stderr via wrapper
     });
@@ -1106,6 +1121,18 @@ export class TmuxWrapper {
       const spawnMatch = trimmed.match(/^(?:[•\-*]\s*)?->relay:spawn\s+(\S+)\s+(\S+)(?:\s+["'](.+?)["'])?\s*$/);
       if (spawnMatch && this.config.onSpawn) {
         const [, name, cli, task] = spawnMatch;
+
+        // Validate the parsed values are not fence markers or corrupted
+        if (cli === '<<<' || cli === '>>>' || name === '<<<' || name === '>>>') {
+          this.logStderr(`Invalid spawn command (fence markers), skipping: name=${name}, cli=${cli}`);
+          continue;
+        }
+        // Reject suspiciously short agent names (likely parsing corruption)
+        if (name.length < 2) {
+          this.logStderr(`Spawn command has suspiciously short name, skipping: name=${name}`);
+          continue;
+        }
+
         const taskStr = task || ''; // Task is optional, default to empty string
         const spawnKey = `${name}:${cli}`;
 
