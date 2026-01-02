@@ -13,31 +13,24 @@ import { EventEmitter } from 'node:events';
 import { RelayClient } from './client.js';
 import type { ParsedCommand } from './parser.js';
 import type { SendPayload, SendMeta, SpeakOnTrigger } from '../protocol/types.js';
+import {
+  type QueuedMessage,
+  type InjectionResult,
+  type InjectionMetrics,
+  type CliType,
+  INJECTION_CONSTANTS,
+  stripAnsi,
+  sleep,
+  buildInjectionString,
+  calculateSuccessRate,
+  createInjectionMetrics,
+  getDefaultRelayPrefix,
+  detectCliType,
+  CLI_QUIRKS,
+} from './shared.js';
 
 /** Maximum lines to keep in output buffer */
 const MAX_BUFFER_LINES = 10000;
-
-/** Maximum retry attempts for injection */
-const MAX_INJECTION_RETRIES = 3;
-
-/** Timeout for output stability check (ms) */
-const STABILITY_TIMEOUT_MS = 3000;
-
-/** Polling interval for stability check (ms) */
-const STABILITY_POLL_MS = 200;
-
-/** Required consecutive stable polls before injection */
-const REQUIRED_STABLE_POLLS = 2;
-
-/** Timeout for injection verification (ms) */
-const VERIFICATION_TIMEOUT_MS = 2000;
-
-/** Result of an injection attempt */
-interface InjectionResult {
-  success: boolean;
-  attempts: number;
-  fallbackUsed?: boolean;
-}
 
 export interface PtyWrapperConfig {
   name: string;
@@ -48,6 +41,8 @@ export interface PtyWrapperConfig {
   env?: Record<string, string>;
   /** Relay prefix pattern (default: '->relay:') */
   relayPrefix?: string;
+  /** CLI type for special handling (auto-detected from command if not set) */
+  cliType?: CliType;
   /** Directory to write log files (optional) */
   logsDir?: string;
   /** Dashboard port for spawn/release API calls (enables nested spawning from spawned agents) */
@@ -87,14 +82,15 @@ export class PtyWrapper extends EventEmitter {
   private outputBuffer: string[] = [];
   private rawBuffer = '';
   private relayPrefix: string;
+  private cliType: CliType;
   private sentMessageHashes: Set<string> = new Set();
   private processedSpawnCommands: Set<string> = new Set();
   private processedReleaseCommands: Set<string> = new Set();
-  private messageQueue: Array<{ from: string; body: string; messageId: string; thread?: string; importance?: number; data?: Record<string, unknown>; originalTo?: string }> = [];
+  private messageQueue: QueuedMessage[] = [];
   private isInjecting = false;
   private readyForMessages = false;
   private lastOutputTime = 0;
-  private injectionMetrics = { total: 0, successFirstTry: 0, successWithRetry: 0, failed: 0 };
+  private injectionMetrics: InjectionMetrics = createInjectionMetrics();
   private logFilePath?: string;
   private logStream?: fs.WriteStream;
   private hasAcceptedPrompt = false;
@@ -102,12 +98,15 @@ export class PtyWrapper extends EventEmitter {
   constructor(config: PtyWrapperConfig) {
     super();
     this.config = config;
-    this.relayPrefix = config.relayPrefix ?? '->relay:';
+    this.relayPrefix = config.relayPrefix ?? getDefaultRelayPrefix();
+
+    // Detect CLI type from command for special handling
+    this.cliType = config.cliType ?? detectCliType(config.command);
 
     this.client = new RelayClient({
       agentName: config.name,
       socketPath: config.socketPath,
-      cli: 'spawned',
+      cli: this.cliType,
       workingDirectory: config.cwd ?? process.cwd(),
       quiet: true,
     });
@@ -264,7 +263,7 @@ export class PtyWrapper extends EventEmitter {
 
     // Check for the permission acceptance prompt
     // Pattern: "2. Yes, I accept" in the output
-    const cleanData = this.stripAnsi(data);
+    const cleanData = stripAnsi(data);
     if (cleanData.includes('Yes, I accept') && cleanData.includes('No, exit')) {
       console.log(`[pty:${this.config.name}] Detected permission prompt, auto-accepting...`);
       this.hasAcceptedPrompt = true;
@@ -313,7 +312,7 @@ export class PtyWrapper extends EventEmitter {
    * Deduplication via sentMessageHashes.
    */
   private parseRelayCommands(): void {
-    const cleanContent = this.stripAnsi(this.rawBuffer);
+    const cleanContent = stripAnsi(this.rawBuffer);
 
     // First, try to find fenced multi-line messages: ->relay:Target <<<\n...\n>>>
     this.parseFencedMessages(cleanContent);
@@ -443,34 +442,6 @@ export class PtyWrapper extends EventEmitter {
         raw: line,
       });
     }
-  }
-
-  /**
-   * Strip ANSI escape codes from string.
-   * Converts cursor movements to spaces to preserve visual layout.
-   */
-  private stripAnsi(str: string): string {
-    // Convert cursor forward movements to spaces (CSI n C)
-    // \x1B[nC means move cursor right n columns
-    // eslint-disable-next-line no-control-regex
-    str = str.replace(/\x1B\[(\d+)C/g, (_m, n) => ' '.repeat(parseInt(n, 10) || 1));
-
-    // Convert single cursor right (CSI C) to space
-    // eslint-disable-next-line no-control-regex
-    str = str.replace(/\x1B\[C/g, ' ');
-
-    // Remove carriage returns (causes text overwriting issues)
-    str = str.replace(/\r(?!\n)/g, '');
-
-    // Strip remaining ANSI escape sequences (with \x1B prefix)
-    // eslint-disable-next-line no-control-regex
-    str = str.replace(/\x1B(?:\[[0-9;?]*[A-Za-z]|\].*?(?:\x07|\x1B\\)|[@-Z\\-_])/g, '');
-
-    // Strip orphaned CSI sequences that lost their escape byte
-    // These look like [?25h, [?2026l, [0m, etc. at the start of content
-    str = str.replace(/^\s*(\[\??\d*[A-Za-z])+\s*/g, '');
-
-    return str;
   }
 
   /**
@@ -630,16 +601,16 @@ export class PtyWrapper extends EventEmitter {
     let stablePolls = 0;
     let lastBufferLength = this.rawBuffer.length;
 
-    while (Date.now() - startTime < STABILITY_TIMEOUT_MS) {
-      await this.sleep(STABILITY_POLL_MS);
+    while (Date.now() - startTime < INJECTION_CONSTANTS.STABILITY_TIMEOUT_MS) {
+      await sleep(INJECTION_CONSTANTS.STABILITY_POLL_MS);
 
       const timeSinceOutput = Date.now() - this.lastOutputTime;
       const bufferUnchanged = this.rawBuffer.length === lastBufferLength;
 
       // Consider stable if no output for at least one poll interval
-      if (timeSinceOutput >= STABILITY_POLL_MS && bufferUnchanged) {
+      if (timeSinceOutput >= INJECTION_CONSTANTS.STABILITY_POLL_MS && bufferUnchanged) {
         stablePolls++;
-        if (stablePolls >= REQUIRED_STABLE_POLLS) {
+        if (stablePolls >= INJECTION_CONSTANTS.REQUIRED_STABLE_POLLS) {
           return true;
         }
       } else {
@@ -661,7 +632,7 @@ export class PtyWrapper extends EventEmitter {
     const expectedPattern = `Relay message from ${from} [${shortId}]`;
     const startTime = Date.now();
 
-    while (Date.now() - startTime < VERIFICATION_TIMEOUT_MS) {
+    while (Date.now() - startTime < INJECTION_CONSTANTS.VERIFICATION_TIMEOUT_MS) {
       // Check if pattern appears in recent buffer
       // Look at last 2000 chars to avoid scanning entire buffer
       const recentOutput = this.rawBuffer.slice(-2000);
@@ -669,7 +640,7 @@ export class PtyWrapper extends EventEmitter {
         return true;
       }
 
-      await this.sleep(100);
+      await sleep(100);
     }
 
     return false;
@@ -692,7 +663,7 @@ export class PtyWrapper extends EventEmitter {
 
     // Write message to PTY, then send Enter separately after a small delay
     this.ptyProcess.write(injection);
-    await this.sleep(50);
+    await sleep(INJECTION_CONSTANTS.ENTER_DELAY_MS);
     this.ptyProcess.write('\r');
   }
 
@@ -706,7 +677,7 @@ export class PtyWrapper extends EventEmitter {
   ): Promise<InjectionResult> {
     this.injectionMetrics.total++;
 
-    for (let attempt = 0; attempt < MAX_INJECTION_RETRIES; attempt++) {
+    for (let attempt = 0; attempt < INJECTION_CONSTANTS.MAX_RETRIES; attempt++) {
       try {
         // Perform the injection
         await this.performInjection(injection);
@@ -726,12 +697,12 @@ export class PtyWrapper extends EventEmitter {
 
         // Not verified - log and retry
         console.warn(
-          `[pty:${this.config.name}] Injection not verified, attempt ${attempt + 1}/${MAX_INJECTION_RETRIES}`
+          `[pty:${this.config.name}] Injection not verified, attempt ${attempt + 1}/${INJECTION_CONSTANTS.MAX_RETRIES}`
         );
 
         // Backoff before retry
-        if (attempt < MAX_INJECTION_RETRIES - 1) {
-          await this.sleep(300 * (attempt + 1));
+        if (attempt < INJECTION_CONSTANTS.MAX_RETRIES - 1) {
+          await sleep(INJECTION_CONSTANTS.RETRY_BACKOFF_MS * (attempt + 1));
         }
       } catch (err: any) {
         console.error(`[pty:${this.config.name}] Injection error on attempt ${attempt + 1}: ${err.message}`);
@@ -740,7 +711,7 @@ export class PtyWrapper extends EventEmitter {
 
     // All retries failed
     this.injectionMetrics.failed++;
-    return { success: false, attempts: MAX_INJECTION_RETRIES };
+    return { success: false, attempts: INJECTION_CONSTANTS.MAX_RETRIES };
   }
 
   /**
@@ -773,29 +744,34 @@ export class PtyWrapper extends EventEmitter {
       // Wait for output to stabilize before injecting
       await this.waitForOutputStable();
 
-      const shortId = msg.messageId.substring(0, 8);
-      // Strip ANSI escape sequences and orphaned control sequences from message body
-      const sanitizedBody = this.stripAnsi(msg.body).replace(/[\r\n]+/g, ' ').trim();
-      // Thread/importance/channel hints to match tmux-wrapper format
-      const threadHint = msg.thread ? ` [thread:${msg.thread}]` : '';
-      const importanceHint = msg.importance !== undefined && msg.importance > 75 ? ' [!!]' :
-                             msg.importance !== undefined && msg.importance > 50 ? ' [!]' : '';
-
-      // Channel indicator: [#general] for broadcasts - tells agent to reply to * not sender
-      const channelHint = msg.originalTo === '*' ? ' [#general]' : '';
-
-      // Extract attachment file paths if present
-      let attachmentHint = '';
-      if (msg.data?.attachments && Array.isArray(msg.data.attachments)) {
-        const filePaths = msg.data.attachments
-          .map((att: { filePath?: string }) => att.filePath)
-          .filter((p): p is string => typeof p === 'string');
-        if (filePaths.length > 0) {
-          attachmentHint = ` [Attachments: ${filePaths.join(', ')}]`;
+      // For Gemini: check if at shell prompt, skip injection to avoid shell execution
+      if (this.cliType === 'gemini') {
+        const recentOutput = this.rawBuffer.slice(-200);
+        const lastLine = recentOutput.split('\n').filter(l => l.trim()).pop() || '';
+        if (CLI_QUIRKS.isShellPrompt(lastLine)) {
+          console.log(`[pty:${this.config.name}] Gemini at shell prompt, re-queuing message`);
+          this.messageQueue.unshift(msg);
+          this.isInjecting = false;
+          setTimeout(() => this.processMessageQueue(), 2000);
+          return;
         }
       }
 
-      const injection = `Relay message from ${msg.from} [${shortId}]${threadHint}${importanceHint}${channelHint}${attachmentHint}: ${sanitizedBody}`;
+      // Build injection string using shared utility
+      let injection = buildInjectionString(msg);
+
+      // Gemini-specific: wrap in backticks to prevent shell keyword interpretation
+      if (this.cliType === 'gemini') {
+        // Extract the message body part and wrap it
+        const colonIdx = injection.indexOf(': ');
+        if (colonIdx > 0) {
+          const prefix = injection.substring(0, colonIdx + 2);
+          const body = injection.substring(colonIdx + 2);
+          injection = prefix + CLI_QUIRKS.wrapForGemini(body);
+        }
+      }
+
+      const shortId = msg.messageId.substring(0, 8);
 
       // Inject with retry and verification
       const result = await this.injectWithRetry(injection, shortId, msg.from);
@@ -821,7 +797,7 @@ export class PtyWrapper extends EventEmitter {
 
       // Process next message if any
       if (this.messageQueue.length > 0) {
-        setTimeout(() => this.processMessageQueue(), 500);
+        setTimeout(() => this.processMessageQueue(), INJECTION_CONSTANTS.QUEUE_PROCESS_DELAY_MS);
       }
     }
   }
@@ -902,13 +878,6 @@ export class PtyWrapper extends EventEmitter {
   }
 
   /**
-   * Sleep helper
-   */
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  /**
    * Close the log file stream
    */
   private closeLogStream(): void {
@@ -938,21 +907,10 @@ export class PtyWrapper extends EventEmitter {
   /**
    * Get injection reliability metrics
    */
-  getInjectionMetrics(): {
-    total: number;
-    successFirstTry: number;
-    successWithRetry: number;
-    failed: number;
-    successRate: number;
-  } {
-    const total = this.injectionMetrics.total;
-    const successRate = total > 0
-      ? ((this.injectionMetrics.successFirstTry + this.injectionMetrics.successWithRetry) / total) * 100
-      : 100;
-
+  getInjectionMetrics(): InjectionMetrics & { successRate: number } {
     return {
       ...this.injectionMetrics,
-      successRate: Math.round(successRate * 100) / 100,
+      successRate: calculateSuccessRate(this.injectionMetrics),
     };
   }
 

@@ -22,6 +22,14 @@ import type { SendPayload, SendMeta } from '../protocol/types.js';
 import { SqliteStorageAdapter } from '../storage/sqlite-adapter.js';
 import { getProjectPaths } from '../utils/project-namespace.js';
 import { getTmuxPath } from '../utils/tmux-resolver.js';
+import {
+  type QueuedMessage,
+  type CliType,
+  stripAnsi,
+  sleep,
+  getDefaultRelayPrefix,
+  CLI_QUIRKS,
+} from './shared.js';
 
 const execAsync = promisify(exec);
 const escapeRegex = (str: string): string => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -92,10 +100,10 @@ export interface TmuxWrapperConfig {
 /**
  * Get the default relay prefix for a given CLI type.
  * All agents now use '->relay:' as the unified prefix.
+ * @deprecated Use getDefaultRelayPrefix() from shared.js instead
  */
-export function getDefaultPrefix(_cliType: 'claude' | 'codex' | 'gemini' | 'droid' | 'other'): string {
-  // Unified prefix for all agent types
-  return '->relay:';
+export function getDefaultPrefix(_cliType: CliType): string {
+  return getDefaultRelayPrefix();
 }
 
 export class TmuxWrapper {
@@ -115,13 +123,13 @@ export class TmuxWrapper {
   private activityState: 'active' | 'idle' | 'disconnected' = 'disconnected';
   private recentlySentMessages: Map<string, number> = new Map();
   private sentMessageHashes: Set<string> = new Set(); // Permanent dedup
-  private messageQueue: Array<{ from: string; body: string; messageId: string; thread?: string; importance?: number; data?: Record<string, unknown>; originalTo?: string }> = [];
+  private messageQueue: QueuedMessage[] = [];
   private isInjecting = false;
   // Track processed output to avoid re-parsing
   private processedOutputLength = 0;
   private lastLoggedLength = 0; // Track length for incremental log streaming
   private lastDebugLog = 0;
-  private cliType: 'claude' | 'codex' | 'gemini' | 'droid' | 'other';
+  private cliType: CliType;
   private relayPrefix: string;
   private lastSummaryHash = ''; // Dedup summary saves
   private lastSummaryRawContent = ''; // Dedup invalid JSON error logging
@@ -376,7 +384,7 @@ export class TmuxWrapper {
 
       // Send the command to run
       await this.sendKeysLiteral(fullCommand);
-      await this.sleep(100);
+      await sleep(100);
       await this.sendKeys('Enter');
 
     } catch (err: any) {
@@ -418,7 +426,7 @@ export class TmuxWrapper {
 
     try {
       await this.sendKeysLiteral(instructions);
-      await this.sleep(50);
+      await sleep(50);
       await this.sendKeys('Enter');
     } catch {
       // Silent fail - instructions are nice-to-have
@@ -466,14 +474,14 @@ export class TmuxWrapper {
         if (promptPatterns.test(lastLine)) {
           this.logStderr('Shell ready');
           // Extra delay to ensure shell is fully ready
-          await this.sleep(200);
+          await sleep(200);
           return;
         }
       } catch {
         // Session might not be ready yet
       }
 
-      await this.sleep(200);
+      await sleep(200);
     }
 
     // Fallback: proceed anyway after timeout
@@ -536,7 +544,7 @@ export class TmuxWrapper {
 
       // Always parse the FULL capture for ->relay commands
       // This handles terminal UIs that rewrite content in place
-      const cleanContent = this.stripAnsi(stdout);
+      const cleanContent = stripAnsi(stdout);
       // Join continuation lines that TUIs split across multiple lines
       const joinedContent = this.joinContinuationLines(cleanContent);
       const { commands } = this.parser.parse(joinedContent);
@@ -591,21 +599,6 @@ export class TmuxWrapper {
         this.stop();
       }
     }
-  }
-
-  /**
-   * Strip ANSI escape codes
-   */
-  private stripAnsi(str: string): string {
-    // Strip ANSI escape sequences (with \x1B prefix)
-    // eslint-disable-next-line no-control-regex
-    let result = str.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
-
-    // Strip orphaned CSI sequences that lost their escape byte
-    // These look like [?25h, [?2026l, [0m, etc. at the start of content
-    result = result.replace(/^\s*(\[\??\d*[A-Za-z])+\s*/g, '');
-
-    return result;
   }
 
   /**
@@ -978,7 +971,7 @@ export class TmuxWrapper {
 
     try {
       // Strip ANSI escape sequences and orphaned control sequences from message body
-      let sanitizedBody = this.stripAnsi(msg.body).replace(/[\r\n]+/g, ' ').trim();
+      let sanitizedBody = stripAnsi(msg.body).replace(/[\r\n]+/g, ' ').trim();
 
       // Gemini interprets certain keywords (While, For, If, etc.) as shell commands
       // Wrap in backticks to prevent shell keyword interpretation
@@ -1006,9 +999,9 @@ export class TmuxWrapper {
         // Input still has text after timeout - clear it forcefully
         this.logStderr('Input not clear after waiting, clearing forcefully');
         await this.sendKeys('Escape');
-        await this.sleep(30);
+        await sleep(30);
         await this.sendKeys('C-u');
-        await this.sleep(30);
+        await sleep(30);
       }
 
       // Ensure pane output is stable to avoid interleaving with active generation
@@ -1028,7 +1021,7 @@ export class TmuxWrapper {
       // If at shell prompt, skip injection to avoid shell command execution
       if (this.cliType === 'gemini') {
         const lastLine = await this.getLastLine();
-        const cleanLine = this.stripAnsi(lastLine).trim();
+        const cleanLine = stripAnsi(lastLine).trim();
         if (/^\$\s*$/.test(cleanLine) || /^\s*\$\s*$/.test(cleanLine)) {
           this.logStderr('Gemini at shell prompt, skipping injection to avoid shell execution');
           // Re-queue the message for later
@@ -1066,7 +1059,7 @@ export class TmuxWrapper {
 
       // Paste message as a bracketed paste to avoid interleaving with active output
       await this.pasteLiteral(injection);
-      await this.sleep(30);
+      await sleep(30);
 
       // Submit
       await this.sendKeys('Enter');
@@ -1149,10 +1142,6 @@ export class TmuxWrapper {
     }
   }
 
-  private sleep(ms: number): Promise<void> {
-    return new Promise(r => setTimeout(r, ms));
-  }
-
   /**
    * Reset session-specific state for wrapper reuse.
    * Call this when starting a new session with the same wrapper instance.
@@ -1167,14 +1156,7 @@ export class TmuxWrapper {
    * Get the prompt pattern for the current CLI type.
    */
   private getPromptPattern(): RegExp {
-    const promptPatterns: Record<string, RegExp> = {
-      claude: /^[>›»]\s*$/,           // Claude: "> " or similar
-      gemini: /^[>›»]\s*$/,           // Gemini: "> "
-      codex: /^[>›»]\s*$/,            // Codex: "> "
-      other: /^[>$%#➜›»]\s*$/,        // Shell or other: "$ ", "> ", etc.
-    };
-
-    return promptPatterns[this.cliType] || promptPatterns.other;
+    return CLI_QUIRKS.getPromptPattern(this.cliType);
   }
 
   /**
@@ -1196,7 +1178,7 @@ export class TmuxWrapper {
    * Detect if the provided line contains visible user input (beyond the prompt).
    */
   private hasVisibleInput(line: string): boolean {
-    const cleanLine = this.stripAnsi(line).trimEnd();
+    const cleanLine = stripAnsi(line).trimEnd();
     if (cleanLine === '') return false;
 
     return !this.getPromptPattern().test(cleanLine);
@@ -1209,7 +1191,7 @@ export class TmuxWrapper {
   private async isInputClear(lastLine?: string): Promise<boolean> {
     try {
       const lineToCheck = lastLine ?? await this.getLastLine();
-      const cleanLine = this.stripAnsi(lineToCheck).trimEnd();
+      const cleanLine = stripAnsi(lineToCheck).trimEnd();
       const isClear = this.getPromptPattern().test(cleanLine);
 
       if (this.config.debug) {
@@ -1277,7 +1259,7 @@ export class TmuxWrapper {
         lastCursorX = cursorX;
       }
 
-      await this.sleep(pollIntervalMs);
+      await sleep(pollIntervalMs);
     }
 
     this.logStderr(`waitForClearInput: timed out after ${maxWaitMs}ms`);
@@ -1311,7 +1293,7 @@ export class TmuxWrapper {
     let stableCount = 0;
 
     while (Date.now() - start < maxWaitMs) {
-      await this.sleep(pollIntervalMs);
+      await sleep(pollIntervalMs);
       const sig = await this.capturePaneSignature();
       if (!sig) continue;
 
