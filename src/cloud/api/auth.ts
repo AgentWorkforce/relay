@@ -1,12 +1,12 @@
 /**
  * Auth API Routes
  *
- * Handles GitHub OAuth for user login.
+ * Session management routes.
+ * User login is handled via Nango (see nango-auth.ts).
+ * GitHub repo operations are in github-app.ts.
  */
 
 import { Router, Request, Response } from 'express';
-import crypto from 'crypto';
-import { getConfig } from '../config.js';
 import { db } from '../db/index.js';
 
 export const authRouter = Router();
@@ -16,132 +16,16 @@ declare module 'express-session' {
   interface SessionData {
     userId?: string;
     githubToken?: string;
-    oauthState?: string;
   }
 }
 
 /**
  * GET /api/auth/github
- * Start GitHub OAuth flow
+ * Redirect to Nango login flow
+ * @deprecated Use /api/auth/nango/login-session instead
  */
-authRouter.get('/github', (req: Request, res: Response) => {
-  const config = getConfig();
-  const state = crypto.randomBytes(16).toString('hex');
-
-  // Store state in session for CSRF protection
-  req.session.oauthState = state;
-
-  const params = new URLSearchParams({
-    client_id: config.github.clientId,
-    redirect_uri: `${config.publicUrl}/api/auth/github/callback`,
-    scope: 'read:user user:email repo',
-    state,
-  });
-
-  res.redirect(`https://github.com/login/oauth/authorize?${params}`);
-});
-
-/**
- * GET /api/auth/github/callback
- * GitHub OAuth callback
- */
-authRouter.get('/github/callback', async (req: Request, res: Response) => {
-  const config = getConfig();
-  const { code, state } = req.query;
-
-  // Verify state
-  if (state !== req.session.oauthState) {
-    return res.status(400).json({ error: 'Invalid state parameter' });
-  }
-
-  try {
-    // Exchange code for token
-    const tokenResponse = await fetch('https://github.com/login/oauth/access_token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-      body: JSON.stringify({
-        client_id: config.github.clientId,
-        client_secret: config.github.clientSecret,
-        code,
-      }),
-    });
-
-    const tokenData = await tokenResponse.json() as {
-      access_token?: string;
-      error?: string;
-      error_description?: string;
-    };
-    if (tokenData.error) {
-      throw new Error(tokenData.error_description || tokenData.error);
-    }
-
-    const accessToken = tokenData.access_token!;
-
-    // Get user info
-    const userResponse = await fetch('https://api.github.com/user', {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        Accept: 'application/vnd.github.v3+json',
-      },
-    });
-
-    const userData = await userResponse.json() as {
-      id: number;
-      login: string;
-      email?: string;
-      avatar_url: string;
-    };
-
-    // Get user email if not public
-    let email = userData.email;
-    if (!email) {
-      const emailsResponse = await fetch('https://api.github.com/user/emails', {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          Accept: 'application/vnd.github.v3+json',
-        },
-      });
-      const emails = await emailsResponse.json() as Array<{ email: string; primary: boolean }>;
-      const primaryEmail = emails.find((e) => e.primary);
-      email = primaryEmail?.email;
-    }
-
-    // Create or update user
-    const user = await db.users.upsert({
-      githubId: String(userData.id),
-      githubUsername: userData.login,
-      email,
-      avatarUrl: userData.avatar_url,
-    });
-
-    // Store GitHub token as a credential
-    await db.credentials.upsert({
-      userId: user.id,
-      provider: 'github',
-      accessToken,
-      scopes: ['read:user', 'user:email', 'repo'],
-      providerAccountId: String(userData.id),
-      providerAccountEmail: email,
-    });
-
-    // Set session
-    req.session.userId = user.id;
-    req.session.githubToken = accessToken;
-    delete req.session.oauthState;
-
-    // Redirect to dashboard or onboarding
-    const redirectTo = user.onboardingCompletedAt
-      ? '/dashboard'
-      : '/onboarding/providers';
-
-    res.redirect(redirectTo);
-  } catch (error) {
-    console.error('GitHub OAuth error:', error);
-    res.redirect('/login?error=oauth_failed');
-  }
+authRouter.get('/github', (_req: Request, res: Response) => {
+  res.redirect('/api/auth/nango/login-session');
 });
 
 /**
@@ -183,6 +67,9 @@ authRouter.get('/me', async (req: Request, res: Response) => {
     // Get pending invites
     const pendingInvites = await db.workspaceMembers.getPendingInvites(user.id);
 
+    // Check for pending GitHub installation request
+    const pendingGitHubApproval = !!user.pendingInstallationRequest;
+
     res.json({
       id: user.id,
       githubUsername: user.githubUsername,
@@ -191,6 +78,7 @@ authRouter.get('/me', async (req: Request, res: Response) => {
       plan: user.plan,
       connectedProviders,
       pendingInvites: pendingInvites.length,
+      pendingGitHubApproval,
       onboardingCompleted: !!user.onboardingCompletedAt,
     });
   } catch (error) {

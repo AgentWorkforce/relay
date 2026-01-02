@@ -33,6 +33,9 @@ import { teamsRouter } from './api/teams.js';
 import { billingRouter } from './api/billing.js';
 import { usageRouter } from './api/usage.js';
 import { coordinatorsRouter } from './api/coordinators.js';
+import { webhooksRouter } from './api/webhooks.js';
+import { githubAppRouter } from './api/github-app.js';
+import { nangoAuthRouter } from './api/nango-auth.js';
 
 export interface CloudServer {
   app: Express;
@@ -140,7 +143,14 @@ export async function createServer(): Promise<CloudServer> {
 
   // Lightweight CSRF protection using session token
   const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+  // Paths exempt from CSRF (webhooks from external services)
+  const CSRF_EXEMPT_PATHS = ['/api/webhooks/', '/api/auth/nango/webhook'];
   app.use((req: Request, res: Response, next: NextFunction) => {
+    // Skip CSRF for webhook endpoints
+    if (CSRF_EXEMPT_PATHS.some(path => req.path.startsWith(path))) {
+      return next();
+    }
+
     if (!req.session) return res.status(500).json({ error: 'Session unavailable' });
 
     if (!req.session.csrfToken) {
@@ -177,6 +187,9 @@ export async function createServer(): Promise<CloudServer> {
   app.use('/api/billing', billingRouter);
   app.use('/api/usage', usageRouter);
   app.use('/api/project-groups', coordinatorsRouter);
+  app.use('/api/webhooks', webhooksRouter);
+  app.use('/api/github-app', githubAppRouter);
+  app.use('/api/auth/nango', nangoAuthRouter);
   // TODO: Add authenticated agent/daemon channels when remote sockets are supported
 
   // Serve static dashboard files (Next.js static export)

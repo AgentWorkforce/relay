@@ -12,12 +12,15 @@ export interface CloudConfig {
   databaseUrl: string;
   redisUrl: string;
 
-  // GitHub OAuth
+  // GitHub OAuth & App
   github: {
     clientId: string;
     clientSecret: string;
-    appId?: string;
-    appPrivateKey?: string;
+    appId: string;
+    appPrivateKey: string;
+    appWebhookSecret: string;
+    appClientId?: string;
+    appClientSecret?: string;
   };
 
   // Provider OAuth (for device flow)
@@ -48,6 +51,12 @@ export interface CloudConfig {
     railway?: {
       apiToken: string;
     };
+  };
+
+  // Nango OAuth management
+  nango: {
+    secretKey: string;
+    host?: string;
   };
 
   // Stripe billing
@@ -90,8 +99,11 @@ export function loadConfig(): CloudConfig {
     github: {
       clientId: requireEnv('GITHUB_CLIENT_ID'),
       clientSecret: requireEnv('GITHUB_CLIENT_SECRET'),
-      appId: optionalEnv('GITHUB_APP_ID'),
-      appPrivateKey: optionalEnv('GITHUB_APP_PRIVATE_KEY'),
+      appId: requireEnv('GITHUB_APP_ID'),
+      appPrivateKey: requireEnv('GITHUB_APP_PRIVATE_KEY'),
+      appWebhookSecret: requireEnv('GITHUB_APP_WEBHOOK_SECRET'),
+      appClientId: optionalEnv('GITHUB_APP_CLIENT_ID'),
+      appClientSecret: optionalEnv('GITHUB_APP_CLIENT_SECRET'),
     },
 
     providers: {
@@ -129,6 +141,11 @@ export function loadConfig(): CloudConfig {
             apiToken: optionalEnv('RAILWAY_API_TOKEN')!,
           }
         : undefined,
+    },
+
+    nango: {
+      secretKey: requireEnv('NANGO_SECRET_KEY'),
+      host: optionalEnv('NANGO_HOST'),
     },
 
     stripe: {
