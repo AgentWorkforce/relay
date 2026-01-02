@@ -41,9 +41,17 @@ interface WorkerMeta {
   logFile?: string;
 }
 
+/** Stored listener references for cleanup */
+interface ListenerBindings {
+  output?: (data: string) => void;
+  summary?: (event: SummaryEvent) => void;
+  sessionEnd?: (event: SessionEndEvent) => void;
+}
+
 interface ActiveWorker extends WorkerInfo {
   pty: PtyWrapper;
   logFile?: string;
+  listeners?: ListenerBindings;
 }
 
 export class AgentSpawner {
@@ -91,25 +99,48 @@ export class AgentSpawner {
 
   /**
    * Bind cloud persistence event handlers to a PtyWrapper.
+   * Returns the listener references for cleanup.
    */
-  private bindCloudPersistenceEvents(name: string, pty: PtyWrapper): void {
-    if (!this.cloudPersistence) return;
+  private bindCloudPersistenceEvents(name: string, pty: PtyWrapper): Partial<ListenerBindings> {
+    if (!this.cloudPersistence) return {};
 
-    pty.on('summary', async (event) => {
+    const summaryListener = async (event: SummaryEvent) => {
       try {
         await this.cloudPersistence!.onSummary(name, event);
       } catch (err) {
         console.error(`[spawner] Cloud persistence summary error for ${name}:`, err);
       }
-    });
+    };
 
-    pty.on('session-end', async (event) => {
+    const sessionEndListener = async (event: SessionEndEvent) => {
       try {
         await this.cloudPersistence!.onSessionEnd(name, event);
       } catch (err) {
         console.error(`[spawner] Cloud persistence session-end error for ${name}:`, err);
       }
-    });
+    };
+
+    pty.on('summary', summaryListener);
+    pty.on('session-end', sessionEndListener);
+
+    return { summary: summaryListener, sessionEnd: sessionEndListener };
+  }
+
+  /**
+   * Unbind all tracked listeners from a PtyWrapper.
+   */
+  private unbindListeners(pty: PtyWrapper, listeners?: ListenerBindings): void {
+    if (!listeners) return;
+
+    if (listeners.output) {
+      pty.off('output', listeners.output);
+    }
+    if (listeners.summary) {
+      pty.off('summary', listeners.summary);
+    }
+    if (listeners.sessionEnd) {
+      pty.off('session-end', listeners.sessionEnd);
+    }
   }
 
   /**
@@ -188,25 +219,41 @@ export class AgentSpawner {
         },
         onExit: (code) => {
           if (debug) console.log(`[spawner:debug] Worker ${name} exited with code ${code}`);
+          // Clean up listeners before removing from tracking
+          const worker = this.activeWorkers.get(name);
+          if (worker?.listeners) {
+            this.unbindListeners(worker.pty, worker.listeners);
+          }
           this.activeWorkers.delete(name);
-          this.saveWorkersMetadata();
+          try {
+            this.saveWorkersMetadata();
+          } catch (err) {
+            console.error(`[spawner] Failed to save metadata on exit:`, err);
+          }
         },
       };
 
       // Create and start the pty wrapper
       const pty = new PtyWrapper(ptyConfig);
 
+      // Track listener references for proper cleanup
+      const listeners: ListenerBindings = {};
+
       // Hook up output events for live log streaming
-      pty.on('output', (data: string) => {
+      const outputListener = (data: string) => {
         // Broadcast to any connected WebSocket clients via global function
         const broadcast = (global as any).__broadcastLogOutput;
         if (broadcast) {
           broadcast(name, data);
         }
-      });
+      };
+      pty.on('output', outputListener);
+      listeners.output = outputListener;
 
-      // Bind cloud persistence events (if enabled)
-      this.bindCloudPersistenceEvents(name, pty);
+      // Bind cloud persistence events (if enabled) and store references
+      const cloudListeners = this.bindCloudPersistenceEvents(name, pty);
+      if (cloudListeners.summary) listeners.summary = cloudListeners.summary;
+      if (cloudListeners.sessionEnd) listeners.sessionEnd = cloudListeners.sessionEnd;
 
       await pty.start();
 
@@ -273,6 +320,7 @@ export class AgentSpawner {
         pid: pty.pid,
         pty,
         logFile: pty.logPath,
+        listeners, // Store for cleanup
       };
       this.activeWorkers.set(name, workerInfo);
       this.saveWorkersMetadata();
@@ -439,6 +487,9 @@ export class AgentSpawner {
     }
 
     try {
+      // Unbind all listeners first to prevent memory leaks
+      this.unbindListeners(worker.pty, worker.listeners);
+
       // Stop the pty process gracefully
       worker.pty.stop();
 
@@ -457,7 +508,8 @@ export class AgentSpawner {
       return true;
     } catch (err: any) {
       console.error(`[spawner] Failed to release ${name}:`, err.message);
-      // Still remove from tracking
+      // Still unbind and remove from tracking
+      this.unbindListeners(worker.pty, worker.listeners);
       this.activeWorkers.delete(name);
       this.saveWorkersMetadata();
       return false;

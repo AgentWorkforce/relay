@@ -47,15 +47,51 @@ async function initCloudPersistence(workspaceId: string): Promise<CloudPersisten
     const db = getDb();
     console.log('[dashboard] Cloud persistence enabled');
 
-    // Track active sessions per agent
-    const agentSessionIds = new Map<string, string>();
+    // Track active sessions per agent with timestamps for TTL cleanup
+    const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+    const MAX_SESSIONS = 10000;
+    const agentSessionIds = new Map<string, { id: string; lastActivity: number }>();
+
+    // Periodic cleanup of stale sessions (every 5 minutes)
+    const cleanupInterval = setInterval(() => {
+      const now = Date.now();
+      let evicted = 0;
+      for (const [name, { lastActivity }] of agentSessionIds.entries()) {
+        if (now - lastActivity > SESSION_TTL_MS) {
+          agentSessionIds.delete(name);
+          evicted++;
+        }
+      }
+      if (evicted > 0) {
+        console.log(`[cloud] Evicted ${evicted} stale session entries`);
+      }
+    }, 5 * 60 * 1000);
+
+    // Don't keep process alive just for cleanup
+    cleanupInterval.unref();
 
     return {
       onSummary: async (agentName, event) => {
         try {
           // Ensure we have a session for this agent
-          let sessionId = agentSessionIds.get(agentName);
+          const cached = agentSessionIds.get(agentName);
+          let sessionId = cached?.id;
+
           if (!sessionId) {
+            // Enforce max size - evict oldest if needed
+            if (agentSessionIds.size >= MAX_SESSIONS) {
+              let oldest: { name: string; time: number } | null = null;
+              for (const [name, { lastActivity }] of agentSessionIds.entries()) {
+                if (!oldest || lastActivity < oldest.time) {
+                  oldest = { name, time: lastActivity };
+                }
+              }
+              if (oldest) {
+                agentSessionIds.delete(oldest.name);
+                console.log(`[cloud] Evicted oldest session for ${oldest.name} (max sessions reached)`);
+              }
+            }
+
             // Create a new session
             const [session] = await db.insert(agentSessions).values({
               workspaceId,
@@ -64,8 +100,10 @@ async function initCloudPersistence(workspaceId: string): Promise<CloudPersisten
               startedAt: new Date(),
             }).returning();
             sessionId = session.id;
-            agentSessionIds.set(agentName, sessionId);
           }
+
+          // Update cache with activity timestamp
+          agentSessionIds.set(agentName, { id: sessionId, lastActivity: Date.now() });
 
           // Insert summary
           await db.insert(agentSummaries).values({
@@ -83,8 +121,8 @@ async function initCloudPersistence(workspaceId: string): Promise<CloudPersisten
 
       onSessionEnd: async (agentName, event) => {
         try {
-          const sessionId = agentSessionIds.get(agentName);
-          if (sessionId) {
+          const cached = agentSessionIds.get(agentName);
+          if (cached) {
             // Update session as ended
             await db.update(agentSessions)
               .set({
@@ -92,7 +130,7 @@ async function initCloudPersistence(workspaceId: string): Promise<CloudPersisten
                 endedAt: new Date(),
                 endMarker: event.marker,
               })
-              .where(eq(agentSessions.id, sessionId));
+              .where(eq(agentSessions.id, cached.id));
 
             agentSessionIds.delete(agentName);
             console.log(`[cloud] Session ended for ${agentName}: ${event.marker.summary || 'no summary'}`);

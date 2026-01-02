@@ -183,13 +183,25 @@ export class CloudPersistenceService {
   }
 
   /**
-   * Get the latest summary for an agent in a workspace.
+   * Get the latest summary for an agent in THIS workspace.
+   * Joins through agent_sessions to ensure workspace scoping.
    */
   async getLatestSummary(agentName: string) {
     const db = getDb();
-    const results = await db.select()
+    // Join with sessions to ensure we only get summaries from this workspace
+    const results = await db.select({
+      id: agentSummaries.id,
+      sessionId: agentSummaries.sessionId,
+      agentName: agentSummaries.agentName,
+      summary: agentSummaries.summary,
+      createdAt: agentSummaries.createdAt,
+    })
       .from(agentSummaries)
-      .where(eq(agentSummaries.agentName, agentName))
+      .innerJoin(agentSessions, eq(agentSummaries.sessionId, agentSessions.id))
+      .where(and(
+        eq(agentSummaries.agentName, agentName),
+        eq(agentSessions.workspaceId, this.config.workspaceId)
+      ))
       .orderBy(desc(agentSummaries.createdAt))
       .limit(1);
     return results[0] || null;
