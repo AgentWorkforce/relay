@@ -52,6 +52,31 @@ interface Metrics {
   };
 }
 
+interface AgentMemoryMetric {
+  name: string;
+  pid?: number;
+  status: string;
+  rssBytes?: number;
+  heapUsedBytes?: number;
+  cpuPercent?: number;
+  trend?: 'growing' | 'stable' | 'shrinking' | 'unknown';
+  trendRatePerMinute?: number;
+  alertLevel?: 'normal' | 'warning' | 'critical' | 'oom_imminent';
+  highWatermark?: number;
+  averageRss?: number;
+  uptimeMs?: number;
+  startedAt?: string;
+}
+
+interface MemoryMetrics {
+  agents: AgentMemoryMetric[];
+  system: {
+    totalMemory: number;
+    freeMemory: number;
+    heapUsed: number;
+  };
+}
+
 const COLORS = ['#4a9eff', '#b388ff', '#ff9e40', '#00e676', '#ff5c5c', '#00ffc8'];
 
 function getAvatarColor(name: string): string {
@@ -84,16 +109,27 @@ function formatTime(isoString: string): string {
 
 export default function MetricsPage() {
   const [metrics, setMetrics] = useState<Metrics | null>(null);
+  const [memoryMetrics, setMemoryMetrics] = useState<MemoryMetrics | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchMetrics = async () => {
       try {
-        const response = await fetch('/api/metrics');
-        if (!response.ok) throw new Error('Failed to fetch metrics');
-        const data = await response.json();
+        const [metricsRes, memoryRes] = await Promise.all([
+          fetch('/api/metrics'),
+          fetch('/api/metrics/agents'),
+        ]);
+
+        if (!metricsRes.ok) throw new Error('Failed to fetch metrics');
+        const data = await metricsRes.json();
         setMetrics(data);
+
+        if (memoryRes.ok) {
+          const memData = await memoryRes.json();
+          setMemoryMetrics(memData);
+        }
+
         setError(null);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load metrics');
@@ -324,6 +360,52 @@ export default function MetricsPage() {
           </div>
         </section>
 
+        {/* Agent Memory Section */}
+        {memoryMetrics && memoryMetrics.agents.length > 0 && (
+          <section className="mb-6">
+            <div className="flex items-center justify-between mb-3">
+              <SectionHeader title="Agent Memory & Resources" />
+              <SystemMemoryIndicator system={memoryMetrics.system} />
+            </div>
+            <div className="bg-bg-secondary border border-border rounded-lg p-6">
+              {/* Memory Overview Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                <MemoryStatCard
+                  label="Total Agents"
+                  value={memoryMetrics.agents.length}
+                  subtext="being monitored"
+                  accent="cyan"
+                />
+                <MemoryStatCard
+                  label="Healthy"
+                  value={memoryMetrics.agents.filter(a => a.alertLevel === 'normal').length}
+                  subtext="normal memory"
+                  accent="green"
+                />
+                <MemoryStatCard
+                  label="Warning"
+                  value={memoryMetrics.agents.filter(a => a.alertLevel === 'warning').length}
+                  subtext="elevated usage"
+                  accent="orange"
+                />
+                <MemoryStatCard
+                  label="Critical"
+                  value={memoryMetrics.agents.filter(a => a.alertLevel === 'critical' || a.alertLevel === 'oom_imminent').length}
+                  subtext="needs attention"
+                  accent="red"
+                />
+              </div>
+
+              {/* Agent Memory Cards */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {memoryMetrics.agents.map((agent) => (
+                  <AgentMemoryCard key={agent.name} agent={agent} />
+                ))}
+              </div>
+            </div>
+          </section>
+        )}
+
         {/* Footer */}
         <div className="text-center py-4 text-text-muted text-xs font-mono">
           Last updated: {formatTime(metrics.timestamp)}
@@ -463,5 +545,180 @@ function SessionStatusBadge({ closedBy }: { closedBy?: 'agent' | 'disconnect' | 
     <span className={`inline-flex items-center px-2 py-0.5 rounded-lg text-[11px] font-medium ${config.className}`}>
       {config.label}
     </span>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Memory Monitoring Components
+───────────────────────────────────────────────────────────── */
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(Math.abs(bytes)) / Math.log(k));
+  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+}
+
+function SystemMemoryIndicator({ system }: { system: { totalMemory: number; freeMemory: number; heapUsed: number } }) {
+  const usedPercent = Math.round(((system.totalMemory - system.freeMemory) / system.totalMemory) * 100);
+
+  return (
+    <div className="flex items-center gap-3 px-3 py-1.5 bg-bg-tertiary border border-border rounded-lg">
+      <div className="flex items-center gap-2">
+        <svg className="w-4 h-4 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <rect x="4" y="4" width="16" height="16" rx="2" />
+          <rect x="8" y="8" width="8" height="8" rx="1" fill="currentColor" opacity="0.3" />
+        </svg>
+        <span className="text-xs text-text-muted">System:</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <div className="w-24 h-2 bg-border rounded-full overflow-hidden">
+          <div
+            className={`h-full rounded-full transition-all ${
+              usedPercent > 90 ? 'bg-error' : usedPercent > 70 ? 'bg-warning' : 'bg-accent'
+            }`}
+            style={{ width: `${usedPercent}%` }}
+          />
+        </div>
+        <span className="text-xs font-mono text-text-muted">{usedPercent}%</span>
+      </div>
+      <span className="text-xs font-mono text-text-muted">
+        {formatBytes(system.freeMemory)} free
+      </span>
+    </div>
+  );
+}
+
+function MemoryStatCard({ label, value, subtext, accent }: {
+  label: string;
+  value: number;
+  subtext: string;
+  accent: 'cyan' | 'green' | 'orange' | 'red';
+}) {
+  const accentColors = {
+    cyan: 'text-accent',
+    green: 'text-success',
+    orange: 'text-warning',
+    red: 'text-error',
+  };
+
+  return (
+    <div className="bg-bg-tertiary border border-border/50 rounded-lg p-4 text-center">
+      <div className={`font-mono text-3xl font-bold ${accentColors[accent]} leading-none`}>
+        {value}
+      </div>
+      <div className="text-[11px] text-text-muted uppercase tracking-wide mt-2">{label}</div>
+      <div className="text-xs text-text-muted mt-1">{subtext}</div>
+    </div>
+  );
+}
+
+function AgentMemoryCard({ agent }: { agent: AgentMemoryMetric }) {
+  const memoryMB = agent.rssBytes ? agent.rssBytes / (1024 * 1024) : 0;
+  const maxMemoryMB = 2048; // 2GB max for visualization
+  const memoryPercent = Math.min((memoryMB / maxMemoryMB) * 100, 100);
+
+  const alertStyles = {
+    normal: { bg: 'bg-success/10', border: 'border-success/30', text: 'text-success', label: 'Healthy' },
+    warning: { bg: 'bg-warning/10', border: 'border-warning/30', text: 'text-warning', label: 'Warning' },
+    critical: { bg: 'bg-error/10', border: 'border-error/30', text: 'text-error', label: 'Critical' },
+    oom_imminent: { bg: 'bg-error/20', border: 'border-error/50', text: 'text-error', label: 'OOM Risk' },
+  };
+
+  const trendIcons = {
+    growing: { icon: '↑', color: 'text-warning', label: 'Growing' },
+    stable: { icon: '→', color: 'text-success', label: 'Stable' },
+    shrinking: { icon: '↓', color: 'text-accent', label: 'Shrinking' },
+    unknown: { icon: '?', color: 'text-text-muted', label: 'Unknown' },
+  };
+
+  const style = alertStyles[agent.alertLevel || 'normal'];
+  const trend = trendIcons[agent.trend || 'unknown'];
+
+  return (
+    <div className={`${style.bg} border ${style.border} rounded-lg p-4 transition-all hover:scale-[1.01]`}>
+      {/* Header */}
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-3">
+          <div
+            className="w-10 h-10 rounded-lg flex items-center justify-center text-white text-sm font-semibold"
+            style={{ backgroundColor: getAvatarColor(agent.name) }}
+          >
+            {getInitials(agent.name)}
+          </div>
+          <div>
+            <div className="font-semibold font-mono text-sm text-text-primary">{agent.name}</div>
+            <div className="text-xs text-text-muted">
+              PID: {agent.pid || 'N/A'} • {agent.status}
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${style.bg} ${style.text}`}>
+            {style.label}
+          </span>
+        </div>
+      </div>
+
+      {/* Memory Bar */}
+      <div className="mb-4">
+        <div className="flex items-center justify-between mb-1.5">
+          <span className="text-xs text-text-muted">Memory Usage</span>
+          <span className="text-sm font-mono font-semibold text-text-primary">
+            {formatBytes(agent.rssBytes || 0)}
+          </span>
+        </div>
+        <div className="h-3 bg-bg-primary rounded-full overflow-hidden">
+          <div
+            className={`h-full rounded-full transition-all duration-500 ${
+              (agent.alertLevel === 'critical' || agent.alertLevel === 'oom_imminent')
+                ? 'bg-gradient-to-r from-error to-error/70'
+                : agent.alertLevel === 'warning'
+                ? 'bg-gradient-to-r from-warning to-warning/70'
+                : 'bg-gradient-to-r from-accent to-[#6366f1]'
+            }`}
+            style={{ width: `${memoryPercent}%` }}
+          />
+        </div>
+        <div className="flex items-center justify-between mt-1">
+          <span className="text-[10px] text-text-muted">0</span>
+          <span className="text-[10px] text-text-muted">2 GB</span>
+        </div>
+      </div>
+
+      {/* Stats Grid */}
+      <div className="grid grid-cols-3 gap-3">
+        <div className="text-center">
+          <div className="text-lg font-mono font-bold text-accent">
+            {agent.cpuPercent?.toFixed(1) || '0'}%
+          </div>
+          <div className="text-[10px] text-text-muted uppercase">CPU</div>
+        </div>
+        <div className="text-center">
+          <div className={`text-lg font-mono font-bold ${trend.color} flex items-center justify-center gap-1`}>
+            <span>{trend.icon}</span>
+            <span className="text-xs">{trend.label}</span>
+          </div>
+          <div className="text-[10px] text-text-muted uppercase">Trend</div>
+        </div>
+        <div className="text-center">
+          <div className="text-lg font-mono font-bold text-[#a78bfa]">
+            {formatBytes(agent.highWatermark || 0)}
+          </div>
+          <div className="text-[10px] text-text-muted uppercase">Peak</div>
+        </div>
+      </div>
+
+      {/* Uptime */}
+      {agent.uptimeMs && (
+        <div className="mt-3 pt-3 border-t border-border/30 flex items-center justify-between">
+          <span className="text-xs text-text-muted">Uptime</span>
+          <span className="text-xs font-mono text-text-muted">
+            {formatDuration(Math.floor(agent.uptimeMs / 1000))}
+          </span>
+        </div>
+      )}
+    </div>
   );
 }

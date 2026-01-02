@@ -401,7 +401,7 @@ export async function startDashboard(
     ? new AgentSpawner(projectRoot || dataDir, tmuxSession)
     : undefined;
 
-  // Initialize cloud persistence if enabled (RELAY_CLOUD_ENABLED=true)
+  // Initialize cloud persistence and memory monitoring if enabled (RELAY_CLOUD_ENABLED=true)
   if (spawner) {
     // Use workspace ID from env or generate from project root
     const workspaceId = process.env.RELAY_WORKSPACE_ID ||
@@ -414,6 +414,30 @@ export async function startDashboard(
     }).catch((err) => {
       console.warn('[dashboard] Failed to initialize cloud persistence:', err);
     });
+
+    // Initialize memory monitoring for cloud deployments
+    // Memory monitoring is enabled by default when cloud is enabled
+    if (process.env.RELAY_CLOUD_ENABLED === 'true' || process.env.RELAY_MEMORY_MONITORING === 'true') {
+      import('../resiliency/memory-monitor.js').then(({ getMemoryMonitor }) => {
+        const memoryMonitor = getMemoryMonitor({
+          checkIntervalMs: 10000, // Check every 10 seconds
+          enableTrendAnalysis: true,
+          enableProactiveAlerts: true,
+        });
+        memoryMonitor.start();
+        console.log('[dashboard] Memory monitoring enabled');
+
+        // Register existing workers with memory monitor
+        const workers = spawner.getActiveWorkers();
+        for (const worker of workers) {
+          if (worker.pid) {
+            memoryMonitor.register(worker.name, worker.pid);
+          }
+        }
+      }).catch((err) => {
+        console.warn('[dashboard] Failed to initialize memory monitoring:', err);
+      });
+    }
   }
 
   process.on('uncaughtException', (err) => {
