@@ -688,6 +688,47 @@ Let me know if that works.
     });
   });
 
+  describe('Instructional text filtering', () => {
+    it('filters out placeholder target names like AgentName', () => {
+      const input = '->relay:AgentName This is an example message\n';
+      const result = parser.parse(input);
+      expect(result.commands).toHaveLength(0);
+      expect(result.output).toBe(input);
+    });
+
+    it('filters out placeholder target names case-insensitively', () => {
+      const input = '->relay:AGENTNAME Example\n->relay:target Test\n->relay:Recipient Hello\n';
+      const result = parser.parse(input);
+      expect(result.commands).toHaveLength(0);
+    });
+
+    it('filters out fenced messages to placeholder targets', () => {
+      const input = '->relay:AgentName <<<\nMulti-line example message\n>>>\n';
+      const result = parser.parse(input);
+      expect(result.commands).toHaveLength(0);
+    });
+
+    it('filters out PROTOCOL: instruction patterns in body', () => {
+      const input = '->relay:Lead message | PROTOCOL: (1) ACK receipt\n';
+      const result = parser.parse(input);
+      expect(result.commands).toHaveLength(0);
+    });
+
+    it('allows real agent names that are not placeholders', () => {
+      const input = '->relay:Lead Hello\n->relay:Alice Test\n';
+      const result = parser.parse(input);
+      expect(result.commands).toHaveLength(2);
+      expect(result.commands[0].to).toBe('Lead');
+      expect(result.commands[1].to).toBe('Alice');
+    });
+
+    it('filters instructional text in fenced inline mode', () => {
+      const input = '->relay:Lead <<<\nExample: how to send\n>>>\n';
+      const result = parser.parse(input);
+      expect(result.commands).toHaveLength(0);
+    });
+  });
+
   describe('Edge cases', () => {
     it('inline commands must be complete in single chunk (no cross-chunk buffering)', () => {
       // Inline relay commands split across chunks are NOT detected

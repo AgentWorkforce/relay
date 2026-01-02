@@ -114,11 +114,34 @@ const INSTRUCTIONAL_MARKERS = [
 ];
 
 /**
+ * Placeholder target names commonly used in documentation and examples.
+ * Messages to these targets should be filtered out as instructional text.
+ */
+const PLACEHOLDER_TARGETS = new Set([
+  'agentname',
+  'target',
+  'recipient',
+  'yourtarget',
+  'targetagent',
+  'someagent',
+  'otheragent',
+  'worker',        // Too generic, often used in examples
+]);
+
+/**
  * Check if a parsed relay command body looks like instructional/example text.
  * These patterns commonly appear in system prompts and documentation.
  */
 function isInstructionalText(body: string): boolean {
   return INSTRUCTIONAL_MARKERS.some(pattern => pattern.test(body));
+}
+
+/**
+ * Check if a target name is a placeholder commonly used in documentation/examples.
+ * These should not be treated as real message targets.
+ */
+function isPlaceholderTarget(target: string): boolean {
+  return PLACEHOLDER_TARGETS.has(target.toLowerCase());
 }
 
 /**
@@ -564,6 +587,12 @@ export class OutputParser {
       // Check for fenced inline start: ->relay:Target <<<
       const fencedStart = isFencedInlineStart(line);
       if (fencedStart && this.options.enableInline) {
+        // Skip placeholder target names early (common in documentation/examples)
+        if (isPlaceholderTarget(fencedStart.target)) {
+          outputLines.push(line);
+          continue;
+        }
+
         // Enter fenced inline mode
         this.inFencedInline = true;
         this.fencedInlineTarget = fencedStart.target;
@@ -762,6 +791,12 @@ export class OutputParser {
         }
 
         const { to, project } = parseTarget(target);
+
+        // Skip placeholder target names (common in documentation/examples)
+        if (isPlaceholderTarget(to)) {
+          return { command: null, output: line };
+        }
+
         return {
           command: {
             to,
@@ -786,6 +821,12 @@ export class OutputParser {
         }
 
         const { to, project } = parseTarget(target);
+
+        // Skip placeholder target names (common in documentation/examples)
+        if (isPlaceholderTarget(to)) {
+          return { command: null, output: line };
+        }
+
         return {
           command: {
             to,
@@ -879,6 +920,22 @@ export class OutputParser {
   }
 
   /**
+   * Check if the current fenced inline command should be filtered out.
+   * Returns true if the command looks like instructional/example text.
+   */
+  private shouldFilterFencedInline(target: string, body: string): boolean {
+    // Check for placeholder target names
+    if (isPlaceholderTarget(target)) {
+      return true;
+    }
+    // Check for instructional body content
+    if (isInstructionalText(body)) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * Parse while inside a fenced inline block (->relay:Target <<< ... >>>).
    * Accumulates lines until >>> is seen on its own line.
    */
@@ -904,16 +961,20 @@ export class OutputParser {
       // Only if we have actual content to send
       if (consecutiveBlankLines >= 2 && this.fencedInlineBuffer.trim().length > 0) {
         const body = unescapeFenceMarkers(stripAnsi(this.fencedInlineBuffer.trim()));
-        const command: ParsedCommand = {
-          to: this.fencedInlineTarget,
-          kind: this.fencedInlineKind,
-          body,
-          thread: this.fencedInlineThread,
-          threadProject: this.fencedInlineThreadProject,
-          project: this.fencedInlineProject,
-          raw: this.fencedInlineRaw.join('\n'),
-        };
-        commands.push(command);
+
+        // Skip instructional/example text (common in system prompts and documentation)
+        if (!this.shouldFilterFencedInline(this.fencedInlineTarget, body)) {
+          const command: ParsedCommand = {
+            to: this.fencedInlineTarget,
+            kind: this.fencedInlineKind,
+            body,
+            thread: this.fencedInlineThread,
+            threadProject: this.fencedInlineThreadProject,
+            project: this.fencedInlineProject,
+            raw: this.fencedInlineRaw.join('\n'),
+          };
+          commands.push(command);
+        }
 
         // Reset fenced inline state
         this.inFencedInline = false;
@@ -940,16 +1001,20 @@ export class OutputParser {
         // Auto-close and send the incomplete fenced block (if it has content)
         if (this.fencedInlineBuffer.trim().length > 0) {
           const body = unescapeFenceMarkers(stripAnsi(this.fencedInlineBuffer.trim()));
-          const command: ParsedCommand = {
-            to: this.fencedInlineTarget,
-            kind: this.fencedInlineKind,
-            body,
-            thread: this.fencedInlineThread,
-            threadProject: this.fencedInlineThreadProject,
-            project: this.fencedInlineProject,
-            raw: this.fencedInlineRaw.join('\n'),
-          };
-          commands.push(command);
+
+          // Skip instructional/example text (common in system prompts and documentation)
+          if (!this.shouldFilterFencedInline(this.fencedInlineTarget, body)) {
+            const command: ParsedCommand = {
+              to: this.fencedInlineTarget,
+              kind: this.fencedInlineKind,
+              body,
+              thread: this.fencedInlineThread,
+              threadProject: this.fencedInlineThreadProject,
+              project: this.fencedInlineProject,
+              raw: this.fencedInlineRaw.join('\n'),
+            };
+            commands.push(command);
+          }
         }
 
         // Reset fenced inline state
@@ -990,16 +1055,19 @@ export class OutputParser {
         const body = unescapeFenceMarkers(stripAnsi(this.fencedInlineBuffer.trim()));
         this.fencedInlineRaw.push(line);
 
-        const command: ParsedCommand = {
-          to: this.fencedInlineTarget,
-          kind: this.fencedInlineKind,
-          body,
-          thread: this.fencedInlineThread,
-          threadProject: this.fencedInlineThreadProject,
-          project: this.fencedInlineProject,
-          raw: this.fencedInlineRaw.join('\n'),
-        };
-        commands.push(command);
+        // Skip instructional/example text (common in system prompts and documentation)
+        if (!this.shouldFilterFencedInline(this.fencedInlineTarget, body)) {
+          const command: ParsedCommand = {
+            to: this.fencedInlineTarget,
+            kind: this.fencedInlineKind,
+            body,
+            thread: this.fencedInlineThread,
+            threadProject: this.fencedInlineThreadProject,
+            project: this.fencedInlineProject,
+            raw: this.fencedInlineRaw.join('\n'),
+          };
+          commands.push(command);
+        }
 
         // Reset fenced inline state
         this.inFencedInline = false;
