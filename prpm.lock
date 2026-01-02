@@ -98,7 +98,24 @@
           "position": "append"
         }
       }
+    },
+    "@agent-workforce/trail-snippet#agents.md": {
+      "version": "1.0.0",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-workforce%2Ftrail-snippet/1.0.0.tar.gz",
+      "integrity": "sha256-3b39b2befbd2a832296efe84f23c6a22eb047486974f5cb780a93b461e27720e",
+      "format": "agents.md",
+      "subtype": "snippet",
+      "sourceFormat": "generic",
+      "sourceSubtype": "snippet",
+      "installedPath": "AGENTS.md",
+      "snippetMetadata": {
+        "targetPath": "AGENTS.md",
+        "config": {
+          "target": "AGENTS.md",
+          "position": "append"
+        }
+      }
     }
   },
-  "generated": "2025-12-28T23:37:18.122Z"
+  "generated": "2026-01-02T10:13:29.909Z"
 }
