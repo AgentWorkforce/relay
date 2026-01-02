@@ -417,13 +417,11 @@ export class PtyWrapper extends EventEmitter {
     const command = parseContinuityCommand(content);
     if (!command) return;
 
-    // Deduplication: use type + content hash for commands with content
-    const hasContent = command.content || command.query || command.item;
-    const cmdHash = hasContent
-      ? `${command.type}:${command.content || command.query || command.item}`
-      : `${command.type}:${Date.now()}`; // Allow load/search to run each time if no content
+    // Deduplication: use type + content hash for all commands
+    // Fixed: content-less commands (like load) now use static hash to prevent infinite loops
+    const cmdHash = `${command.type}:${command.content || command.query || command.item || 'no-content'}`;
 
-    if (hasContent && this.processedContinuityCommands.has(cmdHash)) return;
+    if (this.processedContinuityCommands.has(cmdHash)) return;
     this.processedContinuityCommands.add(cmdHash);
 
     // Limit dedup set size
