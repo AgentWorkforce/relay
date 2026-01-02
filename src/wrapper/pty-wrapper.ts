@@ -157,7 +157,8 @@ export class PtyWrapper extends EventEmitter {
       const agentConfig = findAgentConfig(config.name, config.cwd);
       if (agentConfig?.description) {
         detectedTask = agentConfig.description;
-        console.log(`[pty:${config.name}] Auto-detected role: ${detectedTask.substring(0, 60)}...`);
+        // Use stderr for consistency with TmuxWrapper's logStderr pattern
+        process.stderr.write(`[pty:${config.name}] Auto-detected role: ${detectedTask.substring(0, 60)}...\n`);
       }
     }
     // Store detected task for use in hook registry
@@ -770,6 +771,11 @@ export class PtyWrapper extends EventEmitter {
             // Reject suspiciously short agent names (likely parsing corruption)
             if (name.length < 2) {
               console.warn(`[pty:${this.config.name}] Spawn command has suspiciously short name, skipping: name=${name}`);
+              continue;
+            }
+            // Reject suspiciously short CLI names (likely parsing corruption)
+            if (cli.length < 2) {
+              console.warn(`[pty:${this.config.name}] Spawn command has suspiciously short CLI, skipping: cli=${cli}`);
               continue;
             }
 

@@ -169,6 +169,7 @@ export class TmuxWrapper {
   private continuity?: ContinuityManager; // Session continuity management
   private processedContinuityCommands: Set<string> = new Set(); // Dedup continuity commands
   private agentId?: string; // Unique agent ID for resume functionality
+  private injectionMetrics: InjectionMetrics = createInjectionMetrics(); // Track injection reliability
 
   constructor(config: TmuxWrapperConfig) {
     this.config = {
@@ -1132,8 +1133,18 @@ export class TmuxWrapper {
           this.logStderr(`Spawn command has suspiciously short name, skipping: name=${name}`);
           continue;
         }
+        // Reject suspiciously short CLI names (likely parsing corruption)
+        if (cli.length < 2) {
+          this.logStderr(`Spawn command has suspiciously short CLI, skipping: cli=${cli}`);
+          continue;
+        }
 
-        const taskStr = task || ''; // Task is optional, default to empty string
+        let taskStr = task || ''; // Task is optional, default to empty string
+        // Reject if task starts with <<< (fenced format not supported for spawn)
+        if (taskStr.startsWith('<<<')) {
+          this.logStderr(`Spawn command uses fenced format (not supported), using empty task: name=${name}, cli=${cli}`);
+          taskStr = ''; // Use empty task instead of "<<<..."
+        }
         const spawnKey = `${name}:${cli}`;
 
         // Dedup - only process each spawn once (keyed by name:cli, not including task)
@@ -1216,6 +1227,92 @@ export class TmuxWrapper {
     }
 
     this.injectNextMessage();
+  }
+
+  /**
+   * Verify that an injection appeared in the tmux pane scrollback.
+   * Looks for the message pattern in captured pane content.
+   */
+  private async verifyInjection(shortId: string, from: string): Promise<boolean> {
+    const expectedPattern = `Relay message from ${from} [${shortId}]`;
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < INJECTION_CONSTANTS.VERIFICATION_TIMEOUT_MS) {
+      try {
+        // Capture pane scrollback
+        const { stdout } = await execAsync(
+          `"${this.tmuxPath}" capture-pane -t ${this.sessionName} -p -S - 2>/dev/null`
+        );
+
+        // Check if our message pattern appears
+        if (stdout.includes(expectedPattern)) {
+          return true;
+        }
+      } catch {
+        // Session might be gone, verification fails
+        return false;
+      }
+
+      await sleep(100);
+    }
+
+    return false;
+  }
+
+  /**
+   * Perform a single injection attempt via tmux paste.
+   */
+  private async performInjection(injection: string): Promise<void> {
+    await this.pasteLiteral(injection);
+    await sleep(INJECTION_CONSTANTS.ENTER_DELAY_MS);
+    await this.sendKeys('Enter');
+  }
+
+  /**
+   * Inject a message with retry logic and verification.
+   */
+  private async injectWithRetry(
+    injection: string,
+    shortId: string,
+    from: string
+  ): Promise<InjectionResult> {
+    this.injectionMetrics.total++;
+
+    for (let attempt = 0; attempt < INJECTION_CONSTANTS.MAX_RETRIES; attempt++) {
+      try {
+        // Perform the injection
+        await this.performInjection(injection);
+
+        // Verify it appeared in pane
+        const verified = await this.verifyInjection(shortId, from);
+
+        if (verified) {
+          if (attempt === 0) {
+            this.injectionMetrics.successFirstTry++;
+          } else {
+            this.injectionMetrics.successWithRetry++;
+            this.logStderr(`Injection succeeded on attempt ${attempt + 1}`);
+          }
+          return { success: true, attempts: attempt + 1 };
+        }
+
+        // Not verified - log and retry
+        this.logStderr(
+          `Injection not verified, attempt ${attempt + 1}/${INJECTION_CONSTANTS.MAX_RETRIES}`
+        );
+
+        // Backoff before retry
+        if (attempt < INJECTION_CONSTANTS.MAX_RETRIES - 1) {
+          await sleep(INJECTION_CONSTANTS.RETRY_BACKOFF_MS * (attempt + 1));
+        }
+      } catch (err: any) {
+        this.logStderr(`Injection error on attempt ${attempt + 1}: ${err.message}`, true);
+      }
+    }
+
+    // All retries failed
+    this.injectionMetrics.failed++;
+    return { success: false, attempts: INJECTION_CONSTANTS.MAX_RETRIES };
   }
 
   /**
@@ -1316,13 +1413,24 @@ export class TmuxWrapper {
 
       const injection = `Relay message from ${msg.from} ${idTag}${threadHint}${importanceHint}${channelHint}${attachmentHint}: ${sanitizedBody}${truncationHint}`;
 
-      // Paste message as a bracketed paste to avoid interleaving with active output
-      await this.pasteLiteral(injection);
-      await sleep(30);
+      // Inject with retry and verification
+      const result = await this.injectWithRetry(injection, shortId, msg.from);
 
-      // Submit
-      await this.sendKeys('Enter');
-      this.logStderr(`Injection complete`);
+      if (result.success) {
+        this.logStderr(`Injection complete (attempt ${result.attempts})`);
+      } else {
+        // All retries failed - log and optionally fall back to inbox
+        this.logStderr(
+          `Message delivery failed after ${result.attempts} attempts: from=${msg.from} id=${shortId}`,
+          true
+        );
+
+        // Write to inbox as fallback if enabled
+        if (this.inbox) {
+          this.inbox.addMessage(msg.from, msg.body);
+          this.logStderr('Wrote message to inbox as fallback');
+        }
+      }
 
     } catch (err: any) {
       this.logStderr(`Injection failed: ${err.message}`, true);
@@ -1330,7 +1438,7 @@ export class TmuxWrapper {
       this.isInjecting = false;
 
       if (this.messageQueue.length > 0) {
-        setTimeout(() => this.checkForInjectionOpportunity(), 1000);
+        setTimeout(() => this.checkForInjectionOpportunity(), INJECTION_CONSTANTS.QUEUE_PROCESS_DELAY_MS);
       }
     }
   }

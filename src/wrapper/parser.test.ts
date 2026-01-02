@@ -662,6 +662,30 @@ Let me know if that works.
       expect(result3.commands).toHaveLength(0);
       expect(result3.output).toBe('>>>\n');
     });
+
+    it('passes through spawn with fence marker as CLI (agent-relay-312)', () => {
+      // This is corrupted input where CLI became a fence marker
+      const result = parser.parse('->relay:spawn Worker <<<\n');
+
+      expect(result.commands).toHaveLength(0);
+      expect(result.output).toBe('->relay:spawn Worker <<<\n');
+    });
+
+    it('passes through release command with fenced format', () => {
+      // Release commands should also be passed through
+      const result = parser.parse('->relay:release Worker <<<\n');
+
+      expect(result.commands).toHaveLength(0);
+      expect(result.output).toBe('->relay:release Worker <<<\n');
+    });
+
+    it('passes through spawn command embedded in other content', () => {
+      // Spawn pattern appearing in documentation/content should be passed through
+      const result = parser.parse('->relay:spawn Worker claude\n');
+
+      expect(result.commands).toHaveLength(0);
+      expect(result.output).toBe('->relay:spawn Worker claude\n');
+    });
   });
 
   describe('Edge cases', () => {
