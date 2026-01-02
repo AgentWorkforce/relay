@@ -380,10 +380,16 @@ export class PtyWrapper extends EventEmitter {
 
         const notification = `[Continuity] Previous session context loaded.${statusParts ? ` ${statusParts}` : ''}\n\n${context.formatted}`;
 
-        // Inject via relay message to self
-        this.client.sendMessage(this.config.name, notification, 'message', {
+        // Queue continuity context directly to messageQueue with 'system' as sender
+        // This avoids creating confusing "Agent -> Agent" self-messages in the dashboard
+        // Fix for Lead communication issue: continuity checkpoints were creating self-messages
+        this.messageQueue.push({
+          from: 'system',
+          body: notification,
+          messageId: `continuity-startup-${Date.now()}`,
           thread: 'continuity-context',
         });
+        this.processMessageQueue();
 
         const mode = context.handoff ? 'resume' : 'continue';
         console.log(`[pty:${this.config.name}] Continuity context injected (${mode})`);
@@ -954,6 +960,7 @@ export class PtyWrapper extends EventEmitter {
 
   /**
    * Inject a message with retry logic and verification.
+   * Includes dedup check to prevent double-injection race condition.
    */
   private async injectWithRetry(
     injection: string,
@@ -964,6 +971,17 @@ export class PtyWrapper extends EventEmitter {
 
     for (let attempt = 0; attempt < INJECTION_CONSTANTS.MAX_RETRIES; attempt++) {
       try {
+        // On retry attempts, first check if message already exists (race condition fix)
+        // Previous injection may have succeeded but verification timed out
+        if (attempt > 0) {
+          const alreadyExists = await this.verifyInjection(shortId, from);
+          if (alreadyExists) {
+            this.injectionMetrics.successWithRetry++;
+            console.log(`[pty:${this.config.name}] Message already present (late verification), skipping re-injection`);
+            return { success: true, attempts: attempt + 1 };
+          }
+        }
+
         // Perform the injection
         await this.performInjection(injection);
 
