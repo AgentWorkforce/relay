@@ -73,7 +73,7 @@ async function initCloudPersistence(workspaceId: string): Promise<CloudPersisten
     cleanupInterval.unref();
 
     // Helper to get or create session with race protection
-    async function getOrCreateSession(agentName: string): Promise<string> {
+    const getOrCreateSession = async (agentName: string): Promise<string> => {
       // Check cache first
       const cached = agentSessionIds.get(agentName);
       if (cached) {
