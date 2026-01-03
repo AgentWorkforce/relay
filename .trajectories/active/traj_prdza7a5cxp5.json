@@ -1,0 +1,25 @@
+{
+  "id": "traj_prdza7a5cxp5",
+  "version": 1,
+  "task": {
+    "title": "Fix notification filtering to use dynamic user",
+    "source": {
+      "system": "plain",
+      "id": "agent-relay-319"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-01-03T15:51:54.280Z",
+  "agents": [
+    {
+      "name": "UIFixer",
+      "role": "lead",
+      "joinedAt": "2026-01-03T15:51:54.281Z"
+    }
+  ],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": []
+}

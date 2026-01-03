@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-03T15:37:00.902Z",
+  "lastUpdated": "2026-01-03T15:51:54.282Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -211,6 +211,26 @@
       "startedAt": "2026-01-03T15:26:26.404Z",
       "completedAt": "2026-01-03T15:37:00.890Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_qb3twvvywfwi.json"
+    },
+    "traj_5vr4e9erb1fs": {
+      "title": "Investigate P0 spawn bug agent-relay-453",
+      "status": "completed",
+      "startedAt": "2026-01-03T15:46:41.489Z",
+      "completedAt": "2026-01-03T15:46:53.995Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_5vr4e9erb1fs.json"
+    },
+    "traj_hpungyhoj6v5": {
+      "title": "Fix tmux-wrapper.ts spawn CLI optional",
+      "status": "completed",
+      "startedAt": "2026-01-03T15:47:17.137Z",
+      "completedAt": "2026-01-03T15:50:12.155Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_hpungyhoj6v5.json"
+    },
+    "traj_prdza7a5cxp5": {
+      "title": "Fix notification filtering to use dynamic user",
+      "status": "active",
+      "startedAt": "2026-01-03T15:51:54.280Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/active/traj_prdza7a5cxp5.json"
     }
   }
 }
