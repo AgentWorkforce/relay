@@ -28,7 +28,7 @@
     },
     {
       "name": "agent-relay-snippet",
-      "version": "1.0.2",
+      "version": "1.0.5",
       "description": "AGENTS.md / CLAUDE.md snippet for agents on how to use agent-relay",
       "format": "generic",
       "subtype": "snippet",
@@ -39,6 +39,60 @@
       },
       "files": [
         "docs/agent-relay-snippet.md"
+      ]
+    },
+    {
+      "name": "agent-relay-protocol",
+      "version": "1.0.1",
+      "description": "Internal protocol snippet with session persistence, continuity, and trajectory tracking for dashboard integration",
+      "format": "generic",
+      "subtype": "snippet",
+      "private": true,
+      "snippet": {
+        "target": "AGENTS.md",
+        "position": "append",
+        "header": "Agent Relay Protocol"
+      },
+      "files": [
+        "docs/agent-relay-protocol.md"
+      ]
+    },
+    {
+      "name": "using-beads-bv",
+      "version": "1.0.0",
+      "description": "Skill for dependency-aware task planning with beads (bd) CLI and bv graph sidecar - covers ready work selection, priority management, and robot flags",
+      "format": "claude",
+      "subtype": "skill",
+      "private": true,
+      "tags": [
+        "task-management",
+        "dependency-tracking",
+        "project-planning",
+        "lead-agent",
+        "coordination"
+      ],
+      "files": [
+        ".claude/skills/using-beads-bv/SKILL.md"
+      ]
+    },
+    {
+      "name": "shadow-agents",
+      "version": "1.0.0",
+      "description": "Shadow agent profiles for code review, session auditing, and active monitoring - assign to spawned agents for oversight",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "shadow",
+        "review",
+        "audit",
+        "monitoring",
+        "oversight",
+        "code-review"
+      ],
+      "files": [
+        ".claude/agents/shadow-reviewer.md",
+        ".claude/agents/shadow-auditor.md",
+        ".claude/agents/shadow-active.md"
       ]
     }
   ]

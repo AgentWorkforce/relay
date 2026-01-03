@@ -2,8 +2,9 @@
  * MessageStatusIndicator Component
  *
  * Shows the delivery status of a message:
- * - Sending: Animated clock/pending icon
- * - Received/Acked: Checkmark icon
+ * - Sending/Unread: Animated clock/pending icon
+ * - Acked/Read: Checkmark icon (success)
+ * - Failed: Exclamation icon (error - NACK or timeout)
  *
  * Used to indicate when a message was received by an agent
  * before they start responding (fills the gap before ThinkingIndicator).
@@ -57,6 +58,18 @@ export function MessageStatusIndicator({
     );
   }
 
+  // Failed - show error indicator
+  if (status === 'failed') {
+    return (
+      <span
+        className={`inline-flex items-center justify-center ${sizeClass} text-error`}
+        title="Delivery failed"
+      >
+        <FailedIcon className={sizeClass} />
+      </span>
+    );
+  }
+
   return null;
 }
 
@@ -87,6 +100,23 @@ function CheckIcon({ className }: { className?: string }) {
     >
       {/* Single checkmark for delivered */}
       <path d="M3 8l3 3 7-7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function FailedIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+    >
+      {/* Exclamation mark in circle for failed delivery */}
+      <circle cx="8" cy="8" r="6" />
+      <line x1="8" y1="5" x2="8" y2="8" strokeLinecap="round" />
+      <circle cx="8" cy="11" r="0.5" fill="currentColor" stroke="none" />
     </svg>
   );
 }

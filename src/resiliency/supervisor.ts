@@ -11,6 +11,8 @@ import { Logger, createLogger, LogLevel } from './logger.js';
 import { metrics } from './metrics.js';
 import { ContextPersistence, getContextPersistence } from './context-persistence.js';
 import { createContextHandler, detectProvider, ProviderType } from './provider-context.js';
+import { LeaderWatchdog } from './leader-watchdog.js';
+import { StatelessLeadCoordinator, LeadHeartbeat } from './stateless-lead.js';
 
 export interface SupervisedAgent {
   name: string;
@@ -36,6 +38,14 @@ export interface SupervisorConfig {
     enabled: boolean;
     baseDir?: string;
     autoInjectOnRestart: boolean;
+  };
+  /** Leader coordination (P0-P3) */
+  leaderCoordination?: {
+    enabled: boolean;
+    /** Path to .beads directory */
+    beadsDir: string;
+    /** Callback to send relay messages */
+    sendRelay?: (to: string, message: string) => Promise<void>;
   };
 }
 
@@ -64,10 +74,14 @@ export class AgentSupervisor extends EventEmitter {
   private restarters = new Map<string, () => Promise<void>>();
   private contextPersistence?: ContextPersistence;
   private contextHandlers = new Map<string, ReturnType<typeof createContextHandler>>();
+  private leaderWatchdog?: LeaderWatchdog;
+  private leadCoordinator?: StatelessLeadCoordinator;
+  private supervisorAgentId: string;
 
   constructor(config: Partial<SupervisorConfig> = {}) {
     super();
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.supervisorAgentId = `supervisor-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     this.logger = createLogger('supervisor', {
       level: this.config.logging.level,
@@ -103,6 +117,16 @@ export class AgentSupervisor extends EventEmitter {
     this.logger.info('Agent supervisor stopping');
     this.healthMonitor.stop();
 
+    // Stop leader coordination
+    if (this.leaderWatchdog) {
+      this.leaderWatchdog.stop();
+    }
+    if (this.leadCoordinator) {
+      this.leadCoordinator.stop().catch((err) => {
+        this.logger.error('Error stopping lead coordinator', { error: String(err) });
+      });
+    }
+
     // Stop context persistence
     if (this.contextPersistence) {
       this.contextPersistence.stopAutoSave();
@@ -114,6 +138,132 @@ export class AgentSupervisor extends EventEmitter {
         this.logger.error('Error cleaning up context handler', { name, error: String(err) });
       });
     });
+  }
+
+  /**
+   * Enable leader coordination with watchdog
+   * This allows this supervisor to participate in leader election and
+   * potentially become the lead coordinator for task distribution.
+   */
+  enableLeaderCoordination(beadsDir: string, sendRelay: (to: string, message: string) => Promise<void>): void {
+    if (this.leaderWatchdog) {
+      this.logger.warn('Leader coordination already enabled');
+      return;
+    }
+
+    this.logger.info('Enabling leader coordination', { beadsDir });
+
+    // Create watchdog to monitor leader health
+    this.leaderWatchdog = new LeaderWatchdog({
+      beadsDir,
+      agentName: 'supervisor',
+      agentId: this.supervisorAgentId,
+      checkIntervalMs: 5000,
+      staleThresholdMs: 30000,
+      onBecomeLeader: async () => {
+        await this.becomeLeader(beadsDir, sendRelay);
+      },
+      getHealthyAgents: async () => {
+        return this.getHealthyAgents();
+      },
+    });
+
+    // Forward watchdog events
+    this.leaderWatchdog.on('electionStarted', (data) => this.emit('electionStarted', data));
+    this.leaderWatchdog.on('electionComplete', (data) => this.emit('electionComplete', data));
+    this.leaderWatchdog.on('becameLeader', () => this.emit('becameLeader'));
+    this.leaderWatchdog.on('leaderStale', (data) => this.emit('leaderStale', data));
+
+    this.leaderWatchdog.start();
+  }
+
+  /**
+   * Called when this supervisor wins leader election
+   */
+  private async becomeLeader(beadsDir: string, sendRelay: (to: string, message: string) => Promise<void>): Promise<void> {
+    this.logger.info('This supervisor is becoming the lead coordinator');
+
+    // Stop existing coordinator if any
+    if (this.leadCoordinator) {
+      await this.leadCoordinator.stop();
+    }
+
+    // Create stateless lead coordinator
+    this.leadCoordinator = new StatelessLeadCoordinator({
+      beadsDir,
+      agentName: 'supervisor',
+      agentId: this.supervisorAgentId,
+      pollIntervalMs: 5000,
+      heartbeatIntervalMs: 10000,
+      leaseDurationMs: 300000,
+      sendRelay,
+      getAvailableWorkers: async () => {
+        return this.getAvailableWorkerNames();
+      },
+    });
+
+    // Forward coordinator events
+    this.leadCoordinator.on('assigned', (data) => this.emit('taskAssigned', data));
+    this.leadCoordinator.on('completed', (data) => this.emit('taskCompleted', data));
+
+    await this.leadCoordinator.start();
+  }
+
+  /**
+   * Get healthy agents for leader election
+   */
+  private getHealthyAgents(): Array<{ name: string; id: string; spawnedAt: Date }> {
+    const healthyAgents: Array<{ name: string; id: string; spawnedAt: Date }> = [];
+
+    for (const [name, agent] of this.agents) {
+      const health = this.healthMonitor.get(name);
+      if (health && health.status === 'healthy') {
+        healthyAgents.push({
+          name: agent.name,
+          id: `${agent.name}-${agent.pid}`,
+          spawnedAt: agent.spawnedAt,
+        });
+      }
+    }
+
+    // Include supervisor itself as a candidate
+    healthyAgents.push({
+      name: 'supervisor',
+      id: this.supervisorAgentId,
+      spawnedAt: new Date(0), // Supervisor is always oldest
+    });
+
+    return healthyAgents;
+  }
+
+  /**
+   * Get available worker names (healthy agents not currently busy)
+   */
+  private getAvailableWorkerNames(): string[] {
+    const available: string[] = [];
+
+    for (const [name, agent] of this.agents) {
+      const health = this.healthMonitor.get(name);
+      if (health && health.status === 'healthy') {
+        available.push(agent.name);
+      }
+    }
+
+    return available;
+  }
+
+  /**
+   * Check if this supervisor is currently the leader
+   */
+  isLeader(): boolean {
+    return this.leaderWatchdog?.isCurrentLeader() ?? false;
+  }
+
+  /**
+   * Get current leader info
+   */
+  getCurrentLeader(): LeadHeartbeat | null {
+    return this.leaderWatchdog?.getCurrentLeader() ?? null;
   }
 
   /**

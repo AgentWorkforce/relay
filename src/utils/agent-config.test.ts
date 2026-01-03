@@ -119,6 +119,93 @@ allowed-tools: Read, Grep, Glob
     });
   });
 
+  describe('auto-detect integration pattern', () => {
+    // Tests the pattern used by TmuxWrapper and PtyWrapper
+    // to auto-detect agent role from config files
+
+    it('detects role when config exists with description', () => {
+      const agentsDir = path.join(tempDir, '.claude', 'agents');
+      fs.mkdirSync(agentsDir, { recursive: true });
+      fs.writeFileSync(path.join(agentsDir, 'backend.md'), `---
+name: backend
+description: Backend development agent - handles server-side tasks
+model: sonnet
+---
+# Backend Agent
+`);
+
+      // Simulate wrapper auto-detect pattern
+      const configTask: string | undefined = undefined; // No explicit task
+      let detectedTask = configTask;
+      if (!detectedTask) {
+        const agentConfig = findAgentConfig('Backend', tempDir);
+        if (agentConfig?.description) {
+          detectedTask = agentConfig.description;
+        }
+      }
+
+      expect(detectedTask).toBe('Backend development agent - handles server-side tasks');
+    });
+
+    it('uses explicit task when provided', () => {
+      const agentsDir = path.join(tempDir, '.claude', 'agents');
+      fs.mkdirSync(agentsDir, { recursive: true });
+      fs.writeFileSync(path.join(agentsDir, 'worker.md'), `---
+description: Config description
+---
+`);
+
+      // Simulate wrapper auto-detect pattern with explicit task
+      const configTask = 'Explicit task override';
+      let detectedTask = configTask;
+      if (!detectedTask) {
+        const agentConfig = findAgentConfig('Worker', tempDir);
+        if (agentConfig?.description) {
+          detectedTask = agentConfig.description;
+        }
+      }
+
+      expect(detectedTask).toBe('Explicit task override');
+    });
+
+    it('handles missing config gracefully', () => {
+      // Simulate wrapper auto-detect pattern with no config
+      const configTask: string | undefined = undefined;
+      let detectedTask = configTask;
+      if (!detectedTask) {
+        const agentConfig = findAgentConfig('NonExistent', tempDir);
+        if (agentConfig?.description) {
+          detectedTask = agentConfig.description;
+        }
+      }
+
+      expect(detectedTask).toBeUndefined();
+    });
+
+    it('handles config without description gracefully', () => {
+      const agentsDir = path.join(tempDir, '.claude', 'agents');
+      fs.mkdirSync(agentsDir, { recursive: true });
+      fs.writeFileSync(path.join(agentsDir, 'nodesc.md'), `---
+name: nodesc
+model: haiku
+---
+# Agent without description
+`);
+
+      // Simulate wrapper auto-detect pattern
+      const configTask: string | undefined = undefined;
+      let detectedTask = configTask;
+      if (!detectedTask) {
+        const agentConfig = findAgentConfig('nodesc', tempDir);
+        if (agentConfig?.description) {
+          detectedTask = agentConfig.description;
+        }
+      }
+
+      expect(detectedTask).toBeUndefined();
+    });
+  });
+
   describe('buildClaudeArgs', () => {
     it('returns existing args when no config found', () => {
       const args = buildClaudeArgs('Unknown', ['--debug'], tempDir);

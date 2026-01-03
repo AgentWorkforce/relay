@@ -98,7 +98,78 @@
           "position": "append"
         }
       }
+    },
+    "@agent-workforce/trail-snippet#agents.md": {
+      "version": "1.0.0",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-workforce%2Ftrail-snippet/1.0.0.tar.gz",
+      "integrity": "sha256-3b39b2befbd2a832296efe84f23c6a22eb047486974f5cb780a93b461e27720e",
+      "format": "agents.md",
+      "subtype": "snippet",
+      "sourceFormat": "generic",
+      "sourceSubtype": "snippet",
+      "installedPath": "AGENTS.md",
+      "snippetMetadata": {
+        "targetPath": "AGENTS.md",
+        "config": {
+          "target": "AGENTS.md",
+          "position": "append"
+        }
+      }
+    },
+    "@my-senior-dev/github-oauth-nango-integration#claude": {
+      "version": "1.0.0",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40my-senior-dev%2Fgithub-oauth-nango-integration/1.0.0.tar.gz",
+      "integrity": "sha256-71a1a37a07f18a475f6aa21b68a0ca785ebb3b86547ac9140ddf4e6cdda57b2f",
+      "format": "claude",
+      "subtype": "skill",
+      "sourceFormat": "claude",
+      "sourceSubtype": "skill",
+      "installedPath": ".claude/skills/github-oauth-nango-integration/SKILL.md"
+    },
+    "@agent-relay/agent-relay-snippet#agents.md:AGENTS.md": {
+      "version": "1.0.5",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-relay%2Fagent-relay-snippet/1.0.5.tar.gz",
+      "integrity": "sha256-cec9b1a517a9858d4c2583cac4addf074796a19583ed506797a1d7467bda5c90",
+      "format": "agents.md",
+      "subtype": "snippet",
+      "sourceFormat": "generic",
+      "sourceSubtype": "snippet",
+      "installedPath": "AGENTS.md",
+      "snippetMetadata": {
+        "targetPath": "AGENTS.md",
+        "config": {
+          "target": "AGENTS.md",
+          "position": "append"
+        }
+      }
+    },
+    "@agent-relay/agent-relay-protocol#agents.md:AGENTS.md": {
+      "version": "1.0.1",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-relay%2Fagent-relay-protocol/1.0.1.tar.gz",
+      "integrity": "sha256-64f1f0eb15985079ac30594e8c7a5f41012f8efec80d8c5dc2059f11e2565f65",
+      "format": "agents.md",
+      "subtype": "snippet",
+      "sourceFormat": "generic",
+      "sourceSubtype": "snippet",
+      "installedPath": "AGENTS.md",
+      "snippetMetadata": {
+        "targetPath": "AGENTS.md",
+        "config": {
+          "target": "AGENTS.md",
+          "position": "append"
+        }
+      }
+    },
+    "@my-senior-dev/browser-testing-with-screenshots#claude": {
+      "version": "1.0.0",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40my-senior-dev%2Fbrowser-testing-with-screenshots/1.0.0.tar.gz",
+      "integrity": "sha256-d0443e43bc37284cbe81003649536ffa961bc672cb38c83696d6786c75d5a334",
+      "format": "claude",
+      "subtype": "skill",
+      "sourceFormat": "claude",
+      "sourceSubtype": "skill",
+      "installedPath": ".claude/skills/browser-testing-with-screenshots/SKILL.md"
     }
   },
-  "generated": "2025-12-28T23:37:18.122Z"
+  "generated": "2026-01-03T15:28:59.485Z"
 }

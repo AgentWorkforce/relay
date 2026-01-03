@@ -124,3 +124,26 @@ export {
   type CrashPattern,
   type CrashStats,
 } from './crash-insights.js';
+
+export {
+  StatelessLeadCoordinator,
+  createStatelessLead,
+  type BeadsTask,
+  type LeadHeartbeat,
+  type StatelessLeadConfig,
+} from './stateless-lead.js';
+
+export {
+  LeaderWatchdog,
+  createLeaderWatchdog,
+  type LeaderWatchdogConfig,
+  type ElectionResult,
+} from './leader-watchdog.js';
+
+export {
+  GossipHealthMonitor,
+  createGossipHealth,
+  type GossipHeartbeat,
+  type PeerHealth,
+  type GossipHealthConfig,
+} from './gossip-health.js';

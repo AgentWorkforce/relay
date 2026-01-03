@@ -83,7 +83,7 @@ export function useSession(options: UseSessionOptions = {}): UseSessionReturn {
       }
 
       return status;
-    } catch (e) {
+    } catch (_e) {
       return {
         authenticated: false,
         code: 'SESSION_ERROR',

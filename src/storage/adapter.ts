@@ -1,6 +1,6 @@
 import type { PayloadKind, SendMeta } from '../protocol/types.js';
 
-export type MessageStatus = 'unread' | 'read' | 'acked';
+export type MessageStatus = 'unread' | 'read' | 'acked' | 'failed';
 
 export interface StoredMessage {
   id: string;

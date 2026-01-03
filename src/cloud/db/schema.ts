@@ -31,10 +31,17 @@ export const users = pgTable('users', {
   email: varchar('email', { length: 255 }),
   avatarUrl: varchar('avatar_url', { length: 512 }),
   plan: varchar('plan', { length: 50 }).notNull().default('free'),
+  // Nango OAuth connections
+  nangoConnectionId: varchar('nango_connection_id', { length: 255 }), // Permanent login connection
+  incomingConnectionId: varchar('incoming_connection_id', { length: 255 }), // Temp polling connection
+  pendingInstallationRequest: timestamp('pending_installation_request'), // Org approval wait
   onboardingCompletedAt: timestamp('onboarding_completed_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
+}, (table) => ({
+  nangoConnectionIdx: index('idx_users_nango_connection').on(table.nangoConnectionId),
+  incomingConnectionIdx: index('idx_users_incoming_connection').on(table.incomingConnectionId),
+}));
 
 export const usersRelations = relations(users, ({ many }) => ({
   credentials: many(credentials),
@@ -42,6 +49,41 @@ export const usersRelations = relations(users, ({ many }) => ({
   projectGroups: many(projectGroups),
   repositories: many(repositories),
   linkedDaemons: many(linkedDaemons),
+  installedGitHubApps: many(githubInstallations),
+}));
+
+// ============================================================================
+// GitHub App Installations
+// ============================================================================
+
+export const githubInstallations = pgTable('github_installations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  installationId: varchar('installation_id', { length: 255 }).unique().notNull(),
+  accountType: varchar('account_type', { length: 50 }).notNull(), // 'user' | 'organization'
+  accountLogin: varchar('account_login', { length: 255 }).notNull(),
+  accountId: varchar('account_id', { length: 255 }).notNull(),
+  installedById: uuid('installed_by_id').references(() => users.id, { onDelete: 'set null' }),
+  // Permissions granted to the installation
+  permissions: jsonb('permissions').$type<Record<string, string>>().default({}),
+  // Events the installation is subscribed to
+  events: text('events').array(),
+  // Installation state
+  suspended: boolean('suspended').notNull().default(false),
+  suspendedAt: timestamp('suspended_at'),
+  suspendedBy: varchar('suspended_by', { length: 255 }),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  accountLoginIdx: index('idx_github_installations_account_login').on(table.accountLogin),
+  installedByIdx: index('idx_github_installations_installed_by').on(table.installedById),
+}));
+
+export const githubInstallationsRelations = relations(githubInstallations, ({ one, many }) => ({
+  installedBy: one(users, {
+    fields: [githubInstallations.installedById],
+    references: [users.id],
+  }),
+  repositories: many(repositories),
 }));
 
 // ============================================================================
@@ -191,6 +233,9 @@ export const repositories = pgTable('repositories', {
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
   projectGroupId: uuid('project_group_id').references(() => projectGroups.id, { onDelete: 'set null' }),
+  // GitHub App installation that provides access to this repo
+  installationId: uuid('installation_id').references(() => githubInstallations.id, { onDelete: 'set null' }),
+  nangoConnectionId: varchar('nango_connection_id', { length: 255 }),
   githubFullName: varchar('github_full_name', { length: 255 }).notNull(),
   githubId: bigint('github_id', { mode: 'number' }).notNull(),
   defaultBranch: varchar('default_branch', { length: 255 }).notNull().default('main'),
@@ -211,6 +256,8 @@ export const repositories = pgTable('repositories', {
   userIdIdx: index('idx_repositories_user_id').on(table.userId),
   workspaceIdIdx: index('idx_repositories_workspace_id').on(table.workspaceId),
   projectGroupIdIdx: index('idx_repositories_project_group_id').on(table.projectGroupId),
+  installationIdIdx: index('idx_repositories_installation_id').on(table.installationId),
+  nangoConnectionIdx: index('idx_repositories_nango_connection').on(table.nangoConnectionId),
 }));
 
 export const repositoriesRelations = relations(repositories, ({ one }) => ({
@@ -225,6 +272,10 @@ export const repositoriesRelations = relations(repositories, ({ one }) => ({
   projectGroup: one(projectGroups, {
     fields: [repositories.projectGroupId],
     references: [projectGroups.id],
+  }),
+  installation: one(githubInstallations, {
+    fields: [repositories.installationId],
+    references: [githubInstallations.id],
   }),
 }));
 
@@ -341,6 +392,8 @@ export const agentSummaries = pgTable('agent_summaries', {
 
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
+export type GitHubInstallation = typeof githubInstallations.$inferSelect;
+export type NewGitHubInstallation = typeof githubInstallations.$inferInsert;
 export type Credential = typeof credentials.$inferSelect;
 export type NewCredential = typeof credentials.$inferInsert;
 export type Workspace = typeof workspaces.$inferSelect;

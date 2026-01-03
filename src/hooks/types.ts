@@ -167,3 +167,172 @@ export interface HookConfig {
  * Handler function signature for programmatic hooks
  */
 export type HookHandler = (context: HookContext) => HookResult | Promise<HookResult>;
+
+// ============================================================================
+// Lifecycle Hook Types
+// ============================================================================
+
+/**
+ * Extended context for session start hooks
+ */
+export interface SessionStartContext extends HookContext {
+  /** Task description if agent was started with a task */
+  task?: string;
+  /** Task ID if linked to external system */
+  taskId?: string;
+  /** Task source (e.g., 'beads', 'linear', 'github') */
+  taskSource?: string;
+}
+
+/**
+ * Extended context for session end hooks
+ */
+export interface SessionEndContext extends HookContext {
+  /** Exit code if available */
+  exitCode?: number;
+  /** Duration of the session in milliseconds */
+  duration: number;
+  /** Whether the session ended gracefully */
+  graceful: boolean;
+}
+
+/**
+ * Extended context for output hooks
+ */
+export interface OutputContext extends HookContext {
+  /** Cleaned output (ANSI codes stripped) */
+  content: string;
+  /** Raw output with ANSI codes */
+  rawContent: string;
+  /** Whether this is a complete line */
+  isComplete: boolean;
+}
+
+/**
+ * Extended context for message received hooks
+ */
+export interface MessageReceivedContext extends HookContext {
+  /** Sender agent name */
+  from: string;
+  /** Message body */
+  body: string;
+  /** Message ID */
+  messageId: string;
+  /** Thread ID if threaded */
+  thread?: string;
+}
+
+/**
+ * Extended context for message sent hooks
+ */
+export interface MessageSentContext extends HookContext {
+  /** Target agent name */
+  to: string;
+  /** Message body */
+  body: string;
+  /** Thread ID if threaded */
+  thread?: string;
+}
+
+/**
+ * Extended context for idle hooks
+ */
+export interface IdleContext extends HookContext {
+  /** Duration of inactivity in milliseconds */
+  idleDuration: number;
+  /** Number of times idle hook has fired this session */
+  idleCount: number;
+}
+
+/**
+ * Extended context for error hooks
+ */
+export interface ErrorContext extends HookContext {
+  /** The error that occurred */
+  error: Error;
+  /** Phase where error occurred (e.g., 'output', 'message', 'tool') */
+  phase?: string;
+}
+
+/**
+ * Lifecycle hook handler types
+ */
+export type OnSessionStartHook = (ctx: SessionStartContext) => Promise<HookResult | void> | HookResult | void;
+export type OnSessionEndHook = (ctx: SessionEndContext) => Promise<HookResult | void> | HookResult | void;
+export type OnOutputHook = (ctx: OutputContext) => Promise<HookResult | void> | HookResult | void;
+export type OnMessageReceivedHook = (ctx: MessageReceivedContext) => Promise<HookResult | void> | HookResult | void;
+export type OnMessageSentHook = (ctx: MessageSentContext) => Promise<HookResult | void> | HookResult | void;
+export type OnIdleHook = (ctx: IdleContext) => Promise<HookResult | void> | HookResult | void;
+export type OnErrorHook = (ctx: ErrorContext) => Promise<HookResult | void> | HookResult | void;
+
+/**
+ * Lifecycle hook definitions for registration
+ */
+export interface LifecycleHooks {
+  onSessionStart?: OnSessionStartHook | OnSessionStartHook[];
+  onSessionEnd?: OnSessionEndHook | OnSessionEndHook[];
+  onOutput?: OnOutputHook | OnOutputHook[];
+  onMessageReceived?: OnMessageReceivedHook | OnMessageReceivedHook[];
+  onMessageSent?: OnMessageSentHook | OnMessageSentHook[];
+  onIdle?: OnIdleHook | OnIdleHook[];
+  onError?: OnErrorHook | OnErrorHook[];
+}
+
+/**
+ * Lifecycle hook event names
+ */
+export type LifecycleHookEvent =
+  | 'sessionStart'
+  | 'sessionEnd'
+  | 'output'
+  | 'messageReceived'
+  | 'messageSent'
+  | 'idle'
+  | 'error';
+
+/**
+ * Pattern handler for custom namespaces (e.g., @deploy:, @notify:)
+ */
+export type PatternHandler = (
+  target: string,
+  message: string,
+  ctx: HookContext
+) => Promise<HookResult | void> | HookResult | void;
+
+/**
+ * Memory configuration for hooks
+ */
+export interface HooksMemoryConfig {
+  /** Memory adapter type: 'inmemory', 'supermemory', etc. */
+  type?: string;
+  /** API key for external memory services */
+  apiKey?: string;
+  /** Custom API endpoint */
+  endpoint?: string;
+  /** Whether to inject memories on session start */
+  injectOnStart?: boolean;
+  /** Maximum memories to inject on start */
+  maxStartMemories?: number;
+  /** Whether to prompt for memory save on session end */
+  promptOnEnd?: boolean;
+  /** Whether to auto-save detected learnings (default: true) */
+  autoSave?: boolean;
+  /** Whether to track learnings for session-end summary (default: true) */
+  autoSaveOnEnd?: boolean;
+}
+
+/**
+ * Full hooks configuration
+ */
+export interface HooksConfig {
+  /** Lifecycle hooks */
+  hooks?: LifecycleHooks;
+  /** Pattern handlers by namespace */
+  patterns?: Record<string, PatternHandler | 'builtin'>;
+  /** Idle timeout in milliseconds (default: 30000) */
+  idleTimeout?: number;
+  /** Whether to enable trajectory tracking hooks */
+  trajectoryTracking?: boolean;
+  /** Memory system configuration */
+  memory?: HooksMemoryConfig | boolean;
+}

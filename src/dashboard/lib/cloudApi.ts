@@ -130,7 +130,93 @@ async function cloudFetch<T>(
 /**
  * Cloud API methods
  */
+// ===== Nango Auth Types =====
+
+export interface NangoLoginSession {
+  sessionToken: string;
+  tempUserId: string;
+}
+
+export interface NangoLoginStatus {
+  ready: boolean;
+  user?: {
+    id: string;
+    githubUsername: string;
+    email?: string;
+    avatarUrl?: string;
+    plan: string;
+  };
+}
+
+export interface NangoRepoSession {
+  sessionToken: string;
+}
+
+export interface NangoRepoStatus {
+  ready: boolean;
+  pendingApproval?: boolean;
+  message?: string;
+  repos?: Array<{
+    id: string;
+    fullName: string;
+    isPrivate: boolean;
+    defaultBranch: string;
+  }>;
+}
+
 export const cloudApi = {
+  // ===== Nango Auth =====
+
+  /**
+   * Get a Nango connect session for GitHub login
+   */
+  async getNangoLoginSession(): Promise<{ success: true; data: NangoLoginSession } | { success: false; error: string }> {
+    try {
+      const response = await fetch('/api/auth/nango/login-session', {
+        credentials: 'include',
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        return { success: false, error: data.error || 'Failed to create login session' };
+      }
+      return { success: true, data: data as NangoLoginSession };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Network error' };
+    }
+  },
+
+  /**
+   * Poll for login completion after Nango connect UI
+   */
+  async checkNangoLoginStatus(connectionId: string): Promise<{ success: true; data: NangoLoginStatus } | { success: false; error: string }> {
+    try {
+      const response = await fetch(`/api/auth/nango/login-status/${encodeURIComponent(connectionId)}`, {
+        credentials: 'include',
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        return { success: false, error: data.error || 'Failed to check login status' };
+      }
+      return { success: true, data: data as NangoLoginStatus };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Network error' };
+    }
+  },
+
+  /**
+   * Get a Nango connect session for GitHub App OAuth (repo access)
+   */
+  async getNangoRepoSession(): Promise<{ success: true; data: NangoRepoSession } | { success: false; error: string; sessionExpired?: boolean }> {
+    return cloudFetch<NangoRepoSession>('/api/auth/nango/repo-session');
+  },
+
+  /**
+   * Poll for repo sync completion after GitHub App OAuth
+   */
+  async checkNangoRepoStatus(connectionId: string): Promise<{ success: true; data: NangoRepoStatus } | { success: false; error: string; sessionExpired?: boolean }> {
+    return cloudFetch<NangoRepoStatus>(`/api/auth/nango/repo-status/${encodeURIComponent(connectionId)}`);
+  },
+
   /**
    * Check current session status
    */

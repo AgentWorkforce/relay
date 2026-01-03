@@ -5,3 +5,6 @@
  */
 
 export * from './types.js';
+export * from './registry.js';
+export * from './trajectory-hooks.js';
+export * from './emitter.js';

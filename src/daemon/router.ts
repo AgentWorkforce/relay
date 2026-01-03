@@ -15,6 +15,7 @@ import {
 } from '../protocol/types.js';
 import type { StorageAdapter } from '../storage/adapter.js';
 import type { AgentRegistry } from './agent-registry.js';
+import { routerLog } from '../utils/logger.js';
 
 export interface RoutableConnection {
   id: string;
@@ -237,7 +238,7 @@ export class Router {
     // Set reverse lookup
     this.primaryByShadow.set(shadowAgent, primaryAgent);
 
-    console.log(`[router] Shadow bound: ${shadowAgent} -> ${primaryAgent} (speakOn: ${relationship.speakOn.join(', ')})`);
+    routerLog.info(`Shadow bound: ${shadowAgent} -> ${primaryAgent}`, { speakOn: relationship.speakOn });
   }
 
   /**
@@ -261,7 +262,7 @@ export class Router {
     // Remove reverse lookup
     this.primaryByShadow.delete(shadowAgent);
 
-    console.log(`[router] Shadow unbound: ${shadowAgent} from ${primaryAgent}`);
+    routerLog.info(`Shadow unbound: ${shadowAgent} from ${primaryAgent}`);
   }
 
   /**
@@ -330,7 +331,7 @@ export class Router {
       const sent = target.send(deliver);
       if (sent) {
         this.trackDelivery(target, deliver);
-        console.log(`[router] Shadow trigger ${trigger} sent to ${shadow.shadowAgent} (primary: ${primaryAgent})`);
+        routerLog.debug(`Shadow trigger ${trigger} sent to ${shadow.shadowAgent}`, { primary: primaryAgent });
         // Set processing state for triggered shadows - they're expected to respond
         this.setProcessing(shadow.shadowAgent, deliver.id);
       }
@@ -359,7 +360,7 @@ export class Router {
   route(from: RoutableConnection, envelope: SendEnvelope): void {
     const senderName = from.agentName;
     if (!senderName) {
-      console.log(`[router] Dropping message - sender has no name`);
+      routerLog.warn('Dropping message - sender has no name');
       return;
     }
 
@@ -371,7 +372,7 @@ export class Router {
     const to = envelope.to;
     const topic = envelope.topic;
 
-    console.log(`[router] ${senderName} -> ${to}:${envelope.payload.body?.substring(0, 50)}...`);
+    routerLog.debug(`${senderName} -> ${to}`, { preview: envelope.payload.body?.substring(0, 50) });
 
     if (to === '*') {
       // Broadcast to all (except sender)
@@ -440,7 +441,7 @@ export class Router {
       const sent = target.send(deliver);
       if (sent) {
         this.trackDelivery(target, deliver);
-        console.log(`[router] Shadow copy to ${shadow.shadowAgent} (${direction} from ${primaryAgent})`);
+        routerLog.debug(`Shadow copy to ${shadow.shadowAgent}`, { direction, primary: primaryAgent });
         // Note: Don't set processing state for shadow copies - shadow stays passive
       }
     }
@@ -460,16 +461,16 @@ export class Router {
     if (!target) {
       const remoteAgent = this.crossMachineHandler?.isRemoteAgent(to);
       if (remoteAgent) {
-        console.log(`[router] Routing to remote agent: ${to} on ${remoteAgent.daemonName}`);
+        routerLog.info(`Routing to remote agent: ${to}`, { daemonName: remoteAgent.daemonName });
         return this.sendToRemoteAgent(from, to, envelope, remoteAgent);
       }
-      console.log(`[router] Target "${to}" not found. Available agents: ${Array.from(this.agents.keys()).join(', ')}`);
+      routerLog.warn(`Target "${to}" not found`, { availableAgents: Array.from(this.agents.keys()) });
       return false;
     }
 
     const deliver = this.createDeliverEnvelope(from, to, envelope, target);
     const sent = target.send(deliver);
-    console.log(`[router] Delivered to ${to}: ${sent ? 'success' : 'failed'}`);
+    routerLog.debug(`Delivered to ${to}`, { success: sent });
     this.persistDeliverEnvelope(deliver);
     if (sent) {
       this.trackDelivery(target, deliver);
@@ -490,7 +491,7 @@ export class Router {
     remoteAgent: RemoteAgentInfo
   ): boolean {
     if (!this.crossMachineHandler) {
-      console.log(`[router] Cross-machine handler not available`);
+      routerLog.warn('Cross-machine handler not available');
       return false;
     }
 
@@ -509,7 +510,7 @@ export class Router {
       }
     ).then((sent) => {
       if (sent) {
-        console.log(`[router] Cross-machine message sent to ${to} on ${remoteAgent.daemonName}`);
+        routerLog.info(`Cross-machine message sent to ${to}`, { daemonName: remoteAgent.daemonName });
         // Persist as cross-machine message
         this.storage?.saveMessage({
           id: envelope.id || `cross-${Date.now()}`,
@@ -529,12 +530,12 @@ export class Router {
           status: 'unread',
           is_urgent: false,
           is_broadcast: false,
-        }).catch(err => console.error('[router] Failed to persist cross-machine message:', err));
+        }).catch(err => routerLog.error('Failed to persist cross-machine message', { error: String(err) }));
       } else {
-        console.error(`[router] Failed to send cross-machine message to ${to}`);
+        routerLog.error(`Failed to send cross-machine message to ${to}`);
       }
     }).catch(err => {
-      console.error(`[router] Cross-machine send error:`, err);
+      routerLog.error('Cross-machine send error', { error: String(err) });
     });
 
     // Return true immediately - message is queued
@@ -625,7 +626,7 @@ export class Router {
       is_urgent: false,
       is_broadcast: isBroadcast || envelope.to === '*',
     }).catch((err) => {
-      console.error('[router] Failed to persist message', err);
+      routerLog.error('Failed to persist message', { error: String(err) });
     });
   }
 
@@ -682,7 +683,7 @@ export class Router {
 
     const timer = setTimeout(() => {
       this.clearProcessing(agentName);
-      console.log(`[router] Processing timeout for ${agentName}`);
+      routerLog.warn(`Processing timeout for ${agentName}`);
     }, Router.PROCESSING_TIMEOUT_MS);
 
     this.processingAgents.set(agentName, {
@@ -690,7 +691,7 @@ export class Router {
       messageId,
       timer,
     });
-    console.log(`[router] ${agentName} started processing (message: ${messageId})`);
+    routerLog.debug(`${agentName} started processing`, { messageId });
     this.onProcessingStateChange?.();
   }
 
@@ -704,7 +705,7 @@ export class Router {
         clearTimeout(state.timer);
       }
       this.processingAgents.delete(agentName);
-      console.log(`[router] ${agentName} finished processing`);
+      routerLog.debug(`${agentName} finished processing`);
       this.onProcessingStateChange?.();
     }
   }
@@ -727,10 +728,10 @@ export class Router {
     const statusUpdate = this.storage?.updateMessageStatus?.(ackId, 'acked');
     if (statusUpdate instanceof Promise) {
       statusUpdate.catch(err => {
-        console.error('[router] Failed to record ACK status', err);
+        routerLog.error('Failed to record ACK status', { error: String(err) });
       });
     }
-    console.log(`[router] ACK received for ${ackId}`);
+    routerLog.debug(`ACK received for ${ackId}`);
   }
 
   /**
@@ -768,34 +769,87 @@ export class Router {
       const now = Date.now();
       const elapsed = now - pending.firstSentAt;
       if (elapsed > this.deliveryOptions.deliveryTtlMs) {
-        console.warn(`[router] Dropping ${deliverId} after TTL (${this.deliveryOptions.deliveryTtlMs}ms)`);
+        routerLog.warn(`Dropping ${deliverId} after TTL`, { ttlMs: this.deliveryOptions.deliveryTtlMs });
         this.pendingDeliveries.delete(deliverId);
+        // Mark message as failed in storage
+        const statusUpdate = this.storage?.updateMessageStatus?.(deliverId, 'failed');
+        if (statusUpdate instanceof Promise) {
+          statusUpdate.catch(err => {
+            routerLog.error(`Failed to update status for ${deliverId}`, { error: String(err) });
+          });
+        }
         return;
       }
 
       if (pending.attempts >= this.deliveryOptions.maxAttempts) {
-        console.warn(`[router] Dropping ${deliverId} after max attempts (${this.deliveryOptions.maxAttempts})`);
+        routerLog.warn(`Dropping ${deliverId} after max attempts`, { maxAttempts: this.deliveryOptions.maxAttempts });
         this.pendingDeliveries.delete(deliverId);
+        // Mark message as failed in storage
+        const statusUpdate = this.storage?.updateMessageStatus?.(deliverId, 'failed');
+        if (statusUpdate instanceof Promise) {
+          statusUpdate.catch(err => {
+            routerLog.error(`Failed to update status for ${deliverId}`, { error: String(err) });
+          });
+        }
         return;
       }
 
       const target = this.connections.get(pending.connectionId);
       if (!target) {
-        console.warn(`[router] Dropping ${deliverId} - connection unavailable`);
+        routerLog.warn(`Dropping ${deliverId} - connection unavailable`);
         this.pendingDeliveries.delete(deliverId);
+        // Mark message as failed in storage
+        const statusUpdate = this.storage?.updateMessageStatus?.(deliverId, 'failed');
+        if (statusUpdate instanceof Promise) {
+          statusUpdate.catch(err => {
+            routerLog.error(`Failed to update status for ${deliverId}`, { error: String(err) });
+          });
+        }
         return;
       }
 
       pending.attempts++;
       const sent = target.send(pending.envelope);
       if (!sent) {
-        console.warn(`[router] Retry failed for ${deliverId} (attempt ${pending.attempts})`);
+        routerLog.warn(`Retry failed for ${deliverId}`, { attempt: pending.attempts });
       } else {
-        console.log(`[router] Retried ${deliverId} (attempt ${pending.attempts})`);
+        routerLog.debug(`Retried ${deliverId}`, { attempt: pending.attempts });
       }
 
       pending.timer = this.scheduleRetry(deliverId);
     }, this.deliveryOptions.ackTimeoutMs);
+  }
+
+  /**
+   * Broadcast a system message to all connected agents.
+   * Used for system notifications like agent death announcements.
+   */
+  broadcastSystemMessage(message: string, data?: Record<string, unknown>): void {
+    const envelope: SendEnvelope = {
+      v: PROTOCOL_VERSION,
+      type: 'SEND',
+      id: uuid(),
+      ts: Date.now(),
+      from: '_system',
+      to: '*',
+      payload: {
+        kind: 'message',
+        body: message,
+        data: {
+          ...data,
+          _isSystemMessage: true,
+        },
+      },
+    };
+
+    // Broadcast to all agents
+    for (const [agentName, connection] of this.agents.entries()) {
+      const deliver = this.createDeliverEnvelope('_system', agentName, envelope, connection);
+      const sent = connection.send(deliver);
+      if (sent) {
+        routerLog.debug(`System broadcast sent to ${agentName}`);
+      }
+    }
   }
 
   /**
@@ -809,7 +863,7 @@ export class Router {
     const pending = await this.storage.getPendingMessagesForSession(connection.agentName, connection.sessionId);
     if (!pending.length) return;
 
-    console.log(`[router] Replaying ${pending.length} messages to ${connection.agentName}`);
+    routerLog.info(`Replaying ${pending.length} messages to ${connection.agentName}`);
 
     for (const msg of pending) {
       const deliver: DeliverEnvelope = {

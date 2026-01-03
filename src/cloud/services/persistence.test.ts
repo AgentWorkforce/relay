@@ -2,7 +2,7 @@
  * Tests for CloudPersistenceService
  */
 
-import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
 import { CloudPersistenceService } from './persistence.js';
 import type { SummaryEvent, SessionEndEvent } from '../../wrapper/pty-wrapper.js';

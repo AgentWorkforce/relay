@@ -6,6 +6,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { v4 as uuid } from 'uuid';
+import { createLogger } from '../utils/logger.js';
+
+const log = createLogger('registry');
 
 export interface AgentRecord {
   id: string;
@@ -187,7 +190,7 @@ export class AgentRegistry {
         this.agents.set(record.name, record);
       }
     } catch (err) {
-      console.error('[registry] Failed to load agents.json:', err);
+      log.error('Failed to load agents.json', { error: String(err) });
     }
   }
 
@@ -200,7 +203,7 @@ export class AgentRegistry {
       fs.writeFileSync(tempPath, data, 'utf-8');
       fs.renameSync(tempPath, this.registryPath);
     } catch (err) {
-      console.error('[registry] Failed to write agents.json:', err);
+      log.error('Failed to write agents.json', { error: String(err) });
     }
   }
 }

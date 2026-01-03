@@ -51,6 +51,8 @@ export interface MessageListProps {
   currentChannel: string;
   onThreadClick?: (messageId: string) => void;
   highlightedMessageId?: string;
+  /** Currently selected thread ID - when set, shows thread-related messages */
+  currentThread?: string | null;
   /** Agents list for checking processing state */
   agents?: Agent[];
   /** Current user info (for cloud mode - shows avatar/username instead of "Dashboard") */
@@ -62,6 +64,7 @@ export function MessageList({
   currentChannel,
   onThreadClick,
   highlightedMessageId,
+  currentThread,
   agents = [],
   currentUser,
 }: MessageListProps) {
@@ -75,6 +78,10 @@ export function MessageList({
       });
     }
   }
+
+  // Build a map of recipient -> latest message ID from current user
+  // This is used to only show the thinking indicator on the most recent message
+  const latestMessageToAgent = new Map<string, string>();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const prevFilteredLengthRef = useRef<number>(0);
@@ -84,8 +91,14 @@ export function MessageList({
   // Track if a scroll is in progress to prevent race conditions
   const isScrollingRef = useRef(false);
 
-  // Filter messages for current channel
+  // Filter messages for current channel or current thread
   const filteredMessages = messages.filter((msg) => {
+    // When a thread is selected, show messages related to that thread
+    if (currentThread) {
+      // Show the original message (id matches thread) or replies (thread field matches)
+      return msg.id === currentThread || msg.thread === currentThread;
+    }
+
     if (currentChannel === 'general') {
       // Show messages that are broadcasts (to='*' or isBroadcast flag)
       // Also show messages that have channel='general' in their metadata
@@ -94,6 +107,16 @@ export function MessageList({
     }
     return msg.from === currentChannel || msg.to === currentChannel;
   });
+
+  // Populate latestMessageToAgent with the latest message from current user to each agent
+  // Iterate in order (oldest to newest) so the last one wins
+  for (const msg of filteredMessages) {
+    const isFromCurrentUser = msg.from === 'Dashboard' ||
+      (currentUser && msg.from === currentUser.displayName);
+    if (isFromCurrentUser && msg.to !== '*') {
+      latestMessageToAgent.set(msg.to, msg.id);
+    }
+  }
 
   // Check if we need to scroll BEFORE the DOM updates
   // This runs during render, before useLayoutEffect
@@ -204,9 +227,14 @@ export function MessageList({
         const isFromCurrentUser = message.from === 'Dashboard' ||
           (currentUser && message.from === currentUser.displayName);
 
+        // Check if this is the latest message from current user to this recipient
+        // Only the latest message should show the thinking indicator
+        const isLatestToRecipient = isFromCurrentUser && message.to !== '*' &&
+          latestMessageToAgent.get(message.to) === message.id;
+
         // Check if the recipient is currently processing
-        // Only show thinking indicator for messages from current user to a specific agent
-        const recipientProcessing = isFromCurrentUser && message.to !== '*'
+        // Only show thinking indicator for the LATEST message from current user to an agent
+        const recipientProcessing = isLatestToRecipient
           ? processingAgents.get(message.to)
           : undefined;
 
@@ -705,14 +733,32 @@ function formatMessageBody(content: string): React.ReactNode {
 }
 
 /**
- * Format a single line, detecting URLs
+ * Format a single line, detecting URLs and inline code
  */
 function formatLine(line: string): React.ReactNode {
-  const urlRegex = /(https?:\/\/[^\s]+)/g;
-  const parts = line.split(urlRegex);
+  // Combined regex to match URLs and inline code (backticks)
+  // Order matters: check for backticks first to avoid URL detection inside code
+  const combinedRegex = /(`[^`]+`|https?:\/\/[^\s]+)/g;
+  const parts = line.split(combinedRegex);
 
   return parts.map((part, i) => {
-    if (urlRegex.test(part)) {
+    if (!part) return null;
+
+    // Check for inline code (backticks)
+    if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
+      const code = part.slice(1, -1);
+      return (
+        <code
+          key={i}
+          className="px-1.5 py-0.5 mx-0.5 rounded bg-bg-elevated/80 text-accent-cyan font-mono text-[0.85em] border border-border-subtle/50"
+        >
+          {code}
+        </code>
+      );
+    }
+
+    // Check for URLs
+    if (/^https?:\/\//.test(part)) {
       return (
         <a
           key={i}
@@ -725,6 +771,7 @@ function formatLine(line: string): React.ReactNode {
         </a>
       );
     }
+
     return part;
   });
 }

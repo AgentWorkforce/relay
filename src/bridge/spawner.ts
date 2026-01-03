@@ -56,6 +56,14 @@ interface ActiveWorker extends WorkerInfo {
   listeners?: ListenerBindings;
 }
 
+/** Callback for agent death notifications */
+export type OnAgentDeathCallback = (info: {
+  name: string;
+  exitCode: number | null;
+  agentId?: string;
+  resumeInstructions?: string;
+}) => void;
+
 export class AgentSpawner {
   private activeWorkers: Map<string, ActiveWorker> = new Map();
   private agentsPath: string;
@@ -64,6 +72,7 @@ export class AgentSpawner {
   private logsDir: string;
   private workersPath: string;
   private dashboardPort?: number;
+  private onAgentDeath?: OnAgentDeathCallback;
   private cloudPersistence?: CloudPersistenceHandler;
 
   constructor(projectRoot: string, _tmuxSession?: string, dashboardPort?: number) {
@@ -85,6 +94,14 @@ export class AgentSpawner {
    */
   setDashboardPort(port: number): void {
     this.dashboardPort = port;
+  }
+
+  /**
+   * Set callback for agent death notifications.
+   * Called when an agent exits unexpectedly (non-zero exit code).
+   */
+  setOnAgentDeath(callback: OnAgentDeathCallback): void {
+    this.onAgentDeath = callback;
   }
 
   /**
@@ -192,6 +209,8 @@ export class AgentSpawner {
       // Create PtyWrapper config
       // Use dashboardPort for nested spawns (API-based, works in non-TTY contexts)
       // Fall back to callbacks only if no dashboardPort is set
+      // Note: Spawned agents CAN spawn sub-workers intentionally - the parser is strict enough
+      // to avoid accidental spawns from documentation text (requires line start, PascalCase, known CLI)
       const ptyConfig: PtyWrapperConfig = {
         name,
         command,
@@ -221,16 +240,31 @@ export class AgentSpawner {
         },
         onExit: (code) => {
           if (debug) console.log(`[spawner:debug] Worker ${name} exited with code ${code}`);
-          // Clean up listeners before removing from tracking
+
+          // Get the agentId and clean up listeners before removing from active workers
           const worker = this.activeWorkers.get(name);
+          const agentId = worker?.pty?.getAgentId?.();
           if (worker?.listeners) {
             this.unbindListeners(worker.pty, worker.listeners);
           }
+
           this.activeWorkers.delete(name);
           try {
             this.saveWorkersMetadata();
           } catch (err) {
             console.error(`[spawner] Failed to save metadata on exit:`, err);
+          }
+
+          // Notify if agent died unexpectedly (non-zero exit)
+          if (code !== 0 && code !== null && this.onAgentDeath) {
+            this.onAgentDeath({
+              name,
+              exitCode: code,
+              agentId,
+              resumeInstructions: agentId
+                ? `To resume this agent's work, use: --resume ${agentId}`
+                : undefined,
+            });
           }
         },
       };
@@ -266,7 +300,7 @@ export class AgentSpawner {
       if (!registered) {
         const error = `Worker ${name} failed to register within 30s`;
         console.error(`[spawner] ${error}`);
-        pty.kill();
+        await pty.kill();
         return {
           success: false,
           name,
@@ -492,15 +526,12 @@ export class AgentSpawner {
       // Unbind all listeners first to prevent memory leaks
       this.unbindListeners(worker.pty, worker.listeners);
 
-      // Stop the pty process gracefully
-      worker.pty.stop();
-
-      // Wait for graceful shutdown
-      await sleep(2000);
+      // Stop the pty process gracefully (handles auto-save internally)
+      await worker.pty.stop();
 
       // Force kill if still running
       if (worker.pty.isRunning) {
-        worker.pty.kill();
+        await worker.pty.kill();
       }
 
       this.activeWorkers.delete(name);

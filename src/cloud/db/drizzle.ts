@@ -15,6 +15,8 @@ import { getConfig } from '../config.js';
 export type {
   User,
   NewUser,
+  GitHubInstallation,
+  NewGitHubInstallation,
   Credential,
   NewCredential,
   Workspace,
@@ -71,8 +73,14 @@ export interface UserQueries {
   findByGithubId(githubId: string): Promise<schema.User | null>;
   findByGithubUsername(username: string): Promise<schema.User | null>;
   findByEmail(email: string): Promise<schema.User | null>;
+  findByNangoConnectionId(connectionId: string): Promise<schema.User | null>;
+  findByIncomingConnectionId(connectionId: string): Promise<schema.User | null>;
   upsert(data: schema.NewUser): Promise<schema.User>;
+  update(id: string, data: Partial<Omit<schema.User, 'id' | 'createdAt'>>): Promise<void>;
   completeOnboarding(userId: string): Promise<void>;
+  clearIncomingConnectionId(userId: string): Promise<void>;
+  setPendingInstallationRequest(userId: string): Promise<void>;
+  clearPendingInstallationRequest(userId: string): Promise<void>;
 }
 
 export const userQueries: UserQueries = {
@@ -100,6 +108,21 @@ export const userQueries: UserQueries = {
     return result[0] ?? null;
   },
 
+  async findByNangoConnectionId(connectionId: string): Promise<schema.User | null> {
+    const db = getDb();
+    const result = await db
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.nangoConnectionId, connectionId));
+    return result[0] ?? null;
+  },
+
+  async findByIncomingConnectionId(connectionId: string): Promise<schema.User | null> {
+    const db = getDb();
+    const result = await db.select().from(schema.users).where(eq(schema.users.incomingConnectionId, connectionId));
+    return result[0] ?? null;
+  },
+
   async upsert(data: schema.NewUser): Promise<schema.User> {
     const db = getDb();
     const result = await db
@@ -124,6 +147,144 @@ export const userQueries: UserQueries = {
       .update(schema.users)
       .set({ onboardingCompletedAt: new Date(), updatedAt: new Date() })
       .where(eq(schema.users.id, userId));
+  },
+
+  async update(id: string, data: Partial<Omit<schema.User, 'id' | 'createdAt'>>): Promise<void> {
+    const db = getDb();
+    await db
+      .update(schema.users)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(schema.users.id, id));
+  },
+
+  async clearIncomingConnectionId(userId: string): Promise<void> {
+    const db = getDb();
+    await db
+      .update(schema.users)
+      .set({ incomingConnectionId: null, updatedAt: new Date() })
+      .where(eq(schema.users.id, userId));
+  },
+
+  async setPendingInstallationRequest(userId: string): Promise<void> {
+    const db = getDb();
+    await db
+      .update(schema.users)
+      .set({ pendingInstallationRequest: new Date(), updatedAt: new Date() })
+      .where(eq(schema.users.id, userId));
+  },
+
+  async clearPendingInstallationRequest(userId: string): Promise<void> {
+    const db = getDb();
+    await db
+      .update(schema.users)
+      .set({ pendingInstallationRequest: null, updatedAt: new Date() })
+      .where(eq(schema.users.id, userId));
+  },
+};
+
+// ============================================================================
+// GitHub Installation Queries
+// ============================================================================
+
+export interface GitHubInstallationQueries {
+  findById(id: string): Promise<schema.GitHubInstallation | null>;
+  findByInstallationId(installationId: string): Promise<schema.GitHubInstallation | null>;
+  findByAccountLogin(accountLogin: string): Promise<schema.GitHubInstallation | null>;
+  findByInstalledBy(userId: string): Promise<schema.GitHubInstallation[]>;
+  findAll(): Promise<schema.GitHubInstallation[]>;
+  upsert(data: schema.NewGitHubInstallation): Promise<schema.GitHubInstallation>;
+  updatePermissions(installationId: string, permissions: Record<string, string>, events: string[]): Promise<void>;
+  suspend(installationId: string, suspendedBy: string): Promise<void>;
+  unsuspend(installationId: string): Promise<void>;
+  delete(installationId: string): Promise<void>;
+}
+
+export const githubInstallationQueries: GitHubInstallationQueries = {
+  async findById(id: string): Promise<schema.GitHubInstallation | null> {
+    const db = getDb();
+    const result = await db.select().from(schema.githubInstallations).where(eq(schema.githubInstallations.id, id));
+    return result[0] ?? null;
+  },
+
+  async findByInstallationId(installationId: string): Promise<schema.GitHubInstallation | null> {
+    const db = getDb();
+    const result = await db
+      .select()
+      .from(schema.githubInstallations)
+      .where(eq(schema.githubInstallations.installationId, installationId));
+    return result[0] ?? null;
+  },
+
+  async findByAccountLogin(accountLogin: string): Promise<schema.GitHubInstallation | null> {
+    const db = getDb();
+    const result = await db
+      .select()
+      .from(schema.githubInstallations)
+      .where(eq(schema.githubInstallations.accountLogin, accountLogin));
+    return result[0] ?? null;
+  },
+
+  async findByInstalledBy(userId: string): Promise<schema.GitHubInstallation[]> {
+    const db = getDb();
+    return db
+      .select()
+      .from(schema.githubInstallations)
+      .where(eq(schema.githubInstallations.installedById, userId));
+  },
+
+  async findAll(): Promise<schema.GitHubInstallation[]> {
+    const db = getDb();
+    return db.select().from(schema.githubInstallations).orderBy(schema.githubInstallations.accountLogin);
+  },
+
+  async upsert(data: schema.NewGitHubInstallation): Promise<schema.GitHubInstallation> {
+    const db = getDb();
+    const result = await db
+      .insert(schema.githubInstallations)
+      .values(data)
+      .onConflictDoUpdate({
+        target: schema.githubInstallations.installationId,
+        set: {
+          accountType: data.accountType,
+          accountLogin: data.accountLogin,
+          accountId: data.accountId,
+          permissions: data.permissions,
+          events: data.events,
+          installedById: data.installedById,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return result[0];
+  },
+
+  async updatePermissions(installationId: string, permissions: Record<string, string>, events: string[]): Promise<void> {
+    const db = getDb();
+    await db
+      .update(schema.githubInstallations)
+      .set({ permissions, events, updatedAt: new Date() })
+      .where(eq(schema.githubInstallations.installationId, installationId));
+  },
+
+  async suspend(installationId: string, suspendedBy: string): Promise<void> {
+    const db = getDb();
+    await db
+      .update(schema.githubInstallations)
+      .set({ suspended: true, suspendedAt: new Date(), suspendedBy, updatedAt: new Date() })
+      .where(eq(schema.githubInstallations.installationId, installationId));
+  },
+
+  async unsuspend(installationId: string): Promise<void> {
+    const db = getDb();
+    await db
+      .update(schema.githubInstallations)
+      .set({ suspended: false, suspendedAt: null, suspendedBy: null, updatedAt: new Date() })
+      .where(eq(schema.githubInstallations.installationId, installationId));
+  },
+
+  async delete(installationId: string): Promise<void> {
+    const db = getDb();
+    await db.delete(schema.githubInstallations).where(eq(schema.githubInstallations.installationId, installationId));
   },
 };
 

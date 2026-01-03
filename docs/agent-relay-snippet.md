@@ -16,7 +16,20 @@ Your message here.>>>
 Broadcast to all agents.>>>
 ```
 
-**CRITICAL:** Always close multi-line messages with `>>>` on its own line!
+**CRITICAL:** Always close multi-line messages with `>>>` after the very last character.
+
+**WARNING:** Do NOT put blank lines before `>>>` - it must immediately follow your content:
+
+```
+# CORRECT - >>> immediately after content
+->relay:Agent <<<Your message here.>>>
+
+# WRONG - blank line before >>> breaks parsing
+->relay:Agent <<<
+Your message here.
+
+>>>
+```
 
 ## Communication Protocol
 
@@ -26,8 +39,6 @@ Broadcast to all agents.>>>
 ->relay:Sender <<<
 ACK: Brief description of task received>>>
 ```
-
-Then proceed with your work. This confirms message delivery and lets the sender know you're on it.
 
 **Report completion** - When done, send a completion message:
 
@@ -62,8 +73,6 @@ Response to the group message.>>>
 Response to the group message.>>>
 ```
 
-This ensures your response appears in the same channel as the original message.
-
 If truncated, read full message:
 ```bash
 agent-relay read abc123
@@ -74,13 +83,26 @@ agent-relay read abc123
 Spawn workers to delegate tasks:
 
 ```
-->relay:spawn WorkerName claude "task description"
+# Short tasks - single line with quotes
+->relay:spawn WorkerName claude "short task description"
+
+# Long tasks - use fenced format (recommended)
+->relay:spawn WorkerName claude <<<
+Implement the authentication module.
+Requirements:
+- JWT tokens with refresh
+- Password hashing with bcrypt
+- Rate limiting on login endpoint>>>
+
+# Release when done
 ->relay:release WorkerName
 ```
 
+**Use fenced format for tasks longer than ~50 characters** to avoid truncation from terminal line wrapping.
+
 ## Threads
 
-Use threads to group related messages together. Thread syntax:
+Use threads to group related messages together:
 
 ```
 ->relay:AgentName [thread:topic-name] <<<
@@ -91,25 +113,20 @@ Your message here.>>>
 - Working on a specific issue (e.g., `[thread:agent-relay-299]`)
 - Back-and-forth discussions with another agent
 - Code review conversations
-- Any multi-message topic you want grouped
 
-**Examples:**
+## Status Updates
+
+**Send status updates to your lead, NOT broadcast:**
 
 ```
-->relay:Protocol [thread:auth-feature] <<<
-How should we handle token refresh?>>>
+# Correct - status to lead only
+->relay:Lead <<<
+STATUS: Working on auth module>>>
 
-->relay:Frontend [thread:auth-feature] <<<
-Use a 401 interceptor that auto-refreshes.>>>
-
-->relay:Reviewer [thread:pr-123] <<<
-Please review src/auth/*.ts>>>
-
-->relay:Developer [thread:pr-123] <<<
-LGTM, approved!>>>
+# Wrong - don't broadcast status to everyone
+->relay:* <<<
+STATUS: Working on auth module>>>
 ```
-
-Thread messages appear grouped in the dashboard with reply counts.
 
 ## Common Patterns
 
@@ -117,7 +134,7 @@ Thread messages appear grouped in the dashboard with reply counts.
 ->relay:Lead <<<
 ACK: Starting /api/register implementation>>>
 
-->relay:* <<<
+->relay:Lead <<<
 STATUS: Working on auth module>>>
 
 ->relay:Lead <<<
@@ -133,81 +150,25 @@ REVIEW: Please check src/auth/*.ts>>>
 QUESTION: JWT or sessions?>>>
 ```
 
-## Cross-Project Messaging
-
-When running in bridge mode (multiple projects connected), use `project:agent` format:
-
-```
-->relay:frontend:Designer <<<
-Please update the login UI for the new auth flow>>>
-
-->relay:backend:lead <<<
-API question - should we use REST or GraphQL?>>>
-
-->relay:shared-lib:* <<<
-New utility functions available, please pull latest>>>
-```
-
-**Format:** `->relay:project-id:agent-name`
-
-**Special targets:**
-- `->relay:project:lead` - Message the lead agent of that project
-- `->relay:project:*` - Broadcast to all agents in that project
-- `->relay:*:*` - Broadcast to ALL agents in ALL projects
-
-**Cross-project threads:**
-```
-->relay:frontend:Designer [thread:auth-feature] <<<
-UI mockups ready for review>>>
-```
-
 ## Rules
 
 - Pattern must be at line start (whitespace OK)
 - Escape with `\->relay:` to output literally
 - Check daemon status: `agent-relay status`
 
-## Session Persistence (Required)
+## Writing Examples (For Documentation)
 
-Output these blocks to maintain session state. **The system monitors your output for these patterns.**
-
-### Progress Summary (Output Periodically)
-
-When completing significant work, output a summary block:
+When showing examples of relay syntax in documentation or explanations, **escape the markers** so they don't get interpreted as actual messages:
 
 ```
-[[SUMMARY]]
-{
-  "currentTask": "What you're working on now",
-  "completedTasks": ["task1", "task2"],
-  "context": "Important context for session recovery",
-  "files": ["src/file1.ts", "src/file2.ts"]
-}
-[[/SUMMARY]]
+# Escape the opening marker
+\->relay:AgentName \<<<
+Example content here.\>>>
 ```
 
-**When to output:**
-- After completing a major task
-- Before long-running operations
-- When switching to a different area of work
-- Every 10-15 minutes of active work
+**What to escape:**
+- `\->relay:` - Prevents the pattern from being detected as a real message
+- `\<<<` - Prevents the fenced block from being parsed
+- `\>>>` - Prevents the block from being closed
 
-### Session End (Required on Completion)
-
-When your work session is complete, output:
-
-```
-[[SESSION_END]]
-{
-  "summary": "Brief description of what was accomplished",
-  "completedTasks": ["task1", "task2", "task3"]
-}
-[[/SESSION_END]]
-```
-
-Or for a simple close: `[[SESSION_END]]Work complete.[[/SESSION_END]]`
-
-**This enables:**
-- Session recovery if connection drops
-- Progress tracking in dashboard
-- Proper session cleanup in cloud
+This ensures your examples are displayed literally rather than sent as messages.
