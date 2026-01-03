@@ -93,8 +93,8 @@ function isSpawnOrReleaseCommand(line: string): boolean {
 }
 
 // Claude extended thinking block markers - skip content inside these
-const THINKING_START = /<antml:thinking>/;
-const THINKING_END = /<\/thinking>/;
+const THINKING_START = new RegExp(String.raw`<` + `thinking>`);
+const THINKING_END = new RegExp(String.raw`</` + `thinking>`);
 
 /**
  * Patterns that indicate instructional/example text that should NOT be parsed as actual commands.
@@ -114,11 +114,34 @@ const INSTRUCTIONAL_MARKERS = [
 ];
 
 /**
+ * Placeholder target names commonly used in documentation and examples.
+ * Messages to these targets should be filtered out as instructional text.
+ */
+const PLACEHOLDER_TARGETS = new Set([
+  'agentname',
+  'target',
+  'recipient',
+  'yourtarget',
+  'targetagent',
+  'someagent',
+  'otheragent',
+  'worker',        // Too generic, often used in examples
+]);
+
+/**
  * Check if a parsed relay command body looks like instructional/example text.
  * These patterns commonly appear in system prompts and documentation.
  */
 function isInstructionalText(body: string): boolean {
   return INSTRUCTIONAL_MARKERS.some(pattern => pattern.test(body));
+}
+
+/**
+ * Check if a target name is a placeholder commonly used in documentation/examples.
+ * These should not be treated as real message targets.
+ */
+function isPlaceholderTarget(target: string): boolean {
+  return PLACEHOLDER_TARGETS.has(target.toLowerCase());
 }
 
 /**
@@ -171,7 +194,8 @@ const ANSI_PATTERN = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\].*?(?:\x07|\x1b\\)|\r/g;
 
 // Pattern for orphaned CSI sequences that lost their escape byte
 // These look like [?25h, [?2026l, [0m, etc. at the start of content
-const ORPHANED_CSI_PATTERN = /^\s*(\[\??\d*[A-Za-z])+\s*/g;
+// Requires at least one digit or question mark to avoid stripping legitimate text like [Agent
+const ORPHANED_CSI_PATTERN = /^\s*(\[(?:\?|\d)\d*[A-Za-z])+\s*/g;
 
 /**
  * Parse a target string that may contain cross-project syntax.
@@ -553,9 +577,23 @@ export class OutputParser {
         continue;
       }
 
+      // Skip spawn/release commands BEFORE checking fenced format
+      // This prevents ->relay:spawn Worker cli <<< from being parsed as a message to "spawn"
+      const strippedForSpawnCheck = stripAnsi(line);
+      if (isSpawnOrReleaseCommand(strippedForSpawnCheck)) {
+        outputLines.push(line);
+        continue;
+      }
+
       // Check for fenced inline start: ->relay:Target <<<
       const fencedStart = isFencedInlineStart(line);
       if (fencedStart && this.options.enableInline) {
+        // Skip placeholder target names early (common in documentation/examples)
+        if (isPlaceholderTarget(fencedStart.target)) {
+          outputLines.push(line);
+          continue;
+        }
+
         // Enter fenced inline mode
         this.inFencedInline = true;
         this.fencedInlineTarget = fencedStart.target;
@@ -754,6 +792,12 @@ export class OutputParser {
         }
 
         const { to, project } = parseTarget(target);
+
+        // Skip placeholder target names (common in documentation/examples)
+        if (isPlaceholderTarget(to)) {
+          return { command: null, output: line };
+        }
+
         return {
           command: {
             to,
@@ -778,6 +822,12 @@ export class OutputParser {
         }
 
         const { to, project } = parseTarget(target);
+
+        // Skip placeholder target names (common in documentation/examples)
+        if (isPlaceholderTarget(to)) {
+          return { command: null, output: line };
+        }
+
         return {
           command: {
             to,
@@ -871,6 +921,22 @@ export class OutputParser {
   }
 
   /**
+   * Check if the current fenced inline command should be filtered out.
+   * Returns true if the command looks like instructional/example text.
+   */
+  private shouldFilterFencedInline(target: string, body: string): boolean {
+    // Check for placeholder target names
+    if (isPlaceholderTarget(target)) {
+      return true;
+    }
+    // Check for instructional body content
+    if (isInstructionalText(body)) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * Parse while inside a fenced inline block (->relay:Target <<< ... >>>).
    * Accumulates lines until >>> is seen on its own line.
    */
@@ -896,16 +962,20 @@ export class OutputParser {
       // Only if we have actual content to send
       if (consecutiveBlankLines >= 2 && this.fencedInlineBuffer.trim().length > 0) {
         const body = unescapeFenceMarkers(stripAnsi(this.fencedInlineBuffer.trim()));
-        const command: ParsedCommand = {
-          to: this.fencedInlineTarget,
-          kind: this.fencedInlineKind,
-          body,
-          thread: this.fencedInlineThread,
-          threadProject: this.fencedInlineThreadProject,
-          project: this.fencedInlineProject,
-          raw: this.fencedInlineRaw.join('\n'),
-        };
-        commands.push(command);
+
+        // Skip instructional/example text (common in system prompts and documentation)
+        if (!this.shouldFilterFencedInline(this.fencedInlineTarget, body)) {
+          const command: ParsedCommand = {
+            to: this.fencedInlineTarget,
+            kind: this.fencedInlineKind,
+            body,
+            thread: this.fencedInlineThread,
+            threadProject: this.fencedInlineThreadProject,
+            project: this.fencedInlineProject,
+            raw: this.fencedInlineRaw.join('\n'),
+          };
+          commands.push(command);
+        }
 
         // Reset fenced inline state
         this.inFencedInline = false;
@@ -932,16 +1002,20 @@ export class OutputParser {
         // Auto-close and send the incomplete fenced block (if it has content)
         if (this.fencedInlineBuffer.trim().length > 0) {
           const body = unescapeFenceMarkers(stripAnsi(this.fencedInlineBuffer.trim()));
-          const command: ParsedCommand = {
-            to: this.fencedInlineTarget,
-            kind: this.fencedInlineKind,
-            body,
-            thread: this.fencedInlineThread,
-            threadProject: this.fencedInlineThreadProject,
-            project: this.fencedInlineProject,
-            raw: this.fencedInlineRaw.join('\n'),
-          };
-          commands.push(command);
+
+          // Skip instructional/example text (common in system prompts and documentation)
+          if (!this.shouldFilterFencedInline(this.fencedInlineTarget, body)) {
+            const command: ParsedCommand = {
+              to: this.fencedInlineTarget,
+              kind: this.fencedInlineKind,
+              body,
+              thread: this.fencedInlineThread,
+              threadProject: this.fencedInlineThreadProject,
+              project: this.fencedInlineProject,
+              raw: this.fencedInlineRaw.join('\n'),
+            };
+            commands.push(command);
+          }
         }
 
         // Reset fenced inline state
@@ -982,16 +1056,19 @@ export class OutputParser {
         const body = unescapeFenceMarkers(stripAnsi(this.fencedInlineBuffer.trim()));
         this.fencedInlineRaw.push(line);
 
-        const command: ParsedCommand = {
-          to: this.fencedInlineTarget,
-          kind: this.fencedInlineKind,
-          body,
-          thread: this.fencedInlineThread,
-          threadProject: this.fencedInlineThreadProject,
-          project: this.fencedInlineProject,
-          raw: this.fencedInlineRaw.join('\n'),
-        };
-        commands.push(command);
+        // Skip instructional/example text (common in system prompts and documentation)
+        if (!this.shouldFilterFencedInline(this.fencedInlineTarget, body)) {
+          const command: ParsedCommand = {
+            to: this.fencedInlineTarget,
+            kind: this.fencedInlineKind,
+            body,
+            thread: this.fencedInlineThread,
+            threadProject: this.fencedInlineThreadProject,
+            project: this.fencedInlineProject,
+            raw: this.fencedInlineRaw.join('\n'),
+          };
+          commands.push(command);
+        }
 
         // Reset fenced inline state
         this.inFencedInline = false;

@@ -5,6 +5,7 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import crypto from 'crypto';
+import { exec } from 'child_process';
 import { fileURLToPath } from 'url';
 import { SqliteStorageAdapter } from '../storage/sqlite-adapter.js';
 import type { StorageAdapter, StoredMessage } from '../storage/adapter.js';
@@ -14,6 +15,7 @@ import { computeSystemMetrics, formatPrometheusMetrics } from './metrics.js';
 import { MultiProjectClient } from '../bridge/multi-project-client.js';
 import { AgentSpawner, type CloudPersistenceHandler } from '../bridge/spawner.js';
 import type { ProjectConfig, SpawnRequest } from '../bridge/types.js';
+import { listTrajectorySteps, getTrajectoryStatus, getTrajectoryHistory } from '../trajectory/integration.js';
 import { loadTeamsConfig } from '../bridge/teams-config.js';
 
 /**
@@ -574,7 +576,7 @@ export async function startDashboard(
             await fs.promises.unlink(filePath);
             evictedCount++;
           }
-        } catch (err) {
+        } catch (_err) {
           // Ignore errors for individual files (may have been deleted)
         }
       }
@@ -1626,8 +1628,8 @@ export async function startDashboard(
       console.log(`[dashboard] Client subscribed to logs for: ${agentName} (spawned: ${isSpawned}, daemon: ${isDaemon})`);
 
       if (isSpawned && spawner) {
-        // Send initial log history for spawned agents
-        const lines = spawner.getWorkerOutput(agentName, 200);
+        // Send initial log history for spawned agents (5000 lines to match xterm scrollback capacity)
+        const lines = spawner.getWorkerOutput(agentName, 5000);
         ws.send(JSON.stringify({
           type: 'history',
           agent: agentName,
@@ -2654,6 +2656,638 @@ Start by greeting the project leads and asking for status updates.`;
       });
     }
   });
+
+  /**
+   * GET /api/trajectory - Get current trajectory status
+   */
+  app.get('/api/trajectory', async (_req, res) => {
+    try {
+      const status = await getTrajectoryStatus();
+      res.json({
+        success: true,
+        ...status,
+      });
+    } catch (err: any) {
+      console.error('[api] Trajectory status error:', err);
+      res.status(500).json({
+        success: false,
+        error: err.message,
+      });
+    }
+  });
+
+  /**
+   * GET /api/trajectory/steps - List trajectory steps
+   */
+  app.get('/api/trajectory/steps', async (req, res) => {
+    try {
+      const trajectoryId = req.query.trajectoryId as string | undefined;
+      const result = await listTrajectorySteps(trajectoryId);
+
+      if (result.success) {
+        res.json({
+          success: true,
+          steps: result.steps,
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          steps: [],
+          error: result.error,
+        });
+      }
+    } catch (err: any) {
+      console.error('[api] Trajectory steps error:', err);
+      res.status(500).json({
+        success: false,
+        steps: [],
+        error: err.message,
+      });
+    }
+  });
+
+  /**
+   * GET /api/trajectory/history - List all trajectories (completed and active)
+   */
+  app.get('/api/trajectory/history', async (_req, res) => {
+    try {
+      const result = await getTrajectoryHistory();
+
+      if (result.success) {
+        res.json({
+          success: true,
+          trajectories: result.trajectories,
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          trajectories: [],
+          error: result.error,
+        });
+      }
+    } catch (err: any) {
+      console.error('[api] Trajectory history error:', err);
+      res.status(500).json({
+        success: false,
+        trajectories: [],
+        error: err.message,
+      });
+    }
+  });
+
+  // ===== Decision Queue API =====
+
+  interface Decision {
+    id: string;
+    agentName: string;
+    title: string;
+    description: string;
+    options?: { id: string; label: string; description?: string }[];
+    urgency: 'low' | 'medium' | 'high' | 'critical';
+    category: 'approval' | 'choice' | 'input' | 'confirmation';
+    createdAt: string;
+    expiresAt?: string;
+    context?: Record<string, unknown>;
+  }
+
+  const decisions = new Map<string, Decision>();
+
+  /**
+   * GET /api/decisions - List all pending decisions
+   */
+  app.get('/api/decisions', (_req, res) => {
+    const allDecisions = Array.from(decisions.values())
+      .sort((a, b) => {
+        const urgencyOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+        return urgencyOrder[a.urgency] - urgencyOrder[b.urgency];
+      });
+    res.json({ success: true, decisions: allDecisions });
+  });
+
+  /**
+   * POST /api/decisions - Create a new decision request
+   * Body: { agentName, title, description, options?, urgency, category, expiresAt?, context? }
+   */
+  app.post('/api/decisions', (req, res) => {
+    const { agentName, title, description, options, urgency, category, expiresAt, context } = req.body;
+
+    if (!agentName || !title || !urgency || !category) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: agentName, title, urgency, category',
+      });
+    }
+
+    const decision: Decision = {
+      id: `decision-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      agentName,
+      title,
+      description: description || '',
+      options,
+      urgency,
+      category,
+      createdAt: new Date().toISOString(),
+      expiresAt,
+      context,
+    };
+
+    decisions.set(decision.id, decision);
+
+    // Broadcast to WebSocket clients
+    broadcastData().catch(() => {});
+
+    res.json({ success: true, decision });
+  });
+
+  /**
+   * POST /api/decisions/:id/approve - Approve/resolve a decision
+   * Body: { optionId?: string, response?: string }
+   */
+  app.post('/api/decisions/:id/approve', async (req, res) => {
+    const { id } = req.params;
+    const { optionId, response } = req.body;
+
+    const decision = decisions.get(id);
+    if (!decision) {
+      return res.status(404).json({ success: false, error: 'Decision not found' });
+    }
+
+    // Send response to the agent via relay
+    const agentName = decision.agentName;
+    let responseMessage = `DECISION APPROVED: ${decision.title}`;
+    if (optionId && decision.options) {
+      const option = decision.options.find(o => o.id === optionId);
+      if (option) {
+        responseMessage += `\nSelected: ${option.label}`;
+      }
+    }
+    if (response) {
+      responseMessage += `\nResponse: ${response}`;
+    }
+
+    // Try to send message to agent
+    try {
+      const client = await getRelayClient('Dashboard');
+      if (client) {
+        await client.sendMessage(agentName, responseMessage, 'message');
+      }
+    } catch (err) {
+      console.warn('[api] Could not send decision response to agent:', err);
+    }
+
+    decisions.delete(id);
+    broadcastData().catch(() => {});
+
+    res.json({ success: true, message: 'Decision approved' });
+  });
+
+  /**
+   * POST /api/decisions/:id/reject - Reject a decision
+   * Body: { reason?: string }
+   */
+  app.post('/api/decisions/:id/reject', async (req, res) => {
+    const { id } = req.params;
+    const { reason } = req.body;
+
+    const decision = decisions.get(id);
+    if (!decision) {
+      return res.status(404).json({ success: false, error: 'Decision not found' });
+    }
+
+    // Send rejection to the agent
+    const agentName = decision.agentName;
+    let responseMessage = `DECISION REJECTED: ${decision.title}`;
+    if (reason) {
+      responseMessage += `\nReason: ${reason}`;
+    }
+
+    try {
+      const client = await getRelayClient('Dashboard');
+      if (client) {
+        await client.sendMessage(agentName, responseMessage, 'message');
+      }
+    } catch (err) {
+      console.warn('[api] Could not send decision rejection to agent:', err);
+    }
+
+    decisions.delete(id);
+    broadcastData().catch(() => {});
+
+    res.json({ success: true, message: 'Decision rejected' });
+  });
+
+  /**
+   * DELETE /api/decisions/:id - Delete/dismiss a decision
+   */
+  app.delete('/api/decisions/:id', (_req, res) => {
+    const { id } = _req.params;
+
+    if (!decisions.has(id)) {
+      return res.status(404).json({ success: false, error: 'Decision not found' });
+    }
+
+    decisions.delete(id);
+    broadcastData().catch(() => {});
+
+    res.json({ success: true, message: 'Decision dismissed' });
+  });
+
+  // ===== Fleet Overview API =====
+
+  interface FleetServer {
+    id: string;
+    name: string;
+    status: 'healthy' | 'degraded' | 'offline';
+    agents: { name: string; status: string }[];
+    cpuUsage: number;
+    memoryUsage: number;
+    activeConnections: number;
+    uptime: number;
+    lastHeartbeat: string;
+  }
+
+  /**
+   * GET /api/fleet/servers - Get fleet server overview
+   * Returns local daemon info + any connected bridge servers
+   * Note: When bridge is active, local agents are already included in bridge project agents,
+   * so we don't add a separate "Local Daemon" entry to avoid double-counting.
+   */
+  app.get('/api/fleet/servers', async (_req, res) => {
+    const servers: FleetServer[] = [];
+    const localAgents = spawner?.getActiveWorkers() || [];
+    const agentStatuses = await loadAgentStatuses();
+    let hasBridgeProjects = false;
+
+    // Check for bridge connections first
+    const bridgeStatePath = path.join(dataDir, 'bridge-state.json');
+    if (fs.existsSync(bridgeStatePath)) {
+      try {
+        const bridgeState = JSON.parse(fs.readFileSync(bridgeStatePath, 'utf-8'));
+        if (bridgeState.projects && bridgeState.projects.length > 0) {
+          hasBridgeProjects = true;
+
+          for (const project of bridgeState.projects) {
+            // Enrich with actual online agents from agents.json (same logic as getBridgeData)
+            // This fixes the bug where stale agents were counted
+            let projectAgents: { name: string; status: string }[] = [];
+
+            if (project.path) {
+              const projectHash = crypto.createHash('sha256').update(project.path).digest('hex').slice(0, 12);
+              const projectDataDir = path.join(path.dirname(dataDir), projectHash);
+              const projectTeamDir = path.join(projectDataDir, 'team');
+              const agentsPath = path.join(projectTeamDir, 'agents.json');
+
+              if (fs.existsSync(agentsPath)) {
+                try {
+                  const agentsData = JSON.parse(fs.readFileSync(agentsPath, 'utf-8'));
+                  if (agentsData.agents && Array.isArray(agentsData.agents)) {
+                    // Filter to only show online agents (seen within 30 seconds)
+                    const thirtySecondsAgo = Date.now() - 30 * 1000;
+                    projectAgents = agentsData.agents
+                      .filter((a: { lastSeen?: string }) => {
+                        if (!a.lastSeen) return false;
+                        return new Date(a.lastSeen).getTime() > thirtySecondsAgo;
+                      })
+                      .map((a: { name: string; cli?: string }) => ({
+                        name: a.name,
+                        status: 'online',
+                      }));
+                  }
+                } catch (e) {
+                  console.warn(`[api] Failed to read agents for ${project.path}:`, e);
+                }
+              }
+            }
+
+            servers.push({
+              id: project.id,
+              name: project.name || project.path.split('/').pop() || project.id,
+              status: project.connected ? 'healthy' : 'offline',
+              agents: projectAgents,
+              cpuUsage: 0,
+              memoryUsage: 0,
+              activeConnections: project.connected ? 1 : 0,
+              uptime: 0,
+              lastHeartbeat: project.lastSeen || new Date().toISOString(),
+            });
+          }
+        }
+      } catch (err) {
+        console.warn('[api] Failed to read bridge state:', err);
+      }
+    }
+
+    // Only add local daemon entry if we don't have bridge projects
+    // (otherwise local agents are already counted in the bridge project)
+    if (!hasBridgeProjects) {
+      servers.push({
+        id: 'local',
+        name: 'Local Daemon',
+        status: 'healthy',
+        agents: localAgents.map(a => ({
+          name: a.name,
+          status: agentStatuses[a.name]?.status || 'unknown',
+        })),
+        cpuUsage: Math.random() * 30, // Mock - would come from actual metrics
+        memoryUsage: Math.random() * 50,
+        activeConnections: wss.clients.size,
+        uptime: process.uptime(),
+        lastHeartbeat: new Date().toISOString(),
+      });
+    }
+
+    res.json({ success: true, servers });
+  });
+
+  /**
+   * GET /api/fleet/stats - Get aggregate fleet statistics
+   */
+  app.get('/api/fleet/stats', async (_req, res) => {
+    const localAgents = spawner?.getActiveWorkers() || [];
+    const agentStatuses = await loadAgentStatuses();
+
+    const totalAgents = localAgents.length;
+    let onlineAgents = 0;
+    let busyAgents = 0;
+
+    for (const agent of localAgents) {
+      const status = agentStatuses[agent.name]?.status;
+      if (status === 'online') onlineAgents++;
+      if (status === 'busy') busyAgents++;
+    }
+
+    res.json({
+      success: true,
+      stats: {
+        totalAgents,
+        onlineAgents,
+        busyAgents,
+        pendingDecisions: decisions.size,
+        activeTasks: Array.from(tasks.values()).filter(t =>
+          t.status === 'assigned' || t.status === 'in_progress'
+        ).length,
+      },
+    });
+  });
+
+  // ===== Task Assignment API =====
+
+  interface TaskAssignment {
+    id: string;
+    agentName: string;
+    title: string;
+    description: string;
+    priority: 'low' | 'medium' | 'high' | 'critical';
+    status: 'pending' | 'assigned' | 'in_progress' | 'completed' | 'failed';
+    createdAt: string;
+    assignedAt?: string;
+    completedAt?: string;
+    result?: string;
+  }
+
+  const tasks = new Map<string, TaskAssignment>();
+
+  /**
+   * GET /api/tasks - List all tasks
+   */
+  app.get('/api/tasks', (req, res) => {
+    const status = req.query.status as string | undefined;
+    const agentName = req.query.agent as string | undefined;
+
+    let allTasks = Array.from(tasks.values());
+
+    if (status) {
+      allTasks = allTasks.filter(t => t.status === status);
+    }
+    if (agentName) {
+      allTasks = allTasks.filter(t => t.agentName === agentName);
+    }
+
+    // Sort by priority and creation time
+    allTasks.sort((a, b) => {
+      const priorityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+      const priorityDiff = priorityOrder[a.priority] - priorityOrder[b.priority];
+      if (priorityDiff !== 0) return priorityDiff;
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+
+    res.json({ success: true, tasks: allTasks });
+  });
+
+  /**
+   * POST /api/tasks - Create and assign a task
+   * Body: { agentName, title, description, priority }
+   */
+  app.post('/api/tasks', async (req, res) => {
+    const { agentName, title, description, priority } = req.body;
+
+    if (!agentName || !title || !priority) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: agentName, title, priority',
+      });
+    }
+
+    const task: TaskAssignment = {
+      id: `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      agentName,
+      title,
+      description: description || '',
+      priority,
+      status: 'assigned',
+      createdAt: new Date().toISOString(),
+      assignedAt: new Date().toISOString(),
+    };
+
+    tasks.set(task.id, task);
+
+    // Send task to agent via relay
+    try {
+      const client = await getRelayClient('Dashboard');
+      if (client) {
+        const taskMessage = `TASK ASSIGNED [${priority.toUpperCase()}]: ${title}\n\n${description || 'No additional details.'}`;
+        await client.sendMessage(agentName, taskMessage, 'message');
+      }
+    } catch (err) {
+      console.warn('[api] Could not send task to agent:', err);
+    }
+
+    broadcastData().catch(() => {});
+
+    res.json({ success: true, task });
+  });
+
+  /**
+   * PATCH /api/tasks/:id - Update task status
+   * Body: { status, result? }
+   */
+  app.patch('/api/tasks/:id', (req, res) => {
+    const { id } = req.params;
+    const { status, result } = req.body;
+
+    const task = tasks.get(id);
+    if (!task) {
+      return res.status(404).json({ success: false, error: 'Task not found' });
+    }
+
+    if (status) {
+      task.status = status;
+      if (status === 'completed' || status === 'failed') {
+        task.completedAt = new Date().toISOString();
+      }
+    }
+    if (result !== undefined) {
+      task.result = result;
+    }
+
+    tasks.set(id, task);
+    broadcastData().catch(() => {});
+
+    res.json({ success: true, task });
+  });
+
+  /**
+   * DELETE /api/tasks/:id - Cancel/delete a task
+   */
+  app.delete('/api/tasks/:id', async (req, res) => {
+    const { id } = req.params;
+
+    const task = tasks.get(id);
+    if (!task) {
+      return res.status(404).json({ success: false, error: 'Task not found' });
+    }
+
+    // Notify agent of cancellation if task is still active
+    if (task.status === 'pending' || task.status === 'assigned' || task.status === 'in_progress') {
+      try {
+        const client = await getRelayClient('Dashboard');
+        if (client) {
+          await client.sendMessage(task.agentName, `TASK CANCELLED: ${task.title}`, 'message');
+        }
+      } catch (err) {
+        console.warn('[api] Could not send task cancellation to agent:', err);
+      }
+    }
+
+    tasks.delete(id);
+    broadcastData().catch(() => {});
+
+    res.json({ success: true, message: 'Task cancelled' });
+  });
+
+  // ===== Beads Integration API =====
+
+  /**
+   * POST /api/beads - Create a bead (task/issue) via the bd CLI
+   */
+  app.post('/api/beads', async (req, res) => {
+    const { title, assignee, priority, type, description: _description } = req.body;
+
+    if (!title || typeof title !== 'string') {
+      return res.status(400).json({ success: false, error: 'Title is required' });
+    }
+
+    // Build bd create command
+    const args: string[] = ['create', `--title="${title.replace(/"/g, '\\"')}"`];
+
+    if (assignee) {
+      args.push(`--assignee=${assignee}`);
+    }
+    if (priority !== undefined && priority !== null) {
+      args.push(`--priority=${priority}`);
+    }
+    if (type && ['task', 'bug', 'feature'].includes(type)) {
+      args.push(`--type=${type}`);
+    }
+
+    const cmd = `bd ${args.join(' ')}`;
+    console.log('[api/beads] Creating bead:', cmd);
+
+    // Execute bd create command
+    exec(cmd, { cwd: dataDir }, (error, stdout, stderr) => {
+      if (error) {
+        console.error('[api/beads] bd create failed:', stderr || error.message);
+        return res.status(500).json({
+          success: false,
+          error: stderr || error.message || 'Failed to create bead',
+        });
+      }
+
+      // Parse bead ID from output (bd create outputs the ID)
+      const output = stdout.trim();
+      // bd create typically outputs: "Created beads-xxx: title"
+      const idMatch = output.match(/Created\s+(beads-\w+)/i) || output.match(/(beads-\w+)/);
+      const beadId = idMatch ? idMatch[1] : `beads-${Date.now()}`;
+
+      console.log('[api/beads] Created bead:', beadId);
+      res.json({
+        success: true,
+        bead: {
+          id: beadId,
+          title,
+          assignee,
+          priority,
+          type: type || 'task',
+        },
+      });
+    });
+  });
+
+  /**
+   * POST /api/relay/send - Send a relay message to an agent
+   */
+  app.post('/api/relay/send', async (req, res) => {
+    const { to, content, thread } = req.body;
+
+    if (!to || typeof to !== 'string') {
+      return res.status(400).json({ success: false, error: 'Recipient (to) is required' });
+    }
+    if (!content || typeof content !== 'string') {
+      return res.status(400).json({ success: false, error: 'Message content is required' });
+    }
+
+    try {
+      const client = await getRelayClient('Dashboard');
+      if (!client) {
+        return res.status(503).json({
+          success: false,
+          error: 'Relay client not available',
+        });
+      }
+
+      const messageId = await client.sendMessage(to, content, thread ? 'message' : 'message');
+      console.log('[api/relay/send] Sent message to', to, ':', messageId);
+
+      res.json({
+        success: true,
+        messageId: messageId || `msg-${Date.now()}`,
+      });
+    } catch (err) {
+      console.error('[api/relay/send] Failed to send message:', err);
+      res.status(500).json({
+        success: false,
+        error: err instanceof Error ? err.message : 'Failed to send message',
+      });
+    }
+  });
+
+  // Helper to load agent statuses
+  async function loadAgentStatuses(): Promise<Record<string, { status: string }>> {
+    const agentsFile = path.join(dataDir, 'agents.json');
+    try {
+      if (fs.existsSync(agentsFile)) {
+        const data = JSON.parse(fs.readFileSync(agentsFile, 'utf-8'));
+        const result: Record<string, { status: string }> = {};
+        for (const agent of data.agents || []) {
+          result[agent.name] = { status: agent.status || 'offline' };
+        }
+        return result;
+      }
+    } catch (err) {
+      console.warn('[api] Failed to load agent statuses:', err);
+    }
+    return {};
+  }
 
   // Watch for changes
   if (storage) {

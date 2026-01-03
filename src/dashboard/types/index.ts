@@ -20,6 +20,10 @@ export interface Agent {
   processingStartedAt?: number; // Timestamp when processing started
   isSpawned?: boolean; // True if agent was spawned via dashboard (can be killed)
   team?: string; // Optional user-defined team grouping (e.g., "frontend-team", "backend-team")
+  agentId?: string; // Unique agent ID for resume functionality
+  lastMessageReceivedAt?: number; // Timestamp when agent last received a message
+  lastOutputAt?: number; // Timestamp when agent last produced output
+  isStuck?: boolean; // True when agent received message but hasn't responded within threshold
 }
 
 export interface AgentSummary {
@@ -32,7 +36,7 @@ export interface AgentSummary {
 }
 
 // Message Status
-export type MessageStatus = 'unread' | 'read' | 'acked' | 'sending';
+export type MessageStatus = 'unread' | 'read' | 'acked' | 'sending' | 'failed';
 
 // Attachment Types
 export interface Attachment {

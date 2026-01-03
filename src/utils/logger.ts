@@ -25,7 +25,7 @@ interface LogEntry {
 const LOG_FILE = process.env.AGENT_RELAY_LOG_FILE;
 const LOG_LEVEL = (process.env.AGENT_RELAY_LOG_LEVEL ?? 'INFO').toUpperCase() as LogLevel;
 const LOG_JSON = process.env.AGENT_RELAY_LOG_JSON === '1';
-const DEBUG = process.env.DEBUG === '1' || LOG_LEVEL === 'DEBUG';
+const _DEBUG = process.env.DEBUG === '1' || LOG_LEVEL === 'DEBUG';
 
 const LEVEL_PRIORITY: Record<LogLevel, number> = {
   DEBUG: 0,

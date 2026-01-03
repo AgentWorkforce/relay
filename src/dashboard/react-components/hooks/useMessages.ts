@@ -5,7 +5,7 @@
  * threading, and send functionality.
  */
 
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import type { Message, SendMessageRequest } from '../../types';
 
 export interface UseMessagesOptions {
@@ -63,16 +63,50 @@ export function useMessages({
   // This allows us to show new messages that arrive after viewing
   const [seenThreads, setSeenThreads] = useState<Map<string, number>>(new Map());
 
+  // Effective sender name for the current user (used for filtering own messages)
+  const effectiveSenderName = senderName || 'Dashboard';
+
+  // Optimistic messages: shown immediately before server confirms
+  // These have status='sending' and a temp ID prefixed with 'optimistic-'
+  const [optimisticMessages, setOptimisticMessages] = useState<Message[]>([]);
+
+  // Clean up optimistic messages when they appear in the real messages list
+  // Match by content + from + to (since IDs will be different)
+  useEffect(() => {
+    if (optimisticMessages.length === 0) return;
+
+    // Create a set of "fingerprints" for real messages (recent ones only)
+    const recentMessages = messages.slice(-50); // Only check recent messages for performance
+    const realFingerprints = new Set(
+      recentMessages.map((m) => `${m.from}:${m.to}:${m.content.slice(0, 100)}`)
+    );
+
+    // Remove optimistic messages that now exist in real messages
+    setOptimisticMessages((prev) =>
+      prev.filter((opt) => {
+        const fingerprint = `${opt.from}:${opt.to}:${opt.content.slice(0, 100)}`;
+        return !realFingerprints.has(fingerprint);
+      })
+    );
+  }, [messages, optimisticMessages.length]);
+
+  // Combine real messages with optimistic messages
+  const allMessages = useMemo(() => {
+    if (optimisticMessages.length === 0) return messages;
+    // Append optimistic messages at the end (they're the most recent)
+    return [...messages, ...optimisticMessages];
+  }, [messages, optimisticMessages]);
+
   // Filter messages by current channel
   // Only exclude reply-chain replies (where thread is another message's ID)
   // Keep topic thread messages (where thread is a topic name, not a message ID)
   const filteredMessages = useMemo(() => {
     // Build set of message IDs for efficient lookup
-    const messageIds = new Set(messages.map((m) => m.id));
+    const messageIds = new Set(allMessages.map((m) => m.id));
 
     // Filter out reply-chain replies (thread points to existing message ID)
     // Keep topic thread messages (thread is a name, not a message ID)
-    const mainViewMessages = messages.filter((m) => {
+    const mainViewMessages = allMessages.filter((m) => {
       if (!m.thread) return true; // No thread - show it
       // If thread is a message ID, it's a reply - hide it from main view
       // If thread is a topic name, show it
@@ -85,21 +119,21 @@ export function useMessages({
     return mainViewMessages.filter(
       (m) => m.from === currentChannel || m.to === currentChannel
     );
-  }, [messages, currentChannel]);
+  }, [allMessages, currentChannel]);
 
   // Get messages for a specific thread
   const threadMessages = useCallback(
-    (threadId: string) => messages.filter((m) => m.thread === threadId),
-    [messages]
+    (threadId: string) => allMessages.filter((m) => m.thread === threadId),
+    [allMessages]
   );
 
   // Calculate active threads with unread counts
   const activeThreads = useMemo((): ThreadInfo[] => {
     const threadMap = new Map<string, Message[]>();
-    const messageIds = new Set(messages.map((m) => m.id));
+    const messageIds = new Set(allMessages.map((m) => m.id));
 
     // Group messages by thread
-    for (const msg of messages) {
+    for (const msg of allMessages) {
       if (msg.thread) {
         const existing = threadMap.get(msg.thread) || [];
         existing.push(msg);
@@ -122,10 +156,10 @@ export function useMessages({
 
       // Count unread messages in thread
       // Consider messages as "read" if they arrived before we last viewed this thread
-      // Exclude messages from "Dashboard" - users shouldn't get notifications for their own messages
+      // Exclude messages from current user - users shouldn't get notifications for their own messages
       const seenTimestamp = seenThreads.get(threadId);
       const unreadCount = threadMsgs.filter((m) => {
-        if (m.from === 'Dashboard') return false; // Don't count own messages as unread
+        if (m.from === effectiveSenderName) return false; // Don't count own messages as unread
         if (m.isRead) return false; // Already marked as read
         if (seenTimestamp) {
           // If we've seen this thread, only count messages after that time
@@ -138,7 +172,7 @@ export function useMessages({
       let name = threadId;
       if (messageIds.has(threadId)) {
         // Find the original message that started the thread
-        const originalMsg = messages.find((m) => m.id === threadId);
+        const originalMsg = allMessages.find((m) => m.id === threadId);
         if (originalMsg) {
           // Use first line of content, truncated
           const firstLine = originalMsg.content.split('\n')[0];
@@ -161,7 +195,7 @@ export function useMessages({
       (a, b) =>
         new Date(b.lastMessage.timestamp).getTime() - new Date(a.lastMessage.timestamp).getTime()
     );
-  }, [messages, seenThreads]);
+  }, [allMessages, seenThreads]);
 
   // Wrapper for setCurrentThread that also marks the thread as seen
   const setCurrentThread = useCallback((threadId: string | null) => {
@@ -184,18 +218,35 @@ export function useMessages({
 
   // Calculate stats
   const stats = useMemo(() => {
-    const unread = messages.filter((m) => !m.isRead).length;
+    const unread = allMessages.filter((m) => !m.isRead).length;
     return {
-      totalCount: messages.length,
+      totalCount: allMessages.length,
       unreadCount: unread,
     };
-  }, [messages]);
+  }, [allMessages]);
 
-  // Send message function
+  // Send message function with optimistic updates
   const sendMessage = useCallback(
     async (to: string, content: string, thread?: string, attachmentIds?: string[]): Promise<boolean> => {
       setIsSending(true);
       setSendError(null);
+
+      // Create optimistic message and add it immediately for snappy UX
+      const from = effectiveSenderName;
+      const optimisticId = `optimistic-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+      const optimisticMsg: Message = {
+        id: optimisticId,
+        from,
+        to,
+        content,
+        timestamp: new Date().toISOString(),
+        status: 'sending',
+        thread,
+        isRead: true, // User's own messages are always "read"
+      };
+
+      // Add optimistic message immediately - UI updates instantly
+      setOptimisticMessages((prev) => [...prev, optimisticMsg]);
 
       try {
         const request: SendMessageRequest & { from?: string } = {
@@ -219,19 +270,25 @@ export function useMessages({
         const result = await response.json() as { success?: boolean; error?: string };
 
         if (response.ok && result.success) {
+          // Success! The optimistic message will be cleaned up when
+          // the real message arrives via WebSocket
           return true;
         }
 
+        // Failed - remove the optimistic message and show error
+        setOptimisticMessages((prev) => prev.filter((m) => m.id !== optimisticId));
         setSendError(result.error || 'Failed to send message');
         return false;
       } catch (_error) {
+        // Network error - remove optimistic message
+        setOptimisticMessages((prev) => prev.filter((m) => m.id !== optimisticId));
         setSendError('Network error');
         return false;
       } finally {
         setIsSending(false);
       }
     },
-    [senderName]
+    [effectiveSenderName, senderName]
   );
 
   return {

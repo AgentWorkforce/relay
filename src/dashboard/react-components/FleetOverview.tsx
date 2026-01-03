@@ -64,65 +64,73 @@ export function FleetOverview({
 
   if (isLoading) {
     return (
-      <div className="fleet-overview fleet-overview-loading">
+      <div className="bg-bg-card rounded-lg border border-border-subtle overflow-hidden flex flex-col items-center justify-center p-12 text-text-muted text-center">
         <Spinner />
-        <span>Loading fleet data...</span>
+        <span className="mt-3 text-sm">Loading fleet data...</span>
       </div>
     );
   }
 
   if (servers.length === 0) {
     return (
-      <div className="fleet-overview fleet-overview-empty">
+      <div className="bg-bg-card rounded-lg border border-border-subtle overflow-hidden flex flex-col items-center justify-center p-12 text-text-muted text-center">
         <EmptyIcon />
-        <h3>No Fleet Servers</h3>
-        <p>Connect to peer servers to enable fleet view</p>
+        <h3 className="mt-4 mb-2 text-base font-semibold text-text-primary">No Fleet Servers</h3>
+        <p className="text-sm">Connect to peer servers to enable fleet view</p>
       </div>
     );
   }
 
   return (
-    <div className="fleet-overview">
+    <div className="bg-bg-card rounded-lg border border-border-subtle overflow-hidden">
       {/* Header with stats */}
-      <div className="fleet-overview-header">
-        <div className="fleet-overview-title">
+      <div className="flex items-center gap-6 p-4 border-b border-border-subtle bg-bg-secondary">
+        <div className="flex items-center gap-2 font-semibold text-sm text-text-primary">
           <FleetIcon />
           <span>Fleet Overview</span>
         </div>
 
-        <div className="fleet-overview-stats">
-          <div className="fleet-stat">
-            <span className="fleet-stat-value">
+        <div className="flex gap-6 flex-1">
+          <div className="flex flex-col items-center">
+            <span className="text-base font-semibold text-text-primary">
               {stats.online}/{stats.total}
             </span>
-            <span className="fleet-stat-label">Servers</span>
+            <span className="text-xs text-text-muted uppercase tracking-wide">Servers</span>
           </div>
-          <div className="fleet-stat">
-            <span className="fleet-stat-value">{stats.totalAgents}</span>
-            <span className="fleet-stat-label">Agents</span>
+          <div className="flex flex-col items-center">
+            <span className="text-base font-semibold text-text-primary">{stats.totalAgents}</span>
+            <span className="text-xs text-text-muted uppercase tracking-wide">Agents</span>
           </div>
           {stats.avgLatency !== null && (
-            <div className="fleet-stat">
-              <span className="fleet-stat-value">{stats.avgLatency}ms</span>
-              <span className="fleet-stat-label">Avg Latency</span>
+            <div className="flex flex-col items-center">
+              <span className="text-base font-semibold text-text-primary">{stats.avgLatency}ms</span>
+              <span className="text-xs text-text-muted uppercase tracking-wide">Avg Latency</span>
             </div>
           )}
-          <div className="fleet-stat">
-            <span className="fleet-stat-value">{stats.totalMessages}/s</span>
-            <span className="fleet-stat-label">Messages</span>
+          <div className="flex flex-col items-center">
+            <span className="text-base font-semibold text-text-primary">{stats.totalMessages}/s</span>
+            <span className="text-xs text-text-muted uppercase tracking-wide">Messages</span>
           </div>
         </div>
 
-        <div className="fleet-overview-controls">
+        <div className="flex gap-1 bg-bg-tertiary rounded-md p-0.5">
           <button
-            className={`fleet-view-btn ${viewMode === 'grid' ? 'active' : ''}`}
+            className={`flex items-center justify-center w-7 h-7 bg-transparent border-none rounded cursor-pointer transition-all duration-150 ${
+              viewMode === 'grid'
+                ? 'bg-bg-card text-text-primary shadow-sm'
+                : 'text-text-muted hover:text-text-secondary'
+            }`}
             onClick={() => setViewMode('grid')}
             title="Grid view"
           >
             <GridIcon />
           </button>
           <button
-            className={`fleet-view-btn ${viewMode === 'list' ? 'active' : ''}`}
+            className={`flex items-center justify-center w-7 h-7 bg-transparent border-none rounded cursor-pointer transition-all duration-150 ${
+              viewMode === 'list'
+                ? 'bg-bg-card text-text-primary shadow-sm'
+                : 'text-text-muted hover:text-text-secondary'
+            }`}
             onClick={() => setViewMode('list')}
             title="List view"
           >
@@ -132,21 +140,35 @@ export function FleetOverview({
       </div>
 
       {/* Health bar */}
-      <div className="fleet-health-bar">
-        {servers.map((server) => (
-          <div
-            key={server.id}
-            className={`fleet-health-segment ${server.status}`}
-            style={{ flex: server.agentCount || 1 }}
-            title={`${server.name}: ${server.agentCount} agents`}
-          />
-        ))}
+      <div className="flex h-1 bg-bg-tertiary">
+        {servers.map((server) => {
+          const statusColors: Record<string, string> = {
+            online: 'bg-success',
+            offline: 'bg-error',
+            degraded: 'bg-warning',
+            connecting: 'bg-accent-purple',
+          };
+          return (
+            <div
+              key={server.id}
+              className={`transition-all duration-300 ${statusColors[server.status] || 'bg-text-dim'}`}
+              style={{ flex: server.agentCount || 1 }}
+              title={`${server.name}: ${server.agentCount} agents`}
+            />
+          );
+        })}
       </div>
 
       {/* Server grid/list */}
-      <div className={`fleet-servers fleet-servers-${viewMode}`}>
+      <div
+        className={`p-4 ${
+          viewMode === 'grid'
+            ? 'grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4'
+            : 'flex flex-col gap-2'
+        }`}
+      >
         {servers.map((server) => (
-          <div key={server.id} className="fleet-server-wrapper">
+          <div key={server.id} className="flex flex-col gap-2">
             <ServerCard
               server={server}
               isSelected={server.id === selectedServerId}
@@ -157,14 +179,18 @@ export function FleetOverview({
 
             {/* Agent preview for grid view */}
             {viewMode === 'grid' && agentsByServer[server.id]?.length > 0 && (
-              <div className="fleet-server-agents">
-                {agentsByServer[server.id].slice(0, 5).map((agent) => {
+              <div className="flex gap-1 px-2">
+                {agentsByServer[server.id].slice(0, 5).map((agent, idx) => {
                   const colors = getAgentColor(agent.name);
                   return (
                     <div
                       key={agent.name}
-                      className="fleet-agent-avatar"
-                      style={{ backgroundColor: colors.primary, color: colors.text }}
+                      className="w-6 h-6 rounded-md flex items-center justify-center text-[9px] font-semibold border-2 border-bg-card"
+                      style={{
+                        backgroundColor: colors.primary,
+                        color: colors.text,
+                        marginLeft: idx > 0 ? '-4px' : 0,
+                      }}
                       title={agent.name}
                     >
                       {getAgentInitials(agent.name)}
@@ -172,7 +198,10 @@ export function FleetOverview({
                   );
                 })}
                 {agentsByServer[server.id].length > 5 && (
-                  <div className="fleet-agent-more">
+                  <div
+                    className="w-6 h-6 rounded-md flex items-center justify-center text-[9px] font-semibold bg-bg-tertiary text-text-muted border-2 border-bg-card"
+                    style={{ marginLeft: '-4px' }}
+                  >
                     +{agentsByServer[server.id].length - 5}
                   </div>
                 )}
@@ -233,7 +262,7 @@ function EmptyIcon() {
 
 function Spinner() {
   return (
-    <svg className="fleet-spinner" width="24" height="24" viewBox="0 0 24 24">
+    <svg className="animate-spin" width="24" height="24" viewBox="0 0 24 24">
       <circle
         cx="12"
         cy="12"
@@ -247,211 +276,3 @@ function Spinner() {
     </svg>
   );
 }
-
-/**
- * CSS styles for the fleet overview
- */
-export const fleetOverviewStyles = `
-.fleet-overview {
-  background: #ffffff;
-  border-radius: 8px;
-  border: 1px solid #e8e8e8;
-  overflow: hidden;
-}
-
-.fleet-overview-loading,
-.fleet-overview-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 48px;
-  color: #888;
-  text-align: center;
-}
-
-.fleet-overview-empty h3 {
-  margin: 16px 0 8px;
-  font-size: 16px;
-  color: #333;
-}
-
-.fleet-overview-empty p {
-  margin: 0;
-  font-size: 13px;
-}
-
-.fleet-spinner {
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-.fleet-overview-header {
-  display: flex;
-  align-items: center;
-  gap: 24px;
-  padding: 16px;
-  border-bottom: 1px solid #e8e8e8;
-  background: #fafafa;
-}
-
-.fleet-overview-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 600;
-  font-size: 14px;
-  color: #333;
-}
-
-.fleet-overview-title svg {
-  color: #666;
-}
-
-.fleet-overview-stats {
-  display: flex;
-  gap: 24px;
-  flex: 1;
-}
-
-.fleet-stat {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-.fleet-stat-value {
-  font-size: 16px;
-  font-weight: 600;
-  color: #1a1a1a;
-}
-
-.fleet-stat-label {
-  font-size: 11px;
-  color: #888;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-}
-
-.fleet-overview-controls {
-  display: flex;
-  gap: 4px;
-  background: #f0f0f0;
-  border-radius: 6px;
-  padding: 2px;
-}
-
-.fleet-view-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  background: transparent;
-  border: none;
-  border-radius: 4px;
-  color: #888;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.fleet-view-btn:hover {
-  color: #333;
-}
-
-.fleet-view-btn.active {
-  background: #ffffff;
-  color: #333;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
-}
-
-.fleet-health-bar {
-  display: flex;
-  height: 4px;
-  background: #f0f0f0;
-}
-
-.fleet-health-segment {
-  transition: flex 0.3s;
-}
-
-.fleet-health-segment.online {
-  background: #10b981;
-}
-
-.fleet-health-segment.offline {
-  background: #ef4444;
-}
-
-.fleet-health-segment.degraded {
-  background: #f59e0b;
-}
-
-.fleet-health-segment.connecting {
-  background: #6366f1;
-}
-
-.fleet-servers {
-  padding: 16px;
-}
-
-.fleet-servers-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 16px;
-}
-
-.fleet-servers-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.fleet-server-wrapper {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.fleet-server-agents {
-  display: flex;
-  gap: 4px;
-  padding: 0 8px;
-}
-
-.fleet-agent-avatar {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 9px;
-  font-weight: 600;
-  border: 2px solid #ffffff;
-  margin-left: -4px;
-}
-
-.fleet-agent-avatar:first-child {
-  margin-left: 0;
-}
-
-.fleet-agent-more {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  background: #f0f0f0;
-  font-size: 9px;
-  font-weight: 600;
-  color: #666;
-  border: 2px solid #ffffff;
-  margin-left: -4px;
-}
-`;

@@ -98,6 +98,7 @@ export const STATUS_COLORS = {
   processing: '#6366f1',  // Indigo (thinking/processing)
   error: '#ef4444',       // Red
   attention: '#ef4444',   // Red (for badge)
+  stuck: '#f97316',       // Orange (received message but no response)
 } as const;
 
 export type AgentStatus = keyof typeof STATUS_COLORS;

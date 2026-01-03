@@ -9,7 +9,7 @@ import helmet from 'helmet';
 import crypto from 'crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createClient } from 'redis';
+import { createClient, RedisClientType } from 'redis';
 import { RedisStore } from 'connect-redis';
 import { getConfig } from './config.js';
 import { runMigrations } from './db/index.js';
@@ -20,6 +20,7 @@ const __dirname = path.dirname(__filename);
 declare module 'express-session' {
   interface SessionData {
     csrfToken?: string;
+    userId?: string;
   }
 }
 
@@ -33,6 +34,9 @@ import { teamsRouter } from './api/teams.js';
 import { billingRouter } from './api/billing.js';
 import { usageRouter } from './api/usage.js';
 import { coordinatorsRouter } from './api/coordinators.js';
+import { webhooksRouter } from './api/webhooks.js';
+import { githubAppRouter } from './api/github-app.js';
+import { nangoAuthRouter } from './api/nango-auth.js';
 
 export interface CloudServer {
   app: Express;
@@ -46,14 +50,14 @@ export async function createServer(): Promise<CloudServer> {
   app.set('trust proxy', 1);
 
   // Redis client for sessions
-  const redisClient = createClient({ url: config.redisUrl });
+  const redisClient: RedisClientType = createClient({ url: config.redisUrl });
   redisClient.on('error', (err) => {
     console.error('[redis] error', err);
   });
   redisClient.on('reconnecting', () => {
     console.warn('[redis] reconnecting...');
   });
-  await (redisClient as any).connect();
+  await redisClient.connect();
 
   // Middleware
   // Configure helmet to allow Next.js inline scripts
@@ -98,7 +102,7 @@ export async function createServer(): Promise<CloudServer> {
     const started = Date.now();
     res.on('finish', () => {
       const duration = Date.now() - started;
-      const user = (req.session as any)?.userId ?? 'anon';
+      const user = req.session?.userId ?? 'anon';
       console.log(
         `[audit] ${req.method} ${req.originalUrl} ${res.statusCode} user=${user} ip=${req.ip} ${duration}ms`
       );
@@ -140,7 +144,14 @@ export async function createServer(): Promise<CloudServer> {
 
   // Lightweight CSRF protection using session token
   const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+  // Paths exempt from CSRF (webhooks from external services)
+  const CSRF_EXEMPT_PATHS = ['/api/webhooks/', '/api/auth/nango/webhook'];
   app.use((req: Request, res: Response, next: NextFunction) => {
+    // Skip CSRF for webhook endpoints
+    if (CSRF_EXEMPT_PATHS.some(path => req.path.startsWith(path))) {
+      return next();
+    }
+
     if (!req.session) return res.status(500).json({ error: 'Session unavailable' });
 
     if (!req.session.csrfToken) {
@@ -177,6 +188,9 @@ export async function createServer(): Promise<CloudServer> {
   app.use('/api/billing', billingRouter);
   app.use('/api/usage', usageRouter);
   app.use('/api/project-groups', coordinatorsRouter);
+  app.use('/api/webhooks', webhooksRouter);
+  app.use('/api/github-app', githubAppRouter);
+  app.use('/api/auth/nango', nangoAuthRouter);
   // TODO: Add authenticated agent/daemon channels when remote sockets are supported
 
   // Serve static dashboard files (Next.js static export)

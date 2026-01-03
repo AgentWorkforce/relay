@@ -11,7 +11,7 @@ import { Sidebar } from './layout/Sidebar';
 import { Header } from './layout/Header';
 import { MessageList } from './MessageList';
 import { ThreadPanel } from './ThreadPanel';
-import { CommandPalette } from './CommandPalette';
+import { CommandPalette, type TaskCreateRequest, PRIORITY_CONFIG } from './CommandPalette';
 import { SpawnModal, type SpawnConfig } from './SpawnModal';
 import { NewConversationModal } from './NewConversationModal';
 import { SettingsPanel, defaultSettings, type Settings } from './SettingsPanel';
@@ -21,6 +21,10 @@ import { FileAutocomplete, getFileQuery, completeFileInValue } from './FileAutoc
 import { WorkspaceSelector, type Workspace } from './WorkspaceSelector';
 import { AddWorkspaceModal } from './AddWorkspaceModal';
 import { LogViewerPanel } from './LogViewerPanel';
+import { TrajectoryViewer } from './TrajectoryViewer';
+import { DecisionQueue, type Decision } from './DecisionQueue';
+import { FleetOverview } from './FleetOverview';
+import type { ServerInfo } from './ServerCard';
 import { TypingIndicator } from './TypingIndicator';
 import { OnlineUsersIndicator } from './OnlineUsersIndicator';
 import { UserProfilePanel } from './UserProfilePanel';
@@ -29,9 +33,11 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { useAgents } from './hooks/useAgents';
 import { useMessages } from './hooks/useMessages';
 import { useOrchestrator } from './hooks/useOrchestrator';
+import { useTrajectory } from './hooks/useTrajectory';
+import { useRecentRepos } from './hooks/useRecentRepos';
 import { usePresence, type UserPresence } from './hooks/usePresence';
 import { useCloudSessionOptional } from './CloudSessionProvider';
-import { api } from '../lib/api';
+import { api, convertApiDecision } from '../lib/api';
 import type { CurrentUser } from './MessageList';
 
 /**
@@ -124,8 +130,37 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   // Log viewer panel state
   const [logViewerAgent, setLogViewerAgent] = useState<Agent | null>(null);
 
+  // Trajectory panel state
+  const [isTrajectoryOpen, setIsTrajectoryOpen] = useState(false);
+  const {
+    steps: trajectorySteps,
+    status: trajectoryStatus,
+    history: trajectoryHistory,
+    isLoading: isTrajectoryLoading,
+    selectTrajectory,
+    selectedTrajectoryId,
+  } = useTrajectory({
+    autoPoll: isTrajectoryOpen, // Only poll when panel is open
+  });
+
+  // Recent repos tracking
+  const { recentRepos, addRecentRepo, getRecentProjects } = useRecentRepos();
+
   // Coordinator panel state
   const [isCoordinatorOpen, setIsCoordinatorOpen] = useState(false);
+
+  // Decision queue state
+  const [isDecisionQueueOpen, setIsDecisionQueueOpen] = useState(false);
+  const [decisions, setDecisions] = useState<Decision[]>([]);
+  const [decisionProcessing, setDecisionProcessing] = useState<Record<string, boolean>>({});
+
+  // Fleet overview state
+  const [isFleetViewActive, setIsFleetViewActive] = useState(false);
+  const [fleetServers, setFleetServers] = useState<ServerInfo[]>([]);
+  const [selectedServerId, setSelectedServerId] = useState<string | undefined>();
+
+  // Task creation state (tasks are stored in beads, not local state)
+  const [isCreatingTask, setIsCreatingTask] = useState(false);
 
   // Mobile sidebar state
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -402,6 +437,9 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   const handleProjectSelect = useCallback((project: Project) => {
     setCurrentProject(project.id);
 
+    // Track as recently accessed
+    addRecentRepo(project);
+
     // Switch workspace if using orchestrator
     if (workspaces.length > 0) {
       switchWorkspace(project.id).catch((err) => {
@@ -414,7 +452,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
       setCurrentChannel(project.agents[0].name);
     }
     closeSidebarOnMobile();
-  }, [selectAgent, setCurrentChannel, closeSidebarOnMobile, workspaces.length, switchWorkspace]);
+  }, [selectAgent, setCurrentChannel, closeSidebarOnMobile, workspaces.length, switchWorkspace, addRecentRepo]);
 
   // Handle agent selection
   const handleAgentSelect = useCallback((agent: Agent) => {
@@ -534,6 +572,122 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     setLogViewerAgent(agent);
   }, []);
 
+  // Fetch fleet servers periodically when fleet view is active
+  useEffect(() => {
+    if (!isFleetViewActive) return;
+
+    const fetchFleetServers = async () => {
+      const result = await api.getFleetServers();
+      if (result.success && result.data) {
+        // Convert FleetServer to ServerInfo format
+        const servers: ServerInfo[] = result.data.servers.map((s) => ({
+          id: s.id,
+          name: s.name,
+          url: s.id === 'local' ? window.location.origin : `http://${s.id}`,
+          status: s.status === 'healthy' ? 'online' : s.status === 'degraded' ? 'degraded' : 'offline',
+          agentCount: s.agents.length,
+          uptime: s.uptime,
+          lastSeen: s.lastHeartbeat,
+        }));
+        setFleetServers(servers);
+      }
+    };
+
+    fetchFleetServers();
+    const interval = setInterval(fetchFleetServers, 5000);
+    return () => clearInterval(interval);
+  }, [isFleetViewActive]);
+
+  // Fetch decisions periodically when queue is open
+  useEffect(() => {
+    if (!isDecisionQueueOpen) return;
+
+    const fetchDecisions = async () => {
+      const result = await api.getDecisions();
+      if (result.success && result.data) {
+        setDecisions(result.data.decisions.map(convertApiDecision));
+      }
+    };
+
+    fetchDecisions();
+    const interval = setInterval(fetchDecisions, 5000);
+    return () => clearInterval(interval);
+  }, [isDecisionQueueOpen]);
+
+  // Decision queue handlers
+  const handleDecisionApprove = useCallback(async (decisionId: string, optionId?: string) => {
+    setDecisionProcessing((prev) => ({ ...prev, [decisionId]: true }));
+    try {
+      const result = await api.approveDecision(decisionId, optionId);
+      if (result.success) {
+        setDecisions((prev) => prev.filter((d) => d.id !== decisionId));
+      } else {
+        console.error('Failed to approve decision:', result.error);
+      }
+    } catch (err) {
+      console.error('Failed to approve decision:', err);
+    } finally {
+      setDecisionProcessing((prev) => ({ ...prev, [decisionId]: false }));
+    }
+  }, []);
+
+  const handleDecisionReject = useCallback(async (decisionId: string, reason?: string) => {
+    setDecisionProcessing((prev) => ({ ...prev, [decisionId]: true }));
+    try {
+      const result = await api.rejectDecision(decisionId, reason);
+      if (result.success) {
+        setDecisions((prev) => prev.filter((d) => d.id !== decisionId));
+      } else {
+        console.error('Failed to reject decision:', result.error);
+      }
+    } catch (err) {
+      console.error('Failed to reject decision:', err);
+    } finally {
+      setDecisionProcessing((prev) => ({ ...prev, [decisionId]: false }));
+    }
+  }, []);
+
+  const handleDecisionDismiss = useCallback(async (decisionId: string) => {
+    const result = await api.dismissDecision(decisionId);
+    if (result.success) {
+      setDecisions((prev) => prev.filter((d) => d.id !== decisionId));
+    }
+  }, []);
+
+  // Task creation handler - creates bead and sends relay notification
+  const handleTaskCreate = useCallback(async (task: TaskCreateRequest) => {
+    setIsCreatingTask(true);
+    try {
+      // Map UI priority to beads priority number
+      const beadsPriority = PRIORITY_CONFIG[task.priority].beadsPriority;
+
+      // Create bead via API
+      const result = await api.createBead({
+        title: task.title,
+        assignee: task.agentName,
+        priority: beadsPriority,
+        type: 'task',
+      });
+
+      if (result.success && result.data?.bead) {
+        // Send relay notification to agent (non-interrupting)
+        await api.sendRelayMessage({
+          to: task.agentName,
+          content: `📋 New task assigned: "${task.title}" (P${beadsPriority})\nCheck \`bd ready\` for details.`,
+        });
+        console.log('Task created:', result.data.bead.id);
+      } else {
+        console.error('Failed to create task bead:', result.error);
+        throw new Error(result.error || 'Failed to create task');
+      }
+    } catch (err) {
+      console.error('Failed to create task:', err);
+      throw err;
+    } finally {
+      setIsCreatingTask(false);
+    }
+  }, []);
+
   // Handle command palette
   const handleCommandPaletteOpen = useCallback(() => {
     setIsCommandPaletteOpen(true);
@@ -590,6 +744,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
         setIsCommandPaletteOpen(false);
         setIsSpawnModalOpen(false);
         setIsNewConversationOpen(false);
+        setIsTrajectoryOpen(false);
       }
     };
 
@@ -661,11 +816,17 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           selectedAgent={selectedAgent}
           projects={mergedProjects}
           currentProject={mergedProjects.find(p => p.id === currentProject) || null}
+          recentProjects={getRecentProjects(mergedProjects)}
+          onProjectChange={handleProjectSelect}
           onCommandPaletteOpen={handleCommandPaletteOpen}
           onSettingsClick={handleSettingsClick}
           onHistoryClick={handleHistoryClick}
           onNewConversationClick={handleNewConversationClick}
           onCoordinatorClick={handleCoordinatorClick}
+          onFleetClick={() => setIsFleetViewActive(!isFleetViewActive)}
+          isFleetViewActive={isFleetViewActive}
+          onTrajectoryClick={() => setIsTrajectoryOpen(true)}
+          hasActiveTrajectory={trajectoryStatus?.active}
           onMenuClick={() => setIsSidebarOpen(true)}
           hasUnreadNotifications={hasUnreadMessages}
         />
@@ -701,10 +862,25 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
                 <LoadingSpinner />
                 <p className="font-display text-text-secondary">Connecting to dashboard...</p>
               </div>
+            ) : isFleetViewActive ? (
+              <div className="p-4 h-full overflow-y-auto">
+                <FleetOverview
+                  servers={fleetServers}
+                  agents={agents}
+                  selectedServerId={selectedServerId}
+                  onServerSelect={setSelectedServerId}
+                  onServerReconnect={(serverId) => {
+                    // TODO: Implement server reconnect via API
+                    console.log('Reconnecting to server:', serverId);
+                  }}
+                  isLoading={!data}
+                />
+              </div>
             ) : (
               <MessageList
                 messages={messages}
                 currentChannel={currentChannel}
+                currentThread={currentThread}
                 onThreadClick={(messageId) => setCurrentThread(messageId)}
                 highlightedMessageId={currentThread ?? undefined}
                 agents={data?.agents}
@@ -786,6 +962,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
         onAgentSelect={handleAgentSelect}
         onProjectSelect={handleProjectSelect}
         onSpawnClick={handleSpawnClick}
+        onTaskCreate={handleTaskCreate}
         onGeneralClick={() => {
           selectAgent(null);
           setCurrentChannel('general');
@@ -848,6 +1025,103 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           availableAgents={agents}
           onAgentChange={setLogViewerAgent}
         />
+      )}
+
+      {/* Trajectory Panel - Fullscreen slide-over */}
+      {isTrajectoryOpen && (
+        <div
+          className="fixed inset-0 z-50 flex bg-black/50 backdrop-blur-sm"
+          onClick={() => setIsTrajectoryOpen(false)}
+        >
+          <div
+            className="ml-auto w-full max-w-3xl h-full bg-bg-primary shadow-2xl animate-in slide-in-from-right duration-300 flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border-subtle bg-bg-secondary">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500/20 to-accent-cyan/20 flex items-center justify-center border border-blue-500/30">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-blue-500">
+                    <path d="M3 12h4l3 9 4-18 3 9h4" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </div>
+                <div>
+                  <h2 className="text-lg font-semibold text-text-primary m-0">Trajectory Viewer</h2>
+                  <p className="text-xs text-text-muted m-0">
+                    {trajectoryStatus?.active ? `Active: ${trajectoryStatus.task || 'Working...'}` : 'Browse past trajectories'}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsTrajectoryOpen(false)}
+                className="w-10 h-10 rounded-lg bg-bg-tertiary border border-border-subtle flex items-center justify-center text-text-muted hover:text-text-primary hover:bg-bg-hover hover:border-blue-500/50 transition-all"
+                title="Close (Esc)"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 overflow-hidden p-6">
+              <TrajectoryViewer
+                agentName={trajectoryStatus?.task?.slice(0, 30) || 'Current'}
+                steps={trajectorySteps}
+                history={trajectoryHistory}
+                selectedTrajectoryId={selectedTrajectoryId}
+                onSelectTrajectory={selectTrajectory}
+                isLoading={isTrajectoryLoading}
+                maxHeight="calc(100vh - 160px)"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+
+      {/* Decision Queue Panel */}
+      {isDecisionQueueOpen && (
+        <div className="fixed left-4 bottom-4 w-[400px] max-h-[500px] z-50 shadow-modal">
+          <div className="relative">
+            <button
+              onClick={() => setIsDecisionQueueOpen(false)}
+              className="absolute -top-2 -right-2 w-6 h-6 bg-bg-elevated border border-border rounded-full flex items-center justify-center text-text-muted hover:text-text-primary hover:bg-bg-hover z-10"
+              title="Close decisions"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M18 6L6 18M6 6l12 12" />
+              </svg>
+            </button>
+            <DecisionQueue
+              decisions={decisions}
+              onApprove={handleDecisionApprove}
+              onReject={handleDecisionReject}
+              onDismiss={handleDecisionDismiss}
+              isProcessing={decisionProcessing}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Decision Queue Toggle Button (bottom-left when panel is closed) */}
+      {!isDecisionQueueOpen && decisions.length > 0 && (
+        <button
+          onClick={() => setIsDecisionQueueOpen(true)}
+          className="fixed left-4 bottom-4 w-12 h-12 bg-warning text-bg-deep rounded-full shadow-[0_0_20px_rgba(255,107,53,0.4)] flex items-center justify-center hover:scale-105 transition-transform z-50"
+          title={`${decisions.length} pending decision${decisions.length > 1 ? 's' : ''}`}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="8" x2="12" y2="12" />
+            <line x1="12" y1="16" x2="12.01" y2="16" />
+          </svg>
+          {decisions.length > 0 && (
+            <span className="absolute -top-1 -right-1 w-5 h-5 bg-error text-white text-[10px] font-bold rounded-full flex items-center justify-center">
+              {decisions.length}
+            </span>
+          )}
+        </button>
       )}
 
       {/* User Profile Panel */}

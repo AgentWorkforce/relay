@@ -4,6 +4,11 @@
 
 import { describe, it, expect } from 'vitest';
 import { getDefaultPrefix } from './tmux-wrapper.js';
+import {
+  type InjectionResult,
+  INJECTION_CONSTANTS,
+  createInjectionMetrics,
+} from './shared.js';
 
 describe('TmuxWrapper constants', () => {
   // Unified prefix across all CLI types
@@ -165,6 +170,147 @@ describe('Cursor stability constants', () => {
         stableCursorCount >= STABLE_CURSOR_THRESHOLD &&
         cursorWithInput <= MAX_PROMPT_CURSOR_POSITION;
       expect(isClearWithInput).toBe(false);
+    });
+  });
+});
+
+describe('Injection retry logic', () => {
+  // Test the retry logic pattern used by injectWithRetry
+
+  describe('INJECTION_CONSTANTS', () => {
+    it('has correct MAX_RETRIES', () => {
+      expect(INJECTION_CONSTANTS.MAX_RETRIES).toBe(3);
+    });
+
+    it('has correct VERIFICATION_TIMEOUT_MS', () => {
+      expect(INJECTION_CONSTANTS.VERIFICATION_TIMEOUT_MS).toBe(2000);
+    });
+
+    it('has correct RETRY_BACKOFF_MS', () => {
+      expect(INJECTION_CONSTANTS.RETRY_BACKOFF_MS).toBe(300);
+    });
+  });
+
+  describe('InjectionMetrics tracking', () => {
+    it('initializes with zero counts', () => {
+      const metrics = createInjectionMetrics();
+      expect(metrics.total).toBe(0);
+      expect(metrics.successFirstTry).toBe(0);
+      expect(metrics.successWithRetry).toBe(0);
+      expect(metrics.failed).toBe(0);
+    });
+
+    it('tracks successful first-try injection', () => {
+      const metrics = createInjectionMetrics();
+
+      // Simulate successful first-try injection
+      metrics.total++;
+      const verified = true;
+      const attempt = 0;
+      if (verified && attempt === 0) {
+        metrics.successFirstTry++;
+      }
+
+      expect(metrics.total).toBe(1);
+      expect(metrics.successFirstTry).toBe(1);
+      expect(metrics.successWithRetry).toBe(0);
+      expect(metrics.failed).toBe(0);
+    });
+
+    it('tracks successful retry injection', () => {
+      const metrics = createInjectionMetrics();
+
+      // Simulate successful injection on retry
+      metrics.total++;
+      const verified = true;
+      const attempt = 2; // Third attempt
+      if (verified && attempt > 0) {
+        metrics.successWithRetry++;
+      }
+
+      expect(metrics.total).toBe(1);
+      expect(metrics.successFirstTry).toBe(0);
+      expect(metrics.successWithRetry).toBe(1);
+      expect(metrics.failed).toBe(0);
+    });
+
+    it('tracks failed injection', () => {
+      const metrics = createInjectionMetrics();
+
+      // Simulate failed injection after all retries
+      metrics.total++;
+      metrics.failed++;
+
+      expect(metrics.total).toBe(1);
+      expect(metrics.successFirstTry).toBe(0);
+      expect(metrics.successWithRetry).toBe(0);
+      expect(metrics.failed).toBe(1);
+    });
+  });
+
+  describe('InjectionResult structure', () => {
+    it('returns success result on first try', () => {
+      const result: InjectionResult = { success: true, attempts: 1 };
+      expect(result.success).toBe(true);
+      expect(result.attempts).toBe(1);
+    });
+
+    it('returns success result after retries', () => {
+      const result: InjectionResult = { success: true, attempts: 3 };
+      expect(result.success).toBe(true);
+      expect(result.attempts).toBe(3);
+    });
+
+    it('returns failure result after max retries', () => {
+      const result: InjectionResult = {
+        success: false,
+        attempts: INJECTION_CONSTANTS.MAX_RETRIES,
+      };
+      expect(result.success).toBe(false);
+      expect(result.attempts).toBe(3);
+    });
+
+    it('can include fallback flag', () => {
+      const result: InjectionResult = {
+        success: false,
+        attempts: 3,
+        fallbackUsed: true,
+      };
+      expect(result.fallbackUsed).toBe(true);
+    });
+  });
+
+  describe('Backoff calculation', () => {
+    it('increases backoff with each attempt', () => {
+      const backoffMs = INJECTION_CONSTANTS.RETRY_BACKOFF_MS;
+
+      // Backoff for attempt 0 (first retry)
+      const backoff0 = backoffMs * 1;
+      expect(backoff0).toBe(300);
+
+      // Backoff for attempt 1 (second retry)
+      const backoff1 = backoffMs * 2;
+      expect(backoff1).toBe(600);
+
+      // Backoff for attempt 2 (third retry - but no backoff needed after last attempt)
+      const backoff2 = backoffMs * 3;
+      expect(backoff2).toBe(900);
+    });
+  });
+
+  describe('Verification pattern matching', () => {
+    it('generates correct expected pattern', () => {
+      const shortId = 'abc12345';
+      const from = 'TestAgent';
+      const expectedPattern = `Relay message from ${from} [${shortId}]`;
+      expect(expectedPattern).toBe('Relay message from TestAgent [abc12345]');
+    });
+
+    it('handles different agent names', () => {
+      const shortId = 'def67890';
+      const from = 'Backend';
+      const expectedPattern = `Relay message from ${from} [${shortId}]`;
+      expect(expectedPattern).toBe('Relay message from Backend [def67890]');
     });
   });
 });

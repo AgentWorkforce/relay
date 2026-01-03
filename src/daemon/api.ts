@@ -46,12 +46,21 @@ export class DaemonApi extends EventEmitter {
   private sessions = new Map<WS, UserSession>();
   private routes = new Map<string, RouteHandler>();
   private config: ApiDaemonConfig;
+  private allowedOrigins: Set<string>;
+  private allowAllOrigins: boolean;
 
   constructor(config: ApiDaemonConfig) {
     super();
     this.config = config;
     this.workspaceManager = getWorkspaceManager(config.dataDir);
     this.agentManager = getAgentManager(config.dataDir);
+    const configuredOrigins = this.loadAllowedOrigins(config);
+    this.allowAllOrigins = configuredOrigins.includes('*');
+    this.allowedOrigins = new Set(
+      configuredOrigins
+        .map(origin => origin.trim())
+        .filter(origin => origin && origin !== '*')
+    );
 
     // Setup routes
     this.setupRoutes();
@@ -59,6 +68,46 @@ export class DaemonApi extends EventEmitter {
     // Forward events to WebSocket clients
     this.workspaceManager.on('event', (event: DaemonEvent) => this.broadcastEvent(event));
     this.agentManager.on('event', (event: DaemonEvent) => this.broadcastEvent(event));
+  }
+
+  /**
+   * Resolve allowed origins from config/env (comma-separated list).
+   * Empty list means no cross-origin access is permitted.
+   */
+  private loadAllowedOrigins(config: ApiDaemonConfig): string[] {
+    if (config.allowedOrigins?.length) {
+      return config.allowedOrigins;
+    }
+    const envOrigins = process.env.AGENT_RELAY_API_ALLOWED_ORIGINS;
+    if (envOrigins?.trim()) {
+      return envOrigins.split(',').map(origin => origin.trim()).filter(Boolean);
+    }
+    return [];
+  }
+
+  /**
+   * Return allowed origin for CORS or null if explicitly blocked.
+   * Undefined means no CORS header will be set (same-origin/server-to-server).
+   */
+  private resolveAllowedOrigin(
+    originHeader?: string | null,
+    requestHost?: string | null
+  ): string | null | undefined {
+    if (!originHeader) return undefined; // Non-browser or requests without Origin header
+    if (this.allowAllOrigins) return originHeader;
+    if (this.allowedOrigins.has(originHeader)) return originHeader;
+    if (requestHost) {
+      try {
+        const originHost = new URL(originHeader).host;
+        // Allow same-origin requests even if not explicitly configured
+        if (originHost === requestHost) {
+          return originHeader;
+        }
+      } catch {
+        // Malformed origin; treat as blocked below
+      }
+    }
+    return null;
   }
 
   /**
@@ -265,10 +314,24 @@ export class DaemonApi extends EventEmitter {
    * Handle HTTP request
    */
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    // CORS headers
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    const originHeader = typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
+    const allowedOrigin = this.resolveAllowedOrigin(originHeader, req.headers.host);
+
+    // CORS headers (default denies cross-origin unless explicitly allowed)
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Vary', 'Origin');
+
+    if (allowedOrigin === null) {
+      logger.warn('CORS origin blocked', { origin: originHeader });
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'CORS origin not allowed' }));
+      return;
+    }
+
+    if (allowedOrigin) {
+      res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+    }
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);

@@ -76,6 +76,9 @@
   },
   "homepage": "https://github.com/khaliqgant/agent-relay#readme",
   "dependencies": {
+    "@nangohq/node": "^0.69.20",
+    "@types/jsonwebtoken": "^9.0.10",
+    "agent-trajectories": "^0.1.1",
     "better-sqlite3": "^9.4.3",
     "chokidar": "^5.0.0",
     "commander": "^12.1.0",
@@ -88,6 +91,7 @@
     "express-session": "^1.18.2",
     "helmet": "^8.1.0",
     "http-proxy-middleware": "^3.0.5",
+    "jsonwebtoken": "^9.0.3",
     "node-pty": "1.0.0",
     "pg": "^8.16.3",
     "redis": "^5.10.0",

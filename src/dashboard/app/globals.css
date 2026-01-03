@@ -3,8 +3,9 @@
  * Mission Control Theme
  */
 
-@import "tailwindcss";
 @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap');
+@import "tailwindcss";
+@import "@xterm/xterm/css/xterm.css";
 @config "../tailwind.config.js";
 
 /* Base styles */

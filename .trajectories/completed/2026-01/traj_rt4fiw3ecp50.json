@@ -1,0 +1,48 @@
+{
+  "id": "traj_rt4fiw3ecp50",
+  "version": 1,
+  "task": {
+    "title": "Fix trajectory agents array population",
+    "source": {
+      "system": "plain",
+      "id": "agent-relay-452"
+    }
+  },
+  "status": "abandoned",
+  "startedAt": "2026-01-03T13:30:08.415Z",
+  "agents": [],
+  "chapters": [
+    {
+      "id": "chap_r4oq003sm2ke",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-03T13:30:15.567Z",
+      "events": [
+        {
+          "ts": 1767447015568,
+          "type": "decision",
+          "content": "Abandoned stale traj_9921cuhel0pj and started new trajectory for 452: Abandoned stale traj_9921cuhel0pj and started new trajectory for 452",
+          "raw": {
+            "question": "Abandoned stale traj_9921cuhel0pj and started new trajectory for 452",
+            "chosen": "Abandoned stale traj_9921cuhel0pj and started new trajectory for 452",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767447082829,
+          "type": "note",
+          "content": "Abandoned: Starting new task agent-relay-327",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-03T13:31:22.829Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-01-03T13:31:22.829Z"
+}

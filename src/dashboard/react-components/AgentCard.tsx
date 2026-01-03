@@ -15,6 +15,7 @@ import {
 } from '../lib/colors';
 import { getAgentDisplayName, getAgentBreadcrumb } from '../lib/hierarchy';
 import { ThinkingIndicator, ThinkingDot } from './ThinkingIndicator';
+import { getStuckDuration, formatStuckDuration } from '../lib/stuckDetection';
 
 export interface AgentCardProps {
   agent: Agent;
@@ -31,7 +32,10 @@ export interface AgentCardProps {
 /**
  * Get a descriptive tooltip for an agent's connection status.
  */
-function getStatusTooltip(status: AgentStatus, isProcessing?: boolean): string {
+function getStatusTooltip(status: AgentStatus, isProcessing?: boolean, isStuck?: boolean, stuckDuration?: number): string {
+  if (isStuck && stuckDuration) {
+    return `Stuck - Agent received message ${formatStuckDuration(stuckDuration)} ago but hasn't responded`;
+  }
   if (isProcessing) {
     return 'Processing - Agent is actively working';
   }
@@ -48,6 +52,8 @@ function getStatusTooltip(status: AgentStatus, isProcessing?: boolean): string {
       return 'Error - Agent encountered an error';
     case 'attention':
       return 'Attention - Agent requires user input';
+    case 'stuck':
+      return 'Stuck - Agent may be blocked or unresponsive';
     default:
       return `Status: ${status}`;
   }
@@ -67,9 +73,11 @@ export function AgentCard({
   const colors = getAgentColor(agent.name);
   const initials = getAgentInitials(agent.name);
   const displayName = displayNameOverride || getAgentDisplayName(agent.name);
-  const statusColor = STATUS_COLORS[agent.status] || STATUS_COLORS.offline;
+  const stuckDuration = getStuckDuration(agent);
+  const isStuck = agent.isStuck || stuckDuration > 0;
+  const statusColor = isStuck ? STATUS_COLORS.stuck : (STATUS_COLORS[agent.status] || STATUS_COLORS.offline);
   const isOnline = agent.status === 'online';
-  const statusTooltip = getStatusTooltip(agent.status, agent.isProcessing);
+  const statusTooltip = getStatusTooltip(agent.status, agent.isProcessing, isStuck, stuckDuration);
 
   const handleClick = () => {
     onClick?.(agent);
@@ -211,6 +219,15 @@ export function AgentCard({
               title="Needs Attention - Agent requires user input or has pending decisions"
             />
           )}
+          {isStuck && (
+            <div
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#f97316]/20 text-[#f97316] text-[10px] font-medium animate-pulse"
+              title={statusTooltip}
+            >
+              <StuckIcon />
+              <span>{formatStuckDuration(stuckDuration)}</span>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -247,11 +264,21 @@ export function AgentCard({
             {agent.needsAttention && (
               <span className="bg-red-500 text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center" title="Needs Attention - Agent requires user input or has pending decisions">!</span>
             )}
+            {isStuck && (
+              <span className="bg-[#f97316] text-white text-[10px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1" title={statusTooltip}>
+                <StuckIcon /> {formatStuckDuration(stuckDuration)}
+              </span>
+            )}
           </div>
           {showBreadcrumb ? (
             <span className="text-xs text-text-muted truncate block">{getAgentBreadcrumb(agent.name)}</span>
           ) : (
             <span className="text-xs text-text-muted truncate block">{agent.name}</span>
+          )}
+          {agent.agentId && (
+            <span className="text-[10px] text-text-muted font-mono opacity-70" title="Agent ID (use to resume)">
+              ID: {agent.agentId}
+            </span>
           )}
         </div>
       </div>
@@ -271,7 +298,7 @@ export function AgentCard({
       {agent.currentTask && !agent.isProcessing && (
         <div className="mt-2 p-2 bg-bg-hover rounded text-xs">
           <span className="text-text-muted mr-1">Working on:</span>
-          <span className="text-text-primary">{agent.currentTask}</span>
+          <span className="text-text-primary line-clamp-2" title={agent.currentTask}>{agent.currentTask}</span>
         </div>
       )}
 
@@ -385,6 +412,25 @@ function LogsIcon() {
     >
       <polyline points="4 17 10 11 4 5" />
       <line x1="12" y1="19" x2="20" y2="19" />
+    </svg>
+  );
+}
+
+function StuckIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="12" cy="12" r="10" />
+      <line x1="12" y1="8" x2="12" y2="12" />
+      <line x1="12" y1="16" x2="12.01" y2="16" />
     </svg>
   );
 }

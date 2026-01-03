@@ -16,18 +16,40 @@ import { exec, execSync, spawn, ChildProcess } from 'node:child_process';
 import crypto from 'node:crypto';
 import { promisify } from 'node:util';
 import { RelayClient } from './client.js';
-import { OutputParser, type ParsedCommand, parseSummaryWithDetails, parseSessionEndFromOutput } from './parser.js';
+import { OutputParser, type ParsedCommand, type ParsedSummary, parseSummaryWithDetails, parseSessionEndFromOutput, type SessionEndMarker } from './parser.js';
 import { InboxManager } from './inbox.js';
 import type { SendPayload, SendMeta } from '../protocol/types.js';
 import { SqliteStorageAdapter } from '../storage/sqlite-adapter.js';
 import { getProjectPaths } from '../utils/project-namespace.js';
 import { getTmuxPath } from '../utils/tmux-resolver.js';
+import { findAgentConfig } from '../utils/agent-config.js';
+import {
+  TrajectoryIntegration,
+  getTrajectoryIntegration,
+  detectPhaseFromContent,
+  getCompactTrailInstructions,
+  getTrailEnvVars,
+  type PDEROPhase,
+} from '../trajectory/integration.js';
+import { escapeForShell } from '../bridge/utils.js';
+import {
+  getContinuityManager,
+  parseContinuityCommand,
+  hasContinuityCommand,
+  type ContinuityManager,
+} from '../continuity/index.js';
 import {
   type QueuedMessage,
   type CliType,
+  type InjectionMetrics,
+  type InjectionCallbacks,
   stripAnsi,
   sleep,
   getDefaultRelayPrefix,
+  createInjectionMetrics,
+  buildInjectionString,
+  injectWithRetry as sharedInjectWithRetry,
+  INJECTION_CONSTANTS,
   CLI_QUIRKS,
 } from './shared.js';
 
@@ -95,6 +117,10 @@ export interface TmuxWrapperConfig {
   outputStabilityPollMs?: number;
   /** Stream output to daemon for dashboard log viewing (default: true) */
   streamLogs?: boolean;
+  /** Resume from a previous agent ID (for crash recovery) */
+  resumeAgentId?: string;
+  /** Dashboard port for API-based spawn/release (preferred over callbacks) */
+  dashboardPort?: number;
 }
 
 /**
@@ -134,15 +160,23 @@ export class TmuxWrapper {
   private lastSummaryHash = ''; // Dedup summary saves
   private lastSummaryRawContent = ''; // Dedup invalid JSON error logging
   private sessionEndProcessed = false; // Track if we've already processed session end
+  private sessionEndData?: SessionEndMarker; // Store SESSION_END data for handoff
   private pendingRelayCommands: ParsedCommand[] = [];
   private queuedMessageHashes: Set<string> = new Set(); // For offline queue dedup
   private readonly MAX_PENDING_RELAY_COMMANDS = 50;
   private processedSpawnCommands: Set<string> = new Set(); // Dedup spawn commands
   private processedReleaseCommands: Set<string> = new Set(); // Dedup release commands
+  private pendingFencedSpawn: { name: string; cli: string; taskLines: string[] } | null = null; // Track multi-line spawn task
   private receivedMessageIdSet: Set<string> = new Set();
   private receivedMessageIdOrder: string[] = [];
   private readonly MAX_RECEIVED_MESSAGES = 2000;
   private tmuxPath: string; // Resolved path to tmux binary (system or bundled)
+  private trajectory?: TrajectoryIntegration; // Trajectory tracking via trail
+  private lastDetectedPhase?: PDEROPhase; // Track last auto-detected PDERO phase
+  private continuity?: ContinuityManager; // Session continuity management
+  private processedContinuityCommands: Set<string> = new Set(); // Dedup continuity commands
+  private agentId?: string; // Unique agent ID for resume functionality
+  private injectionMetrics: InjectionMetrics = createInjectionMetrics(); // Track injection reliability
 
   constructor(config: TmuxWrapperConfig) {
     this.config = {
@@ -186,13 +220,23 @@ export class TmuxWrapper {
     // Resolve tmux path early so we fail fast if tmux isn't available
     this.tmuxPath = getTmuxPath();
 
+    // Auto-detect agent role from .claude/agents/ or .openagents/ if task not provided
+    let detectedTask = this.config.task;
+    if (!detectedTask) {
+      const agentConfig = findAgentConfig(config.name, this.config.cwd);
+      if (agentConfig?.description) {
+        detectedTask = agentConfig.description;
+        this.logStderr(`Auto-detected role: ${detectedTask.substring(0, 60)}...`, true);
+      }
+    }
+
     this.client = new RelayClient({
       agentName: config.name,
       socketPath: config.socketPath,
       cli: this.cliType,
       program: this.config.program,
       model: this.config.model,
-      task: this.config.task,
+      task: detectedTask,
       workingDirectory: this.config.cwd ?? process.cwd(),
       quiet: true, // Keep stdout clean; we log to stderr via wrapper
     });
@@ -216,6 +260,12 @@ export class TmuxWrapper {
       this.storage = undefined;
       return false;
     });
+
+    // Initialize trajectory tracking via trail CLI
+    this.trajectory = getTrajectoryIntegration(projectPaths.projectId, config.name);
+
+    // Initialize continuity manager for session persistence
+    this.continuity = getContinuityManager({ defaultCli: this.cliType });
 
     // Handle incoming messages from relay
     this.client.onMessage = (from: string, payload: SendPayload, messageId: string, meta?: SendMeta, originalTo?: string) => {
@@ -253,6 +303,23 @@ export class TmuxWrapper {
 
     // Prefix with newline to avoid corrupting tmux status line
     process.stderr.write(`\r[relay:${this.config.name}] ${msg}\n`);
+  }
+
+  /**
+   * Detect PDERO phase from output content and auto-transition if needed
+   */
+  private detectAndTransitionPhase(content: string): void {
+    if (!this.trajectory) return;
+
+    const detectedPhase = detectPhaseFromContent(content);
+    if (detectedPhase && detectedPhase !== this.lastDetectedPhase) {
+      const currentPhase = this.trajectory.getPhase();
+      if (detectedPhase !== currentPhase) {
+        this.trajectory.transition(detectedPhase, 'Auto-detected from output');
+        this.lastDetectedPhase = detectedPhase;
+        this.logStderr(`Phase transition: ${currentPhase || 'none'} → ${detectedPhase}`);
+      }
+    }
   }
 
   /**
@@ -369,13 +436,18 @@ export class TmuxWrapper {
         }
       }
 
-      // Set environment variables
+      // Set environment variables including trail/trajectory vars
+      const projectPaths = getProjectPaths();
+      const trailEnvVars = getTrailEnvVars(projectPaths.projectId, this.config.name, projectPaths.dataDir);
+
       for (const [key, value] of Object.entries({
         ...this.config.env,
+        ...trailEnvVars,
         AGENT_RELAY_NAME: this.config.name,
         TERM: 'xterm-256color',
       })) {
-        const escaped = value.replace(/"/g, '\\"');
+        // Use proper shell escaping to prevent command injection via env var values
+        const escaped = escapeForShell(value);
         execSync(`"${this.tmuxPath}" setenv -t ${this.sessionName} ${key} "${escaped}"`);
       }
 
@@ -398,6 +470,12 @@ export class TmuxWrapper {
     this.lastActivityTime = Date.now();
     this.activityState = 'active';
 
+    // Initialize trajectory tracking (auto-start if task provided)
+    this.initializeTrajectory();
+
+    // Initialize continuity and get/create agentId
+    this.initializeAgentId();
+
     // Inject instructions for the agent (after a delay to let CLI initialize)
     setTimeout(() => this.injectInstructions(), 3000);
 
@@ -410,6 +488,66 @@ export class TmuxWrapper {
   }
 
   /**
+   * Initialize trajectory tracking
+   * Auto-starts a trajectory if task is provided in config
+   */
+  private async initializeTrajectory(): Promise<void> {
+    if (!this.trajectory) return;
+
+    // Auto-start trajectory if task is provided
+    if (this.config.task) {
+      const success = await this.trajectory.initialize(this.config.task);
+      if (success) {
+        this.logStderr(`Trajectory started for task: ${this.config.task}`);
+      }
+    } else {
+      // Just initialize without starting a trajectory
+      await this.trajectory.initialize();
+    }
+  }
+
+  /**
+   * Initialize agent ID for continuity/resume functionality
+   */
+  private async initializeAgentId(): Promise<void> {
+    if (!this.continuity) return;
+
+    try {
+      let ledger;
+
+      // If resuming from a previous agent ID, try to find that ledger
+      if (this.config.resumeAgentId) {
+        ledger = await this.continuity.findLedgerByAgentId(this.config.resumeAgentId);
+        if (ledger) {
+          this.logStderr(`Resuming agent ID: ${ledger.agentId} (from previous session)`);
+        } else {
+          this.logStderr(`Resume agent ID ${this.config.resumeAgentId} not found, creating new`, true);
+        }
+      }
+
+      // If not resuming or resume ID not found, get or create ledger
+      if (!ledger) {
+        ledger = await this.continuity.getOrCreateLedger(
+          this.config.name,
+          this.cliType
+        );
+        this.logStderr(`Agent ID: ${ledger.agentId} (use this to resume if agent dies)`);
+      }
+
+      this.agentId = ledger.agentId;
+    } catch (err: any) {
+      this.logStderr(`Failed to initialize agent ID: ${err.message}`, true);
+    }
+  }
+
+  /**
+   * Get the current agent ID
+   */
+  getAgentId(): string | undefined {
+    return this.agentId;
+  }
+
+  /**
    * Inject usage instructions for the agent including persistence protocol
    */
   private async injectInstructions(): Promise<void> {
@@ -417,7 +555,9 @@ export class TmuxWrapper {
 
     // Use escaped prefix (\->relay:) in examples to prevent parser from treating them as real commands
     const escapedPrefix = '\\' + this.relayPrefix;
-    const instructions = [
+
+    // Build instructions including relay and trail
+    const relayInstructions = [
       `[Agent Relay] You are "${this.config.name}" - connected for real-time messaging.`,
       `SEND: ${escapedPrefix}AgentName message`,
       `MULTI-LINE: ${escapedPrefix}AgentName <<<(newline)content(newline)>>> - ALWAYS end with >>> on its own line!`,
@@ -425,12 +565,62 @@ export class TmuxWrapper {
       `END: Output [[SESSION_END]]{"summary":"..."}[[/SESSION_END]] when session complete.`,
     ].join(' | ');
 
+    // Add trail instructions if available
+    const trailInstructions = getCompactTrailInstructions();
+
     try {
-      await this.sendKeysLiteral(instructions);
+      await this.sendKeysLiteral(relayInstructions);
       await sleep(50);
       await this.sendKeys('Enter');
+
+      // Inject trail instructions
+      if (this.trajectory?.isTrailInstalledSync()) {
+        await sleep(100);
+        await this.sendKeysLiteral(trailInstructions);
+        await sleep(50);
+        await this.sendKeys('Enter');
+      }
+
+      // Inject continuity context from previous session
+      await this.injectContinuityContext();
     } catch {
       // Silent fail - instructions are nice-to-have
+    }
+  }
+
+  /**
+   * Inject continuity context from previous session
+   */
+  private async injectContinuityContext(): Promise<void> {
+    if (!this.continuity || !this.running) return;
+
+    try {
+      const context = await this.continuity.getStartupContext(this.config.name);
+      if (context && context.formatted) {
+        // Inject a brief notification about loaded context
+        const notification = `[Continuity] Previous session context loaded. ${
+          context.ledger ? `Task: ${context.ledger.currentTask?.slice(0, 50) || 'unknown'}` : ''
+        }${context.handoff ? ` | Last handoff: ${context.handoff.createdAt.toISOString().split('T')[0]}` : ''}`;
+
+        await sleep(200);
+        await this.sendKeysLiteral(notification);
+        await sleep(50);
+        await this.sendKeys('Enter');
+
+        // Queue the full context for injection when agent is ready
+        this.messageQueue.push({
+          from: 'system',
+          body: context.formatted,
+          messageId: `continuity-startup-${Date.now()}`,
+        });
+        this.checkForInjectionOpportunity();
+
+        if (this.config.debug) {
+          this.logStderr(`[CONTINUITY] Loaded context for ${this.config.name}`);
+        }
+      }
+    } catch (err: any) {
+      this.logStderr(`[CONTINUITY] Failed to load context: ${err.message}`, true);
     }
   }
 
@@ -548,7 +738,7 @@ export class TmuxWrapper {
       const cleanContent = stripAnsi(stdout);
       // Join continuation lines that TUIs split across multiple lines
       const joinedContent = this.joinContinuationLines(cleanContent);
-      const { commands } = this.parser.parse(joinedContent);
+      const { commands, output: filteredOutput } = this.parser.parse(joinedContent);
 
       // Debug: log relay commands being parsed
       if (commands.length > 0 && this.config.debug) {
@@ -565,12 +755,13 @@ export class TmuxWrapper {
         this.processedOutputLength = stdout.length;
 
         // Stream new output to daemon for dashboard log viewing
+        // Use filtered output to exclude thinking blocks and relay commands
         if (this.config.streamLogs && this.client.state === 'READY') {
-          // Send incremental output since last log
-          const newContent = cleanContent.substring(this.lastLoggedLength);
+          // Send incremental filtered output since last log
+          const newContent = filteredOutput.substring(this.lastLoggedLength);
           if (newContent.length > 0) {
             this.client.sendLog(newContent);
-            this.lastLoggedLength = cleanContent.length;
+            this.lastLoggedLength = filteredOutput.length;
           }
         }
       }
@@ -582,6 +773,12 @@ export class TmuxWrapper {
 
       // Check for [[SUMMARY]] blocks and save to storage
       this.parseSummaryAndSave(cleanContent);
+
+      // Detect PDERO phase transitions from output content
+      this.detectAndTransitionPhase(cleanContent);
+
+      // Parse and handle continuity commands (->continuity:save, ->continuity:load, etc.)
+      await this.parseContinuityCommands(joinedContent);
 
       // Check for [[SESSION_END]] blocks to explicitly close session
       this.parseSessionEndAndClose(cleanContent);
@@ -738,6 +935,9 @@ export class TmuxWrapper {
       this.queuedMessageHashes.delete(msgHash);
       const truncatedBody = cmd.body.substring(0, Math.min(RELAY_LOG_TRUNCATE_LENGTH, cmd.body.length));
       this.logStderr(`→ ${cmd.to}: ${truncatedBody}...`);
+
+      // Record in trajectory via trail
+      this.trajectory?.message('sent', this.config.name, cmd.to, cmd.body);
     } else if (this.client.state !== 'READY') {
       // Only log failure once per state change
       this.logStderr(`Send failed (client ${this.client.state})`);
@@ -790,7 +990,15 @@ export class TmuxWrapper {
     if (summaryHash === this.lastSummaryHash) return;
     this.lastSummaryHash = summaryHash;
 
-    // Wait for storage to be ready before saving
+    // Save to continuity ledger for session recovery
+    // This ensures the ledger has actual data instead of placeholders
+    if (this.continuity) {
+      this.saveSummaryToLedger(summary).catch(err => {
+        this.logStderr(`Failed to save summary to ledger: ${err.message}`, true);
+      });
+    }
+
+    // Wait for storage to be ready before saving to project storage
     this.storageReady.then(ready => {
       if (!ready || !this.storage) {
         this.logStderr('Cannot save summary: storage not initialized');
@@ -815,18 +1023,110 @@ export class TmuxWrapper {
   }
 
   /**
+   * Save a parsed summary to the continuity ledger.
+   * Maps summary fields to ledger fields for session recovery.
+   */
+  private async saveSummaryToLedger(summary: ParsedSummary): Promise<void> {
+    if (!this.continuity) return;
+
+    const updates: Record<string, unknown> = {};
+
+    // Map summary fields to ledger fields
+    if (summary.currentTask) {
+      updates.currentTask = summary.currentTask;
+    }
+
+    if (summary.completedTasks && summary.completedTasks.length > 0) {
+      updates.completed = summary.completedTasks;
+    }
+
+    if (summary.context) {
+      // Store context in inProgress as "next steps" hint
+      updates.inProgress = [summary.context];
+    }
+
+    if (summary.files && summary.files.length > 0) {
+      updates.fileContext = summary.files.map((f: string) => ({ path: f }));
+    }
+
+    // Only save if we have meaningful updates
+    if (Object.keys(updates).length > 0) {
+      await this.continuity.saveLedger(this.config.name, updates);
+      this.logStderr('Saved summary to continuity ledger');
+    }
+  }
+
+  /**
+   * Parse ->continuity: commands from output and handle them.
+   * Supported commands:
+   *   ->continuity:save <<<...>>>  - Save session state to ledger
+   *   ->continuity:load            - Request context injection
+   *   ->continuity:search "query"  - Search past handoffs
+   *   ->continuity:uncertain "..."  - Mark item as uncertain
+   *   ->continuity:handoff <<<...>>> - Create explicit handoff
+   */
+  private async parseContinuityCommands(content: string): Promise<void> {
+    if (!this.continuity) return;
+    if (!hasContinuityCommand(content)) return;
+
+    const command = parseContinuityCommand(content);
+    if (!command) return;
+
+    // Create a hash for deduplication
+    // For commands with content (save, handoff, uncertain), use content hash
+    // For commands without content (load, search), allow each unique call
+    const hasContent = command.content || command.query || command.item;
+    const cmdHash = hasContent
+      ? `${command.type}:${command.content || command.query || command.item}`
+      : `${command.type}:${Date.now()}`; // Allow load/search to run each time
+    if (hasContent && this.processedContinuityCommands.has(cmdHash)) return;
+    this.processedContinuityCommands.add(cmdHash);
+
+    // Limit dedup set size
+    if (this.processedContinuityCommands.size > 100) {
+      const oldest = this.processedContinuityCommands.values().next().value;
+      if (oldest) this.processedContinuityCommands.delete(oldest);
+    }
+
+    try {
+      if (this.config.debug) {
+        this.logStderr(`[CONTINUITY] Processing ${command.type} command`);
+      }
+
+      const response = await this.continuity.handleCommand(this.config.name, command);
+
+      // If there's a response (e.g., from load or search), inject it
+      if (response) {
+        this.messageQueue.push({
+          from: 'system',
+          body: response,
+          messageId: `continuity-${Date.now()}`,
+        });
+        this.checkForInjectionOpportunity();
+      }
+    } catch (err: any) {
+      this.logStderr(`[CONTINUITY] Error: ${err.message}`, true);
+    }
+  }
+
+  /**
    * Parse [[SESSION_END]] blocks from output and close session explicitly.
    * Agents output this to mark their work session as complete:
    *
    * [[SESSION_END]]
    * {"summary": "Completed auth module", "completedTasks": ["login", "logout"]}
    * [[/SESSION_END]]
+   *
+   * Also stores the data for use in autoSave to populate handoff (fixes empty handoff issue).
    */
   private parseSessionEndAndClose(content: string): void {
     if (this.sessionEndProcessed) return; // Only process once per session
 
     const sessionEnd = parseSessionEndFromOutput(content);
     if (!sessionEnd) return;
+
+    // Store SESSION_END data for use in autoSave (fixes empty handoff issue)
+    this.sessionEndData = sessionEnd;
 
     // Get session ID from client connection - if not available yet, don't set flag
     // so we can retry when sessionId becomes available
@@ -857,31 +1157,179 @@ export class TmuxWrapper {
   }
 
   /**
+   * Execute spawn via API (if dashboardPort set) or callback
+   */
+  private async executeSpawn(name: string, cli: string, task: string): Promise<void> {
+    if (this.config.dashboardPort) {
+      // Use dashboard API for spawning (works from any context, no terminal required)
+      try {
+        const response = await fetch(`http://localhost:${this.config.dashboardPort}/api/spawn`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, cli, task }),
+        });
+        const result = await response.json() as { success: boolean; error?: string };
+        if (result.success) {
+          this.logStderr(`Spawned ${name} via API`);
+        } else {
+          this.logStderr(`Spawn failed: ${result.error}`, true);
+        }
+      } catch (err: any) {
+        this.logStderr(`Spawn API call failed: ${err.message}`, true);
+      }
+    } else if (this.config.onSpawn) {
+      // Fall back to callback
+      try {
+        await this.config.onSpawn(name, cli, task);
+      } catch (err: any) {
+        this.logStderr(`Spawn failed: ${err.message}`, true);
+      }
+    }
+  }
+
+  /**
+   * Execute release via API (if dashboardPort set) or callback
+   */
+  private async executeRelease(name: string): Promise<void> {
+    if (this.config.dashboardPort) {
+      // Use dashboard API for release (works from any context, no terminal required)
+      try {
+        const response = await fetch(`http://localhost:${this.config.dashboardPort}/api/spawned/${encodeURIComponent(name)}`, {
+          method: 'DELETE',
+        });
+        const result = await response.json() as { success: boolean; error?: string };
+        if (result.success) {
+          this.logStderr(`Released ${name} via API`);
+        } else {
+          this.logStderr(`Release failed: ${result.error}`, true);
+        }
+      } catch (err: any) {
+        this.logStderr(`Release API call failed: ${err.message}`, true);
+      }
+    } else if (this.config.onRelease) {
+      // Fall back to callback
+      try {
+        await this.config.onRelease(name);
+      } catch (err: any) {
+        this.logStderr(`Release failed: ${err.message}`, true);
+      }
+    }
+  }
+
+  /**
    * Parse ->relay:spawn and ->relay:release commands from output.
-   * Format:
-   *   ->relay:spawn WorkerName cli "task description"
+   * Supports two formats:
+   *   Single-line: ->relay:spawn WorkerName cli "task description"
+   *   Multi-line (fenced): ->relay:spawn WorkerName cli <<<
+   *                        task description here
+   *                        can span multiple lines>>>
    *   ->relay:release WorkerName
    */
   private parseSpawnReleaseCommands(content: string): void {
-    // Only process if callbacks are configured
-    if (!this.config.onSpawn && !this.config.onRelease) return;
+    // Only process if we have API or callbacks configured
+    const canSpawn = this.config.dashboardPort || this.config.onSpawn;
+    const canRelease = this.config.dashboardPort || this.config.onRelease;
+    if (!canSpawn && !canRelease) return;
 
     const lines = content.split('\n');
 
     for (const line of lines) {
       const trimmed = line.trim();
 
-      // Match ->relay:spawn WorkerName cli OR ->relay:spawn WorkerName cli "task"
-      // Task is now optional - agents can be spawned without immediate task injection
-      // Pattern: ->relay:spawn <name> <cli> [optional: "<task>" or '<task>']
-      // Allow trailing whitespace and optional bullet prefixes that TUIs might add
-      const spawnMatch = trimmed.match(/^(?:[•\-*]\s*)?->relay:spawn\s+(\S+)\s+(\S+)(?:\s+["'](.+?)["'])?\s*$/);
-      if (spawnMatch && this.config.onSpawn) {
-        const [, name, cli, task] = spawnMatch;
-        const taskStr = task || ''; // Task is optional, default to empty string
+      // If we're in fenced spawn mode, accumulate lines until we see >>>
+      if (this.pendingFencedSpawn) {
+        // Check for fence close (>>> at end of line or on its own line)
+        const closeIdx = trimmed.indexOf('>>>');
+        if (closeIdx !== -1) {
+          // Add content before >>> to task
+          const contentBeforeClose = trimmed.substring(0, closeIdx);
+          if (contentBeforeClose) {
+            this.pendingFencedSpawn.taskLines.push(contentBeforeClose);
+          }
+
+          // Execute the spawn with accumulated task
+          const { name, cli, taskLines } = this.pendingFencedSpawn;
+          const taskStr = taskLines.join('\n').trim();
+          const spawnKey = `${name}:${cli}`;
+
+          if (!this.processedSpawnCommands.has(spawnKey)) {
+            this.processedSpawnCommands.add(spawnKey);
+            if (taskStr) {
+              this.logStderr(`Spawn command (fenced): ${name} (${cli}) - "${taskStr.substring(0, 50)}..."`);
+            } else {
+              this.logStderr(`Spawn command (fenced): ${name} (${cli}) - no task`);
+            }
+            this.executeSpawn(name, cli, taskStr);
+          }
+
+          this.pendingFencedSpawn = null;
+        } else {
+          // Accumulate line as part of task
+          this.pendingFencedSpawn.taskLines.push(line);
+        }
+        continue;
+      }
+
+      // Check for fenced spawn start: ->relay:spawn Name [cli] <<< (CLI optional, defaults to 'claude')
+      const fencedSpawnMatch = trimmed.match(/^(?:[•\-*]\s*)?->relay:spawn\s+(\S+)(?:\s+(\S+))?\s+<<<(.*)$/);
+      if (fencedSpawnMatch && canSpawn) {
+        const [, name, cliOrUndefined, inlineContent] = fencedSpawnMatch;
+        const cli = cliOrUndefined || 'claude';
+
+        // Validate name
+        if (name.length < 2) {
+          this.logStderr(`Fenced spawn has invalid name, skipping: name=${name}`);
+          continue;
+        }
+
+        // Check if fence closes on same line (e.g., ->relay:spawn Worker cli <<<task>>>)
+        const inlineCloseIdx = inlineContent.indexOf('>>>');
+        if (inlineCloseIdx !== -1) {
+          // Single line fenced: extract task between <<< and >>>
+          const taskStr = inlineContent.substring(0, inlineCloseIdx).trim();
+          const spawnKey = `${name}:${cli}`;
+
+          if (!this.processedSpawnCommands.has(spawnKey)) {
+            this.processedSpawnCommands.add(spawnKey);
+            if (taskStr) {
+              this.logStderr(`Spawn command: ${name} (${cli}) - "${taskStr.substring(0, 50)}..."`);
+            } else {
+              this.logStderr(`Spawn command: ${name} (${cli}) - no task`);
+            }
+            this.executeSpawn(name, cli, taskStr);
+          }
+        } else {
+          // Start multi-line fenced mode
+          this.pendingFencedSpawn = {
+            name,
+            cli,
+            taskLines: inlineContent.trim() ? [inlineContent.trim()] : [],
+          };
+          this.logStderr(`Starting fenced spawn capture: ${name} (${cli})`);
+        }
+        continue;
+      }
+
+      // Match single-line spawn: ->relay:spawn WorkerName [cli] ["task"]
+      // CLI is optional - defaults to 'claude'. Task is also optional.
+      const spawnMatch = trimmed.match(/^(?:[•\-*]\s*)?->relay:spawn\s+(\S+)(?:\s+(\S+))?(?:\s+["'](.+?)["'])?\s*$/);
+      if (spawnMatch && canSpawn) {
+        const [, name, cliOrUndefined, task] = spawnMatch;
+        const cli = cliOrUndefined || 'claude';
+
+        // Validate the parsed values
+        if (cli === '<<<' || cli === '>>>' || name === '<<<' || name === '>>>') {
+          this.logStderr(`Invalid spawn command (fence markers), skipping: name=${name}, cli=${cli}`);
+          continue;
+        }
+        if (name.length < 2) {
+          this.logStderr(`Spawn command has suspiciously short name, skipping: name=${name}`);
+          continue;
+        }
+
+        const taskStr = task || '';
         const spawnKey = `${name}:${cli}`;
 
-        // Dedup - only process each spawn once (keyed by name:cli, not including task)
         if (!this.processedSpawnCommands.has(spawnKey)) {
           this.processedSpawnCommands.add(spawnKey);
           if (taskStr) {
@@ -889,26 +1337,20 @@ export class TmuxWrapper {
           } else {
             this.logStderr(`Spawn command: ${name} (${cli}) - no task`);
           }
-          this.config.onSpawn(name, cli, taskStr).catch(err => {
-            this.logStderr(`Spawn failed: ${err.message}`, true);
-          });
+          this.executeSpawn(name, cli, taskStr);
         }
         continue;
       }
 
       // Match ->relay:release WorkerName
-      // Allow trailing whitespace and optional bullet prefixes
       const releaseMatch = trimmed.match(/^(?:[•\-*]\s*)?->relay:release\s+(\S+)\s*$/);
-      if (releaseMatch && this.config.onRelease) {
+      if (releaseMatch && canRelease) {
         const [, name] = releaseMatch;
 
-        // Dedup - only process each release once
         if (!this.processedReleaseCommands.has(name)) {
           this.processedReleaseCommands.add(name);
           this.logStderr(`Release command: ${name}`);
-          this.config.onRelease(name).catch(err => {
-            this.logStderr(`Release failed: ${err.message}`, true);
-          });
+          this.executeRelease(name);
         }
       }
     }
@@ -928,6 +1370,9 @@ export class TmuxWrapper {
     const truncatedBody = payload.body.substring(0, Math.min(DEBUG_LOG_TRUNCATE_LENGTH, payload.body.length));
     const channelInfo = originalTo === '*' ? ' [broadcast]' : '';
     this.logStderr(`← ${from}${channelInfo}: ${truncatedBody}...`);
+
+    // Record in trajectory via trail
+    this.trajectory?.message('received', from, this.config.name, payload.body);
 
     // Queue for injection - include originalTo so we can inform the agent how to route responses
     this.messageQueue.push({ from, body: payload.body, messageId, thread: payload.thread, importance: meta?.importance, data: payload.data, originalTo });
@@ -961,7 +1406,8 @@ export class TmuxWrapper {
   }
 
   /**
-   * Inject message via tmux send-keys
+   * Inject message via tmux send-keys.
+   * Uses shared injection logic with tmux-specific callbacks.
    */
   private async injectNextMessage(): Promise<void> {
     const msg = this.messageQueue.shift();
@@ -971,38 +1417,22 @@ export class TmuxWrapper {
     this.logStderr(`Injecting message from ${msg.from} (cli: ${this.cliType})`);
 
     try {
-      // Strip ANSI escape sequences and orphaned control sequences from message body
-      let sanitizedBody = stripAnsi(msg.body).replace(/[\r\n]+/g, ' ').trim();
-
-      // Gemini interprets certain keywords (While, For, If, etc.) as shell commands
-      // Wrap in backticks to prevent shell keyword interpretation
-      if (this.cliType === 'gemini') {
-        sanitizedBody = `\`${sanitizedBody.replace(/`/g, "'")}\``;
-      }
-
-      // Short message ID for display (first 8 chars)
       const shortId = msg.messageId.substring(0, 8);
 
-      // Remove message truncation to allow full messages to pass through
-      const wasTruncated = false;
-
-      // Always include message ID; add lookup hint if truncated
-      const idTag = `[${shortId}]`;
-      const truncationHint = wasTruncated
-        ? ` [TRUNCATED - run "agent-relay read ${msg.messageId}"]`
-        : '';
-
       // Wait for input to be clear before injecting
+      // If input is not clear (human typing), re-queue and try later - never clear forcefully!
+      // Fix for agent-relay-j9z: forceful clearing destroys human input in progress
       const waitTimeoutMs = this.config.inputWaitTimeoutMs ?? 5000;
       const waitPollMs = this.config.inputWaitPollMs ?? 200;
       const inputClear = await this.waitForClearInput(waitTimeoutMs, waitPollMs);
       if (!inputClear) {
-        // Input still has text after timeout - clear it forcefully
-        this.logStderr('Input not clear after waiting, clearing forcefully');
-        await this.sendKeys('Escape');
-        await sleep(30);
-        await this.sendKeys('C-u');
-        await sleep(30);
+        // Input still has text after timeout - DON'T clear forcefully, re-queue instead
+        // This preserves any human input in progress
+        this.logStderr('Input not clear after waiting, re-queuing injection to preserve human input');
+        this.messageQueue.unshift(msg);
+        this.isInjecting = false;
+        setTimeout(() => this.checkForInjectionOpportunity(), this.config.injectRetryMs ?? 1000);
+        return;
       }
 
       // Ensure pane output is stable to avoid interleaving with active generation
@@ -1023,7 +1453,7 @@ export class TmuxWrapper {
       if (this.cliType === 'gemini') {
         const lastLine = await this.getLastLine();
         const cleanLine = stripAnsi(lastLine).trim();
-        if (/^\$\s*$/.test(cleanLine) || /^\s*\$\s*$/.test(cleanLine)) {
+        if (CLI_QUIRKS.isShellPrompt(cleanLine)) {
           this.logStderr('Gemini at shell prompt, skipping injection to avoid shell execution');
           // Re-queue the message for later
           this.messageQueue.unshift(msg);
@@ -1033,38 +1463,59 @@ export class TmuxWrapper {
         }
       }
 
-      // Standard injection for all CLIs including Gemini
-      // Format: Relay message from Sender [abc12345] [thread:xxx] [!] [#general]: content
-      // Thread/importance/channel hints are compact and optional to not break TUIs
-      const threadHint = msg.thread ? ` [thread:${msg.thread}]` : '';
-      // Importance indicator: [!!] for high (>75), [!] for medium (>50), none for low/default
-      const importanceHint = msg.importance !== undefined && msg.importance > 75 ? ' [!!]' :
-                             msg.importance !== undefined && msg.importance > 50 ? ' [!]' : '';
+      // Build injection string using shared utility
+      let injection = buildInjectionString(msg);
 
-      // Channel indicator: [#general] for broadcasts - tells agent to reply to * not sender
-      // This ensures responses to #general messages go back to #general, not as DMs
-      const channelHint = msg.originalTo === '*' ? ' [#general]' : '';
-
-      // Extract attachment file paths if present
-      let attachmentHint = '';
-      if (msg.data?.attachments && Array.isArray(msg.data.attachments)) {
-        const filePaths = msg.data.attachments
-          .map((att: { filePath?: string }) => att.filePath)
-          .filter((p): p is string => typeof p === 'string');
-        if (filePaths.length > 0) {
-          attachmentHint = ` [Attachments: ${filePaths.join(', ')}]`;
+      // Gemini-specific: wrap body in backticks to prevent shell keyword interpretation
+      if (this.cliType === 'gemini') {
+        const colonIdx = injection.indexOf(': ');
+        if (colonIdx > 0) {
+          const prefix = injection.substring(0, colonIdx + 2);
+          const body = injection.substring(colonIdx + 2);
+          injection = prefix + CLI_QUIRKS.wrapForGemini(body);
         }
       }
 
-      const injection = `Relay message from ${msg.from} ${idTag}${threadHint}${importanceHint}${channelHint}${attachmentHint}: ${sanitizedBody}${truncationHint}`;
+      // Create callbacks for shared injection logic
+      const callbacks: InjectionCallbacks = {
+        getOutput: async () => {
+          try {
+            const { stdout } = await execAsync(
+              `"${this.tmuxPath}" capture-pane -t ${this.sessionName} -p -S - 2>/dev/null`
+            );
+            return stdout;
+          } catch {
+            return '';
+          }
+        },
+        performInjection: async (inj: string) => {
+          await this.pasteLiteral(inj);
+          await sleep(INJECTION_CONSTANTS.ENTER_DELAY_MS);
+          await this.sendKeys('Enter');
+        },
+        log: (message: string) => this.logStderr(message),
+        logError: (message: string) => this.logStderr(message, true),
+        getMetrics: () => this.injectionMetrics,
+      };
 
-      // Paste message as a bracketed paste to avoid interleaving with active output
-      await this.pasteLiteral(injection);
-      await sleep(30);
+      // Inject with retry and verification using shared logic
+      const result = await sharedInjectWithRetry(injection, shortId, msg.from, callbacks);
 
-      // Submit
-      await this.sendKeys('Enter');
-      this.logStderr(`Injection complete`);
+      if (result.success) {
+        this.logStderr(`Injection complete (attempt ${result.attempts})`);
+      } else {
+        // All retries failed - log and optionally fall back to inbox
+        this.logStderr(
+          `Message delivery failed after ${result.attempts} attempts: from=${msg.from} id=${shortId}`,
+          true
+        );
+
+        // Write to inbox as fallback if enabled
+        if (this.inbox) {
+          this.inbox.addMessage(msg.from, msg.body);
+          this.logStderr('Wrote message to inbox as fallback');
+        }
+      }
 
     } catch (err: any) {
       this.logStderr(`Injection failed: ${err.message}`, true);
@@ -1072,7 +1523,7 @@ export class TmuxWrapper {
       this.isInjecting = false;
 
       if (this.messageQueue.length > 0) {
-        setTimeout(() => this.checkForInjectionOpportunity(), 1000);
+        setTimeout(() => this.checkForInjectionOpportunity(), INJECTION_CONSTANTS.QUEUE_PROCESS_DELAY_MS);
       }
     }
   }
@@ -1151,6 +1602,7 @@ export class TmuxWrapper {
     this.sessionEndProcessed = false;
     this.lastSummaryHash = '';
     this.lastSummaryRawContent = '';
+    this.sessionEndData = undefined;
   }
 
   /**
@@ -1320,6 +1772,14 @@ export class TmuxWrapper {
     if (!this.running) return;
     this.running = false;
     this.activityState = 'disconnected';
+
+    // Auto-save continuity state before shutdown (fire and forget)
+    // Pass sessionEndData to populate handoff (fixes empty handoff issue)
+    if (this.continuity) {
+      this.continuity.autoSave(this.config.name, 'session_end', this.sessionEndData).catch((err) => {
+        this.logStderr(`[CONTINUITY] Auto-save failed: ${err.message}`, true);
+      });
+    }
 
     // Reset session state for potential reuse
     this.resetSessionState();

@@ -438,7 +438,7 @@ Let me know if that works.
       }
       lines += 'Output after message\n';
 
-      const result = parser.parse(lines);
+      const _result = parser.parse(lines);
 
       // Message should be auto-closed and sent (discarded due to exceeding limit)
       // Parser should not be stuck in fenced mode
@@ -634,6 +634,99 @@ Let me know if that works.
       expect(result.commands).toHaveLength(0);
       expect(result.output).toBe('->relay:SPAWN Worker claude\n');
     });
+
+    it('does not parse spawn command with fenced format as relay message (agent-relay-312)', () => {
+      // Bug fix: spawn with fenced format should be passed through, not parsed as message to "spawn"
+      // Previously this would match the fenced pattern and send to target "spawn"
+      const result = parser.parse('->relay:spawn Backend claude <<<\n');
+
+      // Should NOT create a command to target "spawn"
+      expect(result.commands).toHaveLength(0);
+      // Should be passed through for wrapper to handle
+      expect(result.output).toBe('->relay:spawn Backend claude <<<\n');
+    });
+
+    it('does not enter fenced mode for spawn command with fence markers', () => {
+      // Multi-line spawn with fenced format - should all be passed through
+      const result1 = parser.parse('->relay:spawn Worker claude <<<\n');
+      expect(result1.commands).toHaveLength(0);
+      expect(result1.output).toBe('->relay:spawn Worker claude <<<\n');
+
+      // Parser should NOT be in fenced mode, so this line is independent
+      const result2 = parser.parse('Task description here\n');
+      expect(result2.commands).toHaveLength(0);
+      expect(result2.output).toBe('Task description here\n');
+
+      // Fence close should also be passed through
+      const result3 = parser.parse('>>>\n');
+      expect(result3.commands).toHaveLength(0);
+      expect(result3.output).toBe('>>>\n');
+    });
+
+    it('passes through spawn with fence marker as CLI (agent-relay-312)', () => {
+      // This is corrupted input where CLI became a fence marker
+      const result = parser.parse('->relay:spawn Worker <<<\n');
+
+      expect(result.commands).toHaveLength(0);
+      expect(result.output).toBe('->relay:spawn Worker <<<\n');
+    });
+
+    it('passes through release command with fenced format', () => {
+      // Release commands should also be passed through
+      const result = parser.parse('->relay:release Worker <<<\n');
+
+      expect(result.commands).toHaveLength(0);
+      expect(result.output).toBe('->relay:release Worker <<<\n');
+    });
+
+    it('passes through spawn command embedded in other content', () => {
+      // Spawn pattern appearing in documentation/content should be passed through
+      const result = parser.parse('->relay:spawn Worker claude\n');
+
+      expect(result.commands).toHaveLength(0);
+      expect(result.output).toBe('->relay:spawn Worker claude\n');
+    });
+  });
+
+  describe('Instructional text filtering', () => {
+    it('filters out placeholder target names like AgentName', () => {
+      const input = '->relay:AgentName This is an example message\n';
+      const result = parser.parse(input);
+      expect(result.commands).toHaveLength(0);
+      expect(result.output).toBe(input);
+    });
+
+    it('filters out placeholder target names case-insensitively', () => {
+      const input = '->relay:AGENTNAME Example\n->relay:target Test\n->relay:Recipient Hello\n';
+      const result = parser.parse(input);
+      expect(result.commands).toHaveLength(0);
+    });
+
+    it('filters out fenced messages to placeholder targets', () => {
+      const input = '->relay:AgentName <<<\nMulti-line example message\n>>>\n';
+      const result = parser.parse(input);
+      expect(result.commands).toHaveLength(0);
+    });
+
+    it('filters out PROTOCOL: instruction patterns in body', () => {
+      const input = '->relay:Lead message | PROTOCOL: (1) ACK receipt\n';
+      const result = parser.parse(input);
+      expect(result.commands).toHaveLength(0);
+    });
+
+    it('allows real agent names that are not placeholders', () => {
+      const input = '->relay:Lead Hello\n->relay:Alice Test\n';
+      const result = parser.parse(input);
+      expect(result.commands).toHaveLength(2);
+      expect(result.commands[0].to).toBe('Lead');
+      expect(result.commands[1].to).toBe('Alice');
+    });
+
+    it('filters instructional text in fenced inline mode', () => {
+      const input = '->relay:Lead <<<\nExample: how to send\n>>>\n';
+      const result = parser.parse(input);
+      expect(result.commands).toHaveLength(0);
+    });
   });
 
   describe('Edge cases', () => {
@@ -789,6 +882,18 @@ Let me know if that works.
       // This should exceed 30 bytes
       const result = customParser.parse(input);
       expect(result.commands).toHaveLength(0);
+    });
+
+    it('preserves text starting with [Letter like [Agent Relay]', () => {
+      // Regression test: The orphaned CSI pattern should NOT strip [A from [Agent
+      // because [A without digits is not a valid orphaned CSI sequence
+      const input = '[Agent Relay] It\'s been 15 minutes. Please output a [[SUMMARY]] block\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(0);
+      expect(result.output).toBe(input);
+      // Specifically verify [Agent is preserved, not stripped to 'gent'
+      expect(result.output).toContain('[Agent');
     });
   });
 

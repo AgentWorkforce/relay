@@ -5,7 +5,7 @@
  * Provides a modal-like overlay for dedicated log viewing.
  */
 
-import React, { useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { LogViewer } from './LogViewer';
 import { getAgentColor, getAgentInitials } from '../lib/colors';
 import type { Agent } from '../types';
@@ -36,6 +36,7 @@ export function LogViewerPanel({
   availableAgents = [],
 }: LogViewerPanelProps) {
   const colors = getAgentColor(agent.name);
+  const [isHeaderCollapsed, setIsHeaderCollapsed] = useState(true); // Default to collapsed
 
   // Close on Escape
   useEffect(() => {
@@ -123,21 +124,36 @@ export function LogViewerPanel({
         className={`flex flex-col ${getAnimationClass()}`}
         style={getPanelStyles()}
       >
-        {/* Header with agent info */}
+        {/* Header with agent info - collapsible */}
         <div
-          className="flex items-center justify-between px-5 py-4 border-b border-[#21262d]"
+          className={`flex items-center justify-between border-b border-[#21262d] transition-all duration-200 ${
+            isHeaderCollapsed ? 'px-4 py-2' : 'px-5 py-4'
+          }`}
           style={{
             background: 'linear-gradient(180deg, #161b22 0%, #0d1117 100%)',
           }}
         >
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
+            {/* Collapse/expand toggle */}
+            <button
+              className="p-1 rounded-md text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d] transition-colors"
+              onClick={() => setIsHeaderCollapsed(!isHeaderCollapsed)}
+              title={isHeaderCollapsed ? 'Expand header' : 'Collapse header'}
+            >
+              <CollapseIcon collapsed={isHeaderCollapsed} />
+            </button>
+
             {/* Agent avatar with shine effect */}
             <div
-              className="relative shrink-0 w-11 h-11 rounded-xl flex items-center justify-center text-sm font-bold overflow-hidden"
+              className={`relative shrink-0 rounded-xl flex items-center justify-center font-bold overflow-hidden transition-all duration-200 ${
+                isHeaderCollapsed ? 'w-8 h-8 text-xs' : 'w-11 h-11 text-sm'
+              }`}
               style={{
                 backgroundColor: colors.primary,
                 color: colors.text,
-                boxShadow: `0 0 24px ${colors.primary}50, inset 0 1px 0 rgba(255,255,255,0.2)`,
+                boxShadow: isHeaderCollapsed
+                  ? `0 0 12px ${colors.primary}40`
+                  : `0 0 24px ${colors.primary}50, inset 0 1px 0 rgba(255,255,255,0.2)`,
               }}
             >
               {/* Shine overlay */}
@@ -150,38 +166,61 @@ export function LogViewerPanel({
               <span className="relative z-10">{getAgentInitials(agent.name)}</span>
             </div>
 
-            <div className="flex flex-col">
-              <div className="flex items-center gap-2.5">
-                <h2
-                  className="text-lg font-semibold m-0"
+            {/* Agent info - collapsed shows inline, expanded shows stacked */}
+            {isHeaderCollapsed ? (
+              <div className="flex items-center gap-2">
+                <span
+                  className="text-sm font-semibold"
                   style={{ color: colors.primary }}
                 >
                   {agent.name}
-                </h2>
+                </span>
                 <span
-                  className={`px-2.5 py-0.5 rounded-md text-[10px] uppercase tracking-wider font-medium ${
+                  className={`px-2 py-0.5 rounded text-[9px] uppercase tracking-wider font-medium ${
                     agent.status === 'online'
                       ? 'bg-[#3fb950]/15 text-[#3fb950]'
                       : agent.status === 'busy'
                       ? 'bg-[#d29922]/15 text-[#d29922]'
                       : 'bg-[#484f58]/15 text-[#484f58]'
                   }`}
-                  style={{
-                    boxShadow: agent.status === 'online' ? '0 0 8px rgba(63,185,80,0.2)' : 'none',
-                  }}
                 >
                   {agent.status}
                 </span>
               </div>
-              {agent.currentTask && (
-                <span className="text-sm text-[#8b949e] truncate max-w-[300px] mt-0.5">
-                  {agent.currentTask}
-                </span>
-              )}
-            </div>
+            ) : (
+              <div className="flex flex-col">
+                <div className="flex items-center gap-2.5">
+                  <h2
+                    className="text-lg font-semibold m-0"
+                    style={{ color: colors.primary }}
+                  >
+                    {agent.name}
+                  </h2>
+                  <span
+                    className={`px-2.5 py-0.5 rounded-md text-[10px] uppercase tracking-wider font-medium ${
+                      agent.status === 'online'
+                        ? 'bg-[#3fb950]/15 text-[#3fb950]'
+                        : agent.status === 'busy'
+                        ? 'bg-[#d29922]/15 text-[#d29922]'
+                        : 'bg-[#484f58]/15 text-[#484f58]'
+                    }`}
+                    style={{
+                      boxShadow: agent.status === 'online' ? '0 0 8px rgba(63,185,80,0.2)' : 'none',
+                    }}
+                  >
+                    {agent.status}
+                  </span>
+                </div>
+                {agent.currentTask && (
+                  <span className="text-sm text-[#8b949e] truncate max-w-[300px] mt-0.5">
+                    {agent.currentTask}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             {/* Agent switcher dropdown */}
             {availableAgents.length > 1 && onAgentChange && (
               <AgentSwitcher
@@ -415,6 +454,24 @@ function CheckIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#3fb950" strokeWidth="2">
       <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
+}
+
+function CollapseIcon({ collapsed }: { collapsed: boolean }) {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={`transition-transform duration-200 ${collapsed ? '' : 'rotate-90'}`}
+    >
+      <polyline points="9 18 15 12 9 6" />
     </svg>
   );
 }

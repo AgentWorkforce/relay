@@ -12,6 +12,8 @@
 export type {
   User,
   NewUser,
+  GitHubInstallation,
+  NewGitHubInstallation,
   Credential,
   NewCredential,
   Workspace,
@@ -36,6 +38,7 @@ export type {
 // Re-export schema tables for direct access if needed
 export {
   users as usersTable,
+  githubInstallations as githubInstallationsTable,
   credentials as credentialsTable,
   workspaces as workspacesTable,
   workspaceMembers as workspaceMembersTable,
@@ -52,6 +55,7 @@ import {
   closeDb,
   runMigrations,
   userQueries,
+  githubInstallationQueries,
   credentialQueries,
   workspaceQueries,
   workspaceMemberQueries,
@@ -68,6 +72,8 @@ export type WorkspaceMemberRole = 'owner' | 'admin' | 'member' | 'viewer';
 export const db = {
   // User operations
   users: userQueries,
+  // GitHub App installation operations
+  githubInstallations: githubInstallationQueries,
   // Credential operations
   credentials: credentialQueries,
   // Workspace operations
@@ -89,6 +95,7 @@ export const db = {
 // Export query objects for direct import
 export {
   userQueries,
+  githubInstallationQueries,
   credentialQueries,
   workspaceQueries,
   workspaceMemberQueries,

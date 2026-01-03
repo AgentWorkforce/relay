@@ -43,6 +43,8 @@ export interface Agent {
   lastHealthCheck?: Date;
   restartCount: number;
   logFile?: string;
+  /** Unique agent ID for session resume */
+  agentId?: string;
 }
 
 /**
@@ -102,6 +104,8 @@ export interface ApiDaemonConfig {
   port: number;
   /** Host to bind to */
   host: string;
+  /** Allowed CORS origins for HTTP API (empty = no cross-origin access) */
+  allowedOrigins?: string[];
   /** Data directory for persistence */
   dataDir: string;
   /** Enable auto-restart for crashed agents */

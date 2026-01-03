@@ -424,6 +424,40 @@ export class Orchestrator extends EventEmitter {
       // Create spawner
       workspace.spawner = new AgentSpawner(workspace.path);
 
+      // Set up agent death notifications
+      workspace.spawner.setOnAgentDeath((info) => {
+        // Broadcast to dashboard via WebSocket
+        this.broadcastEvent({
+          type: 'agent:crashed',
+          workspaceId,
+          data: {
+            name: info.name,
+            exitCode: info.exitCode,
+            continuityAgentId: info.agentId,
+            resumeInstructions: info.resumeInstructions,
+          },
+          timestamp: new Date(),
+        });
+
+        // Broadcast to all connected agents via relay
+        const message = info.agentId
+          ? `AGENT DIED: "${info.name}" has crashed (exit code: ${info.exitCode}). Agent ID: ${info.agentId}. ${info.resumeInstructions}`
+          : `AGENT DIED: "${info.name}" has crashed (exit code: ${info.exitCode}).`;
+
+        workspace.daemon?.broadcastSystemMessage(message, {
+          agentName: info.name,
+          exitCode: info.exitCode,
+          agentId: info.agentId,
+          resumeInstructions: info.resumeInstructions,
+        });
+
+        logger.warn('Agent died', {
+          name: info.name,
+          exitCode: info.exitCode,
+          agentId: info.agentId,
+        });
+      });
+
       logger.info('Workspace daemon started', { id: workspaceId, socket: paths.socketPath });
     } catch (err) {
       workspace.status = 'error';

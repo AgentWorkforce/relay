@@ -64,6 +64,7 @@ program
   .option('-n, --name <name>', 'Agent name (auto-generated if not set)')
   .option('-q, --quiet', 'Disable debug output', false)
   .option('--prefix <pattern>', 'Relay prefix pattern (default: ->relay:)')
+  .option('--dashboard-port <port>', 'Dashboard port for spawn/release API (auto-detected if not set)')
   .option('--shadow <name>', 'Spawn a shadow agent with this name that monitors the primary')
   .option('--shadow-role <role>', 'Shadow role: reviewer, auditor, or triggers (comma-separated: SESSION_END,CODE_WRITTEN,REVIEW_REQUEST,EXPLICIT_ASK,ALL_MESSAGES)')
   .argument('[command...]', 'Command to wrap (e.g., claude)')
@@ -100,8 +101,30 @@ program
     const { TmuxWrapper } = await import('../wrapper/tmux-wrapper.js');
     const { AgentSpawner } = await import('../bridge/spawner.js');
 
-    // Create spawner so any agent can spawn workers
-    const spawner = new AgentSpawner(paths.projectRoot);
+    // Determine dashboard port for spawn/release API
+    // Priority: CLI flag > env var > auto-detect default port
+    let dashboardPort: number | undefined;
+    if (options.dashboardPort) {
+      dashboardPort = parseInt(options.dashboardPort, 10);
+    } else {
+      // Try to detect if dashboard is running at default port
+      const defaultPort = parseInt(DEFAULT_DASHBOARD_PORT, 10);
+      try {
+        const response = await fetch(`http://localhost:${defaultPort}/api/status`, {
+          method: 'GET',
+          signal: AbortSignal.timeout(500), // Quick timeout for detection
+        });
+        if (response.ok) {
+          dashboardPort = defaultPort;
+          console.error(`Dashboard detected: http://localhost:${dashboardPort}`);
+        }
+      } catch {
+        // Dashboard not running - spawn/release will use fallback callbacks
+      }
+    }
+
+    // Create spawner as fallback for direct spawn (if dashboard API not available)
+    const spawner = new AgentSpawner(paths.projectRoot, undefined, dashboardPort);
 
     const wrapper = new TmuxWrapper({
       name: agentName,
@@ -112,7 +135,9 @@ program
       relayPrefix: options.prefix,
       useInbox: true,
       inboxDir: paths.dataDir, // Use the project-specific data directory for the inbox
-      // Wire up spawn/release callbacks so any agent can spawn workers
+      // Use dashboard API for spawn/release when available (preferred - works from any context)
+      dashboardPort,
+      // Wire up spawn/release callbacks as fallback (if no dashboardPort)
       onSpawn: async (workerName: string, workerCli: string, task: string) => {
         console.error(`[${agentName}] Spawning ${workerName} (${workerCli})...`);
         const result = await spawner.spawn({
@@ -140,7 +165,7 @@ program
 
     process.on('SIGINT', async () => {
       await spawner.releaseAll();
-      wrapper.stop();
+      await wrapper.stop();
       process.exit(0);
     });
 
@@ -1902,6 +1927,65 @@ cloudCommand
     }
   });
 
+// ============================================================================
+// TRAJECTORY COMMANDS (trail proxy)
+// ============================================================================
+
+// trail - Proxy to trail CLI for trajectory tracking
+program
+  .command('trail')
+  .description('Trajectory tracking commands (proxies to trail CLI)')
+  .argument('[args...]', 'Arguments to pass to trail CLI')
+  .allowUnknownOption()
+  .action(async (args: string[]) => {
+    const { spawn } = await import('node:child_process');
+    const { getProjectPaths } = await import('../utils/project-namespace.js');
+
+    const paths = getProjectPaths();
+
+    // Check if trail is available
+    const trailCheck = spawn('which', ['trail'], { stdio: 'pipe' });
+    const trailExists = await new Promise<boolean>((resolve) => {
+      trailCheck.on('close', (code) => resolve(code === 0));
+      trailCheck.on('error', () => resolve(false));
+    });
+
+    if (!trailExists) {
+      console.error('trail CLI not found. Install with: npm install -g agent-trajectories');
+      console.log('');
+      console.log('The trail CLI provides trajectory tracking for agent work:');
+      console.log('  trail start "<task>"         Start tracking a new trajectory');
+      console.log('  trail status                 Show current trajectory status');
+      console.log('  trail phase <phase>          Transition to PDERO phase');
+      console.log('  trail decision "<choice>"    Record a decision');
+      console.log('  trail complete               Complete the trajectory');
+      console.log('  trail list                   List all trajectories');
+      console.log('');
+      console.log('PDERO phases: plan, design, execute, review, observe');
+      process.exit(1);
+    }
+
+    // Spawn trail with the provided arguments
+    const trailProc = spawn('trail', args, {
+      cwd: paths.projectRoot,
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        TRAJECTORIES_PROJECT: paths.projectId,
+        TRAJECTORIES_DATA_DIR: paths.dataDir,
+      },
+    });
+
+    trailProc.on('close', (code) => {
+      process.exit(code ?? 0);
+    });
+
+    trailProc.on('error', (err) => {
+      console.error(`Failed to run trail: ${err.message}`);
+      process.exit(1);
+    });
+  });
+
 cloudCommand
   .command('agents')
   .description('List agents across all linked machines')
@@ -2085,7 +2169,7 @@ cloudCommand
   .command('daemons')
   .description('List all linked daemon instances')
   .option('--json', 'Output as JSON')
-  .action(async (options) => {
+  .action(async (_options) => {
     const os = await import('node:os');
 
     const dataDir = process.env.AGENT_RELAY_DATA_DIR ||

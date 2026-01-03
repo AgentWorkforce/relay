@@ -225,9 +225,69 @@ function installDashboardDeps() {
 }
 
 /**
+ * Patch agent-trajectories CLI to record agent info on start
+ */
+function patchAgentTrajectories() {
+  const pkgRoot = getPackageRoot();
+  const cliPath = path.join(pkgRoot, 'node_modules', 'agent-trajectories', 'dist', 'cli', 'index.js');
+
+  if (!fs.existsSync(cliPath)) {
+    info('agent-trajectories not installed, skipping patch');
+    return;
+  }
+
+  const content = fs.readFileSync(cliPath, 'utf-8');
+
+  // If already patched, exit early
+  if (content.includes('--agent <name>') && content.includes('trajectory.agents.push')) {
+    info('agent-trajectories already patched');
+    return;
+  }
+
+  const optionNeedle = '.option("-t, --task <id>", "External task ID").option("-s, --source <system>", "Task system (github, linear, jira, beads)").option("--url <url>", "URL to external task")';
+  const optionReplacement = `${optionNeedle}.option("-a, --agent <name>", "Agent name starting the trajectory").option("-r, --role <role>", "Agent role (lead, contributor, reviewer)")`;
+
+  const createNeedle = `    const trajectory = createTrajectory({
+      title,
+      source
+    });
+    await storage.save(trajectory);`;
+
+  const createReplacement = `    const agentName = options.agent || process.env.AGENT_NAME || process.env.AGENT_RELAY_NAME || process.env.USER || process.env.USERNAME;
+    const agentRole = options.role || "lead";
+    const trajectory = createTrajectory({
+      title,
+      source
+    });
+    if (agentName) {
+      trajectory.agents.push({
+        name: agentName,
+        role: ["lead", "contributor", "reviewer"].includes(agentRole) ? agentRole : "lead",
+        joinedAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+    }
+    await storage.save(trajectory);`;
+
+  if (!content.includes(optionNeedle) || !content.includes(createNeedle)) {
+    warn('agent-trajectories CLI format changed, skipping patch');
+    return;
+  }
+
+  const updated = content
+    .replace(optionNeedle, optionReplacement)
+    .replace(createNeedle, createReplacement);
+
+  fs.writeFileSync(cliPath, updated, 'utf-8');
+  success('Patched agent-trajectories to record agent on trail start');
+}
+
+/**
  * Main postinstall routine
  */
 async function main() {
+  // Ensure trail CLI captures agent info on start
+  patchAgentTrajectories();
+
   // Always install dashboard dependencies (needed for build)
   installDashboardDeps();
 

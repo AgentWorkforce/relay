@@ -14,15 +14,21 @@ import { RelayClient } from './client.js';
 import type { ParsedCommand, ParsedSummary, SessionEndMarker } from './parser.js';
 import { parseSummaryWithDetails, parseSessionEndFromOutput } from './parser.js';
 import type { SendPayload, SendMeta, SpeakOnTrigger } from '../protocol/types.js';
+import { getProjectPaths } from '../utils/project-namespace.js';
+import { getTrailEnvVars } from '../trajectory/integration.js';
+import { findAgentConfig } from '../utils/agent-config.js';
+import { HookRegistry, createTrajectoryHooks, type LifecycleHooks } from '../hooks/index.js';
+import { getContinuityManager, parseContinuityCommand, hasContinuityCommand, type ContinuityManager } from '../continuity/index.js';
 import {
   type QueuedMessage,
-  type InjectionResult,
   type InjectionMetrics,
+  type InjectionCallbacks,
   type CliType,
   INJECTION_CONSTANTS,
   stripAnsi,
   sleep,
   buildInjectionString,
+  injectWithRetry as sharedInjectWithRetry,
   calculateSuccessRate,
   createInjectionMetrics,
   getDefaultRelayPrefix,
@@ -48,6 +54,8 @@ export interface PtyWrapperConfig {
   logsDir?: string;
   /** Dashboard port for spawn/release API calls (enables nested spawning from spawned agents) */
   dashboardPort?: number;
+  /** Allow this agent to spawn other agents (default: true for Lead, false for spawned workers) */
+  allowSpawn?: boolean;
   /** Callback for spawn commands (fallback if dashboardPort not set) */
   onSpawn?: (name: string, cli: string, task: string) => Promise<void>;
   /** Callback for release commands (fallback if dashboardPort not set) */
@@ -60,6 +68,14 @@ export interface PtyWrapperConfig {
   shadowSpeakOn?: SpeakOnTrigger[];
   /** Stream output to daemon for dashboard log viewing (default: true) */
   streamLogs?: boolean;
+  /** Task/role description for trajectory tracking */
+  task?: string;
+  /** Custom lifecycle hooks */
+  hooks?: LifecycleHooks;
+  /** Enable trajectory tracking hooks (default: true if task provided) */
+  trajectoryTracking?: boolean;
+  /** Resume from a previous agent ID (for crash recovery) */
+  resumeAgentId?: string;
   /**
    * Summary reminder configuration. Set to false to disable.
    * Default: { intervalMinutes: 15, minOutputs: 50 }
@@ -111,6 +127,7 @@ export class PtyWrapper extends EventEmitter {
   private sentMessageHashes: Set<string> = new Set();
   private processedSpawnCommands: Set<string> = new Set();
   private processedReleaseCommands: Set<string> = new Set();
+  private pendingFencedSpawn: { name: string; cli: string; taskLines: string[] } | null = null;
   private messageQueue: QueuedMessage[] = [];
   private isInjecting = false;
   private readyForMessages = false;
@@ -119,10 +136,18 @@ export class PtyWrapper extends EventEmitter {
   private logFilePath?: string;
   private logStream?: fs.WriteStream;
   private hasAcceptedPrompt = false;
+  private hookRegistry: HookRegistry;
+  private sessionStartTime = Date.now();
+  private continuity?: ContinuityManager;
+  private agentId?: string;
+  private processedContinuityCommands: Set<string> = new Set();
   private lastSummaryRawContent = ''; // Dedup summary event emissions
   private sessionEndProcessed = false; // Track if we've already emitted session-end
+  private inThinkingBlock = false; // Track if inside <thinking>...</thinking>
   private lastSummaryTime = Date.now(); // Track when last summary was output
   private outputsSinceSummary = 0; // Count outputs since last summary
+  private detectedTask?: string; // Auto-detected task from agent config
+  private sessionEndData?: SessionEndMarker; // Store SESSION_END data for handoff
 
   constructor(config: PtyWrapperConfig) {
     super();
@@ -132,13 +157,59 @@ export class PtyWrapper extends EventEmitter {
     // Detect CLI type from command for special handling
     this.cliType = config.cliType ?? detectCliType(config.command);
 
+    // Auto-detect agent role from .claude/agents/ or .openagents/ if task not provided
+    let detectedTask = config.task;
+    if (!detectedTask) {
+      const agentConfig = findAgentConfig(config.name, config.cwd);
+      if (agentConfig?.description) {
+        detectedTask = agentConfig.description;
+        // Use stderr for consistency with TmuxWrapper's logStderr pattern
+        process.stderr.write(`[pty:${config.name}] Auto-detected role: ${detectedTask.substring(0, 60)}...\n`);
+      }
+    }
+    // Store detected task for use in hook registry
+    this.detectedTask = detectedTask;
+
     this.client = new RelayClient({
       agentName: config.name,
       socketPath: config.socketPath,
       cli: this.cliType,
+      task: detectedTask,
       workingDirectory: config.cwd ?? process.cwd(),
       quiet: true,
     });
+
+    // Initialize hook registry
+    const projectPaths = getProjectPaths();
+    this.hookRegistry = new HookRegistry({
+      agentName: config.name,
+      workingDir: config.cwd ?? process.cwd(),
+      projectId: projectPaths.projectId,
+      task: this.detectedTask,
+      env: config.env,
+      inject: (text) => this.write(text + '\r'),
+      send: async (to, body) => {
+        this.client.sendMessage(to, body, 'message');
+      },
+    });
+
+    // Register trajectory hooks if enabled (default: true if task provided or auto-detected)
+    const enableTrajectory = config.trajectoryTracking ?? !!this.detectedTask;
+    if (enableTrajectory) {
+      const trajectoryHooks = createTrajectoryHooks({
+        projectId: projectPaths.projectId,
+        agentName: config.name,
+      });
+      this.hookRegistry.registerLifecycleHooks(trajectoryHooks);
+    }
+
+    // Register custom hooks if provided
+    if (config.hooks) {
+      this.hookRegistry.registerLifecycleHooks(config.hooks);
+    }
+
+    // Initialize continuity manager
+    this.continuity = getContinuityManager({ defaultCli: 'spawned' });
 
     // Handle incoming messages
     this.client.onMessage = (from: string, payload: SendPayload, messageId: string, meta?: SendMeta, originalTo?: string) => {
@@ -190,6 +261,10 @@ export class PtyWrapper extends EventEmitter {
     console.log(`[pty:${this.config.name}] Spawning: ${this.config.command} ${args.join(' ')}`);
     console.log(`[pty:${this.config.name}] CWD: ${cwd}`);
 
+    // Get trail environment variables
+    const projectPaths = getProjectPaths();
+    const trailEnvVars = getTrailEnvVars(projectPaths.projectId, this.config.name, projectPaths.dataDir);
+
     // Spawn the process with error handling
     try {
       this.ptyProcess = pty.spawn(this.config.command, args, {
@@ -200,6 +275,7 @@ export class PtyWrapper extends EventEmitter {
         env: {
           ...process.env,
           ...this.config.env,
+          ...trailEnvVars,
           AGENT_RELAY_NAME: this.config.name,
           TERM: 'xterm-256color',
         },
@@ -212,6 +288,19 @@ export class PtyWrapper extends EventEmitter {
     }
 
     this.running = true;
+    this.sessionStartTime = Date.now();
+
+    // Dispatch session start hook (handles trajectory initialization)
+    this.hookRegistry.dispatchSessionStart().catch(err => {
+      console.error(`[pty:${this.config.name}] Session start hook error:`, err);
+    });
+
+    // Initialize continuity and get agentId, then inject context
+    this.initializeAgentId()
+      .then(() => this.injectContinuityContext())
+      .catch(err => {
+        console.error(`[pty:${this.config.name}] Agent ID/continuity initialization error:`, err);
+      });
 
     // Capture output
     this.ptyProcess.onData((data: string) => {
@@ -236,6 +325,131 @@ export class PtyWrapper extends EventEmitter {
   }
 
   /**
+   * Initialize agent ID for continuity/resume functionality
+   */
+  private async initializeAgentId(): Promise<void> {
+    if (!this.continuity) return;
+
+    try {
+      let ledger;
+
+      // If resuming from a previous agent ID, try to find that ledger
+      if (this.config.resumeAgentId) {
+        ledger = await this.continuity.findLedgerByAgentId(this.config.resumeAgentId);
+        if (ledger) {
+          console.log(`[pty:${this.config.name}] Resuming agent ID: ${ledger.agentId} (from previous session)`);
+        } else {
+          console.error(`[pty:${this.config.name}] Resume agent ID ${this.config.resumeAgentId} not found, creating new`);
+        }
+      }
+
+      // If not resuming or resume ID not found, get or create ledger
+      if (!ledger) {
+        ledger = await this.continuity.getOrCreateLedger(
+          this.config.name,
+          'spawned'
+        );
+        console.log(`[pty:${this.config.name}] Agent ID: ${ledger.agentId} (use this to resume if agent dies)`);
+      }
+
+      this.agentId = ledger.agentId;
+    } catch (err: any) {
+      console.error(`[pty:${this.config.name}] Failed to initialize agent ID: ${err.message}`);
+    }
+  }
+
+  /**
+   * Get the current agent ID
+   */
+  getAgentId(): string | undefined {
+    return this.agentId;
+  }
+
+  /**
+   * Inject continuity context from previous session.
+   * Called after agent ID initialization to restore state from ledger.
+   */
+  private async injectContinuityContext(): Promise<void> {
+    if (!this.continuity || !this.running) return;
+
+    try {
+      const context = await this.continuity.getStartupContext(this.config.name);
+      if (context?.formatted) {
+        // Build context notification similar to TmuxWrapper
+        const taskInfo = context.ledger?.currentTask
+          ? `Task: ${context.ledger.currentTask.slice(0, 50)}`
+          : '';
+        const handoffInfo = context.handoff
+          ? `Last handoff: ${context.handoff.createdAt.toISOString().split('T')[0]}`
+          : '';
+        const statusParts = [taskInfo, handoffInfo].filter(Boolean).join(' | ');
+
+        const notification = `[Continuity] Previous session context loaded.${statusParts ? ` ${statusParts}` : ''}\n\n${context.formatted}`;
+
+        // Queue continuity context directly to messageQueue with 'system' as sender
+        // This avoids creating confusing "Agent -> Agent" self-messages in the dashboard
+        // Fix for Lead communication issue: continuity checkpoints were creating self-messages
+        this.messageQueue.push({
+          from: 'system',
+          body: notification,
+          messageId: `continuity-startup-${Date.now()}`,
+          thread: 'continuity-context',
+        });
+        this.processMessageQueue();
+
+        const mode = context.handoff ? 'resume' : 'continue';
+        console.log(`[pty:${this.config.name}] Continuity context injected (${mode})`);
+      }
+    } catch (err: any) {
+      console.error(`[pty:${this.config.name}] Failed to inject continuity context: ${err.message}`);
+    }
+  }
+
+  /**
+   * Parse ->continuity: commands from output and handle them.
+   *
+   * Supported commands:
+   *   ->continuity:save <<<...>>>  - Save session state to ledger
+   *   ->continuity:load            - Request context injection
+   *   ->continuity:search "query"  - Search past handoffs
+   *   ->continuity:uncertain "..."  - Mark item as uncertain
+   *   ->continuity:handoff <<<...>>> - Create explicit handoff
+   */
+  private async parseContinuityCommands(content: string): Promise<void> {
+    if (!this.continuity) return;
+    if (!hasContinuityCommand(content)) return;
+
+    const command = parseContinuityCommand(content);
+    if (!command) return;
+
+    // Deduplication: use type + content hash for all commands
+    // Fixed: content-less commands (like load) now use static hash to prevent infinite loops
+    const cmdHash = `${command.type}:${command.content || command.query || command.item || 'no-content'}`;
+
+    if (this.processedContinuityCommands.has(cmdHash)) return;
+    this.processedContinuityCommands.add(cmdHash);
+
+    // Limit dedup set size
+    if (this.processedContinuityCommands.size > 100) {
+      const oldest = this.processedContinuityCommands.values().next().value;
+      if (oldest) this.processedContinuityCommands.delete(oldest);
+    }
+
+    try {
+      const response = await this.continuity.handleCommand(this.config.name, command);
+      if (response) {
+        // Inject response via relay message to self
+        this.client.sendMessage(this.config.name, response, 'message', {
+          thread: 'continuity-response',
+        });
+        console.log(`[pty:${this.config.name}] Continuity command handled: ${command.type}`);
+      }
+    } catch (err: any) {
+      console.error(`[pty:${this.config.name}] Continuity command error: ${err.message}`);
+    }
+  }
+
+  /**
    * Handle output from the process
    */
   private handleOutput(data: string): void {
@@ -254,8 +468,12 @@ export class PtyWrapper extends EventEmitter {
     this.emit('output', data);
 
     // Stream to daemon for dashboard log viewing (if connected)
+    // Filter out Claude's extended thinking blocks before streaming
     if (this.config.streamLogs !== false && this.client.state === 'READY') {
-      this.client.sendLog(data);
+      const filteredData = this.filterThinkingBlocks(data);
+      if (filteredData) {
+        this.client.sendLog(filteredData);
+      }
     }
 
     // Auto-accept Claude's first-run prompt for --dangerously-skip-permissions
@@ -281,14 +499,78 @@ export class PtyWrapper extends EventEmitter {
     // Parse for relay commands
     this.parseRelayCommands();
 
+    // Dispatch output hook (handles phase detection, etc.)
+    const cleanData = stripAnsi(data);
+    this.hookRegistry.dispatchOutput(cleanData, data).catch(err => {
+      console.error(`[pty:${this.config.name}] Output hook error:`, err);
+    });
+
     // Check for [[SUMMARY]] and [[SESSION_END]] blocks and emit events
     // This allows cloud services to handle persistence without hardcoding storage
     const cleanContent = stripAnsi(this.rawBuffer);
     this.checkForSummaryAndEmit(cleanContent);
     this.checkForSessionEndAndEmit(cleanContent);
 
+    // Parse for continuity commands (->continuity:save, ->continuity:load, etc.)
+    // Use rawBuffer (accumulated content) not immediate chunk, since multi-line
+    // fenced commands like ->continuity:save <<<...>>> span multiple output events
+    this.parseContinuityCommands(cleanContent).catch(err => {
+      console.error(`[pty:${this.config.name}] Continuity command parsing error:`, err);
+    });
+
     // Track outputs and potentially remind about summaries
     this.trackOutputAndRemind(data);
+  }
+
+  /**
+   * Filter Claude's extended thinking blocks from output.
+   * Thinking blocks are wrapped in <thinking>...</thinking> tags and should
+   * not be streamed to the dashboard or stored in output buffers.
+   *
+   * This method tracks state across calls to handle multi-line thinking blocks.
+   */
+  private filterThinkingBlocks(data: string): string {
+    const THINKING_START = /<thinking>/;
+    const THINKING_END = /<\/thinking>/;
+
+    const lines = data.split('\n');
+    const outputLines: string[] = [];
+
+    for (const line of lines) {
+      // If in thinking block, check for end
+      if (this.inThinkingBlock) {
+        if (THINKING_END.test(line)) {
+          this.inThinkingBlock = false;
+          // If there's content after </thinking> on the same line, keep it
+          const afterEnd = line.split('</thinking>')[1];
+          if (afterEnd && afterEnd.trim()) {
+            outputLines.push(afterEnd);
+          }
+        }
+        // Skip this line - inside thinking block
+        continue;
+      }
+
+      // Check for thinking start
+      if (THINKING_START.test(line)) {
+        this.inThinkingBlock = true;
+        // Check if it ends on the same line
+        if (THINKING_END.test(line)) {
+          this.inThinkingBlock = false;
+        }
+        // Keep content before <thinking> if any
+        const beforeStart = line.split('<thinking>')[0];
+        if (beforeStart && beforeStart.trim()) {
+          outputLines.push(beforeStart);
+        }
+        continue;
+      }
+
+      // Normal line - keep it
+      outputLines.push(line);
+    }
+
+    return outputLines.join('\n');
   }
 
   /**
@@ -381,6 +663,11 @@ export class PtyWrapper extends EventEmitter {
       const threadId = match[3];      // Thread ID
       const startIdx = match.index + match[0].length;
 
+      // Skip spawn/release commands - they are handled by parseSpawnReleaseCommands
+      if (/^spawn$/i.test(target) || /^release$/i.test(target)) {
+        continue;
+      }
+
       // Find the closing >>>
       const endIdx = content.indexOf('>>>', startIdx);
       if (endIdx === -1) continue;
@@ -424,6 +711,12 @@ export class PtyWrapper extends EventEmitter {
       // Find the relay prefix in the line
       const prefixIdx = line.indexOf(this.relayPrefix);
       if (prefixIdx === -1) continue;
+
+      // Skip spawn/release commands - they are handled by parseSpawnReleaseCommands
+      const afterPrefixForCheck = line.substring(prefixIdx + this.relayPrefix.length);
+      if (/^spawn\s+/i.test(afterPrefixForCheck) || /^release\s+/i.test(afterPrefixForCheck)) {
+        continue;
+      }
 
       // Extract everything after the prefix
       const afterPrefix = line.substring(prefixIdx + this.relayPrefix.length);
@@ -499,17 +792,51 @@ export class PtyWrapper extends EventEmitter {
     const success = this.client.sendMessage(cmd.to, cmd.body, cmd.kind, cmd.data, cmd.thread);
     if (success) {
       this.sentMessageHashes.add(msgHash);
+
+      // Dispatch message sent hook
+      this.hookRegistry.dispatchMessageSent(cmd.to, cmd.body, cmd.thread).catch(err => {
+        console.error(`[pty:${this.config.name}] Message sent hook error:`, err);
+      });
     }
+  }
+
+  /** Valid CLI types for spawn commands */
+  private static readonly VALID_CLI_TYPES = new Set([
+    'claude', 'codex', 'gemini', 'droid', 'aider', 'cursor', 'cline', 'opencode',
+  ]);
+
+  /** Validate agent name format (PascalCase, alphanumeric, 2-30 chars) */
+  private isValidAgentName(name: string): boolean {
+    // Must start with uppercase letter, contain only alphanumeric chars
+    // Length 2-30 characters
+    return /^[A-Z][a-zA-Z0-9]{1,29}$/.test(name);
+  }
+
+  /** Validate CLI type */
+  private isValidCliType(cli: string): boolean {
+    return PtyWrapper.VALID_CLI_TYPES.has(cli.toLowerCase());
   }
 
   /**
    * Parse spawn/release commands from output
    * Uses string-based parsing for robustness with PTY output.
+   * Supports two formats:
+   *   Single-line: ->relay:spawn WorkerName cli "task description"
+   *   Multi-line (fenced): ->relay:spawn WorkerName cli <<<
+   *                        task description here
+   *                        can span multiple lines>>>
    * Delegates to dashboard API if dashboardPort is set (for nested spawns).
+   *
+   * STRICT VALIDATION:
+   * - Command must be at start of line (after whitespace)
+   * - Agent name must be PascalCase (e.g., Backend, Frontend, Worker1)
+   * - CLI must be a known type (claude, codex, gemini, etc.)
    */
   private parseSpawnReleaseCommands(content: string): void {
     // Need either API port or callbacks to handle spawn/release
-    const canSpawn = this.config.dashboardPort || this.config.onSpawn;
+    // Also check allowSpawn config - spawned workers should not spawn other agents
+    const spawnAllowed = this.config.allowSpawn !== false;
+    const canSpawn = spawnAllowed && (this.config.dashboardPort || this.config.onSpawn);
     const canRelease = this.config.dashboardPort || this.config.onRelease;
     if (!canSpawn && !canRelease) return;
 
@@ -518,25 +845,116 @@ export class PtyWrapper extends EventEmitter {
     const releasePrefix = '->relay:release';
 
     for (const line of lines) {
-      // Check for spawn command
-      const spawnIdx = line.indexOf(spawnPrefix);
-      if (spawnIdx !== -1 && canSpawn) {
-        const afterSpawn = line.substring(spawnIdx + spawnPrefix.length).trim();
-        // Parse: WorkerName cli OR WorkerName cli "task" (task is optional)
+      const trimmed = line.trim();
+
+      // Skip escaped commands: \->relay:spawn should not trigger
+      if (trimmed.includes('\\->relay:')) {
+        continue;
+      }
+
+      // If we're in fenced spawn mode, accumulate lines until we see >>>
+      if (this.pendingFencedSpawn) {
+        const closeIdx = trimmed.indexOf('>>>');
+        if (closeIdx !== -1) {
+          // Add content before >>> to task
+          const contentBeforeClose = trimmed.substring(0, closeIdx);
+          if (contentBeforeClose) {
+            this.pendingFencedSpawn.taskLines.push(contentBeforeClose);
+          }
+
+          // Execute the spawn with accumulated task
+          const { name, cli, taskLines } = this.pendingFencedSpawn;
+          const taskStr = taskLines.join('\n').trim();
+          const spawnKey = `${name}:${cli}`;
+
+          if (!this.processedSpawnCommands.has(spawnKey)) {
+            this.processedSpawnCommands.add(spawnKey);
+            console.log(`[pty:${this.config.name}] Spawn command (fenced): ${name} (${cli}) - "${taskStr.substring(0, 50)}..."`);
+            this.executeSpawn(name, cli, taskStr);
+          }
+
+          this.pendingFencedSpawn = null;
+        } else {
+          // Accumulate line as part of task
+          this.pendingFencedSpawn.taskLines.push(line);
+        }
+        continue;
+      }
+
+      // Check for fenced spawn start: ->relay:spawn Name [cli] <<<
+      // STRICT: Must be at start of line (after whitespace)
+      if (canSpawn && trimmed.startsWith(spawnPrefix)) {
+        const afterSpawn = trimmed.substring(spawnPrefix.length).trim();
+
+        // Check for fenced format: Name [cli] <<< (CLI optional, defaults to 'claude')
+        const fencedMatch = afterSpawn.match(/^(\S+)(?:\s+(\S+))?\s+<<<(.*)$/);
+        if (fencedMatch) {
+          const [, name, cliOrUndefined, inlineContent] = fencedMatch;
+          let cli = cliOrUndefined || 'claude';
+
+          // STRICT: Validate agent name (PascalCase) and CLI type
+          if (!this.isValidAgentName(name)) {
+            console.warn(`[pty:${this.config.name}] Invalid agent name format, skipping: name=${name} (must be PascalCase)`);
+            continue;
+          }
+          if (!this.isValidCliType(cli)) {
+            console.warn(`[pty:${this.config.name}] Unknown CLI type, using default: cli=${cli}`);
+            cli = 'claude';
+          }
+
+          // Check if fence closes on same line
+          const inlineCloseIdx = inlineContent.indexOf('>>>');
+          if (inlineCloseIdx !== -1) {
+            // Single line fenced: extract task between <<< and >>>
+            const taskStr = inlineContent.substring(0, inlineCloseIdx).trim();
+            const spawnKey = `${name}:${cli}`;
+
+            if (!this.processedSpawnCommands.has(spawnKey)) {
+              this.processedSpawnCommands.add(spawnKey);
+              console.log(`[pty:${this.config.name}] Spawn command (fenced): ${name} (${cli}) - "${taskStr.substring(0, 50)}..."`);
+              this.executeSpawn(name, cli, taskStr);
+            }
+          } else {
+            // Start multi-line fenced mode
+            this.pendingFencedSpawn = {
+              name,
+              cli,
+              taskLines: inlineContent.trim() ? [inlineContent.trim()] : [],
+            };
+            console.log(`[pty:${this.config.name}] Starting fenced spawn capture: ${name} (${cli})`);
+          }
+          continue;
+        }
+
+        // Parse single-line format: WorkerName [cli] [task]
+        // CLI defaults to 'claude' if not provided
         const parts = afterSpawn.split(/\s+/);
-        if (parts.length >= 2) {
+        if (parts.length >= 1) {
           const name = parts[0];
-          const cli = parts[1];
-          // Task is everything after cli, potentially in quotes (optional)
+          // CLI is optional - defaults to 'claude'
+          let cli = parts[1] || 'claude';
+          // Task is everything after cli (if cli was provided) or after name (if cli was omitted)
           let task = '';
-          if (parts.length >= 3) {
-            const taskPart = parts.slice(2).join(' ');
+          const taskStartIndex = parts[1] ? 2 : 1;
+          if (parts.length > taskStartIndex) {
+            const taskPart = parts.slice(taskStartIndex).join(' ');
             // Remove surrounding quotes if present
             const quoteMatch = taskPart.match(/^["'](.*)["']$/);
             task = quoteMatch ? quoteMatch[1] : taskPart;
           }
 
-          if (name && cli) {
+          if (name) {
+            // STRICT: Validate agent name (PascalCase) and CLI type
+            if (!this.isValidAgentName(name)) {
+              // Don't log warning for documentation text - just silently skip
+              continue;
+            }
+            if (!this.isValidCliType(cli)) {
+              // Default CLI 'claude' should always be valid, but validate anyway
+              console.warn(`[pty:${this.config.name}] Unknown CLI type, using default: cli=${cli}, defaulting to 'claude'`);
+              cli = 'claude';
+            }
+
             const spawnKey = `${name}:${cli}`;
             if (!this.processedSpawnCommands.has(spawnKey)) {
               this.processedSpawnCommands.add(spawnKey);
@@ -548,12 +966,13 @@ export class PtyWrapper extends EventEmitter {
       }
 
       // Check for release command
-      const releaseIdx = line.indexOf(releasePrefix);
-      if (releaseIdx !== -1 && canRelease) {
-        const afterRelease = line.substring(releaseIdx + releasePrefix.length).trim();
+      // STRICT: Must be at start of line (after whitespace)
+      if (canRelease && trimmed.startsWith(releasePrefix)) {
+        const afterRelease = trimmed.substring(releasePrefix.length).trim();
         const name = afterRelease.split(/\s+/)[0];
 
-        if (name && !this.processedReleaseCommands.has(name)) {
+        // STRICT: Validate agent name format
+        if (name && this.isValidAgentName(name) && !this.processedReleaseCommands.has(name)) {
           this.processedReleaseCommands.add(name);
           this.executeRelease(name);
         }
@@ -628,6 +1047,11 @@ export class PtyWrapper extends EventEmitter {
   private handleIncomingMessage(from: string, payload: SendPayload, messageId: string, meta?: SendMeta, originalTo?: string): void {
     this.messageQueue.push({ from, body: payload.body, messageId, thread: payload.thread, importance: meta?.importance, data: payload.data, originalTo });
     this.processMessageQueue();
+
+    // Dispatch message received hook
+    this.hookRegistry.dispatchMessageReceived(from, payload.body, messageId).catch(err => {
+      console.error(`[pty:${this.config.name}] Message received hook error:`, err);
+    });
   }
 
   /**
@@ -663,93 +1087,10 @@ export class PtyWrapper extends EventEmitter {
   }
 
   /**
-   * Verify that an injected message appeared in the output.
-   * Looks for the message pattern in recent output.
-   */
-  private async verifyInjection(shortId: string, from: string): Promise<boolean> {
-    const expectedPattern = `Relay message from ${from} [${shortId}]`;
-    const startTime = Date.now();
-
-    while (Date.now() - startTime < INJECTION_CONSTANTS.VERIFICATION_TIMEOUT_MS) {
-      // Check if pattern appears in recent buffer
-      // Look at last 2000 chars to avoid scanning entire buffer
-      const recentOutput = this.rawBuffer.slice(-2000);
-      if (recentOutput.includes(expectedPattern)) {
-        return true;
-      }
-
-      await sleep(100);
-    }
-
-    return false;
-  }
-
-  /**
    * Check if the agent process is still alive and responsive.
    */
   private isAgentAlive(): boolean {
     return this.running && this.ptyProcess !== undefined;
-  }
-
-  /**
-   * Perform a single injection attempt.
-   */
-  private async performInjection(injection: string): Promise<void> {
-    if (!this.ptyProcess || !this.running) {
-      throw new Error('PTY process not running');
-    }
-
-    // Write message to PTY, then send Enter separately after a small delay
-    this.ptyProcess.write(injection);
-    await sleep(INJECTION_CONSTANTS.ENTER_DELAY_MS);
-    this.ptyProcess.write('\r');
-  }
-
-  /**
-   * Inject a message with retry logic and verification.
-   */
-  private async injectWithRetry(
-    injection: string,
-    shortId: string,
-    from: string
-  ): Promise<InjectionResult> {
-    this.injectionMetrics.total++;
-
-    for (let attempt = 0; attempt < INJECTION_CONSTANTS.MAX_RETRIES; attempt++) {
-      try {
-        // Perform the injection
-        await this.performInjection(injection);
-
-        // Verify it appeared in output
-        const verified = await this.verifyInjection(shortId, from);
-
-        if (verified) {
-          if (attempt === 0) {
-            this.injectionMetrics.successFirstTry++;
-          } else {
-            this.injectionMetrics.successWithRetry++;
-            console.log(`[pty:${this.config.name}] Injection succeeded on attempt ${attempt + 1}`);
-          }
-          return { success: true, attempts: attempt + 1 };
-        }
-
-        // Not verified - log and retry
-        console.warn(
-          `[pty:${this.config.name}] Injection not verified, attempt ${attempt + 1}/${INJECTION_CONSTANTS.MAX_RETRIES}`
-        );
-
-        // Backoff before retry
-        if (attempt < INJECTION_CONSTANTS.MAX_RETRIES - 1) {
-          await sleep(INJECTION_CONSTANTS.RETRY_BACKOFF_MS * (attempt + 1));
-        }
-      } catch (err: any) {
-        console.error(`[pty:${this.config.name}] Injection error on attempt ${attempt + 1}: ${err.message}`);
-      }
-    }
-
-    // All retries failed
-    this.injectionMetrics.failed++;
-    return { success: false, attempts: INJECTION_CONSTANTS.MAX_RETRIES };
   }
 
   /**
@@ -758,6 +1099,8 @@ export class PtyWrapper extends EventEmitter {
    * 2. Verify injection appeared in output
    * 3. Retry with backoff on failure
    * 4. Fall back to logging on complete failure
+   *
+   * Uses shared injection logic with PTY-specific callbacks.
    */
   private async processMessageQueue(): Promise<void> {
     // Wait until instructions have been injected and agent is ready
@@ -811,8 +1154,28 @@ export class PtyWrapper extends EventEmitter {
 
       const shortId = msg.messageId.substring(0, 8);
 
-      // Inject with retry and verification
-      const result = await this.injectWithRetry(injection, shortId, msg.from);
+      // Create callbacks for shared injection logic
+      const callbacks: InjectionCallbacks = {
+        getOutput: async () => {
+          // Look at last 2000 chars to avoid scanning entire buffer
+          return this.rawBuffer.slice(-2000);
+        },
+        performInjection: async (inj: string) => {
+          if (!this.ptyProcess || !this.running) {
+            throw new Error('PTY process not running');
+          }
+          // Write message to PTY, then send Enter separately after a small delay
+          this.ptyProcess.write(inj);
+          await sleep(INJECTION_CONSTANTS.ENTER_DELAY_MS);
+          this.ptyProcess.write('\r');
+        },
+        log: (message: string) => console.log(`[pty:${this.config.name}] ${message}`),
+        logError: (message: string) => console.error(`[pty:${this.config.name}] ${message}`),
+        getMetrics: () => this.injectionMetrics,
+      };
+
+      // Inject with retry and verification using shared logic
+      const result = await sharedInjectWithRetry(injection, shortId, msg.from, callbacks);
 
       if (!result.success) {
         // Log the failed message for debugging/recovery
@@ -855,6 +1218,8 @@ export class PtyWrapper extends EventEmitter {
       `END: Output [[SESSION_END]]{"summary":"..."}[[/SESSION_END]] when session complete.`,
     ].join(' | ');
 
+    // Note: Trail instructions are injected via hooks (trajectory-hooks.ts)
+
     try {
       this.ptyProcess.write(instructions + '\r');
     } catch {
@@ -891,34 +1256,76 @@ export class PtyWrapper extends EventEmitter {
   /**
    * Stop the agent process
    */
-  stop(): void {
+  async stop(): Promise<void> {
     if (!this.running) return;
     this.running = false;
+
+    // Auto-save continuity state before stopping
+    // Pass sessionEndData to populate handoff (fixes empty handoff issue)
+    if (this.continuity) {
+      try {
+        await this.continuity.autoSave(this.config.name, 'session_end', this.sessionEndData);
+      } catch (err) {
+        console.error(`[pty:${this.config.name}] Continuity auto-save failed:`, err);
+      }
+    }
+
+    // Dispatch session end hook (handles trajectory completion)
+    try {
+      await this.hookRegistry.dispatchSessionEnd(0, true);
+    } catch (err) {
+      console.error(`[pty:${this.config.name}] Session end hook error:`, err);
+    }
 
     if (this.ptyProcess) {
       // Try graceful termination first
       this.ptyProcess.write('\x03'); // Ctrl+C
-      setTimeout(() => {
-        if (this.ptyProcess) {
-          this.ptyProcess.kill();
-        }
-      }, 1000);
+      await sleep(1000);
+      if (this.ptyProcess) {
+        this.ptyProcess.kill();
+      }
     }
 
     this.closeLogStream();
     this.client.destroy();
+    this.hookRegistry.destroy();
   }
 
   /**
    * Kill the process immediately
    */
-  kill(): void {
+  async kill(): Promise<void> {
     this.running = false;
+
+    // Auto-save continuity state before killing (with timeout to avoid hanging)
+    // Pass sessionEndData if available (may have been parsed before kill)
+    if (this.continuity) {
+      try {
+        await Promise.race([
+          this.continuity.autoSave(this.config.name, 'crash', this.sessionEndData),
+          sleep(2000), // 2s timeout for crash saves
+        ]);
+      } catch (err) {
+        console.error(`[pty:${this.config.name}] Continuity auto-save failed:`, err);
+      }
+    }
+
+    // Dispatch session end hook (forced termination, with timeout)
+    try {
+      await Promise.race([
+        this.hookRegistry.dispatchSessionEnd(undefined, false),
+        sleep(1000), // 1s timeout for hooks on kill
+      ]);
+    } catch (err) {
+      console.error(`[pty:${this.config.name}] Session end hook error:`, err);
+    }
+
     if (this.ptyProcess) {
       this.ptyProcess.kill();
     }
     this.closeLogStream();
     this.client.destroy();
+    this.hookRegistry.destroy();
   }
 
   /**
@@ -998,6 +1405,7 @@ export class PtyWrapper extends EventEmitter {
   /**
    * Check for [[SUMMARY]] blocks and emit 'summary' event.
    * Allows cloud services to persist summaries without hardcoding storage.
+   * Also updates the local continuity ledger for session recovery.
    */
   private checkForSummaryAndEmit(content: string): void {
     const result = parseSummaryWithDetails(content);
@@ -1019,16 +1427,61 @@ export class PtyWrapper extends EventEmitter {
       return;
     }
 
+    const summary = result.summary!;
+
+    // Save to local continuity ledger for session recovery
+    // This ensures the ledger has actual data instead of placeholders
+    if (this.continuity) {
+      this.saveSummaryToLedger(summary).catch(err => {
+        console.error(`[pty:${this.config.name}] Failed to save summary to ledger:`, err);
+      });
+    }
+
     // Emit event for external handlers (cloud services, dashboard, etc.)
     this.emit('summary', {
       agentName: this.config.name,
-      summary: result.summary!,
+      summary,
     });
+  }
+
+  /**
+   * Save a parsed summary to the continuity ledger.
+   * Maps summary fields to ledger fields for session recovery.
+   */
+  private async saveSummaryToLedger(summary: ParsedSummary): Promise<void> {
+    if (!this.continuity) return;
+
+    const updates: Record<string, unknown> = {};
+
+    // Map summary fields to ledger fields
+    if (summary.currentTask) {
+      updates.currentTask = summary.currentTask;
+    }
+
+    if (summary.completedTasks && summary.completedTasks.length > 0) {
+      updates.completed = summary.completedTasks;
+    }
+
+    if (summary.context) {
+      // Store context in inProgress as "next steps" hint
+      updates.inProgress = [summary.context];
+    }
+
+    if (summary.files && summary.files.length > 0) {
+      updates.fileContext = summary.files.map((f: string) => ({ path: f }));
+    }
+
+    // Only save if we have meaningful updates
+    if (Object.keys(updates).length > 0) {
+      await this.continuity.saveLedger(this.config.name, updates);
+      console.log(`[pty:${this.config.name}] Saved summary to continuity ledger`);
+    }
   }
 
   /**
    * Check for [[SESSION_END]] blocks and emit 'session-end' event.
    * Allows cloud services to handle session closure without hardcoding storage.
+   * Also stores the data for use in autoSave to populate handoff.
    */
   private checkForSessionEndAndEmit(content: string): void {
     if (this.sessionEndProcessed) return; // Only emit once per session
@@ -1037,6 +1490,9 @@ export class PtyWrapper extends EventEmitter {
     if (!sessionEnd) return;
 
     this.sessionEndProcessed = true;
+
+    // Store SESSION_END data for use in autoSave (fixes empty handoff issue)
+    this.sessionEndData = sessionEnd;
 
     // Emit event for external handlers
     this.emit('session-end', {
@@ -1052,6 +1508,7 @@ export class PtyWrapper extends EventEmitter {
   resetSessionState(): void {
     this.sessionEndProcessed = false;
     this.lastSummaryRawContent = '';
+    this.sessionEndData = undefined;
   }
 
   /**
