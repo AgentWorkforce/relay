@@ -75,6 +75,7 @@ function CommandPaletteContent({
 }: CommandPaletteProps) {
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [activeCategory, setActiveCategory] = useState<typeof CATEGORY_ORDER[number] | null>(null);
   const selectedIndexRef = useRef(selectedIndex);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -135,8 +136,19 @@ function CommandPaletteContent({
 
   // Build command list
   const commands = useMemo(() => {
+    // Sort projects: current project first, then alphabetically
+    const sortedProjects = [...projects].sort((a, b) => {
+      const aIsCurrent = a.id === currentProject;
+      const bIsCurrent = b.id === currentProject;
+      if (aIsCurrent && !bIsCurrent) return -1;
+      if (!aIsCurrent && bIsCurrent) return 1;
+      const aName = a.name || a.path.split('/').pop() || a.id;
+      const bName = b.name || b.path.split('/').pop() || b.id;
+      return aName.localeCompare(bName);
+    });
+
     const cmds: Command[] = [
-      ...projects.map((project) => {
+      ...sortedProjects.map((project) => {
         const displayName = project.name || project.path.split('/').pop() || project.id;
         const isCurrent = project.id === currentProject;
         return {
@@ -146,7 +158,7 @@ function CommandPaletteContent({
             ? `Current project • ${project.agents.length} agents`
             : `${project.agents.length} agents`,
           category: 'projects' as const,
-          icon: <FolderIcon />,
+          icon: isCurrent ? <CurrentProjectIcon /> : <FolderIcon />,
           action: () => {
             onProjectSelect?.(project);
             onClose();
@@ -234,15 +246,26 @@ function CommandPaletteContent({
   }, [agents, projects, currentProject, onAgentSelect, onProjectSelect, onSpawnClick, onSettingsClick, onGeneralClick, onClose, customCommands]);
 
   const filteredCommands = useMemo(() => {
-    if (!query.trim()) return commands;
-    const lowerQuery = query.toLowerCase();
-    return commands.filter(
-      (cmd) =>
-        cmd.label.toLowerCase().includes(lowerQuery) ||
-        cmd.description?.toLowerCase().includes(lowerQuery) ||
-        cmd.category.toLowerCase().includes(lowerQuery)
-    );
-  }, [commands, query]);
+    let filtered = commands;
+
+    // Filter by active category if set
+    if (activeCategory) {
+      filtered = filtered.filter((cmd) => cmd.category === activeCategory);
+    }
+
+    // Filter by search query
+    if (query.trim()) {
+      const lowerQuery = query.toLowerCase();
+      filtered = filtered.filter(
+        (cmd) =>
+          cmd.label.toLowerCase().includes(lowerQuery) ||
+          cmd.description?.toLowerCase().includes(lowerQuery) ||
+          cmd.category.toLowerCase().includes(lowerQuery)
+      );
+    }
+
+    return filtered;
+  }, [commands, query, activeCategory]);
 
   const groupedCommands = useMemo(() => {
     const groups: Record<string, Command[]> = {};
@@ -267,6 +290,7 @@ function CommandPaletteContent({
   useEffect(() => {
     setQuery('');
     setSelectedIndex(0);
+    setActiveCategory(null); // Show all categories by default
     setMode('search');
     setTaskAgent(null);
     setTaskTitle('');
@@ -341,16 +365,38 @@ function CommandPaletteContent({
             flatCommands[selectedIndexRef.current].action();
           }
           break;
+        case 'Tab':
+          e.preventDefault();
+          // Cycle through categories: null -> projects -> agents -> actions -> ... -> null
+          setActiveCategory(prev => {
+            if (prev === null) return CATEGORY_ORDER[0];
+            const currentIdx = CATEGORY_ORDER.indexOf(prev);
+            if (e.shiftKey) {
+              // Shift+Tab: go backwards
+              return currentIdx === 0 ? null : CATEGORY_ORDER[currentIdx - 1];
+            } else {
+              // Tab: go forwards
+              return currentIdx === CATEGORY_ORDER.length - 1 ? null : CATEGORY_ORDER[currentIdx + 1];
+            }
+          });
+          setSelectedIndex(0);
+          break;
         case 'Escape':
           e.preventDefault();
-          onClose();
+          // If filtering by category, clear filter first
+          if (activeCategory) {
+            setActiveCategory(null);
+            setSelectedIndex(0);
+          } else {
+            onClose();
+          }
           break;
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [flatCommands, filteredAgents, mode, selectedIndex, onClose, handleTaskSubmit]);
+  }, [flatCommands, filteredAgents, mode, selectedIndex, activeCategory, onClose, handleTaskSubmit]);
 
   const categoryLabels: Record<string, string> = {
     projects: 'Projects',
@@ -570,15 +616,27 @@ function CommandPaletteContent({
       >
         <div className="flex items-center gap-3 p-4 border-b border-sidebar-border">
           <SearchIcon />
+          {activeCategory && (
+            <button
+              onClick={() => { setActiveCategory(null); setSelectedIndex(0); }}
+              className="flex items-center gap-1 px-2 py-0.5 text-xs font-medium bg-accent-cyan/20 text-accent-cyan rounded-md hover:bg-accent-cyan/30 transition-colors"
+            >
+              {categoryLabels[activeCategory]}
+              <span className="text-accent-cyan/60">×</span>
+            </button>
+          )}
           <input
             ref={inputRef}
             autoFocus
             type="text"
             className="flex-1 border-none text-base font-sans outline-none bg-transparent text-text-primary placeholder:text-text-muted"
-            placeholder="Search commands, agents..."
+            placeholder={activeCategory ? `Search ${categoryLabels[activeCategory].toLowerCase()}...` : "Search commands, agents..."}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
+          <kbd className="bg-sidebar-border border border-sidebar-hover rounded px-1.5 py-0.5 text-xs text-text-muted font-sans" title="Cycle categories">
+            Tab
+          </kbd>
           <kbd className="bg-sidebar-border border border-sidebar-hover rounded px-1.5 py-0.5 text-xs text-text-muted font-sans">
             ESC
           </kbd>
@@ -700,6 +758,25 @@ function FolderIcon() {
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
     </svg>
+  );
+}
+
+function CurrentProjectIcon() {
+  return (
+    <div className="relative">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-accent-cyan">
+        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+      </svg>
+      <svg
+        className="absolute -bottom-0.5 -right-0.5 text-accent-cyan bg-sidebar-bg rounded-full"
+        width="10"
+        height="10"
+        viewBox="0 0 24 24"
+        fill="currentColor"
+      >
+        <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
+      </svg>
+    </div>
   );
 }
 

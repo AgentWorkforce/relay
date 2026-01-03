@@ -209,6 +209,8 @@ export class AgentSpawner {
       // Create PtyWrapper config
       // Use dashboardPort for nested spawns (API-based, works in non-TTY contexts)
       // Fall back to callbacks only if no dashboardPort is set
+      // Note: Spawned agents CAN spawn sub-workers intentionally - the parser is strict enough
+      // to avoid accidental spawns from documentation text (requires line start, PascalCase, known CLI)
       const ptyConfig: PtyWrapperConfig = {
         name,
         command,

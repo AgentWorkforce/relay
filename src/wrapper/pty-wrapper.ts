@@ -53,6 +53,8 @@ export interface PtyWrapperConfig {
   logsDir?: string;
   /** Dashboard port for spawn/release API calls (enables nested spawning from spawned agents) */
   dashboardPort?: number;
+  /** Allow this agent to spawn other agents (default: true for Lead, false for spawned workers) */
+  allowSpawn?: boolean;
   /** Callback for spawn commands (fallback if dashboardPort not set) */
   onSpawn?: (name: string, cli: string, task: string) => Promise<void>;
   /** Callback for release commands (fallback if dashboardPort not set) */
@@ -796,6 +798,23 @@ export class PtyWrapper extends EventEmitter {
     }
   }
 
+  /** Valid CLI types for spawn commands */
+  private static readonly VALID_CLI_TYPES = new Set([
+    'claude', 'codex', 'gemini', 'droid', 'aider', 'cursor', 'cline', 'opencode',
+  ]);
+
+  /** Validate agent name format (PascalCase, alphanumeric, 2-30 chars) */
+  private isValidAgentName(name: string): boolean {
+    // Must start with uppercase letter, contain only alphanumeric chars
+    // Length 2-30 characters
+    return /^[A-Z][a-zA-Z0-9]{1,29}$/.test(name);
+  }
+
+  /** Validate CLI type */
+  private isValidCliType(cli: string): boolean {
+    return PtyWrapper.VALID_CLI_TYPES.has(cli.toLowerCase());
+  }
+
   /**
    * Parse spawn/release commands from output
    * Uses string-based parsing for robustness with PTY output.
@@ -805,10 +824,17 @@ export class PtyWrapper extends EventEmitter {
    *                        task description here
    *                        can span multiple lines>>>
    * Delegates to dashboard API if dashboardPort is set (for nested spawns).
+   *
+   * STRICT VALIDATION:
+   * - Command must be at start of line (after whitespace)
+   * - Agent name must be PascalCase (e.g., Backend, Frontend, Worker1)
+   * - CLI must be a known type (claude, codex, gemini, etc.)
    */
   private parseSpawnReleaseCommands(content: string): void {
     // Need either API port or callbacks to handle spawn/release
-    const canSpawn = this.config.dashboardPort || this.config.onSpawn;
+    // Also check allowSpawn config - spawned workers should not spawn other agents
+    const spawnAllowed = this.config.allowSpawn !== false;
+    const canSpawn = spawnAllowed && (this.config.dashboardPort || this.config.onSpawn);
     const canRelease = this.config.dashboardPort || this.config.onRelease;
     if (!canSpawn && !canRelease) return;
 
@@ -818,6 +844,11 @@ export class PtyWrapper extends EventEmitter {
 
     for (const line of lines) {
       const trimmed = line.trim();
+
+      // Skip escaped commands: \->relay:spawn should not trigger
+      if (trimmed.includes('\\->relay:')) {
+        continue;
+      }
 
       // If we're in fenced spawn mode, accumulate lines until we see >>>
       if (this.pendingFencedSpawn) {
@@ -849,18 +880,22 @@ export class PtyWrapper extends EventEmitter {
       }
 
       // Check for fenced spawn start: ->relay:spawn Name cli <<<
-      const spawnIdx = line.indexOf(spawnPrefix);
-      if (spawnIdx !== -1 && canSpawn) {
-        const afterSpawn = line.substring(spawnIdx + spawnPrefix.length).trim();
+      // STRICT: Must be at start of line (after whitespace)
+      if (canSpawn && trimmed.startsWith(spawnPrefix)) {
+        const afterSpawn = trimmed.substring(spawnPrefix.length).trim();
 
         // Check for fenced format: Name cli <<<
         const fencedMatch = afterSpawn.match(/^(\S+)\s+(\S+)\s+<<<(.*)$/);
         if (fencedMatch) {
           const [, name, cli, inlineContent] = fencedMatch;
 
-          // Validate name and cli
-          if (name.length < 2 || cli.length < 2) {
-            console.warn(`[pty:${this.config.name}] Fenced spawn has invalid name/cli, skipping: name=${name}, cli=${cli}`);
+          // STRICT: Validate agent name (PascalCase) and CLI type
+          if (!this.isValidAgentName(name)) {
+            console.warn(`[pty:${this.config.name}] Invalid agent name format, skipping: name=${name} (must be PascalCase)`);
+            continue;
+          }
+          if (!this.isValidCliType(cli)) {
+            console.warn(`[pty:${this.config.name}] Unknown CLI type, skipping: cli=${cli}`);
             continue;
           }
 
@@ -903,17 +938,13 @@ export class PtyWrapper extends EventEmitter {
           }
 
           if (name && cli) {
-            // Validate the parsed values
-            if (cli === '<<<' || cli === '>>>' || name === '<<<' || name === '>>>') {
-              console.warn(`[pty:${this.config.name}] Invalid spawn command (fence markers in name/cli), skipping: name=${name}, cli=${cli}`);
+            // STRICT: Validate agent name (PascalCase) and CLI type
+            if (!this.isValidAgentName(name)) {
+              // Don't log warning for documentation text - just silently skip
               continue;
             }
-            if (name.length < 2) {
-              console.warn(`[pty:${this.config.name}] Spawn command has suspiciously short name, skipping: name=${name}`);
-              continue;
-            }
-            if (cli.length < 2) {
-              console.warn(`[pty:${this.config.name}] Spawn command has suspiciously short CLI, skipping: cli=${cli}`);
+            if (!this.isValidCliType(cli)) {
+              // Don't log warning for documentation text - just silently skip
               continue;
             }
 
@@ -928,12 +959,13 @@ export class PtyWrapper extends EventEmitter {
       }
 
       // Check for release command
-      const releaseIdx = line.indexOf(releasePrefix);
-      if (releaseIdx !== -1 && canRelease) {
-        const afterRelease = line.substring(releaseIdx + releasePrefix.length).trim();
+      // STRICT: Must be at start of line (after whitespace)
+      if (canRelease && trimmed.startsWith(releasePrefix)) {
+        const afterRelease = trimmed.substring(releasePrefix.length).trim();
         const name = afterRelease.split(/\s+/)[0];
 
-        if (name && !this.processedReleaseCommands.has(name)) {
+        // STRICT: Validate agent name format
+        if (name && this.isValidAgentName(name) && !this.processedReleaseCommands.has(name)) {
           this.processedReleaseCommands.add(name);
           this.executeRelease(name);
         }
