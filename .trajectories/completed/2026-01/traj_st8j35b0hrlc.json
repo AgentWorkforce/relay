@@ -8,7 +8,7 @@
       "id": "cloud-e2e-fix"
     }
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-01-03T19:04:57.338Z",
   "agents": [],
   "chapters": [
@@ -42,11 +42,18 @@
           },
           "significance": "high"
         }
-      ]
+      ],
+      "endedAt": "2026-01-03T19:09:05.597Z"
     }
   ],
   "commits": [],
   "filesChanged": [],
   "projectId": "/home/user/relay",
-  "tags": []
+  "tags": [],
+  "completedAt": "2026-01-03T19:09:05.597Z",
+  "retrospective": {
+    "summary": "Fixed GitHub token to use Nango (fresh installation tokens) and added credential file creation in workspace entrypoint for Claude/Codex/Gemini",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  }
 }

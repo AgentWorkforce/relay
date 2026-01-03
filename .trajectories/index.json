@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-03T19:08:21.489Z",
+  "lastUpdated": "2026-01-03T19:09:05.618Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -242,9 +242,10 @@
     },
     "traj_st8j35b0hrlc": {
       "title": "Fix cloud provisioning for GitHub cloning and agent credentials",
-      "status": "active",
+      "status": "completed",
       "startedAt": "2026-01-03T19:04:57.338Z",
-      "path": "/home/user/relay/.trajectories/active/traj_st8j35b0hrlc.json"
+      "completedAt": "2026-01-03T19:09:05.597Z",
+      "path": "/home/user/relay/.trajectories/completed/2026-01/traj_st8j35b0hrlc.json"
     }
   }
 }
