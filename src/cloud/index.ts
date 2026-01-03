@@ -13,6 +13,30 @@ export { getConfig, loadConfig, CloudConfig } from './config.js';
 export { CredentialVault } from './vault/index.js';
 export { WorkspaceProvisioner, ProvisionConfig, Workspace, WorkspaceStatus } from './provisioner/index.js';
 
+// Scaling infrastructure
+export {
+  ScalingPolicyService,
+  ScalingThresholds,
+  ScalingPolicy,
+  ScalingDecision,
+  WorkspaceMetrics,
+  getScalingPolicyService,
+  AutoScaler,
+  ScalingOperation,
+  getAutoScaler,
+  createAutoScaler,
+  CapacityManager,
+  WorkspaceCapacity,
+  PlacementRecommendation,
+  CapacityForecast,
+  getCapacityManager,
+  createCapacityManager,
+  ScalingOrchestrator,
+  ScalingEvent,
+  getScalingOrchestrator,
+  createScalingOrchestrator,
+} from './services/index.js';
+
 // Billing
 export * from './billing/index.js';
 

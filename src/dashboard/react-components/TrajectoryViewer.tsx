@@ -39,7 +39,6 @@ export interface TrajectoryViewerProps {
   onSelectTrajectory?: (id: string | null) => void;
   isLoading?: boolean;
   onStepClick?: (step: TrajectoryStep) => void;
-  maxHeight?: string;
   compact?: boolean;
 }
 
@@ -51,7 +50,6 @@ export function TrajectoryViewer({
   onSelectTrajectory,
   isLoading = false,
   onStepClick,
-  maxHeight = '400px',
   compact = false,
 }: TrajectoryViewerProps) {
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
@@ -97,13 +95,26 @@ export function TrajectoryViewer({
   }, [steps]);
 
   return (
-    <div className="bg-gradient-to-b from-bg-card to-bg-tertiary rounded-xl border border-border/50 overflow-hidden shadow-lg backdrop-blur-sm">
+    <div className="h-full flex flex-col bg-gradient-to-b from-bg-card to-bg-tertiary rounded-xl border border-border/50 overflow-hidden shadow-lg backdrop-blur-sm">
       {/* Header with gradient accent line */}
       <div className="relative">
         <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-blue-500 via-accent-cyan to-blue-500 opacity-60" />
         
         <div className="flex items-center justify-between px-5 py-4 border-b border-border/30">
           <div className="flex items-center gap-3">
+            {/* Back button when viewing a specific trajectory */}
+            {selectedTrajectoryId && onSelectTrajectory && (
+              <button
+                onClick={() => onSelectTrajectory(null)}
+                className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] font-medium text-text-muted hover:text-accent-cyan bg-bg-elevated/50 hover:bg-bg-elevated rounded-lg border border-border/30 hover:border-accent-cyan/30 transition-all duration-200"
+                title="Back to trajectory list"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M19 12H5M12 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                <span>List</span>
+              </button>
+            )}
             <div className="relative">
               <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-blue-500/20 to-accent-cyan/20 flex items-center justify-center border border-blue-500/30">
                 <TrajectoryHeaderIcon />
@@ -172,7 +183,7 @@ export function TrajectoryViewer({
       </div>
 
       {/* Timeline */}
-      <div className="overflow-y-auto px-4 py-3 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent" style={{ maxHeight }}>
+      <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
         {isLoading ? (
           <div className="flex flex-col items-center justify-center gap-4 py-12 text-text-muted">
             <div className="relative">

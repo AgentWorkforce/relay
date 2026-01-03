@@ -16,7 +16,7 @@ function verifyGitHubSignature(payload: string, signature: string | undefined): 
   if (!signature) return false;
 
   const config = getConfig();
-  const secret = config.github.appWebhookSecret || config.github.clientSecret;
+  const secret = config.github.webhookSecret || config.github.clientSecret;
 
   const expectedSignature = `sha256=${crypto
     .createHmac('sha256', secret)

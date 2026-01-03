@@ -1,0 +1,20 @@
+# Daemon Simulator for QA Testing
+FROM node:20-slim
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+COPY tsconfig.json ./
+
+# Install dependencies (minimal)
+RUN npm ci --only=production
+
+# Copy test code
+COPY test/cloud/daemon-simulator.ts ./test/cloud/
+
+# Install ts-node for running TypeScript directly
+RUN npm install -g tsx
+
+# Run the simulator
+CMD ["tsx", "test/cloud/daemon-simulator.ts"]

@@ -92,7 +92,25 @@ export type WorkspaceStatus = Workspace['status'];
 export { Workspace };
 
 /**
- * Abstract provisioner interface
+ * Resource tier configurations for vertical scaling
+ */
+export interface ResourceTier {
+  name: 'small' | 'medium' | 'large' | 'xlarge';
+  cpuCores: number;
+  memoryMb: number;
+  maxAgents: number;
+}
+
+export const RESOURCE_TIERS: Record<string, ResourceTier> = {
+  small: { name: 'small', cpuCores: 1, memoryMb: 512, maxAgents: 5 },
+  medium: { name: 'medium', cpuCores: 2, memoryMb: 1024, maxAgents: 10 },
+  large: { name: 'large', cpuCores: 4, memoryMb: 2048, maxAgents: 20 },
+  xlarge: { name: 'xlarge', cpuCores: 8, memoryMb: 4096, maxAgents: 50 },
+};
+
+/**
+ * Abstract provisioner interface - adapter pattern for multiple providers
+ * Supports both Kubernetes, Fly.io, Railway, Docker, etc.
  */
 interface ComputeProvisioner {
   provision(workspace: Workspace, credentials: Map<string, string>): Promise<{
@@ -102,6 +120,15 @@ interface ComputeProvisioner {
   deprovision(workspace: Workspace): Promise<void>;
   getStatus(workspace: Workspace): Promise<WorkspaceStatus>;
   restart(workspace: Workspace): Promise<void>;
+
+  // Vertical scaling - resize workspace resources
+  resize?(workspace: Workspace, tier: ResourceTier): Promise<void>;
+
+  // Update max agent limit
+  updateAgentLimit?(workspace: Workspace, newLimit: number): Promise<void>;
+
+  // Get current resource tier
+  getCurrentTier?(workspace: Workspace): Promise<ResourceTier>;
 }
 
 /**
@@ -131,7 +158,7 @@ class FlyProvisioner implements ComputeProvisioner {
     const appName = `ar-${workspace.id.substring(0, 8)}`;
 
     // Create Fly app
-    const _createResponse = await fetchWithRetry('https://api.machines.dev/v1/apps', {
+    await fetchWithRetry('https://api.machines.dev/v1/apps', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${this.apiToken}`,
@@ -317,6 +344,108 @@ class FlyProvisioner implements ComputeProvisioner {
         },
       }
     );
+  }
+
+  /**
+   * Resize workspace - vertical scaling via Fly Machines API
+   */
+  async resize(workspace: Workspace, tier: ResourceTier): Promise<void> {
+    if (!workspace.computeId) return;
+
+    const appName = `ar-${workspace.id.substring(0, 8)}`;
+
+    // Update machine configuration
+    await fetchWithRetry(
+      `https://api.machines.dev/v1/apps/${appName}/machines/${workspace.computeId}`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.apiToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          config: {
+            guest: {
+              cpu_kind: tier.cpuCores <= 2 ? 'shared' : 'performance',
+              cpus: tier.cpuCores,
+              memory_mb: tier.memoryMb,
+            },
+            env: {
+              MAX_AGENTS: String(tier.maxAgents),
+            },
+          },
+        }),
+      }
+    );
+
+    console.log(`[fly] Resized workspace ${workspace.id} to ${tier.name} (${tier.cpuCores} CPU, ${tier.memoryMb}MB RAM)`);
+  }
+
+  /**
+   * Update the max agent limit for a workspace
+   */
+  async updateAgentLimit(workspace: Workspace, newLimit: number): Promise<void> {
+    if (!workspace.computeId) return;
+
+    const appName = `ar-${workspace.id.substring(0, 8)}`;
+
+    // Update environment variable
+    await fetchWithRetry(
+      `https://api.machines.dev/v1/apps/${appName}/machines/${workspace.computeId}`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.apiToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          config: {
+            env: {
+              MAX_AGENTS: String(newLimit),
+            },
+          },
+        }),
+      }
+    );
+
+    console.log(`[fly] Updated workspace ${workspace.id} agent limit to ${newLimit}`);
+  }
+
+  /**
+   * Get current resource tier for a workspace
+   */
+  async getCurrentTier(workspace: Workspace): Promise<ResourceTier> {
+    if (!workspace.computeId) {
+      return RESOURCE_TIERS.small;
+    }
+
+    const appName = `ar-${workspace.id.substring(0, 8)}`;
+
+    const response = await fetchWithRetry(
+      `https://api.machines.dev/v1/apps/${appName}/machines/${workspace.computeId}`,
+      {
+        headers: {
+          Authorization: `Bearer ${this.apiToken}`,
+        },
+      }
+    );
+
+    if (!response.ok) {
+      return RESOURCE_TIERS.small;
+    }
+
+    const machine = await response.json() as {
+      config?: { guest?: { cpus?: number; memory_mb?: number } };
+    };
+
+    const _cpus = machine.config?.guest?.cpus || 1;
+    const memoryMb = machine.config?.guest?.memory_mb || 512;
+
+    // Map to nearest tier
+    if (memoryMb >= 4096) return RESOURCE_TIERS.xlarge;
+    if (memoryMb >= 2048) return RESOURCE_TIERS.large;
+    if (memoryMb >= 1024) return RESOURCE_TIERS.medium;
+    return RESOURCE_TIERS.small;
   }
 }
 
@@ -806,6 +935,67 @@ export class WorkspaceProvisioner {
     // For now, just deprovision to stop
     await this.provisioner.deprovision(workspace);
     await db.workspaces.updateStatus(workspaceId, 'stopped');
+  }
+
+  /**
+   * Resize a workspace (vertical scaling)
+   */
+  async resize(workspaceId: string, tier: ResourceTier): Promise<void> {
+    const workspace = await db.workspaces.findById(workspaceId);
+    if (!workspace) {
+      throw new Error('Workspace not found');
+    }
+
+    if (!this.provisioner.resize) {
+      throw new Error('Resize not supported by current compute provider');
+    }
+
+    await this.provisioner.resize(workspace, tier);
+
+    // Update workspace config with new limits
+    await db.workspaces.updateConfig(workspaceId, {
+      ...workspace.config,
+      maxAgents: tier.maxAgents,
+      resourceTier: tier.name,
+    });
+  }
+
+  /**
+   * Update the max agent limit for a workspace
+   */
+  async updateAgentLimit(workspaceId: string, newLimit: number): Promise<void> {
+    const workspace = await db.workspaces.findById(workspaceId);
+    if (!workspace) {
+      throw new Error('Workspace not found');
+    }
+
+    if (this.provisioner.updateAgentLimit) {
+      await this.provisioner.updateAgentLimit(workspace, newLimit);
+    }
+
+    // Update workspace config
+    await db.workspaces.updateConfig(workspaceId, {
+      ...workspace.config,
+      maxAgents: newLimit,
+    });
+  }
+
+  /**
+   * Get current resource tier for a workspace
+   */
+  async getCurrentTier(workspaceId: string): Promise<ResourceTier> {
+    const workspace = await db.workspaces.findById(workspaceId);
+    if (!workspace) {
+      throw new Error('Workspace not found');
+    }
+
+    if (this.provisioner.getCurrentTier) {
+      return this.provisioner.getCurrentTier(workspace);
+    }
+
+    // Fallback: determine from config or default to small
+    const tierName = workspace.config.resourceTier || 'small';
+    return RESOURCE_TIERS[tierName] || RESOURCE_TIERS.small;
   }
 }
 

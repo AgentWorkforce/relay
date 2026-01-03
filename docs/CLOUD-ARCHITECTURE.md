@@ -471,6 +471,158 @@ SESSION_SECRET=xxx
 - Wake on webhook or API call
 - Regional deployment for latency
 
+## Auto-Scaling Infrastructure
+
+The auto-scaling system automatically adjusts workspace resources based on agent activity and resource utilization.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     AUTO-SCALING SYSTEM                          │
+│                                                                  │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐      │
+│  │   Memory     │───▶│   Scaling    │───▶│    Auto      │      │
+│  │   Monitor    │    │   Policy     │    │   Scaler     │      │
+│  │ (per agent)  │    │   Service    │    │  (leader)    │      │
+│  └──────────────┘    └──────────────┘    └──────┬───────┘      │
+│                                                  │               │
+│                                           Redis Pub/Sub          │
+│                                                  │               │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────┴───────┐      │
+│  │   Capacity   │◀───│   Scaling    │◀───│  Workspace   │      │
+│  │   Manager    │    │ Orchestrator │    │  Provisioner │      │
+│  └──────────────┘    └──────────────┘    └──────────────┘      │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Components
+
+#### 1. Scaling Policy Service (`/src/cloud/services/scaling-policy.ts`)
+Defines when to scale based on metrics:
+
+| Policy | Priority | Trigger | Action |
+|--------|----------|---------|--------|
+| agent-limit-increase | 150 | 85% agent capacity (single workspace) | Increase max agents |
+| workspace-resize-up | 140 | 75% memory for 2min (single workspace) | Resize to next tier |
+| cpu-pressure-resize | 135 | 85% CPU for 3min | Resize workspace |
+| memory-pressure-scale-up | 100 | 80% memory for 1min | Add workspace |
+| agent-count-scale-up | 80 | 90% agent capacity | Add workspace |
+| low-usage-scale-down | 50 | Under 20% for 10min | Remove workspace |
+| workspace-resize-down | 45 | Under 15% memory/CPU for 15min | Reduce tier |
+
+**Scaling Priority**: In-workspace (vertical) scaling is preferred over adding workspaces (horizontal) since it's more efficient.
+
+#### 2. Auto-Scaler (`/src/cloud/services/auto-scaler.ts`)
+Coordinates scaling decisions across multiple servers:
+- Leader election via Redis (only one server evaluates)
+- Distributed locking prevents concurrent scaling
+- Cooldown periods prevent thrashing
+- Publishes decisions via Redis pub/sub
+
+#### 3. Capacity Manager (`/src/cloud/services/capacity-manager.ts`)
+Tracks workspace utilization:
+- Per-workspace memory, CPU, agent counts
+- Trend analysis (15min/60min forecasts)
+- Placement recommendations for new agents
+- Stale workspace detection
+
+#### 4. Scaling Orchestrator (`/src/cloud/services/scaling-orchestrator.ts`)
+Executes scaling decisions:
+- Handles both vertical and horizontal scaling
+- Coordinates with provisioner for resizing
+- Records scaling events for auditing
+- Emits events for monitoring
+
+### Resource Tiers
+
+Vertical scaling uses predefined resource tiers:
+
+| Tier | CPU Cores | Memory | Max Agents |
+|------|-----------|--------|------------|
+| small | 1 (shared) | 512MB | 5 |
+| medium | 2 (shared) | 1GB | 10 |
+| large | 4 (performance) | 2GB | 20 |
+| xlarge | 8 (performance) | 4GB | 50 |
+
+### Scaling Actions
+
+| Action | Type | Description |
+|--------|------|-------------|
+| scale_up | Horizontal | Provision new workspace |
+| scale_down | Horizontal | Deprovision idle workspace |
+| resize_up | Vertical | Increase workspace resources |
+| resize_down | Vertical | Decrease workspace resources |
+| increase_agent_limit | Vertical | Raise max agents limit |
+| migrate_agents | Horizontal | Move agents between workspaces |
+| rebalance | Horizontal | Redistribute agents evenly |
+
+### Plan-Based Thresholds
+
+Each plan has different scaling limits:
+
+| Plan | Max Workspaces | Max Agents/Workspace | Memory Threshold |
+|------|----------------|---------------------|------------------|
+| free | 1 | 5 | 80% |
+| pro | 3 | 15 | 85% |
+| team | 10 | 25 | 85% |
+| enterprise | 50 | 50 | 90% |
+
+### Configuration
+
+```typescript
+// Enable auto-scaling with custom config
+const orchestrator = createScalingOrchestrator({
+  enabled: true,
+  autoProvision: true,      // Auto-provision new workspaces
+  autoDeprovision: false,   // Require manual deprovision (safety)
+  idleTimeoutMs: 1800000,   // 30 min idle timeout
+  minUserWorkspaces: 1,     // Never scale below 1
+});
+
+await orchestrator.initialize(process.env.REDIS_URL);
+```
+
+### Monitoring
+
+The orchestrator emits events for monitoring:
+
+```typescript
+orchestrator.on('workspace_resized', ({ userId, workspaceId, previousTier, newTier }) => {
+  console.log(`Resized ${workspaceId} from ${previousTier} to ${newTier}`);
+});
+
+orchestrator.on('scaling_blocked', ({ reason, operation }) => {
+  console.log(`Scaling blocked: ${reason}`);
+});
+
+orchestrator.on('agent_limit_updated', ({ workspaceId, previousLimit, newLimit }) => {
+  console.log(`Agent limit: ${previousLimit} → ${newLimit}`);
+});
+```
+
+### Cross-Server Coordination
+
+Multiple cloud servers coordinate via Redis:
+- Leader election ensures single decision maker
+- Pub/sub broadcasts metrics and decisions
+- Distributed locks prevent race conditions
+
+```
+Server A (leader)     Server B              Server C
+     │                    │                    │
+     │◀── metrics ────────│                    │
+     │◀── metrics ────────┼────────────────────│
+     │                    │                    │
+     ├── evaluate ────────┼────────────────────┤
+     │                    │                    │
+     │── scale request ──▶│                    │
+     │                   ▶│◀── execute ────────│
+     │                    │                    │
+     │◀── complete ───────│                    │
+```
+
 ---
 
 ## Cloud Coordinators (Project Groups)

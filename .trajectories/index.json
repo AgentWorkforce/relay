@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-03T15:55:06.290Z",
+  "lastUpdated": "2026-01-03T16:38:36.822Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -232,6 +232,12 @@
       "startedAt": "2026-01-03T15:51:54.280Z",
       "completedAt": "2026-01-03T15:55:06.279Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_prdza7a5cxp5.json"
+    },
+    "traj_cvtqhlwcq9s0": {
+      "title": "Fix trajectory viewer navigation - add back to list",
+      "status": "active",
+      "startedAt": "2026-01-03T16:37:49.153Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/active/traj_cvtqhlwcq9s0.json"
     }
   }
 }

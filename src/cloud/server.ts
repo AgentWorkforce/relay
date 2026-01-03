@@ -13,6 +13,7 @@ import { createClient, RedisClientType } from 'redis';
 import { RedisStore } from 'connect-redis';
 import { getConfig } from './config.js';
 import { runMigrations } from './db/index.js';
+import { getScalingOrchestrator, ScalingOrchestrator } from './services/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -34,6 +35,9 @@ import { teamsRouter } from './api/teams.js';
 import { billingRouter } from './api/billing.js';
 import { usageRouter } from './api/usage.js';
 import { coordinatorsRouter } from './api/coordinators.js';
+import { daemonsRouter } from './api/daemons.js';
+import { monitoringRouter } from './api/monitoring.js';
+import { testHelpersRouter } from './api/test-helpers.js';
 import { webhooksRouter } from './api/webhooks.js';
 import { githubAppRouter } from './api/github-app.js';
 import { nangoAuthRouter } from './api/nango-auth.js';
@@ -163,6 +167,17 @@ export async function createServer(): Promise<CloudServer> {
       return next();
     }
 
+    // Skip CSRF for Bearer-authenticated endpoints (daemon API, test helpers)
+    const authHeader = req.get('authorization');
+    if (authHeader?.startsWith('Bearer ')) {
+      return next();
+    }
+
+    // Skip CSRF for test endpoints in non-production
+    if (process.env.NODE_ENV !== 'production' && req.path.startsWith('/api/test/')) {
+      return next();
+    }
+
     const token = req.get('x-csrf-token');
     if (!token || token !== req.session.csrfToken) {
       return res.status(403).json({
@@ -188,10 +203,17 @@ export async function createServer(): Promise<CloudServer> {
   app.use('/api/billing', billingRouter);
   app.use('/api/usage', usageRouter);
   app.use('/api/project-groups', coordinatorsRouter);
+  app.use('/api/daemons', daemonsRouter);
+  app.use('/api/monitoring', monitoringRouter);
   app.use('/api/webhooks', webhooksRouter);
   app.use('/api/github-app', githubAppRouter);
   app.use('/api/auth/nango', nangoAuthRouter);
-  // TODO: Add authenticated agent/daemon channels when remote sockets are supported
+
+  // Test helper routes (only available in non-production)
+  if (process.env.NODE_ENV !== 'production') {
+    app.use('/api/test', testHelpersRouter);
+    console.log('[cloud] Test helper routes enabled (non-production mode)');
+  }
 
   // Serve static dashboard files (Next.js static export)
   // Path: dist/cloud/server.js -> ../../src/dashboard/out
@@ -219,6 +241,7 @@ export async function createServer(): Promise<CloudServer> {
 
   // Server lifecycle
   let server: ReturnType<Express['listen']> | null = null;
+  let scalingOrchestrator: ScalingOrchestrator | null = null;
 
   return {
     app,
@@ -227,6 +250,32 @@ export async function createServer(): Promise<CloudServer> {
       // Run database migrations before accepting connections
       console.log('[cloud] Running database migrations...');
       await runMigrations();
+
+      // Initialize scaling orchestrator for auto-scaling
+      if (process.env.RELAY_CLOUD_ENABLED === 'true') {
+        try {
+          scalingOrchestrator = getScalingOrchestrator();
+          await scalingOrchestrator.initialize(config.redisUrl);
+          console.log('[cloud] Scaling orchestrator initialized');
+
+          // Log scaling events
+          scalingOrchestrator.on('scaling_started', (op) => {
+            console.log(`[scaling] Started: ${op.action} for user ${op.userId}`);
+          });
+          scalingOrchestrator.on('scaling_completed', (op) => {
+            console.log(`[scaling] Completed: ${op.action} for user ${op.userId}`);
+          });
+          scalingOrchestrator.on('scaling_error', ({ operation, error }) => {
+            console.error(`[scaling] Error: ${operation.action} for ${operation.userId}:`, error);
+          });
+          scalingOrchestrator.on('workspace_provisioned', (data) => {
+            console.log(`[scaling] Provisioned workspace ${data.workspaceId} for user ${data.userId}`);
+          });
+        } catch (error) {
+          console.warn('[cloud] Failed to initialize scaling orchestrator:', error);
+          // Non-fatal - server can run without auto-scaling
+        }
+      }
 
       return new Promise((resolve) => {
         server = app.listen(config.port, () => {
@@ -238,6 +287,11 @@ export async function createServer(): Promise<CloudServer> {
     },
 
     async stop() {
+      // Shutdown scaling orchestrator
+      if (scalingOrchestrator) {
+        await scalingOrchestrator.shutdown();
+      }
+
       if (server) {
         await new Promise<void>((resolve) => server!.close(() => resolve()));
       }

@@ -12,15 +12,11 @@ export interface CloudConfig {
   databaseUrl: string;
   redisUrl: string;
 
-  // GitHub OAuth & App
+  // GitHub OAuth (user login)
   github: {
     clientId: string;
     clientSecret: string;
-    appId: string;
-    appPrivateKey: string;
-    appWebhookSecret: string;
-    appClientId?: string;
-    appClientSecret?: string;
+    webhookSecret?: string; // Optional: for verifying GitHub webhooks
   };
 
   // Provider OAuth (for device flow)
@@ -99,11 +95,7 @@ export function loadConfig(): CloudConfig {
     github: {
       clientId: requireEnv('GITHUB_CLIENT_ID'),
       clientSecret: requireEnv('GITHUB_CLIENT_SECRET'),
-      appId: requireEnv('GITHUB_APP_ID'),
-      appPrivateKey: requireEnv('GITHUB_APP_PRIVATE_KEY'),
-      appWebhookSecret: requireEnv('GITHUB_APP_WEBHOOK_SECRET'),
-      appClientId: optionalEnv('GITHUB_APP_CLIENT_ID'),
-      appClientSecret: optionalEnv('GITHUB_APP_CLIENT_SECRET'),
+      webhookSecret: optionalEnv('GITHUB_WEBHOOK_SECRET'),
     },
 
     providers: {

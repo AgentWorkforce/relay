@@ -1,0 +1,202 @@
+# Agent Relay Cloud - Full QA Test Environment
+# Run with: docker compose -f docker-compose.test.yml up --build
+#
+# This environment simulates the full cloud stack with:
+# - PostgreSQL database
+# - Redis for sessions/pub-sub
+# - Cloud API server
+# - Simulated daemon(s) that report metrics
+# - Test runner for integration tests
+#
+# Usage:
+#   # Start the full stack
+#   docker compose -f docker-compose.test.yml up -d
+#
+#   # Run integration tests
+#   docker compose -f docker-compose.test.yml run test-runner
+#
+#   # View logs
+#   docker compose -f docker-compose.test.yml logs -f
+#
+#   # Tear down
+#   docker compose -f docker-compose.test.yml down -v
+
+version: '3.8'
+
+services:
+  # PostgreSQL database
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: agent_relay
+      POSTGRES_PASSWORD: test_password
+      POSTGRES_DB: agent_relay_test
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_test_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent_relay"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  # Redis for sessions and pub/sub
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  # Cloud API server
+  cloud:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3100:3000"
+    environment:
+      NODE_ENV: test
+      PORT: 3000
+      PUBLIC_URL: http://localhost:3100
+
+      # Database
+      DATABASE_URL: postgres://agent_relay:test_password@postgres:5432/agent_relay_test
+      REDIS_URL: redis://redis:6379
+
+      # Session
+      SESSION_SECRET: test-session-secret
+
+      # Vault master key (test only)
+      VAULT_MASTER_KEY: dGVzdC12YXVsdC1rZXktZm9yLXRlc3Rpbmctb25seQ==
+
+      # Disable external services in test mode
+      STRIPE_SECRET_KEY: sk_test_placeholder
+      STRIPE_PUBLISHABLE_KEY: pk_test_placeholder
+      STRIPE_WEBHOOK_SECRET: whsec_test
+
+      # Compute provider (docker for local)
+      COMPUTE_PROVIDER: docker
+
+      # Enable memory monitoring
+      RELAY_MEMORY_MONITORING: "true"
+      RELAY_CLOUD_ENABLED: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Simulated daemon 1 - Reports metrics to cloud
+  daemon-simulator-1:
+    build:
+      context: .
+      dockerfile: test/cloud/Dockerfile.daemon-simulator
+    environment:
+      DAEMON_NAME: test-daemon-1
+      CLOUD_API_URL: http://cloud:3000
+      SIMULATOR_MODE: "true"
+      AGENT_COUNT: "3"
+      REPORT_INTERVAL_MS: "5000"
+      # Simulate some memory issues
+      SIMULATE_MEMORY_GROWTH: "true"
+      SIMULATE_CRASH: "false"
+    depends_on:
+      cloud:
+        condition: service_healthy
+    restart: on-failure
+
+  # Simulated daemon 2 - Normal operation
+  daemon-simulator-2:
+    build:
+      context: .
+      dockerfile: test/cloud/Dockerfile.daemon-simulator
+    environment:
+      DAEMON_NAME: test-daemon-2
+      CLOUD_API_URL: http://cloud:3000
+      SIMULATOR_MODE: "true"
+      AGENT_COUNT: "2"
+      REPORT_INTERVAL_MS: "5000"
+      SIMULATE_MEMORY_GROWTH: "false"
+      SIMULATE_CRASH: "false"
+    depends_on:
+      cloud:
+        condition: service_healthy
+    restart: on-failure
+
+  # Simulated daemon 3 - Crash simulation
+  daemon-simulator-crash:
+    build:
+      context: .
+      dockerfile: test/cloud/Dockerfile.daemon-simulator
+    environment:
+      DAEMON_NAME: test-daemon-crash
+      CLOUD_API_URL: http://cloud:3000
+      SIMULATOR_MODE: "true"
+      AGENT_COUNT: "1"
+      REPORT_INTERVAL_MS: "3000"
+      SIMULATE_MEMORY_GROWTH: "false"
+      SIMULATE_CRASH: "true"
+      CRASH_AFTER_SECONDS: "30"
+    depends_on:
+      cloud:
+        condition: service_healthy
+    profiles:
+      - crash-test
+
+  # Integration test runner
+  test-runner:
+    build:
+      context: .
+      dockerfile: test/cloud/Dockerfile.test-runner
+    environment:
+      CLOUD_API_URL: http://cloud:3000
+      DATABASE_URL: postgres://agent_relay:test_password@postgres:5432/agent_relay_test
+      REDIS_URL: redis://redis:6379
+      TEST_TIMEOUT: "60000"
+    depends_on:
+      cloud:
+        condition: service_healthy
+      daemon-simulator-1:
+        condition: service_started
+      daemon-simulator-2:
+        condition: service_started
+    volumes:
+      - ./test:/app/test:ro
+      - ./src:/app/src:ro
+      - test_results:/app/test-results
+    profiles:
+      - test
+
+  # WebSocket test client
+  ws-test-client:
+    build:
+      context: .
+      dockerfile: test/cloud/Dockerfile.ws-client
+    environment:
+      CLOUD_WS_URL: ws://cloud:3000/ws
+      TEST_DURATION_SECONDS: "60"
+    depends_on:
+      cloud:
+        condition: service_healthy
+    profiles:
+      - ws-test
+
+volumes:
+  postgres_test_data:
+  test_results:
+
+networks:
+  default:
+    name: agent-relay-test

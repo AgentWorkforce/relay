@@ -2202,4 +2202,411 @@ cloudCommand
     }
   });
 
+// ============================================================================
+// Monitoring commands (metrics, health, profiler)
+// ============================================================================
+
+// metrics - Show agent memory metrics
+program
+  .command('metrics')
+  .description('Show agent memory metrics and resource usage')
+  .option('--agent <name>', 'Show metrics for specific agent')
+  .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
+  .option('--json', 'Output as JSON')
+  .option('--watch', 'Continuously update metrics')
+  .option('--interval <ms>', 'Update interval for watch mode', '5000')
+  .action(async (options: { agent?: string; port?: string; json?: boolean; watch?: boolean; interval?: string }) => {
+    const port = options.port || DEFAULT_DASHBOARD_PORT;
+
+    const fetchMetrics = async () => {
+      try {
+        const response = await fetch(`http://localhost:${port}/api/metrics/agents`);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        return await response.json() as {
+          agents: Array<{
+            name: string;
+            pid?: number;
+            status: string;
+            rssBytes?: number;
+            cpuPercent?: number;
+            trend?: string;
+            alertLevel?: string;
+            highWatermark?: number;
+            uptimeMs?: number;
+          }>;
+          system: {
+            totalMemory: number;
+            freeMemory: number;
+            heapUsed: number;
+          };
+        };
+      } catch (err: any) {
+        if (err.code === 'ECONNREFUSED') {
+          console.error(`Cannot connect to dashboard at port ${port}. Is the daemon running?`);
+          console.log(`Run 'agent-relay up' to start the daemon.`);
+        } else {
+          console.error(`Failed to fetch metrics: ${err.message}`);
+        }
+        process.exit(1);
+      }
+    };
+
+    const formatBytes = (bytes: number): string => {
+      if (bytes === 0) return '0 B';
+      const k = 1024;
+      const sizes = ['B', 'KB', 'MB', 'GB'];
+      const i = Math.floor(Math.log(Math.abs(bytes)) / Math.log(k));
+      return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+    };
+
+    const formatUptime = (ms: number): string => {
+      if (ms < 60000) return `${Math.floor(ms / 1000)}s`;
+      if (ms < 3600000) return `${Math.floor(ms / 60000)}m`;
+      return `${Math.floor(ms / 3600000)}h ${Math.floor((ms % 3600000) / 60000)}m`;
+    };
+
+    const displayMetrics = (data: Awaited<ReturnType<typeof fetchMetrics>>) => {
+      let agents = data.agents;
+
+      if (options.agent) {
+        agents = agents.filter(a => a.name === options.agent);
+        if (agents.length === 0) {
+          console.error(`Agent "${options.agent}" not found`);
+          return;
+        }
+      }
+
+      if (options.json) {
+        console.log(JSON.stringify({ agents, system: data.system }, null, 2));
+        return;
+      }
+
+      if (options.watch) {
+        // Clear screen for watch mode
+        console.clear();
+        console.log(`Agent Metrics (updating every ${options.interval}ms)  [Ctrl+C to stop]`);
+        console.log(`System: ${formatBytes(data.system.heapUsed)} heap / ${formatBytes(data.system.freeMemory)} free`);
+        console.log('');
+      }
+
+      if (agents.length === 0) {
+        console.log('No agents with memory metrics.');
+        console.log('Ensure agents are running and memory monitoring is enabled.');
+        return;
+      }
+
+      console.log('AGENT           PID      MEMORY      CPU    TREND       ALERT     UPTIME');
+      console.log('─'.repeat(75));
+
+      for (const agent of agents) {
+        const name = agent.name.padEnd(15);
+        const pid = (agent.pid?.toString() || '-').padEnd(8);
+        const memory = formatBytes(agent.rssBytes || 0).padEnd(11);
+        const cpu = ((agent.cpuPercent?.toFixed(1) || '0') + '%').padEnd(6);
+        const trend = (agent.trend || 'unknown').padEnd(11);
+        const alertColors: Record<string, string> = {
+          normal: 'normal',
+          warning: '\x1b[33mwarning\x1b[0m',
+          critical: '\x1b[31mcritical\x1b[0m',
+          oom_imminent: '\x1b[31;1mOOM!\x1b[0m',
+        };
+        const alert = (alertColors[agent.alertLevel || 'normal'] || agent.alertLevel || '-').padEnd(9);
+        const uptime = formatUptime(agent.uptimeMs || 0);
+
+        console.log(`${name} ${pid} ${memory} ${cpu} ${trend} ${alert} ${uptime}`);
+      }
+
+      if (!options.watch) {
+        console.log('');
+        console.log(`Total: ${agents.length} agent(s)`);
+        if (agents.some(a => a.alertLevel && a.alertLevel !== 'normal')) {
+          console.log('');
+          console.log('⚠️  Some agents have elevated memory usage. Run `agent-relay health` for details.');
+        }
+      }
+    };
+
+    if (options.watch) {
+      const interval = parseInt(options.interval || '5000', 10);
+
+      const update = async () => {
+        try {
+          const data = await fetchMetrics();
+          displayMetrics(data);
+        } catch {
+          // Error already logged in fetchMetrics
+        }
+      };
+
+      process.on('SIGINT', () => {
+        console.log('\nStopped watching metrics.');
+        process.exit(0);
+      });
+
+      await update();
+      setInterval(update, interval);
+    } else {
+      const data = await fetchMetrics();
+      displayMetrics(data);
+    }
+  });
+
+// health - Show crash insights and system health
+program
+  .command('health')
+  .description('Show system health, crash insights, and recommendations')
+  .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
+  .option('--json', 'Output as JSON')
+  .option('--crashes', 'Show recent crash history')
+  .option('--alerts', 'Show unacknowledged alerts')
+  .action(async (options: { port?: string; json?: boolean; crashes?: boolean; alerts?: boolean }) => {
+    const port = options.port || DEFAULT_DASHBOARD_PORT;
+
+    try {
+      const response = await fetch(`http://localhost:${port}/api/metrics/health`);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const data = await response.json() as {
+        healthScore: number;
+        summary: string;
+        issues: Array<{ severity: string; message: string }>;
+        recommendations: string[];
+        crashes: Array<{
+          id: string;
+          agentName: string;
+          crashedAt: string;
+          likelyCause: string;
+          summary: string;
+        }>;
+        alerts: Array<{
+          id: string;
+          agentName: string;
+          alertType: string;
+          message: string;
+          createdAt: string;
+        }>;
+        stats: {
+          totalCrashes24h: number;
+          totalAlerts24h: number;
+          agentCount: number;
+        };
+      };
+
+      if (options.json) {
+        console.log(JSON.stringify(data, null, 2));
+        return;
+      }
+
+      // Health score with color
+      const scoreColor = data.healthScore >= 80 ? '\x1b[32m' : // Green
+                         data.healthScore >= 50 ? '\x1b[33m' : // Yellow
+                         '\x1b[31m'; // Red
+      const resetColor = '\x1b[0m';
+
+      console.log('');
+      console.log('═══════════════════════════════════════════════════════════════');
+      console.log(`  SYSTEM HEALTH: ${scoreColor}${data.healthScore}/100${resetColor}`);
+      console.log('═══════════════════════════════════════════════════════════════');
+      console.log('');
+      console.log(`  ${data.summary}`);
+      console.log('');
+
+      // Show stats
+      console.log(`  Agents: ${data.stats.agentCount}`);
+      console.log(`  Crashes (24h): ${data.stats.totalCrashes24h}`);
+      console.log(`  Alerts (24h): ${data.stats.totalAlerts24h}`);
+      console.log('');
+
+      // Show issues
+      if (data.issues.length > 0) {
+        console.log('  ISSUES:');
+        for (const issue of data.issues) {
+          const icon = issue.severity === 'critical' ? '🔴' :
+                       issue.severity === 'high' ? '🟠' :
+                       issue.severity === 'medium' ? '🟡' : '🔵';
+          console.log(`    ${icon} ${issue.message}`);
+        }
+        console.log('');
+      }
+
+      // Show recommendations
+      if (data.recommendations.length > 0) {
+        console.log('  RECOMMENDATIONS:');
+        for (const rec of data.recommendations) {
+          console.log(`    → ${rec}`);
+        }
+        console.log('');
+      }
+
+      // Show crashes if requested
+      if (options.crashes && data.crashes.length > 0) {
+        console.log('  RECENT CRASHES:');
+        console.log('  ─────────────────────────────────────────────────────────────');
+        for (const crash of data.crashes.slice(0, 10)) {
+          const time = new Date(crash.crashedAt).toLocaleString();
+          console.log(`    ${crash.agentName} - ${time}`);
+          console.log(`      Cause: ${crash.likelyCause} | ${crash.summary.slice(0, 60)}...`);
+        }
+        console.log('');
+      }
+
+      // Show alerts if requested
+      if (options.alerts && data.alerts.length > 0) {
+        console.log('  UNACKNOWLEDGED ALERTS:');
+        console.log('  ─────────────────────────────────────────────────────────────');
+        for (const alert of data.alerts.slice(0, 10)) {
+          const time = new Date(alert.createdAt).toLocaleString();
+          const icon = alert.alertType === 'oom_imminent' ? '🔴' :
+                       alert.alertType === 'critical' ? '🟠' : '🟡';
+          console.log(`    ${icon} ${alert.agentName} - ${alert.alertType}`);
+          console.log(`      ${alert.message}`);
+        }
+        console.log('');
+      }
+
+      console.log('═══════════════════════════════════════════════════════════════');
+      console.log('');
+
+      if (!options.crashes && data.stats.totalCrashes24h > 0) {
+        console.log('  Tip: Run `agent-relay health --crashes` to see crash details');
+      }
+      if (!options.alerts && data.stats.totalAlerts24h > 0) {
+        console.log('  Tip: Run `agent-relay health --alerts` to see alerts');
+      }
+      console.log('');
+
+    } catch (err: any) {
+      if (err.code === 'ECONNREFUSED') {
+        console.error(`Cannot connect to dashboard at port ${port}. Is the daemon running?`);
+        console.log(`Run 'agent-relay up' to start the daemon.`);
+      } else {
+        console.error(`Failed to fetch health data: ${err.message}`);
+      }
+      process.exit(1);
+    }
+  });
+
+// profile - Run agent with profiling enabled
+program
+  .command('profile')
+  .description('Run an agent with memory profiling enabled')
+  .argument('<command...>', 'Command to profile')
+  .option('-n, --name <name>', 'Agent name')
+  .option('--heap-snapshot-interval <ms>', 'Take heap snapshots at interval (ms)', '60000')
+  .option('--output-dir <dir>', 'Directory for profile output', './profiles')
+  .option('--expose-gc', 'Expose garbage collector for manual GC')
+  .action(async (commandParts: string[], options: {
+    name?: string;
+    heapSnapshotInterval?: string;
+    outputDir?: string;
+    exposeGc?: boolean;
+  }) => {
+    const { spawn } = await import('child_process');
+    const os = await import('node:os');
+    const { getProjectPaths } = await import('../utils/project-namespace.js');
+
+    if (!commandParts || commandParts.length === 0) {
+      console.error('No command specified');
+      process.exit(1);
+    }
+
+    const [cmd, ...args] = commandParts;
+    const agentName = options.name ?? generateAgentName();
+    const outputDir = options.outputDir || './profiles';
+    const snapshotInterval = parseInt(options.heapSnapshotInterval || '60000', 10);
+
+    // Create output directory
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    console.log('');
+    console.log('🔬 Agent Relay Profiler');
+    console.log('');
+    console.log(`  Agent: ${agentName}`);
+    console.log(`  Command: ${cmd} ${args.join(' ')}`);
+    console.log(`  Output: ${outputDir}`);
+    console.log(`  Heap snapshots: every ${snapshotInterval}ms`);
+    console.log('');
+
+    // Build Node.js flags for profiling
+    const nodeFlags: string[] = [
+      '--inspect',  // Enable inspector
+      '--inspect-brk=0',  // Don't actually break, just enable
+    ];
+
+    if (options.exposeGc) {
+      nodeFlags.push('--expose-gc');
+    }
+
+    // Set environment variables for profiling
+    const profileEnv = {
+      ...process.env,
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} ${nodeFlags.join(' ')}`.trim(),
+      AGENT_RELAY_PROFILE_ENABLED: '1',
+      AGENT_RELAY_PROFILE_OUTPUT: outputDir,
+      AGENT_RELAY_PROFILE_INTERVAL: snapshotInterval.toString(),
+    };
+
+    console.log('Starting profiled agent...');
+    console.log('');
+
+    // Use the regular wrapper but with profiling environment
+    const paths = getProjectPaths();
+    const { TmuxWrapper } = await import('../wrapper/tmux-wrapper.js');
+
+    const wrapper = new TmuxWrapper({
+      name: agentName,
+      command: cmd,
+      args,
+      socketPath: paths.socketPath,
+      debug: true,
+      env: profileEnv,
+      useInbox: true,
+      inboxDir: paths.dataDir,
+    });
+
+    const snapshotCount = 0;
+
+    // Start memory sampling
+    const sampleInterval = setInterval(() => {
+      const memUsage = process.memoryUsage();
+      const timestamp = new Date().toISOString();
+      const sample = {
+        timestamp,
+        heapUsed: memUsage.heapUsed,
+        heapTotal: memUsage.heapTotal,
+        external: memUsage.external,
+        rss: memUsage.rss,
+      };
+
+      // Append to samples file
+      const samplesFile = path.join(outputDir, `${agentName}-memory.jsonl`);
+      fs.appendFileSync(samplesFile, JSON.stringify(sample) + '\n');
+    }, 5000);
+
+    process.on('SIGINT', async () => {
+      clearInterval(sampleInterval);
+      console.log('\n');
+      console.log('Profiling stopped.');
+      console.log('');
+      console.log(`Profile data saved to: ${outputDir}/`);
+      console.log(`  - ${agentName}-memory.jsonl  (memory samples)`);
+      console.log('');
+      console.log('To analyze:');
+      console.log(`  1. Open chrome://inspect in Chrome`);
+      console.log(`  2. Load CPU/heap profiles from ${outputDir}/`);
+      console.log('');
+      wrapper.stop();
+      process.exit(0);
+    });
+
+    await wrapper.start();
+    console.log(`Profiling ${agentName}... Press Ctrl+C to stop.`);
+  });
+
 program.parse();

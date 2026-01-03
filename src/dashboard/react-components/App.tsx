@@ -1072,7 +1072,6 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
                 selectedTrajectoryId={selectedTrajectoryId}
                 onSelectTrajectory={selectTrajectory}
                 isLoading={isTrajectoryLoading}
-                maxHeight="calc(100vh - 160px)"
               />
             </div>
           </div>

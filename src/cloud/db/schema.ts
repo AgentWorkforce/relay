@@ -124,6 +124,7 @@ export interface WorkspaceConfig {
   repositories?: string[];
   supervisorEnabled?: boolean;
   maxAgents?: number;
+  resourceTier?: 'small' | 'medium' | 'large' | 'xlarge';
 }
 
 export const workspaces = pgTable('workspaces', {
@@ -418,3 +419,143 @@ export type NewAgentSummary = typeof agentSummaries.$inferInsert;
 // Agent configuration types
 export type CoordinatorAgentConfig = NonNullable<ProjectGroup['coordinatorAgent']>;
 export type ProjectAgentConfig = NonNullable<Repository['projectAgent']>;
+
+// ============================================================================
+// Agent Metrics (memory monitoring and crash insights)
+// ============================================================================
+
+export interface AgentMemoryMetricsData {
+  rssBytes: number;
+  heapUsedBytes: number;
+  heapTotalBytes: number;
+  cpuPercent: number;
+  trend: 'growing' | 'stable' | 'shrinking' | 'unknown';
+  trendRatePerMinute: number;
+  alertLevel: 'normal' | 'warning' | 'critical' | 'oom_imminent';
+  highWatermark: number;
+  averageRss: number;
+}
+
+export interface CrashInsightData {
+  likelyCause: 'oom' | 'memory_leak' | 'sudden_spike' | 'signal' | 'error' | 'unknown';
+  confidence: 'high' | 'medium' | 'low';
+  summary: string;
+  details: string[];
+  recommendations: string[];
+  peakMemory: number;
+  lastKnownMemory: number | null;
+}
+
+export const agentMetrics = pgTable('agent_metrics', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  daemonId: uuid('daemon_id').notNull().references(() => linkedDaemons.id, { onDelete: 'cascade' }),
+  agentName: varchar('agent_name', { length: 255 }).notNull(),
+  pid: bigint('pid', { mode: 'number' }),
+  status: varchar('status', { length: 50 }).notNull().default('unknown'),
+  // Current memory snapshot
+  rssBytes: bigint('rss_bytes', { mode: 'number' }),
+  heapUsedBytes: bigint('heap_used_bytes', { mode: 'number' }),
+  cpuPercent: bigint('cpu_percent', { mode: 'number' }),
+  // Trend data
+  trend: varchar('trend', { length: 20 }),
+  trendRatePerMinute: bigint('trend_rate_per_minute', { mode: 'number' }),
+  alertLevel: varchar('alert_level', { length: 20 }).default('normal'),
+  // Watermarks
+  highWatermark: bigint('high_watermark', { mode: 'number' }),
+  averageRss: bigint('average_rss', { mode: 'number' }),
+  // Full metrics JSON for detailed data
+  metricsData: jsonb('metrics_data').$type<AgentMemoryMetricsData>(),
+  // Timestamps
+  uptimeMs: bigint('uptime_ms', { mode: 'number' }),
+  startedAt: timestamp('started_at'),
+  recordedAt: timestamp('recorded_at').defaultNow().notNull(),
+}, (table) => ({
+  daemonIdIdx: index('idx_agent_metrics_daemon_id').on(table.daemonId),
+  agentNameIdx: index('idx_agent_metrics_agent_name').on(table.agentName),
+  recordedAtIdx: index('idx_agent_metrics_recorded_at').on(table.recordedAt),
+  alertLevelIdx: index('idx_agent_metrics_alert_level').on(table.alertLevel),
+}));
+
+export const agentMetricsRelations = relations(agentMetrics, ({ one }) => ({
+  daemon: one(linkedDaemons, {
+    fields: [agentMetrics.daemonId],
+    references: [linkedDaemons.id],
+  }),
+}));
+
+// ============================================================================
+// Agent Crashes (crash history with insights)
+// ============================================================================
+
+export const agentCrashes = pgTable('agent_crashes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  daemonId: uuid('daemon_id').notNull().references(() => linkedDaemons.id, { onDelete: 'cascade' }),
+  agentName: varchar('agent_name', { length: 255 }).notNull(),
+  pid: bigint('pid', { mode: 'number' }),
+  exitCode: bigint('exit_code', { mode: 'number' }),
+  signal: varchar('signal', { length: 50 }),
+  reason: text('reason'),
+  // Crash analysis
+  likelyCause: varchar('likely_cause', { length: 50 }),
+  confidence: varchar('confidence', { length: 20 }),
+  summary: text('summary'),
+  // Memory state at crash
+  peakMemory: bigint('peak_memory', { mode: 'number' }),
+  lastKnownMemory: bigint('last_known_memory', { mode: 'number' }),
+  memoryTrend: varchar('memory_trend', { length: 20 }),
+  // Full insight data
+  insightData: jsonb('insight_data').$type<CrashInsightData>(),
+  // Last output (truncated)
+  lastOutput: text('last_output'),
+  crashedAt: timestamp('crashed_at').defaultNow().notNull(),
+}, (table) => ({
+  daemonIdIdx: index('idx_agent_crashes_daemon_id').on(table.daemonId),
+  agentNameIdx: index('idx_agent_crashes_agent_name').on(table.agentName),
+  crashedAtIdx: index('idx_agent_crashes_crashed_at').on(table.crashedAt),
+  likelyCauseIdx: index('idx_agent_crashes_likely_cause').on(table.likelyCause),
+}));
+
+export const agentCrashesRelations = relations(agentCrashes, ({ one }) => ({
+  daemon: one(linkedDaemons, {
+    fields: [agentCrashes.daemonId],
+    references: [linkedDaemons.id],
+  }),
+}));
+
+// ============================================================================
+// Memory Alerts (proactive alerting history)
+// ============================================================================
+
+export const memoryAlerts = pgTable('memory_alerts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  daemonId: uuid('daemon_id').notNull().references(() => linkedDaemons.id, { onDelete: 'cascade' }),
+  agentName: varchar('agent_name', { length: 255 }).notNull(),
+  alertType: varchar('alert_type', { length: 50 }).notNull(), // warning, critical, oom_imminent, trend_warning, recovered
+  currentRss: bigint('current_rss', { mode: 'number' }),
+  threshold: bigint('threshold', { mode: 'number' }),
+  message: text('message'),
+  recommendation: text('recommendation'),
+  acknowledged: boolean('acknowledged').default(false),
+  acknowledgedAt: timestamp('acknowledged_at'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  daemonIdIdx: index('idx_memory_alerts_daemon_id').on(table.daemonId),
+  agentNameIdx: index('idx_memory_alerts_agent_name').on(table.agentName),
+  alertTypeIdx: index('idx_memory_alerts_alert_type').on(table.alertType),
+  createdAtIdx: index('idx_memory_alerts_created_at').on(table.createdAt),
+}));
+
+export const memoryAlertsRelations = relations(memoryAlerts, ({ one }) => ({
+  daemon: one(linkedDaemons, {
+    fields: [memoryAlerts.daemonId],
+    references: [linkedDaemons.id],
+  }),
+}));
+
+// Type exports for new tables
+export type AgentMetric = typeof agentMetrics.$inferSelect;
+export type NewAgentMetric = typeof agentMetrics.$inferInsert;
+export type AgentCrash = typeof agentCrashes.$inferSelect;
+export type NewAgentCrash = typeof agentCrashes.$inferInsert;
+export type MemoryAlert = typeof memoryAlerts.$inferSelect;
+export type NewMemoryAlert = typeof memoryAlerts.$inferInsert;

@@ -382,6 +382,7 @@ export interface WorkspaceQueries {
     status: string,
     options?: { computeId?: string; publicUrl?: string; errorMessage?: string }
   ): Promise<void>;
+  updateConfig(id: string, config: schema.WorkspaceConfig): Promise<void>;
   setCustomDomain(id: string, customDomain: string, status?: string): Promise<void>;
   updateCustomDomainStatus(id: string, status: string): Promise<void>;
   removeCustomDomain(id: string): Promise<void>;
@@ -432,6 +433,17 @@ export const workspaceQueries: WorkspaceQueries = {
         computeId: options?.computeId,
         publicUrl: options?.publicUrl,
         errorMessage: options?.errorMessage,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.workspaces.id, id));
+  },
+
+  async updateConfig(id: string, config: schema.WorkspaceConfig): Promise<void> {
+    const db = getDb();
+    await db
+      .update(schema.workspaces)
+      .set({
+        config,
         updatedAt: new Date(),
       })
       .where(eq(schema.workspaces.id, id));

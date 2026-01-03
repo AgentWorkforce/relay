@@ -1,0 +1,46 @@
+{
+  "id": "traj_cvtqhlwcq9s0",
+  "version": 1,
+  "task": {
+    "title": "Fix trajectory viewer navigation - add back to list",
+    "source": {
+      "system": "plain",
+      "id": "dashboard-nav-fix"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-01-03T16:37:49.153Z",
+  "agents": [
+    {
+      "name": "Frontend",
+      "role": "lead",
+      "joinedAt": "2026-01-03T16:37:49.154Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_xijeuibb9urb",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-03T16:38:36.820Z",
+      "events": [
+        {
+          "ts": 1767458316821,
+          "type": "decision",
+          "content": "Added back button to header instead of only in empty state: Added back button to header instead of only in empty state",
+          "raw": {
+            "question": "Added back button to header instead of only in empty state",
+            "chosen": "Added back button to header instead of only in empty state",
+            "alternatives": [],
+            "reasoning": "Back button was only visible when no steps were displayed. Moving it to header ensures it's always accessible when viewing a specific trajectory."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": []
+}

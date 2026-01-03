@@ -17,6 +17,7 @@ import { AgentSpawner, type CloudPersistenceHandler } from '../bridge/spawner.js
 import type { ProjectConfig, SpawnRequest } from '../bridge/types.js';
 import { listTrajectorySteps, getTrajectoryStatus, getTrajectoryHistory } from '../trajectory/integration.js';
 import { loadTeamsConfig } from '../bridge/teams-config.js';
+import { getMemoryMonitor } from '../resiliency/memory-monitor.js';
 
 /**
  * Initialize cloud persistence for session tracking.
@@ -403,7 +404,7 @@ export async function startDashboard(
     ? new AgentSpawner(projectRoot || dataDir, tmuxSession)
     : undefined;
 
-  // Initialize cloud persistence if enabled (RELAY_CLOUD_ENABLED=true)
+  // Initialize cloud persistence and memory monitoring if enabled (RELAY_CLOUD_ENABLED=true)
   if (spawner) {
     // Use workspace ID from env or generate from project root
     const workspaceId = process.env.RELAY_WORKSPACE_ID ||
@@ -416,6 +417,30 @@ export async function startDashboard(
     }).catch((err) => {
       console.warn('[dashboard] Failed to initialize cloud persistence:', err);
     });
+
+    // Initialize memory monitoring for cloud deployments
+    // Memory monitoring is enabled by default when cloud is enabled
+    if (process.env.RELAY_CLOUD_ENABLED === 'true' || process.env.RELAY_MEMORY_MONITORING === 'true') {
+      try {
+        const memoryMonitor = getMemoryMonitor({
+          checkIntervalMs: 10000, // Check every 10 seconds
+          enableTrendAnalysis: true,
+          enableProactiveAlerts: true,
+        });
+        memoryMonitor.start();
+        console.log('[dashboard] Memory monitoring enabled');
+
+        // Register existing workers with memory monitor
+        const workers = spawner.getActiveWorkers();
+        for (const worker of workers) {
+          if (worker.pid) {
+            memoryMonitor.register(worker.name, worker.pid);
+          }
+        }
+      } catch (err) {
+        console.warn('[dashboard] Failed to initialize memory monitoring:', err);
+      }
+    }
   }
 
   process.on('uncaughtException', (err) => {
@@ -2053,6 +2078,232 @@ export async function startDashboard(
     } catch (err) {
       console.error('Failed to compute Prometheus metrics', err);
       res.status(500).send('# Error computing metrics\n');
+    }
+  });
+
+  // ===== Agent Memory Metrics API =====
+
+  /**
+   * GET /api/metrics/agents - Detailed agent memory and resource metrics
+   */
+  app.get('/api/metrics/agents', async (req, res) => {
+    try {
+      const agents: Array<{
+        name: string;
+        pid?: number;
+        status: string;
+        rssBytes?: number;
+        heapUsedBytes?: number;
+        cpuPercent?: number;
+        trend?: string;
+        trendRatePerMinute?: number;
+        alertLevel?: string;
+        highWatermark?: number;
+        averageRss?: number;
+        uptimeMs?: number;
+        startedAt?: string;
+      }> = [];
+
+      // Get metrics from spawner's active workers
+      if (spawner) {
+        const activeWorkers = spawner.getActiveWorkers();
+        for (const worker of activeWorkers) {
+          // Get memory usage via ps command
+          let rssBytes = 0;
+          let cpuPercent = 0;
+
+          if (worker.pid) {
+            try {
+              const { execSync } = await import('child_process');
+              const output = execSync(`ps -o rss=,pcpu= -p ${worker.pid}`, {
+                encoding: 'utf8',
+                timeout: 3000,
+              }).trim();
+              const parts = output.split(/\s+/);
+              rssBytes = parseInt(parts[0] || '0', 10) * 1024;
+              cpuPercent = parseFloat(parts[1] || '0');
+            } catch {
+              // Process may have exited
+            }
+          }
+
+          agents.push({
+            name: worker.name,
+            pid: worker.pid,
+            status: worker.pid ? 'running' : 'unknown',
+            rssBytes,
+            cpuPercent,
+            trend: 'unknown',
+            alertLevel: rssBytes > 1024 * 1024 * 1024 ? 'critical' :
+                       rssBytes > 512 * 1024 * 1024 ? 'warning' : 'normal',
+            highWatermark: rssBytes,
+            uptimeMs: worker.spawnedAt ? Date.now() - worker.spawnedAt : 0,
+            startedAt: worker.spawnedAt ? new Date(worker.spawnedAt).toISOString() : undefined,
+          });
+        }
+      }
+
+      // Also check agents.json for registered agents that may not be spawned
+      const agentsPath = path.join(teamDir, 'agents.json');
+      if (fs.existsSync(agentsPath)) {
+        const data = JSON.parse(fs.readFileSync(agentsPath, 'utf-8'));
+        const registeredAgents = data.agents || [];
+        for (const agent of registeredAgents) {
+          if (!agents.find(a => a.name === agent.name)) {
+            // Check if recently active (within 30 seconds)
+            const lastSeen = agent.lastSeen ? new Date(agent.lastSeen).getTime() : 0;
+            const isActive = Date.now() - lastSeen < 30000;
+            if (isActive) {
+              agents.push({
+                name: agent.name,
+                status: 'active',
+                alertLevel: 'normal',
+              });
+            }
+          }
+        }
+      }
+
+      res.json({
+        agents,
+        system: {
+          totalMemory: os.totalmem(),
+          freeMemory: os.freemem(),
+          heapUsed: process.memoryUsage().heapUsed,
+        },
+      });
+    } catch (err) {
+      console.error('Failed to get agent metrics', err);
+      res.status(500).json({ error: 'Failed to get agent metrics' });
+    }
+  });
+
+  /**
+   * GET /api/metrics/health - System health and crash insights
+   */
+  app.get('/api/metrics/health', async (req, res) => {
+    try {
+      // Calculate health score based on available data
+      let healthScore = 100;
+      const issues: Array<{ severity: string; message: string }> = [];
+      const recommendations: string[] = [];
+      const crashes: Array<{
+        id: string;
+        agentName: string;
+        crashedAt: string;
+        likelyCause: string;
+        summary: string;
+      }> = [];
+      const alerts: Array<{
+        id: string;
+        agentName: string;
+        alertType: string;
+        message: string;
+        createdAt: string;
+      }> = [];
+
+      let agentCount = 0;
+      const totalCrashes24h = 0;
+      let totalAlerts24h = 0;
+
+      // Get spawned agent count
+      if (spawner) {
+        const workers = spawner.getActiveWorkers();
+        agentCount = workers.length;
+
+        // Check for high memory usage
+        for (const worker of workers) {
+          if (worker.pid) {
+            try {
+              const { execSync } = await import('child_process');
+              const output = execSync(`ps -o rss= -p ${worker.pid}`, {
+                encoding: 'utf8',
+                timeout: 3000,
+              }).trim();
+              const rssBytes = parseInt(output, 10) * 1024;
+
+              if (rssBytes > 1.5 * 1024 * 1024 * 1024) {
+                // > 1.5GB
+                healthScore -= 20;
+                issues.push({
+                  severity: 'critical',
+                  message: `Agent "${worker.name}" is using ${Math.round(rssBytes / 1024 / 1024)}MB of memory`,
+                });
+                totalAlerts24h++;
+                alerts.push({
+                  id: `alert-${Date.now()}-${worker.name}`,
+                  agentName: worker.name,
+                  alertType: 'oom_imminent',
+                  message: `Memory usage critical: ${Math.round(rssBytes / 1024 / 1024)}MB`,
+                  createdAt: new Date().toISOString(),
+                });
+              } else if (rssBytes > 1024 * 1024 * 1024) {
+                // > 1GB
+                healthScore -= 10;
+                issues.push({
+                  severity: 'high',
+                  message: `Agent "${worker.name}" memory usage is elevated (${Math.round(rssBytes / 1024 / 1024)}MB)`,
+                });
+              }
+            } catch {
+              // Process may have exited
+            }
+          }
+        }
+      }
+
+      // Check registered agents
+      const agentsPath = path.join(teamDir, 'agents.json');
+      if (fs.existsSync(agentsPath)) {
+        const data = JSON.parse(fs.readFileSync(agentsPath, 'utf-8'));
+        const registeredAgents = data.agents || [];
+        const activeAgents = registeredAgents.filter((a: any) => {
+          const lastSeen = a.lastSeen ? new Date(a.lastSeen).getTime() : 0;
+          return Date.now() - lastSeen < 30000;
+        });
+        agentCount = Math.max(agentCount, activeAgents.length);
+      }
+
+      // Generate recommendations based on issues
+      if (issues.some(i => i.severity === 'critical')) {
+        recommendations.push('Consider restarting agents with high memory usage');
+        recommendations.push('Monitor system resources closely');
+      }
+      if (agentCount === 0) {
+        recommendations.push('No active agents detected - start agents to begin monitoring');
+      }
+
+      // Clamp health score
+      healthScore = Math.max(0, Math.min(100, healthScore));
+
+      // Generate summary
+      let summary: string;
+      if (healthScore >= 90) {
+        summary = 'System is healthy. All agents operating normally.';
+      } else if (healthScore >= 70) {
+        summary = 'Some issues detected. Review warnings and recommendations.';
+      } else if (healthScore >= 50) {
+        summary = 'Multiple issues detected. Action recommended.';
+      } else {
+        summary = 'Critical issues detected. Immediate action required.';
+      }
+
+      res.json({
+        healthScore,
+        summary,
+        issues,
+        recommendations,
+        crashes,
+        alerts,
+        stats: {
+          totalCrashes24h,
+          totalAlerts24h,
+          agentCount,
+        },
+      });
+    } catch (err) {
+      console.error('Failed to compute health metrics', err);
+      res.status(500).json({ error: 'Failed to compute health metrics' });
     }
   });
 
