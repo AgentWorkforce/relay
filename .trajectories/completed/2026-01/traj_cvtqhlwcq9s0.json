@@ -8,7 +8,7 @@
       "id": "dashboard-nav-fix"
     }
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-01-03T16:37:49.153Z",
   "agents": [
     {
@@ -36,11 +36,18 @@
           },
           "significance": "high"
         }
-      ]
+      ],
+      "endedAt": "2026-01-03T18:43:48.687Z"
     }
   ],
   "commits": [],
   "filesChanged": [],
   "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
-  "tags": []
+  "tags": [],
+  "completedAt": "2026-01-03T18:43:48.687Z",
+  "retrospective": {
+    "summary": "Added back button to trajectory viewer header, accessible when viewing a specific trajectory",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
 }
