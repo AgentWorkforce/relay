@@ -120,6 +120,8 @@ export interface TmuxWrapperConfig {
   streamLogs?: boolean;
   /** Resume from a previous agent ID (for crash recovery) */
   resumeAgentId?: string;
+  /** Dashboard port for API-based spawn/release (preferred over callbacks) */
+  dashboardPort?: number;
 }
 
 /**
@@ -1156,6 +1158,66 @@ export class TmuxWrapper {
   }
 
   /**
+   * Execute spawn via API (if dashboardPort set) or callback
+   */
+  private async executeSpawn(name: string, cli: string, task: string): Promise<void> {
+    if (this.config.dashboardPort) {
+      // Use dashboard API for spawning (works from any context, no terminal required)
+      try {
+        const response = await fetch(`http://localhost:${this.config.dashboardPort}/api/spawn`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, cli, task }),
+        });
+        const result = await response.json() as { success: boolean; error?: string };
+        if (result.success) {
+          this.logStderr(`Spawned ${name} via API`);
+        } else {
+          this.logStderr(`Spawn failed: ${result.error}`, true);
+        }
+      } catch (err: any) {
+        this.logStderr(`Spawn API call failed: ${err.message}`, true);
+      }
+    } else if (this.config.onSpawn) {
+      // Fall back to callback
+      try {
+        await this.config.onSpawn(name, cli, task);
+      } catch (err: any) {
+        this.logStderr(`Spawn failed: ${err.message}`, true);
+      }
+    }
+  }
+
+  /**
+   * Execute release via API (if dashboardPort set) or callback
+   */
+  private async executeRelease(name: string): Promise<void> {
+    if (this.config.dashboardPort) {
+      // Use dashboard API for release (works from any context, no terminal required)
+      try {
+        const response = await fetch(`http://localhost:${this.config.dashboardPort}/api/spawned/${encodeURIComponent(name)}`, {
+          method: 'DELETE',
+        });
+        const result = await response.json() as { success: boolean; error?: string };
+        if (result.success) {
+          this.logStderr(`Released ${name} via API`);
+        } else {
+          this.logStderr(`Release failed: ${result.error}`, true);
+        }
+      } catch (err: any) {
+        this.logStderr(`Release API call failed: ${err.message}`, true);
+      }
+    } else if (this.config.onRelease) {
+      // Fall back to callback
+      try {
+        await this.config.onRelease(name);
+      } catch (err: any) {
+        this.logStderr(`Release failed: ${err.message}`, true);
+      }
+    }
+  }
+
+  /**
    * Parse ->relay:spawn and ->relay:release commands from output.
    * Supports two formats:
    *   Single-line: ->relay:spawn WorkerName cli "task description"
@@ -1165,8 +1227,10 @@ export class TmuxWrapper {
    *   ->relay:release WorkerName
    */
   private parseSpawnReleaseCommands(content: string): void {
-    // Only process if callbacks are configured
-    if (!this.config.onSpawn && !this.config.onRelease) return;
+    // Only process if we have API or callbacks configured
+    const canSpawn = this.config.dashboardPort || this.config.onSpawn;
+    const canRelease = this.config.dashboardPort || this.config.onRelease;
+    if (!canSpawn && !canRelease) return;
 
     const lines = content.split('\n');
 
@@ -1196,9 +1260,7 @@ export class TmuxWrapper {
             } else {
               this.logStderr(`Spawn command (fenced): ${name} (${cli}) - no task`);
             }
-            this.config.onSpawn?.(name, cli, taskStr).catch(err => {
-              this.logStderr(`Spawn failed: ${err.message}`, true);
-            });
+            this.executeSpawn(name, cli, taskStr);
           }
 
           this.pendingFencedSpawn = null;
@@ -1209,14 +1271,15 @@ export class TmuxWrapper {
         continue;
       }
 
-      // Check for fenced spawn start: ->relay:spawn Name cli <<<
-      const fencedSpawnMatch = trimmed.match(/^(?:[•\-*]\s*)?->relay:spawn\s+(\S+)\s+(\S+)\s+<<<(.*)$/);
-      if (fencedSpawnMatch && this.config.onSpawn) {
-        const [, name, cli, inlineContent] = fencedSpawnMatch;
+      // Check for fenced spawn start: ->relay:spawn Name [cli] <<< (CLI optional, defaults to 'claude')
+      const fencedSpawnMatch = trimmed.match(/^(?:[•\-*]\s*)?->relay:spawn\s+(\S+)(?:\s+(\S+))?\s+<<<(.*)$/);
+      if (fencedSpawnMatch && canSpawn) {
+        const [, name, cliOrUndefined, inlineContent] = fencedSpawnMatch;
+        let cli = cliOrUndefined || 'claude';
 
-        // Validate name and cli
-        if (name.length < 2 || cli.length < 2) {
-          this.logStderr(`Fenced spawn has invalid name/cli, skipping: name=${name}, cli=${cli}`);
+        // Validate name
+        if (name.length < 2) {
+          this.logStderr(`Fenced spawn has invalid name, skipping: name=${name}`);
           continue;
         }
 
@@ -1234,9 +1297,7 @@ export class TmuxWrapper {
             } else {
               this.logStderr(`Spawn command: ${name} (${cli}) - no task`);
             }
-            this.config.onSpawn(name, cli, taskStr).catch(err => {
-              this.logStderr(`Spawn failed: ${err.message}`, true);
-            });
+            this.executeSpawn(name, cli, taskStr);
           }
         } else {
           // Start multi-line fenced mode
@@ -1250,11 +1311,12 @@ export class TmuxWrapper {
         continue;
       }
 
-      // Match single-line spawn: ->relay:spawn WorkerName cli "task"
-      // Task is optional - agents can be spawned without immediate task injection
-      const spawnMatch = trimmed.match(/^(?:[•\-*]\s*)?->relay:spawn\s+(\S+)\s+(\S+)(?:\s+["'](.+?)["'])?\s*$/);
-      if (spawnMatch && this.config.onSpawn) {
-        const [, name, cli, task] = spawnMatch;
+      // Match single-line spawn: ->relay:spawn WorkerName [cli] ["task"]
+      // CLI is optional - defaults to 'claude'. Task is also optional.
+      const spawnMatch = trimmed.match(/^(?:[•\-*]\s*)?->relay:spawn\s+(\S+)(?:\s+(\S+))?(?:\s+["'](.+?)["'])?\s*$/);
+      if (spawnMatch && canSpawn) {
+        const [, name, cliOrUndefined, task] = spawnMatch;
+        let cli = cliOrUndefined || 'claude';
 
         // Validate the parsed values
         if (cli === '<<<' || cli === '>>>' || name === '<<<' || name === '>>>') {
@@ -1263,10 +1325,6 @@ export class TmuxWrapper {
         }
         if (name.length < 2) {
           this.logStderr(`Spawn command has suspiciously short name, skipping: name=${name}`);
-          continue;
-        }
-        if (cli.length < 2) {
-          this.logStderr(`Spawn command has suspiciously short CLI, skipping: cli=${cli}`);
           continue;
         }
 
@@ -1280,24 +1338,20 @@ export class TmuxWrapper {
           } else {
             this.logStderr(`Spawn command: ${name} (${cli}) - no task`);
           }
-          this.config.onSpawn(name, cli, taskStr).catch(err => {
-            this.logStderr(`Spawn failed: ${err.message}`, true);
-          });
+          this.executeSpawn(name, cli, taskStr);
         }
         continue;
       }
 
       // Match ->relay:release WorkerName
       const releaseMatch = trimmed.match(/^(?:[•\-*]\s*)?->relay:release\s+(\S+)\s*$/);
-      if (releaseMatch && this.config.onRelease) {
+      if (releaseMatch && canRelease) {
         const [, name] = releaseMatch;
 
         if (!this.processedReleaseCommands.has(name)) {
           this.processedReleaseCommands.add(name);
           this.logStderr(`Release command: ${name}`);
-          this.config.onRelease(name).catch(err => {
-            this.logStderr(`Release failed: ${err.message}`, true);
-          });
+          this.executeRelease(name);
         }
       }
     }
