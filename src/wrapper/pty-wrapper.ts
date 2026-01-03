@@ -21,7 +21,6 @@ import { HookRegistry, createTrajectoryHooks, type LifecycleHooks } from '../hoo
 import { getContinuityManager, parseContinuityCommand, hasContinuityCommand, type ContinuityManager } from '../continuity/index.js';
 import {
   type QueuedMessage,
-  type InjectionResult,
   type InjectionMetrics,
   type InjectionCallbacks,
   type CliType,

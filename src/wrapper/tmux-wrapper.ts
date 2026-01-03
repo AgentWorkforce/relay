@@ -41,7 +41,6 @@ import {
 import {
   type QueuedMessage,
   type CliType,
-  type InjectionResult,
   type InjectionMetrics,
   type InjectionCallbacks,
   stripAnsi,
@@ -1275,7 +1274,7 @@ export class TmuxWrapper {
       const fencedSpawnMatch = trimmed.match(/^(?:[•\-*]\s*)?->relay:spawn\s+(\S+)(?:\s+(\S+))?\s+<<<(.*)$/);
       if (fencedSpawnMatch && canSpawn) {
         const [, name, cliOrUndefined, inlineContent] = fencedSpawnMatch;
-        let cli = cliOrUndefined || 'claude';
+        const cli = cliOrUndefined || 'claude';
 
         // Validate name
         if (name.length < 2) {
@@ -1316,7 +1315,7 @@ export class TmuxWrapper {
       const spawnMatch = trimmed.match(/^(?:[•\-*]\s*)?->relay:spawn\s+(\S+)(?:\s+(\S+))?(?:\s+["'](.+?)["'])?\s*$/);
       if (spawnMatch && canSpawn) {
         const [, name, cliOrUndefined, task] = spawnMatch;
-        let cli = cliOrUndefined || 'claude';
+        const cli = cliOrUndefined || 'claude';
 
         // Validate the parsed values
         if (cli === '<<<' || cli === '>>>' || name === '<<<' || name === '>>>') {

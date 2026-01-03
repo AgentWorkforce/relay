@@ -11,7 +11,6 @@ import {
   getContinuityManager,
   resetContinuityManager,
 } from './manager.js';
-import type { Ledger, Handoff, HandoffTrigger } from './types.js';
 
 describe('ContinuityManager', () => {
   let manager: ContinuityManager;
