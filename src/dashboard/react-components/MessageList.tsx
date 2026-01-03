@@ -733,14 +733,32 @@ function formatMessageBody(content: string): React.ReactNode {
 }
 
 /**
- * Format a single line, detecting URLs
+ * Format a single line, detecting URLs and inline code
  */
 function formatLine(line: string): React.ReactNode {
-  const urlRegex = /(https?:\/\/[^\s]+)/g;
-  const parts = line.split(urlRegex);
+  // Combined regex to match URLs and inline code (backticks)
+  // Order matters: check for backticks first to avoid URL detection inside code
+  const combinedRegex = /(`[^`]+`|https?:\/\/[^\s]+)/g;
+  const parts = line.split(combinedRegex);
 
   return parts.map((part, i) => {
-    if (urlRegex.test(part)) {
+    if (!part) return null;
+
+    // Check for inline code (backticks)
+    if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
+      const code = part.slice(1, -1);
+      return (
+        <code
+          key={i}
+          className="px-1.5 py-0.5 mx-0.5 rounded bg-bg-elevated/80 text-accent-cyan font-mono text-[0.85em] border border-border-subtle/50"
+        >
+          {code}
+        </code>
+      );
+    }
+
+    // Check for URLs
+    if (/^https?:\/\//.test(part)) {
       return (
         <a
           key={i}
@@ -753,6 +771,7 @@ function formatLine(line: string): React.ReactNode {
         </a>
       );
     }
+
     return part;
   });
 }

@@ -132,7 +132,14 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
 
   // Trajectory panel state
   const [isTrajectoryOpen, setIsTrajectoryOpen] = useState(false);
-  const { steps: trajectorySteps, status: trajectoryStatus, isLoading: isTrajectoryLoading } = useTrajectory({
+  const {
+    steps: trajectorySteps,
+    status: trajectoryStatus,
+    history: trajectoryHistory,
+    isLoading: isTrajectoryLoading,
+    selectTrajectory,
+    selectedTrajectoryId,
+  } = useTrajectory({
     autoPoll: isTrajectoryOpen, // Only poll when panel is open
   });
 
@@ -1042,6 +1049,9 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
             <TrajectoryViewer
               agentName={trajectoryStatus?.task?.slice(0, 30) || 'Current'}
               steps={trajectorySteps}
+              history={trajectoryHistory}
+              selectedTrajectoryId={selectedTrajectoryId}
+              onSelectTrajectory={selectTrajectory}
               isLoading={isTrajectoryLoading}
               maxHeight="60vh"
             />

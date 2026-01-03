@@ -94,6 +94,134 @@ export function hasContinuityCommand(output: string): boolean {
 }
 
 /**
+ * Map section headers to ledger field names
+ */
+function mapSectionToField(section: string): string | null {
+  const sectionMap: Record<string, string> = {
+    'completed': 'completed',
+    'previously completed': 'completed',
+    'done': 'completed',
+    'finished': 'completed',
+    'in progress': 'inProgress',
+    'working': 'inProgress',
+    'ongoing': 'inProgress',
+    'blocked': 'blocked',
+    'blockers': 'blocked',
+    'stuck': 'blocked',
+    'key decisions': 'keyDecisions',
+    'prior decisions': 'keyDecisions',
+    'decisions': 'keyDecisions',
+    'needs verification': 'uncertainItems',
+    'uncertain': 'uncertainItems',
+    'relevant files': 'fileContext',
+    'key files': 'fileContext',
+    'files': 'fileContext',
+    'next steps': 'nextSteps',
+    'todo': 'nextSteps',
+    'next': 'nextSteps',
+    'learnings': 'learnings',
+  };
+  return sectionMap[section] || null;
+}
+
+/**
+ * Add an item to the appropriate ledger section
+ */
+function addItemToSection(result: Partial<Ledger>, section: string, item: string): void {
+  const field = mapSectionToField(section);
+  if (!field) return;
+
+  switch (field) {
+    case 'completed':
+      result.completed = [...(result.completed || []), item];
+      break;
+    case 'inProgress':
+      result.inProgress = [...(result.inProgress || []), item];
+      break;
+    case 'blocked':
+      result.blocked = [...(result.blocked || []), item];
+      break;
+    case 'keyDecisions':
+      result.keyDecisions = [
+        ...(result.keyDecisions || []),
+        { decision: item, timestamp: new Date() },
+      ];
+      break;
+    case 'uncertainItems':
+      result.uncertainItems = [...(result.uncertainItems || []), item];
+      break;
+    case 'fileContext':
+      result.fileContext = [...(result.fileContext || []), { path: item }];
+      break;
+    case 'nextSteps':
+      result.inProgress = [...(result.inProgress || []), item];
+      break;
+  }
+}
+
+/**
+ * Process a field-value pair from bold markdown or plain text
+ */
+function processFieldValue(result: Partial<Ledger>, field: string, value: string): void {
+  switch (field) {
+    case 'current task':
+    case 'task':
+    case 'working on':
+      result.currentTask = value;
+      break;
+
+    case 'completed':
+    case 'done':
+    case 'finished':
+      result.completed = parseListValue(value);
+      break;
+
+    case 'in progress':
+    case 'working':
+    case 'ongoing':
+      result.inProgress = parseListValue(value);
+      break;
+
+    case 'blocked':
+    case 'blockers':
+    case 'stuck':
+      result.blocked = parseListValue(value);
+      break;
+
+    case 'key decision':
+    case 'key decisions':
+    case 'decisions':
+    case 'decided':
+      result.keyDecisions = parseDecisions(value);
+      break;
+
+    case 'uncertain':
+    case 'unconfirmed':
+    case 'needs verification':
+    case 'to verify':
+      result.uncertainItems = parseListValue(value);
+      break;
+
+    case 'files':
+    case 'file context':
+    case 'relevant files':
+      result.fileContext = parseFileRefs(value);
+      break;
+
+    case 'next':
+    case 'next steps':
+    case 'todo':
+      result.inProgress = [...(result.inProgress || []), ...parseListValue(value)];
+      break;
+
+    case 'phase':
+    case 'last phase':
+      result.pderoPhase = value.toLowerCase() as Ledger['pderoPhase'];
+      break;
+  }
+}
+
+/**
  * Parse the content of a save command into ledger fields
  *
  * Expected format:
@@ -104,6 +232,11 @@ export function hasContinuityCommand(output: string): boolean {
  *   Key decisions: <decision>
  *   Uncertain: <item>, ...
  *   Files: <path>:<lines>, ...
+ *
+ * Also handles markdown-formatted content:
+ *   **Current Task:** <task>
+ *   ### Completed
+ *   - ✓ <item>
  */
 export function parseSaveContent(content: string): Partial<Ledger> {
   const result: Partial<Ledger> = {
@@ -116,70 +249,72 @@ export function parseSaveContent(content: string): Partial<Ledger> {
   };
 
   const lines = content.split('\n');
+  let currentSection: string | null = null;
 
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
 
+    // Check for markdown section headers (## or ###)
+    const sectionMatch = trimmed.match(/^#{2,3}\s+(.+)$/);
+    if (sectionMatch) {
+      currentSection = sectionMatch[1].toLowerCase().trim();
+      continue;
+    }
+
+    // Skip top-level markdown headers
+    if (trimmed.startsWith('#')) continue;
+
+    // Handle markdown list items under a section
+    if (trimmed.startsWith('-') && currentSection) {
+      const itemContent = trimmed.slice(1).trim().replace(/^[✓⚠❓]\s*/, '');
+      if (itemContent) {
+        addItemToSection(result, currentSection, itemContent);
+      }
+      continue;
+    }
+
+    // Skip standalone list items without a section context
+    if (trimmed.startsWith('-') && !currentSection) {
+      continue;
+    }
+
+    // Match "**Field:** value" (markdown bold syntax - colon can be inside or outside asterisks)
+    // Format 1: **Field:** value (colon inside asterisks)
+    // Format 2: **Field**: value (colon outside asterisks)
+    const boldMatch = trimmed.match(/^\*\*([^*:]+):?\*\*:?\s*(.*)$/);
+    if (boldMatch) {
+      const field = boldMatch[1].toLowerCase().trim();
+      const value = boldMatch[2].trim();
+      processFieldValue(result, field, value);
+      // Reset section when we see a bold field
+      currentSection = null;
+      continue;
+    }
+
     // Match "Field: value" or "Field:" followed by list items
     const colonIndex = trimmed.indexOf(':');
     if (colonIndex === -1) continue;
 
-    const field = trimmed.slice(0, colonIndex).toLowerCase().trim();
+    // Skip if colon is too early (likely a file path like "src/file.ts:10")
+    // or if field contains special characters that suggest it's not a field
+    const potentialField = trimmed.slice(0, colonIndex);
+    if (
+      colonIndex < 2 ||
+      potentialField.includes('/') ||
+      potentialField.includes('\\') ||
+      potentialField.includes('`')
+    ) {
+      continue;
+    }
+
+    const field = potentialField.toLowerCase().trim();
     const value = trimmed.slice(colonIndex + 1).trim();
 
-    switch (field) {
-      case 'current task':
-      case 'task':
-      case 'working on':
-        result.currentTask = value;
-        break;
+    // Reset section when we see a new field
+    currentSection = null;
 
-      case 'completed':
-      case 'done':
-      case 'finished':
-        result.completed = parseListValue(value);
-        break;
-
-      case 'in progress':
-      case 'working':
-      case 'ongoing':
-        result.inProgress = parseListValue(value);
-        break;
-
-      case 'blocked':
-      case 'blockers':
-      case 'stuck':
-        result.blocked = parseListValue(value);
-        break;
-
-      case 'key decision':
-      case 'key decisions':
-      case 'decisions':
-      case 'decided':
-        result.keyDecisions = parseDecisions(value);
-        break;
-
-      case 'uncertain':
-      case 'unconfirmed':
-      case 'needs verification':
-      case 'to verify':
-        result.uncertainItems = parseListValue(value);
-        break;
-
-      case 'files':
-      case 'file context':
-      case 'relevant files':
-        result.fileContext = parseFileRefs(value);
-        break;
-
-      case 'next':
-      case 'next steps':
-      case 'todo':
-        // Store next steps in inProgress for ledger
-        result.inProgress = [...(result.inProgress || []), ...parseListValue(value)];
-        break;
-    }
+    processFieldValue(result, field, value);
   }
 
   return result;
@@ -266,55 +401,160 @@ export function parseHandoffContent(content: string): ParsedHandoffContent {
   };
 
   const lines = content.split('\n');
+  let currentSection: string | null = null;
 
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
 
+    // Check for markdown section headers (## or ###)
+    const sectionMatch = trimmed.match(/^#{2,3}\s+(.+)$/);
+    if (sectionMatch) {
+      currentSection = sectionMatch[1].toLowerCase().trim();
+      continue;
+    }
+
+    // Skip top-level markdown headers
+    if (trimmed.startsWith('#')) continue;
+
+    // Handle markdown list items under a section
+    if (trimmed.startsWith('-') && currentSection) {
+      const itemContent = trimmed.slice(1).trim().replace(/^[✓⚠❓]\s*/, '');
+      if (itemContent) {
+        addItemToHandoffSection(result, currentSection, itemContent);
+      }
+      continue;
+    }
+
+    // Skip standalone list items without a section context
+    if (trimmed.startsWith('-') && !currentSection) {
+      continue;
+    }
+
+    // Match "**Field:** value" (markdown bold syntax - colon can be inside or outside asterisks)
+    const boldMatch = trimmed.match(/^\*\*([^*:]+):?\*\*:?\s*(.*)$/);
+    if (boldMatch) {
+      const field = boldMatch[1].toLowerCase().trim();
+      const value = boldMatch[2].trim();
+      processHandoffFieldValue(result, field, value);
+      currentSection = null;
+      continue;
+    }
+
+    // Match "Field: value"
     const colonIndex = trimmed.indexOf(':');
     if (colonIndex === -1) continue;
 
-    const field = trimmed.slice(0, colonIndex).toLowerCase().trim();
+    // Skip if colon is too early or field contains path-like characters
+    const potentialField = trimmed.slice(0, colonIndex);
+    if (
+      colonIndex < 2 ||
+      potentialField.includes('/') ||
+      potentialField.includes('\\') ||
+      potentialField.includes('`')
+    ) {
+      continue;
+    }
+
+    const field = potentialField.toLowerCase().trim();
     const value = trimmed.slice(colonIndex + 1).trim();
 
-    switch (field) {
-      case 'summary':
-        result.summary = value;
-        break;
-
-      case 'task':
-      case 'task description':
-        result.taskDescription = value;
-        break;
-
-      case 'completed':
-      case 'done':
-        result.completedWork = parseListValue(value);
-        break;
-
-      case 'next':
-      case 'next steps':
-      case 'todo':
-        result.nextSteps = parseListValue(value);
-        break;
-
-      case 'decisions':
-      case 'key decisions':
-        result.decisions = parseDecisions(value);
-        break;
-
-      case 'files':
-        result.fileReferences = parseFileRefs(value);
-        break;
-
-      case 'learnings':
-      case 'learned':
-        result.learnings = parseListValue(value);
-        break;
-    }
+    currentSection = null;
+    processHandoffFieldValue(result, field, value);
   }
 
   return result;
+}
+
+/**
+ * Add an item to the appropriate handoff section
+ */
+function addItemToHandoffSection(
+  result: ParsedHandoffContent,
+  section: string,
+  item: string
+): void {
+  const sectionMap: Record<string, keyof ParsedHandoffContent> = {
+    'summary': 'summary',
+    'completed': 'completedWork',
+    'previously completed': 'completedWork',
+    'done': 'completedWork',
+    'next steps': 'nextSteps',
+    'next': 'nextSteps',
+    'todo': 'nextSteps',
+    'key decisions': 'decisions',
+    'prior decisions': 'decisions',
+    'decisions': 'decisions',
+    'files': 'fileReferences',
+    'key files': 'fileReferences',
+    'learnings': 'learnings',
+  };
+
+  const field = sectionMap[section];
+  if (!field) return;
+
+  switch (field) {
+    case 'completedWork':
+      result.completedWork.push(item);
+      break;
+    case 'nextSteps':
+      result.nextSteps.push(item);
+      break;
+    case 'decisions':
+      result.decisions.push({ decision: item, timestamp: new Date() });
+      break;
+    case 'fileReferences':
+      result.fileReferences.push({ path: item });
+      break;
+    case 'learnings':
+      result.learnings.push(item);
+      break;
+  }
+}
+
+/**
+ * Process a field-value pair for handoff content
+ */
+function processHandoffFieldValue(
+  result: ParsedHandoffContent,
+  field: string,
+  value: string
+): void {
+  switch (field) {
+    case 'summary':
+      result.summary = value;
+      break;
+
+    case 'task':
+    case 'task description':
+      result.taskDescription = value;
+      break;
+
+    case 'completed':
+    case 'done':
+      result.completedWork = parseListValue(value);
+      break;
+
+    case 'next':
+    case 'next steps':
+    case 'todo':
+      result.nextSteps = parseListValue(value);
+      break;
+
+    case 'decisions':
+    case 'key decisions':
+      result.decisions = parseDecisions(value);
+      break;
+
+    case 'files':
+      result.fileReferences = parseFileRefs(value);
+      break;
+
+    case 'learnings':
+    case 'learned':
+      result.learnings = parseListValue(value);
+      break;
+  }
 }
 
 /**

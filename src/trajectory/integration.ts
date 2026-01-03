@@ -15,7 +15,100 @@
  */
 
 import { spawn, execSync } from 'node:child_process';
+import { readFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { getProjectPaths } from '../utils/project-namespace.js';
+
+/**
+ * Trajectory index file structure
+ */
+interface TrajectoryIndexEntry {
+  title: string;
+  status: 'active' | 'completed' | 'abandoned';
+  startedAt: string;
+  completedAt?: string;
+  path: string;
+}
+
+interface TrajectoryIndex {
+  version: number;
+  lastUpdated: string;
+  trajectories: Record<string, TrajectoryIndexEntry>;
+}
+
+/**
+ * Full trajectory file structure
+ */
+interface TrajectoryFile {
+  id: string;
+  version: number;
+  task: {
+    title: string;
+    source?: { system: string; id: string };
+  };
+  status: 'active' | 'completed' | 'abandoned';
+  startedAt: string;
+  completedAt?: string;
+  agents: Array<{ name: string; role: string; joinedAt: string }>;
+  chapters: Array<{
+    id: string;
+    title: string;
+    agentName: string;
+    startedAt: string;
+    endedAt?: string;
+    events: Array<{
+      ts: number;
+      type: string;
+      content: string;
+      raw?: Record<string, unknown>;
+      significance?: string;
+    }>;
+  }>;
+  retrospective?: {
+    summary: string;
+    approach: string;
+    confidence: number;
+  };
+}
+
+/**
+ * Get the trajectories directory path
+ */
+function getTrajectoriesDir(): string {
+  const { projectRoot } = getProjectPaths();
+  return join(projectRoot, '.trajectories');
+}
+
+/**
+ * Read the trajectory index file directly from filesystem
+ */
+function readTrajectoryIndex(): TrajectoryIndex | null {
+  try {
+    const indexPath = join(getTrajectoriesDir(), 'index.json');
+    if (!existsSync(indexPath)) {
+      return null;
+    }
+    const content = readFileSync(indexPath, 'utf-8');
+    return JSON.parse(content) as TrajectoryIndex;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read a specific trajectory file directly from filesystem
+ */
+function readTrajectoryFile(trajectoryPath: string): TrajectoryFile | null {
+  try {
+    if (!existsSync(trajectoryPath)) {
+      return null;
+    }
+    const content = readFileSync(trajectoryPath, 'utf-8');
+    return JSON.parse(content) as TrajectoryFile;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * PDERO phases for agent work lifecycle
@@ -116,38 +209,56 @@ export async function startTrajectory(options: StartTrajectoryOptions): Promise<
   if (options.phase) {
     args.push('--phase', options.phase);
   }
-  args.push('--json');
 
   const result = await runTrail(args);
   if (result.success) {
-    try {
-      const data = JSON.parse(result.output);
-      return { success: true, trajectoryId: data.id };
-    } catch {
-      return { success: true, trajectoryId: undefined };
-    }
+    // Parse trajectory ID from output like "✓ Trajectory started: traj_xxx"
+    const match = result.output.match(/traj_[a-z0-9]+/i);
+    return { success: true, trajectoryId: match?.[0] };
   }
   return { success: false, error: result.error };
 }
 
 /**
  * Get current trajectory status
+ * Reads directly from .trajectories/index.json instead of using CLI
  */
 export async function getTrajectoryStatus(): Promise<{ active: boolean; trajectoryId?: string; phase?: PDEROPhase; task?: string }> {
-  const result = await runTrail(['status', '--json']);
-  if (result.success) {
-    try {
-      const data = JSON.parse(result.output);
+  const index = readTrajectoryIndex();
+  if (!index) {
+    return { active: false };
+  }
+
+  // Find an active trajectory
+  for (const [id, entry] of Object.entries(index.trajectories)) {
+    if (entry.status === 'active') {
+      // Read the full trajectory file to get phase info
+      const trajectory = readTrajectoryFile(entry.path);
+      let currentPhase: PDEROPhase | undefined;
+
+      if (trajectory?.chapters?.length) {
+        const lastChapter = trajectory.chapters[trajectory.chapters.length - 1];
+        // Check events for phase transitions
+        for (const event of [...(lastChapter.events || [])].reverse()) {
+          if (event.type === 'phase_transition' || event.type === 'phase') {
+            const phaseMatch = event.content?.match(/phase[:\s]+(\w+)/i);
+            if (phaseMatch) {
+              currentPhase = phaseMatch[1].toLowerCase() as PDEROPhase;
+              break;
+            }
+          }
+        }
+      }
+
       return {
-        active: data.status === 'active',
-        trajectoryId: data.id,
-        phase: data.currentPhase,
-        task: data.task?.title,
+        active: true,
+        trajectoryId: id,
+        phase: currentPhase,
+        task: entry.title,
       };
-    } catch {
-      return { active: false };
     }
   }
+
   return { active: false };
 }
 
@@ -277,39 +388,127 @@ export interface TrajectoryStepData {
 /**
  * List trajectory steps/events
  * Returns steps for the current or specified trajectory
+ * Reads directly from filesystem instead of using CLI
  */
 export async function listTrajectorySteps(trajectoryId?: string): Promise<{
   success: boolean;
   steps: TrajectoryStepData[];
   error?: string;
 }> {
-  const args = ['list', '--json'];
-  if (trajectoryId) {
-    args.push('--trajectory', trajectoryId);
+  const index = readTrajectoryIndex();
+  if (!index) {
+    return { success: true, steps: [] };
   }
 
-  const result = await runTrail(args);
-  if (result.success) {
-    try {
-      const data = JSON.parse(result.output);
-      const steps: TrajectoryStepData[] = (data.events || data.entries || []).map((e: any, i: number) => ({
-        id: e.id || `step-${i}`,
-        timestamp: e.timestamp || e.createdAt || Date.now(),
-        type: mapEventType(e.type || e.eventType),
-        phase: e.phase,
-        title: e.title || e.content?.slice(0, 50) || e.type || 'Event',
-        description: e.content || e.description,
-        metadata: e.metadata || e.data,
-        duration: e.duration,
-        status: mapEventStatus(e.status),
-      }));
-      return { success: true, steps };
-    } catch (_err) {
-      // If trail list doesn't work, return empty
-      return { success: true, steps: [] };
+  // Find the trajectory to load
+  let trajectoryPath: string | undefined;
+
+  if (trajectoryId) {
+    // Use specified trajectory
+    const entry = index.trajectories[trajectoryId];
+    if (entry) {
+      trajectoryPath = entry.path;
+    }
+  } else {
+    // Find active trajectory
+    for (const [_id, entry] of Object.entries(index.trajectories)) {
+      if (entry.status === 'active') {
+        trajectoryPath = entry.path;
+        break;
+      }
     }
   }
-  return { success: false, steps: [], error: result.error };
+
+  if (!trajectoryPath) {
+    return { success: true, steps: [] };
+  }
+
+  const trajectory = readTrajectoryFile(trajectoryPath);
+  if (!trajectory) {
+    return { success: true, steps: [] };
+  }
+
+  // Extract events from all chapters
+  const steps: TrajectoryStepData[] = [];
+  let stepIndex = 0;
+
+  for (const chapter of trajectory.chapters || []) {
+    for (const event of chapter.events || []) {
+      steps.push({
+        id: `step-${stepIndex++}`,
+        timestamp: event.ts || Date.now(),
+        type: mapEventType(event.type),
+        title: event.content?.slice(0, 50) || event.type || 'Event',
+        description: event.content,
+        metadata: event.raw,
+        status: mapEventStatus(trajectory.status),
+      });
+    }
+  }
+
+  return { success: true, steps };
+}
+
+/**
+ * Trajectory history entry for dashboard display
+ */
+export interface TrajectoryHistoryEntry {
+  id: string;
+  title: string;
+  status: 'active' | 'completed' | 'abandoned';
+  startedAt: string;
+  completedAt?: string;
+  agents?: string[];
+  summary?: string;
+  confidence?: number;
+}
+
+/**
+ * Get trajectory history - list all trajectories
+ * Reads directly from filesystem
+ */
+export async function getTrajectoryHistory(): Promise<{
+  success: boolean;
+  trajectories: TrajectoryHistoryEntry[];
+  error?: string;
+}> {
+  const index = readTrajectoryIndex();
+  if (!index) {
+    return { success: true, trajectories: [] };
+  }
+
+  const trajectories: TrajectoryHistoryEntry[] = [];
+
+  for (const [id, entry] of Object.entries(index.trajectories)) {
+    const historyEntry: TrajectoryHistoryEntry = {
+      id,
+      title: entry.title,
+      status: entry.status,
+      startedAt: entry.startedAt,
+      completedAt: entry.completedAt,
+    };
+
+    // Try to read full trajectory for additional details
+    if (entry.path) {
+      const trajectory = readTrajectoryFile(entry.path);
+      if (trajectory) {
+        historyEntry.agents = trajectory.agents?.map(a => a.name);
+        if (trajectory.retrospective) {
+          historyEntry.summary = trajectory.retrospective.summary;
+          historyEntry.confidence = trajectory.retrospective.confidence;
+        }
+      }
+    }
+
+    trajectories.push(historyEntry);
+  }
+
+  // Sort by startedAt descending (most recent first)
+  trajectories.sort((a, b) =>
+    new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()
+  );
+
+  return { success: true, trajectories };
 }
 
 /**
@@ -346,6 +545,7 @@ function mapEventStatus(status?: string): TrajectoryStepData['status'] | undefin
   switch (status?.toLowerCase()) {
     case 'running':
     case 'in_progress':
+    case 'active':
       return 'running';
     case 'success':
     case 'completed':
@@ -353,6 +553,7 @@ function mapEventStatus(status?: string): TrajectoryStepData['status'] | undefin
       return 'success';
     case 'error':
     case 'failed':
+    case 'abandoned':
       return 'error';
     case 'pending':
     case 'queued':

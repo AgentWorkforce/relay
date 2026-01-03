@@ -15,7 +15,7 @@ import { computeSystemMetrics, formatPrometheusMetrics } from './metrics.js';
 import { MultiProjectClient } from '../bridge/multi-project-client.js';
 import { AgentSpawner, type CloudPersistenceHandler } from '../bridge/spawner.js';
 import type { ProjectConfig, SpawnRequest } from '../bridge/types.js';
-import { listTrajectorySteps, getTrajectoryStatus } from '../trajectory/integration.js';
+import { listTrajectorySteps, getTrajectoryStatus, getTrajectoryHistory } from '../trajectory/integration.js';
 import { loadTeamsConfig } from '../bridge/teams-config.js';
 
 /**
@@ -1628,8 +1628,8 @@ export async function startDashboard(
       console.log(`[dashboard] Client subscribed to logs for: ${agentName} (spawned: ${isSpawned}, daemon: ${isDaemon})`);
 
       if (isSpawned && spawner) {
-        // Send initial log history for spawned agents
-        const lines = spawner.getWorkerOutput(agentName, 200);
+        // Send initial log history for spawned agents (5000 lines to match xterm scrollback capacity)
+        const lines = spawner.getWorkerOutput(agentName, 5000);
         ws.send(JSON.stringify({
           type: 'history',
           agent: agentName,
@@ -2701,6 +2701,35 @@ Start by greeting the project leads and asking for status updates.`;
       res.status(500).json({
         success: false,
         steps: [],
+        error: err.message,
+      });
+    }
+  });
+
+  /**
+   * GET /api/trajectory/history - List all trajectories (completed and active)
+   */
+  app.get('/api/trajectory/history', async (_req, res) => {
+    try {
+      const result = await getTrajectoryHistory();
+
+      if (result.success) {
+        res.json({
+          success: true,
+          trajectories: result.trajectories,
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          trajectories: [],
+          error: result.error,
+        });
+      }
+    } catch (err: any) {
+      console.error('[api] Trajectory history error:', err);
+      res.status(500).json({
+        success: false,
+        trajectories: [],
         error: err.message,
       });
     }

@@ -13,6 +13,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { randomBytes } from 'crypto';
+import { createLogger } from '../utils/logger.js';
+
+const log = createLogger('cloud-sync');
 
 export interface CloudSyncConfig {
   apiKey?: string;
@@ -95,19 +98,19 @@ export class CloudSyncService extends EventEmitter {
    */
   async start(): Promise<void> {
     if (!this.config.enabled || !this.config.apiKey) {
-      console.log('[cloud-sync] Disabled (no API key configured)');
-      console.log('[cloud-sync] Run `agent-relay cloud link` to connect to cloud');
+      log.info('Disabled (no API key configured)');
+      log.info('Run `agent-relay cloud link` to connect to cloud');
       return;
     }
 
-    console.log(`[cloud-sync] Starting cloud sync to ${this.config.cloudUrl}`);
+    log.info('Starting cloud sync', { url: this.config.cloudUrl });
 
     // Initial heartbeat
     await this.sendHeartbeat();
 
     // Start periodic heartbeat
     this.heartbeatTimer = setInterval(
-      () => this.sendHeartbeat().catch(console.error),
+      () => this.sendHeartbeat().catch((err) => log.error('Heartbeat failed', { error: String(err) })),
       this.config.heartbeatInterval
     );
 
@@ -138,7 +141,7 @@ export class CloudSyncService extends EventEmitter {
 
     // Trigger immediate sync if connected
     if (this.connected) {
-      this.syncAgents().catch(console.error);
+      this.syncAgents().catch((err) => log.error('Agent sync failed', { error: String(err) }));
     }
   }
 
@@ -213,7 +216,7 @@ export class CloudSyncService extends EventEmitter {
 
       if (!response.ok) {
         if (response.status === 401) {
-          console.error('[cloud-sync] Invalid API key. Run `agent-relay cloud link` to re-authenticate.');
+          log.error('Invalid API key. Run `agent-relay cloud link` to re-authenticate.');
           this.stop();
           return;
         }
@@ -235,7 +238,7 @@ export class CloudSyncService extends EventEmitter {
         this.syncAgents(),
       ]);
     } catch (error) {
-      console.error('[cloud-sync] Heartbeat error:', error);
+      log.error('Heartbeat error', { error: String(error) });
       this.emit('error', error);
     }
   }

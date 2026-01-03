@@ -222,3 +222,126 @@ export const CLI_QUIRKS = {
     return /^\$\s*$/.test(clean) || /^\s*\$\s*$/.test(clean);
   },
 } as const;
+
+/**
+ * Callbacks for wrapper-specific injection operations.
+ * These allow the shared injection logic to work with both
+ * TmuxWrapper (tmux paste) and PtyWrapper (PTY write).
+ */
+export interface InjectionCallbacks {
+  /** Get current output content for verification */
+  getOutput: () => Promise<string>;
+  /** Perform the actual injection (write to terminal) */
+  performInjection: (injection: string) => Promise<void>;
+  /** Log a message (debug/info level) */
+  log: (message: string) => void;
+  /** Log an error message */
+  logError: (message: string) => void;
+  /** Get the injection metrics object to update */
+  getMetrics: () => InjectionMetrics;
+}
+
+/**
+ * Verify that an injected message appeared in the output.
+ * Uses a callback to get output content, allowing different backends
+ * (tmux capture-pane, PTY buffer) to be used.
+ *
+ * @param shortId - First 8 chars of message ID
+ * @param from - Sender name
+ * @param getOutput - Callback to retrieve current output
+ * @returns true if message pattern found in output
+ */
+export async function verifyInjection(
+  shortId: string,
+  from: string,
+  getOutput: () => Promise<string>
+): Promise<boolean> {
+  const expectedPattern = `Relay message from ${from} [${shortId}]`;
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < INJECTION_CONSTANTS.VERIFICATION_TIMEOUT_MS) {
+    try {
+      const output = await getOutput();
+      if (output.includes(expectedPattern)) {
+        return true;
+      }
+    } catch {
+      // Output retrieval failed, verification fails
+      return false;
+    }
+
+    await sleep(100);
+  }
+
+  return false;
+}
+
+/**
+ * Inject a message with retry logic and verification.
+ * Includes dedup check to prevent double-injection race condition.
+ *
+ * This consolidates the retry/verification logic that was duplicated
+ * in TmuxWrapper and PtyWrapper.
+ *
+ * @param injection - The formatted injection string
+ * @param shortId - First 8 chars of message ID for verification
+ * @param from - Sender name for verification pattern
+ * @param callbacks - Wrapper-specific callbacks for injection operations
+ * @returns Result indicating success/failure and attempt count
+ */
+export async function injectWithRetry(
+  injection: string,
+  shortId: string,
+  from: string,
+  callbacks: InjectionCallbacks
+): Promise<InjectionResult> {
+  const metrics = callbacks.getMetrics();
+  metrics.total++;
+
+  for (let attempt = 0; attempt < INJECTION_CONSTANTS.MAX_RETRIES; attempt++) {
+    try {
+      // On retry attempts, first check if message already exists (race condition fix)
+      // Previous injection may have succeeded but verification timed out
+      if (attempt > 0) {
+        const alreadyExists = await verifyInjection(shortId, from, callbacks.getOutput);
+        if (alreadyExists) {
+          metrics.successWithRetry++;
+          callbacks.log(`Message already present (late verification), skipping re-injection`);
+          return { success: true, attempts: attempt + 1 };
+        }
+      }
+
+      // Perform the injection
+      await callbacks.performInjection(injection);
+
+      // Verify it appeared in output
+      const verified = await verifyInjection(shortId, from, callbacks.getOutput);
+
+      if (verified) {
+        if (attempt === 0) {
+          metrics.successFirstTry++;
+        } else {
+          metrics.successWithRetry++;
+          callbacks.log(`Injection succeeded on attempt ${attempt + 1}`);
+        }
+        return { success: true, attempts: attempt + 1 };
+      }
+
+      // Not verified - log and retry
+      callbacks.log(
+        `Injection not verified, attempt ${attempt + 1}/${INJECTION_CONSTANTS.MAX_RETRIES}`
+      );
+
+      // Backoff before retry
+      if (attempt < INJECTION_CONSTANTS.MAX_RETRIES - 1) {
+        await sleep(INJECTION_CONSTANTS.RETRY_BACKOFF_MS * (attempt + 1));
+      }
+    } catch (err: any) {
+      callbacks.logError(`Injection error on attempt ${attempt + 1}: ${err?.message || err}`);
+    }
+  }
+
+  // All retries failed
+  metrics.failed++;
+  return { success: false, attempts: INJECTION_CONSTANTS.MAX_RETRIES };
+}

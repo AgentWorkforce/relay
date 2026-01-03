@@ -20,9 +20,23 @@ export interface TrajectoryStep {
   status?: 'pending' | 'running' | 'success' | 'error';
 }
 
+export interface TrajectoryHistoryEntry {
+  id: string;
+  title: string;
+  status: 'active' | 'completed' | 'abandoned';
+  startedAt: string;
+  completedAt?: string;
+  agents?: string[];
+  summary?: string;
+  confidence?: number;
+}
+
 export interface TrajectoryViewerProps {
   agentName: string;
   steps: TrajectoryStep[];
+  history?: TrajectoryHistoryEntry[];
+  selectedTrajectoryId?: string | null;
+  onSelectTrajectory?: (id: string | null) => void;
   isLoading?: boolean;
   onStepClick?: (step: TrajectoryStep) => void;
   maxHeight?: string;
@@ -32,6 +46,9 @@ export interface TrajectoryViewerProps {
 export function TrajectoryViewer({
   agentName,
   steps,
+  history = [],
+  selectedTrajectoryId,
+  onSelectTrajectory,
   isLoading = false,
   onStepClick,
   maxHeight = '400px',
@@ -83,12 +100,12 @@ export function TrajectoryViewer({
     <div className="bg-gradient-to-b from-bg-card to-bg-tertiary rounded-xl border border-border/50 overflow-hidden shadow-lg backdrop-blur-sm">
       {/* Header with gradient accent line */}
       <div className="relative">
-        <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-accent-purple via-accent-cyan to-accent-purple opacity-60" />
+        <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-blue-500 via-accent-cyan to-blue-500 opacity-60" />
         
         <div className="flex items-center justify-between px-5 py-4 border-b border-border/30">
           <div className="flex items-center gap-3">
             <div className="relative">
-              <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-accent-purple/20 to-accent-cyan/20 flex items-center justify-center border border-accent-purple/30">
+              <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-blue-500/20 to-accent-cyan/20 flex items-center justify-center border border-blue-500/30">
                 <TrajectoryHeaderIcon />
               </div>
               {steps.some(s => s.status === 'running') && (
@@ -141,7 +158,7 @@ export function TrajectoryViewer({
                 key={f.value}
                 className={`flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium rounded-lg transition-all duration-200 whitespace-nowrap ${
                   filter === f.value
-                    ? 'bg-accent-purple/20 text-accent-purple border border-accent-purple/30 shadow-[0_0_12px_rgba(168,85,247,0.15)]'
+                    ? 'bg-blue-500/20 text-blue-500 border border-blue-500/30 shadow-[0_0_12px_rgba(59,130,246,0.15)]'
                     : 'text-text-muted hover:text-text-secondary hover:bg-bg-hover/50'
                 }`}
                 onClick={() => setFilter(f.value)}
@@ -165,23 +182,86 @@ export function TrajectoryViewer({
             <span className="text-sm font-medium">Loading trajectory...</span>
           </div>
         ) : filteredSteps.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-4 py-12 text-text-muted">
-            <div className="w-16 h-16 rounded-2xl bg-bg-elevated/50 flex items-center justify-center border border-border/30">
-              <EmptyIcon />
-            </div>
-            <div className="text-center">
-              {steps.length === 0 ? (
-                <>
+          <div className="flex flex-col gap-4 py-4 text-text-muted">
+            {steps.length === 0 && history.length > 0 ? (
+              /* Show trajectory history when no current steps */
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between px-2">
+                  <span className="text-xs font-medium text-text-secondary uppercase tracking-wider">Recent Trajectories</span>
+                  {selectedTrajectoryId && onSelectTrajectory && (
+                    <button
+                      onClick={() => onSelectTrajectory(null)}
+                      className="text-[10px] text-accent-cyan hover:underline"
+                    >
+                      ← Back to current
+                    </button>
+                  )}
+                </div>
+                <div className="flex flex-col gap-1">
+                  {history.slice(0, 10).map((entry) => (
+                    <button
+                      key={entry.id}
+                      onClick={() => onSelectTrajectory?.(entry.id)}
+                      className={`w-full text-left px-3 py-2.5 rounded-lg transition-all duration-200 border ${
+                        selectedTrajectoryId === entry.id
+                          ? 'bg-blue-500/15 border-blue-500/40 text-text-primary'
+                          : 'bg-bg-tertiary/50 border-transparent hover:bg-bg-elevated/60 hover:border-border/40'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[13px] font-medium text-text-primary truncate flex-1">
+                          {entry.title}
+                        </span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium flex-shrink-0 ${
+                          entry.status === 'completed'
+                            ? 'bg-green-500/15 text-green-500'
+                            : entry.status === 'active'
+                            ? 'bg-blue-500/15 text-blue-500'
+                            : 'bg-amber-500/15 text-amber-500'
+                        }`}>
+                          {entry.status}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-[10px] text-text-dim">
+                          {formatRelativeTime(entry.startedAt)}
+                        </span>
+                        {entry.confidence && (
+                          <span className="text-[10px] text-text-dim">
+                            • {Math.round(entry.confidence * 100)}% confidence
+                          </span>
+                        )}
+                      </div>
+                      {entry.summary && (
+                        <p className="text-[11px] text-text-muted mt-1 line-clamp-2">
+                          {entry.summary}
+                        </p>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : steps.length === 0 ? (
+              <div className="flex flex-col items-center justify-center gap-4 py-8">
+                <div className="w-16 h-16 rounded-2xl bg-bg-elevated/50 flex items-center justify-center border border-border/30">
+                  <EmptyIcon />
+                </div>
+                <div className="text-center">
                   <p className="text-sm font-medium text-text-secondary">No steps recorded</p>
                   <p className="text-xs text-text-dim mt-1">Steps will appear here as the agent works</p>
-                </>
-              ) : (
-                <>
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center gap-4 py-8">
+                <div className="w-16 h-16 rounded-2xl bg-bg-elevated/50 flex items-center justify-center border border-border/30">
+                  <EmptyIcon />
+                </div>
+                <div className="text-center">
                   <p className="text-sm font-medium text-text-secondary">No matching steps</p>
                   <p className="text-xs text-text-dim mt-1">Try a different filter or select "All"</p>
-                </>
-              )}
-            </div>
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <div className="flex flex-col gap-0.5">
@@ -366,6 +446,21 @@ function formatTimestamp(ts: string | number): string {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
+function formatRelativeTime(dateStr: string): string {
+  const date = new Date(dateStr);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+
+  if (diffMins < 1) return 'just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return date.toLocaleDateString();
+}
+
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
@@ -400,7 +495,7 @@ function getStatusColor(status?: TrajectoryStep['status']): string | null {
 function getPhaseColor(phase?: TrajectoryStep['phase']): string | null {
   switch (phase) {
     case 'plan':
-      return '#a855f7'; // purple
+      return '#3b82f6'; // blue
     case 'design':
       return '#00d9ff'; // cyan
     case 'execute':
@@ -419,7 +514,7 @@ function getTypeColor(type: TrajectoryStep['type']): string {
     case 'tool_call':
       return '#00d9ff'; // cyan
     case 'decision':
-      return '#a855f7'; // purple
+      return '#3b82f6'; // blue
     case 'message':
       return '#3b82f6'; // blue
     case 'state_change':
@@ -455,7 +550,7 @@ function getStepIcon(type: TrajectoryStep['type']): React.ReactNode {
 // Icon components
 function TrajectoryHeaderIcon() {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-accent-purple">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-blue-500">
       <path d="M3 12h4l3 9 4-18 3 9h4" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );

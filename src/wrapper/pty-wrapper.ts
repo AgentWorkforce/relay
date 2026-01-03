@@ -23,11 +23,13 @@ import {
   type QueuedMessage,
   type InjectionResult,
   type InjectionMetrics,
+  type InjectionCallbacks,
   type CliType,
   INJECTION_CONSTANTS,
   stripAnsi,
   sleep,
   buildInjectionString,
+  injectWithRetry as sharedInjectWithRetry,
   calculateSuccessRate,
   createInjectionMetrics,
   getDefaultRelayPrefix,
@@ -1081,105 +1083,10 @@ export class PtyWrapper extends EventEmitter {
   }
 
   /**
-   * Verify that an injected message appeared in the output.
-   * Looks for the message pattern in recent output.
-   */
-  private async verifyInjection(shortId: string, from: string): Promise<boolean> {
-    const expectedPattern = `Relay message from ${from} [${shortId}]`;
-    const startTime = Date.now();
-
-    while (Date.now() - startTime < INJECTION_CONSTANTS.VERIFICATION_TIMEOUT_MS) {
-      // Check if pattern appears in recent buffer
-      // Look at last 2000 chars to avoid scanning entire buffer
-      const recentOutput = this.rawBuffer.slice(-2000);
-      if (recentOutput.includes(expectedPattern)) {
-        return true;
-      }
-
-      await sleep(100);
-    }
-
-    return false;
-  }
-
-  /**
    * Check if the agent process is still alive and responsive.
    */
   private isAgentAlive(): boolean {
     return this.running && this.ptyProcess !== undefined;
-  }
-
-  /**
-   * Perform a single injection attempt.
-   */
-  private async performInjection(injection: string): Promise<void> {
-    if (!this.ptyProcess || !this.running) {
-      throw new Error('PTY process not running');
-    }
-
-    // Write message to PTY, then send Enter separately after a small delay
-    this.ptyProcess.write(injection);
-    await sleep(INJECTION_CONSTANTS.ENTER_DELAY_MS);
-    this.ptyProcess.write('\r');
-  }
-
-  /**
-   * Inject a message with retry logic and verification.
-   * Includes dedup check to prevent double-injection race condition.
-   */
-  private async injectWithRetry(
-    injection: string,
-    shortId: string,
-    from: string
-  ): Promise<InjectionResult> {
-    this.injectionMetrics.total++;
-
-    for (let attempt = 0; attempt < INJECTION_CONSTANTS.MAX_RETRIES; attempt++) {
-      try {
-        // On retry attempts, first check if message already exists (race condition fix)
-        // Previous injection may have succeeded but verification timed out
-        if (attempt > 0) {
-          const alreadyExists = await this.verifyInjection(shortId, from);
-          if (alreadyExists) {
-            this.injectionMetrics.successWithRetry++;
-            console.log(`[pty:${this.config.name}] Message already present (late verification), skipping re-injection`);
-            return { success: true, attempts: attempt + 1 };
-          }
-        }
-
-        // Perform the injection
-        await this.performInjection(injection);
-
-        // Verify it appeared in output
-        const verified = await this.verifyInjection(shortId, from);
-
-        if (verified) {
-          if (attempt === 0) {
-            this.injectionMetrics.successFirstTry++;
-          } else {
-            this.injectionMetrics.successWithRetry++;
-            console.log(`[pty:${this.config.name}] Injection succeeded on attempt ${attempt + 1}`);
-          }
-          return { success: true, attempts: attempt + 1 };
-        }
-
-        // Not verified - log and retry
-        console.warn(
-          `[pty:${this.config.name}] Injection not verified, attempt ${attempt + 1}/${INJECTION_CONSTANTS.MAX_RETRIES}`
-        );
-
-        // Backoff before retry
-        if (attempt < INJECTION_CONSTANTS.MAX_RETRIES - 1) {
-          await sleep(INJECTION_CONSTANTS.RETRY_BACKOFF_MS * (attempt + 1));
-        }
-      } catch (err: any) {
-        console.error(`[pty:${this.config.name}] Injection error on attempt ${attempt + 1}: ${err.message}`);
-      }
-    }
-
-    // All retries failed
-    this.injectionMetrics.failed++;
-    return { success: false, attempts: INJECTION_CONSTANTS.MAX_RETRIES };
   }
 
   /**
@@ -1188,6 +1095,8 @@ export class PtyWrapper extends EventEmitter {
    * 2. Verify injection appeared in output
    * 3. Retry with backoff on failure
    * 4. Fall back to logging on complete failure
+   *
+   * Uses shared injection logic with PTY-specific callbacks.
    */
   private async processMessageQueue(): Promise<void> {
     // Wait until instructions have been injected and agent is ready
@@ -1241,8 +1150,28 @@ export class PtyWrapper extends EventEmitter {
 
       const shortId = msg.messageId.substring(0, 8);
 
-      // Inject with retry and verification
-      const result = await this.injectWithRetry(injection, shortId, msg.from);
+      // Create callbacks for shared injection logic
+      const callbacks: InjectionCallbacks = {
+        getOutput: async () => {
+          // Look at last 2000 chars to avoid scanning entire buffer
+          return this.rawBuffer.slice(-2000);
+        },
+        performInjection: async (inj: string) => {
+          if (!this.ptyProcess || !this.running) {
+            throw new Error('PTY process not running');
+          }
+          // Write message to PTY, then send Enter separately after a small delay
+          this.ptyProcess.write(inj);
+          await sleep(INJECTION_CONSTANTS.ENTER_DELAY_MS);
+          this.ptyProcess.write('\r');
+        },
+        log: (message: string) => console.log(`[pty:${this.config.name}] ${message}`),
+        logError: (message: string) => console.error(`[pty:${this.config.name}] ${message}`),
+        getMetrics: () => this.injectionMetrics,
+      };
+
+      // Inject with retry and verification using shared logic
+      const result = await sharedInjectWithRetry(injection, shortId, msg.from, callbacks);
 
       if (!result.success) {
         // Log the failed message for debugging/recovery
@@ -1472,6 +1401,7 @@ export class PtyWrapper extends EventEmitter {
   /**
    * Check for [[SUMMARY]] blocks and emit 'summary' event.
    * Allows cloud services to persist summaries without hardcoding storage.
+   * Also updates the local continuity ledger for session recovery.
    */
   private checkForSummaryAndEmit(content: string): void {
     const result = parseSummaryWithDetails(content);
@@ -1493,11 +1423,55 @@ export class PtyWrapper extends EventEmitter {
       return;
     }
 
+    const summary = result.summary!;
+
+    // Save to local continuity ledger for session recovery
+    // This ensures the ledger has actual data instead of placeholders
+    if (this.continuity) {
+      this.saveSummaryToLedger(summary).catch(err => {
+        console.error(`[pty:${this.config.name}] Failed to save summary to ledger:`, err);
+      });
+    }
+
     // Emit event for external handlers (cloud services, dashboard, etc.)
     this.emit('summary', {
       agentName: this.config.name,
-      summary: result.summary!,
+      summary,
     });
+  }
+
+  /**
+   * Save a parsed summary to the continuity ledger.
+   * Maps summary fields to ledger fields for session recovery.
+   */
+  private async saveSummaryToLedger(summary: ParsedSummary): Promise<void> {
+    if (!this.continuity) return;
+
+    const updates: Record<string, unknown> = {};
+
+    // Map summary fields to ledger fields
+    if (summary.currentTask) {
+      updates.currentTask = summary.currentTask;
+    }
+
+    if (summary.completedTasks && summary.completedTasks.length > 0) {
+      updates.completed = summary.completedTasks;
+    }
+
+    if (summary.context) {
+      // Store context in inProgress as "next steps" hint
+      updates.inProgress = [summary.context];
+    }
+
+    if (summary.files && summary.files.length > 0) {
+      updates.fileContext = summary.files.map((f: string) => ({ path: f }));
+    }
+
+    // Only save if we have meaningful updates
+    if (Object.keys(updates).length > 0) {
+      await this.continuity.saveLedger(this.config.name, updates);
+      console.log(`[pty:${this.config.name}] Saved summary to continuity ledger`);
+    }
   }
 
   /**

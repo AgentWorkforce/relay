@@ -15,6 +15,17 @@ interface TrajectoryStatus {
   task?: string;
 }
 
+export interface TrajectoryHistoryEntry {
+  id: string;
+  title: string;
+  status: 'active' | 'completed' | 'abandoned';
+  startedAt: string;
+  completedAt?: string;
+  agents?: string[];
+  summary?: string;
+  confidence?: number;
+}
+
 interface UseTrajectoryOptions {
   /** Polling interval in ms (default: 2000) */
   pollInterval?: number;
@@ -29,23 +40,28 @@ interface UseTrajectoryOptions {
 interface UseTrajectoryResult {
   steps: TrajectoryStep[];
   status: TrajectoryStatus | null;
+  history: TrajectoryHistoryEntry[];
   isLoading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
+  selectTrajectory: (id: string | null) => void;
+  selectedTrajectoryId: string | null;
 }
 
 export function useTrajectory(options: UseTrajectoryOptions = {}): UseTrajectoryResult {
   const {
     pollInterval = 2000,
     autoPoll = true,
-    trajectoryId,
+    trajectoryId: initialTrajectoryId,
     apiBaseUrl = '',
   } = options;
 
   const [steps, setSteps] = useState<TrajectoryStep[]>([]);
   const [status, setStatus] = useState<TrajectoryStatus | null>(null);
+  const [history, setHistory] = useState<TrajectoryHistoryEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [selectedTrajectoryId, setSelectedTrajectoryId] = useState<string | null>(initialTrajectoryId || null);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
 
   // Fetch trajectory status
@@ -67,9 +83,24 @@ export function useTrajectory(options: UseTrajectoryOptions = {}): UseTrajectory
     }
   }, [apiBaseUrl]);
 
+  // Fetch trajectory history
+  const fetchHistory = useCallback(async () => {
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/trajectory/history`);
+      const data = await response.json();
+
+      if (data.success) {
+        setHistory(data.trajectories || []);
+      }
+    } catch (err: any) {
+      console.error('[useTrajectory] History fetch error:', err);
+    }
+  }, [apiBaseUrl]);
+
   // Fetch trajectory steps
   const fetchSteps = useCallback(async () => {
     try {
+      const trajectoryId = selectedTrajectoryId;
       const url = trajectoryId
         ? `${apiBaseUrl}/api/trajectory/steps?trajectoryId=${encodeURIComponent(trajectoryId)}`
         : `${apiBaseUrl}/api/trajectory/steps`;
@@ -87,19 +118,29 @@ export function useTrajectory(options: UseTrajectoryOptions = {}): UseTrajectory
       console.error('[useTrajectory] Steps fetch error:', err);
       setError(err.message);
     }
-  }, [apiBaseUrl, trajectoryId]);
+  }, [apiBaseUrl, selectedTrajectoryId]);
+
+  // Select a specific trajectory
+  const selectTrajectory = useCallback((id: string | null) => {
+    setSelectedTrajectoryId(id);
+  }, []);
 
   // Combined refresh function
   const refresh = useCallback(async () => {
     setIsLoading(true);
-    await Promise.all([fetchStatus(), fetchSteps()]);
+    await Promise.all([fetchStatus(), fetchSteps(), fetchHistory()]);
     setIsLoading(false);
-  }, [fetchStatus, fetchSteps]);
+  }, [fetchStatus, fetchSteps, fetchHistory]);
 
   // Initial fetch
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Re-fetch steps when selected trajectory changes
+  useEffect(() => {
+    fetchSteps();
+  }, [selectedTrajectoryId, fetchSteps]);
 
   // Polling
   useEffect(() => {
@@ -108,21 +149,29 @@ export function useTrajectory(options: UseTrajectoryOptions = {}): UseTrajectory
     pollingRef.current = setInterval(() => {
       fetchSteps();
       fetchStatus();
+      // Poll history less frequently
     }, pollInterval);
+
+    // Poll history every 10 seconds
+    const historyPollRef = setInterval(fetchHistory, 10000);
 
     return () => {
       if (pollingRef.current) {
         clearInterval(pollingRef.current);
       }
+      clearInterval(historyPollRef);
     };
-  }, [autoPoll, pollInterval, fetchSteps, fetchStatus]);
+  }, [autoPoll, pollInterval, fetchSteps, fetchStatus, fetchHistory]);
 
   return {
     steps,
     status,
+    history,
     isLoading,
     error,
     refresh,
+    selectTrajectory,
+    selectedTrajectoryId,
   };
 }
 

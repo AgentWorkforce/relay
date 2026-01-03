@@ -16,7 +16,7 @@ import { exec, execSync, spawn, ChildProcess } from 'node:child_process';
 import crypto from 'node:crypto';
 import { promisify } from 'node:util';
 import { RelayClient } from './client.js';
-import { OutputParser, type ParsedCommand, parseSummaryWithDetails, parseSessionEndFromOutput, type SessionEndMarker } from './parser.js';
+import { OutputParser, type ParsedCommand, type ParsedSummary, parseSummaryWithDetails, parseSessionEndFromOutput, type SessionEndMarker } from './parser.js';
 import { InboxManager } from './inbox.js';
 import type { SendPayload, SendMeta } from '../protocol/types.js';
 import { SqliteStorageAdapter } from '../storage/sqlite-adapter.js';
@@ -43,10 +43,13 @@ import {
   type CliType,
   type InjectionResult,
   type InjectionMetrics,
+  type InjectionCallbacks,
   stripAnsi,
   sleep,
   getDefaultRelayPrefix,
   createInjectionMetrics,
+  buildInjectionString,
+  injectWithRetry as sharedInjectWithRetry,
   INJECTION_CONSTANTS,
   CLI_QUIRKS,
 } from './shared.js';
@@ -986,7 +989,15 @@ export class TmuxWrapper {
     if (summaryHash === this.lastSummaryHash) return;
     this.lastSummaryHash = summaryHash;
 
-    // Wait for storage to be ready before saving
+    // Save to continuity ledger for session recovery
+    // This ensures the ledger has actual data instead of placeholders
+    if (this.continuity) {
+      this.saveSummaryToLedger(summary).catch(err => {
+        this.logStderr(`Failed to save summary to ledger: ${err.message}`, true);
+      });
+    }
+
+    // Wait for storage to be ready before saving to project storage
     this.storageReady.then(ready => {
       if (!ready || !this.storage) {
         this.logStderr('Cannot save summary: storage not initialized');
@@ -1008,6 +1019,40 @@ export class TmuxWrapper {
         this.logStderr(`Failed to save summary: ${err.message}`, true);
       });
     });
+  }
+
+  /**
+   * Save a parsed summary to the continuity ledger.
+   * Maps summary fields to ledger fields for session recovery.
+   */
+  private async saveSummaryToLedger(summary: ParsedSummary): Promise<void> {
+    if (!this.continuity) return;
+
+    const updates: Record<string, unknown> = {};
+
+    // Map summary fields to ledger fields
+    if (summary.currentTask) {
+      updates.currentTask = summary.currentTask;
+    }
+
+    if (summary.completedTasks && summary.completedTasks.length > 0) {
+      updates.completed = summary.completedTasks;
+    }
+
+    if (summary.context) {
+      // Store context in inProgress as "next steps" hint
+      updates.inProgress = [summary.context];
+    }
+
+    if (summary.files && summary.files.length > 0) {
+      updates.fileContext = summary.files.map((f: string) => ({ path: f }));
+    }
+
+    // Only save if we have meaningful updates
+    if (Object.keys(updates).length > 0) {
+      await this.continuity.saveLedger(this.config.name, updates);
+      this.logStderr('Saved summary to continuity ledger');
+    }
   }
 
   /**
@@ -1308,105 +1353,8 @@ export class TmuxWrapper {
   }
 
   /**
-   * Verify that an injection appeared in the tmux pane scrollback.
-   * Looks for the message pattern in captured pane content.
-   */
-  private async verifyInjection(shortId: string, from: string): Promise<boolean> {
-    const expectedPattern = `Relay message from ${from} [${shortId}]`;
-    const startTime = Date.now();
-
-    while (Date.now() - startTime < INJECTION_CONSTANTS.VERIFICATION_TIMEOUT_MS) {
-      try {
-        // Capture pane scrollback
-        const { stdout } = await execAsync(
-          `"${this.tmuxPath}" capture-pane -t ${this.sessionName} -p -S - 2>/dev/null`
-        );
-
-        // Check if our message pattern appears
-        if (stdout.includes(expectedPattern)) {
-          return true;
-        }
-      } catch {
-        // Session might be gone, verification fails
-        return false;
-      }
-
-      await sleep(100);
-    }
-
-    return false;
-  }
-
-  /**
-   * Perform a single injection attempt via tmux paste.
-   */
-  private async performInjection(injection: string): Promise<void> {
-    await this.pasteLiteral(injection);
-    await sleep(INJECTION_CONSTANTS.ENTER_DELAY_MS);
-    await this.sendKeys('Enter');
-  }
-
-  /**
-   * Inject a message with retry logic and verification.
-   * Includes dedup check to prevent double-injection race condition.
-   */
-  private async injectWithRetry(
-    injection: string,
-    shortId: string,
-    from: string
-  ): Promise<InjectionResult> {
-    this.injectionMetrics.total++;
-
-    for (let attempt = 0; attempt < INJECTION_CONSTANTS.MAX_RETRIES; attempt++) {
-      try {
-        // On retry attempts, first check if message already exists (race condition fix)
-        // Previous injection may have succeeded but verification timed out
-        if (attempt > 0) {
-          const alreadyExists = await this.verifyInjection(shortId, from);
-          if (alreadyExists) {
-            this.injectionMetrics.successWithRetry++;
-            this.logStderr(`Message already present (late verification), skipping re-injection`);
-            return { success: true, attempts: attempt + 1 };
-          }
-        }
-
-        // Perform the injection
-        await this.performInjection(injection);
-
-        // Verify it appeared in pane
-        const verified = await this.verifyInjection(shortId, from);
-
-        if (verified) {
-          if (attempt === 0) {
-            this.injectionMetrics.successFirstTry++;
-          } else {
-            this.injectionMetrics.successWithRetry++;
-            this.logStderr(`Injection succeeded on attempt ${attempt + 1}`);
-          }
-          return { success: true, attempts: attempt + 1 };
-        }
-
-        // Not verified - log and retry
-        this.logStderr(
-          `Injection not verified, attempt ${attempt + 1}/${INJECTION_CONSTANTS.MAX_RETRIES}`
-        );
-
-        // Backoff before retry
-        if (attempt < INJECTION_CONSTANTS.MAX_RETRIES - 1) {
-          await sleep(INJECTION_CONSTANTS.RETRY_BACKOFF_MS * (attempt + 1));
-        }
-      } catch (err: any) {
-        this.logStderr(`Injection error on attempt ${attempt + 1}: ${err.message}`, true);
-      }
-    }
-
-    // All retries failed
-    this.injectionMetrics.failed++;
-    return { success: false, attempts: INJECTION_CONSTANTS.MAX_RETRIES };
-  }
-
-  /**
-   * Inject message via tmux send-keys
+   * Inject message via tmux send-keys.
+   * Uses shared injection logic with tmux-specific callbacks.
    */
   private async injectNextMessage(): Promise<void> {
     const msg = this.messageQueue.shift();
@@ -1416,26 +1364,7 @@ export class TmuxWrapper {
     this.logStderr(`Injecting message from ${msg.from} (cli: ${this.cliType})`);
 
     try {
-      // Strip ANSI escape sequences and orphaned control sequences from message body
-      let sanitizedBody = stripAnsi(msg.body).replace(/[\r\n]+/g, ' ').trim();
-
-      // Gemini interprets certain keywords (While, For, If, etc.) as shell commands
-      // Wrap in backticks to prevent shell keyword interpretation
-      if (this.cliType === 'gemini') {
-        sanitizedBody = `\`${sanitizedBody.replace(/`/g, "'")}\``;
-      }
-
-      // Short message ID for display (first 8 chars)
       const shortId = msg.messageId.substring(0, 8);
-
-      // Remove message truncation to allow full messages to pass through
-      const wasTruncated = false;
-
-      // Always include message ID; add lookup hint if truncated
-      const idTag = `[${shortId}]`;
-      const truncationHint = wasTruncated
-        ? ` [TRUNCATED - run "agent-relay read ${msg.messageId}"]`
-        : '';
 
       // Wait for input to be clear before injecting
       // If input is not clear (human typing), re-queue and try later - never clear forcefully!
@@ -1471,7 +1400,7 @@ export class TmuxWrapper {
       if (this.cliType === 'gemini') {
         const lastLine = await this.getLastLine();
         const cleanLine = stripAnsi(lastLine).trim();
-        if (/^\$\s*$/.test(cleanLine) || /^\s*\$\s*$/.test(cleanLine)) {
+        if (CLI_QUIRKS.isShellPrompt(cleanLine)) {
           this.logStderr('Gemini at shell prompt, skipping injection to avoid shell execution');
           // Re-queue the message for later
           this.messageQueue.unshift(msg);
@@ -1481,33 +1410,43 @@ export class TmuxWrapper {
         }
       }
 
-      // Standard injection for all CLIs including Gemini
-      // Format: Relay message from Sender [abc12345] [thread:xxx] [!] [#general]: content
-      // Thread/importance/channel hints are compact and optional to not break TUIs
-      const threadHint = msg.thread ? ` [thread:${msg.thread}]` : '';
-      // Importance indicator: [!!] for high (>75), [!] for medium (>50), none for low/default
-      const importanceHint = msg.importance !== undefined && msg.importance > 75 ? ' [!!]' :
-                             msg.importance !== undefined && msg.importance > 50 ? ' [!]' : '';
+      // Build injection string using shared utility
+      let injection = buildInjectionString(msg);
 
-      // Channel indicator: [#general] for broadcasts - tells agent to reply to * not sender
-      // This ensures responses to #general messages go back to #general, not as DMs
-      const channelHint = msg.originalTo === '*' ? ' [#general]' : '';
-
-      // Extract attachment file paths if present
-      let attachmentHint = '';
-      if (msg.data?.attachments && Array.isArray(msg.data.attachments)) {
-        const filePaths = msg.data.attachments
-          .map((att: { filePath?: string }) => att.filePath)
-          .filter((p): p is string => typeof p === 'string');
-        if (filePaths.length > 0) {
-          attachmentHint = ` [Attachments: ${filePaths.join(', ')}]`;
+      // Gemini-specific: wrap body in backticks to prevent shell keyword interpretation
+      if (this.cliType === 'gemini') {
+        const colonIdx = injection.indexOf(': ');
+        if (colonIdx > 0) {
+          const prefix = injection.substring(0, colonIdx + 2);
+          const body = injection.substring(colonIdx + 2);
+          injection = prefix + CLI_QUIRKS.wrapForGemini(body);
         }
       }
 
-      const injection = `Relay message from ${msg.from} ${idTag}${threadHint}${importanceHint}${channelHint}${attachmentHint}: ${sanitizedBody}${truncationHint}`;
+      // Create callbacks for shared injection logic
+      const callbacks: InjectionCallbacks = {
+        getOutput: async () => {
+          try {
+            const { stdout } = await execAsync(
+              `"${this.tmuxPath}" capture-pane -t ${this.sessionName} -p -S - 2>/dev/null`
+            );
+            return stdout;
+          } catch {
+            return '';
+          }
+        },
+        performInjection: async (inj: string) => {
+          await this.pasteLiteral(inj);
+          await sleep(INJECTION_CONSTANTS.ENTER_DELAY_MS);
+          await this.sendKeys('Enter');
+        },
+        log: (message: string) => this.logStderr(message),
+        logError: (message: string) => this.logStderr(message, true),
+        getMetrics: () => this.injectionMetrics,
+      };
 
-      // Inject with retry and verification
-      const result = await this.injectWithRetry(injection, shortId, msg.from);
+      // Inject with retry and verification using shared logic
+      const result = await sharedInjectWithRetry(injection, shortId, msg.from, callbacks);
 
       if (result.success) {
         this.logStderr(`Injection complete (attempt ${result.attempts})`);

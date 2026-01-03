@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-03T14:11:06.007Z",
+  "lastUpdated": "2026-01-03T15:09:03.192Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -144,9 +144,52 @@
     },
     "traj_gjdre5voouod": {
       "title": "Fix LogViewer ANSI stripping and Show more removal",
-      "status": "active",
+      "status": "completed",
       "startedAt": "2026-01-03T14:11:06.005Z",
-      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/active/traj_gjdre5voouod.json"
+      "completedAt": "2026-01-03T14:16:21.305Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_gjdre5voouod.json"
+    },
+    "traj_h4xijiuip3w4": {
+      "title": "Fix trajectory viewer - colors and data loading",
+      "status": "completed",
+      "startedAt": "2026-01-03T14:28:34.689Z",
+      "completedAt": "2026-01-03T14:39:58.858Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_h4xijiuip3w4.json"
+    },
+    "traj_u9n9eqasw16k": {
+      "title": "Backend trajectory data-loading fix review",
+      "status": "completed",
+      "startedAt": "2026-01-03T14:40:11.376Z",
+      "completedAt": "2026-01-03T14:41:50.001Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_u9n9eqasw16k.json"
+    },
+    "traj_4aa0bb77s4nh": {
+      "title": "Record backend review findings",
+      "status": "completed",
+      "startedAt": "2026-01-03T14:42:29.295Z",
+      "completedAt": "2026-01-03T14:42:42.369Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_4aa0bb77s4nh.json"
+    },
+    "traj_ntbs6ppopf46": {
+      "title": "Re-review backend fixes",
+      "status": "completed",
+      "startedAt": "2026-01-03T14:42:57.213Z",
+      "completedAt": "2026-01-03T14:43:14.756Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_ntbs6ppopf46.json"
+    },
+    "traj_2dao7ddgnta0": {
+      "title": "Replace console.log with structured logger in agent-registry.ts and cloud-sync.ts",
+      "status": "completed",
+      "startedAt": "2026-01-03T14:48:09.986Z",
+      "completedAt": "2026-01-03T14:56:16.425Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_2dao7ddgnta0.json"
+    },
+    "traj_wkp2fgzdyinb": {
+      "title": "Fix continuity parser to handle markdown content",
+      "status": "completed",
+      "startedAt": "2026-01-03T15:03:22.148Z",
+      "completedAt": "2026-01-03T15:09:03.169Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_wkp2fgzdyinb.json"
     }
   }
 }

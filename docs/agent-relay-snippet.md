@@ -16,14 +16,13 @@ Your message here.>>>
 Broadcast to all agents.>>>
 ```
 
-**CRITICAL:** Always close multi-line messages with `>>>` on its own line!
+**CRITICAL:** Always close multi-line messages with `>>>` after the very last character.
 
 **WARNING:** Do NOT put blank lines before `>>>` - it must immediately follow your content:
 
 ```
 # CORRECT - >>> immediately after content
-->relay:Agent <<<
-Your message here.>>>
+->relay:Agent <<<Your message here.>>>
 
 # WRONG - blank line before >>> breaks parsing
 ->relay:Agent <<<
@@ -156,3 +155,20 @@ QUESTION: JWT or sessions?>>>
 - Pattern must be at line start (whitespace OK)
 - Escape with `\->relay:` to output literally
 - Check daemon status: `agent-relay status`
+
+## Writing Examples (For Documentation)
+
+When showing examples of relay syntax in documentation or explanations, **escape the markers** so they don't get interpreted as actual messages:
+
+```
+# Escape the opening marker
+\->relay:AgentName \<<<
+Example content here.\>>>
+```
+
+**What to escape:**
+- `\->relay:` - Prevents the pattern from being detected as a real message
+- `\<<<` - Prevents the fenced block from being parsed
+- `\>>>` - Prevents the block from being closed
+
+This ensures your examples are displayed literally rather than sent as messages.
