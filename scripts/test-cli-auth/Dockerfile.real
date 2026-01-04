@@ -21,6 +21,8 @@ RUN apt-get update && apt-get install -y \
     curl \
     git \
     python3 \
+    make \
+    g++ \
     jq \
     && rm -rf /var/lib/apt/lists/*
 
@@ -48,9 +50,8 @@ RUN curl -fsSL https://opencode.ai/install | bash || echo "OpenCode install fail
 # Droid - uses official install script
 RUN curl -fsSL https://app.factory.ai/cli | sh || echo "Droid install failed"
 
-# Gemini - try npm first, fall back to install script
-RUN npm install -g @anthropic-ai/gemini-cli 2>/dev/null || \
-    curl -fsSL https://gemini.google.com/cli/install.sh | bash || \
+# Gemini CLI - uses Google's install script
+RUN curl -fsSL https://gemini.google.com/cli/install.sh | bash || \
     echo "Gemini install failed"
 
 # Add user's local bin to PATH
