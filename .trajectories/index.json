@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-04T00:06:36.637Z",
+  "lastUpdated": "2026-01-04T06:58:02.712Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -279,7 +279,7 @@
       "title": "Provider CLI auth flow for cloud workspaces",
       "status": "active",
       "startedAt": "2026-01-04T00:05:43.304Z",
-      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/active/traj_7ludwvz45veh.json"
+      "path": "/home/user/relay/.trajectories/active/traj_7ludwvz45veh.json"
     }
   }
 }

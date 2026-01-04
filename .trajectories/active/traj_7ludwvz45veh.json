@@ -47,6 +47,42 @@
             "reasoning": "Users should be able to connect additional AI providers after initial setup. Settings page in workspace dashboard will allow connecting Claude, Codex, OpenCode, Droid at any time, not just during initial workspace setup."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1767509811642,
+          "type": "decision",
+          "content": "Default trajectories to opt-out (user-level storage): Default trajectories to opt-out (user-level storage)",
+          "raw": {
+            "question": "Default trajectories to opt-out (user-level storage)",
+            "chosen": "Default trajectories to opt-out (user-level storage)",
+            "alternatives": [],
+            "reasoning": "Most repos won't want trajectory files in source control. Users must explicitly opt-in to store in repo via .relay/config.json"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767509822845,
+          "type": "decision",
+          "content": "Store user-level trajectories in ~/.config/agent-relay/trajectories/<project-hash>/: Store user-level trajectories in ~/.config/agent-relay/trajectories/<project-hash>/",
+          "raw": {
+            "question": "Store user-level trajectories in ~/.config/agent-relay/trajectories/<project-hash>/",
+            "chosen": "Store user-level trajectories in ~/.config/agent-relay/trajectories/<project-hash>/",
+            "alternatives": [],
+            "reasoning": "XDG-compliant path, project-isolated via hash to prevent collisions, survives repo deletion"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767509882710,
+          "type": "decision",
+          "content": "Trajectory settings configurable after GitHub app setup: Trajectory settings configurable after GitHub app setup",
+          "raw": {
+            "question": "Trajectory settings configurable after GitHub app setup",
+            "chosen": "Trajectory settings configurable after GitHub app setup",
+            "alternatives": [],
+            "reasoning": "Users should configure .relay/config.json after connecting repo to cloud workspace. This happens in the workspace onboarding flow."
+          },
+          "significance": "high"
         }
       ]
     }
