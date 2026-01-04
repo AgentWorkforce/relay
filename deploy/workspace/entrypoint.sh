@@ -41,7 +41,9 @@ EOF
 response=$(curl -sf \
   -H "Authorization: Bearer ${WORKSPACE_TOKEN}" \
   "${CLOUD_API_URL}/api/git/token?workspaceId=${WORKSPACE_ID}" 2>/dev/null)
-echo "$response" | grep -o '"token":"[^"]*"' | cut -d'"' -f4
+if [[ -n "$response" ]]; then
+  echo "$response" | jq -r '.token // empty'
+fi
 GHEOF
   chmod +x "/tmp/gh-token-helper.sh"
 
