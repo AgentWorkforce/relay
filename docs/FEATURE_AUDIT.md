@@ -40,7 +40,7 @@ Comparison of Claude Code features from https://adocomplete.com/advent-of-claude
 | `claude --continue` resume last session | 🔶 Partial | Have session persistence, but resume is protocol-level not user-facing |
 | `claude --resume` session picker | ❌ Missing | No interactive session picker |
 | Named sessions (`/rename`, `/resume`) | ❌ Missing | Sessions have IDs but no user-friendly naming |
-| Claude Code Remote / teleport | ✅ Have | `agent-relay cloud link` bridges web → local via CloudSyncService |
+| Claude Code Remote / teleport | 🔶 Partial | `agent-relay cloud link` works but OAuth requires manual copy/paste (see bd-oauth-callback) |
 | `/export` conversation to markdown | ❌ Missing | Have message history but no export command |
 
 ---
@@ -110,23 +110,24 @@ Comparison of Claude Code features from https://adocomplete.com/advent-of-claude
 
 ### High Priority (Core UX gaps)
 
-1. **Session Picker/Resume UI** - Named sessions with picker
-2. **Export Command** - `/export` or `agent-relay export` for conversations
-3. **Context/Usage Visibility** - Token consumption and rate limits per agent
+1. **OAuth Callback Server** - Seamless `cloud link` without manual copy/paste (bd-oauth-callback)
+2. **Session Picker/Resume UI** - Named sessions with picker
+3. **Export Command** - `/export` or `agent-relay export` for conversations
+4. **Context/Usage Visibility** - Token consumption and rate limits per agent
 
 ### Medium Priority (Power user features)
 
-4. **Init Command** - `agent-relay init` to scaffold project config
-5. **Rules System** - Path-based conditional rules (`.claude/rules/`)
-6. **Plan Mode** - Preview implementation plans before spawning agents
-7. **Statusline** - Per-agent status bar with custom metrics
+5. **Init Command** - `agent-relay init` to scaffold project config
+6. **Rules System** - Path-based conditional rules (`.claude/rules/`)
+7. **Plan Mode** - Preview implementation plans before spawning agents
+8. **Statusline** - Per-agent status bar with custom metrics
 
 ### Lower Priority (Nice to have)
 
-8. **Sandbox Mode** - Execution boundaries for spawned agents
-9. **Plugin Format** - Bundled package format for distribution
-10. **Chrome Extension** - Browser automation (major undertaking)
-11. **LSP Integration** - Code intelligence for agents
+9. **Sandbox Mode** - Execution boundaries for spawned agents
+10. **Plugin Format** - Bundled package format for distribution
+11. **Chrome Extension** - Browser automation (major undertaking)
+12. **LSP Integration** - Code intelligence for agents
 
 ---
 
