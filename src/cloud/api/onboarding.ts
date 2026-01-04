@@ -61,6 +61,43 @@ setInterval(() => {
 }, 60000);
 
 /**
+ * Interactive prompt handler configuration
+ * Defines patterns to detect prompts and responses to send
+ */
+interface PromptHandler {
+  /** Pattern to detect in CLI output (case-insensitive) */
+  pattern: RegExp;
+  /** Response to send (e.g., '\r' for enter, 'y\r' for yes+enter) */
+  response: string;
+  /** Delay before sending response (ms) */
+  delay?: number;
+  /** Description for logging/debugging */
+  description: string;
+}
+
+/**
+ * CLI auth configuration for each provider
+ */
+export interface CLIAuthConfig {
+  /** CLI command to run */
+  command: string;
+  /** Arguments to pass */
+  args: string[];
+  /** Pattern to extract auth URL from output */
+  urlPattern: RegExp;
+  /** Path to credentials file (for reading after auth) */
+  credentialPath?: string;
+  /** Display name for UI */
+  displayName: string;
+  /** Interactive prompts to auto-respond to */
+  prompts: PromptHandler[];
+  /** Success indicators in output */
+  successPatterns: RegExp[];
+  /** How long to wait for URL to appear (ms) */
+  waitTimeout: number;
+}
+
+/**
  * CLI commands and URL patterns for each provider
  *
  * Each CLI tool outputs an OAuth URL when run without credentials.
@@ -70,52 +107,227 @@ setInterval(() => {
  * for the user to complete OAuth in their browser. We capture the URL and
  * display it in a popup for the user.
  */
-const CLI_AUTH_CONFIG: Record<string, {
-  command: string;
-  args: string[];
-  urlPattern: RegExp;
-  credentialPath?: string;
-  displayName: string;
-}> = {
+export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
   anthropic: {
-    // Claude Code CLI - running without args triggers OAuth if not authenticated
     command: 'claude',
-    args: [], // No args needed - CLI auto-prompts for auth
-    // Generic URL pattern with capture group - Claude outputs auth URL to stdout
+    args: [],
     urlPattern: /(https:\/\/[^\s]+)/,
     credentialPath: '~/.claude/credentials.json',
     displayName: 'Claude',
+    waitTimeout: 5000,
+    prompts: [
+      {
+        pattern: /dark\s*(mode|theme)/i,
+        response: '\r', // Press enter to accept default
+        delay: 100,
+        description: 'Dark mode prompt',
+      },
+      {
+        pattern: /(subscription|api\s*key|how\s*would\s*you\s*like\s*to\s*authenticate)/i,
+        response: '\r', // Press enter for first option (subscription)
+        delay: 100,
+        description: 'Auth method prompt',
+      },
+      {
+        pattern: /trust\s*(this|the)\s*(directory|folder|workspace)/i,
+        response: 'y\r', // Yes to trust
+        delay: 100,
+        description: 'Trust directory prompt',
+      },
+    ],
+    successPatterns: [
+      /success/i,
+      /authenticated/i,
+      /logged\s*in/i,
+    ],
   },
   openai: {
-    // Codex CLI - uses 'login' subcommand
     command: 'codex',
     args: ['login'],
     urlPattern: /(https:\/\/[^\s]+)/,
     credentialPath: '~/.codex/credentials.json',
     displayName: 'Codex',
+    waitTimeout: 3000,
+    prompts: [
+      {
+        pattern: /trust\s*(this|the)\s*(directory|folder|workspace)/i,
+        response: 'y\r',
+        delay: 100,
+        description: 'Trust directory prompt',
+      },
+    ],
+    successPatterns: [
+      /success/i,
+      /authenticated/i,
+      /logged\s*in/i,
+    ],
   },
   google: {
-    // Gemini CLI
     command: 'gemini',
     args: [],
     urlPattern: /(https:\/\/[^\s]+)/,
     displayName: 'Gemini',
+    waitTimeout: 3000,
+    prompts: [],
+    successPatterns: [
+      /success/i,
+      /authenticated/i,
+    ],
   },
   opencode: {
-    // OpenCode CLI
     command: 'opencode',
     args: [],
     urlPattern: /(https:\/\/[^\s]+)/,
     displayName: 'OpenCode',
+    waitTimeout: 3000,
+    prompts: [],
+    successPatterns: [
+      /success/i,
+      /authenticated/i,
+    ],
   },
   droid: {
-    // Droid CLI
     command: 'droid',
     args: [],
     urlPattern: /(https:\/\/[^\s]+)/,
     displayName: 'Droid',
+    waitTimeout: 3000,
+    prompts: [],
+    successPatterns: [
+      /success/i,
+      /authenticated/i,
+    ],
   },
 };
+
+/**
+ * Strip ANSI escape codes from text
+ */
+export function stripAnsiCodes(text: string): string {
+  return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+}
+
+/**
+ * Check if text matches any success pattern
+ */
+export function matchesSuccessPattern(text: string, patterns: RegExp[]): boolean {
+  const cleanText = stripAnsiCodes(text).toLowerCase();
+  return patterns.some(p => p.test(cleanText));
+}
+
+/**
+ * Find matching prompt handler for given text
+ */
+export function findMatchingPrompt(
+  text: string,
+  prompts: PromptHandler[],
+  respondedPrompts: Set<string>
+): PromptHandler | null {
+  const cleanText = stripAnsiCodes(text);
+
+  for (const prompt of prompts) {
+    // Skip if already responded to this prompt type
+    if (respondedPrompts.has(prompt.description)) continue;
+
+    if (prompt.pattern.test(cleanText)) {
+      return prompt;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Validate a provider's CLI auth configuration
+ * Returns null if valid, or an error message if invalid
+ */
+export function validateProviderConfig(providerId: string, config: CLIAuthConfig): string | null {
+  if (!config.command || typeof config.command !== 'string') {
+    return `${providerId}: missing or invalid 'command'`;
+  }
+
+  if (!Array.isArray(config.args)) {
+    return `${providerId}: 'args' must be an array`;
+  }
+
+  if (!(config.urlPattern instanceof RegExp)) {
+    return `${providerId}: 'urlPattern' must be a RegExp`;
+  }
+
+  // Check urlPattern has a capture group
+  const testUrl = 'https://example.com/test';
+  const match = testUrl.match(config.urlPattern);
+  if (!match || !match[1]) {
+    return `${providerId}: 'urlPattern' must have a capture group - got ${config.urlPattern}`;
+  }
+
+  if (!config.displayName || typeof config.displayName !== 'string') {
+    return `${providerId}: missing or invalid 'displayName'`;
+  }
+
+  if (typeof config.waitTimeout !== 'number' || config.waitTimeout <= 0) {
+    return `${providerId}: 'waitTimeout' must be a positive number`;
+  }
+
+  if (!Array.isArray(config.prompts)) {
+    return `${providerId}: 'prompts' must be an array`;
+  }
+
+  for (let i = 0; i < config.prompts.length; i++) {
+    const prompt = config.prompts[i];
+    if (!(prompt.pattern instanceof RegExp)) {
+      return `${providerId}: prompt[${i}].pattern must be a RegExp`;
+    }
+    if (typeof prompt.response !== 'string') {
+      return `${providerId}: prompt[${i}].response must be a string`;
+    }
+    if (!prompt.description || typeof prompt.description !== 'string') {
+      return `${providerId}: prompt[${i}].description must be a non-empty string`;
+    }
+  }
+
+  if (!Array.isArray(config.successPatterns)) {
+    return `${providerId}: 'successPatterns' must be an array`;
+  }
+
+  for (let i = 0; i < config.successPatterns.length; i++) {
+    if (!(config.successPatterns[i] instanceof RegExp)) {
+      return `${providerId}: successPatterns[${i}] must be a RegExp`;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Validate all provider configurations
+ * Throws an error if any provider is invalid
+ */
+export function validateAllProviderConfigs(): void {
+  const errors: string[] = [];
+
+  for (const [providerId, config] of Object.entries(CLI_AUTH_CONFIG)) {
+    const error = validateProviderConfig(providerId, config);
+    if (error) {
+      errors.push(error);
+    }
+  }
+
+  if (errors.length > 0) {
+    throw new Error(`Invalid provider configurations:\n${errors.join('\n')}`);
+  }
+}
+
+/**
+ * Get list of supported providers for CLI auth
+ */
+export function getSupportedProviders(): { id: string; displayName: string; command: string }[] {
+  return Object.entries(CLI_AUTH_CONFIG).map(([id, config]) => ({
+    id,
+    displayName: config.displayName,
+    command: config.command,
+  }));
+}
 
 /**
  * POST /api/onboarding/cli/:provider/start
@@ -158,50 +370,37 @@ onboardingRouter.post('/cli/:provider/start', async (req: Request, res: Response
     session.process = proc;
 
     // Track which prompts we've already responded to
-    let respondedDarkMode = false;
-    let respondedAuthChoice = false;
+    const respondedPrompts = new Set<string>();
 
     // Capture PTY output for auth URL and handle interactive prompts
     proc.onData((data: string) => {
       session.output += data;
 
-      // Strip ANSI escape codes for pattern matching
-      const cleanText = data.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
-      const lowerText = cleanText.toLowerCase();
-
-      // Handle Claude's interactive setup prompts
-      if (provider === 'anthropic') {
-        // Dark mode prompt - just press enter to accept default (or 'n' for no)
-        if (!respondedDarkMode && (lowerText.includes('dark mode') || lowerText.includes('dark theme'))) {
-          respondedDarkMode = true;
-          // Press enter to accept default
-          setTimeout(() => proc.write('\r'), 100);
-        }
-
-        // Auth method prompt - choose subscription (press enter or '1')
-        // Claude asks: "Would you like to use your Claude subscription or an API key?"
-        if (!respondedAuthChoice && (
-          lowerText.includes('subscription') ||
-          lowerText.includes('api key') ||
-          lowerText.includes('how would you like to authenticate')
-        )) {
-          respondedAuthChoice = true;
-          // Press enter to select first option (Claude subscription)
-          setTimeout(() => proc.write('\r'), 100);
-        }
+      // Check for matching prompts and auto-respond
+      const matchingPrompt = findMatchingPrompt(data, config.prompts, respondedPrompts);
+      if (matchingPrompt) {
+        respondedPrompts.add(matchingPrompt.description);
+        const delay = matchingPrompt.delay ?? 100;
+        setTimeout(() => {
+          try {
+            proc.write(matchingPrompt.response);
+            console.log(`[onboarding] Auto-responded to: ${matchingPrompt.description}`);
+          } catch {
+            // Process may have exited
+          }
+        }, delay);
       }
 
       // Look for auth URL
+      const cleanText = stripAnsiCodes(data);
       const match = cleanText.match(config.urlPattern);
       if (match && match[1]) {
         session.authUrl = match[1];
         session.status = 'waiting_auth';
       }
 
-      // Look for success indicators
-      if (lowerText.includes('success') ||
-          lowerText.includes('authenticated') ||
-          lowerText.includes('logged in')) {
+      // Check for success indicators
+      if (matchesSuccessPattern(data, config.successPatterns)) {
         session.status = 'success';
       }
     });
@@ -217,10 +416,8 @@ onboardingRouter.post('/cli/:provider/start', async (req: Request, res: Response
       }
     });
 
-    // Wait for URL to appear - longer timeout for Claude's multi-step setup
-    // Claude asks: dark mode? -> subscription vs API key? -> shows login URL
-    const waitTime = provider === 'anthropic' ? 5000 : 2000;
-    await new Promise(resolve => setTimeout(resolve, waitTime));
+    // Wait for URL to appear using provider-specific timeout
+    await new Promise(resolve => setTimeout(resolve, config.waitTimeout));
 
     // Return session info based on current state
     if (session.status === 'success') {
