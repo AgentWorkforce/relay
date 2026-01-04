@@ -192,6 +192,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
 
   // Full settings page state
   const [isFullSettingsOpen, setIsFullSettingsOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<'dashboard' | 'workspace' | 'team' | 'billing'>('dashboard');
 
   // Conversation history panel state
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
@@ -541,6 +542,13 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
 
   // Handle settings click - opens full settings page
   const handleSettingsClick = useCallback(() => {
+    setSettingsInitialTab('dashboard');
+    setIsFullSettingsOpen(true);
+  }, []);
+
+  // Handle workspace settings click - opens settings to workspace tab
+  const handleWorkspaceSettingsClick = useCallback(() => {
+    setSettingsInitialTab('workspace');
     setIsFullSettingsOpen(true);
   }, []);
 
@@ -851,6 +859,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
             activeWorkspaceId={effectiveActiveWorkspaceId ?? undefined}
             onSelect={handleEffectiveWorkspaceSelect}
             onAddWorkspace={() => setIsAddWorkspaceOpen(true)}
+            onWorkspaceSettings={handleWorkspaceSettingsClick}
             isLoading={effectiveIsLoading}
           />
         </div>
@@ -1226,6 +1235,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
       {isFullSettingsOpen && (
         <SettingsPage
           currentUserId={cloudSession?.user?.id}
+          initialTab={settingsInitialTab}
           onClose={() => setIsFullSettingsOpen(false)}
         />
       )}

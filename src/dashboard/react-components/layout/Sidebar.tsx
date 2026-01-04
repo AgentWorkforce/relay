@@ -42,8 +42,6 @@ export interface SidebarProps {
   onThreadSelect?: (threadId: string) => void;
   /** Mobile: close sidebar handler */
   onClose?: () => void;
-  /** Settings click handler */
-  onSettingsClick?: () => void;
 }
 
 export function Sidebar({
@@ -67,7 +65,6 @@ export function Sidebar({
   onLogsClick,
   onThreadSelect,
   onClose,
-  onSettingsClick,
 }: SidebarProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [isThreadsCollapsed, setIsThreadsCollapsed] = useState(() => {
@@ -206,20 +203,13 @@ export function Sidebar({
       </div>
 
       {/* Footer Actions */}
-      <div className="p-4 border-t border-border-subtle space-y-2">
+      <div className="p-4 border-t border-border-subtle">
         <button
           className="w-full py-3 px-4 bg-gradient-to-r from-accent-cyan to-[#00b8d9] text-bg-deep font-semibold text-sm cursor-pointer flex items-center justify-center gap-2 rounded-lg transition-all duration-150 hover:shadow-glow-cyan hover:-translate-y-0.5"
           onClick={onSpawnClick}
         >
           <PlusIcon />
           Spawn Agent
-        </button>
-        <button
-          className="w-full py-2.5 px-4 bg-bg-tertiary border border-border-subtle text-text-secondary font-medium text-sm cursor-pointer flex items-center justify-center gap-2 rounded-lg transition-all duration-150 hover:bg-bg-elevated hover:border-border-medium hover:text-text-primary"
-          onClick={onSettingsClick}
-        >
-          <SettingsIcon />
-          Settings
         </button>
       </div>
     </aside>
@@ -275,15 +265,6 @@ function CloseIcon() {
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <line x1="18" y1="6" x2="6" y2="18" />
       <line x1="6" y1="6" x2="18" y2="18" />
-    </svg>
-  );
-}
-
-function SettingsIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
     </svg>
   );
 }
