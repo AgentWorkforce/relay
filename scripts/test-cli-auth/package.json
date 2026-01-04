@@ -1,0 +1,14 @@
+{
+  "name": "cli-oauth-test",
+  "version": "1.0.0",
+  "description": "CLI OAuth flow testing for agent-relay",
+  "type": "module",
+  "scripts": {
+    "test": "tsx ci-test-runner.ts",
+    "test:local": "tsx test-oauth-flow.ts"
+  },
+  "dependencies": {
+    "node-pty": "^1.0.0",
+    "tsx": "^4.19.0"
+  }
+}

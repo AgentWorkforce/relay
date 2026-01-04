@@ -208,8 +208,64 @@ For testing with actual CLIs (not mocks), you can:
 - Check for typos in pattern (e.g., `logged in` vs `loggedin`)
 - Add new patterns if CLI uses different success messages
 
+## CI Integration
+
+### GitHub Actions
+
+The workflow `.github/workflows/cli-oauth-test.yml` runs:
+
+1. **On every push/PR** that modifies:
+   - `src/cloud/api/onboarding.ts`
+   - `scripts/test-cli-auth/**`
+
+2. **Weekly schedule** (Sundays at midnight):
+   - Catches provider CLI changes early
+   - Auto-creates GitHub issues on failure
+
+### Running CI Tests Locally
+
+```bash
+# Build the test container
+docker build -t cli-oauth-test scripts/test-cli-auth/
+
+# Run all tests
+docker run --rm cli-oauth-test
+
+# Run with results output
+docker run --rm -v $(pwd)/test-results:/tmp cli-oauth-test
+cat test-results/cli-oauth-test-results.json
+```
+
+### Test Output Format
+
+```json
+{
+  "timestamp": "2024-01-15T10:30:00.000Z",
+  "results": [
+    {
+      "provider": "anthropic",
+      "command": "claude",
+      "passed": true,
+      "urlExtracted": "https://console.anthropic.com/oauth/...",
+      "urlValid": true,
+      "promptsHandled": 3,
+      "exitCode": 0,
+      "duration": 1234
+    }
+  ],
+  "summary": {
+    "total": 5,
+    "passed": 5,
+    "failed": 0
+  }
+}
+```
+
 ## Files
 
 - `mock-cli.sh` - Simulates CLI interactive flows for testing
-- `test-oauth-flow.ts` - Integration test runner
+- `ci-test-runner.ts` - Docker-based CI test runner
+- `test-oauth-flow.ts` - Local integration test runner
+- `Dockerfile` - Test container definition
+- `package.json` - Test dependencies
 - `README.md` - This documentation

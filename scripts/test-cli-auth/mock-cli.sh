@@ -1,12 +1,35 @@
 #!/bin/bash
 # Mock CLI for testing OAuth flow prompt handling
-# Usage: ./mock-cli.sh <provider>
+# Usage: ./mock-cli.sh <provider> [delay]
 #
 # This script simulates the interactive prompts of various AI CLI tools
 # for testing the onboarding OAuth flow without actual CLI binaries.
+#
+# When installed as symlinks (e.g., /usr/local/bin/claude -> mock-cli.sh),
+# it auto-detects the provider from the command name.
 
-PROVIDER="${1:-claude}"
-DELAY="${2:-0.5}"
+# Detect provider from how the script was called
+SCRIPT_NAME=$(basename "$0")
+
+case "$SCRIPT_NAME" in
+  claude) PROVIDER="claude" ;;
+  codex) PROVIDER="codex" ;;
+  gemini) PROVIDER="gemini" ;;
+  opencode) PROVIDER="opencode" ;;
+  droid) PROVIDER="droid" ;;
+  mock-cli.sh|mock-cli|mock-cli-impl.sh)
+    PROVIDER="${1:-claude}"
+    shift 2>/dev/null || true
+    ;;
+  *) PROVIDER="${1:-claude}" ;;
+esac
+
+# Handle 'login' subcommand for codex
+if [ "$PROVIDER" = "codex" ] && [ "$1" = "login" ]; then
+  shift
+fi
+
+DELAY="${1:-0.3}"
 
 # Colors for output
 GREEN='\033[0;32m'
