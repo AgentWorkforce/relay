@@ -38,6 +38,10 @@ interface ProviderInfo {
   displayName: string;
   color: string;
   cliCommand?: string;
+  /** Whether this provider supports device flow (code displayed on screen) */
+  supportsDeviceFlow?: boolean;
+  /** Whether standard flow redirects to a URL the user must copy (shows "not found" page) */
+  requiresUrlCopy?: boolean;
 }
 
 interface ProviderAuthState {
@@ -46,6 +50,8 @@ interface ProviderAuthState {
   sessionId?: string;
   status: 'starting' | 'waiting' | 'submitting' | 'success' | 'error';
   error?: string;
+  /** Whether using device flow (code displayed on screen vs redirect URL) */
+  useDeviceFlow?: boolean;
 }
 
 type PageState = 'loading' | 'local' | 'select-workspace' | 'no-workspaces' | 'connect-provider' | 'connecting' | 'connected' | 'error';
@@ -53,7 +59,7 @@ type PageState = 'loading' | 'local' | 'select-workspace' | 'no-workspaces' | 'c
 // Available AI providers
 const AI_PROVIDERS: ProviderInfo[] = [
   { id: 'anthropic', name: 'Anthropic', displayName: 'Claude', color: '#D97757', cliCommand: 'claude' },
-  { id: 'codex', name: 'OpenAI', displayName: 'Codex', color: '#10A37F', cliCommand: 'codex login' },
+  { id: 'codex', name: 'OpenAI', displayName: 'Codex', color: '#10A37F', cliCommand: 'codex login', supportsDeviceFlow: true, requiresUrlCopy: true },
   { id: 'opencode', name: 'OpenCode', displayName: 'OpenCode', color: '#00D4AA', cliCommand: 'opencode' },
   { id: 'droid', name: 'Factory', displayName: 'Droid', color: '#6366F1', cliCommand: 'droid' },
 ];
@@ -389,9 +395,19 @@ export default function DashboardPage() {
     }
   }, [selectedWorkspace, connectToWorkspace]);
 
-  // Submit auth code from OAuth popup
-  const handleSubmitAuthCode = useCallback(async () => {
-    if (!providerAuth?.sessionId || !authCode.trim()) return;
+  // Complete auth - polls for credentials after user completes auth in browser
+  const handleCompleteAuth = useCallback(async () => {
+    if (!providerAuth?.sessionId) return;
+
+    // For providers that require URL copy, validate the auth code/URL is provided
+    if (providerAuth.provider.requiresUrlCopy && !authCode.trim()) {
+      setProviderAuth(prev => prev ? {
+        ...prev,
+        status: 'error',
+        error: 'Please paste the redirect URL from your browser',
+      } : null);
+      return;
+    }
 
     const backendProviderId = PROVIDER_ID_MAP[providerAuth.provider.id] || providerAuth.provider.id;
 
@@ -403,30 +419,35 @@ export default function DashboardPage() {
         headers['X-CSRF-Token'] = csrfToken;
       }
 
-      const res = await fetch(`/api/onboarding/cli/${backendProviderId}/code/${providerAuth.sessionId}`, {
+      // Include auth code/URL in the body for providers that require it
+      const body = providerAuth.provider.requiresUrlCopy
+        ? JSON.stringify({ authCode: authCode.trim() })
+        : undefined;
+
+      const res = await fetch(`/api/onboarding/cli/${backendProviderId}/complete/${providerAuth.sessionId}`, {
         method: 'POST',
         credentials: 'include',
         headers,
-        body: JSON.stringify({ code: authCode.trim() }),
+        body,
       });
 
       const data = await res.json();
 
       if (!res.ok) {
-        throw new Error(data.error || 'Failed to submit auth code');
+        throw new Error(data.error || 'Failed to complete authentication');
       }
 
       // Success - show success state, then offer to connect another or continue
       setProviderAuth(prev => prev ? { ...prev, status: 'success' } : null);
-      setAuthCode('');
+      setAuthCode(''); // Clear the auth code input
     } catch (err) {
       setProviderAuth(prev => prev ? {
         ...prev,
         status: 'error',
-        error: err instanceof Error ? err.message : 'Failed to submit auth code',
+        error: err instanceof Error ? err.message : 'Failed to complete authentication',
       } : null);
     }
-  }, [providerAuth, authCode, csrfToken]);
+  }, [providerAuth, csrfToken, authCode]);
 
   // Connect another provider after successful auth
   const handleConnectAnother = useCallback(() => {
@@ -633,15 +654,35 @@ export default function DashboardPage() {
 
               {providerAuth.status === 'waiting' && providerAuth.authUrl && (
                 <div className="space-y-4">
-                  {/* Instructions */}
-                  <div className="p-4 bg-bg-tertiary rounded-lg border border-border-subtle">
-                    <h4 className="font-medium text-white mb-2">Complete authentication:</h4>
-                    <ol className="text-sm text-text-muted space-y-2 list-decimal list-inside">
-                      <li>Click the button below to open the login page</li>
-                      <li>Complete authentication and copy the code shown</li>
-                      <li>Paste the code below and click Submit</li>
-                    </ol>
-                  </div>
+                  {/* Provider-specific instructions */}
+                  {providerAuth.provider.requiresUrlCopy ? (
+                    /* Codex/OpenAI - requires copying the redirect URL */
+                    <div className="p-4 bg-bg-tertiary rounded-lg border border-border-subtle">
+                      <h4 className="font-medium text-white mb-2">Complete authentication:</h4>
+                      <ol className="text-sm text-text-muted space-y-2 list-decimal list-inside">
+                        <li>Click the button below to open the login page</li>
+                        <li>Sign in with your {providerAuth.provider.name} account</li>
+                        <li>
+                          <span className="text-warning font-medium">Important:</span> After signing in, the page will show "Page not found" or similar - <span className="text-white">this is expected!</span>
+                        </li>
+                        <li>Copy the <span className="text-white">entire URL</span> from your browser's address bar</li>
+                        <li>Paste it below and click Submit</li>
+                      </ol>
+                      <div className="mt-3 p-2 bg-warning/10 border border-warning/20 rounded text-xs text-warning">
+                        The URL will look like: <code className="bg-bg-deep px-1 rounded">http://127.0.0.1:...?code=...</code>
+                      </div>
+                    </div>
+                  ) : (
+                    /* Standard flow - just sign in and return */
+                    <div className="p-4 bg-bg-tertiary rounded-lg border border-border-subtle">
+                      <h4 className="font-medium text-white mb-2">Complete authentication:</h4>
+                      <ol className="text-sm text-text-muted space-y-2 list-decimal list-inside">
+                        <li>Click the button below to open the login page</li>
+                        <li>Sign in with your {providerAuth.provider.name} account</li>
+                        <li>Return here and click "I've completed login"</li>
+                      </ol>
+                    </div>
+                  )}
 
                   {/* Auth URL button */}
                   <a
@@ -653,33 +694,56 @@ export default function DashboardPage() {
                     Open {providerAuth.provider.displayName} Login Page
                   </a>
 
-                  {/* Auth code input */}
-                  <div className="space-y-2">
-                    <label className="block text-sm font-medium text-white">
-                      Paste your authentication code:
-                    </label>
-                    <input
-                      type="text"
-                      value={authCode}
-                      onChange={(e) => setAuthCode(e.target.value)}
-                      placeholder="Enter the code from the login page"
-                      className="w-full px-4 py-3 bg-bg-tertiary border border-border-subtle rounded-xl text-white placeholder-text-muted focus:outline-none focus:border-accent-cyan transition-colors"
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && authCode.trim()) {
-                          handleSubmitAuthCode();
-                        }
-                      }}
-                    />
-                  </div>
+                  {/* For providers that require URL copy, show input field */}
+                  {providerAuth.provider.requiresUrlCopy && (
+                    <div className="space-y-2">
+                      <label className="block text-sm text-text-muted">
+                        Paste the redirect URL here:
+                      </label>
+                      <input
+                        type="text"
+                        value={authCode}
+                        onChange={(e) => setAuthCode(e.target.value)}
+                        placeholder="http://127.0.0.1:...?code=..."
+                        className="w-full px-4 py-3 bg-bg-deep border border-border-subtle rounded-xl text-white placeholder-text-muted focus:outline-none focus:border-accent-cyan"
+                      />
+                      <button
+                        onClick={handleCompleteAuth}
+                        disabled={!authCode.trim()}
+                        className="w-full py-3 px-4 bg-gradient-to-r from-accent-cyan to-[#00b8d9] text-bg-deep font-semibold rounded-xl text-center hover:shadow-glow-cyan transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        Submit
+                      </button>
+                    </div>
+                  )}
 
-                  {/* Submit code button */}
-                  <button
-                    onClick={handleSubmitAuthCode}
-                    disabled={!authCode.trim()}
-                    className="w-full py-3 px-4 bg-bg-tertiary border border-border-subtle text-white rounded-xl text-center hover:border-accent-cyan/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    Submit Code
-                  </button>
+                  {/* Complete button - only show for standard flow */}
+                  {!providerAuth.provider.requiresUrlCopy && (
+                    <button
+                      onClick={handleCompleteAuth}
+                      className="w-full py-3 px-4 bg-bg-tertiary border border-border-subtle text-white rounded-xl text-center hover:border-accent-cyan/50 transition-colors"
+                    >
+                      I've completed login
+                    </button>
+                  )}
+
+                  {/* Device flow option for supported providers */}
+                  {providerAuth.provider.supportsDeviceFlow && !providerAuth.useDeviceFlow && (
+                    <div className="pt-2 border-t border-border-subtle">
+                      <button
+                        onClick={() => {
+                          // TODO: Implement device flow - for now just show info
+                          setProviderAuth(prev => prev ? { ...prev, useDeviceFlow: true } : null);
+                        }}
+                        className="w-full py-2 text-accent-cyan hover:text-white transition-colors text-sm"
+                      >
+                        Having trouble? Try Device Flow instead
+                      </button>
+                      <p className="text-xs text-text-muted text-center mt-1">
+                        Device flow shows a code you enter on the provider's website
+                      </p>
+                    </div>
+                  )}
 
                   {/* Cancel button */}
                   <button
