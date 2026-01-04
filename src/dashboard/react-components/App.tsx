@@ -39,6 +39,7 @@ import { useRecentRepos } from './hooks/useRecentRepos';
 import { usePresence, type UserPresence } from './hooks/usePresence';
 import { useCloudSessionOptional } from './CloudSessionProvider';
 import { api, convertApiDecision } from '../lib/api';
+import { cloudApi } from '../lib/cloudApi';
 import type { CurrentUser } from './MessageList';
 
 /**
@@ -87,6 +88,73 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
         avatarUrl: cloudSession.user.avatarUrl,
       }
     : undefined;
+
+  // Cloud workspaces state (for cloud mode)
+  const [cloudWorkspaces, setCloudWorkspaces] = useState<Array<{
+    id: string;
+    name: string;
+    status: string;
+    path?: string;
+  }>>([]);
+  const [activeCloudWorkspaceId, setActiveCloudWorkspaceId] = useState<string | null>(null);
+  const [isLoadingCloudWorkspaces, setIsLoadingCloudWorkspaces] = useState(false);
+
+  // Fetch cloud workspaces when in cloud mode
+  useEffect(() => {
+    if (!cloudSession?.user) return;
+
+    const fetchCloudWorkspaces = async () => {
+      setIsLoadingCloudWorkspaces(true);
+      try {
+        const result = await cloudApi.getWorkspaceSummary();
+        if (result.success && result.data.workspaces) {
+          setCloudWorkspaces(result.data.workspaces);
+          // Auto-select first workspace if none selected
+          if (!activeCloudWorkspaceId && result.data.workspaces.length > 0) {
+            setActiveCloudWorkspaceId(result.data.workspaces[0].id);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch cloud workspaces:', err);
+      } finally {
+        setIsLoadingCloudWorkspaces(false);
+      }
+    };
+
+    fetchCloudWorkspaces();
+    // Poll for updates every 30 seconds
+    const interval = setInterval(fetchCloudWorkspaces, 30000);
+    return () => clearInterval(interval);
+  }, [cloudSession?.user, activeCloudWorkspaceId]);
+
+  // Determine which workspaces to use (cloud mode or orchestrator)
+  const isCloudMode = Boolean(cloudSession?.user);
+  const effectiveWorkspaces = useMemo(() => {
+    if (isCloudMode && cloudWorkspaces.length > 0) {
+      // Convert cloud workspaces to the format expected by WorkspaceSelector
+      return cloudWorkspaces.map(ws => ({
+        id: ws.id,
+        name: ws.name,
+        path: ws.path || `/workspace/${ws.name}`,
+        status: ws.status === 'running' ? 'active' as const : 'inactive' as const,
+        provider: 'claude' as const,
+        lastActiveAt: new Date(),
+      }));
+    }
+    return workspaces;
+  }, [isCloudMode, cloudWorkspaces, workspaces]);
+
+  const effectiveActiveWorkspaceId = isCloudMode ? activeCloudWorkspaceId : activeWorkspaceId;
+  const effectiveIsLoading = isCloudMode ? isLoadingCloudWorkspaces : isOrchestratorLoading;
+
+  // Handle workspace selection (works for both cloud and orchestrator)
+  const handleEffectiveWorkspaceSelect = useCallback(async (workspace: { id: string; name: string }) => {
+    if (isCloudMode) {
+      setActiveCloudWorkspaceId(workspace.id);
+    } else {
+      await switchWorkspace(workspace.id);
+    }
+  }, [isCloudMode, switchWorkspace]);
 
   // Presence tracking for online users and typing indicators
   const { onlineUsers, typingUsers, sendTyping, isConnected: isPresenceConnected } = usePresence({
@@ -779,11 +847,11 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
         {/* Workspace Selector */}
         <div className="p-3 border-b border-sidebar-border">
           <WorkspaceSelector
-            workspaces={workspaces}
-            activeWorkspaceId={activeWorkspaceId}
-            onSelect={handleWorkspaceSelect}
+            workspaces={effectiveWorkspaces}
+            activeWorkspaceId={effectiveActiveWorkspaceId ?? undefined}
+            onSelect={handleEffectiveWorkspaceSelect}
             onAddWorkspace={() => setIsAddWorkspaceOpen(true)}
-            isLoading={isOrchestratorLoading}
+            isLoading={effectiveIsLoading}
           />
         </div>
 
