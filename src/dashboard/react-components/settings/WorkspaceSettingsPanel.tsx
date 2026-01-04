@@ -7,7 +7,7 @@
  * Design: Mission Control theme with deep space aesthetic
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { cloudApi } from '../../lib/cloudApi';
 
 export interface WorkspaceSettingsPanelProps {
@@ -61,6 +61,8 @@ interface AIProvider {
   apiKeyUrl?: string;
   apiKeyName?: string;
   supportsOAuth?: boolean;
+  supportsDeviceFlow?: boolean; // Provider supports device flow (easier for headless environments)
+  preferApiKey?: boolean; // Show API key input by default (simpler for mobile/containers)
   isConnected?: boolean;
 }
 
@@ -86,6 +88,7 @@ const AI_PROVIDERS: AIProvider[] = [
     apiKeyUrl: 'https://platform.openai.com/api-keys',
     apiKeyName: 'API key',
     supportsOAuth: true,
+    supportsDeviceFlow: true, // Codex supports --device-auth for headless environments
   },
   {
     id: 'google',
@@ -141,9 +144,14 @@ export function WorkspaceSettingsPanel({
   const [providerStatus, setProviderStatus] = useState<Record<string, boolean>>({});
   const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
   const [apiKeyInput, setApiKeyInput] = useState('');
+  const [authCodeInput, setAuthCodeInput] = useState('');
   const [providerError, setProviderError] = useState<string | null>(null);
   const [oauthSession, setOauthSession] = useState<OAuthSession | null>(null);
   const [showApiKeyFallback, setShowApiKeyFallback] = useState<Record<string, boolean>>({});
+  // Track whether popup has been opened for current session (avoids stale closure issues)
+  const popupOpenedRef = useRef<string | null>(null);
+  // Device flow preference for providers that support it
+  const [useDeviceFlow, setUseDeviceFlow] = useState<Record<string, boolean>>({});
 
   // Custom domain form
   const [customDomain, setCustomDomain] = useState('');
@@ -197,6 +205,8 @@ export function WorkspaceSettingsPanel({
     setProviderError(null);
     setConnectingProvider(provider.id);
     setOauthSession({ providerId: provider.id, sessionId: '', status: 'starting' });
+    // Reset popup tracking for new session
+    popupOpenedRef.current = null;
 
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -206,6 +216,10 @@ export function WorkspaceSettingsPanel({
         method: 'POST',
         credentials: 'include',
         headers,
+        body: JSON.stringify({
+          workspaceId,
+          useDeviceFlow: useDeviceFlow[provider.id] || false,
+        }),
       });
 
       const data = await res.json();
@@ -225,11 +239,14 @@ export function WorkspaceSettingsPanel({
         providerId: provider.id,
         sessionId: data.sessionId,
         authUrl: data.authUrl,
-        status: data.status || 'starting',
+        // If we have an authUrl, immediately show waiting_auth status so auth code input appears
+        status: data.authUrl ? 'waiting_auth' : (data.status || 'starting'),
       };
       setOauthSession(session);
 
       if (data.authUrl) {
+        // Track that popup was opened for this session
+        popupOpenedRef.current = data.sessionId;
         openAuthPopup(data.authUrl, provider.displayName);
         pollAuthStatus(provider.id, data.sessionId);
       } else if (data.status === 'starting') {
@@ -263,6 +280,7 @@ export function WorkspaceSettingsPanel({
         setProviderError('Authentication timed out. Please try again.');
         setOauthSession(null);
         setConnectingProvider(null);
+        popupOpenedRef.current = null;
         return;
       }
 
@@ -282,7 +300,9 @@ export function WorkspaceSettingsPanel({
           return;
         } else if (data.status === 'error') {
           throw new Error(data.error || 'Authentication failed');
-        } else if (data.status === 'waiting_auth' && data.authUrl && !oauthSession?.authUrl) {
+        } else if (data.status === 'waiting_auth' && data.authUrl && popupOpenedRef.current !== sessionId) {
+          // Use ref to prevent multiple popups (avoids stale closure issue)
+          popupOpenedRef.current = sessionId;
           setOauthSession(prev => prev ? { ...prev, authUrl: data.authUrl, status: 'waiting_auth' } : null);
           openAuthPopup(data.authUrl, AI_PROVIDERS.find(p => p.id === providerId)?.displayName || 'Provider');
         }
@@ -293,6 +313,7 @@ export function WorkspaceSettingsPanel({
         setProviderError(err instanceof Error ? err.message : 'Auth check failed');
         setOauthSession(null);
         setConnectingProvider(null);
+        popupOpenedRef.current = null;
       }
     };
 
@@ -318,10 +339,12 @@ export function WorkspaceSettingsPanel({
       setProviderStatus(prev => ({ ...prev, [providerId]: true }));
       setOauthSession(null);
       setConnectingProvider(null);
+      popupOpenedRef.current = null;
     } catch (err) {
       setProviderError(err instanceof Error ? err.message : 'Failed to complete auth');
       setOauthSession(null);
       setConnectingProvider(null);
+      popupOpenedRef.current = null;
     }
   };
 
@@ -338,6 +361,62 @@ export function WorkspaceSettingsPanel({
     }
     setOauthSession(null);
     setConnectingProvider(null);
+    setAuthCodeInput('');
+    popupOpenedRef.current = null;
+  };
+
+  const submitAuthCodeToSession = async () => {
+    if (!oauthSession?.sessionId || !authCodeInput.trim()) {
+      return;
+    }
+
+    setProviderError(null);
+
+    // Extract code from URL if user pasted the full callback URL
+    let code = authCodeInput.trim();
+    if (code.includes('code=')) {
+      try {
+        const url = new URL(code);
+        const extractedCode = url.searchParams.get('code');
+        if (extractedCode) {
+          code = extractedCode;
+        }
+      } catch {
+        // Not a valid URL, try to extract code parameter manually
+        const match = code.match(/code=([^&\s]+)/);
+        if (match) {
+          code = match[1];
+        }
+      }
+    }
+
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
+
+      const res = await fetch(`/api/onboarding/cli/${oauthSession.providerId}/code/${oauthSession.sessionId}`, {
+        method: 'POST',
+        credentials: 'include',
+        headers,
+        body: JSON.stringify({ code }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to submit auth code');
+      }
+
+      // Clear the input and continue polling - the CLI should now complete
+      setAuthCodeInput('');
+
+      // If immediate success, complete the flow
+      if (data.status === 'success') {
+        await completeAuthFlow(oauthSession.providerId, oauthSession.sessionId);
+      }
+    } catch (err) {
+      setProviderError(err instanceof Error ? err.message : 'Failed to submit auth code');
+    }
   };
 
   const submitApiKey = async (provider: AIProvider) => {
@@ -722,6 +801,34 @@ export function WorkspaceSettingsPanel({
                                   </button>
                                 </p>
                               )}
+                              {/* Auth code/URL input for completing auth */}
+                              <div className="mt-4 pt-4 border-t border-border-subtle">
+                                <p className="text-xs text-text-muted mb-2">
+                                  {provider.id === 'openai' ? (
+                                    <>After completing login, if you see &quot;site can&apos;t be reached&quot;, copy the full URL from your browser and paste it here:</>
+                                  ) : provider.id === 'anthropic' ? (
+                                    <>After completing login, copy the auth code shown on the page and paste it here:</>
+                                  ) : (
+                                    <>If {provider.displayName} gives you an auth code, paste it here:</>
+                                  )}
+                                </p>
+                                <div className="flex gap-2">
+                                  <input
+                                    type="text"
+                                    placeholder={provider.id === 'openai' ? 'Paste callback URL or auth code' : 'Paste auth code here'}
+                                    value={authCodeInput}
+                                    onChange={(e) => setAuthCodeInput(e.target.value)}
+                                    className="flex-1 px-3 py-2 bg-bg-card border border-border-subtle rounded-lg text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-cyan focus:ring-1 focus:ring-accent-cyan/30 transition-all font-mono"
+                                  />
+                                  <button
+                                    onClick={submitAuthCodeToSession}
+                                    disabled={!authCodeInput.trim()}
+                                    className="px-4 py-2 bg-accent-cyan text-bg-deep font-semibold rounded-lg text-sm hover:bg-accent-cyan/90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                                  >
+                                    Submit
+                                  </button>
+                                </div>
+                              </div>
                             </>
                           )}
                           <button
@@ -766,15 +873,32 @@ export function WorkspaceSettingsPanel({
                               </a>
                             </p>
                           )}
-                          <button
-                            onClick={() => setShowApiKeyFallback(prev => ({ ...prev, [provider.id]: false }))}
-                            className="text-xs text-text-muted hover:text-text-secondary transition-colors"
-                          >
-                            ← Back to OAuth login
-                          </button>
+                          {provider.supportsOAuth && (
+                            <button
+                              onClick={() => setShowApiKeyFallback(prev => ({ ...prev, [provider.id]: false }))}
+                              className="text-xs text-text-muted hover:text-text-secondary transition-colors"
+                            >
+                              ← Back to OAuth login
+                            </button>
+                          )}
                         </div>
-                      ) : (
+                      ) : provider.supportsOAuth ? (
                         <div className="space-y-3">
+                          {/* Device flow toggle for providers that support it */}
+                          {provider.supportsDeviceFlow && (
+                            <label className="flex items-center gap-2 text-xs text-text-secondary cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={useDeviceFlow[provider.id] || false}
+                                onChange={(e) => setUseDeviceFlow(prev => ({
+                                  ...prev,
+                                  [provider.id]: e.target.checked,
+                                }))}
+                                className="w-4 h-4 rounded border-border-subtle bg-bg-card text-accent-cyan focus:ring-accent-cyan/30 cursor-pointer"
+                              />
+                              Use device flow (easier for containers/headless)
+                            </label>
+                          )}
                           <button
                             onClick={() => startOAuthFlow(provider)}
                             disabled={connectingProvider !== null}
@@ -791,6 +915,46 @@ export function WorkspaceSettingsPanel({
                               Or enter API key manually
                             </button>
                           )}
+                        </div>
+                      ) : (
+                        /* Provider doesn't support OAuth - show API key input directly */
+                        <div className="space-y-4">
+                          <div className="flex gap-3">
+                            <input
+                              type="password"
+                              placeholder={`Enter ${provider.displayName} ${provider.apiKeyName || 'API key'}`}
+                              value={connectingProvider === provider.id ? apiKeyInput : ''}
+                              onChange={(e) => {
+                                setConnectingProvider(provider.id);
+                                setApiKeyInput(e.target.value);
+                              }}
+                              onFocus={() => setConnectingProvider(provider.id)}
+                              className="flex-1 px-4 py-3 bg-bg-card border border-border-subtle rounded-lg text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-cyan focus:ring-1 focus:ring-accent-cyan/30 transition-all"
+                            />
+                            <button
+                              onClick={() => submitApiKey(provider)}
+                              disabled={connectingProvider !== provider.id || !apiKeyInput.trim()}
+                              className="px-5 py-3 bg-accent-cyan text-bg-deep font-semibold rounded-lg text-sm hover:bg-accent-cyan/90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                            >
+                              Connect
+                            </button>
+                          </div>
+                          {provider.apiKeyUrl && (
+                            <p className="text-xs text-text-muted">
+                              Get your API key from{' '}
+                              <a
+                                href={provider.apiKeyUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-accent-cyan hover:underline"
+                              >
+                                {new URL(provider.apiKeyUrl).hostname}
+                              </a>
+                            </p>
+                          )}
+                          <p className="text-xs text-amber-400/80">
+                            OAuth not available for {provider.displayName} in container environments
+                          </p>
                         </div>
                       )}
                     </div>
