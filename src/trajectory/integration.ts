@@ -18,6 +18,11 @@ import { spawn, execSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { getProjectPaths } from '../utils/project-namespace.js';
+import {
+  getPrimaryTrajectoriesDir,
+  getAllTrajectoriesDirs,
+  getTrajectoryEnvVars,
+} from './config.js';
 
 /**
  * Trajectory index file structure
@@ -72,19 +77,19 @@ interface TrajectoryFile {
 }
 
 /**
- * Get the trajectories directory path
+ * Get the primary trajectories directory path (for writing)
+ * Uses config to determine if repo or user-level storage
  */
 function getTrajectoriesDir(): string {
-  const { projectRoot } = getProjectPaths();
-  return join(projectRoot, '.trajectories');
+  return getPrimaryTrajectoriesDir();
 }
 
 /**
- * Read the trajectory index file directly from filesystem
+ * Read a single trajectory index file from a directory
  */
-function readTrajectoryIndex(): TrajectoryIndex | null {
+function readSingleTrajectoryIndex(trajectoriesDir: string): TrajectoryIndex | null {
   try {
-    const indexPath = join(getTrajectoriesDir(), 'index.json');
+    const indexPath = join(trajectoriesDir, 'index.json');
     if (!existsSync(indexPath)) {
       return null;
     }
@@ -93,6 +98,51 @@ function readTrajectoryIndex(): TrajectoryIndex | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Read and merge trajectory indexes from all locations (repo + user-level)
+ * This allows reading trajectories from both places
+ */
+function readTrajectoryIndex(): TrajectoryIndex | null {
+  const dirs = getAllTrajectoriesDirs();
+
+  if (dirs.length === 0) {
+    return null;
+  }
+
+  // Read and merge all indexes
+  let mergedIndex: TrajectoryIndex | null = null;
+
+  for (const dir of dirs) {
+    const index = readSingleTrajectoryIndex(dir);
+    if (!index) continue;
+
+    if (!mergedIndex) {
+      mergedIndex = index;
+    } else {
+      // Merge trajectories, preferring more recent entries
+      for (const [id, entry] of Object.entries(index.trajectories)) {
+        const existing = mergedIndex.trajectories[id];
+        if (!existing) {
+          mergedIndex.trajectories[id] = entry;
+        } else {
+          // Keep the more recently updated one
+          const existingTime = new Date(existing.completedAt || existing.startedAt).getTime();
+          const newTime = new Date(entry.completedAt || entry.startedAt).getTime();
+          if (newTime > existingTime) {
+            mergedIndex.trajectories[id] = entry;
+          }
+        }
+      }
+      // Update lastUpdated to most recent
+      if (new Date(index.lastUpdated) > new Date(mergedIndex.lastUpdated)) {
+        mergedIndex.lastUpdated = index.lastUpdated;
+      }
+    }
+  }
+
+  return mergedIndex;
 }
 
 /**
@@ -149,12 +199,16 @@ export interface DecisionOptions {
 
 /**
  * Run a trail CLI command
+ * Uses config-based environment to control trajectory storage location
  */
 async function runTrail(args: string[]): Promise<{ success: boolean; output: string; error?: string }> {
   return new Promise((resolve) => {
+    // Get trajectory env vars to set correct storage location
+    const trajectoryEnv = getTrajectoryEnvVars();
+
     const proc = spawn('trail', args, {
       cwd: getProjectPaths().projectRoot,
-      env: process.env,
+      env: { ...process.env, ...trajectoryEnv },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -1025,11 +1079,15 @@ export function getCompactTrailInstructions(): string {
 
 /**
  * Get environment variables for trail CLI
+ * If dataDir is not provided, uses config-based storage location
  */
-export function getTrailEnvVars(projectId: string, agentName: string, dataDir: string): Record<string, string> {
+export function getTrailEnvVars(projectId: string, agentName: string, dataDir?: string): Record<string, string> {
+  // Use config-based path if dataDir not explicitly provided
+  const effectiveDataDir = dataDir ?? getPrimaryTrajectoriesDir();
+
   return {
     TRAJECTORIES_PROJECT: projectId,
-    TRAJECTORIES_DATA_DIR: dataDir,
+    TRAJECTORIES_DATA_DIR: effectiveDataDir,
     TRAJECTORIES_AGENT: agentName,
     TRAIL_AUTO_PHASE: '1', // Enable auto phase detection
   };
