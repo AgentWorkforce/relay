@@ -23,6 +23,12 @@ Usage notes:
 <path>.openskills/frontend-design/SKILL.md</path>
 </skill>
 
+<skill activation="lazy">
+<name>workspace-capabilities</name>
+<description>Browser testing (Playwright, screenshots, VNC) and container spawning (Docker) capabilities. Use when you need to run browser automation, take screenshots, or execute code in isolated containers.</description>
+<path>.openskills/workspace-capabilities/SKILL.md</path>
+</skill>
+
 </available_skills>
 </skills_system>
 
