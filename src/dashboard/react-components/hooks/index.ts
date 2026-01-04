@@ -27,3 +27,9 @@ export {
   type UseRecentReposReturn,
   type RecentRepo,
 } from './useRecentRepos';
+export {
+  useWorkspaceStatus,
+  type UseWorkspaceStatusOptions,
+  type UseWorkspaceStatusReturn,
+  type WorkspaceStatus,
+} from './useWorkspaceStatus';

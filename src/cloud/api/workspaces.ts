@@ -729,3 +729,191 @@ workspacesRouter.post('/quick', checkWorkspaceLimit, async (req: Request, res: R
     res.status(500).json({ error: 'Failed to provision workspace' });
   }
 });
+
+/**
+ * GET /api/workspaces/summary
+ * Get summary of all user workspaces for dashboard status indicator
+ */
+workspacesRouter.get('/summary', async (req: Request, res: Response) => {
+  const userId = req.session.userId!;
+
+  try {
+    const workspaces = await db.workspaces.findByUserId(userId);
+    const provisioner = getProvisioner();
+
+    // Get live status for each workspace
+    const workspaceSummaries = await Promise.all(
+      workspaces.map(async (w) => {
+        let liveStatus = w.status;
+        try {
+          liveStatus = await provisioner.getStatus(w.id);
+        } catch {
+          // Fall back to DB status
+        }
+
+        return {
+          id: w.id,
+          name: w.name,
+          status: liveStatus,
+          publicUrl: w.publicUrl,
+          isStopped: liveStatus === 'stopped',
+          isRunning: liveStatus === 'running',
+          isProvisioning: liveStatus === 'provisioning',
+          hasError: liveStatus === 'error',
+        };
+      })
+    );
+
+    // Overall status for quick dashboard indicator
+    const hasRunningWorkspace = workspaceSummaries.some(w => w.isRunning);
+    const hasStoppedWorkspace = workspaceSummaries.some(w => w.isStopped);
+    const hasProvisioningWorkspace = workspaceSummaries.some(w => w.isProvisioning);
+
+    res.json({
+      workspaces: workspaceSummaries,
+      summary: {
+        total: workspaceSummaries.length,
+        running: workspaceSummaries.filter(w => w.isRunning).length,
+        stopped: workspaceSummaries.filter(w => w.isStopped).length,
+        provisioning: workspaceSummaries.filter(w => w.isProvisioning).length,
+        error: workspaceSummaries.filter(w => w.hasError).length,
+      },
+      overallStatus: hasRunningWorkspace
+        ? 'ready'
+        : hasProvisioningWorkspace
+          ? 'provisioning'
+          : hasStoppedWorkspace
+            ? 'stopped'
+            : workspaceSummaries.length === 0
+              ? 'none'
+              : 'error',
+    });
+  } catch (error) {
+    console.error('Error getting workspace summary:', error);
+    res.status(500).json({ error: 'Failed to get workspace summary' });
+  }
+});
+
+/**
+ * POST /api/workspaces/:id/wakeup
+ * Check if workspace is stopped and auto-restart if needed
+ * Returns status and whether a restart was triggered
+ */
+workspacesRouter.post('/:id/wakeup', async (req: Request, res: Response) => {
+  const userId = req.session.userId!;
+  const { id } = req.params;
+
+  try {
+    const workspace = await db.workspaces.findById(id);
+
+    if (!workspace) {
+      return res.status(404).json({ error: 'Workspace not found' });
+    }
+
+    if (workspace.userId !== userId) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    const provisioner = getProvisioner();
+    const currentStatus = await provisioner.getStatus(id);
+
+    // If already running, no action needed
+    if (currentStatus === 'running') {
+      return res.json({
+        status: 'running',
+        wasRestarted: false,
+        message: 'Workspace is already running',
+        publicUrl: workspace.publicUrl,
+      });
+    }
+
+    // If stopped, trigger restart
+    if (currentStatus === 'stopped') {
+      await provisioner.restart(id);
+      return res.json({
+        status: 'starting',
+        wasRestarted: true,
+        message: 'Workspace is starting up. This typically takes 15-30 seconds.',
+        estimatedStartTime: 30, // seconds
+        publicUrl: workspace.publicUrl,
+      });
+    }
+
+    // Other states (provisioning, error)
+    res.json({
+      status: currentStatus,
+      wasRestarted: false,
+      message: currentStatus === 'provisioning'
+        ? 'Workspace is still being provisioned'
+        : 'Workspace is in an error state. Please check the dashboard.',
+      publicUrl: workspace.publicUrl,
+    });
+  } catch (error) {
+    console.error('Error waking up workspace:', error);
+    res.status(500).json({ error: 'Failed to wake up workspace' });
+  }
+});
+
+/**
+ * GET /api/workspaces/primary
+ * Get the user's primary workspace (first/default) with live status
+ * Used by dashboard to show quick status indicator
+ */
+workspacesRouter.get('/primary', async (req: Request, res: Response) => {
+  const userId = req.session.userId!;
+
+  try {
+    const workspaces = await db.workspaces.findByUserId(userId);
+
+    if (workspaces.length === 0) {
+      return res.json({
+        exists: false,
+        message: 'No workspace found. Connect a repository to auto-provision one.',
+      });
+    }
+
+    const primary = workspaces[0];
+    const provisioner = getProvisioner();
+
+    let liveStatus = primary.status;
+    try {
+      liveStatus = await provisioner.getStatus(primary.id);
+    } catch {
+      // Fall back to DB status
+    }
+
+    res.json({
+      exists: true,
+      workspace: {
+        id: primary.id,
+        name: primary.name,
+        status: liveStatus,
+        publicUrl: primary.publicUrl,
+        isStopped: liveStatus === 'stopped',
+        isRunning: liveStatus === 'running',
+        isProvisioning: liveStatus === 'provisioning',
+        hasError: liveStatus === 'error',
+        config: {
+          providers: primary.config.providers || [],
+          repositories: primary.config.repositories || [],
+        },
+      },
+      // Quick messages for UI
+      statusMessage: liveStatus === 'running'
+        ? 'Workspace is running'
+        : liveStatus === 'stopped'
+          ? 'Workspace is idle (will start automatically when needed)'
+          : liveStatus === 'provisioning'
+            ? 'Workspace is being provisioned...'
+            : 'Workspace has an error',
+      actionNeeded: liveStatus === 'stopped'
+        ? 'wakeup'
+        : liveStatus === 'error'
+          ? 'check_error'
+          : null,
+    });
+  } catch (error) {
+    console.error('Error getting primary workspace:', error);
+    res.status(500).json({ error: 'Failed to get primary workspace' });
+  }
+});

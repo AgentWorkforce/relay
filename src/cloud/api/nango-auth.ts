@@ -11,6 +11,7 @@ import { randomUUID } from 'crypto';
 import { requireAuth } from './auth.js';
 import { db } from '../db/index.js';
 import { nangoService, NANGO_INTEGRATIONS } from '../services/nango.js';
+import { getProvisioner } from '../provisioner/index.js';
 
 export const nangoAuthRouter = Router();
 
@@ -150,6 +151,10 @@ nangoAuthRouter.get('/repo-status/:connectionId', requireAuth, async (req: Reque
       return res.json({ ready: false });
     }
 
+    // Check workspace status for frontend visibility
+    const workspaces = await db.workspaces.findByUserId(userId);
+    const primaryWorkspace = workspaces[0];
+
     res.json({
       ready: true,
       repos: reposFromConnection.map(r => ({
@@ -158,6 +163,13 @@ nangoAuthRouter.get('/repo-status/:connectionId', requireAuth, async (req: Reque
         isPrivate: r.isPrivate,
         defaultBranch: r.defaultBranch,
       })),
+      workspace: primaryWorkspace ? {
+        id: primaryWorkspace.id,
+        name: primaryWorkspace.name,
+        status: primaryWorkspace.status,
+        publicUrl: primaryWorkspace.publicUrl,
+      } : null,
+      workspaceProvisioning: primaryWorkspace?.status === 'provisioning',
     });
   } catch (error) {
     console.error('Error checking repo status:', error);
@@ -409,6 +421,11 @@ async function handleRepoAuthWebhook(
 
     console.log(`[nango-webhook] Synced ${repos.length} repos for ${user.githubUsername} (installation: ${githubInstallationId || 'unknown'})`);
 
+    // Auto-provision a workspace if user doesn't have one
+    if (repos.length > 0) {
+      await autoProvisionWorkspaceIfNeeded(user.id, user.githubUsername || 'user', repos.map(r => r.full_name));
+    }
+
   } catch (error: unknown) {
     const err = error as { message?: string };
     if (err.message?.includes('403')) {
@@ -418,5 +435,44 @@ async function handleRepoAuthWebhook(
     } else {
       throw error;
     }
+  }
+}
+
+/**
+ * Auto-provision a workspace for the user if they don't have one
+ * This is called after repos are connected to provide immediate workspace access
+ */
+async function autoProvisionWorkspaceIfNeeded(
+  userId: string,
+  username: string,
+  repositories: string[]
+): Promise<void> {
+  try {
+    // Check if user already has a workspace
+    const existingWorkspaces = await db.workspaces.findByUserId(userId);
+    if (existingWorkspaces.length > 0) {
+      console.log(`[auto-provision] User ${username} already has ${existingWorkspaces.length} workspace(s), skipping auto-provision`);
+      return;
+    }
+
+    console.log(`[auto-provision] Starting workspace provision for ${username} with ${repositories.length} repos`);
+
+    const provisioner = getProvisioner();
+    const result = await provisioner.provision({
+      userId,
+      name: `${username}'s Workspace`,
+      providers: [], // No AI providers yet - user can connect them later
+      repositories,
+    });
+
+    if (result.status === 'error') {
+      console.error(`[auto-provision] Failed to provision workspace for ${username}:`, result.error);
+      return;
+    }
+
+    console.log(`[auto-provision] Workspace ${result.workspaceId} provisioned for ${username} (status: ${result.status})`);
+  } catch (error) {
+    console.error(`[auto-provision] Error provisioning workspace for ${username}:`, error);
+    // Non-fatal - user can still manually create a workspace
   }
 }

@@ -340,6 +340,90 @@ export const cloudApi = {
     });
   },
 
+  /**
+   * Get primary workspace with live status
+   */
+  async getPrimaryWorkspace() {
+    return cloudFetch<{
+      exists: boolean;
+      message?: string;
+      workspace?: {
+        id: string;
+        name: string;
+        status: string;
+        publicUrl?: string;
+        isStopped: boolean;
+        isRunning: boolean;
+        isProvisioning: boolean;
+        hasError: boolean;
+        config: {
+          providers: string[];
+          repositories: string[];
+        };
+      };
+      statusMessage: string;
+      actionNeeded?: 'wakeup' | 'check_error' | null;
+    }>('/api/workspaces/primary');
+  },
+
+  /**
+   * Get workspace summary (all workspaces with status)
+   */
+  async getWorkspaceSummary() {
+    return cloudFetch<{
+      workspaces: Array<{
+        id: string;
+        name: string;
+        status: string;
+        publicUrl?: string;
+        isStopped: boolean;
+        isRunning: boolean;
+        isProvisioning: boolean;
+        hasError: boolean;
+      }>;
+      summary: {
+        total: number;
+        running: number;
+        stopped: number;
+        provisioning: number;
+        error: number;
+      };
+      overallStatus: 'ready' | 'provisioning' | 'stopped' | 'none' | 'error';
+    }>('/api/workspaces/summary');
+  },
+
+  /**
+   * Get workspace status (live polling from compute provider)
+   */
+  async getWorkspaceStatus(id: string) {
+    return cloudFetch<{ status: string }>(`/api/workspaces/${encodeURIComponent(id)}/status`);
+  },
+
+  /**
+   * Wake up a stopped workspace
+   */
+  async wakeupWorkspace(id: string) {
+    return cloudFetch<{
+      status: string;
+      wasRestarted: boolean;
+      message: string;
+      estimatedStartTime?: number;
+      publicUrl?: string;
+    }>(`/api/workspaces/${encodeURIComponent(id)}/wakeup`, {
+      method: 'POST',
+    });
+  },
+
+  /**
+   * Restart a workspace
+   */
+  async restartWorkspace(id: string) {
+    return cloudFetch<{ success: boolean; message: string }>(
+      `/api/workspaces/${encodeURIComponent(id)}/restart`,
+      { method: 'POST' }
+    );
+  },
+
   // ===== Provider API =====
 
   /**
