@@ -83,11 +83,15 @@ setInterval(() => {
 
 /**
  * POST /api/onboarding/cli/:provider/start
- * Start CLI-based auth - spawns the CLI and captures auth URL
+ * Start CLI-based auth - forwards to workspace daemon if available
+ *
+ * CLI auth requires a running workspace since CLI tools are installed there.
+ * For onboarding without a workspace, users should use the API key flow.
  */
 onboardingRouter.post('/cli/:provider/start', async (req: Request, res: Response) => {
   const { provider } = req.params;
   const userId = req.session.userId!;
+  const { workspaceId } = req.body; // Optional: specific workspace to use
 
   const config = CLI_AUTH_CONFIG[provider];
   if (!config) {
@@ -97,85 +101,74 @@ onboardingRouter.post('/cli/:provider/start', async (req: Request, res: Response
     });
   }
 
-  // Create session
-  const sessionId = crypto.randomUUID();
-  const session: CLIAuthSession = {
-    userId,
-    provider,
-    status: 'starting',
-    createdAt: new Date(),
-    output: '',
-  };
-  activeSessions.set(sessionId, session);
-
   try {
-    // Use shared PTY runner for CLI auth
-    const ptyResult = await runCLIAuthViaPTY(config, {
-      onAuthUrl: (url) => {
-        session.authUrl = url;
-        session.status = 'waiting_auth';
-      },
-      onPromptHandled: (description) => {
-        console.log(`[onboarding] Auto-responded to: ${description}`);
-      },
-      onOutput: (data) => {
-        session.output += data;
-        if (matchesSuccessPattern(data, config.successPatterns)) {
-          session.status = 'success';
-        }
-      },
+    // Find a running workspace to use for CLI auth
+    let workspace;
+    if (workspaceId) {
+      workspace = await db.workspaces.findById(workspaceId);
+      if (!workspace || workspace.userId !== userId) {
+        return res.status(404).json({ error: 'Workspace not found' });
+      }
+    } else {
+      // Find any running workspace for this user
+      const workspaces = await db.workspaces.findByUserId(userId);
+      workspace = workspaces.find(w => w.status === 'running' && w.publicUrl);
+    }
+
+    if (!workspace || workspace.status !== 'running' || !workspace.publicUrl) {
+      return res.status(400).json({
+        error: 'CLI auth requires a running workspace',
+        code: 'NO_RUNNING_WORKSPACE',
+        message: 'Please start a workspace first, or use the API key input to connect your provider.',
+        hint: 'You can create a workspace without providers and connect them afterward using CLI auth.',
+      });
+    }
+
+    // Forward auth request to workspace daemon
+    const workspaceUrl = workspace.publicUrl.replace(/\/$/, '');
+    const authResponse = await fetch(`${workspaceUrl}/auth/cli/${provider}/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
     });
 
-    // Update session with result
-    if (ptyResult.success && !session.authUrl) {
-      session.status = 'success';
-      await extractCredentials(session, config);
-    } else if (ptyResult.error && session.status === 'starting') {
-      session.status = 'error';
-      session.error = ptyResult.error;
+    if (!authResponse.ok) {
+      const errorData = await authResponse.json().catch(() => ({})) as { error?: string };
+      return res.status(authResponse.status).json({
+        error: errorData.error || 'Failed to start CLI auth in workspace',
+      });
     }
 
-    // Return session info based on current state
-    if (session.status === 'success' && !session.authUrl) {
-      // CLI exited without auth URL - check if we have credentials
-      if (session.token) {
-        // Already authenticated - we found existing credentials
-        activeSessions.delete(sessionId);
-        res.json({
-          sessionId,
-          status: 'success',
-          alreadyAuthenticated: true,
-          message: `Already authenticated with ${config.displayName}`,
-        });
-      } else {
-        // No auth URL and no credentials - CLI didn't start auth flow properly
-        activeSessions.delete(sessionId);
-        console.error(`[onboarding] CLI exited without auth URL or credentials. Output:\n${session.output}`);
-        res.status(500).json({
-          error: 'CLI auth failed - no auth URL generated. Please try again or check CLI installation.',
-          debug: process.env.NODE_ENV === 'development' ? session.output.slice(-500) : undefined,
-        });
-      }
-    } else if (session.authUrl) {
-      res.json({
-        sessionId,
-        status: 'waiting_auth',
-        authUrl: session.authUrl,
-        message: 'Open the auth URL to complete login',
-      });
-    } else if (session.status === 'error') {
-      activeSessions.delete(sessionId);
-      res.status(500).json({ error: session.error || 'CLI auth failed to start' });
-    } else {
-      // Still starting, return session ID to poll
-      res.json({
-        sessionId,
-        status: 'starting',
-        message: 'Auth session starting, poll for status',
-      });
-    }
+    const workspaceSession = await authResponse.json() as {
+      sessionId: string;
+      status?: string;
+      authUrl?: string;
+    };
+
+    // Create cloud session to track this
+    const sessionId = crypto.randomUUID();
+    const session: CLIAuthSession = {
+      userId,
+      provider,
+      status: (workspaceSession.status as CLIAuthSession['status']) || 'starting',
+      authUrl: workspaceSession.authUrl,
+      createdAt: new Date(),
+      output: '',
+    };
+
+    // Store workspace info for status polling
+    (session as CLIAuthSession & { workspaceUrl?: string; workspaceSessionId?: string }).workspaceUrl = workspaceUrl;
+    (session as CLIAuthSession & { workspaceUrl?: string; workspaceSessionId?: string }).workspaceSessionId = workspaceSession.sessionId;
+
+    activeSessions.set(sessionId, session);
+
+    res.json({
+      sessionId,
+      status: session.status,
+      authUrl: session.authUrl,
+      workspaceId: workspace.id,
+      message: session.authUrl ? 'Open the auth URL to complete login' : 'Auth session starting, poll for status',
+    });
   } catch (error) {
-    activeSessions.delete(sessionId);
     console.error(`Error starting CLI auth for ${provider}:`, error);
     res.status(500).json({ error: 'Failed to start CLI authentication' });
   }
@@ -183,19 +176,41 @@ onboardingRouter.post('/cli/:provider/start', async (req: Request, res: Response
 
 /**
  * GET /api/onboarding/cli/:provider/status/:sessionId
- * Check status of CLI auth session
+ * Check status of CLI auth session - forwards to workspace daemon
  */
-onboardingRouter.get('/cli/:provider/status/:sessionId', (req: Request, res: Response) => {
-  const { sessionId } = req.params;
+onboardingRouter.get('/cli/:provider/status/:sessionId', async (req: Request, res: Response) => {
+  const { provider, sessionId } = req.params;
   const userId = req.session.userId!;
 
-  const session = activeSessions.get(sessionId);
+  const session = activeSessions.get(sessionId) as CLIAuthSession & { workspaceUrl?: string; workspaceSessionId?: string } | undefined;
   if (!session) {
     return res.status(404).json({ error: 'Session not found or expired' });
   }
 
   if (session.userId !== userId) {
     return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  // If we have workspace info, poll the workspace for status
+  if (session.workspaceUrl && session.workspaceSessionId) {
+    try {
+      const statusResponse = await fetch(
+        `${session.workspaceUrl}/auth/cli/${provider}/status/${session.workspaceSessionId}`
+      );
+      if (statusResponse.ok) {
+        const workspaceStatus = await statusResponse.json() as {
+          status?: string;
+          authUrl?: string;
+          error?: string;
+        };
+        // Update local session with workspace status
+        session.status = (workspaceStatus.status as CLIAuthSession['status']) || session.status;
+        session.authUrl = workspaceStatus.authUrl || session.authUrl;
+        session.error = workspaceStatus.error;
+      }
+    } catch (err) {
+      console.error('[onboarding] Failed to poll workspace status:', err);
+    }
   }
 
   res.json({
@@ -214,7 +229,7 @@ onboardingRouter.post('/cli/:provider/complete/:sessionId', async (req: Request,
   const userId = req.session.userId!;
   const { token } = req.body; // Optional: user can paste token directly
 
-  const session = activeSessions.get(sessionId);
+  const session = activeSessions.get(sessionId) as CLIAuthSession & { workspaceUrl?: string; workspaceSessionId?: string } | undefined;
   if (!session) {
     return res.status(404).json({ error: 'Session not found or expired' });
   }
@@ -227,12 +242,18 @@ onboardingRouter.post('/cli/:provider/complete/:sessionId', async (req: Request,
     // If token provided directly, use it
     let accessToken = token || session.token;
 
-    // If no token yet, try to read from credentials file
-    if (!accessToken) {
-      const config = CLI_AUTH_CONFIG[provider];
-      if (config) {
-        await extractCredentials(session, config);
-        accessToken = session.token;
+    // If no token yet, try to get from workspace
+    if (!accessToken && session.workspaceUrl && session.workspaceSessionId) {
+      try {
+        const credsResponse = await fetch(
+          `${session.workspaceUrl}/auth/cli/${provider}/creds/${session.workspaceSessionId}`
+        );
+        if (credsResponse.ok) {
+          const creds = await credsResponse.json() as { token?: string };
+          accessToken = creds.token;
+        }
+      } catch (err) {
+        console.error('[onboarding] Failed to get credentials from workspace:', err);
       }
     }
 
@@ -251,13 +272,6 @@ onboardingRouter.post('/cli/:provider/complete/:sessionId', async (req: Request,
     });
 
     // Clean up session
-    if (session.process) {
-      try {
-        session.process.kill();
-      } catch {
-        // Process may already be dead
-      }
-    }
     activeSessions.delete(sessionId);
 
     res.json({
@@ -274,17 +288,21 @@ onboardingRouter.post('/cli/:provider/complete/:sessionId', async (req: Request,
  * POST /api/onboarding/cli/:provider/cancel/:sessionId
  * Cancel a CLI auth session
  */
-onboardingRouter.post('/cli/:provider/cancel/:sessionId', (req: Request, res: Response) => {
-  const { sessionId } = req.params;
+onboardingRouter.post('/cli/:provider/cancel/:sessionId', async (req: Request, res: Response) => {
+  const { provider, sessionId } = req.params;
   const userId = req.session.userId!;
 
-  const session = activeSessions.get(sessionId);
+  const session = activeSessions.get(sessionId) as CLIAuthSession & { workspaceUrl?: string; workspaceSessionId?: string } | undefined;
   if (session?.userId === userId) {
-    if (session.process) {
+    // Cancel on workspace side if applicable
+    if (session.workspaceUrl && session.workspaceSessionId) {
       try {
-        session.process.kill();
+        await fetch(
+          `${session.workspaceUrl}/auth/cli/${provider}/cancel/${session.workspaceSessionId}`,
+          { method: 'POST' }
+        );
       } catch {
-        // Process may already be dead
+        // Ignore cancel errors
       }
     }
     activeSessions.delete(sessionId);

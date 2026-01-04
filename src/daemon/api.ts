@@ -19,6 +19,12 @@ import type {
   AddWorkspaceRequest,
   SpawnAgentRequest,
 } from './types.js';
+import {
+  startCLIAuth,
+  getAuthSession,
+  cancelAuthSession,
+  getSupportedProviders,
+} from './cli-auth.js';
 
 const logger = createLogger('daemon-api');
 
@@ -307,6 +313,82 @@ export class DaemonApi extends EventEmitter {
     this.routes.set('GET /agents', async (): Promise<ApiResponse> => {
       const agents = this.agentManager.getAll();
       return { status: 200, body: { agents } };
+    });
+
+    // === CLI Auth (for cloud server to call) ===
+
+    // List supported providers
+    this.routes.set('GET /auth/providers', async (): Promise<ApiResponse> => {
+      return { status: 200, body: { providers: getSupportedProviders() } };
+    });
+
+    // Start CLI auth flow
+    this.routes.set('POST /auth/cli/:provider/start', async (req): Promise<ApiResponse> => {
+      const { provider } = req.params;
+      try {
+        const session = startCLIAuth(provider);
+        return {
+          status: 200,
+          body: {
+            sessionId: session.id,
+            status: session.status,
+            authUrl: session.authUrl,
+          },
+        };
+      } catch (err) {
+        return {
+          status: 400,
+          body: { error: err instanceof Error ? err.message : 'Failed to start auth' },
+        };
+      }
+    });
+
+    // Get auth session status
+    this.routes.set('GET /auth/cli/:provider/status/:sessionId', async (req): Promise<ApiResponse> => {
+      const { sessionId } = req.params;
+      const session = getAuthSession(sessionId);
+      if (!session) {
+        return { status: 404, body: { error: 'Session not found' } };
+      }
+      return {
+        status: 200,
+        body: {
+          sessionId: session.id,
+          status: session.status,
+          authUrl: session.authUrl,
+          error: session.error,
+          promptsHandled: session.promptsHandled,
+        },
+      };
+    });
+
+    // Get credentials from completed auth
+    this.routes.set('GET /auth/cli/:provider/creds/:sessionId', async (req): Promise<ApiResponse> => {
+      const { sessionId } = req.params;
+      const session = getAuthSession(sessionId);
+      if (!session) {
+        return { status: 404, body: { error: 'Session not found' } };
+      }
+      if (session.status !== 'success') {
+        return { status: 400, body: { error: 'Auth not complete', status: session.status } };
+      }
+      return {
+        status: 200,
+        body: {
+          token: session.token,
+          provider: session.provider,
+        },
+      };
+    });
+
+    // Cancel auth session
+    this.routes.set('POST /auth/cli/:provider/cancel/:sessionId', async (req): Promise<ApiResponse> => {
+      const { sessionId } = req.params;
+      const cancelled = cancelAuthSession(sessionId);
+      if (!cancelled) {
+        return { status: 404, body: { error: 'Session not found' } };
+      }
+      return { status: 200, body: { success: true } };
     });
   }
 
