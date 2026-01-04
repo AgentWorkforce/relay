@@ -12,6 +12,7 @@ import { App } from '../../react-components/App';
 import { CloudSessionProvider } from '../../react-components/CloudSessionProvider';
 import { LogoIcon } from '../../react-components/Logo';
 import { setActiveWorkspaceId } from '../../lib/api';
+import { ProviderAuthFlow } from '../../react-components/ProviderAuthFlow';
 
 interface Workspace {
   id: string;
@@ -44,15 +45,7 @@ interface ProviderInfo {
   requiresUrlCopy?: boolean;
 }
 
-interface ProviderAuthState {
-  provider: ProviderInfo;
-  authUrl?: string;
-  sessionId?: string;
-  status: 'starting' | 'waiting' | 'submitting' | 'success' | 'error';
-  error?: string;
-  /** Whether using device flow (code displayed on screen vs redirect URL) */
-  useDeviceFlow?: boolean;
-}
+// ProviderAuthState simplified - now using ProviderAuthFlow shared component
 
 type PageState = 'loading' | 'local' | 'select-workspace' | 'no-workspaces' | 'connect-provider' | 'connecting' | 'connected' | 'error';
 
@@ -77,8 +70,7 @@ export default function DashboardPage() {
   // Track cloud mode for potential future use
   const [_isCloudMode, setIsCloudMode] = useState(FORCE_CLOUD_MODE);
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
-  const [providerAuth, setProviderAuth] = useState<ProviderAuthState | null>(null);
-  const [authCode, setAuthCode] = useState<string>('');
+  const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
 
   // Check if we're in cloud mode and fetch data
   useEffect(() => {
@@ -271,188 +263,23 @@ export default function DashboardPage() {
     }
   }, [connectToWorkspace, csrfToken]);
 
-  // Handle connecting an AI provider via CLI login
-  // Maps frontend provider IDs to backend provider IDs
-  const PROVIDER_ID_MAP: Record<string, string> = {
-    anthropic: 'anthropic',
-    codex: 'openai', // Backend uses 'openai' for Codex
-    opencode: 'opencode',
-    droid: 'droid',
-  };
-
-  const handleConnectProvider = useCallback(async (provider: ProviderInfo) => {
+  // Handle connecting an AI provider - simplified with ProviderAuthFlow component
+  const handleConnectProvider = useCallback((provider: ProviderInfo) => {
     if (!selectedWorkspace) return;
-
-    setProviderAuth({ provider, status: 'starting' });
-
-    try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (csrfToken) {
-        headers['X-CSRF-Token'] = csrfToken;
-      }
-
-      // Use the onboarding CLI auth endpoint which has proper PTY handling
-      const backendProviderId = PROVIDER_ID_MAP[provider.id] || provider.id;
-      const res = await fetch(`/api/onboarding/cli/${backendProviderId}/start`, {
-        method: 'POST',
-        credentials: 'include',
-        headers,
-        body: JSON.stringify({ workspaceId: selectedWorkspace.id }),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || data.message || 'Failed to start provider auth');
-      }
-
-      if (data.authUrl) {
-        // Auto-open the auth URL in a popup
-        const width = 600;
-        const height = 700;
-        const left = window.screenX + (window.outerWidth - width) / 2;
-        const top = window.screenY + (window.outerHeight - height) / 2;
-        window.open(
-          data.authUrl,
-          `${provider.displayName} Login`,
-          `width=${width},height=${height},left=${left},top=${top},popup=yes`
-        );
-        setAuthCode(''); // Clear any previous code
-        setProviderAuth({ provider, authUrl: data.authUrl, sessionId: data.sessionId, status: 'waiting' });
-      } else if (data.sessionId) {
-        // Session started but no URL yet - poll for status
-        setProviderAuth({ provider, sessionId: data.sessionId, status: 'starting' });
-        // Start polling for auth URL
-        const pollForAuthUrl = async (sessionId: string) => {
-          const maxAttempts = 30; // 30 seconds
-          for (let i = 0; i < maxAttempts; i++) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            try {
-              const statusRes = await fetch(
-                `/api/onboarding/cli/${backendProviderId}/status/${sessionId}`,
-                { credentials: 'include' }
-              );
-              const statusData = await statusRes.json();
-
-              if (statusData.authUrl) {
-                const width = 600;
-                const height = 700;
-                const left = window.screenX + (window.outerWidth - width) / 2;
-                const top = window.screenY + (window.outerHeight - height) / 2;
-                window.open(
-                  statusData.authUrl,
-                  `${provider.displayName} Login`,
-                  `width=${width},height=${height},left=${left},top=${top},popup=yes`
-                );
-                setAuthCode(''); // Clear any previous code
-                setProviderAuth({ provider, authUrl: statusData.authUrl, sessionId, status: 'waiting' });
-                return;
-              } else if (statusData.status === 'success') {
-                setProviderAuth({ provider, status: 'success' });
-                setTimeout(() => {
-                  setProviderAuth(null);
-                  connectToWorkspace(selectedWorkspace);
-                }, 2000);
-                return;
-              } else if (statusData.status === 'error') {
-                throw new Error(statusData.error || 'Authentication failed');
-              }
-            } catch (pollErr) {
-              console.warn('Error polling auth status:', pollErr);
-            }
-          }
-          // Timeout
-          setProviderAuth({
-            provider,
-            status: 'error',
-            error: 'Timed out waiting for authentication URL',
-          });
-        };
-        pollForAuthUrl(data.sessionId);
-      } else {
-        // Already authenticated
-        setProviderAuth({ provider, status: 'success' });
-        setTimeout(() => {
-          setProviderAuth(null);
-          connectToWorkspace(selectedWorkspace);
-        }, 2000);
-      }
-    } catch (err) {
-      setProviderAuth({
-        provider,
-        status: 'error',
-        error: err instanceof Error ? err.message : 'Failed to connect provider',
-      });
-    }
-  }, [selectedWorkspace, csrfToken, connectToWorkspace]);
+    setConnectingProvider(provider.id);
+  }, [selectedWorkspace]);
 
   // Skip provider connection and continue to workspace
   const handleSkipProvider = useCallback(() => {
     if (selectedWorkspace) {
-      setProviderAuth(null);
-      setAuthCode('');
+      setConnectingProvider(null);
       connectToWorkspace(selectedWorkspace);
     }
   }, [selectedWorkspace, connectToWorkspace]);
 
-  // Complete auth - polls for credentials after user completes auth in browser
-  const handleCompleteAuth = useCallback(async () => {
-    if (!providerAuth?.sessionId) return;
-
-    // For providers that require URL copy, validate the auth code/URL is provided
-    if (providerAuth.provider.requiresUrlCopy && !authCode.trim()) {
-      setProviderAuth(prev => prev ? {
-        ...prev,
-        status: 'error',
-        error: 'Please paste the redirect URL from your browser',
-      } : null);
-      return;
-    }
-
-    const backendProviderId = PROVIDER_ID_MAP[providerAuth.provider.id] || providerAuth.provider.id;
-
-    setProviderAuth(prev => prev ? { ...prev, status: 'submitting' } : null);
-
-    try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (csrfToken) {
-        headers['X-CSRF-Token'] = csrfToken;
-      }
-
-      // Include auth code/URL in the body for providers that require it
-      const body = providerAuth.provider.requiresUrlCopy
-        ? JSON.stringify({ authCode: authCode.trim() })
-        : undefined;
-
-      const res = await fetch(`/api/onboarding/cli/${backendProviderId}/complete/${providerAuth.sessionId}`, {
-        method: 'POST',
-        credentials: 'include',
-        headers,
-        body,
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to complete authentication');
-      }
-
-      // Success - show success state, then offer to connect another or continue
-      setProviderAuth(prev => prev ? { ...prev, status: 'success' } : null);
-      setAuthCode(''); // Clear the auth code input
-    } catch (err) {
-      setProviderAuth(prev => prev ? {
-        ...prev,
-        status: 'error',
-        error: err instanceof Error ? err.message : 'Failed to complete authentication',
-      } : null);
-    }
-  }, [providerAuth, csrfToken, authCode]);
-
   // Connect another provider after successful auth
   const handleConnectAnother = useCallback(() => {
-    setProviderAuth(null);
-    setAuthCode('');
+    setConnectingProvider(null);
     // Stay on connect-provider screen
   }, []);
 
@@ -606,188 +433,44 @@ export default function DashboardPage() {
             </p>
           </div>
 
-          {/* Provider auth modal */}
-          {providerAuth && (
-            <div className="mb-6 bg-bg-primary/80 backdrop-blur-sm border border-border-subtle rounded-2xl p-6">
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-3">
-                  <div
-                    className="w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold"
-                    style={{ backgroundColor: providerAuth.provider.color }}
-                  >
-                    {providerAuth.provider.displayName[0]}
-                  </div>
-                  <div>
-                    <h3 className="font-medium text-white">{providerAuth.provider.displayName}</h3>
-                    <p className="text-sm text-text-muted">
-                      {providerAuth.status === 'starting' && 'Starting login...'}
-                      {providerAuth.status === 'waiting' && 'Complete authentication below'}
-                      {providerAuth.status === 'success' && 'Connected!'}
-                      {providerAuth.status === 'error' && providerAuth.error}
-                    </p>
-                  </div>
-                </div>
-                {/* Close button for starting/waiting states */}
-                {(providerAuth.status === 'starting' || providerAuth.status === 'waiting') && (
-                  <button
-                    onClick={() => setProviderAuth(null)}
-                    className="p-2 text-text-muted hover:text-white transition-colors rounded-lg hover:bg-bg-tertiary"
-                    title="Cancel"
-                  >
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                )}
-              </div>
+          {/* Provider auth flow - using shared component */}
+          {connectingProvider && (() => {
+            const provider = AI_PROVIDERS.find(p => p.id === connectingProvider);
+            if (!provider) return null;
+            return (
+              <div className="mb-6 bg-bg-primary/80 backdrop-blur-sm border border-border-subtle rounded-2xl p-6">
+                <ProviderAuthFlow
+                  provider={{
+                    id: provider.id,
+                    name: provider.name,
+                    displayName: provider.displayName,
+                    color: provider.color,
+                    requiresUrlCopy: provider.requiresUrlCopy,
+                  }}
+                  workspaceId={selectedWorkspace!.id}
+                  csrfToken={csrfToken || undefined}
+                  onSuccess={() => {
+                    // Show success state briefly, then offer options
+                    setConnectingProvider(null);
+                    // Stay on connect-provider screen to allow connecting more providers
+                    // User can click "Continue to Dashboard" or connect another
+                  }}
+                  onCancel={() => {
+                    setConnectingProvider(null);
+                  }}
+                  onError={() => {
+                    setConnectingProvider(null);
+                  }}
+                />
 
-              {/* Starting state - show spinner with cancel option */}
-              {providerAuth.status === 'starting' && (
-                <div className="flex items-center justify-center gap-3 py-4">
-                  <svg className="w-5 h-5 text-accent-cyan animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                  <span className="text-text-muted">Preparing authentication...</span>
-                </div>
-              )}
-
-              {providerAuth.status === 'waiting' && providerAuth.authUrl && (
-                <div className="space-y-4">
-                  {/* Provider-specific instructions */}
-                  {providerAuth.provider.requiresUrlCopy ? (
-                    /* Codex/OpenAI - requires copying the redirect URL */
-                    <div className="p-4 bg-bg-tertiary rounded-lg border border-border-subtle">
-                      <h4 className="font-medium text-white mb-2">Complete authentication:</h4>
-                      <ol className="text-sm text-text-muted space-y-2 list-decimal list-inside">
-                        <li>Click the button below to open the login page</li>
-                        <li>Sign in with your {providerAuth.provider.name} account</li>
-                        <li>
-                          <span className="text-warning font-medium">Important:</span> After signing in, the page will show "Page not found" or similar - <span className="text-white">this is expected!</span>
-                        </li>
-                        <li>Copy the <span className="text-white">entire URL</span> from your browser's address bar</li>
-                        <li>Paste it below and click Submit</li>
-                      </ol>
-                      <div className="mt-3 p-2 bg-warning/10 border border-warning/20 rounded text-xs text-warning">
-                        The URL will look like: <code className="bg-bg-deep px-1 rounded">http://127.0.0.1:...?code=...</code>
-                      </div>
-                    </div>
-                  ) : (
-                    /* Standard flow - just sign in and return */
-                    <div className="p-4 bg-bg-tertiary rounded-lg border border-border-subtle">
-                      <h4 className="font-medium text-white mb-2">Complete authentication:</h4>
-                      <ol className="text-sm text-text-muted space-y-2 list-decimal list-inside">
-                        <li>Click the button below to open the login page</li>
-                        <li>Sign in with your {providerAuth.provider.name} account</li>
-                        <li>Return here and click "I've completed login"</li>
-                      </ol>
-                    </div>
-                  )}
-
-                  {/* Auth URL button */}
-                  <a
-                    href={providerAuth.authUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="block w-full py-3 px-4 bg-gradient-to-r from-accent-cyan to-[#00b8d9] text-bg-deep font-semibold rounded-xl text-center hover:shadow-glow-cyan transition-all"
-                  >
-                    Open {providerAuth.provider.displayName} Login Page
-                  </a>
-
-                  {/* For providers that require URL copy, show input field */}
-                  {providerAuth.provider.requiresUrlCopy && (
-                    <div className="space-y-2">
-                      <label className="block text-sm text-text-muted">
-                        Paste the redirect URL here:
-                      </label>
-                      <input
-                        type="text"
-                        value={authCode}
-                        onChange={(e) => setAuthCode(e.target.value)}
-                        placeholder="http://127.0.0.1:...?code=..."
-                        className="w-full px-4 py-3 bg-bg-deep border border-border-subtle rounded-xl text-white placeholder-text-muted focus:outline-none focus:border-accent-cyan"
-                      />
-                      <button
-                        onClick={handleCompleteAuth}
-                        disabled={!authCode.trim()}
-                        className="w-full py-3 px-4 bg-gradient-to-r from-accent-cyan to-[#00b8d9] text-bg-deep font-semibold rounded-xl text-center hover:shadow-glow-cyan transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        Submit
-                      </button>
-                    </div>
-                  )}
-
-                  {/* Complete button - only show for standard flow */}
-                  {!providerAuth.provider.requiresUrlCopy && (
-                    <button
-                      onClick={handleCompleteAuth}
-                      className="w-full py-3 px-4 bg-bg-tertiary border border-border-subtle text-white rounded-xl text-center hover:border-accent-cyan/50 transition-colors"
-                    >
-                      I've completed login
-                    </button>
-                  )}
-
-                  {/* Device flow option for supported providers */}
-                  {providerAuth.provider.supportsDeviceFlow && !providerAuth.useDeviceFlow && (
-                    <div className="pt-2 border-t border-border-subtle">
-                      <button
-                        onClick={() => {
-                          // TODO: Implement device flow - for now just show info
-                          setProviderAuth(prev => prev ? { ...prev, useDeviceFlow: true } : null);
-                        }}
-                        className="w-full py-2 text-accent-cyan hover:text-white transition-colors text-sm"
-                      >
-                        Having trouble? Try Device Flow instead
-                      </button>
-                      <p className="text-xs text-text-muted text-center mt-1">
-                        Device flow shows a code you enter on the provider's website
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Cancel button */}
-                  <button
-                    onClick={() => {
-                      setProviderAuth(null);
-                      setAuthCode('');
-                    }}
-                    className="w-full py-2 text-text-muted hover:text-white transition-colors text-sm"
-                  >
-                    Cancel and try a different provider
-                  </button>
-                </div>
-              )}
-
-              {/* Submitting state */}
-              {providerAuth.status === 'submitting' && (
-                <div className="flex items-center justify-center gap-3 py-4">
-                  <svg className="w-5 h-5 text-accent-cyan animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                  <span className="text-text-muted">Verifying code...</span>
-                </div>
-              )}
-
-              {/* Success state - offer to connect another or continue */}
-              {providerAuth.status === 'success' && (
-                <div className="space-y-4">
-                  <div className="flex items-center justify-center gap-3 py-4">
-                    <div className="w-10 h-10 bg-success/20 rounded-full flex items-center justify-center">
-                      <svg className="w-6 h-6 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                      </svg>
-                    </div>
-                    <span className="text-white font-medium">{providerAuth.provider.displayName} connected successfully!</span>
-                  </div>
-
+                {/* After success, show options to connect another or continue */}
+                <div className="mt-4 pt-4 border-t border-border-subtle space-y-3">
                   <button
                     onClick={handleConnectAnother}
                     className="w-full py-3 px-4 bg-bg-tertiary border border-border-subtle text-white rounded-xl text-center hover:border-accent-cyan/50 transition-colors"
                   >
                     Connect Another Provider
                   </button>
-
                   <button
                     onClick={handleSkipProvider}
                     className="w-full py-3 px-4 bg-gradient-to-r from-accent-cyan to-[#00b8d9] text-bg-deep font-semibold rounded-xl text-center hover:shadow-glow-cyan transition-all"
@@ -795,44 +478,46 @@ export default function DashboardPage() {
                     Continue to Dashboard
                   </button>
                 </div>
-              )}
-
-              {providerAuth.status === 'error' && (
-                <button
-                  onClick={() => setProviderAuth(null)}
-                  className="w-full py-2 text-text-muted hover:text-white transition-colors text-sm"
-                >
-                  Try a different provider
-                </button>
-              )}
-            </div>
-          )}
+              </div>
+            );
+          })()}
 
           {/* Provider list */}
-          {!providerAuth && (
+          {!connectingProvider && (
             <div className="bg-bg-primary/80 backdrop-blur-sm border border-border-subtle rounded-2xl p-6">
               <h2 className="text-lg font-semibold text-white mb-4">Choose an AI Provider</h2>
               <div className="space-y-3">
                 {AI_PROVIDERS.map((provider) => (
-                  <button
-                    key={provider.id}
-                    onClick={() => handleConnectProvider(provider)}
-                    className="w-full flex items-center gap-3 p-4 bg-bg-tertiary rounded-xl border border-border-subtle hover:border-accent-cyan/50 transition-colors text-left"
-                  >
-                    <div
-                      className="w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold flex-shrink-0"
-                      style={{ backgroundColor: provider.color }}
+                  <div key={provider.id} className="space-y-2">
+                    <button
+                      onClick={() => handleConnectProvider(provider)}
+                      className="w-full flex items-center gap-3 p-4 bg-bg-tertiary rounded-xl border border-border-subtle hover:border-accent-cyan/50 transition-colors text-left"
                     >
-                      {provider.displayName[0]}
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-white font-medium">{provider.displayName}</p>
-                      <p className="text-text-muted text-sm">{provider.name}</p>
-                    </div>
-                    <svg className="w-5 h-5 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                    </svg>
-                  </button>
+                      <div
+                        className="w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold flex-shrink-0"
+                        style={{ backgroundColor: provider.color }}
+                      >
+                        {provider.displayName[0]}
+                      </div>
+                      <div className="flex-1">
+                        <p className="text-white font-medium">{provider.displayName}</p>
+                        <p className="text-text-muted text-sm">{provider.name}</p>
+                      </div>
+                      <svg className="w-5 h-5 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
+                    </button>
+                    {/* Pre-auth warning for providers that require URL copy */}
+                    {provider.requiresUrlCopy && (
+                      <div className="ml-4 p-3 bg-warning/10 border border-warning/20 rounded-lg">
+                        <p className="text-xs text-warning">
+                          <span className="font-semibold">⚠️ Important:</span> After signing in, you'll see a "Page not found" error.
+                          This is expected! Copy the <span className="font-medium">entire URL</span> from your browser's address bar
+                          (it will look like <code className="bg-bg-deep px-1 rounded">http://127.0.0.1:...?code=...</code>) and paste it back here.
+                        </p>
+                      </div>
+                    )}
+                  </div>
                 ))}
               </div>
             </div>
