@@ -3,6 +3,8 @@
 # This container installs the actual AI provider CLIs and tests
 # URL extraction from their OAuth flows.
 #
+# Installation methods match deploy/workspace/Dockerfile to ensure consistency.
+#
 # Usage:
 #   docker build -f Dockerfile.real -t cli-oauth-test-real scripts/test-cli-auth/
 #   docker run --rm cli-oauth-test-real
@@ -12,45 +14,62 @@
 
 FROM node:20-slim
 
-# Install system dependencies
+# Install system dependencies (matches deploy/workspace/Dockerfile)
 RUN apt-get update && apt-get install -y \
     bash \
+    ca-certificates \
     curl \
     git \
     python3 \
+    jq \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install Claude Code CLI
-RUN npm install -g @anthropic-ai/claude-code || echo "Claude Code install skipped"
+# Install Codex globally as root (matches workspace Dockerfile)
+RUN npm install -g @openai/codex || echo "Codex install failed"
 
-# Install Codex CLI (OpenAI)
-RUN npm install -g @openai/codex || echo "Codex install skipped"
+# Create test user (CLIs install to ~/.local/bin)
+RUN useradd -m -u 1001 testuser
+RUN chown -R testuser:testuser /app
+USER testuser
 
-# Install Gemini CLI (if available)
-RUN npm install -g @google/gemini-cli 2>/dev/null || echo "Gemini CLI not available yet"
+# Install AI CLIs as testuser (matches workspace Dockerfile installation methods)
 
-# Install OpenCode CLI (if available)
-RUN npm install -g opencode 2>/dev/null || echo "OpenCode CLI not available"
+# Claude - uses official install script
+RUN curl -fsSL https://claude.ai/install.sh | bash || echo "Claude install failed"
+# Pre-seed Claude config to skip interactive onboarding
+RUN mkdir -p /home/testuser/.claude && \
+    echo '{"theme":"dark","hasCompletedOnboarding":true}' > /home/testuser/.claude/settings.local.json
 
-# Install Droid CLI (if available)
-RUN npm install -g @factory/droid 2>/dev/null || echo "Droid CLI not available"
+# OpenCode - uses official install script
+RUN curl -fsSL https://opencode.ai/install | bash || echo "OpenCode install failed"
+
+# Droid - uses official install script
+RUN curl -fsSL https://app.factory.ai/cli | sh || echo "Droid install failed"
+
+# Gemini - try npm first, fall back to install script
+RUN npm install -g @anthropic-ai/gemini-cli 2>/dev/null || \
+    curl -fsSL https://gemini.google.com/cli/install.sh | bash || \
+    echo "Gemini install failed"
+
+# Add user's local bin to PATH
+ENV PATH="/home/testuser/.local/bin:$PATH"
 
 # Copy test files
-COPY ci-test-real-clis.ts /app/
-COPY package.json /app/
+COPY --chown=testuser:testuser ci-test-real-clis.ts /app/
+COPY --chown=testuser:testuser package.json /app/
 
 # Install test dependencies
 RUN npm install
 
 # Verify which CLIs are installed
 RUN echo "=== Installed CLIs ===" && \
-    which claude && claude --version || echo "claude: not found" && \
-    which codex && codex --version || echo "codex: not found" && \
-    which gemini || echo "gemini: not found" && \
-    which opencode || echo "opencode: not found" && \
-    which droid || echo "droid: not found"
+    (which claude && claude --version 2>&1 | head -1) || echo "claude: not found" && \
+    (which codex && codex --version 2>&1 | head -1) || echo "codex: not found" && \
+    (which gemini && gemini --version 2>&1 | head -1) || echo "gemini: not found" && \
+    (which opencode && opencode --version 2>&1 | head -1) || echo "opencode: not found" && \
+    (which droid && droid --version 2>&1 | head -1) || echo "droid: not found"
 
 # Default command runs the CI tests
 CMD ["npx", "tsx", "/app/ci-test-real-clis.ts"]
