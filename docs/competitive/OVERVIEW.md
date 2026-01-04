@@ -19,6 +19,7 @@ This analysis evaluates 16 multi-agent orchestration tools against agent-relay. 
 | Tool | API Key? | Communication Type | Mechanism | Real-time? | Memory |
 |------|----------|-------------------|-----------|------------|--------|
 | **agent-relay** | No | Direct P2P | Unix socket | Yes | SQLite (pluggable) |
+| Tmux-Orchestrator | No | Hierarchical | tmux send-keys | No (~500ms) | Git commits |
 | Multiagent Chat | No | File + PTY push | Outbox → PTY write | Partial | JSONL chat log |
 | AI Maestro | No (OAuth) | File + WebSocket | File-based queues | Partial | Built-in (code graph) |
 | Toad | Yes | Protocol-based | ACP/A2A protocol | No | Minimal |
