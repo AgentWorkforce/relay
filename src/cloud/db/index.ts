@@ -19,6 +19,8 @@ export type {
   Workspace,
   NewWorkspace,
   WorkspaceConfig,
+  WorkspaceAgentPolicy,
+  AgentPolicyRule,
   WorkspaceMember,
   NewWorkspaceMember,
   ProjectGroup,

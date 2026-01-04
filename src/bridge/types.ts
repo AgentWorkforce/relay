@@ -41,6 +41,8 @@ export interface SpawnRequest {
   task: string;
   /** Optional team name to organize agents under */
   team?: string;
+  /** Name of the agent requesting the spawn (for policy enforcement) */
+  spawnerName?: string;
   /** Shadow execution mode (subagent = no extra process) */
   shadowMode?: 'subagent' | 'process';
   /** Primary agent to shadow (if this agent is a shadow) */
@@ -53,12 +55,21 @@ export interface SpawnRequest {
   shadowSpeakOn?: Array<'SESSION_END' | 'CODE_WRITTEN' | 'REVIEW_REQUEST' | 'EXPLICIT_ASK' | 'ALL_MESSAGES'>;
 }
 
+/** Policy decision details */
+export interface PolicyDecision {
+  allowed: boolean;
+  reason: string;
+  policySource: 'repo' | 'local' | 'workspace' | 'default';
+}
+
 export interface SpawnResult {
   success: boolean;
   name: string;
   /** PID of the spawned process (for pty-based workers) */
   pid?: number;
   error?: string;
+  /** Policy decision details if spawn was blocked by policy */
+  policyDecision?: PolicyDecision;
 }
 
 export interface WorkerInfo {

@@ -118,6 +118,40 @@ export const credentialsRelations = relations(credentials, ({ one }) => ({
 // Workspaces
 // ============================================================================
 
+// Agent policy types for workspace-level enforcement
+export interface AgentPolicyRule {
+  /** Agent name pattern (supports wildcards: "Lead", "Worker*", "*") */
+  name: string;
+  /** Allowed tools (empty = all allowed, ["none"] = no tools) */
+  allowedTools?: string[];
+  /** Agents this agent can spawn (empty = can spawn any) */
+  canSpawn?: string[];
+  /** Agents this agent can message (empty = can message any) */
+  canMessage?: string[];
+  /** Maximum concurrent spawns allowed */
+  maxSpawns?: number;
+  /** Rate limit: messages per minute */
+  rateLimit?: number;
+  /** Whether this agent can be spawned by others */
+  canBeSpawned?: boolean;
+}
+
+export interface WorkspaceAgentPolicy {
+  /** Default policy for agents without explicit config */
+  defaultPolicy?: AgentPolicyRule;
+  /** Named agent policies */
+  agents?: AgentPolicyRule[];
+  /** Global settings */
+  settings?: {
+    /** Require explicit agent definitions (reject unknown agents) */
+    requireExplicitAgents?: boolean;
+    /** Enable audit logging */
+    auditEnabled?: boolean;
+    /** Maximum total agents */
+    maxTotalAgents?: number;
+  };
+}
+
 // Workspace configuration type
 export interface WorkspaceConfig {
   providers?: string[];
@@ -125,6 +159,8 @@ export interface WorkspaceConfig {
   supervisorEnabled?: boolean;
   maxAgents?: number;
   resourceTier?: 'small' | 'medium' | 'large' | 'xlarge';
+  /** Agent policy for this workspace (enforced when repos don't have agents.md) */
+  agentPolicy?: WorkspaceAgentPolicy;
 }
 
 export const workspaces = pgTable('workspaces', {

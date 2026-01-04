@@ -94,6 +94,29 @@
         ".claude/agents/shadow-auditor.md",
         ".claude/agents/shadow-active.md"
       ]
+    },
+    {
+      "name": "agent-policy-snippet",
+      "version": "1.0.0",
+      "description": "Agent policy rules snippet - informs agents of spawn, messaging, and tool restrictions",
+      "format": "generic",
+      "subtype": "snippet",
+      "snippet": {
+        "target": "AGENTS.md",
+        "position": "append",
+        "header": "Agent Policy"
+      },
+      "tags": [
+        "policy",
+        "rules",
+        "permissions",
+        "authorization",
+        "security",
+        "multi-agent"
+      ],
+      "files": [
+        "docs/agent-policy-snippet.md"
+      ]
     }
   ]
 }
