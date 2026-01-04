@@ -117,35 +117,65 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
     args: [],
     urlPattern: /(https:\/\/[^\s]+)/,
     displayName: 'Gemini',
-    waitTimeout: 3000,
-    prompts: [],
+    waitTimeout: 5000,
+    prompts: [
+      {
+        pattern: /login\s*with\s*google|google\s*account|choose.*auth/i,
+        response: '\r', // Select first option (Login with Google)
+        delay: 200,
+        description: 'Auth method selection',
+      },
+    ],
     successPatterns: [
       /success/i,
       /authenticated/i,
+      /logged\s*in/i,
     ],
   },
   opencode: {
     command: 'opencode',
-    args: [],
+    args: ['auth', 'login'],
     urlPattern: /(https:\/\/[^\s]+)/,
     displayName: 'OpenCode',
-    waitTimeout: 3000,
-    prompts: [],
+    waitTimeout: 5000,
+    prompts: [
+      {
+        pattern: /select.*provider|choose.*provider|which.*provider/i,
+        response: '\r', // Select first provider
+        delay: 200,
+        description: 'Provider selection',
+      },
+      {
+        pattern: /claude\s*pro|anthropic|select.*auth/i,
+        response: '\r', // Select first auth option
+        delay: 200,
+        description: 'Auth type selection',
+      },
+    ],
     successPatterns: [
       /success/i,
       /authenticated/i,
+      /logged\s*in/i,
     ],
   },
   droid: {
     command: 'droid',
-    args: [],
+    args: ['--login'],
     urlPattern: /(https:\/\/[^\s]+)/,
     displayName: 'Droid',
-    waitTimeout: 3000,
-    prompts: [],
+    waitTimeout: 5000,
+    prompts: [
+      {
+        pattern: /sign\s*in|log\s*in|authenticate/i,
+        response: '\r',
+        delay: 200,
+        description: 'Login prompt',
+      },
+    ],
     successPatterns: [
       /success/i,
       /authenticated/i,
+      /logged\s*in/i,
     ],
   },
 };
