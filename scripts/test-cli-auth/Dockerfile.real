@@ -28,11 +28,10 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Install Codex globally as root (matches workspace Dockerfile)
+# Install npm-based CLIs globally as root (npm -g requires root)
 RUN npm install -g @openai/codex || echo "Codex install failed"
-
-# Install Gemini CLI globally as root (npm -g requires root)
 RUN npm install -g @google/gemini-cli || echo "Gemini install failed"
+RUN npm install -g opencode-ai@latest || echo "OpenCode install failed"
 
 # Create test user (CLIs install to ~/.local/bin)
 RUN useradd -m -u 1001 testuser
@@ -47,8 +46,7 @@ RUN curl -fsSL https://claude.ai/install.sh | bash || echo "Claude install faile
 RUN mkdir -p /home/testuser/.claude && \
     echo '{"theme":"dark","hasCompletedOnboarding":true}' > /home/testuser/.claude/settings.local.json
 
-# OpenCode - uses official install script (installs to ~/.local/bin)
-RUN curl -fsSL https://opencode.ai/install | bash || echo "OpenCode install failed"
+# Note: OpenCode is installed as root above via npm
 
 # Droid - uses official install script
 RUN curl -fsSL https://app.factory.ai/cli | sh || echo "Droid install failed"

@@ -56,11 +56,10 @@ COPY deploy/workspace/entrypoint.sh /entrypoint.sh
 COPY deploy/workspace/git-credential-relay /usr/local/bin/git-credential-relay
 RUN chmod +x /entrypoint.sh /usr/local/bin/git-credential-relay
 
-# Install Codex globally as root (requires write to /usr/local)
+# Install npm-based CLIs globally as root (npm -g requires root)
 RUN npm install -g @openai/codex
-
-# Install Gemini CLI globally as root (npm -g requires root)
 RUN npm install -g @google/gemini-cli
+RUN npm install -g opencode-ai@latest
 
 # Create workspace directory
 RUN mkdir -p /workspace/repos /data
@@ -76,11 +75,9 @@ RUN curl -fsSL https://claude.ai/install.sh | bash
 # Pre-seed Claude config to skip interactive onboarding
 RUN mkdir -p /home/workspace/.claude && \
     echo '{"theme":"dark","hasCompletedOnboarding":true}' > /home/workspace/.claude/settings.local.json
-# OpenCode
-RUN curl -fsSL https://opencode.ai/install | bash
+# Note: Codex, Gemini, and OpenCode are installed as root above via npm
 # Droid
 RUN curl -fsSL https://app.factory.ai/cli | sh
-# Note: Gemini is installed as root above (npm -g requires root)
 
 # Environment
 ENV NODE_ENV=production
