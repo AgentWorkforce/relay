@@ -72,10 +72,11 @@ export type OnAgentDeathCallback = (info: {
  * Cached after first load.
  */
 let relaySnippetCache: string | null = null;
+let relayProtocolCache: string | null = null;
 
-function loadRelaySnippet(): string {
-  if (relaySnippetCache !== null) {
-    return relaySnippetCache;
+function loadRelaySnippets(): string {
+  if (relaySnippetCache !== null && relayProtocolCache !== null) {
+    return `${relaySnippetCache}\n\n${relayProtocolCache}`;
   }
 
   try {
@@ -84,7 +85,9 @@ function loadRelaySnippet(): string {
     const __dirname = path.dirname(__filename);
     // From src/bridge/ go up to package root, then into docs/
     const snippetPath = path.resolve(__dirname, '../../docs/agent-relay-snippet.md');
+    const protocolPath = path.resolve(__dirname, '../../docs/agent-relay-protocol.md');
 
+    // Load base communication snippet
     if (fs.existsSync(snippetPath)) {
       relaySnippetCache = fs.readFileSync(snippetPath, 'utf-8');
       console.log('[spawner] Loaded relay communication snippet');
@@ -110,12 +113,41 @@ Your message here.>>>
 `;
       console.log('[spawner] Using fallback relay snippet (docs/agent-relay-snippet.md not found)');
     }
+
+    // Load protocol snippet (session persistence, trajectories, etc.)
+    if (fs.existsSync(protocolPath)) {
+      relayProtocolCache = fs.readFileSync(protocolPath, 'utf-8');
+      console.log('[spawner] Loaded relay protocol snippet');
+    } else {
+      // Fallback: minimal protocol instructions
+      relayProtocolCache = `# Agent Relay Protocol
+
+## Work Trajectories (Required)
+
+Record your work using trail commands:
+
+\`\`\`bash
+trail start "Task description"
+trail decision "Choice made" --reasoning "Why"
+trail complete --summary "What was done" --confidence 0.85
+\`\`\`
+
+## Session End
+
+When done, output:
+\`\`\`
+[[SESSION_END]]Work complete.[[/SESSION_END]]
+\`\`\`
+`;
+      console.log('[spawner] Using fallback protocol snippet (docs/agent-relay-protocol.md not found)');
+    }
   } catch (err: any) {
-    console.error('[spawner] Failed to load relay snippet:', err.message);
-    relaySnippetCache = '';
+    console.error('[spawner] Failed to load relay snippets:', err.message);
+    relaySnippetCache = relaySnippetCache || '';
+    relayProtocolCache = relayProtocolCache || '';
   }
 
-  return relaySnippetCache;
+  return `${relaySnippetCache}\n\n${relayProtocolCache}`;
 }
 
 export class AgentSpawner {
@@ -419,9 +451,10 @@ export class AgentSpawner {
 
       // Always prepend relay communication rules so agents know how to communicate
       // This is essential because target repos may not have the snippet installed
-      const relaySnippet = loadRelaySnippet();
-      if (relaySnippet) {
-        fullMessage = `${relaySnippet}\n\n---\n\n${fullMessage}`;
+      // Includes both base communication patterns AND protocol rules (trajectories, session persistence)
+      const relayRules = loadRelaySnippets();
+      if (relayRules) {
+        fullMessage = `${relayRules}\n\n---\n\n${fullMessage}`;
         if (debug) console.log(`[spawner:debug] Prepended relay communication rules for ${name}`);
       }
 
