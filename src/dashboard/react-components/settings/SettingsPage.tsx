@@ -158,17 +158,32 @@ export function SettingsPage({
         </div>
 
         {/* Mobile Workspace Selector */}
-        {(activeTab === 'workspace' || activeTab === 'team') && workspaces.length > 1 && (
+        {(activeTab === 'workspace' || activeTab === 'team') && workspaces.length > 0 && (
           <div className="md:hidden px-4 py-2 border-b border-border-subtle bg-bg-tertiary/50">
-            <select
-              value={selectedWorkspaceId || ''}
-              onChange={(e) => setSelectedWorkspaceId(e.target.value)}
-              className="w-full px-3 py-2 bg-bg-card border border-border-subtle rounded-lg text-sm text-text-primary focus:outline-none focus:border-accent-cyan"
-            >
-              {workspaces.map((ws) => (
-                <option key={ws.id} value={ws.id}>{ws.name}</option>
-              ))}
-            </select>
+            <div className="flex items-center gap-2">
+              <div
+                className={`w-2 h-2 rounded-full shrink-0 ${
+                  workspaces.find(ws => ws.id === selectedWorkspaceId)?.status === 'running'
+                    ? 'bg-success'
+                    : workspaces.find(ws => ws.id === selectedWorkspaceId)?.status === 'stopped'
+                    ? 'bg-amber-400'
+                    : 'bg-text-muted'
+                }`}
+              />
+              {workspaces.length === 1 ? (
+                <span className="text-sm text-text-primary">{workspaces[0].name}</span>
+              ) : (
+                <select
+                  value={selectedWorkspaceId || ''}
+                  onChange={(e) => setSelectedWorkspaceId(e.target.value)}
+                  className="flex-1 px-3 py-2 bg-bg-card border border-border-subtle rounded-lg text-sm text-text-primary focus:outline-none focus:border-accent-cyan"
+                >
+                  {workspaces.map((ws) => (
+                    <option key={ws.id} value={ws.id}>{ws.name}</option>
+                  ))}
+                </select>
+              )}
+            </div>
           </div>
         )}
 
