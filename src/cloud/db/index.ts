@@ -19,6 +19,8 @@ export type {
   Workspace,
   NewWorkspace,
   WorkspaceConfig,
+  WorkspaceAgentPolicy,
+  AgentPolicyRule,
   WorkspaceMember,
   NewWorkspaceMember,
   ProjectGroup,
@@ -33,6 +35,20 @@ export type {
   NewSubscription,
   UsageRecord,
   NewUsageRecord,
+  // CI failure types
+  CIAnnotation,
+  CIFailureEvent,
+  NewCIFailureEvent,
+  CIFixAttempt,
+  NewCIFixAttempt,
+  CICheckStrategy,
+  CIWebhookConfig,
+  // Issue and comment types
+  IssueAssignment,
+  NewIssueAssignment,
+  CommentMention,
+  NewCommentMention,
+  AgentTriggerConfig,
 } from './schema.js';
 
 // Re-export schema tables for direct access if needed
@@ -47,6 +63,10 @@ export {
   linkedDaemons as linkedDaemonsTable,
   subscriptions as subscriptionsTable,
   usageRecords as usageRecordsTable,
+  ciFailureEvents as ciFailureEventsTable,
+  ciFixAttempts as ciFixAttemptsTable,
+  issueAssignments as issueAssignmentsTable,
+  commentMentions as commentMentionsTable,
 } from './schema.js';
 
 // Import query modules
@@ -62,6 +82,10 @@ import {
   linkedDaemonQueries,
   projectGroupQueries,
   repositoryQueries,
+  ciFailureEventQueries,
+  ciFixAttemptQueries,
+  issueAssignmentQueries,
+  commentMentionQueries,
 } from './drizzle.js';
 
 // Legacy type aliases for backwards compatibility
@@ -86,6 +110,12 @@ export const db = {
   repositories: repositoryQueries,
   // Linked daemon operations (for local agent-relay instances)
   linkedDaemons: linkedDaemonQueries,
+  // CI failure tracking
+  ciFailureEvents: ciFailureEventQueries,
+  ciFixAttempts: ciFixAttemptQueries,
+  // Issue and comment tracking
+  issueAssignments: issueAssignmentQueries,
+  commentMentions: commentMentionQueries,
   // Database utilities
   getDb,
   close: closeDb,
@@ -102,6 +132,10 @@ export {
   projectGroupQueries,
   repositoryQueries,
   linkedDaemonQueries,
+  ciFailureEventQueries,
+  ciFixAttemptQueries,
+  issueAssignmentQueries,
+  commentMentionQueries,
 };
 
 // Export database utilities

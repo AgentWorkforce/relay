@@ -39,3 +39,6 @@ coverage/
 .next
 
 src/dashboard/out
+
+.env.local
+.env

@@ -67,8 +67,22 @@ describe('AgentSpawner', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    existsSyncMock.mockReturnValue(true);
-    readFileSyncMock.mockReturnValue(JSON.stringify({ agents: [] }));
+    // Mock file system calls with path-aware responses
+    existsSyncMock.mockImplementation((filePath: string) => {
+      // Snippet files don't exist in test environment
+      if (filePath.includes('agent-relay-snippet') || filePath.includes('agent-relay-protocol')) {
+        return false;
+      }
+      return true;
+    });
+    readFileSyncMock.mockImplementation((filePath: string) => {
+      // Return agents.json content for registry files
+      if (typeof filePath === 'string' && filePath.includes('agents.json')) {
+        return JSON.stringify({ agents: [] });
+      }
+      // Return empty for other files
+      return '';
+    });
     writeFileSyncMock.mockImplementation(() => {});
     mkdirSyncMock.mockImplementation(() => undefined);
     mockPtyWrapper.start.mockResolvedValue(undefined);
@@ -95,7 +109,10 @@ describe('AgentSpawner', () => {
     });
     expect(spawner.hasWorker('Dev1')).toBe(true);
     expect(mockPtyWrapper.start).toHaveBeenCalled();
-    expect(mockPtyWrapper.write).toHaveBeenCalledWith('Finish the report\r');
+    // Task is written to PTY (may include injected snippets, so check task is included)
+    expect(mockPtyWrapper.write).toHaveBeenCalled();
+    const writeCall = mockPtyWrapper.write.mock.calls[0][0];
+    expect(writeCall).toContain('Finish the report');
   });
 
   it('adds --dangerously-skip-permissions for Claude variants', async () => {

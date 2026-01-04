@@ -4,6 +4,7 @@
  * One-click provisioning for compute resources (Fly.io, Railway, Docker).
  */
 
+import * as crypto from 'crypto';
 import { getConfig } from '../config.js';
 import { db, Workspace } from '../db/index.js';
 import { vault } from '../vault/index.js';
@@ -11,6 +12,7 @@ import { nangoService } from '../services/nango.js';
 
 const WORKSPACE_PORT = 3888;
 const FETCH_TIMEOUT_MS = 10_000;
+const WORKSPACE_IMAGE = process.env.WORKSPACE_IMAGE || 'ghcr.io/agentworkforce/relay-workspace:latest';
 
 /**
  * Get a fresh GitHub App installation token from Nango.
@@ -104,6 +106,8 @@ export interface ProvisionConfig {
   repositories: string[];
   supervisorEnabled?: boolean;
   maxAgents?: number;
+  /** Direct GitHub token for testing (bypasses Nango lookup) */
+  githubToken?: string;
 }
 
 export interface ProvisionResult {
@@ -164,6 +168,8 @@ class FlyProvisioner implements ComputeProvisioner {
   private org: string;
   private region: string;
   private workspaceDomain?: string;
+  private cloudApiUrl: string;
+  private sessionSecret: string;
 
   constructor() {
     const config = getConfig();
@@ -174,6 +180,19 @@ class FlyProvisioner implements ComputeProvisioner {
     this.org = config.compute.fly.org;
     this.region = config.compute.fly.region || 'sjc';
     this.workspaceDomain = config.compute.fly.workspaceDomain;
+    this.cloudApiUrl = config.publicUrl;
+    this.sessionSecret = config.sessionSecret;
+  }
+
+  /**
+   * Generate a workspace token for API authentication
+   * This is a simple HMAC - in production, consider using JWTs
+   */
+  private generateWorkspaceToken(workspaceId: string): string {
+    return crypto
+      .createHmac('sha256', this.sessionSecret)
+      .update(`workspace:${workspaceId}`)
+      .digest('hex');
   }
 
   async provision(
@@ -231,7 +250,7 @@ class FlyProvisioner implements ComputeProvisioner {
         body: JSON.stringify({
           region: this.region,
           config: {
-            image: 'ghcr.io/khaliqgant/agent-relay-workspace:latest',
+            image: WORKSPACE_IMAGE,
             env: {
               WORKSPACE_ID: workspace.id,
               SUPERVISOR_ENABLED: String(workspace.config.supervisorEnabled ?? false),
@@ -240,6 +259,9 @@ class FlyProvisioner implements ComputeProvisioner {
               PROVIDERS: (workspace.config.providers ?? []).join(','),
               PORT: String(WORKSPACE_PORT),
               AGENT_RELAY_DASHBOARD_PORT: String(WORKSPACE_PORT),
+              // Git gateway configuration
+              CLOUD_API_URL: this.cloudApiUrl,
+              WORKSPACE_TOKEN: this.generateWorkspaceToken(workspace.id),
             },
             services: [
               {
@@ -479,6 +501,8 @@ class FlyProvisioner implements ComputeProvisioner {
  */
 class RailwayProvisioner implements ComputeProvisioner {
   private apiToken: string;
+  private cloudApiUrl: string;
+  private sessionSecret: string;
 
   constructor() {
     const config = getConfig();
@@ -486,6 +510,15 @@ class RailwayProvisioner implements ComputeProvisioner {
       throw new Error('Railway configuration missing');
     }
     this.apiToken = config.compute.railway.apiToken;
+    this.cloudApiUrl = config.publicUrl;
+    this.sessionSecret = config.sessionSecret;
+  }
+
+  private generateWorkspaceToken(workspaceId: string): string {
+    return crypto
+      .createHmac('sha256', this.sessionSecret)
+      .update(`workspace:${workspaceId}`)
+      .digest('hex');
   }
 
   async provision(
@@ -539,7 +572,7 @@ class RailwayProvisioner implements ComputeProvisioner {
             projectId,
             name: 'workspace',
             source: {
-              image: 'ghcr.io/khaliqgant/agent-relay-workspace:latest',
+              image: WORKSPACE_IMAGE,
             },
           },
         },
@@ -558,6 +591,8 @@ class RailwayProvisioner implements ComputeProvisioner {
       PROVIDERS: (workspace.config.providers ?? []).join(','),
       PORT: String(WORKSPACE_PORT),
       AGENT_RELAY_DASHBOARD_PORT: String(WORKSPACE_PORT),
+      CLOUD_API_URL: this.cloudApiUrl,
+      WORKSPACE_TOKEN: this.generateWorkspaceToken(workspace.id),
     };
 
     for (const [provider, token] of credentials) {
@@ -724,6 +759,22 @@ class RailwayProvisioner implements ComputeProvisioner {
  * Local Docker provisioner (for development/self-hosted)
  */
 class DockerProvisioner implements ComputeProvisioner {
+  private cloudApiUrl: string;
+  private sessionSecret: string;
+
+  constructor() {
+    const config = getConfig();
+    this.cloudApiUrl = config.publicUrl;
+    this.sessionSecret = config.sessionSecret;
+  }
+
+  private generateWorkspaceToken(workspaceId: string): string {
+    return crypto
+      .createHmac('sha256', this.sessionSecret)
+      .update(`workspace:${workspaceId}`)
+      .digest('hex');
+  }
+
   async provision(
     workspace: Workspace,
     credentials: Map<string, string>
@@ -739,6 +790,8 @@ class DockerProvisioner implements ComputeProvisioner {
       `-e PROVIDERS=${(workspace.config.providers ?? []).join(',')}`,
       `-e PORT=${WORKSPACE_PORT}`,
       `-e AGENT_RELAY_DASHBOARD_PORT=${WORKSPACE_PORT}`,
+      `-e CLOUD_API_URL=${this.cloudApiUrl}`,
+      `-e WORKSPACE_TOKEN=${this.generateWorkspaceToken(workspace.id)}`,
     ];
 
     for (const [provider, token] of credentials) {
@@ -751,7 +804,7 @@ class DockerProvisioner implements ComputeProvisioner {
 
     try {
       execSync(
-        `docker run -d --name ${containerName} -p ${hostPort}:${WORKSPACE_PORT} ${envArgs.join(' ')} ghcr.io/khaliqgant/agent-relay-workspace:latest`,
+        `docker run -d --name ${containerName} -p ${hostPort}:${WORKSPACE_PORT} ${envArgs.join(' ')} ${WORKSPACE_IMAGE}`,
         { stdio: 'pipe' }
       );
 
@@ -863,13 +916,20 @@ export class WorkspaceProvisioner {
     }
 
     // GitHub token is required for cloning repositories
-    // Use Nango GitHub App token (fresh installation token, not from vault)
+    // Use direct token if provided (for testing), otherwise get from Nango
     if (config.repositories.length > 0) {
-      const githubToken = await getGithubAppTokenForUser(config.userId);
-      if (githubToken) {
-        credentials.set('github', githubToken);
+      if (config.githubToken) {
+        // Direct token provided (for testing)
+        credentials.set('github', config.githubToken);
+        console.log('[provisioner] Using provided GitHub token');
       } else {
-        console.warn(`[provisioner] No GitHub App token for user ${config.userId}; repository cloning may fail.`);
+        // Get fresh installation token from Nango GitHub App
+        const githubToken = await getGithubAppTokenForUser(config.userId);
+        if (githubToken) {
+          credentials.set('github', githubToken);
+        } else {
+          console.warn(`[provisioner] No GitHub App token for user ${config.userId}; repository cloning may fail.`);
+        }
       }
     }
 

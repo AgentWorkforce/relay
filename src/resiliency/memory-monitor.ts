@@ -391,7 +391,7 @@ export class AgentMemoryMonitor extends EventEmitter {
     if (!metrics) return;
 
     const { thresholds } = this.config;
-    const previousRss = metrics.current.rssBytes;
+    const _previousRss = metrics.current.rssBytes;
     const previousAlertLevel = metrics.alertLevel;
 
     // Update current snapshot

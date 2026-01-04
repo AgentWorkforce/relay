@@ -8,9 +8,9 @@
 # - Example workspace (optional)
 #
 # After starting, access:
-# - Landing page: http://localhost:3000
-# - Dashboard: http://localhost:3000/dashboard
-# - API: http://localhost:3000/api
+# - Landing page: http://localhost:4567
+# - Dashboard: http://localhost:4567/dashboard
+# - API: http://localhost:4567/api
 
 version: '3.8'
 
@@ -26,7 +26,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./deploy/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
-      - "5432:5432"
+      - "5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U agent_relay"]
       interval: 5s
@@ -52,11 +52,11 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "3000:3000"
+      - "4567:4567"
     environment:
       NODE_ENV: development
-      PORT: 3000
-      PUBLIC_URL: http://localhost:3000
+      PORT: 4567
+      PUBLIC_URL: http://localhost:4567
 
       # Database
       DATABASE_URL: postgres://agent_relay:dev_password@postgres:5432/agent_relay
@@ -95,7 +95,7 @@ services:
       # Mount docker socket for local workspace provisioning
       - /var/run/docker.sock:/var/run/docker.sock
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:4567/health"]
       interval: 10s
       timeout: 5s
       retries: 3

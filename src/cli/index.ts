@@ -2459,7 +2459,7 @@ program
         console.log('  UNACKNOWLEDGED ALERTS:');
         console.log('  ─────────────────────────────────────────────────────────────');
         for (const alert of data.alerts.slice(0, 10)) {
-          const time = new Date(alert.createdAt).toLocaleString();
+          const _time = new Date(alert.createdAt).toLocaleString();
           const icon = alert.alertType === 'oom_imminent' ? '🔴' :
                        alert.alertType === 'critical' ? '🟠' : '🟡';
           console.log(`    ${icon} ${alert.agentName} - ${alert.alertType}`);
@@ -2505,8 +2505,6 @@ program
     outputDir?: string;
     exposeGc?: boolean;
   }) => {
-    const { spawn } = await import('child_process');
-    const os = await import('node:os');
     const { getProjectPaths } = await import('../utils/project-namespace.js');
 
     if (!commandParts || commandParts.length === 0) {
@@ -2569,8 +2567,6 @@ program
       useInbox: true,
       inboxDir: paths.dataDir,
     });
-
-    const snapshotCount = 0;
 
     // Start memory sampling
     const sampleInterval = setInterval(() => {

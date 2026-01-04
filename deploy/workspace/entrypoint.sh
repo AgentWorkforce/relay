@@ -16,8 +16,49 @@ REPO_LIST="${REPOSITORIES:-}"
 mkdir -p "${WORKSPACE_DIR}"
 cd "${WORKSPACE_DIR}"
 
-# Configure Git credentials for GitHub clones (avoid storing tokens in remotes)
-if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+# Configure Git credentials via the gateway (tokens auto-refresh via Nango)
+# The credential helper fetches fresh tokens from the cloud API on each git operation
+if [[ -n "${CLOUD_API_URL:-}" && -n "${WORKSPACE_ID:-}" && -n "${WORKSPACE_TOKEN:-}" ]]; then
+  log "Configuring git credential helper (gateway mode)"
+  git config --global credential.helper "/usr/local/bin/git-credential-relay"
+  git config --global credential.useHttpPath true
+  export GIT_TERMINAL_PROMPT=0
+
+  # Configure gh CLI to use the same token mechanism
+  # gh auth login expects a token via stdin or GH_TOKEN env var
+  # We'll set up a wrapper that fetches fresh tokens
+  mkdir -p "${HOME}/.config/gh"
+  cat > "${HOME}/.config/gh/hosts.yml" <<EOF
+github.com:
+  oauth_token: placeholder
+  git_protocol: https
+EOF
+
+  # Create gh token wrapper script
+  cat > "/tmp/gh-token-helper.sh" <<'GHEOF'
+#!/usr/bin/env bash
+# Fetch fresh token for gh CLI
+response=$(curl -sf \
+  -H "Authorization: Bearer ${WORKSPACE_TOKEN}" \
+  "${CLOUD_API_URL}/api/git/token?workspaceId=${WORKSPACE_ID}" 2>/dev/null)
+if [[ -n "$response" ]]; then
+  echo "$response" | jq -r '.token // empty'
+fi
+GHEOF
+  chmod +x "/tmp/gh-token-helper.sh"
+
+  # gh CLI will use GH_TOKEN if set; we export a function to refresh it
+  # For now, set it once at startup (will be refreshed by the credential helper for git operations)
+  export GH_TOKEN=$(/tmp/gh-token-helper.sh 2>/dev/null || echo "")
+  if [[ -n "${GH_TOKEN}" ]]; then
+    log "GitHub CLI configured with fresh token"
+  else
+    log "WARN: Could not fetch GitHub token for gh CLI"
+  fi
+
+# Fallback: Use static GITHUB_TOKEN if provided (legacy mode)
+elif [[ -n "${GITHUB_TOKEN:-}" ]]; then
+  log "Configuring git credentials (legacy static token mode)"
   GIT_ASKPASS_SCRIPT="/tmp/git-askpass.sh"
   cat > "${GIT_ASKPASS_SCRIPT}" <<'EOF'
 #!/usr/bin/env bash
@@ -31,6 +72,7 @@ EOF
   chmod +x "${GIT_ASKPASS_SCRIPT}"
   export GIT_ASKPASS="${GIT_ASKPASS_SCRIPT}"
   export GIT_TERMINAL_PROMPT=0
+  export GH_TOKEN="${GITHUB_TOKEN}"
 fi
 
 clone_or_update_repo() {
@@ -67,6 +109,17 @@ if [[ -n "${REPO_LIST}" ]]; then
   for repo in "${repos[@]}"; do
     clone_or_update_repo "${repo}"
   done
+fi
+
+# ============================================================================
+# Configure agent policy enforcement for cloud workspaces
+# Policy is fetched from cloud API and enforced at runtime
+# ============================================================================
+
+if [[ -n "${CLOUD_API_URL:-}" && -n "${WORKSPACE_ID:-}" ]]; then
+  log "Enabling agent policy enforcement"
+  export AGENT_POLICY_ENFORCEMENT=1
+  # Policy is fetched from ${CLOUD_API_URL}/api/policy/${WORKSPACE_ID}/internal
 fi
 
 # ============================================================================

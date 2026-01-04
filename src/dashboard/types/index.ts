@@ -24,6 +24,34 @@ export interface Agent {
   lastMessageReceivedAt?: number; // Timestamp when agent last received a message
   lastOutputAt?: number; // Timestamp when agent last produced output
   isStuck?: boolean; // True when agent received message but hasn't responded within threshold
+  // Profile fields for understanding agent behavior
+  profile?: AgentProfile;
+}
+
+/**
+ * Agent profile information - helps users understand agent behavior
+ */
+export interface AgentProfile {
+  /** Display title/role (e.g., "Lead Developer", "Code Reviewer") */
+  title?: string;
+  /** Short description of what this agent does */
+  description?: string;
+  /** The prompt/task the agent was spawned with */
+  spawnPrompt?: string;
+  /** Agent profile/persona prompt (e.g., lead agent instructions) */
+  personaPrompt?: string;
+  /** Name of the persona preset used (e.g., "lead", "reviewer", "shadow-auditor") */
+  personaName?: string;
+  /** Model being used (e.g., "claude-3-opus", "gpt-4") */
+  model?: string;
+  /** Working directory */
+  workingDirectory?: string;
+  /** When the agent was first seen */
+  firstSeen?: string;
+  /** Capabilities or tools available to the agent */
+  capabilities?: string[];
+  /** Tags for categorization */
+  tags?: string[];
 }
 
 export interface AgentSummary {

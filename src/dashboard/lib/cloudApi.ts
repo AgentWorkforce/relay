@@ -386,4 +386,21 @@ export const cloudApi = {
       { method: 'POST' }
     );
   },
+
+  // ===== GitHub App API =====
+
+  /**
+   * Get user's connected repositories
+   */
+  async getRepos() {
+    return cloudFetch<{ repositories: Array<{
+      id: string;
+      fullName: string;
+      isPrivate: boolean;
+      defaultBranch: string;
+      syncStatus: string;
+      hasNangoConnection: boolean;
+      lastSyncedAt?: string;
+    }> }>('/api/github-app/repos');
+  },
 };

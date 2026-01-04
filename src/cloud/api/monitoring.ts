@@ -15,7 +15,7 @@ import { requireAuth } from './auth.js';
 import { db as dbModule } from '../db/index.js';
 import { getDb } from '../db/drizzle.js';
 import {
-  linkedDaemons,
+  linkedDaemons as _linkedDaemons,
   agentMetrics,
   agentCrashes,
   memoryAlerts,

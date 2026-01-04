@@ -1,0 +1,117 @@
+name: CLI OAuth Flow Tests
+
+on:
+  push:
+    paths:
+      - 'src/cloud/api/onboarding.ts'
+      - 'scripts/test-cli-auth/**'
+      - '.github/workflows/cli-oauth-test.yml'
+  pull_request:
+    paths:
+      - 'src/cloud/api/onboarding.ts'
+      - 'scripts/test-cli-auth/**'
+  # Allow manual trigger
+  workflow_dispatch:
+  # Run weekly to catch provider CLI changes
+  schedule:
+    - cron: '0 0 * * 0' # Every Sunday at midnight
+
+jobs:
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run onboarding unit tests
+        run: npx vitest run src/cloud/api/onboarding.test.ts
+
+  real-cli-tests:
+    name: Real CLI Integration Tests
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build test container with real CLIs
+        run: |
+          docker build -f scripts/test-cli-auth/Dockerfile.real \
+            -t cli-oauth-test-real .
+
+      - name: Run CLI OAuth tests against real CLIs
+        id: test
+        run: |
+          mkdir -p test-results
+          docker run --rm \
+            -v ${{ github.workspace }}/test-results:/tmp \
+            cli-oauth-test-real
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-oauth-test-results
+          path: test-results/cli-oauth-test-results.json
+          if-no-files-found: ignore
+
+      - name: Parse and display results
+        if: always()
+        run: |
+          if [ -f test-results/cli-oauth-test-results.json ]; then
+            echo "### CLI OAuth Test Results" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Provider | Status | URL Found | Duration |" >> $GITHUB_STEP_SUMMARY
+            echo "|----------|--------|-----------|----------|" >> $GITHUB_STEP_SUMMARY
+
+            cat test-results/cli-oauth-test-results.json | \
+              jq -r '.results[] | "| \(.provider) | \(if .passed then "✅" else "❌" end) | \(if .urlExtracted then "Yes" else "No" end) | \(.duration)ms |"' \
+              >> $GITHUB_STEP_SUMMARY
+
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Summary:** $(cat test-results/cli-oauth-test-results.json | jq -r '.summary | "\(.passed)/\(.total) passed"')" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  notify-on-failure:
+    name: Notify on Failure
+    runs-on: ubuntu-latest
+    needs: [unit-tests, real-cli-tests]
+    if: failure() && github.event_name == 'schedule'
+    steps:
+      - name: Create issue for CI failure
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `CLI OAuth Tests Failed - ${new Date().toISOString().split('T')[0]}`;
+            const body = `
+            ## CLI OAuth Integration Tests Failed
+
+            The scheduled CLI OAuth tests have failed. This may indicate:
+            - A provider has updated their CLI and changed the OAuth flow
+            - Prompt patterns need to be updated
+            - URL extraction patterns need adjustment
+
+            ### Action Required
+            1. Check the [workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
+            2. Update \`CLI_AUTH_CONFIG\` in \`src/cloud/api/onboarding.ts\` if needed
+            3. Update mock CLI behavior in \`scripts/test-cli-auth/mock-cli.sh\`
+            4. Re-run tests to verify fixes
+
+            /cc @${context.actor}
+            `;
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: title,
+              body: body,
+              labels: ['bug', 'cli-oauth', 'automated']
+            });

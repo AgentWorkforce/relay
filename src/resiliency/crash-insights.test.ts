@@ -4,13 +4,9 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
 import {
   CrashInsightsService,
   getCrashInsights,
-  type CrashRecord,
-  type CrashAnalysis,
 } from './crash-insights.js';
 import type { AgentMemoryMonitor, CrashMemoryContext } from './memory-monitor.js';
 

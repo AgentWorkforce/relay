@@ -85,8 +85,8 @@ function optionalEnv(name: string): string | undefined {
 
 export function loadConfig(): CloudConfig {
   return {
-    port: parseInt(process.env.PORT || '3000', 10),
-    publicUrl: process.env.PUBLIC_URL || 'http://localhost:3000',
+    port: parseInt(process.env.PORT || '4567', 10),
+    publicUrl: process.env.PUBLIC_URL || 'http://localhost:4567',
     sessionSecret: requireEnv('SESSION_SECRET'),
 
     databaseUrl: requireEnv('DATABASE_URL'),

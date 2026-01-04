@@ -2,15 +2,42 @@
  * Onboarding API Routes
  *
  * Handles CLI proxy authentication for Claude Code and other providers.
- * Spawns CLI tools to get auth URLs, captures tokens.
+ * Spawns CLI tools via PTY to get auth URLs, captures tokens.
+ *
+ * We use node-pty instead of child_process.spawn because:
+ * 1. Many CLIs detect if they're in a TTY and behave differently
+ * 2. Interactive OAuth flows often require TTY for proper output
+ * 3. PTY ensures the CLI outputs auth URLs correctly
  */
 
 import { Router, Request, Response } from 'express';
-import { spawn, ChildProcess } from 'child_process';
-import crypto from 'crypto';
+import type { IPty } from 'node-pty';
+import * as crypto from 'crypto';
 import { requireAuth } from './auth.js';
 import { db } from '../db/index.js';
 import { vault } from '../vault/index.js';
+
+// Re-export from shared module for backward compatibility
+export {
+  CLI_AUTH_CONFIG,
+  runCLIAuthViaPTY,
+  stripAnsiCodes,
+  matchesSuccessPattern,
+  findMatchingPrompt,
+  validateProviderConfig,
+  validateAllProviderConfigs,
+  getSupportedProviders,
+  type CLIAuthConfig,
+  type PTYAuthResult,
+  type PTYAuthOptions,
+  type PromptHandler,
+} from './cli-pty-runner.js';
+
+import {
+  CLI_AUTH_CONFIG,
+  runCLIAuthViaPTY,
+  matchesSuccessPattern,
+} from './cli-pty-runner.js';
 
 export const onboardingRouter = Router();
 
@@ -24,13 +51,14 @@ onboardingRouter.use(requireAuth);
 interface CLIAuthSession {
   userId: string;
   provider: string;
-  process?: ChildProcess;
+  process?: IPty;
   authUrl?: string;
   callbackUrl?: string;
   status: 'starting' | 'waiting_auth' | 'success' | 'error' | 'timeout';
   token?: string;
   error?: string;
   createdAt: Date;
+  output: string; // Accumulated output for debugging
 }
 
 const activeSessions = new Map<string, CLIAuthSession>();
@@ -38,44 +66,20 @@ const activeSessions = new Map<string, CLIAuthSession>();
 // Clean up old sessions periodically
 setInterval(() => {
   const now = Date.now();
-  for (const [id, session] of activeSessions) {
+  activeSessions.forEach((session, id) => {
     // Remove sessions older than 10 minutes
     if (now - session.createdAt.getTime() > 10 * 60 * 1000) {
       if (session.process) {
-        session.process.kill();
+        try {
+          session.process.kill();
+        } catch {
+          // Process may already be dead
+        }
       }
       activeSessions.delete(id);
     }
-  }
+  });
 }, 60000);
-
-/**
- * CLI commands and URL patterns for each provider
- */
-const CLI_AUTH_CONFIG: Record<string, {
-  command: string;
-  args: string[];
-  urlPattern: RegExp;
-  tokenPattern?: RegExp;
-  credentialPath?: string;
-}> = {
-  anthropic: {
-    // Claude Code CLI login
-    command: 'claude',
-    args: ['login', '--no-open'],
-    // Claude outputs: "Please open: https://..."
-    urlPattern: /(?:open|visit|go to)[:\s]+(\S+anthropic\S+)/i,
-    // Token might be in output or in credentials file
-    credentialPath: '~/.claude/credentials.json',
-  },
-  openai: {
-    // Codex CLI auth
-    command: 'codex',
-    args: ['auth', '--no-browser'],
-    urlPattern: /(?:open|visit|go to)[:\s]+(\S+openai\S+)/i,
-    credentialPath: '~/.codex/credentials.json',
-  },
-};
 
 /**
  * POST /api/onboarding/cli/:provider/start
@@ -100,63 +104,48 @@ onboardingRouter.post('/cli/:provider/start', async (req: Request, res: Response
     provider,
     status: 'starting',
     createdAt: new Date(),
+    output: '',
   };
   activeSessions.set(sessionId, session);
 
   try {
-    // Spawn CLI process
-    const proc = spawn(config.command, config.args, {
-      env: { ...process.env, NO_COLOR: '1' },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    session.process = proc;
-    let _output = '';
-
-    // Capture stdout/stderr for auth URL
-    const handleOutput = (data: Buffer) => {
-      const text = data.toString();
-      _output += text;
-
-      // Look for auth URL
-      const match = text.match(config.urlPattern);
-      if (match && match[1]) {
-        session.authUrl = match[1];
+    // Use shared PTY runner for CLI auth
+    const ptyResult = await runCLIAuthViaPTY(config, {
+      onAuthUrl: (url) => {
+        session.authUrl = url;
         session.status = 'waiting_auth';
-      }
+      },
+      onPromptHandled: (description) => {
+        console.log(`[onboarding] Auto-responded to: ${description}`);
+      },
+      onOutput: (data) => {
+        session.output += data;
+        if (matchesSuccessPattern(data, config.successPatterns)) {
+          session.status = 'success';
+        }
+      },
+    });
 
-      // Look for success indicators
-      if (text.toLowerCase().includes('success') ||
-          text.toLowerCase().includes('authenticated') ||
-          text.toLowerCase().includes('logged in')) {
-        session.status = 'success';
-      }
-    };
-
-    proc.stdout.on('data', handleOutput);
-    proc.stderr.on('data', handleOutput);
-
-    proc.on('error', (err) => {
+    // Update session with result
+    if (ptyResult.success && !session.authUrl) {
+      session.status = 'success';
+      await extractCredentials(session, config);
+    } else if (ptyResult.error && session.status === 'starting') {
       session.status = 'error';
-      session.error = `Failed to start CLI: ${err.message}`;
-    });
+      session.error = ptyResult.error;
+    }
 
-    proc.on('exit', async (code) => {
-      if (code === 0 && session.status !== 'error') {
-        session.status = 'success';
-        // Try to read credentials from file
-        await extractCredentials(session, config);
-      } else if (session.status === 'starting') {
-        session.status = 'error';
-        session.error = `CLI exited with code ${code}`;
-      }
-    });
-
-    // Wait a moment for URL to appear
-    await new Promise(resolve => setTimeout(resolve, 2000));
-
-    // Return session info
-    if (session.authUrl) {
+    // Return session info based on current state
+    if (session.status === 'success' && !session.authUrl) {
+      // Already authenticated - CLI exited successfully without auth URL
+      activeSessions.delete(sessionId);
+      res.json({
+        sessionId,
+        status: 'success',
+        alreadyAuthenticated: true,
+        message: `Already authenticated with ${config.displayName}`,
+      });
+    } else if (session.authUrl) {
       res.json({
         sessionId,
         status: 'waiting_auth',
@@ -252,7 +241,11 @@ onboardingRouter.post('/cli/:provider/complete/:sessionId', async (req: Request,
 
     // Clean up session
     if (session.process) {
-      session.process.kill();
+      try {
+        session.process.kill();
+      } catch {
+        // Process may already be dead
+      }
     }
     activeSessions.delete(sessionId);
 
@@ -277,7 +270,11 @@ onboardingRouter.post('/cli/:provider/cancel/:sessionId', (req: Request, res: Re
   const session = activeSessions.get(sessionId);
   if (session?.userId === userId) {
     if (session.process) {
-      session.process.kill();
+      try {
+        session.process.kill();
+      } catch {
+        // Process may already be dead
+      }
     }
     activeSessions.delete(sessionId);
   }

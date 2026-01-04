@@ -6,11 +6,13 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { sleep } from './utils.js';
 import { getProjectPaths } from '../utils/project-namespace.js';
 import { resolveCommand } from '../utils/command-resolver.js';
 import { PtyWrapper, type PtyWrapperConfig, type SummaryEvent, type SessionEndEvent } from '../wrapper/pty-wrapper.js';
 import { selectShadowCli } from './shadow-cli.js';
+import { AgentPolicyService, type CloudPolicyFetcher } from '../policy/agent-policy.js';
 import type {
   SpawnRequest,
   SpawnResult,
@@ -64,6 +66,90 @@ export type OnAgentDeathCallback = (info: {
   resumeInstructions?: string;
 }) => void;
 
+/**
+ * Load the relay communication snippet.
+ * This defines how agents communicate via relay patterns.
+ * Cached after first load.
+ */
+let relaySnippetCache: string | null = null;
+let relayProtocolCache: string | null = null;
+
+function loadRelaySnippets(): string {
+  if (relaySnippetCache !== null && relayProtocolCache !== null) {
+    return `${relaySnippetCache}\n\n${relayProtocolCache}`;
+  }
+
+  try {
+    // Resolve path relative to this file's location
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = path.dirname(__filename);
+    // From src/bridge/ go up to package root, then into docs/
+    const snippetPath = path.resolve(__dirname, '../../docs/agent-relay-snippet.md');
+    const protocolPath = path.resolve(__dirname, '../../docs/agent-relay-protocol.md');
+
+    // Load base communication snippet
+    if (fs.existsSync(snippetPath)) {
+      relaySnippetCache = fs.readFileSync(snippetPath, 'utf-8');
+      console.log('[spawner] Loaded relay communication snippet');
+    } else {
+      // Fallback: minimal relay instructions
+      relaySnippetCache = `# Agent Relay Communication
+
+You are connected to an agent relay system. Use these patterns to communicate:
+
+## Sending Messages
+\`\`\`
+->relay:AgentName <<<
+Your message here.>>>
+\`\`\`
+
+## Communication Protocol
+- **ACK immediately** when receiving a task
+- **Report completion** with DONE: summary
+
+## Common Patterns
+- \`->relay:Lead <<<ACK: Starting task>>>\`
+- \`->relay:Lead <<<DONE: Task complete>>>\`
+`;
+      console.log('[spawner] Using fallback relay snippet (docs/agent-relay-snippet.md not found)');
+    }
+
+    // Load protocol snippet (session persistence, trajectories, etc.)
+    if (fs.existsSync(protocolPath)) {
+      relayProtocolCache = fs.readFileSync(protocolPath, 'utf-8');
+      console.log('[spawner] Loaded relay protocol snippet');
+    } else {
+      // Fallback: minimal protocol instructions
+      relayProtocolCache = `# Agent Relay Protocol
+
+## Work Trajectories (Required)
+
+Record your work using trail commands:
+
+\`\`\`bash
+trail start "Task description"
+trail decision "Choice made" --reasoning "Why"
+trail complete --summary "What was done" --confidence 0.85
+\`\`\`
+
+## Session End
+
+When done, output:
+\`\`\`
+[[SESSION_END]]Work complete.[[/SESSION_END]]
+\`\`\`
+`;
+      console.log('[spawner] Using fallback protocol snippet (docs/agent-relay-protocol.md not found)');
+    }
+  } catch (err: any) {
+    console.error('[spawner] Failed to load relay snippets:', err.message);
+    relaySnippetCache = relaySnippetCache || '';
+    relayProtocolCache = relayProtocolCache || '';
+  }
+
+  return `${relaySnippetCache}\n\n${relayProtocolCache}`;
+}
+
 export class AgentSpawner {
   private activeWorkers: Map<string, ActiveWorker> = new Map();
   private agentsPath: string;
@@ -74,6 +160,8 @@ export class AgentSpawner {
   private dashboardPort?: number;
   private onAgentDeath?: OnAgentDeathCallback;
   private cloudPersistence?: CloudPersistenceHandler;
+  private policyService?: AgentPolicyService;
+  private policyEnforcementEnabled = false;
 
   constructor(projectRoot: string, _tmuxSession?: string, dashboardPort?: number) {
     const paths = getProjectPaths(projectRoot);
@@ -86,6 +174,39 @@ export class AgentSpawner {
 
     // Ensure logs directory exists
     fs.mkdirSync(this.logsDir, { recursive: true });
+
+    // Initialize policy service if enforcement is enabled
+    if (process.env.AGENT_POLICY_ENFORCEMENT === '1') {
+      this.policyEnforcementEnabled = true;
+      this.policyService = new AgentPolicyService({
+        projectRoot: this.projectRoot,
+        workspaceId: process.env.WORKSPACE_ID,
+        strictMode: process.env.AGENT_POLICY_STRICT === '1',
+      });
+      console.log('[spawner] Policy enforcement enabled');
+    }
+  }
+
+  /**
+   * Set cloud policy fetcher for workspace-level policies
+   */
+  setCloudPolicyFetcher(fetcher: CloudPolicyFetcher): void {
+    if (this.policyService) {
+      // Recreate policy service with cloud fetcher
+      this.policyService = new AgentPolicyService({
+        projectRoot: this.projectRoot,
+        workspaceId: process.env.WORKSPACE_ID,
+        cloudFetcher: fetcher,
+        strictMode: process.env.AGENT_POLICY_STRICT === '1',
+      });
+    }
+  }
+
+  /**
+   * Get the policy service (for external access to policy checks)
+   */
+  getPolicyService(): AgentPolicyService | undefined {
+    return this.policyService;
   }
 
   /**
@@ -166,7 +287,7 @@ export class AgentSpawner {
    * Spawn a new worker agent using node-pty
    */
   async spawn(request: SpawnRequest): Promise<SpawnResult> {
-    const { name, cli, task, team } = request;
+    const { name, cli, task, team, spawnerName } = request;
     const debug = process.env.DEBUG_SPAWN === '1';
 
     // Check if worker already exists
@@ -176,6 +297,23 @@ export class AgentSpawner {
         name,
         error: `Worker ${name} already exists`,
       };
+    }
+
+    // Policy enforcement: check if the spawner is authorized to spawn this agent
+    if (this.policyEnforcementEnabled && this.policyService && spawnerName) {
+      const decision = await this.policyService.canSpawn(spawnerName, name, cli);
+      if (!decision.allowed) {
+        console.warn(`[spawner] Policy blocked spawn: ${spawnerName} -> ${name}: ${decision.reason}`);
+        return {
+          success: false,
+          name,
+          error: `Policy denied: ${decision.reason}`,
+          policyDecision: decision,
+        };
+      }
+      if (debug) {
+        console.log(`[spawner:debug] Policy allowed spawn: ${spawnerName} -> ${name} (source: ${decision.policySource})`);
+      }
     }
 
     try {
@@ -308,10 +446,31 @@ export class AgentSpawner {
         };
       }
 
+      // Build the full message: relay snippet + policy instructions (if any) + task
+      let fullMessage = task || '';
+
+      // Always prepend relay communication rules so agents know how to communicate
+      // This is essential because target repos may not have the snippet installed
+      // Includes both base communication patterns AND protocol rules (trajectories, session persistence)
+      const relayRules = loadRelaySnippets();
+      if (relayRules) {
+        fullMessage = `${relayRules}\n\n---\n\n${fullMessage}`;
+        if (debug) console.log(`[spawner:debug] Prepended relay communication rules for ${name}`);
+      }
+
+      // Prepend policy instructions if enforcement is enabled
+      if (this.policyEnforcementEnabled && this.policyService) {
+        const policyInstruction = await this.policyService.getPolicyInstruction(name);
+        if (policyInstruction) {
+          fullMessage = `${policyInstruction}\n\n${fullMessage}`;
+          if (debug) console.log(`[spawner:debug] Prepended policy instructions to task for ${name}`);
+        }
+      }
+
       // Send task via relay message if provided (not via direct PTY injection)
       // This ensures the agent is ready to receive before processing the task
-      if (task && task.trim()) {
-        if (debug) console.log(`[spawner:debug] Will send task via relay: ${task.substring(0, 50)}...`);
+      if (fullMessage && fullMessage.trim()) {
+        if (debug) console.log(`[spawner:debug] Will send task via relay: ${fullMessage.substring(0, 50)}...`);
 
         // If we have dashboard API, send task as relay message
         if (this.dashboardPort) {
@@ -323,7 +482,7 @@ export class AgentSpawner {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 to: name,
-                message: task,
+                message: fullMessage,
                 from: '__spawner__',
               }),
             });
@@ -333,16 +492,16 @@ export class AgentSpawner {
             } else {
               console.warn(`[spawner] Failed to send task via relay: ${result.error}`);
               // Fall back to direct injection
-              pty.write(task + '\r');
+              pty.write(fullMessage + '\r');
             }
           } catch (err: any) {
             console.warn(`[spawner] Relay send failed, falling back to direct injection: ${err.message}`);
-            pty.write(task + '\r');
+            pty.write(fullMessage + '\r');
           }
         } else {
           // No dashboard API available - use direct injection as fallback
           if (debug) console.log(`[spawner:debug] No dashboard API, using direct injection`);
-          pty.write(task + '\r');
+          pty.write(fullMessage + '\r');
         }
       }
 

@@ -2,7 +2,7 @@
 const nextConfig = {
   // Static export - generates HTML/JS/CSS that can be served by any server
   output: 'export',
-  distDir: 'out',
+  // Export output goes to 'out/' by default with output: 'export'
 
   // Disable strict mode for now during development
   reactStrictMode: true,

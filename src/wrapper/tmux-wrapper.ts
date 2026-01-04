@@ -27,6 +27,8 @@ import {
   TrajectoryIntegration,
   getTrajectoryIntegration,
   detectPhaseFromContent,
+  detectToolCalls,
+  detectErrors,
   getCompactTrailInstructions,
   getTrailEnvVars,
   type PDEROPhase,
@@ -102,7 +104,7 @@ export interface TmuxWrapperConfig {
   /** Polling interval when waiting for clear input (ms) */
   inputWaitPollMs?: number;
   /** CLI type for special handling (auto-detected from command if not set) */
-  cliType?: 'claude' | 'codex' | 'gemini' | 'droid' | 'other';
+  cliType?: 'claude' | 'codex' | 'gemini' | 'droid' | 'opencode' | 'other';
   /** Enable tmux mouse mode for scroll passthrough (default: true) */
   mouseMode?: boolean;
   /** Relay prefix pattern (default: '->relay:') */
@@ -173,6 +175,8 @@ export class TmuxWrapper {
   private tmuxPath: string; // Resolved path to tmux binary (system or bundled)
   private trajectory?: TrajectoryIntegration; // Trajectory tracking via trail
   private lastDetectedPhase?: PDEROPhase; // Track last auto-detected PDERO phase
+  private seenToolCalls: Set<string> = new Set(); // Dedup tool call trajectory events
+  private seenErrors: Set<string> = new Set(); // Dedup error trajectory events
   private continuity?: ContinuityManager; // Session continuity management
   private processedContinuityCommands: Set<string> = new Set(); // Dedup continuity commands
   private agentId?: string; // Unique agent ID for resume functionality
@@ -207,6 +211,8 @@ export class TmuxWrapper {
       this.cliType = 'claude';
     } else if (cmdLower.includes('droid')) {
       this.cliType = 'droid';
+    } else if (cmdLower.includes('opencode')) {
+      this.cliType = 'opencode';
     } else {
       this.cliType = 'other';
     }
@@ -306,11 +312,13 @@ export class TmuxWrapper {
   }
 
   /**
-   * Detect PDERO phase from output content and auto-transition if needed
+   * Detect PDERO phase from output content and auto-transition if needed.
+   * Also detects tool calls and errors, recording them to the trajectory.
    */
   private detectAndTransitionPhase(content: string): void {
     if (!this.trajectory) return;
 
+    // Detect phase transitions
     const detectedPhase = detectPhaseFromContent(content);
     if (detectedPhase && detectedPhase !== this.lastDetectedPhase) {
       const currentPhase = this.trajectory.getPhase();
@@ -318,6 +326,30 @@ export class TmuxWrapper {
         this.trajectory.transition(detectedPhase, 'Auto-detected from output');
         this.lastDetectedPhase = detectedPhase;
         this.logStderr(`Phase transition: ${currentPhase || 'none'} → ${detectedPhase}`);
+      }
+    }
+
+    // Detect and record tool calls
+    // Note: We deduplicate by tool+status to record each unique tool type once per session
+    // (e.g., "Read" started, "Read" completed). This provides a summary of tools used
+    // without flooding the trajectory with every individual invocation.
+    const tools = detectToolCalls(content);
+    for (const tool of tools) {
+      const key = `${tool.tool}:${tool.status || 'started'}`;
+      if (!this.seenToolCalls.has(key)) {
+        this.seenToolCalls.add(key);
+        const statusLabel = tool.status === 'completed' ? ' (completed)' : '';
+        this.trajectory.event(`Tool: ${tool.tool}${statusLabel}`, 'tool_call');
+      }
+    }
+
+    // Detect and record errors
+    const errors = detectErrors(content);
+    for (const error of errors) {
+      if (!this.seenErrors.has(error.message)) {
+        this.seenErrors.add(error.message);
+        const prefix = error.type === 'warning' ? 'Warning' : 'Error';
+        this.trajectory.event(`${prefix}: ${error.message}`, 'error');
       }
     }
   }
@@ -1586,7 +1618,7 @@ export class TmuxWrapper {
     // Set tmux buffer then paste
     // Skip bracketed paste (-p) for CLIs that don't handle it properly (droid, other)
     await execAsync(`"${this.tmuxPath}" set-buffer -- "${escaped}"`);
-    const useBracketedPaste = this.cliType === 'claude' || this.cliType === 'codex' || this.cliType === 'gemini';
+    const useBracketedPaste = this.cliType === 'claude' || this.cliType === 'codex' || this.cliType === 'gemini' || this.cliType === 'opencode';
     if (useBracketedPaste) {
       await execAsync(`"${this.tmuxPath}" paste-buffer -t ${this.sessionName} -p`);
     } else {

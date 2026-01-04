@@ -55,9 +55,10 @@
     "services:up": "docker compose -f docker-compose.dev.yml up -d postgres redis && echo '✓ Postgres and Redis running'",
     "services:down": "docker compose -f docker-compose.dev.yml down",
     "services:logs": "docker compose -f docker-compose.dev.yml logs -f postgres redis",
-    "cloud:api": "node dist/cloud/index.js",
-    "precloud": "npm run clean && tsc && chmod +x dist/cli/index.js && npm run services:up",
-    "cloud": "concurrently -n api,daemon,dashboard -c cyan,blue,magenta \"npm run cloud:api\" \"npm run dev:daemon\" \"npm run dev:dashboard\""
+    "cloud:setup": "./scripts/cloud-setup.sh",
+    "cloud:api": "node -r dotenv/config dist/cloud/index.js",
+    "precloud": "./scripts/cloud-setup.sh --skip-data",
+    "cloud": "concurrently -n api,daemon,dashboard -c cyan,blue,magenta \"npm run cloud:api\" \"npm run dev:daemon\" \"npm run dev:next\""
   },
   "keywords": [
     "agent",

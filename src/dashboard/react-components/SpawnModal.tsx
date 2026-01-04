@@ -24,7 +24,7 @@ export interface SpawnConfig {
 
 function deriveShadowMode(command: string): 'subagent' | 'process' {
   const base = command.trim().split(' ')[0].toLowerCase();
-  if (base.startsWith('claude') || base === 'codex' || base === 'opencode') return 'subagent';
+  if (base.startsWith('claude') || base === 'codex' || base === 'opencode' || base === 'gemini' || base === 'droid') return 'subagent';
   return 'process';
 }
 
@@ -51,6 +51,27 @@ const AGENT_TEMPLATES = [
     command: 'codex',
     description: 'OpenAI Codex agent',
     icon: '⚡',
+  },
+  {
+    id: 'gemini',
+    name: 'Gemini',
+    command: 'gemini',
+    description: 'Google Gemini CLI agent',
+    icon: '💎',
+  },
+  {
+    id: 'opencode',
+    name: 'OpenCode',
+    command: 'opencode',
+    description: 'OpenCode AI agent',
+    icon: '🔷',
+  },
+  {
+    id: 'droid',
+    name: 'Droid',
+    command: 'droid',
+    description: 'Factory Droid agent',
+    icon: '🤖',
   },
   {
     id: 'custom',

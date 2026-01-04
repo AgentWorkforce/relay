@@ -4,7 +4,7 @@
  * Secure storage for OAuth tokens with AES-256-GCM encryption.
  */
 
-import crypto from 'crypto';
+import * as crypto from 'crypto';
 import { getConfig } from '../config.js';
 import { db } from '../db/index.js';
 

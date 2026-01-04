@@ -125,30 +125,16 @@ githubAppRouter.post('/repos/:id/issues', async (req: Request, res: Response) =>
       return res.status(400).json({ error: 'Repository not connected via Nango' });
     }
 
-    // Get token and create issue via GitHub API
-    const token = await nangoService.getGithubAppToken(repository.nangoConnectionId);
+    // Create issue via Nango Proxy (handles token injection automatically)
     const [owner, repo] = repository.githubFullName.split('/');
-
-    const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/issues`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ title, body: body || '', labels }),
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Failed to create issue: ${response.status} ${error}`);
-    }
-
-    const issue = await response.json() as { id: number; number: number; html_url: string };
+    const issue = await nangoService.createGithubIssue(
+      repository.nangoConnectionId,
+      owner,
+      repo,
+      { title, body: body || '', labels }
+    );
 
     res.json({
-      id: issue.id,
       number: issue.number,
       url: issue.html_url,
     });
@@ -182,29 +168,16 @@ githubAppRouter.post('/repos/:id/pulls', async (req: Request, res: Response) => 
       return res.status(400).json({ error: 'Repository not connected via Nango' });
     }
 
-    const token = await nangoService.getGithubAppToken(repository.nangoConnectionId);
+    // Create PR via Nango Proxy (handles token injection automatically)
     const [owner, repo] = repository.githubFullName.split('/');
-
-    const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ title, body: body || '', head, base }),
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Failed to create PR: ${response.status} ${error}`);
-    }
-
-    const pr = await response.json() as { id: number; number: number; html_url: string };
+    const pr = await nangoService.createGithubPullRequest(
+      repository.nangoConnectionId,
+      owner,
+      repo,
+      { title, body: body || '', head, base }
+    );
 
     res.json({
-      id: pr.id,
       number: pr.number,
       url: pr.html_url,
     });
@@ -237,29 +210,15 @@ githubAppRouter.post('/repos/:id/comments', async (req: Request, res: Response) 
       return res.status(400).json({ error: 'Repository not connected via Nango' });
     }
 
-    const token = await nangoService.getGithubAppToken(repository.nangoConnectionId);
+    // Add comment via Nango Proxy (handles token injection automatically)
     const [owner, repo] = repository.githubFullName.split('/');
-
-    const response = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2022-11-28',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ body }),
-      }
+    const comment = await nangoService.addGithubIssueComment(
+      repository.nangoConnectionId,
+      owner,
+      repo,
+      issueNumber,
+      body
     );
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Failed to add comment: ${response.status} ${error}`);
-    }
-
-    const comment = await response.json() as { id: number; html_url: string };
 
     res.json({
       id: comment.id,

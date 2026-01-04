@@ -27,6 +27,7 @@ export interface AgentCardProps {
   onMessageClick?: (agent: Agent) => void;
   onReleaseClick?: (agent: Agent) => void;
   onLogsClick?: (agent: Agent) => void;
+  onProfileClick?: (agent: Agent) => void;
 }
 
 /**
@@ -69,6 +70,7 @@ export function AgentCard({
   onMessageClick,
   onReleaseClick,
   onLogsClick,
+  onProfileClick,
 }: AgentCardProps) {
   const colors = getAgentColor(agent.name);
   const initials = getAgentInitials(agent.name);
@@ -96,6 +98,11 @@ export function AgentCard({
   const handleLogsClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     onLogsClick?.(agent);
+  };
+
+  const handleProfileClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onProfileClick?.(agent);
   };
 
   if (compact) {
@@ -170,6 +177,19 @@ export function AgentCard({
 
         {/* Actions & Status */}
         <div className="flex items-center gap-2 shrink-0">
+          {onProfileClick && (
+            <button
+              className="relative bg-transparent border border-transparent text-text-dim p-1.5 cursor-pointer
+                         flex items-center justify-center rounded-md transition-all duration-200
+                         opacity-0 group-hover:opacity-100
+                         hover:bg-[#a855f7]/10 hover:border-[#a855f7]/30 hover:text-[#a855f7]
+                         hover:shadow-[0_0_12px_rgba(168,85,247,0.25)]"
+              onClick={handleProfileClick}
+              title="View profile"
+            >
+              <ProfileIcon />
+            </button>
+          )}
           {agent.isSpawned && onLogsClick && (
             <button
               className="relative bg-transparent border border-transparent text-text-dim p-1.5 cursor-pointer
@@ -313,6 +333,15 @@ export function AgentCard({
           )}
         </div>
         <div className="flex gap-1.5">
+          {onProfileClick && (
+            <button
+              className="relative bg-gradient-to-b from-[#2a1a3a] to-[#1a0f2a] text-[#a855f7] border border-[#402060] rounded-md py-1.5 px-2.5 cursor-pointer flex items-center justify-center gap-1 transition-all duration-200 shadow-[inset_0_1px_0_rgba(168,85,247,0.1),0_2px_4px_rgba(0,0,0,0.3)] overflow-hidden hover:bg-gradient-to-b hover:from-[#402060] hover:to-[#301a50] hover:border-[#a855f7] hover:shadow-[inset_0_1px_0_rgba(168,85,247,0.2),0_0_12px_rgba(168,85,247,0.4),0_2px_8px_rgba(0,0,0,0.4)] hover:scale-105 active:scale-[0.98]"
+              onClick={handleProfileClick}
+              title="View profile"
+            >
+              <ProfileIcon />
+            </button>
+          )}
           {agent.isSpawned && onLogsClick && (
             <button
               className="relative bg-gradient-to-b from-[#1a2a3a] to-[#0f1a2a] text-accent-cyan border border-[#204060] rounded-md py-1.5 px-2.5 cursor-pointer flex items-center justify-center gap-1 transition-all duration-200 shadow-[inset_0_1px_0_rgba(0,217,255,0.1),0_2px_4px_rgba(0,0,0,0.3)] overflow-hidden hover:bg-gradient-to-b hover:from-[#204060] hover:to-[#1a3a50] hover:border-accent-cyan hover:shadow-[inset_0_1px_0_rgba(0,217,255,0.2),0_0_12px_rgba(0,217,255,0.4),0_2px_8px_rgba(0,0,0,0.4)] hover:scale-105 active:scale-[0.98]"
@@ -431,6 +460,24 @@ function StuckIcon() {
       <circle cx="12" cy="12" r="10" />
       <line x1="12" y1="8" x2="12" y2="12" />
       <line x1="12" y1="16" x2="12.01" y2="16" />
+    </svg>
+  );
+}
+
+function ProfileIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
     </svg>
   );
 }

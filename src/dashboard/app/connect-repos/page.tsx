@@ -1,19 +1,17 @@
 /**
  * Connect Repos Page - GitHub App OAuth via Nango
  *
- * Allows authenticated users to connect their GitHub repositories
- * via the GitHub App OAuth flow (separate from login).
+ * Key: Initialize Nango on page load, not on click.
+ * This avoids popup blockers by ensuring openConnectUI is synchronous.
  */
 
 'use client';
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import Nango, { ConnectUI } from '@nangohq/frontend';
-import type { ConnectUIEvent } from '@nangohq/frontend';
-import { cloudApi } from '../../lib/cloudApi';
+import React, { useState, useEffect, useRef } from 'react';
+import Nango from '@nangohq/frontend';
 import { LogoIcon } from '../../react-components/Logo';
 
-type ConnectState = 'checking' | 'idle' | 'loading' | 'connecting' | 'polling' | 'pending-approval' | 'success' | 'error';
+type ConnectState = 'checking' | 'ready' | 'connecting' | 'polling' | 'pending-approval' | 'success' | 'error';
 
 interface ConnectedRepo {
   id: string;
@@ -27,148 +25,198 @@ export default function ConnectReposPage() {
   const [error, setError] = useState<string | null>(null);
   const [repos, setRepos] = useState<ConnectedRepo[]>([]);
   const [pendingMessage, setPendingMessage] = useState<string | null>(null);
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const connectUIRef = useRef<ConnectUI | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string>('');
 
-  // Check session on mount
+  // Store Nango instance - initialized on mount
+  const nangoRef = useRef<InstanceType<typeof Nango> | null>(null);
+
+  // Check session and initialize Nango on mount
   useEffect(() => {
-    const checkSession = async () => {
-      const session = await cloudApi.checkSession();
-      if (!session.authenticated) {
-        // Redirect to login
-        window.location.href = '/login';
-        return;
-      }
-      setState('idle');
-    };
-    checkSession();
-  }, []);
+    let mounted = true;
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current);
-      }
-      if (connectUIRef.current) {
-        connectUIRef.current.close();
-      }
-    };
-  }, []);
-
-  // Poll for repo sync completion
-  const startPolling = useCallback((connId: string) => {
-    setState('polling');
-
-    pollIntervalRef.current = setInterval(async () => {
+    const init = async () => {
       try {
-        const result = await cloudApi.checkNangoRepoStatus(connId);
-        if (result.success) {
-          if (result.data.pendingApproval) {
-            // Org approval pending
-            if (pollIntervalRef.current) {
-              clearInterval(pollIntervalRef.current);
-            }
-            setState('pending-approval');
-            setPendingMessage(result.data.message || 'Waiting for organization admin approval');
-          } else if (result.data.ready && result.data.repos) {
-            // Repos synced successfully
-            if (pollIntervalRef.current) {
-              clearInterval(pollIntervalRef.current);
-            }
-            setRepos(result.data.repos);
-            setState('success');
-          }
-        }
-      } catch (err) {
-        console.error('Polling error:', err);
-      }
-    }, 2000);
-
-    // Timeout after 5 minutes
-    setTimeout(() => {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current);
-        pollIntervalRef.current = null;
-        setState('error');
-        setError('Connection timed out. Please try again.');
-      }
-    }, 5 * 60 * 1000);
-  }, []);
-
-  // Handle connect button click
-  const handleConnect = useCallback(async () => {
-    setState('loading');
-    setError(null);
-
-    try {
-      // Create Nango instance and open Connect UI first (shows loading state)
-      const nango = new Nango();
-
-      const handleEvent = (event: ConnectUIEvent) => {
-        if (event.type === 'connect') {
-          // Connection successful - start polling for repo sync
-          const connectionId = event.payload.connectionId;
-          startPolling(connectionId);
-          if (connectUIRef.current) {
-            connectUIRef.current.close();
-          }
-        } else if (event.type === 'close') {
-          // User closed without connecting
-          setState('idle');
-        } else if (event.type === 'error') {
-          setState('error');
-          setError(event.payload.errorMessage || 'Connection failed');
-          if (connectUIRef.current) {
-            connectUIRef.current.close();
-          }
-        }
-      };
-
-      // Open Connect UI (shows loading until token is set)
-      connectUIRef.current = nango.openConnectUI({
-        onEvent: handleEvent,
-      });
-      connectUIRef.current.open();
-      setState('connecting');
-
-      // Get repo session token from backend and set it
-      const sessionResult = await cloudApi.getNangoRepoSession();
-      if (!sessionResult.success) {
-        if (connectUIRef.current) {
-          connectUIRef.current.close();
-        }
-        if (sessionResult.sessionExpired) {
+        // Check if authenticated
+        const sessionRes = await fetch('/api/auth/session', { credentials: 'include' });
+        const session = await sessionRes.json();
+        if (!session.authenticated) {
           window.location.href = '/login';
           return;
         }
-        throw new Error(sessionResult.error || 'Failed to create session');
+
+        if (!mounted) return;
+
+        // Get Nango session token for repo connection
+        const nangoRes = await fetch('/api/auth/nango/repo-session', {
+          credentials: 'include',
+        });
+        const nangoData = await nangoRes.json();
+
+        if (!mounted) return;
+
+        if (!nangoRes.ok || !nangoData.sessionToken) {
+          if (nangoData?.sessionExpired || nangoData?.code === 'SESSION_EXPIRED') {
+            window.location.href = '/login';
+            return;
+          }
+          setError('Failed to initialize. Please refresh the page.');
+          setState('error');
+          return;
+        }
+
+        // Create Nango instance NOW, not on click
+        nangoRef.current = new Nango({ connectSessionToken: nangoData.sessionToken });
+        setState('ready');
+      } catch {
+        if (mounted) {
+          window.location.href = '/login';
+        }
+      }
+    };
+
+    init();
+    return () => { mounted = false; };
+  }, []);
+
+  const checkRepoStatus = async (connectionId: string): Promise<{
+    ready: boolean;
+    pendingApproval?: boolean;
+    message?: string;
+    repos?: ConnectedRepo[];
+  }> => {
+    const response = await fetch(`/api/auth/nango/repo-status/${connectionId}`, {
+      credentials: 'include',
+    });
+    if (!response.ok) {
+      throw new Error('Status not ready');
+    }
+    return response.json();
+  };
+
+  const handleAuthSuccess = async (connectionId: string) => {
+    try {
+      setState('polling');
+      setStatusMessage('Syncing repositories...');
+
+      const pollStartTime = Date.now();
+      const maxPollTime = 5 * 60 * 1000;
+      const pollInterval = 2000;
+
+      const pollForRepos = async (): Promise<void> => {
+        const elapsed = Date.now() - pollStartTime;
+
+        if (elapsed > maxPollTime) {
+          throw new Error('Connection timed out. Please try again.');
+        }
+
+        try {
+          const result = await checkRepoStatus(connectionId);
+          if (result.pendingApproval) {
+            setState('pending-approval');
+            setPendingMessage(result.message || 'Waiting for organization admin approval');
+            return;
+          } else if (result.ready && result.repos) {
+            setRepos(result.repos);
+            setState('success');
+            return;
+          }
+
+          await new Promise(resolve => setTimeout(resolve, pollInterval));
+          return pollForRepos();
+        } catch {
+          await new Promise(resolve => setTimeout(resolve, pollInterval));
+          return pollForRepos();
+        }
+      };
+
+      await pollForRepos();
+    } catch (err) {
+      console.error('[AUTH] Error:', err);
+      setError(err instanceof Error ? err.message : 'Connection failed');
+      setState('error');
+      setStatusMessage('');
+    }
+  };
+
+  // Use nango.auth() instead of openConnectUI to avoid popup blocker issues
+  const handleConnect = async () => {
+    if (!nangoRef.current) {
+      setError('Not ready. Please refresh the page.');
+      return;
+    }
+
+    setState('connecting');
+    setError(null);
+    setStatusMessage('Connecting to GitHub...');
+
+    try {
+      // Use github-app-oauth for GitHub App installation
+      const result = await nangoRef.current.auth('github-app-oauth');
+      if (result && 'connectionId' in result) {
+        await handleAuthSuccess(result.connectionId);
+      } else {
+        throw new Error('No connection ID returned');
+      }
+    } catch (err: unknown) {
+      const error = err as Error & { type?: string };
+      console.error('GitHub App auth error:', error);
+
+      // Don't show error for user-cancelled auth
+      if (error.type === 'user_cancelled' || error.message?.includes('closed')) {
+        setStatusMessage('');
+        // Re-initialize for next attempt
+        fetch('/api/auth/nango/repo-session', { credentials: 'include' })
+          .then(res => res.json())
+          .then(data => {
+            if (data.sessionToken) {
+              nangoRef.current = new Nango({ connectSessionToken: data.sessionToken });
+              setState('ready');
+            }
+          });
+        return;
       }
 
-      // Set the session token - this enables the Connect UI
-      connectUIRef.current.setSessionToken(sessionResult.data.sessionToken);
-    } catch (err) {
-      console.error('Connect error:', err);
+      setError(error.message || 'Connection failed');
       setState('error');
-      setError(err instanceof Error ? err.message : 'Failed to connect');
+      setStatusMessage('');
     }
-  }, [startPolling]);
+  };
 
-  // Handle retry
-  const handleRetry = useCallback(() => {
-    setState('idle');
+  const handleRetry = async () => {
     setError(null);
     setRepos([]);
     setPendingMessage(null);
-    if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current);
-    }
-  }, []);
+    setStatusMessage('');
+    setState('checking');
 
-  // Continue to dashboard
-  const handleContinue = useCallback(() => {
+    // Re-initialize Nango for the retry
+    try {
+      const nangoRes = await fetch('/api/auth/nango/repo-session', {
+        credentials: 'include',
+      });
+      const nangoData = await nangoRes.json();
+
+      if (!nangoRes.ok || !nangoData.sessionToken) {
+        if (nangoData?.sessionExpired || nangoData?.code === 'SESSION_EXPIRED') {
+          window.location.href = '/login';
+          return;
+        }
+        setError('Failed to initialize. Please refresh the page.');
+        setState('error');
+        return;
+      }
+
+      nangoRef.current = new Nango({ connectSessionToken: nangoData.sessionToken });
+      setState('ready');
+    } catch {
+      setError('Failed to initialize. Please refresh the page.');
+      setState('error');
+    }
+  };
+
+  const handleContinue = () => {
     window.location.href = '/app';
-  }, []);
+  };
 
   if (state === 'checking') {
     return (
@@ -178,11 +226,14 @@ export default function ConnectReposPage() {
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
           </svg>
-          <p className="mt-4 text-text-muted">Checking session...</p>
+          <p className="mt-4 text-text-muted">Loading...</p>
         </div>
       </div>
     );
   }
+
+  const isConnecting = state === 'connecting' || state === 'polling';
+  const isReady = state === 'ready';
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#0a0a0f] via-[#0d1117] to-[#0a0a0f] flex flex-col items-center justify-center p-4">
@@ -220,13 +271,9 @@ export default function ConnectReposPage() {
               </div>
               <h2 className="text-xl font-semibold text-white mb-4 text-center">Repositories Connected!</h2>
 
-              {/* Repo list */}
               <div className="max-h-60 overflow-y-auto mb-6 space-y-2">
                 {repos.map((repo) => (
-                  <div
-                    key={repo.id}
-                    className="flex items-center gap-3 p-3 bg-bg-tertiary rounded-lg"
-                  >
+                  <div key={repo.id} className="flex items-center gap-3 p-3 bg-bg-tertiary rounded-lg">
                     <svg className="w-5 h-5 text-text-muted flex-shrink-0" fill="currentColor" viewBox="0 0 16 16">
                       <path d="M2 2.5A2.5 2.5 0 014.5 0h8.75a.75.75 0 01.75.75v12.5a.75.75 0 01-.75.75h-2.5a.75.75 0 110-1.5h1.75v-2h-8a1 1 0 00-.714 1.7.75.75 0 01-1.072 1.05A2.495 2.495 0 012 11.5v-9zm10.5-1V9h-8c-.356 0-.694.074-1 .208V2.5a1 1 0 011-1h8z" />
                     </svg>
@@ -256,19 +303,12 @@ export default function ConnectReposPage() {
               <p className="text-text-muted mb-6">{pendingMessage}</p>
               <p className="text-sm text-text-muted mb-6">
                 An organization admin needs to approve the GitHub App installation.
-                You'll be able to connect once approved.
               </p>
               <div className="flex gap-3">
-                <button
-                  onClick={handleRetry}
-                  className="flex-1 py-3 px-4 bg-bg-tertiary border border-border-subtle rounded-xl text-white font-medium hover:bg-bg-hover transition-colors"
-                >
+                <button onClick={handleRetry} className="flex-1 py-3 px-4 bg-bg-tertiary border border-border-subtle rounded-xl text-white font-medium hover:bg-bg-hover transition-colors">
                   Try Again
                 </button>
-                <button
-                  onClick={handleContinue}
-                  className="flex-1 py-3 px-4 bg-bg-tertiary border border-border-subtle rounded-xl text-white font-medium hover:bg-bg-hover transition-colors"
-                >
+                <button onClick={handleContinue} className="flex-1 py-3 px-4 bg-bg-tertiary border border-border-subtle rounded-xl text-white font-medium hover:bg-bg-hover transition-colors">
                   Skip for Now
                 </button>
               </div>
@@ -282,10 +322,7 @@ export default function ConnectReposPage() {
               </div>
               <h2 className="text-xl font-semibold text-white mb-2">Connection Failed</h2>
               <p className="text-text-muted mb-6">{error}</p>
-              <button
-                onClick={handleRetry}
-                className="w-full py-3 px-4 bg-bg-tertiary border border-border-subtle rounded-xl text-white font-medium hover:bg-bg-hover transition-colors"
-              >
+              <button onClick={handleRetry} className="w-full py-3 px-4 bg-bg-tertiary border border-border-subtle rounded-xl text-white font-medium hover:bg-bg-hover transition-colors">
                 Try Again
               </button>
             </div>
@@ -298,10 +335,16 @@ export default function ConnectReposPage() {
                 </svg>
               </div>
               <h2 className="text-xl font-semibold text-white mb-2">Syncing Repositories</h2>
-              <p className="text-text-muted">Fetching your repositories...</p>
+              <p className="text-text-muted">{statusMessage || 'Fetching your repositories...'}</p>
             </div>
           ) : (
             <div>
+              {error && (
+                <div className="mb-4 p-3 bg-error/10 border border-error/20 rounded-lg">
+                  <p className="text-error text-sm">{error}</p>
+                </div>
+              )}
+
               <div className="mb-6 p-4 bg-bg-tertiary rounded-lg border border-border-subtle">
                 <h3 className="font-medium text-white mb-2">What this enables:</h3>
                 <ul className="space-y-2 text-sm text-text-muted">
@@ -328,16 +371,16 @@ export default function ConnectReposPage() {
 
               <button
                 onClick={handleConnect}
-                disabled={state === 'loading' || state === 'connecting'}
+                disabled={!isReady || isConnecting}
                 className="w-full py-4 px-6 bg-[#24292e] hover:bg-[#2f363d] border border-[#444d56] rounded-xl text-white font-medium flex items-center justify-center gap-3 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {state === 'loading' || state === 'connecting' ? (
+                {isConnecting ? (
                   <>
                     <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                     </svg>
-                    <span>{state === 'loading' ? 'Loading...' : 'Opening GitHub...'}</span>
+                    <span>{statusMessage || 'Connecting...'}</span>
                   </>
                 ) : (
                   <>
@@ -349,17 +392,13 @@ export default function ConnectReposPage() {
                 )}
               </button>
 
-              <button
-                onClick={handleContinue}
-                className="w-full mt-3 py-3 px-4 text-text-muted hover:text-white transition-colors text-sm"
-              >
+              <button onClick={handleContinue} className="w-full mt-3 py-3 px-4 text-text-muted hover:text-white transition-colors text-sm">
                 Skip for now
               </button>
             </div>
           )}
         </div>
 
-        {/* Back link */}
         <div className="mt-6 text-center">
           <a href="/app" className="text-text-muted hover:text-white transition-colors">
             Back to dashboard

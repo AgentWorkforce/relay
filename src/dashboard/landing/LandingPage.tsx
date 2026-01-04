@@ -11,9 +11,11 @@ import { Logo, LogoIcon, LogoHero } from '../react-components/Logo';
 
 // Agent providers with their signature colors
 const PROVIDERS = {
-  claude: { name: 'Claude', color: '#00D9FF', icon: '◈' },
-  codex: { name: 'Codex', color: '#FF6B35', icon: '⬡' },
-  gemini: { name: 'Gemini', color: '#00FFC8', icon: '◇' },
+  claude: { name: 'Claude', color: '#D97757', icon: '◈' },
+  codex: { name: 'Codex', color: '#10A37F', icon: '⬡' },
+  gemini: { name: 'Gemini', color: '#4285F4', icon: '◇' },
+  opencode: { name: 'OpenCode', color: '#00D4AA', icon: '◆' },
+  droid: { name: 'Droid', color: '#6366F1', icon: '⬢' },
 };
 
 // Simulated agent messages for the live demo
@@ -466,11 +468,6 @@ function ProvidersSection() {
             <div className="provider-status">Supported</div>
           </div>
         ))}
-        <div className="provider-card coming-soon">
-          <div className="provider-icon">◎</div>
-          <div className="provider-name">More Coming</div>
-          <div className="provider-status">2025</div>
-        </div>
       </div>
     </section>
   );

@@ -27,43 +27,74 @@ providersRouter.use(requireAuth);
  *
  * When providers add OAuth support, we can switch to device flow.
  */
-const PROVIDERS = {
+// Base provider properties
+interface BaseProvider {
+  name: string;
+  displayName: string;
+  description: string;
+  color: string;
+}
+
+// CLI-based auth provider (Claude, OpenCode, Droid)
+interface CliProvider extends BaseProvider {
+  authStrategy: 'cli';
+  cliCommand: string;
+  credentialPath: string;
+}
+
+// Device flow OAuth provider (Google)
+interface DeviceFlowProvider extends BaseProvider {
+  authStrategy: 'device_flow';
+  deviceCodeUrl: string;
+  tokenUrl: string;
+  userInfoUrl: string;
+  scopes: string[];
+}
+
+type Provider = CliProvider | DeviceFlowProvider;
+
+const PROVIDERS: Record<string, Provider> = {
   anthropic: {
     name: 'Anthropic',
     displayName: 'Claude',
     description: 'Claude Code - recommended for code tasks',
-    // Auth strategy: CLI-based until Anthropic adds OAuth
-    authStrategy: 'cli' as const,
-    cliCommand: 'claude login',
-    credentialPath: '~/.claude/credentials.json', // Where Claude stores tokens
-    // Future OAuth endpoints (hypothetical - for when Anthropic implements)
-    deviceCodeUrl: 'https://api.anthropic.com/oauth/device/code',
-    tokenUrl: 'https://api.anthropic.com/oauth/token',
-    userInfoUrl: 'https://api.anthropic.com/v1/user',
-    scopes: ['claude-code:execute', 'user:read'],
+    authStrategy: 'cli',
+    cliCommand: 'claude',
+    credentialPath: '~/.claude/credentials.json',
     color: '#D97757',
   },
-  openai: {
+  codex: {
     name: 'OpenAI',
     displayName: 'Codex',
-    description: 'Codex CLI for AI-assisted coding',
-    // Auth strategy: CLI-based until OpenAI adds OAuth
-    authStrategy: 'cli' as const,
-    cliCommand: 'codex auth',
+    description: 'Codex - OpenAI coding assistant',
+    authStrategy: 'cli',
+    cliCommand: 'codex login',
     credentialPath: '~/.codex/credentials.json',
-    // Future OAuth endpoints (hypothetical)
-    deviceCodeUrl: 'https://auth.openai.com/device/code',
-    tokenUrl: 'https://auth.openai.com/oauth/token',
-    userInfoUrl: 'https://api.openai.com/v1/user',
-    scopes: ['openid', 'profile', 'email', 'codex:execute'],
     color: '#10A37F',
+  },
+  opencode: {
+    name: 'OpenCode',
+    displayName: 'OpenCode',
+    description: 'OpenCode - AI coding assistant',
+    authStrategy: 'cli',
+    cliCommand: 'opencode',
+    credentialPath: '~/.opencode/credentials.json',
+    color: '#00D4AA',
+  },
+  droid: {
+    name: 'Factory',
+    displayName: 'Droid',
+    description: 'Droid - Factory AI coding agent',
+    authStrategy: 'cli',
+    cliCommand: 'droid',
+    credentialPath: '~/.factory/credentials.json',
+    color: '#6366F1',
   },
   google: {
     name: 'Google',
     displayName: 'Gemini',
     description: 'Gemini - multi-modal capabilities',
-    // Auth strategy: Real OAuth device flow (works today!)
-    authStrategy: 'device_flow' as const,
+    authStrategy: 'device_flow',
     deviceCodeUrl: 'https://oauth2.googleapis.com/device/code',
     tokenUrl: 'https://oauth2.googleapis.com/token',
     userInfoUrl: 'https://www.googleapis.com/oauth2/v2/userinfo',
@@ -71,6 +102,11 @@ const PROVIDERS = {
     color: '#4285F4',
   },
 };
+
+// Type guard for device flow providers
+function isDeviceFlowProvider(provider: Provider): provider is DeviceFlowProvider {
+  return provider.authStrategy === 'device_flow';
+}
 
 type ProviderType = keyof typeof PROVIDERS;
 
@@ -206,7 +242,13 @@ providersRouter.post('/:provider/connect', async (req: Request, res: Response) =
   }
 
   // Device flow auth (Google) - start OAuth device flow
-  const clientConfig = config.providers[provider];
+  // At this point, we know it's a device flow provider (CLI was handled above)
+  if (!isDeviceFlowProvider(providerConfig)) {
+    return res.status(400).json({ error: 'Provider does not support device flow' });
+  }
+
+  // Only google is configured for device flow in config
+  const clientConfig = provider === 'google' ? config.providers.google : undefined;
   if (!clientConfig) {
     return res.status(400).json({ error: `Provider ${provider} not configured` });
   }
@@ -221,7 +263,7 @@ providersRouter.post('/:provider/connect', async (req: Request, res: Response) =
       body: new URLSearchParams({
         client_id: clientConfig.clientId,
         scope: providerConfig.scopes.join(' '),
-        ...((provider === 'google') && { client_secret: (clientConfig as any).clientSecret }),
+        ...((provider === 'google') && { client_secret: clientConfig.clientSecret }),
       }),
     });
 
@@ -298,7 +340,7 @@ providersRouter.post('/:provider/verify', async (req: Request, res: Response) =>
       userId,
       provider,
       accessToken: 'cli-authenticated', // Placeholder - real token from CLI
-      scopes: providerConfig.scopes,
+      scopes: [], // CLI auth doesn't use scopes
       providerAccountEmail: req.body.email, // User can optionally provide
     });
 
@@ -310,6 +352,73 @@ providersRouter.post('/:provider/verify', async (req: Request, res: Response) =>
   } catch (error) {
     console.error(`Error verifying ${provider} auth:`, error);
     res.status(500).json({ error: 'Failed to verify connection' });
+  }
+});
+
+/**
+ * POST /api/providers/:provider/api-key
+ * Connect a provider using an API key (for cloud-hosted workspaces)
+ */
+providersRouter.post('/:provider/api-key', async (req: Request, res: Response) => {
+  const { provider } = req.params as { provider: ProviderType };
+  const userId = req.session.userId!;
+  const { apiKey } = req.body;
+
+  if (!apiKey || typeof apiKey !== 'string') {
+    return res.status(400).json({ error: 'API key is required' });
+  }
+
+  const providerConfig = PROVIDERS[provider];
+  if (!providerConfig) {
+    return res.status(404).json({ error: 'Unknown provider' });
+  }
+
+  // Validate the API key by making a test request
+  try {
+    let isValid = false;
+
+    if (provider === 'anthropic') {
+      // Test Anthropic API key
+      const testRes = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: 'claude-3-haiku-20240307',
+          max_tokens: 1,
+          messages: [{ role: 'user', content: 'hi' }],
+        }),
+      });
+      // 200 = valid, 401 = invalid key, 400/other = might still be valid key
+      isValid = testRes.status !== 401;
+    } else {
+      // For other providers, just accept the key
+      isValid = true;
+    }
+
+    if (!isValid) {
+      return res.status(400).json({ error: 'Invalid API key' });
+    }
+
+    // Store the API key - use scopes from device flow providers, empty for CLI providers
+    const scopes = isDeviceFlowProvider(providerConfig) ? providerConfig.scopes : [];
+    await vault.storeCredential({
+      userId,
+      provider,
+      accessToken: apiKey,
+      scopes,
+    });
+
+    res.json({
+      success: true,
+      message: `${providerConfig.displayName} connected`,
+    });
+  } catch (error) {
+    console.error(`Error connecting ${provider} with API key:`, error);
+    res.status(500).json({ error: 'Failed to connect provider' });
   }
 });
 
@@ -392,6 +501,12 @@ providersRouter.delete('/:provider/flow/:flowId', (req: Request, res: Response) 
  */
 async function pollForToken(flowId: string, provider: ProviderType, clientId: string) {
   const providerConfig = PROVIDERS[provider];
+
+  // Only device flow providers can poll for tokens
+  if (!isDeviceFlowProvider(providerConfig)) {
+    console.error(`Provider ${provider} does not support device flow polling`);
+    return;
+  }
 
   const poll = async (intervalMs: number) => {
     const current = await loadFlow(flowId);
@@ -491,19 +606,21 @@ async function storeProviderTokens(
 ) {
   const providerConfig = PROVIDERS[provider];
 
-  // Fetch user info from provider
+  // Fetch user info from provider (only device flow providers have userInfoUrl)
   let userInfo: { id?: string; email?: string } = {};
-  try {
-    const response = await fetch(providerConfig.userInfoUrl, {
-      headers: {
-        Authorization: `Bearer ${tokens.accessToken}`,
-      },
-    });
-    if (response.ok) {
-      userInfo = await response.json() as { id?: string; email?: string };
+  if (isDeviceFlowProvider(providerConfig)) {
+    try {
+      const response = await fetch(providerConfig.userInfoUrl, {
+        headers: {
+          Authorization: `Bearer ${tokens.accessToken}`,
+        },
+      });
+      if (response.ok) {
+        userInfo = await response.json() as { id?: string; email?: string };
+      }
+    } catch (error) {
+      console.error('Error fetching user info:', error);
     }
-  } catch (error) {
-    console.error('Error fetching user info:', error);
   }
 
   // Encrypt and store

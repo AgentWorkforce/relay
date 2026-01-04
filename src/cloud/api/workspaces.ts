@@ -531,8 +531,154 @@ async function removeDomainFromCompute(workspace: Workspace): Promise<void> {
 }
 
 /**
+ * POST /api/workspaces/:id/connect-provider
+ * Trigger CLI login flow for a provider (claude, codex, opencode, droid)
+ * Returns the OAuth URL for the user to complete authentication
+ */
+const PROVIDER_CLI_COMMANDS: Record<string, { command: string; displayName: string }> = {
+  anthropic: { command: 'claude', displayName: 'Claude' },
+  codex: { command: 'codex login', displayName: 'Codex' },
+  opencode: { command: 'opencode', displayName: 'OpenCode' },
+  droid: { command: 'droid', displayName: 'Droid' },
+};
+
+workspacesRouter.post('/:id/connect-provider', async (req: Request, res: Response) => {
+  const userId = req.session.userId!;
+  const { id } = req.params;
+  const { provider } = req.body;
+
+  const providerConfig = PROVIDER_CLI_COMMANDS[provider];
+  if (!provider || !providerConfig) {
+    return res.status(400).json({
+      error: 'Valid provider is required',
+      validProviders: Object.keys(PROVIDER_CLI_COMMANDS),
+    });
+  }
+
+  try {
+    const workspace = await db.workspaces.findById(id);
+
+    if (!workspace) {
+      return res.status(404).json({ error: 'Workspace not found' });
+    }
+
+    if (workspace.userId !== userId) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    if (workspace.status !== 'running') {
+      return res.status(400).json({ error: 'Workspace must be running to connect providers' });
+    }
+
+    const containerName = workspace.computeId;
+
+    if (!containerName) {
+      return res.status(400).json({ error: 'Workspace has no compute instance' });
+    }
+
+    // Run the CLI login command in the container and capture output
+    const { execSync } = await import('child_process');
+
+    try {
+      // For Docker containers, run the command and capture the OAuth URL
+      // The CLI typically outputs something like:
+      // "Please visit https://... to authenticate"
+      const output = execSync(
+        `docker exec ${containerName} timeout 10 ${providerConfig.command} 2>&1 || true`,
+        { encoding: 'utf-8', timeout: 15000 }
+      );
+
+      // Parse OAuth URL from output
+      const urlMatch = output.match(/https:\/\/[^\s]+/);
+
+      if (urlMatch) {
+        res.json({
+          success: true,
+          provider,
+          authUrl: urlMatch[0],
+          message: `Visit the URL to authenticate with ${providerConfig.displayName}`,
+          instructions: [
+            '1. Click the authentication URL below',
+            '2. Complete the login in your browser',
+            '3. Return here - your workspace will automatically detect the credentials',
+          ],
+        });
+      } else {
+        // CLI might already be authenticated or returned different output
+        res.json({
+          success: false,
+          provider,
+          output: output.substring(0, 500), // First 500 chars for debugging
+          message: 'Could not extract authentication URL. The provider may already be connected.',
+        });
+      }
+    } catch (execError) {
+      const errorMsg = execError instanceof Error ? execError.message : 'Unknown error';
+      console.error(`[workspace] CLI login error for ${provider}:`, errorMsg);
+
+      res.status(500).json({
+        error: 'Failed to start authentication flow',
+        details: errorMsg,
+      });
+    }
+  } catch (error) {
+    console.error('Error connecting provider:', error);
+    res.status(500).json({ error: 'Failed to connect provider' });
+  }
+});
+
+/**
+ * POST /api/workspaces/:id/proxy/*
+ * Proxy API requests to the workspace container
+ * This allows the dashboard to make REST calls through the cloud server
+ */
+workspacesRouter.all('/:id/proxy/{*proxyPath}', async (req: Request, res: Response) => {
+  const userId = req.session.userId!;
+  const { id, proxyPath } = req.params;
+
+  try {
+    const workspace = await db.workspaces.findById(id);
+
+    if (!workspace) {
+      return res.status(404).json({ error: 'Workspace not found' });
+    }
+
+    if (workspace.userId !== userId) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    if (workspace.status !== 'running' || !workspace.publicUrl) {
+      return res.status(400).json({ error: 'Workspace is not running' });
+    }
+
+    // Forward the request to the workspace
+    const targetUrl = `${workspace.publicUrl}/api/${proxyPath}`;
+
+    const fetchOptions: RequestInit = {
+      method: req.method,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    };
+
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      fetchOptions.body = JSON.stringify(req.body);
+    }
+
+    const proxyRes = await fetch(targetUrl, fetchOptions);
+    const data = await proxyRes.json();
+
+    res.status(proxyRes.status).json(data);
+  } catch (error) {
+    console.error('[workspace-proxy] Error:', error);
+    res.status(500).json({ error: 'Failed to proxy request to workspace' });
+  }
+});
+
+/**
  * POST /api/workspaces/quick
  * Quick provision: one-click with defaults
+ * Providers are optional - can be connected after workspace creation via CLI login
  */
 workspacesRouter.post('/quick', checkWorkspaceLimit, async (req: Request, res: Response) => {
   const userId = req.session.userId!;
@@ -543,17 +689,11 @@ workspacesRouter.post('/quick', checkWorkspaceLimit, async (req: Request, res: R
   }
 
   try {
-    // Get user's connected providers
+    // Get user's connected providers (optional now)
     const credentials = await db.credentials.findByUserId(userId);
     const providers = credentials
       .filter((c) => c.provider !== 'github')
       .map((c) => c.provider);
-
-    if (providers.length === 0) {
-      return res.status(400).json({
-        error: 'No AI providers connected. Please connect at least one provider.',
-      });
-    }
 
     // Create workspace with defaults
     const provisioner = getProvisioner();
@@ -562,7 +702,7 @@ workspacesRouter.post('/quick', checkWorkspaceLimit, async (req: Request, res: R
     const result = await provisioner.provision({
       userId,
       name: workspaceName,
-      providers,
+      providers: providers.length > 0 ? providers : [], // Empty is OK now
       repositories: [repositoryFullName],
       supervisorEnabled: true,
       maxAgents: 10,
@@ -579,7 +719,10 @@ workspacesRouter.post('/quick', checkWorkspaceLimit, async (req: Request, res: R
       workspaceId: result.workspaceId,
       status: result.status,
       publicUrl: result.publicUrl,
-      message: 'Workspace provisioned successfully!',
+      providersConnected: providers.length > 0,
+      message: providers.length > 0
+        ? 'Workspace provisioned successfully!'
+        : 'Workspace provisioned! Connect an AI provider to start using agents.',
     });
   } catch (error) {
     console.error('Error quick provisioning:', error);

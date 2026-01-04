@@ -41,6 +41,7 @@ import { testHelpersRouter } from './api/test-helpers.js';
 import { webhooksRouter } from './api/webhooks.js';
 import { githubAppRouter } from './api/github-app.js';
 import { nangoAuthRouter } from './api/nango-auth.js';
+import { gitRouter } from './api/git.js';
 
 export interface CloudServer {
   app: Express;
@@ -64,16 +65,19 @@ export async function createServer(): Promise<CloudServer> {
   await redisClient.connect();
 
   // Middleware
-  // Configure helmet to allow Next.js inline scripts
+  // Configure helmet to allow Next.js inline scripts and Nango Connect UI
   app.use(helmet({
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
-        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-        fontSrc: ["'self'", "https://fonts.gstatic.com"],
+        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://connect.nango.dev"],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com", "https://connect.nango.dev"],
+        fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
         imgSrc: ["'self'", "data:", "https:"],
-        connectSrc: ["'self'", "wss:", "ws:", "https:"],
+        connectSrc: ["'self'", "wss:", "ws:", "https:", "https://api.nango.dev", "https://connect.nango.dev"],
+        frameSrc: ["'self'", "https://connect.nango.dev", "https://github.com"],
+        childSrc: ["'self'", "https://connect.nango.dev", "blob:"],
+        workerSrc: ["'self'", "blob:"],
       },
     },
   }));
@@ -83,7 +87,13 @@ export async function createServer(): Promise<CloudServer> {
       credentials: true,
     })
   );
-  app.use(express.json());
+  // Custom JSON parser that preserves raw body for webhook signature verification
+  app.use(express.json({
+    verify: (req: Request, _res, buf) => {
+      // Store raw body for webhook signature verification
+      (req as Request & { rawBody?: string }).rawBody = buf.toString();
+    },
+  }));
 
   // Session middleware
   app.use(
@@ -208,6 +218,7 @@ export async function createServer(): Promise<CloudServer> {
   app.use('/api/webhooks', webhooksRouter);
   app.use('/api/github-app', githubAppRouter);
   app.use('/api/auth/nango', nangoAuthRouter);
+  app.use('/api/git', gitRouter);
 
   // Test helper routes (only available in non-production)
   if (process.env.NODE_ENV !== 'production') {
@@ -218,9 +229,12 @@ export async function createServer(): Promise<CloudServer> {
   // Serve static dashboard files (Next.js static export)
   // Path: dist/cloud/server.js -> ../../src/dashboard/out
   const dashboardPath = path.join(__dirname, '../../src/dashboard/out');
-  app.use(express.static(dashboardPath));
 
-  // SPA fallback - serve index.html for all non-API routes
+  // Serve static files with .html extension fallback for clean URLs
+  // e.g., /signup will try /signup.html
+  app.use(express.static(dashboardPath, { extensions: ['html'] }));
+
+  // SPA fallback - serve index.html for all non-API routes that don't match static files
   // Express 5 requires named wildcard params instead of bare '*'
   app.get('/{*splat}', (req, res, next) => {
     // Don't serve index.html for API routes

@@ -18,6 +18,8 @@ import {
   TrajectoryIntegration,
   getTrajectoryIntegration,
   detectPhaseFromContent,
+  detectToolCalls,
+  detectErrors,
   getCompactTrailInstructions,
   type PDEROPhase,
 } from '../trajectory/integration.js';
@@ -32,6 +34,10 @@ export interface TrajectoryHooksOptions {
   agentName: string;
   /** Whether to auto-detect phase transitions */
   autoDetectPhase?: boolean;
+  /** Whether to detect and record tool calls */
+  detectTools?: boolean;
+  /** Whether to detect and record errors */
+  detectErrors?: boolean;
   /** Whether to inject trail instructions on session start */
   injectInstructions?: boolean;
   /** Whether to prompt for retrospective on session end */
@@ -44,6 +50,10 @@ export interface TrajectoryHooksOptions {
 interface TrajectoryHooksState {
   trajectory: TrajectoryIntegration;
   lastDetectedPhase?: PDEROPhase;
+  /** Set of tool calls already recorded to avoid duplicates */
+  seenTools: Set<string>;
+  /** Set of errors already recorded to avoid duplicates */
+  seenErrors: Set<string>;
   options: TrajectoryHooksOptions;
 }
 
@@ -63,8 +73,12 @@ interface TrajectoryHooksState {
 export function createTrajectoryHooks(options: TrajectoryHooksOptions): LifecycleHooks {
   const state: TrajectoryHooksState = {
     trajectory: getTrajectoryIntegration(options.projectId, options.agentName),
+    seenTools: new Set<string>(),
+    seenErrors: new Set<string>(),
     options: {
       autoDetectPhase: true,
+      detectTools: true,
+      detectErrors: true,
       injectInstructions: true,
       promptRetrospective: true,
       ...options,
@@ -149,21 +163,49 @@ Or if you need to document learnings:
 }
 
 /**
- * Output hook - auto-detects PDERO phase transitions
+ * Output hook - auto-detects PDERO phase transitions, tool calls, and errors
  */
 function createOutputHook(state: TrajectoryHooksState) {
   return async (ctx: OutputContext): Promise<HookResult | void> => {
     const { trajectory, options } = state;
 
-    if (!options.autoDetectPhase) {
-      return;
+    // Detect and record phase transitions
+    if (options.autoDetectPhase) {
+      const detectedPhase = detectPhaseFromContent(ctx.content);
+
+      if (detectedPhase && detectedPhase !== state.lastDetectedPhase) {
+        state.lastDetectedPhase = detectedPhase;
+        await trajectory.transition(detectedPhase, 'Auto-detected from output');
+      }
     }
 
-    const detectedPhase = detectPhaseFromContent(ctx.content);
+    // Detect and record tool calls
+    // Note: We deduplicate by tool+status to record each unique tool type once per session
+    // (e.g., "Read" started, "Read" completed). This provides a summary of tools used
+    // without flooding the trajectory with every individual invocation.
+    if (options.detectTools) {
+      const tools = detectToolCalls(ctx.content);
+      for (const tool of tools) {
+        const key = `${tool.tool}:${tool.status || 'started'}`;
+        if (!state.seenTools.has(key)) {
+          state.seenTools.add(key);
+          const statusLabel = tool.status === 'completed' ? ' (completed)' : '';
+          await trajectory.event(`Tool: ${tool.tool}${statusLabel}`, 'tool_call');
+        }
+      }
+    }
 
-    if (detectedPhase && detectedPhase !== state.lastDetectedPhase) {
-      state.lastDetectedPhase = detectedPhase;
-      await trajectory.transition(detectedPhase, 'Auto-detected from output');
+    // Detect and record errors
+    if (options.detectErrors) {
+      const errors = detectErrors(ctx.content);
+      for (const error of errors) {
+        // Deduplicate by message content
+        if (!state.seenErrors.has(error.message)) {
+          state.seenErrors.add(error.message);
+          const prefix = error.type === 'warning' ? 'Warning' : 'Error';
+          await trajectory.event(`${prefix}: ${error.message}`, 'error');
+        }
+      }
     }
   };
 }

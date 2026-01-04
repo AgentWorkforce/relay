@@ -15,7 +15,6 @@ import * as os from 'os';
 import {
   AgentMemoryMonitor,
   CrashMemoryContext,
-  MemorySnapshot,
   formatBytes,
 } from './memory-monitor.js';
 

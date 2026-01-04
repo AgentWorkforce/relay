@@ -1,5 +1,5 @@
 -- Agent Relay Cloud - Database bootstrap
--- Deprecated: use migrations in src/cloud/db/migrations/0001_initial.sql
--- This file is kept as a convenience wrapper for local psql usage.
+-- Migrations are handled by Drizzle ORM at server startup.
+-- This file is kept for Docker entrypoint compatibility.
 
-\\i ../src/cloud/db/migrations/0001_initial.sql
+-- No-op: Drizzle migrations run automatically

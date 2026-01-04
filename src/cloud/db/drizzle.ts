@@ -944,6 +944,7 @@ export const projectGroupQueries: ProjectGroupQueries = {
 
 export interface RepositoryQueries {
   findById(id: string): Promise<schema.Repository | null>;
+  findByFullName(fullName: string): Promise<schema.Repository | null>;
   findByUserId(userId: string): Promise<schema.Repository[]>;
   findByWorkspaceId(workspaceId: string): Promise<schema.Repository[]>;
   findByProjectGroupId(projectGroupId: string): Promise<schema.Repository[]>;
@@ -959,6 +960,15 @@ export const repositoryQueries: RepositoryQueries = {
   async findById(id: string): Promise<schema.Repository | null> {
     const db = getDb();
     const result = await db.select().from(schema.repositories).where(eq(schema.repositories.id, id));
+    return result[0] ?? null;
+  },
+
+  async findByFullName(fullName: string): Promise<schema.Repository | null> {
+    const db = getDb();
+    const result = await db
+      .select()
+      .from(schema.repositories)
+      .where(eq(schema.repositories.githubFullName, fullName));
     return result[0] ?? null;
   },
 
@@ -1153,6 +1163,383 @@ export const agentSummaryQueries: AgentSummaryQueries = {
   async deleteBySession(sessionId: string): Promise<void> {
     const db = getDb();
     await db.delete(schema.agentSummaries).where(eq(schema.agentSummaries.sessionId, sessionId));
+  },
+};
+
+// ============================================================================
+// CI Failure Event Queries
+// ============================================================================
+
+export interface CIFailureEventQueries {
+  findById(id: string): Promise<schema.CIFailureEvent | null>;
+  findByRepository(repository: string, limit?: number): Promise<schema.CIFailureEvent[]>;
+  findByPR(repository: string, prNumber: number): Promise<schema.CIFailureEvent[]>;
+  findRecentUnprocessed(limit?: number): Promise<schema.CIFailureEvent[]>;
+  create(data: schema.NewCIFailureEvent): Promise<schema.CIFailureEvent>;
+  markProcessed(id: string, agentSpawned: boolean): Promise<void>;
+  delete(id: string): Promise<void>;
+}
+
+export const ciFailureEventQueries: CIFailureEventQueries = {
+  async findById(id: string): Promise<schema.CIFailureEvent | null> {
+    const db = getDb();
+    const result = await db.select().from(schema.ciFailureEvents).where(eq(schema.ciFailureEvents.id, id));
+    return result[0] ?? null;
+  },
+
+  async findByRepository(repository: string, limit = 50): Promise<schema.CIFailureEvent[]> {
+    const db = getDb();
+    return db
+      .select()
+      .from(schema.ciFailureEvents)
+      .where(eq(schema.ciFailureEvents.repository, repository))
+      .orderBy(desc(schema.ciFailureEvents.createdAt))
+      .limit(limit);
+  },
+
+  async findByPR(repository: string, prNumber: number): Promise<schema.CIFailureEvent[]> {
+    const db = getDb();
+    return db
+      .select()
+      .from(schema.ciFailureEvents)
+      .where(
+        and(
+          eq(schema.ciFailureEvents.repository, repository),
+          eq(schema.ciFailureEvents.prNumber, prNumber)
+        )
+      )
+      .orderBy(desc(schema.ciFailureEvents.createdAt));
+  },
+
+  async findRecentUnprocessed(limit = 100): Promise<schema.CIFailureEvent[]> {
+    const db = getDb();
+    return db
+      .select()
+      .from(schema.ciFailureEvents)
+      .where(isNull(schema.ciFailureEvents.processedAt))
+      .orderBy(schema.ciFailureEvents.createdAt)
+      .limit(limit);
+  },
+
+  async create(data: schema.NewCIFailureEvent): Promise<schema.CIFailureEvent> {
+    const db = getDb();
+    const result = await db.insert(schema.ciFailureEvents).values(data).returning();
+    return result[0];
+  },
+
+  async markProcessed(id: string, agentSpawned: boolean): Promise<void> {
+    const db = getDb();
+    await db
+      .update(schema.ciFailureEvents)
+      .set({ processedAt: new Date(), agentSpawned })
+      .where(eq(schema.ciFailureEvents.id, id));
+  },
+
+  async delete(id: string): Promise<void> {
+    const db = getDb();
+    await db.delete(schema.ciFailureEvents).where(eq(schema.ciFailureEvents.id, id));
+  },
+};
+
+// ============================================================================
+// CI Fix Attempt Queries
+// ============================================================================
+
+export interface CIFixAttemptQueries {
+  findById(id: string): Promise<schema.CIFixAttempt | null>;
+  findByFailureEvent(failureEventId: string): Promise<schema.CIFixAttempt[]>;
+  findActiveByRepository(repository: string): Promise<schema.CIFixAttempt[]>;
+  create(data: schema.NewCIFixAttempt): Promise<schema.CIFixAttempt>;
+  updateStatus(id: string, status: string, errorMessage?: string): Promise<void>;
+  complete(id: string, status: 'success' | 'failed', commitSha?: string, errorMessage?: string): Promise<void>;
+}
+
+export const ciFixAttemptQueries: CIFixAttemptQueries = {
+  async findById(id: string): Promise<schema.CIFixAttempt | null> {
+    const db = getDb();
+    const result = await db.select().from(schema.ciFixAttempts).where(eq(schema.ciFixAttempts.id, id));
+    return result[0] ?? null;
+  },
+
+  async findByFailureEvent(failureEventId: string): Promise<schema.CIFixAttempt[]> {
+    const db = getDb();
+    return db
+      .select()
+      .from(schema.ciFixAttempts)
+      .where(eq(schema.ciFixAttempts.failureEventId, failureEventId))
+      .orderBy(desc(schema.ciFixAttempts.startedAt));
+  },
+
+  async findActiveByRepository(repository: string): Promise<schema.CIFixAttempt[]> {
+    const db = getDb();
+    // Find active fix attempts by joining with failure events
+    const activeStatuses = ['pending', 'in_progress'];
+    return db
+      .select({
+        id: schema.ciFixAttempts.id,
+        failureEventId: schema.ciFixAttempts.failureEventId,
+        agentId: schema.ciFixAttempts.agentId,
+        agentName: schema.ciFixAttempts.agentName,
+        status: schema.ciFixAttempts.status,
+        commitSha: schema.ciFixAttempts.commitSha,
+        errorMessage: schema.ciFixAttempts.errorMessage,
+        startedAt: schema.ciFixAttempts.startedAt,
+        completedAt: schema.ciFixAttempts.completedAt,
+      })
+      .from(schema.ciFixAttempts)
+      .innerJoin(schema.ciFailureEvents, eq(schema.ciFixAttempts.failureEventId, schema.ciFailureEvents.id))
+      .where(
+        and(
+          eq(schema.ciFailureEvents.repository, repository),
+          sql`${schema.ciFixAttempts.status} IN ('pending', 'in_progress')`
+        )
+      );
+  },
+
+  async create(data: schema.NewCIFixAttempt): Promise<schema.CIFixAttempt> {
+    const db = getDb();
+    const result = await db.insert(schema.ciFixAttempts).values(data).returning();
+    return result[0];
+  },
+
+  async updateStatus(id: string, status: string, errorMessage?: string): Promise<void> {
+    const db = getDb();
+    const updates: Record<string, unknown> = { status };
+    if (errorMessage) {
+      updates.errorMessage = errorMessage;
+    }
+    await db
+      .update(schema.ciFixAttempts)
+      .set(updates)
+      .where(eq(schema.ciFixAttempts.id, id));
+  },
+
+  async complete(
+    id: string,
+    status: 'success' | 'failed',
+    commitSha?: string,
+    errorMessage?: string
+  ): Promise<void> {
+    const db = getDb();
+    await db
+      .update(schema.ciFixAttempts)
+      .set({
+        status,
+        completedAt: new Date(),
+        commitSha: commitSha ?? null,
+        errorMessage: errorMessage ?? null,
+      })
+      .where(eq(schema.ciFixAttempts.id, id));
+  },
+};
+
+// ============================================================================
+// Issue Assignment Queries
+// ============================================================================
+
+export interface IssueAssignmentQueries {
+  findById(id: string): Promise<schema.IssueAssignment | null>;
+  findByRepository(repository: string, limit?: number): Promise<schema.IssueAssignment[]>;
+  findByIssue(repository: string, issueNumber: number): Promise<schema.IssueAssignment | null>;
+  findByAgent(agentId: string): Promise<schema.IssueAssignment[]>;
+  findPending(limit?: number): Promise<schema.IssueAssignment[]>;
+  create(data: schema.NewIssueAssignment): Promise<schema.IssueAssignment>;
+  assignAgent(id: string, agentId: string, agentName: string): Promise<void>;
+  updateStatus(id: string, status: string, resolution?: string): Promise<void>;
+  linkPR(id: string, prNumber: number): Promise<void>;
+}
+
+export const issueAssignmentQueries: IssueAssignmentQueries = {
+  async findById(id: string): Promise<schema.IssueAssignment | null> {
+    const db = getDb();
+    const result = await db.select().from(schema.issueAssignments).where(eq(schema.issueAssignments.id, id));
+    return result[0] ?? null;
+  },
+
+  async findByRepository(repository: string, limit = 50): Promise<schema.IssueAssignment[]> {
+    const db = getDb();
+    return db
+      .select()
+      .from(schema.issueAssignments)
+      .where(eq(schema.issueAssignments.repository, repository))
+      .orderBy(desc(schema.issueAssignments.createdAt))
+      .limit(limit);
+  },
+
+  async findByIssue(repository: string, issueNumber: number): Promise<schema.IssueAssignment | null> {
+    const db = getDb();
+    const result = await db
+      .select()
+      .from(schema.issueAssignments)
+      .where(
+        and(
+          eq(schema.issueAssignments.repository, repository),
+          eq(schema.issueAssignments.issueNumber, issueNumber)
+        )
+      );
+    return result[0] ?? null;
+  },
+
+  async findByAgent(agentId: string): Promise<schema.IssueAssignment[]> {
+    const db = getDb();
+    return db
+      .select()
+      .from(schema.issueAssignments)
+      .where(eq(schema.issueAssignments.agentId, agentId))
+      .orderBy(desc(schema.issueAssignments.createdAt));
+  },
+
+  async findPending(limit = 100): Promise<schema.IssueAssignment[]> {
+    const db = getDb();
+    return db
+      .select()
+      .from(schema.issueAssignments)
+      .where(eq(schema.issueAssignments.status, 'pending'))
+      .orderBy(schema.issueAssignments.createdAt)
+      .limit(limit);
+  },
+
+  async create(data: schema.NewIssueAssignment): Promise<schema.IssueAssignment> {
+    const db = getDb();
+    const result = await db.insert(schema.issueAssignments).values(data).returning();
+    return result[0];
+  },
+
+  async assignAgent(id: string, agentId: string, agentName: string): Promise<void> {
+    const db = getDb();
+    await db
+      .update(schema.issueAssignments)
+      .set({
+        agentId,
+        agentName,
+        assignedAt: new Date(),
+        status: 'assigned',
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.issueAssignments.id, id));
+  },
+
+  async updateStatus(id: string, status: string, resolution?: string): Promise<void> {
+    const db = getDb();
+    const updates: Record<string, unknown> = { status, updatedAt: new Date() };
+    if (resolution) {
+      updates.resolution = resolution;
+    }
+    await db
+      .update(schema.issueAssignments)
+      .set(updates)
+      .where(eq(schema.issueAssignments.id, id));
+  },
+
+  async linkPR(id: string, prNumber: number): Promise<void> {
+    const db = getDb();
+    await db
+      .update(schema.issueAssignments)
+      .set({ linkedPrNumber: prNumber, updatedAt: new Date() })
+      .where(eq(schema.issueAssignments.id, id));
+  },
+};
+
+// ============================================================================
+// Comment Mention Queries
+// ============================================================================
+
+export interface CommentMentionQueries {
+  findById(id: string): Promise<schema.CommentMention | null>;
+  findByRepository(repository: string, limit?: number): Promise<schema.CommentMention[]>;
+  findBySource(sourceType: string, sourceId: number): Promise<schema.CommentMention | null>;
+  findPending(limit?: number): Promise<schema.CommentMention[]>;
+  findByMentionedAgent(mentionedAgent: string, limit?: number): Promise<schema.CommentMention[]>;
+  create(data: schema.NewCommentMention): Promise<schema.CommentMention>;
+  markProcessing(id: string, agentId: string, agentName: string): Promise<void>;
+  markResponded(id: string, responseCommentId: number, responseBody: string): Promise<void>;
+  markIgnored(id: string): Promise<void>;
+}
+
+export const commentMentionQueries: CommentMentionQueries = {
+  async findById(id: string): Promise<schema.CommentMention | null> {
+    const db = getDb();
+    const result = await db.select().from(schema.commentMentions).where(eq(schema.commentMentions.id, id));
+    return result[0] ?? null;
+  },
+
+  async findByRepository(repository: string, limit = 50): Promise<schema.CommentMention[]> {
+    const db = getDb();
+    return db
+      .select()
+      .from(schema.commentMentions)
+      .where(eq(schema.commentMentions.repository, repository))
+      .orderBy(desc(schema.commentMentions.createdAt))
+      .limit(limit);
+  },
+
+  async findBySource(sourceType: string, sourceId: number): Promise<schema.CommentMention | null> {
+    const db = getDb();
+    const result = await db
+      .select()
+      .from(schema.commentMentions)
+      .where(
+        and(
+          eq(schema.commentMentions.sourceType, sourceType),
+          eq(schema.commentMentions.sourceId, sourceId)
+        )
+      );
+    return result[0] ?? null;
+  },
+
+  async findPending(limit = 100): Promise<schema.CommentMention[]> {
+    const db = getDb();
+    return db
+      .select()
+      .from(schema.commentMentions)
+      .where(eq(schema.commentMentions.status, 'pending'))
+      .orderBy(schema.commentMentions.createdAt)
+      .limit(limit);
+  },
+
+  async findByMentionedAgent(mentionedAgent: string, limit = 50): Promise<schema.CommentMention[]> {
+    const db = getDb();
+    return db
+      .select()
+      .from(schema.commentMentions)
+      .where(eq(schema.commentMentions.mentionedAgent, mentionedAgent))
+      .orderBy(desc(schema.commentMentions.createdAt))
+      .limit(limit);
+  },
+
+  async create(data: schema.NewCommentMention): Promise<schema.CommentMention> {
+    const db = getDb();
+    const result = await db.insert(schema.commentMentions).values(data).returning();
+    return result[0];
+  },
+
+  async markProcessing(id: string, agentId: string, agentName: string): Promise<void> {
+    const db = getDb();
+    await db
+      .update(schema.commentMentions)
+      .set({ status: 'processing', agentId, agentName })
+      .where(eq(schema.commentMentions.id, id));
+  },
+
+  async markResponded(id: string, responseCommentId: number, responseBody: string): Promise<void> {
+    const db = getDb();
+    await db
+      .update(schema.commentMentions)
+      .set({
+        status: 'responded',
+        responseCommentId,
+        responseBody,
+        respondedAt: new Date(),
+      })
+      .where(eq(schema.commentMentions.id, id));
+  },
+
+  async markIgnored(id: string): Promise<void> {
+    const db = getDb();
+    await db
+      .update(schema.commentMentions)
+      .set({ status: 'ignored' })
+      .where(eq(schema.commentMentions.id, id));
   },
 };
 

@@ -8,7 +8,6 @@ import {
   getMemoryMonitor,
   formatBytes,
   type MemorySnapshot,
-  type AgentMemoryMetrics,
   type MemoryAlert,
 } from './memory-monitor.js';
 
@@ -115,7 +114,7 @@ describe('AgentMemoryMonitor', () => {
 
     it('should reset metrics on PID update', () => {
       monitor.register('test-agent', 12345);
-      const metrics = monitor.get('test-agent');
+      const _metrics = monitor.get('test-agent');
 
       monitor.updatePid('test-agent', 54321);
 

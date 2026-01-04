@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-03T19:22:22.783Z",
+  "lastUpdated": "2026-01-04T07:29:24.092Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -253,6 +253,33 @@
       "startedAt": "2026-01-03T19:17:32.797Z",
       "completedAt": "2026-01-03T19:22:22.762Z",
       "path": "/home/user/relay/.trajectories/completed/2026-01/traj_yvdadtvdgnz3.json"
+    },
+    "traj_1k5if5snst2e": {
+      "title": "Fix 404 errors on auth endpoints",
+      "status": "completed",
+      "startedAt": "2026-01-03T19:55:20.964Z",
+      "completedAt": "2026-01-03T21:14:38.934Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_1k5if5snst2e.json"
+    },
+    "traj_cxofprm2m2en": {
+      "title": "Fix Nango popup blocked by browser - use constructor pattern",
+      "status": "completed",
+      "startedAt": "2026-01-03T21:18:15.384Z",
+      "completedAt": "2026-01-03T21:18:33.901Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_cxofprm2m2en.json"
+    },
+    "traj_ajs7zqfux4wc": {
+      "title": "Fix Nango popup blocked - match my-senior-dev pattern exactly",
+      "status": "completed",
+      "startedAt": "2026-01-03T21:22:52.243Z",
+      "completedAt": "2026-01-03T21:23:07.802Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_ajs7zqfux4wc.json"
+    },
+    "traj_7ludwvz45veh": {
+      "title": "Provider CLI auth flow for cloud workspaces",
+      "status": "active",
+      "startedAt": "2026-01-04T00:05:43.304Z",
+      "path": "/home/user/relay/.trajectories/active/traj_7ludwvz45veh.json"
     }
   }
 }

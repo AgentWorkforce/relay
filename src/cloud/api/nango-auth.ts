@@ -71,8 +71,13 @@ nangoAuthRouter.get('/login-status/:connectionId', async (req: Request, res: Res
     // Clear incoming connection ID
     await db.users.clearIncomingConnectionId(user.id);
 
+    // Check if user has any repos connected
+    const repos = await db.repositories.findByUserId(user.id);
+    const hasRepos = repos.length > 0;
+
     res.json({
       ready: true,
+      hasRepos,
       user: {
         id: user.id,
         githubUsername: user.githubUsername,
@@ -169,17 +174,28 @@ nangoAuthRouter.get('/repo-status/:connectionId', requireAuth, async (req: Reque
  * Handle Nango webhooks for auth and sync events
  */
 nangoAuthRouter.post('/webhook', async (req: Request, res: Response) => {
-  const signature = req.headers['x-nango-signature'] as string | undefined;
-  const rawBody = JSON.stringify(req.body);
+  // Use the preserved raw body from express.json verify callback
+  const rawBody = (req as Request & { rawBody?: string }).rawBody || JSON.stringify(req.body);
 
-  // Verify signature
-  if (!nangoService.verifyWebhookSignature(rawBody, signature)) {
-    console.error('[nango-webhook] Invalid signature');
-    return res.status(401).json({ error: 'Invalid signature' });
+  // Verify signature using the new verifyIncomingWebhookRequest method
+  const hasSignature = req.headers['x-nango-signature'] || req.headers['x-nango-hmac-sha256'];
+  const isDev = process.env.NODE_ENV !== 'production';
+
+  if (hasSignature) {
+    if (!nangoService.verifyWebhookSignature(rawBody, req.headers as Record<string, string | string[] | undefined>)) {
+      console.error('[nango-webhook] Invalid signature');
+      return res.status(401).json({ error: 'Invalid signature' });
+    }
+    console.log('[nango-webhook] Signature verified');
+  } else if (!isDev) {
+    console.error('[nango-webhook] Missing signature in production');
+    return res.status(401).json({ error: 'Missing signature' });
+  } else {
+    console.warn('[nango-webhook] Skipping signature verification in development (no signature)');
   }
 
   const payload = req.body;
-  console.log(`[nango-webhook] Received ${payload.type} event`);
+  console.log(`[nango-webhook] Received ${payload.type} event`, JSON.stringify(payload, null, 2));
 
   try {
     switch (payload.type) {
@@ -189,6 +205,11 @@ nangoAuthRouter.post('/webhook', async (req: Request, res: Response) => {
 
       case 'sync':
         console.log('[nango-webhook] Sync event received');
+        break;
+
+      case 'forward':
+        // Nango forwards events from providers - typically not needed for our flow
+        console.log('[nango-webhook] Forward event from provider (ignored)');
         break;
 
       default:
@@ -224,6 +245,11 @@ async function handleAuthWebhook(payload: {
 
 /**
  * Handle GitHub login webhook
+ *
+ * Three scenarios:
+ * 1. New user - Create user record, keep connection as permanent
+ * 2. Returning user with existing connection - Store incoming ID for polling, delete temp connection
+ * 3. Existing user, first connection - Set connection ID as permanent
  */
 async function handleLoginWebhook(
   connectionId: string,
@@ -231,21 +257,15 @@ async function handleLoginWebhook(
 ): Promise<void> {
   // Get GitHub user info via Nango proxy
   const githubUser = await nangoService.getGithubUser(connectionId);
+  const githubId = String(githubUser.id);
 
   // Check if user already exists
-  const existingUser = await db.users.findByGithubId(String(githubUser.id));
+  const existingUser = await db.users.findByGithubId(githubId);
 
-  if (existingUser) {
-    // Returning user - store temp connection for polling
-    await db.users.update(existingUser.id, {
-      incomingConnectionId: connectionId,
-    });
-
-    console.log(`[nango-webhook] Returning user login: ${githubUser.login}`);
-  } else {
-    // New user - create record
+  // SCENARIO 1: New user
+  if (!existingUser) {
     const newUser = await db.users.upsert({
-      githubId: String(githubUser.id),
+      githubId,
       githubUsername: githubUser.login,
       email: githubUser.email || null,
       avatarUrl: githubUser.avatar_url || null,
@@ -260,7 +280,49 @@ async function handleLoginWebhook(
     });
 
     console.log(`[nango-webhook] New user created: ${githubUser.login}`);
+    return;
   }
+
+  // SCENARIO 2: Returning user with existing connection - delete temp connection
+  if (existingUser.nangoConnectionId && existingUser.nangoConnectionId !== connectionId) {
+    console.log(`[nango-webhook] Returning user: ${githubUser.login}`, {
+      permanentConnectionId: existingUser.nangoConnectionId,
+      incomingConnectionId: connectionId,
+    });
+
+    // Store incoming connection ID for polling
+    await db.users.update(existingUser.id, {
+      incomingConnectionId: connectionId,
+      githubUsername: githubUser.login,
+      avatarUrl: githubUser.avatar_url || null,
+    });
+
+    // Delete the temporary connection from Nango to prevent duplicates
+    try {
+      await nangoService.deleteConnection(connectionId, NANGO_INTEGRATIONS.GITHUB_USER);
+      console.log(`[nango-webhook] Deleted temp connection for returning user`);
+    } catch (error) {
+      console.error(`[nango-webhook] Failed to delete temp connection:`, error);
+      // Non-fatal - continue anyway
+    }
+
+    return;
+  }
+
+  // SCENARIO 3: Existing user, first connection (or same connection)
+  console.log(`[nango-webhook] First/same connection for existing user: ${githubUser.login}`);
+  await db.users.update(existingUser.id, {
+    nangoConnectionId: connectionId,
+    incomingConnectionId: connectionId,
+    githubUsername: githubUser.login,
+    avatarUrl: githubUser.avatar_url || null,
+  });
+
+  // Update connection with user ID
+  await nangoService.updateEndUser(connectionId, NANGO_INTEGRATIONS.GITHUB_USER, {
+    id: existingUser.id,
+    email: existingUser.email || undefined,
+  });
 }
 
 /**
@@ -270,9 +332,22 @@ async function handleRepoAuthWebhook(
   connectionId: string,
   endUser?: { id?: string; email?: string }
 ): Promise<void> {
-  const userId = endUser?.id;
+  let userId = endUser?.id;
+
+  // Fallback: If endUser.id not in webhook, fetch connection metadata from Nango
   if (!userId) {
-    console.error('[nango-webhook] No user ID in repo auth webhook');
+    console.log('[nango-webhook] No user ID in webhook payload, fetching from connection metadata...');
+    try {
+      const connection = await nangoService.getConnection(connectionId, NANGO_INTEGRATIONS.GITHUB_APP);
+      userId = connection.end_user?.id;
+      console.log(`[nango-webhook] Got user ID from connection: ${userId || 'not found'}`);
+    } catch (err) {
+      console.error('[nango-webhook] Failed to fetch connection metadata:', err);
+    }
+  }
+
+  if (!userId) {
+    console.error('[nango-webhook] No user ID found - cannot sync repos');
     return;
   }
 
@@ -283,6 +358,34 @@ async function handleRepoAuthWebhook(
   }
 
   try {
+    // Get the GitHub App installation ID
+    const githubInstallationId = await nangoService.getGithubAppInstallationId(connectionId);
+    let installationUuid: string | null = null;
+
+    if (githubInstallationId) {
+      // Find or create the github_installations record
+      let installation = await db.githubInstallations.findByInstallationId(String(githubInstallationId));
+
+      if (!installation) {
+        // Create a new installation record
+        // We need to get more info about the installation - for now use user info
+        installation = await db.githubInstallations.upsert({
+          installationId: String(githubInstallationId),
+          accountType: 'user', // Could be 'organization' - we'd need to detect this
+          accountLogin: user.githubUsername || 'unknown',
+          accountId: user.githubId || 'unknown',
+          installedById: user.id,
+          permissions: {},
+          events: [],
+        });
+        console.log(`[nango-webhook] Created installation record for ${githubInstallationId}`);
+      }
+
+      installationUuid = installation.id;
+    } else {
+      console.warn('[nango-webhook] Could not get installation ID from Nango connection');
+    }
+
     // Fetch repos the user has access to
     const { repositories: repos } = await nangoService.listGithubAppRepos(connectionId);
 
@@ -295,6 +398,7 @@ async function handleRepoAuthWebhook(
         isPrivate: repo.private,
         defaultBranch: repo.default_branch,
         nangoConnectionId: connectionId,
+        installationId: installationUuid,
         syncStatus: 'synced',
         lastSyncedAt: new Date(),
       });
@@ -303,7 +407,7 @@ async function handleRepoAuthWebhook(
     // Clear any pending installation request
     await db.users.clearPendingInstallationRequest(user.id);
 
-    console.log(`[nango-webhook] Synced ${repos.length} repos for ${user.githubUsername}`);
+    console.log(`[nango-webhook] Synced ${repos.length} repos for ${user.githubUsername} (installation: ${githubInstallationId || 'unknown'})`);
 
   } catch (error: unknown) {
     const err = error as { message?: string };

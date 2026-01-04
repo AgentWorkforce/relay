@@ -1,0 +1,166 @@
+{
+  "id": "traj_7ludwvz45veh",
+  "version": 1,
+  "task": {
+    "title": "Provider CLI auth flow for cloud workspaces",
+    "source": {
+      "system": "plain",
+      "id": "pre-launch-fixes"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-01-04T00:05:43.304Z",
+  "agents": [
+    {
+      "name": "khaliqgant",
+      "role": "lead",
+      "joinedAt": "2026-01-04T00:05:43.304Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_esd2ffqy9f0f",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-04T00:05:51.196Z",
+      "events": [
+        {
+          "ts": 1767485151196,
+          "type": "decision",
+          "content": "Pre-seed Claude CLI config to skip interactive setup: Pre-seed Claude CLI config to skip interactive setup",
+          "raw": {
+            "question": "Pre-seed Claude CLI config to skip interactive setup",
+            "chosen": "Pre-seed Claude CLI config to skip interactive setup",
+            "alternatives": [],
+            "reasoning": "Claude CLI has interactive first-run (theme selection, etc). Alternative was web terminal (xterm.js) which is more flexible but complex. Pre-seeding config is simpler for MVP. May revisit for web terminal if other CLIs have similar issues."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767485196636,
+          "type": "decision",
+          "content": "Add settings page for CLI provider management: Add settings page for CLI provider management",
+          "raw": {
+            "question": "Add settings page for CLI provider management",
+            "chosen": "Add settings page for CLI provider management",
+            "alternatives": [],
+            "reasoning": "Users should be able to connect additional AI providers after initial setup. Settings page in workspace dashboard will allow connecting Claude, Codex, OpenCode, Droid at any time, not just during initial workspace setup."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767509811642,
+          "type": "decision",
+          "content": "Default trajectories to opt-out (user-level storage): Default trajectories to opt-out (user-level storage)",
+          "raw": {
+            "question": "Default trajectories to opt-out (user-level storage)",
+            "chosen": "Default trajectories to opt-out (user-level storage)",
+            "alternatives": [],
+            "reasoning": "Most repos won't want trajectory files in source control. Users must explicitly opt-in to store in repo via .relay/config.json"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767509822845,
+          "type": "decision",
+          "content": "Store user-level trajectories in ~/.config/agent-relay/trajectories/<project-hash>/: Store user-level trajectories in ~/.config/agent-relay/trajectories/<project-hash>/",
+          "raw": {
+            "question": "Store user-level trajectories in ~/.config/agent-relay/trajectories/<project-hash>/",
+            "chosen": "Store user-level trajectories in ~/.config/agent-relay/trajectories/<project-hash>/",
+            "alternatives": [],
+            "reasoning": "XDG-compliant path, project-isolated via hash to prevent collisions, survives repo deletion"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767509882710,
+          "type": "decision",
+          "content": "Trajectory settings configurable after GitHub app setup: Trajectory settings configurable after GitHub app setup",
+          "raw": {
+            "question": "Trajectory settings configurable after GitHub app setup",
+            "chosen": "Trajectory settings configurable after GitHub app setup",
+            "alternatives": [],
+            "reasoning": "Users should configure .relay/config.json after connecting repo to cloud workspace. This happens in the workspace onboarding flow."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767510018871,
+          "type": "decision",
+          "content": "Add dashboard API for trajectory preferences: Add dashboard API for trajectory preferences",
+          "raw": {
+            "question": "Add dashboard API for trajectory preferences",
+            "chosen": "Add dashboard API for trajectory preferences",
+            "alternatives": [],
+            "reasoning": "Users configure via dashboard after GitHub app setup, during workspace onboarding"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767510106990,
+          "type": "decision",
+          "content": "Add comprehensive settings with trajectory explanations: Add comprehensive settings with trajectory explanations",
+          "raw": {
+            "question": "Add comprehensive settings with trajectory explanations",
+            "chosen": "Add comprehensive settings with trajectory explanations",
+            "alternatives": [],
+            "reasoning": "Users need to understand what trajectories are (PDERO paradigm), why they'd opt-in, and link to pdero.com for more info"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767510429532,
+          "type": "decision",
+          "content": "Investigate Claude OAuth login flow: Investigate Claude OAuth login flow",
+          "raw": {
+            "question": "Investigate Claude OAuth login flow",
+            "chosen": "Investigate Claude OAuth login flow",
+            "alternatives": [],
+            "reasoning": "Current provider setup uses API keys but Claude uses OAuth. Need to bypass interactive prompts and get login URL for popup-based auth."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767510693303,
+          "type": "decision",
+          "content": "Cloud provider auth strategy for Claude: Cloud provider auth strategy for Claude",
+          "raw": {
+            "question": "Cloud provider auth strategy for Claude",
+            "chosen": "Cloud provider auth strategy for Claude",
+            "alternatives": [],
+            "reasoning": "Claude uses OAuth in cloud environments. For users connecting accounts: 1) API key works (already supported), 2) CLI setup-token is interactive, 3) Need proper OAuth device flow from Anthropic. Recommend API key for now with improved UX."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767511753148,
+          "type": "decision",
+          "content": "Use node-pty for CLI OAuth flow: Use node-pty for CLI OAuth flow",
+          "raw": {
+            "question": "Use node-pty for CLI OAuth flow",
+            "chosen": "Use node-pty for CLI OAuth flow",
+            "alternatives": [],
+            "reasoning": "Regular spawn with pipes doesn't properly emulate TTY, causing CLIs to behave differently. PTY ensures auth URLs are output correctly and allows sending responses to interactive prompts."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767511764090,
+          "type": "decision",
+          "content": "Auto-respond to Claude interactive setup prompts: Auto-respond to Claude interactive setup prompts",
+          "raw": {
+            "question": "Auto-respond to Claude interactive setup prompts",
+            "chosen": "Auto-respond to Claude interactive setup prompts",
+            "alternatives": [],
+            "reasoning": "Claude has multi-step setup: dark mode -> auth method -> login URL. We detect prompts and send enter key to progress through them automatically."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": []
+}
