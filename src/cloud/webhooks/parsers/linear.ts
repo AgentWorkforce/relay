@@ -136,11 +136,12 @@ export const linearParser: WebhookParser = {
 
           // Check if assigned to an agent (name matches agent pattern)
           const assigneeName = String(assignee?.name || '').toLowerCase();
-          const agentPatterns = ['agent', 'bot', 'lead', 'developer', 'reviewer', 'debugger', 'ci-fix', 'test', 'docs', 'refactor'];
+          // Order matters: more specific patterns first, generic 'agent' and 'bot' last
+          const agentPatterns = ['developer', 'reviewer', 'debugger', 'ci-fix', 'refactor', 'lead', 'test', 'docs', 'agent', 'bot'];
           const isAgentAssignment = wasAssigned && agentPatterns.some(p => assigneeName.includes(p));
 
           if (isAgentAssignment) {
-            // Extract the agent type from the assignee name
+            // Extract the agent type from the assignee name (finds first/most-specific match)
             const matchedAgent = agentPatterns.find(p => assigneeName.includes(p)) || 'developer';
 
             events.push({

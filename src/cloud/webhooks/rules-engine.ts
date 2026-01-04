@@ -15,7 +15,8 @@ function evaluateCondition(condition: string, event: NormalizedEvent): boolean {
 
   try {
     // Parse condition: $.path operator value
-    const conditionPattern = /^\$\.([a-zA-Z0-9_.]+)\s*(==|!=|in|contains|>|<|>=|<=)\s*(.+)$/;
+    // Note: >= and <= must come before > and < in the alternation to match correctly
+    const conditionPattern = /^\$\.([a-zA-Z0-9_.]+)\s*(==|!=|>=|<=|>|<|in|contains)\s*(.+)$/;
     const match = condition.match(conditionPattern);
 
     if (!match) {
@@ -52,6 +53,10 @@ function evaluateCondition(condition: string, event: NormalizedEvent): boolean {
 
     switch (operator) {
       case '==':
+        // Handle null/undefined equivalence
+        if (compareValue === null) {
+          return eventValue === null || eventValue === undefined;
+        }
         return eventValue === compareValue;
       case '!=':
         return eventValue !== compareValue;
