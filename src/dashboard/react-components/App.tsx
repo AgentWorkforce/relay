@@ -877,6 +877,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           onLogsClick={handleLogsClick}
           onThreadSelect={setCurrentThread}
           onClose={() => setIsSidebarOpen(false)}
+          onSettingsClick={handleSettingsClick}
         />
       </div>
 
