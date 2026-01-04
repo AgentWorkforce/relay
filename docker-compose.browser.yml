@@ -1,0 +1,78 @@
+# Agent Relay - Browser Testing Workspace
+#
+# Extends docker-compose.dev.yml with browser testing capabilities.
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml -f docker-compose.browser.yml up
+#
+# Access:
+#   - Dashboard: http://localhost:3888
+#   - VNC (web): http://localhost:6080/vnc.html
+#   - VNC (native): vnc://localhost:5900
+
+version: '3.8'
+
+services:
+  # Browser-enabled workspace with full testing capabilities
+  workspace-browser:
+    build:
+      context: .
+      dockerfile: deploy/workspace/Dockerfile.browser
+    ports:
+      - "3888:3888"    # Dashboard/API
+      - "3889:3889"    # WebSocket
+      - "5900:5900"    # VNC direct
+      - "6080:6080"    # noVNC web interface
+    environment:
+      WORKSPACE_ID: browser-workspace
+      SUPERVISOR_ENABLED: "true"
+      MAX_AGENTS: "10"
+      # Browser display settings
+      DISPLAY: ":99"
+      SCREEN_WIDTH: "1920"
+      SCREEN_HEIGHT: "1080"
+      SCREEN_DEPTH: "24"
+      # VNC settings
+      VNC_ENABLED: "true"
+      VNC_PORT: "5900"
+      NOVNC_ENABLED: "true"
+      NOVNC_PORT: "6080"
+    volumes:
+      # Persistent data
+      - workspace_browser_data:/data
+      # Mount repos
+      - ./:/workspace/relay:ro
+      # Docker socket for spawning containers
+      - /var/run/docker.sock:/var/run/docker.sock
+    # Required for some browser operations
+    shm_size: '2gb'
+    # Security options for browser sandboxing
+    security_opt:
+      - seccomp:unconfined
+    depends_on:
+      - cloud
+
+  # Alternative: Rootless Docker-in-Docker workspace
+  # Uses sysbox runtime for secure nested containers
+  workspace-dind:
+    build:
+      context: .
+      dockerfile: deploy/workspace/Dockerfile.browser
+    runtime: sysbox-runc  # Requires sysbox installed on host
+    ports:
+      - "3898:3888"
+      - "6090:6080"
+    environment:
+      WORKSPACE_ID: dind-workspace
+      SUPERVISOR_ENABLED: "true"
+      MAX_AGENTS: "10"
+      # DinD mode - Docker daemon runs inside container
+      DOCKER_HOST: "unix:///var/run/docker.sock"
+    volumes:
+      - workspace_dind_data:/data
+    profiles:
+      - dind  # Only start with: --profile dind
+
+volumes:
+  workspace_browser_data:
+  workspace_dind_data:
