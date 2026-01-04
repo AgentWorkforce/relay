@@ -95,6 +95,21 @@ export async function startCLIAuth(
   };
   sessions.set(sessionId, session);
 
+  // Check if already authenticated (credentials exist)
+  try {
+    const existingCreds = await extractCredentials(provider, config);
+    if (existingCreds?.token) {
+      logger.info('Already authenticated - existing credentials found', { provider, sessionId });
+      session.status = 'success';
+      session.token = existingCreds.token;
+      session.refreshToken = existingCreds.refreshToken;
+      session.tokenExpiresAt = existingCreds.expiresAt;
+      return session;
+    }
+  } catch {
+    // No existing credentials, proceed with auth flow
+  }
+
   // Use device flow args if requested and supported
   const args = options.useDeviceFlow && config.deviceFlowArgs
     ? config.deviceFlowArgs
@@ -209,7 +224,19 @@ export async function startCLIAuth(
     proc.onExit(async ({ exitCode }) => {
       clearTimeout(timeout);
       clearTimeout(authUrlTimeout);
-      logger.info('CLI process exited', { provider, exitCode });
+
+      // Log full output for debugging PTY exit issues
+      const cleanOutput = stripAnsiCodes(session.output);
+      logger.info('CLI process exited', {
+        provider,
+        exitCode,
+        outputLength: session.output.length,
+        hasAuthUrl: !!session.authUrl,
+        sessionStatus: session.status,
+        promptsHandled: session.promptsHandled,
+        // Last 500 chars of output for debugging
+        outputTail: cleanOutput.slice(-500),
+      });
 
       // Try to extract credentials
       if (session.authUrl || exitCode === 0) {
@@ -261,24 +288,47 @@ export function getAuthSession(sessionId: string): AuthSession | null {
  *
  * @returns Object with success status and optional error message
  */
-export function submitAuthCode(
+export async function submitAuthCode(
   sessionId: string,
   code: string
-): { success: boolean; error?: string } {
+): Promise<{ success: boolean; error?: string; needsRestart?: boolean }> {
   const session = sessions.get(sessionId);
   if (!session) {
     logger.warn('Auth code submission failed: session not found', { sessionId });
-    return { success: false, error: 'Session not found or expired' };
+    return { success: false, error: 'Session not found or expired', needsRestart: true };
   }
 
   if (!session.process) {
     logger.warn('Auth code submission failed: no PTY process', {
       sessionId,
       sessionStatus: session.status,
+      provider: session.provider,
     });
+
+    // Try to extract credentials as a fallback - maybe auth completed in browser
+    const config = CLI_AUTH_CONFIG[session.provider];
+    if (config) {
+      try {
+        const creds = await extractCredentials(session.provider, config);
+        if (creds) {
+          session.token = creds.token;
+          session.refreshToken = creds.refreshToken;
+          session.tokenExpiresAt = creds.expiresAt;
+          session.status = 'success';
+          logger.info('Credentials found despite PTY exit', { provider: session.provider });
+          return { success: true };
+        }
+      } catch {
+        // No credentials found
+      }
+    }
+
+    // For providers like Claude that need the code pasted into CLI,
+    // if the PTY is gone, user needs to restart the auth flow
     return {
       success: false,
-      error: 'CLI process not running. The auth session may have timed out.',
+      error: 'The authentication session has ended. The CLI process exited before the code could be entered. Please click "Try Again" to restart.',
+      needsRestart: true,
     };
   }
 
@@ -459,6 +509,30 @@ async function extractCredentials(
       // Fallback: API key or legacy formats
       const token = creds.OPENAI_API_KEY || creds.token || creds.access_token || creds.api_key;
       return token ? { token } : null;
+    } else if (provider === 'opencode') {
+      // OpenCode stores multiple providers: { opencode: {...}, anthropic: {...}, openai: {...}, google: {...} }
+      // Check for any valid credential - prefer OpenCode Zen, then Anthropic
+      if (creds.opencode?.key) {
+        return { token: creds.opencode.key };
+      }
+      if (creds.anthropic?.access) {
+        return {
+          token: creds.anthropic.access,
+          refreshToken: creds.anthropic.refresh,
+          expiresAt: creds.anthropic.expires ? new Date(creds.anthropic.expires) : undefined,
+        };
+      }
+      if (creds.openai?.access) {
+        return {
+          token: creds.openai.access,
+          refreshToken: creds.openai.refresh,
+          expiresAt: creds.openai.expires ? new Date(creds.openai.expires) : undefined,
+        };
+      }
+      if (creds.google?.key) {
+        return { token: creds.google.key };
+      }
+      return null;
     }
 
     const token = creds.token || creds.access_token || creds.api_key;

@@ -66,13 +66,21 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
     waitTimeout: 30000, // Claude can take a while to show the auth URL
     prompts: [
       {
+        // Claude Code version selection - accept default (recommended)
+        pattern: /which\s*version|claude\s*code\s*version|select.*version/i,
+        response: '\r',
+        delay: 100,
+        description: 'Version selection prompt',
+      },
+      {
         pattern: /dark\s*(mode|theme)/i,
         response: '\r', // Press enter to accept default
         delay: 100,
         description: 'Dark mode prompt',
       },
       {
-        pattern: /(subscription|api\s*key|how\s*would\s*you\s*like\s*to\s*authenticate)/i,
+        // Be more specific to avoid matching after URL is shown
+        pattern: /how\s*would\s*you\s*like\s*to\s*authenticate|choose.*auth.*method|select.*auth/i,
         response: '\r', // Press enter for first option (subscription)
         delay: 100,
         description: 'Auth method prompt',
@@ -84,7 +92,7 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
         description: 'Trust directory prompt',
       },
     ],
-    successPatterns: [/success/i, /authenticated/i, /logged\s*in/i],
+    successPatterns: [/success/i, /authenticated/i, /logged\s*in/i, /you.*(?:are|now).*logged/i],
   },
   openai: {
     command: 'codex',
@@ -124,24 +132,27 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
   opencode: {
     command: 'opencode',
     args: ['auth', 'login'],
-    urlPattern: /(https:\/\/[^\s]+)/,
+    // OpenCode redirects to provider OAuth pages (Anthropic, OpenAI, Google)
+    urlPattern: /(https:\/\/(?:accounts\.anthropic\.com|auth\.openai\.com|accounts\.google\.com|opencode\.ai)[^\s]+)/,
+    credentialPath: '~/.local/share/opencode/auth.json',
     displayName: 'OpenCode',
     waitTimeout: 30000,
     prompts: [
       {
         pattern: /select.*provider|choose.*provider|which.*provider/i,
-        response: '\r', // Select first provider
-        delay: 200,
+        response: '\r', // Select first provider (OpenCode Zen - recommended)
+        delay: 300,
         description: 'Provider selection',
       },
       {
-        pattern: /claude\s*pro|anthropic|select.*auth/i,
-        response: '\r', // Select first auth option
+        pattern: /opencode\s*zen|recommended/i,
+        response: '\r', // Confirm provider selection
         delay: 200,
-        description: 'Auth type selection',
+        description: 'Confirm provider',
       },
     ],
-    successPatterns: [/success/i, /authenticated/i, /logged\s*in/i],
+    // Success patterns include credential added and existing credentials list
+    successPatterns: [/success/i, /authenticated/i, /logged\s*in/i, /credential\s*added/i, /\d+\s*credentials?/i],
   },
   droid: {
     command: 'droid',
