@@ -963,18 +963,18 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           onMenuClick={() => setIsSidebarOpen(true)}
           hasUnreadNotifications={hasUnreadMessages}
         />
-        {/* Online users indicator - only show in cloud mode */}
+        </div>
+        {/* Spacer for fixed header on mobile - matches header height (52px) */}
+        <div className="h-[52px] flex-shrink-0 md:hidden" />
+        {/* Online users indicator - outside fixed header so it scrolls with content on mobile */}
         {currentUser && onlineUsers.length > 0 && (
-          <div className="flex items-center justify-end px-4 py-1 bg-bg-tertiary/80 border-b border-border-subtle">
+          <div className="flex items-center justify-end px-4 py-1 bg-bg-tertiary/80 border-b border-border-subtle flex-shrink-0">
             <OnlineUsersIndicator
               onlineUsers={onlineUsers}
               onUserClick={setSelectedUserProfile}
             />
           </div>
         )}
-        </div>
-        {/* Spacer for fixed header on mobile - matches header height (52px) */}
-        <div className="h-[52px] flex-shrink-0 md:hidden" />
 
         {/* Content Area */}
         <div className="flex-1 flex overflow-hidden min-h-0">
