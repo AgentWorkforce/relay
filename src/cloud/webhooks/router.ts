@@ -16,7 +16,6 @@ import type {
   NormalizedEvent,
   WebhookAction,
   WebhookResult,
-  WebhookResponse,
 } from './types.js';
 import { getParser } from './parsers/index.js';
 import { getResponder } from './responders/index.js';

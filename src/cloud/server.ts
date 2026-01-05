@@ -406,7 +406,7 @@ export async function createServer(): Promise<CloudServer> {
 
   // Heartbeat interval to detect dead connections (30 seconds)
   const PRESENCE_HEARTBEAT_INTERVAL = 30000;
-  const PRESENCE_HEARTBEAT_TIMEOUT = 35000; // Allow 5s grace period
+  const _PRESENCE_HEARTBEAT_TIMEOUT = 35000; // Allow 5s grace period (reserved for future use)
 
   // Track connection health for heartbeat
   const connectionHealth = new WeakMap<WebSocket, { isAlive: boolean; lastPing: number }>();

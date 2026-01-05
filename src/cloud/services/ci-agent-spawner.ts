@@ -295,7 +295,7 @@ _— ${getAppName()}_`
 /**
  * Build the prompt for the CI fix agent
  */
-function buildAgentPrompt(failureEvent: CIFailureEvent, repository: Repository): string {
+function buildAgentPrompt(failureEvent: CIFailureEvent, _repository: Repository): string {
   const annotations = failureEvent.annotations as CIAnnotation[] | null;
   const annotationsList = annotations && annotations.length > 0
     ? annotations

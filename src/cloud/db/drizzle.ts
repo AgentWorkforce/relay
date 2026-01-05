@@ -1281,7 +1281,6 @@ export const ciFixAttemptQueries: CIFixAttemptQueries = {
   async findActiveByRepository(repository: string): Promise<schema.CIFixAttempt[]> {
     const db = getDb();
     // Find active fix attempts by joining with failure events
-    const activeStatuses = ['pending', 'in_progress'];
     return db
       .select({
         id: schema.ciFixAttempts.id,

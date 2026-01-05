@@ -14,7 +14,6 @@ import {
   timestamp,
   boolean,
   bigint,
-  integer,
   jsonb,
   unique,
   index,

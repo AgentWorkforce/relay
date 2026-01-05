@@ -703,7 +703,7 @@ async function handleIssueCommentEvent(payload: IssueCommentPayload): Promise<vo
       try {
         const { handleMention } = await import('../services/mention-handler.js');
         await handleMention(mentionRecord);
-      } catch (importError) {
+      } catch (_importError) {
         // Handler not implemented yet - mentions will be processed later
         console.log(`[webhook] Mention handler not available, mention queued for later processing`);
       }

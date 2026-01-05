@@ -33,12 +33,6 @@ export {
   type PromptHandler,
 } from './cli-pty-runner.js';
 
-import {
-  CLI_AUTH_CONFIG,
-  runCLIAuthViaPTY,
-  matchesSuccessPattern,
-} from './cli-pty-runner.js';
-
 export const onboardingRouter = Router();
 
 // Debug: log all requests to this router
@@ -575,8 +569,9 @@ onboardingRouter.post('/complete', async (req: Request, res: Response) => {
 
 /**
  * Helper: Extract credentials from CLI credential file
+ * @deprecated Currently unused - kept for potential future use
  */
-async function extractCredentials(
+async function _extractCredentials(
   session: CLIAuthSession,
   config: typeof CLI_AUTH_CONFIG[string]
 ): Promise<void> {
