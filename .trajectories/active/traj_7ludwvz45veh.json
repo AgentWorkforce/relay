@@ -191,6 +191,18 @@
             "reasoning": "Hamburger menu visibility, logs button always visible on mobile, responsive padding throughout"
           },
           "significance": "high"
+        },
+        {
+          "ts": 1767636873294,
+          "type": "decision",
+          "content": "Starting work on bd-critical-016: Workspace Daemon Auth security fix: Starting work on bd-critical-016: Workspace Daemon Auth security fix",
+          "raw": {
+            "question": "Starting work on bd-critical-016: Workspace Daemon Auth security fix",
+            "chosen": "Starting work on bd-critical-016: Workspace Daemon Auth security fix",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
         }
       ]
     }

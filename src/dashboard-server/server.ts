@@ -2111,6 +2111,35 @@ export async function startDashboard(
   // ===== CLI Auth API (for workspace-based provider authentication) =====
 
   /**
+   * Middleware to validate workspace token for internal endpoints.
+   * In cloud mode, requests to /auth/cli/* must include a valid WORKSPACE_TOKEN
+   * to prevent unauthorized access to auth sessions.
+   */
+  const validateWorkspaceToken: express.RequestHandler = (req, res, next) => {
+    // Skip auth validation in local mode (no WORKSPACE_TOKEN set)
+    const expectedToken = process.env.WORKSPACE_TOKEN;
+    if (!expectedToken) {
+      return next();
+    }
+
+    // Extract token from Authorization header
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ')
+      ? authHeader.substring(7)
+      : null;
+
+    if (!token || token !== expectedToken) {
+      console.warn('[dashboard] Unauthorized CLI auth request - invalid or missing workspace token');
+      return res.status(401).json({ error: 'Unauthorized - invalid workspace token' });
+    }
+
+    next();
+  };
+
+  // Apply workspace token validation to all CLI auth endpoints
+  app.use('/auth/cli', validateWorkspaceToken);
+
+  /**
    * POST /auth/cli/:provider/start - Start CLI auth flow
    * Body: { useDeviceFlow?: boolean }
    */

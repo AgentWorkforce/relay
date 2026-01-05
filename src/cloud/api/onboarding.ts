@@ -16,6 +16,7 @@ import * as crypto from 'crypto';
 import { requireAuth } from './auth.js';
 import { db } from '../db/index.js';
 import { vault } from '../vault/index.js';
+import { getConfig } from '../config.js';
 
 // Import for local use
 import {
@@ -51,6 +52,25 @@ export {
 
 export const onboardingRouter = Router();
 
+/**
+ * Generate workspace token for authenticating requests to workspace daemon.
+ * Must match the token generation in provisioner/index.ts
+ */
+function generateWorkspaceToken(workspaceId: string): string {
+  const config = getConfig();
+  return crypto
+    .createHmac('sha256', config.sessionSecret)
+    .update(`workspace:${workspaceId}`)
+    .digest('hex');
+}
+
+/**
+ * Get Authorization header for workspace daemon requests
+ */
+function getWorkspaceAuthHeader(workspaceId: string): string {
+  return `Bearer ${generateWorkspaceToken(workspaceId)}`;
+}
+
 // Debug: log all requests to this router
 onboardingRouter.use((req, res, next) => {
   console.log(`[onboarding] ${req.method} ${req.path} - body:`, JSON.stringify(req.body));
@@ -80,6 +100,7 @@ interface CLIAuthSession {
   // Workspace delegation fields (set when auth runs in workspace daemon)
   workspaceUrl?: string;
   workspaceSessionId?: string;
+  workspaceId?: string; // For generating auth token
 }
 
 const activeSessions = new Map<string, CLIAuthSession>();
@@ -185,7 +206,10 @@ onboardingRouter.post('/cli/:provider/start', async (req: Request, res: Response
 
     const authResponse = await fetch(targetUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': getWorkspaceAuthHeader(workspace.id),
+      },
       body: JSON.stringify({ useDeviceFlow }),
     });
 
@@ -217,6 +241,7 @@ onboardingRouter.post('/cli/:provider/start', async (req: Request, res: Response
       // Store workspace info for status polling and auth code forwarding
       workspaceUrl,
       workspaceSessionId: workspaceSession.sessionId,
+      workspaceId: workspace.id,
     };
 
     activeSessions.set(sessionId, session);
@@ -253,10 +278,13 @@ onboardingRouter.get('/cli/:provider/status/:sessionId', async (req: Request, re
   }
 
   // If we have workspace info, poll the workspace for status
-  if (session.workspaceUrl && session.workspaceSessionId) {
+  if (session.workspaceUrl && session.workspaceSessionId && session.workspaceId) {
     try {
       const statusResponse = await fetch(
-        `${session.workspaceUrl}/auth/cli/${provider}/status/${session.workspaceSessionId}`
+        `${session.workspaceUrl}/auth/cli/${provider}/status/${session.workspaceSessionId}`,
+        {
+          headers: { 'Authorization': getWorkspaceAuthHeader(session.workspaceId) },
+        }
       );
       if (statusResponse.ok) {
         const workspaceStatus = await statusResponse.json() as {
@@ -311,7 +339,7 @@ onboardingRouter.post('/cli/:provider/complete/:sessionId', async (req: Request,
     let tokenExpiresAt = session.tokenExpiresAt;
 
     // If using workspace delegation, forward complete request first
-    if (session.workspaceUrl && session.workspaceSessionId) {
+    if (session.workspaceUrl && session.workspaceSessionId && session.workspaceId) {
       // Forward authCode to workspace if provided (for Codex-style redirects)
       if (authCode) {
         const backendProviderId = provider === 'anthropic' ? 'anthropic' : provider;
@@ -320,7 +348,10 @@ onboardingRouter.post('/cli/:provider/complete/:sessionId', async (req: Request,
 
         const completeResponse = await fetch(targetUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': getWorkspaceAuthHeader(session.workspaceId),
+          },
           body: JSON.stringify({ authCode }),
         });
 
@@ -337,7 +368,10 @@ onboardingRouter.post('/cli/:provider/complete/:sessionId', async (req: Request,
       if (!accessToken) {
         try {
           const credsResponse = await fetch(
-            `${session.workspaceUrl}/auth/cli/${provider}/creds/${session.workspaceSessionId}`
+            `${session.workspaceUrl}/auth/cli/${provider}/creds/${session.workspaceSessionId}`,
+            {
+              headers: { 'Authorization': getWorkspaceAuthHeader(session.workspaceId) },
+            }
           );
           if (credsResponse.ok) {
             const creds = await credsResponse.json() as {
@@ -424,14 +458,17 @@ onboardingRouter.post('/cli/:provider/code/:sessionId', async (req: Request, res
   });
 
   // Forward to workspace daemon
-  if (session.workspaceUrl && session.workspaceSessionId) {
+  if (session.workspaceUrl && session.workspaceSessionId && session.workspaceId) {
     try {
       const targetUrl = `${session.workspaceUrl}/auth/cli/${provider}/code/${session.workspaceSessionId}`;
       console.log('[onboarding] Forwarding auth code to workspace:', targetUrl);
 
       const codeResponse = await fetch(targetUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': getWorkspaceAuthHeader(session.workspaceId),
+        },
         body: JSON.stringify({ code }),
       });
 
@@ -485,11 +522,14 @@ onboardingRouter.post('/cli/:provider/cancel/:sessionId', async (req: Request, r
   const session = activeSessions.get(sessionId);
   if (session?.userId === userId) {
     // Cancel on workspace side if applicable
-    if (session.workspaceUrl && session.workspaceSessionId) {
+    if (session.workspaceUrl && session.workspaceSessionId && session.workspaceId) {
       try {
         await fetch(
           `${session.workspaceUrl}/auth/cli/${provider}/cancel/${session.workspaceSessionId}`,
-          { method: 'POST' }
+          {
+            method: 'POST',
+            headers: { 'Authorization': getWorkspaceAuthHeader(session.workspaceId) },
+          }
         );
       } catch {
         // Ignore cancel errors
