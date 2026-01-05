@@ -18,6 +18,7 @@ import type { ProjectConfig, SpawnRequest } from '../bridge/types.js';
 import { listTrajectorySteps, getTrajectoryStatus, getTrajectoryHistory } from '../trajectory/integration.js';
 import { loadTeamsConfig } from '../bridge/teams-config.js';
 import { getMemoryMonitor } from '../resiliency/memory-monitor.js';
+import { detectWorkspacePath } from '../utils/project-namespace.js';
 import {
   startCLIAuth,
   getAuthSession,
@@ -408,8 +409,12 @@ export async function startDashboard(
     : undefined;
 
   // Initialize spawner if enabled
+  // Use detectWorkspacePath to find the actual repo directory in cloud workspaces
+  const workspacePath = detectWorkspacePath(projectRoot || dataDir);
+  console.log(`[dashboard] Workspace path: ${workspacePath}`);
+
   const spawner: AgentSpawner | undefined = enableSpawner
-    ? new AgentSpawner(projectRoot || dataDir, tmuxSession)
+    ? new AgentSpawner(workspacePath, tmuxSession)
     : undefined;
 
   // Initialize cloud persistence and memory monitoring if enabled (RELAY_CLOUD_ENABLED=true)
@@ -1374,24 +1379,34 @@ export async function startDashboard(
     // Filter agents:
     // 1. Exclude "Dashboard" (internal agent, not a real team member)
     // 2. Exclude offline agents (no lastSeen or lastSeen > threshold)
+    // 3. Exclude agents without a known CLI (these are improperly registered or stale)
     const now = Date.now();
     // 30 seconds - aligns with heartbeat timeout (5s heartbeat * 6 multiplier = 30s)
     // This ensures agents disappear quickly after they stop responding to heartbeats
     const OFFLINE_THRESHOLD_MS = 30 * 1000;
-    const filteredAgents = Array.from(agentsMap.values()).filter(agent => {
-      // Exclude Dashboard
-      if (agent.name === 'Dashboard') return false;
+    const filteredAgents = Array.from(agentsMap.values())
+      .filter(agent => {
+        // Exclude Dashboard
+        if (agent.name === 'Dashboard') return false;
 
-      // Exclude agents starting with __ (internal/system agents)
-      if (agent.name.startsWith('__')) return false;
+        // Exclude agents starting with __ (internal/system agents)
+        if (agent.name.startsWith('__')) return false;
 
-      // Exclude offline agents (no lastSeen or too old)
-      if (!agent.lastSeen) return false;
-      const lastSeenTime = new Date(agent.lastSeen).getTime();
-      if (now - lastSeenTime > OFFLINE_THRESHOLD_MS) return false;
+        // Exclude agents without a proper CLI (improperly registered or stale)
+        if (!agent.cli || agent.cli === 'Unknown') return false;
 
-      return true;
-    });
+        // Exclude offline agents (no lastSeen or too old)
+        if (!agent.lastSeen) return false;
+        const lastSeenTime = new Date(agent.lastSeen).getTime();
+        if (now - lastSeenTime > OFFLINE_THRESHOLD_MS) return false;
+
+        return true;
+      })
+      .map(agent => ({
+        ...agent,
+        // All agents that pass the filter have a known CLI and are AI agents
+        isHuman: false,
+      }));
 
     return {
       agents: filteredAgents,
@@ -1773,8 +1788,39 @@ export async function startDashboard(
     return Array.from(onlineUsers.values()).map((state) => state.info);
   };
 
+  // Heartbeat to detect dead connections (30 seconds)
+  const PRESENCE_HEARTBEAT_INTERVAL = 30000;
+  const presenceHealth = new WeakMap<WebSocket, { isAlive: boolean }>();
+
+  const presenceHeartbeat = setInterval(() => {
+    wssPresence.clients.forEach((ws) => {
+      const health = presenceHealth.get(ws);
+      if (!health) {
+        presenceHealth.set(ws, { isAlive: true });
+        return;
+      }
+      if (!health.isAlive) {
+        ws.terminate();
+        return;
+      }
+      health.isAlive = false;
+      ws.ping();
+    });
+  }, PRESENCE_HEARTBEAT_INTERVAL);
+
+  wssPresence.on('close', () => {
+    clearInterval(presenceHeartbeat);
+  });
+
   wssPresence.on('connection', (ws) => {
-    console.log('[dashboard] Presence WebSocket client connected');
+    // Initialize health tracking (no log - too noisy)
+    presenceHealth.set(ws, { isAlive: true });
+
+    ws.on('pong', () => {
+      const health = presenceHealth.get(ws);
+      if (health) health.isAlive = true;
+    });
+
     let clientUsername: string | undefined;
 
     ws.on('message', (data) => {
@@ -1805,7 +1851,11 @@ export async function startDashboard(
               // Add this connection to existing user
               existing.connections.add(ws);
               existing.info.lastSeen = now;
-              console.log(`[dashboard] User ${username} opened new tab (${existing.connections.size} connections)`);
+              // Only log at milestones to reduce noise
+              const count = existing.connections.size;
+              if (count === 2 || count === 5 || count === 10 || count % 50 === 0) {
+                console.log(`[dashboard] User ${username} has ${count} connections`);
+              }
             } else {
               // New user - create presence state
               onlineUsers.set(username, {
