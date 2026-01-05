@@ -1,0 +1,85 @@
+# Source code (TypeScript)
+src/
+
+# Pre-built binaries (downloaded at install time via postinstall.js)
+bin/tmux
+
+# Source maps (not needed for production)
+**/*.js.map
+**/*.d.ts.map
+
+# Documentation (link to GitHub instead)
+docs/
+
+# Development scripts (except postinstall.js which is needed)
+scripts/cloud-setup.sh
+scripts/dev/
+scripts/e2e-test.sh
+scripts/games/
+scripts/manual-qa.sh
+scripts/run-cloud-qa.sh
+scripts/test-cli-auth/
+scripts/test-pty-input*.js
+scripts/tictactoe-setup.sh
+
+# Test files
+**/*.test.ts
+**/*.test.js
+**/*.integration.test.ts
+**/*.integration.test.js
+test/
+
+# Build artifacts
+*.tgz
+
+# Development files
+.github/
+.vscode/
+.env*
+*.log
+.claude/
+.beads/
+.continuity/
+.relay/
+.openskills/
+.trails/
+
+# Config files not needed at runtime
+tsconfig.json
+vitest.config.ts
+eslint.config.*
+.eslintrc.*
+drizzle.config.ts
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+.gitignore
+
+# Node modules handled by npm
+node_modules/
+
+# Examples (users can get from GitHub)
+examples/
+
+# Deployment configs
+fly.toml
+railway.json
+render.yaml
+*.Dockerfile
+
+# PRPM configs
+prpm.json
+prpm.lock
+
+# Public HTML files (not needed for npm package)
+public/
+
+# TypeScript build info
+tsconfig.tsbuildinfo
+*.tsbuildinfo
+
+# Other dev files
+run-dashboard.js
+CLAUDE.md
+AGENTS.md
+*.tasks.md
