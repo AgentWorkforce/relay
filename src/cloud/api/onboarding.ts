@@ -155,7 +155,7 @@ onboardingRouter.post('/cli/:provider/start', async (req: Request, res: Response
     // Forward auth request to workspace daemon
     // When running in Docker, localhost refers to the container, not the host
     // Use host.docker.internal on Mac/Windows to reach the host machine
-    // When running on Fly.io, use internal networking (.flycast) instead of public DNS
+    // When running on Fly.io, use internal networking (.internal) instead of public DNS
     let workspaceUrl = workspace.publicUrl.replace(/\/$/, '');
 
     // Detect Fly.io by checking FLY_APP_NAME env var
@@ -169,10 +169,11 @@ onboardingRouter.post('/cli/:provider/start', async (req: Request, res: Response
 
     if (isOnFly && workspaceUrl.includes('.fly.dev')) {
       // Use Fly.io internal networking for server-to-server communication
-      // ar-583f273b.fly.dev -> http://ar-583f273b.flycast:3888
+      // ar-583f273b.fly.dev -> http://ar-583f273b.internal:3888
+      // .internal uses IPv6 and works by default for apps in the same org
       const appName = workspaceUrl.match(/https?:\/\/([^.]+)\.fly\.dev/)?.[1];
       if (appName) {
-        workspaceUrl = `http://${appName}.flycast:3888`;
+        workspaceUrl = `http://${appName}.internal:3888`;
         console.log('[onboarding] Using Fly internal network:', workspaceUrl);
       }
     } else if (isInDocker && workspaceUrl.includes('localhost')) {

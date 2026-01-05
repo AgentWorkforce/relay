@@ -2,6 +2,7 @@
  * Webhook API Routes
  *
  * Handles GitHub App webhooks for installation events.
+ * Also provides workspace webhook forwarding for external integrations.
  */
 
 import { Router, Request, Response } from 'express';
@@ -10,6 +11,170 @@ import { getConfig } from '../config.js';
 import { db } from '../db/index.js';
 
 export const webhooksRouter = Router();
+
+// ============================================================================
+// Workspace Webhook Forwarding
+// ============================================================================
+
+/**
+ * Convert workspace public URL to internal Fly.io URL
+ */
+function getWorkspaceInternalUrl(publicUrl: string): string {
+  const isOnFly = !!process.env.FLY_APP_NAME;
+  let url = publicUrl.replace(/\/$/, '');
+
+  if (isOnFly && url.includes('.fly.dev')) {
+    // Use Fly.io internal networking
+    // ar-583f273b.fly.dev -> http://ar-583f273b.internal:3888
+    // .internal uses IPv6 and works by default for apps in the same org
+    const appName = url.match(/https?:\/\/([^.]+)\.fly\.dev/)?.[1];
+    if (appName) {
+      url = `http://${appName}.internal:3888`;
+    }
+  }
+
+  return url;
+}
+
+/**
+ * Wake a suspended Fly.io workspace machine
+ */
+async function wakeWorkspaceMachine(workspaceId: string): Promise<boolean> {
+  const workspace = await db.workspaces.findById(workspaceId);
+  if (!workspace?.computeId) return false;
+
+  const appName = `ar-${workspaceId.substring(0, 8)}`;
+  const apiToken = process.env.FLY_API_TOKEN;
+
+  if (!apiToken) {
+    console.warn('[webhooks] FLY_API_TOKEN not set, cannot wake machine');
+    return false;
+  }
+
+  try {
+    const response = await fetch(
+      `https://api.machines.dev/v1/apps/${appName}/machines/${workspace.computeId}/start`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiToken}` },
+      }
+    );
+
+    if (response.ok) {
+      console.log(`[webhooks] Started workspace machine ${workspace.computeId}`);
+      // Wait a bit for machine to start
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      return true;
+    }
+
+    // 200 OK means already running
+    if (response.status === 200) {
+      return true;
+    }
+
+    console.warn(`[webhooks] Failed to start machine: ${response.status}`);
+    return false;
+  } catch (error) {
+    console.error('[webhooks] Error waking machine:', error);
+    return false;
+  }
+}
+
+/**
+ * POST /api/webhooks/workspace/:workspaceId/*
+ * Forward webhooks to a specific workspace
+ *
+ * External services can send webhooks to:
+ *   https://agent-relay.com/api/webhooks/workspace/{workspaceId}/your/path
+ *
+ * This will be forwarded to:
+ *   http://{workspace-internal}/webhooks/your/path
+ */
+webhooksRouter.all('/workspace/:workspaceId/*', async (req: Request, res: Response) => {
+  const { workspaceId } = req.params;
+  // Get the path after /workspace/:workspaceId/
+  const forwardPath = req.params[0] || '';
+
+  console.log(`[webhooks] Forwarding to workspace ${workspaceId}: ${req.method} /${forwardPath}`);
+
+  try {
+    // Find the workspace
+    const workspace = await db.workspaces.findById(workspaceId);
+    if (!workspace) {
+      return res.status(404).json({ error: 'Workspace not found' });
+    }
+
+    if (!workspace.publicUrl) {
+      return res.status(400).json({ error: 'Workspace has no public URL' });
+    }
+
+    // Try to wake the machine if it might be suspended
+    if (workspace.status === 'running' || workspace.status === 'suspended') {
+      await wakeWorkspaceMachine(workspaceId);
+    }
+
+    // Get internal URL for server-to-server communication
+    const internalUrl = getWorkspaceInternalUrl(workspace.publicUrl);
+    const targetUrl = `${internalUrl}/webhooks/${forwardPath}`;
+
+    console.log(`[webhooks] Forwarding to: ${targetUrl}`);
+
+    // Forward the request with original headers and body
+    const forwardHeaders: Record<string, string> = {};
+
+    // Copy relevant headers
+    const headersToForward = [
+      'content-type',
+      'x-hub-signature-256',
+      'x-hub-signature',
+      'x-github-event',
+      'x-github-delivery',
+      'x-gitlab-token',
+      'x-gitlab-event',
+      'user-agent',
+    ];
+
+    for (const header of headersToForward) {
+      const value = req.get(header);
+      if (value) {
+        forwardHeaders[header] = value;
+      }
+    }
+
+    // Add workspace context header
+    forwardHeaders['x-forwarded-for-workspace'] = workspaceId;
+    forwardHeaders['x-original-host'] = req.get('host') || '';
+
+    // Get raw body if available, otherwise use JSON stringified body
+    const rawBody = (req as Request & { rawBody?: string }).rawBody || JSON.stringify(req.body);
+
+    const response = await fetch(targetUrl, {
+      method: req.method,
+      headers: forwardHeaders,
+      body: ['GET', 'HEAD'].includes(req.method) ? undefined : rawBody,
+    });
+
+    // Forward response back
+    const responseBody = await response.text();
+    res.status(response.status);
+
+    // Copy response headers
+    response.headers.forEach((value, key) => {
+      if (!['content-encoding', 'transfer-encoding', 'content-length'].includes(key.toLowerCase())) {
+        res.set(key, value);
+      }
+    });
+
+    res.send(responseBody);
+
+  } catch (error) {
+    console.error(`[webhooks] Error forwarding to workspace ${workspaceId}:`, error);
+    res.status(502).json({
+      error: 'Failed to forward webhook to workspace',
+      details: (error as Error).message,
+    });
+  }
+});
 
 // GitHub webhook signature verification
 function verifyGitHubSignature(payload: string, signature: string | undefined): boolean {
