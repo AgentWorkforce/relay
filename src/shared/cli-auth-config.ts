@@ -80,7 +80,7 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
       },
       {
         // Be more specific to avoid matching after URL is shown
-        pattern: /how\s*would\s*you\s*like\s*to\s*authenticate|choose.*auth.*method|select.*auth/i,
+        pattern: /how\s*would\s*you\s*like\s*to\s*authenticate|choose.*auth.*method|select.*auth|subscription\s*or.*api\s*key/i,
         response: '\r', // Press enter for first option (subscription)
         delay: 100,
         description: 'Auth method prompt',
@@ -133,7 +133,7 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
     command: 'opencode',
     args: ['auth', 'login'],
     // OpenCode redirects to provider OAuth pages (Anthropic, OpenAI, Google)
-    urlPattern: /(https:\/\/(?:accounts\.anthropic\.com|auth\.openai\.com|accounts\.google\.com|opencode\.ai)[^\s]+)/,
+    urlPattern: /(https:\/\/[^\s]+)/,
     credentialPath: '~/.local/share/opencode/auth.json',
     displayName: 'OpenCode',
     waitTimeout: 30000,

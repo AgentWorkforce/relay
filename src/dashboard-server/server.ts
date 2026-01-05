@@ -2082,7 +2082,12 @@ export async function startDashboard(
 
     const result = await submitAuthCode(sessionId, code);
     if (!result.success) {
-      return res.status(404).json({ error: result.error || 'Session not found or process not running' });
+      // Use 400 for known errors (like PTY exited), 404 for session not found
+      const status = result.needsRestart ? 400 : 404;
+      return res.status(status).json({
+        error: result.error || 'Session not found or process not running',
+        needsRestart: result.needsRestart,
+      });
     }
 
     res.json({ success: true, message: 'Auth code submitted' });
@@ -2115,9 +2120,12 @@ export async function startDashboard(
       }
 
       // Submit the code to the CLI process
-      const submitResult = submitAuthCode(sessionId, code);
+      const submitResult = await submitAuthCode(sessionId, code);
       if (!submitResult.success) {
-        return res.status(400).json({ error: submitResult.error });
+        return res.status(400).json({
+          error: submitResult.error,
+          needsRestart: submitResult.needsRestart,
+        });
       }
 
       // Wait a moment for credentials to be written

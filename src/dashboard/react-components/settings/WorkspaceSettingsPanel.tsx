@@ -9,6 +9,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { cloudApi } from '../../lib/cloudApi';
+import { ProviderAuthFlow } from '../ProviderAuthFlow';
 
 export interface WorkspaceSettingsPanelProps {
   workspaceId: string;
@@ -776,68 +777,33 @@ export function WorkspaceSettingsPanel({
 
                   {!providerStatus[provider.id] && (
                     <div className="mt-5 pt-5 border-t border-border-subtle">
-                      {oauthSession?.providerId === provider.id ? (
-                        <div className="space-y-4">
-                          {oauthSession.status === 'starting' && (
-                            <div className="flex items-center gap-3 text-sm text-text-secondary">
-                              <div className="w-4 h-4 rounded-full border-2 border-accent-cyan/30 border-t-accent-cyan animate-spin" />
-                              Starting authentication...
-                            </div>
-                          )}
-                          {oauthSession.status === 'waiting_auth' && (
-                            <>
-                              <div className="flex items-center gap-3 text-sm text-accent-cyan">
-                                <LockIcon />
-                                Complete login in the popup window
-                              </div>
-                              {oauthSession.authUrl && (
-                                <p className="text-xs text-text-muted">
-                                  Popup didn&apos;t open?{' '}
-                                  <button
-                                    onClick={() => openAuthPopup(oauthSession.authUrl!, provider.displayName)}
-                                    className="text-accent-cyan hover:underline"
-                                  >
-                                    Click here to open
-                                  </button>
-                                </p>
-                              )}
-                              {/* Auth code/URL input for completing auth */}
-                              <div className="mt-4 pt-4 border-t border-border-subtle">
-                                <p className="text-xs text-text-muted mb-2">
-                                  {provider.id === 'openai' ? (
-                                    <>After completing login, if you see &quot;site can&apos;t be reached&quot;, copy the full URL from your browser and paste it here:</>
-                                  ) : provider.id === 'anthropic' ? (
-                                    <>After completing login, copy the auth code shown on the page and paste it here:</>
-                                  ) : (
-                                    <>If {provider.displayName} gives you an auth code, paste it here:</>
-                                  )}
-                                </p>
-                                <div className="flex gap-2">
-                                  <input
-                                    type="text"
-                                    placeholder={provider.id === 'openai' ? 'Paste callback URL or auth code' : 'Paste auth code here'}
-                                    value={authCodeInput}
-                                    onChange={(e) => setAuthCodeInput(e.target.value)}
-                                    className="flex-1 px-3 py-2 bg-bg-card border border-border-subtle rounded-lg text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-cyan focus:ring-1 focus:ring-accent-cyan/30 transition-all font-mono"
-                                  />
-                                  <button
-                                    onClick={submitAuthCodeToSession}
-                                    disabled={!authCodeInput.trim()}
-                                    className="px-4 py-2 bg-accent-cyan text-bg-deep font-semibold rounded-lg text-sm hover:bg-accent-cyan/90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-                                  >
-                                    Submit
-                                  </button>
-                                </div>
-                              </div>
-                            </>
-                          )}
-                          <button
-                            onClick={cancelOAuthFlow}
-                            className="text-sm text-text-muted hover:text-text-secondary transition-colors"
-                          >
-                            Cancel
-                          </button>
-                        </div>
+                      {connectingProvider === provider.id ? (
+                        <ProviderAuthFlow
+                          provider={{
+                            id: provider.id,
+                            name: provider.name,
+                            displayName: provider.displayName,
+                            color: provider.color,
+                            requiresUrlCopy: provider.id === 'openai',
+                          }}
+                          workspaceId={workspaceId}
+                          csrfToken={csrfToken}
+                          useDeviceFlow={useDeviceFlow[provider.id] || false}
+                          onSuccess={() => {
+                            setProviderStatus(prev => ({ ...prev, [provider.id]: true }));
+                            setConnectingProvider(null);
+                            setOauthSession(null);
+                          }}
+                          onCancel={() => {
+                            setConnectingProvider(null);
+                            setOauthSession(null);
+                          }}
+                          onError={(err) => {
+                            setProviderError(err);
+                            setConnectingProvider(null);
+                            setOauthSession(null);
+                          }}
+                        />
                       ) : showApiKeyFallback[provider.id] ? (
                         <div className="space-y-4">
                           <div className="flex gap-3">

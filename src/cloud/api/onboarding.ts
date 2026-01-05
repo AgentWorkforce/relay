@@ -389,14 +389,17 @@ onboardingRouter.post('/cli/:provider/code/:sessionId', async (req: Request, res
       console.log('[onboarding] Workspace error:', errorData);
 
       // Provide more helpful error message
-      if (codeResponse.status === 404) {
-        return res.status(404).json({
-          error: 'Auth session expired in workspace. The CLI process may have timed out. Please try connecting again.',
+      const needsRestart = (errorData as { needsRestart?: boolean }).needsRestart;
+      if (codeResponse.status === 404 || codeResponse.status === 400) {
+        return res.status(400).json({
+          error: errorData.error || 'Auth session expired in workspace. The CLI process may have timed out. Please try connecting again.',
+          needsRestart: needsRestart ?? true,
         });
       }
 
       return res.status(codeResponse.status).json({
         error: errorData.error || 'Failed to submit auth code to workspace',
+        needsRestart,
       });
     } catch (err) {
       console.error('[onboarding] Failed to submit auth code to workspace:', err);
