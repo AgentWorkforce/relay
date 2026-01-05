@@ -93,10 +93,13 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
         description: 'Login success prompt',
       },
       {
-        // Trust directory - matches "Do you trust the files in this folder?" and similar
-        pattern: /trust\s*(this|the)?\s*(files|directory|folder|workspace)|do\s*you\s*trust/i,
+        // Trust directory - matches various trust prompts including:
+        // "Quick safety check: Is this a project you created or one you trust?"
+        // "Yes, I trust this folder"
+        // "Do you trust the files in this folder?"
+        pattern: /trust\s*(this|the)?\s*(files|directory|folder|workspace)|do\s*you\s*trust|safety\s*check|yes,?\s*i\s*trust/i,
         response: '\r', // Press enter for first option (Yes, proceed)
-        delay: 200,
+        delay: 300, // Slightly longer delay for menu to render
         description: 'Trust directory prompt',
       },
       {
