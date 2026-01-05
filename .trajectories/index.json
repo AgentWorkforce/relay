@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-05T21:29:51.202Z",
+  "lastUpdated": "2026-01-05T23:14:01.070Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -309,6 +309,12 @@
       "startedAt": "2026-01-05T20:14:01.563Z",
       "completedAt": "2026-01-05T20:14:01.617Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_hhxte7w4gjjx.json"
+    },
+    "traj_avqeghu6pz5a": {
+      "title": "Fix gh CLI authentication in workspace containers",
+      "status": "active",
+      "startedAt": "2026-01-05T23:14:00.755Z",
+      "path": "/workspace/relay/.trajectories/active/traj_avqeghu6pz5a.json"
     }
   }
 }
