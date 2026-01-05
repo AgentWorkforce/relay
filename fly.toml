@@ -7,6 +7,12 @@ primary_region = "sjc"
 [build]
   dockerfile = "Dockerfile"
 
+[deploy]
+  strategy = "rolling"
+  # Wait for new machine to become healthy before stopping old one
+  # This prevents downtime from bad deploys
+  wait_timeout = "5m"
+
 [env]
   NODE_ENV = "production"
   PORT = "3000"

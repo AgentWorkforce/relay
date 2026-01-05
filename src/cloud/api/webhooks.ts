@@ -107,11 +107,13 @@ async function handleWorkspaceWebhook(req: Request, res: Response): Promise<void
     // Find the workspace
     const workspace = await db.workspaces.findById(workspaceId);
     if (!workspace) {
-      return res.status(404).json({ error: 'Workspace not found' });
+      res.status(404).json({ error: 'Workspace not found' });
+      return;
     }
 
     if (!workspace.publicUrl) {
-      return res.status(400).json({ error: 'Workspace has no public URL' });
+      res.status(400).json({ error: 'Workspace has no public URL' });
+      return;
     }
 
     // Try to wake the machine if it might be suspended
@@ -180,7 +182,11 @@ async function handleWorkspaceWebhook(req: Request, res: Response): Promise<void
       details: (error as Error).message,
     });
   }
-});
+}
+
+// Register workspace webhook forwarding route
+// Uses a simple pattern - the handler extracts the path from req.originalUrl
+webhooksRouter.all('/workspace/*', handleWorkspaceWebhook);
 
 // GitHub webhook signature verification
 function verifyGitHubSignature(payload: string, signature: string | undefined): boolean {
