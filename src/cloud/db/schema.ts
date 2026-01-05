@@ -225,6 +225,54 @@ export const workspaceMembersRelations = relations(workspaceMembers, ({ one }) =
 }));
 
 // ============================================================================
+// Workspace Credentials (per-user credentials in shared workspaces)
+// ============================================================================
+
+/**
+ * Links user credentials to workspaces for multi-user support.
+ *
+ * In shared workspaces, each user needs their own credentials for CLI tools
+ * (Claude, Codex) since these tools read from HOME directory files, not env vars.
+ *
+ * Credential resolution order:
+ * 1. User's own credential for this workspace (workspace_credentials)
+ * 2. Workspace default credential (is_default = true)
+ * 3. Workspace owner's credential (fallback)
+ */
+export const workspaceCredentials = pgTable('workspace_credentials', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').notNull().references(() => workspaces.id, { onDelete: 'cascade' }),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  provider: varchar('provider', { length: 50 }).notNull(),
+  credentialId: uuid('credential_id').notNull().references(() => credentials.id, { onDelete: 'cascade' }),
+  /** Whether this is the default credential for the workspace (set by admin) */
+  isDefault: boolean('is_default').default(false).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  workspaceUserProviderIdx: unique('workspace_credentials_workspace_user_provider_unique')
+    .on(table.workspaceId, table.userId, table.provider),
+  workspaceIdIdx: index('idx_workspace_credentials_workspace_id').on(table.workspaceId),
+  userIdIdx: index('idx_workspace_credentials_user_id').on(table.userId),
+  credentialIdIdx: index('idx_workspace_credentials_credential_id').on(table.credentialId),
+}));
+
+export const workspaceCredentialsRelations = relations(workspaceCredentials, ({ one }) => ({
+  workspace: one(workspaces, {
+    fields: [workspaceCredentials.workspaceId],
+    references: [workspaces.id],
+  }),
+  user: one(users, {
+    fields: [workspaceCredentials.userId],
+    references: [users.id],
+  }),
+  credential: one(credentials, {
+    fields: [workspaceCredentials.credentialId],
+    references: [credentials.id],
+  }),
+}));
+
+// ============================================================================
 // Project Groups (grouping of related repositories)
 // ============================================================================
 
@@ -436,6 +484,8 @@ export type Workspace = typeof workspaces.$inferSelect;
 export type NewWorkspace = typeof workspaces.$inferInsert;
 export type WorkspaceMember = typeof workspaceMembers.$inferSelect;
 export type NewWorkspaceMember = typeof workspaceMembers.$inferInsert;
+export type WorkspaceCredential = typeof workspaceCredentials.$inferSelect;
+export type NewWorkspaceCredential = typeof workspaceCredentials.$inferInsert;
 export type ProjectGroup = typeof projectGroups.$inferSelect;
 export type NewProjectGroup = typeof projectGroups.$inferInsert;
 export type Repository = typeof repositories.$inferSelect;

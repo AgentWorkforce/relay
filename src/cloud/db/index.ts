@@ -58,6 +58,7 @@ export {
   credentials as credentialsTable,
   workspaces as workspacesTable,
   workspaceMembers as workspaceMembersTable,
+  workspaceCredentials as workspaceCredentialsTable,
   projectGroups as projectGroupsTable,
   repositories as repositoriesTable,
   linkedDaemons as linkedDaemonsTable,
@@ -79,6 +80,7 @@ import {
   credentialQueries,
   workspaceQueries,
   workspaceMemberQueries,
+  workspaceCredentialQueries,
   linkedDaemonQueries,
   projectGroupQueries,
   repositoryQueries,
@@ -104,6 +106,8 @@ export const db = {
   workspaces: workspaceQueries,
   // Workspace member operations
   workspaceMembers: workspaceMemberQueries,
+  // Workspace credential operations (per-user credentials in shared workspaces)
+  workspaceCredentials: workspaceCredentialQueries,
   // Project group operations (for grouping repositories)
   projectGroups: projectGroupQueries,
   // Repository operations

@@ -191,6 +191,30 @@
             "reasoning": "Hamburger menu visibility, logs button always visible on mobile, responsive padding throughout"
           },
           "significance": "high"
+        },
+        {
+          "ts": 1767638246492,
+          "type": "decision",
+          "content": "Starting bd-critical-021: Per-User Credentials in Shared Workspaces: Starting bd-critical-021: Per-User Credentials in Shared Workspaces",
+          "raw": {
+            "question": "Starting bd-critical-021: Per-User Credentials in Shared Workspaces",
+            "chosen": "Starting bd-critical-021: Per-User Credentials in Shared Workspaces",
+            "alternatives": [],
+            "reasoning": "Depends on bd-critical-016 (now complete). Required for multi-user workspace support."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767638682258,
+          "type": "decision",
+          "content": "bd-critical-021: Added workspace_credentials table with query operations: bd-critical-021: Added workspace_credentials table with query operations",
+          "raw": {
+            "question": "bd-critical-021: Added workspace_credentials table with query operations",
+            "chosen": "bd-critical-021: Added workspace_credentials table with query operations",
+            "alternatives": [],
+            "reasoning": "Table links user credentials to workspaces with resolution order: user's own -> workspace default -> owner fallback"
+          },
+          "significance": "high"
         }
       ]
     }

@@ -24,6 +24,8 @@ export type {
   WorkspaceConfig,
   WorkspaceMember,
   NewWorkspaceMember,
+  WorkspaceCredential,
+  NewWorkspaceCredential,
   ProjectGroup,
   NewProjectGroup,
   CoordinatorAgentConfig,
@@ -620,6 +622,141 @@ export const workspaceMemberQueries: WorkspaceMemberQueries = {
         )
       );
     return result.length > 0;
+  },
+};
+
+// ============================================================================
+// Workspace Credential Queries (per-user credentials in shared workspaces)
+// ============================================================================
+
+export interface WorkspaceCredentialQueries {
+  findByWorkspaceId(workspaceId: string): Promise<schema.WorkspaceCredential[]>;
+  findByUserId(userId: string): Promise<schema.WorkspaceCredential[]>;
+  findForWorkspaceUser(workspaceId: string, userId: string, provider: string): Promise<schema.WorkspaceCredential | null>;
+  findDefaultForWorkspace(workspaceId: string, provider: string): Promise<schema.WorkspaceCredential | null>;
+  upsert(data: schema.NewWorkspaceCredential): Promise<schema.WorkspaceCredential>;
+  setDefault(workspaceId: string, provider: string, credentialId: string): Promise<void>;
+  remove(workspaceId: string, userId: string, provider: string): Promise<void>;
+  /**
+   * Resolve credential for a user in a workspace.
+   * Order: user's own -> workspace default -> null (fallback to owner handled by caller)
+   */
+  resolveCredential(workspaceId: string, userId: string, provider: string): Promise<schema.WorkspaceCredential | null>;
+}
+
+export const workspaceCredentialQueries: WorkspaceCredentialQueries = {
+  async findByWorkspaceId(workspaceId: string): Promise<schema.WorkspaceCredential[]> {
+    const db = getDb();
+    return db
+      .select()
+      .from(schema.workspaceCredentials)
+      .where(eq(schema.workspaceCredentials.workspaceId, workspaceId));
+  },
+
+  async findByUserId(userId: string): Promise<schema.WorkspaceCredential[]> {
+    const db = getDb();
+    return db
+      .select()
+      .from(schema.workspaceCredentials)
+      .where(eq(schema.workspaceCredentials.userId, userId));
+  },
+
+  async findForWorkspaceUser(workspaceId: string, userId: string, provider: string): Promise<schema.WorkspaceCredential | null> {
+    const db = getDb();
+    const result = await db
+      .select()
+      .from(schema.workspaceCredentials)
+      .where(
+        and(
+          eq(schema.workspaceCredentials.workspaceId, workspaceId),
+          eq(schema.workspaceCredentials.userId, userId),
+          eq(schema.workspaceCredentials.provider, provider)
+        )
+      );
+    return result[0] ?? null;
+  },
+
+  async findDefaultForWorkspace(workspaceId: string, provider: string): Promise<schema.WorkspaceCredential | null> {
+    const db = getDb();
+    const result = await db
+      .select()
+      .from(schema.workspaceCredentials)
+      .where(
+        and(
+          eq(schema.workspaceCredentials.workspaceId, workspaceId),
+          eq(schema.workspaceCredentials.provider, provider),
+          eq(schema.workspaceCredentials.isDefault, true)
+        )
+      );
+    return result[0] ?? null;
+  },
+
+  async upsert(data: schema.NewWorkspaceCredential): Promise<schema.WorkspaceCredential> {
+    const db = getDb();
+    const result = await db
+      .insert(schema.workspaceCredentials)
+      .values(data)
+      .onConflictDoUpdate({
+        target: [schema.workspaceCredentials.workspaceId, schema.workspaceCredentials.userId, schema.workspaceCredentials.provider],
+        set: {
+          credentialId: data.credentialId,
+          isDefault: data.isDefault,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return result[0];
+  },
+
+  async setDefault(workspaceId: string, provider: string, credentialId: string): Promise<void> {
+    const db = getDb();
+    // First, unset any existing default for this workspace+provider
+    await db
+      .update(schema.workspaceCredentials)
+      .set({ isDefault: false })
+      .where(
+        and(
+          eq(schema.workspaceCredentials.workspaceId, workspaceId),
+          eq(schema.workspaceCredentials.provider, provider),
+          eq(schema.workspaceCredentials.isDefault, true)
+        )
+      );
+    // Then set the new default
+    await db
+      .update(schema.workspaceCredentials)
+      .set({ isDefault: true })
+      .where(
+        and(
+          eq(schema.workspaceCredentials.workspaceId, workspaceId),
+          eq(schema.workspaceCredentials.credentialId, credentialId)
+        )
+      );
+  },
+
+  async remove(workspaceId: string, userId: string, provider: string): Promise<void> {
+    const db = getDb();
+    await db
+      .delete(schema.workspaceCredentials)
+      .where(
+        and(
+          eq(schema.workspaceCredentials.workspaceId, workspaceId),
+          eq(schema.workspaceCredentials.userId, userId),
+          eq(schema.workspaceCredentials.provider, provider)
+        )
+      );
+  },
+
+  async resolveCredential(workspaceId: string, userId: string, provider: string): Promise<schema.WorkspaceCredential | null> {
+    // 1. Check user's own credential
+    const userCred = await this.findForWorkspaceUser(workspaceId, userId, provider);
+    if (userCred) return userCred;
+
+    // 2. Check workspace default
+    const defaultCred = await this.findDefaultForWorkspace(workspaceId, provider);
+    if (defaultCred) return defaultCred;
+
+    // 3. Return null - caller should fall back to owner's credential
+    return null;
   },
 };
 
