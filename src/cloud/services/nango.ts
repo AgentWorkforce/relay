@@ -60,31 +60,42 @@ class NangoService {
    * For API calls, use the proxy methods instead.
    */
   async getGithubAppToken(connectionId: string): Promise<string> {
-    const token = await this.client.getToken(
-      NANGO_INTEGRATIONS.GITHUB_APP,
-      connectionId,
-      false,
-      true
-    );
+    try {
+      const token = await this.client.getToken(
+        NANGO_INTEGRATIONS.GITHUB_APP,
+        connectionId,
+        false,
+        true
+      );
 
-    // Handle different return formats from Nango
-    if (typeof token === 'string') {
-      return token;
-    }
-
-    // Nango may return an object with access_token
-    if (token && typeof token === 'object') {
-      const tokenObj = token as { access_token?: string; token?: string };
-      if (tokenObj.access_token) {
-        return tokenObj.access_token;
+      // Handle different return formats from Nango
+      if (typeof token === 'string') {
+        return token;
       }
-      if (tokenObj.token) {
-        return tokenObj.token;
-      }
-    }
 
-    console.error('[nango] Unexpected token format:', typeof token, token);
-    throw new Error('Expected GitHub App token to be a string');
+      // Nango may return an object with access_token
+      if (token && typeof token === 'object') {
+        const tokenObj = token as { access_token?: string; token?: string };
+        if (tokenObj.access_token) {
+          return tokenObj.access_token;
+        }
+        if (tokenObj.token) {
+          return tokenObj.token;
+        }
+      }
+
+      console.error('[nango] Unexpected token format:', typeof token, token);
+      throw new Error('Expected GitHub App token to be a string');
+    } catch (err: unknown) {
+      // Handle 404 (connection not found) gracefully
+      const error = err as { response?: { status?: number }; status?: number };
+      const status = error.response?.status || error.status;
+      if (status === 404) {
+        throw new Error(`GitHub App connection not found: ${connectionId} (may have been disconnected)`);
+      }
+      // Re-throw with cleaner message
+      throw new Error(`Failed to get GitHub App token: ${(err as Error).message || 'Unknown error'}`);
+    }
   }
 
   /**
