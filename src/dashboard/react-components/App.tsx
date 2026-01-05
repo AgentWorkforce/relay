@@ -938,8 +938,8 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
 
       {/* Main Content */}
       <main className="flex-1 flex flex-col min-w-0 bg-bg-secondary/50 overflow-hidden">
-        {/* Header - sticky on mobile */}
-        <div className="sticky top-0 z-50 flex-shrink-0">
+        {/* Header - fixed on mobile for keyboard-safe positioning, sticky on desktop */}
+        <div className="fixed top-0 left-0 right-0 z-50 md:sticky md:top-0 md:left-auto md:right-auto bg-bg-secondary">
           <Header
           currentChannel={currentChannel}
           selectedAgent={selectedAgent}
@@ -969,6 +969,8 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           </div>
         )}
         </div>
+        {/* Spacer for fixed header on mobile - matches header height (52px) */}
+        <div className="h-[52px] flex-shrink-0 md:hidden" />
 
         {/* Content Area */}
         <div className="flex-1 flex overflow-hidden min-h-0">
