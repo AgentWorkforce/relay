@@ -64,6 +64,17 @@ function clearProvisioningProgress(workspaceId: string): void {
 }
 
 /**
+ * Schedule cleanup of provisioning progress after a delay
+ * This gives the frontend time to poll and see the 'complete' stage
+ */
+function scheduleProgressCleanup(workspaceId: string, delayMs: number = 30_000): void {
+  setTimeout(() => {
+    clearProvisioningProgress(workspaceId);
+    console.log(`[provisioner] Cleaned up provisioning progress for ${workspaceId.substring(0, 8)}`);
+  }, delayMs);
+}
+
+/**
  * Get a fresh GitHub App installation token from Nango.
  * Looks up the user's connected repositories to find a valid Nango connection.
  */
@@ -601,6 +612,9 @@ class FlyProvisioner implements ComputeProvisioner {
 
     // Stage: Complete
     updateProvisioningStage(workspace.id, 'complete');
+
+    // Schedule cleanup of provisioning progress after 30s (gives frontend time to see 'complete')
+    scheduleProgressCleanup(workspace.id);
 
     return {
       computeId: machine.id,
@@ -1272,6 +1286,7 @@ export class WorkspaceProvisioner {
 
   /**
    * Provision a new workspace (one-click)
+   * Returns immediately with 'provisioning' status and runs actual provisioning in background
    */
   async provision(config: ProvisionConfig): Promise<ProvisionResult> {
     // Create workspace record
@@ -1297,6 +1312,25 @@ export class WorkspaceProvisioner {
     // Auto-accept the creator's membership
     await db.workspaceMembers.acceptInvite(workspace.id, config.userId);
 
+    // Initialize stage tracking immediately
+    updateProvisioningStage(workspace.id, 'creating');
+
+    // Run provisioning in the background
+    this.runProvisioningAsync(workspace, config).catch((error) => {
+      console.error(`[provisioner] Background provisioning failed for ${workspace.id}:`, error);
+    });
+
+    // Return immediately with 'provisioning' status
+    return {
+      workspaceId: workspace.id,
+      status: 'provisioning',
+    };
+  }
+
+  /**
+   * Run the actual provisioning work asynchronously
+   */
+  private async runProvisioningAsync(workspace: Workspace, config: ProvisionConfig): Promise<void> {
     // Get credentials
     const credentials = new Map<string, string>();
     for (const provider of config.providers) {
@@ -1336,11 +1370,7 @@ export class WorkspaceProvisioner {
         publicUrl,
       });
 
-      return {
-        workspaceId: workspace.id,
-        status: 'running',
-        publicUrl,
-      };
+      console.log(`[provisioner] Workspace ${workspace.id} provisioned successfully at ${publicUrl}`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
@@ -1348,11 +1378,10 @@ export class WorkspaceProvisioner {
         errorMessage,
       });
 
-      return {
-        workspaceId: workspace.id,
-        status: 'error',
-        error: errorMessage,
-      };
+      // Clear provisioning progress on error
+      clearProvisioningProgress(workspace.id);
+
+      console.error(`[provisioner] Workspace ${workspace.id} provisioning failed:`, errorMessage);
     }
   }
 

@@ -301,8 +301,9 @@ workspacesRouter.get('/:id/status', async (req: Request, res: Response) => {
     const provisioner = getProvisioner();
     const status = await provisioner.getStatus(id);
 
-    // Include provisioning progress info if status is 'provisioning'
-    const provisioningProgress = status === 'provisioning' ? getProvisioningStage(id) : null;
+    // Include provisioning progress info if it exists (even after status changes to 'running')
+    // This allows the frontend to see all stages including 'complete'
+    const provisioningProgress = getProvisioningStage(id);
 
     res.json({
       status,
