@@ -203,6 +203,30 @@
             "reasoning": ""
           },
           "significance": "high"
+        },
+        {
+          "ts": 1767637700734,
+          "type": "decision",
+          "content": "Implemented workspace token auth for CLI endpoints: Implemented workspace token auth for CLI endpoints",
+          "raw": {
+            "question": "Implemented workspace token auth for CLI endpoints",
+            "chosen": "Implemented workspace token auth for CLI endpoints",
+            "alternatives": [],
+            "reasoning": "Added HMAC-based token validation to prevent unauthorized access to auth sessions"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767637829693,
+          "type": "decision",
+          "content": "bd-critical-016: Chose HMAC-SHA256 token validation over simpler approaches: bd-critical-016: Chose HMAC-SHA256 token validation over simpler approaches",
+          "raw": {
+            "question": "bd-critical-016: Chose HMAC-SHA256 token validation over simpler approaches",
+            "chosen": "bd-critical-016: Chose HMAC-SHA256 token validation over simpler approaches",
+            "alternatives": [],
+            "reasoning": "Matches existing provisioner token generation, cryptographically secure, no additional dependencies needed"
+          },
+          "significance": "high"
         }
       ]
     }
