@@ -99,6 +99,97 @@ async function softHealthCheck(url: string): Promise<void> {
   }
 }
 
+/**
+ * Wait for machine to be in "started" state
+ */
+async function waitForMachineStarted(
+  apiToken: string,
+  appName: string,
+  machineId: string,
+  maxWaitMs = 60_000
+): Promise<void> {
+  const startTime = Date.now();
+  let lastState = 'unknown';
+
+  while (Date.now() - startTime < maxWaitMs) {
+    try {
+      const res = await fetch(
+        `https://api.machines.dev/v1/apps/${appName}/machines/${machineId}`,
+        {
+          headers: { Authorization: `Bearer ${apiToken}` },
+        }
+      );
+
+      if (res.ok) {
+        const machine = (await res.json()) as { state: string };
+        lastState = machine.state;
+        console.log(`[provisioner] Machine ${machineId} state: ${lastState}`);
+
+        if (lastState === 'started') {
+          return;
+        }
+
+        // If stopped/suspended, try to start it
+        if (lastState === 'stopped' || lastState === 'suspended') {
+          console.log(`[provisioner] Starting machine ${machineId}...`);
+          await fetch(
+            `https://api.machines.dev/v1/apps/${appName}/machines/${machineId}/start`,
+            {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${apiToken}` },
+            }
+          );
+        }
+      }
+    } catch (error) {
+      console.warn(`[provisioner] Error checking machine state:`, error);
+    }
+
+    await wait(3000);
+  }
+
+  throw new Error(`Machine ${machineId} did not start within ${maxWaitMs}ms (last state: ${lastState})`);
+}
+
+/**
+ * Wait for health check to pass (with DNS propagation time)
+ */
+async function waitForHealthy(url: string, maxWaitMs = 90_000): Promise<void> {
+  const startTime = Date.now();
+  const healthUrl = `${url.replace(/\/$/, '')}/health`;
+
+  console.log(`[provisioner] Waiting for ${healthUrl} to become healthy...`);
+
+  while (Date.now() - startTime < maxWaitMs) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10_000);
+
+      const res = await fetch(healthUrl, {
+        method: 'GET',
+        signal: controller.signal,
+      });
+
+      clearTimeout(timer);
+
+      if (res.ok) {
+        console.log(`[provisioner] Health check passed for ${url}`);
+        return;
+      }
+
+      console.log(`[provisioner] Health check returned ${res.status}, retrying...`);
+    } catch (error) {
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      console.log(`[provisioner] Health check failed (${elapsed}s elapsed), retrying... ${(error as Error).message}`);
+    }
+
+    await wait(5000);
+  }
+
+  // Don't throw - workspace is provisioned, health check is best-effort
+  console.warn(`[provisioner] Health check did not pass within ${maxWaitMs}ms, continuing anyway`);
+}
+
 export interface ProvisionConfig {
   userId: string;
   name: string;
@@ -311,7 +402,11 @@ class FlyProvisioner implements ComputeProvisioner {
       ? `https://${customHostname}`
       : `https://${appName}.fly.dev`;
 
-    await softHealthCheck(publicUrl);
+    // Wait for machine to be in started state
+    await waitForMachineStarted(this.apiToken, appName, machine.id);
+
+    // Wait for health check to pass (includes DNS propagation time)
+    await waitForHealthy(publicUrl);
 
     return {
       computeId: machine.id,

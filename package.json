@@ -1,6 +1,6 @@
 {
   "name": "agent-relay",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Real-time agent-to-agent communication system",
   "type": "module",
   "main": "dist/index.js",
@@ -8,15 +8,6 @@
   "bin": {
     "agent-relay": "dist/cli/index.js"
   },
-  "files": [
-    "dist/",
-    "bin/",
-    "scripts/",
-    "install.sh",
-    "README.md",
-    "LICENSE",
-    "docs/"
-  ],
   "publishConfig": {
     "access": "public"
   },
