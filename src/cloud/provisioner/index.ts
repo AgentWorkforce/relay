@@ -14,6 +14,55 @@ const WORKSPACE_PORT = 3888;
 const FETCH_TIMEOUT_MS = 10_000;
 const WORKSPACE_IMAGE = process.env.WORKSPACE_IMAGE || 'ghcr.io/agentworkforce/relay-workspace:latest';
 
+// ============================================================================
+// Provisioning Stage Tracking
+// ============================================================================
+
+export type ProvisioningStage =
+  | 'creating'
+  | 'networking'
+  | 'secrets'
+  | 'machine'
+  | 'booting'
+  | 'health'
+  | 'complete';
+
+interface ProvisioningProgress {
+  stage: ProvisioningStage;
+  startedAt: number;
+  updatedAt: number;
+}
+
+// In-memory tracker for provisioning progress (workspace ID -> progress)
+const provisioningProgress = new Map<string, ProvisioningProgress>();
+
+/**
+ * Update the provisioning stage for a workspace
+ */
+function updateProvisioningStage(workspaceId: string, stage: ProvisioningStage): void {
+  const existing = provisioningProgress.get(workspaceId);
+  provisioningProgress.set(workspaceId, {
+    stage,
+    startedAt: existing?.startedAt ?? Date.now(),
+    updatedAt: Date.now(),
+  });
+  console.log(`[provisioner] Workspace ${workspaceId.substring(0, 8)} stage: ${stage}`);
+}
+
+/**
+ * Get the current provisioning stage for a workspace
+ */
+export function getProvisioningStage(workspaceId: string): ProvisioningProgress | null {
+  return provisioningProgress.get(workspaceId) ?? null;
+}
+
+/**
+ * Clear provisioning progress (call when complete or failed)
+ */
+function clearProvisioningProgress(workspaceId: string): void {
+  provisioningProgress.delete(workspaceId);
+}
+
 /**
  * Get a fresh GitHub App installation token from Nango.
  * Looks up the user's connected repositories to find a valid Nango connection.
@@ -325,6 +374,9 @@ class FlyProvisioner implements ComputeProvisioner {
   ): Promise<{ computeId: string; publicUrl: string }> {
     const appName = `ar-${workspace.id.substring(0, 8)}`;
 
+    // Stage: Creating workspace
+    updateProvisioningStage(workspace.id, 'creating');
+
     // Create Fly app
     await fetchWithRetry('https://api.machines.dev/v1/apps', {
       method: 'POST',
@@ -338,28 +390,81 @@ class FlyProvisioner implements ComputeProvisioner {
       }),
     });
 
+    // Stage: Networking
+    updateProvisioningStage(workspace.id, 'networking');
+
     // Allocate IPs for the app (required for public DNS)
+    // Must use GraphQL API - Machines REST API doesn't support IP allocation
     // Shared IPv4 is free, IPv6 is free
     console.log(`[fly] Allocating IPs for ${appName}...`);
-    await Promise.all([
-      fetchWithRetry(`https://api.machines.dev/v1/apps/${appName}/ips`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.apiToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ type: 'shared_v4' }),
-      }).catch(err => console.warn(`[fly] Failed to allocate shared IPv4: ${err.message}`)),
-      fetchWithRetry(`https://api.machines.dev/v1/apps/${appName}/ips`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.apiToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ type: 'v6' }),
-      }).catch(err => console.warn(`[fly] Failed to allocate IPv6: ${err.message}`)),
+    const allocateIP = async (type: 'shared_v4' | 'v6'): Promise<boolean> => {
+      try {
+        // Map our type to Fly GraphQL enum
+        const graphqlType = type === 'shared_v4' ? 'shared_v4' : 'v6';
+        const res = await fetchWithRetry('https://api.fly.io/graphql', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${this.apiToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            query: `
+              mutation AllocateIPAddress($input: AllocateIPAddressInput!) {
+                allocateIpAddress(input: $input) {
+                  ipAddress {
+                    id
+                    address
+                    type
+                  }
+                }
+              }
+            `,
+            variables: {
+              input: {
+                appId: appName,
+                type: graphqlType,
+              },
+            },
+          }),
+        });
+        if (!res.ok) {
+          const errorText = await res.text();
+          console.warn(`[fly] Failed to allocate ${type}: ${res.status} ${errorText}`);
+          return false;
+        }
+        const data = await res.json() as {
+          data?: { allocateIpAddress?: { ipAddress?: { address?: string } } };
+          errors?: Array<{ message: string }>;
+        };
+        if (data.errors?.length) {
+          // Ignore "already allocated" errors
+          const alreadyAllocated = data.errors.some(e =>
+            e.message.includes('already') || e.message.includes('exists')
+          );
+          if (!alreadyAllocated) {
+            console.warn(`[fly] GraphQL error allocating ${type}: ${data.errors[0].message}`);
+            return false;
+          }
+          console.log(`[fly] IP ${type} already allocated`);
+          return true;
+        }
+        const address = data.data?.allocateIpAddress?.ipAddress?.address;
+        console.log(`[fly] Allocated ${type}: ${address}`);
+        return true;
+      } catch (err) {
+        console.warn(`[fly] Failed to allocate ${type}: ${(err as Error).message}`);
+        return false;
+      }
+    };
+
+    const [sharedV4Result, v6Result] = await Promise.all([
+      allocateIP('shared_v4'),
+      allocateIP('v6'),
     ]);
-    console.log(`[fly] IPs allocated for ${appName}`);
+    console.log(`[fly] IP allocation results: shared_v4=${sharedV4Result}, v6=${v6Result}`);
+
+    // Stage: Secrets
+    updateProvisioningStage(workspace.id, 'secrets');
 
     // Set secrets (provider credentials)
     const secrets: Record<string, string> = {};
@@ -386,6 +491,9 @@ class FlyProvisioner implements ComputeProvisioner {
     if (customHostname) {
       await this.allocateCertificate(appName, customHostname);
     }
+
+    // Stage: Machine
+    updateProvisioningStage(workspace.id, 'machine');
 
     // Create machine with auto-stop/start for cost optimization
     const machineResponse = await fetchWithRetry(
@@ -474,12 +582,21 @@ class FlyProvisioner implements ComputeProvisioner {
       ? `https://${customHostname}`
       : `https://${appName}.fly.dev`;
 
+    // Stage: Booting
+    updateProvisioningStage(workspace.id, 'booting');
+
     // Wait for machine to be in started state
     await waitForMachineStarted(this.apiToken, appName, machine.id);
+
+    // Stage: Health check
+    updateProvisioningStage(workspace.id, 'health');
 
     // Wait for health check to pass (includes DNS propagation time)
     // Pass appName to enable internal Fly network health checks
     await waitForHealthy(publicUrl, appName);
+
+    // Stage: Complete
+    updateProvisioningStage(workspace.id, 'complete');
 
     return {
       computeId: machine.id,
