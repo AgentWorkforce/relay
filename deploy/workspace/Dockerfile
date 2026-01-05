@@ -16,12 +16,19 @@ RUN apt-get update && apt-get install -y \
 COPY package*.json ./
 COPY scripts ./scripts
 
-# Install dependencies (production only, skip tmux in CI)
+# Install ALL dependencies (need devDependencies for build)
 ENV CI=true
-RUN npm ci --omit=dev
+RUN npm ci
 
-# Copy pre-built dist (build before docker build)
-COPY dist ./dist
+# Copy source files for build
+COPY tsconfig*.json ./
+COPY src ./src
+
+# Build the TypeScript (skip dashboard build for workspace image)
+RUN npx tsc
+
+# Remove devDependencies after build
+RUN npm prune --omit=dev
 
 # ---
 

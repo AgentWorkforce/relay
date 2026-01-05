@@ -170,6 +170,7 @@ class FlyProvisioner implements ComputeProvisioner {
   private workspaceDomain?: string;
   private cloudApiUrl: string;
   private sessionSecret: string;
+  private registryAuth?: { username: string; password: string };
 
   constructor() {
     const config = getConfig();
@@ -180,6 +181,7 @@ class FlyProvisioner implements ComputeProvisioner {
     this.org = config.compute.fly.org;
     this.region = config.compute.fly.region || 'sjc';
     this.workspaceDomain = config.compute.fly.workspaceDomain;
+    this.registryAuth = config.compute.fly.registryAuth;
     this.cloudApiUrl = config.publicUrl;
     this.sessionSecret = config.sessionSecret;
   }
@@ -253,6 +255,14 @@ class FlyProvisioner implements ComputeProvisioner {
           region: this.region,
           config: {
             image: WORKSPACE_IMAGE,
+            // Registry auth for private ghcr.io images
+            ...(this.registryAuth && {
+              image_registry_auth: {
+                registry: 'ghcr.io',
+                username: this.registryAuth.username,
+                password: this.registryAuth.password,
+              },
+            }),
             env: {
               WORKSPACE_ID: workspace.id,
               SUPERVISOR_ENABLED: String(workspace.config.supervisorEnabled ?? false),

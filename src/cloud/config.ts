@@ -43,6 +43,10 @@ export interface CloudConfig {
       org: string;
       region?: string;
       workspaceDomain?: string; // e.g., ws.agent-relay.com
+      registryAuth?: {
+        username: string;
+        password: string;
+      };
     };
     railway?: {
       apiToken: string;
@@ -126,6 +130,12 @@ export function loadConfig(): CloudConfig {
             org: optionalEnv('FLY_ORG') || 'personal',
             region: optionalEnv('FLY_REGION') || 'sjc',
             workspaceDomain: optionalEnv('FLY_WORKSPACE_DOMAIN'),
+            registryAuth: optionalEnv('GHCR_USERNAME') && optionalEnv('GHCR_TOKEN')
+              ? {
+                  username: optionalEnv('GHCR_USERNAME')!,
+                  password: optionalEnv('GHCR_TOKEN')!,
+                }
+              : undefined,
           }
         : undefined,
       railway: optionalEnv('RAILWAY_API_TOKEN')
