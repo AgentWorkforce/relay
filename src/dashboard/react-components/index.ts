@@ -32,6 +32,7 @@ export { AddWorkspaceModal, type AddWorkspaceModalProps } from './AddWorkspaceMo
 export { PricingPlans, type PricingPlansProps, type Plan } from './PricingPlans';
 export { BillingPanel, type BillingPanelProps, type Subscription, type Invoice, type PaymentMethod } from './BillingPanel';
 export { SessionExpiredModal, type SessionExpiredModalProps } from './SessionExpiredModal';
+export { ProvisioningProgress, type ProvisioningProgressProps } from './ProvisioningProgress';
 export {
   CloudSessionProvider,
   useCloudSession,

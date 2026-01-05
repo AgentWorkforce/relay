@@ -13,6 +13,7 @@ import { CloudSessionProvider } from '../../react-components/CloudSessionProvide
 import { LogoIcon } from '../../react-components/Logo';
 import { setActiveWorkspaceId } from '../../lib/api';
 import { ProviderAuthFlow } from '../../react-components/ProviderAuthFlow';
+import { ProvisioningProgress } from '../../react-components/ProvisioningProgress';
 
 interface Workspace {
   id: string;
@@ -47,7 +48,14 @@ interface ProviderInfo {
 
 // ProviderAuthState simplified - now using ProviderAuthFlow shared component
 
-type PageState = 'loading' | 'local' | 'select-workspace' | 'no-workspaces' | 'connect-provider' | 'connecting' | 'connected' | 'error';
+type PageState = 'loading' | 'local' | 'select-workspace' | 'no-workspaces' | 'provisioning' | 'connect-provider' | 'connecting' | 'connected' | 'error';
+
+interface ProvisioningInfo {
+  workspaceId: string;
+  workspaceName: string;
+  stage: string | null;
+  startedAt: number;
+}
 
 // Available AI providers
 const AI_PROVIDERS: ProviderInfo[] = [
@@ -71,6 +79,7 @@ export default function DashboardPage() {
   const [_isCloudMode, setIsCloudMode] = useState(FORCE_CLOUD_MODE);
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
   const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
+  const [provisioningInfo, setProvisioningInfo] = useState<ProvisioningInfo | null>(null);
 
   // Check if we're in cloud mode and fetch data
   useEffect(() => {
@@ -191,7 +200,6 @@ export default function DashboardPage() {
   }, []);
 
   const handleCreateWorkspace = useCallback(async (repoFullName: string) => {
-    setState('loading');
     setError(null);
 
     try {
@@ -213,6 +221,16 @@ export default function DashboardPage() {
         throw new Error(data.error || 'Failed to create workspace');
       }
 
+      // Set provisioning state with workspace info
+      const startedAt = Date.now();
+      setProvisioningInfo({
+        workspaceId: data.workspaceId,
+        workspaceName: repoFullName.split('/')[1] || repoFullName,
+        stage: null,
+        startedAt,
+      });
+      setState('provisioning');
+
       // Poll for workspace to be ready
       // Cloud deployments (Fly.io) can take 3-5 minutes for cold starts
       const pollForReady = async (workspaceId: string) => {
@@ -226,6 +244,14 @@ export default function DashboardPage() {
           });
           const statusData = await statusRes.json();
 
+          // Update provisioning stage if available
+          if (statusData.provisioning?.stage) {
+            setProvisioningInfo(prev => prev ? {
+              ...prev,
+              stage: statusData.provisioning.stage,
+            } : null);
+          }
+
           if (statusData.status === 'running') {
             // Fetch updated workspace info
             const wsRes = await fetch(`/api/workspaces/${workspaceId}`, {
@@ -233,7 +259,8 @@ export default function DashboardPage() {
             });
             const wsData = await wsRes.json();
             if (wsData.publicUrl) {
-              // Store workspace and show provider connection screen
+              // Clear provisioning info and show provider connection screen
+              setProvisioningInfo(null);
               setSelectedWorkspace(wsData);
               setState('connect-provider');
               return;
@@ -258,6 +285,7 @@ export default function DashboardPage() {
       await pollForReady(data.workspaceId);
     } catch (err) {
       console.error('Create workspace error:', err);
+      setProvisioningInfo(null);
       setError(err instanceof Error ? err.message : 'Failed to create workspace');
       setState('no-workspaces');
     }
@@ -378,6 +406,26 @@ export default function DashboardPage() {
           </svg>
           <p className="mt-4 text-white font-medium">Connecting to {selectedWorkspace?.name}...</p>
           <p className="mt-2 text-text-muted text-sm">{selectedWorkspace?.publicUrl}</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Provisioning state - show progress UI
+  if (state === 'provisioning' && provisioningInfo) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-[#0a0a0f] via-[#0d1117] to-[#0a0a0f] flex items-center justify-center">
+        <div className="w-full max-w-xl">
+          <ProvisioningProgress
+            isProvisioning={true}
+            currentStage={provisioningInfo.stage}
+            workspaceName={provisioningInfo.workspaceName}
+            error={error}
+            onCancel={() => {
+              setProvisioningInfo(null);
+              setState('no-workspaces');
+            }}
+          />
         </div>
       </div>
     );

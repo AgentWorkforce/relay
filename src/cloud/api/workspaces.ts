@@ -7,7 +7,7 @@
 import { Router, Request, Response } from 'express';
 import { requireAuth } from './auth.js';
 import { db, Workspace } from '../db/index.js';
-import { getProvisioner } from '../provisioner/index.js';
+import { getProvisioner, getProvisioningStage } from '../provisioner/index.js';
 import { checkWorkspaceLimit } from './middleware/planLimits.js';
 
 export const workspacesRouter = Router();
@@ -301,7 +301,17 @@ workspacesRouter.get('/:id/status', async (req: Request, res: Response) => {
     const provisioner = getProvisioner();
     const status = await provisioner.getStatus(id);
 
-    res.json({ status });
+    // Include provisioning progress info if status is 'provisioning'
+    const provisioningProgress = status === 'provisioning' ? getProvisioningStage(id) : null;
+
+    res.json({
+      status,
+      provisioning: provisioningProgress ? {
+        stage: provisioningProgress.stage,
+        startedAt: provisioningProgress.startedAt,
+        elapsedMs: Date.now() - provisioningProgress.startedAt,
+      } : null,
+    });
   } catch (error) {
     console.error('Error getting workspace status:', error);
     res.status(500).json({ error: 'Failed to get status' });

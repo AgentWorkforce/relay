@@ -589,11 +589,12 @@ export function WorkspaceSettingsPanel({
 
     const result = await cloudApi.deleteWorkspace(workspace.id);
     if (result.success) {
-      onClose?.();
+      // Redirect to workspace selection/onboarding page
+      window.location.href = '/app';
     } else {
       setError(result.error);
     }
-  }, [workspace, onClose]);
+  }, [workspace]);
 
   if (isLoading) {
     return (
