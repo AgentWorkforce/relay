@@ -1,0 +1,33 @@
+{
+  "id": "traj_avqeghu6pz5a",
+  "version": 1,
+  "task": {
+    "title": "Fix gh CLI authentication in workspace containers",
+    "source": {
+      "system": "plain",
+      "id": "agent-relay-323"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-01-05T23:14:00.755Z",
+  "agents": [
+    {
+      "name": "Lead",
+      "role": "lead",
+      "joinedAt": "2026-01-05T23:14:00.911Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_1hosy42mvh0j",
+      "title": "Initial work",
+      "agentName": "Lead",
+      "startedAt": "2026-01-05T23:14:00.911Z",
+      "events": []
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "84085b56a3fa",
+  "tags": []
+}

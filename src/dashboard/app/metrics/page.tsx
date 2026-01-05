@@ -212,7 +212,7 @@ export default function MetricsPage() {
         <div className="max-w-[1400px] mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
             <Link
-              href="/"
+              href="/app"
               className="flex items-center gap-2 text-text-muted text-sm font-medium px-3 py-2 rounded-md transition-all hover:text-accent hover:bg-accent/10"
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

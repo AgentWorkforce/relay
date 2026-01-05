@@ -316,6 +316,12 @@
       "startedAt": "2026-01-05T23:10:52.953Z",
       "completedAt": "2026-01-05T23:15:32.933Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_fhx9irlckht6.json"
+    },
+    "traj_avqeghu6pz5a": {
+      "title": "Fix gh CLI authentication in workspace containers",
+      "status": "active",
+      "startedAt": "2026-01-05T23:14:00.755Z",
+      "path": "/workspace/relay/.trajectories/active/traj_avqeghu6pz5a.json"
     }
   }
 }
