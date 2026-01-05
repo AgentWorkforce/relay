@@ -90,10 +90,16 @@ async function wakeWorkspaceMachine(workspaceId: string): Promise<boolean> {
  * This will be forwarded to:
  *   http://{workspace-internal}/webhooks/your/path
  */
-webhooksRouter.all('/workspace/:workspaceId/:path(*)', async (req: Request, res: Response) => {
-  const { workspaceId } = req.params;
-  // Get the path after /workspace/:workspaceId/
-  const forwardPath = req.params.path || '';
+// Handler for workspace webhook forwarding - matches any path under /workspace/:workspaceId
+async function handleWorkspaceWebhook(req: Request, res: Response): Promise<void> {
+  // Extract workspaceId from URL path
+  const pathMatch = req.originalUrl.match(/\/workspace\/([^/]+)\/?(.*)$/);
+  if (!pathMatch) {
+    res.status(400).json({ error: 'Invalid workspace webhook URL' });
+    return;
+  }
+  const workspaceId = pathMatch[1];
+  const forwardPath = pathMatch[2] || '';
 
   console.log(`[webhooks] Forwarding to workspace ${workspaceId}: ${req.method} /${forwardPath}`);
 
