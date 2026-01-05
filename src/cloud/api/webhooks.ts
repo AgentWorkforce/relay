@@ -184,9 +184,10 @@ async function handleWorkspaceWebhook(req: Request, res: Response): Promise<void
   }
 }
 
-// Register workspace webhook forwarding route
-// Uses a simple pattern - the handler extracts the path from req.originalUrl
-webhooksRouter.all('/workspace/*', handleWorkspaceWebhook);
+// TODO: Re-enable workspace webhook forwarding once route pattern issue is resolved
+// The newer path-to-regexp version doesn't support wildcard patterns like /workspace/*
+// See: https://git.new/pathToRegexpError
+// webhooksRouter.all('/workspace/*', handleWorkspaceWebhook);
 
 // GitHub webhook signature verification
 function verifyGitHubSignature(payload: string, signature: string | undefined): boolean {
