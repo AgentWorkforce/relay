@@ -9,32 +9,10 @@ import { getBillingService, getAllPlans, getPlan, comparePlans } from '../billin
 import type { SubscriptionTier } from '../billing/types.js';
 import { getConfig } from '../config.js';
 import { db } from '../db/index.js';
+import { requireAuth } from './auth.js';
 import type Stripe from 'stripe';
 
-// Extend express session with user info
-declare module 'express-session' {
-  interface SessionData {
-    user?: {
-      id: string;
-      email: string;
-      name?: string;
-      stripeCustomerId?: string;
-    };
-  }
-}
-
 export const billingRouter = Router();
-
-/**
- * Middleware to require authentication
- */
-function requireAuth(req: Request, res: Response, next: NextFunction) {
-  if (!req.session?.user) {
-    res.status(401).json({ error: 'Authentication required' });
-    return;
-  }
-  next();
-}
 
 /**
  * GET /api/billing/plans
@@ -92,17 +70,23 @@ billingRouter.get('/compare', (req, res) => {
  * Get current user's subscription status
  */
 billingRouter.get('/subscription', requireAuth, async (req, res) => {
-  const user = req.session!.user!;
+  const userId = req.session.userId!;
   const billing = getBillingService();
 
   try {
+    // Fetch user from database
+    const user = await db.users.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
     // Get or create Stripe customer
     const customerId = user.stripeCustomerId ||
-      await billing.getOrCreateCustomer(user.id, user.email, user.name);
+      await billing.getOrCreateCustomer(user.id, user.email || '', user.githubUsername);
 
-    // Save customer ID to session if newly created
+    // Save customer ID to database if newly created
     if (!user.stripeCustomerId) {
-      req.session!.user!.stripeCustomerId = customerId;
+      await db.users.update(userId, { stripeCustomerId: customerId });
     }
 
     // Get customer details
@@ -139,7 +123,7 @@ billingRouter.get('/subscription', requireAuth, async (req, res) => {
  * Create a checkout session for subscription
  */
 billingRouter.post('/checkout', requireAuth, async (req, res) => {
-  const user = req.session!.user!;
+  const userId = req.session.userId!;
   const { tier, interval = 'month' } = req.body;
 
   if (!tier || !['pro', 'team', 'enterprise'].includes(tier)) {
@@ -156,13 +140,19 @@ billingRouter.post('/checkout', requireAuth, async (req, res) => {
   const config = getConfig();
 
   try {
+    // Fetch user from database
+    const user = await db.users.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
     // Get or create customer
     const customerId = user.stripeCustomerId ||
-      await billing.getOrCreateCustomer(user.id, user.email, user.name);
+      await billing.getOrCreateCustomer(user.id, user.email || '', user.githubUsername);
 
-    // Save customer ID to session
+    // Save customer ID to database
     if (!user.stripeCustomerId) {
-      req.session!.user!.stripeCustomerId = customerId;
+      await db.users.update(userId, { stripeCustomerId: customerId });
     }
 
     // Create checkout session
@@ -186,17 +176,22 @@ billingRouter.post('/checkout', requireAuth, async (req, res) => {
  * Create a billing portal session for managing subscription
  */
 billingRouter.post('/portal', requireAuth, async (req, res) => {
-  const user = req.session!.user!;
-
-  if (!user.stripeCustomerId) {
-    res.status(400).json({ error: 'No billing account found' });
-    return;
-  }
-
-  const billing = getBillingService();
-  const config = getConfig();
+  const userId = req.session.userId!;
 
   try {
+    const user = await db.users.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (!user.stripeCustomerId) {
+      res.status(400).json({ error: 'No billing account found' });
+      return;
+    }
+
+    const billing = getBillingService();
+    const config = getConfig();
+
     const session = await billing.createPortalSession(
       user.stripeCustomerId,
       `${config.publicUrl}/billing`
@@ -214,7 +209,7 @@ billingRouter.post('/portal', requireAuth, async (req, res) => {
  * Change subscription tier
  */
 billingRouter.post('/change', requireAuth, async (req, res) => {
-  const user = req.session!.user!;
+  const userId = req.session.userId!;
   const { tier, interval = 'month' } = req.body;
 
   if (!tier || !['free', 'pro', 'team', 'enterprise'].includes(tier)) {
@@ -222,14 +217,19 @@ billingRouter.post('/change', requireAuth, async (req, res) => {
     return;
   }
 
-  if (!user.stripeCustomerId) {
-    res.status(400).json({ error: 'No billing account found' });
-    return;
-  }
-
-  const billing = getBillingService();
-
   try {
+    const user = await db.users.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (!user.stripeCustomerId) {
+      res.status(400).json({ error: 'No billing account found' });
+      return;
+    }
+
+    const billing = getBillingService();
+
     // Get current subscription
     const customer = await billing.getCustomer(user.stripeCustomerId);
 
@@ -266,16 +266,20 @@ billingRouter.post('/change', requireAuth, async (req, res) => {
  * Cancel subscription at period end
  */
 billingRouter.post('/cancel', requireAuth, async (req, res) => {
-  const user = req.session!.user!;
-
-  if (!user.stripeCustomerId) {
-    res.status(400).json({ error: 'No billing account found' });
-    return;
-  }
-
-  const billing = getBillingService();
+  const userId = req.session.userId!;
 
   try {
+    const user = await db.users.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (!user.stripeCustomerId) {
+      res.status(400).json({ error: 'No billing account found' });
+      return;
+    }
+
+    const billing = getBillingService();
     const customer = await billing.getCustomer(user.stripeCustomerId);
 
     if (!customer?.subscription) {
@@ -302,16 +306,20 @@ billingRouter.post('/cancel', requireAuth, async (req, res) => {
  * Resume a canceled subscription
  */
 billingRouter.post('/resume', requireAuth, async (req, res) => {
-  const user = req.session!.user!;
-
-  if (!user.stripeCustomerId) {
-    res.status(400).json({ error: 'No billing account found' });
-    return;
-  }
-
-  const billing = getBillingService();
+  const userId = req.session.userId!;
 
   try {
+    const user = await db.users.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (!user.stripeCustomerId) {
+      res.status(400).json({ error: 'No billing account found' });
+      return;
+    }
+
+    const billing = getBillingService();
     const customer = await billing.getCustomer(user.stripeCustomerId);
 
     if (!customer?.subscription) {
@@ -340,16 +348,20 @@ billingRouter.post('/resume', requireAuth, async (req, res) => {
  * Get user's invoices
  */
 billingRouter.get('/invoices', requireAuth, async (req, res) => {
-  const user = req.session!.user!;
-
-  if (!user.stripeCustomerId) {
-    res.json({ invoices: [] });
-    return;
-  }
-
-  const billing = getBillingService();
+  const userId = req.session.userId!;
 
   try {
+    const user = await db.users.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (!user.stripeCustomerId) {
+      res.json({ invoices: [] });
+      return;
+    }
+
+    const billing = getBillingService();
     const customer = await billing.getCustomer(user.stripeCustomerId);
     res.json({ invoices: customer?.invoices || [] });
   } catch (error) {
@@ -363,16 +375,20 @@ billingRouter.get('/invoices', requireAuth, async (req, res) => {
  * Get upcoming invoice preview
  */
 billingRouter.get('/upcoming', requireAuth, async (req, res) => {
-  const user = req.session!.user!;
-
-  if (!user.stripeCustomerId) {
-    res.json({ invoice: null });
-    return;
-  }
-
-  const billing = getBillingService();
+  const userId = req.session.userId!;
 
   try {
+    const user = await db.users.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (!user.stripeCustomerId) {
+      res.json({ invoice: null });
+      return;
+    }
+
+    const billing = getBillingService();
     const invoice = await billing.getUpcomingInvoice(user.stripeCustomerId);
     res.json({ invoice });
   } catch (error) {

@@ -88,6 +88,8 @@ export function usePresence(options: UsePresenceOptions = {}): UsePresenceReturn
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isConnectingRef = useRef(false); // Prevent race conditions
+  const currentUserRef = useRef(currentUser);
+  currentUserRef.current = currentUser; // Keep ref in sync with prop
 
   // Clear stale typing indicators (after 3 seconds of no update)
   useEffect(() => {
@@ -102,7 +104,8 @@ export function usePresence(options: UsePresenceOptions = {}): UsePresenceReturn
   }, []);
 
   const connect = useCallback(() => {
-    if (!currentUser) return; // Don't connect without user info
+    const user = currentUserRef.current;
+    if (!user) return; // Don't connect without user info
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
     if (isConnectingRef.current) return; // Prevent concurrent connect attempts
 
@@ -116,15 +119,18 @@ export function usePresence(options: UsePresenceOptions = {}): UsePresenceReturn
         isConnectingRef.current = false;
         setIsConnected(true);
 
-        // Announce presence
-        ws.send(JSON.stringify({
-          type: 'presence',
-          action: 'join',
-          user: {
-            username: currentUser.username,
-            avatarUrl: currentUser.avatarUrl,
-          },
-        }));
+        // Announce presence (use ref to get latest user info)
+        const currentUserInfo = currentUserRef.current;
+        if (currentUserInfo) {
+          ws.send(JSON.stringify({
+            type: 'presence',
+            action: 'join',
+            user: {
+              username: currentUserInfo.username,
+              avatarUrl: currentUserInfo.avatarUrl,
+            },
+          }));
+        }
       };
 
       ws.onclose = () => {
@@ -133,7 +139,7 @@ export function usePresence(options: UsePresenceOptions = {}): UsePresenceReturn
         wsRef.current = null;
 
         // Reconnect after 2 seconds (only if not intentionally disconnected)
-        if (currentUser) {
+        if (currentUserRef.current) {
           reconnectTimeoutRef.current = setTimeout(() => {
             connect();
           }, 2000);
@@ -174,7 +180,7 @@ export function usePresence(options: UsePresenceOptions = {}): UsePresenceReturn
 
             case 'typing':
               // Typing indicator update
-              if (msg.username === currentUser?.username) break; // Ignore self
+              if (msg.username === currentUserRef.current?.username) break; // Ignore self
 
               if (msg.isTyping) {
                 setTypingUsers((prev) => {
@@ -204,7 +210,7 @@ export function usePresence(options: UsePresenceOptions = {}): UsePresenceReturn
     } catch (e) {
       console.error('[usePresence] Failed to create WebSocket:', e);
     }
-  }, [currentUser, wsUrl]);
+  }, [wsUrl]); // Use ref for currentUser to avoid dependency
 
   const disconnect = useCallback(() => {
     // Clear reconnect timeout first
@@ -223,11 +229,12 @@ export function usePresence(options: UsePresenceOptions = {}): UsePresenceReturn
       ws.onerror = null;
 
       // Send leave message before closing
-      if (ws.readyState === WebSocket.OPEN && currentUser) {
+      const user = currentUserRef.current;
+      if (ws.readyState === WebSocket.OPEN && user) {
         ws.send(JSON.stringify({
           type: 'presence',
           action: 'leave',
-          username: currentUser.username,
+          username: user.username,
         }));
       }
       ws.close();
@@ -235,12 +242,13 @@ export function usePresence(options: UsePresenceOptions = {}): UsePresenceReturn
     }
 
     setIsConnected(false);
-  }, [currentUser]);
+  }, []); // Use ref for currentUser to avoid dependency
 
   // Send typing indicator
   const sendTyping = useCallback((isTyping: boolean) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    if (!currentUser) return;
+    const user = currentUserRef.current;
+    if (!user) return;
 
     // Clear any existing timeout first
     if (typingTimeoutRef.current) {
@@ -251,8 +259,8 @@ export function usePresence(options: UsePresenceOptions = {}): UsePresenceReturn
     wsRef.current.send(JSON.stringify({
       type: 'typing',
       isTyping,
-      username: currentUser.username,
-      avatarUrl: currentUser.avatarUrl,
+      username: user.username,
+      avatarUrl: user.avatarUrl,
     }));
 
     // Only set auto-clear timeout when starting to type
@@ -262,13 +270,9 @@ export function usePresence(options: UsePresenceOptions = {}): UsePresenceReturn
         sendTyping(false);
       }, 3000);
     }
-  }, [currentUser]);
+  }, []); // Use ref for currentUser to avoid dependency
 
   // Connect when user is available
-  // Use refs to avoid effect re-running on function reference changes
-  const currentUserRef = useRef(currentUser);
-  currentUserRef.current = currentUser;
-
   useEffect(() => {
     if (!autoConnect || !currentUserRef.current) return;
 
@@ -282,24 +286,25 @@ export function usePresence(options: UsePresenceOptions = {}): UsePresenceReturn
     return () => {
       disconnect();
     };
-    // Only re-run when autoConnect or currentUser identity changes
+    // Callbacks are now stable (use refs internally), so only need to depend on user identity
   }, [autoConnect, currentUser?.username, connect, disconnect]);
 
   // Send leave on page unload
   useEffect(() => {
     const handleUnload = () => {
-      if (wsRef.current?.readyState === WebSocket.OPEN && currentUser) {
+      const user = currentUserRef.current;
+      if (wsRef.current?.readyState === WebSocket.OPEN && user) {
         wsRef.current.send(JSON.stringify({
           type: 'presence',
           action: 'leave',
-          username: currentUser.username,
+          username: user.username,
         }));
       }
     };
 
     window.addEventListener('beforeunload', handleUnload);
     return () => window.removeEventListener('beforeunload', handleUnload);
-  }, [currentUser]);
+  }, []); // Use ref for currentUser to avoid dependency
 
   return {
     onlineUsers,

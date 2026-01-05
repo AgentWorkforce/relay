@@ -272,7 +272,9 @@ export async function createServer(): Promise<CloudServer> {
   app.use('/api/workspaces', workspacesRouter);
   app.use('/api/repos', reposRouter);
   app.use('/api/onboarding', onboardingRouter);
-  app.use('/api/teams', teamsRouter);
+  // Teams router handles /workspaces/:id/members and /invites routes
+  // Must be mounted at /api since routes include full paths
+  app.use('/api', teamsRouter);
   app.use('/api/billing', billingRouter);
   app.use('/api/usage', usageRouter);
   app.use('/api/project-groups', coordinatorsRouter);

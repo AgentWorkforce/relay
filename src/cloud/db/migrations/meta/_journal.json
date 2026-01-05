@@ -50,6 +50,13 @@
       "when": 1736208000000,
       "tag": "0007_drop_workspace_ssh",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1736208001000,
+      "tag": "0008_stripe_customer_id",
+      "breakpoints": true
     }
   ]
 }

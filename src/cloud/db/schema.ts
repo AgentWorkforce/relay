@@ -31,6 +31,8 @@ export const users = pgTable('users', {
   email: varchar('email', { length: 255 }),
   avatarUrl: varchar('avatar_url', { length: 512 }),
   plan: varchar('plan', { length: 50 }).notNull().default('free'),
+  // Stripe billing
+  stripeCustomerId: varchar('stripe_customer_id', { length: 255 }),
   // Nango OAuth connections
   nangoConnectionId: varchar('nango_connection_id', { length: 255 }), // Permanent login connection
   incomingConnectionId: varchar('incoming_connection_id', { length: 255 }), // Temp polling connection

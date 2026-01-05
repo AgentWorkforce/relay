@@ -14,7 +14,7 @@ import { ThreadPanel } from './ThreadPanel';
 import { CommandPalette, type TaskCreateRequest, PRIORITY_CONFIG } from './CommandPalette';
 import { SpawnModal, type SpawnConfig } from './SpawnModal';
 import { NewConversationModal } from './NewConversationModal';
-import { SettingsPanel, defaultSettings, type Settings } from './SettingsPanel';
+import { defaultSettings, type Settings } from './SettingsPanel';
 import { SettingsPage } from './settings';
 import { ConversationHistory } from './ConversationHistory';
 import { MentionAutocomplete, getMentionQuery, completeMentionInValue, type HumanUser } from './MentionAutocomplete';
@@ -169,10 +169,15 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   }, [isCloudMode, switchWorkspace]);
 
   // Presence tracking for online users and typing indicators
-  const { onlineUsers, typingUsers, sendTyping, isConnected: isPresenceConnected } = usePresence({
-    currentUser: currentUser
+  // Memoize the user object to prevent reconnection on every render
+  const presenceUser = useMemo(() =>
+    currentUser
       ? { username: currentUser.displayName, avatarUrl: currentUser.avatarUrl }
       : undefined,
+    [currentUser?.displayName, currentUser?.avatarUrl]
+  );
+  const { onlineUsers, typingUsers, sendTyping, isConnected: isPresenceConnected } = usePresence({
+    currentUser: presenceUser,
   });
 
   // User profile panel state
@@ -198,8 +203,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   // Command palette state
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
 
-  // Settings panel state
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  // Settings state (for theme)
   const [settings, setSettings] = useState<Settings>(defaultSettings);
 
   // Full settings page state
@@ -1106,16 +1110,6 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
         existingAgents={agents.map((a) => a.name)}
         isSpawning={isSpawning}
         error={spawnError}
-      />
-
-      {/* Settings Panel */}
-      <SettingsPanel
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
-        settings={settings}
-        onSettingsChange={setSettings}
-        onResetSettings={() => setSettings(defaultSettings)}
-        csrfToken={cloudSession?.csrfToken ?? undefined}
       />
 
       {/* Add Workspace Modal */}

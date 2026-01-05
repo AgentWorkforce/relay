@@ -80,6 +80,7 @@ export default function DashboardPage() {
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
   const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
   const [provisioningInfo, setProvisioningInfo] = useState<ProvisioningInfo | null>(null);
+  const [connectedProviders, setConnectedProviders] = useState<string[]>([]);
 
   // Check if we're in cloud mode and fetch data
   useEffect(() => {
@@ -114,6 +115,11 @@ export default function DashboardPage() {
 
         // Cloud mode - fetch workspaces and repos
         setIsCloudMode(true);
+
+        // Track which providers are already connected
+        if (session.connectedProviders) {
+          setConnectedProviders(session.connectedProviders.map((p: { provider: string }) => p.provider));
+        }
 
         const [workspacesRes, reposRes] = await Promise.all([
           fetch('/api/workspaces', { credentials: 'include' }),
@@ -499,6 +505,8 @@ export default function DashboardPage() {
                   workspaceId={selectedWorkspace!.id}
                   csrfToken={csrfToken || undefined}
                   onSuccess={() => {
+                    // Add provider to connected list
+                    setConnectedProviders(prev => [...new Set([...prev, provider.id])]);
                     // Show success state briefly, then offer options
                     setConnectingProvider(null);
                     // Stay on connect-provider screen to allow connecting more providers
@@ -540,60 +548,85 @@ export default function DashboardPage() {
                   <div key={provider.id}>
                     {/* Special expanded section for Codex with CLI auth flow */}
                     {provider.id === 'codex' ? (
-                      <div className="p-4 bg-bg-tertiary rounded-xl border border-border-subtle space-y-4">
+                      <div className={`p-4 bg-bg-tertiary rounded-xl border space-y-4 ${connectedProviders.includes(provider.id) || connectedProviders.includes('openai') ? 'border-green-500/50' : 'border-border-subtle'}`}>
                         <div className="flex items-center gap-3">
                           <div
-                            className="w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold flex-shrink-0"
+                            className="w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold flex-shrink-0 relative"
                             style={{ backgroundColor: provider.color }}
                           >
                             {provider.displayName[0]}
+                            {(connectedProviders.includes(provider.id) || connectedProviders.includes('openai')) && (
+                              <div className="absolute -top-1 -right-1 w-5 h-5 bg-green-500 rounded-full flex items-center justify-center">
+                                <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                                </svg>
+                              </div>
+                            )}
                           </div>
                           <div className="flex-1">
                             <p className="text-white font-medium">{provider.displayName}</p>
                             <p className="text-text-muted text-sm">{provider.name}</p>
                           </div>
+                          {(connectedProviders.includes(provider.id) || connectedProviders.includes('openai')) && (
+                            <span className="text-green-400 text-sm font-medium">Connected</span>
+                          )}
                         </div>
 
-                        {/* Info about CLI auth flow */}
-                        <div className="p-3 bg-accent-cyan/10 border border-accent-cyan/30 rounded-lg">
-                          <p className="text-sm text-accent-cyan font-medium mb-1">CLI-assisted authentication</p>
-                          <p className="text-xs text-accent-cyan/80">
-                            Codex auth uses a simple CLI command to capture the OAuth callback locally.
-                            You&apos;ll run <code className="bg-bg-deep px-1 rounded">npx agent-relay codex-auth</code> in your terminal,
-                            then sign in with OpenAI. The CLI handles the rest automatically.
-                          </p>
-                        </div>
+                        {!(connectedProviders.includes(provider.id) || connectedProviders.includes('openai')) && (
+                          <>
+                            {/* Info about CLI auth flow */}
+                            <div className="p-3 bg-accent-cyan/10 border border-accent-cyan/30 rounded-lg">
+                              <p className="text-sm text-accent-cyan font-medium mb-1">CLI-assisted authentication</p>
+                              <p className="text-xs text-accent-cyan/80">
+                                Codex auth uses a simple CLI command to capture the OAuth callback locally.
+                                You&apos;ll run <code className="bg-bg-deep px-1 rounded">npx agent-relay codex-auth</code> in your terminal,
+                                then sign in with OpenAI. The CLI handles the rest automatically.
+                              </p>
+                            </div>
 
-                        {/* Single connect button */}
-                        <button
-                          onClick={() => handleConnectProvider(provider)}
-                          className="w-full flex items-center justify-center gap-2 p-3 bg-gradient-to-r from-accent-cyan to-[#00b8d9] text-bg-deep font-semibold rounded-xl hover:shadow-glow-cyan transition-all"
-                        >
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                          </svg>
-                          Connect with Codex
-                        </button>
+                            {/* Single connect button */}
+                            <button
+                              onClick={() => handleConnectProvider(provider)}
+                              className="w-full flex items-center justify-center gap-2 p-3 bg-gradient-to-r from-accent-cyan to-[#00b8d9] text-bg-deep font-semibold rounded-xl hover:shadow-glow-cyan transition-all"
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                              </svg>
+                              Connect with Codex
+                            </button>
+                          </>
+                        )}
                       </div>
                     ) : (
                       /* Standard provider button */
                       <button
                         onClick={() => handleConnectProvider(provider)}
-                        className="w-full flex items-center gap-3 p-4 bg-bg-tertiary rounded-xl border border-border-subtle hover:border-accent-cyan/50 transition-colors text-left"
+                        className={`w-full flex items-center gap-3 p-4 bg-bg-tertiary rounded-xl border transition-colors text-left ${connectedProviders.includes(provider.id) ? 'border-green-500/50' : 'border-border-subtle hover:border-accent-cyan/50'}`}
                       >
                         <div
-                          className="w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold flex-shrink-0"
+                          className="w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold flex-shrink-0 relative"
                           style={{ backgroundColor: provider.color }}
                         >
                           {provider.displayName[0]}
+                          {connectedProviders.includes(provider.id) && (
+                            <div className="absolute -top-1 -right-1 w-5 h-5 bg-green-500 rounded-full flex items-center justify-center">
+                              <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                              </svg>
+                            </div>
+                          )}
                         </div>
                         <div className="flex-1">
                           <p className="text-white font-medium">{provider.displayName}</p>
                           <p className="text-text-muted text-sm">{provider.name}</p>
                         </div>
-                        <svg className="w-5 h-5 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                        </svg>
+                        {connectedProviders.includes(provider.id) ? (
+                          <span className="text-green-400 text-sm font-medium">Connected</span>
+                        ) : (
+                          <svg className="w-5 h-5 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                          </svg>
+                        )}
                       </button>
                     )}
                   </div>
