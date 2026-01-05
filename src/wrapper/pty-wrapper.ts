@@ -574,16 +574,19 @@ export class PtyWrapper extends EventEmitter {
   }
 
   /**
-   * Auto-accept Claude's first-run prompts for --dangerously-skip-permissions
-   * Detects the acceptance prompt and sends "2" to select "Yes, I accept"
+   * Auto-accept Claude's first-run prompts
+   * Handles:
+   * 1. --dangerously-skip-permissions acceptance ("Yes, I accept")
+   * 2. Trust directory prompt ("Yes, I trust this folder")
    */
   private handleAutoAcceptPrompts(data: string): void {
     if (this.hasAcceptedPrompt) return;
     if (!this.ptyProcess || !this.running) return;
 
-    // Check for the permission acceptance prompt
-    // Pattern: "2. Yes, I accept" in the output
     const cleanData = stripAnsi(data);
+
+    // Check for the permission acceptance prompt (--dangerously-skip-permissions)
+    // Pattern: "2. Yes, I accept" in the output
     if (cleanData.includes('Yes, I accept') && cleanData.includes('No, exit')) {
       console.log(`[pty:${this.config.name}] Detected permission prompt, auto-accepting...`);
       this.hasAcceptedPrompt = true;
@@ -593,6 +596,22 @@ export class PtyWrapper extends EventEmitter {
           this.ptyProcess.write('2');
         }
       }, 100);
+      return;
+    }
+
+    // Check for the trust directory prompt
+    // Pattern: "1. Yes, I trust this folder" with "No, exit"
+    if ((cleanData.includes('trust this folder') || cleanData.includes('safety check'))
+        && cleanData.includes('No, exit')) {
+      console.log(`[pty:${this.config.name}] Detected trust directory prompt, auto-accepting...`);
+      this.hasAcceptedPrompt = true;
+      // Send Enter to accept first option (already selected)
+      setTimeout(() => {
+        if (this.ptyProcess && this.running) {
+          this.ptyProcess.write('\r');
+        }
+      }, 300);
+      return;
     }
   }
 
