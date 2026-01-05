@@ -48,14 +48,21 @@ github.com:
 EOF
 
   # Create gh token wrapper script
+  # Uses userToken (OAuth) for gh CLI, not installation token
   cat > "/tmp/gh-token-helper.sh" <<'GHEOF'
 #!/usr/bin/env bash
-# Fetch fresh token for gh CLI
+# Fetch fresh user OAuth token for gh CLI
 response=$(curl -sf \
   -H "Authorization: Bearer ${WORKSPACE_TOKEN}" \
   "${CLOUD_API_URL}/api/git/token?workspaceId=${WORKSPACE_ID}" 2>/dev/null)
 if [[ -n "$response" ]]; then
-  echo "$response" | jq -r '.token // empty'
+  # Prefer userToken (OAuth) for gh CLI, fall back to installation token
+  user_token=$(echo "$response" | jq -r '.userToken // empty')
+  if [[ -n "$user_token" && "$user_token" != "null" ]]; then
+    echo "$user_token"
+  else
+    echo "$response" | jq -r '.token // empty'
+  fi
 fi
 GHEOF
   chmod +x "/tmp/gh-token-helper.sh"
@@ -125,11 +132,18 @@ clone_or_update_repo() {
       log "WARN: Failed to clone ${repo}"
     }
   fi
+
+  # Mark directory as safe to prevent "dubious ownership" errors
+  # This is needed when git runs as a different user (e.g., root via SSH)
+  if [[ -d "${target}/.git" ]]; then
+    git config --global --add safe.directory "${target}" 2>/dev/null || true
+  fi
 }
 
 if [[ -n "${REPO_LIST}" ]]; then
-  if [[ -z "${GITHUB_TOKEN:-}" ]]; then
-    log "WARN: REPOSITORIES set but no GITHUB_TOKEN provided; clones may fail."
+  # Check if we have credentials configured (gateway mode or static token)
+  if [[ -z "${GITHUB_TOKEN:-}" && -z "${CLOUD_API_URL:-}" ]]; then
+    log "WARN: REPOSITORIES set but no credentials configured; clones may fail."
   fi
 
   IFS=',' read -ra repos <<< "${REPO_LIST}"

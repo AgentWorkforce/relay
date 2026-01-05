@@ -88,6 +88,87 @@ class NangoService {
   }
 
   /**
+   * Retrieve the user's OAuth access token from a GitHub App OAuth connection.
+   * This is the user-level token (not the installation token).
+   * Use this for operations that require user context (e.g., gh CLI).
+   *
+   * The user token can be found in:
+   * 1. getToken() without installation flag
+   * 2. connection_config.access_token in github-app-oauth
+   * 3. Separate 'github' user connection
+   */
+  async getGithubUserOAuthToken(connectionId: string): Promise<string> {
+    // First try: Get token from github-app-oauth connection credentials
+    try {
+      const token = await this.client.getToken(
+        NANGO_INTEGRATIONS.GITHUB_APP,
+        connectionId
+      );
+
+      if (typeof token === 'string' && token.length > 0) {
+        return token;
+      }
+
+      if (token && typeof token === 'object') {
+        const tokenObj = token as { access_token?: string; token?: string };
+        if (tokenObj.access_token) {
+          return tokenObj.access_token;
+        }
+        if (tokenObj.token) {
+          return tokenObj.token;
+        }
+      }
+    } catch (err) {
+      console.log('[nango] getToken for user OAuth failed, trying connection_config:', err);
+    }
+
+    // Second try: Check connection_config for user token
+    try {
+      const connection = await this.client.getConnection(NANGO_INTEGRATIONS.GITHUB_APP, connectionId);
+      const connConfig = (connection as { connection_config?: Record<string, unknown> }).connection_config;
+      if (connConfig?.access_token && typeof connConfig.access_token === 'string') {
+        return connConfig.access_token;
+      }
+      // Also check credentials object
+      const credentials = (connection as { credentials?: { access_token?: string } }).credentials;
+      if (credentials?.access_token) {
+        return credentials.access_token;
+      }
+    } catch (err) {
+      console.log('[nango] connection_config check failed:', err);
+    }
+
+    throw new Error('Could not retrieve GitHub user OAuth token');
+  }
+
+  /**
+   * Retrieve the user's OAuth token from a 'github' user connection.
+   * This is for the separate GitHub OAuth login (not the App connection).
+   */
+  async getGithubUserToken(connectionId: string): Promise<string> {
+    const token = await this.client.getToken(
+      NANGO_INTEGRATIONS.GITHUB_USER,
+      connectionId
+    );
+
+    if (typeof token === 'string') {
+      return token;
+    }
+
+    if (token && typeof token === 'object') {
+      const tokenObj = token as { access_token?: string; token?: string };
+      if (tokenObj.access_token) {
+        return tokenObj.access_token;
+      }
+      if (tokenObj.token) {
+        return tokenObj.token;
+      }
+    }
+
+    throw new Error('Could not retrieve GitHub user token');
+  }
+
+  /**
    * List repositories available to a GitHub App installation using the Nango Proxy.
    * The proxy automatically handles token injection and refresh.
    * @see https://nango.dev/docs/implementation-guides/requests-proxy/implement-requests-proxy

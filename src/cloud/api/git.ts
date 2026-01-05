@@ -91,14 +91,34 @@ gitRouter.get('/token', async (req: Request, res: Response) => {
       });
     }
 
-    // Get fresh token from Nango (auto-refreshes if needed)
-    const token = await nangoService.getGithubAppToken(repoWithConnection.nangoConnectionId);
+    // Get fresh tokens from Nango (auto-refreshes if needed)
+    // - installationToken: for git operations (clone, push, pull)
+    // - userToken: for gh CLI operations (requires user context)
+    const installationToken = await nangoService.getGithubAppToken(repoWithConnection.nangoConnectionId);
+
+    // Try to get user OAuth token from github-app-oauth connection_config first
+    // Fall back to separate 'github' user connection if available
+    let userToken: string | null = null;
+    try {
+      userToken = await nangoService.getGithubUserOAuthToken(repoWithConnection.nangoConnectionId);
+    } catch {
+      // Try the separate github user connection if available
+      const userRepo = repos.find(r => r.nangoConnectionId && r.nangoConnectionId !== repoWithConnection.nangoConnectionId);
+      if (userRepo?.nangoConnectionId) {
+        try {
+          userToken = await nangoService.getGithubUserToken(userRepo.nangoConnectionId);
+        } catch {
+          console.log('[git] No github user token available');
+        }
+      }
+    }
 
     // GitHub App installation tokens expire after 1 hour
     const expiresAt = new Date(Date.now() + 55 * 60 * 1000).toISOString(); // 55 min buffer
 
     res.json({
-      token,
+      token: installationToken,
+      userToken, // For gh CLI - may be null if not available
       expiresAt,
       username: 'x-access-token', // GitHub App tokens use this as username
     });
