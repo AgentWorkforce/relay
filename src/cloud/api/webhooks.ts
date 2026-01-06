@@ -91,7 +91,7 @@ async function wakeWorkspaceMachine(workspaceId: string): Promise<boolean> {
  *   http://{workspace-internal}/webhooks/your/path
  */
 // Handler for workspace webhook forwarding - matches any path under /workspace/:workspaceId
-async function handleWorkspaceWebhook(req: Request, res: Response): Promise<void> {
+async function _handleWorkspaceWebhook(req: Request, res: Response): Promise<void> {
   // Extract workspaceId from URL path
   const pathMatch = req.originalUrl.match(/\/workspace\/([^/]+)\/?(.*)$/);
   if (!pathMatch) {

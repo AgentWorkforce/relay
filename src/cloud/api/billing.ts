@@ -4,7 +4,7 @@
  * REST API for subscription and billing management.
  */
 
-import { Router, Request, Response, NextFunction } from 'express';
+import { Router, Request } from 'express';
 import { getBillingService, getAllPlans, getPlan, comparePlans } from '../billing/index.js';
 import type { SubscriptionTier } from '../billing/types.js';
 import { getConfig } from '../config.js';

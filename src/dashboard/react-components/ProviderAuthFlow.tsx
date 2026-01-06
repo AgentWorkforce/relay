@@ -490,16 +490,10 @@ export function ProviderAuthFlow({
           <div className="p-4 bg-bg-tertiary rounded-lg border border-border-subtle">
             <h4 className="font-medium text-white mb-2">Complete authentication:</h4>
             {isCodexFlow ? (
-              /* Codex/OpenAI: OAuth redirects to localhost which is unreachable */
-              <ol className="text-sm text-text-muted space-y-2 list-decimal list-inside">
-                <li>Click the button below to open the login page</li>
-                <li>Sign in with your {provider.displayName} account</li>
-                <li className="text-amber-400">
-                  <strong>Important:</strong> After signing in, you&apos;ll see a &quot;This site can&apos;t be reached&quot; error - this is expected!
-                </li>
-                <li>Copy the <strong>entire URL</strong> from your browser&apos;s address bar (it starts with <code className="px-1 py-0.5 bg-bg-card rounded text-xs">http://localhost...</code>)</li>
-                <li>Paste it in the input below and click Submit</li>
-              </ol>
+              /* Codex/OpenAI: CLI helper captures localhost redirect */
+              <p className="text-sm text-text-muted">
+                Follow the two steps below. The CLI command captures the OAuth callback automatically.
+              </p>
             ) : isClaudeFlow ? (
               /* Claude/Anthropic: Shows a code after OAuth completion */
               <ol className="text-sm text-text-muted space-y-2 list-decimal list-inside">
@@ -519,20 +513,22 @@ export function ProviderAuthFlow({
             )}
           </div>
 
-          {/* Auth URL button */}
-          <a
-            href={authUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="block w-full py-3 px-4 bg-gradient-to-r from-accent-cyan to-[#00b8d9] text-bg-deep font-semibold rounded-xl text-center hover:shadow-glow-cyan transition-all"
-          >
-            Open {provider.displayName} Login Page
-          </a>
+          {/* Auth URL button - hidden for Codex CLI flow since it's integrated into steps */}
+          {!(isCodexFlow && cliCommand && !showManualFallback) && (
+            <a
+              href={authUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block w-full py-2 px-4 bg-bg-tertiary border border-border-subtle text-white font-medium rounded-lg text-center hover:border-accent-cyan/50 transition-all"
+            >
+              Open {provider.displayName} Login Page
+            </a>
+          )}
 
           {isCodexFlow ? (
             /* Codex: CLI helper or manual URL paste */
             <div className="space-y-4">
-              {/* Primary: CLI command */}
+              {/* Primary: CLI command - shown BEFORE the login button */}
               {cliCommand && !showManualFallback && (
                 <div className="space-y-3">
                   <div className="p-3 bg-accent-cyan/10 border border-accent-cyan/30 rounded-lg">
@@ -552,27 +548,43 @@ export function ProviderAuthFlow({
                         Copy
                       </button>
                     </div>
-                    <p className="text-sm text-accent-cyan mt-3">
-                      <strong>Step 2:</strong> Then click the button above to sign in with OpenAI
-                    </p>
                     <p className="text-xs text-text-muted mt-2">
-                      The CLI will automatically capture the callback and complete authentication.
+                      This starts a local server to capture the OAuth callback.
                     </p>
-                    {cliPollingActive && (
-                      <div className="flex items-center gap-2 mt-3 text-xs text-accent-cyan">
-                        <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                        </svg>
-                        <span>Waiting for CLI to capture callback...</span>
-                      </div>
-                    )}
                   </div>
+
+                  <div className="p-3 bg-bg-tertiary border border-border-subtle rounded-lg">
+                    <p className="text-sm text-white mb-2">
+                      <strong>Step 2:</strong> Sign in with OpenAI
+                    </p>
+                    <a
+                      href={authUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-block py-2 px-4 bg-bg-card border border-accent-cyan/50 text-accent-cyan font-medium rounded-lg text-sm hover:bg-accent-cyan/10 transition-all"
+                    >
+                      Open OpenAI Login →
+                    </a>
+                    <p className="text-xs text-text-muted mt-2">
+                      After signing in, the CLI will automatically capture the callback and complete authentication.
+                    </p>
+                  </div>
+
+                  {cliPollingActive && (
+                    <div className="flex items-center gap-2 p-3 bg-accent-cyan/5 border border-accent-cyan/20 rounded-lg text-sm text-accent-cyan">
+                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      <span>Waiting for CLI to capture callback...</span>
+                    </div>
+                  )}
+
                   <button
                     onClick={() => setShowManualFallback(true)}
                     className="text-xs text-text-muted hover:text-white transition-colors"
                   >
-                    Having trouble? Click here for manual method
+                    CLI not working? Click here for manual method
                   </button>
                 </div>
               )}

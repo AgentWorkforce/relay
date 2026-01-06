@@ -7,7 +7,7 @@
  * Design: Mission Control theme with deep space aesthetic
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { cloudApi } from '../../lib/cloudApi';
 import { ProviderAuthFlow } from '../ProviderAuthFlow';
 import { RepoAccessPanel } from '../RepoAccessPanel';
@@ -81,7 +81,7 @@ const AI_PROVIDERS: AIProvider[] = [
     supportsOAuth: true,
   },
   {
-    id: 'openai',
+    id: 'codex',
     name: 'OpenAI',
     displayName: 'Codex',
     description: 'Codex - OpenAI coding assistant',
@@ -123,14 +123,6 @@ const AI_PROVIDERS: AIProvider[] = [
   },
 ];
 
-interface OAuthSession {
-  providerId: string;
-  sessionId: string;
-  authUrl?: string;
-  status: 'starting' | 'waiting_auth' | 'success' | 'error';
-  error?: string;
-}
-
 export function WorkspaceSettingsPanel({
   workspaceId,
   csrfToken,
@@ -146,12 +138,8 @@ export function WorkspaceSettingsPanel({
   const [providerStatus, setProviderStatus] = useState<Record<string, boolean>>({});
   const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
   const [apiKeyInput, setApiKeyInput] = useState('');
-  const [authCodeInput, setAuthCodeInput] = useState('');
   const [providerError, setProviderError] = useState<string | null>(null);
-  const [oauthSession, setOauthSession] = useState<OAuthSession | null>(null);
   const [showApiKeyFallback, setShowApiKeyFallback] = useState<Record<string, boolean>>({});
-  // Track whether popup has been opened for current session (avoids stale closure issues)
-  const popupOpenedRef = useRef<string | null>(null);
   // Device flow preference for providers that support it
   const [useDeviceFlow, setUseDeviceFlow] = useState<Record<string, boolean>>({});
 
@@ -203,222 +191,11 @@ export function WorkspaceSettingsPanel({
   }, [workspaceId]);
 
   // Start CLI-based OAuth flow for a provider
-  const startOAuthFlow = async (provider: AIProvider) => {
+  // This just sets state to show the ProviderAuthFlow component, which handles the actual auth
+  const startOAuthFlow = (provider: AIProvider) => {
     setProviderError(null);
     setConnectingProvider(provider.id);
-    setOauthSession({ providerId: provider.id, sessionId: '', status: 'starting' });
-    // Reset popup tracking for new session
-    popupOpenedRef.current = null;
-
-    try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
-
-      const res = await fetch(`/api/onboarding/cli/${provider.id}/start`, {
-        method: 'POST',
-        credentials: 'include',
-        headers,
-        body: JSON.stringify({
-          workspaceId,
-          useDeviceFlow: useDeviceFlow[provider.id] || false,
-        }),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to start authentication');
-      }
-
-      if (data.status === 'success' || data.alreadyAuthenticated) {
-        setProviderStatus(prev => ({ ...prev, [provider.id]: true }));
-        setOauthSession(null);
-        setConnectingProvider(null);
-        return;
-      }
-
-      const session: OAuthSession = {
-        providerId: provider.id,
-        sessionId: data.sessionId,
-        authUrl: data.authUrl,
-        // If we have an authUrl, immediately show waiting_auth status so auth code input appears
-        status: data.authUrl ? 'waiting_auth' : (data.status || 'starting'),
-      };
-      setOauthSession(session);
-
-      if (data.authUrl) {
-        // Track that popup was opened for this session
-        popupOpenedRef.current = data.sessionId;
-        openAuthPopup(data.authUrl, provider.displayName);
-        pollAuthStatus(provider.id, data.sessionId);
-      } else if (data.status === 'starting') {
-        pollAuthStatus(provider.id, data.sessionId);
-      }
-    } catch (err) {
-      setProviderError(err instanceof Error ? err.message : 'Failed to start OAuth');
-      setOauthSession(null);
-      setConnectingProvider(null);
-    }
-  };
-
-  const openAuthPopup = (url: string, providerName: string) => {
-    const width = 600;
-    const height = 700;
-    const left = window.screenX + (window.outerWidth - width) / 2;
-    const top = window.screenY + (window.outerHeight - height) / 2;
-    window.open(
-      url,
-      `${providerName} Login`,
-      `width=${width},height=${height},left=${left},top=${top},popup=yes`
-    );
-  };
-
-  const pollAuthStatus = async (providerId: string, sessionId: string) => {
-    const maxAttempts = 60;
-    let attempts = 0;
-
-    const poll = async () => {
-      if (attempts >= maxAttempts) {
-        setProviderError('Authentication timed out. Please try again.');
-        setOauthSession(null);
-        setConnectingProvider(null);
-        popupOpenedRef.current = null;
-        return;
-      }
-
-      try {
-        const res = await fetch(`/api/onboarding/cli/${providerId}/status/${sessionId}`, {
-          credentials: 'include',
-        });
-
-        const data = await res.json();
-
-        if (!res.ok) {
-          throw new Error(data.error || 'Failed to check status');
-        }
-
-        if (data.status === 'success') {
-          await completeAuthFlow(providerId, sessionId);
-          return;
-        } else if (data.status === 'error') {
-          throw new Error(data.error || 'Authentication failed');
-        } else if (data.status === 'waiting_auth' && data.authUrl && popupOpenedRef.current !== sessionId) {
-          // Use ref to prevent multiple popups (avoids stale closure issue)
-          popupOpenedRef.current = sessionId;
-          setOauthSession(prev => prev ? { ...prev, authUrl: data.authUrl, status: 'waiting_auth' } : null);
-          openAuthPopup(data.authUrl, AI_PROVIDERS.find(p => p.id === providerId)?.displayName || 'Provider');
-        }
-
-        attempts++;
-        setTimeout(poll, 5000);
-      } catch (err) {
-        setProviderError(err instanceof Error ? err.message : 'Auth check failed');
-        setOauthSession(null);
-        setConnectingProvider(null);
-        popupOpenedRef.current = null;
-      }
-    };
-
-    poll();
-  };
-
-  const completeAuthFlow = async (providerId: string, sessionId: string) => {
-    try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
-
-      const res = await fetch(`/api/onboarding/cli/${providerId}/complete/${sessionId}`, {
-        method: 'POST',
-        credentials: 'include',
-        headers,
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || 'Failed to complete authentication');
-      }
-
-      setProviderStatus(prev => ({ ...prev, [providerId]: true }));
-      setOauthSession(null);
-      setConnectingProvider(null);
-      popupOpenedRef.current = null;
-    } catch (err) {
-      setProviderError(err instanceof Error ? err.message : 'Failed to complete auth');
-      setOauthSession(null);
-      setConnectingProvider(null);
-      popupOpenedRef.current = null;
-    }
-  };
-
-  const cancelOAuthFlow = async () => {
-    if (oauthSession?.sessionId) {
-      try {
-        await fetch(`/api/onboarding/cli/${oauthSession.providerId}/cancel/${oauthSession.sessionId}`, {
-          method: 'POST',
-          credentials: 'include',
-        });
-      } catch {
-        // Ignore cancel errors
-      }
-    }
-    setOauthSession(null);
-    setConnectingProvider(null);
-    setAuthCodeInput('');
-    popupOpenedRef.current = null;
-  };
-
-  const submitAuthCodeToSession = async () => {
-    if (!oauthSession?.sessionId || !authCodeInput.trim()) {
-      return;
-    }
-
-    setProviderError(null);
-
-    // Extract code from URL if user pasted the full callback URL
-    let code = authCodeInput.trim();
-    if (code.includes('code=')) {
-      try {
-        const url = new URL(code);
-        const extractedCode = url.searchParams.get('code');
-        if (extractedCode) {
-          code = extractedCode;
-        }
-      } catch {
-        // Not a valid URL, try to extract code parameter manually
-        const match = code.match(/code=([^&\s]+)/);
-        if (match) {
-          code = match[1];
-        }
-      }
-    }
-
-    try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
-
-      const res = await fetch(`/api/onboarding/cli/${oauthSession.providerId}/code/${oauthSession.sessionId}`, {
-        method: 'POST',
-        credentials: 'include',
-        headers,
-        body: JSON.stringify({ code }),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to submit auth code');
-      }
-
-      // Clear the input and continue polling - the CLI should now complete
-      setAuthCodeInput('');
-
-      // If immediate success, complete the flow
-      if (data.status === 'success') {
-        await completeAuthFlow(oauthSession.providerId, oauthSession.sessionId);
-      }
-    } catch (err) {
-      setProviderError(err instanceof Error ? err.message : 'Failed to submit auth code');
-    }
+    // ProviderAuthFlow will handle the rest when it mounts
   };
 
   const submitApiKey = async (provider: AIProvider) => {
@@ -787,7 +564,7 @@ export function WorkspaceSettingsPanel({
                             name: provider.name,
                             displayName: provider.displayName,
                             color: provider.color,
-                            requiresUrlCopy: provider.id === 'openai',
+                            requiresUrlCopy: provider.id === 'codex',
                           }}
                           workspaceId={workspaceId}
                           csrfToken={csrfToken}
@@ -795,16 +572,13 @@ export function WorkspaceSettingsPanel({
                           onSuccess={() => {
                             setProviderStatus(prev => ({ ...prev, [provider.id]: true }));
                             setConnectingProvider(null);
-                            setOauthSession(null);
                           }}
                           onCancel={() => {
                             setConnectingProvider(null);
-                            setOauthSession(null);
                           }}
                           onError={(err) => {
                             setProviderError(err);
                             setConnectingProvider(null);
-                            setOauthSession(null);
                           }}
                         />
                       ) : showApiKeyFallback[provider.id] ? (

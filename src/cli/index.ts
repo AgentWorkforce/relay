@@ -2642,46 +2642,27 @@ program
     console.log(cyan('═══════════════════════════════════════════════════'));
     console.log('');
 
-    // Get or create auth session
-    let authSessionId = options.token;
+    // Get auth session from token
+    const authSessionId = options.token;
 
     if (!authSessionId) {
-      // No token provided - create a session via the API
-      console.log('Creating auth session...');
-      try {
-        const response = await fetch(`${CLOUD_URL}/api/auth/codex-helper/cli-session`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-        });
-
-        if (!response.ok) {
-          const error = await response.json().catch(() => ({})) as { error?: string };
-          console.log('');
-          console.log(red('Failed to create auth session.'));
-          console.log('');
-          if (response.status === 401) {
-            console.log('To use this command, run it with a token from the Agent Relay dashboard:');
-            console.log('');
-            console.log(cyan('  npx agent-relay codex-auth --token=<TOKEN>'));
-            console.log('');
-            console.log('Get the token from: Settings → Connect Codex → "Use CLI helper"');
-          } else {
-            console.log(`Error: ${error.error || response.statusText}`);
-          }
-          process.exit(1);
-        }
-
-        const data = await response.json() as { authSessionId: string };
-        authSessionId = data.authSessionId;
-      } catch (err) {
-        console.log(red('Failed to connect to Agent Relay Cloud.'));
-        console.log(`URL: ${CLOUD_URL}`);
-        console.log(`Error: ${err instanceof Error ? err.message : String(err)}`);
-        process.exit(1);
-      }
+      // No token provided - show instructions
+      console.log(red('Missing --token parameter.'));
+      console.log('');
+      console.log('To connect Codex, follow these steps:');
+      console.log('');
+      console.log('  1. Go to the Agent Relay dashboard');
+      console.log('  2. Click "Connect with Codex" (Settings → AI Providers)');
+      console.log('  3. Copy the command shown (it includes the token)');
+      console.log('  4. Run the command in your terminal');
+      console.log('');
+      console.log('The command will look like:');
+      console.log(cyan('  npx agent-relay codex-auth --token=<TOKEN>'));
+      console.log('');
+      process.exit(1);
     }
 
-    console.log(`Session: ${authSessionId?.slice(0, 8)}...`);
+    console.log(`Session: ${authSessionId.slice(0, 8)}...`);
     console.log(`Listening on port: ${cyan(String(CALLBACK_PORT))}`);
     console.log('');
 

@@ -48,7 +48,7 @@ function setCachedAccess(userId: string, workspaceId: string, access: Omit<Cache
   workspaceAccessCache.set(key, { ...access, cachedAt: Date.now() });
 }
 
-function invalidateCachedAccess(userId: string, workspaceId?: string): void {
+function _invalidateCachedAccess(userId: string, workspaceId?: string): void {
   if (workspaceId) {
     workspaceAccessCache.delete(`${userId}:${workspaceId}`);
   } else {
@@ -446,10 +446,10 @@ workspacesRouter.get('/accessible', async (req: Request, res: Response) => {
         });
 
         // Find workspaces that contain these repos
-        const accessibleRepoNames = new Set(reposResult.repositories.map((r) => r.fullName));
+        const _accessibleRepoNames = new Set(reposResult.repositories.map((r) => r.fullName));
 
         // Get all repos in the system
-        const allRepos = await db.repositories.findByUserId(userId); // Will need to expand this
+        const _allRepos = await db.repositories.findByUserId(userId); // Will need to expand this
 
         // Actually, we need a different approach - get all workspaces with their repos
         // and check if user has access to any of them
@@ -535,7 +535,7 @@ workspacesRouter.get('/accessible', async (req: Request, res: Response) => {
  */
 workspacesRouter.get('/:id', requireWorkspaceAccess, async (req: Request, res: Response) => {
   const { id } = req.params;
-  const workspaceAccess = (req as any).workspaceAccess;
+  const _workspaceAccess = (req as any).workspaceAccess;
 
   try {
     const workspace = await db.workspaces.findById(id);
