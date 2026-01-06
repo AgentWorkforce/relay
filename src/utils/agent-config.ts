@@ -138,7 +138,7 @@ export function buildClaudeArgs(
   const config = findAgentConfig(agentName, projectRoot);
 
   if (!config) {
-    return existingArgs;
+    return [...existingArgs]; // Return a copy to avoid reference issues
   }
 
   const newArgs = [...existingArgs];

@@ -67,9 +67,38 @@ fi
 GHEOF
   chmod +x "/tmp/gh-token-helper.sh"
 
-  # gh CLI will use GH_TOKEN if set; we export a function to refresh it
-  # For now, set it once at startup (will be refreshed by the credential helper for git operations)
-  # Retry a few times in case the cloud API isn't ready yet
+  # Create gh wrapper that auto-refreshes token on each invocation
+  # This ensures gh always has a valid token without agents needing to do anything
+  GH_REAL=$(which gh 2>/dev/null || echo "/usr/bin/gh")
+  if [[ -x "${GH_REAL}" ]]; then
+    cat > "/tmp/gh-wrapper" <<GHWRAPPER
+#!/usr/bin/env bash
+# Auto-refreshing gh wrapper - fetches fresh token on each invocation
+export GH_TOKEN=\$(/tmp/gh-token-helper.sh 2>/dev/null)
+if [[ -z "\${GH_TOKEN}" ]]; then
+  echo "gh-wrapper: Failed to fetch GitHub token" >&2
+  echo "gh-wrapper: Check CLOUD_API_URL, WORKSPACE_ID, and WORKSPACE_TOKEN are set" >&2
+  exit 1
+fi
+exec "${GH_REAL}" "\$@"
+GHWRAPPER
+    chmod +x "/tmp/gh-wrapper"
+
+    # Create symlink or copy to override the real gh
+    # We use /usr/local/bin which comes before /usr/bin in PATH
+    if [[ -w "/usr/local/bin" ]]; then
+      cp "/tmp/gh-wrapper" "/usr/local/bin/gh"
+      log "Installed auto-refreshing gh wrapper to /usr/local/bin/gh"
+    else
+      # If we can't write to /usr/local/bin, add /tmp to PATH
+      export PATH="/tmp:${PATH}"
+      mv "/tmp/gh-wrapper" "/tmp/gh"
+      log "Added auto-refreshing gh wrapper to PATH"
+    fi
+  fi
+
+  # Also set GH_TOKEN at startup for any tools that read it directly
+  # (The wrapper handles runtime refresh, this is just for initialization)
   export GH_TOKEN=""
   for attempt in 1 2 3; do
     GH_TOKEN=$(/tmp/gh-token-helper.sh 2>/dev/null || echo "")
@@ -81,7 +110,7 @@ GHEOF
   if [[ -n "${GH_TOKEN}" ]]; then
     log "GitHub CLI configured with fresh token"
   else
-    log "WARN: Could not fetch GitHub token for gh CLI"
+    log "WARN: Could not fetch initial GitHub token for gh CLI"
   fi
 
 # Fallback: Use static GITHUB_TOKEN if provided (legacy mode)

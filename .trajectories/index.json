@@ -352,6 +352,13 @@
       "completedAt": "2026-01-06T12:58:24.003Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_xy9vifpqet80.json"
     },
+    "traj_78ffm31jn3uk": {
+      "title": "Fix agent token fetch and seamless gh CLI",
+      "status": "completed",
+      "startedAt": "2026-01-06T16:24:13.901Z",
+      "completedAt": "2026-01-06T16:24:50.235Z",
+      "path": "/home/user/relay/.trajectories/completed/2026-01/traj_78ffm31jn3uk.json"
+    },
     "traj_v9dkdoxylyid": {
       "title": "Implement first-class user messaging with channels and DMs",
       "status": "completed",

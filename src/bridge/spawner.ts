@@ -12,6 +12,7 @@ import { resolveCommand } from '../utils/command-resolver.js';
 import { PtyWrapper, type PtyWrapperConfig, type SummaryEvent, type SessionEndEvent } from '../wrapper/pty-wrapper.js';
 import { selectShadowCli } from './shadow-cli.js';
 import { AgentPolicyService, type CloudPolicyFetcher } from '../policy/agent-policy.js';
+import { buildClaudeArgs } from '../utils/agent-config.js';
 import type {
   SpawnRequest,
   SpawnResult,
@@ -263,6 +264,16 @@ export class AgentSpawner {
       const isClaudeCli = commandName.startsWith('claude');
       if (isClaudeCli && !args.includes('--dangerously-skip-permissions')) {
         args.push('--dangerously-skip-permissions');
+      }
+
+      // Apply agent config (model, --agent flag) from .claude/agents/ if available
+      // This ensures spawned agents respect their profile settings
+      if (isClaudeCli) {
+        const configuredArgs = buildClaudeArgs(name, args, this.projectRoot);
+        // Replace args with configured version (includes --model and --agent if found)
+        args.length = 0;
+        args.push(...configuredArgs);
+        if (debug) console.log(`[spawner:debug] Applied agent config for ${name}: ${args.join(' ')}`);
       }
 
       // Add --dangerously-bypass-approvals-and-sandbox for Codex agents

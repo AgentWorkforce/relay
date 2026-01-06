@@ -156,21 +156,21 @@ gitRouter.get('/token', async (req: Request, res: Response) => {
       });
     }
 
-    // Get user OAuth token from user's login connection (GITHUB_USER integration)
-    // This is the user's personal OAuth token, not the GitHub App installation token
-    // Required for gh CLI operations that need user context (e.g., creating PRs)
+    // Try to get user OAuth token from github-app-oauth connection_config first
+    // Fall back to separate 'github' user connection if available
     let userToken: string | null = null;
     try {
-      // Look up the user to get their login connection ID
-      const user = await db.users.findById(userId);
-      if (user?.nangoConnectionId) {
-        userToken = await nangoService.getGithubUserToken(user.nangoConnectionId);
-        console.log(`[git] Retrieved user OAuth token from login connection`);
-      } else {
-        console.log('[git] User has no login connection (nangoConnectionId is null)');
+      userToken = await nangoService.getGithubUserOAuthToken(repoWithConnection.nangoConnectionId);
+    } catch {
+      // Try the separate github user connection if available
+      const userRepo = repos.find(r => r.nangoConnectionId && r.nangoConnectionId !== repoWithConnection.nangoConnectionId);
+      if (userRepo?.nangoConnectionId) {
+        try {
+          userToken = await nangoService.getGithubUserToken(userRepo.nangoConnectionId);
+        } catch {
+          console.log('[git] No github user token available');
+        }
       }
-    } catch (err) {
-      console.log('[git] Failed to get user OAuth token:', err instanceof Error ? err.message : err);
     }
 
     // GitHub App installation tokens expire after 1 hour
