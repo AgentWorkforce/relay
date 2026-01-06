@@ -215,31 +215,31 @@ export async function startCLIAuth(
         session.error = matchedError.message;
         session.errorHint = matchedError.hint;
         session.recoverable = matchedError.recoverable;
-        // Don't respond to any prompts in this chunk - let the error be reported
-        // The frontend will show the error and let user decide to retry
-        return;
       }
 
-      // Handle prompts (only if no error was detected in this chunk)
-      const matchingPrompt = findMatchingPrompt(data, config.prompts, respondedPrompts);
-      if (matchingPrompt) {
-        respondedPrompts.add(matchingPrompt.description);
-        session.promptsHandled.push(matchingPrompt.description);
-        logger.info('Auto-responding to prompt', { description: matchingPrompt.description });
+      // Don't auto-respond to prompts if we're in error state
+      // This prevents responding to "Press Enter to retry" after an error
+      if (session.status !== 'error') {
+        const matchingPrompt = findMatchingPrompt(data, config.prompts, respondedPrompts);
+        if (matchingPrompt) {
+          respondedPrompts.add(matchingPrompt.description);
+          session.promptsHandled.push(matchingPrompt.description);
+          logger.info('Auto-responding to prompt', { description: matchingPrompt.description });
 
-        const delay = matchingPrompt.delay ?? 100;
-        setTimeout(() => {
-          try {
-            proc.write(matchingPrompt.response);
-          } catch {
-            // Process may have exited
-          }
-        }, delay);
+          const delay = matchingPrompt.delay ?? 100;
+          setTimeout(() => {
+            try {
+              proc.write(matchingPrompt.response);
+            } catch {
+              // Process may have exited
+            }
+          }, delay);
+        }
       }
 
-      // Extract auth URL
+      // Extract auth URL (only if not in error state and don't have URL yet)
       const match = cleanText.match(config.urlPattern);
-      if (match && match[1] && !session.authUrl) {
+      if (match && match[1] && !session.authUrl && session.status !== 'error') {
         session.authUrl = match[1];
         session.status = 'waiting_auth';
         logger.info('Auth URL captured', { provider, url: session.authUrl });
@@ -261,7 +261,8 @@ export async function startCLIAuth(
       }
 
       // Check for success and try to extract credentials
-      if (matchesSuccessPattern(data, config.successPatterns)) {
+      // Don't override error status - if there was an error, keep it
+      if (session.status !== 'error' && matchesSuccessPattern(data, config.successPatterns)) {
         session.status = 'success';
         logger.info('Success pattern detected, attempting credential extraction', { provider });
 
