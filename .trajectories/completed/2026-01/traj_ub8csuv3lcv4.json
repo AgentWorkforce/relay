@@ -8,7 +8,7 @@
       "id": "workspace-websocket-stability"
     }
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-01-06T18:13:23.603Z",
   "agents": [
     {
@@ -36,11 +36,18 @@
           },
           "significance": "high"
         }
-      ]
+      ],
+      "endedAt": "2026-01-06T18:16:51.462Z"
     }
   ],
   "commits": [],
   "filesChanged": [],
   "projectId": "/home/user/relay",
-  "tags": []
+  "tags": [],
+  "completedAt": "2026-01-06T18:16:51.462Z",
+  "retrospective": {
+    "summary": "Added ping/pong keepalive to main and bridge WebSockets to fix connection instability",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
 }
