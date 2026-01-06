@@ -117,8 +117,21 @@ export default function DashboardPage() {
         setIsCloudMode(true);
 
         // Track which providers are already connected
+        // Map backend IDs to frontend IDs for consistency
+        const BACKEND_TO_FRONTEND_MAP: Record<string, string> = {
+          openai: 'codex', // Backend stores 'openai', frontend uses 'codex'
+        };
         if (session.connectedProviders) {
-          setConnectedProviders(session.connectedProviders.map((p: { provider: string }) => p.provider));
+          const providers: string[] = [];
+          session.connectedProviders.forEach((p: { provider: string }) => {
+            providers.push(p.provider);
+            // Also add the frontend ID if there's a mapping
+            const frontendId = BACKEND_TO_FRONTEND_MAP[p.provider];
+            if (frontendId) {
+              providers.push(frontendId);
+            }
+          });
+          setConnectedProviders(providers);
         }
 
         const [workspacesRes, reposRes] = await Promise.all([

@@ -171,9 +171,18 @@ export function WorkspaceSettingsPanel({
           setCustomDomain(wsResult.data.customDomain);
         }
         // Mark connected providers
+        // Map backend IDs to frontend IDs for consistency
+        const BACKEND_TO_FRONTEND_MAP: Record<string, string> = {
+          openai: 'codex', // Backend stores 'openai', frontend uses 'codex'
+        };
         const connected: Record<string, boolean> = {};
         wsResult.data.config.providers.forEach((p) => {
           connected[p] = true;
+          // Also mark the frontend ID as connected if there's a mapping
+          const frontendId = BACKEND_TO_FRONTEND_MAP[p];
+          if (frontendId) {
+            connected[frontendId] = true;
+          }
         });
         setProviderStatus(connected);
       } else {
@@ -627,6 +636,17 @@ export function WorkspaceSettingsPanel({
                         </div>
                       ) : provider.supportsOAuth ? (
                         <div className="space-y-3">
+                          {/* CLI info for Codex */}
+                          {provider.id === 'codex' && (
+                            <div className="p-3 bg-accent-cyan/10 border border-accent-cyan/30 rounded-lg">
+                              <p className="text-sm text-accent-cyan font-medium mb-1">CLI-assisted authentication</p>
+                              <p className="text-xs text-accent-cyan/80">
+                                Codex auth uses a CLI command to capture the OAuth callback locally.
+                                You&apos;ll run <code className="bg-bg-deep px-1 rounded">npx agent-relay codex-auth</code> in your terminal,
+                                then sign in with OpenAI. The CLI handles the rest automatically.
+                              </p>
+                            </div>
+                          )}
                           {/* Device flow toggle for providers that support it */}
                           {provider.supportsDeviceFlow && (
                             <label className="flex items-center gap-2 text-xs text-text-secondary cursor-pointer">
