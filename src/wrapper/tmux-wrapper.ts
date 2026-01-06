@@ -513,13 +513,6 @@ export class TmuxWrapper extends BaseWrapper {
   }
 
   /**
-   * Get the current agent ID
-   */
-  getAgentId(): string | undefined {
-    return this.agentId;
-  }
-
-  /**
    * Inject usage instructions for the agent including persistence protocol
    */
   private async injectInstructions(): Promise<void> {
@@ -1520,11 +1513,10 @@ export class TmuxWrapper extends BaseWrapper {
    * Reset session-specific state for wrapper reuse.
    * Call this when starting a new session with the same wrapper instance.
    */
-  resetSessionState(): void {
-    this.sessionEndProcessed = false;
+  override resetSessionState(): void {
+    super.resetSessionState();
+    // TmuxWrapper-specific state
     this.lastSummaryHash = '';
-    this.lastSummaryRawContent = '';
-    this.sessionEndData = undefined;
   }
 
   /**
@@ -1721,13 +1713,5 @@ export class TmuxWrapper extends BaseWrapper {
 
     // Disconnect relay
     this.client.destroy();
-  }
-
-  get isRunning(): boolean {
-    return this.running;
-  }
-
-  get name(): string {
-    return this.config.name;
   }
 }

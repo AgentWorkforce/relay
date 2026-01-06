@@ -234,9 +234,7 @@ export abstract class BaseWrapper extends EventEmitter {
     // Only send if client ready
     if (this.client.state !== 'READY') return;
 
-    this.client.sendMessage(cmd.to, cmd.body, 'message', {
-      thread: cmd.thread,
-    });
+    this.client.sendMessage(cmd.to, cmd.body, cmd.kind, cmd.data, cmd.thread);
   }
 
   // =========================================================================

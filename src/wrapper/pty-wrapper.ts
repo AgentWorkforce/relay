@@ -388,9 +388,7 @@ export class PtyWrapper extends BaseWrapper {
       const response = await this.continuity.handleCommand(this.config.name, command);
       if (response) {
         // Inject response via relay message to self
-        this.client.sendMessage(this.config.name, response, 'message', {
-          thread: 'continuity-response',
-        });
+        this.client.sendMessage(this.config.name, response, 'message', undefined, 'continuity-response');
         console.log(`[pty:${this.config.name}] Continuity command handled: ${command.type}`);
       }
     } catch (err: any) {
@@ -1474,14 +1472,6 @@ export class PtyWrapper extends BaseWrapper {
     }
   }
 
-  get isRunning(): boolean {
-    return this.running;
-  }
-
-  get name(): string {
-    return this.config.name;
-  }
-
   get pid(): number | undefined {
     return this.ptyProcess?.pid;
   }
@@ -1607,15 +1597,5 @@ export class PtyWrapper extends BaseWrapper {
       agentName: this.config.name,
       marker: sessionEnd,
     });
-  }
-
-  /**
-   * Reset session-specific state for wrapper reuse.
-   * Call this when starting a new session with the same wrapper instance.
-   */
-  resetSessionState(): void {
-    this.sessionEndProcessed = false;
-    this.lastSummaryRawContent = '';
-    this.sessionEndData = undefined;
   }
 }
