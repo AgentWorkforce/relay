@@ -17,6 +17,7 @@ import {
   type PayloadKind,
   type SpeakOnTrigger,
   type LogPayload,
+  type EntityType,
   PROTOCOL_VERSION,
 } from '../protocol/types.js';
 import { encodeFrame, FrameParser } from '../protocol/framing.js';
@@ -27,6 +28,8 @@ export type ClientState = 'DISCONNECTED' | 'CONNECTING' | 'HANDSHAKING' | 'READY
 export interface ClientConfig {
   socketPath: string;
   agentName: string;
+  /** Entity type: 'agent' (default) or 'user' for human users */
+  entityType?: EntityType;
   /** Optional CLI identifier to surface to the dashboard */
   cli?: string;
   /** Optional program identifier (e.g., 'claude', 'gpt-4o') */
@@ -37,6 +40,10 @@ export interface ClientConfig {
   task?: string;
   /** Optional working directory to surface in registry/dashboard */
   workingDirectory?: string;
+  /** Display name for human users */
+  displayName?: string;
+  /** Avatar URL for human users */
+  avatarUrl?: string;
   /** Suppress client-side console logging */
   quiet?: boolean;
   reconnect: boolean;
@@ -359,11 +366,14 @@ export class RelayClient {
       ts: Date.now(),
       payload: {
         agent: this.config.agentName,
+        entityType: this.config.entityType,
         cli: this.config.cli,
         program: this.config.program,
         model: this.config.model,
         task: this.config.task,
         workingDirectory: this.config.workingDirectory,
+        displayName: this.config.displayName,
+        avatarUrl: this.config.avatarUrl,
         capabilities: {
           ack: true,
           resume: true,

@@ -10,6 +10,7 @@ import { fileURLToPath } from 'url';
 import { SqliteStorageAdapter } from '../storage/sqlite-adapter.js';
 import type { StorageAdapter, StoredMessage } from '../storage/adapter.js';
 import { RelayClient } from '../wrapper/client.js';
+import { UserBridge } from './user-bridge.js';
 import { computeNeedsAttention } from './needs-attention.js';
 import { computeSystemMetrics, formatPrometheusMetrics } from './metrics.js';
 import { MultiProjectClient } from '../bridge/multi-project-client.js';
@@ -738,6 +739,28 @@ export async function startDashboard(
 
   // Start default relay client connection (non-blocking)
   getRelayClient('Dashboard').catch(() => {});
+
+  // User bridge for human-to-human and human-to-agent messaging
+  const userBridge = new UserBridge({
+    socketPath,
+    createRelayClient: async (options) => {
+      const client = new RelayClient({
+        socketPath: options.socketPath,
+        agentName: options.agentName,
+        entityType: options.entityType,
+        cli: 'dashboard',
+        reconnect: true,
+        maxReconnectAttempts: 5,
+      });
+
+      client.onError = (err) => {
+        console.error(`[user-bridge] Relay client error for ${options.agentName}:`, err.message);
+      };
+
+      await client.connect();
+      return client;
+    },
+  });
 
   // Bridge client for cross-project messaging
   let bridgeClient: MultiProjectClient | undefined;

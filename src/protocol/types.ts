@@ -26,7 +26,14 @@ export type MessageType =
   | 'UNSUBSCRIBE'
   | 'SHADOW_BIND'
   | 'SHADOW_UNBIND'
-  | 'LOG'; // Agent output for dashboard streaming
+  | 'LOG' // Agent output for dashboard streaming
+  // Channel messaging types
+  | 'CHANNEL_JOIN'
+  | 'CHANNEL_LEAVE'
+  | 'CHANNEL_MESSAGE'
+  | 'CHANNEL_INFO'
+  | 'CHANNEL_MEMBERS'
+  | 'CHANNEL_TYPING';
 
 export type PayloadKind = 'message' | 'action' | 'state' | 'thinking';
 
@@ -41,6 +48,13 @@ export interface Envelope<T = unknown> {
   payload: T;
 }
 
+/**
+ * Entity type distinguishes between AI agents and human users.
+ * - 'agent': AI agent (Claude, GPT, custom agents)
+ * - 'user': Human user (via dashboard WebSocket)
+ */
+export type EntityType = 'agent' | 'user';
+
 // Handshake payloads
 export interface HelloPayload {
   agent: string;
@@ -50,6 +64,8 @@ export interface HelloPayload {
     max_inflight: number;
     supports_topics: boolean;
   };
+  /** Entity type: 'agent' (default) or 'user' for human users */
+  entityType?: EntityType;
   /** Optional hint about which CLI the agent is using (claude, codex, gemini, etc.) */
   cli?: string;
   /** Optional program identifier (e.g., 'claude', 'gpt-4o') */
@@ -60,6 +76,10 @@ export interface HelloPayload {
   task?: string;
   /** Optional working directory hint for registry/dashboard */
   workingDirectory?: string;
+  /** Display name for human users */
+  displayName?: string;
+  /** Avatar URL for human users */
+  avatarUrl?: string;
   session?: {
     resume_token?: string;
   };
