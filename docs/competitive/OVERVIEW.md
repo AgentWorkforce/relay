@@ -1,6 +1,7 @@
 # Multi-Agent Orchestration: Competitive Analysis
 
 *Generated: December 2025*
+*Updated: January 2026*
 
 ## Executive Summary
 
@@ -33,7 +34,7 @@ This analysis evaluates 16 multi-agent orchestration tools against agent-relay. 
 | Mimir | Optional | Shared DB | Neo4j graph | No | Built-in (Neo4j) |
 | Claude MPM | No | Orchestrator | Subprocess | No | Pluggable |
 | Multi-MCP | Yes | Parallel LLM | asyncio.gather | N/A | None |
-| Every Code | Yes | Consensus | Racing pattern | Partial | Session-based |
+| Every Code | Yes (multi) | Multi-LLM orchestration | Consensus/Racing | Partial | Session-based |
 | Orc | Yes | File-based | Drums directory | No | State files |
 | Pied Piper | Yes | Task-based | Beads labels | No | Beads |
 
@@ -353,12 +354,39 @@ Policy-first with PII detection, SQL injection blocking. Multi-model routing bas
 ---
 
 ### 11. Every Code (just-every/code)
-**Best Consensus Approach**
+**Best Multi-LLM Consensus Approach**
 
-Multiple agents compete or collaborate via `/plan` (consensus) and `/solve` (fastest wins).
+Community fork of OpenAI Codex CLI with multi-model orchestration. Part of the just-every ecosystem (Ensemble, MAGI).
 
-**Best for:** Quick task completion
-**Not competing on:** Persistent collaboration
+**Communication:** Internal orchestration across multiple LLM providers
+- `/plan` - Consensus strategy (Claude + GPT + Gemini agree on approach)
+- `/solve` - Racing strategy (fastest correct answer wins)
+- `/code` - Implementation via multiple git worktrees
+- Auto Drive - Self-healing autonomous execution
+- Auto Review - Background code review with separate worktree
+
+**Key Features:**
+- Browser integration via Chrome DevTools Protocol (CDP)
+- Ensemble library for multi-provider abstraction
+- Rust core for sandboxing (seatbelt/landlock)
+- 3,000+ stars, 7,100+ forks (Codex heritage)
+
+**Pros:**
+- Model diversity catches blind spots
+- Quality assurance through consensus
+- Self-healing Auto Drive for autonomous work
+- Native browser automation
+
+**Cons:**
+- Requires multiple API keys (OpenAI, Anthropic, Google)
+- Higher costs (multiple model calls per task)
+- Session-based, not persistent collaboration
+- No agent-to-agent messaging
+
+**Best for:** Individual developers wanting quality assurance through model diversity
+**Not competing on:** Persistent agent collaboration, real-time messaging
+
+**See:** [EVERY_CODE.md](./EVERY_CODE.md) for detailed analysis
 
 ---
 
