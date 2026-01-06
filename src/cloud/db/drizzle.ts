@@ -75,6 +75,7 @@ export interface UserQueries {
   findByEmail(email: string): Promise<schema.User | null>;
   findByNangoConnectionId(connectionId: string): Promise<schema.User | null>;
   findByIncomingConnectionId(connectionId: string): Promise<schema.User | null>;
+  findByPlan(plan: string): Promise<schema.User[]>;
   upsert(data: schema.NewUser): Promise<schema.User>;
   update(id: string, data: Partial<Omit<schema.User, 'id' | 'createdAt'>>): Promise<void>;
   completeOnboarding(userId: string): Promise<void>;
@@ -121,6 +122,12 @@ export const userQueries: UserQueries = {
     const db = getDb();
     const result = await db.select().from(schema.users).where(eq(schema.users.incomingConnectionId, connectionId));
     return result[0] ?? null;
+  },
+
+  async findByPlan(plan: string): Promise<schema.User[]> {
+    const db = getDb();
+    const result = await db.select().from(schema.users).where(eq(schema.users.plan, plan));
+    return result;
   },
 
   async upsert(data: schema.NewUser): Promise<schema.User> {

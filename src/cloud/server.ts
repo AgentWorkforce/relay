@@ -16,7 +16,7 @@ import { RedisStore } from 'connect-redis';
 import { WebSocketServer, WebSocket } from 'ws';
 import { getConfig } from './config.js';
 import { runMigrations } from './db/index.js';
-import { getScalingOrchestrator, ScalingOrchestrator } from './services/index.js';
+import { getScalingOrchestrator, ScalingOrchestrator, getComputeEnforcementService, ComputeEnforcementService } from './services/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -364,6 +364,7 @@ export async function createServer(): Promise<CloudServer> {
   // Server lifecycle
   let server: http.Server | null = null;
   let scalingOrchestrator: ScalingOrchestrator | null = null;
+  let computeEnforcement: ComputeEnforcementService | null = null;
 
   // Create HTTP server for WebSocket upgrade handling
   const httpServer = http.createServer(app);
@@ -624,6 +625,15 @@ export async function createServer(): Promise<CloudServer> {
           console.warn('[cloud] Failed to initialize scaling orchestrator:', error);
           // Non-fatal - server can run without auto-scaling
         }
+
+        // Start compute enforcement service (checks every 15 min)
+        try {
+          computeEnforcement = getComputeEnforcementService();
+          computeEnforcement.start();
+          console.log('[cloud] Compute enforcement service started');
+        } catch (error) {
+          console.warn('[cloud] Failed to start compute enforcement:', error);
+        }
       }
 
       return new Promise((resolve) => {
@@ -640,6 +650,11 @@ export async function createServer(): Promise<CloudServer> {
       // Shutdown scaling orchestrator
       if (scalingOrchestrator) {
         await scalingOrchestrator.shutdown();
+      }
+
+      // Stop compute enforcement service
+      if (computeEnforcement) {
+        computeEnforcement.stop();
       }
 
       // Close WebSocket server

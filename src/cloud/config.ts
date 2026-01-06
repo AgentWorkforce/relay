@@ -76,6 +76,9 @@ export interface CloudConfig {
       enterpriseYearly?: string;
     };
   };
+
+  // Admin users (exempt from billing, get enterprise features)
+  adminUsers: string[];
 }
 
 function requireEnv(name: string): string {
@@ -168,7 +171,21 @@ export function loadConfig(): CloudConfig {
         enterpriseYearly: optionalEnv('STRIPE_ENTERPRISE_YEARLY_PRICE_ID'),
       },
     },
+
+    // Admin users - comma-separated GitHub usernames (e.g., "khaliqgant,admin2")
+    adminUsers: (optionalEnv('ADMIN_USERS') || '')
+      .split(',')
+      .map((u) => u.trim().toLowerCase())
+      .filter(Boolean),
   };
+}
+
+/**
+ * Check if a GitHub username is an admin user
+ */
+export function isAdminUser(githubUsername: string): boolean {
+  const config = getConfig();
+  return config.adminUsers.includes(githubUsername.toLowerCase());
 }
 
 // Singleton config instance

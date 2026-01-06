@@ -341,7 +341,7 @@ interface ComputeProvisioner {
   restart(workspace: Workspace): Promise<void>;
 
   // Vertical scaling - resize workspace resources
-  resize?(workspace: Workspace, tier: ResourceTier): Promise<void>;
+  resize?(workspaceOrId: Workspace | string, tier: ResourceTier, skipRestart?: boolean): Promise<void>;
 
   // Update max agent limit
   updateAgentLimit?(workspace: Workspace, newLimit: number): Promise<void>;
@@ -652,6 +652,18 @@ class FlyProvisioner implements ComputeProvisioner {
     // Fly.io takes daily snapshots automatically; we configure retention
     const volume = await this.createVolume(appName);
 
+    // Determine instance size based on user's plan
+    // Free tier gets smaller instance (1 CPU, 1GB) to reduce costs (~$7/mo vs ~$15/mo)
+    const user = await db.users.findById(workspace.userId);
+    const userPlan = (user?.plan as PlanType) || 'free';
+    const isFreeTier = userPlan === 'free';
+    const guestConfig = {
+      cpu_kind: 'shared' as const,
+      cpus: isFreeTier ? 1 : 2,
+      memory_mb: isFreeTier ? 1024 : 2048,
+    };
+    console.log(`[fly] Using ${guestConfig.cpus} CPU / ${guestConfig.memory_mb}MB for ${userPlan} plan`);
+
     // Create machine with auto-stop/start for cost optimization
     const machineResponse = await fetchWithRetry(
       `https://api.machines.dev/v1/apps/${appName}/machines`,
@@ -726,13 +738,8 @@ class FlyProvisioner implements ComputeProvisioner {
                 grace_period: '10s',
               },
             },
-            // Start with small tier (shared CPUs) - scales up based on plan
-            // Free tier uses shared CPUs for cost efficiency
-            guest: {
-              cpu_kind: 'shared',
-              cpus: 2,
-              memory_mb: 2048,
-            },
+            // Instance size based on plan - free tier gets smaller instance
+            guest: guestConfig,
             // Mount the volume we created with snapshot settings
             mounts: [
               {
@@ -870,15 +877,27 @@ class FlyProvisioner implements ComputeProvisioner {
 
   /**
    * Resize workspace - vertical scaling via Fly Machines API
+   * @param skipRestart - If true, config is saved but machine won't restart (changes apply on next start)
    */
-  async resize(workspace: Workspace, tier: ResourceTier): Promise<void> {
-    if (!workspace.computeId) return;
+  async resize(workspaceOrId: Workspace | string, tier: ResourceTier, skipRestart = false): Promise<void> {
+    const workspaceId = typeof workspaceOrId === 'string' ? workspaceOrId : workspaceOrId.id;
+    const computeId = typeof workspaceOrId === 'string' ? undefined : workspaceOrId.computeId;
 
-    const appName = `ar-${workspace.id.substring(0, 8)}`;
+    // If passed just an ID, look up the workspace
+    let machineId = computeId;
+    if (!machineId) {
+      const workspace = await db.workspaces.findById(workspaceId);
+      if (!workspace?.computeId) return;
+      machineId = workspace.computeId;
+    }
+
+    const appName = `ar-${workspaceId.substring(0, 8)}`;
 
     // Update machine configuration
+    // If running: reboots with new specs (unless skip_launch: true)
+    // If stopped: config saved, applies on next start
     await fetchWithRetry(
-      `https://api.machines.dev/v1/apps/${appName}/machines/${workspace.computeId}`,
+      `https://api.machines.dev/v1/apps/${appName}/machines/${machineId}`,
       {
         method: 'POST',
         headers: {
@@ -897,11 +916,13 @@ class FlyProvisioner implements ComputeProvisioner {
               MAX_AGENTS: String(tier.maxAgents),
             },
           },
+          skip_launch: skipRestart, // If true, don't restart - changes apply on next start
         }),
       }
     );
 
-    console.log(`[fly] Resized workspace ${workspace.id} to ${tier.name} (${tier.cpuCores} CPU, ${tier.memoryMb}MB RAM)`);
+    const restartNote = skipRestart ? ' (will apply on next restart)' : ' (restarting)';
+    console.log(`[fly] Resized workspace ${workspaceId.substring(0, 8)} to ${tier.name} (${tier.cpuCores} CPU, ${tier.memoryMb}MB RAM)${restartNote}`);
   }
 
   /**
@@ -1798,8 +1819,9 @@ export class WorkspaceProvisioner {
 
   /**
    * Resize a workspace (vertical scaling)
+   * @param skipRestart - If true, config is saved but machine won't restart (changes apply on next start)
    */
-  async resize(workspaceId: string, tier: ResourceTier): Promise<void> {
+  async resize(workspaceId: string, tier: ResourceTier, skipRestart = false): Promise<void> {
     const workspace = await db.workspaces.findById(workspaceId);
     if (!workspace) {
       throw new Error('Workspace not found');
@@ -1809,7 +1831,7 @@ export class WorkspaceProvisioner {
       throw new Error('Resize not supported by current compute provider');
     }
 
-    await this.provisioner.resize(workspace, tier);
+    await this.provisioner.resize(workspace, tier, skipRestart);
 
     // Update workspace config with new limits
     await db.workspaces.updateConfig(workspaceId, {
