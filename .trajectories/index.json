@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-05T23:15:32.960Z",
+  "lastUpdated": "2026-01-06T06:25:03.243Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -319,9 +319,17 @@
     },
     "traj_avqeghu6pz5a": {
       "title": "Fix gh CLI authentication in workspace containers",
-      "status": "active",
+      "status": "completed",
       "startedAt": "2026-01-05T23:14:00.755Z",
-      "path": "/workspace/relay/.trajectories/active/traj_avqeghu6pz5a.json"
+      "completedAt": "2026-01-06T06:24:07.897Z",
+      "path": "/home/user/relay/.trajectories/completed/2026-01/traj_avqeghu6pz5a.json"
+    },
+    "traj_5ammh5qtvklq": {
+      "title": "Evaluate Fly.io Sprites and implement workspace resilience",
+      "status": "completed",
+      "startedAt": "2026-01-06T06:24:17.361Z",
+      "completedAt": "2026-01-06T06:25:03.223Z",
+      "path": "/home/user/relay/.trajectories/completed/2026-01/traj_5ammh5qtvklq.json"
     }
   }
 }

@@ -8,7 +8,7 @@
       "id": "agent-relay-323"
     }
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-01-05T23:14:00.755Z",
   "agents": [
     {
@@ -23,11 +23,18 @@
       "title": "Initial work",
       "agentName": "Lead",
       "startedAt": "2026-01-05T23:14:00.911Z",
-      "events": []
+      "events": [],
+      "endedAt": "2026-01-06T06:24:07.897Z"
     }
   ],
   "commits": [],
   "filesChanged": [],
   "projectId": "84085b56a3fa",
-  "tags": []
+  "tags": [],
+  "completedAt": "2026-01-06T06:24:07.897Z",
+  "retrospective": {
+    "summary": "Previous session - stale trajectory cleaned up",
+    "approach": "Standard approach",
+    "confidence": 0.5
+  }
 }
