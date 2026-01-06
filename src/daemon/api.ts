@@ -22,6 +22,7 @@ import type {
 import {
   startCLIAuth,
   getAuthSession,
+  submitAuthCode,
   cancelAuthSession,
   getSupportedProviders,
 } from './cli-auth.js';
@@ -427,6 +428,29 @@ export class DaemonApi extends EventEmitter {
           provider: session.provider,
         },
       };
+    });
+
+    // Submit auth code to PTY session
+    this.routes.set('POST /auth/cli/:provider/code/:sessionId', async (req): Promise<ApiResponse> => {
+      const { sessionId } = req.params;
+      const { code } = req.body as { code?: string };
+
+      if (!code || typeof code !== 'string') {
+        return { status: 400, body: { error: 'Auth code is required' } };
+      }
+
+      const result = await submitAuthCode(sessionId, code);
+      if (!result.success) {
+        return {
+          status: 400,
+          body: {
+            error: result.error || 'Failed to submit auth code',
+            needsRestart: result.needsRestart,
+          },
+        };
+      }
+
+      return { status: 200, body: { success: true, message: 'Auth code submitted' } };
     });
 
     // Cancel auth session
