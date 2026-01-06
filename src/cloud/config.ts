@@ -47,6 +47,9 @@ export interface CloudConfig {
         username: string;
         password: string;
       };
+      // Volume snapshot settings
+      snapshotRetentionDays?: number; // 1-60, default 14
+      volumeSizeGb?: number; // default 10
     };
     railway?: {
       apiToken: string;
@@ -136,6 +139,8 @@ export function loadConfig(): CloudConfig {
                   password: optionalEnv('GHCR_TOKEN')!,
                 }
               : undefined,
+            snapshotRetentionDays: parseInt(optionalEnv('FLY_SNAPSHOT_RETENTION_DAYS') || '14', 10),
+            volumeSizeGb: parseInt(optionalEnv('FLY_VOLUME_SIZE_GB') || '10', 10),
           }
         : undefined,
       railway: optionalEnv('RAILWAY_API_TOKEN')

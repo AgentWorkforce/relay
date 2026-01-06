@@ -376,6 +376,8 @@ class FlyProvisioner implements ComputeProvisioner {
   private cloudApiUrl: string;
   private sessionSecret: string;
   private registryAuth?: { username: string; password: string };
+  private snapshotRetentionDays: number;
+  private volumeSizeGb: number;
 
   constructor() {
     const config = getConfig();
@@ -389,6 +391,9 @@ class FlyProvisioner implements ComputeProvisioner {
     this.registryAuth = config.compute.fly.registryAuth;
     this.cloudApiUrl = config.publicUrl;
     this.sessionSecret = config.sessionSecret;
+    // Snapshot settings: default 14 days retention, 10GB volume
+    this.snapshotRetentionDays = Math.min(60, Math.max(1, config.compute.fly.snapshotRetentionDays ?? 14));
+    this.volumeSizeGb = config.compute.fly.volumeSizeGb ?? 10;
   }
 
   /**
@@ -400,6 +405,118 @@ class FlyProvisioner implements ComputeProvisioner {
       .createHmac('sha256', this.sessionSecret)
       .update(`workspace:${workspaceId}`)
       .digest('hex');
+  }
+
+  /**
+   * Create a volume with automatic snapshot settings
+   * Fly.io takes daily snapshots automatically; we configure retention
+   */
+  private async createVolume(appName: string): Promise<{ id: string; name: string }> {
+    const volumeName = 'workspace_data';
+
+    console.log(`[fly] Creating volume ${volumeName} with ${this.snapshotRetentionDays}-day snapshot retention...`);
+
+    const response = await fetchWithRetry(
+      `https://api.machines.dev/v1/apps/${appName}/volumes`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.apiToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: volumeName,
+          region: this.region,
+          size_gb: this.volumeSizeGb,
+          // Enable automatic daily snapshots (default is true, but be explicit)
+          auto_backup_enabled: true,
+          // Retain snapshots for configured days (default 5, we use 14)
+          snapshot_retention: this.snapshotRetentionDays,
+        }),
+      }
+    );
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Failed to create volume: ${error}`);
+    }
+
+    const volume = await response.json() as { id: string; name: string };
+    console.log(`[fly] Volume ${volume.id} created with auto-snapshots (${this.snapshotRetentionDays} days retention)`);
+    return volume;
+  }
+
+  /**
+   * Create an on-demand snapshot of a workspace volume
+   * Use before risky operations or as manual backup
+   */
+  async createSnapshot(appName: string, volumeId: string): Promise<{ id: string }> {
+    console.log(`[fly] Creating on-demand snapshot for volume ${volumeId}...`);
+
+    const response = await fetchWithRetry(
+      `https://api.machines.dev/v1/apps/${appName}/volumes/${volumeId}/snapshots`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.apiToken}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Failed to create snapshot: ${error}`);
+    }
+
+    const snapshot = await response.json() as { id: string };
+    console.log(`[fly] Snapshot ${snapshot.id} created`);
+    return snapshot;
+  }
+
+  /**
+   * List snapshots for a workspace volume
+   */
+  async listSnapshots(appName: string, volumeId: string): Promise<Array<{
+    id: string;
+    created_at: string;
+    size: number;
+  }>> {
+    const response = await fetchWithRetry(
+      `https://api.machines.dev/v1/apps/${appName}/volumes/${volumeId}/snapshots`,
+      {
+        headers: {
+          Authorization: `Bearer ${this.apiToken}`,
+        },
+      }
+    );
+
+    if (!response.ok) {
+      return [];
+    }
+
+    return await response.json() as Array<{ id: string; created_at: string; size: number }>;
+  }
+
+  /**
+   * Get volume info for a workspace
+   */
+  async getVolume(appName: string): Promise<{ id: string; name: string } | null> {
+    const response = await fetchWithRetry(
+      `https://api.machines.dev/v1/apps/${appName}/volumes`,
+      {
+        headers: {
+          Authorization: `Bearer ${this.apiToken}`,
+        },
+      }
+    );
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const volumes = await response.json() as Array<{ id: string; name: string }>;
+    return volumes.find(v => v.name === 'workspace_data') || null;
   }
 
   async provision(
@@ -530,8 +647,12 @@ class FlyProvisioner implements ComputeProvisioner {
       await this.allocateCertificate(appName, customHostname);
     }
 
-    // Stage: Machine
+    // Stage: Machine (includes volume creation)
     updateProvisioningStage(workspace.id, 'machine');
+
+    // Create volume with automatic daily snapshots before machine
+    // Fly.io takes daily snapshots automatically; we configure retention
+    const volume = await this.createVolume(appName);
 
     // Create machine with auto-stop/start for cost optimization
     const machineResponse = await fetchWithRetry(
@@ -613,6 +734,13 @@ class FlyProvisioner implements ComputeProvisioner {
               cpus: 2,
               memory_mb: 2048,
             },
+            // Mount the volume we created with snapshot settings
+            mounts: [
+              {
+                volume: volume.id,
+                path: '/data',
+              },
+            ],
           },
         }),
       }
@@ -1637,6 +1765,96 @@ export class WorkspaceProvisioner {
       currentTier: currentTier.name,
       targetTier: recommendedTier.name,
     };
+  }
+
+  // ============================================================================
+  // Snapshot Management
+  // ============================================================================
+
+  /**
+   * Create an on-demand snapshot of a workspace's volume
+   * Use before risky operations (e.g., major refactors, untrusted code execution)
+   */
+  async createSnapshot(workspaceId: string): Promise<{ snapshotId: string } | null> {
+    const workspace = await db.workspaces.findById(workspaceId);
+    if (!workspace) {
+      throw new Error('Workspace not found');
+    }
+
+    // Only Fly.io provisioner supports snapshots
+    if (!(this.provisioner instanceof FlyProvisioner)) {
+      console.warn('[provisioner] Snapshots only supported on Fly.io');
+      return null;
+    }
+
+    const appName = `ar-${workspace.id.substring(0, 8)}`;
+    const flyProvisioner = this.provisioner as FlyProvisioner;
+
+    // Get the volume
+    const volume = await flyProvisioner.getVolume(appName);
+    if (!volume) {
+      throw new Error('No volume found for workspace');
+    }
+
+    // Create snapshot
+    const snapshot = await flyProvisioner.createSnapshot(appName, volume.id);
+    return { snapshotId: snapshot.id };
+  }
+
+  /**
+   * List available snapshots for a workspace
+   * Includes both automatic daily snapshots and on-demand snapshots
+   */
+  async listSnapshots(workspaceId: string): Promise<Array<{
+    id: string;
+    createdAt: string;
+    sizeBytes: number;
+  }>> {
+    const workspace = await db.workspaces.findById(workspaceId);
+    if (!workspace) {
+      throw new Error('Workspace not found');
+    }
+
+    // Only Fly.io provisioner supports snapshots
+    if (!(this.provisioner instanceof FlyProvisioner)) {
+      return [];
+    }
+
+    const appName = `ar-${workspace.id.substring(0, 8)}`;
+    const flyProvisioner = this.provisioner as FlyProvisioner;
+
+    // Get the volume
+    const volume = await flyProvisioner.getVolume(appName);
+    if (!volume) {
+      return [];
+    }
+
+    // List snapshots
+    const snapshots = await flyProvisioner.listSnapshots(appName, volume.id);
+    return snapshots.map(s => ({
+      id: s.id,
+      createdAt: s.created_at,
+      sizeBytes: s.size,
+    }));
+  }
+
+  /**
+   * Get the volume ID for a workspace (needed for restore operations)
+   */
+  async getVolumeId(workspaceId: string): Promise<string | null> {
+    const workspace = await db.workspaces.findById(workspaceId);
+    if (!workspace) {
+      throw new Error('Workspace not found');
+    }
+
+    if (!(this.provisioner instanceof FlyProvisioner)) {
+      return null;
+    }
+
+    const appName = `ar-${workspace.id.substring(0, 8)}`;
+    const flyProvisioner = this.provisioner as FlyProvisioner;
+    const volume = await flyProvisioner.getVolume(appName);
+    return volume?.id || null;
   }
 }
 

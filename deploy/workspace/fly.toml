@@ -32,6 +32,13 @@ primary_region = "sjc"
   cpus = 1
   memory_mb = 512
 
+# NOTE: Volumes are now created explicitly via the provisioner API
+# with automatic daily snapshots enabled and configurable retention.
+# This mount config is kept for documentation but the provisioner
+# creates volumes with: auto_backup_enabled=true, snapshot_retention=14 days
+#
+# To customize retention, set FLY_SNAPSHOT_RETENTION_DAYS (1-60, default 14)
+# To customize volume size, set FLY_VOLUME_SIZE_GB (default 10)
 [mounts]
   source = "workspace_data"
   destination = "/data"
