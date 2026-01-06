@@ -2691,6 +2691,7 @@ program
 
     // Create HTTP server to capture callback
     let authCode: string | null = null;
+    let authState: string | null = null; // State parameter for CSRF protection
     let serverClosed = false;
 
     const server = http.createServer(async (req, res) => {
@@ -2698,6 +2699,7 @@ program
 
       if (url.pathname === '/auth/callback') {
         const code = url.searchParams.get('code');
+        const state = url.searchParams.get('state'); // Capture state for forwarding
         const error = url.searchParams.get('error');
 
         if (error) {
@@ -2709,6 +2711,7 @@ program
 
         if (code) {
           authCode = code;
+          authState = state; // Store state for forwarding
           res.writeHead(200, { 'Content-Type': 'text/html' });
           res.end(successHtml);
           console.log('');
@@ -2789,6 +2792,7 @@ program
         body: JSON.stringify({
           authSessionId,
           code: authCode,
+          state: authState, // Forward state for CSRF validation
         }),
       });
 

@@ -344,11 +344,15 @@ export function getAuthSession(sessionId: string): AuthSession | null {
  * Submit auth code to a waiting session
  * This writes the code to the PTY process stdin
  *
+ * @param sessionId - The auth session ID
+ * @param code - The OAuth authorization code
+ * @param state - Optional OAuth state parameter for CSRF validation (used by Codex)
  * @returns Object with success status and optional error message
  */
 export async function submitAuthCode(
   sessionId: string,
-  code: string
+  code: string,
+  state?: string
 ): Promise<{ success: boolean; error?: string; needsRestart?: boolean }> {
   // Log all active sessions for debugging
   const activeSessionIds = Array.from(sessions.keys());
@@ -432,6 +436,60 @@ export async function submitAuthCode(
         originalLength: originalCode.length,
         cleanLength: cleanCode.length,
       });
+    }
+
+    // For Codex (openai), forward the callback to the CLI's localhost server
+    // instead of writing to PTY stdin. The CLI spawns a localhost server
+    // waiting for the OAuth callback.
+    if (session.provider === 'openai' && session.authUrl) {
+      // Extract the redirect port from the auth URL (usually 1455)
+      const redirectMatch = session.authUrl.match(/redirect_uri=http%3A%2F%2Flocalhost%3A(\d+)/);
+      const port = redirectMatch ? redirectMatch[1] : '1455';
+
+      logger.info('Forwarding OAuth callback to Codex CLI localhost server', {
+        sessionId,
+        port,
+        codeLength: cleanCode.length,
+        hasState: !!state,
+      });
+
+      try {
+        // Forward the callback to the CLI's localhost server
+        // Include state parameter for CSRF validation if provided
+        let callbackUrl = `http://localhost:${port}/auth/callback?code=${encodeURIComponent(cleanCode)}`;
+        if (state) {
+          callbackUrl += `&state=${encodeURIComponent(state)}`;
+        }
+        const response = await fetch(callbackUrl, {
+          method: 'GET',
+          signal: AbortSignal.timeout(5000),
+        });
+
+        if (response.ok) {
+          logger.info('OAuth callback forwarded successfully to Codex CLI', { sessionId, status: response.status });
+
+          // Start polling for credentials
+          const config = CLI_AUTH_CONFIG[session.provider];
+          if (config) {
+            pollForCredentials(session, config);
+          }
+
+          return { success: true };
+        } else {
+          logger.warn('Codex CLI localhost server returned error', {
+            sessionId,
+            status: response.status,
+            statusText: response.statusText,
+          });
+          // Fall through to PTY write as fallback
+        }
+      } catch (err) {
+        logger.warn('Failed to forward callback to Codex CLI localhost server', {
+          sessionId,
+          error: String(err),
+        });
+        // Fall through to PTY write as fallback
+      }
     }
 
     logger.info('Writing auth code to PTY', {

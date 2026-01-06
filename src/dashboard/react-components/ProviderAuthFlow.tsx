@@ -118,7 +118,7 @@ export function ProviderAuthFlow({
   const isCodexFlow = provider.requiresUrlCopy || provider.id === 'codex' || backendProviderId === 'openai';
 
   // Ref to hold the latest code submission handler (avoids stale closure in polling)
-  const handleCodeReceivedRef = useRef<((code: string) => Promise<void>) | null>(null);
+  const handleCodeReceivedRef = useRef<((code: string, state?: string) => Promise<void>) | null>(null);
 
   // Poll for CLI auth completion (must be defined before fetchCliSession)
   const startCliPolling = useCallback((cliAuthSessionId: string) => {
@@ -142,7 +142,7 @@ export function ProviderAuthFlow({
         });
 
         if (res.ok) {
-          const data = await res.json() as { ready: boolean; code?: string };
+          const data = await res.json() as { ready: boolean; code?: string; state?: string };
 
           if (data.ready && data.code) {
             cliPollingRef.current = false;
@@ -151,7 +151,7 @@ export function ProviderAuthFlow({
             setCodeInput(data.code);
             // Auto-submit the code using ref to avoid stale closure
             if (handleCodeReceivedRef.current) {
-              handleCodeReceivedRef.current(data.code);
+              handleCodeReceivedRef.current(data.code, data.state);
             }
             return;
           }
@@ -375,7 +375,7 @@ export function ProviderAuthFlow({
 
   // Update the ref for CLI polling to use (avoids stale closure)
   useEffect(() => {
-    handleCodeReceivedRef.current = async (code: string) => {
+    handleCodeReceivedRef.current = async (code: string, state?: string) => {
       if (!sessionId) return;
 
       setStatus('submitting');
@@ -389,7 +389,7 @@ export function ProviderAuthFlow({
           method: 'POST',
           credentials: 'include',
           headers,
-          body: JSON.stringify({ code }),
+          body: JSON.stringify({ code, state }), // Include state for CSRF validation
         });
 
         const data = await res.json() as { success?: boolean; error?: string; needsRestart?: boolean };

@@ -1830,6 +1830,35 @@ export async function startDashboard(
             agent: agentName,
           }));
         }
+
+        // Handle interactive terminal input
+        if (msg.type === 'input' && typeof msg.data === 'string') {
+          // Get agent name from message or use first subscribed agent
+          const agentName = msg.agent || [...clientSubscriptions][0];
+
+          if (!agentName) {
+            ws.send(JSON.stringify({
+              type: 'error',
+              error: 'No agent subscribed for input',
+            }));
+            return;
+          }
+
+          // Check if this is a spawned agent (we can only send input to spawned agents)
+          if (spawner?.hasWorker(agentName)) {
+            const success = spawner.sendWorkerInput(agentName, msg.data);
+            if (!success) {
+              console.warn(`[dashboard] Failed to send input to agent ${agentName}`);
+            }
+          } else {
+            // Daemon-connected agents don't support direct input
+            ws.send(JSON.stringify({
+              type: 'error',
+              agent: agentName,
+              error: 'Interactive input not supported for daemon-connected agents',
+            }));
+          }
+        }
       } catch (err) {
         console.error('[dashboard] Invalid logs WebSocket message:', err);
       }

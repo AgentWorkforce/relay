@@ -442,9 +442,9 @@ onboardingRouter.post('/cli/:provider/complete/:sessionId', async (req: Request,
 onboardingRouter.post('/cli/:provider/code/:sessionId', async (req: Request, res: Response) => {
   const { provider, sessionId } = req.params;
   const userId = req.session.userId!;
-  const { code } = req.body;
+  const { code, state } = req.body; // state is optional, used for Codex OAuth
 
-  console.log('[onboarding] Auth code submission request:', { provider, sessionId, codeLength: code?.length });
+  console.log('[onboarding] Auth code submission request:', { provider, sessionId, codeLength: code?.length, hasState: !!state });
 
   if (!code || typeof code !== 'string') {
     return res.status(400).json({ error: 'Auth code is required' });
@@ -476,7 +476,7 @@ onboardingRouter.post('/cli/:provider/code/:sessionId', async (req: Request, res
       const codeResponse = await fetch(targetUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code }),
+        body: JSON.stringify({ code, state }), // Forward state for Codex CSRF validation
       });
 
       console.log('[onboarding] Workspace response:', { status: codeResponse.status });

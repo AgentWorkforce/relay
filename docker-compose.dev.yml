@@ -109,15 +109,15 @@ services:
 
   # Optional: Example workspace for testing
   workspace:
-    image: ghcr.io/agentworkforce/relay-workspace:latest
     build:
       context: .
-      dockerfile: deploy/workspace/Dockerfile
+      dockerfile: deploy/workspace/Dockerfile.local
     user: root  # Required to start SSH server before dropping privileges
     ports:
       - "3888:3888"
       - "3889:3889"
       - "2222:2222"  # SSH for port forwarding (e.g., Codex OAuth)
+      - "1455:1455"  # Codex OAuth callback port
     environment:
       WORKSPACE_ID: local-dev-workspace
       SUPERVISOR_ENABLED: "true"

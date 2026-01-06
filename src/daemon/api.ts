@@ -433,13 +433,13 @@ export class DaemonApi extends EventEmitter {
     // Submit auth code to PTY session
     this.routes.set('POST /auth/cli/:provider/code/:sessionId', async (req): Promise<ApiResponse> => {
       const { sessionId } = req.params;
-      const { code } = req.body as { code?: string };
+      const { code, state } = req.body as { code?: string; state?: string };
 
       if (!code || typeof code !== 'string') {
         return { status: 400, body: { error: 'Auth code is required' } };
       }
 
-      const result = await submitAuthCode(sessionId, code);
+      const result = await submitAuthCode(sessionId, code, state);
       if (!result.success) {
         return {
           status: 400,

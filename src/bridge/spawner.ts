@@ -719,6 +719,19 @@ export class AgentSpawner {
   }
 
   /**
+   * Send input to a worker's PTY (for interactive terminal support)
+   * @param name - Worker name
+   * @param data - Input data to send (keystrokes, text, etc.)
+   * @returns true if input was sent, false if worker not found
+   */
+  sendWorkerInput(name: string, data: string): boolean {
+    const worker = this.activeWorkers.get(name);
+    if (!worker) return false;
+    worker.pty.write(data);
+    return true;
+  }
+
+  /**
    * Wait for an agent to appear in the registry (agents.json)
    */
   private async waitForAgentRegistration(

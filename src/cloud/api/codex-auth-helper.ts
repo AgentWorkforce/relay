@@ -19,6 +19,7 @@ interface PendingAuthSession {
   userId: string;
   createdAt: Date;
   code?: string; // The auth code once received from the CLI
+  state?: string; // OAuth state parameter for CSRF validation
 }
 
 const pendingAuthSessions = new Map<string, PendingAuthSession>();
@@ -70,7 +71,7 @@ codexAuthHelperRouter.post('/cli-session', requireAuth, async (req: Request, res
  * No auth required - validated by authSessionId.
  */
 codexAuthHelperRouter.post('/callback', async (req: Request, res: Response) => {
-  const { authSessionId, code, error } = req.body;
+  const { authSessionId, code, state, error } = req.body;
 
   if (!authSessionId) {
     return res.status(400).json({ error: 'Missing authSessionId' });
@@ -91,8 +92,9 @@ codexAuthHelperRouter.post('/callback', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Missing auth code' });
   }
 
-  // Store the code so the polling endpoint can retrieve it
+  // Store the code and state so the polling endpoint can retrieve them
   session.code = code;
+  session.state = state; // Store state for CSRF validation
   pendingAuthSessions.set(authSessionId, session);
 
   console.log(`[codex-helper] Auth code received for session ${authSessionId}`);
@@ -115,11 +117,13 @@ codexAuthHelperRouter.get('/status/:authSessionId', requireAuth, async (req: Req
   if (session.code) {
     // Clean up session after successful retrieval (code is single-use)
     const code = session.code;
+    const state = session.state;
     pendingAuthSessions.delete(authSessionId);
 
     return res.json({
       ready: true,
       code,
+      state, // Return state for CSRF validation
     });
   }
 

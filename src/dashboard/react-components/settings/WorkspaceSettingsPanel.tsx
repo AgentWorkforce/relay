@@ -185,6 +185,11 @@ export function WorkspaceSettingsPanel({
           }
         });
         setProviderStatus(connected);
+        // Auto-enable device flow for Codex in cloud workspaces
+        // Standard OAuth uses localhost callback which isn't accessible from containers
+        if (wsResult.data.computeProvider === 'fly') {
+          setUseDeviceFlow(prev => ({ ...prev, codex: true }));
+        }
       } else {
         setError(wsResult.error);
       }

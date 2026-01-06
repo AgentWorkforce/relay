@@ -47,6 +47,10 @@ export {
   type WorkspaceProviderProps,
 } from './WorkspaceContext';
 
+// Terminal Components
+export { XTermLogViewer, type XTermLogViewerProps } from './XTermLogViewer';
+export { XTermInteractive, type XTermInteractiveProps } from './XTermInteractive';
+
 // Layout Components
 export { Sidebar, type SidebarProps } from './layout/Sidebar';
 export { Header, type HeaderProps } from './layout/Header';
