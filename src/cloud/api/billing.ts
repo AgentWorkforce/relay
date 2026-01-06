@@ -7,12 +7,65 @@
 import { Router, Request } from 'express';
 import { getBillingService, getAllPlans, getPlan, comparePlans } from '../billing/index.js';
 import type { SubscriptionTier } from '../billing/types.js';
-import { getConfig } from '../config.js';
-import { db } from '../db/index.js';
+import { getConfig, isAdminUser } from '../config.js';
+import { db, type PlanType } from '../db/index.js';
 import { requireAuth } from './auth.js';
+import { getProvisioner, RESOURCE_TIERS } from '../provisioner/index.js';
+import { getResourceTierForPlan } from '../services/planLimits.js';
 import type Stripe from 'stripe';
 
 export const billingRouter = Router();
+
+/**
+ * Resize user's workspaces to match their new plan tier
+ * Called after plan upgrade/downgrade to adjust compute resources
+ *
+ * Strategy:
+ * - Stopped workspaces: Resize immediately (no disruption)
+ * - Running workspaces: Save config for next restart (no agent disruption)
+ *
+ * User can manually restart to get new resources immediately, or wait for
+ * natural restart (auto-stop idle, manual restart, etc.)
+ */
+async function resizeWorkspacesForPlan(userId: string, newPlan: PlanType): Promise<void> {
+  try {
+    const workspaces = await db.workspaces.findByUserId(userId);
+    if (workspaces.length === 0) return;
+
+    const provisioner = getProvisioner();
+    const targetTierName = getResourceTierForPlan(newPlan);
+    const targetTier = RESOURCE_TIERS[targetTierName];
+
+    console.log(`[billing] Upgrading ${workspaces.length} workspace(s) for user ${userId.substring(0, 8)} to ${targetTierName}`);
+
+    for (const workspace of workspaces) {
+      if (workspace.status !== 'running' && workspace.status !== 'stopped') {
+        console.log(`[billing] Skipping workspace ${workspace.id.substring(0, 8)} (status: ${workspace.status})`);
+        continue;
+      }
+
+      try {
+        // For running workspaces: don't restart, apply on next restart
+        // This prevents disrupting active agents
+        const skipRestart = workspace.status === 'running';
+
+        await provisioner.resize(workspace.id, targetTier, skipRestart);
+
+        if (skipRestart) {
+          console.log(`[billing] Queued resize for workspace ${workspace.id.substring(0, 8)} to ${targetTierName} (will apply on next restart)`);
+          // TODO: Store pending upgrade in workspace metadata so we can show in UI
+        } else {
+          console.log(`[billing] Resized workspace ${workspace.id.substring(0, 8)} to ${targetTierName}`);
+        }
+      } catch (error) {
+        console.error(`[billing] Failed to resize workspace ${workspace.id}:`, error);
+        // Continue with other workspaces even if one fails
+      }
+    }
+  } catch (error) {
+    console.error('[billing] Failed to resize workspaces:', error);
+  }
+}
 
 /**
  * GET /api/billing/plans
@@ -85,7 +138,6 @@ billingRouter.get('/compare', (req, res) => {
  */
 billingRouter.get('/subscription', requireAuth, async (req, res) => {
   const userId = req.session.userId!;
-  const billing = getBillingService();
 
   try {
     // Fetch user from database
@@ -93,6 +145,28 @@ billingRouter.get('/subscription', requireAuth, async (req, res) => {
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
+
+    // Admin users have special status - show their current plan without Stripe
+    if (isAdminUser(user.githubUsername)) {
+      return res.json({
+        tier: user.plan || 'enterprise',
+        subscription: null,
+        customer: null,
+        isAdmin: true,
+      });
+    }
+
+    // If user doesn't have a Stripe customer ID and is on free tier, skip Stripe calls entirely
+    // This prevents hanging on Stripe API calls for users who have never paid
+    if (!user.stripeCustomerId && user.plan === 'free') {
+      return res.json({
+        tier: 'free',
+        subscription: null,
+        customer: null,
+      });
+    }
+
+    const billing = getBillingService();
 
     // Get or create Stripe customer
     const customerId = user.stripeCustomerId ||
@@ -150,7 +224,6 @@ billingRouter.post('/checkout', requireAuth, async (req, res) => {
     return;
   }
 
-  const billing = getBillingService();
   const config = getConfig();
 
   try {
@@ -159,6 +232,26 @@ billingRouter.post('/checkout', requireAuth, async (req, res) => {
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
+
+    // Admin users get free upgrades - skip Stripe entirely
+    if (isAdminUser(user.githubUsername)) {
+      // Update user plan directly
+      await db.users.update(userId, { plan: tier });
+      console.log(`[billing] Admin user ${user.githubUsername} upgraded to ${tier} (free)`);
+
+      // Resize workspaces to match new plan (async)
+      resizeWorkspacesForPlan(userId, tier as PlanType).catch((err) => {
+        console.error(`[billing] Failed to resize workspaces for admin ${user.githubUsername}:`, err);
+      });
+
+      // Return a fake session that redirects to success
+      return res.json({
+        sessionId: 'admin-upgrade',
+        checkoutUrl: `${config.publicUrl}/billing/success?admin=true`,
+      });
+    }
+
+    const billing = getBillingService();
 
     // Get or create customer
     const customerId = user.stripeCustomerId ||
@@ -370,9 +463,9 @@ billingRouter.get('/invoices', requireAuth, async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
+    // No Stripe customer = no invoices, skip Stripe call entirely
     if (!user.stripeCustomerId) {
-      res.json({ invoices: [] });
-      return;
+      return res.json({ invoices: [] });
     }
 
     const billing = getBillingService();
@@ -466,11 +559,16 @@ billingRouter.post(
           // Extract subscription tier and update user's plan
           if (billingEvent.userId) {
             const subscription = billingEvent.data as unknown as Stripe.Subscription;
-            const tier = billing.getTierFromSubscription(subscription);
+            const tier = billing.getTierFromSubscription(subscription) as PlanType;
 
             // Update user's plan in database
             await db.users.update(billingEvent.userId, { plan: tier });
             console.log(`Updated user ${billingEvent.userId} plan to: ${tier}`);
+
+            // Resize workspaces to match new plan (async, don't block webhook)
+            resizeWorkspacesForPlan(billingEvent.userId, tier).catch((err) => {
+              console.error(`Failed to resize workspaces for user ${billingEvent.userId}:`, err);
+            });
           } else {
             console.warn('Subscription event received without userId:', billingEvent.id);
           }
@@ -482,6 +580,11 @@ billingRouter.post(
           if (billingEvent.userId) {
             await db.users.update(billingEvent.userId, { plan: 'free' });
             console.log(`User ${billingEvent.userId} subscription canceled, reset to free plan`);
+
+            // Resize workspaces down to free tier (async)
+            resizeWorkspacesForPlan(billingEvent.userId, 'free').catch((err) => {
+              console.error(`Failed to resize workspaces for user ${billingEvent.userId}:`, err);
+            });
           }
           break;
         }

@@ -30,6 +30,7 @@ import {
   injectWithRetry as sharedInjectWithRetry,
   CLI_QUIRKS,
 } from './shared.js';
+import { detectProviderAuthRevocation, type AuthRevocationResult } from './auth-detection.js';
 
 /** Maximum lines to keep in output buffer */
 const MAX_BUFFER_LINES = 10000;
@@ -77,6 +78,13 @@ export interface SessionEndEvent {
   marker: SessionEndMarker;
 }
 
+export interface AuthRevokedEvent {
+  agentName: string;
+  provider: string;
+  message?: string;
+  confidence: 'high' | 'medium' | 'low';
+}
+
 export interface PtyWrapperEvents {
   output: (data: string) => void;
   exit: (code: number) => void;
@@ -86,6 +94,8 @@ export interface PtyWrapperEvents {
   'summary': (event: SummaryEvent) => void;
   /** Emitted when agent outputs a [[SESSION_END]] block. Cloud services can handle session closure. */
   'session-end': (event: SessionEndEvent) => void;
+  /** Emitted when auth revocation is detected. Cloud services can handle re-auth flow. */
+  'auth_revoked': (event: AuthRevokedEvent) => void;
 }
 
 export class PtyWrapper extends BaseWrapper {
@@ -114,6 +124,11 @@ export class PtyWrapper extends BaseWrapper {
   private static readonly LOG_DEDUP_MAX_SIZE = 100; // Max entries in dedup map
   private lastParsedLength = 0; // Track last parsed position to avoid re-parsing entire buffer
   private lastContinuityParsedLength = 0; // Same for continuity commands
+
+  // Auth revocation detection state
+  private authRevoked = false;
+  private lastAuthCheck = 0;
+  private readonly AUTH_CHECK_INTERVAL = 5000; // Check every 5 seconds max
 
   constructor(config: PtyWrapperConfig) {
     super(config);
@@ -457,6 +472,9 @@ export class PtyWrapper extends BaseWrapper {
     const cleanContent = stripAnsi(this.rawBuffer);
     this.checkForSummaryAndEmit(cleanContent);
     this.checkForSessionEndAndEmit(cleanContent);
+
+    // Check for auth revocation patterns
+    this.checkAuthRevocation(cleanContent);
 
     // Parse for continuity commands (->continuity:save, ->continuity:load, etc.)
     // Use rawBuffer (accumulated content) not immediate chunk, since multi-line
@@ -1596,5 +1614,72 @@ export class PtyWrapper extends BaseWrapper {
       agentName: this.config.name,
       marker: sessionEnd,
     });
+  }
+
+  /**
+   * Check for auth revocation patterns in output.
+   * Detects when the CLI's OAuth session has been revoked (e.g., user logged in elsewhere).
+   * Emits 'auth_revoked' event and sends notification to relay daemon.
+   */
+  private checkAuthRevocation(output: string): void {
+    // Only check once - auth revocation is a terminal state
+    if (this.authRevoked) return;
+
+    // Throttle checks to avoid performance impact
+    const now = Date.now();
+    if (now - this.lastAuthCheck < this.AUTH_CHECK_INTERVAL) return;
+    this.lastAuthCheck = now;
+
+    // Determine provider from config
+    const provider = this.config.command || this.cliType || 'claude';
+
+    // Check for auth revocation patterns
+    const result = detectProviderAuthRevocation(output, provider);
+
+    if (result.detected && result.confidence !== 'low') {
+      this.authRevoked = true;
+
+      console.error(
+        `[pty:${this.config.name}] Auth revocation detected: ` +
+        `pattern="${result.pattern}" confidence=${result.confidence} ` +
+        `message="${result.message}"`
+      );
+
+      // Send notification to relay daemon via system channel
+      if (this.client.state === 'READY') {
+        const authPayload = JSON.stringify({
+          type: 'auth_revoked',
+          agent: this.config.name,
+          provider,
+          message: result.message,
+          confidence: result.confidence,
+          timestamp: new Date().toISOString(),
+        });
+        this.client.sendMessage('#system', authPayload, 'message');
+      }
+
+      // Emit event for external handlers (cloud services, dashboard)
+      this.emit('auth_revoked', {
+        agentName: this.config.name,
+        provider,
+        message: result.message,
+        confidence: result.confidence,
+      });
+    }
+  }
+
+  /**
+   * Reset auth state (e.g., after re-authentication)
+   */
+  resetAuthState(): void {
+    this.authRevoked = false;
+    this.lastAuthCheck = 0;
+  }
+
+  /**
+   * Check if auth has been revoked
+   */
+  isAuthRevoked(): boolean {
+    return this.authRevoked;
   }
 }

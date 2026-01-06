@@ -65,3 +65,12 @@ export {
   KNOWN_AGENTS,
   isKnownAgent,
 } from './mention-handler.js';
+
+// Compute enforcement (free tier limits)
+export {
+  ComputeEnforcementService,
+  ComputeEnforcementConfig,
+  EnforcementResult,
+  getComputeEnforcementService,
+  createComputeEnforcementService,
+} from './compute-enforcement.js';

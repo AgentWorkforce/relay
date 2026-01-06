@@ -38,6 +38,7 @@ import {
   type PDEROPhase,
 } from '../trajectory/integration.js';
 import { escapeForShell } from '../bridge/utils.js';
+import { detectProviderAuthRevocation, type AuthRevocationResult } from './auth-detection.js';
 import {
   type CliType,
   type InjectionCallbacks,
@@ -136,6 +137,9 @@ export class TmuxWrapper extends BaseWrapper {
   private lastDetectedPhase?: PDEROPhase; // Track last auto-detected PDERO phase
   private seenToolCalls: Set<string> = new Set(); // Dedup tool call trajectory events
   private seenErrors: Set<string> = new Set(); // Dedup error trajectory events
+  private authRevoked = false; // Track if auth has been revoked
+  private lastAuthCheck = 0; // Timestamp of last auth check (throttle)
+  private readonly AUTH_CHECK_INTERVAL = 5000; // Check auth status every 5 seconds max
 
   constructor(config: TmuxWrapperConfig) {
     // Merge defaults with config
@@ -750,6 +754,9 @@ export class TmuxWrapper extends BaseWrapper {
       // Use joinedContent to handle multi-line output from TUIs like Claude Code
       this.parseSpawnReleaseCommands(joinedContent);
 
+      // Check for auth revocation (limited sessions scenario)
+      this.checkAuthRevocation(cleanContent);
+
       this.updateActivityState();
 
       // Also check for injection opportunity
@@ -791,6 +798,66 @@ export class TmuxWrapper extends BaseWrapper {
       this.activityState = 'active';
       this.logStderr('Session active');
     }
+  }
+
+  /**
+   * Check if the CLI output indicates auth has been revoked.
+   * This can happen when the user authenticates elsewhere (limited sessions).
+   */
+  private checkAuthRevocation(output: string): void {
+    // Don't check if already revoked or if we checked recently
+    if (this.authRevoked) return;
+    const now = Date.now();
+    if (now - this.lastAuthCheck < this.AUTH_CHECK_INTERVAL) return;
+    this.lastAuthCheck = now;
+
+    // Get the CLI type/provider from config
+    const provider = this.config.program || this.cliType || 'claude';
+
+    // Check for auth revocation patterns in recent output
+    const result = detectProviderAuthRevocation(output, provider);
+
+    if (result.detected && result.confidence !== 'low') {
+      this.authRevoked = true;
+      this.logStderr(`[AUTH] Auth revocation detected (${result.confidence} confidence): ${result.message}`);
+
+      // Send auth status message to daemon
+      if (this.client.state === 'READY') {
+        const authPayload = JSON.stringify({
+          type: 'auth_revoked',
+          agent: this.config.name,
+          provider,
+          message: result.message,
+          confidence: result.confidence,
+          timestamp: new Date().toISOString(),
+        });
+        this.client.sendMessage('#system', authPayload, 'message');
+      }
+
+      // Emit event for listeners
+      this.emit('auth_revoked', {
+        agent: this.config.name,
+        provider,
+        message: result.message,
+        confidence: result.confidence,
+      });
+    }
+  }
+
+  /**
+   * Reset auth revocation state (called after successful re-authentication)
+   */
+  public resetAuthState(): void {
+    this.authRevoked = false;
+    this.lastAuthCheck = 0;
+    this.logStderr('[AUTH] Auth state reset');
+  }
+
+  /**
+   * Check if auth has been revoked
+   */
+  public isAuthRevoked(): boolean {
+    return this.authRevoked;
   }
 
   /**

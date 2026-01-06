@@ -31,6 +31,466 @@ coordinatorWriteRoutes.forEach(route => {
   coordinatorsRouter.use(route, checkCoordinatorAccess);
 });
 
+// ============================================================================
+// Project Group CRUD Routes
+// These must come BEFORE the /:groupId/coordinator routes
+// ============================================================================
+
+/**
+ * GET /api/project-groups
+ * List all project groups for the authenticated user
+ */
+coordinatorsRouter.get('/', async (req: Request, res: Response) => {
+  const userId = req.session.userId!;
+
+  try {
+    const result = await db.projectGroups.findAllWithRepositories(userId);
+
+    res.json({
+      groups: result.groups.map(group => ({
+        id: group.id,
+        name: group.name,
+        description: group.description,
+        color: group.color,
+        icon: group.icon,
+        coordinatorAgent: group.coordinatorAgent,
+        sortOrder: group.sortOrder,
+        repositoryCount: group.repositories.length,
+        repositories: group.repositories.map(repo => ({
+          id: repo.id,
+          githubFullName: repo.githubFullName,
+          defaultBranch: repo.defaultBranch,
+          isPrivate: repo.isPrivate,
+        })),
+        createdAt: group.createdAt,
+        updatedAt: group.updatedAt,
+      })),
+      ungroupedRepositories: result.ungroupedRepositories.map(repo => ({
+        id: repo.id,
+        githubFullName: repo.githubFullName,
+        defaultBranch: repo.defaultBranch,
+        isPrivate: repo.isPrivate,
+        workspaceId: repo.workspaceId,
+      })),
+    });
+  } catch (error) {
+    console.error('Error listing project groups:', error);
+    res.status(500).json({ error: 'Failed to list project groups' });
+  }
+});
+
+/**
+ * POST /api/project-groups
+ * Create a new project group
+ */
+coordinatorsRouter.post('/', async (req: Request, res: Response) => {
+  const userId = req.session.userId!;
+  const { name, description, color, icon, repositoryIds } = req.body;
+
+  if (!name || typeof name !== 'string' || name.trim().length === 0) {
+    return res.status(400).json({ error: 'Name is required' });
+  }
+
+  if (name.length > 255) {
+    return res.status(400).json({ error: 'Name must be 255 characters or less' });
+  }
+
+  try {
+    // Check for duplicate name
+    const existing = await db.projectGroups.findByName(userId, name.trim());
+    if (existing) {
+      return res.status(409).json({ error: 'A project group with this name already exists' });
+    }
+
+    // Create the group
+    const group = await db.projectGroups.create({
+      userId,
+      name: name.trim(),
+      description: description?.trim() || null,
+      color: color || null,
+      icon: icon || null,
+      coordinatorAgent: { enabled: false },
+      sortOrder: 0,
+    });
+
+    // Assign repositories to the group if provided
+    if (repositoryIds && Array.isArray(repositoryIds) && repositoryIds.length > 0) {
+      // Verify all repositories belong to the user
+      const userRepos = await db.repositories.findByUserId(userId);
+      const userRepoIds = new Set(userRepos.map(r => r.id));
+
+      for (const repoId of repositoryIds) {
+        if (!userRepoIds.has(repoId)) {
+          return res.status(400).json({
+            error: `Repository ${repoId} not found or not owned by user`,
+          });
+        }
+      }
+
+      // Assign repositories to the group
+      for (const repoId of repositoryIds) {
+        await db.repositories.assignToGroup(repoId, group.id);
+      }
+    }
+
+    // Fetch the group with repositories for response
+    const groupWithRepos = await db.projectGroups.findWithRepositories(group.id);
+
+    res.status(201).json({
+      success: true,
+      group: {
+        id: groupWithRepos!.id,
+        name: groupWithRepos!.name,
+        description: groupWithRepos!.description,
+        color: groupWithRepos!.color,
+        icon: groupWithRepos!.icon,
+        coordinatorAgent: groupWithRepos!.coordinatorAgent,
+        repositories: groupWithRepos!.repositories.map(repo => ({
+          id: repo.id,
+          githubFullName: repo.githubFullName,
+          defaultBranch: repo.defaultBranch,
+          isPrivate: repo.isPrivate,
+        })),
+        createdAt: groupWithRepos!.createdAt,
+        updatedAt: groupWithRepos!.updatedAt,
+      },
+    });
+  } catch (error) {
+    console.error('Error creating project group:', error);
+    res.status(500).json({ error: 'Failed to create project group' });
+  }
+});
+
+/**
+ * GET /api/project-groups/:id
+ * Get a specific project group with its repositories
+ */
+coordinatorsRouter.get('/:id', async (req: Request, res: Response) => {
+  const userId = req.session.userId!;
+  const { id } = req.params;
+
+  // Skip if this looks like a coordinator route
+  if (id === 'coordinators') {
+    return res.status(404).json({ error: 'Not found' });
+  }
+
+  try {
+    const group = await db.projectGroups.findWithRepositories(id);
+
+    if (!group) {
+      return res.status(404).json({ error: 'Project group not found' });
+    }
+
+    if (group.userId !== userId) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    res.json({
+      id: group.id,
+      name: group.name,
+      description: group.description,
+      color: group.color,
+      icon: group.icon,
+      coordinatorAgent: group.coordinatorAgent,
+      sortOrder: group.sortOrder,
+      repositories: group.repositories.map(repo => ({
+        id: repo.id,
+        githubFullName: repo.githubFullName,
+        defaultBranch: repo.defaultBranch,
+        isPrivate: repo.isPrivate,
+        syncStatus: repo.syncStatus,
+        lastSyncedAt: repo.lastSyncedAt,
+        workspaceId: repo.workspaceId,
+      })),
+      createdAt: group.createdAt,
+      updatedAt: group.updatedAt,
+    });
+  } catch (error) {
+    console.error('Error getting project group:', error);
+    res.status(500).json({ error: 'Failed to get project group' });
+  }
+});
+
+/**
+ * PATCH /api/project-groups/:id
+ * Update a project group's metadata
+ */
+coordinatorsRouter.patch('/:id', async (req: Request, res: Response) => {
+  const userId = req.session.userId!;
+  const { id } = req.params;
+  const { name, description, color, icon } = req.body;
+
+  try {
+    const group = await db.projectGroups.findById(id);
+
+    if (!group) {
+      return res.status(404).json({ error: 'Project group not found' });
+    }
+
+    if (group.userId !== userId) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    // Build update object with only provided fields
+    const updates: Record<string, unknown> = {};
+
+    if (name !== undefined) {
+      if (typeof name !== 'string' || name.trim().length === 0) {
+        return res.status(400).json({ error: 'Name cannot be empty' });
+      }
+      if (name.length > 255) {
+        return res.status(400).json({ error: 'Name must be 255 characters or less' });
+      }
+      // Check for duplicate name (excluding current group)
+      const existing = await db.projectGroups.findByName(userId, name.trim());
+      if (existing && existing.id !== id) {
+        return res.status(409).json({ error: 'A project group with this name already exists' });
+      }
+      updates.name = name.trim();
+    }
+
+    if (description !== undefined) {
+      updates.description = description?.trim() || null;
+    }
+
+    if (color !== undefined) {
+      // Validate hex color format if provided
+      if (color && !/^#[0-9A-Fa-f]{6}$/.test(color)) {
+        return res.status(400).json({ error: 'Color must be a valid hex color (e.g., #3B82F6)' });
+      }
+      updates.color = color || null;
+    }
+
+    if (icon !== undefined) {
+      updates.icon = icon || null;
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'No valid fields to update' });
+    }
+
+    await db.projectGroups.update(id, updates);
+
+    // Fetch updated group
+    const updatedGroup = await db.projectGroups.findWithRepositories(id);
+
+    res.json({
+      success: true,
+      group: {
+        id: updatedGroup!.id,
+        name: updatedGroup!.name,
+        description: updatedGroup!.description,
+        color: updatedGroup!.color,
+        icon: updatedGroup!.icon,
+        coordinatorAgent: updatedGroup!.coordinatorAgent,
+        repositories: updatedGroup!.repositories.map(repo => ({
+          id: repo.id,
+          githubFullName: repo.githubFullName,
+          defaultBranch: repo.defaultBranch,
+          isPrivate: repo.isPrivate,
+        })),
+        updatedAt: updatedGroup!.updatedAt,
+      },
+    });
+  } catch (error) {
+    console.error('Error updating project group:', error);
+    res.status(500).json({ error: 'Failed to update project group' });
+  }
+});
+
+/**
+ * DELETE /api/project-groups/:id
+ * Delete a project group (repositories are unassigned, not deleted)
+ */
+coordinatorsRouter.delete('/:id', async (req: Request, res: Response) => {
+  const userId = req.session.userId!;
+  const { id } = req.params;
+
+  try {
+    const group = await db.projectGroups.findById(id);
+
+    if (!group) {
+      return res.status(404).json({ error: 'Project group not found' });
+    }
+
+    if (group.userId !== userId) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    // Stop coordinator if running
+    if (group.coordinatorAgent?.enabled) {
+      try {
+        const coordinatorService = getCoordinatorService();
+        await coordinatorService.stop(id);
+      } catch (err) {
+        console.warn('Error stopping coordinator during group deletion:', err);
+      }
+    }
+
+    // Delete the group (repositories will have projectGroupId set to null due to ON DELETE SET NULL)
+    await db.projectGroups.delete(id);
+
+    res.json({
+      success: true,
+      message: 'Project group deleted',
+    });
+  } catch (error) {
+    console.error('Error deleting project group:', error);
+    res.status(500).json({ error: 'Failed to delete project group' });
+  }
+});
+
+/**
+ * POST /api/project-groups/:id/repositories
+ * Add repositories to a project group
+ */
+coordinatorsRouter.post('/:id/repositories', async (req: Request, res: Response) => {
+  const userId = req.session.userId!;
+  const { id } = req.params;
+  const { repositoryIds } = req.body;
+
+  if (!repositoryIds || !Array.isArray(repositoryIds) || repositoryIds.length === 0) {
+    return res.status(400).json({ error: 'repositoryIds array is required' });
+  }
+
+  try {
+    const group = await db.projectGroups.findById(id);
+
+    if (!group) {
+      return res.status(404).json({ error: 'Project group not found' });
+    }
+
+    if (group.userId !== userId) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    // Verify all repositories belong to the user
+    const userRepos = await db.repositories.findByUserId(userId);
+    const userRepoIds = new Set(userRepos.map(r => r.id));
+
+    for (const repoId of repositoryIds) {
+      if (!userRepoIds.has(repoId)) {
+        return res.status(400).json({
+          error: `Repository ${repoId} not found or not owned by user`,
+        });
+      }
+    }
+
+    // Assign repositories to the group
+    for (const repoId of repositoryIds) {
+      await db.repositories.assignToGroup(repoId, id);
+    }
+
+    // Fetch updated group
+    const updatedGroup = await db.projectGroups.findWithRepositories(id);
+
+    res.json({
+      success: true,
+      group: {
+        id: updatedGroup!.id,
+        name: updatedGroup!.name,
+        repositories: updatedGroup!.repositories.map(repo => ({
+          id: repo.id,
+          githubFullName: repo.githubFullName,
+          defaultBranch: repo.defaultBranch,
+          isPrivate: repo.isPrivate,
+        })),
+      },
+    });
+  } catch (error) {
+    console.error('Error adding repositories to group:', error);
+    res.status(500).json({ error: 'Failed to add repositories to group' });
+  }
+});
+
+/**
+ * DELETE /api/project-groups/:id/repositories/:repoId
+ * Remove a repository from a project group
+ */
+coordinatorsRouter.delete('/:id/repositories/:repoId', async (req: Request, res: Response) => {
+  const userId = req.session.userId!;
+  const { id, repoId } = req.params;
+
+  try {
+    const group = await db.projectGroups.findById(id);
+
+    if (!group) {
+      return res.status(404).json({ error: 'Project group not found' });
+    }
+
+    if (group.userId !== userId) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    // Verify repository exists and belongs to this group
+    const repo = await db.repositories.findById(repoId);
+
+    if (!repo) {
+      return res.status(404).json({ error: 'Repository not found' });
+    }
+
+    if (repo.userId !== userId) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    if (repo.projectGroupId !== id) {
+      return res.status(400).json({ error: 'Repository is not in this group' });
+    }
+
+    // Remove repository from group (set projectGroupId to null)
+    await db.repositories.assignToGroup(repoId, null);
+
+    res.json({
+      success: true,
+      message: 'Repository removed from group',
+    });
+  } catch (error) {
+    console.error('Error removing repository from group:', error);
+    res.status(500).json({ error: 'Failed to remove repository from group' });
+  }
+});
+
+/**
+ * PUT /api/project-groups/reorder
+ * Reorder project groups
+ */
+coordinatorsRouter.put('/reorder', async (req: Request, res: Response) => {
+  const userId = req.session.userId!;
+  const { orderedIds } = req.body;
+
+  if (!orderedIds || !Array.isArray(orderedIds)) {
+    return res.status(400).json({ error: 'orderedIds array is required' });
+  }
+
+  try {
+    // Verify all groups belong to user
+    const userGroups = await db.projectGroups.findByUserId(userId);
+    const userGroupIds = new Set(userGroups.map(g => g.id));
+
+    for (const groupId of orderedIds) {
+      if (!userGroupIds.has(groupId)) {
+        return res.status(400).json({
+          error: `Group ${groupId} not found or not owned by user`,
+        });
+      }
+    }
+
+    await db.projectGroups.reorder(userId, orderedIds);
+
+    res.json({
+      success: true,
+      message: 'Groups reordered',
+    });
+  } catch (error) {
+    console.error('Error reordering project groups:', error);
+    res.status(500).json({ error: 'Failed to reorder project groups' });
+  }
+});
+
+// ============================================================================
+// Coordinator Agent Routes
+// ============================================================================
+
 /**
  * GET /api/project-groups/:groupId/coordinator
  * Get coordinator agent configuration

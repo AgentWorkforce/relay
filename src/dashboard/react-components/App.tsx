@@ -20,7 +20,6 @@ import { MentionAutocomplete, getMentionQuery, completeMentionInValue, type Huma
 import { FileAutocomplete, getFileQuery, completeFileInValue } from './FileAutocomplete';
 import { WorkspaceSelector, type Workspace } from './WorkspaceSelector';
 import { AddWorkspaceModal } from './AddWorkspaceModal';
-import { WorkspaceSettingsPanel } from './WorkspaceSettingsPanel';
 import { LogViewerPanel } from './LogViewerPanel';
 import { TrajectoryViewer } from './TrajectoryViewer';
 import { DecisionQueue, type Decision } from './DecisionQueue';
@@ -31,6 +30,7 @@ import { OnlineUsersIndicator } from './OnlineUsersIndicator';
 import { UserProfilePanel } from './UserProfilePanel';
 import { CoordinatorPanel } from './CoordinatorPanel';
 import { BillingResult } from './BillingResult';
+import { UsageBanner } from './UsageBanner';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAgents } from './hooks/useAgents';
 import { useMessages } from './hooks/useMessages';
@@ -200,9 +200,6 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   const [isAddWorkspaceOpen, setIsAddWorkspaceOpen] = useState(false);
   const [isAddingWorkspace, setIsAddingWorkspace] = useState(false);
   const [addWorkspaceError, setAddWorkspaceError] = useState<string | null>(null);
-
-  // Workspace settings panel state
-  const [isWorkspaceSettingsPanelOpen, setIsWorkspaceSettingsPanelOpen] = useState(false);
 
   // Command palette state
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
@@ -596,9 +593,10 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     setIsFullSettingsOpen(true);
   }, []);
 
-  // Handle workspace settings click - opens workspace settings panel
+  // Handle workspace settings click - opens full settings page with workspace tab
   const handleWorkspaceSettingsClick = useCallback(() => {
-    setIsWorkspaceSettingsPanelOpen(true);
+    setSettingsInitialTab('workspace');
+    setIsFullSettingsOpen(true);
   }, []);
 
   // Handle history click
@@ -996,6 +994,8 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           onMenuClick={() => setIsSidebarOpen(true)}
           hasUnreadNotifications={hasUnreadMessages}
         />
+        {/* Usage banner for free tier users */}
+        <UsageBanner onUpgradeClick={handleSettingsClick} />
         </div>
         {/* Spacer for fixed header on mobile - matches header height (52px) */}
         <div className="h-[52px] flex-shrink-0 md:hidden" />
@@ -1158,30 +1158,6 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
         isAdding={isAddingWorkspace}
         error={addWorkspaceError}
       />
-
-      {/* Workspace Settings Panel */}
-      {effectiveActiveWorkspaceId && (
-        <WorkspaceSettingsPanel
-          isOpen={isWorkspaceSettingsPanelOpen}
-          onClose={() => setIsWorkspaceSettingsPanelOpen(false)}
-          workspaceId={effectiveActiveWorkspaceId}
-          workspaceName={effectiveWorkspaces.find(w => w.id === effectiveActiveWorkspaceId)?.name || 'Workspace'}
-          isOwner={true}
-          apiBaseUrl="/api"
-          onWorkspaceUpdated={() => {
-            // Refetch cloud workspaces if in cloud mode
-            if (isCloudMode) {
-              cloudApi.getWorkspaceSummary().then(result => {
-                if (result.success && result.data.workspaces) {
-                  setCloudWorkspaces(result.data.workspaces);
-                }
-              });
-            }
-            // Refetch workspace repos
-            refetchWorkspaceRepos();
-          }}
-        />
-      )}
 
       {/* Conversation History */}
       <ConversationHistory
