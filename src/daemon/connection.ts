@@ -18,6 +18,7 @@ import {
   type PongPayload,
   type ErrorPayload,
   type AckPayload,
+  type EntityType,
   PROTOCOL_VERSION,
 } from '../protocol/types.js';
 import { encodeFrame, FrameParser } from '../protocol/framing.js';
@@ -54,11 +55,14 @@ export class Connection {
 
   private _state: ConnectionState = 'CONNECTING';
   private _agentName?: string;
+  private _entityType?: EntityType;
   private _cli?: string;
   private _program?: string;
   private _model?: string;
   private _task?: string;
   private _workingDirectory?: string;
+  private _displayName?: string;
+  private _avatarUrl?: string;
   private _sessionId: string;
   private _resumeToken: string;
   private _isResumed = false;
@@ -97,6 +101,10 @@ export class Connection {
     return this._agentName;
   }
 
+  get entityType(): EntityType | undefined {
+    return this._entityType;
+  }
+
   get cli(): string | undefined {
     return this._cli;
   }
@@ -115,6 +123,14 @@ export class Connection {
 
   get workingDirectory(): string | undefined {
     return this._workingDirectory;
+  }
+
+  get displayName(): string | undefined {
+    return this._displayName;
+  }
+
+  get avatarUrl(): string | undefined {
+    return this._avatarUrl;
   }
 
   get sessionId(): string {
@@ -183,11 +199,14 @@ export class Connection {
     }
 
     this._agentName = envelope.payload.agent;
+    this._entityType = envelope.payload.entityType;
     this._cli = envelope.payload.cli;
     this._program = envelope.payload.program;
     this._model = envelope.payload.model;
     this._task = envelope.payload.task;
     this._workingDirectory = envelope.payload.workingDirectory;
+    this._displayName = envelope.payload.displayName;
+    this._avatarUrl = envelope.payload.avatarUrl;
 
     // Check for session resume
     const resumeToken = envelope.payload.session?.resume_token;

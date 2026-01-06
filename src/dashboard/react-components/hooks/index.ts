@@ -39,3 +39,9 @@ export {
   type UseWorkspaceReposReturn,
   type WorkspaceRepo,
 } from './useWorkspaceRepos';
+export {
+  useChannels,
+  type UseChannelsOptions,
+  type UseChannelsReturn,
+  type ChannelMessage,
+} from './useChannels';

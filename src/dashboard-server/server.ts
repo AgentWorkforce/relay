@@ -10,6 +10,7 @@ import { fileURLToPath } from 'url';
 import { SqliteStorageAdapter } from '../storage/sqlite-adapter.js';
 import type { StorageAdapter, StoredMessage } from '../storage/adapter.js';
 import { RelayClient } from '../wrapper/client.js';
+import { UserBridge } from './user-bridge.js';
 import { computeNeedsAttention } from './needs-attention.js';
 import { computeSystemMetrics, formatPrometheusMetrics } from './metrics.js';
 import { MultiProjectClient } from '../bridge/multi-project-client.js';
@@ -738,6 +739,28 @@ export async function startDashboard(
 
   // Start default relay client connection (non-blocking)
   getRelayClient('Dashboard').catch(() => {});
+
+  // User bridge for human-to-human and human-to-agent messaging
+  const userBridge = new UserBridge({
+    socketPath,
+    createRelayClient: async (options) => {
+      const client = new RelayClient({
+        socketPath: options.socketPath,
+        agentName: options.agentName,
+        entityType: options.entityType,
+        cli: 'dashboard',
+        reconnect: true,
+        maxReconnectAttempts: 5,
+      });
+
+      client.onError = (err) => {
+        console.error(`[user-bridge] Relay client error for ${options.agentName}:`, err.message);
+      };
+
+      await client.connect();
+      return client;
+    },
+  });
 
   // Bridge client for cross-project messaging
   let bridgeClient: MultiProjectClient | undefined;
@@ -1930,6 +1953,11 @@ export async function startDashboard(
 
               console.log(`[dashboard] User ${username} came online`);
 
+              // Register user with relay daemon for messaging
+              userBridge.registerUser(username, ws, { avatarUrl }).catch((err) => {
+                console.error(`[dashboard] Failed to register user ${username} with relay:`, err);
+              });
+
               // Broadcast join to all other clients (only for truly new users)
               broadcastPresence({
                 type: 'presence_join',
@@ -2006,6 +2034,88 @@ export async function startDashboard(
             avatarUrl: userState?.info.avatarUrl,
             isTyping: msg.isTyping,
           }, ws);
+        } else if (msg.type === 'channel_join') {
+          // Join a channel
+          if (!clientUsername) {
+            console.warn(`[dashboard] Security: Unauthenticated channel_join attempt`);
+            return;
+          }
+          if (!msg.channel || typeof msg.channel !== 'string') {
+            console.warn(`[dashboard] Invalid channel_join: missing channel`);
+            return;
+          }
+          userBridge.joinChannel(clientUsername, msg.channel).then((success) => {
+            ws.send(JSON.stringify({
+              type: 'channel_joined',
+              channel: msg.channel,
+              success,
+            }));
+          }).catch((err) => {
+            console.error(`[dashboard] Channel join error:`, err);
+            ws.send(JSON.stringify({
+              type: 'channel_joined',
+              channel: msg.channel,
+              success: false,
+              error: err.message,
+            }));
+          });
+        } else if (msg.type === 'channel_leave') {
+          // Leave a channel
+          if (!clientUsername) {
+            console.warn(`[dashboard] Security: Unauthenticated channel_leave attempt`);
+            return;
+          }
+          if (!msg.channel || typeof msg.channel !== 'string') {
+            console.warn(`[dashboard] Invalid channel_leave: missing channel`);
+            return;
+          }
+          userBridge.leaveChannel(clientUsername, msg.channel).then((success) => {
+            ws.send(JSON.stringify({
+              type: 'channel_left',
+              channel: msg.channel,
+              success,
+            }));
+          }).catch((err) => {
+            console.error(`[dashboard] Channel leave error:`, err);
+          });
+        } else if (msg.type === 'channel_message') {
+          // Send message to channel
+          if (!clientUsername) {
+            console.warn(`[dashboard] Security: Unauthenticated channel_message attempt`);
+            return;
+          }
+          if (!msg.channel || typeof msg.channel !== 'string') {
+            console.warn(`[dashboard] Invalid channel_message: missing channel`);
+            return;
+          }
+          if (!msg.body || typeof msg.body !== 'string') {
+            console.warn(`[dashboard] Invalid channel_message: missing body`);
+            return;
+          }
+          userBridge.sendChannelMessage(clientUsername, msg.channel, msg.body, {
+            thread: msg.thread,
+          }).catch((err) => {
+            console.error(`[dashboard] Channel message error:`, err);
+          });
+        } else if (msg.type === 'direct_message') {
+          // Send direct message to user or agent
+          if (!clientUsername) {
+            console.warn(`[dashboard] Security: Unauthenticated direct_message attempt`);
+            return;
+          }
+          if (!msg.to || typeof msg.to !== 'string') {
+            console.warn(`[dashboard] Invalid direct_message: missing 'to'`);
+            return;
+          }
+          if (!msg.body || typeof msg.body !== 'string') {
+            console.warn(`[dashboard] Invalid direct_message: missing body`);
+            return;
+          }
+          userBridge.sendDirectMessage(clientUsername, msg.to, msg.body, {
+            thread: msg.thread,
+          }).catch((err) => {
+            console.error(`[dashboard] Direct message error:`, err);
+          });
         }
       } catch (err) {
         console.error('[dashboard] Invalid presence message:', err);
@@ -2028,6 +2138,9 @@ export async function startDashboard(
             onlineUsers.delete(clientUsername);
             console.log(`[dashboard] User ${clientUsername} disconnected`);
 
+            // Unregister from relay daemon
+            userBridge.unregisterUser(clientUsername);
+
             broadcastPresence({
               type: 'presence_leave',
               username: clientUsername,
@@ -2045,6 +2158,91 @@ export async function startDashboard(
       console.error('Failed to fetch dashboard data', err);
       res.status(500).json({ error: 'Failed to load data' });
     });
+  });
+
+  // ===== Channel API =====
+  /**
+   * GET /api/channels - Get list of channels the user has joined
+   */
+  app.get('/api/channels', (req, res) => {
+    const username = req.query.username as string;
+    if (!username) {
+      return res.status(400).json({ error: 'username query param required' });
+    }
+    const channels = userBridge.getUserChannels(username);
+    res.json({ channels });
+  });
+
+  /**
+   * GET /api/channels/users - Get list of registered users
+   */
+  app.get('/api/channels/users', (_req, res) => {
+    const users = userBridge.getRegisteredUsers();
+    res.json({ users });
+  });
+
+  /**
+   * POST /api/channels/join - Join a channel
+   */
+  app.post('/api/channels/join', express.json(), async (req, res) => {
+    const { username, channel } = req.body;
+    if (!username || !channel) {
+      return res.status(400).json({ error: 'username and channel required' });
+    }
+    try {
+      const success = await userBridge.joinChannel(username, channel);
+      res.json({ success, channel });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
+   * POST /api/channels/leave - Leave a channel
+   */
+  app.post('/api/channels/leave', express.json(), async (req, res) => {
+    const { username, channel } = req.body;
+    if (!username || !channel) {
+      return res.status(400).json({ error: 'username and channel required' });
+    }
+    try {
+      const success = await userBridge.leaveChannel(username, channel);
+      res.json({ success, channel });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
+   * POST /api/channels/message - Send a message to a channel
+   */
+  app.post('/api/channels/message', express.json(), async (req, res) => {
+    const { username, channel, body, thread } = req.body;
+    if (!username || !channel || !body) {
+      return res.status(400).json({ error: 'username, channel, and body required' });
+    }
+    try {
+      const success = await userBridge.sendChannelMessage(username, channel, body, { thread });
+      res.json({ success });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
+   * POST /api/dm - Send a direct message
+   */
+  app.post('/api/dm', express.json(), async (req, res) => {
+    const { from, to, body, thread } = req.body;
+    if (!from || !to || !body) {
+      return res.status(400).json({ error: 'from, to, and body required' });
+    }
+    try {
+      const success = await userBridge.sendDirectMessage(from, to, body, { thread });
+      res.json({ success });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // ===== Health Check API =====
@@ -2409,22 +2607,26 @@ export async function startDashboard(
       if (spawner) {
         const activeWorkers = spawner.getActiveWorkers();
         for (const worker of activeWorkers) {
-          // Get memory usage via ps command
+          // Get memory usage via /proc filesystem
           let rssBytes = 0;
-          let cpuPercent = 0;
+          const cpuPercent = 0;
 
           if (worker.pid) {
             try {
-              const { execSync } = await import('child_process');
-              const output = execSync(`ps -o rss=,pcpu= -p ${worker.pid}`, {
-                encoding: 'utf8',
-                timeout: 3000,
-              }).trim();
-              const parts = output.split(/\s+/);
-              rssBytes = parseInt(parts[0] || '0', 10) * 1024;
-              cpuPercent = parseFloat(parts[1] || '0');
+              // Use /proc filesystem instead of ps command (not available in all containers)
+              const statusPath = `/proc/${worker.pid}/status`;
+              if (fs.existsSync(statusPath)) {
+                const status = fs.readFileSync(statusPath, 'utf8');
+                // Parse VmRSS (Resident Set Size) from /proc/[pid]/status
+                const rssMatch = status.match(/VmRSS:\s+(\d+)\s+kB/);
+                if (rssMatch) {
+                  rssBytes = parseInt(rssMatch[1], 10) * 1024; // Convert kB to bytes
+                }
+              }
+              // Note: CPU percentage requires sampling /proc/[pid]/stat over time
+              // which is more complex. Leaving at 0 for now.
             } catch {
-              // Process may have exited
+              // Process may have exited or /proc not accessible
             }
           }
 
