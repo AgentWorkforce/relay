@@ -155,7 +155,7 @@ export function useChannels(options: UseChannelsOptions = {}): UseChannelsReturn
               }
               break;
 
-            case 'channel_message':
+            case 'channel_message': {
               const channelMsg: ChannelMessage = {
                 id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
                 type: 'channel_message',
@@ -171,8 +171,9 @@ export function useChannels(options: UseChannelsOptions = {}): UseChannelsReturn
               });
               onMessageRef.current?.(channelMsg);
               break;
+            }
 
-            case 'direct_message':
+            case 'direct_message': {
               const dmMsg: ChannelMessage = {
                 id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
                 type: 'direct_message',
@@ -188,6 +189,7 @@ export function useChannels(options: UseChannelsOptions = {}): UseChannelsReturn
               });
               onMessageRef.current?.(dmMsg);
               break;
+            }
           }
         } catch (e) {
           console.error('[useChannels] Failed to parse message:', e);

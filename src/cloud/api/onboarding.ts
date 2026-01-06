@@ -317,7 +317,7 @@ onboardingRouter.post('/cli/:provider/complete/:sessionId', async (req: Request,
   try {
     let accessToken = token || session.token;
     let refreshToken = session.refreshToken;
-    let tokenExpiresAt = session.tokenExpiresAt;
+    let _tokenExpiresAt = session.tokenExpiresAt;
 
     // If using workspace delegation, forward complete request first
     if (session.workspaceUrl && session.workspaceSessionId) {
@@ -364,7 +364,7 @@ onboardingRouter.post('/cli/:provider/complete/:sessionId', async (req: Request,
               accessToken = creds.token;
               refreshToken = creds.refreshToken;
               if (creds.tokenExpiresAt) {
-                tokenExpiresAt = new Date(creds.tokenExpiresAt);
+                _tokenExpiresAt = new Date(creds.tokenExpiresAt);
               }
               console.log('[onboarding] Fetched credentials from workspace:', {
                 hasToken: !!accessToken,

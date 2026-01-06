@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { UserBridge, type UserBridgeOptions } from './user-bridge.js';
+import { UserBridge } from './user-bridge.js';
 
 // Mock WebSocket
 class MockWebSocket {
