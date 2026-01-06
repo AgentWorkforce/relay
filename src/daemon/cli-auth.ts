@@ -305,8 +305,9 @@ export async function startCLIAuth(
         outputTail: cleanOutput.slice(-500),
       });
 
-      // Try to extract credentials
-      if (session.authUrl || exitCode === 0) {
+      // Try to extract credentials (but don't override error status)
+      // CLI might exit cleanly (code 0) even after an OAuth error
+      if ((session.authUrl || exitCode === 0) && session.status !== 'error') {
         try {
           const creds = await extractCredentials(provider, config);
           if (creds) {
