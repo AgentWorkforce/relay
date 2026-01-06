@@ -16,7 +16,7 @@ import { exec, execSync, spawn, ChildProcess } from 'node:child_process';
 import crypto from 'node:crypto';
 import { promisify } from 'node:util';
 import { BaseWrapper, type BaseWrapperConfig } from './base-wrapper.js';
-import { OutputParser, type ParsedCommand, type ParsedSummary, parseSummaryWithDetails, parseSessionEndFromOutput, type SessionEndMarker } from './parser.js';
+import { OutputParser, type ParsedCommand, type ParsedSummary, parseSummaryWithDetails, parseSessionEndFromOutput } from './parser.js';
 import {
   hasContinuityCommand,
   parseContinuityCommand,
@@ -39,7 +39,6 @@ import {
 } from '../trajectory/integration.js';
 import { escapeForShell } from '../bridge/utils.js';
 import {
-  type QueuedMessage,
   type CliType,
   type InjectionCallbacks,
   stripAnsi,
@@ -52,7 +51,6 @@ import {
 } from './shared.js';
 
 const execAsync = promisify(exec);
-const escapeRegex = (str: string): string => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // Constants for cursor stability detection in waitForClearInput
 /** Number of consecutive polls with stable cursor before assuming input is clear */

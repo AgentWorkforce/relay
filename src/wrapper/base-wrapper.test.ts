@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { BaseWrapper, type BaseWrapperConfig } from './base-wrapper.js';
+import { BaseWrapper } from './base-wrapper.js';
 import type { QueuedMessage } from './shared.js';
 import type { ParsedSummary } from './parser.js';
 import type { SendPayload, SendMeta } from '../protocol/types.js';
