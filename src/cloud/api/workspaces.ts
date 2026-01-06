@@ -81,6 +81,24 @@ interface CachedUserRepos {
 const userReposCache = new Map<string, CachedUserRepos>();
 const USER_REPOS_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes - hard expiry
 const STALE_WHILE_REVALIDATE_MS = 5 * 60 * 1000; // Trigger background refresh after 5 minutes
+const MAX_CACHE_ENTRIES = 500; // Prevent unbounded growth
+
+/**
+ * Evict oldest cache entries if we exceed the limit
+ */
+function evictOldestCacheEntries(): void {
+  if (userReposCache.size <= MAX_CACHE_ENTRIES) return;
+
+  // Convert to array, sort by cachedAt (oldest first), delete oldest entries
+  const entries = Array.from(userReposCache.entries())
+    .sort((a, b) => a[1].cachedAt - b[1].cachedAt);
+
+  const toEvict = entries.slice(0, entries.length - MAX_CACHE_ENTRIES);
+  for (const [key] of toEvict) {
+    console.log(`[repos-cache] Evicting oldest cache entry: ${key.substring(0, 8)}`);
+    userReposCache.delete(key);
+  }
+}
 
 /**
  * Background refresh function that paginates through ALL user repos
@@ -144,6 +162,7 @@ async function refreshUserReposInBackground(nangoConnectionId: string): Promise<
       isComplete: true,
       refreshInProgress: false,
     });
+    evictOldestCacheEntries();
   } catch (err) {
     console.error(`[repos-cache] Background refresh failed for ${nangoConnectionId.substring(0, 8)}:`, err);
 
@@ -182,81 +201,105 @@ function getCachedUserRepos(nangoConnectionId: string): CachedUserRepos | null {
   return cached;
 }
 
+// Track in-flight initializations to prevent duplicate API calls
+const initializingConnections = new Set<string>();
+
 /**
  * Initialize cache with first page and trigger background refresh for rest
  * Returns the first page of repos immediately
  */
 async function initializeUserReposCache(nangoConnectionId: string): Promise<CachedRepo[]> {
-  // Fetch first page synchronously
-  const firstPage = await nangoService.listUserAccessibleRepos(nangoConnectionId, {
-    perPage: 100,
-    page: 1,
-    type: 'all',
-  });
-
-  const repos = firstPage.repositories.map(r => ({
-    fullName: r.fullName,
-    permissions: r.permissions,
-  }));
-
-  // Store first page immediately
-  userReposCache.set(nangoConnectionId, {
-    repositories: repos,
-    cachedAt: Date.now(),
-    isComplete: !firstPage.hasMore,
-    refreshInProgress: firstPage.hasMore, // Will be refreshing if there's more
-  });
-
-  // If there are more pages, trigger background refresh to get them all
-  if (firstPage.hasMore) {
-    console.log(`[repos-cache] First page has ${repos.length} repos, more available - triggering background refresh`);
-    // Fire and forget - continue pagination in background
-    (async () => {
-      try {
-        const allRepos = [...repos];
-        let page = 2;
-        let hasMore = true;
-        const MAX_PAGES = 20;
-
-        while (hasMore && page <= MAX_PAGES) {
-          const result = await nangoService.listUserAccessibleRepos(nangoConnectionId, {
-            perPage: 100,
-            page,
-            type: 'all',
-          });
-
-          allRepos.push(...result.repositories.map(r => ({
-            fullName: r.fullName,
-            permissions: r.permissions,
-          })));
-
-          hasMore = result.hasMore;
-          page++;
-
-          if (hasMore) {
-            await new Promise(resolve => setTimeout(resolve, 100));
-          }
-        }
-
-        console.log(`[repos-cache] Background pagination complete: ${allRepos.length} total repos`);
-
-        userReposCache.set(nangoConnectionId, {
-          repositories: allRepos,
-          cachedAt: Date.now(),
-          isComplete: true,
-          refreshInProgress: false,
-        });
-      } catch (err) {
-        console.error('[repos-cache] Background pagination failed:', err);
-        const existing = userReposCache.get(nangoConnectionId);
-        if (existing) {
-          existing.refreshInProgress = false;
-        }
-      }
-    })();
+  // Check if another request is already initializing this connection
+  if (initializingConnections.has(nangoConnectionId)) {
+    console.log(`[repos-cache] Another request is initializing ${nangoConnectionId.substring(0, 8)}, waiting...`);
+    // Wait a bit and check cache again
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const cached = userReposCache.get(nangoConnectionId);
+    if (cached) {
+      return cached.repositories;
+    }
+    // Still no cache, fall through to initialize (previous request may have failed)
   }
 
-  return repos;
+  initializingConnections.add(nangoConnectionId);
+
+  try {
+    // Fetch first page synchronously
+    const firstPage = await nangoService.listUserAccessibleRepos(nangoConnectionId, {
+      perPage: 100,
+      page: 1,
+      type: 'all',
+    });
+
+    const repos = firstPage.repositories.map(r => ({
+      fullName: r.fullName,
+      permissions: r.permissions,
+    }));
+
+    // Store first page immediately
+    userReposCache.set(nangoConnectionId, {
+      repositories: repos,
+      cachedAt: Date.now(),
+      isComplete: !firstPage.hasMore,
+      refreshInProgress: firstPage.hasMore, // Will be refreshing if there's more
+    });
+    evictOldestCacheEntries();
+
+    // If there are more pages, trigger background refresh to get the rest
+    if (firstPage.hasMore) {
+      console.log(`[repos-cache] First page has ${repos.length} repos, more available - triggering background pagination`);
+      // Fire and forget - reuse the shared background refresh function
+      // But start from page 2 with the existing repos
+      (async () => {
+        try {
+          const allRepos = [...repos];
+          let page = 2;
+          let hasMore = true;
+          const MAX_PAGES = 20;
+
+          while (hasMore && page <= MAX_PAGES) {
+            const result = await nangoService.listUserAccessibleRepos(nangoConnectionId, {
+              perPage: 100,
+              page,
+              type: 'all',
+            });
+
+            allRepos.push(...result.repositories.map(r => ({
+              fullName: r.fullName,
+              permissions: r.permissions,
+            })));
+
+            hasMore = result.hasMore;
+            page++;
+
+            if (hasMore) {
+              await new Promise(resolve => setTimeout(resolve, 100));
+            }
+          }
+
+          console.log(`[repos-cache] Background pagination complete: ${allRepos.length} total repos`);
+
+          userReposCache.set(nangoConnectionId, {
+            repositories: allRepos,
+            cachedAt: Date.now(),
+            isComplete: true,
+            refreshInProgress: false,
+          });
+          evictOldestCacheEntries();
+        } catch (err) {
+          console.error('[repos-cache] Background pagination failed:', err);
+          const existing = userReposCache.get(nangoConnectionId);
+          if (existing) {
+            existing.refreshInProgress = false;
+          }
+        }
+      })();
+    }
+
+    return repos;
+  } finally {
+    initializingConnections.delete(nangoConnectionId);
+  }
 }
 
 // ============================================================================
