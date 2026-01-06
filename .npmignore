@@ -83,3 +83,11 @@ run-dashboard.js
 CLAUDE.md
 AGENTS.md
 *.tasks.md
+
+# Temp and cache directories
+.tmp-*/
+.npm-cache/
+coverage/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
