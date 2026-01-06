@@ -653,14 +653,15 @@ class FlyProvisioner implements ComputeProvisioner {
     const volume = await this.createVolume(appName);
 
     // Determine instance size based on user's plan
-    // Free tier gets smaller instance (1 CPU, 1GB) to reduce costs (~$7/mo vs ~$15/mo)
+    // Free tier: 1 CPU, 2GB (~$10/mo) - Claude needs 2GB minimum
+    // Paid tiers: 2 CPU, 2GB (~$15/mo)
     const user = await db.users.findById(workspace.userId);
     const userPlan = (user?.plan as PlanType) || 'free';
     const isFreeTier = userPlan === 'free';
     const guestConfig = {
       cpu_kind: 'shared' as const,
       cpus: isFreeTier ? 1 : 2,
-      memory_mb: isFreeTier ? 1024 : 2048,
+      memory_mb: 2048, // Claude needs 2GB minimum to run reliably
     };
     console.log(`[fly] Using ${guestConfig.cpus} CPU / ${guestConfig.memory_mb}MB for ${userPlan} plan`);
 

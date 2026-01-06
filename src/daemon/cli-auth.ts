@@ -436,8 +436,18 @@ export async function submitAuthCode(
   }
 
   try {
-    // Clean the code - trim whitespace
-    const cleanCode = code.trim();
+    // Clean the code - trim whitespace and strip state parameter if present
+    // Claude OAuth codes come as "CODE#STATE" - we only need the code part
+    let cleanCode = code.trim();
+    if (cleanCode.includes('#')) {
+      const originalCode = cleanCode;
+      cleanCode = cleanCode.split('#')[0];
+      logger.info('Stripped state parameter from auth code', {
+        sessionId,
+        originalLength: originalCode.length,
+        cleanLength: cleanCode.length,
+      });
+    }
 
     logger.info('Writing auth code to PTY', {
       sessionId,

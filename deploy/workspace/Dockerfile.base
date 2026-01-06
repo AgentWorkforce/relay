@@ -28,10 +28,11 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
     && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
-# Install npm-based CLIs globally as root
-RUN npm install -g @openai/codex
-RUN npm install -g @google/gemini-cli
-RUN npm install -g opencode-ai@latest
+# Install npm-based CLIs globally as root with pinned versions for stability
+RUN npm install -g @anthropic-ai/claude-code@2.0.67
+RUN npm install -g @openai/codex@0.78.0
+RUN npm install -g @google/gemini-cli@0.22.5
+RUN npm install -g opencode-ai@1.1.3
 
 # Create workspace directory structure
 RUN mkdir -p /workspace /data
@@ -42,9 +43,7 @@ RUN useradd -m -u 1001 -s /bin/bash workspace \
 
 USER workspace
 
-# Install user-space CLIs
-# Claude
-RUN curl -fsSL https://claude.ai/install.sh | bash
+# Install user-space CLIs (ones that require user-space installation)
 # Droid
 RUN curl -fsSL https://app.factory.ai/cli | sh
 
