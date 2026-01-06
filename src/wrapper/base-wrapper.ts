@@ -108,10 +108,14 @@ export abstract class BaseWrapper extends EventEmitter {
     this.relayPrefix = config.relayPrefix ?? getDefaultRelayPrefix();
     this.cliType = config.cliType ?? detectCliType(config.command);
 
-    // Initialize relay client
+    // Initialize relay client with full config
     this.client = new RelayClient({
       agentName: config.name,
       socketPath: config.socketPath,
+      cli: this.cliType,
+      task: config.task,
+      workingDirectory: config.cwd,
+      quiet: true,
     });
 
     // Initialize continuity manager

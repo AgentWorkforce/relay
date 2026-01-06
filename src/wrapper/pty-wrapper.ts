@@ -4,78 +4,54 @@
  * Unlike TmuxWrapper which provides interactive terminal access,
  * PtyWrapper runs agents headlessly with output capture for logs.
  * Used for spawned workers that don't need direct user interaction.
+ *
+ * Extends BaseWrapper for shared message handling, spawn/release,
+ * and continuity integration.
  */
 
 import * as pty from 'node-pty';
 import fs from 'node:fs';
 import path from 'node:path';
-import { EventEmitter } from 'node:events';
-import { RelayClient } from './client.js';
+import { BaseWrapper, type BaseWrapperConfig } from './base-wrapper.js';
 import type { ParsedCommand, ParsedSummary, SessionEndMarker } from './parser.js';
 import { parseSummaryWithDetails, parseSessionEndFromOutput, isPlaceholderTarget } from './parser.js';
-import type { SendPayload, SendMeta, SpeakOnTrigger } from '../protocol/types.js';
+import type { SendPayload, SendMeta } from '../protocol/types.js';
 import { getProjectPaths } from '../utils/project-namespace.js';
 import { getTrailEnvVars } from '../trajectory/integration.js';
 import { findAgentConfig } from '../utils/agent-config.js';
 import { HookRegistry, createTrajectoryHooks, type LifecycleHooks } from '../hooks/index.js';
-import { getContinuityManager, parseContinuityCommand, hasContinuityCommand, type ContinuityManager } from '../continuity/index.js';
+import { parseContinuityCommand, hasContinuityCommand } from '../continuity/index.js';
 import {
   type QueuedMessage,
   type InjectionMetrics,
   type InjectionCallbacks,
-  type CliType,
   INJECTION_CONSTANTS,
   stripAnsi,
   sleep,
   buildInjectionString,
   injectWithRetry as sharedInjectWithRetry,
   calculateSuccessRate,
-  createInjectionMetrics,
-  getDefaultRelayPrefix,
-  detectCliType,
   CLI_QUIRKS,
 } from './shared.js';
 
 /** Maximum lines to keep in output buffer */
 const MAX_BUFFER_LINES = 10000;
 
-export interface PtyWrapperConfig {
-  name: string;
-  command: string;
-  args?: string[];
-  socketPath?: string;
-  cwd?: string;
-  env?: Record<string, string>;
-  /** Relay prefix pattern (default: '->relay:') */
-  relayPrefix?: string;
-  /** CLI type for special handling (auto-detected from command if not set) */
-  cliType?: CliType;
+/**
+ * PtyWrapper-specific configuration.
+ * Extends BaseWrapperConfig with PTY-specific options.
+ */
+export interface PtyWrapperConfig extends BaseWrapperConfig {
   /** Directory to write log files (optional) */
   logsDir?: string;
-  /** Dashboard port for spawn/release API calls (enables nested spawning from spawned agents) */
-  dashboardPort?: number;
   /** Allow this agent to spawn other agents (default: true for Lead, false for spawned workers) */
   allowSpawn?: boolean;
-  /** Callback for spawn commands (fallback if dashboardPort not set) */
-  onSpawn?: (name: string, cli: string, task: string) => Promise<void>;
-  /** Callback for release commands (fallback if dashboardPort not set) */
-  onRelease?: (name: string) => Promise<void>;
   /** Callback when agent exits */
   onExit?: (code: number) => void;
-  /** Primary agent to shadow (if this agent is a shadow) */
-  shadowOf?: string;
-  /** When the shadow should speak (default: ['EXPLICIT_ASK']) */
-  shadowSpeakOn?: SpeakOnTrigger[];
-  /** Stream output to daemon for dashboard log viewing (default: true) */
-  streamLogs?: boolean;
-  /** Task/role description for trajectory tracking */
-  task?: string;
   /** Custom lifecycle hooks */
   hooks?: LifecycleHooks;
   /** Enable trajectory tracking hooks (default: true if task provided) */
   trajectoryTracking?: boolean;
-  /** Resume from a previous agent ID (for crash recovery) */
-  resumeAgentId?: string;
   /**
    * Summary reminder configuration. Set to false to disable.
    * Default: { intervalMinutes: 15, minOutputs: 50 }
@@ -115,40 +91,25 @@ export interface PtyWrapperEvents {
   'session-end': (event: SessionEndEvent) => void;
 }
 
-export class PtyWrapper extends EventEmitter {
-  private config: PtyWrapperConfig;
+export class PtyWrapper extends BaseWrapper {
+  // Override config with PtyWrapper-specific type
+  protected override config: PtyWrapperConfig;
+
+  // PTY-specific state
   private ptyProcess?: pty.IPty;
-  private client: RelayClient;
-  private running = false;
   private outputBuffer: string[] = [];
   private rawBuffer = '';
-  private relayPrefix: string;
-  private cliType: CliType;
-  private sentMessageHashes: Set<string> = new Set();
-  private receivedMessageIds: Set<string> = new Set(); // Dedup incoming messages
-  private processedSpawnCommands: Set<string> = new Set();
-  private processedReleaseCommands: Set<string> = new Set();
-  private pendingFencedSpawn: { name: string; cli: string; taskLines: string[] } | null = null;
-  private messageQueue: QueuedMessage[] = [];
-  private isInjecting = false;
   private readyForMessages = false;
   private lastOutputTime = 0;
-  private injectionMetrics: InjectionMetrics = createInjectionMetrics();
   private logFilePath?: string;
   private logStream?: fs.WriteStream;
   private acceptedPrompts: Set<string> = new Set(); // Track which prompts have been accepted
   private hookRegistry: HookRegistry;
   private sessionStartTime = Date.now();
-  private continuity?: ContinuityManager;
-  private agentId?: string;
-  private processedContinuityCommands: Set<string> = new Set();
-  private lastSummaryRawContent = ''; // Dedup summary event emissions
-  private sessionEndProcessed = false; // Track if we've already emitted session-end
   private inThinkingBlock = false; // Track if inside <thinking>...</thinking>
   private lastSummaryTime = Date.now(); // Track when last summary was output
   private outputsSinceSummary = 0; // Count outputs since last summary
   private detectedTask?: string; // Auto-detected task from agent config
-  private sessionEndData?: SessionEndMarker; // Store SESSION_END data for handoff
   private instructionsInjected = false; // Track if init instructions have been injected
   private continuityInjected = false; // Track if continuity context has been injected
   private recentLogChunks: Map<string, number> = new Map(); // Dedup log streaming (hash -> timestamp)
@@ -158,12 +119,8 @@ export class PtyWrapper extends EventEmitter {
   private lastContinuityParsedLength = 0; // Same for continuity commands
 
   constructor(config: PtyWrapperConfig) {
-    super();
+    super(config);
     this.config = config;
-    this.relayPrefix = config.relayPrefix ?? getDefaultRelayPrefix();
-
-    // Detect CLI type from command for special handling
-    this.cliType = config.cliType ?? detectCliType(config.command);
 
     // Auto-detect agent role from .claude/agents/ or .openagents/ if task not provided
     let detectedTask = config.task;
@@ -178,16 +135,7 @@ export class PtyWrapper extends EventEmitter {
     // Store detected task for use in hook registry
     this.detectedTask = detectedTask;
 
-    this.client = new RelayClient({
-      agentName: config.name,
-      socketPath: config.socketPath,
-      cli: this.cliType,
-      task: detectedTask,
-      workingDirectory: config.cwd ?? process.cwd(),
-      quiet: true,
-    });
-
-    // Initialize hook registry
+    // Initialize hook registry (PTY-specific)
     const projectPaths = getProjectPaths();
     this.hookRegistry = new HookRegistry({
       agentName: config.name,
@@ -215,15 +163,33 @@ export class PtyWrapper extends EventEmitter {
     if (config.hooks) {
       this.hookRegistry.registerLifecycleHooks(config.hooks);
     }
-
-    // Initialize continuity manager
-    this.continuity = getContinuityManager({ defaultCli: 'spawned' });
-
-    // Handle incoming messages
-    this.client.onMessage = (from: string, payload: SendPayload, messageId: string, meta?: SendMeta, originalTo?: string) => {
-      this.handleIncomingMessage(from, payload, messageId, meta, originalTo);
-    };
   }
+
+  // =========================================================================
+  // Abstract method implementations (required by BaseWrapper)
+  // =========================================================================
+
+  /**
+   * Inject content into the PTY process.
+   * Used by BaseWrapper for message injection.
+   */
+  protected async performInjection(content: string): Promise<void> {
+    if (this.ptyProcess && this.running) {
+      this.ptyProcess.write(content);
+    }
+  }
+
+  /**
+   * Get cleaned output buffer for command parsing.
+   * Strips ANSI codes and returns raw buffer content.
+   */
+  protected getCleanOutput(): string {
+    return stripAnsi(this.rawBuffer);
+  }
+
+  // =========================================================================
+  // Lifecycle methods
+  // =========================================================================
 
   /**
    * Start the agent process
@@ -332,46 +298,7 @@ export class PtyWrapper extends EventEmitter {
     }, 2000);
   }
 
-  /**
-   * Initialize agent ID for continuity/resume functionality
-   */
-  private async initializeAgentId(): Promise<void> {
-    if (!this.continuity) return;
-
-    try {
-      let ledger;
-
-      // If resuming from a previous agent ID, try to find that ledger
-      if (this.config.resumeAgentId) {
-        ledger = await this.continuity.findLedgerByAgentId(this.config.resumeAgentId);
-        if (ledger) {
-          console.log(`[pty:${this.config.name}] Resuming agent ID: ${ledger.agentId} (from previous session)`);
-        } else {
-          console.error(`[pty:${this.config.name}] Resume agent ID ${this.config.resumeAgentId} not found, creating new`);
-        }
-      }
-
-      // If not resuming or resume ID not found, get or create ledger
-      if (!ledger) {
-        ledger = await this.continuity.getOrCreateLedger(
-          this.config.name,
-          'spawned'
-        );
-        console.log(`[pty:${this.config.name}] Agent ID: ${ledger.agentId} (use this to resume if agent dies)`);
-      }
-
-      this.agentId = ledger.agentId;
-    } catch (err: any) {
-      console.error(`[pty:${this.config.name}] Failed to initialize agent ID: ${err.message}`);
-    }
-  }
-
-  /**
-   * Get the current agent ID
-   */
-  getAgentId(): string | undefined {
-    return this.agentId;
-  }
+  // Note: initializeAgentId() and getAgentId() are inherited from BaseWrapper
 
   /**
    * Inject continuity context from previous session.
@@ -435,7 +362,11 @@ export class PtyWrapper extends EventEmitter {
    *   ->continuity:uncertain "..."  - Mark item as uncertain
    *   ->continuity:handoff <<<...>>> - Create explicit handoff
    */
-  private async parseContinuityCommands(content: string): Promise<void> {
+  /**
+   * Parse continuity commands from output.
+   * Overrides BaseWrapper to use client.sendMessage instead of queuing.
+   */
+  protected override async parseContinuityCommands(content: string): Promise<void> {
     if (!this.continuity) return;
     if (!hasContinuityCommand(content)) return;
 
@@ -927,27 +858,19 @@ export class PtyWrapper extends EventEmitter {
   }
 
   /**
-   * Send relay command to daemon
+   * Send relay command to daemon.
+   * Extends BaseWrapper to add PTY-specific logging and hook dispatch.
    */
-  private sendRelayCommand(cmd: ParsedCommand): void {
-    const msgHash = `${cmd.to}:${cmd.body}`;
+  protected override sendRelayCommand(cmd: ParsedCommand): void {
+    // Check if this message would be sent (before BaseWrapper deduplicates)
+    const msgHash = `${cmd.to}:${cmd.body.substring(0, 100)}`;
+    const wouldSend = !this.sentMessageHashes.has(msgHash) && this.client.state === 'READY';
 
-    if (this.sentMessageHashes.has(msgHash)) {
-      console.log(`[pty:${this.config.name}] Skipping duplicate message to ${cmd.to}`);
-      return;
-    }
+    // Call base class to handle deduplication and actual send
+    super.sendRelayCommand(cmd);
 
-    if (this.client.state !== 'READY') {
-      console.log(`[pty:${this.config.name}] Cannot send to ${cmd.to} - relay not ready (state: ${this.client.state})`);
-      return;
-    }
-
-    const success = this.client.sendMessage(cmd.to, cmd.body, cmd.kind, cmd.data, cmd.thread);
-    console.log(`[pty:${this.config.name}] Sent message to ${cmd.to}: ${success ? 'success' : 'failed'}`);
-    if (success) {
-      this.sentMessageHashes.add(msgHash);
-
-      // Dispatch message sent hook
+    // PTY-specific: Dispatch message sent hook if the message was sent
+    if (wouldSend && this.sentMessageHashes.has(msgHash)) {
       this.hookRegistry.dispatchMessageSent(cmd.to, cmd.body, cmd.thread).catch(err => {
         console.error(`[pty:${this.config.name}] Message sent hook error:`, err);
       });
@@ -985,8 +908,10 @@ export class PtyWrapper extends EventEmitter {
    * - Command must be at start of line (after whitespace)
    * - Agent name must be PascalCase (e.g., Backend, Frontend, Worker1)
    * - CLI must be a known type (claude, codex, gemini, etc.)
+   *
+   * Overrides BaseWrapper to add PTY-specific validation and logging.
    */
-  private parseSpawnReleaseCommands(content: string): void {
+  protected override parseSpawnReleaseCommands(content: string): void {
     // Need either API port or callbacks to handle spawn/release
     // Also check allowSpawn config - spawned workers should not spawn other agents
     const spawnAllowed = this.config.allowSpawn !== false;
@@ -1178,9 +1103,10 @@ export class PtyWrapper extends EventEmitter {
   }
 
   /**
-   * Execute spawn via API or callback
+   * Execute spawn via API or callback.
+   * Overrides BaseWrapper to add PTY-specific logging and API path.
    */
-  private async executeSpawn(name: string, cli: string, task: string): Promise<void> {
+  protected override async executeSpawn(name: string, cli: string, task: string): Promise<void> {
     console.log(`[pty:${this.config.name}] [SPAWN-DEBUG] executeSpawn called: name=${name}, cli=${cli}, task="${task.substring(0, 50)}..."`);
     console.log(`[pty:${this.config.name}] [SPAWN-DEBUG] dashboardPort=${this.config.dashboardPort}, hasOnSpawn=${!!this.config.onSpawn}`);
 
@@ -1212,9 +1138,10 @@ export class PtyWrapper extends EventEmitter {
   }
 
   /**
-   * Execute release via API or callback
+   * Execute release via API or callback.
+   * Overrides BaseWrapper to add PTY-specific logging and API path.
    */
-  private async executeRelease(name: string): Promise<void> {
+  protected override async executeRelease(name: string): Promise<void> {
     if (this.config.dashboardPort) {
       // Use dashboard API for releasing
       try {
@@ -1241,27 +1168,17 @@ export class PtyWrapper extends EventEmitter {
   }
 
   /**
-   * Handle incoming message from relay
-   * @param originalTo - The original 'to' field from sender. '*' indicates this was a broadcast message.
+   * Handle incoming message from relay.
+   * Extends BaseWrapper to add PTY-specific behavior.
    */
-  private handleIncomingMessage(from: string, payload: SendPayload, messageId: string, meta?: SendMeta, originalTo?: string): void {
-    // Deduplicate: skip if we've already received this message
-    if (this.receivedMessageIds.has(messageId)) {
-      console.log(`[pty:${this.config.name}] Skipping duplicate message: ${messageId.substring(0, 8)}`);
-      return;
-    }
-    this.receivedMessageIds.add(messageId);
+  protected override handleIncomingMessage(from: string, payload: SendPayload, messageId: string, meta?: SendMeta, originalTo?: string): void {
+    // Call base class to handle deduplication and queuing
+    super.handleIncomingMessage(from, payload, messageId, meta, originalTo);
 
-    // Limit dedup set size to prevent memory leak
-    if (this.receivedMessageIds.size > 1000) {
-      const oldest = this.receivedMessageIds.values().next().value;
-      if (oldest) this.receivedMessageIds.delete(oldest);
-    }
-
-    this.messageQueue.push({ from, body: payload.body, messageId, thread: payload.thread, importance: meta?.importance, data: payload.data, originalTo });
+    // PTY-specific: Process the message queue immediately
     this.processMessageQueue();
 
-    // Dispatch message received hook
+    // PTY-specific: Dispatch message received hook
     this.hookRegistry.dispatchMessageReceived(from, payload.body, messageId).catch(err => {
       console.error(`[pty:${this.config.name}] Message received hook error:`, err);
     });
@@ -1669,39 +1586,7 @@ export class PtyWrapper extends EventEmitter {
     });
   }
 
-  /**
-   * Save a parsed summary to the continuity ledger.
-   * Maps summary fields to ledger fields for session recovery.
-   */
-  private async saveSummaryToLedger(summary: ParsedSummary): Promise<void> {
-    if (!this.continuity) return;
-
-    const updates: Record<string, unknown> = {};
-
-    // Map summary fields to ledger fields
-    if (summary.currentTask) {
-      updates.currentTask = summary.currentTask;
-    }
-
-    if (summary.completedTasks && summary.completedTasks.length > 0) {
-      updates.completed = summary.completedTasks;
-    }
-
-    if (summary.context) {
-      // Store context in inProgress as "next steps" hint
-      updates.inProgress = [summary.context];
-    }
-
-    if (summary.files && summary.files.length > 0) {
-      updates.fileContext = summary.files.map((f: string) => ({ path: f }));
-    }
-
-    // Only save if we have meaningful updates
-    if (Object.keys(updates).length > 0) {
-      await this.continuity.saveLedger(this.config.name, updates);
-      console.log(`[pty:${this.config.name}] Saved summary to continuity ledger`);
-    }
-  }
+  // Note: saveSummaryToLedger() is inherited from BaseWrapper
 
   /**
    * Check for [[SESSION_END]] blocks and emit 'session-end' event.
@@ -1751,64 +1636,5 @@ export class PtyWrapper extends EventEmitter {
    */
   get pendingMessageCount(): number {
     return this.messageQueue.length;
-  }
-
-  /**
-   * Join continuation lines after ->relay or ->continuity commands.
-   * TUIs like Claude Code insert real newlines in output, causing
-   * messages to span multiple lines. This joins indented
-   * continuation lines back to the command line.
-   */
-  private joinContinuationLines(content: string): string {
-    const lines = content.split('\n');
-    const result: string[] = [];
-
-    // Pattern to detect relay OR continuity command line (with optional bullet prefix)
-    const commandPattern = new RegExp(
-      `^(?:\\s*(?:[>$%#→➜›»●•◦‣⁃\\-*⏺◆◇○□■]\\s*)*)?(?:${this.relayPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}|->continuity:)`
-    );
-    // Pattern to detect a continuation line (starts with spaces, no bullet/command)
-    const continuationPattern = /^[ \t]+[^>$%#→➜›»●•◦‣⁃\-*⏺◆◇○□■\s]/;
-    // Pattern to detect a new block/bullet (stops continuation)
-    const newBlockPattern = /^(?:\s*)?[>$%#→➜›»●•◦‣⁃\-*⏺◆◇○□■]/;
-
-    let i = 0;
-    while (i < lines.length) {
-      const line = lines[i];
-
-      // Check if this is a command line
-      if (commandPattern.test(line)) {
-        let joined = line;
-        let j = i + 1;
-
-        // Look ahead for continuation lines
-        while (j < lines.length) {
-          const nextLine = lines[j];
-
-          // Empty line stops continuation
-          if (nextLine.trim() === '') break;
-
-          // New bullet/block stops continuation
-          if (newBlockPattern.test(nextLine)) break;
-
-          // Check if it looks like a continuation (indented text)
-          if (continuationPattern.test(nextLine)) {
-            // Join with newline to preserve multi-line message content
-            joined += '\n' + nextLine.trim();
-            j++;
-          } else {
-            break;
-          }
-        }
-
-        result.push(joined);
-        i = j; // Skip the lines we joined
-      } else {
-        result.push(line);
-        i++;
-      }
-    }
-
-    return result.join('\n');
   }
 }
