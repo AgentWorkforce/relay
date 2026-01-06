@@ -6,8 +6,13 @@ log() {
   echo "[workspace] $*"
 }
 
-# Drop to workspace user if running as root
+# Fix volume permissions and drop to workspace user if running as root
 if [[ "$(id -u)" == "0" ]]; then
+  # Fix /data and /workspace permissions before dropping privileges
+  # Fresh Fly.io volumes are root-owned, need to chown for workspace user
+  log "Fixing volume permissions..."
+  chown -R workspace:workspace /data /workspace 2>/dev/null || true
+
   log "Dropping privileges to workspace user..."
   exec gosu workspace "$0" "$@"
 fi
