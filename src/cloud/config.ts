@@ -6,6 +6,7 @@ export interface CloudConfig {
   // Server
   port: number;
   publicUrl: string;
+  appUrl: string; // Dashboard app URL (e.g., app.agent-relay.com)
   sessionSecret: string;
 
   // Database
@@ -97,6 +98,7 @@ export function loadConfig(): CloudConfig {
   return {
     port: parseInt(process.env.PORT || '4567', 10),
     publicUrl: process.env.PUBLIC_URL || 'http://localhost:4567',
+    appUrl: process.env.APP_URL || process.env.PUBLIC_URL || 'http://localhost:4567',
     sessionSecret: requireEnv('SESSION_SECRET'),
 
     databaseUrl: requireEnv('DATABASE_URL'),

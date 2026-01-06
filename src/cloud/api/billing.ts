@@ -17,20 +17,52 @@ import type Stripe from 'stripe';
 export const billingRouter = Router();
 
 /**
+ * Get the count of connected agents in a running workspace
+ * Returns 0 if workspace is not reachable or has no agents
+ */
+async function getWorkspaceAgentCount(publicUrl: string): Promise<number> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+
+    const response = await fetch(`${publicUrl}/agents`, {
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!response.ok) return 0;
+
+    const data = await response.json() as { agents?: unknown[] };
+    return data.agents?.length ?? 0;
+  } catch {
+    // Workspace not reachable or error - assume no agents
+    return 0;
+  }
+}
+
+interface ResizeResult {
+  resized: number;
+  deferred: Array<{ workspaceId: string; workspaceName: string; agentCount: number }>;
+  failed: number;
+}
+
+/**
  * Resize user's workspaces to match their new plan tier
  * Called after plan upgrade/downgrade to adjust compute resources
  *
  * Strategy:
  * - Stopped workspaces: Resize immediately (no disruption)
- * - Running workspaces: Save config for next restart (no agent disruption)
+ * - Running workspaces with no agents: Resize immediately (safe to restart)
+ * - Running workspaces with agents: Save config for next restart (no agent disruption)
  *
- * User can manually restart to get new resources immediately, or wait for
- * natural restart (auto-stop idle, manual restart, etc.)
+ * Returns info about which workspaces were deferred so we can inform the user.
  */
-async function resizeWorkspacesForPlan(userId: string, newPlan: PlanType): Promise<void> {
+async function resizeWorkspacesForPlan(userId: string, newPlan: PlanType): Promise<ResizeResult> {
+  const result: ResizeResult = { resized: 0, deferred: [], failed: 0 };
+
   try {
     const workspaces = await db.workspaces.findByUserId(userId);
-    if (workspaces.length === 0) return;
+    if (workspaces.length === 0) return result;
 
     const provisioner = getProvisioner();
     const targetTierName = getResourceTierForPlan(newPlan);
@@ -45,26 +77,47 @@ async function resizeWorkspacesForPlan(userId: string, newPlan: PlanType): Promi
       }
 
       try {
-        // For running workspaces: don't restart, apply on next restart
-        // This prevents disrupting active agents
-        const skipRestart = workspace.status === 'running';
+        let skipRestart = false;
+        let agentCount = 0;
+
+        // For running workspaces: check if there are active agents
+        if (workspace.status === 'running' && workspace.publicUrl) {
+          agentCount = await getWorkspaceAgentCount(workspace.publicUrl);
+
+          if (agentCount > 0) {
+            // Has active agents - don't disrupt them
+            skipRestart = true;
+            console.log(`[billing] Workspace ${workspace.id.substring(0, 8)} has ${agentCount} active agent(s), deferring resize`);
+          } else {
+            // No active agents - safe to restart immediately
+            console.log(`[billing] Workspace ${workspace.id.substring(0, 8)} has no active agents, proceeding with immediate resize`);
+          }
+        }
 
         await provisioner.resize(workspace.id, targetTier, skipRestart);
 
         if (skipRestart) {
           console.log(`[billing] Queued resize for workspace ${workspace.id.substring(0, 8)} to ${targetTierName} (will apply on next restart)`);
-          // TODO: Store pending upgrade in workspace metadata so we can show in UI
+          result.deferred.push({
+            workspaceId: workspace.id,
+            workspaceName: workspace.name,
+            agentCount,
+          });
         } else {
           console.log(`[billing] Resized workspace ${workspace.id.substring(0, 8)} to ${targetTierName}`);
+          result.resized++;
         }
       } catch (error) {
         console.error(`[billing] Failed to resize workspace ${workspace.id}:`, error);
+        result.failed++;
         // Continue with other workspaces even if one fails
       }
     }
   } catch (error) {
     console.error('[billing] Failed to resize workspaces:', error);
   }
+
+  return result;
 }
 
 /**
@@ -247,7 +300,7 @@ billingRouter.post('/checkout', requireAuth, async (req, res) => {
       // Return a fake session that redirects to success
       return res.json({
         sessionId: 'admin-upgrade',
-        checkoutUrl: `${config.publicUrl}/billing/success?admin=true`,
+        checkoutUrl: `${config.appUrl}/billing/success?admin=true`,
       });
     }
 
@@ -267,8 +320,8 @@ billingRouter.post('/checkout', requireAuth, async (req, res) => {
       customerId,
       tier as SubscriptionTier,
       interval as 'month' | 'year',
-      `${config.publicUrl}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
-      `${config.publicUrl}/billing/canceled`
+      `${config.appUrl}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
+      `${config.appUrl}/billing/canceled`
     );
 
     res.json(session);
@@ -301,7 +354,7 @@ billingRouter.post('/portal', requireAuth, async (req, res) => {
 
     const session = await billing.createPortalSession(
       user.stripeCustomerId,
-      `${config.publicUrl}/billing`
+      `${config.appUrl}/billing`
     );
 
     res.json(session);

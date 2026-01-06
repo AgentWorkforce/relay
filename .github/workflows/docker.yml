@@ -110,3 +110,40 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
           platforms: linux/amd64
+
+  # Update running workspaces with new image (graceful - won't disrupt active agents)
+  update-workspaces:
+    runs-on: ubuntu-latest
+    needs: [build-and-push]
+    # Only run on main branch pushes, not releases or manual runs
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Update workspace images
+        env:
+          CLOUD_API_URL: ${{ secrets.CLOUD_API_URL }}
+          ADMIN_API_SECRET: ${{ secrets.ADMIN_API_SECRET }}
+        run: |
+          if [ -z "$CLOUD_API_URL" ] || [ -z "$ADMIN_API_SECRET" ]; then
+            echo "⚠️ CLOUD_API_URL or ADMIN_API_SECRET not configured, skipping workspace update"
+            exit 0
+          fi
+
+          echo "🔄 Updating workspaces to ghcr.io/agentworkforce/relay-workspace:latest"
+
+          response=$(curl -s -w "\n%{http_code}" -X POST "${CLOUD_API_URL}/api/admin/workspaces/update-image" \
+            -H "x-admin-secret: ${ADMIN_API_SECRET}" \
+            -H "Content-Type: application/json" \
+            -d '{"image": "ghcr.io/agentworkforce/relay-workspace:latest", "skipRestart": true}')
+
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+
+          if [ "$http_code" -ge 200 ] && [ "$http_code" -lt 300 ]; then
+            echo "✅ Workspace update initiated successfully"
+            echo "$body" | jq . 2>/dev/null || echo "$body"
+          else
+            echo "❌ Failed to update workspaces (HTTP $http_code)"
+            echo "$body"
+            # Don't fail the workflow - image was still pushed successfully
+            exit 0
+          fi
