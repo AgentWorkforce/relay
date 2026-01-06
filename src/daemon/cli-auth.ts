@@ -401,11 +401,14 @@ export async function submitAuthCode(
     });
 
     // Try to extract credentials as a fallback - maybe auth completed in browser
+    // But don't override error status
     const config = CLI_AUTH_CONFIG[session.provider];
-    if (config) {
+    if (config && session.status !== 'error') {
       try {
         const creds = await extractCredentials(session.provider, config);
-        if (creds) {
+        // Re-check status after async operation (race condition protection)
+        // Use type assertion because TypeScript narrowing doesn't account for async race conditions
+        if (creds && (session.status as AuthSession['status']) !== 'error') {
           session.token = creds.token;
           session.refreshToken = creds.refreshToken;
           session.tokenExpiresAt = creds.expiresAt;
@@ -488,6 +491,14 @@ async function pollForCredentials(session: AuthSession, config: CLIAuthConfig): 
     try {
       const creds = await extractCredentials(session.provider, config);
       if (creds) {
+        // Double-check we're not in error state (race condition protection)
+        // Use type assertion because TypeScript narrowing doesn't account for async race conditions
+        if ((session.status as AuthSession['status']) === 'error') {
+          logger.info('Credentials found but session is in error state, not overriding', {
+            provider: session.provider,
+          });
+          return;
+        }
         session.token = creds.token;
         session.refreshToken = creds.refreshToken;
         session.tokenExpiresAt = creds.expiresAt;
@@ -539,9 +550,18 @@ export async function completeAuthSession(sessionId: string): Promise<{
   const pollInterval = 1000;
 
   for (let i = 0; i < maxAttempts; i++) {
+    // Check if session went into error state
+    if (session.status === 'error') {
+      return { success: false, error: session.error || 'Authentication failed' };
+    }
     try {
       const creds = await extractCredentials(session.provider, config);
       if (creds) {
+        // Double-check we're not in error state (race condition protection)
+        // Use type assertion because TypeScript narrowing doesn't account for async race conditions
+        if ((session.status as AuthSession['status']) === 'error') {
+          return { success: false, error: session.error || 'Authentication failed' };
+        }
         session.token = creds.token;
         session.refreshToken = creds.refreshToken;
         session.tokenExpiresAt = creds.expiresAt;
