@@ -199,49 +199,10 @@ export async function startCLIAuth(
 
     proc.onData((data: string) => {
       session.output += data;
-
-      // Handle prompts
-      const matchingPrompt = findMatchingPrompt(data, config.prompts, respondedPrompts);
-      if (matchingPrompt) {
-        respondedPrompts.add(matchingPrompt.description);
-        session.promptsHandled.push(matchingPrompt.description);
-        logger.info('Auto-responding to prompt', { description: matchingPrompt.description });
-
-        const delay = matchingPrompt.delay ?? 100;
-        setTimeout(() => {
-          try {
-            proc.write(matchingPrompt.response);
-          } catch {
-            // Process may have exited
-          }
-        }, delay);
-      }
-
-      // Extract auth URL
       const cleanText = stripAnsiCodes(data);
-      const match = cleanText.match(config.urlPattern);
-      if (match && match[1] && !session.authUrl) {
-        session.authUrl = match[1];
-        session.status = 'waiting_auth';
-        logger.info('Auth URL captured', { provider, url: session.authUrl });
-        // Signal that we have the auth URL
-        clearTimeout(authUrlTimeout);
-        resolveAuthUrl();
-      }
 
-      // Log all output after auth URL is captured (for debugging)
-      if (session.authUrl) {
-        const trimmedData = stripAnsiCodes(data).trim();
-        if (trimmedData.length > 0) {
-          logger.info('PTY output after auth URL', {
-            provider,
-            sessionId,
-            output: trimmedData.substring(0, 500),
-          });
-        }
-      }
-
-      // Check for error patterns BEFORE checking success (error may appear first)
+      // Check for error patterns FIRST - if error detected, don't auto-respond to prompts
+      // This prevents us from auto-responding to "Press Enter to retry" in error messages
       const matchedError = findMatchingError(data, config.errorPatterns);
       if (matchedError && session.status !== 'error') {
         logger.warn('Auth error detected', {
@@ -254,18 +215,65 @@ export async function startCLIAuth(
         session.error = matchedError.message;
         session.errorHint = matchedError.hint;
         session.recoverable = matchedError.recoverable;
-        // Don't exit yet - let the CLI handle retries if it wants to
-        // The error info will be returned when status is polled
+      }
+
+      // Don't auto-respond to prompts if we're in error state
+      // This prevents responding to "Press Enter to retry" after an error
+      if (session.status !== 'error') {
+        const matchingPrompt = findMatchingPrompt(data, config.prompts, respondedPrompts);
+        if (matchingPrompt) {
+          respondedPrompts.add(matchingPrompt.description);
+          session.promptsHandled.push(matchingPrompt.description);
+          logger.info('Auto-responding to prompt', { description: matchingPrompt.description });
+
+          const delay = matchingPrompt.delay ?? 100;
+          setTimeout(() => {
+            try {
+              proc.write(matchingPrompt.response);
+            } catch {
+              // Process may have exited
+            }
+          }, delay);
+        }
+      }
+
+      // Extract auth URL (only if not in error state and don't have URL yet)
+      const match = cleanText.match(config.urlPattern);
+      if (match && match[1] && !session.authUrl && session.status !== 'error') {
+        session.authUrl = match[1];
+        session.status = 'waiting_auth';
+        logger.info('Auth URL captured', { provider, url: session.authUrl });
+        // Signal that we have the auth URL
+        clearTimeout(authUrlTimeout);
+        resolveAuthUrl();
+      }
+
+      // Log all output after auth URL is captured (for debugging)
+      if (session.authUrl) {
+        const trimmedData = cleanText.trim();
+        if (trimmedData.length > 0) {
+          logger.info('PTY output after auth URL', {
+            provider,
+            sessionId,
+            output: trimmedData.substring(0, 500),
+          });
+        }
       }
 
       // Check for success and try to extract credentials
-      if (matchesSuccessPattern(data, config.successPatterns)) {
+      // Don't override error status - if there was an error, keep it
+      if (session.status !== 'error' && matchesSuccessPattern(data, config.successPatterns)) {
         session.status = 'success';
         logger.info('Success pattern detected, attempting credential extraction', { provider });
 
         // Try to extract credentials immediately (CLI may not exit after success)
         // Use a small delay to let the CLI finish writing the file
         setTimeout(async () => {
+          // Don't extract if status changed to error (e.g., error detected after success pattern)
+          if (session.status === 'error') {
+            logger.info('Skipping credential extraction - session is in error state', { provider });
+            return;
+          }
           try {
             const creds = await extractCredentials(provider, config);
             if (creds) {
@@ -302,8 +310,9 @@ export async function startCLIAuth(
         outputTail: cleanOutput.slice(-500),
       });
 
-      // Try to extract credentials
-      if (session.authUrl || exitCode === 0) {
+      // Try to extract credentials (but don't override error status)
+      // CLI might exit cleanly (code 0) even after an OAuth error
+      if ((session.authUrl || exitCode === 0) && session.status !== 'error') {
         try {
           const creds = await extractCredentials(provider, config);
           if (creds) {
@@ -397,11 +406,14 @@ export async function submitAuthCode(
     });
 
     // Try to extract credentials as a fallback - maybe auth completed in browser
+    // But don't override error status
     const config = CLI_AUTH_CONFIG[session.provider];
-    if (config) {
+    if (config && session.status !== 'error') {
       try {
         const creds = await extractCredentials(session.provider, config);
-        if (creds) {
+        // Re-check status after async operation (race condition protection)
+        // Use type assertion because TypeScript narrowing doesn't account for async race conditions
+        if (creds && (session.status as AuthSession['status']) !== 'error') {
           session.token = creds.token;
           session.refreshToken = creds.refreshToken;
           session.tokenExpiresAt = creds.expiresAt;
@@ -484,6 +496,14 @@ async function pollForCredentials(session: AuthSession, config: CLIAuthConfig): 
     try {
       const creds = await extractCredentials(session.provider, config);
       if (creds) {
+        // Double-check we're not in error state (race condition protection)
+        // Use type assertion because TypeScript narrowing doesn't account for async race conditions
+        if ((session.status as AuthSession['status']) === 'error') {
+          logger.info('Credentials found but session is in error state, not overriding', {
+            provider: session.provider,
+          });
+          return;
+        }
         session.token = creds.token;
         session.refreshToken = creds.refreshToken;
         session.tokenExpiresAt = creds.expiresAt;
@@ -535,9 +555,18 @@ export async function completeAuthSession(sessionId: string): Promise<{
   const pollInterval = 1000;
 
   for (let i = 0; i < maxAttempts; i++) {
+    // Check if session went into error state
+    if (session.status === 'error') {
+      return { success: false, error: session.error || 'Authentication failed' };
+    }
     try {
       const creds = await extractCredentials(session.provider, config);
       if (creds) {
+        // Double-check we're not in error state (race condition protection)
+        // Use type assertion because TypeScript narrowing doesn't account for async race conditions
+        if ((session.status as AuthSession['status']) === 'error') {
+          return { success: false, error: session.error || 'Authentication failed' };
+        }
         session.token = creds.token;
         session.refreshToken = creds.refreshToken;
         session.tokenExpiresAt = creds.expiresAt;

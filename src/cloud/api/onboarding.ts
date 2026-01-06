@@ -343,30 +343,67 @@ onboardingRouter.post('/cli/:provider/complete/:sessionId', async (req: Request,
         session.status = 'success';
       }
 
-      // Fetch credentials from workspace
+      // Fetch credentials from workspace with retry
+      // Credentials may not be immediately available after OAuth completes
       if (!accessToken) {
-        try {
-          const credsResponse = await fetch(
-            `${session.workspaceUrl}/auth/cli/${provider}/creds/${session.workspaceSessionId}`
-          );
-          if (credsResponse.ok) {
-            const creds = await credsResponse.json() as {
-              token?: string;
-              refreshToken?: string;
-              expiresAt?: string;
-            };
-            accessToken = creds.token;
-            refreshToken = creds.refreshToken;
-            if (creds.expiresAt) {
-              tokenExpiresAt = new Date(creds.expiresAt);
+        const MAX_CREDS_RETRIES = 5;
+        const CREDS_RETRY_DELAY = 1000; // 1 second between retries
+
+        for (let attempt = 1; attempt <= MAX_CREDS_RETRIES; attempt++) {
+          try {
+            console.log(`[onboarding] Fetching credentials from workspace (attempt ${attempt}/${MAX_CREDS_RETRIES})`);
+            const credsResponse = await fetch(
+              `${session.workspaceUrl}/auth/cli/${provider}/creds/${session.workspaceSessionId}`
+            );
+
+            if (credsResponse.ok) {
+              const creds = await credsResponse.json() as {
+                token?: string;
+                refreshToken?: string;
+                tokenExpiresAt?: string;
+              };
+              accessToken = creds.token;
+              refreshToken = creds.refreshToken;
+              if (creds.tokenExpiresAt) {
+                tokenExpiresAt = new Date(creds.tokenExpiresAt);
+              }
+              console.log('[onboarding] Fetched credentials from workspace:', {
+                hasToken: !!accessToken,
+                hasRefreshToken: !!refreshToken,
+                attempt,
+              });
+              break; // Success, exit retry loop
             }
-            console.log('[onboarding] Fetched credentials from workspace:', {
-              hasToken: !!accessToken,
-              hasRefreshToken: !!refreshToken,
-            });
+
+            // Check if it's an error state (not just "not ready yet")
+            const errorBody = await credsResponse.json().catch(() => ({})) as {
+              status?: string;
+              error?: string;
+              errorHint?: string;
+              recoverable?: boolean;
+            };
+
+            if (errorBody.status === 'error') {
+              // Auth failed, don't retry
+              console.error('[onboarding] Auth failed in workspace:', errorBody);
+              return res.status(400).json({
+                error: errorBody.error || 'Authentication failed',
+                errorHint: errorBody.errorHint,
+                recoverable: errorBody.recoverable,
+              });
+            }
+
+            // If not ready yet and we have more retries, wait and try again
+            if (attempt < MAX_CREDS_RETRIES) {
+              console.log(`[onboarding] Credentials not ready yet, retrying in ${CREDS_RETRY_DELAY}ms...`);
+              await new Promise(resolve => setTimeout(resolve, CREDS_RETRY_DELAY));
+            }
+          } catch (err) {
+            console.error(`[onboarding] Failed to get credentials from workspace (attempt ${attempt}):`, err);
+            if (attempt < MAX_CREDS_RETRIES) {
+              await new Promise(resolve => setTimeout(resolve, CREDS_RETRY_DELAY));
+            }
           }
-        } catch (err) {
-          console.error('[onboarding] Failed to get credentials from workspace:', err);
         }
       }
     }

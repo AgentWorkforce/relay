@@ -62,6 +62,247 @@ function _invalidateCachedAccess(userId: string, workspaceId?: string): void {
 }
 
 // ============================================================================
+// GitHub Repos Cache (for /accessible endpoint)
+// ============================================================================
+
+interface CachedRepo {
+  fullName: string;
+  permissions: { admin: boolean; push: boolean; pull: boolean };
+}
+
+interface CachedUserRepos {
+  repositories: CachedRepo[];
+  cachedAt: number;
+  isComplete: boolean; // Whether we've fetched all pages
+  refreshInProgress: boolean;
+}
+
+// Cache keyed by nangoConnectionId
+const userReposCache = new Map<string, CachedUserRepos>();
+const USER_REPOS_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes - hard expiry
+const STALE_WHILE_REVALIDATE_MS = 5 * 60 * 1000; // Trigger background refresh after 5 minutes
+const MAX_CACHE_ENTRIES = 500; // Prevent unbounded growth
+
+/**
+ * Evict oldest cache entries if we exceed the limit
+ */
+function evictOldestCacheEntries(): void {
+  if (userReposCache.size <= MAX_CACHE_ENTRIES) return;
+
+  // Convert to array, sort by cachedAt (oldest first), delete oldest entries
+  const entries = Array.from(userReposCache.entries())
+    .sort((a, b) => a[1].cachedAt - b[1].cachedAt);
+
+  const toEvict = entries.slice(0, entries.length - MAX_CACHE_ENTRIES);
+  for (const [key] of toEvict) {
+    console.log(`[repos-cache] Evicting oldest cache entry: ${key.substring(0, 8)}`);
+    userReposCache.delete(key);
+  }
+}
+
+/**
+ * Background refresh function that paginates through ALL user repos
+ */
+async function refreshUserReposInBackground(nangoConnectionId: string): Promise<void> {
+  const cached = userReposCache.get(nangoConnectionId);
+
+  // Don't start if refresh already in progress
+  if (cached?.refreshInProgress) {
+    console.log(`[repos-cache] Background refresh already in progress for ${nangoConnectionId.substring(0, 8)}`);
+    return;
+  }
+
+  // Mark as refreshing
+  if (cached) {
+    cached.refreshInProgress = true;
+  } else {
+    // Create placeholder entry
+    userReposCache.set(nangoConnectionId, {
+      repositories: [],
+      cachedAt: Date.now(),
+      isComplete: false,
+      refreshInProgress: true,
+    });
+  }
+
+  console.log(`[repos-cache] Starting background refresh for ${nangoConnectionId.substring(0, 8)}`);
+
+  try {
+    const allRepos: CachedRepo[] = [];
+    let page = 1;
+    let hasMore = true;
+    const MAX_PAGES = 20; // Safety limit: 20 pages * 100 repos = 2000 repos max
+
+    while (hasMore && page <= MAX_PAGES) {
+      const result = await nangoService.listUserAccessibleRepos(nangoConnectionId, {
+        perPage: 100,
+        page,
+        type: 'all',
+      });
+
+      allRepos.push(...result.repositories.map(r => ({
+        fullName: r.fullName,
+        permissions: r.permissions,
+      })));
+
+      hasMore = result.hasMore;
+      page++;
+
+      // Small delay between pages to avoid rate limiting
+      if (hasMore) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+
+    console.log(`[repos-cache] Background refresh complete for ${nangoConnectionId.substring(0, 8)}: ${allRepos.length} repos across ${page - 1} pages`);
+
+    userReposCache.set(nangoConnectionId, {
+      repositories: allRepos,
+      cachedAt: Date.now(),
+      isComplete: true,
+      refreshInProgress: false,
+    });
+    evictOldestCacheEntries();
+  } catch (err) {
+    console.error(`[repos-cache] Background refresh failed for ${nangoConnectionId.substring(0, 8)}:`, err);
+
+    // Mark refresh as done even on error, keep existing data if any
+    const existing = userReposCache.get(nangoConnectionId);
+    if (existing) {
+      existing.refreshInProgress = false;
+    }
+  }
+}
+
+/**
+ * Get cached user repos, triggering background refresh if stale
+ * Returns null if no cache exists (caller should fetch first page synchronously)
+ */
+function getCachedUserRepos(nangoConnectionId: string): CachedUserRepos | null {
+  const cached = userReposCache.get(nangoConnectionId);
+  if (!cached) return null;
+
+  const age = Date.now() - cached.cachedAt;
+
+  // If expired, delete and return null
+  if (age > USER_REPOS_CACHE_TTL_MS) {
+    console.log(`[repos-cache] Cache expired for ${nangoConnectionId.substring(0, 8)}`);
+    userReposCache.delete(nangoConnectionId);
+    return null;
+  }
+
+  // If stale but valid, trigger background refresh
+  if (age > STALE_WHILE_REVALIDATE_MS && !cached.refreshInProgress) {
+    console.log(`[repos-cache] Cache stale for ${nangoConnectionId.substring(0, 8)}, triggering background refresh`);
+    // Fire and forget - don't await
+    refreshUserReposInBackground(nangoConnectionId).catch(() => {});
+  }
+
+  return cached;
+}
+
+// Track in-flight initializations to prevent duplicate API calls
+const initializingConnections = new Set<string>();
+
+/**
+ * Initialize cache with first page and trigger background refresh for rest
+ * Returns the first page of repos immediately
+ */
+async function initializeUserReposCache(nangoConnectionId: string): Promise<CachedRepo[]> {
+  // Check if another request is already initializing this connection
+  if (initializingConnections.has(nangoConnectionId)) {
+    console.log(`[repos-cache] Another request is initializing ${nangoConnectionId.substring(0, 8)}, waiting...`);
+    // Wait a bit and check cache again
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const cached = userReposCache.get(nangoConnectionId);
+    if (cached) {
+      return cached.repositories;
+    }
+    // Still no cache, fall through to initialize (previous request may have failed)
+  }
+
+  initializingConnections.add(nangoConnectionId);
+
+  try {
+    // Fetch first page synchronously
+    const firstPage = await nangoService.listUserAccessibleRepos(nangoConnectionId, {
+      perPage: 100,
+      page: 1,
+      type: 'all',
+    });
+
+    const repos = firstPage.repositories.map(r => ({
+      fullName: r.fullName,
+      permissions: r.permissions,
+    }));
+
+    // Store first page immediately
+    userReposCache.set(nangoConnectionId, {
+      repositories: repos,
+      cachedAt: Date.now(),
+      isComplete: !firstPage.hasMore,
+      refreshInProgress: firstPage.hasMore, // Will be refreshing if there's more
+    });
+    evictOldestCacheEntries();
+
+    // If there are more pages, trigger background refresh to get the rest
+    if (firstPage.hasMore) {
+      console.log(`[repos-cache] First page has ${repos.length} repos, more available - triggering background pagination`);
+      // Fire and forget - reuse the shared background refresh function
+      // But start from page 2 with the existing repos
+      (async () => {
+        try {
+          const allRepos = [...repos];
+          let page = 2;
+          let hasMore = true;
+          const MAX_PAGES = 20;
+
+          while (hasMore && page <= MAX_PAGES) {
+            const result = await nangoService.listUserAccessibleRepos(nangoConnectionId, {
+              perPage: 100,
+              page,
+              type: 'all',
+            });
+
+            allRepos.push(...result.repositories.map(r => ({
+              fullName: r.fullName,
+              permissions: r.permissions,
+            })));
+
+            hasMore = result.hasMore;
+            page++;
+
+            if (hasMore) {
+              await new Promise(resolve => setTimeout(resolve, 100));
+            }
+          }
+
+          console.log(`[repos-cache] Background pagination complete: ${allRepos.length} total repos`);
+
+          userReposCache.set(nangoConnectionId, {
+            repositories: allRepos,
+            cachedAt: Date.now(),
+            isComplete: true,
+            refreshInProgress: false,
+          });
+          evictOldestCacheEntries();
+        } catch (err) {
+          console.error('[repos-cache] Background pagination failed:', err);
+          const existing = userReposCache.get(nangoConnectionId);
+          if (existing) {
+            existing.refreshInProgress = false;
+          }
+        }
+      })();
+    }
+
+    return repos;
+  } finally {
+    initializingConnections.delete(nangoConnectionId);
+  }
+}
+
+// ============================================================================
 // Workspace Access Middleware
 // ============================================================================
 
@@ -423,9 +664,12 @@ workspacesRouter.get('/accessible', async (req: Request, res: Response) => {
     // 1. Get owned workspaces
     const ownedWorkspaces = await db.workspaces.findByUserId(userId);
 
-    // 2. Get workspaces where user is a member
+    // 2. Get workspaces where user is a member (excluding owned ones to prevent duplicates)
+    const ownedWorkspaceIds = new Set(ownedWorkspaces.map((w) => w.id));
     const memberships = await db.workspaceMembers.findByUserId(userId);
-    const memberWorkspaceIds = memberships.map((m) => m.workspaceId);
+    const memberWorkspaceIds = memberships
+      .map((m) => m.workspaceId)
+      .filter((wsId) => !ownedWorkspaceIds.has(wsId)); // Exclude owned workspaces
 
     // Fetch member workspaces
     const memberWorkspaces: Workspace[] = [];
@@ -435,28 +679,38 @@ workspacesRouter.get('/accessible', async (req: Request, res: Response) => {
     }
 
     // 3. Get workspaces via GitHub repo access (if user has Nango connection)
+    // Uses background caching to handle users with many repos (>100)
     const contributorWorkspaces: Array<Workspace & { accessPermission: string }> = [];
+    let cacheStatus: 'hit' | 'miss' | 'initializing' = 'miss';
 
     if (user.nangoConnectionId) {
-      // Get all repos user has access to via GitHub
       try {
         console.log(`[workspaces/accessible] Checking GitHub repo access for user ${userId.substring(0, 8)} with nangoConnectionId ${user.nangoConnectionId.substring(0, 8)}...`);
 
-        const reposResult = await nangoService.listUserAccessibleRepos(user.nangoConnectionId, {
-          perPage: 100,
-          type: 'all',
-        });
+        // Try to get cached repos first
+        let userRepos: CachedRepo[];
+        const cached = getCachedUserRepos(user.nangoConnectionId);
 
-        console.log(`[workspaces/accessible] User has access to ${reposResult.repositories.length} GitHub repos`);
+        if (cached) {
+          userRepos = cached.repositories;
+          cacheStatus = 'hit';
+          console.log(`[workspaces/accessible] Cache ${cached.isComplete ? 'hit (complete)' : 'hit (partial)'}: ${userRepos.length} repos`);
+        } else {
+          // No cache - initialize with first page and trigger background refresh
+          userRepos = await initializeUserReposCache(user.nangoConnectionId);
+          cacheStatus = 'initializing';
+          console.log(`[workspaces/accessible] Cache miss - initialized with ${userRepos.length} repos (background refresh may add more)`);
+        }
 
         // Get workspaces that aren't owned or membered
+        // Reuse ownedWorkspaceIds and add member workspace IDs
         const knownWorkspaceIds = new Set([
-          ...ownedWorkspaces.map((w) => w.id),
+          ...ownedWorkspaceIds,
           ...memberWorkspaceIds,
         ]);
 
         // Get all repo full names from user's accessible repos
-        for (const repo of reposResult.repositories) {
+        for (const repo of userRepos) {
           // Find repos in our DB that match this full name (case-insensitive)
           const dbRepos = await db.repositories.findByGithubFullName(repo.fullName);
 
@@ -485,7 +739,7 @@ workspacesRouter.get('/accessible', async (req: Request, res: Response) => {
           }
         }
 
-        console.log(`[workspaces/accessible] Found ${contributorWorkspaces.length} contributor workspaces`);
+        console.log(`[workspaces/accessible] Found ${contributorWorkspaces.length} contributor workspaces (cache: ${cacheStatus})`);
       } catch (err) {
         console.warn('[workspaces/accessible] Failed to check GitHub repo access:', err);
         // Continue without contributor workspaces
@@ -1100,8 +1354,9 @@ workspacesRouter.all('/:id/proxy/{*proxyPath}', async (req: Request, res: Respon
     (req as any)._proxyTargetUrl = targetUrl;
 
     // Add timeout to prevent hanging requests
+    // 45s timeout to accommodate Fly.io machine cold starts (can take 20-30s)
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
+    const timeout = setTimeout(() => controller.abort(), 45000);
 
     const fetchOptions: RequestInit = {
       method: req.method,
@@ -1141,7 +1396,7 @@ workspacesRouter.all('/:id/proxy/{*proxyPath}', async (req: Request, res: Respon
     if (error instanceof Error && error.name === 'AbortError') {
       res.status(504).json({
         error: 'Workspace request timed out',
-        details: 'The workspace did not respond within 15 seconds',
+        details: 'The workspace did not respond within 45 seconds',
         targetUrl: targetUrl,
       });
       return;

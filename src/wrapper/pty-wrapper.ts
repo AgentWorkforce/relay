@@ -22,7 +22,6 @@ import { findAgentConfig } from '../utils/agent-config.js';
 import { HookRegistry, createTrajectoryHooks, type LifecycleHooks } from '../hooks/index.js';
 import { parseContinuityCommand, hasContinuityCommand } from '../continuity/index.js';
 import {
-  type QueuedMessage,
   type InjectionCallbacks,
   INJECTION_CONSTANTS,
   stripAnsi,

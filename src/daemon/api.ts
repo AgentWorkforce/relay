@@ -371,13 +371,36 @@ export class DaemonApi extends EventEmitter {
       if (!session) {
         return { status: 404, body: { error: 'Session not found' } };
       }
-      if (session.status !== 'success') {
-        return { status: 400, body: { error: 'Auth not complete', status: session.status } };
+      // Check for error state first
+      if (session.status === 'error') {
+        return {
+          status: 400,
+          body: {
+            error: session.error || 'Authentication failed',
+            errorHint: session.errorHint,
+            recoverable: session.recoverable,
+            status: session.status,
+          },
+        };
+      }
+      // Check if auth is complete AND we have credentials
+      // Status can be 'success' before credentials are extracted (race condition)
+      if (session.status !== 'success' || !session.token) {
+        return {
+          status: 400,
+          body: {
+            error: 'Auth not complete or credentials not yet available',
+            status: session.status,
+            hasToken: !!session.token,
+          },
+        };
       }
       return {
         status: 200,
         body: {
           token: session.token,
+          refreshToken: session.refreshToken,
+          tokenExpiresAt: session.tokenExpiresAt,
           provider: session.provider,
         },
       };

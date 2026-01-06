@@ -525,3 +525,31 @@ The dashboard automatically tracks:
 
 Agents can view their status at the dashboard URL provided at startup.
 <!-- prpm:snippet:end @agent-relay/agent-relay-protocol@1.0.1 -->
+
+# Git Workflow Rules
+
+## NEVER Push Directly to Main
+
+**CRITICAL: Agents must NEVER push directly to the main branch.**
+
+- Always work on a feature branch
+- Commit and push to the feature branch only
+- Let the user decide when to merge to main
+- Do not merge to main without explicit user approval
+
+```bash
+# CORRECT workflow
+git checkout -b feature/my-feature
+# ... do work ...
+git add .
+git commit -m "My changes"
+git push origin feature/my-feature
+# STOP HERE - let user merge
+
+# WRONG - never do this
+git checkout main
+git merge feature/my-feature
+git push origin main  # NO!
+```
+
+This ensures the user maintains control over what goes into the main branch.

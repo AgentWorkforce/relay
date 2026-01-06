@@ -130,6 +130,8 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
       {
         // Fallback: Any "press enter" or "enter to confirm/continue" prompt
         // Keep this LAST so more specific handlers match first
+        // NOTE: Error messages like "Press Enter to retry" are handled by checking
+        // error patterns FIRST in the PTY handler, so this won't trigger on errors
         pattern: /press\s*enter|enter\s*to\s*(confirm|continue|proceed)|hit\s*enter/i,
         response: '\r',
         delay: 300,
