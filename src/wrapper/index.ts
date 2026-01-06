@@ -1,5 +1,6 @@
 export * from './client.js';
 export * from './parser.js';
-// Note: tmux-wrapper.ts is intentionally not exported here.
-// It's dynamically imported in CLI only, as it has different
-// runtime requirements (tmux must be installed).
+export * from './base-wrapper.js';
+// Note: tmux-wrapper.ts and pty-wrapper.ts are intentionally not exported here.
+// They're dynamically imported in CLI only, as they have different
+// runtime requirements (tmux/pty must be available).
