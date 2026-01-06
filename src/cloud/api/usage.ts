@@ -7,6 +7,7 @@
 import { Router, Request, Response } from 'express';
 import { requireAuth } from './auth.js';
 import { getRemainingQuota, getUserUsage, getPlanLimits } from '../services/planLimits.js';
+import { getIntroStatus } from '../services/intro-expiration.js';
 import { db, PlanType } from '../db/index.js';
 
 export const usageRouter = Router();
@@ -29,6 +30,9 @@ usageRouter.get('/', async (req: Request, res: Response) => {
 
     const plan = (user.plan as PlanType) || 'free';
     const quota = await getRemainingQuota(userId);
+
+    // Get intro period status for free tier users
+    const introStatus = getIntroStatus(user.createdAt, plan);
 
     const calcPercent = (current: number, limit: number) =>
       limit === Infinity ? 0 : Math.round((current / limit) * 100);
@@ -59,6 +63,16 @@ usageRouter.get('/', async (req: Request, res: Response) => {
         repos: calcPercent(quota.usage.repoCount, quota.limits.maxRepos),
         concurrentAgents: calcPercent(quota.usage.concurrentAgents, quota.limits.maxConcurrentAgents),
         computeHours: calcPercent(quota.usage.computeHoursThisMonth, quota.limits.maxComputeHoursPerMonth),
+      },
+      // Intro period bonus for free tier users (2 CPU / 4GB for first 14 days)
+      introBonus: {
+        isActive: introStatus.isIntroPeriod,
+        daysRemaining: introStatus.daysRemaining,
+        totalDays: introStatus.introPeriodDays,
+        expiresAt: introStatus.expiresAt?.toISOString() || null,
+        resources: introStatus.isIntroPeriod
+          ? { cpus: 2, memoryGb: 4, description: 'Pro-level resources' }
+          : { cpus: 1, memoryGb: 2, description: 'Standard free tier' },
       },
     });
   } catch (error) {

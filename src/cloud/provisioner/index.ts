@@ -655,14 +655,27 @@ class FlyProvisioner implements ComputeProvisioner {
     // Determine instance size based on user's plan
     // Free tier: 1 CPU, 2GB (~$10/mo) - Claude needs 2GB minimum
     // Paid tiers: 2 CPU, 2GB (~$15/mo)
+    // Introductory bonus: Free users get Pro-level resources for first 14 days
     const user = await db.users.findById(workspace.userId);
     const userPlan = (user?.plan as PlanType) || 'free';
     const isFreeTier = userPlan === 'free';
+
+    // Check if user is in introductory period (first 14 days)
+    const INTRO_PERIOD_DAYS = 14;
+    const userCreatedAt = user?.createdAt ? new Date(user.createdAt) : new Date();
+    const daysSinceSignup = (Date.now() - userCreatedAt.getTime()) / (1000 * 60 * 60 * 24);
+    const isIntroPeriod = isFreeTier && daysSinceSignup < INTRO_PERIOD_DAYS;
+
     const guestConfig = {
       cpu_kind: 'shared' as const,
-      cpus: isFreeTier ? 1 : 2,
-      memory_mb: 2048, // Claude needs 2GB minimum to run reliably
+      cpus: isIntroPeriod ? 2 : (isFreeTier ? 1 : 2), // Intro gets 2 CPUs like Pro
+      memory_mb: isIntroPeriod ? 4096 : 2048, // Intro gets 4GB like Pro
     };
+
+    if (isIntroPeriod) {
+      const daysRemaining = Math.ceil(INTRO_PERIOD_DAYS - daysSinceSignup);
+      console.log(`[fly] Introductory bonus active (${daysRemaining} days remaining) - 2 CPU / 4GB`);
+    }
     console.log(`[fly] Using ${guestConfig.cpus} CPU / ${guestConfig.memory_mb}MB for ${userPlan} plan`);
 
     // Create machine with auto-stop/start for cost optimization

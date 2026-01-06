@@ -28,7 +28,7 @@ export { App, appStyles, type AppProps } from './App';
 export { MentionAutocomplete, useMentionAutocomplete, getMentionQuery, completeMentionInValue, type MentionAutocompleteProps } from './MentionAutocomplete';
 export { ProjectList, type ProjectListProps } from './ProjectList';
 export { WorkspaceSelector, type WorkspaceSelectorProps, type Workspace } from './WorkspaceSelector';
-export { WorkspaceSettingsPanel, type WorkspaceSettingsProps, type WorkspaceRepo, type AvailableRepo } from './WorkspaceSettingsPanel';
+export { WorkspaceSettingsPanel, type WorkspaceSettingsPanelProps } from './settings/WorkspaceSettingsPanel';
 export { AddWorkspaceModal, type AddWorkspaceModalProps } from './AddWorkspaceModal';
 export { PricingPlans, type PricingPlansProps, type Plan } from './PricingPlans';
 export { BillingPanel, type BillingPanelProps, type Subscription, type Invoice, type PaymentMethod } from './BillingPanel';

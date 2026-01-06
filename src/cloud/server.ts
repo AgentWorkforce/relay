@@ -16,7 +16,7 @@ import { RedisStore } from 'connect-redis';
 import { WebSocketServer, WebSocket } from 'ws';
 import { getConfig } from './config.js';
 import { runMigrations } from './db/index.js';
-import { getScalingOrchestrator, ScalingOrchestrator, getComputeEnforcementService, ComputeEnforcementService } from './services/index.js';
+import { getScalingOrchestrator, ScalingOrchestrator, getComputeEnforcementService, ComputeEnforcementService, getIntroExpirationService, IntroExpirationService } from './services/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -365,6 +365,7 @@ export async function createServer(): Promise<CloudServer> {
   let server: http.Server | null = null;
   let scalingOrchestrator: ScalingOrchestrator | null = null;
   let computeEnforcement: ComputeEnforcementService | null = null;
+  let introExpiration: IntroExpirationService | null = null;
 
   // Create HTTP server for WebSocket upgrade handling
   const httpServer = http.createServer(app);
@@ -634,6 +635,15 @@ export async function createServer(): Promise<CloudServer> {
         } catch (error) {
           console.warn('[cloud] Failed to start compute enforcement:', error);
         }
+
+        // Start intro expiration service (checks every hour for expired intro periods)
+        try {
+          introExpiration = getIntroExpirationService();
+          introExpiration.start();
+          console.log('[cloud] Intro expiration service started');
+        } catch (error) {
+          console.warn('[cloud] Failed to start intro expiration:', error);
+        }
       }
 
       return new Promise((resolve) => {
@@ -655,6 +665,11 @@ export async function createServer(): Promise<CloudServer> {
       // Stop compute enforcement service
       if (computeEnforcement) {
         computeEnforcement.stop();
+      }
+
+      // Stop intro expiration service
+      if (introExpiration) {
+        introExpiration.stop();
       }
 
       // Close WebSocket server

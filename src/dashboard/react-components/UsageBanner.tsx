@@ -18,6 +18,17 @@ interface UsageData {
   percentUsed: {
     computeHours: number;
   };
+  introBonus?: {
+    isActive: boolean;
+    daysRemaining: number;
+    totalDays: number;
+    expiresAt: string | null;
+    resources: {
+      cpus: number;
+      memoryGb: number;
+      description: string;
+    };
+  };
 }
 
 export interface UsageBannerProps {
@@ -77,6 +88,10 @@ export function UsageBanner({ apiBaseUrl = '', onUpgradeClick }: UsageBannerProp
   const isExceeded = remaining <= 0;
   const isWarning = percentUsed >= 80 && !isExceeded;
 
+  // Intro bonus status
+  const introBonus = usage.introBonus;
+  const hasActiveIntro = introBonus?.isActive && introBonus.daysRemaining > 0;
+
   // Get current month name
   const monthName = new Date().toLocaleDateString('en-US', { month: 'long' });
 
@@ -93,12 +108,17 @@ export function UsageBanner({ apiBaseUrl = '', onUpgradeClick }: UsageBannerProp
     bgClass = 'bg-warning/10 border-warning/30';
     textClass = 'text-warning';
     iconColor = 'text-warning';
+  } else if (hasActiveIntro) {
+    // Special styling for intro bonus
+    bgClass = 'bg-accent-purple/10 border-accent-purple/30';
+    textClass = 'text-accent-purple';
+    iconColor = 'text-accent-purple';
   }
 
   return (
     <div className={`flex items-center justify-between px-4 py-2 border-b ${bgClass}`}>
       <div className="flex items-center gap-3">
-        <ClockIcon className={iconColor} />
+        {hasActiveIntro ? <RocketIcon className={iconColor} /> : <ClockIcon className={iconColor} />}
         <span className={`text-sm ${textClass}`}>
           {isExceeded ? (
             <>
@@ -110,6 +130,13 @@ export function UsageBanner({ apiBaseUrl = '', onUpgradeClick }: UsageBannerProp
               <strong>{remaining.toFixed(1)}h remaining</strong> — You&apos;ve used {percentUsed}% of your
               free tier compute hours for {monthName}.
             </>
+          ) : hasActiveIntro ? (
+            <>
+              <strong>Intro Bonus Active</strong> — {introBonus!.resources.cpus} CPU / {introBonus!.resources.memoryGb}GB RAM.{' '}
+              <span className="text-text-secondary">
+                {introBonus!.daysRemaining} day{introBonus!.daysRemaining !== 1 ? 's' : ''} remaining before auto-resize to 1 CPU / 2GB.
+              </span>
+            </>
           ) : (
             <>
               <strong>{remaining.toFixed(1)} of {computeHoursPerMonth}h</strong> compute hours remaining
@@ -120,12 +147,12 @@ export function UsageBanner({ apiBaseUrl = '', onUpgradeClick }: UsageBannerProp
       </div>
 
       <div className="flex items-center gap-2">
-        {(isExceeded || isWarning) && (
+        {(isExceeded || isWarning || hasActiveIntro) && (
           <button
             onClick={onUpgradeClick || (() => window.location.href = '/pricing')}
             className="px-3 py-1.5 bg-gradient-to-r from-accent-cyan to-[#00b8d9] text-bg-deep font-semibold border-none rounded-md text-xs cursor-pointer transition-all duration-150 hover:shadow-glow-cyan hover:-translate-y-0.5"
           >
-            Upgrade Plan
+            {hasActiveIntro ? 'Keep Pro Resources' : 'Upgrade Plan'}
           </button>
         )}
 
@@ -176,6 +203,27 @@ function CloseIcon() {
     >
       <line x1="18" y1="6" x2="6" y2="18" />
       <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  );
+}
+
+function RocketIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z" />
+      <path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z" />
+      <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0" />
+      <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
     </svg>
   );
 }
