@@ -26,6 +26,7 @@ import {
   cancelAuthSession,
   getSupportedProviders,
 } from './cli-auth.js';
+import { getRepoManager, initRepoManager, type RepoInfo } from './repo-manager.js';
 
 const logger = createLogger('daemon-api');
 
@@ -125,6 +126,12 @@ export class DaemonApi extends EventEmitter {
    * Start the API server
    */
   async start(): Promise<void> {
+    // Initialize repo manager (scans for existing repos, syncs from env)
+    // This runs in background - don't block server startup
+    initRepoManager().catch((err) => {
+      logger.warn('Failed to initialize repo manager', { error: String(err) });
+    });
+
     return new Promise((resolve) => {
       this.server = http.createServer((req, res) => this.handleRequest(req, res));
 
@@ -461,6 +468,88 @@ export class DaemonApi extends EventEmitter {
         return { status: 404, body: { error: 'Session not found' } };
       }
       return { status: 200, body: { success: true } };
+    });
+
+    // === Repository Management ===
+    // Dynamic repo management without workspace restart
+
+    // List all repos
+    this.routes.set('GET /repos', async (): Promise<ApiResponse> => {
+      try {
+        const repoManager = getRepoManager();
+        const repos = repoManager.getRepos();
+        return { status: 200, body: { repos } };
+      } catch (err) {
+        logger.error('Failed to list repos', { error: String(err) });
+        return { status: 500, body: { error: 'Failed to list repositories' } };
+      }
+    });
+
+    // Get a specific repo
+    this.routes.set('GET /repos/:name', async (req): Promise<ApiResponse> => {
+      try {
+        const repoManager = getRepoManager();
+        // Handle encoded slashes (e.g., "owner%2Frepo" -> "owner/repo")
+        const fullName = decodeURIComponent(req.params.name);
+        const repo = repoManager.getRepo(fullName);
+        if (!repo) {
+          return { status: 404, body: { error: 'Repository not found' } };
+        }
+        return { status: 200, body: repo };
+      } catch (err) {
+        logger.error('Failed to get repo', { error: String(err) });
+        return { status: 500, body: { error: 'Failed to get repository' } };
+      }
+    });
+
+    // Sync (clone or update) a repo
+    this.routes.set('POST /repos/sync', async (req): Promise<ApiResponse> => {
+      const body = req.body as { repo?: string; repos?: string[] };
+
+      // Support single repo or batch
+      const reposToSync: string[] = [];
+      if (body.repo) {
+        reposToSync.push(body.repo);
+      }
+      if (body.repos && Array.isArray(body.repos)) {
+        reposToSync.push(...body.repos);
+      }
+
+      if (reposToSync.length === 0) {
+        return { status: 400, body: { error: 'repo or repos field is required' } };
+      }
+
+      try {
+        const repoManager = getRepoManager();
+        const results = await repoManager.syncRepos(reposToSync);
+
+        const allSuccess = results.every(r => r.success);
+        return {
+          status: allSuccess ? 200 : 207, // 207 Multi-Status if partial success
+          body: { results },
+        };
+      } catch (err) {
+        logger.error('Failed to sync repos', { error: String(err) });
+        return { status: 500, body: { error: 'Failed to sync repositories' } };
+      }
+    });
+
+    // Remove a repo
+    this.routes.set('DELETE /repos/:name', async (req): Promise<ApiResponse> => {
+      try {
+        const repoManager = getRepoManager();
+        const fullName = decodeURIComponent(req.params.name);
+        const deleteFiles = req.query.deleteFiles === 'true';
+
+        const removed = await repoManager.removeRepo(fullName, deleteFiles);
+        if (!removed) {
+          return { status: 404, body: { error: 'Repository not found' } };
+        }
+        return { status: 200, body: { success: true, deleted: deleteFiles } };
+      } catch (err) {
+        logger.error('Failed to remove repo', { error: String(err) });
+        return { status: 500, body: { error: 'Failed to remove repository' } };
+      }
     });
   }
 

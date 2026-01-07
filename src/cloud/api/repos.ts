@@ -5,10 +5,63 @@
  * Includes Nango-based GitHub permission checking for dashboard access control.
  */
 
+import crypto from 'crypto';
 import { Router, Request, Response } from 'express';
 import { requireAuth } from './auth.js';
 import { db } from '../db/index.js';
 import { nangoService } from '../services/nango.js';
+import { getConfig } from '../config.js';
+
+/**
+ * Generate workspace token for API calls to workspace containers
+ */
+function generateWorkspaceToken(workspaceId: string): string {
+  const config = getConfig();
+  return crypto
+    .createHmac('sha256', config.sessionSecret)
+    .update(`workspace:${workspaceId}`)
+    .digest('hex');
+}
+
+/**
+ * Call workspace API endpoint
+ */
+async function callWorkspaceApi(
+  publicUrl: string,
+  workspaceId: string,
+  method: string,
+  endpoint: string,
+  body?: unknown
+): Promise<{ ok: boolean; status: number; data?: unknown; error?: string }> {
+  const token = generateWorkspaceToken(workspaceId);
+  const url = `${publicUrl.replace(/\/$/, '')}${endpoint}`;
+
+  try {
+    const response = await fetch(url, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+
+    const data = await response.json().catch(() => null) as { error?: string } | null;
+
+    return {
+      ok: response.ok,
+      status: response.status,
+      data,
+      error: response.ok ? undefined : (data?.error || `HTTP ${response.status}`),
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      status: 0,
+      error: err instanceof Error ? err.message : 'Network error',
+    };
+  }
+}
 
 export const reposRouter = Router();
 
@@ -398,6 +451,9 @@ reposRouter.get('/:id', async (req: Request, res: Response) => {
 /**
  * POST /api/repos/:id/sync
  * Trigger repository sync (clone/pull to workspace)
+ *
+ * Calls the workspace's /repos/sync API endpoint to clone or update the repo.
+ * This enables dynamic repo management without workspace restart.
  */
 reposRouter.post('/:id/sync', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
@@ -415,16 +471,55 @@ reposRouter.post('/:id/sync', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Repository not assigned to a workspace' });
     }
 
+    // Get the workspace to find its public URL
+    const workspace = await db.workspaces.findById(repo.workspaceId);
+    if (!workspace) {
+      return res.status(404).json({ error: 'Workspace not found' });
+    }
+
+    if (workspace.status !== 'running') {
+      return res.status(400).json({
+        error: 'Workspace is not running',
+        workspaceStatus: workspace.status,
+      });
+    }
+
+    if (!workspace.publicUrl) {
+      return res.status(400).json({ error: 'Workspace has no public URL' });
+    }
+
     // Update sync status
     await db.repositories.updateSyncStatus(id, 'syncing');
 
-    // In production, this would trigger the workspace to pull the repo
-    // For now, simulate success after a short delay
-    setTimeout(async () => {
-      await db.repositories.updateSyncStatus(id, 'synced', new Date());
-    }, 2000);
+    // Call the workspace's repo sync API
+    const result = await callWorkspaceApi(
+      workspace.publicUrl,
+      workspace.id,
+      'POST',
+      '/repos/sync',
+      { repo: repo.githubFullName }
+    );
 
-    res.json({ message: 'Sync started', syncStatus: 'syncing' });
+    if (result.ok) {
+      // Update sync status to synced
+      await db.repositories.updateSyncStatus(id, 'synced', new Date());
+
+      res.json({
+        message: 'Repository synced successfully',
+        syncStatus: 'synced',
+        result: result.data,
+      });
+    } else {
+      // Update sync status to error
+      await db.repositories.updateSyncStatus(id, 'error');
+
+      console.error('Workspace sync failed:', result.error);
+      res.status(502).json({
+        error: 'Failed to sync repository to workspace',
+        details: result.error,
+        syncStatus: 'error',
+      });
+    }
   } catch (error) {
     console.error('Error syncing repo:', error);
     res.status(500).json({ error: 'Failed to sync repository' });
