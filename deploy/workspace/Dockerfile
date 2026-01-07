@@ -59,7 +59,8 @@ RUN ln -sf /app/dist/cli/index.js /usr/local/bin/agent-relay && \
 # Fix ownership
 RUN chown -R workspace:workspace /app
 
-USER workspace
+# Run entrypoint as root so it can start sshd; entrypoint drops to workspace via gosu
+USER root
 
 # Environment
 ENV NODE_ENV=production
