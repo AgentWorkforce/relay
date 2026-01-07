@@ -37,11 +37,12 @@ export function AgentList({
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [allExpanded, setAllExpanded] = useState(true);
 
-  // Filter and group agents
-  const filteredAgents = useMemo(
-    () => filterAgents(agents, searchQuery),
-    [agents, searchQuery]
-  );
+  // Filter out setup agents (temporary agents for provider auth)
+  // and then apply search filtering
+  const filteredAgents = useMemo(() => {
+    const nonSetupAgents = agents.filter(a => !a.name.startsWith('__setup__'));
+    return filterAgents(nonSetupAgents, searchQuery);
+  }, [agents, searchQuery]);
 
   const groups = useMemo(
     () => groupAgents(filteredAgents),

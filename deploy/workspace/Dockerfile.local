@@ -1,5 +1,6 @@
-# Agent Relay Workspace
-# Uses pre-built base image with CLI tools for faster builds
+# Agent Relay Workspace - Local Build
+# Builds everything locally without depending on pre-built base image
+# Use this for local development on Apple Silicon or when base image is unavailable
 
 # Build stage - compile TypeScript
 FROM node:20-slim AS builder
@@ -32,18 +33,53 @@ RUN npx tsc
 RUN npm prune --omit=dev
 
 # ---
-# Runtime stage - use pre-built base with all CLIs
-FROM ghcr.io/agentworkforce/relay-workspace-base:latest
+# Runtime stage - build base + workspace together
+FROM node:20-slim
 
 WORKDIR /app
+
+# Install system dependencies (from Dockerfile.base)
+RUN apt-get update && apt-get install -y \
+    bash \
+    ca-certificates \
+    curl \
+    git \
+    python3 \
+    jq \
+    gosu \
+    make \
+    g++ \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install GitHub CLI (gh)
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+    && apt-get update \
+    && apt-get install -y gh \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install npm-based CLIs globally with pinned versions
+RUN npm install -g @anthropic-ai/claude-code@2.0.67
+RUN npm install -g @openai/codex@0.78.0
+RUN npm install -g @google/gemini-cli@0.22.5
+RUN npm install -g opencode-ai@1.1.3
+
+# Create workspace directory structure
+RUN mkdir -p /workspace /data
+
+# Create non-root user
+RUN useradd -m -u 1001 -s /bin/bash workspace \
+    && chown -R workspace:workspace /app /workspace /data
 
 # Copy from builder
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package*.json ./
 
-# Copy relay snippets for agent spawning (only what's needed)
-COPY docs/agent-relay-snippet.md docs/agent-relay-protocol.md docs/agent-policy-snippet.md ./docs/
+# Copy docs folder (contains relay snippets for agent spawning)
+COPY docs ./docs
 
 # Copy workspace configuration files
 COPY deploy/workspace/entrypoint.sh /entrypoint.sh
@@ -68,8 +104,7 @@ ENV AGENT_RELAY_DASHBOARD_PORT=3888
 ENV PATH="/home/workspace/.local/bin:$PATH"
 
 # Expose ports
-# 3888: Dashboard/API, 3889: Daemon, 1455: Codex OAuth callback, 2222: SSH (for tunneling)
-EXPOSE 3888 3889 1455 2222
+EXPOSE 3888 3889 1455
 
 # Volume for persistent data
 VOLUME ["/data", "/workspace"]

@@ -14,6 +14,36 @@ if [[ "$(id -u)" == "0" ]]; then
   chown -R workspace:workspace /data /workspace 2>/dev/null || true
 
   # ============================================================================
+  # SSH Server Setup (for CLI tunneling - Codex OAuth callback forwarding)
+  # When ENABLE_SSH=true, start SSH server on port 2222 for secure tunneling
+  # ============================================================================
+  if [[ "${ENABLE_SSH:-false}" == "true" ]]; then
+    log "Starting SSH server on port 2222..."
+
+    # Set SSH password for workspace user
+    SSH_PASS="${SSH_PASSWORD:-devpassword}"
+    echo "workspace:${SSH_PASS}" | chpasswd
+
+    # Configure SSH server for tunneling
+    # - Allow password auth (for CLI simplicity)
+    # - Listen on port 2222 (non-privileged)
+    # - Allow TCP forwarding (for port tunneling)
+    cat > /etc/ssh/sshd_config.d/workspace.conf <<SSHEOF
+Port 2222
+PasswordAuthentication yes
+PermitRootLogin no
+AllowUsers workspace
+AllowTcpForwarding yes
+GatewayPorts no
+X11Forwarding no
+SSHEOF
+
+    # Start SSH server in background
+    /usr/sbin/sshd -e
+    log "SSH server started (port 2222, user: workspace)"
+  fi
+
+  # ============================================================================
   # Persist workspace environment for SSH sessions (must be done as root)
   # SSH sessions don't inherit the container's runtime environment, so we write
   # critical variables to /etc/profile.d/ which gets sourced by login shells
@@ -48,6 +78,11 @@ fi
 PORT="${AGENT_RELAY_DASHBOARD_PORT:-${PORT:-3888}}"
 export AGENT_RELAY_DASHBOARD_PORT="${PORT}"
 export PORT="${PORT}"
+
+# Disable auto-updates for AI CLIs in container environments
+# Prevents permission errors when CLIs try to self-update with npm/pip
+export DISABLE_AUTOUPDATER=1
+log "Auto-updates disabled for AI CLIs (container environment)"
 
 # ============================================================================
 # Per-user credential storage setup
@@ -359,6 +394,21 @@ if [[ -n "${OPENAI_TOKEN:-}" ]]; then
 }
 EOF
   chmod 600 "${HOME}/.codex/auth.json"
+
+  # Copy Codex configuration from version-controlled file
+  # This provides a modular way to manage Codex settings
+  if [[ -f "/app/deploy/workspace/codex.config.toml" ]]; then
+    cp "/app/deploy/workspace/codex.config.toml" "${HOME}/.codex/config.toml"
+    chmod 600 "${HOME}/.codex/config.toml"
+    log "Codex configuration applied from codex.config.toml"
+  else
+    # Fallback: create minimal config (should not happen in production)
+    log "WARN: codex.config.toml not found, creating minimal config"
+    cat > "${HOME}/.codex/config.toml" <<CODEXCONFIGEOF
+check_for_updates = false
+CODEXCONFIGEOF
+    chmod 600 "${HOME}/.codex/config.toml"
+  fi
 fi
 
 # Google/Gemini - uses application default credentials

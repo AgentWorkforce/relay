@@ -137,29 +137,31 @@ export function SettingsPage({
           </button>
         </header>
 
-        {/* Mobile Tab Navigation */}
-        <div className="md:hidden flex border-b border-border-subtle bg-bg-secondary/50 overflow-x-auto scrollbar-hide">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex-1 min-w-[80px] flex flex-col items-center gap-1 px-3 py-3 text-xs font-medium transition-all ${
-                activeTab === tab.id
-                  ? 'text-accent-cyan border-b-2 border-accent-cyan bg-accent-cyan/5'
-                  : 'text-text-muted border-b-2 border-transparent'
-              }`}
-            >
-              <span className={activeTab === tab.id ? 'text-accent-cyan' : 'text-text-muted'}>
-                {tab.icon}
-              </span>
-              {tab.label}
-            </button>
-          ))}
+        {/* Tab Navigation - Always visible */}
+        <div className="border-b border-border-subtle bg-bg-secondary/50">
+          <div className="flex justify-center overflow-x-auto scrollbar-hide">
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-all whitespace-nowrap ${
+                  activeTab === tab.id
+                    ? 'text-accent-cyan border-b-2 border-accent-cyan bg-accent-cyan/5'
+                    : 'text-text-muted border-b-2 border-transparent hover:text-text-secondary'
+                }`}
+              >
+                <span className={activeTab === tab.id ? 'text-accent-cyan' : 'text-text-muted'}>
+                  {tab.icon}
+                </span>
+                {tab.label}
+              </button>
+            ))}
+          </div>
         </div>
 
-        {/* Mobile Workspace Selector */}
+        {/* Workspace Selector - Shows when workspace/team tabs active */}
         {(activeTab === 'workspace' || activeTab === 'team') && workspaces.length > 0 && (
-          <div className="md:hidden px-4 py-2 border-b border-border-subtle bg-bg-tertiary/50">
+          <div className="px-4 py-2 border-b border-border-subtle bg-bg-tertiary/50">
             <div className="flex items-center gap-2">
               <div
                 className={`w-2 h-2 rounded-full shrink-0 ${
@@ -188,72 +190,9 @@ export function SettingsPage({
         )}
 
         {/* Content */}
-        <div className="flex-1 flex overflow-hidden">
-          {/* Desktop Sidebar Navigation */}
-          <nav className="hidden md:flex w-64 border-r border-border-subtle bg-bg-secondary/50 p-4 flex-col">
-            <div className="space-y-1">
-              {tabs.map((tab) => (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all duration-200 ${
-                    activeTab === tab.id
-                      ? 'bg-accent-cyan/15 text-accent-cyan border border-accent-cyan/30 shadow-[0_0_20px_rgba(0,217,255,0.1)]'
-                      : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary border border-transparent'
-                  }`}
-                >
-                  <span className={activeTab === tab.id ? 'text-accent-cyan' : 'text-text-muted'}>
-                    {tab.icon}
-                  </span>
-                  {tab.label}
-                </button>
-              ))}
-            </div>
-
-            {/* Workspace Selector (shown on workspace/team tabs) */}
-            {(activeTab === 'workspace' || activeTab === 'team') && workspaces.length > 0 && (
-              <div className="mt-8 pt-6 border-t border-border-subtle">
-                <label className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3 block">
-                  Select Workspace
-                </label>
-                <div className="space-y-2">
-                  {workspaces.map((ws) => (
-                    <button
-                      key={ws.id}
-                      onClick={() => setSelectedWorkspaceId(ws.id)}
-                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all ${
-                        selectedWorkspaceId === ws.id
-                          ? 'bg-bg-tertiary border border-accent-cyan/30 text-text-primary'
-                          : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary border border-transparent'
-                      }`}
-                    >
-                      <div
-                        className={`w-2 h-2 rounded-full ${
-                          ws.status === 'running'
-                            ? 'bg-success'
-                            : ws.status === 'stopped'
-                            ? 'bg-amber-400'
-                            : 'bg-text-muted'
-                        }`}
-                      />
-                      <span className="truncate">{ws.name}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Version info at bottom */}
-            <div className="mt-auto pt-6">
-              <div className="px-4 py-3 bg-bg-tertiary/50 rounded-lg">
-                <p className="text-xs text-text-muted">Agent Relay</p>
-                <p className="text-xs font-mono text-text-muted/60">v1.0.0</p>
-              </div>
-            </div>
-          </nav>
-
+        <div className="flex-1 overflow-hidden">
           {/* Main Content */}
-          <main className="flex-1 overflow-y-auto">
+          <main className="h-full overflow-y-auto">
             <div className="max-w-4xl mx-auto p-4 md:p-8">
               {/* Dashboard Settings */}
               {activeTab === 'dashboard' && (

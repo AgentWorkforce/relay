@@ -48,6 +48,7 @@ import { gitRouter } from './api/git.js';
 import { codexAuthHelperRouter } from './api/codex-auth-helper.js';
 import { adminRouter } from './api/admin.js';
 import { db } from './db/index.js';
+import { validateSshSecurityConfig } from './services/ssh-security.js';
 
 /**
  * Proxy a request to the user's primary running workspace
@@ -88,6 +89,10 @@ export interface CloudServer {
 
 export async function createServer(): Promise<CloudServer> {
   const config = getConfig();
+
+  // Validate security configuration at startup
+  validateSshSecurityConfig();
+
   const app = express();
   app.set('trust proxy', 1);
 
@@ -293,15 +298,16 @@ export async function createServer(): Promise<CloudServer> {
   app.use('/api/project-groups', coordinatorsRouter);
   app.use('/api/github-app', githubAppRouter);
 
-  // Teams router - MUST BE LAST among /api routes
-  // Handles /workspaces/:id/members and /invites with requireAuth on all routes
-  app.use('/api', teamsRouter);
-
   // Test helper routes (only available in non-production)
+  // MUST be before teamsRouter to avoid auth interception
   if (process.env.NODE_ENV !== 'production') {
     app.use('/api/test', testHelpersRouter);
     console.log('[cloud] Test helper routes enabled (non-production mode)');
   }
+
+  // Teams router - MUST BE LAST among /api routes
+  // Handles /workspaces/:id/members and /invites with requireAuth on all routes
+  app.use('/api', teamsRouter);
 
   // Trajectory proxy routes - auto-detect user's workspace and forward
   // These are convenience routes so the dashboard doesn't need to know the workspace ID
@@ -410,6 +416,90 @@ export async function createServer(): Promise<CloudServer> {
     }
   };
 
+  // WebSocket server for agent logs (proxied to workspace daemon)
+  const wssLogs = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+
+  // Handle agent logs WebSocket connections
+  wssLogs.on('connection', async (clientWs: WebSocket, workspaceId: string, agentName: string) => {
+    console.log(`[ws/logs] Client connected for workspace=${workspaceId} agent=${agentName}`);
+
+    let daemonWs: WebSocket | null = null;
+
+    try {
+      // Find the workspace
+      const workspace = await db.workspaces.findById(workspaceId);
+      if (!workspace || !workspace.publicUrl) {
+        clientWs.send(JSON.stringify({ type: 'error', message: 'Workspace not found or not running' }));
+        clientWs.close();
+        return;
+      }
+
+      // Connect to workspace daemon WebSocket
+      // The workspace runs the dashboard server which expects /ws/logs path
+      const baseUrl = workspace.publicUrl.replace(/^http/, 'ws').replace(/\/$/, '');
+      const daemonWsUrl = `${baseUrl}/ws/logs/${encodeURIComponent(agentName)}`;
+      console.log(`[ws/logs] Connecting to daemon: ${daemonWsUrl}`);
+
+      daemonWs = new WebSocket(daemonWsUrl, { perMessageDeflate: false });
+
+      daemonWs.on('open', () => {
+        console.log(`[ws/logs] Connected to daemon for ${agentName}`);
+        // Note: No need to send subscribe message - the agent name in the URL path
+        // triggers auto-subscription in the dashboard server
+      });
+
+      daemonWs.on('message', (data) => {
+        // Forward daemon messages to client
+        if (clientWs.readyState === WebSocket.OPEN) {
+          clientWs.send(data.toString());
+        }
+      });
+
+      daemonWs.on('close', () => {
+        console.log(`[ws/logs] Daemon connection closed for ${agentName}`);
+        if (clientWs.readyState === WebSocket.OPEN) {
+          clientWs.close();
+        }
+      });
+
+      daemonWs.on('error', (err) => {
+        console.error(`[ws/logs] Daemon WebSocket error:`, err);
+        if (clientWs.readyState === WebSocket.OPEN) {
+          clientWs.send(JSON.stringify({ type: 'error', message: 'Daemon connection error' }));
+          clientWs.close();
+        }
+      });
+
+      // Forward client messages to daemon (for user input)
+      clientWs.on('message', (data) => {
+        if (daemonWs && daemonWs.readyState === WebSocket.OPEN) {
+          daemonWs.send(data.toString());
+        }
+      });
+
+      clientWs.on('close', () => {
+        console.log(`[ws/logs] Client disconnected for ${agentName}`);
+        if (daemonWs && daemonWs.readyState === WebSocket.OPEN) {
+          daemonWs.close();
+        }
+      });
+
+      clientWs.on('error', (err) => {
+        console.error(`[ws/logs] Client WebSocket error:`, err);
+        if (daemonWs && daemonWs.readyState === WebSocket.OPEN) {
+          daemonWs.close();
+        }
+      });
+
+    } catch (err) {
+      console.error(`[ws/logs] Setup error:`, err);
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(JSON.stringify({ type: 'error', message: 'Failed to connect to workspace' }));
+        clientWs.close();
+      }
+    }
+  });
+
   // Handle HTTP upgrade for WebSocket
   httpServer.on('upgrade', (request, socket, head) => {
     const pathname = new URL(request.url || '', `http://${request.headers.host}`).pathname;
@@ -418,6 +508,19 @@ export async function createServer(): Promise<CloudServer> {
       wssPresence.handleUpgrade(request, socket, head, (ws) => {
         wssPresence.emit('connection', ws, request);
       });
+    } else if (pathname.startsWith('/ws/logs/')) {
+      // Parse /ws/logs/:workspaceId/:agentName
+      const parts = pathname.split('/').filter(Boolean);
+      if (parts.length >= 4) {
+        const workspaceId = decodeURIComponent(parts[2]);
+        const agentName = decodeURIComponent(parts[3]);
+
+        wssLogs.handleUpgrade(request, socket, head, (ws) => {
+          wssLogs.emit('connection', ws, workspaceId, agentName);
+        });
+      } else {
+        socket.destroy();
+      }
     } else {
       // Unknown WebSocket path - destroy socket
       socket.destroy();

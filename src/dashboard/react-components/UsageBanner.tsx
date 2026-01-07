@@ -109,10 +109,10 @@ export function UsageBanner({ apiBaseUrl = '', onUpgradeClick }: UsageBannerProp
     textClass = 'text-warning';
     iconColor = 'text-warning';
   } else if (hasActiveIntro) {
-    // Special styling for intro bonus
-    bgClass = 'bg-accent-purple/10 border-accent-purple/30';
-    textClass = 'text-accent-purple';
-    iconColor = 'text-accent-purple';
+    // Special styling for intro bonus - use brand cyan
+    bgClass = 'bg-accent-cyan/10 border-accent-cyan/30';
+    textClass = 'text-accent-cyan';
+    iconColor = 'text-accent-cyan';
   }
 
   return (

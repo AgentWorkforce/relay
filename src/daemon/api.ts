@@ -135,8 +135,8 @@ export class DaemonApi extends EventEmitter {
     return new Promise((resolve) => {
       this.server = http.createServer((req, res) => this.handleRequest(req, res));
 
-      // Setup WebSocket server
-      this.wss = new WebSocketServer({ server: this.server });
+      // Setup WebSocket server (disable compression for compatibility)
+      this.wss = new WebSocketServer({ server: this.server, perMessageDeflate: false });
       this.wss.on('connection', (ws, req) => this.handleWebSocketConnection(ws, req));
 
       // Setup ping/pong keepalive (30 second interval)
@@ -440,13 +440,13 @@ export class DaemonApi extends EventEmitter {
     // Submit auth code to PTY session
     this.routes.set('POST /auth/cli/:provider/code/:sessionId', async (req): Promise<ApiResponse> => {
       const { sessionId } = req.params;
-      const { code } = req.body as { code?: string };
+      const { code, state } = req.body as { code?: string; state?: string };
 
       if (!code || typeof code !== 'string') {
         return { status: 400, body: { error: 'Auth code is required' } };
       }
 
-      const result = await submitAuthCode(sessionId, code);
+      const result = await submitAuthCode(sessionId, code, state);
       if (!result.success) {
         return {
           status: 400,
@@ -468,6 +468,14 @@ export class DaemonApi extends EventEmitter {
         return { status: 404, body: { error: 'Session not found' } };
       }
       return { status: 200, body: { success: true } };
+    });
+
+    // Check if provider is authenticated (credentials exist)
+    this.routes.set('GET /auth/cli/:provider/check', async (req): Promise<ApiResponse> => {
+      const { provider } = req.params;
+      const { checkProviderAuth } = await import('./cli-auth.js');
+      const authenticated = await checkProviderAuth(provider);
+      return { status: 200, body: { authenticated } };
     });
 
     // === Repository Management ===

@@ -1722,6 +1722,183 @@ workspacesRouter.all('/:id/proxy/{*proxyPath}', async (req: Request, res: Respon
   }
 });
 
+// ============================================================================
+// Agent Management (proxied to workspace daemon)
+// ============================================================================
+
+/**
+ * POST /api/workspaces/:id/agents
+ * Spawn an agent in the workspace
+ * Proxies to workspace daemon's /workspaces/:id/agents endpoint
+ */
+workspacesRouter.post('/:id/agents', async (req: Request, res: Response) => {
+  const userId = req.session.userId;
+  const { id } = req.params;
+  const { name, provider, task, temporary, interactive } = req.body;
+
+  if (!userId) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+
+  if (!name) {
+    return res.status(400).json({ error: 'Agent name is required' });
+  }
+
+  try {
+    // Find workspace and verify access
+    const workspace = await db.workspaces.findById(id);
+    if (!workspace) {
+      return res.status(404).json({ error: 'Workspace not found' });
+    }
+
+    // Check access
+    const accessResult = await checkWorkspaceAccess(userId, id);
+    if (!accessResult.hasAccess) {
+      return res.status(403).json({ error: 'Access denied to this workspace' });
+    }
+
+    // Ensure workspace is running
+    if (workspace.status !== 'running' || !workspace.publicUrl) {
+      return res.status(400).json({
+        error: 'Workspace is not running',
+        status: workspace.status,
+      });
+    }
+
+    // Proxy to workspace dashboard server's /api/spawn endpoint
+    // The dashboard server expects 'cli' field (not 'provider')
+    const targetUrl = `${workspace.publicUrl.replace(/\/$/, '')}/api/spawn`;
+    console.log(`[workspaces] Proxying agent spawn to: ${targetUrl}`);
+
+    const response = await fetch(targetUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        cli: provider || 'claude', // Map provider to cli
+        task: task || '', // Empty task = interactive mode, user responds to prompts
+        interactive: interactive ?? true, // Default to interactive for setup flows
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return res.status(response.status).json(data);
+    }
+
+    res.status(201).json(data);
+  } catch (error) {
+    console.error('[workspaces] Agent spawn error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage.includes('ECONNREFUSED') || errorMessage.includes('fetch failed')) {
+      return res.status(503).json({
+        error: 'Workspace is not reachable',
+        details: 'The workspace container may not be running',
+      });
+    }
+
+    res.status(500).json({
+      error: 'Failed to spawn agent',
+      details: errorMessage,
+    });
+  }
+});
+
+/**
+ * GET /api/workspaces/:id/agents
+ * List agents in the workspace
+ */
+workspacesRouter.get('/:id/agents', async (req: Request, res: Response) => {
+  const userId = req.session.userId;
+  const { id } = req.params;
+
+  if (!userId) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+
+  try {
+    const workspace = await db.workspaces.findById(id);
+    if (!workspace) {
+      return res.status(404).json({ error: 'Workspace not found' });
+    }
+
+    const accessResult = await checkWorkspaceAccess(userId, id);
+    if (!accessResult.hasAccess) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    if (workspace.status !== 'running' || !workspace.publicUrl) {
+      return res.status(200).json({ agents: [], workspaceId: id });
+    }
+
+    // Use dashboard server's /api/spawned endpoint
+    const targetUrl = `${workspace.publicUrl.replace(/\/$/, '')}/api/spawned`;
+    const response = await fetch(targetUrl, {
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!response.ok) {
+      return res.status(200).json({ agents: [], workspaceId: id });
+    }
+
+    const data = await response.json() as { agents?: unknown[] };
+    // Transform to expected format
+    res.json({ agents: data.agents || [], workspaceId: id });
+  } catch (error) {
+    console.error('[workspaces] List agents error:', error);
+    res.status(200).json({ agents: [], workspaceId: id });
+  }
+});
+
+/**
+ * DELETE /api/workspaces/:id/agents/:agentName
+ * Stop an agent in the workspace
+ */
+workspacesRouter.delete('/:id/agents/:agentName', async (req: Request, res: Response) => {
+  const userId = req.session.userId;
+  const { id, agentName } = req.params;
+
+  if (!userId) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+
+  try {
+    const workspace = await db.workspaces.findById(id);
+    if (!workspace) {
+      return res.status(404).json({ error: 'Workspace not found' });
+    }
+
+    const accessResult = await checkWorkspaceAccess(userId, id);
+    if (!accessResult.hasAccess) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    if (workspace.status !== 'running' || !workspace.publicUrl) {
+      return res.status(400).json({ error: 'Workspace is not running' });
+    }
+
+    // Use dashboard server's /api/spawned/:name endpoint
+    const targetUrl = `${workspace.publicUrl.replace(/\/$/, '')}/api/spawned/${encodeURIComponent(agentName)}`;
+    const response = await fetch(targetUrl, {
+      method: 'DELETE',
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (response.status === 204) {
+      return res.status(204).send();
+    }
+
+    const data = await response.json();
+    res.status(response.status).json(data);
+  } catch (error) {
+    console.error('[workspaces] Stop agent error:', error);
+    res.status(500).json({ error: 'Failed to stop agent' });
+  }
+});
+
 /**
  * POST /api/workspaces/quick
  * Quick provision: one-click with defaults

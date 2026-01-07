@@ -45,6 +45,8 @@ export interface SpawnRequest {
   cwd?: string;
   /** Name of the agent requesting the spawn (for policy enforcement) */
   spawnerName?: string;
+  /** Interactive mode - disables auto-accept of permission prompts (for auth setup flows) */
+  interactive?: boolean;
   /** Shadow execution mode (subagent = no extra process) */
   shadowMode?: 'subagent' | 'process';
   /** Primary agent to shadow (if this agent is a shadow) */

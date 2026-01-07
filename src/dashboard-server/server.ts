@@ -1830,6 +1830,35 @@ export async function startDashboard(
             agent: agentName,
           }));
         }
+
+        // Handle interactive terminal input
+        if (msg.type === 'input' && typeof msg.data === 'string') {
+          // Get agent name from message or use first subscribed agent
+          const agentName = msg.agent || [...clientSubscriptions][0];
+
+          if (!agentName) {
+            ws.send(JSON.stringify({
+              type: 'error',
+              error: 'No agent subscribed for input',
+            }));
+            return;
+          }
+
+          // Check if this is a spawned agent (we can only send input to spawned agents)
+          if (spawner?.hasWorker(agentName)) {
+            const success = spawner.sendWorkerInput(agentName, msg.data);
+            if (!success) {
+              console.warn(`[dashboard] Failed to send input to agent ${agentName}`);
+            }
+          } else {
+            // Daemon-connected agents don't support direct input
+            ws.send(JSON.stringify({
+              type: 'error',
+              agent: agentName,
+              error: 'Interactive input not supported for daemon-connected agents',
+            }));
+          }
+        }
       } catch (err) {
         console.error('[dashboard] Invalid logs WebSocket message:', err);
       }
@@ -2549,6 +2578,31 @@ export async function startDashboard(
    */
   app.get('/auth/cli/providers', (req, res) => {
     res.json({ providers: getSupportedProviders() });
+  });
+
+  /**
+   * GET /auth/cli/openai/check - Check if OpenAI/Codex is authenticated
+   * Used by the codex-auth CLI helper to detect when auth completes
+   */
+  app.get('/auth/cli/openai/check', async (req, res) => {
+    try {
+      // Codex stores credentials at ~/.codex/auth.json
+      const homedir = process.env.HOME || '/home/workspace';
+      const credPath = path.join(homedir, '.codex', 'auth.json');
+
+      if (!fs.existsSync(credPath)) {
+        return res.json({ authenticated: false });
+      }
+
+      const creds = JSON.parse(fs.readFileSync(credPath, 'utf-8'));
+      // Check if we have a valid access token or API key
+      const hasToken = !!(creds.access_token || creds.token || creds.api_key || creds.OPENAI_API_KEY);
+
+      res.json({ authenticated: hasToken });
+    } catch (error) {
+      // File doesn't exist or is invalid
+      res.json({ authenticated: false });
+    }
   });
 
   // ===== Metrics API =====
@@ -3277,6 +3331,7 @@ export async function startDashboard(
       cli = 'claude',
       task = '',
       team,
+      interactive,
       shadowMode,
       shadowAgent,
       shadowOf,
@@ -3297,6 +3352,7 @@ export async function startDashboard(
         cli,
         task,
         team: team || undefined, // Optional team name
+        interactive, // Disables auto-accept for auth setup flows
         shadowMode,
         shadowAgent,
         shadowOf,

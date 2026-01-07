@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-07T06:30:00.000Z",
+  "lastUpdated": "2026-01-07T10:19:49.977Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -386,6 +386,48 @@
       "startedAt": "2026-01-07T06:00:00.000Z",
       "completedAt": "2026-01-07T06:30:00.000Z",
       "path": "/home/user/relay/.trajectories/completed/2026-01/traj_multi_server_arch.md"
+    },
+    "traj_6mieijqyvaag": {
+      "title": "Fix xterm interactive terminal for provider auth setup",
+      "status": "completed",
+      "startedAt": "2026-01-07T08:27:00.428Z",
+      "completedAt": "2026-01-07T08:28:17.323Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_6mieijqyvaag.json"
+    },
+    "traj_0zacdjl1g4ht": {
+      "title": "Interactive terminal for provider auth setup",
+      "status": "completed",
+      "startedAt": "2026-01-07T10:06:42.869Z",
+      "completedAt": "2026-01-07T10:07:24.422Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_0zacdjl1g4ht.json"
+    },
+    "traj_lq450ly148uw": {
+      "title": "Dashboard UI fixes, billing improvements, and settings alignment",
+      "status": "completed",
+      "startedAt": "2026-01-07T10:07:46.226Z",
+      "completedAt": "2026-01-07T10:07:58.979Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_lq450ly148uw.json"
+    },
+    "traj_uc29tlso8i9s": {
+      "title": "Production-ready SSH tunneling for Codex OAuth with security hardening",
+      "status": "completed",
+      "startedAt": "2026-01-07T10:08:04.299Z",
+      "completedAt": "2026-01-07T10:09:10.870Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_uc29tlso8i9s.json"
+    },
+    "traj_dcsp9s8y01ra": {
+      "title": "Dashboard UI fixes, billing improvements, and settings alignment",
+      "status": "completed",
+      "startedAt": "2026-01-07T10:09:36.428Z",
+      "completedAt": "2026-01-07T10:09:38.308Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_dcsp9s8y01ra.json"
+    },
+    "traj_y7aiwijyfmmv": {
+      "title": "Fix CLI hanging - add auth check endpoint",
+      "status": "completed",
+      "startedAt": "2026-01-07T10:19:49.851Z",
+      "completedAt": "2026-01-07T10:19:49.966Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_y7aiwijyfmmv.json"
     }
   }
 }

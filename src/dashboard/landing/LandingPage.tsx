@@ -59,11 +59,25 @@ export function LandingPage() {
 function Navigation() {
   const [scrolled, setScrolled] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
 
   useEffect(() => {
     const handleScroll = () => setScrolled(window.scrollY > 50);
     window.addEventListener('scroll', handleScroll);
     return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  // Check if user is logged in
+  useEffect(() => {
+    async function checkAuth() {
+      try {
+        const response = await fetch('/api/auth/me', { credentials: 'include' });
+        setIsLoggedIn(response.ok);
+      } catch {
+        setIsLoggedIn(false);
+      }
+    }
+    checkAuth();
   }, []);
 
   // Close mobile menu on resize to desktop
@@ -109,8 +123,14 @@ function Navigation() {
         </div>
 
         <div className="nav-actions">
-          <a href="/login" className="btn-ghost">Sign In</a>
-          <a href="/signup" className="btn-primary">Get Started</a>
+          {isLoggedIn ? (
+            <a href="/app" className="btn-primary">Go to App</a>
+          ) : (
+            <>
+              <a href="/login" className="btn-ghost">Sign In</a>
+              <a href="/signup" className="btn-primary">Get Started</a>
+            </>
+          )}
         </div>
 
         <button
@@ -139,8 +159,14 @@ function Navigation() {
             <a href="/docs" onClick={handleNavClick}>Documentation</a>
           </div>
           <div className="mobile-nav-actions">
-            <a href="/login" className="btn-ghost btn-full" onClick={handleNavClick}>Sign In</a>
-            <a href="/signup" className="btn-primary btn-full" onClick={handleNavClick}>Get Started</a>
+            {isLoggedIn ? (
+              <a href="/app" className="btn-primary btn-full" onClick={handleNavClick}>Go to App</a>
+            ) : (
+              <>
+                <a href="/login" className="btn-ghost btn-full" onClick={handleNavClick}>Sign In</a>
+                <a href="/signup" className="btn-primary btn-full" onClick={handleNavClick}>Get Started</a>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -569,13 +595,15 @@ function CTASection() {
       <div className="cta-terminal">
         <div className="terminal-header">
           <span className="terminal-prompt">$</span>
-          <span className="terminal-text">npx agent-relay init</span>
+          <span className="terminal-text">agent-relay cloud link</span>
         </div>
         <div className="terminal-output">
-          <span className="output-line">✓ Connected to Agent Relay Cloud</span>
-          <span className="output-line">✓ Workspace created: my-project</span>
-          <span className="output-line">✓ Ready to spawn agents</span>
-          <span className="output-line cursor">→ agent-relay spawn Lead --provider claude</span>
+          <span className="output-line">✓ Machine linked to Agent Relay Cloud</span>
+          <span className="output-line">✓ Syncing with workspace: my-project</span>
+          <span className="output-line">✓ 3 agents online: Lead, Backend, Frontend</span>
+          <span className="output-line"></span>
+          <span className="output-line dim">$ agent-relay cloud send Lead &quot;Start the auth module&quot;</span>
+          <span className="output-line cursor">✓ Message sent to Lead on cloud-workspace</span>
         </div>
       </div>
     </section>

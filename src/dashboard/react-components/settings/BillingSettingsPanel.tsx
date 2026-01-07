@@ -43,8 +43,23 @@ interface Invoice {
 const TIER_COLORS: Record<string, string> = {
   free: 'bg-bg-tertiary border-border-subtle text-text-muted',
   pro: 'bg-accent-cyan/10 border-accent-cyan/30 text-accent-cyan',
-  team: 'bg-accent-purple/10 border-accent-purple/30 text-accent-purple',
+  team: 'bg-blue-900/30 border-blue-500/40 text-blue-400',
   enterprise: 'bg-amber-400/10 border-amber-400/30 text-amber-400',
+};
+
+const TIER_DESCRIPTIONS: Record<string, string> = {
+  free: 'Free tier - upgrade to unlock more features',
+  pro: 'Professional plan with enhanced features',
+  team: 'Team plan with collaboration features',
+  enterprise: 'Enterprise plan with dedicated support',
+};
+
+// Tier ranking for comparison (higher = better plan)
+const TIER_RANK: Record<string, number> = {
+  free: 0,
+  pro: 1,
+  team: 2,
+  enterprise: 3,
 };
 
 export function BillingSettingsPanel({ onUpgrade }: BillingSettingsPanelProps) {
@@ -234,7 +249,7 @@ export function BillingSettingsPanel({ onUpgrade }: BillingSettingsPanelProps) {
                 </p>
               ) : (
                 <p className="text-xs md:text-sm text-text-muted mt-1">
-                  Free tier - upgrade to unlock more features
+                  {TIER_DESCRIPTIONS[currentTier] || TIER_DESCRIPTIONS.free}
                 </p>
               )}
             </div>
@@ -309,68 +324,75 @@ export function BillingSettingsPanel({ onUpgrade }: BillingSettingsPanelProps) {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {plans
             .filter((p) => p.tier !== 'free')
-            .map((plan) => (
-              <div
-                key={plan.tier}
-                className={`relative p-6 rounded-lg border ${
-                  plan.recommended
-                    ? 'border-accent-cyan shadow-glow-cyan'
-                    : 'border-border-subtle'
-                } bg-bg-tertiary`}
-              >
-                {plan.recommended && (
-                  <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-1 bg-accent-cyan text-bg-deep text-xs font-bold rounded-full">
-                    Most Popular
+            .map((plan) => {
+              // Only show recommended styling for upgrades, not downgrades
+              const isUpgrade = (TIER_RANK[plan.tier] || 0) > (TIER_RANK[currentTier] || 0);
+              const showRecommended = plan.recommended && isUpgrade;
+              const isDowngrade = (TIER_RANK[plan.tier] || 0) < (TIER_RANK[currentTier] || 0);
+
+              return (
+                <div
+                  key={plan.tier}
+                  className={`relative p-6 rounded-lg border ${
+                    showRecommended
+                      ? 'border-accent-cyan shadow-glow-cyan'
+                      : 'border-border-subtle'
+                  } bg-bg-tertiary`}
+                >
+                  {showRecommended && (
+                    <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-1 bg-accent-cyan text-bg-deep text-xs font-bold rounded-full">
+                      Most Popular
+                    </div>
+                  )}
+
+                  <h4 className="text-lg font-bold text-text-primary">{plan.name}</h4>
+                  <p className="text-xs text-text-muted mt-1 mb-4">{plan.description}</p>
+
+                  <div className="mb-4">
+                    <span className="text-3xl font-bold text-text-primary">
+                      ${billingInterval === 'year' ? plan.price.yearly : plan.price.monthly}
+                    </span>
+                    <span className="text-text-muted">
+                      /{billingInterval === 'year' ? 'year' : 'month'}
+                    </span>
                   </div>
-                )}
 
-                <h4 className="text-lg font-bold text-text-primary">{plan.name}</h4>
-                <p className="text-xs text-text-muted mt-1 mb-4">{plan.description}</p>
+                  <ul className="space-y-2 mb-6">
+                    {plan.features.slice(0, 5).map((feature, i) => (
+                      <li key={i} className="flex items-start gap-2 text-sm text-text-secondary">
+                        <CheckIcon className="text-success shrink-0 mt-0.5" />
+                        {feature}
+                      </li>
+                    ))}
+                  </ul>
 
-                <div className="mb-4">
-                  <span className="text-3xl font-bold text-text-primary">
-                    ${billingInterval === 'year' ? plan.price.yearly : plan.price.monthly}
-                  </span>
-                  <span className="text-text-muted">
-                    /{billingInterval === 'year' ? 'year' : 'month'}
-                  </span>
+                  {currentTier === plan.tier ? (
+                    <button
+                      disabled
+                      className="w-full py-2.5 bg-bg-hover text-text-muted rounded-lg text-sm font-medium cursor-default"
+                    >
+                      Current Plan
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => handleCheckout(plan.tier)}
+                      disabled={checkoutLoading !== null}
+                      className={`w-full py-2.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 ${
+                        showRecommended
+                          ? 'bg-accent-cyan text-bg-deep hover:bg-accent-cyan/90'
+                          : 'bg-bg-hover text-text-primary hover:bg-bg-active'
+                      }`}
+                    >
+                      {checkoutLoading === plan.tier
+                        ? 'Loading...'
+                        : isDowngrade
+                        ? 'Downgrade'
+                        : 'Upgrade'}
+                    </button>
+                  )}
                 </div>
-
-                <ul className="space-y-2 mb-6">
-                  {plan.features.slice(0, 5).map((feature, i) => (
-                    <li key={i} className="flex items-start gap-2 text-sm text-text-secondary">
-                      <CheckIcon className="text-success shrink-0 mt-0.5" />
-                      {feature}
-                    </li>
-                  ))}
-                </ul>
-
-                {currentTier === plan.tier ? (
-                  <button
-                    disabled
-                    className="w-full py-2.5 bg-bg-hover text-text-muted rounded-lg text-sm font-medium cursor-default"
-                  >
-                    Current Plan
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => handleCheckout(plan.tier)}
-                    disabled={checkoutLoading !== null}
-                    className={`w-full py-2.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 ${
-                      plan.recommended
-                        ? 'bg-accent-cyan text-bg-deep hover:bg-accent-cyan/90'
-                        : 'bg-bg-hover text-text-primary hover:bg-bg-active'
-                    }`}
-                  >
-                    {checkoutLoading === plan.tier
-                      ? 'Loading...'
-                      : currentTier === 'free'
-                      ? 'Upgrade'
-                      : 'Switch'}
-                  </button>
-                )}
-              </div>
-            ))}
+              );
+            })}
         </div>
       </div>
 

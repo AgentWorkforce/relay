@@ -1159,6 +1159,11 @@ section {
   color: var(--text-secondary);
 }
 
+.output-line.dim {
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
 .output-line.cursor::after {
   content: '▋';
   animation: cursorBlink 1s step-end infinite;

@@ -311,9 +311,18 @@ export default function DashboardPage() {
     }
   }, [connectToWorkspace, csrfToken]);
 
-  // Handle connecting an AI provider - simplified with ProviderAuthFlow component
+  // Handle connecting an AI provider
+  // For Claude, redirect to the interactive xterm setup page
+  // For others, use the inline ProviderAuthFlow component
   const handleConnectProvider = useCallback((provider: ProviderInfo) => {
     if (!selectedWorkspace) return;
+
+    // For Claude (anthropic), use the xterm-based interactive setup
+    if (provider.id === 'anthropic') {
+      window.location.href = `/providers/setup/claude?workspace=${selectedWorkspace.id}`;
+      return;
+    }
+
     setConnectingProvider(provider.id);
   }, [selectedWorkspace]);
 
@@ -560,8 +569,66 @@ export default function DashboardPage() {
               <div className="space-y-3">
                 {AI_PROVIDERS.map((provider) => (
                   <div key={provider.id}>
-                    {/* Special expanded section for Codex with CLI auth flow */}
-                    {provider.id === 'codex' ? (
+                    {/* Special expanded section for Claude with interactive terminal setup */}
+                    {provider.id === 'anthropic' ? (
+                      <div className={`p-4 bg-bg-tertiary rounded-xl border space-y-4 ${connectedProviders.includes(provider.id) ? 'border-green-500/50' : 'border-border-subtle'}`}>
+                        <div className="flex items-center gap-3">
+                          <div
+                            className="w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold flex-shrink-0 relative"
+                            style={{ backgroundColor: provider.color }}
+                          >
+                            {provider.displayName[0]}
+                            {connectedProviders.includes(provider.id) && (
+                              <div className="absolute -top-1 -right-1 w-5 h-5 bg-green-500 rounded-full flex items-center justify-center">
+                                <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                                </svg>
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex-1">
+                            <p className="text-white font-medium">{provider.displayName}</p>
+                            <p className="text-text-muted text-sm">{provider.name}</p>
+                          </div>
+                          {connectedProviders.includes(provider.id) && (
+                            <span className="text-green-400 text-sm font-medium">Connected</span>
+                          )}
+                        </div>
+
+                        {!connectedProviders.includes(provider.id) && (
+                          <>
+                            {/* Info about interactive terminal setup */}
+                            <div className="p-3 bg-accent-cyan/10 border border-accent-cyan/30 rounded-lg">
+                              <p className="text-sm text-accent-cyan font-medium mb-1">Interactive terminal setup</p>
+                              <p className="text-xs text-accent-cyan/80">
+                                Connect Claude using an interactive terminal. You&apos;ll see the Claude CLI start up
+                                and can complete the OAuth login directly in the terminal.
+                              </p>
+                            </div>
+
+                            {/* Main connect button */}
+                            <button
+                              onClick={() => handleConnectProvider(provider)}
+                              className="w-full flex items-center justify-center gap-2 p-3 bg-gradient-to-r from-accent-cyan to-[#00b8d9] text-bg-deep font-semibold rounded-xl hover:shadow-glow-cyan transition-all"
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                              </svg>
+                              Connect with Claude
+                            </button>
+
+                            {/* Fallback link */}
+                            <button
+                              onClick={() => setConnectingProvider(provider.id)}
+                              className="w-full text-center text-xs text-text-muted hover:text-white transition-colors"
+                            >
+                              Having issues? Try the popup-based login instead
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    ) : provider.id === 'codex' ? (
+                      /* Special expanded section for Codex with CLI auth flow */
                       <div className={`p-4 bg-bg-tertiary rounded-xl border space-y-4 ${connectedProviders.includes(provider.id) || connectedProviders.includes('openai') ? 'border-green-500/50' : 'border-border-subtle'}`}>
                         <div className="flex items-center gap-3">
                           <div

@@ -209,11 +209,11 @@ billingRouter.get('/subscription', requireAuth, async (req, res) => {
       });
     }
 
-    // If user doesn't have a Stripe customer ID and is on free tier, skip Stripe calls entirely
-    // This prevents hanging on Stripe API calls for users who have never paid
-    if (!user.stripeCustomerId && user.plan === 'free') {
+    // If user doesn't have a Stripe customer ID, use the database plan value
+    // This handles manually-set plans and prevents hanging on Stripe API calls
+    if (!user.stripeCustomerId) {
       return res.json({
-        tier: 'free',
+        tier: user.plan || 'free',
         subscription: null,
         customer: null,
       });
@@ -242,8 +242,12 @@ billingRouter.get('/subscription', requireAuth, async (req, res) => {
       return;
     }
 
+    // Use Stripe subscription tier if active, otherwise fall back to database plan value
+    // This allows manual plan overrides in the database to take effect
+    const tier = customer.subscription?.tier || user.plan || 'free';
+
     res.json({
-      tier: customer.subscription?.tier || 'free',
+      tier,
       subscription: customer.subscription,
       customer: {
         id: customer.id,

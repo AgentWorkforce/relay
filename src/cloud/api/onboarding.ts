@@ -116,10 +116,15 @@ onboardingRouter.post('/cli/:provider/start', async (req: Request, res: Response
   console.log('[onboarding] Route handler entered! provider:', req.params.provider);
   const { provider } = req.params;
   const userId = req.session.userId!;
-  const { workspaceId, useDeviceFlow } = req.body; // Optional: specific workspace, device flow option
+  const { workspaceId, useDeviceFlow: requestedDeviceFlow } = req.body; // Optional: specific workspace, device flow option
+
+  // Device flow is only used if explicitly requested by the client
+  // Standard flow: user runs `codex-auth` CLI locally to capture OAuth callback and forward to cloud
+  const config = CLI_AUTH_CONFIG[provider];
+  const useDeviceFlow = requestedDeviceFlow ?? false;
+
   console.log('[onboarding] userId:', userId, 'workspaceId:', workspaceId, 'useDeviceFlow:', useDeviceFlow);
 
-  const config = CLI_AUTH_CONFIG[provider];
   if (!config) {
     return res.status(400).json({
       error: 'Provider not supported for CLI auth',
@@ -230,6 +235,7 @@ onboardingRouter.post('/cli/:provider/start', async (req: Request, res: Response
       status: session.status,
       authUrl: session.authUrl,
       workspaceId: workspace.id,
+      useDeviceFlow, // Tell dashboard whether device flow is being used (no CLI helper needed)
       message: session.authUrl ? 'Open the auth URL to complete login' : 'Auth session starting, poll for status',
     });
   } catch (error) {
@@ -442,9 +448,9 @@ onboardingRouter.post('/cli/:provider/complete/:sessionId', async (req: Request,
 onboardingRouter.post('/cli/:provider/code/:sessionId', async (req: Request, res: Response) => {
   const { provider, sessionId } = req.params;
   const userId = req.session.userId!;
-  const { code } = req.body;
+  const { code, state } = req.body; // state is optional, used for Codex OAuth
 
-  console.log('[onboarding] Auth code submission request:', { provider, sessionId, codeLength: code?.length });
+  console.log('[onboarding] Auth code submission request:', { provider, sessionId, codeLength: code?.length, hasState: !!state });
 
   if (!code || typeof code !== 'string') {
     return res.status(400).json({ error: 'Auth code is required' });
@@ -476,7 +482,7 @@ onboardingRouter.post('/cli/:provider/code/:sessionId', async (req: Request, res
       const codeResponse = await fetch(targetUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code }),
+        body: JSON.stringify({ code, state }), // Forward state for Codex CSRF validation
       });
 
       console.log('[onboarding] Workspace response:', { status: codeResponse.status });
@@ -543,6 +549,41 @@ onboardingRouter.post('/cli/:provider/cancel/:sessionId', async (req: Request, r
   }
 
   res.json({ success: true });
+});
+
+/**
+ * POST /api/onboarding/mark-connected/:provider
+ * Mark a provider as connected without storing a token.
+ * Used by terminal-based setup where the CLI stores credentials locally.
+ */
+onboardingRouter.post('/mark-connected/:provider', async (req: Request, res: Response) => {
+  const { provider } = req.params;
+  const userId = req.session.userId!;
+
+  // Validate provider
+  const validProviders = ['anthropic', 'openai', 'google', 'github'];
+  if (!validProviders.includes(provider)) {
+    return res.status(400).json({ error: 'Invalid provider' });
+  }
+
+  try {
+    // Mark provider as connected (tokens are stored by CLI on workspace)
+    await db.credentials.upsert({
+      userId,
+      provider,
+      scopes: getProviderScopes(provider),
+    });
+
+    console.log(`[onboarding] Marked ${provider} as connected for user ${userId}`);
+
+    res.json({
+      success: true,
+      message: `${provider} connected successfully`,
+    });
+  } catch (error) {
+    console.error(`Error marking ${provider} as connected:`, error);
+    res.status(500).json({ error: 'Failed to mark provider as connected' });
+  }
 });
 
 /**

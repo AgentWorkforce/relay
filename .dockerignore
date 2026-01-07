@@ -1,0 +1,40 @@
+# Dependencies - must be rebuilt inside container for correct platform
+node_modules
+src/dashboard/node_modules
+
+# Build outputs
+dist
+src/dashboard/out
+src/dashboard/.next
+
+# Development files
+.git
+.github
+.vscode
+*.log
+.env*
+.DS_Store
+
+# Test files
+coverage
+*.test.ts
+*.spec.ts
+__tests__
+
+# Docker files (avoid recursive copy)
+Dockerfile*
+docker-compose*
+
+# Documentation
+*.md
+!README.md
+docs
+!docs/agent-relay-snippet.md
+!docs/agent-relay-protocol.md
+!docs/agent-policy-snippet.md
+
+# Misc
+.beads
+.claude
+.openskills
+tmp

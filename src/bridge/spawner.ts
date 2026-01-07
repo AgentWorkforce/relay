@@ -303,6 +303,8 @@ export class AgentSpawner {
         cwd: agentCwd,
         logsDir: this.logsDir,
         dashboardPort: this.dashboardPort,
+        // Interactive mode - disables auto-accept for auth setup flows
+        interactive: request.interactive,
         // Shadow agent configuration
         shadowOf: request.shadowOf,
         shadowSpeakOn: request.shadowSpeakOn,
@@ -393,18 +395,23 @@ export class AgentSpawner {
       }
 
       // Build the full message: minimal relay reminder + policy instructions (if any) + task
+      // Only build message if there's an actual task - empty task means interactive mode
       let fullMessage = task || '';
 
-      // Prepend a brief relay reminder (agents have full docs via CLAUDE.md)
-      // Note: Previously loaded full 400+ line docs which overwhelmed agents
-      const relayReminder = getMinimalRelayReminder();
-      if (relayReminder) {
-        fullMessage = `${relayReminder}\n\n---\n\n${fullMessage}`;
-        if (debug) console.log(`[spawner:debug] Prepended relay reminder for ${name}`);
+      // Only prepend relay reminder if we have an actual task
+      // Empty task = interactive mode, user will respond to prompts directly
+      if (fullMessage.trim()) {
+        // Prepend a brief relay reminder (agents have full docs via CLAUDE.md)
+        // Note: Previously loaded full 400+ line docs which overwhelmed agents
+        const relayReminder = getMinimalRelayReminder();
+        if (relayReminder) {
+          fullMessage = `${relayReminder}\n\n---\n\n${fullMessage}`;
+          if (debug) console.log(`[spawner:debug] Prepended relay reminder for ${name}`);
+        }
       }
 
-      // Prepend policy instructions if enforcement is enabled
-      if (this.policyEnforcementEnabled && this.policyService) {
+      // Prepend policy instructions if enforcement is enabled (only if we have a task)
+      if (fullMessage.trim() && this.policyEnforcementEnabled && this.policyService) {
         const policyInstruction = await this.policyService.getPolicyInstruction(name);
         if (policyInstruction) {
           fullMessage = `${policyInstruction}\n\n${fullMessage}`;
@@ -716,6 +723,19 @@ export class AgentSpawner {
     const worker = this.activeWorkers.get(name);
     if (!worker) return null;
     return worker.pty.getRawOutput();
+  }
+
+  /**
+   * Send input to a worker's PTY (for interactive terminal support)
+   * @param name - Worker name
+   * @param data - Input data to send (keystrokes, text, etc.)
+   * @returns true if input was sent, false if worker not found
+   */
+  sendWorkerInput(name: string, data: string): boolean {
+    const worker = this.activeWorkers.get(name);
+    if (!worker) return false;
+    worker.pty.write(data);
+    return true;
   }
 
   /**

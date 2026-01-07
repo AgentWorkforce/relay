@@ -262,6 +262,50 @@ testHelpersRouter.post('/create-mock-repo', async (req: Request, res: Response) 
 });
 
 /**
+ * GET /api/test/auto-login
+ * Browser-friendly auto-login - visit this URL to login and redirect
+ * Usage: /api/test/auto-login?redirect=/providers/setup/claude?workspace=xxx
+ */
+testHelpersRouter.get('/auto-login', async (req: Request, res: Response) => {
+  if (!isTestMode) {
+    return res.status(403).json({ error: 'Test endpoints disabled in production' });
+  }
+
+  try {
+    const db = getDb();
+    const redirect = req.query.redirect as string || '/app';
+
+    // Find or create test user
+    let user;
+    const existingUsers = await db.select().from(users).limit(1);
+
+    if (existingUsers.length > 0) {
+      user = existingUsers[0];
+    } else {
+      const testId = `test-${randomUUID()}`;
+      const [newUser] = await db.insert(users).values({
+        email: `${testId}@test.local`,
+        githubId: testId,
+        githubUsername: 'test-user',
+        avatarUrl: null,
+        plan: 'free',
+      }).returning();
+      user = newUser;
+    }
+
+    // Set session and CSRF token
+    req.session.userId = user.id;
+    req.session.csrfToken = randomUUID();
+
+    // Redirect to requested page
+    res.redirect(redirect);
+  } catch (error) {
+    console.error('Error in auto-login:', error);
+    res.status(500).json({ error: 'Failed to auto-login' });
+  }
+});
+
+/**
  * POST /api/test/login-as
  * Quick login for testing - creates session for existing or new test user
  */

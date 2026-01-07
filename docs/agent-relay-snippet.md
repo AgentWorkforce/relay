@@ -155,6 +155,7 @@ QUESTION: JWT or sessions?>>>
 - Pattern must be at line start (whitespace OK)
 - Escape with `\->relay:` to output literally
 - Check daemon status: `agent-relay status`
+- **Do NOT include self-identification or preamble in messages** - start with your actual response content, not "I'm [agent type] running as..."
 
 ## Writing Examples (For Documentation)
 

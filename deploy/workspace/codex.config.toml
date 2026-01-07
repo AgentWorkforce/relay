@@ -1,0 +1,15 @@
+# Codex CLI Configuration for Agent Relay Containers
+# This file is copied to ~/.codex/config.toml in container environments
+# Reference: https://developers.openai.com/codex/config-reference/
+
+# Disable auto-updates in containers to prevent permission errors
+# Updates are managed via Dockerfile (pinned versions)
+check_for_updates = false
+
+# Additional configuration options can be added here as needed
+# Examples (uncomment and adjust as needed):
+# [model]
+# default_model = "o1"
+#
+# [editor]
+# default_editor = "vim"

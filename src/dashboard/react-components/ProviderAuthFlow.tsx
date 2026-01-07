@@ -56,15 +56,20 @@ export function ProviderAuthFlow({
   const [codeInput, setCodeInput] = useState('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [cliCommand, setCliCommand] = useState<string | null>(null);
-  const [cliSessionId, setCliSessionId] = useState<string | null>(null);
+  const [cliWorkspaceId, setCliWorkspaceId] = useState<string | null>(null);
+  const [cliWorkspaceName, setCliWorkspaceName] = useState<string | null>(null);
   const [cliCommandLoading, setCliCommandLoading] = useState(false);
   const [showManualFallback, setShowManualFallback] = useState(false);
   const [cliPollingActive, setCliPollingActive] = useState(false);
+  const [isDeviceFlow, setIsDeviceFlow] = useState(false);
   const popupOpenedRef = useRef(false);
   const pollingRef = useRef(false);
   const cliPollingRef = useRef(false);
 
   const backendProviderId = PROVIDER_ID_MAP[provider.id] || provider.id;
+
+  // Determine if this is the Codex flow (needs to be defined early for use in startAuth)
+  const isCodexFlow = provider.requiresUrlCopy || provider.id === 'codex' || backendProviderId === 'openai';
 
   // Start the OAuth flow
   const startAuth = useCallback(async () => {
@@ -97,10 +102,19 @@ export function ProviderAuthFlow({
 
       setSessionId(data.sessionId);
 
+      // Track if device flow is being used (from API response)
+      if (data.useDeviceFlow) {
+        setIsDeviceFlow(true);
+      }
+
       if (data.authUrl) {
         setAuthUrl(data.authUrl);
         setStatus('waiting');
-        openAuthPopup(data.authUrl);
+        // For Codex flow with device auth, can auto-open popup since no localhost callback needed
+        // For standard Codex flow, wait for user to confirm local server is running
+        if (!isCodexFlow || data.useDeviceFlow) {
+          openAuthPopup(data.authUrl);
+        }
         startPolling(data.sessionId);
       } else if (data.sessionId) {
         // No URL yet, poll for it
@@ -112,16 +126,17 @@ export function ProviderAuthFlow({
       setStatus('error');
       onError(msg);
     }
-  }, [backendProviderId, workspaceId, csrfToken, useDeviceFlow, onSuccess, onError]);
-
-  // Determine if this is the Codex flow
-  const isCodexFlow = provider.requiresUrlCopy || provider.id === 'codex' || backendProviderId === 'openai';
+  }, [backendProviderId, workspaceId, csrfToken, useDeviceFlow, onSuccess, onError, isCodexFlow]);
 
   // Ref to hold the latest code submission handler (avoids stale closure in polling)
-  const handleCodeReceivedRef = useRef<((code: string) => Promise<void>) | null>(null);
+  const handleCodeReceivedRef = useRef<((code: string, state?: string) => Promise<void>) | null>(null);
 
-  // Poll for CLI auth completion (must be defined before fetchCliSession)
-  const startCliPolling = useCallback((cliAuthSessionId: string) => {
+  // Ref to hold handleComplete (avoids circular dependency with startCliPolling)
+  const handleCompleteRef = useRef<((sid?: string) => Promise<void>) | null>(null);
+
+  // Poll for CLI auth completion via SSH tunnel (must be defined before fetchCliSession)
+  // This polls the workspace directly to check if Codex is authenticated
+  const startCliPolling = useCallback((cliAuthWorkspaceId: string, sid?: string) => {
     if (cliPollingRef.current) return;
     cliPollingRef.current = true;
     setCliPollingActive(true);
@@ -137,21 +152,21 @@ export function ProviderAuthFlow({
       }
 
       try {
-        const res = await fetch(`/api/auth/codex-helper/status/${cliAuthSessionId}`, {
+        // Poll workspace auth status (via SSH tunnel approach)
+        const res = await fetch(`/api/auth/codex-helper/auth-status/${cliAuthWorkspaceId}`, {
           credentials: 'include',
         });
 
         if (res.ok) {
-          const data = await res.json() as { ready: boolean; code?: string };
+          const data = await res.json() as { authenticated: boolean };
 
-          if (data.ready && data.code) {
+          if (data.authenticated) {
             cliPollingRef.current = false;
             setCliPollingActive(false);
-            // Submit the code to complete auth
-            setCodeInput(data.code);
-            // Auto-submit the code using ref to avoid stale closure
-            if (handleCodeReceivedRef.current) {
-              handleCodeReceivedRef.current(data.code);
+            // Auth completed via SSH tunnel, now complete the flow to store credentials
+            // Use the session ID from the main auth flow (via ref to avoid stale closure)
+            if (handleCompleteRef.current) {
+              await handleCompleteRef.current(sid);
             }
             return;
           }
@@ -170,6 +185,7 @@ export function ProviderAuthFlow({
   }, []);
 
   // Fetch CLI session for Codex - provides a command the user can run locally
+  // For workspace-based flow, returns SSH tunnel command
   const fetchCliSession = useCallback(async () => {
     if (!isCodexFlow) return;
 
@@ -182,28 +198,51 @@ export function ProviderAuthFlow({
         method: 'POST',
         credentials: 'include',
         headers,
+        body: JSON.stringify({
+          workspaceId,
+          authUrl, // Pass authUrl so CLI can use it directly without needing session auth
+          sessionId, // Pass sessionId for credential storage
+        }),
       });
 
       if (res.ok) {
-        const data = await res.json() as { authSessionId: string; command: string };
-        setCliCommand(data.command);
-        setCliSessionId(data.authSessionId);
-        // Start polling for CLI completion
-        startCliPolling(data.authSessionId);
+        const data = await res.json() as {
+          workspaceId?: string;
+          workspaceName?: string;
+          command: string;
+          commandWithUrl?: string;
+          // Legacy fields
+          authSessionId?: string;
+        };
+
+        // Prefer commandWithUrl if available (includes cloud URL)
+        setCliCommand(data.commandWithUrl || data.command);
+
+        if (data.workspaceId) {
+          // New SSH tunnel flow
+          setCliWorkspaceId(data.workspaceId);
+          setCliWorkspaceName(data.workspaceName || null);
+          // Start polling workspace auth status, passing session ID for completion
+          startCliPolling(data.workspaceId, sessionId || undefined);
+        } else if (data.authSessionId) {
+          // Legacy token-based flow (backwards compatibility)
+          setCliWorkspaceId(data.authSessionId);
+          startCliPolling(data.authSessionId, sessionId || undefined);
+        }
       }
     } catch (err) {
       console.error('Failed to fetch CLI session:', err);
     } finally {
       setCliCommandLoading(false);
     }
-  }, [isCodexFlow, csrfToken, startCliPolling]);
+  }, [isCodexFlow, workspaceId, csrfToken, startCliPolling, sessionId, authUrl]);
 
-  // Fetch CLI session when auth starts for Codex
+  // Fetch CLI session when auth starts for Codex (only for standard flow, not device flow)
   useEffect(() => {
-    if (status === 'waiting' && isCodexFlow && !cliCommand) {
+    if (status === 'waiting' && isCodexFlow && !isDeviceFlow && !cliCommand) {
       fetchCliSession();
     }
-  }, [status, isCodexFlow, cliCommand, fetchCliSession]);
+  }, [status, isCodexFlow, isDeviceFlow, cliCommand, fetchCliSession]);
 
   // Open OAuth popup
   const openAuthPopup = useCallback((url: string) => {
@@ -256,7 +295,8 @@ export function ProviderAuthFlow({
         } else if (data.status === 'waiting_auth' && data.authUrl) {
           setAuthUrl(data.authUrl);
           setStatus('waiting');
-          if (!popupOpenedRef.current) {
+          // For Codex flow, don't auto-open popup - wait for user confirmation
+          if (!popupOpenedRef.current && !isCodexFlow) {
             openAuthPopup(data.authUrl);
           }
         }
@@ -273,7 +313,7 @@ export function ProviderAuthFlow({
     };
 
     poll();
-  }, [backendProviderId, openAuthPopup, onError]);
+  }, [backendProviderId, openAuthPopup, onError, isCodexFlow]);
 
   // Complete auth by polling for credentials
   const handleComplete = useCallback(async (sid?: string) => {
@@ -309,6 +349,11 @@ export function ProviderAuthFlow({
       onError(msg);
     }
   }, [sessionId, backendProviderId, csrfToken, onSuccess, onError]);
+
+  // Keep handleCompleteRef in sync (for CLI polling to avoid stale closure)
+  useEffect(() => {
+    handleCompleteRef.current = handleComplete;
+  }, [handleComplete]);
 
   // Submit auth code (for providers like Codex that need it)
   const handleSubmitCode = useCallback(async () => {
@@ -375,7 +420,7 @@ export function ProviderAuthFlow({
 
   // Update the ref for CLI polling to use (avoids stale closure)
   useEffect(() => {
-    handleCodeReceivedRef.current = async (code: string) => {
+    handleCodeReceivedRef.current = async (code: string, state?: string) => {
       if (!sessionId) return;
 
       setStatus('submitting');
@@ -389,7 +434,7 @@ export function ProviderAuthFlow({
           method: 'POST',
           credentials: 'include',
           headers,
-          body: JSON.stringify({ code }),
+          body: JSON.stringify({ code, state }), // Include state for CSRF validation
         });
 
         const data = await res.json() as { success?: boolean; error?: string; needsRestart?: boolean };
@@ -493,10 +538,15 @@ export function ProviderAuthFlow({
           {/* Instructions - different for each provider */}
           <div className="p-4 bg-bg-tertiary rounded-lg border border-border-subtle">
             <h4 className="font-medium text-white mb-2">Complete authentication:</h4>
-            {isCodexFlow ? (
-              /* Codex/OpenAI: CLI helper captures localhost redirect */
+            {isCodexFlow && isDeviceFlow ? (
+              /* Codex/OpenAI with device flow: Simple browser-based auth */
               <p className="text-sm text-text-muted">
-                Follow the two steps below. The CLI command captures the OAuth callback automatically.
+                Sign in with your OpenAI account in the popup window. You&apos;ll see a device code to enter - this confirms the authorization.
+              </p>
+            ) : isCodexFlow ? (
+              /* Codex/OpenAI standard flow: SSH tunnel forwards OAuth callback to workspace */
+              <p className="text-sm text-text-muted">
+                Run the CLI command below. It establishes an SSH tunnel to forward the OAuth callback to your workspace.
               </p>
             ) : isClaudeFlow ? (
               /* Claude/Anthropic: Shows a code after OAuth completion */
@@ -529,8 +579,31 @@ export function ProviderAuthFlow({
             </a>
           )}
 
-          {isCodexFlow ? (
-            /* Codex: CLI helper or manual URL paste */
+          {isCodexFlow && isDeviceFlow ? (
+            /* Codex with Device Flow: Simple browser-based auth, no CLI helper needed */
+            <div className="space-y-4">
+              <div className="p-3 bg-accent-cyan/10 border border-accent-cyan/30 rounded-lg">
+                <p className="text-sm text-accent-cyan">
+                  <strong>Device Authentication:</strong> Complete the sign-in in the popup window.
+                  After signing in, you&apos;ll see a code - enter it on the OpenAI page to authorize.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 p-3 bg-accent-cyan/5 border border-accent-cyan/20 rounded-lg text-sm text-accent-cyan">
+                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                <span>Waiting for authentication to complete...</span>
+              </div>
+              <button
+                onClick={() => handleComplete()}
+                className="w-full py-2 text-text-muted hover:text-white transition-colors text-sm"
+              >
+                I&apos;ve completed authentication
+              </button>
+            </div>
+          ) : isCodexFlow ? (
+            /* Codex standard flow: CLI helper or manual URL paste */
             <div className="space-y-4">
               {/* Loading state while fetching CLI command */}
               {cliCommandLoading && (
@@ -546,9 +619,10 @@ export function ProviderAuthFlow({
               {/* Primary: CLI command - shown BEFORE the login button */}
               {cliCommand && !showManualFallback && !cliCommandLoading && (
                 <div className="space-y-3">
+                  {/* Step 1: Copy and run the command */}
                   <div className="p-3 bg-accent-cyan/10 border border-accent-cyan/30 rounded-lg">
                     <p className="text-sm text-accent-cyan mb-2">
-                      <strong>Step 1:</strong> Run this command in your terminal:
+                      <strong>Step 1:</strong> Copy and run this command in your terminal
                     </p>
                     <div className="flex items-center gap-2">
                       <code className="flex-1 px-3 py-2 bg-bg-deep rounded-lg text-xs font-mono text-white overflow-x-auto">
@@ -563,35 +637,35 @@ export function ProviderAuthFlow({
                         Copy
                       </button>
                     </div>
-                    <p className="text-xs text-text-muted mt-2">
-                      This starts a local server to capture the OAuth callback.
+                  </div>
+
+                  {/* Step 2: Sign in */}
+                  <div className="p-3 bg-bg-tertiary border border-border-subtle rounded-lg">
+                    <p className="text-sm text-white mb-1">
+                      <strong>Step 2:</strong> Sign in with OpenAI
+                    </p>
+                    <p className="text-xs text-text-muted">
+                      The CLI will open your browser to the OpenAI login page. Sign in with your OpenAI account.
                     </p>
                   </div>
 
+                  {/* Step 3: Wait for completion */}
                   <div className="p-3 bg-bg-tertiary border border-border-subtle rounded-lg">
-                    <p className="text-sm text-white mb-2">
-                      <strong>Step 2:</strong> Sign in with OpenAI
+                    <p className="text-sm text-white mb-1">
+                      <strong>Step 3:</strong> Authentication completes automatically
                     </p>
-                    <a
-                      href={authUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-block py-2 px-4 bg-bg-card border border-accent-cyan/50 text-accent-cyan font-medium rounded-lg text-sm hover:bg-accent-cyan/10 transition-all"
-                    >
-                      Open OpenAI Login →
-                    </a>
-                    <p className="text-xs text-text-muted mt-2">
-                      After signing in, the CLI will automatically capture the callback and complete authentication.
+                    <p className="text-xs text-text-muted">
+                      After signing in, the CLI will capture the callback and this page will update automatically.
                     </p>
                   </div>
 
                   {cliPollingActive && (
-                    <div className="flex items-center gap-2 p-3 bg-accent-cyan/5 border border-accent-cyan/20 rounded-lg text-sm text-accent-cyan">
+                    <div className="flex items-center gap-2 p-3 bg-success/10 border border-success/30 rounded-lg text-sm text-success">
                       <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                       </svg>
-                      <span>Waiting for CLI to capture callback...</span>
+                      <span>Waiting for authentication to complete...</span>
                     </div>
                   )}
 

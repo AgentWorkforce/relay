@@ -2612,29 +2612,28 @@ program
   });
 
 // ============================================================================
-// codex-auth - Local OAuth callback helper for Codex/OpenAI authentication
+// codex-auth - SSH tunnel helper for Codex/OpenAI authentication
 // ============================================================================
 
 program
   .command('codex-auth')
-  .description('Capture Codex OAuth callback locally (run this when connecting Codex in Agent Relay)')
-  .option('--token <token>', 'Auth session token from Agent Relay dashboard')
+  .description('Connect Codex via SSH tunnel to workspace (run this when connecting Codex in Agent Relay)')
+  .option('--workspace <id>', 'Workspace ID to connect to')
   .option('--cloud-url <url>', 'Cloud API URL', process.env.AGENT_RELAY_CLOUD_URL || 'https://agent-relay.com')
-  .option('--port <port>', 'Callback port (default: 1455)', '1455')
+  .option('--token <token>', 'CLI authentication token (from dashboard)')
+  .option('--session-cookie <cookie>', 'Session cookie for authentication (deprecated, use --token)')
   .option('--timeout <seconds>', 'Timeout in seconds (default: 300)', '300')
-  .action(async (options: { token?: string; cloudUrl: string; port: string; timeout: string }) => {
-    const http = await import('node:http');
-    const { URL } = await import('node:url');
-
-    const CALLBACK_PORT = parseInt(options.port, 10);
+  .action(async (options: { workspace?: string; cloudUrl: string; token?: string; sessionCookie?: string; timeout: string }) => {
     const TIMEOUT_MS = parseInt(options.timeout, 10) * 1000;
     const CLOUD_URL = options.cloudUrl.replace(/\/$/, '');
+    const TUNNEL_PORT = 1455;
 
     // Colors for terminal output
     const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`;
     const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
     const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
     const red = (s: string) => `\x1b[31m${s}\x1b[0m`;
+    const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 
     console.log('');
     console.log(cyan('═══════════════════════════════════════════════════'));
@@ -2642,183 +2641,272 @@ program
     console.log(cyan('═══════════════════════════════════════════════════'));
     console.log('');
 
-    // Get auth session from token
-    const authSessionId = options.token;
-
-    if (!authSessionId) {
-      // No token provided - show instructions
-      console.log(red('Missing --token parameter.'));
+    if (!options.workspace) {
+      console.log(red('Missing --workspace parameter.'));
       console.log('');
       console.log('To connect Codex, follow these steps:');
       console.log('');
       console.log('  1. Go to the Agent Relay dashboard');
       console.log('  2. Click "Connect with Codex" (Settings → AI Providers)');
-      console.log('  3. Copy the command shown (it includes the token)');
+      console.log('  3. Copy the command shown (it includes the workspace ID and token)');
       console.log('  4. Run the command in your terminal');
       console.log('');
       console.log('The command will look like:');
-      console.log(cyan('  npx agent-relay codex-auth --token=<TOKEN>'));
+      console.log(cyan('  npx agent-relay codex-auth --workspace=<ID> --token=<TOKEN>'));
       console.log('');
       process.exit(1);
     }
 
-    console.log(`Session: ${authSessionId.slice(0, 8)}...`);
-    console.log(`Listening on port: ${cyan(String(CALLBACK_PORT))}`);
-    console.log('');
+    const workspaceId = options.workspace;
+    console.log(`Workspace: ${workspaceId.slice(0, 8)}...`);
 
-    // Success HTML page
-    const successHtml = `<!DOCTYPE html>
-<html>
-<head>
-  <title>Authentication Successful</title>
-  <style>
-    body { font-family: -apple-system, sans-serif; background: #0a0f1a; color: #e2e8f0;
-           display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-    .card { background: #1a1f2e; padding: 2rem; border-radius: 12px; text-align: center;
-            border: 1px solid rgba(0, 212, 255, 0.3); max-width: 400px; }
-    h1 { color: #00d4ff; margin-bottom: 1rem; }
-    p { color: #94a3b8; margin: 0.5rem 0; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>✓ Authentication Successful!</h1>
-    <p>Your Codex account is now connected.</p>
-    <p style="margin-top: 1rem;">You can close this window.</p>
-  </div>
-</body>
-</html>`;
+    // Get tunnel info from cloud API
+    console.log('Getting workspace connection info...');
 
-    // Create HTTP server to capture callback
-    let authCode: string | null = null;
-    let serverClosed = false;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (options.sessionCookie) {
+      headers['Cookie'] = options.sessionCookie;
+    }
 
-    const server = http.createServer(async (req, res) => {
-      const url = new URL(req.url || '/', `http://localhost:${CALLBACK_PORT}`);
+    // Validate token is provided
+    if (!options.token && !options.sessionCookie) {
+      console.log(red('Missing --token parameter.'));
+      console.log('');
+      console.log('The token is provided by the dashboard when you click "Connect with Codex".');
+      console.log('Copy the complete command from the dashboard and paste it here.');
+      console.log('');
+      process.exit(1);
+    }
 
-      if (url.pathname === '/auth/callback') {
-        const code = url.searchParams.get('code');
-        const error = url.searchParams.get('error');
+    let tunnelInfo: {
+      host: string;
+      port: number;
+      user: string;
+      password: string;
+      tunnelPort: number;
+      workspaceName: string;
+      authUrl?: string; // OAuth URL if provided by dashboard
+    };
 
-        if (error) {
-          res.writeHead(400, { 'Content-Type': 'text/plain' });
-          res.end(`OAuth Error: ${error}`);
-          console.log(red(`OAuth error: ${error}`));
-          return;
-        }
-
-        if (code) {
-          authCode = code;
-          res.writeHead(200, { 'Content-Type': 'text/html' });
-          res.end(successHtml);
-          console.log('');
-          console.log(green('✓ Received OAuth callback!'));
-        } else {
-          res.writeHead(400, { 'Content-Type': 'text/plain' });
-          res.end('Missing authorization code');
-        }
-      } else if (url.pathname === '/favicon.ico') {
-        res.writeHead(404);
-        res.end();
-      } else {
-        res.writeHead(200, { 'Content-Type': 'text/plain' });
-        res.end('Waiting for OAuth callback on /auth/callback...');
+    try {
+      // Build URL with token query parameter
+      const tunnelInfoUrl = new URL(`${CLOUD_URL}/api/auth/codex-helper/tunnel-info/${workspaceId}`);
+      if (options.token) {
+        tunnelInfoUrl.searchParams.set('token', options.token);
       }
-    });
 
-    // Handle server errors
-    server.on('error', (err: NodeJS.ErrnoException) => {
-      if (err.code === 'EADDRINUSE') {
-        console.log(red(`Port ${CALLBACK_PORT} is already in use.`));
-        console.log('');
-        console.log('Another process may be using this port.');
-        console.log('Close it and try again, or specify a different port with --port');
+      const response = await fetch(tunnelInfoUrl.toString(), {
+        method: 'GET',
+        headers,
+        credentials: 'include',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json() as { error?: string };
+        console.log(red(`Failed to get tunnel info: ${errorData.error || response.statusText}`));
         process.exit(1);
       }
-      throw err;
-    });
 
-    // Start listening
-    await new Promise<void>((resolve) => {
-      server.listen(CALLBACK_PORT, () => {
-        resolve();
+      tunnelInfo = await response.json() as typeof tunnelInfo;
+    } catch (err) {
+      console.log(red(`Failed to connect to cloud API: ${err instanceof Error ? err.message : String(err)}`));
+      process.exit(1);
+    }
+
+    console.log(`Workspace: ${cyan(tunnelInfo.workspaceName)}`);
+    console.log('');
+
+    // Establish SSH tunnel using ssh2 library (no external tools needed)
+    console.log(yellow('Establishing SSH tunnel...'));
+    console.log(dim(`  SSH: ${tunnelInfo.host}:${tunnelInfo.port}`));
+    console.log(dim(`  Tunnel: localhost:${TUNNEL_PORT} → workspace:${tunnelInfo.tunnelPort}`));
+    console.log('');
+
+    const { Client } = await import('ssh2');
+    const net = await import('node:net');
+
+    const sshClient = new Client();
+    // Use object to hold server reference (avoids TypeScript narrowing issues)
+    const tunnel: { server: ReturnType<typeof net.createServer> | null } = { server: null };
+    let tunnelReady = false;
+    let tunnelError: string | null = null;
+
+    // Create a promise that resolves when tunnel is ready or rejects on error
+    const tunnelPromise = new Promise<void>((resolve, reject) => {
+      sshClient.on('ready', () => {
+        // Create local server that forwards connections through SSH
+        tunnel.server = net.createServer((localSocket) => {
+          sshClient.forwardOut(
+            '127.0.0.1',
+            TUNNEL_PORT,
+            'localhost',
+            tunnelInfo.tunnelPort,
+            (err, stream) => {
+              if (err) {
+                localSocket.end();
+                return;
+              }
+              localSocket.pipe(stream).pipe(localSocket);
+            }
+          );
+        });
+
+        tunnel.server.on('error', (err: NodeJS.ErrnoException) => {
+          if (err.code === 'EADDRINUSE') {
+            tunnelError = `Port ${TUNNEL_PORT} is already in use. Close any other applications using this port.`;
+          } else {
+            tunnelError = err.message;
+          }
+          reject(new Error(tunnelError));
+        });
+
+        tunnel.server.listen(TUNNEL_PORT, '127.0.0.1', () => {
+          tunnelReady = true;
+          resolve();
+        });
+      });
+
+      sshClient.on('error', (err) => {
+        if (err.message.includes('Authentication')) {
+          tunnelError = 'SSH authentication failed. Check the password.';
+        } else if (err.message.includes('ECONNREFUSED')) {
+          tunnelError = `Cannot connect to SSH server at ${tunnelInfo.host}:${tunnelInfo.port}. Is the workspace running and SSH enabled?`;
+        } else if (err.message.includes('ENOTFOUND') || err.message.includes('getaddrinfo')) {
+          tunnelError = `Cannot resolve hostname: ${tunnelInfo.host}. Check network connectivity.`;
+        } else if (err.message.includes('ETIMEDOUT')) {
+          tunnelError = `Connection timed out to ${tunnelInfo.host}:${tunnelInfo.port}. Is the workspace running?`;
+        } else {
+          tunnelError = `SSH error: ${err.message}`;
+        }
+        reject(new Error(tunnelError));
+      });
+
+      sshClient.on('close', () => {
+        if (!tunnelReady) {
+          // Only set error if not already set by error handler
+          if (!tunnelError) {
+            tunnelError = `SSH connection to ${tunnelInfo.host}:${tunnelInfo.port} closed unexpectedly. The workspace may not have SSH enabled or the port may be blocked.`;
+          }
+          reject(new Error(tunnelError));
+        }
+      });
+
+      // Connect to SSH server
+      sshClient.connect({
+        host: tunnelInfo.host,
+        port: tunnelInfo.port,
+        username: tunnelInfo.user,
+        password: tunnelInfo.password,
+        readyTimeout: 10000,
+        // Disable host key checking for simplicity (workspace containers)
+        hostVerifier: () => true,
       });
     });
 
-    console.log(green('Server ready!'));
-    console.log('');
-    console.log(yellow('Next steps:'));
-    console.log('  1. Go to the Agent Relay dashboard');
-    console.log('  2. Click "Open Codex Login Page" to start OAuth');
-    console.log('  3. Sign in with your OpenAI account');
-    console.log('  4. The callback will be captured automatically');
-    console.log('');
-    console.log(cyan(`Waiting for callback... (timeout: ${options.timeout}s)`));
+    // Wait for tunnel to establish
+    try {
+      await Promise.race([
+        tunnelPromise,
+        new Promise<void>((_, reject) =>
+          setTimeout(() => reject(new Error('SSH connection timeout')), 15000)
+        ),
+      ]);
+    } catch (err) {
+      console.log(red(`Failed to establish tunnel: ${err instanceof Error ? err.message : String(err)}`));
+      sshClient.end();
+      process.exit(1);
+    }
 
-    // Wait for callback or timeout
+    console.log(green('✓ SSH tunnel established!'));
+    console.log('');
+
+    // Handle Ctrl+C gracefully
+    const cleanup = () => {
+      console.log('');
+      console.log(dim('Shutting down...'));
+      if (tunnel.server) {
+        tunnel.server.close();
+      }
+      sshClient.end();
+      process.exit(0);
+    };
+    process.on('SIGINT', cleanup);
+    process.on('SIGTERM', cleanup);
+
+    // Display the OAuth URL
+    if (tunnelInfo.authUrl) {
+      console.log('');
+      console.log(green('Ready! Open this URL in your browser to complete authentication:'));
+      console.log('');
+      console.log(cyan(tunnelInfo.authUrl));
+      console.log('');
+      console.log(dim('The browser will redirect to localhost:1455, which tunnels to the workspace.'));
+      console.log(dim('The Codex CLI in the workspace will receive the callback and complete auth.'));
+      console.log('');
+    } else {
+      console.log('');
+      console.log(yellow('OAuth URL not available. Please start authentication from the dashboard.'));
+      console.log('');
+    }
+
+    // Poll for authentication completion
+    console.log(cyan(`Waiting for authentication... (timeout: ${options.timeout}s)`));
+
     const startTime = Date.now();
-    while (!authCode && !serverClosed && (Date.now() - startTime) < TIMEOUT_MS) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
+    let authenticated = false;
+
+    while (!authenticated && (Date.now() - startTime) < TIMEOUT_MS) {
+      await new Promise(resolve => setTimeout(resolve, 3000));
+
+      try {
+        // Build URL with token for authentication
+        const authStatusUrl = new URL(`${CLOUD_URL}/api/auth/codex-helper/auth-status/${workspaceId}`);
+        if (options.token) {
+          authStatusUrl.searchParams.set('token', options.token);
+        }
+
+        const statusResponse = await fetch(
+          authStatusUrl.toString(),
+          { method: 'GET', headers, credentials: 'include' }
+        );
+
+        if (statusResponse.ok) {
+          const statusData = await statusResponse.json() as { authenticated: boolean };
+          if (statusData.authenticated) {
+            authenticated = true;
+          }
+        }
+      } catch {
+        // Ignore polling errors
+      }
+
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
-      if (elapsed > 0 && elapsed % 30 === 0) {
+      if (!authenticated && elapsed > 0 && elapsed % 30 === 0) {
         console.log(`  Still waiting... (${elapsed}s)`);
       }
     }
 
-    // Close server
-    server.close();
-    serverClosed = true;
-
-    if (!authCode) {
-      console.log('');
-      console.log(red('Timeout waiting for OAuth callback.'));
-      console.log('');
-      console.log('If you completed sign-in, the callback may have failed.');
-      console.log('Try copying the localhost URL from your browser and pasting');
-      console.log('it into the Agent Relay dashboard manually.');
-      process.exit(1);
+    // Cleanup SSH tunnel
+    if (tunnel.server) {
+      tunnel.server.close();
     }
+    sshClient.end();
 
-    // Send code to cloud API
-    console.log('Sending auth code to Agent Relay...');
-
-    try {
-      const response = await fetch(`${CLOUD_URL}/api/auth/codex-helper/callback`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          authSessionId,
-          code: authCode,
-        }),
-      });
-
-      const data = await response.json() as { success?: boolean; error?: string };
-
-      if (response.ok && data.success) {
-        console.log('');
-        console.log(green('═══════════════════════════════════════════════════'));
-        console.log(green('          Authentication Complete!'));
-        console.log(green('═══════════════════════════════════════════════════'));
-        console.log('');
-        console.log('Your Codex account is now connected to Agent Relay.');
-        console.log('You can close this terminal and return to the dashboard.');
-        console.log('');
-      } else {
-        console.log('');
-        console.log(red('Failed to send auth code to Agent Relay.'));
-        console.log(`Error: ${data.error || 'Unknown error'}`);
-        console.log('');
-        console.log('You can try pasting this code manually in the dashboard:');
-        console.log(cyan(authCode));
-        process.exit(1);
-      }
-    } catch (err) {
+    if (authenticated) {
       console.log('');
-      console.log(red('Failed to connect to Agent Relay Cloud.'));
-      console.log(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      console.log(green('═══════════════════════════════════════════════════'));
+      console.log(green('          Authentication Complete!'));
+      console.log(green('═══════════════════════════════════════════════════'));
       console.log('');
-      console.log('You can try pasting this code manually in the dashboard:');
-      console.log(cyan(authCode));
+      console.log('Your Codex account is now connected to the workspace.');
+      console.log('You can close this terminal and return to the dashboard.');
+      console.log('');
+    } else {
+      console.log('');
+      console.log(red('Timeout waiting for authentication.'));
+      console.log('');
+      console.log('If you completed sign-in, the workspace may not have received');
+      console.log('the callback. Check if the SSH tunnel was working correctly.');
       process.exit(1);
     }
   });
