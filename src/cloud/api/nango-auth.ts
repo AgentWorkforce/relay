@@ -245,6 +245,60 @@ async function handleAuthWebhook(payload: {
 }
 
 /**
+ * Check user's repo access and auto-add them to workspaces
+ * Uses GitHub user OAuth to query accessible repos
+ */
+async function checkAndAutoAddToWorkspaces(userId: string, connectionId: string): Promise<void> {
+  try {
+    const user = await db.users.findById(userId);
+    if (!user) return;
+
+    console.log(`[nango-webhook] Checking workspace auto-add for ${user.githubUsername}`);
+
+    // Query repos the user has access to via GitHub OAuth
+    const { repositories } = await nangoService.listUserAccessibleRepos(connectionId, {
+      perPage: 100,
+      type: 'all',
+    });
+
+    const workspacesToJoin = new Set<string>();
+
+    // For each repo, check if it's linked to a workspace
+    for (const repo of repositories) {
+      const allRepoRecords = await db.repositories.findByGithubFullName(repo.fullName);
+      for (const record of allRepoRecords) {
+        if (record.workspaceId) {
+          workspacesToJoin.add(record.workspaceId);
+        }
+      }
+    }
+
+    // Auto-add user to workspaces
+    for (const workspaceId of workspacesToJoin) {
+      const existingMembership = await db.workspaceMembers.findMembership(workspaceId, userId);
+      if (!existingMembership) {
+        const workspace = await db.workspaces.findById(workspaceId);
+        if (workspace) {
+          console.log(`[nango-webhook] Auto-adding ${user.githubUsername} to workspace ${workspace.name}`);
+          await db.workspaceMembers.addMember({
+            workspaceId,
+            userId,
+            role: 'member',
+            invitedBy: workspace.userId,
+          });
+          await db.workspaceMembers.acceptInvite(workspaceId, userId);
+        }
+      }
+    }
+
+    console.log(`[nango-webhook] Auto-add check complete: ${user.githubUsername} added to ${workspacesToJoin.size} workspaces`);
+  } catch (error) {
+    console.error(`[nango-webhook] Error checking workspace auto-add:`, error);
+    // Non-fatal - don't throw
+  }
+}
+
+/**
  * Handle GitHub login webhook
  *
  * Three scenarios:
@@ -281,6 +335,9 @@ async function handleLoginWebhook(
     });
 
     console.log(`[nango-webhook] New user created: ${githubUser.login}`);
+
+    // Check for auto-add to workspaces based on repo access
+    await checkAndAutoAddToWorkspaces(newUser.id, connectionId);
     return;
   }
 
@@ -307,6 +364,8 @@ async function handleLoginWebhook(
       // Non-fatal - continue anyway
     }
 
+    // Check for auto-add using permanent connection
+    await checkAndAutoAddToWorkspaces(existingUser.id, existingUser.nangoConnectionId);
     return;
   }
 
@@ -324,6 +383,9 @@ async function handleLoginWebhook(
     id: existingUser.id,
     email: existingUser.email || undefined,
   });
+
+  // Check for auto-add to workspaces
+  await checkAndAutoAddToWorkspaces(existingUser.id, connectionId);
 }
 
 /**
