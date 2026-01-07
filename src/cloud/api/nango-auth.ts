@@ -268,16 +268,16 @@ async function checkAndAutoAddToWorkspaces(userId: string, connectionId: string)
       // Check if any user has this repo linked to a workspace
       const allRepoRecords = await db.repositories.findByGithubFullName(repo.fullName);
 
-      let hasWorkspaceMatch = false;
+      let matchedWorkspaceId: string | null = null;
       for (const record of allRepoRecords) {
         if (record.workspaceId) {
           workspacesToJoin.add(record.workspaceId);
-          hasWorkspaceMatch = true;
+          matchedWorkspaceId = record.workspaceId; // Save the workspaceId to copy
         }
       }
 
       // Only persist repos that are linked to workspaces
-      if (hasWorkspaceMatch) {
+      if (matchedWorkspaceId) {
         await db.repositories.upsert({
           userId: user.id,
           githubFullName: repo.fullName,
@@ -285,6 +285,7 @@ async function checkAndAutoAddToWorkspaces(userId: string, connectionId: string)
           isPrivate: repo.isPrivate,
           defaultBranch: repo.defaultBranch,
           nangoConnectionId: connectionId,
+          workspaceId: matchedWorkspaceId, // Copy the workspaceId
           syncStatus: 'synced',
           lastSyncedAt: new Date(),
         });
