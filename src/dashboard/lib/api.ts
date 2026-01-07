@@ -295,6 +295,68 @@ export class DashboardWebSocket {
  */
 export const api = {
   /**
+   * Generic GET request
+   */
+  async get<T = unknown>(path: string): Promise<T> {
+    const response = await apiFetch(getApiUrl(path), {
+      method: 'GET',
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    return await response.json() as T;
+  },
+
+  /**
+   * Generic POST request
+   */
+  async post<T = unknown>(path: string, body?: unknown): Promise<T> {
+    const response = await apiFetch(getApiUrl(path), {
+      method: 'POST',
+      body: body ? JSON.stringify(body) : undefined,
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    return await response.json() as T;
+  },
+
+  /**
+   * Generic PATCH request
+   */
+  async patch<T = unknown>(path: string, body?: unknown): Promise<T> {
+    const response = await apiFetch(getApiUrl(path), {
+      method: 'PATCH',
+      body: body ? JSON.stringify(body) : undefined,
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    return await response.json() as T;
+  },
+
+  /**
+   * Generic DELETE request
+   */
+  async delete<T = unknown>(path: string): Promise<T> {
+    const response = await apiFetch(getApiUrl(path), {
+      method: 'DELETE',
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    return await response.json() as T;
+  },
+
+  /**
    * Send a message via the relay
    */
   async sendMessage(request: SendMessageRequest): Promise<ApiResponse<void>> {

@@ -13,7 +13,7 @@ import React, { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { LogoIcon } from '../../react-components/Logo';
 import { TerminalProviderSetup } from '../../react-components/TerminalProviderSetup';
-import { ProviderAuthFlow, type ProviderInfo } from '../../react-components/ProviderAuthFlow';
+import { ProviderAuthFlow } from '../../react-components/ProviderAuthFlow';
 
 interface Provider {
   id: string;

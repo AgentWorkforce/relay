@@ -11,7 +11,7 @@
  * 5. User copies API key back to terminal
  */
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { api } from '@/lib/api';
 
@@ -28,7 +28,20 @@ interface LinkResult {
   daemonId: string;
 }
 
-export default function CloudLinkPage() {
+// Loading fallback for Suspense
+function CloudLinkLoading() {
+  return (
+    <div className="relative min-h-screen flex items-center justify-center p-8 bg-bg-deep overflow-hidden">
+      <div className="bg-gradient-to-br from-bg-secondary to-bg-primary border border-accent-cyan/15 rounded-2xl p-12 shadow-xl backdrop-blur-xl">
+        <div className="w-12 h-12 mx-auto mb-6 border-3 border-accent-cyan/20 border-t-accent-cyan rounded-full animate-spin" />
+        <p className="text-center text-text-secondary">Loading...</p>
+      </div>
+    </div>
+  );
+}
+
+// Main content component that uses useSearchParams
+function CloudLinkContent() {
   const searchParams = useSearchParams();
   const [state, setState] = useState<LinkState>('loading');
   const [machineInfo, setMachineInfo] = useState<MachineInfo | null>(null);
@@ -350,5 +363,14 @@ export default function CloudLinkPage() {
         }
       `}</style>
     </div>
+  );
+}
+
+// Export page wrapped in Suspense for static generation
+export default function CloudLinkPage() {
+  return (
+    <Suspense fallback={<CloudLinkLoading />}>
+      <CloudLinkContent />
+    </Suspense>
   );
 }
