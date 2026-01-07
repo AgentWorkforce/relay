@@ -528,6 +528,7 @@ export class TmuxWrapper extends BaseWrapper {
       `[Agent Relay] You are "${this.config.name}" - connected for real-time messaging.`,
       `SEND: ${escapedPrefix}AgentName message`,
       `MULTI-LINE: ${escapedPrefix}AgentName <<<(newline)content(newline)>>> - ALWAYS end with >>> on its own line!`,
+      `IMPORTANT: Do NOT include self-identification or preamble in messages. Start with your actual response content.`,
       `PERSIST: Output [[SUMMARY]]{"currentTask":"...","context":"..."}[[/SUMMARY]] after major work.`,
       `END: Output [[SESSION_END]]{"summary":"..."}[[/SESSION_END]] when session complete.`,
     ].join(' | ');
