@@ -263,26 +263,31 @@ async function checkAndAutoAddToWorkspaces(userId: string, connectionId: string)
 
     const workspacesToJoin = new Set<string>();
 
-    // Persist repos to database and check for workspace memberships
+    // Check for workspace memberships - only persist repos that match existing workspaces
     for (const repo of repositories) {
-      // Upsert repo to database (cache it)
-      await db.repositories.upsert({
-        userId: user.id,
-        githubFullName: repo.fullName,
-        githubId: repo.id,
-        isPrivate: repo.isPrivate,
-        defaultBranch: repo.defaultBranch,
-        nangoConnectionId: connectionId,
-        syncStatus: 'synced',
-        lastSyncedAt: new Date(),
-      });
-
       // Check if any user has this repo linked to a workspace
       const allRepoRecords = await db.repositories.findByGithubFullName(repo.fullName);
+
+      let hasWorkspaceMatch = false;
       for (const record of allRepoRecords) {
         if (record.workspaceId) {
           workspacesToJoin.add(record.workspaceId);
+          hasWorkspaceMatch = true;
         }
+      }
+
+      // Only persist repos that are linked to workspaces
+      if (hasWorkspaceMatch) {
+        await db.repositories.upsert({
+          userId: user.id,
+          githubFullName: repo.fullName,
+          githubId: repo.id,
+          isPrivate: repo.isPrivate,
+          defaultBranch: repo.defaultBranch,
+          nangoConnectionId: connectionId,
+          syncStatus: 'synced',
+          lastSyncedAt: new Date(),
+        });
       }
     }
 

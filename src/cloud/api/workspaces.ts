@@ -427,16 +427,34 @@ workspacesRouter.use(requireAuth);
 
 /**
  * GET /api/workspaces
- * List user's workspaces
+ * List user's workspaces (owned + member workspaces)
  */
 workspacesRouter.get('/', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
 
   try {
-    const workspaces = await db.workspaces.findByUserId(userId);
+    // Get owned workspaces
+    const ownedWorkspaces = await db.workspaces.findByUserId(userId);
+
+    // Get workspaces where user is a member
+    const memberships = await db.workspaceMembers.findByUserId(userId);
+    const ownedWorkspaceIds = new Set(ownedWorkspaces.map((w) => w.id));
+    const memberWorkspaceIds = memberships
+      .map((m) => m.workspaceId)
+      .filter((wsId) => !ownedWorkspaceIds.has(wsId)); // Exclude owned to prevent duplicates
+
+    // Fetch member workspaces (optimize with Promise.all instead of loop)
+    const memberWorkspaces = (
+      await Promise.all(memberWorkspaceIds.map((wsId) => db.workspaces.findById(wsId)))
+    ).filter((ws): ws is NonNullable<typeof ws> => ws !== null);
+
+    // Combine and sort by creation date
+    const allWorkspaces = [...ownedWorkspaces, ...memberWorkspaces].sort(
+      (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
+    );
 
     res.json({
-      workspaces: workspaces.map((w) => ({
+      workspaces: allWorkspaces.map((w) => ({
         id: w.id,
         name: w.name,
         status: w.status,
@@ -444,6 +462,7 @@ workspacesRouter.get('/', async (req: Request, res: Response) => {
         providers: w.config.providers,
         repositories: w.config.repositories,
         createdAt: w.createdAt,
+        isOwner: w.userId === userId, // Flag to indicate ownership
       })),
     });
   } catch (error) {
@@ -544,14 +563,29 @@ workspacesRouter.post('/', checkWorkspaceLimit, async (req: Request, res: Respon
 
 /**
  * GET /api/workspaces/summary
- * Get summary of all user workspaces for dashboard status indicator
+ * Get summary of all user workspaces for dashboard status indicator (owned + member workspaces)
  * NOTE: This route MUST be before /:id to avoid being caught by parameterized route
  */
 workspacesRouter.get('/summary', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
 
   try {
-    const workspaces = await db.workspaces.findByUserId(userId);
+    // Get owned workspaces
+    const ownedWorkspaces = await db.workspaces.findByUserId(userId);
+
+    // Get workspaces where user is a member
+    const memberships = await db.workspaceMembers.findByUserId(userId);
+    const ownedWorkspaceIds = new Set(ownedWorkspaces.map((w) => w.id));
+    const memberWorkspaceIds = memberships
+      .map((m) => m.workspaceId)
+      .filter((wsId) => !ownedWorkspaceIds.has(wsId));
+
+    // Fetch member workspaces (optimize with Promise.all)
+    const memberWorkspaces = (
+      await Promise.all(memberWorkspaceIds.map((wsId) => db.workspaces.findById(wsId)))
+    ).filter((ws): ws is NonNullable<typeof ws> => ws !== null);
+
+    const workspaces = [...ownedWorkspaces, ...memberWorkspaces];
     const provisioner = getProvisioner();
 
     // Get live status for each workspace
@@ -609,7 +643,7 @@ workspacesRouter.get('/summary', async (req: Request, res: Response) => {
 
 /**
  * GET /api/workspaces/primary
- * Get the user's primary workspace (first/default) with live status
+ * Get the user's primary workspace (first/default) with live status (owned + member workspaces)
  * Used by dashboard to show quick status indicator
  * NOTE: This route MUST be before /:id to avoid being caught by parameterized route
  */
@@ -617,7 +651,22 @@ workspacesRouter.get('/primary', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
 
   try {
-    const workspaces = await db.workspaces.findByUserId(userId);
+    // Get owned workspaces
+    const ownedWorkspaces = await db.workspaces.findByUserId(userId);
+
+    // Get workspaces where user is a member
+    const memberships = await db.workspaceMembers.findByUserId(userId);
+    const ownedWorkspaceIds = new Set(ownedWorkspaces.map((w) => w.id));
+    const memberWorkspaceIds = memberships
+      .map((m) => m.workspaceId)
+      .filter((wsId) => !ownedWorkspaceIds.has(wsId));
+
+    // Fetch member workspaces (optimize with Promise.all)
+    const memberWorkspaces = (
+      await Promise.all(memberWorkspaceIds.map((wsId) => db.workspaces.findById(wsId)))
+    ).filter((ws): ws is NonNullable<typeof ws> => ws !== null);
+
+    const workspaces = [...ownedWorkspaces, ...memberWorkspaces];
 
     if (workspaces.length === 0) {
       return res.json({
@@ -1620,8 +1669,21 @@ workspacesRouter.all('/:id/proxy/{*proxyPath}', async (req: Request, res: Respon
       return res.status(404).json({ error: 'Workspace not found' });
     }
 
+    // Check if user is owner or has workspace membership
     if (workspace.userId !== userId) {
-      return res.status(403).json({ error: 'Unauthorized' });
+      // Check workspace membership
+      const membership = await db.workspaceMembers.findMembership(id, userId);
+      if (!membership || !membership.acceptedAt) {
+        return res.status(403).json({ error: 'Unauthorized - not a workspace member' });
+      }
+
+      // Viewers can only proxy read-only requests
+      if (membership.role === 'viewer' && req.method !== 'GET') {
+        return res.status(403).json({ error: 'Viewers can only make read-only requests' });
+      }
+
+      // Members and admins can read and write
+      // For now, allow all proxy requests for members and admins
     }
 
     if (workspace.status !== 'running' || !workspace.publicUrl) {
