@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-07T05:50:39.704Z",
+  "lastUpdated": "2026-01-07T06:07:35.458Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -375,9 +375,10 @@
     },
     "traj_fqduidx3xbtp": {
       "title": "Implement dynamic repo management for workspaces",
-      "status": "active",
+      "status": "completed",
       "startedAt": "2026-01-07T05:44:47.138Z",
-      "path": "/home/user/relay/.trajectories/active/traj_fqduidx3xbtp.json"
+      "completedAt": "2026-01-07T06:07:35.433Z",
+      "path": "/home/user/relay/.trajectories/completed/2026-01/traj_fqduidx3xbtp.json"
     }
   }
 }
