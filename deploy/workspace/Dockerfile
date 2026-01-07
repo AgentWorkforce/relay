@@ -49,7 +49,8 @@ COPY docs/agent-relay-snippet.md docs/agent-relay-protocol.md docs/agent-policy-
 COPY deploy/workspace/entrypoint.sh /entrypoint.sh
 COPY deploy/workspace/codex.config.toml ./deploy/workspace/codex.config.toml
 COPY deploy/workspace/git-credential-relay /usr/local/bin/git-credential-relay
-RUN chmod +x /entrypoint.sh /usr/local/bin/git-credential-relay
+COPY deploy/workspace/gh-relay /usr/local/bin/gh
+RUN chmod +x /entrypoint.sh /usr/local/bin/git-credential-relay /usr/local/bin/gh
 
 # Create symlink for agent-relay CLI
 RUN ln -sf /app/dist/cli/index.js /usr/local/bin/agent-relay && \

@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+#
+# gh CLI wrapper that fetches fresh GitHub tokens from agent-relay API
+# Caches tokens for 55 minutes to minimize API calls.
+#
+# This solves the problem of expired GH_TOKEN in workspace environments.
+# The provisioner sets GH_TOKEN at startup, but installation tokens expire
+# after ~1 hour. This wrapper fetches fresh tokens before each gh invocation.
+#
+# Install: Copy to /usr/local/bin/gh (before /usr/bin/gh in PATH)
+#
+
+set -euo pipefail
+
+CACHE_DIR="${HOME}/.cache/gh-relay"
+CACHE_FILE="${CACHE_DIR}/token"
+CACHE_TTL_SECONDS=3300  # 55 minutes (tokens expire at 1 hour)
+
+# Ensure cache directory exists
+mkdir -p "$CACHE_DIR"
+
+# Check if we have required env vars for relay token refresh
+use_relay() {
+  [[ -n "${WORKSPACE_ID:-}" ]] && [[ -n "${CLOUD_API_URL:-}" ]] && [[ -n "${WORKSPACE_TOKEN:-}" ]]
+}
+
+# Get cached token if still valid
+get_cached_token() {
+  if [[ -f "$CACHE_FILE" ]]; then
+    local cached_time
+    cached_time=$(stat -c %Y "$CACHE_FILE" 2>/dev/null || stat -f %m "$CACHE_FILE" 2>/dev/null || echo 0)
+    local now
+    now=$(date +%s)
+    local age=$((now - cached_time))
+
+    if [[ $age -lt $CACHE_TTL_SECONDS ]]; then
+      cat "$CACHE_FILE"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# Fetch fresh token from API
+fetch_fresh_token() {
+  local response
+  response=$(curl -sf \
+    -H "Authorization: Bearer ${WORKSPACE_TOKEN}" \
+    "${CLOUD_API_URL}/api/git/token?workspaceId=${WORKSPACE_ID}" \
+    2>/dev/null) || return 1
+
+  local token
+  token=$(echo "$response" | jq -r '.token // empty')
+
+  if [[ -n "$token" ]]; then
+    echo "$token" > "$CACHE_FILE"
+    chmod 600 "$CACHE_FILE"
+    echo "$token"
+    return 0
+  fi
+  return 1
+}
+
+# Get token (cached or fresh)
+get_token() {
+  # Try cache first
+  local token
+  if token=$(get_cached_token); then
+    echo "$token"
+    return 0
+  fi
+
+  # Fetch fresh token
+  if token=$(fetch_fresh_token); then
+    echo "$token"
+    return 0
+  fi
+
+  return 1
+}
+
+# Main logic
+if use_relay; then
+  if token=$(get_token); then
+    export GH_TOKEN="$token"
+  else
+    echo "gh-relay: Warning: Could not refresh token, using existing GH_TOKEN" >&2
+  fi
+fi
+
+# Find original gh binary
+GH_BIN=""
+if [[ -x /usr/bin/gh ]]; then
+  GH_BIN=/usr/bin/gh
+else
+  echo "gh-relay: Error: Cannot find gh binary at /usr/bin/gh" >&2
+  exit 1
+fi
+
+exec "$GH_BIN" "$@"

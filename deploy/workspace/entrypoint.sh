@@ -135,80 +135,19 @@ if [[ -n "${CLOUD_API_URL:-}" && -n "${WORKSPACE_ID:-}" && -n "${WORKSPACE_TOKEN
   git config --global user.email "${GIT_USER_EMAIL:-${DEFAULT_GIT_EMAIL}}"
   log "Git identity configured: ${GIT_USER_NAME:-Agent Relay} <${GIT_USER_EMAIL:-${DEFAULT_GIT_EMAIL}}>"
 
-  # Configure gh CLI to use the same token mechanism
-  # gh auth login expects a token via stdin or GH_TOKEN env var
-  # We'll set up a wrapper that fetches fresh tokens
+  # Configure gh CLI
+  # NOTE: Do NOT create hosts.yml with placeholder - it causes migration errors
+  # when combined with GH_TOKEN. The gh-relay wrapper in /usr/local/bin/gh
+  # handles token refresh automatically with caching.
   mkdir -p "${HOME}/.config/gh"
-  cat > "${HOME}/.config/gh/hosts.yml" <<EOF
-github.com:
-  oauth_token: placeholder
-  git_protocol: https
-EOF
+  # Remove any stale hosts.yml that might cause migration errors
+  rm -f "${HOME}/.config/gh/hosts.yml"
 
-  # Create gh token wrapper script
-  # Uses userToken (OAuth) for gh CLI, not installation token
-  cat > "/tmp/gh-token-helper.sh" <<'GHEOF'
-#!/usr/bin/env bash
-# Fetch fresh user OAuth token for gh CLI
-response=$(curl -sf \
-  -H "Authorization: Bearer ${WORKSPACE_TOKEN}" \
-  "${CLOUD_API_URL}/api/git/token?workspaceId=${WORKSPACE_ID}" 2>/dev/null)
-if [[ -n "$response" ]]; then
-  # Prefer userToken (OAuth) for gh CLI, fall back to installation token
-  user_token=$(echo "$response" | jq -r '.userToken // empty')
-  if [[ -n "$user_token" && "$user_token" != "null" ]]; then
-    echo "$user_token"
-  else
-    echo "$response" | jq -r '.token // empty'
-  fi
-fi
-GHEOF
-  chmod +x "/tmp/gh-token-helper.sh"
-
-  # Create gh wrapper that auto-refreshes token on each invocation
-  # This ensures gh always has a valid token without agents needing to do anything
-  GH_REAL=$(which gh 2>/dev/null || echo "/usr/bin/gh")
-  if [[ -x "${GH_REAL}" ]]; then
-    cat > "/tmp/gh-wrapper" <<GHWRAPPER
-#!/usr/bin/env bash
-# Auto-refreshing gh wrapper - fetches fresh token on each invocation
-export GH_TOKEN=\$(/tmp/gh-token-helper.sh 2>/dev/null)
-if [[ -z "\${GH_TOKEN}" ]]; then
-  echo "gh-wrapper: Failed to fetch GitHub token" >&2
-  echo "gh-wrapper: Check CLOUD_API_URL, WORKSPACE_ID, and WORKSPACE_TOKEN are set" >&2
-  exit 1
-fi
-exec "${GH_REAL}" "\$@"
-GHWRAPPER
-    chmod +x "/tmp/gh-wrapper"
-
-    # Create symlink or copy to override the real gh
-    # We use /usr/local/bin which comes before /usr/bin in PATH
-    if [[ -w "/usr/local/bin" ]]; then
-      cp "/tmp/gh-wrapper" "/usr/local/bin/gh"
-      log "Installed auto-refreshing gh wrapper to /usr/local/bin/gh"
-    else
-      # If we can't write to /usr/local/bin, add /tmp to PATH
-      export PATH="/tmp:${PATH}"
-      mv "/tmp/gh-wrapper" "/tmp/gh"
-      log "Added auto-refreshing gh wrapper to PATH"
-    fi
-  fi
-
-  # Also set GH_TOKEN at startup for any tools that read it directly
-  # (The wrapper handles runtime refresh, this is just for initialization)
-  export GH_TOKEN=""
-  for attempt in 1 2 3; do
-    GH_TOKEN=$(/tmp/gh-token-helper.sh 2>/dev/null || echo "")
-    if [[ -n "${GH_TOKEN}" ]]; then
-      break
-    fi
-    sleep 1
-  done
-  if [[ -n "${GH_TOKEN}" ]]; then
-    log "GitHub CLI configured with fresh token"
-  else
-    log "WARN: Could not fetch initial GitHub token for gh CLI"
+  # The gh-relay wrapper is installed at /usr/local/bin/gh during Docker build.
+  # It fetches fresh tokens from /api/git/token and caches them for 55 minutes.
+  # This handles the case where GH_TOKEN expires after ~1 hour.
+  if [[ -x "/usr/local/bin/gh" ]]; then
+    log "GitHub CLI wrapper installed at /usr/local/bin/gh (auto-refreshing tokens)"
   fi
 
 # Fallback: Use static GITHUB_TOKEN if provided (legacy mode)
