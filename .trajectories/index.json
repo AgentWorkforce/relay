@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-08T08:21:39.291Z",
+  "lastUpdated": "2026-01-08T09:02:38.297Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -501,9 +501,31 @@
     },
     "traj_rsavt0jipi3c": {
       "title": "Power agent session - ready for tasks",
-      "status": "active",
+      "status": "completed",
       "startedAt": "2026-01-08T07:54:35.678Z",
-      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/active/traj_rsavt0jipi3c.json"
+      "completedAt": "2026-01-08T09:01:29.981Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_rsavt0jipi3c.json"
+    },
+    "traj_oszg9flv74pk": {
+      "title": "Fix cloud link authentication flow",
+      "status": "completed",
+      "startedAt": "2026-01-08T09:01:35.826Z",
+      "completedAt": "2026-01-08T09:01:57.389Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_oszg9flv74pk.json"
+    },
+    "traj_xjqvmep5ed3h": {
+      "title": "Fix update-workspaces GitHub Action job",
+      "status": "completed",
+      "startedAt": "2026-01-08T09:02:08.758Z",
+      "completedAt": "2026-01-08T09:02:24.262Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_xjqvmep5ed3h.json"
+    },
+    "traj_y7n6hfbf7dmg": {
+      "title": "Add useSearchParams/Suspense rule to react-dashboard",
+      "status": "completed",
+      "startedAt": "2026-01-08T09:02:29.285Z",
+      "completedAt": "2026-01-08T09:02:38.286Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_y7n6hfbf7dmg.json"
     }
   }
 }

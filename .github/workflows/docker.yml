@@ -121,8 +121,14 @@ jobs:
   update-workspaces:
     runs-on: ubuntu-latest
     needs: [build-and-push]
-    # Only run on main branch pushes, not releases or manual runs
-    if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Only run on main branch pushes when build-and-push succeeded
+    # Note: Can't use success() here because it checks the entire dependency chain,
+    # including build-base which is often skipped. Use explicit result check instead.
+    if: |
+      always() &&
+      needs.build-and-push.result == 'success' &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main'
     steps:
       - name: Update workspace images
         env:
@@ -139,7 +145,7 @@ jobs:
           response=$(curl -s -w "\n%{http_code}" -X POST "${CLOUD_API_URL}/api/admin/workspaces/update-image" \
             -H "x-admin-secret: ${ADMIN_API_SECRET}" \
             -H "Content-Type: application/json" \
-            -d '{"image": "ghcr.io/agentworkforce/relay-workspace:latest", "skipRestart": true}')
+            -d '{"image": "ghcr.io/agentworkforce/relay-workspace:latest", "skipRestart": false}')
 
           http_code=$(echo "$response" | tail -n1)
           body=$(echo "$response" | sed '$d')
