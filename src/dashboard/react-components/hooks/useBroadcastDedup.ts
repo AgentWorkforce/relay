@@ -10,6 +10,7 @@
  * those with the same sender, content, and approximate timestamp.
  */
 
+import { useMemo } from 'react';
 import type { Message } from '../../types';
 
 /**
@@ -75,11 +76,11 @@ export function deduplicateBroadcasts(messages: Message[]): Message[] {
 
 /**
  * Hook for using broadcast deduplication with React state.
- * This is a simple wrapper that can be extended for memoization.
+ * Uses useMemo to prevent unnecessary recalculations when messages haven't changed.
  *
  * @param messages Array of messages to deduplicate
  * @returns Deduplicated messages
  */
 export function useBroadcastDedup(messages: Message[]): Message[] {
-  return deduplicateBroadcasts(messages);
+  return useMemo(() => deduplicateBroadcasts(messages), [messages]);
 }
