@@ -211,11 +211,12 @@ export async function createServer(): Promise<CloudServer> {
 
   // Lightweight CSRF protection using session token
   const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
-  // Paths exempt from CSRF (webhooks from external services, workspace proxy, local auth callbacks)
+  // Paths exempt from CSRF (webhooks from external services, workspace proxy, local auth callbacks, admin API)
   const CSRF_EXEMPT_PATHS = [
     '/api/webhooks/',
     '/api/auth/nango/webhook',
     '/api/auth/codex-helper/callback',
+    '/api/admin/',  // Admin API uses X-Admin-Secret header auth
   ];
   // Additional pattern for workspace proxy routes (contains /proxy/)
   const isWorkspaceProxyRoute = (path: string) => /^\/api\/workspaces\/[^/]+\/proxy\//.test(path);
