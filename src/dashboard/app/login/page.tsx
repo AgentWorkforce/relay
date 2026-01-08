@@ -9,14 +9,19 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'next/navigation';
 import Nango from '@nangohq/frontend';
 import { LogoIcon } from '../../react-components/Logo';
 
 export default function LoginPage() {
+  const searchParams = useSearchParams();
   const [isReady, setIsReady] = useState(false);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [authStatus, setAuthStatus] = useState<string>('');
   const [error, setError] = useState('');
+  
+  // Get return URL from query params (used by cloud link flow)
+  const returnUrl = searchParams.get('return');
 
   // Store Nango instance and session token - initialized on mount
   const nangoRef = useRef<InstanceType<typeof Nango> | null>(null);
@@ -82,8 +87,13 @@ export default function LoginPage() {
         try {
           const result = await checkAuthStatus(connectionId);
           if (result && result.ready) {
-            // Redirect to connect-repos if no repos, otherwise to app
-            window.location.href = result.hasRepos ? '/app' : '/connect-repos';
+            // Redirect to return URL if provided (e.g., cloud link flow), 
+            // otherwise to connect-repos if no repos, or to app
+            if (returnUrl) {
+              window.location.href = returnUrl;
+            } else {
+              window.location.href = result.hasRepos ? '/app' : '/connect-repos';
+            }
             return;
           }
 

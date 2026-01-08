@@ -67,8 +67,8 @@ function CloudLinkContent() {
 
   const checkAuth = async () => {
     try {
-      const data = await api.get<{ userId?: string }>('/api/auth/session');
-      if (data.userId) {
+      const data = await api.get<{ authenticated?: boolean; user?: { id: string } }>('/api/auth/session');
+      if (data.authenticated && data.user?.id) {
         setState('ready');
       } else {
         setState('auth-required');
