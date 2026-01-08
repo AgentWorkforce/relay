@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-07T21:41:49.091Z",
+  "lastUpdated": "2026-01-08T08:05:07.874Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -498,6 +498,12 @@
       "startedAt": "2026-01-07T21:41:28.024Z",
       "completedAt": "2026-01-07T21:41:49.080Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_lgtodco7dp1n.json"
+    },
+    "traj_rsavt0jipi3c": {
+      "title": "Power agent session - ready for tasks",
+      "status": "active",
+      "startedAt": "2026-01-08T07:54:35.678Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/active/traj_rsavt0jipi3c.json"
     }
   }
 }
