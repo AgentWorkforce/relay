@@ -711,6 +711,9 @@ class FlyProvisioner implements ComputeProvisioner {
               PROVIDERS: (workspace.config.providers ?? []).join(','),
               PORT: String(WORKSPACE_PORT),
               AGENT_RELAY_DASHBOARD_PORT: String(WORKSPACE_PORT),
+              // Store repos on persistent volume (/data) so they survive container restarts
+              // Without this, repos are cloned to /workspace (ephemeral) and lost on restart
+              WORKSPACE_DIR: '/data/repos',
               // Git gateway configuration
               CLOUD_API_URL: this.cloudApiUrl,
               WORKSPACE_TOKEN: this.generateWorkspaceToken(workspace.id),
@@ -1295,6 +1298,8 @@ class RailwayProvisioner implements ComputeProvisioner {
       PROVIDERS: (workspace.config.providers ?? []).join(','),
       PORT: String(WORKSPACE_PORT),
       AGENT_RELAY_DASHBOARD_PORT: String(WORKSPACE_PORT),
+      // Store repos on persistent volume so they survive container restarts
+      WORKSPACE_DIR: '/data/repos',
       CLOUD_API_URL: this.cloudApiUrl,
       WORKSPACE_TOKEN: this.generateWorkspaceToken(workspace.id),
     };
@@ -1541,6 +1546,8 @@ class DockerProvisioner implements ComputeProvisioner {
       `-e PROVIDERS=${(workspace.config.providers ?? []).join(',')}`,
       `-e PORT=${WORKSPACE_PORT}`,
       `-e AGENT_RELAY_DASHBOARD_PORT=${WORKSPACE_PORT}`,
+      // Store repos on persistent volume so they survive container restarts
+      `-e WORKSPACE_DIR=/data/repos`,
       `-e CLOUD_API_URL=${this.cloudApiUrlForContainer}`,
       `-e WORKSPACE_TOKEN=${this.generateWorkspaceToken(workspace.id)}`,
     ];
