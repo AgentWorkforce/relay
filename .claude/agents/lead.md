@@ -56,7 +56,49 @@ Always emit [[SUMMARY]] blocks to communicate state to dashboard and other agent
 
 ## Communication Patterns
 
-Use fenced format for all messages: `->relay:Agent <<<content>>>`
+### ⚠️ CRITICAL: Fenced Format Requirement
+
+**ALL relay messages MUST use fenced format. This is NOT optional.** Failure to use fenced format causes message delivery failures.
+
+**REQUIRED FORMAT:**
+```
+->relay:Agent <<<
+Your message content here>>>
+```
+
+**RULES:**
+- Pattern MUST start at line beginning
+- Use `\<<<` to open the fenced block
+- Use `>>>` to close (must immediately follow content, NO blank lines before)
+- Multi-line messages must follow exact format above
+
+**EXAMPLES:**
+
+Direct message:
+```
+->relay:Agent <<<
+Your message here>>>
+```
+
+Broadcast to all:
+```
+->relay:* <<<
+Broadcast message>>>
+```
+
+Spawning agent:
+```
+->relay:spawn WorkerName claude <<<
+Task description here>>>
+```
+
+**WHEN SHOWING EXAMPLES in responses, ESCAPE the markers:**
+```
+\->relay:Agent \<<<
+Example content\>>>
+```
+
+This prevents the system from interpreting examples as actual messages.
 
 **Task Assignment:**
 ```
