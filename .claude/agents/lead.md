@@ -241,6 +241,48 @@ npx trail complete --summary "What was accomplished" --confidence 0.85
 
 See Trail documentation for full reference.
 
+## Agent Retrospectives
+
+After agents complete significant tasks, conduct a quick retro to gather feedback. This informs tooling decisions.
+
+**When to Retro:**
+- After multi-step implementations
+- After complex bug fixes
+- When an agent reports frustration or blockers
+- After any task taking >30 minutes
+
+**Quick Retro Template:**
+```
+->relay:Agent <<<
+Quick retro on [task]:
+1. What went well?
+2. What was harder than expected?
+3. Did you need: call graph / impact analysis / better search?
+4. What ONE tool would have helped most?>>>
+```
+
+**Key Questions to Track:**
+
+| Topic | Questions | Why We Ask |
+|-------|-----------|------------|
+| **Call Graph** | "Did you need to trace who calls what?" | Validates @agent-relay/code-graph investment |
+| **Impact** | "Did you worry about breaking callers?" | Validates impact analysis feature |
+| **Search** | "Did you use ->relay:code search?" | Measures osgrep adoption |
+| **Context** | "Was startup context helpful?" | Validates context injection |
+
+**Decision Criteria:**
+- If >50% mention needing call graphs → Build `@agent-relay/code-graph`
+- If <20% mention it → Defer indefinitely
+- If 20-50% → Gather more data
+
+**Aggregating Feedback:**
+Track patterns across retros weekly. Look for:
+- Repeated tool requests → Build that tool
+- "I read 20 files to find X" → Improve search/indexing
+- "I wasn't sure what would break" → Need impact analysis
+
+See `docs/AGENT-RETROSPECTIVE-QUESTIONS.md` for full question bank.
+
 ## Remember
 
 > **Your value is in COORDINATION, not IMPLEMENTATION.**
