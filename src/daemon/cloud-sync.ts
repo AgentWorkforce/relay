@@ -14,6 +14,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { randomBytes } from 'crypto';
 import { createLogger } from '../utils/logger.js';
+import type { StorageAdapter, StoredMessage } from '../storage/adapter.js';
 
 const log = createLogger('cloud-sync');
 
@@ -22,6 +23,10 @@ export interface CloudSyncConfig {
   cloudUrl: string;
   heartbeatInterval: number; // ms
   enabled: boolean;
+  /** Enable message sync to cloud (default: true if connected) */
+  messageSyncEnabled?: boolean;
+  /** Batch size for message sync (default: 100) */
+  messageSyncBatchSize?: number;
 }
 
 export interface RemoteAgent {
@@ -51,6 +56,9 @@ export class CloudSyncService extends EventEmitter {
   private localAgents: Map<string, { name: string; status: string }> = new Map();
   private remoteAgents: RemoteAgent[] = [];
   private connected = false;
+  private storage: StorageAdapter | null = null;
+  private lastMessageSyncTs: number = 0;
+  private messageSyncInProgress = false;
 
   constructor(config: Partial<CloudSyncConfig> = {}) {
     super();
@@ -232,10 +240,11 @@ export class CloudSyncService extends EventEmitter {
         }
       }
 
-      // Fetch messages and sync agents
+      // Fetch messages, sync agents, and sync local messages to cloud
       await Promise.all([
         this.fetchMessages(),
         this.syncAgents(),
+        this.syncMessagesToCloud(),
       ]);
     } catch (error) {
       log.error('Heartbeat error', { error: String(error) });
@@ -345,6 +354,97 @@ export class CloudSyncService extends EventEmitter {
    */
   getMachineIdentifier(): string {
     return this.machineId;
+  }
+
+  /**
+   * Set the storage adapter for message sync
+   */
+  setStorage(storage: StorageAdapter): void {
+    this.storage = storage;
+    log.info('Storage adapter configured for message sync');
+  }
+
+  /**
+   * Sync local messages to cloud storage
+   *
+   * Reads messages from local SQLite since last sync and posts them
+   * to the cloud API for centralized storage and search.
+   */
+  async syncMessagesToCloud(): Promise<{ synced: number; duplicates: number }> {
+    // Skip if disabled, not connected, no storage, or sync in progress
+    if (!this.connected || !this.storage || this.messageSyncInProgress) {
+      return { synced: 0, duplicates: 0 };
+    }
+
+    if (this.config.messageSyncEnabled === false) {
+      return { synced: 0, duplicates: 0 };
+    }
+
+    this.messageSyncInProgress = true;
+
+    try {
+      const batchSize = this.config.messageSyncBatchSize || 100;
+
+      // Get messages since last sync
+      const messages = await this.storage.getMessages({
+        sinceTs: this.lastMessageSyncTs > 0 ? this.lastMessageSyncTs : undefined,
+        limit: batchSize,
+        order: 'asc',
+      });
+
+      if (messages.length === 0) {
+        return { synced: 0, duplicates: 0 };
+      }
+
+      // Transform to API format
+      const syncPayload = messages.map((msg: StoredMessage) => ({
+        id: msg.id,
+        ts: msg.ts,
+        from: msg.from,
+        to: msg.to,
+        body: msg.body,
+        kind: msg.kind,
+        topic: msg.topic,
+        thread: msg.thread,
+        is_broadcast: msg.is_broadcast,
+        is_urgent: msg.is_urgent,
+        data: msg.data,
+        payload_meta: msg.payloadMeta,
+      }));
+
+      // Post to cloud
+      const response = await fetch(`${this.config.cloudUrl}/api/daemons/messages/sync`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.config.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ messages: syncPayload }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Message sync failed: ${response.status} - ${errorText}`);
+      }
+
+      const result = await response.json() as { synced: number; duplicates: number };
+
+      // Update last sync timestamp to the newest message we synced
+      if (messages.length > 0) {
+        this.lastMessageSyncTs = Math.max(...messages.map((m: StoredMessage) => m.ts));
+      }
+
+      if (result.synced > 0) {
+        log.info(`Synced ${result.synced} messages to cloud`, { duplicates: result.duplicates });
+      }
+
+      return result;
+    } catch (error) {
+      log.error('Message sync error', { error: String(error) });
+      return { synced: 0, duplicates: 0 };
+    } finally {
+      this.messageSyncInProgress = false;
+    }
   }
 }
 

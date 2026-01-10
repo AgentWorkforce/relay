@@ -103,53 +103,27 @@ class NangoService {
    * This is the user-level token (not the installation token).
    * Use this for operations that require user context (e.g., gh CLI).
    *
-   * The user token can be found in:
-   * 1. getToken() without installation flag
-   * 2. connection_config.access_token in github-app-oauth
-   * 3. Separate 'github' user connection
+   * The user token is stored in connection_config.userCredentials.access_token
+   * by Nango's GitHub App OAuth flow. This is a gho_* or ghu_* token that
+   * works for both git operations and gh CLI commands.
    */
   async getGithubUserOAuthToken(connectionId: string): Promise<string> {
-    // First try: Get token from github-app-oauth connection credentials
-    try {
-      const token = await this.client.getToken(
-        NANGO_INTEGRATIONS.GITHUB_APP,
-        connectionId
-      );
-
-      if (typeof token === 'string' && token.length > 0) {
-        return token;
-      }
-
-      if (token && typeof token === 'object') {
-        const tokenObj = token as { access_token?: string; token?: string };
-        if (tokenObj.access_token) {
-          return tokenObj.access_token;
-        }
-        if (tokenObj.token) {
-          return tokenObj.token;
-        }
-      }
-    } catch (err) {
-      console.log('[nango] getToken for user OAuth failed, trying connection_config:', err);
-    }
-
-    // Second try: Check connection_config for user token
     try {
       const connection = await this.client.getConnection(NANGO_INTEGRATIONS.GITHUB_APP, connectionId);
       const connConfig = (connection as { connection_config?: Record<string, unknown> }).connection_config;
-      if (connConfig?.access_token && typeof connConfig.access_token === 'string') {
-        return connConfig.access_token;
-      }
-      // Also check credentials object
-      const credentials = (connection as { credentials?: { access_token?: string } }).credentials;
-      if (credentials?.access_token) {
-        return credentials.access_token;
-      }
-    } catch (err) {
-      console.log('[nango] connection_config check failed:', err);
-    }
 
-    throw new Error('Could not retrieve GitHub user OAuth token');
+      // Check for userCredentials.access_token (the user's personal OAuth token)
+      const userCredentials = connConfig?.userCredentials as { access_token?: string } | undefined;
+      if (userCredentials?.access_token && typeof userCredentials.access_token === 'string') {
+        return userCredentials.access_token;
+      }
+
+      throw new Error('No userCredentials.access_token in connection_config');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      console.log('[nango] getGithubUserOAuthToken failed:', message);
+      throw new Error('Could not retrieve GitHub user OAuth token');
+    }
   }
 
   /**

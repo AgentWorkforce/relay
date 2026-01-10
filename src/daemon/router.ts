@@ -613,23 +613,28 @@ export class Router {
     envelope: SendEnvelope,
     topic?: string
   ): void {
+    // Build recipients list from both agents and users
     const recipients = topic
       ? this.subscriptions.get(topic) ?? new Set()
-      : new Set(this.agents.keys());
+      : new Set([...this.agents.keys(), ...this.users.keys()]);
 
-    for (const agentName of recipients) {
-      if (agentName === from) continue; // Don't send to self
+    for (const recipientName of recipients) {
+      if (recipientName === from) continue; // Don't send to self
 
-      const target = this.agents.get(agentName);
+      // Check both agents and users maps (consistent with sendDirect)
+      const target = this.agents.get(recipientName) ?? this.users.get(recipientName);
       if (target) {
-        const deliver = this.createDeliverEnvelope(from, agentName, envelope, target);
+        const isUserTarget = target.entityType === 'user';
+        const deliver = this.createDeliverEnvelope(from, recipientName, envelope, target);
         const sent = target.send(deliver);
         this.persistDeliverEnvelope(deliver, true); // Mark as broadcast
         if (sent) {
           this.trackDelivery(target, deliver);
-          this.registry?.recordReceive(agentName);
-          // Mark recipient as processing
-          this.setProcessing(agentName, deliver.id);
+          this.registry?.recordReceive(recipientName);
+          // Only mark AI agents as processing; humans don't need processing indicators
+          if (!isUserTarget) {
+            this.setProcessing(recipientName, deliver.id);
+          }
         }
       }
     }

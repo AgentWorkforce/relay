@@ -1977,6 +1977,8 @@ program
       stdio: 'inherit',
       env: {
         ...process.env,
+        // Trajectory env vars override parent shell settings
+        // This ensures config-based TRAJECTORIES_DATA_DIR takes precedence
         TRAJECTORIES_PROJECT: paths.projectId,
         TRAJECTORIES_DATA_DIR: trajectoriesDir,
       },

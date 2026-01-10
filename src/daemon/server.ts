@@ -231,6 +231,12 @@ export class Daemon {
       });
 
       await this.cloudSync.start();
+
+      // Set storage adapter for message sync to cloud
+      if (this.storage) {
+        this.cloudSync.setStorage(this.storage);
+      }
+
       log.info('Cloud sync enabled');
     } catch (err) {
       log.error('Failed to initialize cloud sync', { error: String(err) });

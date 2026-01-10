@@ -43,6 +43,7 @@ SyntaxHighlighter.registerLanguage('dockerfile', docker);
 import type { Message, Agent, Attachment } from '../types';
 import { MessageStatusIndicator } from './MessageStatusIndicator';
 import { ThinkingIndicator } from './ThinkingIndicator';
+import { deduplicateBroadcasts } from './hooks/useBroadcastDedup';
 
 // Provider icons and colors matching landing page
 const PROVIDER_CONFIG: Record<string, { icon: string; color: string }> = {
@@ -127,7 +128,7 @@ export function MessageList({
   const isScrollingRef = useRef(false);
 
   // Filter messages for current channel or current thread
-  const filteredMessages = messages.filter((msg) => {
+  const channelFilteredMessages = messages.filter((msg) => {
     // When a thread is selected, show messages related to that thread
     if (currentThread) {
       // Show the original message (id matches thread) or replies (thread field matches)
@@ -147,6 +148,14 @@ export function MessageList({
     }
     return msg.from === currentChannel || msg.to === currentChannel;
   });
+
+  // Deduplicate broadcast messages in #general channel
+  // When a broadcast is sent to '*', the backend delivers it to each recipient separately,
+  // causing the same message to appear multiple times. Deduplication removes duplicates
+  // by grouping broadcasts with the same sender, content, and timestamp.
+  const filteredMessages = currentChannel === 'general'
+    ? deduplicateBroadcasts(channelFilteredMessages)
+    : channelFilteredMessages;
 
   // Populate latestMessageToAgent with the latest message from current user to each agent
   // Iterate in order (oldest to newest) so the last one wins

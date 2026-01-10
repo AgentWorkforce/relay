@@ -1,0 +1,77 @@
+{
+  "id": "traj_pulomd3y8cvj",
+  "version": 1,
+  "task": {
+    "title": "Refactor trajectory configuration to centralized location",
+    "source": {
+      "system": "plain",
+      "id": "lead-session-2026-01-09-centralized-config"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-01-09T22:23:26.438Z",
+  "agents": [
+    {
+      "name": "Lead",
+      "role": "lead",
+      "joinedAt": "2026-01-09T22:23:26.439Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_nhuy2szjp1yt",
+      "title": "Initial work",
+      "agentName": "Lead",
+      "startedAt": "2026-01-09T22:23:26.439Z",
+      "events": [
+        {
+          "ts": 1767997412402,
+          "type": "decision",
+          "content": "Centralized config to ~/.config/agent-relay/relay.json instead of repo-level .relay/config.json: Centralized config to ~/.config/agent-relay/relay.json instead of repo-level .relay/config.json",
+          "raw": {
+            "question": "Centralized config to ~/.config/agent-relay/relay.json instead of repo-level .relay/config.json",
+            "chosen": "Centralized config to ~/.config/agent-relay/relay.json instead of repo-level .relay/config.json",
+            "alternatives": [],
+            "reasoning": "Single config applies to all projects; survives repo deletion; follows existing AGENT_RELAY_CONFIG_DIR pattern"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767997423880,
+          "type": "decision",
+          "content": "Implemented AGENT_RELAY_CONFIG_DIR environment variable support: Implemented AGENT_RELAY_CONFIG_DIR environment variable support",
+          "raw": {
+            "question": "Implemented AGENT_RELAY_CONFIG_DIR environment variable support",
+            "chosen": "Implemented AGENT_RELAY_CONFIG_DIR environment variable support",
+            "alternatives": [],
+            "reasoning": "Allows configuration location flexibility; XDG-compliant default"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1767997440998,
+          "type": "decision",
+          "content": "Removed repo-level .relay/ directory entirely: Removed repo-level .relay/ directory entirely",
+          "raw": {
+            "question": "Removed repo-level .relay/ directory entirely",
+            "chosen": "Removed repo-level .relay/ directory entirely",
+            "alternatives": [],
+            "reasoning": "No longer needed; config now centralized and not repo-specific"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-09T22:24:32.439Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "84085b56a3fa",
+  "tags": [],
+  "completedAt": "2026-01-09T22:24:32.439Z",
+  "retrospective": {
+    "summary": "Refactored trajectory configuration from repo-level to centralized ~/.config/agent-relay/relay.json. Implemented AGENT_RELAY_CONFIG_DIR env var support following existing patterns. Removed repo-level .relay/ directory. Updated lead.md documentation. All changes committed to docs/lead-agent-cli-patterns branch.",
+    "approach": "Standard approach",
+    "confidence": 0.92
+  }
+}

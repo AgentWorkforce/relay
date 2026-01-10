@@ -141,6 +141,12 @@ export class AgentManager extends EventEmitter {
         args,
         cwd: workspacePath,
         logsDir: this.logsDir,
+        env: {
+          CLOUD_API_URL: process.env.CLOUD_API_URL || '',
+          WORKSPACE_TOKEN: process.env.WORKSPACE_TOKEN || '',
+          WORKSPACE_ID: workspaceId,
+          ...process.env,
+        },
         onExit: (code) => {
           logger.info('Agent process exited', { name, code });
           this.handleAgentExit(agent.id, code);
@@ -373,6 +379,12 @@ export class AgentManager extends EventEmitter {
         args,
         cwd: workspacePath,
         logsDir: this.logsDir,
+        env: {
+          CLOUD_API_URL: process.env.CLOUD_API_URL || '',
+          WORKSPACE_TOKEN: process.env.WORKSPACE_TOKEN || '',
+          WORKSPACE_ID: agent.workspaceId,
+          ...process.env,
+        },
         onExit: (code) => {
           this.handleAgentExit(agent.id, code);
         },

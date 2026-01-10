@@ -760,6 +760,7 @@ export class PtyWrapper extends BaseWrapper {
 
       // Skip placeholder targets (documentation examples like "AgentName", "Lead", etc.)
       if (isPlaceholderTarget(target)) {
+        console.error(`[pty-wrapper] Filtered fenced message - placeholder target: ${target}`);
         continue;
       }
 
@@ -782,6 +783,7 @@ export class PtyWrapper extends BaseWrapper {
 
       // Skip placeholder targets after parsing cross-project syntax
       if (isPlaceholderTarget(to)) {
+        console.error(`[pty-wrapper] Filtered fenced message - placeholder target after cross-project parse: ${to}`);
         continue;
       }
 
@@ -833,7 +835,10 @@ export class PtyWrapper extends BaseWrapper {
         if (!body) continue;
 
         // Skip placeholder targets (documentation examples)
-        if (isPlaceholderTarget(target)) continue;
+        if (isPlaceholderTarget(target)) {
+          console.error(`[pty-wrapper] Filtered single-line message - placeholder target: ${target}`);
+          continue;
+        }
 
         // Parse target for cross-project syntax
         const colonIdx = target.indexOf(':');
@@ -845,7 +850,10 @@ export class PtyWrapper extends BaseWrapper {
         }
 
         // Skip placeholder targets after parsing cross-project syntax
-        if (isPlaceholderTarget(to)) continue;
+        if (isPlaceholderTarget(to)) {
+          console.error(`[pty-wrapper] Filtered single-line message - placeholder target after cross-project parse: ${to}`);
+          continue;
+        }
 
         this.sendRelayCommand({
           to,
@@ -861,7 +869,10 @@ export class PtyWrapper extends BaseWrapper {
       if (!body) continue;
 
       // Skip placeholder targets (documentation examples)
-      if (isPlaceholderTarget(target)) continue;
+      if (isPlaceholderTarget(target)) {
+        console.error(`[pty-wrapper] Filtered single-line message - placeholder target: ${target}`);
+        continue;
+      }
 
       // Parse target for cross-project syntax
       const colonIdx = target.indexOf(':');
@@ -873,7 +884,10 @@ export class PtyWrapper extends BaseWrapper {
       }
 
       // Skip placeholder targets after parsing cross-project syntax
-      if (isPlaceholderTarget(to)) continue;
+      if (isPlaceholderTarget(to)) {
+        console.error(`[pty-wrapper] Filtered single-line message - placeholder target after cross-project parse: ${to}`);
+        continue;
+      }
 
       this.sendRelayCommand({
         to,

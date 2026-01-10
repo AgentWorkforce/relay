@@ -867,8 +867,9 @@ export class TmuxWrapper extends BaseWrapper {
   protected override sendRelayCommand(cmd: ParsedCommand): void {
     const msgHash = `${cmd.to}:${cmd.body}`;
 
-    // Permanent dedup - never send the same message twice (silent)
+    // Permanent dedup - never send the same message twice
     if (this.sentMessageHashes.has(msgHash)) {
+      this.logStderr(`[DEDUP] Skipped duplicate message to ${cmd.to} (hash already sent)`);
       return;
     }
 

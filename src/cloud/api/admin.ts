@@ -56,7 +56,7 @@ adminRouter.use(requireAdminAuth);
  * - batchSize?: Number of concurrent updates (default: 5)
  *
  * Response:
- * - summary: { total, updated, pendingRestart, skippedActiveAgents, skippedNotRunning, errors }
+ * - summary: { total, updated, pendingRestart, skippedActiveAgents, skippedVerificationFailed, skippedNotRunning, errors }
  * - results: Array of per-workspace results
  */
 adminRouter.post('/workspaces/update-image', async (req: Request, res: Response) => {

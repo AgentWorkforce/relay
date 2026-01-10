@@ -41,6 +41,8 @@
     "clean": "rm -rf dist",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "db:migrate:run": "node scripts/run-migrations.js",
+    "db:migrate:verify": "node scripts/verify-schema.js",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "services:up": "docker compose -f docker-compose.dev.yml up -d postgres redis && echo '✓ Postgres and Redis running'",

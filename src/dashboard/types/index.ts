@@ -26,6 +26,10 @@ export interface Agent {
   isStuck?: boolean; // True when agent received message but hasn't responded within threshold
   isHuman?: boolean; // True if this is a human user, not an AI agent
   avatarUrl?: string; // Avatar URL for human users
+  // Local daemon agent fields
+  isLocal?: boolean; // True if agent is from a linked local daemon
+  daemonName?: string; // Name of the linked daemon
+  machineId?: string; // Machine ID of the linked daemon
   // Profile fields for understanding agent behavior
   profile?: AgentProfile;
 }

@@ -169,7 +169,24 @@
       "sourceFormat": "claude",
       "sourceSubtype": "skill",
       "installedPath": ".claude/skills/browser-testing-with-screenshots/SKILL.md"
+    },
+    "@agent-workforce/trail-snippet#agents.md:AGENTS.md": {
+      "version": "1.0.1",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-workforce%2Ftrail-snippet/1.0.1.tar.gz",
+      "integrity": "sha256-a7b8d388e19158b1dd4644f2786291e7c90e4b56411c41d4ede1a7d45e7568c9",
+      "format": "agents.md",
+      "subtype": "snippet",
+      "sourceFormat": "generic",
+      "sourceSubtype": "snippet",
+      "installedPath": "AGENTS.md",
+      "snippetMetadata": {
+        "targetPath": "AGENTS.md",
+        "config": {
+          "target": "AGENTS.md",
+          "position": "append"
+        }
+      }
     }
   },
-  "generated": "2026-01-03T15:28:59.485Z"
+  "generated": "2026-01-08T20:50:49.376Z"
 }

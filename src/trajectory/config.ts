@@ -1,21 +1,26 @@
 /**
  * Trajectory Configuration
  *
- * Handles repo-level opt-in/opt-out for trajectory storage.
- * When trajectories are opt-out (not in source control), they're stored
- * in the user's home directory instead of the repo.
+ * Manages centralized relay configuration for trajectory storage settings.
+ * Config is stored in a central location (not per-repo) and applies to all projects.
  *
- * DECISIONS:
- * 1. Default behavior: trajectories are OPT-OUT (stored outside repo)
- *    - Reasoning: Most repos won't want trajectory files in source control
- *    - Users must explicitly opt-in to store in repo
+ * ARCHITECTURE:
+ * 1. Config location: Centralized, not repo-specific
+ *    - Primary: AGENT_RELAY_CONFIG_DIR/relay.json (if env var set)
+ *    - Default: ~/.config/agent-relay/relay.json
+ *    - Reasoning: Single config applies to all projects; survives repo deletion
  *
- * 2. Setting location: .relay/config.json in repo root
- *    - Reasoning: Keeps relay config separate from .claude/ which may have other uses
- *    - Alternative considered: .claude/settings.json - rejected to avoid conflicts
+ * 2. Default behavior: trajectories are OPT-OUT (stored in user home)
+ *    - Location: ~/.config/agent-relay/trajectories/<project-hash>/
+ *    - Users can opt-in via central config: storeInRepo: true
  *
- * 3. User-level storage: ~/.config/agent-relay/trajectories/<project-hash>/
- *    - Reasoning: XDG-compliant, project-isolated, survives repo deletion
+ * 3. Opt-in storage: .trajectories/ directory in repo root
+ *    - Applied when: User sets storeInRepo: true in central relay.json
+ *    - Users should add .trajectories/ to .gitignore if private
+ *
+ * 4. Initialization: When users initialize relay in a repo, prompt to opt-in
+ *    - Creates entry in ~/.config/agent-relay/relay.json
+ *    - Does NOT create repo-specific config
  */
 
 import { existsSync, readFileSync, mkdirSync, statSync } from 'node:fs';
@@ -23,6 +28,16 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { getProjectPaths } from '../utils/project-namespace.js';
+
+/**
+ * Get the central agent-relay config directory
+ * Uses AGENT_RELAY_CONFIG_DIR environment variable if set,
+ * otherwise defaults to ~/.config/agent-relay
+ */
+function getAgentRelayConfigDir(): string {
+  return process.env.AGENT_RELAY_CONFIG_DIR ??
+    join(homedir(), '.config', 'agent-relay');
+}
 
 /**
  * Relay config structure
@@ -33,6 +48,10 @@ export interface RelayConfig {
     /**
      * Whether to store trajectories in the repo (.trajectories/)
      * Default: false (stored in ~/.config/agent-relay/trajectories/)
+     *
+     * NOTE: When true, this project will track trajectories in git.
+     * Users should add .trajectories/ to .gitignore if they prefer
+     * not to track trajectories for privacy reasons.
      */
     storeInRepo?: boolean;
   };
@@ -45,14 +64,22 @@ let configCache: { path: string; config: RelayConfig; mtime: number } | null = n
 
 /**
  * Get the relay config file path
+ *
+ * Returns the central relay configuration file, not repo-specific.
+ * This config is shared across all projects and stored in:
+ * - AGENT_RELAY_CONFIG_DIR/relay.json (if AGENT_RELAY_CONFIG_DIR is set)
+ * - ~/.config/agent-relay/relay.json (default)
+ *
+ * NOTE: projectRoot parameter is kept for backwards compatibility but ignored.
+ * Config is always loaded from the central location.
  */
 export function getRelayConfigPath(projectRoot?: string): string {
-  const root = projectRoot ?? getProjectPaths().projectRoot;
-  return join(root, '.relay', 'config.json');
+  return join(getAgentRelayConfigDir(), 'relay.json');
 }
 
 /**
- * Read the relay config from the repo
+ * Read the relay config from the central location
+ * Config is shared across all projects
  */
 export function readRelayConfig(projectRoot?: string): RelayConfig {
   const configPath = getRelayConfigPath(projectRoot);

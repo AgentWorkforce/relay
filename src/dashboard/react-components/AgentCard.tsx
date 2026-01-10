@@ -160,17 +160,28 @@ export function AgentCard({
 
         {/* Agent Info */}
         <div className="flex-1 min-w-0 flex flex-col gap-0.5">
-          <span
-            className={`
-              text-[13px] font-semibold tracking-tight truncate transition-colors duration-200
-              ${isOnline ? 'text-text-primary' : 'text-text-secondary'}
-            `}
-          >
-            {displayName}
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span
+              className={`
+                text-[13px] font-semibold tracking-tight truncate transition-colors duration-200
+                ${isOnline ? 'text-text-primary' : 'text-text-secondary'}
+              `}
+            >
+              {displayName}
+            </span>
+            {agent.isLocal && (
+              <span
+                className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-medium uppercase tracking-wider
+                           bg-gradient-to-r from-orange-500/20 to-amber-500/20 text-orange-400 border border-orange-500/30"
+                title={`Local agent from ${agent.daemonName || 'linked daemon'}`}
+              >
+                Local
+              </span>
+            )}
+          </div>
           {!displayNameOverride && (
             <span className="text-[10px] text-text-muted truncate font-mono opacity-70">
-              {getAgentBreadcrumb(agent.name)}
+              {agent.isLocal ? agent.daemonName || agent.machineId : getAgentBreadcrumb(agent.name)}
             </span>
           )}
         </div>
@@ -281,6 +292,15 @@ export function AgentCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="font-semibold text-sm text-text-primary">{displayName}</span>
+            {agent.isLocal && (
+              <span
+                className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-medium uppercase tracking-wider
+                           bg-gradient-to-r from-orange-500/20 to-amber-500/20 text-orange-400 border border-orange-500/30"
+                title={`Local agent from ${agent.daemonName || 'linked daemon'}`}
+              >
+                Local
+              </span>
+            )}
             {agent.needsAttention && (
               <span className="bg-red-500 text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center" title="Needs Attention - Agent requires user input or has pending decisions">!</span>
             )}
@@ -291,9 +311,9 @@ export function AgentCard({
             )}
           </div>
           {showBreadcrumb ? (
-            <span className="text-xs text-text-muted truncate block">{getAgentBreadcrumb(agent.name)}</span>
+            <span className="text-xs text-text-muted truncate block">{agent.isLocal ? agent.daemonName || agent.machineId : getAgentBreadcrumb(agent.name)}</span>
           ) : (
-            <span className="text-xs text-text-muted truncate block">{agent.name}</span>
+            <span className="text-xs text-text-muted truncate block">{agent.isLocal ? agent.daemonName || agent.machineId : agent.name}</span>
           )}
           {agent.agentId && (
             <span className="text-[10px] text-text-muted font-mono opacity-70" title="Agent ID (use to resume)">

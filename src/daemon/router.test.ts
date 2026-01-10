@@ -635,6 +635,29 @@ describe('Router', () => {
       expect(delivered.delivery.originalTo).toBe('*'); // Original target was broadcast
     });
 
+    it('should broadcast to users in addition to agents', () => {
+      const sender = new MockConnection('conn-1', 'agent1');
+      const agentRecipient = new MockConnection('conn-2', 'agent2');
+      const userRecipient = new MockConnection('conn-3', 'user1', 'session-1', 'user');
+
+      router.register(sender);
+      router.register(agentRecipient);
+      router.register(userRecipient);
+
+      const envelope = createSendEnvelope('agent1', '*');
+      router.route(sender, envelope);
+
+      // Both agent and user should receive the broadcast
+      expect(agentRecipient.sendMock).toHaveBeenCalledOnce();
+      expect(userRecipient.sendMock).toHaveBeenCalledOnce();
+
+      // Verify user received correct envelope
+      const delivered = userRecipient.sentEnvelopes[0] as DeliverEnvelope;
+      expect(delivered.from).toBe('agent1');
+      expect(delivered.to).toBe('user1');
+      expect(delivered.delivery.originalTo).toBe('*');
+    });
+
     it('should not include originalTo for direct messages', () => {
       const sender = new MockConnection('conn-1', 'agent1');
       const recipient = new MockConnection('conn-2', 'agent2');

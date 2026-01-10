@@ -789,6 +789,7 @@ export class OutputParser {
 
         // Skip instructional/example text (common in system prompts)
         if (isInstructionalText(body)) {
+          console.error(`[parser] Filtered inline message to ${target} - instructional text. Body: ${body.substring(0, 100)}`);
           return { command: null, output: line };
         }
 
@@ -796,6 +797,7 @@ export class OutputParser {
 
         // Skip placeholder target names (common in documentation/examples)
         if (isPlaceholderTarget(to)) {
+          console.error(`[parser] Filtered inline message - placeholder target: ${to}`);
           return { command: null, output: line };
         }
 
@@ -928,10 +930,12 @@ export class OutputParser {
   private shouldFilterFencedInline(target: string, body: string): boolean {
     // Check for placeholder target names
     if (isPlaceholderTarget(target)) {
+      console.error(`[parser] Filtered message - placeholder target: ${target}`);
       return true;
     }
     // Check for instructional body content
     if (isInstructionalText(body)) {
+      console.error(`[parser] Filtered message to ${target} - instructional text detected. Body preview: ${body.substring(0, 100)}`);
       return true;
     }
     return false;

@@ -176,13 +176,21 @@ gitRouter.get('/token', async (req: Request, res: Response) => {
     // GitHub App installation tokens expire after 1 hour
     const expiresAt = new Date(Date.now() + 55 * 60 * 1000).toISOString(); // 55 min buffer
 
-    console.log(`[git] Token fetched successfully for workspace ${workspaceId.substring(0, 8)}`);
+    // Prefer userToken for git operations - installation tokens (ghs_*) are API-only
+    // and don't work with git credential helpers. User OAuth tokens work for both
+    // git operations (clone, push, pull) AND gh CLI commands.
+    const primaryToken = userToken || installationToken;
+    const tokenType = userToken ? 'user' : 'installation';
+
+    console.log(`[git] Token fetched successfully for workspace ${workspaceId.substring(0, 8)} (type: ${tokenType})`);
 
     res.json({
-      token: installationToken,
-      userToken, // For gh CLI - may be null if not available
+      token: primaryToken, // Primary token for git/gh operations (prefer user token)
+      userToken, // Explicit user token field (may be null)
+      installationToken, // GitHub App installation token for API operations
       expiresAt,
-      username: 'x-access-token', // GitHub App tokens use this as username
+      username: 'x-access-token', // Works with both token types
+      tokenType, // 'user' or 'installation' - helps clients know what they got
     });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -237,9 +245,9 @@ gitRouter.post('/token', async (req: Request, res: Response) => {
       });
     }
 
-    let token: string;
+    let installationToken: string;
     try {
-      token = await nangoService.getGithubAppToken(repoWithConnection.nangoConnectionId);
+      installationToken = await nangoService.getGithubAppToken(repoWithConnection.nangoConnectionId);
     } catch (nangoError) {
       const errorMessage = nangoError instanceof Error ? nangoError.message : 'Unknown error';
       console.error(`[git] POST: Nango token fetch failed:`, errorMessage);
@@ -250,12 +258,35 @@ gitRouter.post('/token', async (req: Request, res: Response) => {
       });
     }
 
+    // Try to get user OAuth token (preferred for git operations)
+    let userToken: string | null = null;
+    try {
+      userToken = await nangoService.getGithubUserOAuthToken(repoWithConnection.nangoConnectionId);
+    } catch {
+      // Try the separate github user connection if available
+      const userRepo = repos.find(r => r.nangoConnectionId && r.nangoConnectionId !== repoWithConnection.nangoConnectionId);
+      if (userRepo?.nangoConnectionId) {
+        try {
+          userToken = await nangoService.getGithubUserToken(userRepo.nangoConnectionId);
+        } catch {
+          console.log('[git] POST: No github user token available');
+        }
+      }
+    }
+
     const expiresAt = new Date(Date.now() + 55 * 60 * 1000).toISOString();
 
+    // Prefer userToken for git operations
+    const primaryToken = userToken || installationToken;
+    const tokenType = userToken ? 'user' : 'installation';
+
     res.json({
-      token,
+      token: primaryToken,
+      userToken,
+      installationToken,
       expiresAt,
       username: 'x-access-token',
+      tokenType,
     });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';

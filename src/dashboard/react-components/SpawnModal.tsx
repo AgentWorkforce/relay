@@ -7,6 +7,7 @@
 
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { getAgentColor, getAgentInitials } from '../lib/colors';
+import { cloudApi } from '../lib/cloudApi';
 
 export type SpeakOnTrigger = 'SESSION_END' | 'CODE_WRITTEN' | 'REVIEW_REQUEST' | 'EXPLICIT_ASK' | 'ALL_MESSAGES';
 
@@ -35,6 +36,10 @@ export interface SpawnModalProps {
   existingAgents: string[];
   isSpawning?: boolean;
   error?: string | null;
+  /** Whether running in cloud mode (enables credentials check) */
+  isCloudMode?: boolean;
+  /** Active workspace ID for provider setup redirect */
+  workspaceId?: string;
 }
 
 const AGENT_TEMPLATES = [
@@ -44,6 +49,7 @@ const AGENT_TEMPLATES = [
     command: 'claude',
     description: 'Claude Code CLI agent',
     icon: '🤖',
+    providerId: 'anthropic', // Maps to provider credential ID
   },
   {
     id: 'codex',
@@ -51,6 +57,7 @@ const AGENT_TEMPLATES = [
     command: 'codex',
     description: 'OpenAI Codex agent',
     icon: '⚡',
+    providerId: 'codex', // Backend uses 'openai', but we check for both
   },
   {
     id: 'gemini',
@@ -58,6 +65,7 @@ const AGENT_TEMPLATES = [
     command: 'gemini',
     description: 'Google Gemini CLI agent',
     icon: '💎',
+    providerId: 'google',
   },
   {
     id: 'opencode',
@@ -65,6 +73,7 @@ const AGENT_TEMPLATES = [
     command: 'opencode',
     description: 'OpenCode AI agent',
     icon: '🔷',
+    providerId: 'opencode',
   },
   {
     id: 'droid',
@@ -72,6 +81,7 @@ const AGENT_TEMPLATES = [
     command: 'droid',
     description: 'Factory Droid agent',
     icon: '🤖',
+    providerId: 'droid',
   },
   {
     id: 'custom',
@@ -79,6 +89,7 @@ const AGENT_TEMPLATES = [
     command: '',
     description: 'Custom command',
     icon: '🔧',
+    providerId: null, // Custom commands don't require credentials check
   },
 ];
 
@@ -89,6 +100,8 @@ export function SpawnModal({
   existingAgents,
   isSpawning = false,
   error,
+  isCloudMode = false,
+  workspaceId,
 }: SpawnModalProps) {
   const [selectedTemplate, setSelectedTemplate] = useState(AGENT_TEMPLATES[0]);
   const [name, setName] = useState('');
@@ -103,6 +116,64 @@ export function SpawnModal({
   const nameInputRef = useRef<HTMLInputElement>(null);
   const effectiveCommand = selectedTemplate.id === 'custom' ? customCommand : selectedTemplate.command;
   const shadowMode = useMemo(() => deriveShadowMode(effectiveCommand), [effectiveCommand]);
+
+  // Provider credentials state (for cloud mode)
+  const [connectedProviders, setConnectedProviders] = useState<Set<string>>(new Set());
+  const [isLoadingCredentials, setIsLoadingCredentials] = useState(false);
+
+  // Check if selected provider has active credentials
+  const hasActiveCredentials = useMemo(() => {
+    // Non-cloud mode or custom template: no credentials check needed
+    if (!isCloudMode || !selectedTemplate.providerId) {
+      return true;
+    }
+    // Check if provider is connected (handle both 'openai' and 'codex' for OpenAI)
+    if (selectedTemplate.providerId === 'codex') {
+      return connectedProviders.has('codex') || connectedProviders.has('openai');
+    }
+    return connectedProviders.has(selectedTemplate.providerId);
+  }, [isCloudMode, selectedTemplate.providerId, connectedProviders]);
+
+  // Provider setup URL for CTA
+  // Note: /providers/setup/ only supports 'claude' and 'codex'
+  // Other providers should go to /providers page
+  const providerSetupUrl = useMemo(() => {
+    if (!selectedTemplate.providerId) return null;
+    const command = selectedTemplate.command;
+    const supportedSetupPages = ['claude', 'codex'];
+
+    if (supportedSetupPages.includes(command)) {
+      const base = `/providers/setup/${command}`;
+      return workspaceId ? `${base}?workspace=${workspaceId}` : base;
+    } else {
+      // For other providers, go to main providers page
+      return workspaceId ? `/providers?workspace=${workspaceId}` : '/providers';
+    }
+  }, [selectedTemplate, workspaceId]);
+
+  // Fetch connected providers when modal opens in cloud mode
+  useEffect(() => {
+    if (!isOpen || !isCloudMode) {
+      return;
+    }
+
+    const fetchProviders = async () => {
+      setIsLoadingCredentials(true);
+      try {
+        const result = await cloudApi.getMe();
+        if (result.success && result.data.connectedProviders) {
+          const providers = new Set(result.data.connectedProviders.map(p => p.provider));
+          setConnectedProviders(providers);
+        }
+      } catch (err) {
+        console.error('Failed to fetch provider credentials:', err);
+      } finally {
+        setIsLoadingCredentials(false);
+      }
+    };
+
+    fetchProviders();
+  }, [isOpen, isCloudMode]);
 
   const SPEAK_ON_OPTIONS: { value: SpeakOnTrigger; label: string; description: string }[] = [
     { value: 'EXPLICIT_ASK', label: 'Explicit Ask', description: 'When directly asked' },
@@ -434,6 +505,41 @@ export function SpawnModal({
             )}
           </div>
 
+          {/* Credentials CTA - shown when provider is not connected */}
+          {isCloudMode && !hasActiveCredentials && !isLoadingCredentials && selectedTemplate.providerId && (
+            <div className="p-4 bg-amber-400/10 border border-amber-400/30 rounded-lg mb-5">
+              <div className="flex items-start gap-3">
+                <div className="shrink-0 w-8 h-8 rounded-lg bg-amber-400/20 flex items-center justify-center">
+                  <LockIcon />
+                </div>
+                <div className="flex-1">
+                  <h4 className="text-sm font-semibold text-amber-400 mb-1">
+                    {selectedTemplate.name} credentials required
+                  </h4>
+                  <p className="text-xs text-text-secondary mb-3">
+                    Connect your {selectedTemplate.name} account to spawn {selectedTemplate.name} agents.
+                    This enables secure access to the AI provider's API.
+                  </p>
+                  <a
+                    href={providerSetupUrl || '#'}
+                    className="inline-flex items-center gap-2 py-2 px-4 bg-amber-400 text-bg-deep font-semibold rounded-md text-sm hover:bg-amber-500 transition-colors"
+                  >
+                    <LockIcon />
+                    Connect {selectedTemplate.name}
+                  </a>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Loading credentials indicator */}
+          {isCloudMode && isLoadingCredentials && (
+            <div className="flex items-center gap-2 p-3 bg-bg-hover rounded-md text-text-muted text-sm mb-5">
+              <Spinner />
+              <span>Checking provider credentials...</span>
+            </div>
+          )}
+
           {/* Error Display */}
           {displayError && (
             <div className="flex items-center gap-2 p-3 bg-error/10 border border-error/30 rounded-md text-error text-sm mb-5">
@@ -455,7 +561,8 @@ export function SpawnModal({
             <button
               type="submit"
               className="flex items-center gap-1.5 py-2.5 px-4 border-none rounded-md text-sm font-medium cursor-pointer font-sans transition-all duration-150 bg-accent text-white hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed"
-              disabled={isSpawning}
+              disabled={isSpawning || (isCloudMode && !hasActiveCredentials)}
+              title={!hasActiveCredentials && isCloudMode ? `Connect ${selectedTemplate.name} credentials first` : undefined}
             >
               {isSpawning ? (
                 <>
@@ -519,6 +626,15 @@ function Spinner() {
         strokeDasharray="32"
         strokeLinecap="round"
       />
+    </svg>
+  );
+}
+
+function LockIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
     </svg>
   );
 }

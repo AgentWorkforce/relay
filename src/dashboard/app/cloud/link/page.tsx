@@ -23,9 +23,16 @@ interface MachineInfo {
   machineName: string;
 }
 
+interface Workspace {
+  id: string;
+  name: string;
+  status: string;
+}
+
 interface LinkResult {
   apiKey: string;
   daemonId: string;
+  workspaceId: string | null;
 }
 
 // Loading fallback for Suspense
@@ -48,6 +55,8 @@ function CloudLinkContent() {
   const [linkResult, setLinkResult] = useState<LinkResult | null>(null);
   const [error, setError] = useState<string>('');
   const [copied, setCopied] = useState(false);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
 
   // Extract machine info from URL params
   useEffect(() => {
@@ -67,8 +76,15 @@ function CloudLinkContent() {
 
   const checkAuth = async () => {
     try {
-      const data = await api.get<{ userId?: string }>('/api/auth/session');
-      if (data.userId) {
+      const data = await api.get<{ authenticated?: boolean; user?: { id: string } }>('/api/auth/session');
+      if (data.authenticated && data.user?.id) {
+        // Fetch user's workspaces
+        const workspacesData = await api.get<{ workspaces: Workspace[] }>('/api/workspaces');
+        setWorkspaces(workspacesData.workspaces || []);
+        // Auto-select first workspace if only one exists
+        if (workspacesData.workspaces?.length === 1) {
+          setSelectedWorkspaceId(workspacesData.workspaces[0].id);
+        }
         setState('ready');
       } else {
         setState('auth-required');
@@ -82,13 +98,20 @@ function CloudLinkContent() {
   const handleLink = async () => {
     if (!machineInfo) return;
 
+    // Require workspace selection if workspaces exist
+    if (workspaces.length > 0 && !selectedWorkspaceId) {
+      setError('Please select a workspace');
+      return;
+    }
+
     setState('linking');
     setError('');
 
     try {
-      const result = await api.post<{ apiKey: string; daemonId: string }>('/api/daemons/link', {
+      const result = await api.post<{ apiKey: string; daemonId: string; workspaceId: string | null }>('/api/daemons/link', {
         machineId: machineInfo.machineId,
         name: machineInfo.machineName,
+        workspaceId: selectedWorkspaceId,
         metadata: {
           linkedVia: 'cli',
           userAgent: navigator.userAgent,
@@ -98,6 +121,7 @@ function CloudLinkContent() {
       setLinkResult({
         apiKey: result.apiKey,
         daemonId: result.daemonId,
+        workspaceId: result.workspaceId,
       });
       setState('success');
     } catch (err: any) {
@@ -221,6 +245,60 @@ function CloudLinkContent() {
               </div>
             </div>
 
+            {/* Workspace selector */}
+            {workspaces.length > 0 && (
+              <div className="mb-8">
+                <label className="block text-sm font-medium text-text-secondary mb-3">
+                  Select Workspace
+                </label>
+                <p className="text-sm text-text-muted mb-4">
+                  Local agents from this machine will appear in the selected workspace&apos;s dashboard.
+                </p>
+                <div className="space-y-2">
+                  {workspaces.map((workspace) => (
+                    <button
+                      key={workspace.id}
+                      onClick={() => setSelectedWorkspaceId(workspace.id)}
+                      className={`w-full flex items-center gap-3 p-4 rounded-xl border transition-all ${
+                        selectedWorkspaceId === workspace.id
+                          ? 'bg-accent-cyan/10 border-accent-cyan/50 shadow-glow-cyan'
+                          : 'bg-black/20 border-border-subtle hover:border-accent-cyan/30'
+                      }`}
+                    >
+                      <div className={`w-3 h-3 rounded-full ${
+                        workspace.status === 'running' ? 'bg-success' : 'bg-gray-500'
+                      }`} />
+                      <span className="text-text-primary font-medium">{workspace.name}</span>
+                      {selectedWorkspaceId === workspace.id && (
+                        <span className="ml-auto text-accent-cyan">✓</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+                {error && !error.includes('Failed') && (
+                  <p className="mt-2 text-sm text-error">{error}</p>
+                )}
+              </div>
+            )}
+
+            {/* No workspaces warning */}
+            {workspaces.length === 0 && (
+              <div className="flex gap-4 bg-accent-cyan/8 border border-accent-cyan/20 rounded-xl p-5 mb-8">
+                <div className="text-2xl flex-shrink-0">📁</div>
+                <div>
+                  <p className="text-text-primary text-[15px] leading-relaxed mb-2">
+                    No workspaces found. Create a workspace first to link this machine.
+                  </p>
+                  <a
+                    href="/app"
+                    className="text-accent-cyan hover:underline text-sm"
+                  >
+                    Go to Dashboard →
+                  </a>
+                </div>
+              </div>
+            )}
+
             {/* Warning */}
             <div className="flex gap-4 bg-warning/8 border border-warning/20 rounded-xl p-5 mb-8">
               <div className="text-2xl flex-shrink-0 animate-kill-pulse">⚠️</div>
@@ -233,7 +311,12 @@ function CloudLinkContent() {
             {/* Link button */}
             <button
               onClick={handleLink}
-              className="w-full flex items-center justify-center gap-3 px-8 py-4 bg-gradient-to-r from-accent-cyan to-success hover:from-accent-cyan/90 hover:to-success/90 text-text-inverse font-display font-semibold text-lg rounded-xl shadow-glow-cyan transition-all duration-200 hover:-translate-y-0.5 hover:shadow-2xl animate-pulse-glow"
+              disabled={workspaces.length === 0}
+              className={`w-full flex items-center justify-center gap-3 px-8 py-4 font-display font-semibold text-lg rounded-xl transition-all duration-200 ${
+                workspaces.length === 0
+                  ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                  : 'bg-gradient-to-r from-accent-cyan to-success hover:from-accent-cyan/90 hover:to-success/90 text-text-inverse shadow-glow-cyan hover:-translate-y-0.5 hover:shadow-2xl animate-pulse-glow'
+              }`}
             >
               <span className="text-xl">🔗</span>
               <span>Link This Machine</span>
@@ -266,6 +349,11 @@ function CloudLinkContent() {
               <p className="text-text-secondary">
                 Copy this API key and paste it into your terminal
               </p>
+              {linkResult.workspaceId && (
+                <p className="mt-2 text-sm text-accent-cyan">
+                  Linked to workspace: {workspaces.find(w => w.id === linkResult.workspaceId)?.name || 'Unknown'}
+                </p>
+              )}
             </div>
 
             {/* API key box */}

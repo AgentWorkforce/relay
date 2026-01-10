@@ -54,6 +54,38 @@ paths:
 - Handle loading and error states appropriately
 - Use `try/catch` for async operations
 
+## Next.js App Router
+
+- Pages using `useSearchParams()` MUST be wrapped in a `<Suspense>` boundary for static generation
+- Pattern: Create a `{Page}Content` component that uses the hook, wrap it in `<Suspense>` in the default export
+- Always provide a loading fallback component
+
+```tsx
+// Required pattern for useSearchParams
+import { Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
+
+function PageLoading() {
+  return <div>Loading...</div>;
+}
+
+function PageContent() {
+  const searchParams = useSearchParams();
+  const param = searchParams.get('param');
+  // ... component logic
+}
+
+export default function Page() {
+  return (
+    <Suspense fallback={<PageLoading />}>
+      <PageContent />
+    </Suspense>
+  );
+}
+```
+
+- See `app/cloud/link/page.tsx` and `app/login/page.tsx` for examples
+
 ## Common Patterns
 
 ```tsx

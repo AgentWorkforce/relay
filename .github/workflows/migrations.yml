@@ -1,0 +1,64 @@
+name: Database Migrations
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/cloud/db/**'
+      - 'drizzle.config.ts'
+      - '.github/workflows/migrations.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/cloud/db/**'
+      - 'drizzle.config.ts'
+      - '.github/workflows/migrations.yml'
+  # Allow manual trigger
+  workflow_dispatch:
+
+jobs:
+  migrations:
+    name: Run Migrations
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: agent_relay
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: agent_relay_test
+        ports:
+          - 5432:5432
+        # Health check to wait for postgres to be ready
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build project
+        run: npm run build
+
+      - name: Run migrations
+        env:
+          DATABASE_URL: postgres://agent_relay:test_password@localhost:5432/agent_relay_test
+        run: node scripts/run-migrations.js
+
+      - name: Verify schema
+        env:
+          DATABASE_URL: postgres://agent_relay:test_password@localhost:5432/agent_relay_test
+        run: node scripts/verify-schema.js

@@ -230,7 +230,8 @@ describe('MultiProjectClient Integration', () => {
       // Broadcast to all leads
       bridgeClient.broadcastToLeads('Standup time!');
 
-      await new Promise(r => setTimeout(r, 100));
+      // Wait for message delivery (longer timeout for macOS)
+      await new Promise(r => setTimeout(r, 300));
 
       expect(messagesAlice).toContain('Standup time!');
       expect(messagesBob).toContain('Standup time!');

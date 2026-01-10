@@ -49,8 +49,10 @@ fetch_fresh_token() {
     "${CLOUD_API_URL}/api/git/token?workspaceId=${WORKSPACE_ID}" \
     2>/dev/null) || return 1
 
+  # Prefer userToken for gh CLI (works for user-context operations like pr create)
+  # Fall back to token field (which is also userToken-first since the API change)
   local token
-  token=$(echo "$response" | jq -r '.token // empty')
+  token=$(echo "$response" | jq -r '.userToken // .token // empty')
 
   if [[ -n "$token" ]]; then
     echo "$token" > "$CACHE_FILE"

@@ -711,6 +711,9 @@ class FlyProvisioner implements ComputeProvisioner {
               PROVIDERS: (workspace.config.providers ?? []).join(','),
               PORT: String(WORKSPACE_PORT),
               AGENT_RELAY_DASHBOARD_PORT: String(WORKSPACE_PORT),
+              // Store repos on persistent volume (/data) so they survive container restarts
+              // Without this, repos are cloned to /workspace (ephemeral) and lost on restart
+              WORKSPACE_DIR: '/data/repos',
               // Git gateway configuration
               CLOUD_API_URL: this.cloudApiUrl,
               WORKSPACE_TOKEN: this.generateWorkspaceToken(workspace.id),
@@ -1097,9 +1100,10 @@ class FlyProvisioner implements ComputeProvisioner {
     hasActiveAgents: boolean;
     agentCount: number;
     agents: Array<{ name: string; status: string }>;
+    verified: boolean;  // false if we couldn't reach the workspace to verify
   }> {
     if (!workspace.publicUrl) {
-      return { hasActiveAgents: false, agentCount: 0, agents: [] };
+      return { hasActiveAgents: false, agentCount: 0, agents: [], verified: true };
     }
 
     try {
@@ -1124,8 +1128,8 @@ class FlyProvisioner implements ComputeProvisioner {
       clearTimeout(timer);
 
       if (!response.ok) {
-        console.warn(`[fly] Failed to check agents for ${workspace.id.substring(0, 8)}: ${response.status}`);
-        return { hasActiveAgents: false, agentCount: 0, agents: [] };
+        console.warn(`[fly] Failed to check agents for ${workspace.id.substring(0, 8)}: HTTP ${response.status}`);
+        return { hasActiveAgents: false, agentCount: 0, agents: [], verified: false };
       }
 
       const data = await response.json() as {
@@ -1133,21 +1137,40 @@ class FlyProvisioner implements ComputeProvisioner {
       };
 
       const agents = data.agents || [];
+
+      // Diagnostic logging: capture raw agent data before filtering
+      if (agents.length > 0) {
+        console.log(`[fly] Workspace ${workspace.id.substring(0, 8)} raw agent data:`,
+          agents.map(a => ({ name: a.name, status: a.status, activityState: a.activityState }))
+        );
+      }
+
       // Consider agents with 'active' or 'idle' activity state as active
       // 'disconnected' agents are not active
       const activeAgents = agents.filter(a =>
         a.status === 'running' || a.activityState === 'active' || a.activityState === 'idle'
       );
 
+      // Log filtering results for diagnostics
+      if (agents.length > 0 && activeAgents.length !== agents.length) {
+        const filteredOut = agents.filter(a =>
+          !(a.status === 'running' || a.activityState === 'active' || a.activityState === 'idle')
+        );
+        console.log(`[fly] Workspace ${workspace.id.substring(0, 8)} filtered out agents:`,
+          filteredOut.map(a => ({ name: a.name, status: a.status, activityState: a.activityState }))
+        );
+      }
+
       return {
         hasActiveAgents: activeAgents.length > 0,
         agentCount: activeAgents.length,
         agents: agents.map(a => ({ name: a.name, status: a.status || a.activityState || 'unknown' })),
+        verified: true,
       };
     } catch (error) {
-      // Workspace might be stopped or unreachable - treat as no active agents
+      // Workspace might be stopped or unreachable - cannot verify agent status
       console.warn(`[fly] Could not reach workspace ${workspace.id.substring(0, 8)} to check agents:`, (error as Error).message);
-      return { hasActiveAgents: false, agentCount: 0, agents: [] };
+      return { hasActiveAgents: false, agentCount: 0, agents: [], verified: false };
     }
   }
 
@@ -1275,6 +1298,8 @@ class RailwayProvisioner implements ComputeProvisioner {
       PROVIDERS: (workspace.config.providers ?? []).join(','),
       PORT: String(WORKSPACE_PORT),
       AGENT_RELAY_DASHBOARD_PORT: String(WORKSPACE_PORT),
+      // Store repos on persistent volume so they survive container restarts
+      WORKSPACE_DIR: '/data/repos',
       CLOUD_API_URL: this.cloudApiUrl,
       WORKSPACE_TOKEN: this.generateWorkspaceToken(workspace.id),
     };
@@ -1521,6 +1546,8 @@ class DockerProvisioner implements ComputeProvisioner {
       `-e PROVIDERS=${(workspace.config.providers ?? []).join(',')}`,
       `-e PORT=${WORKSPACE_PORT}`,
       `-e AGENT_RELAY_DASHBOARD_PORT=${WORKSPACE_PORT}`,
+      // Store repos on persistent volume so they survive container restarts
+      `-e WORKSPACE_DIR=/data/repos`,
       `-e CLOUD_API_URL=${this.cloudApiUrlForContainer}`,
       `-e WORKSPACE_TOKEN=${this.generateWorkspaceToken(workspace.id)}`,
     ];
@@ -2123,6 +2150,7 @@ export class WorkspaceProvisioner {
     UPDATED: 'updated',
     UPDATED_PENDING_RESTART: 'updated_pending_restart',
     SKIPPED_ACTIVE_AGENTS: 'skipped_active_agents',
+    SKIPPED_VERIFICATION_FAILED: 'skipped_verification_failed',
     SKIPPED_NOT_RUNNING: 'skipped_not_running',
     NOT_SUPPORTED: 'not_supported',
     ERROR: 'error',
@@ -2194,6 +2222,17 @@ export class WorkspaceProvisioner {
       if (machineState === 'started') {
         // Machine is running - check for active agents
         const agentCheck = await flyProvisioner.checkActiveAgents(workspace);
+
+        // If we couldn't verify agent status and not forcing, skip to be safe
+        if (!agentCheck.verified && !options.force) {
+          console.log(`[provisioner] Skipped workspace ${workspaceId.substring(0, 8)}: unable to verify agent status (workspace unreachable)`);
+          return {
+            result: WorkspaceProvisioner.UpdateResult.SKIPPED_VERIFICATION_FAILED,
+            workspaceId,
+            machineState,
+            error: 'Unable to verify agent status - workspace unreachable',
+          };
+        }
 
         if (agentCheck.hasActiveAgents && !options.force) {
           // Has active agents and not forcing - skip
@@ -2344,6 +2383,7 @@ export class WorkspaceProvisioner {
       updated: results.filter(r => r.result === WorkspaceProvisioner.UpdateResult.UPDATED).length,
       pendingRestart: results.filter(r => r.result === WorkspaceProvisioner.UpdateResult.UPDATED_PENDING_RESTART).length,
       skippedActiveAgents: results.filter(r => r.result === WorkspaceProvisioner.UpdateResult.SKIPPED_ACTIVE_AGENTS).length,
+      skippedVerificationFailed: results.filter(r => r.result === WorkspaceProvisioner.UpdateResult.SKIPPED_VERIFICATION_FAILED).length,
       skippedNotRunning: results.filter(r => r.result === WorkspaceProvisioner.UpdateResult.SKIPPED_NOT_RUNNING).length,
       errors: results.filter(r => r.result === WorkspaceProvisioner.UpdateResult.ERROR).length,
     };

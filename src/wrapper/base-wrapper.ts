@@ -218,11 +218,17 @@ export abstract class BaseWrapper extends EventEmitter {
    */
   protected sendRelayCommand(cmd: ParsedCommand): void {
     // Validate target
-    if (isPlaceholderTarget(cmd.to)) return;
+    if (isPlaceholderTarget(cmd.to)) {
+      console.error(`[base-wrapper] Skipped message - placeholder target: ${cmd.to}`);
+      return;
+    }
 
     // Create hash for deduplication (use first 100 chars of body)
     const hash = `${cmd.to}:${cmd.body.substring(0, 100)}`;
-    if (this.sentMessageHashes.has(hash)) return;
+    if (this.sentMessageHashes.has(hash)) {
+      console.error(`[base-wrapper] Skipped duplicate message to ${cmd.to}`);
+      return;
+    }
     this.sentMessageHashes.add(hash);
 
     // Limit hash set size

@@ -7,6 +7,7 @@
  */
 
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { getApiUrl } from '../lib/api';
 
 export interface FileAutocompleteProps {
   /** Current input value */
@@ -150,10 +151,11 @@ export function FileAutocomplete({
 
       try {
         const searchQuery = query || '';
-        const response = await fetch(
-          `${apiBase}/api/files?q=${encodeURIComponent(searchQuery)}&limit=15`,
-          { signal: controller.signal }
-        );
+        // Use getApiUrl for cloud mode support (routes through workspace proxy)
+        const url = apiBase
+          ? `${apiBase}/api/files?q=${encodeURIComponent(searchQuery)}&limit=15`
+          : getApiUrl(`/api/files?q=${encodeURIComponent(searchQuery)}&limit=15`);
+        const response = await fetch(url, { signal: controller.signal });
 
         if (!response.ok) {
           throw new Error('Failed to fetch files');
