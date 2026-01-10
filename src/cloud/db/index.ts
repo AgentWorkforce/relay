@@ -49,10 +49,6 @@ export type {
   CommentMention,
   NewCommentMention,
   AgentTriggerConfig,
-  // Agent message types
-  AgentMessage,
-  NewAgentMessage,
-  MessagePayloadMeta,
   // Channel types
   Channel,
   NewChannel,
@@ -82,7 +78,6 @@ export {
   ciFixAttempts as ciFixAttemptsTable,
   issueAssignments as issueAssignmentsTable,
   commentMentions as commentMentionsTable,
-  agentMessages as agentMessagesTable,
   channels as channelsTable,
   channelMembers as channelMembersTable,
   channelMessages as channelMessagesTable,
@@ -106,7 +101,6 @@ import {
   ciFixAttemptQueries,
   issueAssignmentQueries,
   commentMentionQueries,
-  agentMessageQueries,
   channelQueries,
   channelMemberQueries,
   channelMessageQueries,
@@ -141,8 +135,6 @@ export const db = {
   // Issue and comment tracking
   issueAssignments: issueAssignmentQueries,
   commentMentions: commentMentionQueries,
-  // Agent messages (cloud-synced relay messages)
-  agentMessages: agentMessageQueries,
   // Channels
   channels: channelQueries,
   channelMembers: channelMemberQueries,
@@ -168,12 +160,14 @@ export {
   ciFixAttemptQueries,
   issueAssignmentQueries,
   commentMentionQueries,
-  agentMessageQueries,
   channelQueries,
   channelMemberQueries,
   channelMessageQueries,
   channelReadStateQueries,
 };
+
+// Export search types
+export type { SearchResult, SearchOptions } from './drizzle.js';
 
 // Export database utilities
 export { getDb, closeDb, runMigrations };

@@ -1703,7 +1703,7 @@ export const channelMemberQueries: ChannelMemberQueries = {
     return db
       .select()
       .from(schema.channelMembers)
-      .where(and(eq(schema.channelMembers.memberId, memberId), eq(schema.channelMembers.memberType, memberType)));
+      .where(and(eq(schema.channelMembers.entityId, memberId), eq(schema.channelMembers.entityType, memberType)));
   },
 
   async findMembership(channelId: string, memberId: string, memberType: schema.ChannelMemberType): Promise<schema.ChannelMember | null> {
@@ -1714,8 +1714,8 @@ export const channelMemberQueries: ChannelMemberQueries = {
       .where(
         and(
           eq(schema.channelMembers.channelId, channelId),
-          eq(schema.channelMembers.memberId, memberId),
-          eq(schema.channelMembers.memberType, memberType)
+          eq(schema.channelMembers.entityId, memberId),
+          eq(schema.channelMembers.entityType, memberType)
         )
       );
     return result[0] ?? null;
@@ -1735,8 +1735,8 @@ export const channelMemberQueries: ChannelMemberQueries = {
       .where(
         and(
           eq(schema.channelMembers.channelId, channelId),
-          eq(schema.channelMembers.memberId, memberId),
-          eq(schema.channelMembers.memberType, memberType)
+          eq(schema.channelMembers.entityId, memberId),
+          eq(schema.channelMembers.entityType, memberType)
         )
       );
   },
@@ -1748,8 +1748,8 @@ export const channelMemberQueries: ChannelMemberQueries = {
       .where(
         and(
           eq(schema.channelMembers.channelId, channelId),
-          eq(schema.channelMembers.memberId, memberId),
-          eq(schema.channelMembers.memberType, memberType)
+          eq(schema.channelMembers.entityId, memberId),
+          eq(schema.channelMembers.entityType, memberType)
         )
       );
   },
@@ -1762,8 +1762,8 @@ export const channelMemberQueries: ChannelMemberQueries = {
       .where(
         and(
           eq(schema.channelMembers.channelId, channelId),
-          eq(schema.channelMembers.memberId, memberId),
-          eq(schema.channelMembers.memberType, memberType)
+          eq(schema.channelMembers.entityId, memberId),
+          eq(schema.channelMembers.entityType, memberType)
         )
       );
     return result.length > 0;
@@ -1777,8 +1777,8 @@ export const channelMemberQueries: ChannelMemberQueries = {
       .where(
         and(
           eq(schema.channelMembers.channelId, channelId),
-          eq(schema.channelMembers.memberId, memberId),
-          eq(schema.channelMembers.memberType, memberType),
+          eq(schema.channelMembers.entityId, memberId),
+          eq(schema.channelMembers.entityType, memberType),
           eq(schema.channelMembers.role, 'admin')
         )
       );
@@ -1793,8 +1793,8 @@ export const channelMemberQueries: ChannelMemberQueries = {
       .where(
         and(
           eq(schema.channelMembers.channelId, channelId),
-          eq(schema.channelMembers.memberId, memberId),
-          eq(schema.channelMembers.memberType, memberType)
+          eq(schema.channelMembers.entityId, memberId),
+          eq(schema.channelMembers.entityType, memberType)
         )
       );
     const member = result[0];
@@ -1815,6 +1815,19 @@ export const channelMemberQueries: ChannelMemberQueries = {
 // Channel Message Queries
 // ============================================================================
 
+export interface SearchResult {
+  message: schema.ChannelMessage;
+  headline: string;
+  rank: number;
+}
+
+export interface SearchOptions {
+  channelId?: string;
+  channelIds?: string[];
+  limit?: number;
+  offset?: number;
+}
+
 export interface ChannelMessageQueries {
   findById(id: string): Promise<schema.ChannelMessage | null>;
   findByChannelId(channelId: string, options?: { limit?: number; beforeId?: string }): Promise<schema.ChannelMessage[]>;
@@ -1827,6 +1840,8 @@ export interface ChannelMessageQueries {
   delete(id: string): Promise<void>;
   incrementReplyCount(id: string): Promise<void>;
   decrementReplyCount(id: string): Promise<void>;
+  search(query: string, options?: SearchOptions): Promise<SearchResult[]>;
+  searchCount(query: string, options?: SearchOptions): Promise<number>;
 }
 
 export const channelMessageQueries: ChannelMessageQueries = {
@@ -1930,6 +1945,107 @@ export const channelMessageQueries: ChannelMessageQueries = {
       .update(schema.channelMessages)
       .set({ replyCount: sql`GREATEST(${schema.channelMessages.replyCount} - 1, 0)`, updatedAt: new Date() })
       .where(eq(schema.channelMessages.id, id));
+  },
+
+  async search(query: string, options?: SearchOptions): Promise<SearchResult[]> {
+    const db = getDb();
+    const limit = Math.min(options?.limit ?? 20, 100);
+    const offset = options?.offset ?? 0;
+
+    // Normalize and escape query for tsquery
+    const normalizedQuery = query
+      .trim()
+      .toLowerCase()
+      .replace(/[^\w\s]/g, ' ')  // Remove special chars
+      .split(/\s+/)
+      .filter(word => word.length > 0)
+      .map(word => `${word}:*`)  // Prefix matching
+      .join(' & ');
+
+    if (!normalizedQuery) {
+      return [];
+    }
+
+    // Build channel filter
+    let channelFilter = '';
+    if (options?.channelId) {
+      channelFilter = `AND channel_id = '${options.channelId}'`;
+    } else if (options?.channelIds && options.channelIds.length > 0) {
+      const ids = options.channelIds.map(id => `'${id}'`).join(',');
+      channelFilter = `AND channel_id IN (${ids})`;
+    }
+
+    const result = await db.execute(sql.raw(`
+      SELECT
+        m.*,
+        ts_headline('english', m.body, plainto_tsquery('english', '${query.replace(/'/g, "''")}'),
+          'StartSel=<mark>, StopSel=</mark>, MaxWords=35, MinWords=15, MaxFragments=2') as headline,
+        ts_rank(m.search_vector, to_tsquery('english', '${normalizedQuery}')) as rank
+      FROM channel_messages m
+      WHERE m.search_vector @@ to_tsquery('english', '${normalizedQuery}')
+      ${channelFilter}
+      ORDER BY rank DESC, m.created_at DESC
+      LIMIT ${limit}
+      OFFSET ${offset}
+    `));
+
+    return (result.rows as Array<Record<string, unknown>>).map(row => ({
+      message: {
+        id: row.id as string,
+        channelId: row.channel_id as string,
+        senderId: row.sender_id as string,
+        senderType: row.sender_type as schema.ChannelMemberType,
+        senderName: row.sender_name as string,
+        senderAvatarUrl: row.sender_avatar_url as string | null,
+        body: row.body as string,
+        threadId: row.thread_id as string | null,
+        replyCount: Number(row.reply_count),
+        isPinned: row.is_pinned as boolean,
+        pinnedAt: row.pinned_at ? new Date(row.pinned_at as string) : null,
+        pinnedById: row.pinned_by_id as string | null,
+        mentions: row.mentions as string[] | null,
+        createdAt: new Date(row.created_at as string),
+        updatedAt: new Date(row.updated_at as string),
+      },
+      headline: row.headline as string,
+      rank: Number(row.rank),
+    }));
+  },
+
+  async searchCount(query: string, options?: SearchOptions): Promise<number> {
+    const db = getDb();
+
+    // Normalize and escape query for tsquery
+    const normalizedQuery = query
+      .trim()
+      .toLowerCase()
+      .replace(/[^\w\s]/g, ' ')
+      .split(/\s+/)
+      .filter(word => word.length > 0)
+      .map(word => `${word}:*`)
+      .join(' & ');
+
+    if (!normalizedQuery) {
+      return 0;
+    }
+
+    // Build channel filter
+    let channelFilter = '';
+    if (options?.channelId) {
+      channelFilter = `AND channel_id = '${options.channelId}'`;
+    } else if (options?.channelIds && options.channelIds.length > 0) {
+      const ids = options.channelIds.map(id => `'${id}'`).join(',');
+      channelFilter = `AND channel_id IN (${ids})`;
+    }
+
+    const result = await db.execute(sql.raw(`
+      SELECT COUNT(*) as count
+      FROM channel_messages m
+      WHERE m.search_vector @@ to_tsquery('english', '${normalizedQuery}')
+      ${channelFilter}
+    `));
+
+    return Number((result.rows[0] as Record<string, unknown>).count);
   },
 };
 

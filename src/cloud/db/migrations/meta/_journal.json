@@ -85,6 +85,13 @@
       "when": 1736380801000,
       "tag": "0013_add_channel_topic_activity",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "5",
+      "when": 1736467200000,
+      "tag": "0014_channel_messages_fts",
+      "breakpoints": true
     }
   ]
 }

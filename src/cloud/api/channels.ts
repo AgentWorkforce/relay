@@ -240,10 +240,9 @@ channelsRouter.post('/workspaces/:workspaceId/channels', async (req: Request, re
     // Add creator as admin member
     await db.channelMembers.addMember({
       channelId: channel.id,
-      memberId: userId,
-      memberType: 'user',
+      entityId: userId,
+      entityType: 'user',
       role: 'admin',
-      addedById: userId,
     });
 
     // Increment member count
@@ -480,12 +479,12 @@ channelsRouter.get('/workspaces/:workspaceId/channels/:channelId/members', async
     // Enrich with user info for user members
     const enrichedMembers = await Promise.all(
       members.map(async (m) => {
-        if (m.memberType === 'user') {
-          const user = await db.users.findById(m.memberId);
+        if (m.entityType === 'user') {
+          const user = await db.users.findById(m.entityId);
           return {
             id: m.id,
-            memberId: m.memberId,
-            memberType: m.memberType,
+            memberId: m.entityId,
+            memberType: m.entityType,
             role: m.role,
             joinedAt: m.joinedAt,
             user: user
@@ -500,8 +499,8 @@ channelsRouter.get('/workspaces/:workspaceId/channels/:channelId/members', async
           // Agent member - just return basic info
           return {
             id: m.id,
-            memberId: m.memberId,
-            memberType: m.memberType,
+            memberId: m.entityId,
+            memberType: m.entityType,
             role: m.role,
             joinedAt: m.joinedAt,
           };
@@ -576,10 +575,9 @@ channelsRouter.post('/workspaces/:workspaceId/channels/:channelId/members', asyn
     // Add member
     const member = await db.channelMembers.addMember({
       channelId,
-      memberId,
-      memberType,
+      entityId: memberId,
+      entityType: memberType,
       role,
-      addedById: userId,
     });
 
     // Increment member count
@@ -588,8 +586,8 @@ channelsRouter.post('/workspaces/:workspaceId/channels/:channelId/members', asyn
     res.status(201).json({
       member: {
         id: member.id,
-        memberId: member.memberId,
-        memberType: member.memberType,
+        memberId: member.entityId,
+        memberType: member.entityType,
         role: member.role,
         joinedAt: member.joinedAt,
       },
@@ -633,10 +631,9 @@ channelsRouter.post('/workspaces/:workspaceId/channels/:channelId/join', async (
     // Add as regular member
     const member = await db.channelMembers.addMember({
       channelId,
-      memberId: userId,
-      memberType: 'user',
+      entityId: userId,
+      entityType: 'user',
       role: 'member',
-      addedById: userId, // Self-join
     });
 
     // Increment member count
@@ -1082,6 +1079,70 @@ channelsRouter.get('/workspaces/:workspaceId/channels/:channelId/messages/pinned
 });
 
 /**
+ * GET /api/workspaces/:workspaceId/channels/:channelId/messages/:threadId/thread
+ * Get a thread (parent message + all replies)
+ */
+channelsRouter.get('/workspaces/:workspaceId/channels/:channelId/messages/:threadId/thread', async (req: Request, res: Response) => {
+  const userId = req.session.userId!;
+  const { workspaceId, channelId, threadId } = req.params;
+
+  try {
+    // Check user has access to workspace
+    if (!(await canViewWorkspace(workspaceId, userId))) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const channel = await db.channels.findById(channelId);
+    if (!channel || channel.workspaceId !== workspaceId) {
+      return res.status(404).json({ error: 'Channel not found' });
+    }
+
+    // Check access for private channels
+    if (channel.isPrivate) {
+      const isMember = await db.channelMembers.isMember(channelId, userId, 'user');
+      if (!isMember) {
+        return res.status(403).json({ error: 'Access denied to private channel' });
+      }
+    }
+
+    // Get the parent message
+    const parentMessage = await db.channelMessages.findById(threadId);
+    if (!parentMessage || parentMessage.channelId !== channelId) {
+      return res.status(404).json({ error: 'Thread not found' });
+    }
+
+    // Get all replies in the thread
+    const replies = await db.channelMessages.findThread(threadId);
+
+    // Get user's read state
+    const readState = await db.channelReadState.findByChannelAndUser(channelId, userId);
+
+    const formatMessage = (m: typeof parentMessage) => ({
+      id: m.id,
+      channelId: m.channelId,
+      from: m.senderName,
+      fromId: m.senderId,
+      fromEntityType: m.senderType,
+      content: m.body,
+      timestamp: m.createdAt.toISOString(),
+      editedAt: m.updatedAt > m.createdAt ? m.updatedAt.toISOString() : undefined,
+      threadId: m.threadId,
+      replyCount: m.replyCount,
+      isPinned: m.isPinned,
+      isRead: readState ? m.createdAt <= readState.lastReadAt : true,
+    });
+
+    res.json({
+      parent: formatMessage(parentMessage),
+      replies: replies.map(formatMessage),
+    });
+  } catch (error) {
+    console.error('Error getting thread:', error);
+    res.status(500).json({ error: 'Failed to get thread' });
+  }
+});
+
+/**
  * POST /api/workspaces/:workspaceId/channels/:channelId/messages/:messageId/pin
  * Pin a message
  */
@@ -1194,5 +1255,194 @@ channelsRouter.post('/workspaces/:workspaceId/channels/:channelId/read', async (
   } catch (error) {
     console.error('Error marking channel as read:', error);
     res.status(500).json({ error: 'Failed to mark as read' });
+  }
+});
+
+// ============================================================================
+// Search Routes (Task 5: Full-Text Search)
+// ============================================================================
+
+/**
+ * GET /api/workspaces/:workspaceId/search
+ * Search messages across all accessible channels in a workspace
+ */
+channelsRouter.get('/workspaces/:workspaceId/search', async (req: Request, res: Response) => {
+  const userId = req.session.userId!;
+  const { workspaceId } = req.params;
+  const { q, channelId, limit = '20', offset = '0' } = req.query;
+
+  // Validate search query
+  if (!q || typeof q !== 'string' || q.trim().length === 0) {
+    return res.status(400).json({ error: 'Search query (q) is required' });
+  }
+
+  if (q.length > 500) {
+    return res.status(400).json({ error: 'Search query too long (max 500 characters)' });
+  }
+
+  try {
+    // Check user has access to workspace
+    if (!(await canViewWorkspace(workspaceId, userId))) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    // Get all channels user can access
+    const allChannels = await db.channels.findByWorkspaceId(workspaceId, { includeArchived: false });
+
+    // Filter to channels user can access
+    const accessibleChannelIds: string[] = [];
+    for (const channel of allChannels) {
+      if (!channel.isPrivate) {
+        accessibleChannelIds.push(channel.id);
+      } else {
+        const isMember = await db.channelMembers.isMember(channel.id, userId, 'user');
+        if (isMember) {
+          accessibleChannelIds.push(channel.id);
+        }
+      }
+    }
+
+    if (accessibleChannelIds.length === 0) {
+      return res.json({
+        results: [],
+        meta: {
+          query: q,
+          total: 0,
+          limit: parseInt(limit as string),
+          offset: parseInt(offset as string),
+        },
+      });
+    }
+
+    // Build search options
+    const searchOptions = {
+      channelIds: channelId ? undefined : accessibleChannelIds,
+      channelId: channelId as string | undefined,
+      limit: Math.min(parseInt(limit as string) || 20, 100),
+      offset: parseInt(offset as string) || 0,
+    };
+
+    // If specific channel requested, verify access
+    if (channelId) {
+      if (!accessibleChannelIds.includes(channelId as string)) {
+        return res.status(403).json({ error: 'Access denied to channel' });
+      }
+    }
+
+    // Execute search
+    const [results, total] = await Promise.all([
+      db.channelMessages.search(q, searchOptions),
+      db.channelMessages.searchCount(q, searchOptions),
+    ]);
+
+    // Build channel lookup for response
+    const channelMap = new Map(allChannels.map(c => [c.id, c]));
+
+    res.json({
+      results: results.map(r => ({
+        id: r.message.id,
+        channelId: r.message.channelId,
+        channelName: channelMap.get(r.message.channelId)?.name,
+        from: r.message.senderName,
+        fromId: r.message.senderId,
+        fromEntityType: r.message.senderType,
+        content: r.message.body,
+        headline: r.headline,
+        rank: r.rank,
+        timestamp: r.message.createdAt.toISOString(),
+        threadId: r.message.threadId,
+        isPinned: r.message.isPinned,
+      })),
+      meta: {
+        query: q,
+        total,
+        limit: searchOptions.limit,
+        offset: searchOptions.offset,
+        hasMore: searchOptions.offset + results.length < total,
+      },
+    });
+  } catch (error) {
+    console.error('Error searching messages:', error);
+    res.status(500).json({ error: 'Failed to search messages' });
+  }
+});
+
+/**
+ * GET /api/workspaces/:workspaceId/channels/:channelId/search
+ * Search messages within a specific channel
+ */
+channelsRouter.get('/workspaces/:workspaceId/channels/:channelId/search', async (req: Request, res: Response) => {
+  const userId = req.session.userId!;
+  const { workspaceId, channelId } = req.params;
+  const { q, limit = '20', offset = '0' } = req.query;
+
+  // Validate search query
+  if (!q || typeof q !== 'string' || q.trim().length === 0) {
+    return res.status(400).json({ error: 'Search query (q) is required' });
+  }
+
+  if (q.length > 500) {
+    return res.status(400).json({ error: 'Search query too long (max 500 characters)' });
+  }
+
+  try {
+    // Check user has access to workspace
+    if (!(await canViewWorkspace(workspaceId, userId))) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const channel = await db.channels.findById(channelId);
+    if (!channel || channel.workspaceId !== workspaceId) {
+      return res.status(404).json({ error: 'Channel not found' });
+    }
+
+    // Check access for private channels
+    if (channel.isPrivate) {
+      const isMember = await db.channelMembers.isMember(channelId, userId, 'user');
+      if (!isMember) {
+        return res.status(403).json({ error: 'Access denied to private channel' });
+      }
+    }
+
+    const searchOptions = {
+      channelId,
+      limit: Math.min(parseInt(limit as string) || 20, 100),
+      offset: parseInt(offset as string) || 0,
+    };
+
+    // Execute search
+    const [results, total] = await Promise.all([
+      db.channelMessages.search(q, searchOptions),
+      db.channelMessages.searchCount(q, searchOptions),
+    ]);
+
+    res.json({
+      results: results.map(r => ({
+        id: r.message.id,
+        channelId: r.message.channelId,
+        channelName: channel.name,
+        from: r.message.senderName,
+        fromId: r.message.senderId,
+        fromEntityType: r.message.senderType,
+        content: r.message.body,
+        headline: r.headline,
+        rank: r.rank,
+        timestamp: r.message.createdAt.toISOString(),
+        threadId: r.message.threadId,
+        isPinned: r.message.isPinned,
+      })),
+      meta: {
+        query: q,
+        channelId,
+        channelName: channel.name,
+        total,
+        limit: searchOptions.limit,
+        offset: searchOptions.offset,
+        hasMore: searchOptions.offset + results.length < total,
+      },
+    });
+  } catch (error) {
+    console.error('Error searching channel messages:', error);
+    res.status(500).json({ error: 'Failed to search messages' });
   }
 });

@@ -8,6 +8,28 @@
 // Types
 export * from './types';
 
+// API (real + mock fallback)
+export {
+  listChannels,
+  getChannel,
+  getMessages,
+  createChannel,
+  sendMessage,
+  joinChannel,
+  leaveChannel,
+  archiveChannel,
+  unarchiveChannel,
+  deleteChannel,
+  markRead,
+  pinMessage,
+  unpinMessage,
+  getMentionSuggestions,
+  isRealApiEnabled,
+  setApiMode,
+  getApiMode,
+  ApiError,
+} from './api';
+
 // Components
 export { ChannelSidebarV1 } from './ChannelSidebarV1';
 export { ChannelHeader } from './ChannelHeader';
