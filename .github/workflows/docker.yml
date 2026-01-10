@@ -18,6 +18,11 @@ on:
         required: false
         default: false
 
+# Prevent concurrent Docker builds from competing for resources
+concurrency:
+  group: docker-build
+  cancel-in-progress: true
+
 env:
   REGISTRY: ghcr.io
   ORG: agentworkforce
