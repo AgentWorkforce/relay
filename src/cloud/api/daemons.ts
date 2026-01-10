@@ -552,13 +552,16 @@ daemonsRouter.post('/messages/sync', requireDaemonAuth as any, async (req: Reque
       expiresAt,
     }));
 
-    // Insert with onConflictDoNothing for deduplication
-    const inserted = await db.agentMessages.createMany(dbMessages);
+    // Use optimized bulk insert for high-volume message sync
+    // - Batches < 100: multi-row INSERT
+    // - Batches 100-1000: chunked multi-row INSERT
+    // - Batches > 1000: streaming COPY with staging table
+    const result = await db.bulk.optimizedInsert(db.getRawPool(), dbMessages);
 
-    const synced = inserted.length;
-    const duplicates = messages.length - synced;
+    const synced = result.inserted;
+    const duplicates = result.duplicates;
 
-    console.log(`[message-sync] Synced ${synced} messages for daemon ${daemon.id}, ${duplicates} duplicates skipped`);
+    console.log(`[message-sync] Synced ${synced} messages for daemon ${daemon.id}, ${duplicates} duplicates skipped (${result.durationMs}ms)`);
 
     res.json({
       success: true,
@@ -583,11 +586,21 @@ daemonsRouter.get('/messages/stats', requireDaemonAuth as any, async (req: Reque
   }
 
   try {
-    const count = await db.agentMessages.countByWorkspace(daemon.workspaceId);
+    // Get message count and pool health in parallel
+    const [count, poolHealth, poolStats] = await Promise.all([
+      db.agentMessages.countByWorkspace(daemon.workspaceId),
+      db.bulk.checkHealth(),
+      Promise.resolve(db.bulk.getPoolStats()),
+    ]);
 
     res.json({
       workspaceId: daemon.workspaceId,
       messageCount: count,
+      database: {
+        healthy: poolHealth.healthy,
+        latencyMs: poolHealth.latencyMs,
+        pool: poolStats,
+      },
     });
   } catch (error) {
     console.error('Error fetching message stats:', error);

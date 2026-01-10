@@ -10,6 +10,7 @@ import { Pool } from 'pg';
 import { eq, and, sql, desc, lt, isNull, isNotNull, inArray } from 'drizzle-orm';
 import * as schema from './schema.js';
 import { getConfig } from '../config.js';
+import { DEFAULT_POOL_CONFIG, type PoolConfig } from './bulk-ingest.js';
 
 // Types
 export type {
@@ -49,12 +50,39 @@ export * from './schema.js';
 let pool: Pool | null = null;
 let drizzleDb: ReturnType<typeof drizzle> | null = null;
 
+/**
+ * Get or create the connection pool with optimized settings.
+ * Pool configuration:
+ * - max: 20 connections (up from default 10)
+ * - idleTimeoutMillis: 30s (close idle connections)
+ * - connectionTimeoutMillis: 10s (fail fast on connection issues)
+ */
 function getPool(): Pool {
   if (!pool) {
     const config = getConfig();
-    pool = new Pool({ connectionString: config.databaseUrl });
+    pool = new Pool({
+      connectionString: config.databaseUrl,
+      ...DEFAULT_POOL_CONFIG,
+      // Allow SSL for cloud databases
+      ssl: config.databaseUrl?.includes('sslmode=require')
+        ? { rejectUnauthorized: false }
+        : undefined,
+    });
+
+    // Log pool errors (connection issues, etc.)
+    pool.on('error', (err) => {
+      console.error('[db] Pool error:', err.message);
+    });
   }
   return pool;
+}
+
+/**
+ * Get the raw connection pool for bulk operations.
+ * Use this for optimized bulk inserts that bypass the ORM.
+ */
+export function getRawPool(): Pool {
+  return getPool();
 }
 
 export function getDb() {

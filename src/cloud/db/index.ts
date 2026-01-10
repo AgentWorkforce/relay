@@ -79,6 +79,7 @@ import {
   getDb,
   closeDb,
   runMigrations,
+  getRawPool,
   userQueries,
   githubInstallationQueries,
   credentialQueries,
@@ -93,6 +94,16 @@ import {
   commentMentionQueries,
   agentMessageQueries,
 } from './drizzle.js';
+
+// Import bulk ingest utilities
+import {
+  bulkInsertMessages,
+  streamingBulkInsert,
+  optimizedBulkInsert,
+  getPoolStats,
+  checkPoolHealth,
+  type BulkInsertResult,
+} from './bulk-ingest.js';
 
 // Legacy type aliases for backwards compatibility
 export type PlanType = 'free' | 'pro' | 'team' | 'enterprise';
@@ -124,8 +135,17 @@ export const db = {
   commentMentions: commentMentionQueries,
   // Agent messages (cloud-synced relay messages)
   agentMessages: agentMessageQueries,
+  // Bulk ingest utilities (optimized high-volume operations)
+  bulk: {
+    insertMessages: bulkInsertMessages,
+    streamingInsert: streamingBulkInsert,
+    optimizedInsert: optimizedBulkInsert,
+    getPoolStats: () => getPoolStats(getRawPool()),
+    checkHealth: () => checkPoolHealth(getRawPool()),
+  },
   // Database utilities
   getDb,
+  getRawPool,
   close: closeDb,
   runMigrations,
 };
@@ -148,7 +168,17 @@ export {
 };
 
 // Export database utilities
-export { getDb, closeDb, runMigrations };
+export { getDb, closeDb, runMigrations, getRawPool };
+
+// Export bulk ingest utilities
+export {
+  bulkInsertMessages,
+  streamingBulkInsert,
+  optimizedBulkInsert,
+  getPoolStats,
+  checkPoolHealth,
+  type BulkInsertResult,
+};
 
 // Legacy function - use runMigrations instead
 export async function initializeDatabase(): Promise<void> {
