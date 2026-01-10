@@ -29,7 +29,7 @@ export interface SidebarProps {
   humanUnreadCounts?: Record<string, number>;
   currentProject?: string;
   selectedAgent?: string;
-  viewMode: 'local' | 'fleet';
+  viewMode: 'local' | 'fleet' | 'channels';
   isFleetAvailable: boolean;
   isConnected: boolean;
   /** Mobile: whether sidebar is open */
@@ -44,7 +44,7 @@ export interface SidebarProps {
   /** Handler when a human user is selected (opens DM) */
   onHumanSelect?: (human: Agent) => void;
   onProjectSelect?: (project: Project) => void;
-  onViewModeChange?: (mode: 'local' | 'fleet') => void;
+  onViewModeChange?: (mode: 'local' | 'fleet' | 'channels') => void;
   onSpawnClick?: () => void;
   onReleaseClick?: (agent: Agent) => void;
   onLogsClick?: (agent: Agent) => void;
@@ -170,22 +170,33 @@ export function Sidebar({
         </div>
 
         {/* View Mode Toggle */}
-        {isFleetAvailable && (
-          <div className="flex bg-bg-tertiary rounded-lg p-1">
+        <div className="flex bg-bg-tertiary rounded-lg p-1">
+          <button
+            className={`
+              flex-1 py-2 px-3 bg-transparent border-none text-xs font-medium cursor-pointer rounded-md transition-all duration-150
+              ${viewMode === 'local'
+                ? 'bg-bg-elevated text-accent-cyan shadow-sm'
+                : 'text-text-muted hover:text-text-secondary'}
+            `}
+            onClick={() => onViewModeChange?.('local')}
+          >
+            Agents
+          </button>
+          <button
+            className={`
+              flex-1 py-2 px-3 bg-transparent border-none text-xs font-medium cursor-pointer rounded-md transition-all duration-150
+              ${viewMode === 'channels'
+                ? 'bg-bg-elevated text-accent-cyan shadow-sm'
+                : 'text-text-muted hover:text-text-secondary'}
+            `}
+            onClick={() => onViewModeChange?.('channels')}
+          >
+            Channels
+          </button>
+          {isFleetAvailable && (
             <button
               className={`
-                flex-1 py-2 px-4 bg-transparent border-none text-xs font-medium cursor-pointer rounded-md transition-all duration-150
-                ${viewMode === 'local'
-                  ? 'bg-bg-elevated text-accent-cyan shadow-sm'
-                  : 'text-text-muted hover:text-text-secondary'}
-              `}
-              onClick={() => onViewModeChange?.('local')}
-            >
-              Local
-            </button>
-            <button
-              className={`
-                flex-1 py-2 px-4 bg-transparent border-none text-xs font-medium cursor-pointer rounded-md transition-all duration-150
+                flex-1 py-2 px-3 bg-transparent border-none text-xs font-medium cursor-pointer rounded-md transition-all duration-150
                 ${viewMode === 'fleet'
                   ? 'bg-bg-elevated text-accent-cyan shadow-sm'
                   : 'text-text-muted hover:text-text-secondary'}
@@ -194,8 +205,8 @@ export function Sidebar({
             >
               Fleet
             </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {/* Agents/Team Tabs */}

@@ -440,6 +440,153 @@ export async function searchChannel(
   });
 }
 
+// =============================================================================
+// Admin API Functions (Task 10)
+// =============================================================================
+
+/**
+ * Update channel settings (name, description, visibility)
+ * Requires channel or workspace admin role.
+ */
+export async function updateChannel(
+  workspaceId: string,
+  channelId: string,
+  updates: { name?: string; description?: string; isPrivate?: boolean }
+): Promise<Channel> {
+  if (!USE_REAL_API) {
+    // Mock: return updated channel
+    const channels = await mockApi.listChannels();
+    const channel = channels.channels.find(c => c.id === channelId);
+    if (!channel) throw new ApiError('Channel not found', 404);
+    return {
+      ...channel,
+      name: updates.name ?? channel.name,
+      description: updates.description ?? channel.description,
+      visibility: updates.isPrivate !== undefined
+        ? (updates.isPrivate ? 'private' : 'public')
+        : channel.visibility,
+    };
+  }
+
+  const data = await apiRequest<{ channel: unknown }>(
+    `/api/workspaces/${workspaceId}/channels/${encodeURIComponent(channelId)}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    }
+  );
+
+  return mapChannelFromBackend(data.channel);
+}
+
+/**
+ * Add a member to a channel (user or agent)
+ * Requires channel or workspace admin role.
+ */
+export async function addMember(
+  workspaceId: string,
+  channelId: string,
+  request: { memberId: string; memberType: 'user' | 'agent'; role?: 'admin' | 'member' | 'read_only' }
+): Promise<ChannelMember> {
+  if (!USE_REAL_API) {
+    // Mock: return new member
+    return {
+      id: request.memberId,
+      displayName: request.memberId,
+      entityType: request.memberType,
+      role: request.role === 'admin' ? 'admin' : 'member',
+      status: 'offline',
+      joinedAt: new Date().toISOString(),
+    };
+  }
+
+  const data = await apiRequest<{ member: unknown }>(
+    `/api/workspaces/${workspaceId}/channels/${encodeURIComponent(channelId)}/members`,
+    {
+      method: 'POST',
+      body: JSON.stringify(request),
+    }
+  );
+
+  return mapMemberFromBackend(data.member);
+}
+
+/**
+ * Remove a member from a channel
+ * Requires channel or workspace admin role.
+ * Cannot remove the last admin.
+ */
+export async function removeMember(
+  workspaceId: string,
+  channelId: string,
+  memberId: string,
+  memberType: 'user' | 'agent'
+): Promise<void> {
+  if (!USE_REAL_API) {
+    // Mock: no-op
+    return;
+  }
+
+  await apiRequest<void>(
+    `/api/workspaces/${workspaceId}/channels/${encodeURIComponent(channelId)}/members/${encodeURIComponent(memberId)}?memberType=${memberType}`,
+    { method: 'DELETE' }
+  );
+}
+
+/**
+ * Update a member's role in a channel
+ * Requires channel or workspace admin role.
+ * Cannot demote the last admin.
+ */
+export async function updateMemberRole(
+  workspaceId: string,
+  channelId: string,
+  memberId: string,
+  request: { role: 'admin' | 'member' | 'read_only'; memberType: 'user' | 'agent' }
+): Promise<ChannelMember> {
+  if (!USE_REAL_API) {
+    // Mock: return updated member
+    return {
+      id: memberId,
+      displayName: memberId,
+      entityType: request.memberType,
+      role: request.role === 'admin' ? 'admin' : 'member',
+      status: 'offline',
+      joinedAt: new Date().toISOString(),
+    };
+  }
+
+  const data = await apiRequest<{ member: unknown }>(
+    `/api/workspaces/${workspaceId}/channels/${encodeURIComponent(channelId)}/members/${encodeURIComponent(memberId)}/role`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(request),
+    }
+  );
+
+  return mapMemberFromBackend(data.member);
+}
+
+/**
+ * Get all members of a channel
+ */
+export async function getChannelMembers(
+  workspaceId: string,
+  channelId: string
+): Promise<ChannelMember[]> {
+  if (!USE_REAL_API) {
+    // Mock: return empty list or from getChannel
+    const response = await mockApi.getChannel(channelId);
+    return response.members || [];
+  }
+
+  const data = await apiRequest<{ members: unknown[] }>(
+    `/api/workspaces/${workspaceId}/channels/${encodeURIComponent(channelId)}/members`
+  );
+
+  return (data.members || []).map(mapMemberFromBackend);
+}
+
 /**
  * Map search result from backend format
  */

@@ -26,6 +26,12 @@ export {
   getMentionSuggestions,
   searchMessages,
   searchChannel,
+  // Admin API (Task 10)
+  updateChannel,
+  addMember,
+  removeMember,
+  updateMemberRole,
+  getChannelMembers,
   isRealApiEnabled,
   setApiMode,
   getApiMode,
@@ -47,6 +53,9 @@ export {
   DeleteChannelDialog,
   LeaveChannelDialog,
   CreateChannelModal,
+  // Admin Tools (Task 10)
+  ChannelSettingsModal,
+  MemberManagementPanel,
 } from './ChannelDialogs';
 
 // Re-export prop types for convenience
@@ -61,4 +70,7 @@ export type {
   DeleteChannelDialogProps,
   LeaveChannelDialogProps,
   CreateChannelModalProps,
+  // Admin Tools (Task 10)
+  ChannelSettingsModalProps,
+  MemberManagementPanelProps,
 } from './ChannelDialogs';
