@@ -5,6 +5,7 @@
  */
 
 import * as crypto from 'crypto';
+import { createHash } from 'node:crypto';
 import { getConfig } from '../config.js';
 import { db, Workspace, PlanType } from '../db/index.js';
 import { nangoService } from '../services/nango.js';
@@ -15,6 +16,48 @@ import {
   type ResourceTierName,
 } from '../services/planLimits.js';
 import { deriveSshPassword } from '../services/ssh-security.js';
+
+// ============================================================================
+// Daemon API Key Management
+// ============================================================================
+
+/**
+ * Generate a daemon API key in the format ar_live_<32 hex chars>
+ */
+function generateDaemonApiKey(): string {
+  const random = crypto.randomBytes(32).toString('hex');
+  return `ar_live_${random}`;
+}
+
+/**
+ * Hash an API key for secure storage
+ */
+function hashApiKey(apiKey: string): string {
+  return createHash('sha256').update(apiKey).digest('hex');
+}
+
+/**
+ * Create a linked daemon record for a workspace during provisioning
+ */
+async function createLinkedDaemon(
+  userId: string,
+  workspaceId: string,
+  machineId: string,
+): Promise<{ daemonId: string; apiKey: string }> {
+  const apiKey = generateDaemonApiKey();
+  const apiKeyHash = hashApiKey(apiKey);
+
+  const daemon = await db.linkedDaemons.create({
+    userId,
+    workspaceId,
+    name: `auto-provisioned-${Date.now()}`,
+    machineId,
+    apiKeyHash,
+    status: 'offline',
+  });
+
+  return { daemonId: daemon.id, apiKey };
+}
 
 const WORKSPACE_PORT = 3888;
 const WORKSPACE_HEALTH_PORT = 3889; // Health check on separate thread - always responsive
@@ -719,6 +762,9 @@ class FlyProvisioner implements ComputeProvisioner {
               // Git gateway configuration
               CLOUD_API_URL: this.cloudApiUrl,
               WORKSPACE_TOKEN: this.generateWorkspaceToken(workspace.id),
+              // Daemon API key for cloud message sync
+              // Auto-generated during provisioning, stored in linkedDaemons table
+              AGENT_RELAY_API_KEY: machineApiKey,
               // SSH for CLI tunneling (Codex OAuth callback forwarding)
               // Each workspace gets a unique password derived from its ID + secret salt
               ENABLE_SSH: 'true',
@@ -801,6 +847,15 @@ class FlyProvisioner implements ComputeProvisioner {
     }
 
     const machine = (await machineResponse.json()) as { id: string };
+
+    // Create linked daemon for cloud message sync
+    // This generates an API key and registers the daemon in the linkedDaemons table
+    const { daemonId, apiKey: machineApiKey } = await createLinkedDaemon(
+      workspace.userId,
+      workspace.id,
+      machine.id, // Use Fly machine ID as daemon's machine ID
+    );
+    console.log(`[fly] Created linked daemon ${daemonId.substring(0, 8)} for workspace ${workspace.id.substring(0, 8)}`);
 
     // Return custom domain URL if configured, otherwise default fly.dev
     const publicUrl = customHostname
