@@ -3319,7 +3319,7 @@ export async function startDashboard(
 
   /**
    * POST /api/spawn - Spawn a new agent
-   * Body: { name: string, cli?: string, task?: string, team?: string, shadowMode?, shadowAgent?, shadowOf?, shadowTriggers?, shadowSpeakOn? }
+   * Body: { name: string, cli?: string, task?: string, team?: string, spawnerName?, cwd?, interactive?, shadowMode?, shadowAgent?, shadowOf?, shadowTriggers?, shadowSpeakOn? }
    */
   app.post('/api/spawn', async (req, res) => {
     if (!spawner) {
@@ -3334,6 +3334,8 @@ export async function startDashboard(
       cli = 'claude',
       task = '',
       team,
+      spawnerName,
+      cwd,
       interactive,
       shadowMode,
       shadowAgent,
@@ -3355,6 +3357,8 @@ export async function startDashboard(
         cli,
         task,
         team: team || undefined, // Optional team name
+        spawnerName: spawnerName || undefined, // For policy enforcement
+        cwd: cwd || undefined, // Working directory
         interactive, // Disables auto-accept for auth setup flows
         shadowMode,
         shadowAgent,

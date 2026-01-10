@@ -18,6 +18,7 @@ import { RelayClient } from '../wrapper/client.js';
 import { generateAgentName } from '../utils/name-generator.js';
 import { getTmuxPath } from '../utils/tmux-resolver.js';
 import { readWorkersMetadata, getWorkerLogsDir } from '../bridge/spawner.js';
+import type { SpawnRequest, SpawnResult } from '../bridge/types.js';
 import { getShadowForAgent } from '../bridge/shadow-config.js';
 import { selectShadowCli } from '../bridge/shadow-cli.js';
 import { checkForUpdatesInBackground, checkForUpdates } from '../utils/update-checker.js';
@@ -1555,7 +1556,26 @@ program
   .argument('[task]', 'Task description (can also be piped via stdin)')
   .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
   .option('--team <team>', 'Team name for the agent')
-  .action(async (name: string, cli: string, task: string | undefined, options: { port?: string; team?: string }) => {
+  .option('--spawner <name>', 'Name of the agent requesting the spawn (for policy enforcement)')
+  .option('--interactive', 'Disable auto-accept of permission prompts (for auth setup flows)')
+  .option('--cwd <path>', 'Working directory for the agent')
+  .option('--shadow-mode <mode>', 'Shadow execution mode: subagent or process')
+  .option('--shadow-of <name>', 'Primary agent to shadow (if this agent is a shadow)')
+  .option('--shadow-agent <profile>', 'Shadow agent profile to use')
+  .option('--shadow-triggers <triggers>', 'When to trigger shadow (comma-separated: SESSION_END,CODE_WRITTEN,REVIEW_REQUEST,EXPLICIT_ASK,ALL_MESSAGES)')
+  .option('--shadow-speak-on <triggers>', 'When shadow should speak (comma-separated, same values as --shadow-triggers)')
+  .action(async (name: string, cli: string, task: string | undefined, options: {
+    port?: string;
+    team?: string;
+    spawner?: string;
+    interactive?: boolean;
+    cwd?: string;
+    shadowMode?: string;
+    shadowOf?: string;
+    shadowAgent?: string;
+    shadowTriggers?: string;
+    shadowSpeakOn?: string;
+  }) => {
     const port = options.port || DEFAULT_DASHBOARD_PORT;
 
     // Read task from stdin if not provided as argument
@@ -1573,25 +1593,61 @@ program
       process.exit(1);
     }
 
+    // Validate shadow mode if provided
+    if (options.shadowMode && !['subagent', 'process'].includes(options.shadowMode)) {
+      console.error('Error: --shadow-mode must be "subagent" or "process"');
+      process.exit(1);
+    }
+
+    // Parse comma-separated trigger lists
+    const parseTriggers = (value: string | undefined) => {
+      if (!value) return undefined;
+      const validTriggers = ['SESSION_END', 'CODE_WRITTEN', 'REVIEW_REQUEST', 'EXPLICIT_ASK', 'ALL_MESSAGES'];
+      const triggers = value.split(',').map(t => t.trim().toUpperCase());
+      const invalid = triggers.filter(t => !validTriggers.includes(t));
+      if (invalid.length > 0) {
+        console.error(`Error: Invalid triggers: ${invalid.join(', ')}`);
+        console.error(`Valid triggers: ${validTriggers.join(', ')}`);
+        process.exit(1);
+      }
+      return triggers as Array<'SESSION_END' | 'CODE_WRITTEN' | 'REVIEW_REQUEST' | 'EXPLICIT_ASK' | 'ALL_MESSAGES'>;
+    };
+
     try {
+      // Build spawn request using the SpawnRequest type for consistency
+      const spawnRequest: SpawnRequest = {
+        name,
+        cli,
+        task: finalTask,
+        team: options.team,
+        spawnerName: options.spawner,
+        interactive: options.interactive,
+        cwd: options.cwd,
+        shadowMode: options.shadowMode as 'subagent' | 'process' | undefined,
+        shadowOf: options.shadowOf,
+        shadowAgent: options.shadowAgent,
+        shadowTriggers: parseTriggers(options.shadowTriggers),
+        shadowSpeakOn: parseTriggers(options.shadowSpeakOn),
+      };
+
       const response = await fetch(`http://localhost:${port}/api/spawn`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name,
-          cli,
-          task: finalTask,
-          team: options.team,
-        }),
+        body: JSON.stringify(spawnRequest),
       });
 
-      const result = await response.json() as { success: boolean; pid?: number; error?: string };
+      const result = await response.json() as SpawnResult;
 
       if (result.success) {
         console.log(`Spawned agent: ${name} (pid: ${result.pid})`);
         process.exit(0);
       } else {
-        console.error(`Failed to spawn ${name}: ${result.error || 'Unknown error'}`);
+        if (result.policyDecision) {
+          console.error(`Policy denied spawn: ${result.policyDecision.reason}`);
+          console.error(`Policy source: ${result.policyDecision.policySource}`);
+        } else {
+          console.error(`Failed to spawn ${name}: ${result.error || 'Unknown error'}`);
+        }
         process.exit(1);
       }
     } catch (err: any) {
