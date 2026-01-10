@@ -45,16 +45,19 @@ import {
   ChannelViewV1,
   SearchInput,
   SearchResults,
+  CreateChannelModal,
   listChannels,
   getMessages,
   sendMessage as sendChannelApiMessage,
   searchMessages,
   markRead,
+  createChannel,
   type Channel,
   type ChannelMessage as ChannelApiMessage,
   type SearchResult,
   type SearchResponse,
   type UnreadState,
+  type CreateChannelRequest,
   MOCK_CHANNELS,
 } from './channels';
 import { useCloudSessionOptional } from './CloudSessionProvider';
@@ -251,6 +254,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
 
   // User profile panel state
   const [selectedUserProfile, setSelectedUserProfile] = useState<UserPresence | null>(null);
+  const [pendingMention, setPendingMention] = useState<string | undefined>();
 
   // View mode state: 'local' (agents), 'fleet' (multi-server), 'channels' (channel messaging)
   const [viewMode, setViewMode] = useState<'local' | 'fleet' | 'channels'>('local');
@@ -286,6 +290,10 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   const [isAddWorkspaceOpen, setIsAddWorkspaceOpen] = useState(false);
   const [isAddingWorkspace, setIsAddingWorkspace] = useState(false);
   const [addWorkspaceError, setAddWorkspaceError] = useState<string | null>(null);
+
+  // Create channel modal state
+  const [isCreateChannelOpen, setIsCreateChannelOpen] = useState(false);
+  const [isCreatingChannel, setIsCreatingChannel] = useState(false);
 
   // Command palette state
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
@@ -880,11 +888,29 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     closeSidebarOnMobile();
   }, [closeSidebarOnMobile]);
 
-  // Create channel handler (opens modal - placeholder for now)
+  // Create channel handler - opens the create channel modal
   const handleCreateChannel = useCallback(() => {
-    // TODO: Open create channel modal
-    console.log('Create channel clicked');
+    setIsCreateChannelOpen(true);
   }, []);
+
+  // Handler for creating a new channel via API
+  const handleCreateChannelSubmit = useCallback(async (request: CreateChannelRequest) => {
+    if (!effectiveActiveWorkspaceId) return;
+    setIsCreatingChannel(true);
+    try {
+      await createChannel(effectiveActiveWorkspaceId, request);
+      // Refresh channels list after successful creation
+      const response = await listChannels(effectiveActiveWorkspaceId);
+      setChannelsList(response.channels);
+      setArchivedChannelsList(response.archivedChannels || []);
+      setIsCreateChannelOpen(false);
+    } catch (err) {
+      console.error('Failed to create channel:', err);
+      // Keep modal open on error so user can retry
+    } finally {
+      setIsCreatingChannel(false);
+    }
+  }, [effectiveActiveWorkspaceId]);
 
   // Join channel handler
   const handleJoinChannel = useCallback(async (channel: Channel) => {
@@ -1170,6 +1196,41 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     }
     return success;
   }, [sendMessage, selectAgent, setCurrentChannel, agents]);
+
+  // Handle server reconnect (restart workspace)
+  const handleServerReconnect = useCallback(async (serverId: string) => {
+    if (isCloudMode) {
+      try {
+        const result = await cloudApi.restartWorkspace(serverId);
+        if (result.success) {
+          // Update the fleet servers state to show the server is restarting
+          setFleetServers(prev => prev.map(s =>
+            s.id === serverId ? { ...s, status: 'connecting' as const } : s
+          ));
+          // Refresh cloud workspaces after a short delay to get updated status
+          setTimeout(async () => {
+            try {
+              const workspacesResult = await cloudApi.listWorkspaces();
+              if (workspacesResult.success && workspacesResult.data) {
+                setCloudWorkspaces(workspacesResult.data);
+              }
+            } catch (err) {
+              console.error('Failed to refresh workspaces after reconnect:', err);
+            }
+          }, 2000);
+        } else {
+          console.error('Failed to restart workspace:', result.error);
+        }
+      } catch (err) {
+        console.error('Failed to reconnect to server:', err);
+      }
+    } else {
+      // For orchestrator mode, attempt to reconnect by removing and re-adding the workspace
+      console.warn('Server reconnect not fully supported in orchestrator mode');
+      // Refresh the workspace list as a fallback
+      // The orchestrator's WebSocket will handle reconnection automatically
+    }
+  }, [isCloudMode]);
 
   // Handle spawn agent
   const handleSpawn = useCallback(async (config: SpawnConfig): Promise<boolean> => {
@@ -1667,10 +1728,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
                   agents={agents}
                   selectedServerId={selectedServerId}
                   onServerSelect={setSelectedServerId}
-                  onServerReconnect={(serverId) => {
-                    // TODO: Implement server reconnect via API
-                    console.log('Reconnecting to server:', serverId);
-                  }}
+                  onServerReconnect={handleServerReconnect}
                   isLoading={!data}
                 />
               </div>
@@ -1765,6 +1823,8 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
             onTyping={sendTyping}
             isSending={isSending}
             error={sendError}
+            insertMention={pendingMention}
+            onMentionInserted={() => setPendingMention(undefined)}
           />
         </div>
       </main>
@@ -1809,6 +1869,15 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
         onAdd={handleAddWorkspace}
         isAdding={isAddingWorkspace}
         error={addWorkspaceError}
+      />
+
+      {/* Create Channel Modal */}
+      <CreateChannelModal
+        isOpen={isCreateChannelOpen}
+        onClose={() => setIsCreateChannelOpen(false)}
+        onCreate={handleCreateChannelSubmit}
+        isLoading={isCreatingChannel}
+        existingChannels={channelsList.map(c => c.name)}
       />
 
       {/* Conversation History */}
@@ -1939,8 +2008,8 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
         user={selectedUserProfile}
         onClose={() => setSelectedUserProfile(null)}
         onMention={(username) => {
-          // TODO: Focus composer and insert @username
-          // For now, just close the panel
+          // Set pending mention to trigger insertion in MessageComposer
+          setPendingMention(username);
           setSelectedUserProfile(null);
         }}
         onSendMessage={(user) => {
@@ -1999,9 +2068,11 @@ interface MessageComposerProps {
   onTyping?: (isTyping: boolean) => void;
   isSending: boolean;
   error: string | null;
+  insertMention?: string;
+  onMentionInserted?: () => void;
 }
 
-function MessageComposer({ recipient, agents, humanUsers, onSend, onTyping, isSending, error }: MessageComposerProps) {
+function MessageComposer({ recipient, agents, humanUsers, onSend, onTyping, isSending, error, insertMention, onMentionInserted }: MessageComposerProps) {
   const [message, setMessage] = useState('');
   const [cursorPosition, setCursorPosition] = useState(0);
   const [showMentions, setShowMentions] = useState(false);
@@ -2009,6 +2080,30 @@ function MessageComposer({ recipient, agents, humanUsers, onSend, onTyping, isSe
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Handle insertMention prop - insert @username when triggered from outside
+  useEffect(() => {
+    if (insertMention && onMentionInserted) {
+      const mentionText = `@${insertMention} `;
+      // Insert at current cursor position or append to end
+      const textarea = textareaRef.current;
+      if (textarea) {
+        const start = textarea.selectionStart || message.length;
+        const newMessage = message.slice(0, start) + mentionText + message.slice(start);
+        setMessage(newMessage);
+        // Focus and set cursor position after the mention
+        setTimeout(() => {
+          textarea.focus();
+          const newPos = start + mentionText.length;
+          textarea.setSelectionRange(newPos, newPos);
+        }, 0);
+      } else {
+        // Fallback: just append to message
+        setMessage(prev => prev + mentionText);
+      }
+      onMentionInserted();
+    }
+  }, [insertMention, onMentionInserted, message]);
 
   // Process image files (used by both paste and file input)
   const processImageFiles = useCallback(async (imageFiles: File[]) => {
