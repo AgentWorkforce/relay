@@ -68,6 +68,7 @@ export WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
 export HOME="${_USER_HOME}"
 export AGENT_RELAY_USER_ID="${WORKSPACE_OWNER_USER_ID:-}"
 export AGENT_RELAY_DATA_DIR="${_DATA_DIR}"
+export AGENT_RELAY_API_KEY="${AGENT_RELAY_API_KEY:-}"
 ENVEOF
     chmod 644 /etc/profile.d/workspace-env.sh
   fi
