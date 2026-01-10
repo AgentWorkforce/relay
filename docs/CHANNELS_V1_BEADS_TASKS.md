@@ -428,25 +428,28 @@
 
 ---
 
-## Summary
+## Summary (Updated 2026-01-10)
 
 | Phase | Task | Hours | Status |
 |-------|------|-------|--------|
-| 1 | Database & Migrations | 6 | Pending |
-| 1 | Channel CRUD | 8 | Pending |
-| 1 | Channel Members | 8 | Pending |
-| 2 | Messages API | 10 | Pending |
-| 2 | Sidebar UI | 8 | Pending |
-| 2 | Channel Header & View | 10 | Pending |
-| 3 | Browse View | 6 | Pending |
-| 3 | Command Palette | 6 | Pending |
-| 3 | Unread & Archive | 6 | Pending |
-| 3 | Admin Tools | 8 | Pending |
-| | **Total** | **76** | |
+| 1 | Database & Migrations | 6 | ✅ Complete |
+| 1 | Channel CRUD | 8 | ✅ Complete |
+| 1 | Channel Members | 8 | ✅ Complete |
+| 2 | Messages API | 10 | ✅ Complete |
+| 2 | Sidebar UI | 8 | ⚠️ 60% (needs API wiring) |
+| 2 | Channel Header & View | 10 | ⚠️ 40% (needs message rendering) |
+| 3 | Browse View | 6 | ⚠️ 70% (component done, API wiring needed) |
+| 3 | Command Palette | 6 | ❌ Not Started |
+| 3 | Unread & Archive | 6 | ⚠️ 50% (backend done, UI needed) |
+| 3 | Admin Tools | 8 | ❌ Not Started |
+| | **Total Completed** | **38** | |
+| | **Total Remaining** | **38** | |
+| | **Grand Total** | **76** | |
 
-**Total Estimated Effort:** 76 hours
-**Team Size Recommended:** 2-3 developers (25-38 hours each)
-**Timeline:** 3-4 weeks at standard velocity
+**Completion Status:** 50% (38/76 hours)
+**Team Size Recommended:** 1-2 developers (backend testing + frontend implementation)
+**Estimated Timeline to V1:** 2-3 weeks at standard velocity
+**Next Priority:** Complete Task 6 (Channel View UI) and Task 7 (Browse API wiring)
 
 ## Implementation Order
 
