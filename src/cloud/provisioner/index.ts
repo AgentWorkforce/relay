@@ -1187,7 +1187,9 @@ class FlyProvisioner implements ComputeProvisioner {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 10_000);
 
-        const response = await fetch(`${baseUrl}/api/agents`, {
+        // Use /api/data endpoint which returns { agents: [...], ... }
+        // Note: /api/agents doesn't exist on the workspace dashboard-server
+        const response = await fetch(`${baseUrl}/api/data`, {
           method: 'GET',
           headers: {
             'Accept': 'application/json',

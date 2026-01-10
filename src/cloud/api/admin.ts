@@ -205,7 +205,9 @@ adminRouter.get('/workspaces/:id/agents', async (req: Request, res: Response) =>
     }
 
     try {
-      const response = await fetch(`${baseUrl}/api/agents`, {
+      // Use /api/data endpoint which returns { agents: [...], ... }
+      // Note: /api/agents doesn't exist on the workspace dashboard-server
+      const response = await fetch(`${baseUrl}/api/data`, {
         method: 'GET',
         headers: { 'Accept': 'application/json' },
         signal: AbortSignal.timeout(10_000),
