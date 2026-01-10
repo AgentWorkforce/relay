@@ -10,6 +10,8 @@ import { useChannelBrowser, type BrowseChannel } from './hooks/useChannelBrowser
 import { Pagination } from './Pagination';
 
 export interface ChannelBrowserProps {
+  /** Workspace ID for API calls */
+  workspaceId: string;
   isOpen: boolean;
   onClose: () => void;
   onChannelJoined?: (channel: BrowseChannel) => void;
@@ -17,6 +19,7 @@ export interface ChannelBrowserProps {
 }
 
 export function ChannelBrowser({
+  workspaceId,
   isOpen,
   onClose,
   onChannelJoined,
@@ -34,7 +37,7 @@ export function ChannelBrowser({
     joinChannel,
     leaveChannel,
     refresh,
-  } = useChannelBrowser({ autoFetch: isOpen });
+  } = useChannelBrowser({ workspaceId, autoFetch: isOpen });
 
   const [joiningChannelId, setJoiningChannelId] = useState<string | null>(null);
   const [leavingChannelId, setLeavingChannelId] = useState<string | null>(null);

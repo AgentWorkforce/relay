@@ -2239,6 +2239,184 @@ export const channelReadStateQueries: ChannelReadStateQueries = {
 };
 
 // ============================================================================
+// Message Reactions
+// ============================================================================
+
+/**
+ * Standard emoji set for reactions
+ */
+export const STANDARD_REACTIONS = [
+  { emoji: '👍', shortcode: '+1', name: 'thumbs up' },
+  { emoji: '👎', shortcode: '-1', name: 'thumbs down' },
+  { emoji: '❤️', shortcode: 'heart', name: 'heart' },
+  { emoji: '😄', shortcode: 'smile', name: 'smile' },
+  { emoji: '🎉', shortcode: 'tada', name: 'party' },
+  { emoji: '👀', shortcode: 'eyes', name: 'eyes' },
+  { emoji: '🚀', shortcode: 'rocket', name: 'rocket' },
+  { emoji: '💯', shortcode: '100', name: 'hundred' },
+  { emoji: '🤔', shortcode: 'thinking', name: 'thinking' },
+  { emoji: '👏', shortcode: 'clap', name: 'clap' },
+] as const;
+
+export type StandardEmoji = typeof STANDARD_REACTIONS[number]['emoji'];
+
+/**
+ * Reaction summary for a message
+ */
+export interface ReactionSummary {
+  emoji: string;
+  count: number;
+  users: string[];  // User IDs
+  hasReacted: boolean;  // Whether the requesting user has reacted
+}
+
+/**
+ * Message reaction queries interface
+ */
+export interface MessageReactionQueries {
+  addReaction(messageId: string, userId: string, emoji: string): Promise<schema.MessageReaction>;
+  removeReaction(messageId: string, userId: string, emoji: string): Promise<boolean>;
+  getReactions(messageId: string): Promise<schema.MessageReaction[]>;
+  getReactionSummary(messageId: string, requestingUserId?: string): Promise<ReactionSummary[]>;
+  getReactionsByUser(messageId: string, userId: string): Promise<schema.MessageReaction[]>;
+  hasUserReacted(messageId: string, userId: string, emoji: string): Promise<boolean>;
+  getReactionCount(messageId: string): Promise<number>;
+  deleteByMessage(messageId: string): Promise<void>;
+  deleteByUser(userId: string): Promise<void>;
+}
+
+export const messageReactionQueries: MessageReactionQueries = {
+  async addReaction(messageId: string, userId: string, emoji: string): Promise<schema.MessageReaction> {
+    const db = getDb();
+    const result = await db
+      .insert(schema.messageReactions)
+      .values({ messageId, userId, emoji })
+      .onConflictDoNothing()
+      .returning();
+
+    // If conflict (already exists), fetch the existing one
+    if (result.length === 0) {
+      const existing = await db
+        .select()
+        .from(schema.messageReactions)
+        .where(
+          and(
+            eq(schema.messageReactions.messageId, messageId),
+            eq(schema.messageReactions.userId, userId),
+            eq(schema.messageReactions.emoji, emoji)
+          )
+        );
+      return existing[0];
+    }
+    return result[0];
+  },
+
+  async removeReaction(messageId: string, userId: string, emoji: string): Promise<boolean> {
+    const db = getDb();
+    const result = await db
+      .delete(schema.messageReactions)
+      .where(
+        and(
+          eq(schema.messageReactions.messageId, messageId),
+          eq(schema.messageReactions.userId, userId),
+          eq(schema.messageReactions.emoji, emoji)
+        )
+      )
+      .returning();
+    return result.length > 0;
+  },
+
+  async getReactions(messageId: string): Promise<schema.MessageReaction[]> {
+    const db = getDb();
+    return db
+      .select()
+      .from(schema.messageReactions)
+      .where(eq(schema.messageReactions.messageId, messageId))
+      .orderBy(schema.messageReactions.createdAt);
+  },
+
+  async getReactionSummary(messageId: string, requestingUserId?: string): Promise<ReactionSummary[]> {
+    const db = getDb();
+    const reactions = await db
+      .select()
+      .from(schema.messageReactions)
+      .where(eq(schema.messageReactions.messageId, messageId));
+
+    // Group by emoji
+    const grouped = new Map<string, { users: string[]; hasReacted: boolean }>();
+    for (const r of reactions) {
+      const existing = grouped.get(r.emoji) ?? { users: [], hasReacted: false };
+      existing.users.push(r.userId);
+      if (requestingUserId && r.userId === requestingUserId) {
+        existing.hasReacted = true;
+      }
+      grouped.set(r.emoji, existing);
+    }
+
+    // Convert to array
+    const summary: ReactionSummary[] = [];
+    for (const [emoji, data] of grouped) {
+      summary.push({
+        emoji,
+        count: data.users.length,
+        users: data.users,
+        hasReacted: data.hasReacted,
+      });
+    }
+
+    return summary;
+  },
+
+  async getReactionsByUser(messageId: string, userId: string): Promise<schema.MessageReaction[]> {
+    const db = getDb();
+    return db
+      .select()
+      .from(schema.messageReactions)
+      .where(
+        and(
+          eq(schema.messageReactions.messageId, messageId),
+          eq(schema.messageReactions.userId, userId)
+        )
+      );
+  },
+
+  async hasUserReacted(messageId: string, userId: string, emoji: string): Promise<boolean> {
+    const db = getDb();
+    const result = await db
+      .select()
+      .from(schema.messageReactions)
+      .where(
+        and(
+          eq(schema.messageReactions.messageId, messageId),
+          eq(schema.messageReactions.userId, userId),
+          eq(schema.messageReactions.emoji, emoji)
+        )
+      )
+      .limit(1);
+    return result.length > 0;
+  },
+
+  async getReactionCount(messageId: string): Promise<number> {
+    const db = getDb();
+    const result = await db
+      .select({ count: count() })
+      .from(schema.messageReactions)
+      .where(eq(schema.messageReactions.messageId, messageId));
+    return Number(result[0]?.count ?? 0);
+  },
+
+  async deleteByMessage(messageId: string): Promise<void> {
+    const db = getDb();
+    await db.delete(schema.messageReactions).where(eq(schema.messageReactions.messageId, messageId));
+  },
+
+  async deleteByUser(userId: string): Promise<void> {
+    const db = getDb();
+    await db.delete(schema.messageReactions).where(eq(schema.messageReactions.userId, userId));
+  },
+};
+
+// ============================================================================
 // Migration helper
 // ============================================================================
 

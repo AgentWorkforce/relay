@@ -109,6 +109,8 @@ import {
   channelMemberQueries,
   channelMessageQueries,
   channelReadStateQueries,
+  messageReactionQueries,
+  STANDARD_REACTIONS,
 } from './drizzle.js';
 
 // Legacy type aliases for backwards compatibility
@@ -144,6 +146,8 @@ export const db = {
   channelMembers: channelMemberQueries,
   channelMessages: channelMessageQueries,
   channelReadState: channelReadStateQueries,
+  // Message reactions
+  messageReactions: messageReactionQueries,
   // Database utilities
   getDb,
   close: closeDb,
@@ -168,10 +172,15 @@ export {
   channelMemberQueries,
   channelMessageQueries,
   channelReadStateQueries,
+  messageReactionQueries,
+  STANDARD_REACTIONS,
 };
 
 // Export search types
 export type { SearchResult, SearchOptions } from './drizzle.js';
+
+// Export reaction types
+export type { ReactionSummary, StandardEmoji } from './drizzle.js';
 
 // Export database utilities
 export { getDb, closeDb, runMigrations };
