@@ -212,25 +212,44 @@ export class Daemon {
    * Initialize cloud sync service for cross-machine agent communication.
    */
   private async initCloudSync(): Promise<void> {
-    // Check for cloud config file
+    // Check for cloud config file OR environment variables
     const dataDir = process.env.AGENT_RELAY_DATA_DIR ||
       path.join(os.homedir(), '.local', 'share', 'agent-relay');
     const configPath = path.join(dataDir, 'cloud-config.json');
 
-    if (!fs.existsSync(configPath)) {
+    const hasConfigFile = fs.existsSync(configPath);
+    const hasEnvApiKey = !!process.env.AGENT_RELAY_API_KEY;
+
+    // Allow cloud sync if config file exists OR API key is set via env var
+    // This enables cloud-hosted workspaces (Fly.io) to sync messages without a config file
+    if (!hasConfigFile && !hasEnvApiKey) {
       log.info('Cloud sync disabled (not linked to cloud)');
       return;
     }
 
     try {
-      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      let apiKey: string | undefined;
+      let cloudUrl: string | undefined;
+
+      if (hasConfigFile) {
+        // Use config file (local daemons linked via CLI)
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+        apiKey = config.apiKey;
+        cloudUrl = config.cloudUrl;
+      } else {
+        // Use env vars (cloud-hosted workspaces like Fly.io)
+        apiKey = process.env.AGENT_RELAY_API_KEY;
+        // CLOUD_API_URL is set by Fly.io provisioner, AGENT_RELAY_CLOUD_URL is the standard
+        cloudUrl = process.env.AGENT_RELAY_CLOUD_URL || process.env.CLOUD_API_URL;
+        log.info('Using environment variables for cloud sync', { hasApiKey: !!apiKey, hasCloudUrl: !!cloudUrl });
+      }
 
       // Get project root for workspace detection via git remote
       const projectPaths = getProjectPaths();
 
       this.cloudSync = getCloudSync({
-        apiKey: config.apiKey,
-        cloudUrl: config.cloudUrl || this.config.cloudUrl,
+        apiKey,
+        cloudUrl: cloudUrl || this.config.cloudUrl,
         enabled: this.config.cloudSync !== false,
         projectDirectory: projectPaths.projectRoot,
       });
