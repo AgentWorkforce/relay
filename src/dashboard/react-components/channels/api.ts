@@ -2,8 +2,8 @@
  * Channels API Service
  *
  * Channels are now handled entirely by the daemon (not cloud).
- * This API layer uses the local/mock implementation which
- * integrates with the relay system for real-time messaging.
+ * Real-time messaging uses the daemon's CHANNEL_* protocol.
+ * Mock data is still used for channel listing/display (daemon doesn't persist these).
  *
  * Cloud channels were removed because:
  * - Daemon already has full channel protocol support (CHANNEL_JOIN, CHANNEL_MESSAGE, etc.)
@@ -24,8 +24,18 @@ import type {
   SearchResponse,
 } from './types';
 
-// Channels now always use daemon-based implementation via relay
+// Mock data still used for channel listing/display (daemon doesn't persist channels)
 import * as mockApi from './mockApi';
+
+/**
+ * Get current username from localStorage or return default
+ */
+function getCurrentUsername(): string {
+  if (typeof window !== 'undefined') {
+    return localStorage.getItem('relay_username') || 'Dashboard';
+  }
+  return 'Dashboard';
+}
 
 /**
  * Custom error class for API errors
@@ -85,34 +95,108 @@ export async function createChannel(
 }
 
 /**
- * Send a message to a channel
+ * Send a message to a channel via daemon API
  */
 export async function sendMessage(
   _workspaceId: string,
   channelId: string,
   request: SendMessageRequest
 ): Promise<SendMessageResponse> {
-  return mockApi.sendMessage(channelId, request);
+  const username = getCurrentUsername();
+
+  try {
+    const response = await fetch('/api/channels/message', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username,
+        channel: channelId,
+        body: request.content,
+        thread: request.threadId,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Unknown error' }));
+      throw new ApiError(error.error || 'Failed to send message', response.status);
+    }
+
+    // Return optimistic message for immediate UI update
+    // Real message will come via WebSocket
+    return {
+      message: {
+        id: `pending-${Date.now()}`,
+        channelId,
+        from: username,
+        fromEntityType: 'user',
+        content: request.content,
+        timestamp: new Date().toISOString(),
+        threadId: request.threadId,
+        isRead: true,
+      },
+    };
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw new ApiError('Network error sending message', 0);
+  }
 }
 
 /**
- * Join a channel
+ * Join a channel via daemon API
  */
 export async function joinChannel(
   _workspaceId: string,
   channelId: string
 ): Promise<Channel> {
-  return mockApi.joinChannel(channelId);
+  const username = getCurrentUsername();
+
+  try {
+    const response = await fetch('/api/channels/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, channel: channelId }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Unknown error' }));
+      throw new ApiError(error.error || 'Failed to join channel', response.status);
+    }
+
+    // Also update mock state for consistency
+    return mockApi.joinChannel(channelId);
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw new ApiError('Network error joining channel', 0);
+  }
 }
 
 /**
- * Leave a channel
+ * Leave a channel via daemon API
  */
 export async function leaveChannel(
   _workspaceId: string,
   channelId: string
 ): Promise<void> {
-  return mockApi.leaveChannel(channelId);
+  const username = getCurrentUsername();
+
+  try {
+    const response = await fetch('/api/channels/leave', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, channel: channelId }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Unknown error' }));
+      throw new ApiError(error.error || 'Failed to leave channel', response.status);
+    }
+
+    // Also update mock state for consistency
+    return mockApi.leaveChannel(channelId);
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw new ApiError('Network error leaving channel', 0);
+  }
 }
 
 /**

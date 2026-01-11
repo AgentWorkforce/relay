@@ -59,6 +59,8 @@ export interface ChannelViewV1Props {
   onTyping?: (isTyping: boolean) => void;
   /** Callback to mark messages as read */
   onMarkRead?: (upToTimestamp: string) => void;
+  /** Callback when clicking on a member name (for DM navigation) */
+  onMemberClick?: (memberId: string, entityType: 'user' | 'agent') => void;
 }
 
 export function ChannelViewV1({
@@ -81,6 +83,7 @@ export function ChannelViewV1({
   onReact,
   onTyping,
   onMarkRead,
+  onMemberClick,
 }: ChannelViewV1Props) {
   const [expandedThreads, setExpandedThreads] = useState<Set<string>>(new Set());
   const [replyingToThread, setReplyingToThread] = useState<string | undefined>();
@@ -158,23 +161,8 @@ export function ChannelViewV1({
         expandedThreads={expandedThreads}
         onReply={handleReply}
         onReact={onReact}
+        onMemberClick={onMemberClick}
       />
-
-      {/* Thread reply indicator */}
-      {replyingToThread && (
-        <div className="px-4 py-2 bg-accent-cyan/5 border-t border-accent-cyan/20 flex items-center justify-between">
-          <div className="flex items-center gap-2 text-sm">
-            <ThreadIcon className="w-4 h-4 text-accent-cyan" />
-            <span className="text-text-muted">Replying in thread</span>
-          </div>
-          <button
-            onClick={handleCancelThread}
-            className="p-1 rounded hover:bg-bg-hover text-text-muted hover:text-text-primary transition-colors"
-          >
-            <CloseIcon className="w-4 h-4" />
-          </button>
-        </div>
-      )}
 
       {/* Message Input */}
       {isArchived ? (

@@ -858,6 +858,27 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     closeSidebarOnMobile();
   }, [closeSidebarOnMobile, markDmSeen, setCurrentChannel]);
 
+  // Handle channel member click - switch to DM with that member
+  const handleChannelMemberClick = useCallback((memberId: string, entityType: 'user' | 'agent') => {
+    // Don't navigate to self
+    if (memberId === currentUser?.displayName) return;
+
+    // Switch from channel view to local (DM) view
+    setViewMode('local');
+    setSelectedChannelId(undefined);
+
+    // Select the agent or user
+    if (entityType === 'agent') {
+      selectAgent(memberId);
+      setCurrentChannel(memberId);
+    } else {
+      // For users, just set the channel
+      setCurrentChannel(memberId);
+    }
+
+    closeSidebarOnMobile();
+  }, [currentUser?.displayName, selectAgent, setCurrentChannel, closeSidebarOnMobile]);
+
   // =============================================================================
   // Channel V1 Handlers
   // =============================================================================
@@ -1044,29 +1065,25 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   const handleSendChannelMessage = useCallback(async (content: string, threadId?: string) => {
     if (!selectedChannelId) return;
 
-    // Local mode: use relay broadcast system
-    if (!effectiveActiveWorkspaceId) {
-      // Broadcast to all agents with channel context in thread
-      // Channel name is used as thread so messages can be grouped
-      const channelThread = threadId || selectedChannelId;
-      await sendMessage('*', content, channelThread);
-      return;
-    }
-
-    // Cloud mode: use channel API
+    // Both local and cloud modes now use the channel API
+    // which sends proper CHANNEL_MESSAGE protocol to daemon
     try {
-      await sendChannelApiMessage(effectiveActiveWorkspaceId, selectedChannelId, {
-        content,
-        threadId,
-      });
-      // Refresh messages after sending
-      const response = await getMessages(effectiveActiveWorkspaceId, selectedChannelId, { limit: 50 });
-      setChannelMessages(response.messages);
-      setHasMoreMessages(response.hasMore);
+      await sendChannelApiMessage(
+        effectiveActiveWorkspaceId || 'local',
+        selectedChannelId,
+        { content, threadId }
+      );
+      // For cloud mode, refresh messages after sending
+      if (effectiveActiveWorkspaceId) {
+        const response = await getMessages(effectiveActiveWorkspaceId, selectedChannelId, { limit: 50 });
+        setChannelMessages(response.messages);
+        setHasMoreMessages(response.hasMore);
+      }
+      // For local mode, message will come back via WebSocket
     } catch (err) {
       console.error('Failed to send channel message:', err);
     }
-  }, [effectiveActiveWorkspaceId, selectedChannelId, sendMessage]);
+  }, [effectiveActiveWorkspaceId, selectedChannelId]);
 
   // Load more messages (pagination) handler
   const handleLoadMoreMessages = useCallback(async () => {
@@ -1776,6 +1793,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
                 unreadState={channelUnreadState}
                 onSendMessage={handleSendChannelMessage}
                 onLoadMore={handleLoadMoreMessages}
+                onMemberClick={handleChannelMemberClick}
               />
             ) : viewMode === 'channels' ? (
               <div className="flex flex-col items-center justify-center h-full text-text-muted text-center px-4">

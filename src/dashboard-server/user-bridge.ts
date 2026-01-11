@@ -24,6 +24,14 @@ export interface IRelayClient {
     data?: unknown,
     thread?: string
   ): boolean;
+  // Channel operations
+  joinChannel(channel: string, displayName?: string): boolean;
+  leaveChannel(channel: string, reason?: string): boolean;
+  sendChannelMessage(
+    channel: string,
+    body: string,
+    options?: { thread?: string; mentions?: string[]; attachments?: unknown[] }
+  ): boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onMessage?: (from: string, payload: any, messageId: string, meta?: any, originalTo?: string) => void;
 }
@@ -170,14 +178,16 @@ export class UserBridge {
       return false;
     }
 
-    // Send channel join via relay client
-    session.relayClient.sendMessage(channel, '', 'channel_join');
+    // Send CHANNEL_JOIN via relay client
+    const success = session.relayClient.joinChannel(channel, username);
 
-    // Track membership
-    session.channels.add(channel);
+    if (success) {
+      // Track membership
+      session.channels.add(channel);
+      console.log(`[user-bridge] User ${username} joined channel ${channel}`);
+    }
 
-    console.log(`[user-bridge] User ${username} joined channel ${channel}`);
-    return true;
+    return success;
   }
 
   /**
@@ -190,14 +200,16 @@ export class UserBridge {
       return false;
     }
 
-    // Send channel leave via relay client
-    session.relayClient.sendMessage(channel, '', 'channel_leave');
+    // Send CHANNEL_LEAVE via relay client
+    const success = session.relayClient.leaveChannel(channel);
 
-    // Update membership
-    session.channels.delete(channel);
+    if (success) {
+      // Update membership
+      session.channels.delete(channel);
+      console.log(`[user-bridge] User ${username} left channel ${channel}`);
+    }
 
-    console.log(`[user-bridge] User ${username} left channel ${channel}`);
-    return true;
+    return success;
   }
 
   /**
@@ -223,13 +235,10 @@ export class UserBridge {
       return false;
     }
 
-    return session.relayClient.sendMessage(
-      channel,
-      body,
-      'message',
-      options?.data,
-      options?.thread
-    );
+    // Use CHANNEL_MESSAGE protocol
+    return session.relayClient.sendChannelMessage(channel, body, {
+      thread: options?.thread,
+    });
   }
 
   /**

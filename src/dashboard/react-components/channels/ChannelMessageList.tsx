@@ -23,6 +23,7 @@ export function ChannelMessageList({
   expandedThreads = new Set(),
   onReply,
   onReact,
+  onMemberClick,
 }: ChannelMessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -150,6 +151,7 @@ export function ChannelMessageList({
                     onToggleThread={() => onToggleThread?.(message.id)}
                     onReply={() => onReply?.(message)}
                     onReact={(emoji) => onReact?.(message, emoji)}
+                    onMemberClick={onMemberClick}
                     showAvatar={shouldShowAvatar(dateMessages, index)}
                   />
                 </React.Fragment>
@@ -187,6 +189,7 @@ interface MessageItemProps {
   onToggleThread?: () => void;
   onReply?: () => void;
   onReact?: (emoji: string) => void;
+  onMemberClick?: (memberId: string, entityType: 'user' | 'agent') => void;
   showAvatar: boolean;
 }
 
@@ -197,6 +200,7 @@ function MessageItem({
   onToggleThread,
   onReply,
   onReact,
+  onMemberClick,
   showAvatar,
 }: MessageItemProps) {
   const [showActions, setShowActions] = useState(false);
@@ -225,11 +229,20 @@ function MessageItem({
           {/* Header (only show with avatar) */}
           {showAvatar && (
             <div className="flex items-baseline gap-2 mb-0.5">
-              <span className={`text-sm font-semibold ${
-                isOwn ? 'text-accent-cyan' : 'text-text-primary'
-              }`}>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!isOwn && onMemberClick) {
+                    onMemberClick(message.from, message.fromEntityType || 'agent');
+                  }
+                }}
+                disabled={isOwn || !onMemberClick}
+                className={`text-sm font-semibold ${
+                  isOwn ? 'text-accent-cyan cursor-default' : 'text-text-primary hover:underline cursor-pointer'
+                } disabled:cursor-default disabled:hover:no-underline`}
+              >
                 {message.from}
-              </span>
+              </button>
               <span className="text-xs text-text-muted">
                 {formatTime(message.timestamp)}
               </span>

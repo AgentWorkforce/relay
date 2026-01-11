@@ -10,6 +10,7 @@ import os from 'node:os';
 import { Connection, type ConnectionConfig, DEFAULT_CONFIG } from './connection.js';
 import { Router } from './router.js';
 import type { Envelope, SendPayload, ShadowBindPayload, ShadowUnbindPayload, LogPayload, SendEnvelope } from '../protocol/types.js';
+import type { ChannelJoinPayload, ChannelLeavePayload, ChannelMessagePayload } from '../protocol/channels.js';
 import { createStorageAdapter, type StorageAdapter, type StorageConfig } from '../storage/adapter.js';
 import { SqliteStorageAdapter } from '../storage/sqlite-adapter.js';
 import { getProjectPaths } from '../utils/project-namespace.js';
@@ -647,6 +648,28 @@ export class Daemon {
           }
         }
         break;
+
+      // Channel messaging handlers
+      case 'CHANNEL_JOIN': {
+        const channelEnvelope = envelope as Envelope<ChannelJoinPayload>;
+        log.info(`Channel join: ${connection.agentName} -> ${channelEnvelope.payload.channel}`);
+        this.router.handleChannelJoin(connection, channelEnvelope);
+        break;
+      }
+
+      case 'CHANNEL_LEAVE': {
+        const channelEnvelope = envelope as Envelope<ChannelLeavePayload>;
+        log.info(`Channel leave: ${connection.agentName} <- ${channelEnvelope.payload.channel}`);
+        this.router.handleChannelLeave(connection, channelEnvelope);
+        break;
+      }
+
+      case 'CHANNEL_MESSAGE': {
+        const channelEnvelope = envelope as Envelope<ChannelMessagePayload>;
+        log.debug(`Channel message: ${connection.agentName} in ${channelEnvelope.payload.channel}`);
+        this.router.routeChannelMessage(connection, channelEnvelope);
+        break;
+      }
     }
   }
 

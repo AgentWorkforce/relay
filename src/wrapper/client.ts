@@ -20,6 +20,15 @@ import {
   type EntityType,
   PROTOCOL_VERSION,
 } from '../protocol/types.js';
+import type {
+  ChannelJoinPayload,
+  ChannelLeavePayload,
+  ChannelMessagePayload,
+  ChannelJoinEnvelope,
+  ChannelLeaveEnvelope,
+  ChannelMessageEnvelope,
+  MessageAttachment,
+} from '../protocol/channels.js';
 import { encodeFrame, FrameParser } from '../protocol/framing.js';
 import { DEFAULT_SOCKET_PATH } from '../daemon/server.js';
 
@@ -241,6 +250,88 @@ export class RelayClient {
    */
   broadcast(body: string, kind: PayloadKind = 'message', data?: Record<string, unknown>): boolean {
     return this.sendMessage('*', body, kind, data);
+  }
+
+  // =============================================================================
+  // Channel Operations
+  // =============================================================================
+
+  /**
+   * Join a channel.
+   * @param channel - Channel name (e.g., '#general', 'dm:alice:bob')
+   * @param displayName - Optional display name for this member
+   */
+  joinChannel(channel: string, displayName?: string): boolean {
+    if (this._state !== 'READY') return false;
+
+    const envelope: ChannelJoinEnvelope = {
+      v: PROTOCOL_VERSION,
+      type: 'CHANNEL_JOIN',
+      id: uuid(),
+      ts: Date.now(),
+      payload: {
+        channel,
+        displayName,
+      },
+    };
+
+    return this.send(envelope);
+  }
+
+  /**
+   * Leave a channel.
+   * @param channel - Channel name to leave
+   * @param reason - Optional reason for leaving
+   */
+  leaveChannel(channel: string, reason?: string): boolean {
+    if (this._state !== 'READY') return false;
+
+    const envelope: ChannelLeaveEnvelope = {
+      v: PROTOCOL_VERSION,
+      type: 'CHANNEL_LEAVE',
+      id: uuid(),
+      ts: Date.now(),
+      payload: {
+        channel,
+        reason,
+      },
+    };
+
+    return this.send(envelope);
+  }
+
+  /**
+   * Send a message to a channel.
+   * @param channel - Channel name
+   * @param body - Message content
+   * @param options - Optional thread, mentions, attachments
+   */
+  sendChannelMessage(
+    channel: string,
+    body: string,
+    options?: {
+      thread?: string;
+      mentions?: string[];
+      attachments?: MessageAttachment[];
+    }
+  ): boolean {
+    if (this._state !== 'READY') return false;
+
+    const envelope: ChannelMessageEnvelope = {
+      v: PROTOCOL_VERSION,
+      type: 'CHANNEL_MESSAGE',
+      id: uuid(),
+      ts: Date.now(),
+      payload: {
+        channel,
+        body,
+        thread: options?.thread,
+        mentions: options?.mentions,
+        attachments: options?.attachments,
+      },
+    };
+
+    return this.send(envelope);
   }
 
   /**

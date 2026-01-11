@@ -349,6 +349,8 @@ export interface ChannelMessageListProps {
   onReply?: (message: ChannelMessage) => void;
   /** Callback to react to a message */
   onReact?: (message: ChannelMessage, emoji: string) => void;
+  /** Callback when clicking on a member name (for DM navigation) */
+  onMemberClick?: (memberId: string, entityType: 'user' | 'agent') => void;
 }
 
 /**
