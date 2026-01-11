@@ -2386,15 +2386,16 @@ export async function startDashboard(
 
     try {
       // Join the creator to the channel
+      // Note: userBridge.joinChannel triggers router's persistChannelMembership via protocol
+      // We only persist here for dashboard-initiated creates (no daemon connection)
       await userBridge.joinChannel(username, channelId);
-      persistChannelMembership(channelId, username, 'join');
 
       // Handle invites if provided
       if (invites) {
         const inviteList = invites.split(',').map((s) => s.trim()).filter(Boolean);
         for (const invitee of inviteList) {
+          // userBridge.joinChannel handles persistence via protocol
           await userBridge.joinChannel(invitee, channelId);
-          persistChannelMembership(channelId, invitee, 'invite', { invitedBy: username });
         }
       }
 
@@ -2456,10 +2457,8 @@ export async function startDashboard(
     try {
       const results: Array<{ username: string; success: boolean }> = [];
       for (const invitee of inviteList) {
+        // userBridge.joinChannel handles persistence via protocol
         const success = await userBridge.joinChannel(invitee, channelId);
-        if (success) {
-          persistChannelMembership(channelId, invitee, 'invite', { invitedBy });
-        }
         results.push({ username: invitee, success });
       }
 
@@ -2483,17 +2482,14 @@ export async function startDashboard(
    */
   app.post('/api/channels/join', express.json(), async (req, res) => {
     const { username, channel } = req.body;
-    console.log(`[channel-debug] JOIN request: username=${username}, channel=${channel}`);
     if (!username || !channel) {
-      console.log('[channel-debug] JOIN failed: missing username or channel');
       return res.status(400).json({ error: 'username and channel required' });
     }
     try {
       const success = await userBridge.joinChannel(username, channel);
-      console.log(`[channel-debug] JOIN result: success=${success}`);
       res.json({ success, channel });
     } catch (err: any) {
-      console.log(`[channel-debug] JOIN error: ${err.message}`);
+      console.error('[channels] Join failed:', err.message);
       res.status(500).json({ error: err.message });
     }
   });

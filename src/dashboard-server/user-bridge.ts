@@ -172,27 +172,18 @@ export class UserBridge {
    * Join a channel.
    */
   async joinChannel(username: string, channel: string): Promise<boolean> {
-    console.log(`[user-bridge] joinChannel called: username=${username}, channel=${channel}`);
-    console.log(`[user-bridge] Registered users: ${Array.from(this.users.keys()).join(', ')}`);
-
     const session = this.users.get(username);
     if (!session) {
       console.warn(`[user-bridge] Cannot join channel - user ${username} not registered`);
       return false;
     }
 
-    console.log(`[user-bridge] Session found, relayClient state: ${session.relayClient.state}`);
-
     // Send CHANNEL_JOIN via relay client
     const success = session.relayClient.joinChannel(channel, username);
-    console.log(`[user-bridge] joinChannel result: ${success}`);
 
     if (success) {
       // Track membership
       session.channels.add(channel);
-      console.log(`[user-bridge] User ${username} joined channel ${channel}`);
-    } else {
-      console.warn(`[user-bridge] joinChannel returned false for ${username} -> ${channel}`);
     }
 
     return success;
