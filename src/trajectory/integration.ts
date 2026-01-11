@@ -15,7 +15,7 @@
  */
 
 import { spawn, execSync } from 'node:child_process';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { getProjectPaths } from '../utils/project-namespace.js';
 import {
@@ -195,6 +195,46 @@ function readTrajectoryFile(trajectoryPath: string): TrajectoryFile | null {
   }
 }
 
+function getCurrentPhaseFromTrajectory(trajectory: TrajectoryFile | null): PDEROPhase | undefined {
+  if (!trajectory?.chapters?.length) {
+    return undefined;
+  }
+
+  const lastChapter = trajectory.chapters[trajectory.chapters.length - 1];
+  for (const event of [...(lastChapter.events || [])].reverse()) {
+    if (event.type === 'phase_transition' || event.type === 'phase') {
+      const phaseMatch = event.content?.match(/phase[:\s]+(\w+)/i);
+      if (phaseMatch) {
+        return phaseMatch[1].toLowerCase() as PDEROPhase;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function listActiveTrajectoryFiles(trajectoriesDir: string): string[] {
+  const activeDir = join(trajectoriesDir, 'active');
+  if (!existsSync(activeDir)) {
+    return [];
+  }
+
+  return readdirSync(activeDir, { withFileTypes: true })
+    .filter(entry => entry.isFile() && entry.name.endsWith('.json'))
+    .map(entry => join(activeDir, entry.name));
+}
+
+function findActiveTrajectoryPathById(trajectoryDirs: string[], trajectoryId: string): string | null {
+  for (const dir of trajectoryDirs) {
+    const candidate = join(dir, 'active', `${trajectoryId}.json`);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
 /**
  * PDERO phases for agent work lifecycle
  */
@@ -314,36 +354,41 @@ export async function startTrajectory(options: StartTrajectoryOptions): Promise<
  */
 export async function getTrajectoryStatus(): Promise<{ active: boolean; trajectoryId?: string; phase?: PDEROPhase; task?: string }> {
   const index = readTrajectoryIndex();
-  if (!index) {
+  const trajectoryDirs = getAllTrajectoriesDirs();
+  if (!index && trajectoryDirs.length === 0) {
     return { active: false };
   }
 
   // Find an active trajectory
-  for (const [id, entry] of Object.entries(index.trajectories)) {
-    if (entry.status === 'active') {
-      // Read the full trajectory file to get phase info
-      const trajectory = readTrajectoryFile(entry.path);
-      let currentPhase: PDEROPhase | undefined;
+  if (index) {
+    for (const [id, entry] of Object.entries(index.trajectories)) {
+      if (entry.status === 'active') {
+        // Read the full trajectory file to get phase info
+        const trajectory = readTrajectoryFile(entry.path);
+        const currentPhase = getCurrentPhaseFromTrajectory(trajectory);
 
-      if (trajectory?.chapters?.length) {
-        const lastChapter = trajectory.chapters[trajectory.chapters.length - 1];
-        // Check events for phase transitions
-        for (const event of [...(lastChapter.events || [])].reverse()) {
-          if (event.type === 'phase_transition' || event.type === 'phase') {
-            const phaseMatch = event.content?.match(/phase[:\s]+(\w+)/i);
-            if (phaseMatch) {
-              currentPhase = phaseMatch[1].toLowerCase() as PDEROPhase;
-              break;
-            }
-          }
-        }
+        return {
+          active: true,
+          trajectoryId: id,
+          phase: currentPhase,
+          task: entry.title,
+        };
+      }
+    }
+  }
+
+  for (const dir of trajectoryDirs) {
+    for (const activePath of listActiveTrajectoryFiles(dir)) {
+      const trajectory = readTrajectoryFile(activePath);
+      if (!trajectory) {
+        continue;
       }
 
       return {
         active: true,
-        trajectoryId: id,
-        phase: currentPhase,
-        task: entry.title,
+        trajectoryId: trajectory.id,
+        phase: getCurrentPhaseFromTrajectory(trajectory),
+        task: trajectory.task?.title,
       };
     }
   }
@@ -484,30 +529,45 @@ export async function listTrajectorySteps(trajectoryId?: string): Promise<{
   steps: TrajectoryStepData[];
   error?: string;
 }> {
+  const trajectoryDirs = getAllTrajectoriesDirs();
   const index = readTrajectoryIndex();
-  if (!index) {
+
+  if (!index && trajectoryDirs.length === 0) {
     return { success: true, steps: [] };
   }
 
   // Collect all trajectory paths to load
-  const trajectoryPaths: string[] = [];
+  const trajectoryPaths = new Set<string>();
 
   if (trajectoryId) {
     // Use specified trajectory
-    const entry = index.trajectories[trajectoryId];
+    const entry = index?.trajectories[trajectoryId];
     if (entry) {
-      trajectoryPaths.push(entry.path);
+      trajectoryPaths.add(entry.path);
+    } else {
+      const fallback = findActiveTrajectoryPathById(trajectoryDirs, trajectoryId);
+      if (fallback) {
+        trajectoryPaths.add(fallback);
+      }
     }
   } else {
     // Collect ALL active trajectories (not just the first one)
-    for (const [_id, entry] of Object.entries(index.trajectories)) {
-      if (entry.status === 'active') {
-        trajectoryPaths.push(entry.path);
+    if (index) {
+      for (const [_id, entry] of Object.entries(index.trajectories)) {
+        if (entry.status === 'active') {
+          trajectoryPaths.add(entry.path);
+        }
+      }
+    }
+
+    for (const dir of trajectoryDirs) {
+      for (const activePath of listActiveTrajectoryFiles(dir)) {
+        trajectoryPaths.add(activePath);
       }
     }
   }
 
-  if (trajectoryPaths.length === 0) {
+  if (trajectoryPaths.size === 0) {
     return { success: true, steps: [] };
   }
 
@@ -570,35 +630,66 @@ export async function getTrajectoryHistory(): Promise<{
   trajectories: TrajectoryHistoryEntry[];
   error?: string;
 }> {
+  const trajectoryDirs = getAllTrajectoriesDirs();
   const index = readTrajectoryIndex();
-  if (!index) {
+  if (!index && trajectoryDirs.length === 0) {
     return { success: true, trajectories: [] };
   }
 
   const trajectories: TrajectoryHistoryEntry[] = [];
+  const seenIds = new Set<string>();
 
-  for (const [id, entry] of Object.entries(index.trajectories)) {
-    const historyEntry: TrajectoryHistoryEntry = {
-      id,
-      title: entry.title,
-      status: entry.status,
-      startedAt: entry.startedAt,
-      completedAt: entry.completedAt,
-    };
+  if (index) {
+    for (const [id, entry] of Object.entries(index.trajectories)) {
+      const historyEntry: TrajectoryHistoryEntry = {
+        id,
+        title: entry.title,
+        status: entry.status,
+        startedAt: entry.startedAt,
+        completedAt: entry.completedAt,
+      };
 
-    // Try to read full trajectory for additional details
-    if (entry.path) {
-      const trajectory = readTrajectoryFile(entry.path);
-      if (trajectory) {
-        historyEntry.agents = trajectory.agents?.map(a => a.name);
-        if (trajectory.retrospective) {
-          historyEntry.summary = trajectory.retrospective.summary;
-          historyEntry.confidence = trajectory.retrospective.confidence;
+      // Try to read full trajectory for additional details
+      if (entry.path) {
+        const trajectory = readTrajectoryFile(entry.path);
+        if (trajectory) {
+          historyEntry.agents = trajectory.agents?.map(a => a.name);
+          if (trajectory.retrospective) {
+            historyEntry.summary = trajectory.retrospective.summary;
+            historyEntry.confidence = trajectory.retrospective.confidence;
+          }
         }
       }
-    }
 
-    trajectories.push(historyEntry);
+      trajectories.push(historyEntry);
+      seenIds.add(id);
+    }
+  }
+
+  for (const dir of trajectoryDirs) {
+    for (const activePath of listActiveTrajectoryFiles(dir)) {
+      const trajectory = readTrajectoryFile(activePath);
+      if (!trajectory || seenIds.has(trajectory.id)) {
+        continue;
+      }
+
+      const historyEntry: TrajectoryHistoryEntry = {
+        id: trajectory.id,
+        title: trajectory.task?.title || 'Untitled trajectory',
+        status: trajectory.status ?? 'active',
+        startedAt: trajectory.startedAt,
+        completedAt: trajectory.completedAt,
+        agents: trajectory.agents?.map(a => a.name),
+      };
+
+      if (trajectory.retrospective) {
+        historyEntry.summary = trajectory.retrospective.summary;
+        historyEntry.confidence = trajectory.retrospective.confidence;
+      }
+
+      trajectories.push(historyEntry);
+      seenIds.add(trajectory.id);
+    }
   }
 
   // Sort by startedAt descending (most recent first)
