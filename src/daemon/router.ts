@@ -23,6 +23,7 @@ import type { StorageAdapter } from '../storage/adapter.js';
 import type { AgentRegistry } from './agent-registry.js';
 import { routerLog } from '../utils/logger.js';
 import { RateLimiter, NoOpRateLimiter, type RateLimitConfig } from './rate-limiter.js';
+import * as crypto from 'node:crypto';
 
 export interface RoutableConnection {
   id: string;
@@ -1047,6 +1048,7 @@ export class Router {
 
     // Add the new member
     members.add(memberName);
+    this.persistChannelMembership(channel, memberName, 'join');
 
     // Track which channels this member is in
     let memberChannelSet = this.memberChannels.get(memberName);
@@ -1083,6 +1085,7 @@ export class Router {
 
     // Remove from channel
     members.delete(memberName);
+    this.persistChannelMembership(channel, memberName, 'leave');
 
     // Remove from member's channel list
     const memberChannelSet = this.memberChannels.get(memberName);
@@ -1205,10 +1208,41 @@ export class Router {
       },
       thread: envelope.payload.thread,
       status: 'unread',
-      is_urgent: false,
-      is_broadcast: true, // Channel messages are effectively broadcasts
+        is_urgent: false,
+        is_broadcast: true, // Channel messages are effectively broadcasts
     }).catch((err) => {
       routerLog.error('Failed to persist channel message', { error: String(err) });
+    });
+  }
+
+  private persistChannelMembership(
+    channel: string,
+    member: string,
+    action: 'join' | 'leave',
+    opts?: { invitedBy?: string }
+  ): void {
+    if (!this.storage) return;
+
+    this.storage.saveMessage({
+      id: crypto.randomUUID(),
+      ts: Date.now(),
+      from: '__system__',
+      to: channel,
+      topic: undefined,
+      kind: 'state', // membership events stored as state
+      body: `${action}:${member}`,
+      data: {
+        _channelMembership: {
+          member,
+          action,
+          invitedBy: opts?.invitedBy,
+        },
+      },
+      status: 'read',
+      is_urgent: false,
+      is_broadcast: true,
+    }).catch((err) => {
+      routerLog.error('Failed to persist channel membership', { error: String(err) });
     });
   }
 

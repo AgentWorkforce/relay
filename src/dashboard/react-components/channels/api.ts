@@ -166,24 +166,46 @@ export async function createChannel(
   _workspaceId: string,
   request: CreateChannelRequest
 ): Promise<CreateChannelResponse> {
-  // Daemon creates channel on first join
-  const channelId = request.name.startsWith('#') ? request.name : `#${request.name}`;
-  await joinChannel(_workspaceId, channelId);
-  return {
-    channel: {
-      id: channelId,
-      name: request.name,
-      description: request.description,
-      visibility: request.visibility,
-      status: 'active',
-      createdAt: new Date().toISOString(),
-      createdBy: getCurrentUsername(),
-      memberCount: 1,
-      unreadCount: 0,
-      hasMentions: false,
-      isDm: false,
-    },
-  };
+  const username = getCurrentUsername();
+
+  try {
+    const response = await fetch('/api/channels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: request.name,
+        description: request.description,
+        isPrivate: request.visibility === 'private',
+        username,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Unknown error' }));
+      throw new ApiError(error.error || 'Failed to create channel', response.status);
+    }
+
+    const result = await response.json() as { channel: { id: string; name: string; description?: string; isPrivate?: boolean; createdBy: string } };
+
+    return {
+      channel: {
+        id: result.channel.id,
+        name: result.channel.name,
+        description: result.channel.description,
+        visibility: result.channel.isPrivate ? 'private' : 'public',
+        status: 'active',
+        createdAt: new Date().toISOString(),
+        createdBy: result.channel.createdBy,
+        memberCount: 1,
+        unreadCount: 0,
+        hasMentions: false,
+        isDm: false,
+      },
+    };
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw new ApiError('Network error creating channel', 0);
+  }
 }
 
 /**

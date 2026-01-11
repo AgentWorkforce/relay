@@ -410,6 +410,31 @@ export async function startDashboard(
     ? new SqliteStorageAdapter({ dbPath })
     : undefined;
 
+  const persistChannelMembership = (channel: string, member: string, action: 'join' | 'leave' | 'invite', options?: { invitedBy?: string }) => {
+    if (!storage) return;
+    storage.saveMessage({
+      id: `membership-${crypto.randomUUID()}`,
+      ts: Date.now(),
+      from: '__system__',
+      to: channel,
+      topic: undefined,
+      kind: 'state', // membership events stored as state
+      body: `${action}:${member}`,
+      data: {
+        _channelMembership: {
+          member,
+          action,
+          invitedBy: options?.invitedBy,
+        },
+      },
+      status: 'read',
+      is_urgent: false,
+      is_broadcast: true,
+    }).catch((err) => {
+      console.error('[channels] Failed to persist membership event', err);
+    });
+  };
+
   // Initialize spawner if enabled
   // Use detectWorkspacePath to find the actual repo directory in cloud workspaces
   const workspacePath = detectWorkspacePath(projectRoot || dataDir);
@@ -2338,6 +2363,111 @@ export async function startDashboard(
     }
     const channels = userBridge.getUserChannels(username);
     res.json({ channels: channels.map((id) => ({ id, name: id })) });
+  });
+
+  /**
+   * POST /api/channels - Create a new channel
+   */
+  app.post('/api/channels', express.json(), async (req, res) => {
+    const { name, description, isPrivate, invites } = req.body as {
+      name: string;
+      description?: string;
+      isPrivate?: boolean;
+      invites?: string; // comma-separated usernames to invite
+    };
+    const username = (req.query.username as string) || (req.body.username as string) || 'Dashboard';
+
+    if (!name) {
+      return res.status(400).json({ error: 'name is required' });
+    }
+
+    // Normalize channel name
+    const channelId = name.startsWith('#') ? name : `#${name}`;
+
+    try {
+      // Join the creator to the channel
+      await userBridge.joinChannel(username, channelId);
+      persistChannelMembership(channelId, username, 'join');
+
+      // Handle invites if provided
+      if (invites) {
+        const inviteList = invites.split(',').map((s) => s.trim()).filter(Boolean);
+        for (const invitee of inviteList) {
+          await userBridge.joinChannel(invitee, channelId);
+          persistChannelMembership(channelId, invitee, 'invite', { invitedBy: username });
+        }
+      }
+
+      // Persist channel creation as a system message
+      if (storage) {
+        await storage.saveMessage({
+          id: `channel-create-${crypto.randomUUID()}`,
+          ts: Date.now(),
+          from: '__system__',
+          to: channelId,
+          topic: undefined,
+          kind: 'state', // channel creation stored as state
+          body: `Channel created by ${username}`,
+          data: {
+            _channelCreate: {
+              createdBy: username,
+              description,
+              isPrivate: isPrivate ?? false,
+            },
+          },
+          status: 'read',
+          is_urgent: false,
+          is_broadcast: true,
+        });
+      }
+
+      res.json({
+        channel: {
+          id: channelId,
+          name: name.startsWith('#') ? name.slice(1) : name,
+          description,
+          isPrivate: isPrivate ?? false,
+          createdBy: username,
+        },
+      });
+    } catch (err: any) {
+      console.error('[channels] Failed to create channel:', err);
+      res.status(500).json({ error: err.message || 'Failed to create channel' });
+    }
+  });
+
+  /**
+   * POST /api/channels/invite - Invite members to a channel
+   */
+  app.post('/api/channels/invite', express.json(), async (req, res) => {
+    const { channel, invites, invitedBy } = req.body as {
+      channel: string;
+      invites: string; // comma-separated usernames
+      invitedBy?: string;
+    };
+
+    if (!channel || !invites) {
+      return res.status(400).json({ error: 'channel and invites are required' });
+    }
+
+    const channelId = channel.startsWith('#') ? channel : `#${channel}`;
+    const inviteList = invites.split(',').map((s) => s.trim()).filter(Boolean);
+
+    try {
+      const results: Array<{ username: string; success: boolean }> = [];
+      for (const invitee of inviteList) {
+        const success = await userBridge.joinChannel(invitee, channelId);
+        if (success) {
+          persistChannelMembership(channelId, invitee, 'invite', { invitedBy });
+        }
+        results.push({ username: invitee, success });
+      }
+
+      res.json({ channel: channelId, invited: results });
+    } catch (err: any) {
+      console.error('[channels] Failed to invite to channel:', err);
+      res.status(500).json({ error: err.message || 'Failed to invite members' });
+    }
   });
 
   /**

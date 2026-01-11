@@ -5,7 +5,7 @@
  */
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { api } from '../lib/api';
+import { createChannel } from './channels/api';
 
 export interface CreateChannelModalProps {
   isOpen: boolean;
@@ -70,14 +70,14 @@ export function CreateChannelModal({
     setError(null);
 
     try {
-      const result = await api.post<{ channel: { id: string; name: string } }>('/api/channels', {
+      const result = await createChannel('local', {
         name: normalizedName,
         description: description.trim() || undefined,
-        isPrivate,
+        visibility: isPrivate ? 'private' : 'public',
       });
 
       if (result.channel) {
-        onChannelCreated?.(result.channel);
+        onChannelCreated?.({ id: result.channel.id, name: result.channel.name });
         onClose();
       } else {
         setError('Failed to create channel');
