@@ -2284,13 +2284,17 @@ export async function startDashboard(
    */
   app.post('/api/channels/join', express.json(), async (req, res) => {
     const { username, channel } = req.body;
+    console.log(`[channel-debug] JOIN request: username=${username}, channel=${channel}`);
     if (!username || !channel) {
+      console.log('[channel-debug] JOIN failed: missing username or channel');
       return res.status(400).json({ error: 'username and channel required' });
     }
     try {
       const success = await userBridge.joinChannel(username, channel);
+      console.log(`[channel-debug] JOIN result: success=${success}`);
       res.json({ success, channel });
     } catch (err: any) {
+      console.log(`[channel-debug] JOIN error: ${err.message}`);
       res.status(500).json({ error: err.message });
     }
   });
@@ -2316,13 +2320,17 @@ export async function startDashboard(
    */
   app.post('/api/channels/message', express.json(), async (req, res) => {
     const { username, channel, body, thread } = req.body;
+    console.log(`[channel-debug] MESSAGE request: username=${username}, channel=${channel}, body=${body?.substring(0, 50)}...`);
     if (!username || !channel || !body) {
+      console.log('[channel-debug] MESSAGE failed: missing required fields');
       return res.status(400).json({ error: 'username, channel, and body required' });
     }
     try {
       const success = await userBridge.sendChannelMessage(username, channel, body, { thread });
+      console.log(`[channel-debug] MESSAGE result: success=${success}`);
       res.json({ success });
     } catch (err: any) {
+      console.log(`[channel-debug] MESSAGE error: ${err.message}`);
       res.status(500).json({ error: err.message });
     }
   });

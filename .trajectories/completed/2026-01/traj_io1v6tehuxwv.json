@@ -1,0 +1,27 @@
+{
+  "id": "traj_io1v6tehuxwv",
+  "version": 1,
+  "task": {
+    "title": "Investigate prod cloud cursor error"
+  },
+  "status": "completed",
+  "startedAt": "2026-01-11T02:11:07.036Z",
+  "agents": [
+    {
+      "name": "khaliqgant",
+      "role": "lead",
+      "joinedAt": "2026-01-11T02:11:07.039Z"
+    }
+  ],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-01-11T02:13:14.287Z",
+  "retrospective": {
+    "summary": "Investigated Codex cursor read timeout; Codex CLI queries cursor position and fails if PTY doesn’t respond—current PtyWrapper handles CSI 6n with ESC[1;1R; advise ensuring prod uses that build or backport.",
+    "approach": "Standard approach",
+    "confidence": 0.6
+  }
+}

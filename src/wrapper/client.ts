@@ -270,7 +270,12 @@ export class RelayClient {
    * @param displayName - Optional display name for this member
    */
   joinChannel(channel: string, displayName?: string): boolean {
-    if (this._state !== 'READY') return false;
+    console.log(`[channel-debug] RelayClient.joinChannel: channel=${channel}, displayName=${displayName}, state=${this._state}`);
+
+    if (this._state !== 'READY') {
+      console.log(`[channel-debug] RelayClient.joinChannel failed: state is ${this._state}, not READY`);
+      return false;
+    }
 
     const envelope: ChannelJoinEnvelope = {
       v: PROTOCOL_VERSION,
@@ -283,7 +288,9 @@ export class RelayClient {
       },
     };
 
-    return this.send(envelope);
+    const result = this.send(envelope);
+    console.log(`[channel-debug] RelayClient.joinChannel send result: ${result}`);
+    return result;
   }
 
   /**
@@ -323,7 +330,12 @@ export class RelayClient {
       attachments?: MessageAttachment[];
     }
   ): boolean {
-    if (this._state !== 'READY') return false;
+    console.log(`[channel-debug] RelayClient.sendChannelMessage: channel=${channel}, state=${this._state}`);
+
+    if (this._state !== 'READY') {
+      console.log(`[channel-debug] RelayClient.sendChannelMessage failed: state is ${this._state}, not READY`);
+      return false;
+    }
 
     const envelope: ChannelMessageEnvelope = {
       v: PROTOCOL_VERSION,
@@ -339,7 +351,9 @@ export class RelayClient {
       },
     };
 
-    return this.send(envelope);
+    const result = this.send(envelope);
+    console.log(`[channel-debug] RelayClient.sendChannelMessage send result: ${result}`);
+    return result;
   }
 
   /**

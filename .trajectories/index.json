@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-11T01:21:24.090Z",
+  "lastUpdated": "2026-01-11T02:13:14.301Z",
   "trajectories": {
     "traj_x721m1j9rzup": {
       "title": "Phase 1-3 socket baseline architecture and performance optimizations",
@@ -22,6 +22,13 @@
       "startedAt": "2026-01-11T01:14:07.306Z",
       "completedAt": "2026-01-11T01:21:24.079Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_fnmapojrllau.json"
+    },
+    "traj_io1v6tehuxwv": {
+      "title": "Investigate prod cloud cursor error",
+      "status": "completed",
+      "startedAt": "2026-01-11T02:11:07.036Z",
+      "completedAt": "2026-01-11T02:13:14.287Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_io1v6tehuxwv.json"
     }
   }
 }
