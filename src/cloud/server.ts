@@ -386,24 +386,35 @@ export async function createServer(): Promise<CloudServer> {
     return null;
   }
 
-  // Detect on first request if not configured
-  let dashboardDetected = !!localDashboardUrl;
+  // Detect at startup if not configured - use a promise to ensure detection completes before first use
+  let detectionPromise: Promise<void> | null = null;
+
   if (localDashboardUrl) {
     console.log(`[channel-proxy] Using configured dashboard URL: ${localDashboardUrl}`);
-  }
-
-  async function getLocalDashboardUrl(): Promise<string> {
-    if (!dashboardDetected) {
-      const detected = await detectLocalDashboard();
+  } else {
+    // Start detection immediately
+    detectionPromise = detectLocalDashboard().then((detected) => {
       if (detected) {
         localDashboardUrl = detected;
       } else {
-        localDashboardUrl = 'http://localhost:3889'; // fallback to 3889 (common port)
+        localDashboardUrl = 'http://localhost:3889';
         console.log(`[channel-proxy] Falling back to ${localDashboardUrl}`);
       }
-      dashboardDetected = true;
+    });
+  }
+
+  async function getLocalDashboardUrl(): Promise<string> {
+    // Wait for detection to complete if it's in progress
+    if (detectionPromise) {
+      await detectionPromise;
+      detectionPromise = null;
     }
-    return localDashboardUrl!;
+    // If still not set (shouldn't happen), detect now
+    if (!localDashboardUrl) {
+      const detected = await detectLocalDashboard();
+      localDashboardUrl = detected || 'http://localhost:3889';
+    }
+    return localDashboardUrl;
   }
 
   async function proxyToLocalDashboard(

@@ -2481,12 +2481,16 @@ export async function startDashboard(
    * POST /api/channels/join - Join a channel
    */
   app.post('/api/channels/join', express.json(), async (req, res) => {
+    console.log('[channels] POST /api/channels/join received:', req.body);
     const { username, channel } = req.body;
     if (!username || !channel) {
+      console.log('[channels] Join: missing username or channel');
       return res.status(400).json({ error: 'username and channel required' });
     }
     try {
+      console.log(`[channels] Calling userBridge.joinChannel(${username}, ${channel})`);
       const success = await userBridge.joinChannel(username, channel);
+      console.log(`[channels] joinChannel returned: ${success}`);
       res.json({ success, channel });
     } catch (err: any) {
       console.error('[channels] Join failed:', err.message);
