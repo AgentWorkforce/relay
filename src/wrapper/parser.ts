@@ -751,9 +751,25 @@ export class OutputParser {
    *
    * IMPORTANT: We strip ANSI codes for pattern matching, but preserve
    * the original line for output to maintain terminal rendering.
+   *
+   * OPTIMIZATION: Early exit for lines that can't possibly be relay commands.
+   * Most lines don't contain relay patterns, so we avoid expensive regex/ANSI
+   * stripping for the common case.
    */
   private processLine(line: string): { command: ParsedCommand | null; output: string | null } {
-    // Strip ANSI codes for pattern matching
+    // FAST PATH: Quick string check before any expensive operations
+    // Most lines don't contain relay commands, so early exit is a big win
+    // Check for prefix bases (without the colon to handle custom prefixes like '>>')
+    const relayBase = this.options.prefix.replace(/:$/, '');
+    const thinkingBase = this.options.thinkingPrefix.replace(/:$/, '');
+    const hasRelayPattern = line.includes(relayBase) || line.includes(thinkingBase);
+    const hasBlockPattern = line.includes('[[') || line.includes('```');
+
+    if (!hasRelayPattern && !hasBlockPattern) {
+      return { command: null, output: line };
+    }
+
+    // Strip ANSI codes for pattern matching (only when potentially needed)
     const stripped = stripAnsi(line);
 
     // Handle code fences

@@ -28,7 +28,7 @@
  * ```
  */
 
-import { v4 as uuid } from 'uuid';
+import { generateId } from '../utils/id-generator.js';
 import {
   ConsensusEngine,
   createConsensusEngine,
@@ -440,7 +440,7 @@ export class ConsensusIntegration {
     const envelope: SendEnvelope = {
       v: PROTOCOL_VERSION,
       type: 'SEND',
-      id: uuid(),
+      id: generateId(),
       ts: Date.now(),
       from,
       to,
@@ -460,7 +460,7 @@ export class ConsensusIntegration {
     if (target) {
       // Use a mock connection for system messages
       const mockFrom = {
-        id: `consensus-${uuid()}`,
+        id: `consensus-${generateId()}`,
         agentName: from,
         sessionId: 'consensus-system',
         close: () => {},
