@@ -1153,8 +1153,12 @@ export class Router {
 
     console.log(`[channel-debug] Routing message to ${members.size} members`);
 
-    // Route to all members (including sender for confirmation/echo)
+    // Route to all members except the sender (no echo)
     for (const memberName of members) {
+      if (memberName === senderName) {
+        console.log(`[channel-debug] Skipping sender ${memberName}`);
+        continue;
+      }
       const memberConn = this.getConnectionByName(memberName);
       console.log(`[channel-debug] Sending to ${memberName}: connection=${!!memberConn}`);
       if (memberConn) {
