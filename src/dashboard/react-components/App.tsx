@@ -6,7 +6,7 @@
  */
 
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import type { Agent, Project, Message } from '../types';
+import type { Agent, Project, Message, AgentSummary } from '../types';
 import { Sidebar } from './layout/Sidebar';
 import { Header } from './layout/Header';
 import { MessageList } from './MessageList';
@@ -347,7 +347,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
 
   // Agent summaries lookup
   const agentSummariesMap = useMemo(() => {
-    const map = new Map<string, typeof data.summaries extends (infer T)[] ? T : never>();
+    const map = new Map<string, AgentSummary>();
     for (const summary of data?.summaries ?? []) {
       map.set(summary.agentName.toLowerCase(), summary);
     }
