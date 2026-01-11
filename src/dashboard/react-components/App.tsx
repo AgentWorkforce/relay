@@ -1192,6 +1192,113 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     }
   }, [settings.theme]);
 
+  // Request browser notification permissions when enabled
+  useEffect(() => {
+    if (!settings.notifications.desktop) return;
+    if (typeof window === 'undefined' || !('Notification' in window)) return;
+
+    if (Notification.permission === 'granted') return;
+
+    if (Notification.permission === 'denied') {
+      updateSettings((prev) => ({
+        ...prev,
+        notifications: {
+          ...prev.notifications,
+          desktop: false,
+          enabled: prev.notifications.sound || prev.notifications.mentionsOnly,
+        },
+      }));
+      return;
+    }
+
+    Notification.requestPermission().then((permission) => {
+      if (permission !== 'granted') {
+        updateSettings((prev) => ({
+          ...prev,
+          notifications: {
+            ...prev.notifications,
+            desktop: false,
+            enabled: prev.notifications.sound || prev.notifications.mentionsOnly,
+          },
+        }));
+      }
+    }).catch(() => undefined);
+  }, [settings.notifications.desktop, settings.notifications.sound, settings.notifications.mentionsOnly, updateSettings]);
+
+  // Browser notifications and sounds for new messages
+  useEffect(() => {
+    const messages = data?.messages;
+    if (!messages || messages.length === 0) {
+      lastNotifiedMessageCountRef.current = 0;
+      return;
+    }
+
+    if (!settings.notifications.enabled) {
+      lastNotifiedMessageCountRef.current = messages.length;
+      return;
+    }
+
+    if (lastNotifiedMessageCountRef.current === 0) {
+      lastNotifiedMessageCountRef.current = messages.length;
+      return;
+    }
+
+    if (messages.length <= lastNotifiedMessageCountRef.current) return;
+
+    const newMessages = messages.slice(lastNotifiedMessageCountRef.current);
+    lastNotifiedMessageCountRef.current = messages.length;
+
+    const isFromCurrentUser = (message: Message) =>
+      message.from === 'Dashboard' ||
+      (currentUser && message.from === currentUser.displayName);
+
+    const isMessageInCurrentChannel = (message: Message) => {
+      if (currentChannel === 'general') {
+        return message.to === '*' || message.isBroadcast || message.channel === 'general';
+      }
+      return message.from === currentChannel || message.to === currentChannel;
+    };
+
+    const shouldNotifyForMessage = (message: Message) => {
+      if (isFromCurrentUser(message)) return false;
+      if (settings.notifications.mentionsOnly && currentUser?.displayName) {
+        if (!message.content.includes(`@${currentUser.displayName}`)) {
+          return false;
+        }
+      }
+      const isActive = typeof document !== 'undefined' ? !document.hidden : false;
+      if (isActive && isMessageInCurrentChannel(message)) return false;
+      return true;
+    };
+
+    let shouldPlaySound = false;
+
+    for (const message of newMessages) {
+      if (!shouldNotifyForMessage(message)) continue;
+
+      if (settings.notifications.desktop && typeof window !== 'undefined' && 'Notification' in window) {
+        if (Notification.permission === 'granted') {
+          const channelLabel = message.to === '*' ? '#general' : message.to;
+          const body = message.content.split('\n')[0].slice(0, 160);
+          const notification = new Notification(`${message.from} → ${channelLabel}`, { body });
+          notification.onclick = () => {
+            window.focus();
+            setCurrentChannel(message.to === '*' ? 'general' : message.from);
+            notification.close();
+          };
+        }
+      }
+
+      if (settings.notifications.sound) {
+        shouldPlaySound = true;
+      }
+    }
+
+    if (shouldPlaySound) {
+      playNotificationSound();
+    }
+  }, [data?.messages, settings.notifications, currentChannel, currentUser, setCurrentChannel]);
+
   // Keyboard shortcuts
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1431,6 +1538,9 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
                 agents={combinedAgents}
                 currentUser={currentUser}
                 skipChannelFilter={currentHuman !== null}
+                showTimestamps={settings.display.showTimestamps}
+                autoScrollDefault={settings.messages.autoScroll}
+                compactMode={settings.display.compactMode}
               />
             )}
           </div>
@@ -1451,11 +1561,12 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
 
             return (
               <div className="w-full md:w-[400px] md:min-w-[320px] md:max-w-[500px] flex-shrink-0">
-                <ThreadPanel
-                  originalMessage={originalMessage ?? null}
-                  replies={threadMessages(currentThread)}
-                  onClose={() => setCurrentThread(null)}
-                  onReply={async (content) => {
+                  <ThreadPanel
+                    originalMessage={originalMessage ?? null}
+                    replies={threadMessages(currentThread)}
+                    onClose={() => setCurrentThread(null)}
+                    showTimestamps={settings.display.showTimestamps}
+                    onReply={async (content) => {
                     // For topic threads, broadcast to all; for reply chains, reply to the other participant
                     let recipient = '*';
                     if (!isTopicThread && originalMessage) {
