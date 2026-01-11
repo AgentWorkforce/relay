@@ -97,6 +97,7 @@ export async function startCLIAuth(
   const session: AuthSession = {
     id: sessionId,
     provider,
+    userId: options.userId,
     status: 'starting',
     output: '',
     promptsHandled: [],
