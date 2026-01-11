@@ -34,6 +34,7 @@ export type { CLIAuthConfig, PromptHandler };
 interface AuthSession {
   id: string;
   provider: string;
+  userId?: string;
   status: 'starting' | 'waiting_auth' | 'success' | 'error';
   authUrl?: string;
   token?: string;
@@ -96,6 +97,7 @@ export async function startCLIAuth(
   const session: AuthSession = {
     id: sessionId,
     provider,
+    userId: options.userId,
     status: 'starting',
     output: '',
     promptsHandled: [],
@@ -112,7 +114,7 @@ export async function startCLIAuth(
 
   // Check if already authenticated (credentials exist)
   try {
-    const existingCreds = await extractCredentials(provider, config);
+    const existingCreds = await extractCredentials(provider, config, options.userId);
     if (existingCreds?.token) {
       logger.info('Already authenticated - existing credentials found', { provider, sessionId });
       session.status = 'success';
@@ -286,7 +288,7 @@ export async function startCLIAuth(
             return;
           }
           try {
-            const creds = await extractCredentials(provider, config);
+            const creds = await extractCredentials(provider, config, session.userId);
             if (creds) {
               session.token = creds.token;
               session.refreshToken = creds.refreshToken;
@@ -324,7 +326,7 @@ export async function startCLIAuth(
       // CLI might exit cleanly (code 0) even after an OAuth error
       if ((session.authUrl || exitCode === 0) && session.status !== 'error') {
         try {
-          const creds = await extractCredentials(provider, config);
+          const creds = await extractCredentials(provider, config, session.userId);
           if (creds) {
             session.token = creds.token;
             session.refreshToken = creds.refreshToken;
@@ -424,7 +426,7 @@ export async function submitAuthCode(
     const config = CLI_AUTH_CONFIG[session.provider];
     if (config && session.status !== 'error') {
       try {
-        const creds = await extractCredentials(session.provider, config);
+        const creds = await extractCredentials(session.provider, config, session.userId);
         // Re-check status after async operation (race condition protection)
         // Use type assertion because TypeScript narrowing doesn't account for async race conditions
         if (creds && (session.status as AuthSession['status']) !== 'error') {
@@ -581,7 +583,7 @@ async function pollForCredentials(session: AuthSession, config: CLIAuthConfig): 
     }
 
     try {
-      const creds = await extractCredentials(session.provider, config);
+      const creds = await extractCredentials(session.provider, config, session.userId);
       if (creds) {
         // Double-check we're not in error state (race condition protection)
         // Use type assertion because TypeScript narrowing doesn't account for async race conditions
@@ -647,7 +649,7 @@ export async function completeAuthSession(sessionId: string): Promise<{
       return { success: false, error: session.error || 'Authentication failed' };
     }
     try {
-      const creds = await extractCredentials(session.provider, config);
+      const creds = await extractCredentials(session.provider, config, session.userId);
       if (creds) {
         // Double-check we're not in error state (race condition protection)
         // Use type assertion because TypeScript narrowing doesn't account for async race conditions
@@ -701,17 +703,43 @@ interface ExtractedCredentials {
   expiresAt?: Date;
 }
 
+function resolveCredentialPath(
+  provider: string,
+  config: CLIAuthConfig,
+  userId?: string
+): string | null {
+  if (!config.credentialPath) return null;
+
+  if (!userId) {
+    return config.credentialPath.replace('~', os.homedir());
+  }
+
+  try {
+    const userDirService = getUserDirectoryService();
+    const userHome = userDirService.getUserHome(userId);
+    return config.credentialPath.replace('~', userHome);
+  } catch (err) {
+    logger.warn('Failed to resolve per-user credential path, using default', {
+      provider,
+      userId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return config.credentialPath.replace('~', os.homedir());
+  }
+}
+
 /**
  * Extract credentials from CLI credential file
  */
 async function extractCredentials(
   provider: string,
-  config: CLIAuthConfig
+  config: CLIAuthConfig,
+  userId?: string
 ): Promise<ExtractedCredentials | null> {
-  if (!config.credentialPath) return null;
+  const credPath = resolveCredentialPath(provider, config, userId);
+  if (!credPath) return null;
 
   try {
-    const credPath = config.credentialPath.replace('~', os.homedir());
     const content = await fs.readFile(credPath, 'utf8');
     const creds = JSON.parse(content);
 
@@ -776,17 +804,16 @@ async function extractCredentials(
  * Check if a provider is authenticated (credentials exist)
  * Used by the auth check endpoint for SSH tunnel flow
  */
-export async function checkProviderAuth(provider: string): Promise<boolean> {
+export async function checkProviderAuth(provider: string, userId?: string): Promise<boolean> {
   const config = CLI_AUTH_CONFIG[provider];
   if (!config) {
     return false;
   }
 
   try {
-    const creds = await extractCredentials(provider, config);
+    const creds = await extractCredentials(provider, config, userId);
     return !!creds?.token;
   } catch {
     return false;
   }
 }
-
