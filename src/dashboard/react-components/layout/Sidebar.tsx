@@ -155,7 +155,7 @@ export function Sidebar({
     >
       {/* Header */}
       <div className="p-3 sm:p-4 border-b border-border-subtle">
-        <div className="flex items-center gap-2 sm:gap-3 mb-3">
+        <div className="flex items-center gap-2 sm:gap-3">
           <LogoIcon size={24} withGlow={true} />
           <h1 className="text-base sm:text-lg font-display font-semibold m-0 text-text-primary">Agent Relay</h1>
           <ConnectionIndicator isConnected={isConnected} />
@@ -167,45 +167,6 @@ export function Sidebar({
           >
             <CloseIcon />
           </button>
-        </div>
-
-        {/* View Mode Toggle */}
-        <div className="flex bg-bg-tertiary rounded-lg p-1">
-          <button
-            className={`
-              flex-1 py-2 px-3 bg-transparent border-none text-xs font-medium cursor-pointer rounded-md transition-all duration-150
-              ${viewMode === 'local'
-                ? 'bg-bg-elevated text-accent-cyan shadow-sm'
-                : 'text-text-muted hover:text-text-secondary'}
-            `}
-            onClick={() => onViewModeChange?.('local')}
-          >
-            Agents
-          </button>
-          <button
-            className={`
-              flex-1 py-2 px-3 bg-transparent border-none text-xs font-medium cursor-pointer rounded-md transition-all duration-150
-              ${viewMode === 'channels'
-                ? 'bg-bg-elevated text-accent-cyan shadow-sm'
-                : 'text-text-muted hover:text-text-secondary'}
-            `}
-            onClick={() => onViewModeChange?.('channels')}
-          >
-            Channels
-          </button>
-          {isFleetAvailable && (
-            <button
-              className={`
-                flex-1 py-2 px-3 bg-transparent border-none text-xs font-medium cursor-pointer rounded-md transition-all duration-150
-                ${viewMode === 'fleet'
-                  ? 'bg-bg-elevated text-accent-cyan shadow-sm'
-                  : 'text-text-muted hover:text-text-secondary'}
-              `}
-              onClick={() => onViewModeChange?.('fleet')}
-            >
-              Fleet
-            </button>
-          )}
         </div>
       </div>
 

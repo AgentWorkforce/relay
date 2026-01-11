@@ -21,9 +21,10 @@ import type {
 } from './types';
 
 // Feature flag for switching between mock and real API
-// Set via environment variable or runtime config
-const USE_REAL_API = typeof process !== 'undefined'
-  ? process.env.NEXT_PUBLIC_USE_REAL_CHANNELS_API === 'true'
+// In cloud mode (when workspaceId is provided), always use real API
+// Mock API is only for local development without a workspace
+const FORCE_MOCK_API = typeof process !== 'undefined'
+  ? process.env.NEXT_PUBLIC_FORCE_MOCK_CHANNELS_API === 'true'
   : false;
 
 // Re-export mock functions for fallback
@@ -79,7 +80,9 @@ export class ApiError extends Error {
  * List all channels for current user
  */
 export async function listChannels(workspaceId: string): Promise<ListChannelsResponse> {
-  if (!USE_REAL_API) {
+  // Use real API when workspaceId is provided (cloud mode)
+  // Fall back to mock API only when forced or no workspaceId
+  if (FORCE_MOCK_API || !workspaceId) {
     return mockApi.listChannels();
   }
 
@@ -100,7 +103,7 @@ export async function getChannel(
   workspaceId: string,
   channelId: string
 ): Promise<GetChannelResponse> {
-  if (!USE_REAL_API) {
+  if (FORCE_MOCK_API || !workspaceId) {
     return mockApi.getChannel(channelId);
   }
 
@@ -122,7 +125,7 @@ export async function getMessages(
   channelId: string,
   options?: { before?: string; limit?: number; threadId?: string }
 ): Promise<GetMessagesResponse> {
-  if (!USE_REAL_API) {
+  if (FORCE_MOCK_API || !workspaceId) {
     return mockApi.getMessages(channelId, options);
   }
 
@@ -156,7 +159,7 @@ export async function createChannel(
   workspaceId: string,
   request: CreateChannelRequest
 ): Promise<CreateChannelResponse> {
-  if (!USE_REAL_API) {
+  if (FORCE_MOCK_API || !workspaceId) {
     return mockApi.createChannel(request);
   }
 
@@ -186,7 +189,7 @@ export async function sendMessage(
   channelId: string,
   request: SendMessageRequest
 ): Promise<SendMessageResponse> {
-  if (!USE_REAL_API) {
+  if (FORCE_MOCK_API || !workspaceId) {
     return mockApi.sendMessage(channelId, request);
   }
 
@@ -210,7 +213,7 @@ export async function joinChannel(
   workspaceId: string,
   channelId: string
 ): Promise<Channel> {
-  if (!USE_REAL_API) {
+  if (FORCE_MOCK_API || !workspaceId) {
     return mockApi.joinChannel(channelId);
   }
 
@@ -229,7 +232,7 @@ export async function leaveChannel(
   workspaceId: string,
   channelId: string
 ): Promise<void> {
-  if (!USE_REAL_API) {
+  if (FORCE_MOCK_API || !workspaceId) {
     return mockApi.leaveChannel(channelId);
   }
 
@@ -246,7 +249,7 @@ export async function archiveChannel(
   workspaceId: string,
   channelId: string
 ): Promise<Channel> {
-  if (!USE_REAL_API) {
+  if (FORCE_MOCK_API || !workspaceId) {
     return mockApi.archiveChannel(channelId);
   }
 
@@ -265,7 +268,7 @@ export async function unarchiveChannel(
   workspaceId: string,
   channelId: string
 ): Promise<Channel> {
-  if (!USE_REAL_API) {
+  if (FORCE_MOCK_API || !workspaceId) {
     return mockApi.unarchiveChannel(channelId);
   }
 
@@ -284,7 +287,7 @@ export async function deleteChannel(
   workspaceId: string,
   channelId: string
 ): Promise<void> {
-  if (!USE_REAL_API) {
+  if (FORCE_MOCK_API || !workspaceId) {
     return mockApi.deleteChannel(channelId);
   }
 
@@ -303,7 +306,7 @@ export async function markRead(
   channelId: string,
   upToMessageId?: string
 ): Promise<void> {
-  if (!USE_REAL_API) {
+  if (FORCE_MOCK_API || !workspaceId) {
     // Mock uses timestamp, pass current time if no message ID
     return mockApi.markRead(channelId, new Date().toISOString());
   }
@@ -325,7 +328,7 @@ export async function pinMessage(
   channelId: string,
   messageId: string
 ): Promise<void> {
-  if (!USE_REAL_API) {
+  if (FORCE_MOCK_API || !workspaceId) {
     // Mock doesn't have pin support - no-op
     return;
   }
@@ -344,7 +347,7 @@ export async function unpinMessage(
   channelId: string,
   messageId: string
 ): Promise<void> {
-  if (!USE_REAL_API) {
+  if (FORCE_MOCK_API || !workspaceId) {
     // Mock doesn't have unpin support - no-op
     return;
   }
@@ -361,7 +364,7 @@ export async function unpinMessage(
 export async function getMentionSuggestions(
   workspaceId: string
 ): Promise<string[]> {
-  if (!USE_REAL_API) {
+  if (FORCE_MOCK_API || !workspaceId) {
     return mockApi.getMentionSuggestions();
   }
 
@@ -389,7 +392,7 @@ export async function searchMessages(
   query: string,
   options?: { channelId?: string; limit?: number; offset?: number }
 ): Promise<SearchResponse> {
-  if (!USE_REAL_API) {
+  if (FORCE_MOCK_API || !workspaceId) {
     // Mock search response
     return {
       results: [],
@@ -453,7 +456,7 @@ export async function updateChannel(
   channelId: string,
   updates: { name?: string; description?: string; isPrivate?: boolean }
 ): Promise<Channel> {
-  if (!USE_REAL_API) {
+  if (FORCE_MOCK_API || !workspaceId) {
     // Mock: return updated channel
     const channels = await mockApi.listChannels();
     const channel = channels.channels.find(c => c.id === channelId);
@@ -488,7 +491,7 @@ export async function addMember(
   channelId: string,
   request: { memberId: string; memberType: 'user' | 'agent'; role?: 'admin' | 'member' | 'read_only' }
 ): Promise<ChannelMember> {
-  if (!USE_REAL_API) {
+  if (FORCE_MOCK_API || !workspaceId) {
     // Mock: return new member
     return {
       id: request.memberId,
@@ -522,7 +525,7 @@ export async function removeMember(
   memberId: string,
   memberType: 'user' | 'agent'
 ): Promise<void> {
-  if (!USE_REAL_API) {
+  if (FORCE_MOCK_API || !workspaceId) {
     // Mock: no-op
     return;
   }
@@ -544,7 +547,7 @@ export async function updateMemberRole(
   memberId: string,
   request: { role: 'admin' | 'member' | 'read_only'; memberType: 'user' | 'agent' }
 ): Promise<ChannelMember> {
-  if (!USE_REAL_API) {
+  if (FORCE_MOCK_API || !workspaceId) {
     // Mock: return updated member
     return {
       id: memberId,
@@ -574,7 +577,7 @@ export async function getChannelMembers(
   workspaceId: string,
   channelId: string
 ): Promise<ChannelMember[]> {
-  if (!USE_REAL_API) {
+  if (FORCE_MOCK_API || !workspaceId) {
     // Mock: return empty list or from getChannel
     const response = await mockApi.getChannel(channelId);
     return response.members || [];
@@ -694,10 +697,11 @@ function mapMessageFromBackend(backend: unknown): ChannelMessage {
 // =============================================================================
 
 /**
- * Check if real API is enabled
+ * Check if real API is enabled (now depends on workspace context)
+ * Real API is enabled by default when a workspaceId is available
  */
 export function isRealApiEnabled(): boolean {
-  return USE_REAL_API;
+  return !FORCE_MOCK_API;
 }
 
 /**
@@ -711,5 +715,5 @@ export function setApiMode(useReal: boolean): void {
 }
 
 export function getApiMode(): 'real' | 'mock' {
-  return (runtimeOverride ?? USE_REAL_API) ? 'real' : 'mock';
+  return (runtimeOverride ?? !FORCE_MOCK_API) ? 'real' : 'mock';
 }

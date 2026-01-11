@@ -58,7 +58,6 @@ import {
   type SearchResponse,
   type UnreadState,
   type CreateChannelRequest,
-  MOCK_CHANNELS,
 } from './channels';
 import { useCloudSessionOptional } from './CloudSessionProvider';
 import { WorkspaceProvider } from './WorkspaceContext';
@@ -260,7 +259,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   const [viewMode, setViewMode] = useState<'local' | 'fleet' | 'channels'>('local');
 
   // Channel state for V1 channels UI
-  const [channelsList, setChannelsList] = useState<Channel[]>(MOCK_CHANNELS);
+  const [channelsList, setChannelsList] = useState<Channel[]>([]);
   const [archivedChannelsList, setArchivedChannelsList] = useState<Channel[]>([]);
   const [selectedChannelId, setSelectedChannelId] = useState<string | undefined>();
   const [channelMessages, setChannelMessages] = useState<ChannelApiMessage[]>([]);
