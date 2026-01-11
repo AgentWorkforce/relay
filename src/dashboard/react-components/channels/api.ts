@@ -1,14 +1,19 @@
 /**
- * Real API Service for Channels V1
+ * Channels API Service
  *
- * Production API calls for channel-based messaging.
- * Replaces mockApi.ts when USE_REAL_CHANNELS_API is enabled.
+ * Channels are now handled entirely by the daemon (not cloud).
+ * This API layer uses the local/mock implementation which
+ * integrates with the relay system for real-time messaging.
+ *
+ * Cloud channels were removed because:
+ * - Daemon already has full channel protocol support (CHANNEL_JOIN, CHANNEL_MESSAGE, etc.)
+ * - Having two parallel implementations caused confusion
+ * - See trajectory traj_fnmapojrllau for architectural decision
  */
 
 import type {
   Channel,
   ChannelMember,
-  ChannelMessage,
   ListChannelsResponse,
   GetChannelResponse,
   GetMessagesResponse,
@@ -16,47 +21,11 @@ import type {
   CreateChannelResponse,
   SendMessageRequest,
   SendMessageResponse,
-  SearchResult,
   SearchResponse,
 } from './types';
 
-// Feature flag for switching between mock and real API
-// In cloud mode (when workspaceId is provided), always use real API
-// Mock API is only for local development without a workspace
-const FORCE_MOCK_API = typeof process !== 'undefined'
-  ? process.env.NEXT_PUBLIC_FORCE_MOCK_CHANNELS_API === 'true'
-  : false;
-
-// Re-export mock functions for fallback
+// Channels now always use daemon-based implementation via relay
 import * as mockApi from './mockApi';
-
-/**
- * API request helper with error handling
- */
-async function apiRequest<T>(
-  url: string,
-  options: RequestInit = {}
-): Promise<T> {
-  const response = await fetch(url, {
-    ...options,
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-  });
-
-  if (!response.ok) {
-    const errorBody = await response.text().catch(() => '');
-    throw new ApiError(
-      `API request failed: ${response.status} ${response.statusText}`,
-      response.status,
-      errorBody
-    );
-  }
-
-  return response.json();
-}
 
 /**
  * Custom error class for API errors
@@ -73,357 +42,171 @@ export class ApiError extends Error {
 }
 
 // =============================================================================
-// Channel API Functions
+// Channel API Functions - All delegate to daemon-based mockApi
 // =============================================================================
 
 /**
  * List all channels for current user
+ * workspaceId parameter is kept for API compatibility but not used
  */
-export async function listChannels(workspaceId: string): Promise<ListChannelsResponse> {
-  // Use real API when workspaceId is provided (cloud mode)
-  // Fall back to mock API only when forced or no workspaceId
-  if (FORCE_MOCK_API || !workspaceId) {
-    return mockApi.listChannels();
-  }
-
-  const data = await apiRequest<{ channels: unknown[]; archivedChannels?: unknown[] }>(
-    `/api/workspaces/${workspaceId}/channels`
-  );
-
-  return {
-    channels: data.channels.map(mapChannelFromBackend),
-    archivedChannels: (data.archivedChannels || []).map(mapChannelFromBackend),
-  };
+export async function listChannels(_workspaceId?: string): Promise<ListChannelsResponse> {
+  return mockApi.listChannels();
 }
 
 /**
  * Get channel details and members
  */
 export async function getChannel(
-  workspaceId: string,
+  _workspaceId: string,
   channelId: string
 ): Promise<GetChannelResponse> {
-  if (FORCE_MOCK_API || !workspaceId) {
-    return mockApi.getChannel(channelId);
-  }
-
-  const data = await apiRequest<{ channel: unknown; members: unknown[] }>(
-    `/api/workspaces/${workspaceId}/channels/${encodeURIComponent(channelId)}`
-  );
-
-  return {
-    channel: mapChannelFromBackend(data.channel),
-    members: (data.members || []).map(mapMemberFromBackend),
-  };
+  return mockApi.getChannel(channelId);
 }
 
 /**
  * Get messages in a channel
  */
 export async function getMessages(
-  workspaceId: string,
+  _workspaceId: string,
   channelId: string,
   options?: { before?: string; limit?: number; threadId?: string }
 ): Promise<GetMessagesResponse> {
-  if (FORCE_MOCK_API || !workspaceId) {
-    return mockApi.getMessages(channelId, options);
-  }
-
-  const params = new URLSearchParams();
-  if (options?.before) params.append('before', options.before);
-  if (options?.limit) params.append('limit', String(options.limit));
-  if (options?.threadId) params.append('threadId', options.threadId);
-
-  const queryString = params.toString();
-  const url = `/api/workspaces/${workspaceId}/channels/${encodeURIComponent(channelId)}/messages${
-    queryString ? '?' + queryString : ''
-  }`;
-
-  const data = await apiRequest<{
-    messages: unknown[];
-    hasMore: boolean;
-    unread: { count: number; firstUnreadMessageId?: string };
-  }>(url);
-
-  return {
-    messages: data.messages.map(mapMessageFromBackend),
-    hasMore: data.hasMore,
-    unread: data.unread,
-  };
+  return mockApi.getMessages(channelId, options);
 }
 
 /**
  * Create a new channel
  */
 export async function createChannel(
-  workspaceId: string,
+  _workspaceId: string,
   request: CreateChannelRequest
 ): Promise<CreateChannelResponse> {
-  if (FORCE_MOCK_API || !workspaceId) {
-    return mockApi.createChannel(request);
-  }
-
-  const data = await apiRequest<{ channel: unknown }>(
-    `/api/workspaces/${workspaceId}/channels`,
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        name: request.name,
-        description: request.description,
-        isPrivate: request.visibility === 'private',
-        members: request.members,
-      }),
-    }
-  );
-
-  return {
-    channel: mapChannelFromBackend(data.channel),
-  };
+  return mockApi.createChannel(request);
 }
 
 /**
  * Send a message to a channel
  */
 export async function sendMessage(
-  workspaceId: string,
+  _workspaceId: string,
   channelId: string,
   request: SendMessageRequest
 ): Promise<SendMessageResponse> {
-  if (FORCE_MOCK_API || !workspaceId) {
-    return mockApi.sendMessage(channelId, request);
-  }
-
-  const data = await apiRequest<{ message: unknown }>(
-    `/api/workspaces/${workspaceId}/channels/${encodeURIComponent(channelId)}/messages`,
-    {
-      method: 'POST',
-      body: JSON.stringify(request),
-    }
-  );
-
-  return {
-    message: mapMessageFromBackend(data.message),
-  };
+  return mockApi.sendMessage(channelId, request);
 }
 
 /**
  * Join a channel
  */
 export async function joinChannel(
-  workspaceId: string,
+  _workspaceId: string,
   channelId: string
 ): Promise<Channel> {
-  if (FORCE_MOCK_API || !workspaceId) {
-    return mockApi.joinChannel(channelId);
-  }
-
-  const data = await apiRequest<{ channel: unknown }>(
-    `/api/workspaces/${workspaceId}/channels/${encodeURIComponent(channelId)}/join`,
-    { method: 'POST' }
-  );
-
-  return mapChannelFromBackend(data.channel);
+  return mockApi.joinChannel(channelId);
 }
 
 /**
  * Leave a channel
  */
 export async function leaveChannel(
-  workspaceId: string,
+  _workspaceId: string,
   channelId: string
 ): Promise<void> {
-  if (FORCE_MOCK_API || !workspaceId) {
-    return mockApi.leaveChannel(channelId);
-  }
-
-  await apiRequest<void>(
-    `/api/workspaces/${workspaceId}/channels/${encodeURIComponent(channelId)}/leave`,
-    { method: 'POST' }
-  );
+  return mockApi.leaveChannel(channelId);
 }
 
 /**
  * Archive a channel
  */
 export async function archiveChannel(
-  workspaceId: string,
+  _workspaceId: string,
   channelId: string
 ): Promise<Channel> {
-  if (FORCE_MOCK_API || !workspaceId) {
-    return mockApi.archiveChannel(channelId);
-  }
-
-  const data = await apiRequest<{ channel: unknown }>(
-    `/api/workspaces/${workspaceId}/channels/${encodeURIComponent(channelId)}/archive`,
-    { method: 'POST' }
-  );
-
-  return mapChannelFromBackend(data.channel);
+  return mockApi.archiveChannel(channelId);
 }
 
 /**
  * Unarchive a channel
  */
 export async function unarchiveChannel(
-  workspaceId: string,
+  _workspaceId: string,
   channelId: string
 ): Promise<Channel> {
-  if (FORCE_MOCK_API || !workspaceId) {
-    return mockApi.unarchiveChannel(channelId);
-  }
-
-  const data = await apiRequest<{ channel: unknown }>(
-    `/api/workspaces/${workspaceId}/channels/${encodeURIComponent(channelId)}/unarchive`,
-    { method: 'POST' }
-  );
-
-  return mapChannelFromBackend(data.channel);
+  return mockApi.unarchiveChannel(channelId);
 }
 
 /**
  * Delete a channel (permanent)
  */
 export async function deleteChannel(
-  workspaceId: string,
+  _workspaceId: string,
   channelId: string
 ): Promise<void> {
-  if (FORCE_MOCK_API || !workspaceId) {
-    return mockApi.deleteChannel(channelId);
-  }
-
-  await apiRequest<void>(
-    `/api/workspaces/${workspaceId}/channels/${encodeURIComponent(channelId)}`,
-    { method: 'DELETE' }
-  );
+  return mockApi.deleteChannel(channelId);
 }
 
 /**
- * Mark messages as read up to a specific message or all messages
- * @param upToMessageId - Optional message ID to mark read up to. If omitted, marks all as read.
+ * Mark messages as read
  */
 export async function markRead(
-  workspaceId: string,
+  _workspaceId: string,
   channelId: string,
   upToMessageId?: string
 ): Promise<void> {
-  if (FORCE_MOCK_API || !workspaceId) {
-    // Mock uses timestamp, pass current time if no message ID
-    return mockApi.markRead(channelId, new Date().toISOString());
-  }
-
-  await apiRequest<{ success: boolean; unreadCount: number }>(
-    `/api/workspaces/${workspaceId}/channels/${encodeURIComponent(channelId)}/read`,
-    {
-      method: 'POST',
-      body: JSON.stringify(upToMessageId ? { lastMessageId: upToMessageId } : {}),
-    }
-  );
+  // Mock uses timestamp, pass current time if no message ID
+  return mockApi.markRead(channelId, upToMessageId || new Date().toISOString());
 }
 
 /**
- * Pin a message
+ * Pin a message (no-op in daemon mode)
  */
 export async function pinMessage(
-  workspaceId: string,
-  channelId: string,
-  messageId: string
+  _workspaceId: string,
+  _channelId: string,
+  _messageId: string
 ): Promise<void> {
-  if (FORCE_MOCK_API || !workspaceId) {
-    // Mock doesn't have pin support - no-op
-    return;
-  }
-
-  await apiRequest<void>(
-    `/api/workspaces/${workspaceId}/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/pin`,
-    { method: 'POST' }
-  );
+  // Pinning not supported in daemon mode
+  return;
 }
 
 /**
- * Unpin a message
+ * Unpin a message (no-op in daemon mode)
  */
 export async function unpinMessage(
-  workspaceId: string,
-  channelId: string,
-  messageId: string
+  _workspaceId: string,
+  _channelId: string,
+  _messageId: string
 ): Promise<void> {
-  if (FORCE_MOCK_API || !workspaceId) {
-    // Mock doesn't have unpin support - no-op
-    return;
-  }
-
-  await apiRequest<void>(
-    `/api/workspaces/${workspaceId}/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/unpin`,
-    { method: 'POST' }
-  );
+  // Unpinning not supported in daemon mode
+  return;
 }
 
 /**
  * Get mention suggestions (online agents/users)
  */
 export async function getMentionSuggestions(
-  workspaceId: string
+  _workspaceId?: string
 ): Promise<string[]> {
-  if (FORCE_MOCK_API || !workspaceId) {
-    return mockApi.getMentionSuggestions();
-  }
-
-  // Use existing agents endpoint or presence data
-  try {
-    const data = await apiRequest<{ agents?: { name: string }[] }>(
-      `/api/workspaces/${workspaceId}/agents`
-    );
-    return (data.agents || []).map(a => a.name);
-  } catch {
-    // Fallback to empty if endpoint not available
-    return [];
-  }
+  return mockApi.getMentionSuggestions();
 }
 
 // =============================================================================
-// Search API Functions (Task 5)
+// Search API Functions
 // =============================================================================
 
 /**
- * Search messages across a workspace
+ * Search messages (returns empty in daemon mode - search via relay)
  */
 export async function searchMessages(
-  workspaceId: string,
+  _workspaceId: string,
   query: string,
-  options?: { channelId?: string; limit?: number; offset?: number }
+  _options?: { channelId?: string; limit?: number; offset?: number }
 ): Promise<SearchResponse> {
-  if (FORCE_MOCK_API || !workspaceId) {
-    // Mock search response
-    return {
-      results: [],
-      total: 0,
-      hasMore: false,
-      query,
-    };
-  }
-
-  const params = new URLSearchParams();
-  params.append('q', query);
-  if (options?.limit) params.append('limit', String(options.limit));
-  if (options?.offset) params.append('offset', String(options.offset));
-
-  // Use channel-scoped or workspace-wide search
-  const basePath = options?.channelId
-    ? `/api/workspaces/${workspaceId}/channels/${encodeURIComponent(options.channelId)}/search`
-    : `/api/workspaces/${workspaceId}/search`;
-
-  const url = `${basePath}?${params.toString()}`;
-
-  const data = await apiRequest<{
-    results: unknown[];
-    total: number;
-    hasMore: boolean;
-  }>(url);
-
+  // Search not implemented in daemon mode
   return {
-    results: data.results.map(mapSearchResultFromBackend),
-    total: data.total,
-    hasMore: data.hasMore,
+    results: [],
+    total: 0,
+    hasMore: false,
     query,
   };
 }
@@ -437,283 +220,113 @@ export async function searchChannel(
   query: string,
   options?: { limit?: number; offset?: number }
 ): Promise<SearchResponse> {
-  return searchMessages(workspaceId, query, {
-    ...options,
-    channelId,
-  });
+  return searchMessages(workspaceId, query, { ...options, channelId });
 }
 
 // =============================================================================
-// Admin API Functions (Task 10)
+// Admin API Functions
 // =============================================================================
 
 /**
- * Update channel settings (name, description, visibility)
- * Requires channel or workspace admin role.
+ * Update channel settings
  */
 export async function updateChannel(
-  workspaceId: string,
+  _workspaceId: string,
   channelId: string,
   updates: { name?: string; description?: string; isPrivate?: boolean }
 ): Promise<Channel> {
-  if (FORCE_MOCK_API || !workspaceId) {
-    // Mock: return updated channel
-    const channels = await mockApi.listChannels();
-    const channel = channels.channels.find(c => c.id === channelId);
-    if (!channel) throw new ApiError('Channel not found', 404);
-    return {
-      ...channel,
-      name: updates.name ?? channel.name,
-      description: updates.description ?? channel.description,
-      visibility: updates.isPrivate !== undefined
-        ? (updates.isPrivate ? 'private' : 'public')
-        : channel.visibility,
-    };
-  }
-
-  const data = await apiRequest<{ channel: unknown }>(
-    `/api/workspaces/${workspaceId}/channels/${encodeURIComponent(channelId)}`,
-    {
-      method: 'PATCH',
-      body: JSON.stringify(updates),
-    }
-  );
-
-  return mapChannelFromBackend(data.channel);
+  const channels = await mockApi.listChannels();
+  const channel = channels.channels.find(c => c.id === channelId);
+  if (!channel) throw new ApiError('Channel not found', 404);
+  return {
+    ...channel,
+    name: updates.name ?? channel.name,
+    description: updates.description ?? channel.description,
+    visibility: updates.isPrivate !== undefined
+      ? (updates.isPrivate ? 'private' : 'public')
+      : channel.visibility,
+  };
 }
 
 /**
- * Add a member to a channel (user or agent)
- * Requires channel or workspace admin role.
+ * Add a member to a channel
  */
 export async function addMember(
-  workspaceId: string,
-  channelId: string,
+  _workspaceId: string,
+  _channelId: string,
   request: { memberId: string; memberType: 'user' | 'agent'; role?: 'admin' | 'member' | 'read_only' }
 ): Promise<ChannelMember> {
-  if (FORCE_MOCK_API || !workspaceId) {
-    // Mock: return new member
-    return {
-      id: request.memberId,
-      displayName: request.memberId,
-      entityType: request.memberType,
-      role: request.role === 'admin' ? 'admin' : 'member',
-      status: 'offline',
-      joinedAt: new Date().toISOString(),
-    };
-  }
-
-  const data = await apiRequest<{ member: unknown }>(
-    `/api/workspaces/${workspaceId}/channels/${encodeURIComponent(channelId)}/members`,
-    {
-      method: 'POST',
-      body: JSON.stringify(request),
-    }
-  );
-
-  return mapMemberFromBackend(data.member);
+  return {
+    id: request.memberId,
+    displayName: request.memberId,
+    entityType: request.memberType,
+    role: request.role === 'admin' ? 'admin' : 'member',
+    status: 'offline',
+    joinedAt: new Date().toISOString(),
+  };
 }
 
 /**
  * Remove a member from a channel
- * Requires channel or workspace admin role.
- * Cannot remove the last admin.
  */
 export async function removeMember(
-  workspaceId: string,
-  channelId: string,
-  memberId: string,
-  memberType: 'user' | 'agent'
+  _workspaceId: string,
+  _channelId: string,
+  _memberId: string,
+  _memberType: 'user' | 'agent'
 ): Promise<void> {
-  if (FORCE_MOCK_API || !workspaceId) {
-    // Mock: no-op
-    return;
-  }
-
-  await apiRequest<void>(
-    `/api/workspaces/${workspaceId}/channels/${encodeURIComponent(channelId)}/members/${encodeURIComponent(memberId)}?memberType=${memberType}`,
-    { method: 'DELETE' }
-  );
+  // No-op in daemon mode
+  return;
 }
 
 /**
- * Update a member's role in a channel
- * Requires channel or workspace admin role.
- * Cannot demote the last admin.
+ * Update a member's role
  */
 export async function updateMemberRole(
-  workspaceId: string,
-  channelId: string,
+  _workspaceId: string,
+  _channelId: string,
   memberId: string,
   request: { role: 'admin' | 'member' | 'read_only'; memberType: 'user' | 'agent' }
 ): Promise<ChannelMember> {
-  if (FORCE_MOCK_API || !workspaceId) {
-    // Mock: return updated member
-    return {
-      id: memberId,
-      displayName: memberId,
-      entityType: request.memberType,
-      role: request.role === 'admin' ? 'admin' : 'member',
-      status: 'offline',
-      joinedAt: new Date().toISOString(),
-    };
-  }
-
-  const data = await apiRequest<{ member: unknown }>(
-    `/api/workspaces/${workspaceId}/channels/${encodeURIComponent(channelId)}/members/${encodeURIComponent(memberId)}/role`,
-    {
-      method: 'PATCH',
-      body: JSON.stringify(request),
-    }
-  );
-
-  return mapMemberFromBackend(data.member);
+  return {
+    id: memberId,
+    displayName: memberId,
+    entityType: request.memberType,
+    role: request.role === 'admin' ? 'admin' : 'member',
+    status: 'offline',
+    joinedAt: new Date().toISOString(),
+  };
 }
 
 /**
  * Get all members of a channel
  */
 export async function getChannelMembers(
-  workspaceId: string,
+  _workspaceId: string,
   channelId: string
 ): Promise<ChannelMember[]> {
-  if (FORCE_MOCK_API || !workspaceId) {
-    // Mock: return empty list or from getChannel
-    const response = await mockApi.getChannel(channelId);
-    return response.members || [];
-  }
-
-  const data = await apiRequest<{ members: unknown[] }>(
-    `/api/workspaces/${workspaceId}/channels/${encodeURIComponent(channelId)}/members`
-  );
-
-  return (data.members || []).map(mapMemberFromBackend);
-}
-
-/**
- * Map search result from backend format
- */
-function mapSearchResultFromBackend(backend: unknown): SearchResult {
-  const b = backend as Record<string, unknown>;
-  return {
-    id: String(b.id || b.messageId || ''),
-    channelId: String(b.channelId || ''),
-    channelName: String(b.channelName || ''),
-    from: String(b.from || b.senderName || ''),
-    fromEntityType: (b.fromEntityType as 'agent' | 'user') || 'user',
-    content: String(b.content || b.body || ''),
-    snippet: String(b.snippet || b.headline || b.content || ''),
-    timestamp: String(b.timestamp || b.createdAt || new Date().toISOString()),
-    rank: Number(b.rank) || 0,
-  };
+  const response = await mockApi.getChannel(channelId);
+  return response.members || [];
 }
 
 // =============================================================================
-// Mapping Functions - Convert backend responses to frontend types
+// Feature Flag Utilities (kept for API compatibility)
 // =============================================================================
 
 /**
- * Map channel from backend format to frontend format
- */
-function mapChannelFromBackend(backend: unknown): Channel {
-  const b = backend as Record<string, unknown>;
-  return {
-    id: String(b.id || ''),
-    name: String(b.name || ''),
-    description: b.description as string | undefined,
-    topic: b.topic as string | undefined,
-    visibility: b.isPrivate ? 'private' : 'public',
-    status: b.isArchived ? 'archived' : 'active',
-    createdAt: String(b.createdAt || new Date().toISOString()),
-    createdBy: String(b.createdById || b.createdBy || ''),
-    lastActivityAt: b.lastActivityAt as string | undefined,
-    memberCount: Number(b.memberCount) || 0,
-    unreadCount: Number(b.unreadCount) || 0,
-    hasMentions: Boolean(b.hasMentions),
-    lastMessage: b.lastMessage as Channel['lastMessage'],
-    isDm: Boolean(b.isDm),
-    dmParticipants: b.dmParticipants as string[] | undefined,
-  };
-}
-
-/**
- * Map member from backend format to frontend format
- */
-function mapMemberFromBackend(backend: unknown): ChannelMember {
-  const b = backend as Record<string, unknown>;
-  return {
-    id: String(b.id || b.userId || ''),
-    displayName: b.displayName as string | undefined,
-    avatarUrl: b.avatarUrl as string | undefined,
-    entityType: (b.entityType as 'agent' | 'user') || 'user',
-    role: mapRole(b.role as string),
-    status: (b.status as 'online' | 'away' | 'offline') || 'offline',
-    joinedAt: String(b.joinedAt || new Date().toISOString()),
-  };
-}
-
-/**
- * Map role from backend to frontend format
- */
-function mapRole(backendRole: string | undefined): 'owner' | 'admin' | 'member' {
-  switch (backendRole) {
-    case 'admin':
-      return 'owner'; // Backend admin = frontend owner for channel creator
-    case 'member':
-      return 'member';
-    case 'read_only':
-      return 'member'; // Map read_only to member for display
-    default:
-      return 'member';
-  }
-}
-
-/**
- * Map message from backend format to frontend format
- */
-function mapMessageFromBackend(backend: unknown): ChannelMessage {
-  const b = backend as Record<string, unknown>;
-  return {
-    id: String(b.id || ''),
-    channelId: String(b.channelId || ''),
-    from: String(b.from || b.senderName || ''),
-    fromEntityType: (b.fromEntityType as 'agent' | 'user') || 'user',
-    fromAvatarUrl: b.fromAvatarUrl as string | undefined,
-    content: String(b.content || b.body || ''),
-    timestamp: String(b.timestamp || b.createdAt || new Date().toISOString()),
-    editedAt: b.editedAt as string | undefined,
-    threadId: b.threadId as string | undefined,
-    threadSummary: b.threadSummary as ChannelMessage['threadSummary'],
-    mentions: b.mentions as string[] | undefined,
-    attachments: b.attachments as ChannelMessage['attachments'],
-    reactions: b.reactions as ChannelMessage['reactions'],
-    isPinned: Boolean(b.isPinned),
-    isRead: b.isRead !== false, // Default to read if not specified
-  };
-}
-
-// =============================================================================
-// Feature Flag Utilities
-// =============================================================================
-
-/**
- * Check if real API is enabled (now depends on workspace context)
- * Real API is enabled by default when a workspaceId is available
+ * Always returns true - channels now only use daemon/relay
  */
 export function isRealApiEnabled(): boolean {
-  return !FORCE_MOCK_API;
+  return false; // "Real" cloud API is disabled, using daemon instead
 }
 
 /**
- * Runtime toggle for testing (use with caution)
+ * No-op - API mode is fixed to daemon/local
  */
-let runtimeOverride: boolean | null = null;
-
-export function setApiMode(useReal: boolean): void {
-  runtimeOverride = useReal;
-  console.log(`[ChannelsAPI] Mode switched to: ${useReal ? 'REAL' : 'MOCK'}`);
+export function setApiMode(_useReal: boolean): void {
+  console.log('[ChannelsAPI] Mode is fixed to daemon-based implementation');
 }
 
 export function getApiMode(): 'real' | 'mock' {
-  return (runtimeOverride ?? !FORCE_MOCK_API) ? 'real' : 'mock';
+  return 'mock'; // Always daemon-based (local) implementation
 }

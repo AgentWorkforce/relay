@@ -49,20 +49,6 @@ export type {
   CommentMention,
   NewCommentMention,
   AgentTriggerConfig,
-  // Channel types
-  Channel,
-  NewChannel,
-  ChannelMember,
-  NewChannelMember,
-  ChannelMemberRole,
-  ChannelMemberType,
-  ChannelMessage,
-  NewChannelMessage,
-  ChannelReadState,
-  NewChannelReadState,
-  // Message reaction types
-  MessageReaction,
-  NewMessageReaction,
 } from './schema.js';
 
 // Re-export schema tables for direct access if needed
@@ -81,11 +67,6 @@ export {
   ciFixAttempts as ciFixAttemptsTable,
   issueAssignments as issueAssignmentsTable,
   commentMentions as commentMentionsTable,
-  channels as channelsTable,
-  channelMembers as channelMembersTable,
-  channelMessages as channelMessagesTable,
-  channelReadState as channelReadStateTable,
-  messageReactions as messageReactionsTable,
 } from './schema.js';
 
 // Import query modules
@@ -106,12 +87,6 @@ import {
   ciFixAttemptQueries,
   issueAssignmentQueries,
   commentMentionQueries,
-  channelQueries,
-  channelMemberQueries,
-  channelMessageQueries,
-  channelReadStateQueries,
-  messageReactionQueries,
-  STANDARD_REACTIONS,
 } from './drizzle.js';
 
 // TODO: Bulk ingest utilities deferred - waiting for NewAgentMessage schema (beads-bulk-ingest-1)
@@ -153,13 +128,6 @@ export const db = {
   // Issue and comment tracking
   issueAssignments: issueAssignmentQueries,
   commentMentions: commentMentionQueries,
-  // Channels
-  channels: channelQueries,
-  channelMembers: channelMemberQueries,
-  channelMessages: channelMessageQueries,
-  channelReadState: channelReadStateQueries,
-  // Message reactions
-  messageReactions: messageReactionQueries,
   // TODO: Bulk ingest utilities deferred - waiting for NewAgentMessage schema
   // bulk: {
   //   insertMessages: bulkInsertMessages,
@@ -189,19 +157,7 @@ export {
   ciFixAttemptQueries,
   issueAssignmentQueries,
   commentMentionQueries,
-  channelQueries,
-  channelMemberQueries,
-  channelMessageQueries,
-  channelReadStateQueries,
-  messageReactionQueries,
-  STANDARD_REACTIONS,
 };
-
-// Export search types
-export type { SearchResult, SearchOptions } from './drizzle.js';
-
-// Export reaction types
-export type { ReactionSummary, StandardEmoji } from './drizzle.js';
 
 // Export database utilities
 export { getDb, closeDb, runMigrations, getRawPool };

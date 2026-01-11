@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-10T04:20:27.657Z",
+  "lastUpdated": "2026-01-11T01:21:24.090Z",
   "trajectories": {
     "traj_x721m1j9rzup": {
       "title": "Phase 1-3 socket baseline architecture and performance optimizations",
@@ -11,9 +11,17 @@
     },
     "traj_3yx9dy148mge": {
       "title": "Investigate agent-relay codex-auth tunnel failure",
-      "status": "active",
+      "status": "abandoned",
       "startedAt": "2026-01-10T04:02:25.981Z",
-      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/active/traj_3yx9dy148mge.json"
+      "completedAt": "2026-01-11T01:13:59.383Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_3yx9dy148mge.json"
+    },
+    "traj_fnmapojrllau": {
+      "title": "Remove redundant cloud channels - unify on daemon-based channels",
+      "status": "completed",
+      "startedAt": "2026-01-11T01:14:07.306Z",
+      "completedAt": "2026-01-11T01:21:24.079Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_fnmapojrllau.json"
     }
   }
 }

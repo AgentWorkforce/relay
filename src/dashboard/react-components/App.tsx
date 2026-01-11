@@ -464,6 +464,36 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     removedDmAgents,
   });
 
+  // For local mode: convert relay messages to channel message format
+  // Filter messages by channel thread (channel ID is used as thread)
+  const localChannelMessages = useMemo((): ChannelApiMessage[] => {
+    if (effectiveActiveWorkspaceId || !selectedChannelId) return [];
+
+    // Filter messages that have the channel as their thread, or are broadcasts to general
+    const filtered = messages.filter(m => {
+      // Messages with this channel as thread
+      if (m.thread === selectedChannelId) return true;
+      // For #general, also include broadcasts without a thread
+      if (selectedChannelId === '#general' && m.to === '*' && !m.thread) return true;
+      return false;
+    });
+
+    // Convert to ChannelMessage format
+    return filtered.map(m => ({
+      id: m.id,
+      channelId: selectedChannelId,
+      from: m.from,
+      fromEntityType: (m.from === 'Dashboard' || m.from === currentUser?.displayName) ? 'user' : 'agent' as const,
+      content: m.content,
+      timestamp: m.timestamp,
+      isRead: m.isRead ?? true,
+      threadId: m.thread !== selectedChannelId ? m.thread : undefined,
+    }));
+  }, [messages, selectedChannelId, effectiveActiveWorkspaceId, currentUser?.displayName]);
+
+  // Use local or cloud messages depending on mode
+  const effectiveChannelMessages = effectiveActiveWorkspaceId ? channelMessages : localChannelMessages;
+
   // Extract human users from messages (users who are not agents)
   // This enables @ mentioning other human users in cloud mode
   const humanUsers = useMemo((): HumanUser[] => {
@@ -832,10 +862,43 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   // Channel V1 Handlers
   // =============================================================================
 
-  // Load channels when entering channels view mode
+  // Load channels on mount (they're always visible in sidebar, collapsed by default)
   useEffect(() => {
-    if (viewMode !== 'channels' || !effectiveActiveWorkspaceId) return;
+    // Local mode: use default channels (general + engineering)
+    if (!effectiveActiveWorkspaceId) {
+      setChannelsList([
+        {
+          id: '#general',
+          name: 'general',
+          description: 'General discussion for all agents',
+          visibility: 'public',
+          memberCount: 0,
+          unreadCount: 0,
+          hasMentions: false,
+          createdAt: new Date().toISOString(),
+          status: 'active',
+          createdBy: 'system',
+          isDm: false,
+        },
+        {
+          id: '#engineering',
+          name: 'engineering',
+          description: 'Engineering discussion',
+          visibility: 'public',
+          memberCount: 0,
+          unreadCount: 0,
+          hasMentions: false,
+          createdAt: new Date().toISOString(),
+          status: 'active',
+          createdBy: 'system',
+          isDm: false,
+        },
+      ]);
+      setArchivedChannelsList([]);
+      return;
+    }
 
+    // Cloud mode: fetch from API
     const fetchChannels = async () => {
       setIsChannelsLoading(true);
       try {
@@ -850,7 +913,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     };
 
     fetchChannels();
-  }, [viewMode, effectiveActiveWorkspaceId]);
+  }, [effectiveActiveWorkspaceId]);
 
   // Load messages when a channel is selected
   useEffect(() => {
@@ -979,7 +1042,18 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
 
   // Send message to channel handler
   const handleSendChannelMessage = useCallback(async (content: string, threadId?: string) => {
-    if (!effectiveActiveWorkspaceId || !selectedChannelId) return;
+    if (!selectedChannelId) return;
+
+    // Local mode: use relay broadcast system
+    if (!effectiveActiveWorkspaceId) {
+      // Broadcast to all agents with channel context in thread
+      // Channel name is used as thread so messages can be grouped
+      const channelThread = threadId || selectedChannelId;
+      await sendMessage('*', content, channelThread);
+      return;
+    }
+
+    // Cloud mode: use channel API
     try {
       await sendChannelApiMessage(effectiveActiveWorkspaceId, selectedChannelId, {
         content,
@@ -992,7 +1066,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     } catch (err) {
       console.error('Failed to send channel message:', err);
     }
-  }, [effectiveActiveWorkspaceId, selectedChannelId]);
+  }, [effectiveActiveWorkspaceId, selectedChannelId, sendMessage]);
 
   // Load more messages (pagination) handler
   const handleLoadMoreMessages = useCallback(async () => {
@@ -1540,94 +1614,54 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           />
         </div>
 
-        {/* View Mode Toggle - always visible */}
-        <div className="p-3 border-b border-border-subtle">
-          <div className="flex bg-bg-tertiary rounded-lg p-1">
-            <button
-              className={`flex-1 py-2 px-3 bg-transparent border-none text-xs font-medium cursor-pointer rounded-md transition-all duration-150 ${
-                viewMode === 'local'
-                  ? 'bg-bg-elevated text-accent-cyan shadow-sm'
-                  : 'text-text-muted hover:text-text-secondary'
-              }`}
-              onClick={() => setViewMode('local')}
-            >
-              Agents
-            </button>
-            <button
-              className={`flex-1 py-2 px-3 bg-transparent border-none text-xs font-medium cursor-pointer rounded-md transition-all duration-150 ${
-                viewMode === 'channels'
-                  ? 'bg-bg-elevated text-accent-cyan shadow-sm'
-                  : 'text-text-muted hover:text-text-secondary'
-              }`}
-              onClick={() => setViewMode('channels')}
-            >
-              Channels
-            </button>
-            {isFleetAvailable && (
-              <button
-                className={`flex-1 py-2 px-3 bg-transparent border-none text-xs font-medium cursor-pointer rounded-md transition-all duration-150 ${
-                  viewMode === 'fleet'
-                    ? 'bg-bg-elevated text-accent-cyan shadow-sm'
-                    : 'text-text-muted hover:text-text-secondary'
-                }`}
-                onClick={() => setViewMode('fleet')}
-              >
-                Fleet
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Sidebar Content - conditionally show ChannelSidebarV1 when in channels mode */}
-        {viewMode === 'channels' ? (
-          <ChannelSidebarV1
-            channels={channelsList}
-            archivedChannels={archivedChannelsList}
-            selectedChannelId={selectedChannelId}
-            isConnected={isConnected || isOrchestratorConnected}
-            isLoading={isChannelsLoading}
-            onSelectChannel={handleSelectChannel}
-            onCreateChannel={handleCreateChannel}
-            onJoinChannel={handleJoinChannel}
-            onLeaveChannel={handleLeaveChannel}
-            onArchiveChannel={handleArchiveChannel}
-            onUnarchiveChannel={handleUnarchiveChannel}
-            currentUser={currentUser?.displayName}
-          />
-        ) : (
-          <Sidebar
-            agents={localAgentsForSidebar}
-            bridgeAgents={bridgeAgents}
-            projects={mergedProjects}
-            currentUserName={currentUser?.displayName}
-            humanUnreadCounts={humanUnreadCounts}
-            currentProject={currentProject}
-            selectedAgent={selectedAgent?.name}
-            viewMode={viewMode}
-            isFleetAvailable={isFleetAvailable}
-            isConnected={isConnected || isOrchestratorConnected}
-            isOpen={isSidebarOpen}
-            activeThreads={activeThreads}
-            currentThread={currentThread}
-            totalUnreadThreadCount={totalUnreadThreadCount}
-            onAgentSelect={handleAgentSelect}
-            onHumanSelect={handleHumanSelect}
-            onProjectSelect={handleProjectSelect}
-            onViewModeChange={setViewMode}
-            onSpawnClick={handleSpawnClick}
-            onReleaseClick={handleReleaseAgent}
-            onLogsClick={handleLogsClick}
-            onThreadSelect={setCurrentThread}
-            onClose={() => setIsSidebarOpen(false)}
-            onSettingsClick={handleSettingsClick}
-            onTrajectoryClick={() => setIsTrajectoryOpen(true)}
-            hasActiveTrajectory={trajectoryStatus?.active}
-            onFleetClick={() => setIsFleetViewActive(!isFleetViewActive)}
-            isFleetViewActive={isFleetViewActive}
-            onCoordinatorClick={handleCoordinatorClick}
-            hasMultipleProjects={mergedProjects.length > 1}
-          />
-        )}
+        {/* Unified Sidebar - Channels collapsed by default, Agents always visible */}
+        <Sidebar
+          agents={localAgentsForSidebar}
+          bridgeAgents={bridgeAgents}
+          projects={mergedProjects}
+          currentUserName={currentUser?.displayName}
+          humanUnreadCounts={humanUnreadCounts}
+          currentProject={currentProject}
+          selectedAgent={selectedAgent?.name}
+          viewMode={viewMode}
+          isFleetAvailable={isFleetAvailable}
+          isConnected={isConnected || isOrchestratorConnected}
+          isOpen={isSidebarOpen}
+          activeThreads={activeThreads}
+          currentThread={currentThread}
+          totalUnreadThreadCount={totalUnreadThreadCount}
+          channels={channelsList.map(c => ({
+            id: c.id,
+            name: c.name,
+            unreadCount: c.unreadCount,
+            hasMentions: c.hasMentions,
+          }))}
+          selectedChannelId={selectedChannelId}
+          onChannelSelect={(channel) => {
+            const fullChannel = channelsList.find(c => c.id === channel.id);
+            if (fullChannel) {
+              handleSelectChannel(fullChannel);
+              setViewMode('channels');
+            }
+          }}
+          onCreateChannel={handleCreateChannel}
+          onAgentSelect={handleAgentSelect}
+          onHumanSelect={handleHumanSelect}
+          onProjectSelect={handleProjectSelect}
+          onViewModeChange={setViewMode}
+          onSpawnClick={handleSpawnClick}
+          onReleaseClick={handleReleaseAgent}
+          onLogsClick={handleLogsClick}
+          onThreadSelect={setCurrentThread}
+          onClose={() => setIsSidebarOpen(false)}
+          onSettingsClick={handleSettingsClick}
+          onTrajectoryClick={() => setIsTrajectoryOpen(true)}
+          hasActiveTrajectory={trajectoryStatus?.active}
+          onFleetClick={() => setIsFleetViewActive(!isFleetViewActive)}
+          isFleetViewActive={isFleetViewActive}
+          onCoordinatorClick={handleCoordinatorClick}
+          hasMultipleProjects={mergedProjects.length > 1}
+        />
       </div>
 
       {/* Main Content */}
@@ -1734,10 +1768,10 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
             ) : viewMode === 'channels' && selectedChannel ? (
               <ChannelViewV1
                 channel={selectedChannel}
-                messages={channelMessages}
+                messages={effectiveChannelMessages}
                 currentUser={currentUser?.displayName || 'Anonymous'}
                 isLoadingMore={isLoadingMoreMessages}
-                hasMoreMessages={hasMoreMessages}
+                hasMoreMessages={hasMoreMessages && !!effectiveActiveWorkspaceId}
                 mentionSuggestions={agents.map(a => a.name)}
                 unreadState={channelUnreadState}
                 onSendMessage={handleSendChannelMessage}
@@ -1812,20 +1846,22 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           </div>
         )}
 
-        {/* Message Composer */}
-        <div className="p-2 sm:p-4 bg-bg-tertiary border-t border-border-subtle">
-          <MessageComposer
-            recipient={currentChannel === 'general' ? '*' : currentChannel}
-            agents={agents}
-            humanUsers={humanUsers}
-            onSend={currentHuman ? handleDmSend : sendMessage}
-            onTyping={sendTyping}
-            isSending={isSending}
-            error={sendError}
-            insertMention={pendingMention}
-            onMentionInserted={() => setPendingMention(undefined)}
-          />
-        </div>
+        {/* Message Composer - hide in channels mode (ChannelViewV1 has its own input) */}
+        {viewMode !== 'channels' && (
+          <div className="p-2 sm:p-4 bg-bg-tertiary border-t border-border-subtle">
+            <MessageComposer
+              recipient={currentChannel === 'general' ? '*' : currentChannel}
+              agents={agents}
+              humanUsers={humanUsers}
+              onSend={currentHuman ? handleDmSend : sendMessage}
+              onTyping={sendTyping}
+              isSending={isSending}
+              error={sendError}
+              insertMention={pendingMention}
+              onMentionInserted={() => setPendingMention(undefined)}
+            />
+          </div>
+        )}
       </main>
 
       {/* Command Palette */}

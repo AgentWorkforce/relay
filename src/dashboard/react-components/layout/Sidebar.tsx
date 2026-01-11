@@ -1,8 +1,8 @@
 /**
  * Sidebar Component - Mission Control Theme
  *
- * Main navigation sidebar with project/agent list, view mode toggle,
- * and quick actions. Redesigned to match landing page aesthetic.
+ * Main navigation sidebar with channels, agents, and projects in unified view.
+ * Channels are collapsed by default.
  */
 
 import React, { useState, useEffect } from 'react';
@@ -15,6 +15,15 @@ import { LogoIcon } from '../Logo';
 
 const THREADS_COLLAPSED_KEY = 'agent-relay-threads-collapsed';
 const SIDEBAR_TAB_KEY = 'agent-relay-sidebar-tab';
+const CHANNELS_COLLAPSED_KEY = 'agent-relay-channels-collapsed';
+
+/** Channel type for sidebar display */
+export interface SidebarChannel {
+  id: string;
+  name: string;
+  unreadCount: number;
+  hasMentions?: boolean;
+}
 
 export type SidebarTab = 'agents' | 'team';
 
@@ -40,6 +49,14 @@ export interface SidebarProps {
   currentThread?: string | null;
   /** Total unread thread count for notification badge */
   totalUnreadThreadCount?: number;
+  /** Channels for the collapsible channels section */
+  channels?: SidebarChannel[];
+  /** Currently selected channel ID */
+  selectedChannelId?: string;
+  /** Handler when a channel is selected */
+  onChannelSelect?: (channel: SidebarChannel) => void;
+  /** Handler to create a new channel */
+  onCreateChannel?: () => void;
   onAgentSelect?: (agent: Agent, project?: Project) => void;
   /** Handler when a human user is selected (opens DM) */
   onHumanSelect?: (human: Agent) => void;
@@ -82,6 +99,10 @@ export function Sidebar({
   activeThreads = [],
   currentThread,
   totalUnreadThreadCount = 0,
+  channels = [],
+  selectedChannelId,
+  onChannelSelect,
+  onCreateChannel,
   onAgentSelect,
   onHumanSelect,
   onProjectSelect,
@@ -118,6 +139,15 @@ export function Sidebar({
       return false;
     }
   });
+  const [isChannelsCollapsed, setIsChannelsCollapsed] = useState(() => {
+    // Initialize from localStorage - default to collapsed
+    try {
+      const stored = localStorage.getItem(CHANNELS_COLLAPSED_KEY);
+      return stored === null ? true : stored === 'true';
+    } catch {
+      return true;
+    }
+  });
 
   // Persist tab state to localStorage
   useEffect(() => {
@@ -136,6 +166,18 @@ export function Sidebar({
       // localStorage not available
     }
   }, [isThreadsCollapsed]);
+
+  // Persist channels collapsed state
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHANNELS_COLLAPSED_KEY, String(isChannelsCollapsed));
+    } catch {
+      // localStorage not available
+    }
+  }, [isChannelsCollapsed]);
+
+  // Total unread count for channels
+  const totalChannelUnread = channels.reduce((sum, c) => sum + c.unreadCount, 0);
 
   // Separate AI agents from human team members
   const aiAgents = agents.filter(a => !a.isHuman);
@@ -237,6 +279,65 @@ export function Sidebar({
             isCollapsed={isThreadsCollapsed}
             onToggleCollapse={() => setIsThreadsCollapsed(!isThreadsCollapsed)}
           />
+        </div>
+      )}
+
+      {/* Channels Section - Collapsible */}
+      {channels.length > 0 && (
+        <div className="border-b border-border-subtle">
+          <button
+            className="w-full flex items-center justify-between px-3 py-2 text-xs font-semibold text-text-muted uppercase tracking-wide hover:bg-bg-hover transition-colors"
+            onClick={() => setIsChannelsCollapsed(!isChannelsCollapsed)}
+          >
+            <span className="flex items-center gap-2">
+              <HashIcon />
+              Channels
+              {totalChannelUnread > 0 && (
+                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-accent-cyan/20 text-accent-cyan">
+                  {totalChannelUnread}
+                </span>
+              )}
+            </span>
+            <ChevronIcon className={`transition-transform ${isChannelsCollapsed ? '' : 'rotate-180'}`} />
+          </button>
+          {!isChannelsCollapsed && (
+            <div className="px-2 pb-2 space-y-0.5">
+              {channels.map(channel => (
+                <button
+                  key={channel.id}
+                  onClick={() => onChannelSelect?.(channel)}
+                  className={`
+                    w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left text-sm transition-colors
+                    ${selectedChannelId === channel.id
+                      ? 'bg-accent-cyan/10 text-text-primary'
+                      : 'hover:bg-bg-hover text-text-secondary hover:text-text-primary'}
+                  `}
+                >
+                  <span className="text-text-muted">#</span>
+                  <span className={`flex-1 truncate ${channel.unreadCount > 0 ? 'font-semibold text-text-primary' : ''}`}>
+                    {channel.name}
+                  </span>
+                  {channel.unreadCount > 0 && (
+                    <span className={`
+                      text-[11px] font-semibold px-1.5 py-0.5 rounded-full min-w-[18px] text-center
+                      ${channel.hasMentions ? 'bg-red-500/20 text-red-400' : 'bg-accent-cyan/20 text-accent-cyan'}
+                    `}>
+                      {channel.unreadCount}
+                    </span>
+                  )}
+                </button>
+              ))}
+              {onCreateChannel && (
+                <button
+                  onClick={onCreateChannel}
+                  className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left text-sm text-text-muted hover:bg-bg-hover hover:text-text-secondary transition-colors"
+                >
+                  <PlusIcon />
+                  <span>Add channel</span>
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -490,6 +591,25 @@ function PlusIcon() {
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
       <line x1="12" y1="5" x2="12" y2="19" />
       <line x1="5" y1="12" x2="19" y2="12" />
+    </svg>
+  );
+}
+
+function HashIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="4" y1="9" x2="20" y2="9" />
+      <line x1="4" y1="15" x2="20" y2="15" />
+      <line x1="10" y1="3" x2="8" y2="21" />
+      <line x1="16" y1="3" x2="14" y2="21" />
+    </svg>
+  );
+}
+
+function ChevronIcon({ className }: { className?: string }) {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <polyline points="6 9 12 15 18 9" />
     </svg>
   );
 }

@@ -47,7 +47,6 @@ import { nangoAuthRouter } from './api/nango-auth.js';
 import { gitRouter } from './api/git.js';
 import { codexAuthHelperRouter } from './api/codex-auth-helper.js';
 import { adminRouter } from './api/admin.js';
-import { channelsRouter } from './api/channels.js';
 import { consensusRouter } from './api/consensus.js';
 import { db } from './db/index.js';
 import { validateSshSecurityConfig } from './services/ssh-security.js';
@@ -308,7 +307,6 @@ export async function createServer(): Promise<CloudServer> {
   app.use('/api/usage', usageRouter);
   app.use('/api/project-groups', coordinatorsRouter);
   app.use('/api/github-app', githubAppRouter);
-  app.use('/api', channelsRouter);                      // Channel CRUD and membership
 
   // Test helper routes (only available in non-production)
   // MUST be before teamsRouter to avoid auth interception
