@@ -1210,7 +1210,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           // Refresh cloud workspaces after a short delay to get updated status
           setTimeout(async () => {
             try {
-              const workspacesResult = await cloudApi.listWorkspaces();
+              const workspacesResult = await cloudApi.getWorkspaces();
               if (workspacesResult.success && workspacesResult.data) {
                 setCloudWorkspaces(workspacesResult.data);
               }
