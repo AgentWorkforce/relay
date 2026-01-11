@@ -1162,6 +1162,24 @@ class FlyProvisioner implements ComputeProvisioner {
   }
 
   /**
+   * Set secrets as environment variables for a workspace.
+   */
+  async setSecrets(workspace: Workspace, secrets: Record<string, string>): Promise<void> {
+    if (!workspace.computeId || Object.keys(secrets).length === 0) return;
+
+    const appName = `ar-${workspace.id.substring(0, 8)}`;
+
+    await fetchWithRetry(`https://api.machines.dev/v1/apps/${appName}/secrets`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.apiToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(secrets),
+    });
+  }
+
+  /**
    * Check if workspace has active agents by querying the daemon
    * Retries up to 3 times with backoff to handle machines that are starting up
    */
@@ -1565,6 +1583,39 @@ class RailwayProvisioner implements ComputeProvisioner {
       }),
     });
   }
+
+  async setEnvVars(workspace: Workspace, envVars: Record<string, string>): Promise<void> {
+    if (!workspace.computeId || Object.keys(envVars).length === 0) return;
+
+    const linkedDaemons = await db.linkedDaemons.findByWorkspaceId(workspace.id);
+    const serviceId = linkedDaemons[0]?.machineId;
+    if (!serviceId) {
+      console.warn(`[railway] No service ID found for workspace ${workspace.id}`);
+      return;
+    }
+
+    await fetchWithRetry('https://backboard.railway.app/graphql/v2', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.apiToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        query: `
+          mutation SetVariables($input: VariableCollectionUpsertInput!) {
+            variableCollectionUpsert(input: $input)
+          }
+        `,
+        variables: {
+          input: {
+            projectId: workspace.computeId,
+            serviceId,
+            variables: envVars,
+          },
+        },
+      }),
+    });
+  }
 }
 
 /**
@@ -1787,6 +1838,10 @@ class DockerProvisioner implements ComputeProvisioner {
       throw new Error(`Failed to restart container: ${error}`);
     }
   }
+
+  async setEnvVars(_workspace: Workspace, _envVars: Record<string, string>): Promise<void> {
+    console.warn('[docker] Updating environment variables for running containers is not supported.');
+  }
 }
 
 /**
@@ -1995,6 +2050,28 @@ export class WorkspaceProvisioner {
     }
 
     await this.provisioner.restart(workspace);
+  }
+
+  /**
+   * Update environment variables for a workspace instance.
+   */
+  async setWorkspaceEnvVars(workspace: Workspace, envVars: Record<string, string>): Promise<void> {
+    if (Object.keys(envVars).length === 0) return;
+
+    if (this.provisioner instanceof FlyProvisioner) {
+      await this.provisioner.setSecrets(workspace, envVars);
+      return;
+    }
+
+    if (this.provisioner instanceof RailwayProvisioner) {
+      await this.provisioner.setEnvVars(workspace, envVars);
+      return;
+    }
+
+    if (this.provisioner instanceof DockerProvisioner) {
+      await this.provisioner.setEnvVars(workspace, envVars);
+      return;
+    }
   }
 
   /**

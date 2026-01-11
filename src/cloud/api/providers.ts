@@ -10,6 +10,7 @@ import { createClient } from 'redis';
 import { requireAuth } from './auth.js';
 import { getConfig } from '../config.js';
 import { db } from '../db/index.js';
+import { setProviderApiKeyEnv } from './provider-env.js';
 
 export const providersRouter = Router();
 
@@ -409,6 +410,8 @@ providersRouter.post('/:provider/api-key', async (req: Request, res: Response) =
       provider,
       scopes,
     });
+
+    await setProviderApiKeyEnv(userId, provider, apiKey);
 
     res.json({
       success: true,

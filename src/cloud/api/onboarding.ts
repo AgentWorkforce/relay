@@ -15,6 +15,7 @@ import type { IPty } from 'node-pty';
 import * as crypto from 'crypto';
 import { requireAuth } from './auth.js';
 import { db } from '../db/index.js';
+import { setProviderApiKeyEnv } from './provider-env.js';
 
 // Import for local use
 import {
@@ -615,6 +616,8 @@ onboardingRouter.post('/token/:provider', async (req: Request, res: Response) =>
       scopes: getProviderScopes(provider),
       providerAccountEmail: email,
     });
+
+    await setProviderApiKeyEnv(userId, provider, token);
 
     res.json({
       success: true,
