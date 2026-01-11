@@ -326,15 +326,30 @@ export function XTermLogViewer({
         boxShadow: `0 0 60px -15px ${colors.primary}25, 0 25px 50px -12px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255,255,255,0.02)`,
       }}
     >
-      {/* Mobile touch scroll fix for xterm.js */}
+      {/* Mobile touch scroll fix for xterm.js
+          xterm.js intercepts touch events on multiple elements (canvas, viewport, screen).
+          We need to allow vertical panning on all of them while still permitting taps. */}
       <style>{`
+        .xterm-log-viewer .xterm {
+          touch-action: pan-y !important;
+        }
         .xterm-log-viewer .xterm-viewport {
-          -webkit-overflow-scrolling: touch;
-          touch-action: pan-y;
+          -webkit-overflow-scrolling: touch !important;
+          touch-action: pan-y !important;
           overscroll-behavior: contain;
         }
         .xterm-log-viewer .xterm-screen {
-          touch-action: pan-y;
+          touch-action: pan-y !important;
+        }
+        .xterm-log-viewer .xterm-screen canvas {
+          touch-action: pan-y !important;
+        }
+        .xterm-log-viewer .xterm-helper-textarea {
+          touch-action: pan-y !important;
+        }
+        /* Ensure the xterm rows don't block scrolling */
+        .xterm-log-viewer .xterm-rows {
+          touch-action: pan-y !important;
         }
       `}</style>
       {/* Header */}
@@ -463,15 +478,13 @@ export function XTermLogViewer({
         </div>
       )}
 
-      {/* Terminal container */}
+      {/* Terminal container - don't use overflow-auto here, xterm-viewport handles scrolling */}
       <div
         ref={containerRef}
-        className="flex-1 overflow-auto touch-pan-y"
+        className="flex-1 touch-pan-y"
         style={{
           maxHeight,
           minHeight: '200px',
-          WebkitOverflowScrolling: 'touch',
-          overscrollBehavior: 'contain',
         }}
       />
 
