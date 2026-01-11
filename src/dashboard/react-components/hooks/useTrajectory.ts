@@ -64,6 +64,7 @@ export function useTrajectory(options: UseTrajectoryOptions = {}): UseTrajectory
   const [error, setError] = useState<string | null>(null);
   const [selectedTrajectoryId, setSelectedTrajectoryId] = useState<string | null>(initialTrajectoryId || null);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
+  const hasLoadedInitialStepsRef = useRef(false);
 
   // Fetch trajectory status
   const fetchStatus = useCallback(async () => {
@@ -150,7 +151,23 @@ export function useTrajectory(options: UseTrajectoryOptions = {}): UseTrajectory
 
   // Re-fetch steps when selected trajectory changes
   useEffect(() => {
-    fetchSteps();
+    if (!hasLoadedInitialStepsRef.current) {
+      hasLoadedInitialStepsRef.current = true;
+      fetchSteps();
+      return;
+    }
+
+    let cancelled = false;
+    setIsLoading(true);
+    fetchSteps().finally(() => {
+      if (!cancelled) {
+        setIsLoading(false);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, [selectedTrajectoryId, fetchSteps]);
 
   // Polling

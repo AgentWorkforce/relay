@@ -29,6 +29,10 @@ import {
   createInjectionMetrics,
 } from './shared.js';
 import {
+  DEFAULT_IDLE_BEFORE_INJECT_MS,
+  DEFAULT_IDLE_CONFIDENCE_THRESHOLD,
+} from '../config/relay-config.js';
+import {
   getContinuityManager,
   parseContinuityCommand,
   hasContinuityCommand,
@@ -131,8 +135,8 @@ export abstract class BaseWrapper extends EventEmitter {
 
     // Initialize universal idle detector for robust injection timing
     this.idleDetector = new UniversalIdleDetector({
-      minSilenceMs: config.idleBeforeInjectMs ?? 1500,
-      confidenceThreshold: config.idleConfidenceThreshold ?? 0.7,
+      minSilenceMs: config.idleBeforeInjectMs ?? DEFAULT_IDLE_BEFORE_INJECT_MS,
+      confidenceThreshold: config.idleConfidenceThreshold ?? DEFAULT_IDLE_CONFIDENCE_THRESHOLD,
     });
 
     // Set up message handler

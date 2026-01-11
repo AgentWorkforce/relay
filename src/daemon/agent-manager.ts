@@ -347,8 +347,9 @@ export class AgentManager extends EventEmitter {
   }
 
   /**
-   * Interrupt an agent by sending Ctrl+C (SIGINT equivalent).
+   * Interrupt an agent by sending Escape key twice.
    * This breaks the agent out of their current task to allow refocusing.
+   * Uses Escape instead of Ctrl+C for better CLI compatibility (e.g., Claude CLI).
    */
   interrupt(agentId: string): boolean {
     const agent = this.agents.get(agentId);
@@ -356,8 +357,9 @@ export class AgentManager extends EventEmitter {
 
     logger.info('Interrupting agent', { id: agentId, name: agent.name });
 
-    // Send Ctrl+C (ASCII 0x03) to interrupt current operation
-    agent.pty.write('\x03');
+    // Send Escape key twice (ASCII 0x1b) to interrupt current operation
+    // Double Escape ensures the CLI exits any nested mode/prompt
+    agent.pty.write('\x1b\x1b');
     return true;
   }
 
@@ -378,8 +380,9 @@ export class AgentManager extends EventEmitter {
 
     logger.info('Interrupting agent by name', { name, id: agent.id });
 
-    // Send Ctrl+C (ASCII 0x03) to interrupt current operation
-    agent.pty.write('\x03');
+    // Send Escape key twice (ASCII 0x1b) to interrupt current operation
+    // Double Escape ensures the CLI exits any nested mode/prompt
+    agent.pty.write('\x1b\x1b');
     return true;
   }
 

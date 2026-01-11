@@ -19,6 +19,7 @@ export interface AgentListProps {
   onAgentMessage?: (agent: Agent) => void;
   onReleaseClick?: (agent: Agent) => void;
   onLogsClick?: (agent: Agent) => void;
+  onProfileClick?: (agent: Agent) => void;
   compact?: boolean;
   showGroupStats?: boolean;
 }
@@ -31,6 +32,7 @@ export function AgentList({
   onAgentMessage,
   onReleaseClick,
   onLogsClick,
+  onProfileClick,
   compact = false,
   showGroupStats = true,
 }: AgentListProps) {
@@ -122,6 +124,7 @@ export function AgentList({
           onAgentMessage={onAgentMessage}
           onReleaseClick={onReleaseClick}
           onLogsClick={onLogsClick}
+          onProfileClick={onProfileClick}
         />
       ))}
     </div>
@@ -139,6 +142,7 @@ interface AgentGroupComponentProps {
   onAgentMessage?: (agent: Agent) => void;
   onReleaseClick?: (agent: Agent) => void;
   onLogsClick?: (agent: Agent) => void;
+  onProfileClick?: (agent: Agent) => void;
 }
 
 function AgentGroupComponent({
@@ -152,6 +156,7 @@ function AgentGroupComponent({
   onAgentMessage,
   onReleaseClick,
   onLogsClick,
+  onProfileClick,
 }: AgentGroupComponentProps) {
   const stats = showStats ? getGroupStats(group.agents) : null;
 
@@ -175,6 +180,7 @@ function AgentGroupComponent({
           onMessageClick={onAgentMessage}
           onReleaseClick={onReleaseClick}
           onLogsClick={onLogsClick}
+          onProfileClick={onProfileClick}
         />
       </div>
     );
@@ -229,6 +235,7 @@ function AgentGroupComponent({
               onMessageClick={onAgentMessage}
               onReleaseClick={onReleaseClick}
               onLogsClick={onLogsClick}
+              onProfileClick={onProfileClick}
             />
           ))}
         </div>

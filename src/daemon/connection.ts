@@ -22,6 +22,7 @@ import {
   PROTOCOL_VERSION,
 } from '../protocol/types.js';
 import { encodeFrameLegacy as encodeFrame, FrameParser } from '../protocol/framing.js';
+import { DEFAULT_CONNECTION_CONFIG } from '../config/relay-config.js';
 
 export type ConnectionState = 'CONNECTING' | 'HANDSHAKING' | 'ACTIVE' | 'CLOSING' | 'CLOSED' | 'ERROR';
 
@@ -49,14 +50,7 @@ export interface ConnectionConfig {
 }
 
 export const DEFAULT_CONFIG: ConnectionConfig = {
-  maxFrameBytes: 1024 * 1024,
-  heartbeatMs: 5000,
-  // 6x multiplier = 30 second timeout, more tolerant for AI agents processing long responses
-  heartbeatTimeoutMultiplier: 6,
-  // Write queue defaults - generous to avoid dropping messages
-  maxWriteQueueSize: 2000,
-  writeQueueHighWaterMark: 1500,
-  writeQueueLowWaterMark: 500,
+  ...DEFAULT_CONNECTION_CONFIG,
 };
 
 export class Connection {

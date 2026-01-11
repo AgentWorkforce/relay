@@ -232,7 +232,10 @@ export function LogViewerPanel({
                   </span>
                 </div>
                 {agent.currentTask && (
-                  <span className="text-sm text-[#8b949e] truncate max-w-[300px] mt-0.5">
+                  <span
+                    className="text-sm text-[#8b949e] truncate max-w-[300px] mt-0.5"
+                    title={agent.currentTask}
+                  >
                     {agent.currentTask}
                   </span>
                 )}

@@ -6,7 +6,7 @@
  */
 
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import type { Agent, Project, Message } from '../types';
+import type { Agent, Project, Message, AgentSummary } from '../types';
 import { Sidebar } from './layout/Sidebar';
 import { Header } from './layout/Header';
 import { MessageList } from './MessageList';
@@ -28,6 +28,7 @@ import type { ServerInfo } from './ServerCard';
 import { TypingIndicator } from './TypingIndicator';
 import { OnlineUsersIndicator } from './OnlineUsersIndicator';
 import { UserProfilePanel } from './UserProfilePanel';
+import { AgentProfilePanel } from './AgentProfilePanel';
 import { useDirectMessage } from './hooks/useDirectMessage';
 import { CoordinatorPanel } from './CoordinatorPanel';
 import { BillingResult } from './BillingResult';
@@ -54,6 +55,112 @@ function isHumanSender(sender: string, agentNames: Set<string>): boolean {
   return sender !== 'Dashboard' &&
     sender !== '*' &&
     !agentNames.has(sender.toLowerCase());
+}
+
+const SETTINGS_STORAGE_KEY = 'dashboard-settings';
+
+type LegacyDashboardSettings = {
+  theme?: 'dark' | 'light' | 'system';
+  compactMode?: boolean;
+  showTimestamps?: boolean;
+  soundEnabled?: boolean;
+  notificationsEnabled?: boolean;
+  autoScrollMessages?: boolean;
+};
+
+function mergeSettings(base: Settings, partial: Partial<Settings>): Settings {
+  return {
+    ...base,
+    ...partial,
+    notifications: { ...base.notifications, ...partial.notifications },
+    display: { ...base.display, ...partial.display },
+    messages: { ...base.messages, ...partial.messages },
+    connection: { ...base.connection, ...partial.connection },
+  };
+}
+
+function migrateLegacySettings(raw: LegacyDashboardSettings): Settings {
+  const theme = raw.theme && ['dark', 'light', 'system'].includes(raw.theme)
+    ? raw.theme
+    : defaultSettings.theme;
+  const sound = raw.soundEnabled ?? defaultSettings.notifications.sound;
+  const desktop = raw.notificationsEnabled ?? defaultSettings.notifications.desktop;
+  return {
+    ...defaultSettings,
+    theme,
+    display: {
+      ...defaultSettings.display,
+      compactMode: raw.compactMode ?? defaultSettings.display.compactMode,
+      showTimestamps: raw.showTimestamps ?? defaultSettings.display.showTimestamps,
+    },
+    notifications: {
+      ...defaultSettings.notifications,
+      sound,
+      desktop,
+      enabled: sound || desktop || defaultSettings.notifications.mentionsOnly,
+    },
+    messages: {
+      ...defaultSettings.messages,
+      autoScroll: raw.autoScrollMessages ?? defaultSettings.messages.autoScroll,
+    },
+  };
+}
+
+function loadSettingsFromStorage(): Settings {
+  if (typeof window === 'undefined') return defaultSettings;
+  try {
+    const saved = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (!saved) return defaultSettings;
+    const parsed = JSON.parse(saved);
+    if (!parsed || typeof parsed !== 'object') return defaultSettings;
+    if ('notifications' in parsed && 'display' in parsed) {
+      const merged = mergeSettings(defaultSettings, parsed as Partial<Settings>);
+      merged.notifications.enabled = merged.notifications.sound ||
+        merged.notifications.desktop ||
+        merged.notifications.mentionsOnly;
+      return merged;
+    }
+    if ('notificationsEnabled' in parsed || 'soundEnabled' in parsed || 'autoScrollMessages' in parsed) {
+      return migrateLegacySettings(parsed as LegacyDashboardSettings);
+    }
+  } catch {
+    // Fall back to defaults
+  }
+  return defaultSettings;
+}
+
+function saveSettingsToStorage(settings: Settings) {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  } catch {
+    // Ignore localStorage failures
+  }
+}
+
+function playNotificationSound() {
+  if (typeof window === 'undefined') return;
+  const AudioContextConstructor =
+    window.AudioContext ||
+    (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioContextConstructor) return;
+  try {
+    const context = new AudioContextConstructor();
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = 'sine';
+    oscillator.frequency.value = 880;
+    gain.gain.value = 0.03;
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start();
+    oscillator.stop(context.currentTime + 0.12);
+    oscillator.onended = () => {
+      context.close().catch(() => undefined);
+    };
+  } catch {
+    // Audio might be blocked by browser autoplay policies
+  }
 }
 
 export interface AppProps {
@@ -235,6 +342,18 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   // User profile panel state
   const [selectedUserProfile, setSelectedUserProfile] = useState<UserPresence | null>(null);
 
+  // Agent profile panel state
+  const [selectedAgentProfile, setSelectedAgentProfile] = useState<Agent | null>(null);
+
+  // Agent summaries lookup
+  const agentSummariesMap = useMemo(() => {
+    const map = new Map<string, AgentSummary>();
+    for (const summary of data?.summaries ?? []) {
+      map.set(summary.agentName.toLowerCase(), summary);
+    }
+    return map;
+  }, [data?.summaries]);
+
   // View mode state
   const [viewMode, setViewMode] = useState<'local' | 'fleet'>('local');
 
@@ -255,8 +374,11 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   // Command palette state
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
 
-  // Settings state (for theme)
-  const [settings, setSettings] = useState<Settings>(defaultSettings);
+  // Settings state (theme, display, notifications)
+  const [settings, setSettings] = useState<Settings>(() => loadSettingsFromStorage());
+  const updateSettings = useCallback((updater: (prev: Settings) => Settings) => {
+    setSettings((prev) => updater(prev));
+  }, []);
 
   // Full settings page state
   const [isFullSettingsOpen, setIsFullSettingsOpen] = useState(false);
@@ -322,6 +444,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   const lastSeenMessageCountRef = useRef<number>(0);
   const sidebarClosedRef = useRef<boolean>(true); // Track if sidebar is currently closed
   const [dmSeenAt, setDmSeenAt] = useState<Map<string, number>>(new Map());
+  const lastNotifiedMessageCountRef = useRef<number>(0);
 
   // Close sidebar when selecting an agent or project on mobile
   const closeSidebarOnMobile = useCallback(() => {
@@ -1056,6 +1179,11 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     setIsCommandPaletteOpen(false);
   }, []);
 
+  // Persist settings changes
+  useEffect(() => {
+    saveSettingsToStorage(settings);
+  }, [settings]);
+
   // Apply theme to document
   React.useEffect(() => {
     const applyTheme = (theme: 'light' | 'dark' | 'system') => {
@@ -1080,6 +1208,113 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
       return () => mediaQuery.removeEventListener('change', handleChange);
     }
   }, [settings.theme]);
+
+  // Request browser notification permissions when enabled
+  useEffect(() => {
+    if (!settings.notifications.desktop) return;
+    if (typeof window === 'undefined' || !('Notification' in window)) return;
+
+    if (Notification.permission === 'granted') return;
+
+    if (Notification.permission === 'denied') {
+      updateSettings((prev) => ({
+        ...prev,
+        notifications: {
+          ...prev.notifications,
+          desktop: false,
+          enabled: prev.notifications.sound || prev.notifications.mentionsOnly,
+        },
+      }));
+      return;
+    }
+
+    Notification.requestPermission().then((permission) => {
+      if (permission !== 'granted') {
+        updateSettings((prev) => ({
+          ...prev,
+          notifications: {
+            ...prev.notifications,
+            desktop: false,
+            enabled: prev.notifications.sound || prev.notifications.mentionsOnly,
+          },
+        }));
+      }
+    }).catch(() => undefined);
+  }, [settings.notifications.desktop, settings.notifications.sound, settings.notifications.mentionsOnly, updateSettings]);
+
+  // Browser notifications and sounds for new messages
+  useEffect(() => {
+    const messages = data?.messages;
+    if (!messages || messages.length === 0) {
+      lastNotifiedMessageCountRef.current = 0;
+      return;
+    }
+
+    if (!settings.notifications.enabled) {
+      lastNotifiedMessageCountRef.current = messages.length;
+      return;
+    }
+
+    if (lastNotifiedMessageCountRef.current === 0) {
+      lastNotifiedMessageCountRef.current = messages.length;
+      return;
+    }
+
+    if (messages.length <= lastNotifiedMessageCountRef.current) return;
+
+    const newMessages = messages.slice(lastNotifiedMessageCountRef.current);
+    lastNotifiedMessageCountRef.current = messages.length;
+
+    const isFromCurrentUser = (message: Message) =>
+      message.from === 'Dashboard' ||
+      (currentUser && message.from === currentUser.displayName);
+
+    const isMessageInCurrentChannel = (message: Message) => {
+      if (currentChannel === 'general') {
+        return message.to === '*' || message.isBroadcast || message.channel === 'general';
+      }
+      return message.from === currentChannel || message.to === currentChannel;
+    };
+
+    const shouldNotifyForMessage = (message: Message) => {
+      if (isFromCurrentUser(message)) return false;
+      if (settings.notifications.mentionsOnly && currentUser?.displayName) {
+        if (!message.content.includes(`@${currentUser.displayName}`)) {
+          return false;
+        }
+      }
+      const isActive = typeof document !== 'undefined' ? !document.hidden : false;
+      if (isActive && isMessageInCurrentChannel(message)) return false;
+      return true;
+    };
+
+    let shouldPlaySound = false;
+
+    for (const message of newMessages) {
+      if (!shouldNotifyForMessage(message)) continue;
+
+      if (settings.notifications.desktop && typeof window !== 'undefined' && 'Notification' in window) {
+        if (Notification.permission === 'granted') {
+          const channelLabel = message.to === '*' ? '#general' : message.to;
+          const body = message.content.split('\n')[0].slice(0, 160);
+          const notification = new Notification(`${message.from} → ${channelLabel}`, { body });
+          notification.onclick = () => {
+            window.focus();
+            setCurrentChannel(message.to === '*' ? 'general' : message.from);
+            notification.close();
+          };
+        }
+      }
+
+      if (settings.notifications.sound) {
+        shouldPlaySound = true;
+      }
+    }
+
+    if (shouldPlaySound) {
+      playNotificationSound();
+    }
+  }, [data?.messages, settings.notifications, currentChannel, currentUser, setCurrentChannel]);
 
   // Keyboard shortcuts
   React.useEffect(() => {
@@ -1194,6 +1429,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           onSpawnClick={handleSpawnClick}
           onReleaseClick={handleReleaseAgent}
           onLogsClick={handleLogsClick}
+          onProfileClick={setSelectedAgentProfile}
           onThreadSelect={setCurrentThread}
           onClose={() => setIsSidebarOpen(false)}
           onSettingsClick={handleSettingsClick}
@@ -1320,6 +1556,9 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
                 agents={combinedAgents}
                 currentUser={currentUser}
                 skipChannelFilter={currentHuman !== null}
+                showTimestamps={settings.display.showTimestamps}
+                autoScrollDefault={settings.messages.autoScroll}
+                compactMode={settings.display.compactMode}
               />
             )}
           </div>
@@ -1340,11 +1579,12 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
 
             return (
               <div className="w-full md:w-[400px] md:min-w-[320px] md:max-w-[500px] flex-shrink-0">
-                <ThreadPanel
-                  originalMessage={originalMessage ?? null}
-                  replies={threadMessages(currentThread)}
-                  onClose={() => setCurrentThread(null)}
-                  onReply={async (content) => {
+                  <ThreadPanel
+                    originalMessage={originalMessage ?? null}
+                    replies={threadMessages(currentThread)}
+                    onClose={() => setCurrentThread(null)}
+                    showTimestamps={settings.display.showTimestamps}
+                    onReply={async (content) => {
                     // For topic threads, broadcast to all; for reply chains, reply to the other participant
                     let recipient = '*';
                     if (!isTopicThread && originalMessage) {
@@ -1568,6 +1808,20 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
         }}
       />
 
+      {/* Agent Profile Panel */}
+      <AgentProfilePanel
+        agent={selectedAgentProfile}
+        onClose={() => setSelectedAgentProfile(null)}
+        onMessage={(agent) => {
+          selectAgent(agent.name);
+          setCurrentChannel(agent.name);
+          setSelectedAgentProfile(null);
+        }}
+        onLogs={handleLogsClick}
+        onRelease={handleReleaseAgent}
+        summary={selectedAgentProfile ? agentSummariesMap.get(selectedAgentProfile.name.toLowerCase()) : null}
+      />
+
       {/* Coordinator Panel */}
       <CoordinatorPanel
         isOpen={isCoordinatorOpen}
@@ -1587,6 +1841,8 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           currentUserId={cloudSession?.user?.id}
           initialTab={settingsInitialTab}
           onClose={() => setIsFullSettingsOpen(false)}
+          settings={settings}
+          onUpdateSettings={updateSettings}
         />
       )}
     </div>

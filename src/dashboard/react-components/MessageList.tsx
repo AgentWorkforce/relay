@@ -92,6 +92,12 @@ export interface MessageListProps {
   currentUser?: CurrentUser;
   /** Skip channel filtering - messages are already filtered (for DM views) */
   skipChannelFilter?: boolean;
+  /** Default auto-scroll preference */
+  autoScrollDefault?: boolean;
+  /** Show timestamps in message header */
+  showTimestamps?: boolean;
+  /** Compact spacing for dense layouts */
+  compactMode?: boolean;
 }
 
 export function MessageList({
@@ -103,6 +109,9 @@ export function MessageList({
   agents = [],
   currentUser,
   skipChannelFilter = false,
+  autoScrollDefault = true,
+  showTimestamps = true,
+  compactMode = false,
 }: MessageListProps) {
   // Build a map of agent name -> processing state for quick lookup
   const processingAgents = new Map<string, { isProcessing: boolean; processingStartedAt?: number }>();
@@ -119,13 +128,17 @@ export function MessageList({
   // This is used to only show the thinking indicator on the most recent message
   const latestMessageToAgent = new Map<string, string>();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const [autoScroll, setAutoScroll] = useState(true);
+  const [autoScroll, setAutoScroll] = useState(autoScrollDefault);
   const prevFilteredLengthRef = useRef<number>(0);
   const prevChannelRef = useRef<string>(currentChannel);
   // Track if we should scroll on next render (set before DOM updates)
   const shouldScrollRef = useRef(false);
   // Track if a scroll is in progress to prevent race conditions
   const isScrollingRef = useRef(false);
+
+  useEffect(() => {
+    setAutoScroll(autoScrollDefault);
+  }, [autoScrollDefault]);
 
   // Filter messages for current channel or current thread
   const channelFilteredMessages = messages.filter((msg) => {
@@ -167,18 +180,20 @@ export function MessageList({
     }
   }
 
+  const autoScrollAllowed = autoScrollDefault;
+
   // Check if we need to scroll BEFORE the DOM updates
   // This runs during render, before useLayoutEffect
   const currentLength = filteredMessages.length;
   if (currentLength > prevFilteredLengthRef.current) {
     // Check if the latest message is from the current user
     // This includes both "Dashboard" (local mode) and GitHub username (cloud mode)
-    // Always scroll for user's own messages, regardless of autoScroll state
+    // Scroll for user's own messages only when auto-scroll is enabled
     const latestMessage = filteredMessages[filteredMessages.length - 1];
     const latestIsFromUser = latestMessage?.from === 'Dashboard' ||
       (currentUser && latestMessage?.from === currentUser.displayName);
 
-    if (latestIsFromUser || autoScroll) {
+    if (autoScrollAllowed && (latestIsFromUser || autoScroll)) {
       shouldScrollRef.current = true;
       // Re-enable auto-scroll if we're scrolling for user's message
       // This ensures continued auto-scroll after user sends a message
@@ -194,6 +209,7 @@ export function MessageList({
     if (!scrollContainerRef.current) return;
     // Skip scroll events that happen during programmatic scrolling
     if (isScrollingRef.current) return;
+    if (!autoScrollDefault) return;
 
     const container = scrollContainerRef.current;
     const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
@@ -267,7 +283,9 @@ export function MessageList({
 
   return (
     <div
-      className="flex flex-col gap-1 p-2 sm:p-4 bg-bg-secondary h-full overflow-y-auto"
+      className={`flex flex-col bg-bg-secondary h-full overflow-y-auto ${
+        compactMode ? 'gap-0.5 p-1.5 sm:p-2' : 'gap-1 p-2 sm:p-4'
+      }`}
       ref={scrollContainerRef}
       onScroll={handleScroll}
     >
@@ -295,6 +313,8 @@ export function MessageList({
             onThreadClick={onThreadClick}
             recipientProcessing={recipientProcessing}
             currentUser={currentUser}
+            showTimestamps={showTimestamps}
+            compactMode={compactMode}
           />
         );
       })}
@@ -310,9 +330,19 @@ interface MessageItemProps {
   recipientProcessing?: { isProcessing: boolean; processingStartedAt?: number };
   /** Current user info for displaying avatar/username */
   currentUser?: CurrentUser;
+  showTimestamps?: boolean;
+  compactMode?: boolean;
 }
 
-function MessageItem({ message, isHighlighted, onThreadClick, recipientProcessing, currentUser }: MessageItemProps) {
+function MessageItem({
+  message,
+  isHighlighted,
+  onThreadClick,
+  recipientProcessing,
+  currentUser,
+  showTimestamps = true,
+  compactMode = false,
+}: MessageItemProps) {
   const timestamp = formatTimestamp(message.timestamp);
 
   // Check if this message is from the current user (Dashboard or their GitHub username)
@@ -341,7 +371,8 @@ function MessageItem({ message, isHighlighted, onThreadClick, recipientProcessin
   return (
     <div
       className={`
-        group flex gap-2 sm:gap-3 py-2 sm:py-3 px-2 sm:px-4 rounded-xl transition-all duration-150
+        group flex rounded-xl transition-all duration-150
+        ${compactMode ? 'gap-2 py-1.5 px-2' : 'gap-2 sm:gap-3 py-2 sm:py-3 px-2 sm:px-4'}
         hover:bg-bg-card/50
         ${isHighlighted ? 'bg-warning-light/20 border-l-2 border-l-warning pl-2 sm:pl-3' : ''}
       `}
@@ -351,7 +382,9 @@ function MessageItem({ message, isHighlighted, onThreadClick, recipientProcessin
         <img
           src={currentUser.avatarUrl}
           alt={displayName}
-          className="shrink-0 w-8 h-8 sm:w-10 sm:h-10 rounded-lg sm:rounded-xl border-2 object-cover"
+          className={`shrink-0 rounded-lg sm:rounded-xl border-2 object-cover ${
+            compactMode ? 'w-7 h-7 sm:w-8 sm:h-8' : 'w-8 h-8 sm:w-10 sm:h-10'
+          }`}
           style={{
             borderColor: provider.color,
             boxShadow: `0 0 16px ${provider.color}30`,
@@ -359,7 +392,9 @@ function MessageItem({ message, isHighlighted, onThreadClick, recipientProcessin
         />
       ) : (
         <div
-          className="shrink-0 w-8 h-8 sm:w-10 sm:h-10 rounded-lg sm:rounded-xl flex items-center justify-center text-base sm:text-lg font-medium border-2"
+          className={`shrink-0 rounded-lg sm:rounded-xl flex items-center justify-center font-medium border-2 ${
+            compactMode ? 'w-7 h-7 sm:w-8 sm:h-8 text-sm sm:text-base' : 'w-8 h-8 sm:w-10 sm:h-10 text-base sm:text-lg'
+          }`}
           style={{
             backgroundColor: `${provider.color}15`,
             borderColor: provider.color,
@@ -373,7 +408,7 @@ function MessageItem({ message, isHighlighted, onThreadClick, recipientProcessin
 
       <div className="flex-1 min-w-0 overflow-hidden">
         {/* Message Header */}
-        <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+        <div className={`flex items-center gap-2 flex-wrap ${compactMode ? 'mb-1' : 'mb-1.5'}`}>
           <span
             className="font-display font-semibold text-sm"
             style={{ color: provider.color }}
@@ -400,7 +435,9 @@ function MessageItem({ message, isHighlighted, onThreadClick, recipientProcessin
             </span>
           )}
 
-          <span className="text-text-dim text-xs ml-auto font-mono">{timestamp}</span>
+          {showTimestamps && (
+            <span className="text-text-dim text-xs ml-auto font-mono">{timestamp}</span>
+          )}
 
           {/* Message status indicator - show for messages sent by current user */}
           {isFromCurrentUser && (

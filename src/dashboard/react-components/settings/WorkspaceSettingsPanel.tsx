@@ -462,13 +462,16 @@ export function WorkspaceSettingsPanel({
 
   return (
     <div className="flex flex-col h-full bg-bg-primary">
-      {/* Section Navigation */}
-      <div className="flex gap-1 p-3 border-b border-border-subtle bg-gradient-to-b from-bg-tertiary to-bg-primary">
+      {/* Section Navigation - horizontally scrollable on mobile */}
+      <div
+        className="flex gap-1 p-2 sm:p-3 border-b border-border-subtle bg-gradient-to-b from-bg-tertiary to-bg-primary overflow-x-auto scrollbar-hide scroll-smooth snap-x snap-mandatory touch-pan-x"
+        style={{ WebkitOverflowScrolling: 'touch' }}
+      >
         {sections.map((section) => (
           <button
             key={section.id}
             onClick={() => setActiveSection(section.id as typeof activeSection)}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ${
+            className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-lg text-xs sm:text-sm font-medium transition-all duration-200 whitespace-nowrap shrink-0 snap-start ${
               activeSection === section.id
                 ? 'bg-accent-cyan/15 text-accent-cyan border border-accent-cyan/30 shadow-[0_0_12px_rgba(0,217,255,0.15)]'
                 : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary border border-transparent'
@@ -483,7 +486,7 @@ export function WorkspaceSettingsPanel({
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="flex-1 overflow-y-auto p-4 sm:p-6">
         {error && (
           <div className="mb-6 p-4 bg-error/10 border border-error/30 rounded-lg text-error text-sm flex items-center gap-3">
             <AlertIcon />

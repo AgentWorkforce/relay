@@ -10,11 +10,12 @@
  * Design: Mission Control theme - deep space aesthetic with cyan/purple accents
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { cloudApi, getCsrfToken } from '../../lib/cloudApi';
 import { WorkspaceSettingsPanel } from './WorkspaceSettingsPanel';
 import { TeamSettingsPanel } from './TeamSettingsPanel';
 import { BillingSettingsPanel } from './BillingSettingsPanel';
+import type { Settings } from './types';
 
 export interface SettingsPageProps {
   /** Current user ID for team membership checks */
@@ -23,6 +24,10 @@ export interface SettingsPageProps {
   initialTab?: 'dashboard' | 'workspace' | 'team' | 'billing';
   /** Callback when settings page is closed */
   onClose?: () => void;
+  /** Current dashboard settings */
+  settings: Settings;
+  /** Update dashboard settings */
+  onUpdateSettings: (updater: (prev: Settings) => Settings) => void;
 }
 
 interface WorkspaceSummary {
@@ -31,34 +36,17 @@ interface WorkspaceSummary {
   status: string;
 }
 
-interface DashboardSettings {
-  theme: 'dark' | 'light' | 'system';
-  compactMode: boolean;
-  showTimestamps: boolean;
-  soundEnabled: boolean;
-  notificationsEnabled: boolean;
-  autoScrollMessages: boolean;
-}
-
-const DEFAULT_DASHBOARD_SETTINGS: DashboardSettings = {
-  theme: 'dark',
-  compactMode: false,
-  showTimestamps: true,
-  soundEnabled: true,
-  notificationsEnabled: true,
-  autoScrollMessages: true,
-};
-
 export function SettingsPage({
   currentUserId,
   initialTab = 'dashboard',
   onClose,
+  settings,
+  onUpdateSettings,
 }: SettingsPageProps) {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'workspace' | 'team' | 'billing'>(initialTab);
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
   const [isLoadingWorkspaces, setIsLoadingWorkspaces] = useState(true);
-  const [dashboardSettings, setDashboardSettings] = useState<DashboardSettings>(DEFAULT_DASHBOARD_SETTINGS);
 
   // Load workspaces
   useEffect(() => {
@@ -74,32 +62,22 @@ export function SettingsPage({
     loadWorkspaces();
   }, []);
 
-  // Load dashboard settings from localStorage
-  useEffect(() => {
-    const saved = localStorage.getItem('dashboard-settings');
-    if (saved) {
-      try {
-        setDashboardSettings({ ...DEFAULT_DASHBOARD_SETTINGS, ...JSON.parse(saved) });
-      } catch {
-        // Use defaults
-      }
-    }
-  }, []);
+  const updateSettings = useCallback((updater: (prev: Settings) => Settings) => {
+    onUpdateSettings(updater);
+  }, [onUpdateSettings]);
 
-  // Save dashboard settings
-  const updateDashboardSetting = <K extends keyof DashboardSettings>(
-    key: K,
-    value: DashboardSettings[K]
-  ) => {
-    const newSettings = { ...dashboardSettings, [key]: value };
-    setDashboardSettings(newSettings);
-    localStorage.setItem('dashboard-settings', JSON.stringify(newSettings));
-
-    // Apply theme immediately
-    if (key === 'theme') {
-      document.documentElement.setAttribute('data-theme', value as string);
-    }
-  };
+  const updateNotifications = useCallback((updates: Partial<Settings['notifications']>) => {
+    updateSettings((prev) => {
+      const nextNotifications = { ...prev.notifications, ...updates };
+      return {
+        ...prev,
+        notifications: {
+          ...nextNotifications,
+          enabled: nextNotifications.sound || nextNotifications.desktop || nextNotifications.mentionsOnly,
+        },
+      };
+    });
+  }, [updateSettings]);
 
   const tabs = [
     { id: 'dashboard', label: 'Dashboard', icon: <DashboardIcon /> },
@@ -137,14 +115,17 @@ export function SettingsPage({
           </button>
         </header>
 
-        {/* Tab Navigation - Always visible */}
+        {/* Tab Navigation - Always visible, horizontally scrollable on mobile */}
         <div className="border-b border-border-subtle bg-bg-secondary/50">
-          <div className="flex justify-center overflow-x-auto scrollbar-hide">
+          <div
+            className="flex sm:justify-center overflow-x-auto scrollbar-hide scroll-smooth snap-x snap-mandatory touch-pan-x"
+            style={{ WebkitOverflowScrolling: 'touch' }}
+          >
             {tabs.map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-all whitespace-nowrap ${
+                className={`flex items-center gap-2 px-4 sm:px-6 py-3 text-sm font-medium transition-all whitespace-nowrap shrink-0 snap-start ${
                   activeTab === tab.id
                     ? 'text-accent-cyan border-b-2 border-accent-cyan bg-accent-cyan/5'
                     : 'text-text-muted border-b-2 border-transparent hover:text-text-secondary'
@@ -192,8 +173,8 @@ export function SettingsPage({
         {/* Content */}
         <div className="flex-1 overflow-hidden">
           {/* Main Content */}
-          <main className="h-full overflow-y-auto">
-            <div className="max-w-4xl mx-auto p-4 md:p-8">
+          <main className="h-full w-full overflow-y-auto">
+            <div className="w-full max-w-4xl mx-auto p-4 md:p-8">
               {/* Dashboard Settings */}
               {activeTab === 'dashboard' && (
                 <div className="space-y-8">
@@ -209,8 +190,11 @@ export function SettingsPage({
                       description="Choose your preferred color scheme"
                     >
                       <select
-                        value={dashboardSettings.theme}
-                        onChange={(e) => updateDashboardSetting('theme', e.target.value as DashboardSettings['theme'])}
+                        value={settings.theme}
+                        onChange={(e) => updateSettings((prev) => ({
+                          ...prev,
+                          theme: e.target.value as Settings['theme'],
+                        }))}
                         className="px-4 py-2 bg-bg-tertiary border border-border-subtle rounded-lg text-sm text-text-primary focus:outline-none focus:border-accent-cyan"
                       >
                         <option value="dark">Dark</option>
@@ -224,8 +208,14 @@ export function SettingsPage({
                       description="Reduce spacing and show more content"
                     >
                       <Toggle
-                        checked={dashboardSettings.compactMode}
-                        onChange={(v) => updateDashboardSetting('compactMode', v)}
+                        checked={settings.display.compactMode}
+                        onChange={(v) => updateSettings((prev) => ({
+                          ...prev,
+                          display: {
+                            ...prev.display,
+                            compactMode: v,
+                          },
+                        }))}
                       />
                     </SettingRow>
 
@@ -234,8 +224,14 @@ export function SettingsPage({
                       description="Display timestamps on messages"
                     >
                       <Toggle
-                        checked={dashboardSettings.showTimestamps}
-                        onChange={(v) => updateDashboardSetting('showTimestamps', v)}
+                        checked={settings.display.showTimestamps}
+                        onChange={(v) => updateSettings((prev) => ({
+                          ...prev,
+                          display: {
+                            ...prev.display,
+                            showTimestamps: v,
+                          },
+                        }))}
                       />
                     </SettingRow>
                   </SettingsSection>
@@ -247,8 +243,8 @@ export function SettingsPage({
                       description="Play sounds for new messages"
                     >
                       <Toggle
-                        checked={dashboardSettings.soundEnabled}
-                        onChange={(v) => updateDashboardSetting('soundEnabled', v)}
+                        checked={settings.notifications.sound}
+                        onChange={(v) => updateNotifications({ sound: v })}
                       />
                     </SettingRow>
 
@@ -257,8 +253,8 @@ export function SettingsPage({
                       description="Show desktop notifications"
                     >
                       <Toggle
-                        checked={dashboardSettings.notificationsEnabled}
-                        onChange={(v) => updateDashboardSetting('notificationsEnabled', v)}
+                        checked={settings.notifications.desktop}
+                        onChange={(v) => updateNotifications({ desktop: v })}
                       />
                     </SettingRow>
                   </SettingsSection>
@@ -270,8 +266,14 @@ export function SettingsPage({
                       description="Automatically scroll to new messages"
                     >
                       <Toggle
-                        checked={dashboardSettings.autoScrollMessages}
-                        onChange={(v) => updateDashboardSetting('autoScrollMessages', v)}
+                        checked={settings.messages.autoScroll}
+                        onChange={(v) => updateSettings((prev) => ({
+                          ...prev,
+                          messages: {
+                            ...prev.messages,
+                            autoScroll: v,
+                          },
+                        }))}
                       />
                     </SettingRow>
                   </SettingsSection>
@@ -354,8 +356,8 @@ export function SettingsPage({
 // Utility Components
 function PageHeader({ title, subtitle }: { title: string; subtitle: string }) {
   return (
-    <div className="mb-8">
-      <h2 className="text-2xl font-bold text-text-primary">{title}</h2>
+    <div className="mb-6 sm:mb-8">
+      <h2 className="text-xl sm:text-2xl font-bold text-text-primary">{title}</h2>
       <p className="text-sm text-text-muted mt-1">{subtitle}</p>
     </div>
   );
@@ -372,7 +374,7 @@ function SettingsSection({
 }) {
   return (
     <div className="bg-bg-tertiary rounded-xl border border-border-subtle overflow-hidden">
-      <div className="px-6 py-4 border-b border-border-subtle bg-bg-secondary/50 flex items-center gap-3">
+      <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-border-subtle bg-bg-secondary/50 flex items-center gap-3">
         <span className="text-accent-cyan">{icon}</span>
         <h3 className="text-sm font-semibold text-text-primary uppercase tracking-wide">{title}</h3>
       </div>
@@ -391,7 +393,7 @@ function SettingRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className="px-6 py-4 flex items-center justify-between">
+    <div className="px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between">
       <div>
         <p className="text-sm font-medium text-text-primary">{label}</p>
         <p className="text-xs text-text-muted mt-0.5">{description}</p>

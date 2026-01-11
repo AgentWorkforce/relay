@@ -18,6 +18,9 @@ export interface Settings {
     showAvatars: boolean;
     animationsEnabled: boolean;
   };
+  messages: {
+    autoScroll: boolean;
+  };
   connection: {
     autoReconnect: boolean;
     reconnectDelay: number;
@@ -38,6 +41,9 @@ export const defaultSettings: Settings = {
     showTimestamps: true,
     showAvatars: true,
     animationsEnabled: true,
+  },
+  messages: {
+    autoScroll: true,
   },
   connection: {
     autoReconnect: true,

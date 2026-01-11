@@ -79,6 +79,39 @@ interface TrajectoryFile {
 /**
  * Read a single trajectory index file from a directory
  */
+function resolveIndexEntryPath(trajectoriesDir: string, entryPath: string): string {
+  if (!entryPath) {
+    return entryPath;
+  }
+
+  if (existsSync(entryPath)) {
+    return entryPath;
+  }
+
+  const normalized = entryPath.replace(/\\/g, '/');
+  const marker = '/.trajectories/';
+  const markerIndex = normalized.indexOf(marker);
+
+  if (markerIndex >= 0) {
+    const relative = normalized.slice(markerIndex + marker.length);
+    const candidate = join(trajectoriesDir, relative);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  const subdirMatch = normalized.match(/\/(active|completed)\/.+$/);
+  if (subdirMatch) {
+    const relative = subdirMatch[0].slice(1);
+    const candidate = join(trajectoriesDir, relative);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return entryPath;
+}
+
 function readSingleTrajectoryIndex(trajectoriesDir: string): TrajectoryIndex | null {
   try {
     const indexPath = join(trajectoriesDir, 'index.json');
@@ -86,7 +119,17 @@ function readSingleTrajectoryIndex(trajectoriesDir: string): TrajectoryIndex | n
       return null;
     }
     const content = readFileSync(indexPath, 'utf-8');
-    return JSON.parse(content) as TrajectoryIndex;
+    const index = JSON.parse(content) as TrajectoryIndex;
+    const trajectories = index.trajectories ?? {};
+
+    for (const [id, entry] of Object.entries(trajectories)) {
+      trajectories[id] = {
+        ...entry,
+        path: resolveIndexEntryPath(trajectoriesDir, entry.path),
+      };
+    }
+
+    return { ...index, trajectories };
   } catch {
     return null;
   }

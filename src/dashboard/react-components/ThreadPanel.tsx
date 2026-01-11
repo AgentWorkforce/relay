@@ -23,6 +23,8 @@ export interface ThreadPanelProps {
   isSending?: boolean;
   /** Current user info (for cloud mode - shows avatar/username instead of "Dashboard") */
   currentUser?: CurrentUser;
+  /** Show timestamps for messages */
+  showTimestamps?: boolean;
 }
 
 export function ThreadPanel({
@@ -32,6 +34,7 @@ export function ThreadPanel({
   onReply,
   isSending = false,
   currentUser,
+  showTimestamps = true,
 }: ThreadPanelProps) {
   const [replyContent, setReplyContent] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -95,7 +98,12 @@ export function ThreadPanel({
       <div className="flex-1 overflow-y-auto">
         {/* Original Message */}
         <div className="p-4 border-b border-border">
-          <ThreadMessage message={originalMessage} isOriginal currentUser={currentUser} />
+          <ThreadMessage
+            message={originalMessage}
+            isOriginal
+            currentUser={currentUser}
+            showTimestamps={showTimestamps}
+          />
         </div>
 
         {/* Replies */}
@@ -106,7 +114,12 @@ export function ThreadPanel({
             </div>
           ) : (
             replies.map((reply) => (
-              <ThreadMessage key={reply.id} message={reply} currentUser={currentUser} />
+              <ThreadMessage
+                key={reply.id}
+                message={reply}
+                currentUser={currentUser}
+                showTimestamps={showTimestamps}
+              />
             ))
           )}
           <div ref={bottomRef} />
@@ -143,9 +156,10 @@ interface ThreadMessageProps {
   message: Message;
   isOriginal?: boolean;
   currentUser?: CurrentUser;
+  showTimestamps?: boolean;
 }
 
-function ThreadMessage({ message, isOriginal, currentUser }: ThreadMessageProps) {
+function ThreadMessage({ message, isOriginal, currentUser, showTimestamps = true }: ThreadMessageProps) {
   const colors = getAgentColor(message.from);
   const timestamp = formatTimestamp(message.timestamp);
 
@@ -185,7 +199,9 @@ function ThreadMessage({ message, isOriginal, currentUser }: ThreadMessageProps)
               <span className="text-sm text-accent">{message.to}</span>
             </>
           )}
-          <span className="text-text-muted text-xs">{timestamp}</span>
+          {showTimestamps && (
+            <span className="text-text-muted text-xs">{timestamp}</span>
+          )}
           {isOriginal && (
             <span className="text-[10px] py-0.5 px-1.5 rounded bg-accent-light text-accent font-medium">
               Original

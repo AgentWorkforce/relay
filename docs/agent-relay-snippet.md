@@ -31,6 +31,8 @@ Your message here.
 >>>
 ```
 
+**Output rule:** Send only a single fenced relay block per message. Do not include any extra text before or after the block (no preambles, no UI prompt hints).
+
 ## Communication Protocol
 
 **ACK immediately** - When you receive a task, acknowledge it before starting work:
@@ -211,6 +213,7 @@ TIMEOUT: 1800000>>>
 - Escape with `\->relay:` to output literally
 - Check daemon status: `agent-relay status`
 - **Do NOT include self-identification or preamble in messages** - start with your actual response content, not "I'm [agent type] running as..."
+- **Do NOT include UI prompt text** like "Explain this codebase..." or "100% context left" in the same send.
 
 ## Writing Examples (For Documentation)
 

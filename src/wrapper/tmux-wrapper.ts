@@ -51,6 +51,7 @@ import {
   CLI_QUIRKS,
 } from './shared.js';
 import { getTmuxPanePid } from './idle-detector.js';
+import { DEFAULT_TMUX_WRAPPER_CONFIG } from '../config/relay-config.js';
 
 const execAsync = promisify(exec);
 
@@ -147,16 +148,7 @@ export class TmuxWrapper extends BaseWrapper {
     const mergedConfig: TmuxWrapperConfig = {
       cols: process.stdout.columns || 120,
       rows: process.stdout.rows || 40,
-      pollInterval: 200, // Slightly slower polling since we're not displaying
-      idleBeforeInjectMs: 1500,
-      injectRetryMs: 500,
-      debug: false,
-      debugLogIntervalMs: 0,
-      mouseMode: true, // Enable mouse scroll passthrough by default
-      activityIdleThresholdMs: 30_000, // Consider idle after 30s with no output
-      outputStabilityTimeoutMs: 2000,
-      outputStabilityPollMs: 200,
-      streamLogs: true, // Stream output to daemon for dashboard
+      ...DEFAULT_TMUX_WRAPPER_CONFIG,
       ...config,
     };
 

@@ -6,7 +6,7 @@
  * Uses Tailwind CSS with Mission Control theme.
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 
 export interface TrajectoryStep {
   id: string;
@@ -54,12 +54,32 @@ export function TrajectoryViewer({
 }: TrajectoryViewerProps) {
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState<TrajectoryStep['type'] | 'all'>('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const isHistoryView = steps.length === 0 && history.length > 0;
+
+  useEffect(() => {
+    setFilter('all');
+  }, [selectedTrajectoryId]);
 
   // Filter steps
   const filteredSteps = useMemo(() => {
     if (filter === 'all') return steps;
     return steps.filter((s) => s.type === filter);
   }, [steps, filter]);
+
+  const filteredHistory = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return history;
+
+    return history.filter((entry) => {
+      const inTitle = entry.title?.toLowerCase().includes(query);
+      const inSummary = entry.summary?.toLowerCase().includes(query);
+      const inAgents = entry.agents?.some((agent) => agent.toLowerCase().includes(query));
+      const inStatus = entry.status?.toLowerCase().includes(query);
+      const inId = entry.id?.toLowerCase().includes(query);
+      return inTitle || inSummary || inAgents || inStatus || inId;
+    });
+  }, [history, searchQuery]);
 
   // Toggle step expansion
   const toggleStep = (stepId: string) => {
@@ -162,7 +182,7 @@ export function TrajectoryViewer({
         </div>
 
         {/* Filter tabs */}
-        {!compact && (
+        {!compact && !isHistoryView && (
           <div className="flex items-center gap-1 px-4 py-2 bg-bg-elevated/50 border-b border-border/20 overflow-x-auto scrollbar-thin">
             {typeFilters.map((f) => (
               <button
@@ -194,11 +214,18 @@ export function TrajectoryViewer({
           </div>
         ) : filteredSteps.length === 0 ? (
           <div className="flex flex-col gap-4 py-4 text-text-muted">
-            {steps.length === 0 && history.length > 0 ? (
+            {isHistoryView ? (
               /* Show trajectory history when no current steps */
               <div className="flex flex-col gap-2">
-                <div className="flex items-center justify-between px-2">
+                <div className="flex items-center justify-between gap-3 px-2">
                   <span className="text-xs font-medium text-text-secondary uppercase tracking-wider">Recent Trajectories</span>
+                  <input
+                    type="search"
+                    value={searchQuery}
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                    placeholder="Search trajectories..."
+                    className="text-[11px] text-text-secondary bg-bg-elevated/60 border border-border/30 rounded-md px-2 py-1 w-40 focus:outline-none focus:border-accent-cyan/40"
+                  />
                   {selectedTrajectoryId && onSelectTrajectory && (
                     <button
                       onClick={() => onSelectTrajectory(null)}
@@ -209,7 +236,7 @@ export function TrajectoryViewer({
                   )}
                 </div>
                 <div className="flex flex-col gap-1">
-                  {history.slice(0, 10).map((entry) => (
+                  {filteredHistory.map((entry) => (
                     <button
                       key={entry.id}
                       onClick={() => onSelectTrajectory?.(entry.id)}
@@ -250,6 +277,11 @@ export function TrajectoryViewer({
                       )}
                     </button>
                   ))}
+                  {filteredHistory.length === 0 && (
+                    <div className="px-3 py-4 text-[11px] text-text-muted">
+                      No matching trajectories. Try a different search.
+                    </div>
+                  )}
                 </div>
               </div>
             ) : steps.length === 0 ? (

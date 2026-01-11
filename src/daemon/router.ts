@@ -23,6 +23,10 @@ import type { StorageAdapter } from '../storage/adapter.js';
 import type { AgentRegistry } from './agent-registry.js';
 import { routerLog } from '../utils/logger.js';
 import { RateLimiter, NoOpRateLimiter, type RateLimitConfig } from './rate-limiter.js';
+import {
+  DeliveryTracker,
+  type DeliveryReliabilityOptions,
+} from './delivery-tracker.js';
 
 export interface RoutableConnection {
   id: string;
@@ -59,29 +63,6 @@ export interface CrossMachineHandler {
   isRemoteAgent(agentName: string): RemoteAgentInfo | undefined;
 }
 
-export interface DeliveryReliabilityOptions {
-  /** How long to wait for an ACK before retrying (ms) */
-  ackTimeoutMs: number;
-  /** Maximum attempts (initial send counts as attempt 1) */
-  maxAttempts: number;
-  /** How long to keep retrying before dropping (ms) */
-  deliveryTtlMs: number;
-}
-
-const DEFAULT_DELIVERY_OPTIONS: DeliveryReliabilityOptions = {
-  ackTimeoutMs: 5000,
-  maxAttempts: 5,
-  deliveryTtlMs: 60_000,
-};
-
-interface PendingDelivery {
-  envelope: DeliverEnvelope;
-  connectionId: string;
-  attempts: number;
-  firstSentAt: number;
-  timer?: NodeJS.Timeout;
-}
-
 interface ProcessingState {
   startedAt: number;
   messageId: string;
@@ -98,11 +79,10 @@ export class Router {
   private connections: Map<string, RoutableConnection> = new Map(); // connectionId -> Connection
   private agents: Map<string, RoutableConnection> = new Map(); // agentName -> Connection
   private subscriptions: Map<string, Set<string>> = new Map(); // topic -> Set<agentName>
-  private pendingDeliveries: Map<string, PendingDelivery> = new Map(); // deliverId -> pending
   private processingAgents: Map<string, ProcessingState> = new Map(); // agentName -> processing state
-  private deliveryOptions: DeliveryReliabilityOptions;
   private registry?: AgentRegistry;
   private crossMachineHandler?: CrossMachineHandler;
+  private deliveryTracker: DeliveryTracker;
 
   /** Shadow relationships: primaryAgent -> list of shadow configs */
   private shadowsByPrimary: Map<string, ShadowRelationship[]> = new Map();
@@ -135,10 +115,14 @@ export class Router {
     rateLimit?: Partial<RateLimitConfig> | null;
   } = {}) {
     this.storage = options.storage;
-    this.deliveryOptions = { ...DEFAULT_DELIVERY_OPTIONS, ...options.delivery };
     this.registry = options.registry;
     this.onProcessingStateChange = options.onProcessingStateChange;
     this.crossMachineHandler = options.crossMachineHandler;
+    this.deliveryTracker = new DeliveryTracker({
+      storage: this.storage,
+      delivery: options.delivery,
+      getConnection: (id) => this.connections.get(id),
+    });
     // Initialize rate limiter (null = disabled)
     this.rateLimiter = options.rateLimit === null
       ? new NoOpRateLimiter()
@@ -736,7 +720,7 @@ export class Router {
   }
 
   get pendingDeliveryCount(): number {
-    return this.pendingDeliveries.size;
+    return this.deliveryTracker.pendingCount;
   }
 
   /**
@@ -813,109 +797,21 @@ export class Router {
    */
   handleAck(connection: RoutableConnection, envelope: Envelope<AckPayload>): void {
     const ackId = envelope.payload.ack_id;
-    const pending = this.pendingDeliveries.get(ackId);
-    if (!pending) return;
-
-    // Only accept ACKs from the same connection that received the deliver
-    if (pending.connectionId !== connection.id) return;
-
-    if (pending.timer) {
-      clearTimeout(pending.timer);
-    }
-    this.pendingDeliveries.delete(ackId);
-    const statusUpdate = this.storage?.updateMessageStatus?.(ackId, 'acked');
-    if (statusUpdate instanceof Promise) {
-      statusUpdate.catch(err => {
-        routerLog.error('Failed to record ACK status', { error: String(err) });
-      });
-    }
-    routerLog.debug(`ACK received for ${ackId}`);
+    this.deliveryTracker.handleAck(connection.id, ackId);
   }
 
   /**
    * Clear pending deliveries for a connection (e.g., on disconnect).
    */
   clearPendingForConnection(connectionId: string): void {
-    for (const [id, pending] of this.pendingDeliveries.entries()) {
-      if (pending.connectionId === connectionId) {
-        if (pending.timer) clearTimeout(pending.timer);
-        this.pendingDeliveries.delete(id);
-      }
-    }
+    this.deliveryTracker.clearPendingForConnection(connectionId);
   }
 
   /**
    * Track a delivery and schedule retries until ACKed or TTL/attempts exhausted.
    */
   private trackDelivery(target: RoutableConnection, deliver: DeliverEnvelope): void {
-    const pending: PendingDelivery = {
-      envelope: deliver,
-      connectionId: target.id,
-      attempts: 1,
-      firstSentAt: Date.now(),
-    };
-
-    pending.timer = this.scheduleRetry(deliver.id);
-    this.pendingDeliveries.set(deliver.id, pending);
-  }
-
-  private scheduleRetry(deliverId: string): NodeJS.Timeout | undefined {
-    return setTimeout(() => {
-      const pending = this.pendingDeliveries.get(deliverId);
-      if (!pending) return;
-
-      const now = Date.now();
-      const elapsed = now - pending.firstSentAt;
-      if (elapsed > this.deliveryOptions.deliveryTtlMs) {
-        routerLog.warn(`Dropping ${deliverId} after TTL`, { ttlMs: this.deliveryOptions.deliveryTtlMs });
-        this.pendingDeliveries.delete(deliverId);
-        // Mark message as failed in storage
-        const statusUpdate = this.storage?.updateMessageStatus?.(deliverId, 'failed');
-        if (statusUpdate instanceof Promise) {
-          statusUpdate.catch(err => {
-            routerLog.error(`Failed to update status for ${deliverId}`, { error: String(err) });
-          });
-        }
-        return;
-      }
-
-      if (pending.attempts >= this.deliveryOptions.maxAttempts) {
-        routerLog.warn(`Dropping ${deliverId} after max attempts`, { maxAttempts: this.deliveryOptions.maxAttempts });
-        this.pendingDeliveries.delete(deliverId);
-        // Mark message as failed in storage
-        const statusUpdate = this.storage?.updateMessageStatus?.(deliverId, 'failed');
-        if (statusUpdate instanceof Promise) {
-          statusUpdate.catch(err => {
-            routerLog.error(`Failed to update status for ${deliverId}`, { error: String(err) });
-          });
-        }
-        return;
-      }
-
-      const target = this.connections.get(pending.connectionId);
-      if (!target) {
-        routerLog.warn(`Dropping ${deliverId} - connection unavailable`);
-        this.pendingDeliveries.delete(deliverId);
-        // Mark message as failed in storage
-        const statusUpdate = this.storage?.updateMessageStatus?.(deliverId, 'failed');
-        if (statusUpdate instanceof Promise) {
-          statusUpdate.catch(err => {
-            routerLog.error(`Failed to update status for ${deliverId}`, { error: String(err) });
-          });
-        }
-        return;
-      }
-
-      pending.attempts++;
-      const sent = target.send(pending.envelope);
-      if (!sent) {
-        routerLog.warn(`Retry failed for ${deliverId}`, { attempt: pending.attempts });
-      } else {
-        routerLog.debug(`Retried ${deliverId}`, { attempt: pending.attempts });
-      }
-
-      pending.timer = this.scheduleRetry(deliverId);
-    }, this.deliveryOptions.ackTimeoutMs);
+    this.deliveryTracker.track(target, deliver);
   }
 
   /**

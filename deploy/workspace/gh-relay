@@ -15,6 +15,7 @@ set -euo pipefail
 CACHE_DIR="${HOME}/.cache/gh-relay"
 CACHE_FILE="${CACHE_DIR}/token"
 CACHE_TTL_SECONDS=3300  # 55 minutes (tokens expire at 1 hour)
+AUTH_ERROR_PATTERN='(HTTP 401|401 Unauthorized|Bad credentials|authentication failed|invalid token)'
 
 # Ensure cache directory exists
 mkdir -p "$CACHE_DIR"
@@ -63,6 +64,11 @@ fetch_fresh_token() {
   return 1
 }
 
+# Clear cached token (e.g., when we detect an auth failure)
+clear_cached_token() {
+  rm -f "$CACHE_FILE"
+}
+
 # Get token (cached or fresh)
 get_token() {
   # Try cache first
@@ -79,6 +85,32 @@ get_token() {
   fi
 
   return 1
+}
+
+# Run gh and capture stderr to detect auth failures without losing output.
+# Sets AUTH_ERROR=1 when auth errors are detected.
+AUTH_ERROR=0
+run_gh() {
+  local err_file
+  err_file=$(mktemp)
+  AUTH_ERROR=0
+
+  if "$GH_BIN" "$@" 2> >(tee "$err_file" >&2); then
+    :
+  else
+    local status=$?
+    if grep -qiE "$AUTH_ERROR_PATTERN" "$err_file"; then
+      AUTH_ERROR=1
+    fi
+    rm -f "$err_file"
+    return "$status"
+  fi
+
+  if grep -qiE "$AUTH_ERROR_PATTERN" "$err_file"; then
+    AUTH_ERROR=1
+  fi
+  rm -f "$err_file"
+  return 0
 }
 
 # Main logic
@@ -99,4 +131,21 @@ else
   exit 1
 fi
 
-exec "$GH_BIN" "$@"
+if run_gh "$@"; then
+  exit 0
+fi
+status=$?
+
+# If auth failed and we're in relay mode, refresh token and retry once.
+if use_relay && [[ "$AUTH_ERROR" -eq 1 ]]; then
+  clear_cached_token
+  if token=$(fetch_fresh_token); then
+    export GH_TOKEN="$token"
+    if run_gh "$@"; then
+      exit 0
+    fi
+    status=$?
+  fi
+fi
+
+exit "$status"

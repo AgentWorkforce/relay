@@ -7,13 +7,23 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react';
-import type { Agent } from '../types';
+import type { Agent, AgentSummary } from '../types';
 import {
   getAgentColor,
   getAgentInitials,
   STATUS_COLORS,
 } from '../lib/colors';
 import { getAgentDisplayName, getAgentBreadcrumb } from '../lib/hierarchy';
+
+/** Provider display configuration */
+const PROVIDER_CONFIG: Record<string, { label: string; color: string; icon: string }> = {
+  claude: { label: 'Claude', color: '#00d9ff', icon: '🤖' },
+  codex: { label: 'Codex', color: '#10a37f', icon: '🧠' },
+  gemini: { label: 'Gemini', color: '#4285f4', icon: '✨' },
+  droid: { label: 'Droid', color: '#ff6b35', icon: '🤖' },
+  opencode: { label: 'OpenCode', color: '#a855f7', icon: '💻' },
+  other: { label: 'AI Agent', color: '#8d8d8e', icon: '🤖' },
+};
 
 export interface AgentProfilePanelProps {
   /** Agent to display (null to hide panel) */
@@ -26,6 +36,8 @@ export interface AgentProfilePanelProps {
   onLogs?: (agent: Agent) => void;
   /** Callback when release button is clicked */
   onRelease?: (agent: Agent) => void;
+  /** Agent's recent work summary (optional) */
+  summary?: AgentSummary | null;
 }
 
 export function AgentProfilePanel({
@@ -34,6 +46,7 @@ export function AgentProfilePanel({
   onMessage,
   onLogs,
   onRelease,
+  summary,
 }: AgentProfilePanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const [showFullPrompt, setShowFullPrompt] = useState(false);
@@ -175,13 +188,39 @@ export function AgentProfilePanel({
             {agent.isProcessing && ' - Thinking...'}
           </span>
 
+          {/* Provider Display - Prominent like GitHub link for users */}
+          {agent.cli && (() => {
+            const cliLower = agent.cli.toLowerCase();
+            const providerInfo = PROVIDER_CONFIG[cliLower] || PROVIDER_CONFIG.other;
+            return (
+              <div
+                className="flex items-center gap-2 mt-3 px-3 py-2 rounded-lg border"
+                style={{
+                  borderColor: `${providerInfo.color}40`,
+                  backgroundColor: `${providerInfo.color}10`,
+                }}
+              >
+                <span className="text-lg">{providerInfo.icon}</span>
+                <div className="flex flex-col">
+                  <span className="text-xs text-[#8d8d8e] uppercase tracking-wide">Provider</span>
+                  <span
+                    className="text-sm font-medium"
+                    style={{ color: providerInfo.color }}
+                  >
+                    {providerInfo.label}
+                  </span>
+                </div>
+                {profile?.model && (
+                  <span className="ml-auto text-xs text-[#8d8d8e] font-mono">
+                    {profile.model}
+                  </span>
+                )}
+              </div>
+            );
+          })()}
+
           {/* Tags */}
           <div className="flex flex-wrap gap-2 mt-3">
-            {agent.cli && (
-              <span className="text-xs bg-[#2a2d31] text-[#d1d2d3] px-2 py-1 rounded">
-                {agent.cli}
-              </span>
-            )}
             {agent.isSpawned && (
               <span className="text-xs bg-[#a855f7]/20 text-[#a855f7] px-2 py-1 rounded uppercase font-medium">
                 Spawned
@@ -203,6 +242,90 @@ export function AgentProfilePanel({
         {/* Details - Scrollable */}
         <div className="flex-1 p-4 overflow-y-auto">
           <div className="space-y-4">
+            {/* Recent Work Summary - Top of details for visibility */}
+            {summary && (summary.completedTasks?.length || summary.currentTask || summary.context) && (
+              <div className="bg-[#1e2024] border border-[#00d9ff]/20 rounded-lg p-3">
+                <label className="text-xs text-[#00d9ff] uppercase tracking-wide font-medium flex items-center gap-1.5 mb-2">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M3 12h4l3 9 4-18 3 9h4" />
+                  </svg>
+                  Recent Work
+                </label>
+
+                {/* Current Task */}
+                {summary.currentTask && (
+                  <div className="mb-2">
+                    <span className="text-xs text-[#8d8d8e]">Working on:</span>
+                    <p className="text-sm text-[#d1d2d3] mt-0.5 bg-[#2a2d31] p-2 rounded">
+                      {summary.currentTask}
+                    </p>
+                  </div>
+                )}
+
+                {/* Completed Tasks */}
+                {summary.completedTasks && summary.completedTasks.length > 0 && (
+                  <div className="mb-2">
+                    <span className="text-xs text-[#8d8d8e]">Completed:</span>
+                    <ul className="mt-1 space-y-1">
+                      {summary.completedTasks.slice(0, 5).map((task, i) => (
+                        <li key={i} className="text-xs text-[#d1d2d3] flex items-start gap-1.5">
+                          <span className="text-[#10b981] mt-0.5">✓</span>
+                          <span>{task}</span>
+                        </li>
+                      ))}
+                      {summary.completedTasks.length > 5 && (
+                        <li className="text-xs text-[#8d8d8e]">
+                          +{summary.completedTasks.length - 5} more...
+                        </li>
+                      )}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Context */}
+                {summary.context && (
+                  <div className="mb-2">
+                    <span className="text-xs text-[#8d8d8e]">Context:</span>
+                    <p className="text-xs text-[#a0a0b0] mt-0.5 italic">
+                      {summary.context}
+                    </p>
+                  </div>
+                )}
+
+                {/* Files touched */}
+                {summary.files && summary.files.length > 0 && (
+                  <div>
+                    <span className="text-xs text-[#8d8d8e]">Files:</span>
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {summary.files.slice(0, 6).map((file, i) => (
+                        <span
+                          key={i}
+                          className="text-[10px] font-mono bg-[#2a2d31] text-[#a855f7] px-1.5 py-0.5 rounded"
+                          title={file}
+                        >
+                          {file.split('/').pop()}
+                        </span>
+                      ))}
+                      {summary.files.length > 6 && (
+                        <span className="text-[10px] text-[#8d8d8e]">
+                          +{summary.files.length - 6}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Last updated */}
+                {summary.lastUpdated && (
+                  <div className="mt-2 pt-2 border-t border-[#2a2d31]">
+                    <span className="text-[10px] text-[#606070]">
+                      Updated {formatRelativeTime(summary.lastUpdated)}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Description */}
             {profile?.description && (
               <div>
@@ -411,4 +534,23 @@ function formatDateTime(timestamp: string): string {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+/**
+ * Format a timestamp as relative time (e.g., "5 min ago")
+ */
+function formatRelativeTime(timestamp: string): string {
+  const date = new Date(timestamp);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffSec = Math.floor(diffMs / 1000);
+  const diffMin = Math.floor(diffSec / 60);
+  const diffHr = Math.floor(diffMin / 60);
+  const diffDay = Math.floor(diffHr / 24);
+
+  if (diffSec < 60) return 'just now';
+  if (diffMin < 60) return `${diffMin} min ago`;
+  if (diffHr < 24) return `${diffHr} hr ago`;
+  if (diffDay < 7) return `${diffDay} day${diffDay > 1 ? 's' : ''} ago`;
+  return formatDateTime(timestamp);
 }

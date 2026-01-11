@@ -1,0 +1,36 @@
+{
+  "id": "traj_erglv2f8t9eh",
+  "version": 1,
+  "task": {
+    "title": "TrajectoryViewer loading state fix"
+  },
+  "status": "completed",
+  "startedAt": "2026-01-11T11:46:56.195Z",
+  "completedAt": "2026-01-11T11:47:05.481Z",
+  "agents": [
+    {
+      "name": "MessagesEngineer",
+      "role": "lead",
+      "joinedAt": "2026-01-11T11:46:56.196Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_8janvdqf63jj",
+      "title": "Initial work",
+      "agentName": "MessagesEngineer",
+      "startedAt": "2026-01-11T11:46:56.196Z",
+      "endedAt": "2026-01-11T11:47:05.481Z",
+      "events": []
+    }
+  ],
+  "retrospective": {
+    "summary": "Set isLoading during trajectory selection fetch to avoid history flash",
+    "approach": "Standard approach",
+    "confidence": 0.72
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "84085b56a3fa",
+  "tags": []
+}

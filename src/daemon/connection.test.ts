@@ -132,7 +132,9 @@ describe('Connection', () => {
     hello.payload.session = { resume_token: 'token-abc' };
     socket.emit('data', encodeFrameLegacy(hello));
 
-    await new Promise((r) => setTimeout(r, 0));
+    // Wait for async processFrame -> handleHello -> resumeHandler to complete,
+    // then wait for write queue to drain (scheduleDrain uses setImmediate)
+    await new Promise((r) => setTimeout(r, 10));
 
     expect(connection.state).toBe('ACTIVE');
     expect(connection.sessionId).toBe('session-resume');
