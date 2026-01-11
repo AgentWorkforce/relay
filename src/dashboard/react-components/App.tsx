@@ -168,6 +168,8 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
             name: string;
             status: string;
             isLocal: boolean;
+            isHuman?: boolean;
+            avatarUrl?: string;
             daemonId: string;
             daemonName: string;
             daemonStatus: string;
@@ -183,6 +185,8 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
             name: a.name,
             status: a.daemonStatus === 'online' ? 'online' : 'offline',
             isLocal: true,
+            isHuman: a.isHuman,
+            avatarUrl: a.avatarUrl,
             daemonName: a.daemonName,
             machineId: a.machineId,
             lastSeen: a.lastSeenAt || undefined,

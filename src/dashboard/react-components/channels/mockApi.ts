@@ -24,14 +24,29 @@ import {
   MOCK_MESSAGES,
 } from './types';
 
+// Only seed demo data when explicitly enabled (prevents example channels in cloud)
+const ENABLE_DEMO_DATA = process.env.NEXT_PUBLIC_ENABLE_CHANNEL_DEMO === 'true';
+
+function getInitialChannels(): Channel[] {
+  return ENABLE_DEMO_DATA ? [...MOCK_CHANNELS] : [];
+}
+
+function getInitialArchivedChannels(): Channel[] {
+  return ENABLE_DEMO_DATA ? [...MOCK_ARCHIVED_CHANNELS] : [];
+}
+
+function getInitialMessages(): ChannelMessage[] {
+  return ENABLE_DEMO_DATA ? [...MOCK_MESSAGES] : [];
+}
+
 // Simulated latency for realistic UX
 const MOCK_LATENCY_MS = 300;
 
 // In-memory state
-let channels = [...MOCK_CHANNELS];
-let archivedChannels = [...MOCK_ARCHIVED_CHANNELS];
-let messages = [...MOCK_MESSAGES];
-let messageIdCounter = 100;
+let channels = getInitialChannels();
+let archivedChannels = getInitialArchivedChannels();
+let messages = getInitialMessages();
+let messageIdCounter = ENABLE_DEMO_DATA ? 100 : 0;
 
 /**
  * Simulate network latency
@@ -322,8 +337,8 @@ export async function getMentionSuggestions(): Promise<string[]> {
  * Reset mock state (for testing)
  */
 export function resetMockState(): void {
-  channels = [...MOCK_CHANNELS];
-  archivedChannels = [...MOCK_ARCHIVED_CHANNELS];
-  messages = [...MOCK_MESSAGES];
-  messageIdCounter = 100;
+  channels = getInitialChannels();
+  archivedChannels = getInitialArchivedChannels();
+  messages = getInitialMessages();
+  messageIdCounter = ENABLE_DEMO_DATA ? 100 : 0;
 }
