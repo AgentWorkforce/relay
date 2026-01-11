@@ -1,19 +1,607 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-10T04:20:27.657Z",
+  "lastUpdated": "2026-01-11T19:05:52.036968Z",
   "trajectories": {
-    "traj_x721m1j9rzup": {
-      "title": "Phase 1-3 socket baseline architecture and performance optimizations",
+    "traj_ozd98si6a7ns": {
+      "title": "Fix thinking indicator showing on all messages",
+      "status": "abandoned",
+      "startedAt": "2026-01-02T10:19:46.895Z",
+      "completedAt": "2026-01-02T10:22:28.822Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_ozd98si6a7ns.json"
+    },
+    "traj_gtlyqtta3x8l": {
+      "title": "Implement optimistic message delivery",
       "status": "completed",
-      "startedAt": "2026-01-10T03:55:14.837Z",
-      "completedAt": "2026-01-10T03:55:52.216Z",
-      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_x721m1j9rzup.json"
+      "startedAt": "2026-01-02T10:22:32.477Z",
+      "completedAt": "2026-01-02T21:18:48.601Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_gtlyqtta3x8l.json"
+    },
+    "traj_v87hypnongqx": {
+      "title": "Switch from GitHub OAuth to GitHub App for repo access",
+      "status": "completed",
+      "startedAt": "2026-01-02T21:18:58.532Z",
+      "completedAt": "2026-01-02T21:55:20.552Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_v87hypnongqx.json"
+    },
+    "traj_dfuvww9pege5": {
+      "title": "Implement Nango OAuth integration for GitHub",
+      "status": "completed",
+      "startedAt": "2026-01-02T21:56:04.202Z",
+      "completedAt": "2026-01-02T21:59:41.222Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_dfuvww9pege5.json"
+    },
+    "traj_qx9uhf8whhxo": {
+      "title": "Comprehensive codebase review and hardening",
+      "status": "completed",
+      "startedAt": "2026-01-02T22:19:15.313Z",
+      "completedAt": "2026-01-02T22:29:20.753Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_qx9uhf8whhxo.json"
+    },
+    "traj_xnwbznkvv8ua": {
+      "title": "Backend developer session - waiting for Lead tasks",
+      "status": "completed",
+      "startedAt": "2026-01-03T11:26:14.776Z",
+      "completedAt": "2026-01-03T11:54:49.955Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_xnwbznkvv8ua.json"
+    },
+    "traj_rd9toccj18a0": {
+      "title": "Replace console.log with structured logger in router.ts",
+      "status": "completed",
+      "startedAt": "2026-01-03T11:56:09.607Z",
+      "completedAt": "2026-01-03T12:01:25.798Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_rd9toccj18a0.json"
+    },
+    "traj_45x9494d9xnr": {
+      "title": "agent-relay-442 - test coverage for vault and billing",
+      "status": "completed",
+      "startedAt": "2026-01-03T12:01:40.457Z",
+      "completedAt": "2026-01-03T12:02:10.085Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_45x9494d9xnr.json"
+    },
+    "traj_5lhmzq8rxpqv": {
+      "title": "agent-relay-yv5 - HookEmitter class",
+      "status": "completed",
+      "startedAt": "2026-01-03T12:03:48.661Z",
+      "completedAt": "2026-01-03T12:05:57.790Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_5lhmzq8rxpqv.json"
+    },
+    "traj_m2xkjv0w2sq7": {
+      "title": "Review GitHub OAuth login logic",
+      "status": "completed",
+      "startedAt": "2026-01-03T12:06:12.855Z",
+      "completedAt": "2026-01-03T12:06:18.137Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_m2xkjv0w2sq7.json"
+    },
+    "traj_6fgiwdoklvym": {
+      "title": "Wire up TrajectoryViewer component",
+      "status": "abandoned",
+      "startedAt": "2026-01-03T13:25:38.257Z",
+      "completedAt": "2026-01-03T13:28:41.392Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_6fgiwdoklvym.json"
+    },
+    "traj_9921cuhel0pj": {
+      "title": "Fix empty continuity handoff files",
+      "status": "abandoned",
+      "startedAt": "2026-01-03T13:28:47.101Z",
+      "completedAt": "2026-01-03T13:30:03.924Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_9921cuhel0pj.json"
+    },
+    "traj_rt4fiw3ecp50": {
+      "title": "Fix trajectory agents array population",
+      "status": "abandoned",
+      "startedAt": "2026-01-03T13:30:08.415Z",
+      "completedAt": "2026-01-03T13:31:22.829Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_rt4fiw3ecp50.json"
+    },
+    "traj_ysjc8zaeqtd3": {
+      "title": "Add recent repos quick access",
+      "status": "completed",
+      "startedAt": "2026-01-03T13:31:22.891Z",
+      "completedAt": "2026-01-03T13:33:18.061Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_ysjc8zaeqtd3.json"
+    },
+    "traj_x14t8w8rn7xg": {
+      "title": "Fix trajectory agents array population",
+      "status": "abandoned",
+      "startedAt": "2026-01-03T13:36:06.506Z",
+      "completedAt": "2026-01-03T13:36:55.892Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_x14t8w8rn7xg.json"
+    },
+    "traj_z0vcw1wrzide": {
+      "title": "Fix trajectory agents array population",
+      "status": "completed",
+      "startedAt": "2026-01-03T13:37:00.860Z",
+      "completedAt": "2026-01-03T13:38:16.320Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_z0vcw1wrzide.json"
+    },
+    "traj_d2hhz3k0vrhn": {
+      "title": "Coordinate backend logic with Frontend",
+      "status": "abandoned",
+      "startedAt": "2026-01-03T13:40:25.915Z",
+      "completedAt": "2026-01-03T13:48:57.609Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_d2hhz3k0vrhn.json"
+    },
+    "traj_qft54mi7nfor": {
+      "title": "Remove any type casts from cloud server",
+      "status": "completed",
+      "startedAt": "2026-01-03T13:48:58.864Z",
+      "completedAt": "2026-01-03T13:50:23.677Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_qft54mi7nfor.json"
+    },
+    "traj_noq5zbvnrdvz": {
+      "title": "Improve trajectory viewer design",
+      "status": "completed",
+      "startedAt": "2026-01-03T13:58:14.470Z",
+      "completedAt": "2026-01-03T14:01:47.410Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_noq5zbvnrdvz.json"
+    },
+    "traj_1rp3rges5811": {
+      "title": "Improve trajectory viewer design",
+      "status": "completed",
+      "startedAt": "2026-01-03T14:09:55.255Z",
+      "completedAt": "2026-01-03T14:10:29.755Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_1rp3rges5811.json"
+    },
+    "traj_gjdre5voouod": {
+      "title": "Fix LogViewer ANSI stripping and Show more removal",
+      "status": "completed",
+      "startedAt": "2026-01-03T14:11:06.005Z",
+      "completedAt": "2026-01-03T14:16:21.305Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_gjdre5voouod.json"
+    },
+    "traj_h4xijiuip3w4": {
+      "title": "Fix trajectory viewer - colors and data loading",
+      "status": "completed",
+      "startedAt": "2026-01-03T14:28:34.689Z",
+      "completedAt": "2026-01-03T14:39:58.858Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_h4xijiuip3w4.json"
+    },
+    "traj_u9n9eqasw16k": {
+      "title": "Backend trajectory data-loading fix review",
+      "status": "completed",
+      "startedAt": "2026-01-03T14:40:11.376Z",
+      "completedAt": "2026-01-03T14:41:50.001Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_u9n9eqasw16k.json"
+    },
+    "traj_4aa0bb77s4nh": {
+      "title": "Record backend review findings",
+      "status": "completed",
+      "startedAt": "2026-01-03T14:42:29.295Z",
+      "completedAt": "2026-01-03T14:42:42.369Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_4aa0bb77s4nh.json"
+    },
+    "traj_ntbs6ppopf46": {
+      "title": "Re-review backend fixes",
+      "status": "completed",
+      "startedAt": "2026-01-03T14:42:57.213Z",
+      "completedAt": "2026-01-03T14:43:14.756Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_ntbs6ppopf46.json"
+    },
+    "traj_2dao7ddgnta0": {
+      "title": "Replace console.log with structured logger in agent-registry.ts and cloud-sync.ts",
+      "status": "completed",
+      "startedAt": "2026-01-03T14:48:09.986Z",
+      "completedAt": "2026-01-03T14:56:16.425Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_2dao7ddgnta0.json"
+    },
+    "traj_wkp2fgzdyinb": {
+      "title": "Fix continuity parser to handle markdown content",
+      "status": "completed",
+      "startedAt": "2026-01-03T15:03:22.148Z",
+      "completedAt": "2026-01-03T15:09:03.169Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_wkp2fgzdyinb.json"
+    },
+    "traj_3t0440mjeunc": {
+      "title": "Wire up TrajectoryViewer component in dashboard",
+      "status": "abandoned",
+      "startedAt": "2026-01-03T15:24:03.823Z",
+      "completedAt": "2026-01-03T15:25:25.534Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_3t0440mjeunc.json"
+    },
+    "traj_1dviorhnkcb5": {
+      "title": "Use uuid() instead of Math.random() for message IDs",
+      "status": "completed",
+      "startedAt": "2026-01-03T15:25:32.815Z",
+      "completedAt": "2026-01-03T15:25:42.319Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_1dviorhnkcb5.json"
+    },
+    "traj_qb3twvvywfwi": {
+      "title": "Test coverage for Vault and billing modules",
+      "status": "completed",
+      "startedAt": "2026-01-03T15:26:26.404Z",
+      "completedAt": "2026-01-03T15:37:00.890Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_qb3twvvywfwi.json"
+    },
+    "traj_5vr4e9erb1fs": {
+      "title": "Investigate P0 spawn bug agent-relay-453",
+      "status": "completed",
+      "startedAt": "2026-01-03T15:46:41.489Z",
+      "completedAt": "2026-01-03T15:46:53.995Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_5vr4e9erb1fs.json"
+    },
+    "traj_hpungyhoj6v5": {
+      "title": "Fix tmux-wrapper.ts spawn CLI optional",
+      "status": "completed",
+      "startedAt": "2026-01-03T15:47:17.137Z",
+      "completedAt": "2026-01-03T15:50:12.155Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_hpungyhoj6v5.json"
+    },
+    "traj_prdza7a5cxp5": {
+      "title": "Fix notification filtering to use dynamic user",
+      "status": "completed",
+      "startedAt": "2026-01-03T15:51:54.280Z",
+      "completedAt": "2026-01-03T15:55:06.279Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_prdza7a5cxp5.json"
+    },
+    "traj_cvtqhlwcq9s0": {
+      "title": "Fix trajectory viewer navigation - add back to list",
+      "status": "completed",
+      "startedAt": "2026-01-03T16:37:49.153Z",
+      "completedAt": "2026-01-03T18:43:48.687Z",
+      "path": "/home/user/relay/.trajectories/completed/2026-01/traj_cvtqhlwcq9s0.json"
+    },
+    "traj_st8j35b0hrlc": {
+      "title": "Fix cloud provisioning for GitHub cloning and agent credentials",
+      "status": "completed",
+      "startedAt": "2026-01-03T19:04:57.338Z",
+      "completedAt": "2026-01-03T19:09:05.597Z",
+      "path": "/home/user/relay/.trajectories/completed/2026-01/traj_st8j35b0hrlc.json"
+    },
+    "traj_yvdadtvdgnz3": {
+      "title": "Full cloud e2e flow review",
+      "status": "completed",
+      "startedAt": "2026-01-03T19:17:32.797Z",
+      "completedAt": "2026-01-03T19:22:22.762Z",
+      "path": "/home/user/relay/.trajectories/completed/2026-01/traj_yvdadtvdgnz3.json"
+    },
+    "traj_1k5if5snst2e": {
+      "title": "Fix 404 errors on auth endpoints",
+      "status": "completed",
+      "startedAt": "2026-01-03T19:55:20.964Z",
+      "completedAt": "2026-01-03T21:14:38.934Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_1k5if5snst2e.json"
+    },
+    "traj_cxofprm2m2en": {
+      "title": "Fix Nango popup blocked by browser - use constructor pattern",
+      "status": "completed",
+      "startedAt": "2026-01-03T21:18:15.384Z",
+      "completedAt": "2026-01-03T21:18:33.901Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_cxofprm2m2en.json"
+    },
+    "traj_ajs7zqfux4wc": {
+      "title": "Fix Nango popup blocked - match my-senior-dev pattern exactly",
+      "status": "completed",
+      "startedAt": "2026-01-03T21:22:52.243Z",
+      "completedAt": "2026-01-03T21:23:07.802Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_ajs7zqfux4wc.json"
+    },
+    "traj_7ludwvz45veh": {
+      "title": "Provider CLI auth flow for cloud workspaces",
+      "status": "completed",
+      "startedAt": "2026-01-04T00:05:43.304Z",
+      "completedAt": "2026-01-05T21:10:34.744Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_7ludwvz45veh.json"
+    },
+    "traj_t1yy8m7hbuxp": {
+      "title": "Implement GitHub repo permission API via Nango for dashboard access",
+      "status": "completed",
+      "startedAt": "2026-01-05T21:10:44.264Z",
+      "completedAt": "2026-01-05T21:13:52.530Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_t1yy8m7hbuxp.json"
+    },
+    "traj_g0fisy9h51mf": {
+      "title": "Lead agent coordination - GitHub repo access feature",
+      "status": "completed",
+      "startedAt": "2026-01-05T21:18:03.796Z",
+      "completedAt": "2026-01-05T21:29:51.191Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_g0fisy9h51mf.json"
+    },
+    "traj_22bhyulruouw": {
+      "title": "Lead agent coordination - responsive nav fix and team assignments",
+      "status": "completed",
+      "startedAt": "2026-01-05T19:45:50.807Z",
+      "completedAt": "2026-01-05T20:10:25.523Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_22bhyulruouw.json"
+    },
+    "traj_hhxte7w4gjjx": {
+      "title": "test",
+      "status": "abandoned",
+      "startedAt": "2026-01-05T20:14:01.563Z",
+      "completedAt": "2026-01-05T20:14:01.617Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_hhxte7w4gjjx.json"
+    },
+    "traj_fhx9irlckht6": {
+      "title": "Spec and plan: Auto workspace access + Human-to-human messaging",
+      "status": "completed",
+      "startedAt": "2026-01-05T23:10:52.953Z",
+      "completedAt": "2026-01-05T23:15:32.933Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_fhx9irlckht6.json"
+    },
+    "traj_avqeghu6pz5a": {
+      "title": "Fix gh CLI authentication in workspace containers",
+      "status": "completed",
+      "startedAt": "2026-01-05T23:14:00.755Z",
+      "completedAt": "2026-01-05T23:44:34.432Z",
+      "path": "/workspace/relay/.trajectories/completed/2026-01/traj_avqeghu6pz5a.json"
+    },
+    "traj_hfmki2jr9d4r": {
+      "title": "Implement auto workspace access + mobile UI fixes",
+      "status": "completed",
+      "startedAt": "2026-01-05T23:45:03.470Z",
+      "completedAt": "2026-01-06T00:03:49.311Z",
+      "path": "/workspace/relay/.trajectories/completed/2026-01/traj_hfmki2jr9d4r.json"
+    },
+    "traj_5ammh5qtvklq": {
+      "title": "Evaluate Fly.io Sprites and implement workspace resilience",
+      "status": "completed",
+      "startedAt": "2026-01-06T06:24:17.361Z",
+      "completedAt": "2026-01-06T06:25:03.223Z",
+      "path": "/home/user/relay/.trajectories/completed/2026-01/traj_5ammh5qtvklq.json"
+    },
+    "traj_ui9b4tqxoa7j": {
+      "title": "Fix agent token fetch with improved error handling",
+      "status": "completed",
+      "startedAt": "2026-01-06T08:24:36.222Z",
+      "completedAt": "2026-01-06T08:25:20.777Z",
+      "path": "/home/user/relay/.trajectories/completed/2026-01/traj_ui9b4tqxoa7j.json"
+    },
+    "traj_xy9vifpqet80": {
+      "title": "Extract BaseWrapper from PtyWrapper and TmuxWrapper",
+      "status": "completed",
+      "startedAt": "2026-01-06T12:27:13.004Z",
+      "completedAt": "2026-01-06T12:58:24.003Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_xy9vifpqet80.json"
+    },
+    "traj_78ffm31jn3uk": {
+      "title": "Fix agent token fetch and seamless gh CLI",
+      "status": "completed",
+      "startedAt": "2026-01-06T16:24:13.901Z",
+      "completedAt": "2026-01-06T16:24:50.235Z",
+      "path": "/home/user/relay/.trajectories/completed/2026-01/traj_78ffm31jn3uk.json"
+    },
+    "traj_v9dkdoxylyid": {
+      "title": "Implement first-class user messaging with channels and DMs",
+      "status": "completed",
+      "startedAt": "2026-01-06T17:11:57.504Z",
+      "completedAt": "2026-01-06T17:12:56.919Z",
+      "path": "/home/user/relay/.trajectories/completed/2026-01/traj_v9dkdoxylyid.json"
+    },
+    "traj_ub8csuv3lcv4": {
+      "title": "Fix WebSocket disconnections for workspace instances",
+      "status": "completed",
+      "startedAt": "2026-01-06T18:13:23.603Z",
+      "completedAt": "2026-01-06T18:16:51.462Z",
+      "path": "/home/user/relay/.trajectories/completed/2026-01/traj_ub8csuv3lcv4.json"
+    },
+    "traj_fqduidx3xbtp": {
+      "title": "Implement dynamic repo management for workspaces",
+      "status": "completed",
+      "startedAt": "2026-01-07T05:44:47.138Z",
+      "completedAt": "2026-01-07T06:07:35.433Z",
+      "path": "/home/user/relay/.trajectories/completed/2026-01/traj_fqduidx3xbtp.json"
+    },
+    "traj_multi_server_arch": {
+      "title": "Multi-server architecture document",
+      "status": "completed",
+      "startedAt": "2026-01-07T06:00:00.000Z",
+      "completedAt": "2026-01-07T06:30:00.000Z",
+      "path": "/home/user/relay/.trajectories/completed/2026-01/traj_multi_server_arch.md"
+    },
+    "traj_6mieijqyvaag": {
+      "title": "Fix xterm interactive terminal for provider auth setup",
+      "status": "completed",
+      "startedAt": "2026-01-07T08:27:00.428Z",
+      "completedAt": "2026-01-07T08:28:17.323Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_6mieijqyvaag.json"
+    },
+    "traj_0zacdjl1g4ht": {
+      "title": "Interactive terminal for provider auth setup",
+      "status": "completed",
+      "startedAt": "2026-01-07T10:06:42.869Z",
+      "completedAt": "2026-01-07T10:07:24.422Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_0zacdjl1g4ht.json"
+    },
+    "traj_lq450ly148uw": {
+      "title": "Dashboard UI fixes, billing improvements, and settings alignment",
+      "status": "completed",
+      "startedAt": "2026-01-07T10:07:46.226Z",
+      "completedAt": "2026-01-07T10:07:58.979Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_lq450ly148uw.json"
+    },
+    "traj_uc29tlso8i9s": {
+      "title": "Production-ready SSH tunneling for Codex OAuth with security hardening",
+      "status": "completed",
+      "startedAt": "2026-01-07T10:08:04.299Z",
+      "completedAt": "2026-01-07T10:09:10.870Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_uc29tlso8i9s.json"
+    },
+    "traj_dcsp9s8y01ra": {
+      "title": "Dashboard UI fixes, billing improvements, and settings alignment",
+      "status": "completed",
+      "startedAt": "2026-01-07T10:09:36.428Z",
+      "completedAt": "2026-01-07T10:09:38.308Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_dcsp9s8y01ra.json"
+    },
+    "traj_y7aiwijyfmmv": {
+      "title": "Fix CLI hanging - add auth check endpoint",
+      "status": "completed",
+      "startedAt": "2026-01-07T10:19:49.851Z",
+      "completedAt": "2026-01-07T10:19:49.966Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_y7aiwijyfmmv.json"
+    },
+    "traj_psd9ob0j2ru3": {
+      "title": "Clarify codex rule file location and spawn behavior",
+      "status": "completed",
+      "startedAt": "2026-01-07T12:37:16.374Z",
+      "completedAt": "2026-01-07T12:40:48.197Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_psd9ob0j2ru3.json"
+    },
+    "traj_33iuy72sezbk": {
+      "title": "Ensure Codex config applies without OPENAI_TOKEN",
+      "status": "completed",
+      "startedAt": "2026-01-07T12:53:31.624Z",
+      "completedAt": "2026-01-07T12:53:45.247Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_33iuy72sezbk.json"
+    },
+    "traj_94gnp3k30goq": {
+      "title": "Fix intra-workspace messaging delivery and sidebar/notification visibility",
+      "status": "completed",
+      "startedAt": "2026-01-07T14:03:47.655Z",
+      "completedAt": "2026-01-07T14:11:00.042Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_94gnp3k30goq.json"
+    },
+    "traj_03zupyv1s7b9": {
+      "title": "Fix intra-workspace messaging delivery and sidebar/notification visibility",
+      "status": "completed",
+      "startedAt": "2026-01-07T14:15:50.956Z",
+      "completedAt": "2026-01-07T14:16:39.455Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_03zupyv1s7b9.json"
+    },
+    "traj_hf81ey93uz6t": {
+      "title": "Add sidebar section break between agents and human users",
+      "status": "completed",
+      "startedAt": "2026-01-07T14:18:40.736Z",
+      "completedAt": "2026-01-07T14:19:04.139Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_hf81ey93uz6t.json"
+    },
+    "traj_c9izbh2snpzf": {
+      "title": "Fix sshd startup for Codex tunnel",
+      "status": "completed",
+      "startedAt": "2026-01-07T16:17:28.232Z",
+      "completedAt": "2026-01-07T16:17:39.267Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_c9izbh2snpzf.json"
+    },
+    "traj_ax8uungxz2qh": {
+      "title": "Fix DM participant toggle (removal not working)",
+      "status": "completed",
+      "startedAt": "2026-01-07T19:10:39.600Z",
+      "completedAt": "2026-01-07T19:26:00.289Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_ax8uungxz2qh.json"
+    },
+    "traj_1g7yx6qtg4ai": {
+      "title": "Inline DM conversation with agent invites",
+      "status": "completed",
+      "startedAt": "2026-01-07T19:32:42.245Z",
+      "completedAt": "2026-01-07T19:32:52.650Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_1g7yx6qtg4ai.json"
+    },
+    "traj_yvfkwnkdiso2": {
+      "title": "DM invite button sticky + command palette",
+      "status": "completed",
+      "startedAt": "2026-01-07T19:46:11.952Z",
+      "completedAt": "2026-01-07T19:46:25.825Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_yvfkwnkdiso2.json"
+    },
+    "traj_lgtodco7dp1n": {
+      "title": "DM routing/flow cleanup",
+      "status": "completed",
+      "startedAt": "2026-01-07T21:41:28.024Z",
+      "completedAt": "2026-01-07T21:41:49.080Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_lgtodco7dp1n.json"
+    },
+    "traj_rsavt0jipi3c": {
+      "title": "Power agent session - ready for tasks",
+      "status": "completed",
+      "startedAt": "2026-01-08T07:54:35.678Z",
+      "completedAt": "2026-01-08T09:01:29.981Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_rsavt0jipi3c.json"
+    },
+    "traj_oszg9flv74pk": {
+      "title": "Fix cloud link authentication flow",
+      "status": "completed",
+      "startedAt": "2026-01-08T09:01:35.826Z",
+      "completedAt": "2026-01-08T09:01:57.389Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_oszg9flv74pk.json"
+    },
+    "traj_xjqvmep5ed3h": {
+      "title": "Fix update-workspaces GitHub Action job",
+      "status": "completed",
+      "startedAt": "2026-01-08T09:02:08.758Z",
+      "completedAt": "2026-01-08T09:02:24.262Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_xjqvmep5ed3h.json"
+    },
+    "traj_y7n6hfbf7dmg": {
+      "title": "Add useSearchParams/Suspense rule to react-dashboard",
+      "status": "completed",
+      "startedAt": "2026-01-08T09:02:29.285Z",
+      "completedAt": "2026-01-08T09:02:38.286Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_y7n6hfbf7dmg.json"
+    },
+    "traj_q8rga0395hq5": {
+      "title": "Test trajectory",
+      "status": "completed",
+      "startedAt": "2026-01-09T21:54:01.480Z",
+      "completedAt": "2026-01-09T21:54:39.396Z",
+      "path": ".trajectories/completed/2026-01/traj_q8rga0395hq5.json"
+    },
+    "traj_pulomd3y8cvj": {
+      "title": "Refactor trajectory configuration to centralized location",
+      "status": "completed",
+      "startedAt": "2026-01-09T22:23:26.438Z",
+      "completedAt": "2026-01-09T22:24:32.439Z",
+      "path": "/workspace/relay/.trajectories/completed/2026-01/traj_pulomd3y8cvj.json"
     },
     "traj_3yx9dy148mge": {
       "title": "Investigate agent-relay codex-auth tunnel failure",
       "status": "active",
       "startedAt": "2026-01-10T04:02:25.981Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/active/traj_3yx9dy148mge.json"
+    },
+    "traj_a0tqx8biw9c4": {
+      "title": "Tighten trajectory viewer loading state",
+      "status": "completed",
+      "startedAt": "2026-01-11T11:13:18.562Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_a0tqx8biw9c4.json",
+      "completedAt": "2026-01-11T11:42:34.201Z"
+    },
+    "traj_he75f24d1xfm": {
+      "title": "Implement cloud message storage for Algolia challenge",
+      "status": "completed",
+      "startedAt": "2026-01-08T23:57:42.804Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_he75f24d1xfm.json",
+      "completedAt": "2026-01-08T23:58:17.292Z"
+    },
+    "traj_erglv2f8t9eh": {
+      "title": "TrajectoryViewer loading state fix",
+      "status": "completed",
+      "startedAt": "2026-01-11T11:46:56.195Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_erglv2f8t9eh.json",
+      "completedAt": "2026-01-11T11:47:05.481Z"
+    },
+    "traj_4qwd4zmhfwp4": {
+      "title": "gh-relay 401 retry + delivery tracker refactor",
+      "status": "completed",
+      "startedAt": "2026-01-11T10:59:19.370Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_4qwd4zmhfwp4.json",
+      "completedAt": "2026-01-11T10:59:52.187Z"
+    },
+    "traj_6unwwmgyj5sq": {
+      "title": "Lead agent session retrospective - workspace persistence and git auth fixes",
+      "status": "completed",
+      "startedAt": "2026-01-09T21:22:00Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_6unwwmgyj5sq.json",
+      "completedAt": "2026-01-09T21:50:00Z"
+    },
+    "traj_x721m1j9rzup": {
+      "title": "Phase 1-3 socket baseline architecture and performance optimizations",
+      "status": "completed",
+      "startedAt": "2026-01-10T03:55:14.837Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_x721m1j9rzup.json",
+      "completedAt": "2026-01-10T03:55:52.216Z"
+    },
+    "traj_tmux_orchestrator_analysis": {
+      "title": "Tmux-Orchestrator competitive analysis",
+      "status": "completed",
+      "startedAt": "2026-01-04T09:00:00.000Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_tmux_orchestrator_analysis.json",
+      "completedAt": "2026-01-04T09:30:00.000Z"
+    },
+    "traj_cpn70dw066nt": {
+      "title": "Mobile responsive fixes + SIGINT interrupt fix",
+      "status": "completed",
+      "startedAt": "2026-01-11T11:48:02.037Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_cpn70dw066nt.json",
+      "completedAt": "2026-01-11T11:49:01.558Z"
     }
   }
 }
