@@ -14,7 +14,7 @@ export interface Command {
   id: string;
   label: string;
   description?: string;
-  category: 'agents' | 'actions' | 'navigation' | 'settings' | 'projects';
+  category: 'agents' | 'actions' | 'navigation' | 'settings' | 'projects' | 'channels';
   icon?: React.ReactNode;
   shortcut?: string;
   action: () => void;
@@ -28,7 +28,7 @@ export interface TaskCreateRequest {
   priority: TaskPriority;
 }
 
-const CATEGORY_ORDER = ['projects', 'agents', 'actions', 'navigation', 'settings'] as const;
+const CATEGORY_ORDER = ['projects', 'agents', 'actions', 'channels', 'navigation', 'settings'] as const;
 
 export const PRIORITY_CONFIG: Record<TaskPriority, { label: string; beadsPriority: number; color: string }> = {
   critical: { label: 'Critical', beadsPriority: 0, color: '#ef4444' },

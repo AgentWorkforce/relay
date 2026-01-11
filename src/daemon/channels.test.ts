@@ -604,6 +604,7 @@ describe('Router - Channel Support', () => {
       };
       router.routeChannelMessage(alice, parentMsg);
 
+      alice.clearSent();
       bob.clearSent();
 
       // Threaded reply

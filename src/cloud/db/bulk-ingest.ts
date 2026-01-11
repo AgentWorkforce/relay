@@ -13,7 +13,10 @@
  */
 
 import { Pool, PoolClient } from 'pg';
-import type { NewAgentMessage } from './schema.js';
+
+// TODO: NewAgentMessage will be imported once agent messaging schema is complete
+// import type { NewAgentMessage } from './schema.js';
+type NewAgentMessage = Record<string, unknown>;
 
 // Re-export pool config for use in drizzle.ts
 export interface PoolConfig {

@@ -39,8 +39,10 @@ export const AUTH_REVOCATION_PATTERNS: RegExp[] = [
   // OAuth specific
   /oauth\s+error.*401/i,
   /oauth\s+error.*403/i,
+  /oauth\s+token\s+(has\s+)?expired/i,
   /refresh\s+token\s+(is\s+)?invalid/i,
   /failed\s+to\s+refresh/i,
+  /please\s+obtain\s+a\s+new\s+token/i,
 
   // API errors that indicate auth issues
   /api\s+error.*401/i,
@@ -143,8 +145,11 @@ function getConfidenceLevel(
     patternStr.includes('please') && patternStr.includes('log') ||
     patternStr.includes('authentication required') ||
     patternStr.includes('token') && patternStr.includes('expired') ||
+    patternStr.includes('oauth') && patternStr.includes('expired') ||
+    patternStr.includes('authentication_error') ||
     patternStr.includes('signed out') ||
-    patternStr.includes('session revoked')
+    patternStr.includes('session revoked') ||
+    patternStr.includes('obtain') && patternStr.includes('token')
   ) {
     return 'high';
   }
@@ -190,6 +195,8 @@ export const PROVIDER_AUTH_PATTERNS: Record<string, RegExp[]> = {
     /anthropic.*unauthorized/i,
     /claude.*not\s+authenticated/i,
     /please\s+run\s+claude\s+login/i,
+    /please\s+run\s+\/login/i,
+    /authentication_error/i,
   ],
   codex: [
     /codex.*session.*expired/i,

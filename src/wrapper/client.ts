@@ -20,6 +20,15 @@ import {
   type EntityType,
   PROTOCOL_VERSION,
 } from '../protocol/types.js';
+import type {
+  ChannelJoinPayload,
+  ChannelLeavePayload,
+  ChannelMessagePayload,
+  ChannelJoinEnvelope,
+  ChannelLeaveEnvelope,
+  ChannelMessageEnvelope,
+  MessageAttachment,
+} from '../protocol/channels.js';
 import { encodeFrame, FrameParser } from '../protocol/framing.js';
 import { DEFAULT_SOCKET_PATH } from '../daemon/server.js';
 
@@ -89,6 +98,14 @@ export class RelayClient {
    * @param originalTo - Original 'to' field from sender (e.g., '*' for broadcasts)
    */
   onMessage?: (from: string, payload: SendPayload, messageId: string, meta?: SendMeta, originalTo?: string) => void;
+  /**
+   * Callback for channel messages.
+   * @param from - Sender name
+   * @param channel - Channel name
+   * @param body - Message content
+   * @param envelope - Full envelope for additional data
+   */
+  onChannelMessage?: (from: string, channel: string, body: string, envelope: Envelope<ChannelMessagePayload>) => void;
   onStateChange?: (state: ClientState) => void;
   onError?: (error: Error) => void;
 
@@ -241,6 +258,92 @@ export class RelayClient {
    */
   broadcast(body: string, kind: PayloadKind = 'message', data?: Record<string, unknown>): boolean {
     return this.sendMessage('*', body, kind, data);
+  }
+
+  // =============================================================================
+  // Channel Operations
+  // =============================================================================
+
+  /**
+   * Join a channel.
+   * @param channel - Channel name (e.g., '#general', 'dm:alice:bob')
+   * @param displayName - Optional display name for this member
+   */
+  joinChannel(channel: string, displayName?: string): boolean {
+    if (this._state !== 'READY') {
+      return false;
+    }
+
+    const envelope: ChannelJoinEnvelope = {
+      v: PROTOCOL_VERSION,
+      type: 'CHANNEL_JOIN',
+      id: uuid(),
+      ts: Date.now(),
+      payload: {
+        channel,
+        displayName,
+      },
+    };
+
+    return this.send(envelope);
+  }
+
+  /**
+   * Leave a channel.
+   * @param channel - Channel name to leave
+   * @param reason - Optional reason for leaving
+   */
+  leaveChannel(channel: string, reason?: string): boolean {
+    if (this._state !== 'READY') return false;
+
+    const envelope: ChannelLeaveEnvelope = {
+      v: PROTOCOL_VERSION,
+      type: 'CHANNEL_LEAVE',
+      id: uuid(),
+      ts: Date.now(),
+      payload: {
+        channel,
+        reason,
+      },
+    };
+
+    return this.send(envelope);
+  }
+
+  /**
+   * Send a message to a channel.
+   * @param channel - Channel name
+   * @param body - Message content
+   * @param options - Optional thread, mentions, attachments
+   */
+  sendChannelMessage(
+    channel: string,
+    body: string,
+    options?: {
+      thread?: string;
+      mentions?: string[];
+      attachments?: MessageAttachment[];
+    }
+  ): boolean {
+    if (this._state !== 'READY') {
+      return false;
+    }
+
+    const envelope: ChannelMessageEnvelope = {
+      v: PROTOCOL_VERSION,
+      type: 'CHANNEL_MESSAGE',
+      id: uuid(),
+      ts: Date.now(),
+      payload: {
+        channel,
+        body,
+        thread: options?.thread,
+        mentions: options?.mentions,
+        attachments: options?.attachments,
+      },
+    };
+
+    return this.send(envelope);
   }
 
   /**
@@ -421,6 +524,10 @@ export class RelayClient {
         this.handleDeliver(envelope as DeliverEnvelope);
         break;
 
+      case 'CHANNEL_MESSAGE':
+        this.handleChannelMessage(envelope as Envelope<ChannelMessagePayload> & { from?: string });
+        break;
+
       case 'PING':
         this.handlePing(envelope);
         break;
@@ -468,6 +575,39 @@ export class RelayClient {
     // Pass originalTo from delivery info so handlers know if this was a broadcast
     if (this.onMessage && envelope.from) {
       this.onMessage(envelope.from, envelope.payload, envelope.id, envelope.payload_meta, envelope.delivery.originalTo);
+    }
+  }
+
+  private handleChannelMessage(envelope: Envelope<ChannelMessagePayload> & { from?: string }): void {
+    const duplicate = this.markDelivered(envelope.id);
+    if (duplicate) {
+      return;
+    }
+
+    // Notify channel message handler
+    if (this.onChannelMessage && envelope.from) {
+      this.onChannelMessage(
+        envelope.from,
+        envelope.payload.channel,
+        envelope.payload.body,
+        envelope as Envelope<ChannelMessagePayload>
+      );
+    }
+
+    // Also call onMessage for backwards compatibility
+    // Convert to SendPayload format (channel is passed as 5th argument, not in payload)
+    if (this.onMessage && envelope.from) {
+      const sendPayload: SendPayload = {
+        kind: 'message',
+        body: envelope.payload.body,
+        data: {
+          _isChannelMessage: true,
+          _channel: envelope.payload.channel,
+          _mentions: envelope.payload.mentions,
+        },
+        thread: envelope.payload.thread,
+      };
+      this.onMessage(envelope.from, sendPayload, envelope.id, undefined, envelope.payload.channel);
     }
   }
 

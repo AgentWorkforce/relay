@@ -43,6 +43,8 @@ export interface UsePresenceOptions {
   wsUrl?: string;
   /** Whether to auto-connect */
   autoConnect?: boolean;
+  /** Optional handler for additional messages (e.g., channel_message) */
+  onEvent?: (event: any) => void;
 }
 
 export interface UsePresenceReturn {
@@ -78,7 +80,7 @@ function getPresenceUrl(): string {
 }
 
 export function usePresence(options: UsePresenceOptions = {}): UsePresenceReturn {
-  const { currentUser, wsUrl, autoConnect = true } = options;
+  const { currentUser, wsUrl, autoConnect = true, onEvent } = options;
 
   const [onlineUsers, setOnlineUsers] = useState<UserPresence[]>([]);
   const [typingUsers, setTypingUsers] = useState<TypingIndicator[]>([]);
@@ -200,6 +202,9 @@ export function usePresence(options: UsePresenceOptions = {}): UsePresenceReturn
                 );
               }
               break;
+
+            default:
+              onEvent?.(msg);
           }
         } catch (e) {
           console.error('[usePresence] Failed to parse message:', e);

@@ -10,6 +10,7 @@ import os from 'node:os';
 import { Connection, type ConnectionConfig, DEFAULT_CONFIG } from './connection.js';
 import { Router } from './router.js';
 import type { Envelope, SendPayload, ShadowBindPayload, ShadowUnbindPayload, LogPayload, SendEnvelope } from '../protocol/types.js';
+import type { ChannelJoinPayload, ChannelLeavePayload, ChannelMessagePayload } from '../protocol/channels.js';
 import { createStorageAdapter, type StorageAdapter, type StorageConfig } from '../storage/adapter.js';
 import { SqliteStorageAdapter } from '../storage/sqlite-adapter.js';
 import { getProjectPaths } from '../utils/project-namespace.js';
@@ -398,14 +399,45 @@ export class Daemon {
   private notifyCloudSync(): void {
     if (!this.cloudSync?.isConnected()) return;
 
-    const agents = Array.from(this.connections)
-      .filter(c => c.agentName)
+    // Get AI agents (exclude internal ones like Dashboard)
+    const aiAgents = Array.from(this.connections)
+      .filter(c => {
+        if (!c.agentName) return false;
+        if (c.entityType === 'user') return false;
+        if (this.isInternalAgent(c.agentName)) return false;
+        return true;
+      })
       .map(c => ({
         name: c.agentName!,
         status: 'online',
+        isHuman: false,
       }));
 
-    this.cloudSync.updateAgents(agents);
+    // Get human users (entityType === 'user', exclude Dashboard)
+    const humanUsers = Array.from(this.connections)
+      .filter(c => {
+        if (!c.agentName) return false;
+        if (c.entityType !== 'user') return false;
+        if (this.isInternalAgent(c.agentName)) return false;
+        return true;
+      })
+      .map(c => ({
+        name: c.agentName!,
+        status: 'online',
+        isHuman: true,
+        avatarUrl: c.avatarUrl,
+      }));
+
+    this.cloudSync.updateAgents([...aiAgents, ...humanUsers]);
+  }
+
+  /**
+   * Check if an agent is internal (should be hidden from cloud sync and listings).
+   */
+  private isInternalAgent(name: string): boolean {
+    if (name.startsWith('__')) return true;
+    // Dashboard and cli are internal system agents
+    return name === 'Dashboard' || name === 'cli';
   }
 
   /**
@@ -518,6 +550,9 @@ export class Daemon {
           task: connection.task,
           workingDirectory: connection.workingDirectory,
         });
+
+        // Auto-join all agents to #general channel
+        this.router.autoJoinChannel(connection.agentName, '#general');
 
         // Record session start
         if (this.storage instanceof SqliteStorageAdapter) {
@@ -666,6 +701,28 @@ export class Daemon {
           }
         }
         break;
+
+      // Channel messaging handlers
+      case 'CHANNEL_JOIN': {
+        const channelEnvelope = envelope as Envelope<ChannelJoinPayload>;
+        log.info(`Channel join: ${connection.agentName} -> ${channelEnvelope.payload.channel}`);
+        this.router.handleChannelJoin(connection, channelEnvelope);
+        break;
+      }
+
+      case 'CHANNEL_LEAVE': {
+        const channelEnvelope = envelope as Envelope<ChannelLeavePayload>;
+        log.info(`Channel leave: ${connection.agentName} <- ${channelEnvelope.payload.channel}`);
+        this.router.handleChannelLeave(connection, channelEnvelope);
+        break;
+      }
+
+      case 'CHANNEL_MESSAGE': {
+        const channelEnvelope = envelope as Envelope<ChannelMessagePayload>;
+        log.debug(`Channel message: ${connection.agentName} in ${channelEnvelope.payload.channel}`);
+        this.router.routeChannelMessage(connection, channelEnvelope);
+        break;
+      }
     }
   }
 

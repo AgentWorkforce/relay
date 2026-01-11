@@ -23,6 +23,7 @@ import type { StorageAdapter } from '../storage/adapter.js';
 import type { AgentRegistry } from './agent-registry.js';
 import { routerLog } from '../utils/logger.js';
 import { RateLimiter, NoOpRateLimiter, type RateLimitConfig } from './rate-limiter.js';
+import * as crypto from 'node:crypto';
 
 export interface RoutableConnection {
   id: string;
@@ -1041,6 +1042,7 @@ export class Router {
 
     // Add the new member
     members.add(memberName);
+    this.persistChannelMembership(channel, memberName, 'join');
 
     // Track which channels this member is in
     let memberChannelSet = this.memberChannels.get(memberName);
@@ -1077,6 +1079,7 @@ export class Router {
 
     // Remove from channel
     members.delete(memberName);
+    this.persistChannelMembership(channel, memberName, 'leave');
 
     // Remove from member's channel list
     const memberChannelSet = this.memberChannels.get(memberName);
@@ -1138,10 +1141,11 @@ export class Router {
       return;
     }
 
-    // Route to all members except sender
+    // Route to all members except the sender (no echo)
     for (const memberName of members) {
-      if (memberName === senderName) continue;
-
+      if (memberName === senderName) {
+        continue;
+      }
       const memberConn = this.getConnectionByName(memberName);
       if (memberConn) {
         const deliverEnvelope: Envelope<ChannelMessagePayload> = {
@@ -1187,10 +1191,41 @@ export class Router {
       },
       thread: envelope.payload.thread,
       status: 'unread',
-      is_urgent: false,
-      is_broadcast: true, // Channel messages are effectively broadcasts
+        is_urgent: false,
+        is_broadcast: true, // Channel messages are effectively broadcasts
     }).catch((err) => {
       routerLog.error('Failed to persist channel message', { error: String(err) });
+    });
+  }
+
+  private persistChannelMembership(
+    channel: string,
+    member: string,
+    action: 'join' | 'leave',
+    opts?: { invitedBy?: string }
+  ): void {
+    if (!this.storage) return;
+
+    this.storage.saveMessage({
+      id: crypto.randomUUID(),
+      ts: Date.now(),
+      from: '__system__',
+      to: channel,
+      topic: undefined,
+      kind: 'state', // membership events stored as state
+      body: `${action}:${member}`,
+      data: {
+        _channelMembership: {
+          member,
+          action,
+          invitedBy: opts?.invitedBy,
+        },
+      },
+      status: 'read',
+      is_urgent: false,
+      is_broadcast: true,
+    }).catch((err) => {
+      routerLog.error('Failed to persist channel membership', { error: String(err) });
     });
   }
 
@@ -1243,5 +1278,39 @@ export class Router {
    */
   private getConnectionByName(name: string): RoutableConnection | undefined {
     return this.agents.get(name) ?? this.users.get(name);
+  }
+
+  /**
+   * Auto-join a member to a channel without notifications.
+   * Used for default channel membership (e.g., #general).
+   * @param memberName - The agent or user name to add
+   * @param channel - The channel to join (e.g., '#general')
+   */
+  autoJoinChannel(memberName: string, channel: string): void {
+    // Get or create channel
+    let members = this.channels.get(channel);
+    if (!members) {
+      members = new Set();
+      this.channels.set(channel, members);
+    }
+
+    // Check if already a member
+    if (members.has(memberName)) {
+      return;
+    }
+
+    // Add the member (silently, no notifications to other members)
+    members.add(memberName);
+    this.persistChannelMembership(channel, memberName, 'join');
+
+    // Track which channels this member is in
+    let memberChannelSet = this.memberChannels.get(memberName);
+    if (!memberChannelSet) {
+      memberChannelSet = new Set();
+      this.memberChannels.set(memberName, memberChannelSet);
+    }
+    memberChannelSet.add(channel);
+
+    routerLog.debug(`Auto-joined ${memberName} to ${channel}`);
   }
 }

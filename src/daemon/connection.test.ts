@@ -131,7 +131,10 @@ describe('Connection', () => {
     hello.payload.session = { resume_token: 'token-abc' };
     socket.emit('data', encodeFrame(hello));
 
-    await new Promise((r) => setTimeout(r, 0));
+    // Wait for the async resumeHandler to complete
+    await vi.waitFor(() => {
+      expect(connection.state).toBe('ACTIVE');
+    });
 
     expect(connection.state).toBe('ACTIVE');
     expect(connection.sessionId).toBe('session-resume');

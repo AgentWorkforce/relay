@@ -187,6 +187,8 @@ This gives you real-time visibility into what agents are actually doing, bypassi
 ❌ Writing code yourself → ✅ Spawn agent to implement
 ❌ Lengthy explanations → ✅ Short, actionable messages
 ❌ Step-by-step instructions → ✅ Clear acceptance criteria, trust specialist
+❌ **Running long-running build/test tasks directly** → ✅ Spawn background task or delegate to build agent
+❌ **Getting heads-down on tactical fixes** → ✅ Quick triage only (2-3 min), then delegate or monitor from distance
 
 ## Workflow
 

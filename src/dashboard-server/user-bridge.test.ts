@@ -51,6 +51,9 @@ class MockRelayClient {
   public agentName: string;
   public entityType?: string;
   public sentMessages: Array<{ to: string; body: string; kind: string; thread?: string }> = [];
+  public channelJoins: Array<{ channel: string; displayName?: string }> = [];
+  public channelLeaves: Array<{ channel: string; reason?: string }> = [];
+  public channelMessages: Array<{ channel: string; body: string; options?: { thread?: string } }> = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   public onMessage?: (from: string, payload: any, messageId: string, meta?: any, originalTo?: string) => void;
 
@@ -82,6 +85,26 @@ class MockRelayClient {
     return true;
   }
 
+  // Channel operations
+  joinChannel(channel: string, displayName?: string): boolean {
+    this.channelJoins.push({ channel, displayName });
+    return true;
+  }
+
+  leaveChannel(channel: string, reason?: string): boolean {
+    this.channelLeaves.push({ channel, reason });
+    return true;
+  }
+
+  sendChannelMessage(
+    channel: string,
+    body: string,
+    options?: { thread?: string; mentions?: string[]; attachments?: unknown[] }
+  ): boolean {
+    this.channelMessages.push({ channel, body, options: { thread: options?.thread } });
+    return true;
+  }
+
   // Test helper to simulate receiving a message
   simulateIncomingMessage(from: string, body: string, envelope: unknown): void {
     this.onMessage?.(from, envelope, 'test-msg-id', undefined, undefined);
@@ -89,6 +112,9 @@ class MockRelayClient {
 
   clearSent(): void {
     this.sentMessages = [];
+    this.channelJoins = [];
+    this.channelLeaves = [];
+    this.channelMessages = [];
   }
 }
 
@@ -197,10 +223,10 @@ describe('UserBridge', () => {
     it('should send channel join to relay daemon', async () => {
       await bridge.joinChannel('alice', '#general');
 
-      expect(mockRelayClient.sentMessages).toContainEqual(
+      expect(mockRelayClient.channelJoins).toContainEqual(
         expect.objectContaining({
-          to: '#general',
-          kind: 'channel_join',
+          channel: '#general',
+          displayName: 'alice',
         })
       );
     });
@@ -208,10 +234,9 @@ describe('UserBridge', () => {
     it('should send channel leave to relay daemon', async () => {
       await bridge.leaveChannel('alice', '#general');
 
-      expect(mockRelayClient.sentMessages).toContainEqual(
+      expect(mockRelayClient.channelLeaves).toContainEqual(
         expect.objectContaining({
-          to: '#general',
-          kind: 'channel_leave',
+          channel: '#general',
         })
       );
     });
@@ -245,11 +270,10 @@ describe('UserBridge', () => {
     it('should send channel message via relay client', async () => {
       await bridge.sendChannelMessage('alice', '#general', 'Hello everyone!');
 
-      expect(mockRelayClient.sentMessages).toContainEqual(
+      expect(mockRelayClient.channelMessages).toContainEqual(
         expect.objectContaining({
-          to: '#general',
+          channel: '#general',
           body: 'Hello everyone!',
-          kind: 'message',
         })
       );
     });
@@ -283,11 +307,11 @@ describe('UserBridge', () => {
         thread: 'parent-msg-123',
       });
 
-      expect(mockRelayClient.sentMessages).toContainEqual(
+      expect(mockRelayClient.channelMessages).toContainEqual(
         expect.objectContaining({
-          to: '#general',
+          channel: '#general',
           body: 'Reply to thread',
-          thread: 'parent-msg-123',
+          options: { thread: 'parent-msg-123' },
         })
       );
     });

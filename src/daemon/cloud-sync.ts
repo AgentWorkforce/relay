@@ -65,7 +65,7 @@ export class CloudSyncService extends EventEmitter {
   private config: CloudSyncConfig;
   private heartbeatTimer?: NodeJS.Timeout;
   private machineId: string;
-  private localAgents: Map<string, { name: string; status: string }> = new Map();
+  private localAgents: Map<string, { name: string; status: string; isHuman?: boolean; avatarUrl?: string }> = new Map();
   private remoteAgents: RemoteAgent[] = [];
   private connected = false;
   private storage: StorageAdapter | null = null;
@@ -193,7 +193,7 @@ export class CloudSyncService extends EventEmitter {
   /**
    * Update local agent list (called by daemon when agents change)
    */
-  updateAgents(agents: Array<{ name: string; status: string }>): void {
+  updateAgents(agents: Array<{ name: string; status: string; isHuman?: boolean; avatarUrl?: string }>): void {
     this.localAgents.clear();
     for (const agent of agents) {
       this.localAgents.set(agent.name, agent);
@@ -257,6 +257,8 @@ export class CloudSyncService extends EventEmitter {
       const agents = Array.from(this.localAgents.entries()).map(([name, info]) => ({
         name,
         status: info.status,
+        isHuman: info.isHuman,
+        avatarUrl: info.avatarUrl,
       }));
 
       const response = await fetch(`${this.config.cloudUrl}/api/daemons/heartbeat`, {
@@ -311,6 +313,8 @@ export class CloudSyncService extends EventEmitter {
     const agents = Array.from(this.localAgents.entries()).map(([name, info]) => ({
       name,
       status: info.status,
+      isHuman: info.isHuman,
+      avatarUrl: info.avatarUrl,
     }));
 
     const response = await fetch(`${this.config.cloudUrl}/api/daemons/agents`, {

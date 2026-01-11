@@ -93,6 +93,15 @@ export NPM_CONFIG_UPDATE_NOTIFIER=false
 log "Auto-updates disabled for AI CLIs (container environment)"
 
 # ============================================================================
+# Git credential helper configuration
+# Clean up conflicting credential helpers that gh CLI or other tools may set
+# git-credential-relay requires no host-specific overrides to work properly
+# ============================================================================
+git config --global --unset-all 'credential.https://github.com.helper' 2>/dev/null || true
+git config --global --unset-all 'credential.https://gist.github.com.helper' 2>/dev/null || true
+log "Git credential helper configured (removed conflicting gh auth overrides)"
+
+# ============================================================================
 # Per-user credential storage setup
 # Create user-specific HOME on persistent volume (/data)
 # This enables multi-user workspaces where each user has their own credentials

@@ -410,6 +410,31 @@ export async function startDashboard(
     ? new SqliteStorageAdapter({ dbPath })
     : undefined;
 
+  const persistChannelMembership = (channel: string, member: string, action: 'join' | 'leave' | 'invite', options?: { invitedBy?: string }) => {
+    if (!storage) return;
+    storage.saveMessage({
+      id: `membership-${crypto.randomUUID()}`,
+      ts: Date.now(),
+      from: '__system__',
+      to: channel,
+      topic: undefined,
+      kind: 'state', // membership events stored as state
+      body: `${action}:${member}`,
+      data: {
+        _channelMembership: {
+          member,
+          action,
+          invitedBy: options?.invitedBy,
+        },
+      },
+      status: 'read',
+      is_urgent: false,
+      is_broadcast: true,
+    }).catch((err) => {
+      console.error('[channels] Failed to persist membership event', err);
+    });
+  };
+
   // Initialize spawner if enabled
   // Use detectWorkspacePath to find the actual repo directory in cloud workspaces
   const workspacePath = detectWorkspacePath(projectRoot || dataDir);
@@ -708,8 +733,12 @@ export async function startDashboard(
     app.use(express.static(dashboardDir, { extensions: ['html'] }));
 
     // Fallback for Next.js pages (e.g., /metrics -> /metrics.html)
+    // These are needed when a route exists as both a directory and .html file
     app.get('/metrics', (req, res) => {
       res.sendFile(path.join(dashboardDir, 'metrics.html'));
+    });
+    app.get('/app', (req, res) => {
+      res.sendFile(path.join(dashboardDir, 'app.html'));
     });
   } else {
     console.error('[dashboard] Dashboard not found at:', dashboardDistDir, 'or', dashboardSourceDir);
@@ -795,6 +824,8 @@ export async function startDashboard(
         socketPath: options.socketPath,
         agentName: options.agentName,
         entityType: options.entityType,
+        displayName: options.displayName,
+        avatarUrl: options.avatarUrl,
         cli: 'dashboard',
         reconnect: true,
         maxReconnectAttempts: 5,
@@ -2259,12 +2290,183 @@ export async function startDashboard(
    * GET /api/channels - Get list of channels the user has joined
    */
   app.get('/api/channels', (req, res) => {
-    const username = req.query.username as string;
+    const username = req.query.username as string | undefined;
+
+    // Prefer persisted channel history (storage)
+    if (storage) {
+      storage.getMessages({ limit: 1000, order: 'desc' }).then((msgs) => {
+        // Channel messages are stored with to=<channel> and data._isChannelMessage
+        const channelMap = new Map<string, { lastActivityAt: string; status?: string }>();
+        msgs.forEach((m) => {
+          const data = m.data as any;
+          const isChannel = data && data._isChannelMessage;
+          const stateChange = data && data._channelState;
+          const target = m.to || '';
+          if (!target.startsWith('#')) return;
+
+          const existing = channelMap.get(target) || { lastActivityAt: new Date(0).toISOString(), status: 'active' };
+
+          // Apply state changes
+          if (stateChange) {
+            const ts = new Date(m.ts).getTime();
+            const existingTs = new Date(existing.lastActivityAt).getTime();
+            const nextStatus = stateChange === 'archived' ? 'archived' : 'active';
+            channelMap.set(target, {
+              lastActivityAt: ts > existingTs ? new Date(ts).toISOString() : existing.lastActivityAt,
+              status: nextStatus,
+            });
+            return;
+          }
+
+          if (!isChannel) return;
+          const ts = new Date(m.ts).getTime();
+          const existingTs = new Date(existing.lastActivityAt).getTime();
+          channelMap.set(target, {
+            lastActivityAt: ts > existingTs ? new Date(ts).toISOString() : existing.lastActivityAt,
+            status: existing.status ?? 'active',
+          });
+        });
+
+        const channels = Array.from(channelMap.entries()).map(([id, meta]) => ({
+          id,
+          name: id.startsWith('#') ? id.slice(1) : id,
+          status: meta.status ?? 'active',
+          lastActivityAt: meta.lastActivityAt,
+        }));
+
+        // Also include in-memory memberships so live channels show immediately
+        if (username) {
+          const joined = userBridge.getUserChannels(username);
+          joined.forEach((id) => {
+            if (!channelMap.has(id)) {
+              channels.push({
+                id,
+                name: id.startsWith('#') ? id.slice(1) : id,
+                status: 'active',
+                lastActivityAt: new Date().toISOString(),
+              });
+            }
+          });
+        }
+
+        res.json({ channels });
+      }).catch((err) => {
+        console.error('[channels] Failed to read channel history', err);
+        res.status(500).json({ error: 'Failed to load channels' });
+      });
+      return;
+    }
+
+    // Fallback: use in-memory memberships
     if (!username) {
       return res.status(400).json({ error: 'username query param required' });
     }
     const channels = userBridge.getUserChannels(username);
-    res.json({ channels });
+    res.json({ channels: channels.map((id) => ({ id, name: id })) });
+  });
+
+  /**
+   * POST /api/channels - Create a new channel
+   */
+  app.post('/api/channels', express.json(), async (req, res) => {
+    const { name, description, isPrivate, invites } = req.body as {
+      name: string;
+      description?: string;
+      isPrivate?: boolean;
+      invites?: string; // comma-separated usernames to invite
+    };
+    const username = (req.query.username as string) || (req.body.username as string) || 'Dashboard';
+
+    if (!name) {
+      return res.status(400).json({ error: 'name is required' });
+    }
+
+    // Normalize channel name
+    const channelId = name.startsWith('#') ? name : `#${name}`;
+
+    try {
+      // Join the creator to the channel
+      // Note: userBridge.joinChannel triggers router's persistChannelMembership via protocol
+      // We only persist here for dashboard-initiated creates (no daemon connection)
+      await userBridge.joinChannel(username, channelId);
+
+      // Handle invites if provided
+      if (invites) {
+        const inviteList = invites.split(',').map((s) => s.trim()).filter(Boolean);
+        for (const invitee of inviteList) {
+          // userBridge.joinChannel handles persistence via protocol
+          await userBridge.joinChannel(invitee, channelId);
+        }
+      }
+
+      // Persist channel creation as a system message
+      if (storage) {
+        await storage.saveMessage({
+          id: `channel-create-${crypto.randomUUID()}`,
+          ts: Date.now(),
+          from: '__system__',
+          to: channelId,
+          topic: undefined,
+          kind: 'state', // channel creation stored as state
+          body: `Channel created by ${username}`,
+          data: {
+            _channelCreate: {
+              createdBy: username,
+              description,
+              isPrivate: isPrivate ?? false,
+            },
+          },
+          status: 'read',
+          is_urgent: false,
+          is_broadcast: true,
+        });
+      }
+
+      res.json({
+        channel: {
+          id: channelId,
+          name: name.startsWith('#') ? name.slice(1) : name,
+          description,
+          isPrivate: isPrivate ?? false,
+          createdBy: username,
+        },
+      });
+    } catch (err: any) {
+      console.error('[channels] Failed to create channel:', err);
+      res.status(500).json({ error: err.message || 'Failed to create channel' });
+    }
+  });
+
+  /**
+   * POST /api/channels/invite - Invite members to a channel
+   */
+  app.post('/api/channels/invite', express.json(), async (req, res) => {
+    const { channel, invites, invitedBy } = req.body as {
+      channel: string;
+      invites: string; // comma-separated usernames
+      invitedBy?: string;
+    };
+
+    if (!channel || !invites) {
+      return res.status(400).json({ error: 'channel and invites are required' });
+    }
+
+    const channelId = channel.startsWith('#') ? channel : `#${channel}`;
+    const inviteList = invites.split(',').map((s) => s.trim()).filter(Boolean);
+
+    try {
+      const results: Array<{ username: string; success: boolean }> = [];
+      for (const invitee of inviteList) {
+        // userBridge.joinChannel handles persistence via protocol
+        const success = await userBridge.joinChannel(invitee, channelId);
+        results.push({ username: invitee, success });
+      }
+
+      res.json({ channel: channelId, invited: results });
+    } catch (err: any) {
+      console.error('[channels] Failed to invite to channel:', err);
+      res.status(500).json({ error: err.message || 'Failed to invite members' });
+    }
   });
 
   /**
@@ -2287,6 +2489,7 @@ export async function startDashboard(
       const success = await userBridge.joinChannel(username, channel);
       res.json({ success, channel });
     } catch (err: any) {
+      console.error('[channels] Join failed:', err.message);
       res.status(500).json({ error: err.message });
     }
   });
@@ -2308,18 +2511,133 @@ export async function startDashboard(
   });
 
   /**
+   * GET /api/channels/:channel/messages - Get persisted messages for a channel
+   */
+  app.get('/api/channels/:channel/messages', async (req, res) => {
+    if (!storage) {
+      return res.status(503).json({ error: 'Storage not configured' });
+    }
+
+    const channelId = req.params.channel;
+    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 200;
+    const beforeTs = req.query.before ? parseInt(req.query.before as string, 10) : undefined;
+
+    try {
+      const query: any = {
+        to: channelId,
+        limit,
+        order: 'desc',
+      };
+      if (beforeTs) {
+        query.sinceTs = beforeTs;
+      }
+      let messages = await storage.getMessages(query);
+      // Only include channel messages
+      messages = messages.filter((m) => (m.data as any)?._isChannelMessage);
+
+      // Sort ascending for UI
+      messages.sort((a, b) => a.ts - b.ts);
+
+      res.json({
+        messages: messages.map((m) => ({
+          id: m.id,
+          channelId: channelId,
+          from: m.from,
+          fromEntityType: 'user',
+          content: m.body,
+          timestamp: new Date(m.ts).toISOString(),
+          threadId: m.thread || undefined,
+          isRead: true,
+        })),
+        hasMore: messages.length === limit,
+      });
+    } catch (err) {
+      console.error('[channels] Failed to fetch channel messages', err);
+      res.status(500).json({ error: 'Failed to fetch channel messages' });
+    }
+  });
+
+  /**
    * POST /api/channels/message - Send a message to a channel
    */
   app.post('/api/channels/message', express.json(), async (req, res) => {
     const { username, channel, body, thread } = req.body;
+    console.log(`[channel-debug] MESSAGE request: username=${username}, channel=${channel}, body=${body?.substring(0, 50)}...`);
     if (!username || !channel || !body) {
+      console.log('[channel-debug] MESSAGE failed: missing required fields');
       return res.status(400).json({ error: 'username, channel, and body required' });
     }
     try {
       const success = await userBridge.sendChannelMessage(username, channel, body, { thread });
+      console.log(`[channel-debug] MESSAGE result: success=${success}`);
       res.json({ success });
     } catch (err: any) {
+      console.log(`[channel-debug] MESSAGE error: ${err.message}`);
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
+   * POST /api/channels/archive - Mark a channel as archived (persisted in storage)
+   */
+  app.post('/api/channels/archive', express.json(), async (req, res) => {
+    if (!storage) {
+      return res.status(503).json({ error: 'Storage not configured' });
+    }
+    const { channel } = req.body;
+    if (!channel) {
+      return res.status(400).json({ error: 'channel required' });
+    }
+    try {
+      await storage.saveMessage({
+        id: `state-${Date.now()}`,
+        ts: Date.now(),
+        from: '__system__',
+        to: channel,
+        topic: undefined,
+        kind: 'message',
+        body: 'STATE:archived',
+        data: { _channelState: 'archived' },
+        status: 'read',
+        is_urgent: false,
+        is_broadcast: true,
+      });
+      res.json({ success: true });
+    } catch (err) {
+      console.error('[channels] Failed to archive channel', err);
+      res.status(500).json({ error: 'Failed to archive channel' });
+    }
+  });
+
+  /**
+   * POST /api/channels/unarchive - Mark a channel as active (persisted in storage)
+   */
+  app.post('/api/channels/unarchive', express.json(), async (req, res) => {
+    if (!storage) {
+      return res.status(503).json({ error: 'Storage not configured' });
+    }
+    const { channel } = req.body;
+    if (!channel) {
+      return res.status(400).json({ error: 'channel required' });
+    }
+    try {
+      await storage.saveMessage({
+        id: `state-${Date.now()}`,
+        ts: Date.now(),
+        from: '__system__',
+        to: channel,
+        topic: undefined,
+        kind: 'message',
+        body: 'STATE:active',
+        data: { _channelState: 'active' },
+        status: 'read',
+        is_urgent: false,
+        is_broadcast: true,
+      });
+      res.json({ success: true });
+    } catch (err) {
+      console.error('[channels] Failed to unarchive channel', err);
+      res.status(500).json({ error: 'Failed to unarchive channel' });
     }
   });
 
