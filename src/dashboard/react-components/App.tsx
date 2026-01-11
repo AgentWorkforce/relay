@@ -2100,6 +2100,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
         onCreate={handleCreateChannelSubmit}
         isLoading={isCreatingChannel}
         existingChannels={channelsList.map(c => c.name)}
+        availableMembers={agents.map(a => a.name)}
       />
 
       {/* Conversation History */}

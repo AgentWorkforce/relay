@@ -1003,30 +1003,24 @@ export class Router {
     connection: RoutableConnection,
     envelope: Envelope<ChannelJoinPayload>
   ): void {
-    console.log(`[channel-debug] handleChannelJoin called: connection.agentName=${connection.agentName}, channel=${envelope.payload.channel}`);
-
     const memberName = connection.agentName;
     if (!memberName) {
       routerLog.warn('CHANNEL_JOIN from connection without name');
-      console.log('[channel-debug] CHANNEL_JOIN failed: no agentName');
       return;
     }
 
     const channel = envelope.payload.channel;
-    console.log(`[channel-debug] Processing join: ${memberName} -> ${channel}`);
 
     // Get or create channel
     let members = this.channels.get(channel);
     if (!members) {
       members = new Set();
       this.channels.set(channel, members);
-      console.log(`[channel-debug] Created new channel: ${channel}`);
     }
 
     // Check if already a member
     if (members.has(memberName)) {
       routerLog.debug(`${memberName} already in ${channel}`);
-      console.log(`[channel-debug] ${memberName} already in ${channel}`);
       return;
     }
 
@@ -1128,42 +1122,31 @@ export class Router {
     connection: RoutableConnection,
     envelope: Envelope<ChannelMessagePayload>
   ): void {
-    console.log(`[channel-debug] routeChannelMessage called: sender=${connection.agentName}, channel=${envelope.payload.channel}`);
-
     const senderName = connection.agentName;
     if (!senderName) {
       routerLog.warn('CHANNEL_MESSAGE from connection without name');
-      console.log('[channel-debug] CHANNEL_MESSAGE failed: no agentName');
       return;
     }
 
     const channel = envelope.payload.channel;
     const members = this.channels.get(channel);
 
-    console.log(`[channel-debug] Channel ${channel} exists: ${!!members}, members: ${members ? Array.from(members).join(', ') : 'N/A'}`);
-
     if (!members) {
       routerLog.warn(`Message to non-existent channel ${channel}`);
-      console.log(`[channel-debug] CHANNEL_MESSAGE failed: channel ${channel} doesn't exist`);
       return;
     }
 
     if (!members.has(senderName)) {
       routerLog.warn(`${senderName} not a member of ${channel}`);
-      console.log(`[channel-debug] CHANNEL_MESSAGE failed: ${senderName} not a member of ${channel}`);
       return;
     }
-
-    console.log(`[channel-debug] Routing message to ${members.size} members`);
 
     // Route to all members except the sender (no echo)
     for (const memberName of members) {
       if (memberName === senderName) {
-        console.log(`[channel-debug] Skipping sender ${memberName}`);
         continue;
       }
       const memberConn = this.getConnectionByName(memberName);
-      console.log(`[channel-debug] Sending to ${memberName}: connection=${!!memberConn}`);
       if (memberConn) {
         const deliverEnvelope: Envelope<ChannelMessagePayload> = {
           v: PROTOCOL_VERSION,
@@ -1295,5 +1278,39 @@ export class Router {
    */
   private getConnectionByName(name: string): RoutableConnection | undefined {
     return this.agents.get(name) ?? this.users.get(name);
+  }
+
+  /**
+   * Auto-join a member to a channel without notifications.
+   * Used for default channel membership (e.g., #general).
+   * @param memberName - The agent or user name to add
+   * @param channel - The channel to join (e.g., '#general')
+   */
+  autoJoinChannel(memberName: string, channel: string): void {
+    // Get or create channel
+    let members = this.channels.get(channel);
+    if (!members) {
+      members = new Set();
+      this.channels.set(channel, members);
+    }
+
+    // Check if already a member
+    if (members.has(memberName)) {
+      return;
+    }
+
+    // Add the member (silently, no notifications to other members)
+    members.add(memberName);
+    this.persistChannelMembership(channel, memberName, 'join');
+
+    // Track which channels this member is in
+    let memberChannelSet = this.memberChannels.get(memberName);
+    if (!memberChannelSet) {
+      memberChannelSet = new Set();
+      this.memberChannels.set(memberName, memberChannelSet);
+    }
+    memberChannelSet.add(channel);
+
+    routerLog.debug(`Auto-joined ${memberName} to ${channel}`);
   }
 }

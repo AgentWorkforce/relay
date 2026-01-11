@@ -255,6 +255,8 @@ export interface CreateChannelModalProps {
   onCreate: (request: CreateChannelRequest) => void;
   isLoading?: boolean;
   existingChannels?: string[];
+  /** Available agents/users for invite suggestions */
+  availableMembers?: string[];
 }
 
 export function CreateChannelModal({
@@ -263,17 +265,34 @@ export function CreateChannelModal({
   onCreate,
   isLoading = false,
   existingChannels = [],
+  availableMembers = [],
 }: CreateChannelModalProps) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [visibility, setVisibility] = useState<ChannelVisibility>('public');
+  const [inviteInput, setInviteInput] = useState('');
+  const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
 
   const handleClose = useCallback(() => {
     setName('');
     setDescription('');
     setVisibility('public');
+    setInviteInput('');
+    setSelectedMembers([]);
     onClose();
   }, [onClose]);
+
+  const handleAddMember = useCallback((member: string) => {
+    const normalized = member.trim();
+    if (normalized && !selectedMembers.includes(normalized)) {
+      setSelectedMembers(prev => [...prev, normalized]);
+      setInviteInput('');
+    }
+  }, [selectedMembers]);
+
+  const handleRemoveMember = useCallback((member: string) => {
+    setSelectedMembers(prev => prev.filter(m => m !== member));
+  }, []);
 
   const handleSubmit = useCallback((e: React.FormEvent) => {
     e.preventDefault();
@@ -283,8 +302,15 @@ export function CreateChannelModal({
       name: name.trim().toLowerCase().replace(/\s+/g, '-'),
       description: description.trim() || undefined,
       visibility,
+      members: selectedMembers.length > 0 ? selectedMembers : undefined,
     });
-  }, [name, description, visibility, onCreate]);
+  }, [name, description, visibility, selectedMembers, onCreate]);
+
+  // Filter available members for suggestions
+  const suggestions = availableMembers.filter(m =>
+    m.toLowerCase().includes(inviteInput.toLowerCase()) &&
+    !selectedMembers.includes(m)
+  ).slice(0, 5);
 
   if (!isOpen) return null;
 
@@ -341,6 +367,63 @@ export function CreateChannelModal({
             rows={2}
             className="w-full px-3 py-2 bg-bg-tertiary border border-border-subtle rounded-lg text-text-primary text-sm focus:outline-none focus:border-accent-cyan/50 resize-none"
           />
+        </div>
+
+        {/* Invite Members */}
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-text-primary mb-1.5">
+            Invite members <span className="text-text-muted font-normal">(optional)</span>
+          </label>
+          <div className="relative">
+            <input
+              type="text"
+              value={inviteInput}
+              onChange={(e) => setInviteInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && inviteInput.trim()) {
+                  e.preventDefault();
+                  handleAddMember(inviteInput);
+                }
+              }}
+              placeholder="Type agent or user name..."
+              className="w-full px-3 py-2 bg-bg-tertiary border border-border-subtle rounded-lg text-text-primary text-sm focus:outline-none focus:border-accent-cyan/50"
+            />
+            {/* Suggestions dropdown */}
+            {inviteInput && suggestions.length > 0 && (
+              <div className="absolute z-10 w-full mt-1 bg-bg-secondary border border-border-subtle rounded-lg shadow-lg max-h-40 overflow-y-auto">
+                {suggestions.map(member => (
+                  <button
+                    key={member}
+                    type="button"
+                    onClick={() => handleAddMember(member)}
+                    className="w-full px-3 py-2 text-left text-sm text-text-primary hover:bg-bg-hover transition-colors"
+                  >
+                    {member}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          {/* Selected members */}
+          {selectedMembers.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {selectedMembers.map(member => (
+                <span
+                  key={member}
+                  className="inline-flex items-center gap-1 px-2 py-1 bg-accent-cyan/10 text-accent-cyan text-xs rounded-full"
+                >
+                  {member}
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveMember(member)}
+                    className="hover:text-red-400 transition-colors"
+                  >
+                    <XIcon className="w-3 h-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Visibility */}
@@ -566,6 +649,15 @@ function UserMinusIcon({ className }: { className?: string }) {
       <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
       <circle cx="8.5" cy="7" r="4" />
       <line x1="23" y1="11" x2="17" y2="11" />
+    </svg>
+  );
+}
+
+function XIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
     </svg>
   );
 }

@@ -551,6 +551,9 @@ export class Daemon {
           workingDirectory: connection.workingDirectory,
         });
 
+        // Auto-join all agents to #general channel
+        this.router.autoJoinChannel(connection.agentName, '#general');
+
         // Record session start
         if (this.storage instanceof SqliteStorageAdapter) {
           const projectPaths = getProjectPaths();

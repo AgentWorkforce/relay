@@ -270,10 +270,7 @@ export class RelayClient {
    * @param displayName - Optional display name for this member
    */
   joinChannel(channel: string, displayName?: string): boolean {
-    console.log(`[channel-debug] RelayClient.joinChannel: channel=${channel}, displayName=${displayName}, state=${this._state}`);
-
     if (this._state !== 'READY') {
-      console.log(`[channel-debug] RelayClient.joinChannel failed: state is ${this._state}, not READY`);
       return false;
     }
 
@@ -288,9 +285,7 @@ export class RelayClient {
       },
     };
 
-    const result = this.send(envelope);
-    console.log(`[channel-debug] RelayClient.joinChannel send result: ${result}`);
-    return result;
+    return this.send(envelope);
   }
 
   /**
@@ -330,10 +325,7 @@ export class RelayClient {
       attachments?: MessageAttachment[];
     }
   ): boolean {
-    console.log(`[channel-debug] RelayClient.sendChannelMessage: channel=${channel}, state=${this._state}`);
-
     if (this._state !== 'READY') {
-      console.log(`[channel-debug] RelayClient.sendChannelMessage failed: state is ${this._state}, not READY`);
       return false;
     }
 
@@ -351,9 +343,7 @@ export class RelayClient {
       },
     };
 
-    const result = this.send(envelope);
-    console.log(`[channel-debug] RelayClient.sendChannelMessage send result: ${result}`);
-    return result;
+    return this.send(envelope);
   }
 
   /**

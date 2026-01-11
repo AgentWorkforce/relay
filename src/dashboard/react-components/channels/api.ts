@@ -176,6 +176,7 @@ export async function createChannel(
         name: request.name,
         description: request.description,
         isPrivate: request.visibility === 'private',
+        invites: request.members?.join(','),
         username,
       }),
     });

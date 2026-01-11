@@ -133,6 +133,10 @@ export class UserBridge {
 
     this.users.set(username, session);
 
+    // Auto-join user to #general channel
+    // Note: The daemon auto-joins on connect, but we need to track locally too
+    session.channels.add('#general');
+
     // Set up WebSocket close handler
     webSocket.on('close', () => {
       this.unregisterUser(username);
