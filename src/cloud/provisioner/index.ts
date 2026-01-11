@@ -1224,17 +1224,30 @@ class FlyProvisioner implements ComputeProvisioner {
           );
         }
 
-        // Consider agents with 'active' or 'idle' activity state as active
-        // 'disconnected' agents are not active
-        const activeAgents = agents.filter(a =>
-          a.status === 'running' || a.activityState === 'active' || a.activityState === 'idle'
-        );
+        // Treat any online agent as active unless explicitly disconnected/offline.
+        const activeAgents = agents.filter(a => {
+          const status = (a.status ?? '').toLowerCase();
+          const activityState = (a.activityState ?? '').toLowerCase();
+          const isProcessing = (a as { isProcessing?: boolean }).isProcessing === true;
+
+          if (activityState === 'active' || activityState === 'idle') return true;
+          if (status && status !== 'disconnected' && status !== 'offline') return true;
+          if (isProcessing) return true;
+          return false;
+        });
 
         // Log filtering results for diagnostics
         if (agents.length > 0 && activeAgents.length !== agents.length) {
-          const filteredOut = agents.filter(a =>
-            !(a.status === 'running' || a.activityState === 'active' || a.activityState === 'idle')
-          );
+          const filteredOut = agents.filter(a => {
+            const status = (a.status ?? '').toLowerCase();
+            const activityState = (a.activityState ?? '').toLowerCase();
+            const isProcessing = (a as { isProcessing?: boolean }).isProcessing === true;
+
+            if (activityState === 'active' || activityState === 'idle') return false;
+            if (status && status !== 'disconnected' && status !== 'offline') return false;
+            if (isProcessing) return false;
+            return true;
+          });
           console.log(`[fly] Workspace ${workspace.id.substring(0, 8)} filtered out agents:`,
             filteredOut.map(a => ({ name: a.name, status: a.status, activityState: a.activityState }))
           );

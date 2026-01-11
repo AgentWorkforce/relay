@@ -223,9 +223,16 @@ adminRouter.get('/workspaces/:id/agents', async (req: Request, res: Response) =>
       };
 
       const agents = data.agents || [];
-      const activeAgents = agents.filter(a =>
-        a.status === 'running' || a.activityState === 'active' || a.activityState === 'idle'
-      );
+      const activeAgents = agents.filter(a => {
+        const status = (a.status ?? '').toLowerCase();
+        const activityState = (a.activityState ?? '').toLowerCase();
+        const isProcessing = (a as { isProcessing?: boolean }).isProcessing === true;
+
+        if (activityState === 'active' || activityState === 'idle') return true;
+        if (status && status !== 'disconnected' && status !== 'offline') return true;
+        if (isProcessing) return true;
+        return false;
+      });
 
       res.json({
         hasActiveAgents: activeAgents.length > 0,
