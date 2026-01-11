@@ -3536,20 +3536,81 @@ Start by greeting the project leads and asking for status updates.`;
 
   /**
    * GET /api/spawned - List active spawned agents
+   *
+   * Returns agents from two sources:
+   * 1. Spawner's active workers (in-memory tracking)
+   * 2. Daemon's agents.json registry (persisted, survives restarts)
+   *
+   * This fallback ensures docker deployments show agents even after
+   * container restarts when spawner's in-memory state is lost but
+   * agents have reconnected to the daemon.
    */
   app.get('/api/spawned', (req, res) => {
-    if (!spawner) {
-      return res.status(503).json({
-        success: false,
-        error: 'Spawner not enabled',
-        agents: [],
-      });
+    // Collect agents from all available sources
+    const agentsByName = new Map<string, {
+      name: string;
+      cli?: string;
+      pid?: number;
+      spawnedAt?: number;
+      task?: string;
+      team?: string;
+      source: 'spawner' | 'daemon';
+    }>();
+
+    // Source 1: Spawner's active workers (authoritative for spawned agents)
+    if (spawner) {
+      for (const worker of spawner.getActiveWorkers()) {
+        agentsByName.set(worker.name, {
+          name: worker.name,
+          cli: worker.cli,
+          pid: worker.pid,
+          spawnedAt: worker.spawnedAt,
+          task: worker.task,
+          team: worker.team,
+          source: 'spawner',
+        });
+      }
     }
 
-    const agents = spawner.getActiveWorkers();
+    // Source 2: Daemon's agents.json registry (fallback for docker restarts)
+    // Only include agents not already tracked by spawner
+    const agentsPath = path.join(teamDir, 'agents.json');
+    if (fs.existsSync(agentsPath)) {
+      try {
+        const data = JSON.parse(fs.readFileSync(agentsPath, 'utf-8'));
+        const registeredAgents = data.agents || [];
+        const thirtySecondsAgo = Date.now() - 30 * 1000;
+
+        for (const agent of registeredAgents) {
+          // Skip if already tracked by spawner
+          if (agentsByName.has(agent.name)) continue;
+
+          // Only include recently active agents (within 30s heartbeat window)
+          const lastSeen = agent.lastSeen ? new Date(agent.lastSeen).getTime() : 0;
+          if (lastSeen < thirtySecondsAgo) continue;
+
+          agentsByName.set(agent.name, {
+            name: agent.name,
+            cli: agent.cli || 'unknown',
+            spawnedAt: agent.connectedAt ? new Date(agent.connectedAt).getTime() : undefined,
+            team: agent.team,
+            source: 'daemon',
+          });
+        }
+      } catch (err) {
+        console.error('[api/spawned] Failed to read agents.json:', err);
+      }
+    }
+
+    const agents = Array.from(agentsByName.values());
     res.json({
       success: true,
       agents,
+      // Include source info for debugging
+      sources: {
+        spawnerEnabled: !!spawner,
+        daemonAgentsFile: fs.existsSync(agentsPath),
+      },
     });
   });
 
