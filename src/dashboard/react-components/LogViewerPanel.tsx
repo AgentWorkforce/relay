@@ -37,8 +37,8 @@ export function LogViewerPanel({
   availableAgents = [],
 }: LogViewerPanelProps) {
   const colors = getAgentColor(agent.name);
-  const [isHeaderCollapsed, setIsHeaderCollapsed] = useState(true); // Default to collapsed
   const [isInterrupting, setIsInterrupting] = useState(false);
+  const [isHeaderCollapsed, setIsHeaderCollapsed] = useState(false);
 
   // Handle interrupt button click
   const handleInterrupt = useCallback(async () => {
@@ -287,7 +287,7 @@ export function LogViewerPanel({
               </button>
             </div>
 
-            {/* Interrupt button - break agent out of stuck loops */}
+            {/* Interrupt button - send ESC to break agent out of stuck loops */}
             <button
               className={`p-2 rounded-lg transition-all duration-200 ${
                 isInterrupting
@@ -296,7 +296,7 @@ export function LogViewerPanel({
               }`}
               onClick={handleInterrupt}
               disabled={isInterrupting}
-              title="Interrupt agent (Ctrl+C) - break out of current task"
+              title="Send ESC to agent - interrupt current operation"
             >
               <InterruptIcon />
             </button>
@@ -444,8 +444,9 @@ function AgentSwitcher({ agents, currentAgent, onSelect }: AgentSwitcherProps) {
 function InterruptIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      {/* Stop/pause hand icon */}
-      <rect x="6" y="6" width="12" height="12" rx="1" />
+      {/* ESC key icon - represents sending escape sequence */}
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <text x="12" y="15" textAnchor="middle" fill="currentColor" stroke="none" fontSize="8" fontWeight="600" fontFamily="system-ui">ESC</text>
     </svg>
   );
 }
