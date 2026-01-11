@@ -791,6 +791,8 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   // Handle project selection (also switches workspace if using orchestrator)
   const handleProjectSelect = useCallback((project: Project) => {
     setCurrentProject(project.id);
+    // Clear channel selection when switching to project/DM view
+    setSelectedChannelId(undefined);
 
     // Track as recently accessed
     addRecentRepo(project);
@@ -811,6 +813,8 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
 
   // Handle agent selection
   const handleAgentSelect = useCallback((agent: Agent) => {
+    // Clear channel selection when switching to DM view
+    setSelectedChannelId(undefined);
     selectAgent(agent.name);
     setCurrentChannel(agent.name);
     closeSidebarOnMobile();
@@ -857,6 +861,8 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
 
   // Open a DM with a human user from the sidebar
   const handleHumanSelect = useCallback((human: Agent) => {
+    // Clear channel selection when switching to DM view
+    setSelectedChannelId(undefined);
     setCurrentChannel(human.name);
     markDmSeen(human.name);
     closeSidebarOnMobile();
