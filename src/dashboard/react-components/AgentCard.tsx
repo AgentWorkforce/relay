@@ -109,7 +109,7 @@ export function AgentCard({
     return (
       <div
         className={`
-          group relative flex items-center gap-3 py-2.5 px-3 rounded-lg cursor-pointer
+          group relative flex items-start gap-3 py-2.5 px-3 rounded-lg cursor-pointer
           transition-all duration-300 ease-out
           hover:bg-gradient-to-r hover:from-[rgba(255,255,255,0.03)] hover:to-transparent
           ${isSelected
@@ -159,11 +159,12 @@ export function AgentCard({
         </div>
 
         {/* Agent Info */}
-        <div className="flex-1 min-w-0 flex flex-col gap-0.5">
-          <div className="flex items-center gap-1.5">
+        <div className="flex-1 min-w-0 flex flex-col">
+          <div className="flex items-start gap-1.5 flex-wrap">
             <span
               className={`
-                text-[13px] font-semibold tracking-tight truncate transition-colors duration-200
+                text-[13px] font-semibold tracking-tight transition-colors duration-200
+                whitespace-normal break-words leading-snug
                 ${isOnline ? 'text-text-primary' : 'text-text-secondary'}
               `}
             >
@@ -180,85 +181,85 @@ export function AgentCard({
             )}
           </div>
           {!displayNameOverride && (
-            <span className="text-[10px] text-text-muted truncate font-mono opacity-70">
+            <span className="text-[10px] text-text-muted truncate font-mono opacity-70 mt-0.5">
               {agent.isLocal ? agent.daemonName || agent.machineId : getAgentBreadcrumb(agent.name)}
             </span>
           )}
-        </div>
 
-        {/* Actions & Status */}
-        <div className="flex items-center gap-2 shrink-0">
-          {onProfileClick && (
-            <button
-              className="relative bg-transparent border border-transparent text-text-dim p-1.5 cursor-pointer
-                         flex items-center justify-center rounded-md transition-all duration-200
-                         opacity-100 md:opacity-0 md:group-hover:opacity-100
-                         hover:bg-[#a855f7]/10 hover:border-[#a855f7]/30 hover:text-[#a855f7]
-                         hover:shadow-[0_0_12px_rgba(168,85,247,0.25)]"
-              onClick={handleProfileClick}
-              title="View profile"
-            >
-              <ProfileIcon />
-            </button>
-          )}
-          {agent.isSpawned && onLogsClick && (
-            <button
-              className="relative bg-transparent border border-transparent text-text-dim p-1.5 cursor-pointer
-                         flex items-center justify-center rounded-md transition-all duration-200
-                         opacity-100 md:opacity-0 md:group-hover:opacity-100
-                         hover:bg-accent-cyan/10 hover:border-accent-cyan/30 hover:text-accent-cyan
-                         hover:shadow-[0_0_12px_rgba(0,217,255,0.25)]"
-              onClick={handleLogsClick}
-              title="View logs"
-            >
-              <LogsIcon />
-            </button>
-          )}
-          {agent.isSpawned && onReleaseClick && (
-            <button
-              className="relative bg-transparent border border-transparent text-text-dim p-1.5 cursor-pointer
-                         flex items-center justify-center rounded-md transition-all duration-200
-                         opacity-100 md:opacity-0 md:group-hover:opacity-100
-                         hover:bg-error/10 hover:border-error/30 hover:text-error
-                         hover:shadow-[0_0_12px_rgba(255,68,68,0.25)]"
-              onClick={handleReleaseClick}
-              title="Kill agent"
-            >
-              <ReleaseIcon />
-            </button>
-          )}
-          {agent.isProcessing ? (
-            <div title={statusTooltip}>
-              <ThinkingDot isProcessing={true} />
-            </div>
-          ) : (
-            <div
-              className={`
-                w-2 h-2 rounded-full transition-all duration-300
-                ${isOnline ? 'animate-pulse' : ''}
-              `}
-              style={{
-                backgroundColor: statusColor,
-                boxShadow: isOnline ? `0 0 6px ${statusColor}` : 'none',
-              }}
-              title={statusTooltip}
-            />
-          )}
-          {agent.needsAttention && (
-            <div
-              className="w-2 h-2 rounded-full bg-warning animate-pulse shadow-[0_0_8px_rgba(255,107,53,0.5)]"
-              title="Needs Attention - Agent requires user input or has pending decisions"
-            />
-          )}
-          {isStuck && (
-            <div
-              className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#f97316]/20 text-[#f97316] text-[10px] font-medium animate-pulse"
-              title={statusTooltip}
-            >
-              <StuckIcon />
-              <span>{formatStuckDuration(stuckDuration)}</span>
-            </div>
-          )}
+          {/* Actions & Status */}
+          <div className="mt-2 flex items-center flex-wrap gap-2">
+            {onProfileClick && (
+              <button
+                className="relative bg-transparent border border-transparent text-text-dim p-1.5 cursor-pointer
+                           flex items-center justify-center rounded-md transition-all duration-200
+                           opacity-100 md:opacity-0 md:group-hover:opacity-100
+                           hover:bg-[#a855f7]/10 hover:border-[#a855f7]/30 hover:text-[#a855f7]
+                           hover:shadow-[0_0_12px_rgba(168,85,247,0.25)]"
+                onClick={handleProfileClick}
+                title="View profile"
+              >
+                <ProfileIcon />
+              </button>
+            )}
+            {agent.isSpawned && onLogsClick && (
+              <button
+                className="relative bg-transparent border border-transparent text-text-dim p-1.5 cursor-pointer
+                           flex items-center justify-center rounded-md transition-all duration-200
+                           opacity-100 md:opacity-0 md:group-hover:opacity-100
+                           hover:bg-accent-cyan/10 hover:border-accent-cyan/30 hover:text-accent-cyan
+                           hover:shadow-[0_0_12px_rgba(0,217,255,0.25)]"
+                onClick={handleLogsClick}
+                title="View logs"
+              >
+                <LogsIcon />
+              </button>
+            )}
+            {agent.isSpawned && onReleaseClick && (
+              <button
+                className="relative bg-transparent border border-transparent text-text-dim p-1.5 cursor-pointer
+                           flex items-center justify-center rounded-md transition-all duration-200
+                           opacity-100 md:opacity-0 md:group-hover:opacity-100
+                           hover:bg-error/10 hover:border-error/30 hover:text-error
+                           hover:shadow-[0_0_12px_rgba(255,68,68,0.25)]"
+                onClick={handleReleaseClick}
+                title="Kill agent"
+              >
+                <ReleaseIcon />
+              </button>
+            )}
+            {agent.isProcessing ? (
+              <div title={statusTooltip}>
+                <ThinkingDot isProcessing={true} />
+              </div>
+            ) : (
+              <div
+                className={`
+                  w-2 h-2 rounded-full transition-all duration-300
+                  ${isOnline ? 'animate-pulse' : ''}
+                `}
+                style={{
+                  backgroundColor: statusColor,
+                  boxShadow: isOnline ? `0 0 6px ${statusColor}` : 'none',
+                }}
+                title={statusTooltip}
+              />
+            )}
+            {agent.needsAttention && (
+              <div
+                className="w-2 h-2 rounded-full bg-warning animate-pulse shadow-[0_0_8px_rgba(255,107,53,0.5)]"
+                title="Needs Attention - Agent requires user input or has pending decisions"
+              />
+            )}
+            {isStuck && (
+              <div
+                className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#f97316]/20 text-[#f97316] text-[10px] font-medium animate-pulse"
+                title={statusTooltip}
+              >
+                <StuckIcon />
+                <span>{formatStuckDuration(stuckDuration)}</span>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     );
