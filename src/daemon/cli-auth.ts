@@ -34,6 +34,7 @@ export type { CLIAuthConfig, PromptHandler };
 interface AuthSession {
   id: string;
   provider: string;
+  userId?: string;
   status: 'starting' | 'waiting_auth' | 'success' | 'error';
   authUrl?: string;
   token?: string;
