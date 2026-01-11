@@ -38,6 +38,7 @@ export function LogViewerPanel({
 }: LogViewerPanelProps) {
   const colors = getAgentColor(agent.name);
   const [isInterrupting, setIsInterrupting] = useState(false);
+  const [isHeaderCollapsed, setIsHeaderCollapsed] = useState(false);
 
   // Handle interrupt button click
   const handleInterrupt = useCallback(async () => {
