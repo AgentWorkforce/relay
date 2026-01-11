@@ -20,6 +20,7 @@ import {
   type CLIAuthConfig,
   type PromptHandler,
 } from '../shared/cli-auth-config.js';
+import { getUserDirectoryService } from './user-directory.js';
 
 const logger = createLogger('cli-auth');
 
@@ -72,6 +73,8 @@ setInterval(() => {
 export interface StartCLIAuthOptions {
   /** Use device flow instead of standard OAuth (if provider supports it) */
   useDeviceFlow?: boolean;
+  /** User ID for per-user credential storage (multi-user workspaces) */
+  userId?: string;
 }
 
 /**
@@ -150,6 +153,27 @@ export async function startCLIAuth(
   }, AUTH_URL_WAIT_TIMEOUT);
 
   try {
+    // Get per-user environment if userId provided (for multi-user workspaces)
+    // This sets HOME to /data/users/{userId} so CLI stores credentials per-user
+    let userEnv: Record<string, string> = {};
+    if (options.userId) {
+      try {
+        const userDirService = getUserDirectoryService();
+        userEnv = userDirService.getUserEnvironment(options.userId);
+        logger.info('Using per-user environment for CLI auth', {
+          provider,
+          userId: options.userId,
+          home: userEnv.HOME,
+        });
+      } catch (err) {
+        logger.warn('Failed to get user environment, using default', {
+          provider,
+          userId: options.userId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     const proc = pty.spawn(config.command, args, {
       name: 'xterm-256color',
       cols: 120,
@@ -157,6 +181,7 @@ export async function startCLIAuth(
       cwd: process.cwd(),
       env: {
         ...process.env,
+        ...userEnv, // Override HOME for per-user credential storage
         NO_COLOR: '1',
         TERM: 'xterm-256color',
         // Don't set BROWSER - let CLI fail to open browser and fall back to manual paste mode

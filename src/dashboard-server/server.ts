@@ -2438,13 +2438,16 @@ export async function startDashboard(
 
   /**
    * POST /auth/cli/:provider/start - Start CLI auth flow
-   * Body: { useDeviceFlow?: boolean }
+   * Body: { useDeviceFlow?: boolean, userId?: string }
+   *
+   * When userId is provided, credentials are stored per-user at /data/users/{userId}/.{provider}/
+   * This allows multiple users to share a workspace with their own CLI credentials.
    */
   app.post('/auth/cli/:provider/start', async (req, res) => {
     const { provider } = req.params;
-    const { useDeviceFlow } = req.body || {};
+    const { useDeviceFlow, userId } = req.body || {};
     try {
-      const session = await startCLIAuth(provider, { useDeviceFlow });
+      const session = await startCLIAuth(provider, { useDeviceFlow, userId });
       res.json({
         sessionId: session.id,
         status: session.status,
@@ -2623,9 +2626,20 @@ export async function startDashboard(
    */
   app.get('/auth/cli/openai/check', async (req, res) => {
     try {
-      // Codex stores credentials at ~/.codex/auth.json
-      const homedir = process.env.HOME || '/home/workspace';
-      const credPath = path.join(homedir, '.codex', 'auth.json');
+      // Get userId from query params for per-user credential checking
+      // Multiple users can share a workspace, each with their own CLI credentials
+      const userId = req.query.userId as string | undefined;
+
+      let credPath: string;
+      if (userId) {
+        // Per-user credential path: /data/users/{userId}/.codex/auth.json
+        const dataDir = process.env.AGENT_RELAY_DATA_DIR || '/data';
+        credPath = path.join(dataDir, 'users', userId, '.codex', 'auth.json');
+      } else {
+        // Fallback to workspace-wide path for backwards compatibility
+        const homedir = process.env.HOME || '/home/workspace';
+        credPath = path.join(homedir, '.codex', 'auth.json');
+      }
 
       if (!fs.existsSync(credPath)) {
         return res.json({ authenticated: false });
@@ -2633,7 +2647,15 @@ export async function startDashboard(
 
       const creds = JSON.parse(fs.readFileSync(credPath, 'utf-8'));
       // Check if we have a valid access token or API key
-      const hasToken = !!(creds.access_token || creds.token || creds.api_key || creds.OPENAI_API_KEY);
+      // Codex stores tokens in a nested 'tokens' object: { tokens: { access_token, refresh_token } }
+      const hasToken = !!(
+        creds.access_token ||
+        creds.token ||
+        creds.api_key ||
+        creds.OPENAI_API_KEY ||
+        creds.tokens?.access_token ||
+        creds.tokens?.refresh_token
+      );
 
       res.json({ authenticated: hasToken });
     } catch (_error) {

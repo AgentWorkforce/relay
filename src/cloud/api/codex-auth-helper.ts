@@ -348,14 +348,35 @@ codexAuthHelperRouter.get('/auth-status/:workspaceId', async (req: Request, res:
       return res.status(400).json({ error: 'Workspace URL not available' });
     }
 
-    // Check with workspace daemon if Codex is authenticated
-    const response = await fetch(`${workspace.publicUrl}/auth/cli/openai/check`, {
+    // Check with workspace daemon if Codex is authenticated for this specific user
+    // Pass userId to enable per-user credential checking (multiple users can share a workspace)
+    const checkUrl = new URL(`${workspace.publicUrl}/auth/cli/openai/check`);
+    checkUrl.searchParams.set('userId', userId);
+
+    const response = await fetch(checkUrl.toString(), {
       method: 'GET',
       signal: AbortSignal.timeout(5000),
     });
 
     if (response.ok) {
       const data = await response.json() as { authenticated: boolean };
+
+      // When authentication is detected, mark the provider as connected in the database
+      // This ensures the dashboard shows correct per-user connection status
+      if (data.authenticated && userId) {
+        try {
+          await db.credentials.upsert({
+            userId,
+            provider: 'codex', // Codex provider for OpenAI
+            scopes: [],
+          });
+          console.log(`[codex-helper] Marked codex as connected for user ${userId}`);
+        } catch (dbError) {
+          console.error('[codex-helper] Failed to mark provider as connected:', dbError);
+          // Don't fail the request if DB update fails
+        }
+      }
+
       return res.json({ authenticated: data.authenticated });
     }
 

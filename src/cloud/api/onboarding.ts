@@ -191,10 +191,11 @@ onboardingRouter.post('/cli/:provider/start', async (req: Request, res: Response
     const targetUrl = `${workspaceUrl}/auth/cli/${provider}/start`;
     console.log('[onboarding] Forwarding to workspace daemon:', targetUrl);
 
+    // Pass userId to enable per-user credential storage in multi-user workspaces
     const authResponse = await fetch(targetUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ useDeviceFlow }),
+      body: JSON.stringify({ useDeviceFlow, userId }),
     });
 
     console.log('[onboarding] Workspace daemon response:', authResponse.status);

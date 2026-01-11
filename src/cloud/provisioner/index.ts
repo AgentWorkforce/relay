@@ -594,12 +594,15 @@ class FlyProvisioner implements ComputeProvisioner {
 
     // Allocate IPs for the app (required for public DNS)
     // Must use GraphQL API - Machines REST API doesn't support IP allocation
-    // Shared IPv4 is free, IPv6 is free
+    // IMPORTANT: We use dedicated IPv4 ($2/mo) instead of shared because:
+    // - Shared IPv4 doesn't properly handle raw TCP on non-standard ports (like SSH on 3022)
+    // - SSH tunnel connections fail with "Connection closed by remote host" on shared IPs
+    // - Dedicated IPv4 is required for raw TCP services to work correctly
     console.log(`[fly] Allocating IPs for ${appName}...`);
-    const allocateIP = async (type: 'shared_v4' | 'v6'): Promise<boolean> => {
+    const allocateIP = async (type: 'v4' | 'v6'): Promise<boolean> => {
       try {
-        // Map our type to Fly GraphQL enum
-        const graphqlType = type === 'shared_v4' ? 'shared_v4' : 'v6';
+        // Map our type to Fly GraphQL enum (v4 = dedicated IPv4)
+        const graphqlType = type;
         const res = await fetchWithRetry('https://api.fly.io/graphql', {
           method: 'POST',
           headers: {
@@ -656,11 +659,11 @@ class FlyProvisioner implements ComputeProvisioner {
       }
     };
 
-    const [sharedV4Result, v6Result] = await Promise.all([
-      allocateIP('shared_v4'),
+    const [v4Result, v6Result] = await Promise.all([
+      allocateIP('v4'),
       allocateIP('v6'),
     ]);
-    console.log(`[fly] IP allocation results: shared_v4=${sharedV4Result}, v6=${v6Result}`);
+    console.log(`[fly] IP allocation results: v4=${v4Result}, v6=${v6Result}`);
 
     // Stage: Secrets
     updateProvisioningStage(workspace.id, 'secrets');
