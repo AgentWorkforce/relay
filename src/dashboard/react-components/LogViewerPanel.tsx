@@ -144,19 +144,19 @@ export function LogViewerPanel({
         className={`flex flex-col ${getAnimationClass()}`}
         style={getPanelStyles()}
       >
-        {/* Header with agent info - collapsible */}
+        {/* Header with agent info - collapsible, responsive for mobile */}
         <div
           className={`flex items-center justify-between border-b border-[#21262d] transition-all duration-200 ${
-            isHeaderCollapsed ? 'px-4 py-2' : 'px-5 py-4'
+            isHeaderCollapsed ? 'px-2 sm:px-4 py-1.5 sm:py-2' : 'px-3 sm:px-5 py-2 sm:py-4'
           }`}
           style={{
             background: 'linear-gradient(180deg, #161b22 0%, #0d1117 100%)',
           }}
         >
-          <div className="flex items-center gap-3">
-            {/* Collapse/expand toggle */}
+          <div className="flex items-center gap-1.5 sm:gap-3">
+            {/* Collapse/expand toggle - hidden on mobile for simplicity */}
             <button
-              className="p-1 rounded-md text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d] transition-colors"
+              className="hidden sm:block p-1 rounded-md text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d] transition-colors"
               onClick={() => setIsHeaderCollapsed(!isHeaderCollapsed)}
               title={isHeaderCollapsed ? 'Expand header' : 'Collapse header'}
             >
@@ -166,7 +166,7 @@ export function LogViewerPanel({
             {/* Agent avatar with shine effect */}
             <div
               className={`relative shrink-0 rounded-xl flex items-center justify-center font-bold overflow-hidden transition-all duration-200 ${
-                isHeaderCollapsed ? 'w-8 h-8 text-xs' : 'w-11 h-11 text-sm'
+                isHeaderCollapsed ? 'w-7 h-7 sm:w-8 sm:h-8 text-xs' : 'w-9 h-9 sm:w-11 sm:h-11 text-xs sm:text-sm'
               }`}
               style={{
                 backgroundColor: colors.primary,
@@ -209,15 +209,15 @@ export function LogViewerPanel({
               </div>
             ) : (
               <div className="flex flex-col">
-                <div className="flex items-center gap-2.5">
+                <div className="flex items-center gap-1.5 sm:gap-2.5">
                   <h2
-                    className="text-lg font-semibold m-0"
+                    className="text-base sm:text-lg font-semibold m-0"
                     style={{ color: colors.primary }}
                   >
                     {agent.name}
                   </h2>
                   <span
-                    className={`px-2.5 py-0.5 rounded-md text-[10px] uppercase tracking-wider font-medium ${
+                    className={`px-1.5 sm:px-2.5 py-0.5 rounded-md text-[9px] sm:text-[10px] uppercase tracking-wider font-medium ${
                       agent.status === 'online'
                         ? 'bg-[#3fb950]/15 text-[#3fb950]'
                         : agent.status === 'busy'
@@ -231,8 +231,9 @@ export function LogViewerPanel({
                     {agent.status}
                   </span>
                 </div>
+                {/* Task description hidden on mobile to save space */}
                 {agent.currentTask && (
-                  <span className="text-sm text-[#8b949e] truncate max-w-[300px] mt-0.5">
+                  <span className="hidden sm:block text-sm text-[#8b949e] truncate max-w-[300px] mt-0.5">
                     {agent.currentTask}
                   </span>
                 )}
@@ -240,20 +241,22 @@ export function LogViewerPanel({
             )}
           </div>
 
-          <div className="flex items-center gap-2">
-            {/* Agent switcher dropdown */}
+          <div className="flex items-center gap-1 sm:gap-2">
+            {/* Agent switcher dropdown - hidden on mobile to save space */}
             {availableAgents.length > 1 && onAgentChange && (
-              <AgentSwitcher
-                agents={availableAgents}
-                currentAgent={agent}
-                onSelect={onAgentChange}
-              />
+              <div className="hidden sm:block">
+                <AgentSwitcher
+                  agents={availableAgents}
+                  currentAgent={agent}
+                  onSelect={onAgentChange}
+                />
+              </div>
             )}
 
-            {/* Position toggle buttons */}
-            <div className="flex items-center gap-1 bg-[#21262d]/80 rounded-lg p-1 border border-[#30363d]/50">
+            {/* Position toggle buttons - more compact on mobile */}
+            <div className="flex items-center gap-0.5 sm:gap-1 bg-[#21262d]/80 rounded-lg p-0.5 sm:p-1 border border-[#30363d]/50">
               <button
-                className={`p-1.5 rounded-md transition-all duration-200 ${
+                className={`p-1 sm:p-1.5 rounded-md transition-all duration-200 ${
                   position === 'right'
                     ? 'bg-accent-cyan/15 text-accent-cyan shadow-[0_0_8px_rgba(0,217,255,0.15)]'
                     : 'text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#30363d]'
@@ -263,7 +266,7 @@ export function LogViewerPanel({
                 <SidebarIcon />
               </button>
               <button
-                className={`p-1.5 rounded-md transition-all duration-200 ${
+                className={`p-1 sm:p-1.5 rounded-md transition-all duration-200 ${
                   position === 'bottom'
                     ? 'bg-accent-cyan/15 text-accent-cyan shadow-[0_0_8px_rgba(0,217,255,0.15)]'
                     : 'text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#30363d]'
@@ -273,7 +276,7 @@ export function LogViewerPanel({
                 <BottomPanelIcon />
               </button>
               <button
-                className={`p-1.5 rounded-md transition-all duration-200 ${
+                className={`p-1 sm:p-1.5 rounded-md transition-all duration-200 ${
                   position === 'fullscreen'
                     ? 'bg-accent-cyan/15 text-accent-cyan shadow-[0_0_8px_rgba(0,217,255,0.15)]'
                     : 'text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#30363d]'
@@ -284,24 +287,26 @@ export function LogViewerPanel({
               </button>
             </div>
 
-            {/* Interrupt button - break agent out of stuck loops */}
+            {/* Interrupt button (SIGINT/Ctrl+C) - clear stop icon with label on larger screens */}
             <button
-              className={`p-2 rounded-lg transition-all duration-200 ${
+              className={`flex items-center gap-1 p-1.5 sm:px-2.5 sm:py-1.5 rounded-lg transition-all duration-200 ${
                 isInterrupting
-                  ? 'bg-[#d29922]/20 text-[#d29922] animate-pulse'
-                  : 'text-[#8b949e] hover:text-[#d29922] hover:bg-[#d29922]/10 hover:shadow-[0_0_8px_rgba(210,153,34,0.2)]'
+                  ? 'bg-[#f85149]/20 text-[#f85149] animate-pulse'
+                  : 'text-[#8b949e] hover:text-[#f85149] hover:bg-[#f85149]/10 hover:shadow-[0_0_8px_rgba(248,81,73,0.2)]'
               }`}
               onClick={handleInterrupt}
               disabled={isInterrupting}
-              title="Interrupt agent (Ctrl+C) - break out of current task"
+              title="Send SIGINT (Ctrl+C) to interrupt agent"
             >
-              <InterruptIcon />
+              <StopIcon />
+              <span className="hidden sm:inline text-xs font-medium">Stop</span>
             </button>
 
             {/* Close button */}
             <button
-              className="p-2 rounded-lg text-[#8b949e] hover:text-[#f85149] hover:bg-[#f85149]/10 transition-all duration-200 hover:shadow-[0_0_8px_rgba(248,81,73,0.2)]"
+              className="p-1.5 sm:p-2 rounded-lg text-[#8b949e] hover:text-[#f85149] hover:bg-[#f85149]/10 transition-all duration-200 hover:shadow-[0_0_8px_rgba(248,81,73,0.2)]"
               onClick={onClose}
+              title="Close panel"
             >
               <CloseIcon />
             </button>
@@ -438,11 +443,15 @@ function AgentSwitcher({ agents, currentAgent, onSelect }: AgentSwitcherProps) {
 }
 
 // Icons
-function InterruptIcon() {
+
+/** Clear stop icon - octagon shape like a stop sign for SIGINT */
+function StopIcon() {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      {/* Stop/pause hand icon */}
-      <rect x="6" y="6" width="12" height="12" rx="1" />
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      {/* Octagon stop sign shape */}
+      <polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2" />
+      {/* Stop square in center */}
+      <rect x="9" y="9" width="6" height="6" fill="currentColor" stroke="none" />
     </svg>
   );
 }
