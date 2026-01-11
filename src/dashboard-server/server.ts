@@ -3650,6 +3650,56 @@ Start by greeting the project leads and asking for status updates.`;
   });
 
   /**
+   * POST /api/agents/by-name/:name/interrupt - Send ESC sequence to interrupt an agent
+   *
+   * Sends ESC ESC (0x1b 0x1b) to the agent's PTY to interrupt the current operation.
+   * This is useful for breaking agents out of stuck loops without terminating them.
+   */
+  app.post('/api/agents/by-name/:name/interrupt', (req, res) => {
+    if (!spawner) {
+      return res.status(503).json({
+        success: false,
+        error: 'Spawner not enabled',
+      });
+    }
+
+    const { name } = req.params;
+
+    // Check if agent exists
+    if (!spawner.hasWorker(name)) {
+      return res.status(404).json({
+        success: false,
+        error: `Agent ${name} not found or not spawned`,
+      });
+    }
+
+    try {
+      // Send ESC ESC sequence to interrupt the agent
+      // ESC = 0x1b in hexadecimal
+      const success = spawner.sendWorkerInput(name, '\x1b\x1b');
+
+      if (success) {
+        console.log(`[api] Sent interrupt (ESC ESC) to agent ${name}`);
+        res.json({
+          success: true,
+          message: `Interrupt signal sent to ${name}`,
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          error: `Failed to send interrupt to ${name}`,
+        });
+      }
+    } catch (err: any) {
+      console.error('[api] Interrupt error:', err);
+      res.status(500).json({
+        success: false,
+        error: err.message,
+      });
+    }
+  });
+
+  /**
    * GET /api/trajectory - Get current trajectory status
    */
   app.get('/api/trajectory', async (_req, res) => {
