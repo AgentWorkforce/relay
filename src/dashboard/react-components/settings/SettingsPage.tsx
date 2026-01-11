@@ -356,8 +356,8 @@ export function SettingsPage({
 // Utility Components
 function PageHeader({ title, subtitle }: { title: string; subtitle: string }) {
   return (
-    <div className="mb-8">
-      <h2 className="text-2xl font-bold text-text-primary">{title}</h2>
+    <div className="mb-6 sm:mb-8">
+      <h2 className="text-xl sm:text-2xl font-bold text-text-primary">{title}</h2>
       <p className="text-sm text-text-muted mt-1">{subtitle}</p>
     </div>
   );
@@ -374,7 +374,7 @@ function SettingsSection({
 }) {
   return (
     <div className="bg-bg-tertiary rounded-xl border border-border-subtle overflow-hidden">
-      <div className="px-6 py-4 border-b border-border-subtle bg-bg-secondary/50 flex items-center gap-3">
+      <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-border-subtle bg-bg-secondary/50 flex items-center gap-3">
         <span className="text-accent-cyan">{icon}</span>
         <h3 className="text-sm font-semibold text-text-primary uppercase tracking-wide">{title}</h3>
       </div>
@@ -393,7 +393,7 @@ function SettingRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className="px-6 py-4 flex items-center justify-between">
+    <div className="px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between">
       <div>
         <p className="text-sm font-medium text-text-primary">{label}</p>
         <p className="text-xs text-text-muted mt-0.5">{description}</p>
