@@ -322,6 +322,7 @@ interface AgentStatus {
   processingStartedAt?: number;
   isSpawned?: boolean;
   team?: string;
+  avatarUrl?: string;
 }
 
 interface Attachment {
@@ -1351,6 +1352,26 @@ export async function startDashboard(
         team: a.team,
       });
     });
+
+    // Inject online human users (connected via dashboard WebSocket) into agentsMap
+    // These users are tracked in onlineUsers for presence but need to appear in the agents list
+    // with cli: 'dashboard' so they show up in the sidebar for DM conversations
+    for (const [username, state] of onlineUsers) {
+      // Don't overwrite existing entries (e.g., if user is also in team.json)
+      if (!agentsMap.has(username)) {
+        agentsMap.set(username, {
+          name: username,
+          role: 'User',
+          cli: 'dashboard',
+          messageCount: 0,
+          status: 'online',
+          lastSeen: state.info.lastSeen,
+          lastActive: state.info.lastSeen,
+          needsAttention: false,
+          avatarUrl: state.info.avatarUrl,
+        });
+      }
+    }
 
     // Update inbox counts if fallback mode; if storage, count messages addressed to agent
     if (storage) {
