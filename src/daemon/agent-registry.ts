@@ -5,7 +5,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { v4 as uuid } from 'uuid';
+import { generateId } from '../utils/id-generator.js';
 import { createLogger } from '../utils/logger.js';
 
 const log = createLogger('registry');
@@ -105,7 +105,7 @@ export class AgentRegistry {
     }
 
     const record: AgentRecord = {
-      id: `agent-${uuid()}`,
+      id: `agent-${generateId()}`,
       name: agent.name,
       cli: agent.cli,
       program: agent.program,
@@ -206,7 +206,7 @@ export class AgentRegistry {
 
     const now = new Date().toISOString();
     const record: AgentRecord = {
-      id: `agent-${uuid()}`,
+      id: `agent-${generateId()}`,
       name: agentName,
       firstSeen: now,
       lastSeen: now,
@@ -240,7 +240,7 @@ export class AgentRegistry {
       for (const raw of rawAgents) {
         if (!raw?.name) continue;
         const record: AgentRecord = {
-          id: raw.id ?? `agent-${uuid()}`,
+          id: raw.id ?? `agent-${generateId()}`,
           name: raw.name,
           cli: raw.cli,
           program: raw.program,

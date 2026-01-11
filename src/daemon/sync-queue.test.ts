@@ -226,10 +226,10 @@ describe('SyncQueue', () => {
       // Verify filenames are unique
       expect(new Set(spillFiles).size).toBe(2);
 
-      // Verify filename format includes UUID segment
+      // Verify filename format includes ID segment
       for (const file of spillFiles) {
-        // Format: spill-{timestamp}-{uuid-8chars}.json
-        expect(file).toMatch(/^spill-\d+-[a-f0-9]{8}\.json$/);
+        // Format: spill-{timestamp}-{id}.json (ID is alphanumeric base36)
+        expect(file).toMatch(/^spill-\d+-[a-z0-9]+\.json$/);
       }
 
       await queue.close();

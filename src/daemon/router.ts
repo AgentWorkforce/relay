@@ -3,7 +3,7 @@
  * Handles routing messages between agents, topic subscriptions, and broadcast.
  */
 
-import { v4 as uuid } from 'uuid';
+import { generateId } from '../utils/id-generator.js';
 import {
   type Envelope,
   type SendEnvelope,
@@ -377,7 +377,7 @@ export class Router {
       const triggerEnvelope: SendEnvelope = {
         v: PROTOCOL_VERSION,
         type: 'SEND',
-        id: uuid(),
+        id: generateId(),
         ts: Date.now(),
         from: primaryAgent,
         to: shadow.shadowAgent,
@@ -671,7 +671,7 @@ export class Router {
     return {
       v: PROTOCOL_VERSION,
       type: 'DELIVER',
-      id: uuid(),
+      id: generateId(),
       ts: Date.now(),
       from,
       to,
@@ -926,7 +926,7 @@ export class Router {
     const envelope: SendEnvelope = {
       v: PROTOCOL_VERSION,
       type: 'SEND',
-      id: uuid(),
+      id: generateId(),
       ts: Date.now(),
       from: '_system',
       to: '*',
@@ -1030,7 +1030,7 @@ export class Router {
         const joinNotification: Envelope<ChannelJoinPayload> = {
           v: PROTOCOL_VERSION,
           type: 'CHANNEL_JOIN',
-          id: uuid(),
+          id: generateId(),
           ts: Date.now(),
           from: memberName,
           payload: envelope.payload,
@@ -1094,7 +1094,7 @@ export class Router {
         const leaveNotification: Envelope<ChannelLeavePayload> = {
           v: PROTOCOL_VERSION,
           type: 'CHANNEL_LEAVE',
-          id: uuid(),
+          id: generateId(),
           ts: Date.now(),
           from: memberName,
           payload: envelope.payload,
@@ -1147,7 +1147,7 @@ export class Router {
         const deliverEnvelope: Envelope<ChannelMessagePayload> = {
           v: PROTOCOL_VERSION,
           type: 'CHANNEL_MESSAGE',
-          id: uuid(),
+          id: generateId(),
           ts: Date.now(),
           from: senderName,
           payload: envelope.payload,

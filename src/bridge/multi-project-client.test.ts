@@ -34,8 +34,10 @@ vi.mock('node:net', () => ({
 vi.mock('../protocol/framing.js', () => ({
   FrameParser: class {
     push = vi.fn(() => framesToReturn);
+    setLegacyMode = vi.fn();
   },
   encodeFrame: encodeFrameMock,
+  encodeFrameLegacy: encodeFrameMock, // Also mock legacy version
 }));
 
 // Simple socket stub

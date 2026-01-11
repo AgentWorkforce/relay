@@ -5,7 +5,7 @@
 
 import net from 'node:net';
 import fs from 'node:fs';
-import { v4 as uuid } from 'uuid';
+import { generateId } from '../utils/id-generator.js';
 import {
   type Envelope,
   type HelloPayload,
@@ -13,7 +13,7 @@ import {
   type DeliverEnvelope,
   PROTOCOL_VERSION,
 } from '../protocol/types.js';
-import { encodeFrame, FrameParser } from '../protocol/framing.js';
+import { encodeFrameLegacy as encodeFrame, FrameParser } from '../protocol/framing.js';
 import type { ProjectConfig, LeadInfo } from './types.js';
 
 interface ProjectConnection {
@@ -87,10 +87,13 @@ export class MultiProjectClient {
         this.sendHello(conn);
       });
 
+      const parser = new FrameParser();
+      parser.setLegacyMode(true); // Use 4-byte header for backwards compatibility
+
       const conn: ProjectConnection = {
         config: project,
         socket,
-        parser: new FrameParser(),
+        parser,
         ready: false,
       };
 
@@ -142,7 +145,7 @@ export class MultiProjectClient {
     const hello: Envelope<HelloPayload> = {
       v: PROTOCOL_VERSION,
       type: 'HELLO',
-      id: uuid(),
+      id: generateId(),
       ts: Date.now(),
       payload: {
         agent: this.options.agentName,
@@ -192,7 +195,7 @@ export class MultiProjectClient {
         this.send(conn, {
           v: PROTOCOL_VERSION,
           type: 'PONG',
-          id: uuid(),
+          id: generateId(),
           ts: Date.now(),
           payload: (envelope.payload as { nonce?: string }) ?? {},
         });
@@ -208,7 +211,7 @@ export class MultiProjectClient {
     this.send(conn, {
       v: PROTOCOL_VERSION,
       type: 'ACK',
-      id: uuid(),
+      id: generateId(),
       ts: Date.now(),
       payload: {
         ack_id: envelope.id,
@@ -266,7 +269,7 @@ export class MultiProjectClient {
     const envelope: Envelope<SendPayload> = {
       v: PROTOCOL_VERSION,
       type: 'SEND',
-      id: uuid(),
+      id: generateId(),
       ts: Date.now(),
       to: targetAgent,
       payload: {
@@ -296,7 +299,7 @@ export class MultiProjectClient {
         const envelope: Envelope<SendPayload> = {
           v: PROTOCOL_VERSION,
           type: 'SEND',
-          id: uuid(),
+          id: generateId(),
           ts: Date.now(),
           to: '*',
           payload: {
@@ -385,9 +388,10 @@ export class MultiProjectClient {
       this.sendHello(conn);
     });
 
-    // Update connection with new socket
+    // Update connection with new socket and fresh parser
     conn.socket = socket;
     conn.parser = new FrameParser();
+    conn.parser.setLegacyMode(true); // Use 4-byte header for backwards compatibility
 
     socket.on('data', (data) => this.handleData(conn, data));
 
@@ -450,7 +454,7 @@ export class MultiProjectClient {
         this.send(conn, {
           v: PROTOCOL_VERSION,
           type: 'BYE',
-          id: uuid(),
+          id: generateId(),
           ts: Date.now(),
           payload: {},
         });

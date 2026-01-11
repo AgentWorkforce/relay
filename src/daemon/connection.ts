@@ -9,7 +9,7 @@
  */
 
 import net from 'node:net';
-import { v4 as uuid } from 'uuid';
+import { generateId } from '../utils/id-generator.js';
 import {
   type Envelope,
   type HelloPayload,
@@ -21,7 +21,7 @@ import {
   type EntityType,
   PROTOCOL_VERSION,
 } from '../protocol/types.js';
-import { encodeFrame, FrameParser } from '../protocol/framing.js';
+import { encodeFrameLegacy as encodeFrame, FrameParser } from '../protocol/framing.js';
 
 export type ConnectionState = 'CONNECTING' | 'HANDSHAKING' | 'ACTIVE' | 'CLOSING' | 'CLOSED' | 'ERROR';
 
@@ -102,12 +102,13 @@ export class Connection {
   onBackpressure?: (backpressured: boolean) => void;
 
   constructor(socket: net.Socket, config: Partial<ConnectionConfig> = {}) {
-    this.id = uuid();
+    this.id = generateId();
     this.socket = socket;
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.parser = new FrameParser(this.config.maxFrameBytes);
-    this._sessionId = uuid();
-    this._resumeToken = uuid();
+    this.parser.setLegacyMode(true); // Use 4-byte header for backwards compatibility
+    this._sessionId = generateId();
+    this._resumeToken = generateId();
 
     this.setupSocketHandlers();
     this._state = 'HANDSHAKING';
@@ -272,7 +273,7 @@ export class Connection {
     const welcome: Envelope<WelcomePayload> = {
       v: PROTOCOL_VERSION,
       type: 'WELCOME',
-      id: uuid(),
+      id: generateId(),
       ts: Date.now(),
       payload: {
         session_id: this._sessionId,
@@ -336,11 +337,11 @@ export class Connection {
       }
 
       // Send ping
-      const nonce = uuid();
+      const nonce = generateId();
       this.send({
         v: PROTOCOL_VERSION,
         type: 'PING',
-        id: uuid(),
+        id: generateId(),
         ts: now,
         payload: { nonce },
       });
@@ -466,7 +467,7 @@ export class Connection {
     const error: Envelope<ErrorPayload> = {
       v: PROTOCOL_VERSION,
       type: 'ERROR',
-      id: uuid(),
+      id: generateId(),
       ts: Date.now(),
       payload: {
         code: code as ErrorPayload['code'],
@@ -517,7 +518,7 @@ export class Connection {
     this.send({
       v: PROTOCOL_VERSION,
       type: 'BYE',
-      id: uuid(),
+      id: generateId(),
       ts: Date.now(),
       payload: {},
     });

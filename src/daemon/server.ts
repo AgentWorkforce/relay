@@ -16,7 +16,7 @@ import { getProjectPaths } from '../utils/project-namespace.js';
 import { AgentRegistry } from './agent-registry.js';
 import { daemonLog as log } from '../utils/logger.js';
 import { getCloudSync, type CloudSyncService, type RemoteAgent, type CrossMachineMessage } from './cloud-sync.js';
-import { v4 as uuid } from 'uuid';
+import { generateId } from '../utils/id-generator.js';
 import {
   ConsensusIntegration,
   createConsensusIntegration,
@@ -329,7 +329,7 @@ export class Daemon {
     const envelope: SendEnvelope = {
       v: 1,
       type: 'SEND',
-      id: uuid(),
+      id: generateId(),
       ts: Date.now(),
       from: `${msg.from.daemonName}:${msg.from.agent}`,
       to: msg.to,

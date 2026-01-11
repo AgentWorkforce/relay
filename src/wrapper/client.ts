@@ -1,10 +1,15 @@
 /**
  * Relay Client
  * Connects to the daemon and handles message sending/receiving.
+ *
+ * Optimizations:
+ * - Monotonic ID generation (faster than UUID)
+ * - Write coalescing (batch socket writes)
+ * - Circular dedup cache (O(1) eviction)
  */
 
 import net from 'node:net';
-import { v4 as uuid } from 'uuid';
+import { generateId } from '../utils/id-generator.js';
 import {
   type Envelope,
   type HelloPayload,
@@ -20,7 +25,7 @@ import {
   type EntityType,
   PROTOCOL_VERSION,
 } from '../protocol/types.js';
-import { encodeFrame, FrameParser } from '../protocol/framing.js';
+import { encodeFrameLegacy, FrameParser } from '../protocol/framing.js';
 import { DEFAULT_SOCKET_PATH } from '../daemon/server.js';
 
 export type ClientState = 'DISCONNECTED' | 'CONNECTING' | 'HANDSHAKING' | 'READY' | 'BACKOFF';
@@ -63,6 +68,45 @@ const DEFAULT_CLIENT_CONFIG: ClientConfig = {
   reconnectMaxDelayMs: 30000,
 };
 
+/**
+ * Circular buffer for O(1) deduplication with bounded memory.
+ */
+class CircularDedupeCache {
+  private ids: Set<string> = new Set();
+  private ring: string[];
+  private head = 0;
+  private readonly capacity: number;
+
+  constructor(capacity = 2000) {
+    this.capacity = capacity;
+    this.ring = new Array(capacity);
+  }
+
+  /** Returns true if duplicate (already seen) */
+  check(id: string): boolean {
+    if (this.ids.has(id)) return true;
+
+    // Evict oldest if at capacity
+    if (this.ids.size >= this.capacity) {
+      const oldest = this.ring[this.head];
+      if (oldest) this.ids.delete(oldest);
+    }
+
+    // Add new ID
+    this.ring[this.head] = id;
+    this.ids.add(id);
+    this.head = (this.head + 1) % this.capacity;
+
+    return false;
+  }
+
+  clear(): void {
+    this.ids.clear();
+    this.ring = new Array(this.capacity);
+    this.head = 0;
+  }
+}
+
 export class RelayClient {
   private config: ClientConfig;
   private socket?: net.Socket;
@@ -75,9 +119,13 @@ export class RelayClient {
   private reconnectDelay: number;
   private reconnectTimer?: NodeJS.Timeout;
   private _destroyed = false;
-  private deliveredIds: Set<string> = new Set();
-  private deliveredOrder: string[] = [];
-  private readonly deliveredCacheLimit = 2000;
+
+  // Circular dedup cache (O(1) eviction vs O(n) array shift)
+  private dedupeCache = new CircularDedupeCache(2000);
+
+  // Write coalescing: batch multiple writes into single syscall
+  private writeQueue: Buffer[] = [];
+  private writeScheduled = false;
 
   // Event handlers
   /**
@@ -95,6 +143,7 @@ export class RelayClient {
   constructor(config: Partial<ClientConfig> = {}) {
     this.config = { ...DEFAULT_CLIENT_CONFIG, ...config };
     this.parser = new FrameParser();
+    this.parser.setLegacyMode(true); // Use 4-byte header for backwards compatibility
     this.reconnectDelay = this.config.reconnectDelayMs;
   }
 
@@ -185,7 +234,7 @@ export class RelayClient {
       this.send({
         v: PROTOCOL_VERSION,
         type: 'BYE',
-        id: uuid(),
+        id: generateId(),
         ts: Date.now(),
         payload: {},
       });
@@ -221,7 +270,7 @@ export class RelayClient {
     const envelope: SendEnvelope = {
       v: PROTOCOL_VERSION,
       type: 'SEND',
-      id: uuid(),
+      id: generateId(),
       ts: Date.now(),
       to,
       payload: {
@@ -252,7 +301,7 @@ export class RelayClient {
     return this.send({
       v: PROTOCOL_VERSION,
       type: 'SUBSCRIBE',
-      id: uuid(),
+      id: generateId(),
       ts: Date.now(),
       topic,
       payload: {},
@@ -268,7 +317,7 @@ export class RelayClient {
     return this.send({
       v: PROTOCOL_VERSION,
       type: 'UNSUBSCRIBE',
-      id: uuid(),
+      id: generateId(),
       ts: Date.now(),
       topic,
       payload: {},
@@ -297,7 +346,7 @@ export class RelayClient {
     return this.send({
       v: PROTOCOL_VERSION,
       type: 'SHADOW_BIND',
-      id: uuid(),
+      id: generateId(),
       ts: Date.now(),
       payload: {
         primaryAgent,
@@ -318,7 +367,7 @@ export class RelayClient {
     return this.send({
       v: PROTOCOL_VERSION,
       type: 'SHADOW_UNBIND',
-      id: uuid(),
+      id: generateId(),
       ts: Date.now(),
       payload: {
         primaryAgent,
@@ -341,7 +390,7 @@ export class RelayClient {
     const envelope: Envelope<LogPayload> = {
       v: PROTOCOL_VERSION,
       type: 'LOG',
-      id: uuid(),
+      id: generateId(),
       ts: Date.now(),
       payload: {
         data,
@@ -362,7 +411,7 @@ export class RelayClient {
     const hello: Envelope<HelloPayload> = {
       v: PROTOCOL_VERSION,
       type: 'HELLO',
-      id: uuid(),
+      id: generateId(),
       ts: Date.now(),
       payload: {
         agent: this.config.agentName,
@@ -391,13 +440,36 @@ export class RelayClient {
     if (!this.socket) return false;
 
     try {
-      const frame = encodeFrame(envelope);
-      this.socket.write(frame);
+      const frame = encodeFrameLegacy(envelope);
+      this.writeQueue.push(frame);
+
+      // Coalesce writes: schedule flush on next tick if not already scheduled
+      if (!this.writeScheduled) {
+        this.writeScheduled = true;
+        setImmediate(() => this.flushWrites());
+      }
       return true;
     } catch (err) {
       this.handleError(err as Error);
       return false;
     }
+  }
+
+  /**
+   * Flush all queued writes in a single syscall.
+   */
+  private flushWrites(): void {
+    this.writeScheduled = false;
+    if (this.writeQueue.length === 0 || !this.socket) return;
+
+    if (this.writeQueue.length === 1) {
+      // Single frame - write directly (no concat needed)
+      this.socket.write(this.writeQueue[0]);
+    } else {
+      // Multiple frames - batch into single write
+      this.socket.write(Buffer.concat(this.writeQueue));
+    }
+    this.writeQueue = [];
   }
 
   private handleData(data: Buffer): void {
@@ -451,7 +523,7 @@ export class RelayClient {
     this.send({
       v: PROTOCOL_VERSION,
       type: 'ACK',
-      id: uuid(),
+      id: generateId(),
       ts: Date.now(),
       payload: {
         ack_id: envelope.id,
@@ -475,7 +547,7 @@ export class RelayClient {
     this.send({
       v: PROTOCOL_VERSION,
       type: 'PONG',
-      id: uuid(),
+      id: generateId(),
       ts: Date.now(),
       payload: (envelope.payload as { nonce?: string }) ?? {},
     });
@@ -544,25 +616,11 @@ export class RelayClient {
   }
 
   /**
-   * Track delivered message IDs to provide deterministic deduplication when messages are replayed.
+   * Check if message was already delivered (deduplication).
+   * Uses circular buffer for O(1) eviction.
    * @returns true if the message has already been seen.
    */
   private markDelivered(id: string): boolean {
-    if (this.deliveredIds.has(id)) {
-      return true;
-    }
-
-    this.deliveredIds.add(id);
-    this.deliveredOrder.push(id);
-
-    // Simple FIFO eviction to keep memory bounded
-    if (this.deliveredOrder.length > this.deliveredCacheLimit) {
-      const oldest = this.deliveredOrder.shift();
-      if (oldest) {
-        this.deliveredIds.delete(oldest);
-      }
-    }
-
-    return false;
+    return this.dedupeCache.check(id);
   }
 }

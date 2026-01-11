@@ -15,7 +15,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { gzip } from 'node:zlib';
 import { promisify } from 'node:util';
-import { v4 as uuid } from 'uuid';
+import { generateId } from '../utils/id-generator.js';
 import { createLogger } from '../utils/logger.js';
 import type { StoredMessage } from '../storage/adapter.js';
 
@@ -332,7 +332,7 @@ export class SyncQueue {
     try {
       await fs.mkdir(this.config.spillDir, { recursive: true });
 
-      const filename = `spill-${Date.now()}-${uuid().slice(0, 8)}.json`;
+      const filename = `spill-${Date.now()}-${generateId().replace(/-/g, '')}.json`;
       const filepath = path.join(this.config.spillDir, filename);
 
       await fs.writeFile(filepath, JSON.stringify(messages));
