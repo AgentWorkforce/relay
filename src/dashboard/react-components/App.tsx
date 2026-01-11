@@ -17,6 +17,7 @@ import { NewConversationModal } from './NewConversationModal';
 import { SettingsPage, defaultSettings, type Settings } from './settings';
 import { ConversationHistory } from './ConversationHistory';
 import { MentionAutocomplete, getMentionQuery, completeMentionInValue, type HumanUser } from './MentionAutocomplete';
+import { NotificationToast, useToasts } from './NotificationToast';
 import { FileAutocomplete, getFileQuery, completeFileInValue } from './FileAutocomplete';
 import { WorkspaceSelector, type Workspace } from './WorkspaceSelector';
 import { AddWorkspaceModal } from './AddWorkspaceModal';
@@ -351,6 +352,10 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   // Fleet overview state
   const [isFleetViewActive, setIsFleetViewActive] = useState(false);
   const [fleetServers, setFleetServers] = useState<ServerInfo[]>([]);
+
+  // Auth revocation notification state
+  const { toasts, addToast, dismissToast } = useToasts();
+  const [authRevokedAgents, setAuthRevokedAgents] = useState<Set<string>>(new Set());
   const [selectedServerId, setSelectedServerId] = useState<string | undefined>();
 
   // Task creation state (tasks are stored in beads, not local state)
@@ -599,6 +604,60 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     lastSeenMessageCountRef.current = messages.length;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Detect auth revocation messages and show notification
+  useEffect(() => {
+    if (!data?.messages) return;
+
+    for (const msg of data.messages) {
+      // Check for auth_revoked control messages
+      if (msg.content?.includes('auth_revoked') || msg.content?.includes('authentication_error')) {
+        try {
+          const parsed = JSON.parse(msg.content);
+          if (parsed.type === 'auth_revoked' && parsed.agent) {
+            const agentName = parsed.agent;
+            if (!authRevokedAgents.has(agentName)) {
+              setAuthRevokedAgents(prev => new Set([...prev, agentName]));
+              addToast({
+                type: 'error',
+                title: 'Authentication Expired',
+                message: `${agentName}'s API credentials have expired. Please reconnect.`,
+                agentName,
+                duration: 0, // Don't auto-dismiss
+                action: {
+                  label: 'Reconnect',
+                  onClick: () => {
+                    window.location.href = '/providers';
+                  },
+                },
+              });
+            }
+          }
+        } catch {
+          // Not JSON, check for plain text auth error patterns
+          if (msg.content?.includes('OAuth token') && msg.content?.includes('expired')) {
+            const agentName = msg.from;
+            if (agentName && !authRevokedAgents.has(agentName)) {
+              setAuthRevokedAgents(prev => new Set([...prev, agentName]));
+              addToast({
+                type: 'error',
+                title: 'Authentication Expired',
+                message: `${agentName}'s API credentials have expired. Please reconnect.`,
+                agentName,
+                duration: 0,
+                action: {
+                  label: 'Reconnect',
+                  onClick: () => {
+                    window.location.href = '/providers';
+                  },
+                },
+              });
+            }
+          }
+        }
+      }
+    }
+  }, [data?.messages, authRevokedAgents, addToast]);
 
   // Check if fleet view is available
   const isFleetAvailable = Boolean(data?.fleet?.servers?.length) || workspaces.length > 0;
@@ -2115,6 +2174,13 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           onClose={() => setIsFullSettingsOpen(false)}
         />
       )}
+
+      {/* Toast Notifications */}
+      <NotificationToast
+        toasts={toasts}
+        onDismiss={dismissToast}
+        position="top-right"
+      />
     </div>
     </WorkspaceProvider>
   );

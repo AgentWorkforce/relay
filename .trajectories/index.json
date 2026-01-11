@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-11T02:13:14.301Z",
+  "lastUpdated": "2026-01-11T10:15:12.732Z",
   "trajectories": {
     "traj_x721m1j9rzup": {
       "title": "Phase 1-3 socket baseline architecture and performance optimizations",
@@ -29,6 +29,12 @@
       "startedAt": "2026-01-11T02:11:07.036Z",
       "completedAt": "2026-01-11T02:13:14.287Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_io1v6tehuxwv.json"
+    },
+    "traj_dbledg2lxxtf": {
+      "title": "Investigate prod agent_messages writes not happening",
+      "status": "active",
+      "startedAt": "2026-01-11T10:13:26.122Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/active/traj_dbledg2lxxtf.json"
     }
   }
 }
