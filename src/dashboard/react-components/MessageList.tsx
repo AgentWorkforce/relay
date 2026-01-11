@@ -41,9 +41,11 @@ SyntaxHighlighter.registerLanguage('java', java);
 SyntaxHighlighter.registerLanguage('docker', docker);
 SyntaxHighlighter.registerLanguage('dockerfile', docker);
 import type { Message, Agent, Attachment } from '../types';
+import type { UserPresence } from './hooks/usePresence';
 import { MessageStatusIndicator } from './MessageStatusIndicator';
 import { ThinkingIndicator } from './ThinkingIndicator';
 import { deduplicateBroadcasts } from './hooks/useBroadcastDedup';
+import { MessageSenderName } from './MessageSenderName';
 
 // Provider icons and colors matching landing page
 const PROVIDER_CONFIG: Record<string, { icon: string; color: string }> = {
@@ -98,6 +100,12 @@ export interface MessageListProps {
   showTimestamps?: boolean;
   /** Compact spacing for dense layouts */
   compactMode?: boolean;
+  /** Callback when an agent name is clicked to open profile */
+  onAgentClick?: (agent: Agent) => void;
+  /** Callback when a human user name is clicked to open profile */
+  onUserClick?: (user: UserPresence) => void;
+  /** Online users list for profile lookup */
+  onlineUsers?: UserPresence[];
 }
 
 export function MessageList({
@@ -112,6 +120,9 @@ export function MessageList({
   autoScrollDefault = true,
   showTimestamps = true,
   compactMode = false,
+  onAgentClick,
+  onUserClick,
+  onlineUsers = [],
 }: MessageListProps) {
   // Build a map of agent name -> processing state for quick lookup
   const processingAgents = new Map<string, { isProcessing: boolean; processingStartedAt?: number }>();
@@ -315,6 +326,10 @@ export function MessageList({
             currentUser={currentUser}
             showTimestamps={showTimestamps}
             compactMode={compactMode}
+            agents={agents}
+            onlineUsers={onlineUsers}
+            onAgentClick={onAgentClick}
+            onUserClick={onUserClick}
           />
         );
       })}
@@ -332,6 +347,14 @@ interface MessageItemProps {
   currentUser?: CurrentUser;
   showTimestamps?: boolean;
   compactMode?: boolean;
+  /** All agents for name lookup */
+  agents?: Agent[];
+  /** Online users for profile lookup */
+  onlineUsers?: UserPresence[];
+  /** Callback when an agent name is clicked */
+  onAgentClick?: (agent: Agent) => void;
+  /** Callback when a user name is clicked */
+  onUserClick?: (user: UserPresence) => void;
 }
 
 function MessageItem({
@@ -342,6 +365,10 @@ function MessageItem({
   currentUser,
   showTimestamps = true,
   compactMode = false,
+  agents = [],
+  onlineUsers = [],
+  onAgentClick,
+  onUserClick,
 }: MessageItemProps) {
   const timestamp = formatTimestamp(message.timestamp);
 
@@ -359,6 +386,15 @@ function MessageItem({
     ? currentUser.displayName
     : message.from;
   const hasReplies = message.replyCount && message.replyCount > 0;
+
+  // Look up agent or user for sender (for clickable profile)
+  const senderAgent = agents.find(a => a.name.toLowerCase() === message.from.toLowerCase() && !a.isHuman);
+  const senderUser = onlineUsers.find(u => u.username.toLowerCase() === message.from.toLowerCase());
+
+  // Look up agent or user for recipient (for clickable profile)
+  const recipientAgent = message.to !== '*' ? agents.find(a => a.name.toLowerCase() === message.to.toLowerCase() && !a.isHuman) : undefined;
+  const recipientUser = message.to !== '*' ? onlineUsers.find(u => u.username.toLowerCase() === message.to.toLowerCase()) : undefined;
+  const recipientProviderConfig = recipientAgent ? getProviderConfig(message.to) : undefined;
 
   // Show thinking indicator when:
   // 1. Message is from Dashboard or current user (user sent it)
@@ -409,17 +445,27 @@ function MessageItem({
       <div className="flex-1 min-w-0 overflow-hidden">
         {/* Message Header */}
         <div className={`flex items-center gap-2 flex-wrap ${compactMode ? 'mb-1' : 'mb-1.5'}`}>
-          <span
-            className="font-display font-semibold text-sm"
-            style={{ color: provider.color }}
-          >
-            {displayName}
-          </span>
+          <MessageSenderName
+            displayName={displayName}
+            color={provider.color}
+            isCurrentUser={isFromCurrentUser}
+            agent={senderAgent}
+            userPresence={senderUser}
+            onAgentClick={onAgentClick}
+            onUserClick={onUserClick}
+          />
 
           {message.to !== '*' && (
             <>
               <span className="text-text-dim text-xs">→</span>
-              <span className="font-medium text-sm text-accent-cyan">{message.to}</span>
+              <MessageSenderName
+                displayName={message.to}
+                color={recipientProviderConfig?.color || '#00d9ff'}
+                agent={recipientAgent}
+                userPresence={recipientUser}
+                onAgentClick={onAgentClick}
+                onUserClick={onUserClick}
+              />
             </>
           )}
 

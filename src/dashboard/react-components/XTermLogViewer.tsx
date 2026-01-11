@@ -455,8 +455,8 @@ export function XTermLogViewer({
       {/* Terminal container */}
       <div
         ref={containerRef}
-        className="flex-1 overflow-hidden"
-        style={{ maxHeight, minHeight: '200px' }}
+        className="flex-1 overflow-auto md:overflow-hidden touch-pan-y"
+        style={{ maxHeight, minHeight: '200px', WebkitOverflowScrolling: 'touch' }}
       />
 
       {/* Footer status bar */}

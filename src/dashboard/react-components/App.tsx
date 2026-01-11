@@ -1559,6 +1559,9 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
                 showTimestamps={settings.display.showTimestamps}
                 autoScrollDefault={settings.messages.autoScroll}
                 compactMode={settings.display.compactMode}
+                onAgentClick={setSelectedAgentProfile}
+                onUserClick={setSelectedUserProfile}
+                onlineUsers={onlineUsers}
               />
             )}
           </div>
