@@ -354,7 +354,44 @@ export async function createServer(): Promise<CloudServer> {
   // Channel proxy routes - forward to local dashboard-server (not workspace)
   // Channels talk to the local daemon, so they need the local dashboard-server
   // MUST be before teamsRouter to avoid being caught by its catch-all
-  const localDashboardUrl = config.localDashboardUrl || 'http://localhost:3888';
+
+  // Auto-detect local dashboard URL if not configured
+  let localDashboardUrl = config.localDashboardUrl;
+  const defaultPorts = [3888, 3889, 3890];
+
+  async function detectLocalDashboard(): Promise<string | null> {
+    for (const port of defaultPorts) {
+      try {
+        const res = await fetch(`http://localhost:${port}/health`, {
+          method: 'GET',
+          signal: AbortSignal.timeout(1000),
+        });
+        if (res.ok) {
+          console.log(`[channel-proxy] Detected local dashboard at http://localhost:${port}`);
+          return `http://localhost:${port}`;
+        }
+      } catch {
+        // Port not available, try next
+      }
+    }
+    return null;
+  }
+
+  // Detect on first request if not configured
+  let dashboardDetected = !!localDashboardUrl;
+
+  async function getLocalDashboardUrl(): Promise<string> {
+    if (!dashboardDetected) {
+      const detected = await detectLocalDashboard();
+      if (detected) {
+        localDashboardUrl = detected;
+      } else {
+        localDashboardUrl = 'http://localhost:3888'; // fallback
+      }
+      dashboardDetected = true;
+    }
+    return localDashboardUrl!;
+  }
 
   async function proxyToLocalDashboard(
     req: Request,
@@ -363,7 +400,8 @@ export async function createServer(): Promise<CloudServer> {
     options?: { method?: string; body?: unknown }
   ): Promise<void> {
     try {
-      const targetUrl = `${localDashboardUrl}${path}`;
+      const dashboardUrl = await getLocalDashboardUrl();
+      const targetUrl = `${dashboardUrl}${path}`;
       console.log(`[channel-proxy] ${options?.method || 'GET'} ${targetUrl}`);
 
       const fetchOptions: RequestInit = {
