@@ -48,6 +48,8 @@ export interface SidebarProps {
   onSpawnClick?: () => void;
   onReleaseClick?: (agent: Agent) => void;
   onLogsClick?: (agent: Agent) => void;
+  /** Handler to view agent profile */
+  onProfileClick?: (agent: Agent) => void;
   onThreadSelect?: (threadId: string) => void;
   /** Mobile: close sidebar handler */
   onClose?: () => void;
@@ -89,6 +91,7 @@ export function Sidebar({
   onSpawnClick,
   onReleaseClick,
   onLogsClick,
+  onProfileClick,
   onThreadSelect,
   onClose,
   onSettingsClick,
@@ -326,6 +329,7 @@ export function Sidebar({
             onAgentSelect={onAgentSelect}
             onReleaseClick={onReleaseClick}
             onLogsClick={onLogsClick}
+            onProfileClick={onProfileClick}
             compact={true}
           />
         ) : (
@@ -336,6 +340,7 @@ export function Sidebar({
             onAgentSelect={(agent) => onAgentSelect?.(agent)}
             onReleaseClick={onReleaseClick}
             onLogsClick={onLogsClick}
+            onProfileClick={onProfileClick}
             compact={true}
             showGroupStats={true}
           />

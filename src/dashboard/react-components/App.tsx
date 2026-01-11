@@ -28,6 +28,7 @@ import type { ServerInfo } from './ServerCard';
 import { TypingIndicator } from './TypingIndicator';
 import { OnlineUsersIndicator } from './OnlineUsersIndicator';
 import { UserProfilePanel } from './UserProfilePanel';
+import { AgentProfilePanel } from './AgentProfilePanel';
 import { useDirectMessage } from './hooks/useDirectMessage';
 import { CoordinatorPanel } from './CoordinatorPanel';
 import { BillingResult } from './BillingResult';
@@ -340,6 +341,18 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
 
   // User profile panel state
   const [selectedUserProfile, setSelectedUserProfile] = useState<UserPresence | null>(null);
+
+  // Agent profile panel state
+  const [selectedAgentProfile, setSelectedAgentProfile] = useState<Agent | null>(null);
+
+  // Agent summaries lookup
+  const agentSummariesMap = useMemo(() => {
+    const map = new Map<string, typeof data.summaries extends (infer T)[] ? T : never>();
+    for (const summary of data?.summaries ?? []) {
+      map.set(summary.agentName.toLowerCase(), summary);
+    }
+    return map;
+  }, [data?.summaries]);
 
   // View mode state
   const [viewMode, setViewMode] = useState<'local' | 'fleet'>('local');
@@ -1416,6 +1429,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           onSpawnClick={handleSpawnClick}
           onReleaseClick={handleReleaseAgent}
           onLogsClick={handleLogsClick}
+          onProfileClick={setSelectedAgentProfile}
           onThreadSelect={setCurrentThread}
           onClose={() => setIsSidebarOpen(false)}
           onSettingsClick={handleSettingsClick}
@@ -1792,6 +1806,20 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           markDmSeen(user.username);
           setSelectedUserProfile(null);
         }}
+      />
+
+      {/* Agent Profile Panel */}
+      <AgentProfilePanel
+        agent={selectedAgentProfile}
+        onClose={() => setSelectedAgentProfile(null)}
+        onMessage={(agent) => {
+          selectAgent(agent.name);
+          setCurrentChannel(agent.name);
+          setSelectedAgentProfile(null);
+        }}
+        onLogs={handleLogsClick}
+        onRelease={handleReleaseAgent}
+        summary={selectedAgentProfile ? agentSummariesMap.get(selectedAgentProfile.name.toLowerCase()) : null}
       />
 
       {/* Coordinator Panel */}

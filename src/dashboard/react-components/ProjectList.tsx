@@ -67,6 +67,7 @@ export interface ProjectListProps {
   onAgentSelect?: (agent: Agent, project?: Project) => void;
   onReleaseClick?: (agent: Agent) => void;
   onLogsClick?: (agent: Agent) => void;
+  onProfileClick?: (agent: Agent) => void;
   compact?: boolean;
 }
 
@@ -81,6 +82,7 @@ export function ProjectList({
   onAgentSelect,
   onReleaseClick,
   onLogsClick,
+  onProfileClick,
   compact = false,
 }: ProjectListProps) {
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(
@@ -183,6 +185,7 @@ export function ProjectList({
           onAgentSelect={(agent) => onAgentSelect?.(agent)}
           onReleaseClick={onReleaseClick}
           onLogsClick={onLogsClick}
+          onProfileClick={onProfileClick}
         />
       )}
 
@@ -406,6 +409,7 @@ function ProjectSection({
                       onClick={onAgentSelect}
                       onReleaseClick={onReleaseClick}
                       onLogsClick={onLogsClick}
+                      onProfileClick={onProfileClick}
                     />
                   ))}
                 </div>
@@ -423,6 +427,7 @@ function ProjectSection({
               onClick={onAgentSelect}
               onReleaseClick={onReleaseClick}
               onLogsClick={onLogsClick}
+              onProfileClick={onProfileClick}
             />
           ))}
         </div>
@@ -441,6 +446,7 @@ interface BridgeSectionProps {
   onAgentSelect?: (agent: Agent) => void;
   onReleaseClick?: (agent: Agent) => void;
   onLogsClick?: (agent: Agent) => void;
+  onProfileClick?: (agent: Agent) => void;
 }
 
 function BridgeSection({
@@ -450,6 +456,7 @@ function BridgeSection({
   onAgentSelect,
   onReleaseClick,
   onLogsClick,
+  onProfileClick,
 }: BridgeSectionProps) {
   const [isExpanded, setIsExpanded] = useState(true);
 
@@ -480,6 +487,7 @@ function BridgeSection({
               onClick={onAgentSelect}
               onReleaseClick={onReleaseClick}
               onLogsClick={onLogsClick}
+              onProfileClick={onProfileClick}
             />
           ))}
         </div>
