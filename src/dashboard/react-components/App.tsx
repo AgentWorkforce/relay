@@ -465,13 +465,17 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   });
 
   // For local mode: convert relay messages to channel message format
-  // Filter messages by channel thread (channel ID is used as thread)
+  // Filter messages by channel (checking multiple fields for compatibility)
   const localChannelMessages = useMemo((): ChannelApiMessage[] => {
     if (effectiveActiveWorkspaceId || !selectedChannelId) return [];
 
-    // Filter messages that have the channel as their thread, or are broadcasts to general
+    // Filter messages that belong to this channel
     const filtered = messages.filter(m => {
-      // Messages with this channel as thread
+      // Check if message is explicitly for this channel (CHANNEL_MESSAGE format)
+      if (m.to === selectedChannelId) return true;
+      // Check channel property for channel messages
+      if (m.channel === selectedChannelId) return true;
+      // Legacy: messages with this channel as thread
       if (m.thread === selectedChannelId) return true;
       // For #general, also include broadcasts without a thread
       if (selectedChannelId === '#general' && m.to === '*' && !m.thread) return true;
@@ -965,11 +969,20 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     fetchMessages();
   }, [selectedChannelId, effectiveActiveWorkspaceId, viewMode]);
 
-  // Channel selection handler
-  const handleSelectChannel = useCallback((channel: Channel) => {
+  // Channel selection handler - also joins the channel in local mode
+  const handleSelectChannel = useCallback(async (channel: Channel) => {
     setSelectedChannelId(channel.id);
     closeSidebarOnMobile();
-  }, [closeSidebarOnMobile]);
+
+    // Join the channel via the daemon (needed for local mode)
+    // This ensures the user is a member before sending messages
+    try {
+      const { joinChannel: joinChannelApi } = await import('./channels');
+      await joinChannelApi(effectiveActiveWorkspaceId || 'local', channel.id);
+    } catch (err) {
+      console.error('Failed to join channel:', err);
+    }
+  }, [closeSidebarOnMobile, effectiveActiveWorkspaceId]);
 
   // Create channel handler - opens the create channel modal
   const handleCreateChannel = useCallback(() => {

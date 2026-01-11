@@ -1138,10 +1138,8 @@ export class Router {
       return;
     }
 
-    // Route to all members except sender
+    // Route to all members (including sender for confirmation/echo)
     for (const memberName of members) {
-      if (memberName === senderName) continue;
-
       const memberConn = this.getConnectionByName(memberName);
       if (memberConn) {
         const deliverEnvelope: Envelope<ChannelMessagePayload> = {
