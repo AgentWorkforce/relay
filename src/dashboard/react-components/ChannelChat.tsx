@@ -7,6 +7,9 @@
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import type { ChannelMessage } from './hooks/useChannels';
+import type { Agent } from '../types';
+import type { UserPresence } from './hooks/usePresence';
+import { MessageSenderName } from './MessageSenderName';
 
 export interface ChannelChatProps {
   /** Current channel name */
@@ -19,6 +22,14 @@ export interface ChannelChatProps {
   onSendMessage: (body: string, thread?: string) => void;
   /** Online users for mentions */
   onlineUsers?: string[];
+  /** Agents list for profile lookup */
+  agents?: Agent[];
+  /** Online user presence list for profile lookup */
+  onlineUserPresence?: UserPresence[];
+  /** Callback when agent name is clicked */
+  onAgentClick?: (agent: Agent) => void;
+  /** Callback when user name is clicked */
+  onUserClick?: (user: UserPresence) => void;
 }
 
 export function ChannelChat({
@@ -27,6 +38,10 @@ export function ChannelChat({
   currentUser,
   onSendMessage,
   onlineUsers = [],
+  agents = [],
+  onlineUserPresence = [],
+  onAgentClick,
+  onUserClick,
 }: ChannelChatProps) {
   const [inputValue, setInputValue] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -138,6 +153,10 @@ export function ChannelChat({
               key={msg.id}
               message={msg}
               isOwn={msg.from === currentUser}
+              agents={agents}
+              onlineUserPresence={onlineUserPresence}
+              onAgentClick={onAgentClick}
+              onUserClick={onUserClick}
             />
           ))
         )}
@@ -211,13 +230,32 @@ export function ChannelChat({
 interface MessageBubbleProps {
   message: ChannelMessage;
   isOwn: boolean;
+  agents?: Agent[];
+  onlineUserPresence?: UserPresence[];
+  onAgentClick?: (agent: Agent) => void;
+  onUserClick?: (user: UserPresence) => void;
 }
 
-function MessageBubble({ message, isOwn }: MessageBubbleProps) {
+function MessageBubble({
+  message,
+  isOwn,
+  agents = [],
+  onlineUserPresence = [],
+  onAgentClick,
+  onUserClick,
+}: MessageBubbleProps) {
   const time = new Date(message.timestamp).toLocaleTimeString([], {
     hour: '2-digit',
     minute: '2-digit',
   });
+
+  // Look up agent or user for the sender
+  const senderAgent = agents.find(a => a.name.toLowerCase() === message.from.toLowerCase() && !a.isHuman);
+  const senderUser = onlineUserPresence.find(u => u.username.toLowerCase() === message.from.toLowerCase());
+
+  const nameColor = isOwn
+    ? 'var(--accent-color, #89b4fa)'
+    : 'var(--text-primary, #cdd6f4)';
 
   return (
     <div style={{
@@ -231,15 +269,15 @@ function MessageBubble({ message, isOwn }: MessageBubbleProps) {
         gap: '8px',
         marginBottom: '4px',
       }}>
-        <span style={{
-          fontSize: '13px',
-          fontWeight: 600,
-          color: isOwn
-            ? 'var(--accent-color, #89b4fa)'
-            : 'var(--text-primary, #cdd6f4)',
-        }}>
-          {message.from}
-        </span>
+        <MessageSenderName
+          displayName={message.from}
+          color={nameColor}
+          isCurrentUser={isOwn}
+          agent={senderAgent}
+          userPresence={senderUser}
+          onAgentClick={onAgentClick}
+          onUserClick={onUserClick}
+        />
         <span style={{
           fontSize: '11px',
           color: 'var(--text-muted, #6c7086)',
