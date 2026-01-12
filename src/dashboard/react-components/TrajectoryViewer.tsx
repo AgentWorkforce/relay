@@ -55,7 +55,9 @@ export function TrajectoryViewer({
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState<TrajectoryStep['type'] | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const isHistoryView = steps.length === 0 && history.length > 0;
+  // Show history list when no trajectory is selected, allowing users to browse all trajectories
+  // When a trajectory is selected, show its steps instead
+  const isHistoryView = selectedTrajectoryId === null && history.length > 0;
 
   useEffect(() => {
     setFilter('all');
@@ -212,79 +214,71 @@ export function TrajectoryViewer({
             </div>
             <span className="text-sm font-medium">Loading trajectory...</span>
           </div>
+        ) : isHistoryView ? (
+          /* Show trajectory history list - allows browsing all trajectories */
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-3 px-2">
+              <span className="text-xs font-medium text-text-secondary uppercase tracking-wider">All Trajectories</span>
+              <input
+                type="search"
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="Search trajectories..."
+                className="text-[11px] text-text-secondary bg-bg-elevated/60 border border-border/30 rounded-md px-2 py-1 w-40 focus:outline-none focus:border-accent-cyan/40"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              {filteredHistory.map((entry) => (
+                <button
+                  key={entry.id}
+                  onClick={() => onSelectTrajectory?.(entry.id)}
+                  className={`w-full text-left px-3 py-2.5 rounded-lg transition-all duration-200 border ${
+                    entry.status === 'active'
+                      ? 'bg-blue-500/10 border-blue-500/30 hover:bg-blue-500/20'
+                      : 'bg-bg-tertiary/50 border-transparent hover:bg-bg-elevated/60 hover:border-border/40'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[13px] font-medium text-text-primary truncate flex-1">
+                      {entry.title}
+                    </span>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium flex-shrink-0 ${
+                      entry.status === 'completed'
+                        ? 'bg-green-500/15 text-green-500'
+                        : entry.status === 'active'
+                        ? 'bg-blue-500/15 text-blue-500'
+                        : 'bg-amber-500/15 text-amber-500'
+                    }`}>
+                      {entry.status}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className="text-[10px] text-text-dim">
+                      {formatRelativeTime(entry.startedAt)}
+                    </span>
+                    {entry.confidence && (
+                      <span className="text-[10px] text-text-dim">
+                        • {Math.round(entry.confidence * 100)}% confidence
+                      </span>
+                    )}
+                  </div>
+                  {entry.summary && (
+                    <p className="text-[11px] text-text-muted mt-1 line-clamp-2">
+                      {entry.summary}
+                    </p>
+                  )}
+                </button>
+              ))}
+              {filteredHistory.length === 0 && (
+                <div className="px-3 py-4 text-[11px] text-text-muted">
+                  No matching trajectories. Try a different search.
+                </div>
+              )}
+            </div>
+          </div>
         ) : filteredSteps.length === 0 ? (
           <div className="flex flex-col gap-4 py-4 text-text-muted">
-            {isHistoryView ? (
-              /* Show trajectory history when no current steps */
-              <div className="flex flex-col gap-2">
-                <div className="flex items-center justify-between gap-3 px-2">
-                  <span className="text-xs font-medium text-text-secondary uppercase tracking-wider">Recent Trajectories</span>
-                  <input
-                    type="search"
-                    value={searchQuery}
-                    onChange={(event) => setSearchQuery(event.target.value)}
-                    placeholder="Search trajectories..."
-                    className="text-[11px] text-text-secondary bg-bg-elevated/60 border border-border/30 rounded-md px-2 py-1 w-40 focus:outline-none focus:border-accent-cyan/40"
-                  />
-                  {selectedTrajectoryId && onSelectTrajectory && (
-                    <button
-                      onClick={() => onSelectTrajectory(null)}
-                      className="text-[10px] text-accent-cyan hover:underline"
-                    >
-                      ← Back to current
-                    </button>
-                  )}
-                </div>
-                <div className="flex flex-col gap-1">
-                  {filteredHistory.map((entry) => (
-                    <button
-                      key={entry.id}
-                      onClick={() => onSelectTrajectory?.(entry.id)}
-                      className={`w-full text-left px-3 py-2.5 rounded-lg transition-all duration-200 border ${
-                        selectedTrajectoryId === entry.id
-                          ? 'bg-blue-500/15 border-blue-500/40 text-text-primary'
-                          : 'bg-bg-tertiary/50 border-transparent hover:bg-bg-elevated/60 hover:border-border/40'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-[13px] font-medium text-text-primary truncate flex-1">
-                          {entry.title}
-                        </span>
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium flex-shrink-0 ${
-                          entry.status === 'completed'
-                            ? 'bg-green-500/15 text-green-500'
-                            : entry.status === 'active'
-                            ? 'bg-blue-500/15 text-blue-500'
-                            : 'bg-amber-500/15 text-amber-500'
-                        }`}>
-                          {entry.status}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2 mt-1">
-                        <span className="text-[10px] text-text-dim">
-                          {formatRelativeTime(entry.startedAt)}
-                        </span>
-                        {entry.confidence && (
-                          <span className="text-[10px] text-text-dim">
-                            • {Math.round(entry.confidence * 100)}% confidence
-                          </span>
-                        )}
-                      </div>
-                      {entry.summary && (
-                        <p className="text-[11px] text-text-muted mt-1 line-clamp-2">
-                          {entry.summary}
-                        </p>
-                      )}
-                    </button>
-                  ))}
-                  {filteredHistory.length === 0 && (
-                    <div className="px-3 py-4 text-[11px] text-text-muted">
-                      No matching trajectories. Try a different search.
-                    </div>
-                  )}
-                </div>
-              </div>
-            ) : steps.length === 0 ? (
+            {steps.length === 0 ? (
               <div className="flex flex-col items-center justify-center gap-4 py-8">
                 <div className="w-16 h-16 rounded-2xl bg-bg-elevated/50 flex items-center justify-center border border-border/30">
                   <EmptyIcon />
