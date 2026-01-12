@@ -332,9 +332,13 @@ export function XTermLogViewer({
       <style>{`
         .xterm-log-viewer .xterm {
           touch-action: pan-y !important;
+          overscroll-behavior: contain;
         }
         .xterm-log-viewer .xterm-viewport {
           -webkit-overflow-scrolling: touch !important;
+          overflow-y: auto !important;
+          height: 100%;
+          max-height: 100%;
           touch-action: pan-y !important;
           overscroll-behavior: contain;
         }
@@ -485,6 +489,8 @@ export function XTermLogViewer({
         style={{
           maxHeight,
           minHeight: '200px',
+          overscrollBehavior: 'contain',
+          touchAction: 'pan-y',
         }}
       />
 
