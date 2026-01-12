@@ -139,6 +139,7 @@ export function LogViewer({
             maxHeight: '150px',
             WebkitOverflowScrolling: 'touch',
             overscrollBehavior: 'contain',
+            touchAction: 'pan-y',
           }}
           ref={scrollContainerRef}
           onScroll={handleScroll}
