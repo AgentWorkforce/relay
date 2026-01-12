@@ -460,28 +460,321 @@ export async function createServer(): Promise<CloudServer> {
     }
   }
 
+  // =========================================================================
+  // Channel metadata endpoints (stored in cloud PostgreSQL)
+  // =========================================================================
+
+  /**
+   * GET /api/channels - List channels for a workspace
+   * Channels are workspace-scoped, not user-scoped
+   */
   app.get('/api/channels', requireAuth, async (req, res) => {
-    const queryString = req.query.username
-      ? `?username=${encodeURIComponent(req.query.username as string)}`
-      : '';
-    await proxyToLocalDashboard(req, res, `/api/channels${queryString}`);
+    try {
+      const workspaceId = req.query.workspaceId as string;
+      if (!workspaceId) {
+        return res.status(400).json({ error: 'workspaceId query param required' });
+      }
+
+      // Verify user has access to this workspace
+      const userId = req.session.userId!;
+      const workspace = await db.workspaces.findById(workspaceId);
+      if (!workspace) {
+        return res.status(404).json({ error: 'Workspace not found' });
+      }
+      if (workspace.userId !== userId) {
+        const membership = await db.workspaceMembers.findMembership(workspaceId, userId);
+        if (!membership || !membership.acceptedAt) {
+          return res.status(403).json({ error: 'Access denied' });
+        }
+      }
+
+      const allChannels = await db.channels.findByWorkspaceId(workspaceId);
+      const activeChannels = allChannels.filter(c => c.status === 'active');
+      const archivedChannels = allChannels.filter(c => c.status === 'archived');
+
+      // Transform to API response format
+      const mapChannel = (c: typeof allChannels[0]) => ({
+        id: c.channelId,
+        name: c.name,
+        description: c.description,
+        visibility: c.visibility,
+        status: c.status,
+        createdAt: c.createdAt.toISOString(),
+        createdBy: c.createdBy || '__system__',
+        lastActivityAt: c.lastActivityAt?.toISOString(),
+        memberCount: 0, // TODO: count members
+        unreadCount: 0,
+        hasMentions: false,
+        isDm: c.channelId.startsWith('dm:'),
+      });
+
+      res.json({
+        channels: activeChannels.map(mapChannel),
+        archivedChannels: archivedChannels.map(mapChannel),
+      });
+    } catch (error) {
+      console.error('[channels] Error listing channels:', error);
+      res.status(500).json({ error: 'Failed to list channels' });
+    }
   });
 
+  /**
+   * POST /api/channels - Create a new channel
+   */
   app.post('/api/channels', requireAuth, express.json(), async (req, res) => {
-    await proxyToLocalDashboard(req, res, '/api/channels', { method: 'POST', body: req.body });
+    try {
+      const { name, description, isPrivate, workspaceId, invites } = req.body;
+
+      if (!name || !workspaceId) {
+        return res.status(400).json({ error: 'name and workspaceId are required' });
+      }
+
+      // Verify user has access to this workspace
+      const userId = req.session.userId!;
+      const workspace = await db.workspaces.findById(workspaceId);
+      if (!workspace) {
+        return res.status(404).json({ error: 'Workspace not found' });
+      }
+      if (workspace.userId !== userId) {
+        const membership = await db.workspaceMembers.findMembership(workspaceId, userId);
+        if (!membership || !membership.acceptedAt) {
+          return res.status(403).json({ error: 'Access denied' });
+        }
+      }
+
+      // Get creator username from session
+      const user = await db.users.findById(userId);
+      const createdBy = user?.githubUsername || 'unknown';
+
+      // Create channel ID (add # prefix for public channels)
+      const channelId = name.startsWith('#') ? name : `#${name}`;
+      const displayName = name.startsWith('#') ? name.slice(1) : name;
+
+      // Check if channel already exists
+      const existing = await db.channels.findByWorkspaceAndChannelId(workspaceId, channelId);
+      if (existing) {
+        return res.status(409).json({ error: 'Channel already exists' });
+      }
+
+      // Create the channel
+      const channel = await db.channels.create({
+        workspaceId,
+        channelId,
+        name: displayName,
+        description,
+        visibility: isPrivate ? 'private' : 'public',
+        status: 'active',
+        createdBy,
+      });
+
+      // Add creator as owner
+      await db.channelMembers.addMember({
+        channelId: channel.id,
+        memberId: createdBy,
+        memberType: 'user',
+        role: 'owner',
+      });
+
+      // Handle invites if provided
+      if (invites) {
+        const inviteList = typeof invites === 'string'
+          ? invites.split(',').map((s: string) => s.trim()).filter(Boolean)
+          : invites;
+        for (const invitee of inviteList) {
+          await db.channelMembers.addMember({
+            channelId: channel.id,
+            memberId: invitee,
+            memberType: 'user',
+            role: 'member',
+            invitedBy: createdBy,
+          });
+        }
+      }
+
+      res.status(201).json({
+        success: true,
+        channel: {
+          id: channel.channelId,
+          name: channel.name,
+          description: channel.description,
+          visibility: channel.visibility,
+          status: channel.status,
+          createdAt: channel.createdAt.toISOString(),
+          createdBy: channel.createdBy,
+        },
+      });
+    } catch (error) {
+      console.error('[channels] Error creating channel:', error);
+      res.status(500).json({ error: 'Failed to create channel' });
+    }
   });
 
-  app.post('/api/channels/invite', requireAuth, express.json(), async (req, res) => {
-    await proxyToLocalDashboard(req, res, '/api/channels/invite', { method: 'POST', body: req.body });
-  });
-
+  /**
+   * POST /api/channels/join - Join a channel
+   */
   app.post('/api/channels/join', requireAuth, express.json(), async (req, res) => {
-    await proxyToLocalDashboard(req, res, '/api/channels/join', { method: 'POST', body: req.body });
+    try {
+      const { channel: channelId, workspaceId, username } = req.body;
+
+      if (!channelId || !workspaceId) {
+        return res.status(400).json({ error: 'channel and workspaceId are required' });
+      }
+
+      const userId = req.session.userId!;
+      const user = await db.users.findById(userId);
+      const memberId = username || user?.githubUsername || 'unknown';
+
+      // Find the channel
+      const channel = await db.channels.findByWorkspaceAndChannelId(workspaceId, channelId);
+      if (!channel) {
+        return res.status(404).json({ error: 'Channel not found' });
+      }
+
+      // Check if already a member
+      const existing = await db.channelMembers.findMembership(channel.id, memberId);
+      if (!existing) {
+        await db.channelMembers.addMember({
+          channelId: channel.id,
+          memberId,
+          memberType: 'user',
+          role: 'member',
+        });
+      }
+
+      res.json({ success: true, channel: channelId });
+    } catch (error) {
+      console.error('[channels] Error joining channel:', error);
+      res.status(500).json({ error: 'Failed to join channel' });
+    }
   });
 
+  /**
+   * POST /api/channels/leave - Leave a channel
+   */
   app.post('/api/channels/leave', requireAuth, express.json(), async (req, res) => {
-    await proxyToLocalDashboard(req, res, '/api/channels/leave', { method: 'POST', body: req.body });
+    try {
+      const { channel: channelId, workspaceId, username } = req.body;
+
+      if (!channelId || !workspaceId) {
+        return res.status(400).json({ error: 'channel and workspaceId are required' });
+      }
+
+      const userId = req.session.userId!;
+      const user = await db.users.findById(userId);
+      const memberId = username || user?.githubUsername || 'unknown';
+
+      const channel = await db.channels.findByWorkspaceAndChannelId(workspaceId, channelId);
+      if (!channel) {
+        return res.status(404).json({ error: 'Channel not found' });
+      }
+
+      await db.channelMembers.removeMember(channel.id, memberId);
+
+      res.json({ success: true, channel: channelId });
+    } catch (error) {
+      console.error('[channels] Error leaving channel:', error);
+      res.status(500).json({ error: 'Failed to leave channel' });
+    }
   });
+
+  /**
+   * POST /api/channels/invite - Invite users to a channel
+   */
+  app.post('/api/channels/invite', requireAuth, express.json(), async (req, res) => {
+    try {
+      const { channel: channelId, workspaceId, invites, invitedBy } = req.body;
+
+      if (!channelId || !workspaceId || !invites) {
+        return res.status(400).json({ error: 'channel, workspaceId, and invites are required' });
+      }
+
+      const channel = await db.channels.findByWorkspaceAndChannelId(workspaceId, channelId);
+      if (!channel) {
+        return res.status(404).json({ error: 'Channel not found' });
+      }
+
+      const inviteList = typeof invites === 'string'
+        ? invites.split(',').map((s: string) => s.trim()).filter(Boolean)
+        : invites;
+
+      const results = [];
+      for (const invitee of inviteList) {
+        const existing = await db.channelMembers.findMembership(channel.id, invitee);
+        if (!existing) {
+          await db.channelMembers.addMember({
+            channelId: channel.id,
+            memberId: invitee,
+            memberType: 'user',
+            role: 'member',
+            invitedBy,
+          });
+          results.push({ username: invitee, success: true });
+        } else {
+          results.push({ username: invitee, success: true, reason: 'already_member' });
+        }
+      }
+
+      res.json({ channel: channelId, invited: results });
+    } catch (error) {
+      console.error('[channels] Error inviting to channel:', error);
+      res.status(500).json({ error: 'Failed to invite to channel' });
+    }
+  });
+
+  /**
+   * POST /api/channels/archive - Archive a channel
+   */
+  app.post('/api/channels/archive', requireAuth, express.json(), async (req, res) => {
+    try {
+      const { channel: channelId, workspaceId } = req.body;
+
+      if (!channelId || !workspaceId) {
+        return res.status(400).json({ error: 'channel and workspaceId are required' });
+      }
+
+      const channel = await db.channels.findByWorkspaceAndChannelId(workspaceId, channelId);
+      if (!channel) {
+        return res.status(404).json({ error: 'Channel not found' });
+      }
+
+      await db.channels.archive(channel.id);
+
+      res.json({ success: true, channel: channelId, status: 'archived' });
+    } catch (error) {
+      console.error('[channels] Error archiving channel:', error);
+      res.status(500).json({ error: 'Failed to archive channel' });
+    }
+  });
+
+  /**
+   * POST /api/channels/unarchive - Unarchive a channel
+   */
+  app.post('/api/channels/unarchive', requireAuth, express.json(), async (req, res) => {
+    try {
+      const { channel: channelId, workspaceId } = req.body;
+
+      if (!channelId || !workspaceId) {
+        return res.status(400).json({ error: 'channel and workspaceId are required' });
+      }
+
+      const channel = await db.channels.findByWorkspaceAndChannelId(workspaceId, channelId);
+      if (!channel) {
+        return res.status(404).json({ error: 'Channel not found' });
+      }
+
+      await db.channels.unarchive(channel.id);
+
+      res.json({ success: true, channel: channelId, status: 'active' });
+    } catch (error) {
+      console.error('[channels] Error unarchiving channel:', error);
+      res.status(500).json({ error: 'Failed to unarchive channel' });
+    }
+  });
+
+  // =========================================================================
+  // Channel message endpoints (proxied to workspace container)
+  // Messages are stored in the daemon's SQLite for real-time performance
+  // =========================================================================
 
   app.post('/api/channels/message', requireAuth, express.json(), async (req, res) => {
     await proxyToLocalDashboard(req, res, '/api/channels/message', { method: 'POST', body: req.body });
@@ -494,14 +787,6 @@ export async function createServer(): Promise<CloudServer> {
     if (req.query.before) params.set('before', req.query.before as string);
     const queryString = params.toString() ? `?${params.toString()}` : '';
     await proxyToLocalDashboard(req, res, `/api/channels/${channel}/messages${queryString}`);
-  });
-
-  app.post('/api/channels/archive', requireAuth, express.json(), async (req, res) => {
-    await proxyToLocalDashboard(req, res, '/api/channels/archive', { method: 'POST', body: req.body });
-  });
-
-  app.post('/api/channels/unarchive', requireAuth, express.json(), async (req, res) => {
-    await proxyToLocalDashboard(req, res, '/api/channels/unarchive', { method: 'POST', body: req.body });
   });
 
   app.get('/api/channels/users', requireAuth, async (req, res) => {

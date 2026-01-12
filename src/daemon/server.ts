@@ -637,6 +637,16 @@ export class Daemon {
       case 'SEND': {
         const sendEnvelope = envelope as SendEnvelope;
 
+        const membershipUpdate = (sendEnvelope.payload.data as { _channelMembershipUpdate?: { channel?: string; member?: string; action?: 'join' | 'leave' | 'invite' } })?._channelMembershipUpdate;
+        if (membershipUpdate && sendEnvelope.to === '_router') {
+          this.router.handleMembershipUpdate({
+            channel: membershipUpdate.channel ?? '',
+            member: membershipUpdate.member ?? '',
+            action: membershipUpdate.action ?? 'join',
+          });
+          return;
+        }
+
         // Check for consensus commands (messages to _consensus)
         if (this.consensus?.enabled && sendEnvelope.to === '_consensus') {
           const from = connection.agentName ?? 'unknown';

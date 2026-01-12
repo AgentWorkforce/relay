@@ -387,6 +387,74 @@ export const usageRecords = pgTable('usage_records', {
 }));
 
 // ============================================================================
+// Channels (workspace-scoped messaging channels)
+// ============================================================================
+
+export const channels = pgTable('channels', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').notNull().references(() => workspaces.id, { onDelete: 'cascade' }),
+  /** Channel identifier (e.g., '#general', '#random', 'dm:user1:user2') */
+  channelId: varchar('channel_id', { length: 255 }).notNull(),
+  /** Display name (without # prefix) */
+  name: varchar('name', { length: 255 }).notNull(),
+  description: text('description'),
+  /** Channel type: 'public', 'private', 'dm' */
+  visibility: varchar('visibility', { length: 50 }).notNull().default('public'),
+  /** Channel status: 'active', 'archived' */
+  status: varchar('status', { length: 50 }).notNull().default('active'),
+  createdBy: varchar('created_by', { length: 255 }),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  lastActivityAt: timestamp('last_activity_at'),
+}, (table) => ({
+  workspaceChannelIdx: unique('channels_workspace_channel_unique').on(table.workspaceId, table.channelId),
+  workspaceIdIdx: index('idx_channels_workspace_id').on(table.workspaceId),
+  statusIdx: index('idx_channels_status').on(table.status),
+}));
+
+export const channelsRelations = relations(channels, ({ one, many }) => ({
+  workspace: one(workspaces, {
+    fields: [channels.workspaceId],
+    references: [workspaces.id],
+  }),
+  members: many(channelMembers),
+}));
+
+// ============================================================================
+// Channel Members (who's in each channel)
+// ============================================================================
+
+export const channelMembers = pgTable('channel_members', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  channelId: uuid('channel_id').notNull().references(() => channels.id, { onDelete: 'cascade' }),
+  /** Member identifier (username or agent name) */
+  memberId: varchar('member_id', { length: 255 }).notNull(),
+  /** Member type: 'user' or 'agent' */
+  memberType: varchar('member_type', { length: 50 }).notNull().default('user'),
+  /** Role in channel: 'owner', 'admin', 'member' */
+  role: varchar('role', { length: 50 }).notNull().default('member'),
+  joinedAt: timestamp('joined_at').defaultNow().notNull(),
+  invitedBy: varchar('invited_by', { length: 255 }),
+}, (table) => ({
+  channelMemberIdx: unique('channel_members_channel_member_unique').on(table.channelId, table.memberId),
+  channelIdIdx: index('idx_channel_members_channel_id').on(table.channelId),
+  memberIdIdx: index('idx_channel_members_member_id').on(table.memberId),
+}));
+
+export const channelMembersRelations = relations(channelMembers, ({ one }) => ({
+  channel: one(channels, {
+    fields: [channelMembers.channelId],
+    references: [channels.id],
+  }),
+}));
+
+// Type exports for channels
+export type Channel = typeof channels.$inferSelect;
+export type NewChannel = typeof channels.$inferInsert;
+export type ChannelMember = typeof channelMembers.$inferSelect;
+export type NewChannelMember = typeof channelMembers.$inferInsert;
+
+// ============================================================================
 // Agent Sessions (cloud persistence for PtyWrapper agents)
 // ============================================================================
 

@@ -54,15 +54,14 @@ export class ApiError extends Error {
 // =============================================================================
 
 /**
- * List all channels for current user
- * workspaceId parameter is kept for API compatibility but not used
+ * List all channels for a workspace
+ * Channels are workspace-scoped, not user-scoped
  */
 export async function listChannels(workspaceId?: string): Promise<ListChannelsResponse> {
   // Ensure workspace ID is initialized for proper URL routing
   initializeWorkspaceId();
-  const username = getCurrentUsername();
   const params = new URLSearchParams();
-  params.set('username', username);
+  // workspaceId is required for cloud mode
   if (workspaceId) {
     params.set('workspaceId', workspaceId);
   }
@@ -161,7 +160,6 @@ export async function createChannel(
   workspaceId: string,
   request: CreateChannelRequest
 ): Promise<CreateChannelResponse> {
-  const username = getCurrentUsername();
   // Ensure workspace ID is initialized for proper URL routing
   initializeWorkspaceId();
 
@@ -181,7 +179,6 @@ export async function createChannel(
         description: request.description,
         isPrivate: request.visibility === 'private',
         invites: request.members?.join(','),
-        username,
         workspaceId,
       }),
     });
@@ -191,16 +188,27 @@ export async function createChannel(
       throw new ApiError(error.error || 'Failed to create channel', response.status);
     }
 
-    const result = await response.json() as { channel: { id: string; name: string; description?: string; isPrivate?: boolean; createdBy: string } };
+    const result = await response.json() as {
+      success: boolean;
+      channel: {
+        id: string;
+        name: string;
+        description?: string;
+        visibility: 'public' | 'private';
+        status: string;
+        createdAt: string;
+        createdBy: string;
+      };
+    };
 
     return {
       channel: {
         id: result.channel.id,
         name: result.channel.name,
         description: result.channel.description,
-        visibility: result.channel.isPrivate ? 'private' : 'public',
-        status: 'active',
-        createdAt: new Date().toISOString(),
+        visibility: result.channel.visibility,
+        status: result.channel.status as 'active' | 'archived',
+        createdAt: result.channel.createdAt,
         createdBy: result.channel.createdBy,
         memberCount: 1,
         unreadCount: 0,

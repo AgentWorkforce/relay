@@ -1609,6 +1609,155 @@ export const commentMentionQueries: CommentMentionQueries = {
 };
 
 // ============================================================================
+// Channel queries
+// ============================================================================
+
+export interface ChannelQueries {
+  findById(id: string): Promise<schema.Channel | null>;
+  findByWorkspaceId(workspaceId: string): Promise<schema.Channel[]>;
+  findByWorkspaceAndChannelId(workspaceId: string, channelId: string): Promise<schema.Channel | null>;
+  create(channel: schema.NewChannel): Promise<schema.Channel>;
+  update(id: string, updates: Partial<schema.NewChannel>): Promise<void>;
+  archive(id: string): Promise<void>;
+  unarchive(id: string): Promise<void>;
+  delete(id: string): Promise<void>;
+}
+
+export const channelQueries: ChannelQueries = {
+  async findById(id: string): Promise<schema.Channel | null> {
+    const db = getDb();
+    const result = await db.select().from(schema.channels).where(eq(schema.channels.id, id));
+    return result[0] ?? null;
+  },
+
+  async findByWorkspaceId(workspaceId: string): Promise<schema.Channel[]> {
+    const db = getDb();
+    return db
+      .select()
+      .from(schema.channels)
+      .where(eq(schema.channels.workspaceId, workspaceId))
+      .orderBy(desc(schema.channels.lastActivityAt));
+  },
+
+  async findByWorkspaceAndChannelId(workspaceId: string, channelId: string): Promise<schema.Channel | null> {
+    const db = getDb();
+    const result = await db
+      .select()
+      .from(schema.channels)
+      .where(and(
+        eq(schema.channels.workspaceId, workspaceId),
+        eq(schema.channels.channelId, channelId)
+      ));
+    return result[0] ?? null;
+  },
+
+  async create(channel: schema.NewChannel): Promise<schema.Channel> {
+    const db = getDb();
+    const result = await db.insert(schema.channels).values(channel).returning();
+    return result[0];
+  },
+
+  async update(id: string, updates: Partial<schema.NewChannel>): Promise<void> {
+    const db = getDb();
+    await db
+      .update(schema.channels)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(schema.channels.id, id));
+  },
+
+  async archive(id: string): Promise<void> {
+    const db = getDb();
+    await db
+      .update(schema.channels)
+      .set({ status: 'archived', updatedAt: new Date() })
+      .where(eq(schema.channels.id, id));
+  },
+
+  async unarchive(id: string): Promise<void> {
+    const db = getDb();
+    await db
+      .update(schema.channels)
+      .set({ status: 'active', updatedAt: new Date() })
+      .where(eq(schema.channels.id, id));
+  },
+
+  async delete(id: string): Promise<void> {
+    const db = getDb();
+    await db.delete(schema.channels).where(eq(schema.channels.id, id));
+  },
+};
+
+// ============================================================================
+// Channel Member queries
+// ============================================================================
+
+export interface ChannelMemberQueries {
+  findByChannelId(channelId: string): Promise<schema.ChannelMember[]>;
+  findByMemberId(memberId: string): Promise<schema.ChannelMember[]>;
+  findMembership(channelId: string, memberId: string): Promise<schema.ChannelMember | null>;
+  addMember(member: schema.NewChannelMember): Promise<schema.ChannelMember>;
+  removeMember(channelId: string, memberId: string): Promise<void>;
+  updateRole(channelId: string, memberId: string, role: string): Promise<void>;
+}
+
+export const channelMemberQueries: ChannelMemberQueries = {
+  async findByChannelId(channelId: string): Promise<schema.ChannelMember[]> {
+    const db = getDb();
+    return db
+      .select()
+      .from(schema.channelMembers)
+      .where(eq(schema.channelMembers.channelId, channelId));
+  },
+
+  async findByMemberId(memberId: string): Promise<schema.ChannelMember[]> {
+    const db = getDb();
+    return db
+      .select()
+      .from(schema.channelMembers)
+      .where(eq(schema.channelMembers.memberId, memberId));
+  },
+
+  async findMembership(channelId: string, memberId: string): Promise<schema.ChannelMember | null> {
+    const db = getDb();
+    const result = await db
+      .select()
+      .from(schema.channelMembers)
+      .where(and(
+        eq(schema.channelMembers.channelId, channelId),
+        eq(schema.channelMembers.memberId, memberId)
+      ));
+    return result[0] ?? null;
+  },
+
+  async addMember(member: schema.NewChannelMember): Promise<schema.ChannelMember> {
+    const db = getDb();
+    const result = await db.insert(schema.channelMembers).values(member).returning();
+    return result[0];
+  },
+
+  async removeMember(channelId: string, memberId: string): Promise<void> {
+    const db = getDb();
+    await db
+      .delete(schema.channelMembers)
+      .where(and(
+        eq(schema.channelMembers.channelId, channelId),
+        eq(schema.channelMembers.memberId, memberId)
+      ));
+  },
+
+  async updateRole(channelId: string, memberId: string, role: string): Promise<void> {
+    const db = getDb();
+    await db
+      .update(schema.channelMembers)
+      .set({ role })
+      .where(and(
+        eq(schema.channelMembers.channelId, channelId),
+        eq(schema.channelMembers.memberId, memberId)
+      ));
+  },
+};
+
+// ============================================================================
 // Migration helper
 // ============================================================================
 

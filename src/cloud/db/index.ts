@@ -49,6 +49,11 @@ export type {
   CommentMention,
   NewCommentMention,
   AgentTriggerConfig,
+  // Channel types
+  Channel,
+  NewChannel,
+  ChannelMember,
+  NewChannelMember,
 } from './schema.js';
 
 // Re-export schema tables for direct access if needed
@@ -67,6 +72,8 @@ export {
   ciFixAttempts as ciFixAttemptsTable,
   issueAssignments as issueAssignmentsTable,
   commentMentions as commentMentionsTable,
+  channels as channelsTable,
+  channelMembers as channelMembersTable,
 } from './schema.js';
 
 // Import query modules
@@ -87,6 +94,8 @@ import {
   ciFixAttemptQueries,
   issueAssignmentQueries,
   commentMentionQueries,
+  channelQueries,
+  channelMemberQueries,
 } from './drizzle.js';
 
 // TODO: Bulk ingest utilities deferred - waiting for NewAgentMessage schema (beads-bulk-ingest-1)
@@ -128,6 +137,9 @@ export const db = {
   // Issue and comment tracking
   issueAssignments: issueAssignmentQueries,
   commentMentions: commentMentionQueries,
+  // Channel operations (workspace-scoped messaging)
+  channels: channelQueries,
+  channelMembers: channelMemberQueries,
   // TODO: Bulk ingest utilities deferred - waiting for NewAgentMessage schema
   // bulk: {
   //   insertMessages: bulkInsertMessages,

@@ -53,7 +53,7 @@ class MockRelayClient {
   public sentMessages: Array<{ to: string; body: string; kind: string; thread?: string }> = [];
   public channelJoins: Array<{ channel: string; displayName?: string }> = [];
   public channelLeaves: Array<{ channel: string; reason?: string }> = [];
-  public channelMessages: Array<{ channel: string; body: string; options?: { thread?: string } }> = [];
+  public channelMessages: Array<{ channel: string; body: string; options?: { thread?: string; data?: Record<string, unknown> } }> = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   public onMessage?: (from: string, payload: any, messageId: string, meta?: any, originalTo?: string) => void;
 
@@ -99,9 +99,16 @@ class MockRelayClient {
   sendChannelMessage(
     channel: string,
     body: string,
-    options?: { thread?: string; mentions?: string[]; attachments?: unknown[] }
+    options?: { thread?: string; mentions?: string[]; attachments?: unknown[]; data?: Record<string, unknown> }
   ): boolean {
-    this.channelMessages.push({ channel, body, options: { thread: options?.thread } });
+    this.channelMessages.push({
+      channel,
+      body,
+      options: {
+        thread: options?.thread,
+        data: options?.data,
+      },
+    });
     return true;
   }
 

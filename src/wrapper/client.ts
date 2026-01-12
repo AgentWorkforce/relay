@@ -372,6 +372,7 @@ export class RelayClient {
       thread?: string;
       mentions?: string[];
       attachments?: MessageAttachment[];
+      data?: Record<string, unknown>;
     }
   ): boolean {
     if (this._state !== 'READY') {
@@ -389,6 +390,7 @@ export class RelayClient {
         thread: options?.thread,
         mentions: options?.mentions,
         attachments: options?.attachments,
+        data: options?.data,
       },
     };
 

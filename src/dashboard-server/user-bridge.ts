@@ -30,7 +30,7 @@ export interface IRelayClient {
   sendChannelMessage(
     channel: string,
     body: string,
-    options?: { thread?: string; mentions?: string[]; attachments?: unknown[] }
+    options?: { thread?: string; mentions?: string[]; attachments?: unknown[]; data?: Record<string, unknown> }
   ): boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onMessage?: (from: string, payload: any, messageId: string, meta?: any, originalTo?: string) => void;
@@ -263,6 +263,7 @@ export class UserBridge {
     // Use CHANNEL_MESSAGE protocol
     const success = session.relayClient.sendChannelMessage(channel, body, {
       thread: options?.thread,
+      data: options?.data,
     });
     console.log(`[user-bridge] sendChannelMessage result: ${success}`);
 

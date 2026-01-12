@@ -583,6 +583,9 @@ export async function startDashboard(
     }).catch((err) => {
       console.error('[channels] Failed to persist membership event', err);
     });
+    await notifyDaemonOfMembershipUpdate(channel, member, action, workspaceToStore).catch((err) => {
+      console.error('[channels] Failed to notify daemon of membership update', err);
+    });
   };
 
   // Initialize spawner if enabled
@@ -906,6 +909,25 @@ export async function startDashboard(
   // Map of senderName -> RelayClient for per-user connections
   const socketPath = path.join(dataDir, 'relay.sock');
   const relayClients = new Map<string, RelayClient>();
+  const notifyDaemonOfMembershipUpdate = async (
+    channel: string,
+    member: string,
+    action: 'join' | 'leave' | 'invite',
+    workspaceId?: string
+  ) => {
+    const client = await getRelayClient('Dashboard');
+    if (!client || client.state !== 'READY') {
+      return;
+    }
+    client.sendMessage('_router', '', 'state', {
+      _channelMembershipUpdate: {
+        channel,
+        member,
+        action,
+        workspaceId,
+      },
+    });
+  };
   // Track pending client connections to prevent race conditions
   const pendingConnections = new Map<string, Promise<RelayClient | undefined>>();
 
@@ -2678,10 +2700,14 @@ export async function startDashboard(
       console.log('[channels] Join: missing username or channel');
       return res.status(400).json({ error: 'username and channel required' });
     }
+    const workspaceId = resolveWorkspaceId(req);
     try {
       console.log(`[channels] Calling userBridge.joinChannel(${username}, ${channel})`);
       const success = await userBridge.joinChannel(username, channel);
       console.log(`[channels] joinChannel returned: ${success}`);
+      if (success) {
+        await persistChannelMembershipEvent(channel, username, 'join', { workspaceId });
+      }
       res.json({ success, channel });
     } catch (err: any) {
       console.error('[channels] Join failed:', err.message);
@@ -2697,8 +2723,12 @@ export async function startDashboard(
     if (!username || !channel) {
       return res.status(400).json({ error: 'username and channel required' });
     }
+    const workspaceId = resolveWorkspaceId(req);
     try {
       const success = await userBridge.leaveChannel(username, channel);
+      if (success) {
+        await persistChannelMembershipEvent(channel, username, 'leave', { workspaceId });
+      }
       res.json({ success, channel });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -2769,8 +2799,12 @@ export async function startDashboard(
       console.log('[channel-debug] MESSAGE failed: missing required fields');
       return res.status(400).json({ error: 'username, channel, and body required' });
     }
+    const workspaceId = resolveWorkspaceId(req);
     try {
-      const success = await userBridge.sendChannelMessage(username, channel, body, { thread });
+      const success = await userBridge.sendChannelMessage(username, channel, body, {
+        thread,
+        data: workspaceId ? { _workspaceId: workspaceId } : undefined,
+      });
       console.log(`[channel-debug] MESSAGE result: success=${success}`);
       res.json({ success });
     } catch (err: any) {

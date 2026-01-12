@@ -131,6 +131,33 @@ export class Router {
   }
 
   /**
+   * Restore channel memberships from persisted storage.
+   */
+  async restoreChannelMemberships(): Promise<void> {
+    if (!this.storage) return;
+
+    try {
+      const messages = await this.storage.getMessages({ order: 'asc' });
+      for (const msg of messages) {
+        const channel = msg.to;
+        const data = msg.data as Record<string, unknown> | undefined;
+        const membership = data?._channelMembership as { member?: string; action?: 'join' | 'leave' | 'invite' } | undefined;
+        if (!channel || !membership?.member) {
+          continue;
+        }
+        const action = membership.action ?? 'join';
+        this.handleMembershipUpdate({
+          channel,
+          member: membership.member,
+          action,
+        });
+      }
+    } catch (err) {
+      routerLog.error('Failed to restore channel memberships', { error: String(err) });
+    }
+  }
+
+  /**
    * Set or update the cross-machine handler.
    */
   setCrossMachineHandler(handler: CrossMachineHandler): void {
@@ -920,8 +947,9 @@ export class Router {
       return;
     }
 
+    const existingMembers = members ? Array.from(members) : [];
     // Notify existing members about the new joiner
-    for (const existingMember of members) {
+    for (const existingMember of existingMembers) {
       const memberConn = this.getConnectionByName(existingMember);
       if (memberConn) {
         const joinNotification: Envelope<ChannelJoinPayload> = {
@@ -936,19 +964,13 @@ export class Router {
       }
     }
 
-    // Add the new member
-    members.add(memberName);
-    this.persistChannelMembership(channel, memberName, 'join');
-
-    // Track which channels this member is in
-    let memberChannelSet = this.memberChannels.get(memberName);
-    if (!memberChannelSet) {
-      memberChannelSet = new Set();
-      this.memberChannels.set(memberName, memberChannelSet);
+    const added = this.addChannelMember(channel, memberName, { persist: true });
+    if (!added) {
+      routerLog.debug(`${memberName} already in ${channel}`);
+      return;
     }
-    memberChannelSet.add(channel);
 
-    routerLog.info(`${memberName} joined ${channel} (${members.size} members)`);
+    routerLog.info(`${memberName} joined ${channel} (${this.channels.get(channel)?.size ?? 0} members)`);
   }
 
   /**
@@ -973,39 +995,28 @@ export class Router {
       return;
     }
 
-    // Remove from channel
-    members.delete(memberName);
-    this.persistChannelMembership(channel, memberName, 'leave');
-
-    // Remove from member's channel list
-    const memberChannelSet = this.memberChannels.get(memberName);
-    if (memberChannelSet) {
-      memberChannelSet.delete(channel);
-      if (memberChannelSet.size === 0) {
-        this.memberChannels.delete(memberName);
-      }
+    const removed = this.removeChannelMember(channel, memberName, { persist: true });
+    if (!removed) {
+      routerLog.debug(`${memberName} not in ${channel}, ignoring leave`);
+      return;
     }
 
-    // Notify remaining members
-    for (const remainingMember of members) {
-      const memberConn = this.getConnectionByName(remainingMember);
-      if (memberConn) {
-        const leaveNotification: Envelope<ChannelLeavePayload> = {
-          v: PROTOCOL_VERSION,
-          type: 'CHANNEL_LEAVE',
-          id: generateId(),
-          ts: Date.now(),
-          from: memberName,
-          payload: envelope.payload,
-        };
-        memberConn.send(leaveNotification);
+    const remainingMembers = this.channels.get(channel);
+    if (remainingMembers) {
+      for (const remainingMember of remainingMembers) {
+        const memberConn = this.getConnectionByName(remainingMember);
+        if (memberConn) {
+          const leaveNotification: Envelope<ChannelLeavePayload> = {
+            v: PROTOCOL_VERSION,
+            type: 'CHANNEL_LEAVE',
+            id: generateId(),
+            ts: Date.now(),
+            from: memberName,
+            payload: envelope.payload,
+          };
+          memberConn.send(leaveNotification);
+        }
       }
-    }
-
-    // Clean up empty channels
-    if (members.size === 0) {
-      this.channels.delete(channel);
-      routerLog.debug(`Channel ${channel} deleted (empty)`);
     }
 
     routerLog.info(`${memberName} left ${channel}`);
@@ -1071,6 +1082,13 @@ export class Router {
   ): void {
     if (!this.storage) return;
 
+    const payloadData = {
+      ...envelope.payload.data,
+      _isChannelMessage: true,
+      _channel: envelope.payload.channel,
+      _mentions: envelope.payload.mentions,
+    };
+
     this.storage.saveMessage({
       id: envelope.id,
       ts: envelope.ts,
@@ -1079,16 +1097,11 @@ export class Router {
       topic: undefined,
       kind: 'message',
       body: envelope.payload.body,
-      data: {
-        ...envelope.payload.data,
-        _isChannelMessage: true,
-        _channel: envelope.payload.channel,
-        _mentions: envelope.payload.mentions,
-      },
+      data: payloadData,
       thread: envelope.payload.thread,
       status: 'unread',
-        is_urgent: false,
-        is_broadcast: true, // Channel messages are effectively broadcasts
+      is_urgent: false,
+      is_broadcast: true, // Channel messages are effectively broadcasts
     }).catch((err) => {
       routerLog.error('Failed to persist channel message', { error: String(err) });
     });
@@ -1182,7 +1195,7 @@ export class Router {
    * @param memberName - The agent or user name to add
    * @param channel - The channel to join (e.g., '#general')
    */
-  autoJoinChannel(memberName: string, channel: string): void {
+  autoJoinChannel(memberName: string, channel: string, options?: { persist?: boolean }): void {
     // Get or create channel
     let members = this.channels.get(channel);
     if (!members) {
@@ -1191,22 +1204,77 @@ export class Router {
     }
 
     // Check if already a member
+    const added = this.addChannelMember(channel, memberName, { persist: options?.persist });
+    if (added) {
+      routerLog.debug(`Auto-joined ${memberName} to ${channel}`);
+    }
+  }
+
+  private addChannelMember(
+    channel: string,
+    memberName: string,
+    options?: { persist?: boolean }
+  ): boolean {
+    let members = this.channels.get(channel);
+    if (!members) {
+      members = new Set();
+      this.channels.set(channel, members);
+    }
     if (members.has(memberName)) {
+      return false;
+    }
+    members.add(memberName);
+
+    const memberChannelSet = this.memberChannels.get(memberName) ?? new Set();
+    memberChannelSet.add(channel);
+    this.memberChannels.set(memberName, memberChannelSet);
+
+    if (options?.persist ?? true) {
+      this.persistChannelMembership(channel, memberName, 'join');
+    }
+
+    return true;
+  }
+
+  private removeChannelMember(
+    channel: string,
+    memberName: string,
+    options?: { persist?: boolean }
+  ): boolean {
+    const members = this.channels.get(channel);
+    if (!members || !members.has(memberName)) {
+      return false;
+    }
+
+    members.delete(memberName);
+    if (members.size === 0) {
+      this.channels.delete(channel);
+    }
+
+    const memberChannelSet = this.memberChannels.get(memberName);
+    if (memberChannelSet) {
+      memberChannelSet.delete(channel);
+      if (memberChannelSet.size === 0) {
+        this.memberChannels.delete(memberName);
+      }
+    }
+
+    if (options?.persist ?? true) {
+      this.persistChannelMembership(channel, memberName, 'leave');
+    }
+
+    return true;
+  }
+
+  handleMembershipUpdate(update: { channel: string; member: string; action: 'join' | 'leave' | 'invite' }) {
+    if (!update.channel || !update.member) {
       return;
     }
 
-    // Add the member (silently, no notifications to other members)
-    members.add(memberName);
-    this.persistChannelMembership(channel, memberName, 'join');
-
-    // Track which channels this member is in
-    let memberChannelSet = this.memberChannels.get(memberName);
-    if (!memberChannelSet) {
-      memberChannelSet = new Set();
-      this.memberChannels.set(memberName, memberChannelSet);
+    if (update.action === 'leave') {
+      this.removeChannelMember(update.channel, update.member, { persist: false });
+    } else {
+      this.addChannelMember(update.channel, update.member, { persist: false });
     }
-    memberChannelSet.add(channel);
-
-    routerLog.debug(`Auto-joined ${memberName} to ${channel}`);
   }
 }
