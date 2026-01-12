@@ -355,6 +355,13 @@ export function XTermLogViewer({
         .xterm-log-viewer .xterm-rows {
           touch-action: pan-y !important;
         }
+        /* Let touch scroll events reach the viewport on mobile Safari */
+        @media (pointer: coarse) {
+          .xterm-log-viewer .xterm-screen,
+          .xterm-log-viewer .xterm-screen canvas {
+            pointer-events: none;
+          }
+        }
       `}</style>
       {/* Header */}
       {showHeader && (
