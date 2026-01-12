@@ -150,12 +150,12 @@ export function useTrajectory(options: UseTrajectoryOptions = {}): UseTrajectory
   }, [fetchStatus, fetchSteps, fetchHistory]);
 
   // Initial fetch - only run once on mount
+  // Note: Empty deps array is intentional - we use hasInitializedRef to ensure single execution
   useEffect(() => {
     if (hasInitializedRef.current) return;
     hasInitializedRef.current = true;
     refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [refresh]);
 
   // Re-fetch steps when selected trajectory changes
   useEffect(() => {
