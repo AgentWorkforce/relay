@@ -410,6 +410,12 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     autoPoll: isTrajectoryOpen, // Only poll when panel is open
   });
 
+  // Get the title of the selected trajectory from history
+  const selectedTrajectoryTitle = useMemo(() => {
+    if (!selectedTrajectoryId) return null;
+    return trajectoryHistory.find(t => t.id === selectedTrajectoryId)?.title ?? null;
+  }, [selectedTrajectoryId, trajectoryHistory]);
+
   // Recent repos tracking
   const { recentRepos, addRecentRepo, getRecentProjects } = useRecentRepos();
 
@@ -1751,7 +1757,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
             {/* Content */}
             <div className="flex-1 overflow-hidden p-6">
               <TrajectoryViewer
-                agentName={trajectoryStatus?.task?.slice(0, 30) || 'Current'}
+                agentName={selectedTrajectoryTitle?.slice(0, 30) || trajectoryStatus?.task?.slice(0, 30) || 'Trajectories'}
                 steps={trajectorySteps}
                 history={trajectoryHistory}
                 selectedTrajectoryId={selectedTrajectoryId}
