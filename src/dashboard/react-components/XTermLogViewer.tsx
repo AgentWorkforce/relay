@@ -74,6 +74,7 @@ export function XTermLogViewer({
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [lineCount, setLineCount] = useState(0);
+  const [isTerminalReady, setIsTerminalReady] = useState(false);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
   const colors = getAgentColor(agentName);
@@ -110,6 +111,7 @@ export function XTermLogViewer({
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
     searchAddonRef.current = searchAddon;
+    setIsTerminalReady(true);
 
     // Handle resize
     const resizeObserver = new ResizeObserver(() => {
@@ -123,8 +125,49 @@ export function XTermLogViewer({
       terminalRef.current = null;
       fitAddonRef.current = null;
       searchAddonRef.current = null;
+      setIsTerminalReady(false);
     };
   }, []);
+
+  // Mobile touch scrolling fallback for xterm viewport
+  useEffect(() => {
+    if (!containerRef.current || !isTerminalReady) return;
+    if (typeof window !== 'undefined' &&
+        !window.matchMedia('(pointer: coarse)').matches) {
+      return;
+    }
+
+    const container = containerRef.current;
+    const viewport = container.querySelector('.xterm-viewport') as HTMLElement | null;
+    if (!viewport) return;
+
+    let startY = 0;
+    let startScrollTop = 0;
+
+    const handleTouchStart = (event: TouchEvent) => {
+      if (event.touches.length !== 1) return;
+      startY = event.touches[0].clientY;
+      startScrollTop = viewport.scrollTop;
+    };
+
+    const handleTouchMove = (event: TouchEvent) => {
+      if (event.touches.length !== 1) return;
+      const delta = startY - event.touches[0].clientY;
+      viewport.scrollTop = startScrollTop + delta;
+
+      if (viewport.scrollHeight > viewport.clientHeight) {
+        event.preventDefault();
+      }
+    };
+
+    viewport.addEventListener('touchstart', handleTouchStart, { passive: true });
+    viewport.addEventListener('touchmove', handleTouchMove, { passive: false });
+
+    return () => {
+      viewport.removeEventListener('touchstart', handleTouchStart);
+      viewport.removeEventListener('touchmove', handleTouchMove);
+    };
+  }, [isTerminalReady]);
 
   // Connect to WebSocket
   const connect = useCallback(() => {
@@ -341,6 +384,7 @@ export function XTermLogViewer({
           max-height: 100%;
           touch-action: pan-y !important;
           overscroll-behavior: contain;
+          pointer-events: auto;
         }
         .xterm-log-viewer .xterm-screen {
           touch-action: pan-y !important;
@@ -358,7 +402,8 @@ export function XTermLogViewer({
         /* Let touch scroll events reach the viewport on mobile Safari */
         @media (pointer: coarse) {
           .xterm-log-viewer .xterm-screen,
-          .xterm-log-viewer .xterm-screen canvas {
+          .xterm-log-viewer .xterm-screen canvas,
+          .xterm-log-viewer .xterm-helper-textarea {
             pointer-events: none;
           }
         }
