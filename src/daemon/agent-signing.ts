@@ -21,7 +21,6 @@ import {
   verify,
   createPrivateKey,
   createPublicKey,
-  KeyObject,
 } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -137,7 +136,7 @@ export function generateAgentKey(
   const publicKeyPem = pubKeyObj.export({ type: 'spki', format: 'pem' }) as string;
 
   // Create a key ID from the public key hash (for rotation tracking)
-  const keyId = createHash('sha256')
+  const _keyId = createHash('sha256')
     .update(publicKeyPem)
     .digest('hex')
     .substring(0, 16);

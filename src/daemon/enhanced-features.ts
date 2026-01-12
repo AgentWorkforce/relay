@@ -22,7 +22,6 @@ import {
   isPlaceholderTargetFast,
   stripAnsiFast,
   StaticPatterns,
-  type CompiledPatterns,
 } from '../utils/precompiled-patterns.js';
 
 import {

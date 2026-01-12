@@ -423,7 +423,7 @@ export class ConsensusEngine extends EventEmitter {
       quorumMet: boolean;
     }
   ): 'approved' | 'rejected' | 'no_consensus' {
-    const { approveWeight, rejectWeight, totalWeight, votedWeight, quorumMet } = counts;
+    const { approveWeight, rejectWeight, votedWeight, quorumMet } = counts;
 
     switch (proposal.consensusType) {
       case 'unanimous': {

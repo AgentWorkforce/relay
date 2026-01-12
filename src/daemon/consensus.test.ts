@@ -11,7 +11,6 @@ import {
   formatResultMessage,
   type Proposal,
   type ConsensusResult,
-  type ConsensusConfig,
 } from './consensus.js';
 
 // =============================================================================
@@ -662,7 +661,7 @@ describe('ConsensusEngine', () => {
 
   describe('getStats', () => {
     it('returns correct statistics', () => {
-      const p1 = engine.createProposal({
+      const _p1 = engine.createProposal({
         title: 'Pending',
         description: 'Test',
         proposer: 'Lead',

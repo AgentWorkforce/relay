@@ -126,14 +126,14 @@ export function estimateTokens(text: string): number {
 
   let codeChars = 0;
   let whitespaceChars = 0;
-  let punctuationChars = 0;
+  let _punctuationChars = 0;
 
   for (let i = 0; i < sample.length; i++) {
     const char = sample[i];
     if (/\s/.test(char)) {
       whitespaceChars++;
     } else if (/[{}[\]();:,.<>!=+\-*/&|^~`@#$%]/.test(char)) {
-      punctuationChars++;
+      _punctuationChars++;
       codeChars++;
     }
   }

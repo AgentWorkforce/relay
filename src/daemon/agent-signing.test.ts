@@ -20,7 +20,6 @@ import {
   attachSignature,
   extractSignature,
   loadSigningConfig,
-  type AgentKeyPair,
   type SignedMessage,
   type AgentSigningConfig,
 } from './agent-signing.js';

@@ -16,7 +16,6 @@ import {
   formatTokenCount,
   benchmarkTokenEstimation,
   type Message,
-  type CompactionConfig,
 } from './context-compaction.js';
 
 // =============================================================================
