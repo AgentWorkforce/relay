@@ -13,7 +13,7 @@
 
 import { useEffect, useState, useCallback, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { api } from '@/lib/api';
+import { api } from '../../../lib/api';
 
 type LinkState = 'loading' | 'auth-required' | 'ready' | 'linking' | 'success' | 'error';
 
