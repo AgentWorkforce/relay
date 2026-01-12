@@ -582,10 +582,13 @@ export async function listTrajectorySteps(trajectoryId?: string): Promise<{
     }
 
     // Extract events from all chapters
+    // Include trajectory ID in step IDs to ensure uniqueness across trajectories
+    // This prevents React key collisions when switching between trajectories
+    const trajId = trajectory.id || 'unknown';
     for (const chapter of trajectory.chapters || []) {
       for (const event of chapter.events || []) {
         steps.push({
-          id: `step-${stepIndex++}`,
+          id: `${trajId}-step-${stepIndex++}`,
           timestamp: event.ts || Date.now(),
           type: mapEventType(event.type),
           title: event.content?.slice(0, 50) || event.type || 'Event',
