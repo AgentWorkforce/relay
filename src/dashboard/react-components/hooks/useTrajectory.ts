@@ -65,6 +65,7 @@ export function useTrajectory(options: UseTrajectoryOptions = {}): UseTrajectory
   const [selectedTrajectoryId, setSelectedTrajectoryId] = useState<string | null>(initialTrajectoryId || null);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
   const hasLoadedInitialStepsRef = useRef(false);
+  const hasInitializedRef = useRef(false);
 
   // Fetch trajectory status
   const fetchStatus = useCallback(async () => {
@@ -134,6 +135,10 @@ export function useTrajectory(options: UseTrajectoryOptions = {}): UseTrajectory
 
   // Select a specific trajectory
   const selectTrajectory = useCallback((id: string | null) => {
+    // Set loading immediately to avoid flash of empty state before effect runs
+    if (id !== null) {
+      setIsLoading(true);
+    }
     setSelectedTrajectoryId(id);
   }, []);
 
@@ -144,10 +149,13 @@ export function useTrajectory(options: UseTrajectoryOptions = {}): UseTrajectory
     setIsLoading(false);
   }, [fetchStatus, fetchSteps, fetchHistory]);
 
-  // Initial fetch
+  // Initial fetch - only run once on mount
   useEffect(() => {
+    if (hasInitializedRef.current) return;
+    hasInitializedRef.current = true;
     refresh();
-  }, [refresh]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Re-fetch steps when selected trajectory changes
   useEffect(() => {
