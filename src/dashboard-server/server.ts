@@ -2780,18 +2780,44 @@ export async function startDashboard(
       return res.status(400).json({ error: 'username and channel required' });
     }
     const workspaceId = resolveWorkspaceId(req);
-    try {
-      console.log(`[channels] Calling userBridge.joinChannel(${username}, ${channel})`);
-      const success = await userBridge.joinChannel(username, channel);
-      console.log(`[channels] joinChannel returned: ${success}`);
-      if (success) {
-        await persistChannelMembershipEvent(channel, username, 'join', { workspaceId });
-      }
-      res.json({ success, channel });
-    } catch (err: any) {
-      console.error('[channels] Join failed:', err.message);
-      res.status(500).json({ error: err.message });
+    const channelId = channel.startsWith('#') ? channel : `#${channel}`;
+
+    let success = false;
+
+    // Step 1: Try userBridge (for users connected via local WebSocket)
+    const isLocalUser = userBridge.isUserRegistered(username);
+    console.log(`[channels] Join: isLocalUser=${isLocalUser}`);
+
+    if (isLocalUser) {
+      console.log(`[channels] Calling userBridge.joinChannel(${username}, ${channelId})`);
+      success = await userBridge.joinChannel(username, channelId);
+      console.log(`[channels] userBridge.joinChannel returned: ${success}`);
     }
+
+    // Step 2: If not local or userBridge failed, use relay client fallback
+    if (!success) {
+      console.log('[channels] Using relay client fallback for join');
+      try {
+        const client = await getRelayClient(username);
+        console.log(`[channels] Got relay client: ${client ? `state=${client.state}` : 'null'}`);
+
+        if (client && client.state === 'READY') {
+          success = client.joinChannel(channelId, username);
+          console.log(`[channels] relay client joinChannel returned: ${success}`);
+        } else {
+          console.log('[channels] Relay client not ready or null');
+        }
+      } catch (err: any) {
+        console.log(`[channels] Relay client error: ${err.message}`);
+      }
+    }
+
+    if (success) {
+      await persistChannelMembershipEvent(channelId, username, 'join', { workspaceId });
+    }
+
+    console.log(`[channels] Join final result: success=${success}`);
+    res.json({ success, channel: channelId });
   });
 
   /**
