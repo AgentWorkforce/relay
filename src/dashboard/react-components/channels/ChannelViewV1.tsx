@@ -9,7 +9,7 @@
  * This is the main view component for displaying a channel's content.
  */
 
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { ChannelHeader } from './ChannelHeader';
 import { ChannelMessageList } from './ChannelMessageList';
 import { MessageInput } from './MessageInput';
@@ -42,7 +42,7 @@ export interface ChannelViewV1Props {
   /** Callback to load more messages */
   onLoadMore?: () => void;
   /** Callback to send a message */
-  onSendMessage: (content: string, threadId?: string) => void;
+  onSendMessage: (content: string) => void;
   /** Callback when editing channel settings */
   onEditChannel?: () => void;
   /** Callback to show member list */
@@ -51,10 +51,8 @@ export interface ChannelViewV1Props {
   onShowPinned?: () => void;
   /** Callback to search in channel */
   onSearch?: () => void;
-  /** Callback when replying to a message (starts thread) */
-  onReply?: (message: ChannelMessage) => void;
-  /** Callback when reacting to a message */
-  onReact?: (message: ChannelMessage, emoji: string) => void;
+  /** Callback when clicking thread button */
+  onThreadClick?: (messageId: string) => void;
   /** Callback when typing status changes */
   onTyping?: (isTyping: boolean) => void;
   /** Callback to mark messages as read */
@@ -79,59 +77,23 @@ export function ChannelViewV1({
   onShowMembers,
   onShowPinned,
   onSearch,
-  onReply,
-  onReact,
+  onThreadClick,
   onTyping,
   onMarkRead,
   onMemberClick,
 }: ChannelViewV1Props) {
-  const [expandedThreads, setExpandedThreads] = useState<Set<string>>(new Set());
-  const [replyingToThread, setReplyingToThread] = useState<string | undefined>();
-
-  // Toggle thread expansion
-  const handleToggleThread = useCallback((messageId: string) => {
-    setExpandedThreads(prev => {
-      const next = new Set(prev);
-      if (next.has(messageId)) {
-        next.delete(messageId);
-      } else {
-        next.add(messageId);
-      }
-      return next;
-    });
-  }, []);
-
-  // Handle reply - expands thread and sets reply context
-  const handleReply = useCallback((message: ChannelMessage) => {
-    setReplyingToThread(message.id);
-    setExpandedThreads(prev => new Set(prev).add(message.id));
-    onReply?.(message);
-  }, [onReply]);
-
-  // Handle send - includes thread context
+  // Handle send
   const handleSend = useCallback((content: string) => {
-    onSendMessage(content, replyingToThread);
-    // Keep thread context for subsequent messages unless user clears it
-  }, [onSendMessage, replyingToThread]);
-
-  // Cancel thread reply
-  const handleCancelThread = useCallback(() => {
-    setReplyingToThread(undefined);
-  }, []);
-
-  // Mark channel as read when messages load
-  // (This would typically be called when component mounts or channel changes)
+    onSendMessage(content);
+  }, [onSendMessage]);
 
   // Get placeholder text based on channel type
   const inputPlaceholder = useMemo(() => {
-    if (replyingToThread) {
-      return 'Reply in thread...';
-    }
     if (channel.isDm) {
       return `Message ${channel.name}`;
     }
     return `Message #${channel.name}`;
-  }, [channel, replyingToThread]);
+  }, [channel]);
 
   // Check if channel is archived (disable input)
   const isArchived = channel.status === 'archived';
@@ -157,10 +119,7 @@ export function ChannelViewV1({
         isLoadingMore={isLoadingMore}
         hasMore={hasMoreMessages}
         onLoadMore={onLoadMore}
-        onToggleThread={handleToggleThread}
-        expandedThreads={expandedThreads}
-        onReply={handleReply}
-        onReact={onReact}
+        onThreadClick={onThreadClick}
         onMemberClick={onMemberClick}
       />
 
@@ -174,7 +133,6 @@ export function ChannelViewV1({
       ) : (
         <MessageInput
           channelId={channel.id}
-          threadId={replyingToThread}
           placeholder={inputPlaceholder}
           onSend={handleSend}
           onTyping={onTyping}
@@ -182,29 +140,6 @@ export function ChannelViewV1({
         />
       )}
     </div>
-  );
-}
-
-// =============================================================================
-// Icons
-// =============================================================================
-
-function ThreadIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-      <path d="M8 9h8" />
-      <path d="M8 13h6" />
-    </svg>
-  );
-}
-
-function CloseIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <line x1="18" y1="6" x2="6" y2="18" />
-      <line x1="6" y1="6" x2="18" y2="18" />
-    </svg>
   );
 }
 

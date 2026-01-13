@@ -1056,6 +1056,13 @@ export class Router {
     }
 
     // Route to all members except the sender (no echo)
+    const allMembers = Array.from(members);
+    routerLog.info(`Routing channel message from ${senderName} to ${channel}`, {
+      totalMembers: allMembers.length,
+      members: allMembers,
+    });
+
+    let deliveredCount = 0;
     for (const memberName of members) {
       if (memberName === senderName) {
         continue;
@@ -1070,14 +1077,22 @@ export class Router {
           from: senderName,
           payload: envelope.payload,
         };
-        memberConn.send(deliverEnvelope);
+        const sent = memberConn.send(deliverEnvelope);
+        if (sent) {
+          deliveredCount++;
+          routerLog.debug(`Delivered to ${memberName} (${memberConn.entityType || 'agent'})`);
+        } else {
+          routerLog.warn(`Failed to send to ${memberName}`);
+        }
+      } else {
+        routerLog.debug(`Member ${memberName} not connected, skipping`);
       }
     }
 
     // Persist channel message
     this.persistChannelMessage(envelope, senderName);
 
-    routerLog.debug(`${senderName} -> ${channel}: ${envelope.payload.body.substring(0, 50)}`);
+    routerLog.info(`${senderName} -> ${channel}: delivered to ${deliveredCount}/${allMembers.length - 1} members`);
   }
 
   /**

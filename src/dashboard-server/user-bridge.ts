@@ -36,6 +36,8 @@ export interface IRelayClient {
   adminJoinChannel?(channel: string, member: string): boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onMessage?: (from: string, payload: any, messageId: string, meta?: any, originalTo?: string) => void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  onChannelMessage?: (from: string, channel: string, body: string, envelope: any) => void;
 }
 
 /**
@@ -119,12 +121,18 @@ export class UserBridge {
     // Connect to daemon
     await relayClient.connect();
 
-    // Set up message handler to forward messages to WebSocket
+    // Set up message handler to forward direct messages to WebSocket
     relayClient.onMessage = (from, payload, _messageId, _meta, _originalTo) => {
       const body = typeof payload === 'object' && payload !== null && 'body' in payload
         ? (payload as { body: string }).body
         : String(payload);
-      this.handleIncomingMessage(username, from, body, payload);
+      this.handleIncomingDirectMessage(username, from, body, payload);
+    };
+
+    // Set up channel message handler to forward channel messages to WebSocket
+    relayClient.onChannelMessage = (from, channel, body, envelope) => {
+      console.log(`[user-bridge] onChannelMessage callback triggered: ${from} -> ${channel} for ${username}`);
+      this.handleIncomingChannelMessage(username, from, channel, body, envelope);
     };
 
     // Create session
@@ -297,11 +305,37 @@ export class UserBridge {
   }
 
   /**
-   * Handle incoming message from relay daemon.
+   * Handle incoming direct message from relay daemon.
    */
-  private handleIncomingMessage(
+  private handleIncomingDirectMessage(
     username: string,
     from: string,
+    body: string,
+    payload: unknown
+  ): void {
+    const session = this.users.get(username);
+    if (!session) return;
+
+    const ws = session.webSocket;
+    if (ws.readyState !== 1) return; // Not OPEN
+
+    // Direct message (DELIVER)
+    const payloadObj = payload as { body?: string } | undefined;
+    ws.send(JSON.stringify({
+      type: 'direct_message',
+      from,
+      body: payloadObj?.body || body,
+      timestamp: new Date().toISOString(),
+    }));
+  }
+
+  /**
+   * Handle incoming channel message from relay daemon.
+   */
+  private handleIncomingChannelMessage(
+    username: string,
+    from: string,
+    channel: string,
     body: string,
     envelope: unknown
   ): void {
@@ -311,27 +345,19 @@ export class UserBridge {
     const ws = session.webSocket;
     if (ws.readyState !== 1) return; // Not OPEN
 
-    // Determine message type from envelope
-    const env = envelope as { type?: string; payload?: { channel?: string; body?: string }; from?: string; to?: string };
+    console.log(`[user-bridge] Forwarding channel message to ${username}: ${from} -> ${channel}`);
 
-    if (env.type === 'CHANNEL_MESSAGE') {
-      // Channel message
-      ws.send(JSON.stringify({
-        type: 'channel_message',
-        channel: env.payload?.channel,
-        from,
-        body: env.payload?.body || body,
-        timestamp: new Date().toISOString(),
-      }));
-    } else {
-      // Direct message (DELIVER)
-      ws.send(JSON.stringify({
-        type: 'direct_message',
-        from,
-        body: (env.payload as { body?: string })?.body || body,
-        timestamp: new Date().toISOString(),
-      }));
-    }
+    // Channel message
+    const env = envelope as { payload?: { thread?: string; mentions?: string[] } } | undefined;
+    ws.send(JSON.stringify({
+      type: 'channel_message',
+      channel,
+      from,
+      body,
+      thread: env?.payload?.thread,
+      mentions: env?.payload?.mentions,
+      timestamp: new Date().toISOString(),
+    }));
   }
 
   /**

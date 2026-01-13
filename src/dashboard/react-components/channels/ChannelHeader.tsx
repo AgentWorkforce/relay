@@ -20,7 +20,7 @@ export function ChannelHeader({
   const [showDetails, setShowDetails] = useState(false);
 
   const isDm = channel.isDm;
-  const displayName = isDm ? channel.name : `#${channel.name}`;
+  const displayName = isDm ? channel.name : `${channel.name}`;
   const onlineCount = members.filter(m => m.status === 'online').length;
 
   return (

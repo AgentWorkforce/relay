@@ -629,14 +629,38 @@ export async function getChannelMembers(
   _workspaceId: string,
   channelId: string
 ): Promise<ChannelMember[]> {
-  return [{
-    id: getCurrentUsername(),
-    displayName: getCurrentUsername(),
-    entityType: 'user',
-    role: 'owner',
-    status: 'online',
-    joinedAt: new Date().toISOString(),
-  }];
+  try {
+    const url = getApiUrl(`/api/channels/${encodeURIComponent(channelId)}/members`);
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!response.ok) {
+      console.warn('[ChannelsAPI] Failed to get channel members:', response.statusText);
+      // Fall back to just returning current user
+      return [{
+        id: getCurrentUsername(),
+        displayName: getCurrentUsername(),
+        entityType: 'user',
+        role: 'owner',
+        status: 'online',
+        joinedAt: new Date().toISOString(),
+      }];
+    }
+    const data = await response.json();
+    return data.members || [];
+  } catch (error) {
+    console.error('[ChannelsAPI] Error getting channel members:', error);
+    // Fall back to just returning current user
+    return [{
+      id: getCurrentUsername(),
+      displayName: getCurrentUsername(),
+      entityType: 'user',
+      role: 'owner',
+      status: 'online',
+      joinedAt: new Date().toISOString(),
+    }];
+  }
 }
 
 // =============================================================================

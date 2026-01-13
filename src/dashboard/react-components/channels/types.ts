@@ -343,14 +343,8 @@ export interface ChannelMessageListProps {
   hasMore?: boolean;
   /** Callback to load more messages */
   onLoadMore?: () => void;
-  /** Callback when a thread is expanded/collapsed */
-  onToggleThread?: (messageId: string) => void;
-  /** Currently expanded threads */
-  expandedThreads?: Set<string>;
-  /** Callback to reply to a message */
-  onReply?: (message: ChannelMessage) => void;
-  /** Callback to react to a message */
-  onReact?: (message: ChannelMessage, emoji: string) => void;
+  /** Callback when clicking thread button */
+  onThreadClick?: (messageId: string) => void;
   /** Callback when clicking on a member name (for DM navigation) */
   onMemberClick?: (memberId: string, entityType: 'user' | 'agent') => void;
 }
@@ -361,8 +355,6 @@ export interface ChannelMessageListProps {
 export interface MessageInputProps {
   /** Channel to send to */
   channelId: string;
-  /** Thread ID if replying in thread */
-  threadId?: string;
   /** Placeholder text */
   placeholder?: string;
   /** Whether input is disabled */

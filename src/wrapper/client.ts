@@ -678,19 +678,31 @@ export class RelayClient {
   }
 
   private handleChannelMessage(envelope: Envelope<ChannelMessagePayload> & { from?: string }): void {
+    if (!this.config.quiet) {
+      console.log(`[client] handleChannelMessage: from=${envelope.from}, channel=${envelope.payload.channel}`);
+    }
+
     const duplicate = this.markDelivered(envelope.id);
     if (duplicate) {
+      if (!this.config.quiet) {
+        console.log(`[client] handleChannelMessage: duplicate message ${envelope.id}, skipping`);
+      }
       return;
     }
 
     // Notify channel message handler
     if (this.onChannelMessage && envelope.from) {
+      if (!this.config.quiet) {
+        console.log(`[client] Calling onChannelMessage callback`);
+      }
       this.onChannelMessage(
         envelope.from,
         envelope.payload.channel,
         envelope.payload.body,
         envelope as Envelope<ChannelMessagePayload>
       );
+    } else if (!this.config.quiet) {
+      console.log(`[client] No onChannelMessage handler set (handler=${!!this.onChannelMessage}, from=${envelope.from})`);
     }
 
     // Also call onMessage for backwards compatibility

@@ -2,7 +2,6 @@
  * ChannelMessageList Component
  *
  * Displays messages in a channel with:
- * - Thread support (expandable/collapsible)
  * - Unread separator
  * - Date dividers
  * - Auto-scroll to new messages
@@ -19,10 +18,7 @@ export function ChannelMessageList({
   isLoadingMore = false,
   hasMore = false,
   onLoadMore,
-  onToggleThread,
-  expandedThreads = new Set(),
-  onReply,
-  onReact,
+  onThreadClick,
   onMemberClick,
 }: ChannelMessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -147,10 +143,7 @@ export function ChannelMessageList({
                   <MessageItem
                     message={message}
                     isOwn={message.from === currentUser}
-                    isExpanded={expandedThreads.has(message.id)}
-                    onToggleThread={() => onToggleThread?.(message.id)}
-                    onReply={() => onReply?.(message)}
-                    onReact={(emoji) => onReact?.(message, emoji)}
+                    onThreadClick={onThreadClick}
                     onMemberClick={onMemberClick}
                     showAvatar={shouldShowAvatar(dateMessages, index)}
                   />
@@ -185,10 +178,7 @@ export function ChannelMessageList({
 interface MessageItemProps {
   message: ChannelMessage;
   isOwn: boolean;
-  isExpanded: boolean;
-  onToggleThread?: () => void;
-  onReply?: () => void;
-  onReact?: (emoji: string) => void;
+  onThreadClick?: (messageId: string) => void;
   onMemberClick?: (memberId: string, entityType: 'user' | 'agent') => void;
   showAvatar: boolean;
 }
@@ -196,22 +186,14 @@ interface MessageItemProps {
 function MessageItem({
   message,
   isOwn,
-  isExpanded,
-  onToggleThread,
-  onReply,
-  onReact,
+  onThreadClick,
   onMemberClick,
   showAvatar,
 }: MessageItemProps) {
-  const [showActions, setShowActions] = useState(false);
   const hasThread = message.threadSummary && message.threadSummary.replyCount > 0;
 
   return (
-    <div
-      className={`group relative py-1 ${showAvatar ? 'mt-3' : ''}`}
-      onMouseEnter={() => setShowActions(true)}
-      onMouseLeave={() => setShowActions(false)}
-    >
+    <div className={`group relative py-1 ${showAvatar ? 'mt-3' : ''}`}>
       <div className="flex gap-3">
         {/* Avatar column */}
         <div className="w-9 flex-shrink-0">
@@ -228,7 +210,7 @@ function MessageItem({
         <div className="flex-1 min-w-0">
           {/* Header (only show with avatar) */}
           {showAvatar && (
-            <div className="flex items-baseline gap-2 mb-0.5">
+            <div className="flex items-center gap-2 mb-0.5">
               <button
                 type="button"
                 onClick={() => {
@@ -249,6 +231,23 @@ function MessageItem({
               {message.editedAt && (
                 <span className="text-xs text-text-muted">(edited)</span>
               )}
+
+              {/* Thread button */}
+              <button
+                className={`
+                  inline-flex items-center gap-1.5 p-1.5 rounded-lg transition-all duration-150 cursor-pointer border-none
+                  ${hasThread || message.threadId
+                    ? 'text-accent-cyan bg-accent-cyan/10 hover:bg-accent-cyan/20'
+                    : 'text-text-muted bg-transparent opacity-0 group-hover:opacity-100 hover:text-accent-cyan hover:bg-accent-cyan/10'}
+                `}
+                onClick={() => onThreadClick?.(message.threadId || message.id)}
+                title={message.threadId ? `View thread` : (hasThread ? `${message.threadSummary!.replyCount} ${message.threadSummary!.replyCount === 1 ? 'reply' : 'replies'}` : 'Reply in thread')}
+              >
+                <ThreadIcon className="w-3.5 h-3.5" />
+                {hasThread && (
+                  <span className="text-xs font-medium">{message.threadSummary!.replyCount}</span>
+                )}
+              </button>
             </div>
           )}
 
@@ -265,92 +264,9 @@ function MessageItem({
               ))}
             </div>
           )}
-
-          {/* Reactions */}
-          {message.reactions && Object.keys(message.reactions).length > 0 && (
-            <div className="mt-1.5 flex flex-wrap gap-1">
-              {Object.entries(message.reactions).map(([emoji, users]) => (
-                <button
-                  key={emoji}
-                  onClick={() => onReact?.(emoji)}
-                  className="flex items-center gap-1 px-2 py-0.5 bg-bg-tertiary hover:bg-bg-hover rounded-full text-xs transition-colors"
-                >
-                  <span>{emoji}</span>
-                  <span className="text-text-muted">{users.length}</span>
-                </button>
-              ))}
-            </div>
-          )}
-
-          {/* Thread summary */}
-          {hasThread && (
-            <button
-              onClick={onToggleThread}
-              className="mt-2 flex items-center gap-2 text-sm text-accent-cyan hover:underline"
-            >
-              <ThreadIcon className="w-4 h-4" />
-              <span>
-                {message.threadSummary!.replyCount} {message.threadSummary!.replyCount === 1 ? 'reply' : 'replies'}
-              </span>
-              <span className="text-text-muted">
-                Last reply {formatRelativeTime(message.threadSummary!.lastReplyAt)}
-              </span>
-              <ChevronIcon className={`w-4 h-4 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
-            </button>
-          )}
-
-          {/* Expanded thread replies would go here */}
-          {isExpanded && hasThread && (
-            <div className="mt-2 pl-4 border-l-2 border-accent-cyan/30">
-              <p className="text-xs text-text-muted italic">
-                Thread replies will be loaded here...
-              </p>
-            </div>
-          )}
         </div>
-
-        {/* Actions (visible on hover) */}
-        {showActions && (
-          <div className="absolute right-0 -top-3 flex items-center gap-0.5 bg-bg-elevated border border-border-subtle rounded-lg shadow-md p-0.5">
-            <ActionButton
-              icon={<ReplyIcon className="w-4 h-4" />}
-              onClick={onReply}
-              title="Reply in thread"
-            />
-            <ActionButton
-              icon={<EmojiIcon className="w-4 h-4" />}
-              onClick={() => onReact?.('thumbsup')}
-              title="Add reaction"
-            />
-            <ActionButton
-              icon={<MoreIcon className="w-4 h-4" />}
-              onClick={() => {}}
-              title="More actions"
-            />
-          </div>
-        )}
       </div>
     </div>
-  );
-}
-
-function ActionButton({
-  icon,
-  onClick,
-  title,
-}: {
-  icon: React.ReactNode;
-  onClick?: () => void;
-  title: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className="p-1.5 rounded text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors"
-      title={title}
-    >
-      {icon}
-    </button>
   );
 }
 
@@ -545,18 +461,6 @@ function formatTime(isoString: string): string {
   });
 }
 
-function formatRelativeTime(isoString: string): string {
-  const date = new Date(isoString);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-
-  if (diffMins < 1) return 'just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffMins < 1440) return `${Math.floor(diffMins / 60)}h ago`;
-  return formatTime(isoString);
-}
-
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -579,16 +483,6 @@ function ThreadIcon({ className }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-      <path d="M8 9h8" />
-      <path d="M8 13h6" />
-    </svg>
-  );
-}
-
-function ChevronIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="6 9 12 15 18 9" />
     </svg>
   );
 }
@@ -597,36 +491,6 @@ function ChevronDownIcon({ className }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="6 9 12 15 18 9" />
-    </svg>
-  );
-}
-
-function ReplyIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="9 17 4 12 9 7" />
-      <path d="M20 18v-2a4 4 0 0 0-4-4H4" />
-    </svg>
-  );
-}
-
-function EmojiIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="10" />
-      <path d="M8 14s1.5 2 4 2 4-2 4-2" />
-      <line x1="9" y1="9" x2="9.01" y2="9" />
-      <line x1="15" y1="9" x2="15.01" y2="9" />
-    </svg>
-  );
-}
-
-function MoreIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="1" />
-      <circle cx="19" cy="12" r="1" />
-      <circle cx="5" cy="12" r="1" />
     </svg>
   );
 }

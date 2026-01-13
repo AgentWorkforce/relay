@@ -933,7 +933,7 @@ export async function startDashboard(
   const pendingConnections = new Map<string, Promise<RelayClient | undefined>>();
 
   // Get or create a relay client for a specific sender
-  const getRelayClient = async (senderName: string = 'Dashboard'): Promise<RelayClient | undefined> => {
+  const getRelayClient = async (senderName: string = 'Dashboard', entityType?: 'agent' | 'user'): Promise<RelayClient | undefined> => {
     // Check if we already have a connected client for this sender
     const existing = relayClients.get(senderName);
     if (existing && existing.state === 'READY') {
@@ -955,9 +955,12 @@ export async function startDashboard(
     // Create connection promise to prevent race conditions
     const connectionPromise = (async (): Promise<RelayClient | undefined> => {
       // Create new client for this sender
+      // Default to 'user' entityType for non-Dashboard senders (human users)
+      const resolvedEntityType = entityType ?? (senderName === 'Dashboard' ? undefined : 'user');
       const client = new RelayClient({
         socketPath,
         agentName: senderName,
+        entityType: resolvedEntityType,
         cli: 'dashboard',
         reconnect: true,
         maxReconnectAttempts: 5,
@@ -973,6 +976,25 @@ export async function startDashboard(
         if (state === 'DISCONNECTED') {
           relayClients.delete(senderName);
         }
+      };
+
+      // Set up channel message handler to forward messages to presence WebSocket
+      // This enables cloud users to receive channel messages via the presence bridge
+      client.onChannelMessage = (from, channel, body, envelope) => {
+        console.log(`[dashboard] Channel message for ${senderName}: ${from} -> ${channel}`);
+
+        // Broadcast to presence WebSocket clients so cloud can forward to its users
+        // Include the target user so cloud knows who to forward to
+        broadcastChannelMessage({
+          type: 'channel_message',
+          targetUser: senderName,
+          channel,
+          from,
+          body,
+          thread: envelope?.payload?.thread,
+          mentions: envelope?.payload?.mentions,
+          timestamp: new Date().toISOString(),
+        });
       };
 
       try {
@@ -2203,6 +2225,26 @@ export async function startDashboard(
     });
   };
 
+  // Helper to broadcast channel messages to all presence clients
+  // This is used by fallback relay clients to forward messages to cloud-connected users
+  const broadcastChannelMessage = (message: {
+    type: 'channel_message';
+    targetUser: string;
+    channel: string;
+    from: string;
+    body: string;
+    thread?: string;
+    mentions?: string[];
+    timestamp: string;
+  }) => {
+    const payload = JSON.stringify(message);
+    wssPresence.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(payload);
+      }
+    });
+  };
+
   // Helper to get online users list (without ws references)
   const getOnlineUsersList = (): UserPresenceInfo[] => {
     return Array.from(onlineUsers.values()).map((state) => state.info);
@@ -2789,6 +2831,79 @@ export async function startDashboard(
   });
 
   /**
+   * GET /api/channels/:channel/members - Get members of a channel
+   */
+  app.get('/api/channels/:channel/members', async (req, res) => {
+    const channelId = req.params.channel.startsWith('#') ? req.params.channel : `#${req.params.channel}`;
+    const workspaceId = resolveWorkspaceId(req);
+
+    try {
+      // Get persisted members from storage
+      const channelMap = await loadChannelRecords(workspaceId);
+      const record = channelMap.get(channelId);
+
+      // Get online agents from agents.json
+      const agentsPath = path.join(teamDir, 'agents.json');
+      const onlineAgents: string[] = [];
+      const thirtySecondsAgo = Date.now() - 30 * 1000;
+      if (fs.existsSync(agentsPath)) {
+        try {
+          const data = JSON.parse(fs.readFileSync(agentsPath, 'utf-8'));
+          for (const agent of (data.agents || [])) {
+            if (agent.lastSeen && new Date(agent.lastSeen).getTime() > thirtySecondsAgo) {
+              onlineAgents.push(agent.name);
+            }
+          }
+        } catch {
+          // Ignore parse errors
+        }
+      }
+
+      // Get connected users from userBridge
+      const connectedUsers = userBridge.getRegisteredUsers();
+
+      // Build member list
+      const memberSet = new Set<string>();
+
+      // Add persisted members
+      if (record?.members) {
+        for (const member of record.members) {
+          memberSet.add(member);
+        }
+      }
+
+      // For #general, also add all connected agents and users
+      if (channelId === '#general') {
+        for (const agent of onlineAgents) {
+          memberSet.add(agent);
+        }
+        for (const user of connectedUsers) {
+          memberSet.add(user);
+        }
+      }
+
+      // Build response with entity type info
+      const members = Array.from(memberSet).map((name) => {
+        const isOnlineAgent = onlineAgents.includes(name);
+        const isOnlineUser = connectedUsers.includes(name);
+        return {
+          id: name,
+          displayName: name,
+          entityType: isOnlineUser ? 'user' : 'agent',
+          role: 'member',
+          status: isOnlineAgent || isOnlineUser ? 'online' : 'offline',
+          joinedAt: new Date().toISOString(),
+        };
+      });
+
+      return res.json({ members });
+    } catch (err: any) {
+      console.error('[channels] Failed to get channel members:', err);
+      return res.status(500).json({ error: err.message || 'Failed to get channel members' });
+    }
+  });
+
+  /**
    * GET /api/channels/:channel/messages - Get persisted messages for a channel
    */
   app.get('/api/channels/:channel/messages', async (req, res) => {
@@ -2853,11 +2968,39 @@ export async function startDashboard(
       return res.status(400).json({ error: 'username, channel, and body required' });
     }
     const workspaceId = resolveWorkspaceId(req);
+
+    // Ensure channel has # prefix
+    const channelId = channel.startsWith('#') ? channel : `#${channel}`;
+
     try {
-      const success = await userBridge.sendChannelMessage(username, channel, body, {
+      // First try via userBridge (for users connected via WebSocket)
+      let success = await userBridge.sendChannelMessage(username, channelId, body, {
         thread,
         data: workspaceId ? { _workspaceId: workspaceId } : undefined,
       });
+
+      // If user not registered via WebSocket, fall back to dashboard relay client
+      // This handles cloud-proxied requests where user is connected to cloud, not local daemon
+      if (!success && !userBridge.isUserRegistered(username)) {
+        console.log(`[channel-debug] User ${username} not registered via WebSocket, using relay client fallback`);
+
+        // Get or create a relay client for this user
+        const client = await getRelayClient(username);
+        if (client && client.state === 'READY') {
+          // Auto-join the user to the channel first
+          client.joinChannel(channelId, username);
+
+          // Send the channel message
+          success = client.sendChannelMessage(channelId, body, {
+            thread,
+            data: workspaceId ? { _workspaceId: workspaceId } : undefined,
+          });
+          console.log(`[channel-debug] Relay client fallback result: ${success}`);
+        } else {
+          console.log(`[channel-debug] Relay client not available for ${username}`);
+        }
+      }
+
       console.log(`[channel-debug] MESSAGE result: success=${success}`);
       res.json({ success });
     } catch (err: any) {

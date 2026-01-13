@@ -15,7 +15,6 @@ const TYPING_DEBOUNCE_MS = 1000;
 
 export function MessageInput({
   channelId,
-  threadId,
   placeholder = 'Send a message...',
   disabled = false,
   onSend,
@@ -186,14 +185,6 @@ export function MessageInput({
 
   return (
     <div className="relative flex-shrink-0 border-t border-border-subtle bg-bg-primary">
-      {/* Thread indicator */}
-      {threadId && (
-        <div className="px-4 py-2 bg-bg-secondary/50 border-b border-border-subtle flex items-center gap-2">
-          <ThreadIcon className="w-4 h-4 text-accent-cyan" />
-          <span className="text-xs text-text-muted">Replying in thread</span>
-        </div>
-      )}
-
       {/* Mention autocomplete */}
       {showMentions && filteredMentions.length > 0 && (
         <div className="absolute bottom-full left-4 mb-1 bg-bg-elevated border border-border-subtle rounded-lg shadow-lg py-1 min-w-[200px] max-h-[200px] overflow-y-auto">
@@ -276,16 +267,6 @@ export function MessageInput({
 // =============================================================================
 // Icons
 // =============================================================================
-
-function ThreadIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-      <path d="M8 9h8" />
-      <path d="M8 13h6" />
-    </svg>
-  );
-}
 
 function AttachIcon({ className }: { className?: string }) {
   return (

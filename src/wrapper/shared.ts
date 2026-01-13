@@ -120,8 +120,13 @@ export function buildInjectionString(msg: QueuedMessage): string {
         ? ' [!]'
         : '';
 
-  // Channel indicator for broadcasts
-  const channelHint = msg.originalTo === '*' ? ' [#general]' : '';
+  // Channel indicator for channel messages and broadcasts
+  // originalTo will be '*' for broadcasts or the channel name (e.g., '#general') for channel messages
+  const channelHint = msg.originalTo === '*'
+    ? ' [#general]'
+    : msg.originalTo?.startsWith('#')
+      ? ` [${msg.originalTo}]`
+      : '';
 
   // Extract attachment file paths if present
   let attachmentHint = '';
