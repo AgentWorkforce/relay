@@ -3,7 +3,6 @@ name: mobile
 description: Use for mobile app development, React Native, Flutter, iOS, Android, and cross-platform mobile tasks.
 allowed-tools: Read, Grep, Glob, Bash, Edit, Write
 model: sonnet
-agentType: agent
 ---
 
 # Mobile Agent

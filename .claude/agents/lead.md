@@ -2,7 +2,6 @@
 name: lead
 description: Use when coordinating multi-agent teams. Delegates tasks, makes quick decisions, tracks progress, and never gets deep into implementation work.
 allowed-tools: Read, Grep, Glob, Bash, Task, AskUserQuestion
-agentType: agent
 skills: using-beads-bv
 ---
 

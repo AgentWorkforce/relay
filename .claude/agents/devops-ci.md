@@ -3,7 +3,6 @@ name: devops-ci
 description: Use for CI/CD pipelines, infrastructure as code, build automation, and DevOps workflows.
 allowed-tools: Read, Grep, Glob, Bash, Edit, Write
 model: sonnet
-agentType: agent
 ---
 
 # DevOps CI Agent

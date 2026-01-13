@@ -3,7 +3,6 @@ name: prototyper
 description: Use for rapid prototyping, MVPs, proof-of-concepts, and quick experimental implementations.
 allowed-tools: Read, Grep, Glob, Bash, Edit, Write
 model: sonnet
-agentType: agent
 ---
 
 # Prototyper Agent

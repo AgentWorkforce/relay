@@ -2,7 +2,6 @@
 name: qa
 description: Quality assurance, testing protocols, and defect management. Creates test plans and validates feature completeness.
 allowed-tools: Read, Grep, Glob, Bash, WebFetch
-agentType: agent
 ---
 
 # 🎯 QA Agent

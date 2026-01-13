@@ -2,7 +2,6 @@
 name: accessibility
 description: A11y auditing, WCAG compliance, and inclusive design review. Ensures digital content is usable by everyone.
 allowed-tools: Read, Grep, Glob, Bash, WebFetch, WebSearch
-agentType: agent
 ---
 
 # ♿ Accessibility Agent

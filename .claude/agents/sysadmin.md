@@ -3,7 +3,6 @@ name: sysadmin
 description: Use for system administration, server configuration, security hardening, and infrastructure management.
 allowed-tools: Read, Grep, Glob, Bash, Edit, Write
 model: sonnet
-agentType: agent
 ---
 
 # Sysadmin Agent

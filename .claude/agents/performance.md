@@ -2,7 +2,6 @@
 name: performance
 description: Performance optimization and profiling. Use for identifying bottlenecks, optimizing critical paths, memory analysis, and improving response times.
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash, WebSearch, WebFetch
-agentType: agent
 ---
 
 # ⚡ Performance Engineer

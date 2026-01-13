@@ -3,7 +3,6 @@ name: monitor
 description: Use for monitoring setup, alerting configuration, observability, and performance analysis.
 allowed-tools: Read, Grep, Glob, Bash, Edit, Write
 model: sonnet
-agentType: agent
 ---
 
 # Monitor Agent

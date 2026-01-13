@@ -2,7 +2,6 @@
 name: documentor
 description: Technical documentation, API docs, READMEs. Creates clear, comprehensive documentation for codebases.
 allowed-tools: Read, Grep, Glob, Write, Edit
-agentType: agent
 ---
 
 # 📝 Documentor

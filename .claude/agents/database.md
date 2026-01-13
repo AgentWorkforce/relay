@@ -2,7 +2,6 @@
 name: database
 description: Database design, queries, migrations, and data modeling. Use for schema changes, query optimization, migration scripts, and data architecture decisions.
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash, WebSearch, WebFetch
-agentType: agent
 ---
 
 # 🗄️ Database Specialist

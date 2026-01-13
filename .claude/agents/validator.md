@@ -2,7 +2,6 @@
 name: validator
 description: Input validation, data integrity, and schema enforcement. Ensures data quality at system boundaries.
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash
-agentType: agent
 ---
 
 # ✅ Validator Agent
