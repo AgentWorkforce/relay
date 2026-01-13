@@ -338,6 +338,31 @@ export class RelayClient {
   }
 
   /**
+   * Admin join: Add any member to a channel (does not require member to be connected).
+   * Used by dashboard to sync channel memberships for agents.
+   * @param channel - Channel name (e.g., '#general')
+   * @param member - Name of the member to add
+   */
+  adminJoinChannel(channel: string, member: string): boolean {
+    if (this._state !== 'READY') {
+      return false;
+    }
+
+    const envelope: ChannelJoinEnvelope = {
+      v: PROTOCOL_VERSION,
+      type: 'CHANNEL_JOIN',
+      id: generateId(),
+      ts: Date.now(),
+      payload: {
+        channel,
+        member, // Admin mode: specify member to add
+      },
+    };
+
+    return this.send(envelope);
+  }
+
+  /**
    * Leave a channel.
    * @param channel - Channel name to leave
    * @param reason - Optional reason for leaving

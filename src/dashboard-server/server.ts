@@ -2766,6 +2766,29 @@ export async function startDashboard(
   });
 
   /**
+   * POST /api/channels/admin-join - Add a member to a channel (admin operation)
+   * Used by cloud server to sync channel memberships for agents
+   */
+  app.post('/api/channels/admin-join', express.json(), async (req, res) => {
+    const { channel, member } = req.body;
+    if (!channel || !member) {
+      return res.status(400).json({ error: 'channel and member required' });
+    }
+    const workspaceId = resolveWorkspaceId(req);
+    try {
+      console.log(`[channels] Admin join: ${member} -> ${channel}`);
+      const success = await userBridge.adminJoinChannel(channel, member);
+      if (success) {
+        await persistChannelMembershipEvent(channel, member, 'join', { workspaceId });
+      }
+      res.json({ success, channel, member });
+    } catch (err: any) {
+      console.error('[channels] Admin join failed:', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
    * GET /api/channels/:channel/messages - Get persisted messages for a channel
    */
   app.get('/api/channels/:channel/messages', async (req, res) => {

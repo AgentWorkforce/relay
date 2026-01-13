@@ -63,6 +63,12 @@ export interface ChannelJoinPayload {
   displayName?: string;
   /** Optional avatar URL */
   avatarUrl?: string;
+  /**
+   * Optional member name to add to channel.
+   * If provided, adds this member instead of the sender.
+   * Used for admin operations (e.g., adding agents via dashboard).
+   */
+  member?: string;
 }
 
 /**

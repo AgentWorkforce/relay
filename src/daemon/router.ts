@@ -921,18 +921,22 @@ export class Router {
   /**
    * Handle a CHANNEL_JOIN message.
    * Adds the member to the channel and notifies existing members.
+   * If payload.member is set, adds that member (admin mode).
+   * Otherwise, adds the connection's agent name.
    */
   handleChannelJoin(
     connection: RoutableConnection,
     envelope: Envelope<ChannelJoinPayload>
   ): void {
-    const memberName = connection.agentName;
+    // Use payload.member if provided (admin mode), otherwise use connection's name
+    const memberName = envelope.payload.member ?? connection.agentName;
     if (!memberName) {
-      routerLog.warn('CHANNEL_JOIN from connection without name');
+      routerLog.warn('CHANNEL_JOIN from connection without name and no member specified');
       return;
     }
 
     const channel = envelope.payload.channel;
+    const isAdminJoin = Boolean(envelope.payload.member);
 
     // Get or create channel
     let members = this.channels.get(channel);
@@ -947,20 +951,23 @@ export class Router {
       return;
     }
 
-    const existingMembers = members ? Array.from(members) : [];
-    // Notify existing members about the new joiner
-    for (const existingMember of existingMembers) {
-      const memberConn = this.getConnectionByName(existingMember);
-      if (memberConn) {
-        const joinNotification: Envelope<ChannelJoinPayload> = {
-          v: PROTOCOL_VERSION,
-          type: 'CHANNEL_JOIN',
-          id: generateId(),
-          ts: Date.now(),
-          from: memberName,
-          payload: envelope.payload,
-        };
-        memberConn.send(joinNotification);
+    // Only notify existing members for non-admin joins (agents joining themselves)
+    // Admin joins are silent to avoid spamming notifications when syncing
+    if (!isAdminJoin) {
+      const existingMembers = members ? Array.from(members) : [];
+      for (const existingMember of existingMembers) {
+        const memberConn = this.getConnectionByName(existingMember);
+        if (memberConn) {
+          const joinNotification: Envelope<ChannelJoinPayload> = {
+            v: PROTOCOL_VERSION,
+            type: 'CHANNEL_JOIN',
+            id: generateId(),
+            ts: Date.now(),
+            from: memberName,
+            payload: envelope.payload,
+          };
+          memberConn.send(joinNotification);
+        }
       }
     }
 
@@ -970,7 +977,7 @@ export class Router {
       return;
     }
 
-    routerLog.info(`${memberName} joined ${channel} (${this.channels.get(channel)?.size ?? 0} members)`);
+    routerLog.info(`${memberName} joined ${channel} (${this.channels.get(channel)?.size ?? 0} members)${isAdminJoin ? ' [admin]' : ''}`);
   }
 
   /**

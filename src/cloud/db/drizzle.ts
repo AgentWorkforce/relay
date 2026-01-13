@@ -7,7 +7,7 @@
 
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
-import { eq, and, sql, desc, lt, gt, isNull, isNotNull, count } from 'drizzle-orm';
+import { eq, and, sql, desc, lt, gt, isNull, isNotNull, count, inArray } from 'drizzle-orm';
 import * as schema from './schema.js';
 import { getConfig } from '../config.js';
 import { DEFAULT_POOL_CONFIG } from './bulk-ingest.js';
@@ -1698,6 +1698,7 @@ export interface ChannelMemberQueries {
   addMember(member: schema.NewChannelMember): Promise<schema.ChannelMember>;
   removeMember(channelId: string, memberId: string): Promise<void>;
   updateRole(channelId: string, memberId: string, role: string): Promise<void>;
+  countByChannelIds(channelIds: string[]): Promise<Map<string, number>>;
 }
 
 export const channelMemberQueries: ChannelMemberQueries = {
@@ -1754,6 +1755,27 @@ export const channelMemberQueries: ChannelMemberQueries = {
         eq(schema.channelMembers.channelId, channelId),
         eq(schema.channelMembers.memberId, memberId)
       ));
+  },
+
+  async countByChannelIds(channelIds: string[]): Promise<Map<string, number>> {
+    if (channelIds.length === 0) {
+      return new Map();
+    }
+    const db = getDb();
+    const results = await db
+      .select({
+        channelId: schema.channelMembers.channelId,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(schema.channelMembers)
+      .where(inArray(schema.channelMembers.channelId, channelIds))
+      .groupBy(schema.channelMembers.channelId);
+
+    const countMap = new Map<string, number>();
+    for (const row of results) {
+      countMap.set(row.channelId, row.count);
+    }
+    return countMap;
   },
 };
 

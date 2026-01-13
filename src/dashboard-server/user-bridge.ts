@@ -32,6 +32,8 @@ export interface IRelayClient {
     body: string,
     options?: { thread?: string; mentions?: string[]; attachments?: unknown[]; data?: Record<string, unknown> }
   ): boolean;
+  // Admin channel operations
+  adminJoinChannel?(channel: string, member: string): boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onMessage?: (from: string, payload: any, messageId: string, meta?: any, originalTo?: string) => void;
 }
@@ -329,6 +331,50 @@ export class UserBridge {
         body: (env.payload as { body?: string })?.body || body,
         timestamp: new Date().toISOString(),
       }));
+    }
+  }
+
+  /**
+   * Admin: Add a member to a channel (does not require member to be connected).
+   * Used to sync channel memberships from database.
+   * Uses the first available user session or creates a temporary one.
+   */
+  async adminJoinChannel(channel: string, member: string): Promise<boolean> {
+    // Try to use an existing session
+    const sessions = Array.from(this.users.values());
+    if (sessions.length > 0) {
+      const session = sessions[0];
+      if (session.relayClient.adminJoinChannel) {
+        console.log(`[user-bridge] Admin join: ${member} -> ${channel} (via ${session.username})`);
+        return session.relayClient.adminJoinChannel(channel, member);
+      }
+    }
+
+    // No sessions available - create a temporary system client
+    try {
+      console.log(`[user-bridge] Admin join: ${member} -> ${channel} (creating temp client)`);
+      const tempClient = await this.createRelayClient({
+        socketPath: this.socketPath,
+        agentName: '__system__',
+        entityType: 'user',
+      });
+      await tempClient.connect();
+
+      // Give daemon time to complete handshake
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      if (tempClient.adminJoinChannel) {
+        const result = tempClient.adminJoinChannel(channel, member);
+        // Disconnect after a short delay to allow message to be sent
+        setTimeout(() => tempClient.disconnect(), 200);
+        return result;
+      }
+
+      tempClient.disconnect();
+      return false;
+    } catch (err) {
+      console.error('[user-bridge] Failed to create temp client for admin join:', err);
+      return false;
     }
   }
 

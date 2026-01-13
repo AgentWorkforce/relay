@@ -492,6 +492,10 @@ export async function createServer(): Promise<CloudServer> {
       const activeChannels = allChannels.filter(c => c.status === 'active');
       const archivedChannels = allChannels.filter(c => c.status === 'archived');
 
+      // Get member counts for all channels in one query
+      const channelUuids = allChannels.map(c => c.id);
+      const memberCounts = await db.channelMembers.countByChannelIds(channelUuids);
+
       // Transform to API response format
       const mapChannel = (c: typeof allChannels[0]) => ({
         id: c.channelId,
@@ -502,7 +506,7 @@ export async function createServer(): Promise<CloudServer> {
         createdAt: c.createdAt.toISOString(),
         createdBy: c.createdBy || '__system__',
         lastActivityAt: c.lastActivityAt?.toISOString(),
-        memberCount: 0, // TODO: count members
+        memberCount: memberCounts.get(c.id) ?? 0,
         unreadCount: 0,
         hasMentions: false,
         isDm: c.channelId.startsWith('dm:'),
@@ -546,9 +550,9 @@ export async function createServer(): Promise<CloudServer> {
       const user = await db.users.findById(userId);
       const createdBy = user?.githubUsername || 'unknown';
 
-      // Create channel ID (add # prefix for public channels)
-      const channelId = name.startsWith('#') ? name : `#${name}`;
-      const displayName = name.startsWith('#') ? name.slice(1) : name;
+      // Normalize channel name (remove # prefix if present)
+      const channelId = name.startsWith('#') ? name.slice(1) : name;
+      const displayName = channelId;
 
       // Check if channel already exists
       const existing = await db.channels.findByWorkspaceAndChannelId(workspaceId, channelId);
@@ -576,18 +580,59 @@ export async function createServer(): Promise<CloudServer> {
       });
 
       // Handle invites if provided
+      // Supports: comma-separated string, array of strings, or array of {id, type} objects
+      const addedMembers: Array<{ id: string; type: 'user' | 'agent'; role: string }> = [
+        { id: createdBy, type: 'user', role: 'owner' },
+      ];
+
       if (invites) {
-        const inviteList = typeof invites === 'string'
-          ? invites.split(',').map((s: string) => s.trim()).filter(Boolean)
-          : invites;
+        let inviteList: Array<{ id: string; type: 'user' | 'agent' }> = [];
+
+        if (typeof invites === 'string') {
+          // Comma-separated string: "alice,bob" -> all as users
+          inviteList = invites.split(',')
+            .map((s: string) => s.trim())
+            .filter(Boolean)
+            .map(id => ({ id, type: 'user' as const }));
+        } else if (Array.isArray(invites)) {
+          // Array of strings or objects
+          inviteList = invites.map((inv: string | { id: string; type?: string }) => {
+            if (typeof inv === 'string') {
+              return { id: inv, type: 'user' as const };
+            }
+            return {
+              id: inv.id,
+              type: (inv.type === 'agent' ? 'agent' : 'user') as 'user' | 'agent',
+            };
+          });
+        }
+
         for (const invitee of inviteList) {
           await db.channelMembers.addMember({
             channelId: channel.id,
-            memberId: invitee,
-            memberType: 'user',
+            memberId: invitee.id,
+            memberType: invitee.type,
             role: 'member',
             invitedBy: createdBy,
           });
+          addedMembers.push({ id: invitee.id, type: invitee.type, role: 'member' });
+
+          // For agent members, sync to daemon's in-memory channel membership
+          if (invitee.type === 'agent') {
+            try {
+              const channelName = channelId.startsWith('#') ? channelId : `#${channelId}`;
+              const localDashboard = getLocalDashboardUrl();
+              await fetch(`${localDashboard}/api/channels/admin-join`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ channel: channelName, member: invitee.id, workspaceId }),
+              });
+              console.log(`[channels] Synced agent ${invitee.id} to channel ${channelName}`);
+            } catch (err) {
+              // Non-fatal - daemon sync is best-effort
+              console.warn(`[channels] Failed to sync agent ${invitee.id} to daemon:`, err);
+            }
+          }
         }
       }
 
@@ -601,6 +646,7 @@ export async function createServer(): Promise<CloudServer> {
           status: channel.status,
           createdAt: channel.createdAt.toISOString(),
           createdBy: channel.createdBy,
+          members: addedMembers,
         },
       });
     } catch (error) {
@@ -614,11 +660,14 @@ export async function createServer(): Promise<CloudServer> {
    */
   app.post('/api/channels/join', requireAuth, express.json(), async (req, res) => {
     try {
-      const { channel: channelId, workspaceId, username } = req.body;
+      const { channel: rawChannelId, workspaceId, username } = req.body;
 
-      if (!channelId || !workspaceId) {
+      if (!rawChannelId || !workspaceId) {
         return res.status(400).json({ error: 'channel and workspaceId are required' });
       }
+
+      // Normalize channel ID (remove # prefix if present)
+      const channelId = rawChannelId.startsWith('#') ? rawChannelId.slice(1) : rawChannelId;
 
       const userId = req.session.userId!;
       const user = await db.users.findById(userId);
@@ -653,11 +702,14 @@ export async function createServer(): Promise<CloudServer> {
    */
   app.post('/api/channels/leave', requireAuth, express.json(), async (req, res) => {
     try {
-      const { channel: channelId, workspaceId, username } = req.body;
+      const { channel: rawChannelId, workspaceId, username } = req.body;
 
-      if (!channelId || !workspaceId) {
+      if (!rawChannelId || !workspaceId) {
         return res.status(400).json({ error: 'channel and workspaceId are required' });
       }
+
+      // Normalize channel ID (remove # prefix if present)
+      const channelId = rawChannelId.startsWith('#') ? rawChannelId.slice(1) : rawChannelId;
 
       const userId = req.session.userId!;
       const user = await db.users.findById(userId);
@@ -682,11 +734,14 @@ export async function createServer(): Promise<CloudServer> {
    */
   app.post('/api/channels/invite', requireAuth, express.json(), async (req, res) => {
     try {
-      const { channel: channelId, workspaceId, invites, invitedBy } = req.body;
+      const { channel: rawChannelId, workspaceId, invites, invitedBy } = req.body;
 
-      if (!channelId || !workspaceId || !invites) {
+      if (!rawChannelId || !workspaceId || !invites) {
         return res.status(400).json({ error: 'channel, workspaceId, and invites are required' });
       }
+
+      // Normalize channel ID (remove # prefix if present)
+      const channelId = rawChannelId.startsWith('#') ? rawChannelId.slice(1) : rawChannelId;
 
       const channel = await db.channels.findByWorkspaceAndChannelId(workspaceId, channelId);
       if (!channel) {
@@ -726,11 +781,14 @@ export async function createServer(): Promise<CloudServer> {
    */
   app.post('/api/channels/archive', requireAuth, express.json(), async (req, res) => {
     try {
-      const { channel: channelId, workspaceId } = req.body;
+      const { channel: rawChannelId, workspaceId } = req.body;
 
-      if (!channelId || !workspaceId) {
+      if (!rawChannelId || !workspaceId) {
         return res.status(400).json({ error: 'channel and workspaceId are required' });
       }
+
+      // Normalize channel ID (remove # prefix if present)
+      const channelId = rawChannelId.startsWith('#') ? rawChannelId.slice(1) : rawChannelId;
 
       const channel = await db.channels.findByWorkspaceAndChannelId(workspaceId, channelId);
       if (!channel) {
@@ -751,11 +809,14 @@ export async function createServer(): Promise<CloudServer> {
    */
   app.post('/api/channels/unarchive', requireAuth, express.json(), async (req, res) => {
     try {
-      const { channel: channelId, workspaceId } = req.body;
+      const { channel: rawChannelId, workspaceId } = req.body;
 
-      if (!channelId || !workspaceId) {
+      if (!rawChannelId || !workspaceId) {
         return res.status(400).json({ error: 'channel and workspaceId are required' });
       }
+
+      // Normalize channel ID (remove # prefix if present)
+      const channelId = rawChannelId.startsWith('#') ? rawChannelId.slice(1) : rawChannelId;
 
       const channel = await db.channels.findByWorkspaceAndChannelId(workspaceId, channelId);
       if (!channel) {
@@ -787,6 +848,83 @@ export async function createServer(): Promise<CloudServer> {
     if (req.query.before) params.set('before', req.query.before as string);
     const queryString = params.toString() ? `?${params.toString()}` : '';
     await proxyToLocalDashboard(req, res, `/api/channels/${channel}/messages${queryString}`);
+  });
+
+  /**
+   * GET /api/channels/available-members - Get available members for channel invites
+   * Returns workspace members (humans) and agents from linked daemons
+   */
+  app.get('/api/channels/available-members', requireAuth, async (req, res) => {
+    try {
+      const userId = req.session.userId!;
+      const workspaceId = req.query.workspaceId as string | undefined;
+
+      // Get workspace ID - either from query param or user's default workspace
+      let targetWorkspaceId = workspaceId;
+      if (!targetWorkspaceId) {
+        // Find user's default or first workspace
+        const memberships = await db.workspaceMembers.findByUserId(userId);
+        if (memberships.length > 0) {
+          targetWorkspaceId = memberships[0].workspaceId;
+        }
+      }
+
+      if (!targetWorkspaceId) {
+        return res.json({ members: [], agents: [] });
+      }
+
+      // Verify user has access to this workspace
+      const canView = await db.workspaceMembers.canView(targetWorkspaceId, userId);
+      if (!canView) {
+        const workspace = await db.workspaces.findById(targetWorkspaceId);
+        if (!workspace || workspace.userId !== userId) {
+          return res.status(403).json({ error: 'Access denied' });
+        }
+      }
+
+      // Get workspace members (humans)
+      const workspaceMembers = await db.workspaceMembers.findByWorkspaceId(targetWorkspaceId);
+      const members = await Promise.all(
+        workspaceMembers.map(async (m) => {
+          const user = await db.users.findById(m.userId);
+          return {
+            id: user?.githubUsername || m.userId,
+            displayName: user?.githubUsername || 'Unknown',
+            type: 'user' as const,
+            avatarUrl: user?.avatarUrl ?? undefined,
+          };
+        })
+      );
+
+      // Get agents from linked daemons for this workspace
+      const daemons = await db.linkedDaemons.findByWorkspaceId(targetWorkspaceId);
+      const agents: Array<{ id: string; displayName: string; type: 'agent'; status?: string }> = [];
+
+      for (const daemon of daemons) {
+        const metadata = daemon.metadata as Record<string, unknown> | null;
+        const daemonAgents = (metadata?.agents as Array<{ name: string; status: string; isHuman?: boolean }>) || [];
+
+        for (const agent of daemonAgents) {
+          // Skip human users from daemon agent list (they're in workspace members)
+          if (agent.isHuman) continue;
+
+          // Avoid duplicates
+          if (!agents.some((a) => a.id === agent.name)) {
+            agents.push({
+              id: agent.name,
+              displayName: agent.name,
+              type: 'agent',
+              status: agent.status,
+            });
+          }
+        }
+      }
+
+      res.json({ members, agents });
+    } catch (error) {
+      console.error('[channels] Error getting available members:', error);
+      res.status(500).json({ error: 'Failed to get available members' });
+    }
   });
 
   app.get('/api/channels/users', requireAuth, async (req, res) => {

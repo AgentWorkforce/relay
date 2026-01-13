@@ -8,8 +8,9 @@
  * - Create channel modal
  */
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import type { Channel, ChannelVisibility, CreateChannelRequest } from './types';
+import { getAvailableMembers, type AvailableMember } from './api';
 
 // =============================================================================
 // Archive Channel Dialog
@@ -255,8 +256,10 @@ export interface CreateChannelModalProps {
   onCreate: (request: CreateChannelRequest) => void;
   isLoading?: boolean;
   existingChannels?: string[];
-  /** Available agents/users for invite suggestions */
+  /** Available agents/users for invite suggestions (legacy - merged with fetched data) */
   availableMembers?: string[];
+  /** Workspace ID for fetching available members */
+  workspaceId?: string;
 }
 
 export function CreateChannelModal({
@@ -265,13 +268,45 @@ export function CreateChannelModal({
   onCreate,
   isLoading = false,
   existingChannels = [],
-  availableMembers = [],
+  availableMembers: legacyAvailableMembers = [],
+  workspaceId,
 }: CreateChannelModalProps) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [visibility, setVisibility] = useState<ChannelVisibility>('public');
   const [inviteInput, setInviteInput] = useState('');
-  const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
+  const [selectedMembers, setSelectedMembers] = useState<Array<{ id: string; type: 'user' | 'agent' }>>([]);
+  const [fetchedMembers, setFetchedMembers] = useState<AvailableMember[]>([]);
+  const [fetchedAgents, setFetchedAgents] = useState<AvailableMember[]>([]);
+  const [isFetching, setIsFetching] = useState(false);
+
+  // Fetch available members when modal opens
+  useEffect(() => {
+    if (isOpen) {
+      setIsFetching(true);
+      getAvailableMembers(workspaceId)
+        .then(({ members, agents }) => {
+          setFetchedMembers(members);
+          setFetchedAgents(agents);
+        })
+        .catch((err) => {
+          console.error('[CreateChannelModal] Failed to fetch available members:', err);
+        })
+        .finally(() => {
+          setIsFetching(false);
+        });
+    }
+  }, [isOpen, workspaceId]);
+
+  // Combine fetched data with legacy prop for backwards compatibility
+  const allMembers: AvailableMember[] = [
+    ...fetchedMembers,
+    ...fetchedAgents,
+    // Add legacy members as agents (for backwards compatibility)
+    ...legacyAvailableMembers
+      .filter(name => !fetchedAgents.some(a => a.id === name) && !fetchedMembers.some(m => m.id === name))
+      .map(name => ({ id: name, displayName: name, type: 'agent' as const })),
+  ];
 
   const handleClose = useCallback(() => {
     setName('');
@@ -282,16 +317,15 @@ export function CreateChannelModal({
     onClose();
   }, [onClose]);
 
-  const handleAddMember = useCallback((member: string) => {
-    const normalized = member.trim();
-    if (normalized && !selectedMembers.includes(normalized)) {
-      setSelectedMembers(prev => [...prev, normalized]);
+  const handleAddMember = useCallback((member: AvailableMember) => {
+    if (!selectedMembers.some(m => m.id === member.id)) {
+      setSelectedMembers(prev => [...prev, { id: member.id, type: member.type }]);
       setInviteInput('');
     }
   }, [selectedMembers]);
 
-  const handleRemoveMember = useCallback((member: string) => {
-    setSelectedMembers(prev => prev.filter(m => m !== member));
+  const handleRemoveMember = useCallback((memberId: string) => {
+    setSelectedMembers(prev => prev.filter(m => m.id !== memberId));
   }, []);
 
   const handleSubmit = useCallback((e: React.FormEvent) => {
@@ -306,11 +340,12 @@ export function CreateChannelModal({
     });
   }, [name, description, visibility, selectedMembers, onCreate]);
 
-  // Filter available members for suggestions
-  const suggestions = availableMembers.filter(m =>
-    m.toLowerCase().includes(inviteInput.toLowerCase()) &&
-    !selectedMembers.includes(m)
-  ).slice(0, 5);
+  // Filter members for suggestions
+  const suggestions = allMembers.filter(m =>
+    (m.displayName?.toLowerCase().includes(inviteInput.toLowerCase()) ||
+     m.id.toLowerCase().includes(inviteInput.toLowerCase())) &&
+    !selectedMembers.some(sm => sm.id === m.id)
+  ).slice(0, 8);
 
   if (!isOpen) return null;
 
@@ -373,49 +408,71 @@ export function CreateChannelModal({
         <div className="mb-4">
           <label className="block text-sm font-medium text-text-primary mb-1.5">
             Invite members <span className="text-text-muted font-normal">(optional)</span>
+            {isFetching && <span className="ml-2 text-text-muted text-xs">Loading...</span>}
           </label>
           <div className="relative">
             <input
               type="text"
               value={inviteInput}
               onChange={(e) => setInviteInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && inviteInput.trim()) {
-                  e.preventDefault();
-                  handleAddMember(inviteInput);
-                }
-              }}
-              placeholder="Type agent or user name..."
+              placeholder={allMembers.length > 0 ? "Type agent or user name..." : "No members available"}
               className="w-full px-3 py-2 bg-bg-tertiary border border-border-subtle rounded-lg text-text-primary text-sm focus:outline-none focus:border-accent-cyan/50"
             />
             {/* Suggestions dropdown */}
             {inviteInput && suggestions.length > 0 && (
-              <div className="absolute z-10 w-full mt-1 bg-bg-secondary border border-border-subtle rounded-lg shadow-lg max-h-40 overflow-y-auto">
+              <div className="absolute z-10 w-full mt-1 bg-bg-secondary border border-border-subtle rounded-lg shadow-lg max-h-48 overflow-y-auto">
                 {suggestions.map(member => (
                   <button
-                    key={member}
+                    key={member.id}
                     type="button"
                     onClick={() => handleAddMember(member)}
-                    className="w-full px-3 py-2 text-left text-sm text-text-primary hover:bg-bg-hover transition-colors"
+                    className="w-full px-3 py-2 text-left text-sm text-text-primary hover:bg-bg-hover transition-colors flex items-center justify-between"
                   >
-                    {member}
+                    <span>{member.displayName || member.id}</span>
+                    <span className={`text-xs px-1.5 py-0.5 rounded ${
+                      member.type === 'agent'
+                        ? 'bg-purple-500/20 text-purple-400'
+                        : 'bg-accent-cyan/20 text-accent-cyan'
+                    }`}>
+                      {member.type === 'agent' ? 'Agent' : 'User'}
+                    </span>
                   </button>
                 ))}
               </div>
             )}
+            {/* Show all members if no input and we have members */}
+            {!inviteInput && allMembers.length > 0 && (
+              <div className="mt-2 text-xs text-text-muted">
+                {fetchedMembers.length > 0 && (
+                  <span>{fetchedMembers.length} user{fetchedMembers.length !== 1 ? 's' : ''}</span>
+                )}
+                {fetchedMembers.length > 0 && fetchedAgents.length > 0 && <span>, </span>}
+                {fetchedAgents.length > 0 && (
+                  <span>{fetchedAgents.length} agent{fetchedAgents.length !== 1 ? 's' : ''}</span>
+                )}
+                <span> available</span>
+              </div>
+            )}
           </div>
-          {/* Selected members */}
+          {/* Selected members with type badges */}
           {selectedMembers.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mt-2">
               {selectedMembers.map(member => (
                 <span
-                  key={member}
-                  className="inline-flex items-center gap-1 px-2 py-1 bg-accent-cyan/10 text-accent-cyan text-xs rounded-full"
+                  key={member.id}
+                  className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-full ${
+                    member.type === 'agent'
+                      ? 'bg-purple-500/10 text-purple-400'
+                      : 'bg-accent-cyan/10 text-accent-cyan'
+                  }`}
                 >
-                  {member}
+                  {member.id}
+                  <span className="text-[10px] opacity-70">
+                    ({member.type === 'agent' ? 'Agent' : 'User'})
+                  </span>
                   <button
                     type="button"
-                    onClick={() => handleRemoveMember(member)}
+                    onClick={() => handleRemoveMember(member.id)}
                     className="hover:text-red-400 transition-colors"
                   >
                     <XIcon className="w-3 h-3" />

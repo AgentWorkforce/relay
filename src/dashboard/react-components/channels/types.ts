@@ -219,8 +219,8 @@ export interface CreateChannelRequest {
   name: string;
   description?: string;
   visibility: ChannelVisibility;
-  /** Initial members to invite */
-  members?: string[];
+  /** Initial members to invite (with optional type) */
+  members?: Array<string | { id: string; type: 'user' | 'agent' }>;
 }
 
 export interface CreateChannelResponse {

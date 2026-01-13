@@ -178,7 +178,7 @@ export async function createChannel(
         name: request.name,
         description: request.description,
         isPrivate: request.visibility === 'private',
-        invites: request.members?.join(','),
+        invites: request.members, // Array of strings or {id, type} objects
         workspaceId,
       }),
     });
@@ -457,6 +457,55 @@ export async function getMentionSuggestions(
   _workspaceId?: string
 ): Promise<string[]> {
   return ['lead', 'frontend', 'reviewer', 'ops', 'qa'];
+}
+
+/**
+ * Available member for channel invites
+ */
+export interface AvailableMember {
+  id: string;
+  displayName: string;
+  type: 'user' | 'agent';
+  avatarUrl?: string;
+  status?: string;
+}
+
+/**
+ * Get available members for channel invites
+ * Returns workspace members (humans) and agents from linked daemons
+ */
+export async function getAvailableMembers(
+  workspaceId?: string
+): Promise<{ members: AvailableMember[]; agents: AvailableMember[] }> {
+  // Ensure workspace ID is initialized for proper URL routing
+  initializeWorkspaceId();
+  const params = new URLSearchParams();
+  if (workspaceId) {
+    params.set('workspaceId', workspaceId);
+  }
+
+  try {
+    const url = getApiUrl(`/api/channels/available-members?${params.toString()}`);
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+    });
+
+    if (!res.ok) {
+      console.error('[ChannelsAPI] Failed to fetch available members:', res.status);
+      return { members: [], agents: [] };
+    }
+
+    const json = await res.json() as { members?: AvailableMember[]; agents?: AvailableMember[] };
+    return {
+      members: json.members ?? [],
+      agents: json.agents ?? [],
+    };
+  } catch (error) {
+    console.error('[ChannelsAPI] Error fetching available members:', error);
+    return { members: [], agents: [] };
+  }
 }
 
 // =============================================================================
