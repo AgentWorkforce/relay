@@ -477,9 +477,11 @@ interface SyncMessageInput {
   };
 }
 
-// TODO: agentMessages feature not yet implemented - endpoints commented out
-// See: https://github.com/AgentWorkforce/relay/issues/XXX
-/*
+/**
+ * POST /api/daemons/messages/sync
+ * Bulk sync messages from local daemon to cloud storage.
+ * Messages are stored for backup/history - local SQLite is used for display.
+ */
 daemonsRouter.post('/messages/sync', requireDaemonAuth as any, async (req: Request, res: Response) => {
   const daemon = (req as any).daemon;
   const { messages, repoFullName } = req.body as { messages: SyncMessageInput[]; repoFullName?: string };
@@ -565,6 +567,10 @@ daemonsRouter.post('/messages/sync', requireDaemonAuth as any, async (req: Reque
   }
 });
 
+/**
+ * GET /api/daemons/messages/stats
+ * Get message sync statistics and database health.
+ */
 daemonsRouter.get('/messages/stats', requireDaemonAuth as any, async (req: Request, res: Response) => {
   const daemon = (req as any).daemon;
 
@@ -573,12 +579,15 @@ daemonsRouter.get('/messages/stats', requireDaemonAuth as any, async (req: Reque
   }
 
   try {
-    // Get message count and pool health in parallel
-    const [count, poolHealth, poolStats] = await Promise.all([
-      db.agentMessages.countByWorkspace(daemon.workspaceId),
+    // Get message count via raw query and pool health in parallel
+    const pool = db.getRawPool();
+    const [countResult, poolHealth, poolStats] = await Promise.all([
+      pool.query('SELECT COUNT(*) FROM agent_messages WHERE workspace_id = $1', [daemon.workspaceId]),
       db.bulk.checkHealth(),
       Promise.resolve(db.bulk.getPoolStats()),
     ]);
+
+    const count = parseInt(countResult.rows[0]?.count || '0', 10);
 
     res.json({
       workspaceId: daemon.workspaceId,
@@ -594,4 +603,3 @@ daemonsRouter.get('/messages/stats', requireDaemonAuth as any, async (req: Reque
     res.status(500).json({ error: 'Failed to fetch message stats' });
   }
 });
-*/

@@ -98,16 +98,15 @@ import {
   channelMemberQueries,
 } from './drizzle.js';
 
-// TODO: Bulk ingest utilities deferred - waiting for NewAgentMessage schema (beads-bulk-ingest-1)
-// See: docs/CHANNELS_V1_BEADS_TASKS.md for agent messaging implementation plan
-// import {
-//   bulkInsertMessages,
-//   streamingBulkInsert,
-//   optimizedBulkInsert,
-//   getPoolStats,
-//   checkPoolHealth,
-//   type BulkInsertResult,
-// } from './bulk-ingest.js';
+// Bulk ingest utilities for high-volume message sync to cloud
+import {
+  bulkInsertMessages,
+  streamingBulkInsert,
+  optimizedBulkInsert,
+  getPoolStats,
+  checkPoolHealth,
+  type BulkInsertResult,
+} from './bulk-ingest.js';
 
 // Legacy type aliases for backwards compatibility
 export type PlanType = 'free' | 'pro' | 'team' | 'enterprise';
@@ -140,14 +139,14 @@ export const db = {
   // Channel operations (workspace-scoped messaging)
   channels: channelQueries,
   channelMembers: channelMemberQueries,
-  // TODO: Bulk ingest utilities deferred - waiting for NewAgentMessage schema
-  // bulk: {
-  //   insertMessages: bulkInsertMessages,
-  //   streamingInsert: streamingBulkInsert,
-  //   optimizedInsert: optimizedBulkInsert,
-  //   getPoolStats: () => getPoolStats(getRawPool()),
-  //   checkHealth: () => checkPoolHealth(getRawPool()),
-  // },
+  // Bulk ingest utilities for high-volume message sync
+  bulk: {
+    insertMessages: bulkInsertMessages,
+    streamingInsert: streamingBulkInsert,
+    optimizedInsert: optimizedBulkInsert,
+    getPoolStats: () => getPoolStats(getRawPool()),
+    checkHealth: () => checkPoolHealth(getRawPool()),
+  },
   // Database utilities
   getDb,
   getRawPool,
@@ -174,15 +173,15 @@ export {
 // Export database utilities
 export { getDb, closeDb, runMigrations, getRawPool };
 
-// TODO: Bulk ingest utilities deferred - waiting for NewAgentMessage schema
-// export {
-//   bulkInsertMessages,
-//   streamingBulkInsert,
-//   optimizedBulkInsert,
-//   getPoolStats,
-//   checkPoolHealth,
-//   type BulkInsertResult,
-// };
+// Bulk ingest utilities for direct import
+export {
+  bulkInsertMessages,
+  streamingBulkInsert,
+  optimizedBulkInsert,
+  getPoolStats,
+  checkPoolHealth,
+  type BulkInsertResult,
+};
 
 // Legacy function - use runMigrations instead
 export async function initializeDatabase(): Promise<void> {
