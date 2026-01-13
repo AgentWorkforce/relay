@@ -2,6 +2,7 @@
 name: devops
 description: CI/CD pipelines, deployment automation, and infrastructure as code. Use for build systems, Docker, Kubernetes, and cloud infrastructure.
 allowed-tools: Read, Grep, Glob, Bash, Edit, Write
+skills: using-agent-relay
 ---
 
 # 🔧 DevOps Agent

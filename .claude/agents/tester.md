@@ -2,6 +2,7 @@
 name: tester
 description: Test writing (unit, integration, e2e). Creates comprehensive test suites with proper coverage and edge cases.
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash
+skills: using-agent-relay
 ---
 
 # 🧪 Tester Agent

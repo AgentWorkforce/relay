@@ -2,6 +2,7 @@
 name: security
 description: Security auditing, vulnerability assessment, and secure coding review. Identifies OWASP risks and recommends mitigations.
 allowed-tools: Read, Grep, Glob, Bash, WebSearch
+skills: using-agent-relay
 ---
 
 # 🔒 Security Agent

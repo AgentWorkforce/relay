@@ -2,6 +2,7 @@
 name: cli
 description: Use for CLI tool development, command-line interfaces, terminal utilities, and shell scripting.
 allowed-tools: Read, Grep, Glob, Bash, Edit, Write
+skills: using-agent-relay
 model: sonnet
 ---
 

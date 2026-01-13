@@ -2,6 +2,7 @@
 name: integrator
 description: Use for third-party integrations, API connections, webhooks, OAuth flows, and external service integration.
 allowed-tools: Read, Grep, Glob, Bash, Edit, Write
+skills: using-agent-relay
 model: sonnet
 ---
 

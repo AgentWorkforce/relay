@@ -2,6 +2,7 @@
 name: explainer
 description: Code explanation and architecture walkthroughs. Helps developers understand complex code and systems.
 allowed-tools: Read, Grep, Glob
+skills: using-agent-relay
 ---
 
 # 🎓 Explainer

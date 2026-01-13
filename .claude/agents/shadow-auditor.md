@@ -2,6 +2,7 @@
 name: shadow-auditor
 description: Audits agent decisions and session outcomes for compliance and quality. Assign as a shadow for end-of-session review.
 allowed-tools: Read, Grep, Glob
+skills: using-agent-relay
 shadowRole: auditor
 shadowTriggers:
   - SESSION_END

@@ -2,6 +2,7 @@
 name: reviewer
 description: Code review for quality, security, and best practices. Direct invocation for reviewing PRs, commits, or specific files.
 allowed-tools: Read, Grep, Glob, Bash
+skills: using-agent-relay
 ---
 
 # 🔎 Code Reviewer

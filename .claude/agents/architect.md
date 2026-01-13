@@ -2,6 +2,7 @@
 name: architect
 description: System design and architecture decisions. Technical planning, tradeoff analysis, and design documentation.
 allowed-tools: Read, Grep, Glob, Write, Edit
+skills: using-agent-relay
 ---
 
 # 🏗️ Architect

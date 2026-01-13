@@ -2,6 +2,7 @@
 name: researcher
 description: Research tasks and codebase exploration. Investigates questions, finds patterns, and gathers information.
 allowed-tools: Read, Grep, Glob, Bash, WebSearch, WebFetch
+skills: using-agent-relay
 ---
 
 # 🔬 Researcher
