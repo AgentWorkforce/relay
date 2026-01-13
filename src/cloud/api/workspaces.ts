@@ -1747,7 +1747,10 @@ workspacesRouter.all('/:id/proxy/{*proxyPath}', async (req: Request, res: Respon
       targetBaseUrl = `http://${workspace.computeId}:3888`;
     }
 
-    const targetUrl = `${targetBaseUrl}/api/${proxyPath}`;
+    // Preserve query string when proxying - this is critical for API calls like
+    // /trajectory/steps?trajectoryId=xxx which need the query params forwarded
+    const queryString = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
+    const targetUrl = `${targetBaseUrl}/api/${proxyPath}${queryString}`;
     console.log(`[workspace-proxy] ${req.method} ${targetUrl}`);
 
     // Store targetUrl for error handling
