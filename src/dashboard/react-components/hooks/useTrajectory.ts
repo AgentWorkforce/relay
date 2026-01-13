@@ -145,14 +145,25 @@ export function useTrajectory(options: UseTrajectoryOptions = {}): UseTrajectory
 
   // Select a specific trajectory
   const selectTrajectory = useCallback((id: string | null) => {
+    // Normalize empty string to null for consistency
+    const normalizedId = id === '' ? null : id;
+
     // Update the ref immediately so in-flight fetches for other trajectories are ignored
-    latestSelectionRef.current = id;
+    latestSelectionRef.current = normalizedId;
+
+    // Clear steps immediately when switching trajectories to prevent showing stale data
+    // This is the key fix - without this, the old trajectory's steps remain visible
+    // until the new fetch completes, which looks like "loading wrong trajectory"
+    if (normalizedId !== selectedTrajectoryId) {
+      setSteps([]);
+    }
+
     // Set loading immediately to avoid flash of empty state before effect runs
-    if (id !== null) {
+    if (normalizedId !== null) {
       setIsLoading(true);
     }
-    setSelectedTrajectoryId(id);
-  }, []);
+    setSelectedTrajectoryId(normalizedId);
+  }, [selectedTrajectoryId]);
 
   // Combined refresh function
   const refresh = useCallback(async () => {
@@ -163,6 +174,7 @@ export function useTrajectory(options: UseTrajectoryOptions = {}): UseTrajectory
 
   // Keep the latestSelectionRef in sync with state
   // This handles the initial value and any external changes
+  // Note: selectedTrajectoryId is already normalized by selectTrajectory
   useEffect(() => {
     latestSelectionRef.current = selectedTrajectoryId;
   }, [selectedTrajectoryId]);
