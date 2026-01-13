@@ -1,0 +1,186 @@
+name: PR Preview Environment
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-preview:
+    name: Deploy Preview
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      APP_NAME: relay-pr-${{ github.event.pull_request.number }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Fly CLI
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Find existing comment
+        uses: peter-evans/find-comment@v3
+        id: find-comment-initial
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: 'github-actions[bot]'
+          body-includes: '<!-- preview-environment -->'
+
+      - name: Post deploying status
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          comment-id: ${{ steps.find-comment-initial.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          edit-mode: replace
+          body: |
+            <!-- preview-environment -->
+            ## Preview Environment
+
+            | | |
+            |---|---|
+            | **Status** | Deploying... |
+            | **Commit** | ${{ github.event.pull_request.head.sha }} |
+
+            ---
+            <sub>Deployment in progress. This comment will be updated when complete.</sub>
+
+      - name: Check if app exists
+        id: check-app
+        run: |
+          if flyctl apps list --json | jq -e '.[] | select(.Name == "'"$APP_NAME"'")' > /dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Fly.io app
+        if: steps.check-app.outputs.exists == 'false'
+        run: |
+          flyctl apps create $APP_NAME --org personal
+
+      - name: Copy secrets from production
+        if: steps.check-app.outputs.exists == 'false'
+        run: |
+          # Get secrets from production app and set on preview
+          # Note: This copies secret names but values must be set separately
+          # For preview, we use staging database URL and other staging secrets
+          flyctl secrets set \
+            SESSION_SECRET="${{ secrets.PREVIEW_SESSION_SECRET }}" \
+            DATABASE_URL="${{ secrets.PREVIEW_DATABASE_URL }}" \
+            REDIS_URL="${{ secrets.PREVIEW_REDIS_URL }}" \
+            GITHUB_CLIENT_ID="${{ secrets.PREVIEW_GITHUB_CLIENT_ID }}" \
+            GITHUB_CLIENT_SECRET="${{ secrets.PREVIEW_GITHUB_CLIENT_SECRET }}" \
+            VAULT_ENCRYPTION_KEY="${{ secrets.PREVIEW_VAULT_ENCRYPTION_KEY }}" \
+            NANGO_SECRET_KEY="${{ secrets.PREVIEW_NANGO_SECRET_KEY }}" \
+            --app $APP_NAME
+
+      - name: Generate fly.toml for preview
+        run: |
+          cat > fly.preview.toml << EOF
+          app = "${APP_NAME}"
+          primary_region = "sjc"
+
+          [build]
+            dockerfile = "Dockerfile"
+
+          [deploy]
+            strategy = "immediate"
+
+          [env]
+            NODE_ENV = "preview"
+            PORT = "3000"
+            PREVIEW_MODE = "true"
+            PR_NUMBER = "${{ github.event.pull_request.number }}"
+
+          [http_service]
+            internal_port = 3000
+            force_https = true
+            auto_stop_machines = true
+            auto_start_machines = true
+            min_machines_running = 0
+            processes = ["app"]
+
+            [http_service.concurrency]
+              type = "requests"
+              hard_limit = 100
+              soft_limit = 80
+
+          [[vm]]
+            cpu_kind = "shared"
+            cpus = 1
+            memory_mb = 256
+
+          [checks]
+            [checks.health]
+              grace_period = "30s"
+              interval = "60s"
+              method = "get"
+              path = "/health"
+              port = 3000
+              timeout = "10s"
+              type = "http"
+          EOF
+
+      - name: Deploy to Fly.io
+        id: deploy
+        run: |
+          flyctl deploy \
+            --config fly.preview.toml \
+            --remote-only \
+            --wait-timeout 300 \
+            --app $APP_NAME
+
+      - name: Wait for health check
+        run: |
+          echo "Waiting for app to be healthy..."
+          PREVIEW_URL="https://${APP_NAME}.fly.dev"
+
+          # Wait up to 2 minutes for health check
+          for i in {1..24}; do
+            if curl -sf "${PREVIEW_URL}/health" > /dev/null 2>&1; then
+              echo "Health check passed!"
+              exit 0
+            fi
+            echo "Attempt $i/24: Waiting for app to be healthy..."
+            sleep 5
+          done
+
+          echo "Health check failed after 2 minutes"
+          exit 1
+
+      - name: Find existing comment
+        uses: peter-evans/find-comment@v3
+        id: find-comment
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: 'github-actions[bot]'
+          body-includes: '<!-- preview-environment -->'
+
+      - name: Create or update comment
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          comment-id: ${{ steps.find-comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          edit-mode: replace
+          body: |
+            <!-- preview-environment -->
+            ## Preview Environment
+
+            | | |
+            |---|---|
+            | **Status** | Deployed |
+            | **URL** | https://${{ env.APP_NAME }}.fly.dev |
+            | **Dashboard** | https://${{ env.APP_NAME }}.fly.dev/dashboard |
+            | **Commit** | ${{ github.event.pull_request.head.sha }} |
+
+            ---
+            <sub>This preview environment will be automatically destroyed when the PR is closed.</sub>

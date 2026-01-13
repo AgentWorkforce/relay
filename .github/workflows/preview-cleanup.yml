@@ -1,0 +1,62 @@
+name: PR Preview Cleanup
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  cleanup-preview:
+    name: Cleanup Preview Environment
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      APP_NAME: relay-pr-${{ github.event.pull_request.number }}
+
+    steps:
+      - name: Setup Fly CLI
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Check if app exists
+        id: check-app
+        run: |
+          if flyctl apps list --json | jq -e '.[] | select(.Name == "'"$APP_NAME"'")' > /dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Destroy preview app
+        if: steps.check-app.outputs.exists == 'true'
+        run: |
+          echo "Destroying preview app: $APP_NAME"
+          flyctl apps destroy $APP_NAME --yes
+
+      - name: Find existing comment
+        uses: peter-evans/find-comment@v3
+        id: find-comment
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: 'github-actions[bot]'
+          body-includes: '<!-- preview-environment -->'
+
+      - name: Update comment to show destroyed
+        if: steps.find-comment.outputs.comment-id != ''
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          comment-id: ${{ steps.find-comment.outputs.comment-id }}
+          edit-mode: replace
+          body: |
+            <!-- preview-environment -->
+            ## Preview Environment
+
+            | | |
+            |---|---|
+            | **Status** | Destroyed |
+            | **Reason** | PR ${{ github.event.action }} |
+
+            ---
+            <sub>The preview environment has been cleaned up.</sub>
