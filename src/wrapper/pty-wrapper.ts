@@ -777,9 +777,15 @@ export class PtyWrapper extends BaseWrapper {
       'g'
     );
 
+    // Debug: Log if content contains relay prefix with fenced syntax
+    if (content.includes(this.relayPrefix) && content.includes('<<<')) {
+      console.error(`[pty:${this.config.name}] parseFencedMessages: Found relay+<<< in content`);
+    }
+
     let match;
     while ((match = fenceStartPattern.exec(content)) !== null) {
       const target = match[1];
+      console.error(`[pty:${this.config.name}] parseFencedMessages: MATCHED target=${target}`);
       const threadProject = match[2]; // Optional: project part of thread
       const threadId = match[3];      // Thread ID
       const startIdx = match.index + match[0].length;

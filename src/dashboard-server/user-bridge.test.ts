@@ -56,6 +56,8 @@ class MockRelayClient {
   public channelMessages: Array<{ channel: string; body: string; options?: { thread?: string; data?: Record<string, unknown> } }> = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   public onMessage?: (from: string, payload: any, messageId: string, meta?: any, originalTo?: string) => void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  public onChannelMessage?: (from: string, channel: string, body: string, envelope: any) => void;
 
   constructor(options: { socketPath: string; agentName: string; entityType?: string }) {
     this.agentName = options.agentName;
@@ -112,9 +114,18 @@ class MockRelayClient {
     return true;
   }
 
-  // Test helper to simulate receiving a message
-  simulateIncomingMessage(from: string, body: string, envelope: unknown): void {
-    this.onMessage?.(from, envelope, 'test-msg-id', undefined, undefined);
+  // Test helper to simulate receiving a direct message
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  simulateIncomingMessage(from: string, body: string, envelope: any): void {
+    // Pass the payload from the envelope, not the entire envelope
+    const payload = envelope?.payload || { body };
+    this.onMessage?.(from, payload, 'test-msg-id', undefined, undefined);
+  }
+
+  // Test helper to simulate receiving a channel message
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  simulateIncomingChannelMessage(from: string, channel: string, body: string, envelope: any): void {
+    this.onChannelMessage?.(from, channel, body, envelope);
   }
 
   clearSent(): void {
@@ -331,7 +342,7 @@ describe('UserBridge', () => {
     });
 
     it('should forward incoming channel messages to WebSocket', () => {
-      mockRelayClient.simulateIncomingMessage('bob', 'Hello Alice!', {
+      mockRelayClient.simulateIncomingChannelMessage('bob', '#general', 'Hello Alice!', {
         type: 'CHANNEL_MESSAGE',
         payload: {
           channel: '#general',

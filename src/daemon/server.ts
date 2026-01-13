@@ -23,6 +23,7 @@ import {
   createConsensusIntegration,
   type ConsensusIntegrationConfig,
 } from './consensus-integration.js';
+import type { ChannelMembershipStore } from './channel-membership-store.js';
 
 export interface DaemonConfig extends ConnectionConfig {
   socketPath: string;
@@ -62,6 +63,7 @@ export class Daemon {
   private cloudSync?: CloudSyncService;
   private remoteAgents: RemoteAgent[] = [];
   private consensus?: ConsensusIntegration;
+  private cloudSyncDebounceTimer?: NodeJS.Timeout;
 
   /** Callback for log output from agents (used by dashboard for streaming) */
   onLogOutput?: (agentName: string, data: string, timestamp: number) => void;
@@ -138,6 +140,27 @@ export class Daemon {
       this.storage = await createStorageAdapter(storagePath, this.config.storageConfig);
     }
 
+    let channelMembershipStore: ChannelMembershipStore | undefined;
+    const workspaceId = process.env.RELAY_WORKSPACE_ID
+      || process.env.AGENT_RELAY_WORKSPACE_ID
+      || process.env.WORKSPACE_ID;
+    const databaseUrl = process.env.CLOUD_DATABASE_URL
+      || process.env.DATABASE_URL
+      || process.env.AGENT_RELAY_STORAGE_URL;
+    const isPostgresUrl = databaseUrl?.startsWith('postgres://') || databaseUrl?.startsWith('postgresql://');
+
+    if (workspaceId && isPostgresUrl && databaseUrl) {
+      try {
+        const { CloudChannelMembershipStore } = await import('./channel-membership-store.js');
+        channelMembershipStore = new CloudChannelMembershipStore({ workspaceId, databaseUrl });
+        log.info('Channel membership store enabled (cloud DB)', { workspaceId });
+      } catch (err) {
+        log.error('Failed to initialize channel membership store', { error: String(err) });
+      }
+    } else {
+      log.debug('Channel membership store disabled (missing workspaceId or Postgres database URL)');
+    }
+
     this.router = new Router({
       storage: this.storage,
       registry: this.registry,
@@ -146,6 +169,7 @@ export class Daemon {
         sendCrossMachineMessage: this.sendCrossMachineMessage.bind(this),
         isRemoteAgent: this.isRemoteAgent.bind(this),
       },
+      channelMembershipStore,
     });
 
     // Initialize consensus (enabled by default, can be disabled with consensus: false)
@@ -395,8 +419,26 @@ export class Daemon {
 
   /**
    * Notify cloud sync about local agent changes.
+   * Debounced to prevent flooding the cloud API with rapid connect/disconnect events.
    */
   private notifyCloudSync(): void {
+    if (!this.cloudSync?.isConnected()) return;
+
+    // Debounce: clear any pending sync and schedule a new one
+    if (this.cloudSyncDebounceTimer) {
+      clearTimeout(this.cloudSyncDebounceTimer);
+    }
+
+    this.cloudSyncDebounceTimer = setTimeout(() => {
+      this.cloudSyncDebounceTimer = undefined;
+      this.doCloudSync();
+    }, 1000); // 1 second debounce
+  }
+
+  /**
+   * Actually perform the cloud sync (called after debounce).
+   */
+  private doCloudSync(): void {
     if (!this.cloudSync?.isConnected()) return;
 
     // Get AI agents (exclude internal ones like Dashboard)
@@ -450,6 +492,12 @@ export class Daemon {
     if (this.cloudSync) {
       this.cloudSync.stop();
       this.cloudSync = undefined;
+    }
+
+    // Clear cloud sync debounce timer
+    if (this.cloudSyncDebounceTimer) {
+      clearTimeout(this.cloudSyncDebounceTimer);
+      this.cloudSyncDebounceTimer = undefined;
     }
 
     // Stop processing state updates
@@ -729,7 +777,7 @@ export class Daemon {
 
       case 'CHANNEL_MESSAGE': {
         const channelEnvelope = envelope as Envelope<ChannelMessagePayload>;
-        log.debug(`Channel message: ${connection.agentName} in ${channelEnvelope.payload.channel}`);
+        log.info(`CHANNEL_MESSAGE received: from=${connection.agentName} channel=${channelEnvelope.payload.channel}`);
         this.router.routeChannelMessage(connection, channelEnvelope);
         break;
       }

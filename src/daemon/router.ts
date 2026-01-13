@@ -28,6 +28,7 @@ import {
   DeliveryTracker,
   type DeliveryReliabilityOptions,
 } from './delivery-tracker.js';
+import type { ChannelMembershipStore } from './channel-membership-store.js';
 
 export interface RoutableConnection {
   id: string;
@@ -77,6 +78,7 @@ interface ShadowRelationship extends ShadowConfig {
 
 export class Router {
   private storage?: StorageAdapter;
+  private channelMembershipStore?: ChannelMembershipStore;
   private connections: Map<string, RoutableConnection> = new Map(); // connectionId -> Connection
   private agents: Map<string, RoutableConnection> = new Map(); // agentName -> Connection
   private subscriptions: Map<string, Set<string>> = new Map(); // topic -> Set<agentName>
@@ -114,8 +116,10 @@ export class Router {
     crossMachineHandler?: CrossMachineHandler;
     /** Rate limit configuration. Set to null to disable rate limiting. */
     rateLimit?: Partial<RateLimitConfig> | null;
+    channelMembershipStore?: ChannelMembershipStore;
   } = {}) {
     this.storage = options.storage;
+    this.channelMembershipStore = options.channelMembershipStore;
     this.registry = options.registry;
     this.onProcessingStateChange = options.onProcessingStateChange;
     this.crossMachineHandler = options.crossMachineHandler;
@@ -134,23 +138,36 @@ export class Router {
    * Restore channel memberships from persisted storage.
    */
   async restoreChannelMemberships(): Promise<void> {
-    if (!this.storage) return;
+    if (!this.storage && !this.channelMembershipStore) return;
 
     try {
-      const messages = await this.storage.getMessages({ order: 'asc' });
-      for (const msg of messages) {
-        const channel = msg.to;
-        const data = msg.data as Record<string, unknown> | undefined;
-        const membership = data?._channelMembership as { member?: string; action?: 'join' | 'leave' | 'invite' } | undefined;
-        if (!channel || !membership?.member) {
-          continue;
+      if (this.channelMembershipStore) {
+        const memberships = await this.channelMembershipStore.loadMemberships();
+        for (const membership of memberships) {
+          this.handleMembershipUpdate({
+            channel: membership.channel,
+            member: membership.member,
+            action: 'join',
+          });
         }
-        const action = membership.action ?? 'join';
-        this.handleMembershipUpdate({
-          channel,
-          member: membership.member,
-          action,
-        });
+      }
+
+      if (this.storage) {
+        const messages = await this.storage.getMessages({ order: 'asc' });
+        for (const msg of messages) {
+          const channel = msg.to;
+          const data = msg.data as Record<string, unknown> | undefined;
+          const membership = data?._channelMembership as { member?: string; action?: 'join' | 'leave' | 'invite' } | undefined;
+          if (!channel || !membership?.member) {
+            continue;
+          }
+          const action = membership.action ?? 'join';
+          this.handleMembershipUpdate({
+            channel,
+            member: membership.member,
+            action,
+          });
+        }
       }
     } catch (err) {
       routerLog.error('Failed to restore channel memberships', { error: String(err) });
@@ -209,32 +226,40 @@ export class Router {
     this.connections.delete(connection.id);
     if (connection.agentName) {
       const isUser = connection.entityType === 'user';
+      let wasCurrentConnection = false;
 
       if (isUser) {
         const currentUser = this.users.get(connection.agentName);
         if (currentUser?.id === connection.id) {
           this.users.delete(connection.agentName);
+          wasCurrentConnection = true;
         }
       } else {
         const current = this.agents.get(connection.agentName);
         if (current?.id === connection.id) {
           this.agents.delete(connection.agentName);
+          wasCurrentConnection = true;
         }
       }
 
-      // Remove from all subscriptions
-      for (const subscribers of this.subscriptions.values()) {
-        subscribers.delete(connection.agentName);
+      // Only clean up channel/subscription state if this was the current connection.
+      // If a new connection replaced this one, we don't want to remove channel memberships
+      // that the new connection should inherit.
+      if (wasCurrentConnection) {
+        // Remove from all subscriptions
+        for (const subscribers of this.subscriptions.values()) {
+          subscribers.delete(connection.agentName);
+        }
+
+        // Remove from all channels and notify remaining members
+        this.removeFromAllChannels(connection.agentName);
+
+        // Clean up shadow relationships
+        this.unbindShadow(connection.agentName);
+
+        // Clear processing state
+        this.clearProcessing(connection.agentName);
       }
-
-      // Remove from all channels and notify remaining members
-      this.removeFromAllChannels(connection.agentName);
-
-      // Clean up shadow relationships
-      this.unbindShadow(connection.agentName);
-
-      // Clear processing state
-      this.clearProcessing(connection.agentName);
     }
 
     this.clearPendingForConnection(connection.id);
@@ -1052,13 +1077,15 @@ export class Router {
     const channel = envelope.payload.channel;
     const members = this.channels.get(channel);
 
+    routerLog.info(`routeChannelMessage: channel=${channel} sender=${senderName} members=${members ? Array.from(members).join(',') : 'NONE'}`);
+
     if (!members) {
-      routerLog.warn(`Message to non-existent channel ${channel}`);
+      routerLog.warn(`Message to non-existent channel ${channel} (available channels: ${Array.from(this.channels.keys()).join(', ')})`);
       return;
     }
 
     if (!members.has(senderName)) {
-      routerLog.warn(`${senderName} not a member of ${channel}`);
+      routerLog.warn(`${senderName} not a member of ${channel} (members: ${Array.from(members).join(', ')})`);
       return;
     }
 
@@ -1070,6 +1097,10 @@ export class Router {
     });
 
     let deliveredCount = 0;
+    const connectedAgents = Array.from(this.agents.keys());
+    const connectedUsers = Array.from(this.users.keys());
+    routerLog.info(`Connected entities: agents=[${connectedAgents.join(',')}] users=[${connectedUsers.join(',')}]`);
+
     for (const memberName of members) {
       if (memberName === senderName) {
         continue;
@@ -1087,12 +1118,12 @@ export class Router {
         const sent = memberConn.send(deliverEnvelope);
         if (sent) {
           deliveredCount++;
-          routerLog.debug(`Delivered to ${memberName} (${memberConn.entityType || 'agent'})`);
+          routerLog.info(`Delivered to ${memberName} (${memberConn.entityType || 'agent'})`);
         } else {
           routerLog.warn(`Failed to send to ${memberName}`);
         }
       } else {
-        routerLog.debug(`Member ${memberName} not connected, skipping`);
+        routerLog.info(`Member ${memberName} not connected (not in agents or users map)`);
       }
     }
 
@@ -1142,29 +1173,44 @@ export class Router {
     action: 'join' | 'leave',
     opts?: { invitedBy?: string }
   ): void {
-    if (!this.storage) return;
+    if (this.storage) {
+      this.storage.saveMessage({
+        id: crypto.randomUUID(),
+        ts: Date.now(),
+        from: '__system__',
+        to: channel,
+        topic: undefined,
+        kind: 'state', // membership events stored as state
+        body: `${action}:${member}`,
+        data: {
+          _channelMembership: {
+            member,
+            action,
+            invitedBy: opts?.invitedBy,
+          },
+        },
+        status: 'read',
+        is_urgent: false,
+        is_broadcast: true,
+      }).catch((err) => {
+        routerLog.error('Failed to persist channel membership', { error: String(err) });
+      });
+    }
 
-    this.storage.saveMessage({
-      id: crypto.randomUUID(),
-      ts: Date.now(),
-      from: '__system__',
-      to: channel,
-      topic: undefined,
-      kind: 'state', // membership events stored as state
-      body: `${action}:${member}`,
-      data: {
-        _channelMembership: {
+    if (this.channelMembershipStore) {
+      const persistPromise = action === 'leave'
+        ? this.channelMembershipStore.removeMember(channel, member)
+        : this.channelMembershipStore.addMember(channel, member);
+
+      persistPromise.catch((err) => {
+        routerLog.error('Failed to sync channel membership to cloud store', {
+          channel,
           member,
           action,
-          invitedBy: opts?.invitedBy,
-        },
-      },
-      status: 'read',
-      is_urgent: false,
-      is_broadcast: true,
-    }).catch((err) => {
-      routerLog.error('Failed to persist channel membership', { error: String(err) });
-    });
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }
   }
 
   /**

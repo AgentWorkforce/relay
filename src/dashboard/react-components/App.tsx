@@ -1221,8 +1221,8 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   // Channel V1 Handlers
   // =============================================================================
 
-  // Default channels that should always be visible
-  const defaultChannels: Channel[] = [
+  // Default channels that should always be visible - stable reference
+  const defaultChannels = useMemo<Channel[]>(() => [
     {
       id: '#general',
       name: 'general',
@@ -1231,7 +1231,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
       memberCount: 0,
       unreadCount: 0,
       hasMentions: false,
-      createdAt: new Date().toISOString(),
+      createdAt: '2024-01-01T00:00:00.000Z', // Static date for stability
       status: 'active',
       createdBy: 'system',
       isDm: false,
@@ -1244,26 +1244,23 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
       memberCount: 0,
       unreadCount: 0,
       hasMentions: false,
-      createdAt: new Date().toISOString(),
+      createdAt: '2024-01-01T00:00:00.000Z', // Static date for stability
       status: 'active',
       createdBy: 'system',
       isDm: false,
     },
-  ];
+  ], []);
 
   // Load channels on mount (they're always visible in sidebar, collapsed by default)
   useEffect(() => {
-    // Always show default channels (#general, #engineering) regardless of mode
-    // These are the broadcast channels that exist by default
-    if (!effectiveActiveWorkspaceId || !isCloudMode) {
+    // Not in cloud mode or no workspace - show default channels only
+    if (!isCloudMode || !effectiveActiveWorkspaceId) {
       setChannelsList(defaultChannels);
       setArchivedChannelsList([]);
-      if (!effectiveActiveWorkspaceId) return;
-      if (!isCloudMode) return;
+      return;
     }
 
-    // In cloud mode with workspace, fetch channels from API
-    // but merge with default channels to ensure #general is always visible
+    // Cloud mode with workspace - fetch from API and merge with defaults
     setChannelsList(defaultChannels);
     setArchivedChannelsList([]);
     setIsChannelsLoading(true);
@@ -1280,7 +1277,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     };
 
     fetchChannels();
-  }, [effectiveActiveWorkspaceId, isCloudMode]);
+  }, [effectiveActiveWorkspaceId, isCloudMode, defaultChannels, setChannelListsFromResponse]);
 
   // Load messages when a channel is selected (persisted + live)
   useEffect(() => {
@@ -1386,6 +1383,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
         body: JSON.stringify({
           channel: inviteChannelTarget.name,
           invites: members.join(','),
+          workspaceId: effectiveActiveWorkspaceId,
         }),
       });
       if (!response.ok) {
@@ -1398,7 +1396,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     } finally {
       setIsInvitingToChannel(false);
     }
-  }, [inviteChannelTarget]);
+  }, [inviteChannelTarget, effectiveActiveWorkspaceId]);
 
   // Join channel handler
   const handleJoinChannel = useCallback(async (channelId: string) => {
@@ -2194,9 +2192,17 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
             unreadCount: c.unreadCount,
             hasMentions: c.hasMentions,
           }))}
+          archivedChannels={archivedChannelsList.map((c) => ({
+            id: c.id,
+            name: c.name,
+            unreadCount: c.unreadCount ?? 0,
+            hasMentions: c.hasMentions,
+          }))}
           selectedChannelId={selectedChannelId}
           onChannelSelect={(channel) => {
-            const fullChannel = channelsList.find(c => c.id === channel.id);
+            const fullChannel =
+              channelsList.find(c => c.id === channel.id) ||
+              archivedChannelsList.find(c => c.id === channel.id);
             if (fullChannel) {
               handleSelectChannel(fullChannel);
               setViewMode('channels');
@@ -2207,6 +2213,20 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
             const fullChannel = channelsList.find(c => c.id === channel.id);
             if (fullChannel) {
               handleInviteToChannel(fullChannel);
+            }
+          }}
+          onArchiveChannel={(channel) => {
+            const fullChannel = channelsList.find((c) => c.id === channel.id);
+            if (fullChannel) {
+              handleArchiveChannel(fullChannel);
+            }
+          }}
+          onUnarchiveChannel={(channel) => {
+            const fullChannel =
+              archivedChannelsList.find((c) => c.id === channel.id) ||
+              channelsList.find((c) => c.id === channel.id);
+            if (fullChannel) {
+              handleUnarchiveChannel(fullChannel);
             }
           }}
           onAgentSelect={handleAgentSelect}

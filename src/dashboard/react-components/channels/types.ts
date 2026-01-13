@@ -276,38 +276,6 @@ export interface ArchiveChannelRequest {
 // =============================================================================
 
 /**
- * Props for ChannelSidebarV1 component.
- */
-export interface ChannelSidebarV1Props {
-  /** List of active channels */
-  channels: Channel[];
-  /** List of archived channels */
-  archivedChannels?: Channel[];
-  /** Currently selected channel ID */
-  selectedChannelId?: string;
-  /** Whether connected to server */
-  isConnected: boolean;
-  /** Loading state */
-  isLoading?: boolean;
-  /** Callback when channel is selected */
-  onSelectChannel: (channel: Channel) => void;
-  /** Callback to create a new channel */
-  onCreateChannel: () => void;
-  /** Callback to join an existing channel */
-  onJoinChannel: (channelId: string) => void;
-  /** Callback to leave a channel */
-  onLeaveChannel: (channel: Channel) => void;
-  /** Callback to archive a channel */
-  onArchiveChannel: (channel: Channel) => void;
-  /** Callback to unarchive a channel */
-  onUnarchiveChannel: (channel: Channel) => void;
-  /** Callback to invite members to a channel */
-  onInviteMembers?: (channel: Channel) => void;
-  /** Current user name (for DM display) */
-  currentUser?: string;
-}
-
-/**
  * Props for ChannelHeader component.
  */
 export interface ChannelHeaderProps {

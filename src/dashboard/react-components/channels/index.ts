@@ -39,7 +39,6 @@ export {
 } from './api';
 
 // Components
-export { ChannelSidebarV1 } from './ChannelSidebarV1';
 export { ChannelHeader } from './ChannelHeader';
 export { ChannelMessageList } from './ChannelMessageList';
 export { MessageInput } from './MessageInput';
@@ -60,7 +59,6 @@ export {
 } from './ChannelDialogs';
 
 // Re-export prop types for convenience
-export type { ChannelSidebarV1Props } from './types';
 export type { ChannelHeaderProps } from './types';
 export type { ChannelMessageListProps } from './types';
 export type { MessageInputProps } from './types';

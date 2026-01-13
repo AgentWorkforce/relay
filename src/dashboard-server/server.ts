@@ -981,7 +981,7 @@ export async function startDashboard(
       // Set up channel message handler to forward messages to presence WebSocket
       // This enables cloud users to receive channel messages via the presence bridge
       client.onChannelMessage = (from, channel, body, envelope) => {
-        console.log(`[dashboard] Channel message for ${senderName}: ${from} -> ${channel}`);
+        console.log(`[dashboard] *** CHANNEL MESSAGE RECEIVED *** for ${senderName}: ${from} -> ${channel}`);
 
         // Broadcast to presence WebSocket clients so cloud can forward to its users
         // Include the target user so cloud knows who to forward to

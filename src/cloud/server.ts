@@ -617,17 +617,18 @@ export async function createServer(): Promise<CloudServer> {
           });
           addedMembers.push({ id: invitee.id, type: invitee.type, role: 'member' });
 
-          // For agent members, sync to daemon's in-memory channel membership
+          // For agent members, sync to local daemon's in-memory channel membership
           if (invitee.type === 'agent') {
             try {
               const channelName = channelId.startsWith('#') ? channelId : `#${channelId}`;
-              const localDashboard = getLocalDashboardUrl();
-              await fetch(`${localDashboard}/api/channels/admin-join`, {
+              // Route to local dashboard where the daemon and channel routing lives
+              const dashboardUrl = await getLocalDashboardUrl();
+              await fetch(`${dashboardUrl}/api/channels/admin-join`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ channel: channelName, member: invitee.id, workspaceId }),
               });
-              console.log(`[channels] Synced agent ${invitee.id} to channel ${channelName}`);
+              console.log(`[channels] Synced agent ${invitee.id} to channel ${channelName} via local dashboard`);
             } catch (err) {
               // Non-fatal - daemon sync is best-effort
               console.warn(`[channels] Failed to sync agent ${invitee.id} to daemon:`, err);
@@ -692,20 +693,18 @@ export async function createServer(): Promise<CloudServer> {
 
       // Also subscribe the user on the daemon side for real-time messages
       try {
-        const workspace = await db.workspaces.findById(workspaceId);
-        if (workspace?.publicUrl) {
-          const channelWithHash = rawChannelId.startsWith('#') ? rawChannelId : `#${rawChannelId}`;
-          await fetch(`${workspace.publicUrl}/api/channels/subscribe`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              username: memberId,
-              channels: [channelWithHash],
-              workspaceId,
-            }),
-          });
-          console.log(`[cloud] Subscribed ${memberId} to ${channelWithHash} on daemon`);
-        }
+        const dashboardUrl = await getLocalDashboardUrl();
+        const channelWithHash = rawChannelId.startsWith('#') ? rawChannelId : `#${rawChannelId}`;
+        await fetch(`${dashboardUrl}/api/channels/subscribe`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: memberId,
+            channels: [channelWithHash],
+            workspaceId,
+          }),
+        });
+        console.log(`[cloud] Subscribed ${memberId} to ${channelWithHash} on local daemon`);
       } catch (err) {
         // Non-fatal - daemon sync is best-effort
         console.warn(`[cloud] Failed to sync join to daemon:`, err);
@@ -859,6 +858,7 @@ export async function createServer(): Promise<CloudServer> {
   // =========================================================================
 
   app.post('/api/channels/message', requireAuth, express.json(), async (req, res) => {
+    // Route to local dashboard where relay daemon and channel routing lives
     await proxyToLocalDashboard(req, res, '/api/channels/message', { method: 'POST', body: req.body });
   });
 
@@ -869,6 +869,14 @@ export async function createServer(): Promise<CloudServer> {
     if (req.query.before) params.set('before', req.query.before as string);
     const queryString = params.toString() ? `?${params.toString()}` : '';
     await proxyToLocalDashboard(req, res, `/api/channels/${channel}/messages${queryString}`);
+  });
+
+  /**
+   * GET /api/channels/:channel/members - Get members of a channel
+   */
+  app.get('/api/channels/:channel/members', requireAuth, async (req, res) => {
+    const channel = encodeURIComponent(req.params.channel);
+    await proxyToLocalDashboard(req, res, `/api/channels/${channel}/members`);
   });
 
   /**
@@ -1068,17 +1076,17 @@ export async function createServer(): Promise<CloudServer> {
     let daemonWs: WebSocket | null = null;
 
     try {
-      // Find the workspace
+      // Find the workspace (needed to verify it exists)
       const workspace = await db.workspaces.findById(workspaceId);
-      if (!workspace || !workspace.publicUrl) {
-        clientWs.send(JSON.stringify({ type: 'error', message: 'Workspace not found or not running' }));
+      if (!workspace) {
+        clientWs.send(JSON.stringify({ type: 'error', message: 'Workspace not found' }));
         clientWs.close();
         return;
       }
 
-      // Connect to workspace daemon WebSocket
-      // The workspace runs the dashboard server which expects /ws/logs path
-      const baseUrl = workspace.publicUrl.replace(/^http/, 'ws').replace(/\/$/, '');
+      // Connect to local dashboard where the daemon actually runs
+      const dashboardUrl = await getLocalDashboardUrl();
+      const baseUrl = dashboardUrl.replace(/^http/, 'ws').replace(/\/$/, '');
       const daemonWsUrl = `${baseUrl}/ws/logs/${encodeURIComponent(agentName)}`;
       console.log(`[ws/logs] Connecting to daemon: ${daemonWsUrl}`);
 
@@ -1150,16 +1158,17 @@ export async function createServer(): Promise<CloudServer> {
     let daemonWs: WebSocket | null = null;
 
     try {
-      // Find the workspace
+      // Find the workspace (needed to verify it exists)
       const workspace = await db.workspaces.findById(workspaceId);
-      if (!workspace || !workspace.publicUrl) {
-        clientWs.send(JSON.stringify({ type: 'error', message: 'Workspace not found or not running' }));
+      if (!workspace) {
+        clientWs.send(JSON.stringify({ type: 'error', message: 'Workspace not found' }));
         clientWs.close();
         return;
       }
 
-      // Connect to workspace daemon's presence WebSocket
-      const baseUrl = workspace.publicUrl.replace(/^http/, 'ws').replace(/\/$/, '');
+      // Connect to local dashboard where the daemon actually runs
+      const dashboardUrl = await getLocalDashboardUrl();
+      const baseUrl = dashboardUrl.replace(/^http/, 'ws').replace(/\/$/, '');
       const daemonWsUrl = `${baseUrl}/ws/presence`;
       console.log(`[ws/channels] Connecting to daemon: ${daemonWsUrl}`);
 
@@ -1351,20 +1360,20 @@ export async function createServer(): Promise<CloudServer> {
 
     try {
       const workspace = await db.workspaces.findById(workspaceId);
-      if (!workspace || !workspace.publicUrl) {
-        console.log(`[cloud] Workspace ${workspaceId} not found or not running`);
+      if (!workspace) {
+        console.log(`[cloud] Workspace ${workspaceId} not found`);
         return;
       }
 
-      const baseUrl = workspace.publicUrl.replace(/^http/, 'ws').replace(/\/$/, '');
-      const httpBaseUrl = workspace.publicUrl.replace(/\/$/, '');
-      const daemonWsUrl = `${baseUrl}/ws/presence`;
+      // Use local dashboard URL where the daemon actually runs
+      const dashboardUrl = await getLocalDashboardUrl();
+      const daemonWsUrl = dashboardUrl.replace(/^http/, 'ws').replace(/\/$/, '') + '/ws/presence';
       console.log(`[cloud] Connecting channel proxy to daemon: ${daemonWsUrl} for ${username}`);
 
       // First, register the user for channel messages on the daemon side
       // This creates a relay client for them so they receive channel messages
       try {
-        const subscribeRes = await fetch(`${httpBaseUrl}/api/channels/subscribe`, {
+        const subscribeRes = await fetch(`${dashboardUrl}/api/channels/subscribe`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

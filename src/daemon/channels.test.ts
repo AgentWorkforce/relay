@@ -268,6 +268,29 @@ describe('Router - Channel Support', () => {
       expect(router.getChannelMembers('#engineering')).not.toContain('alice');
     });
 
+    it('should preserve channel memberships when connection is replaced', () => {
+      // Simulates a user reconnecting with a new connection (e.g., page refresh)
+      const aliceOld = new MockConnection('conn-1', 'alice', { entityType: 'user' });
+      router.register(aliceOld);
+
+      router.handleChannelJoin(aliceOld, createChannelJoinEnvelope('alice', '#general'));
+      router.handleChannelJoin(aliceOld, createChannelJoinEnvelope('alice', '#engineering'));
+
+      expect(router.getChannelMembers('#general')).toContain('alice');
+      expect(router.getChannelMembers('#engineering')).toContain('alice');
+
+      // New connection replaces the old one (register closes old, then unregister is called on old)
+      const aliceNew = new MockConnection('conn-2', 'alice', { entityType: 'user' });
+      router.register(aliceNew);
+
+      // Old connection's onClose would trigger unregister
+      router.unregister(aliceOld);
+
+      // Channel memberships should be preserved since new connection took over
+      expect(router.getChannelMembers('#general')).toContain('alice');
+      expect(router.getChannelMembers('#engineering')).toContain('alice');
+    });
+
     it('should handle leave from channel not joined gracefully', () => {
       const alice = new MockConnection('conn-1', 'alice', { entityType: 'user' });
       router.register(alice);

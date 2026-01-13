@@ -294,9 +294,25 @@ export abstract class BaseWrapper extends EventEmitter {
     }
 
     // Only send if client ready
-    if (this.client.state !== 'READY') return;
+    if (this.client.state !== 'READY') {
+      console.error(`[base-wrapper] Client not ready (state=${this.client.state}), dropping message to ${cmd.to}`);
+      return;
+    }
 
-    this.client.sendMessage(cmd.to, cmd.body, cmd.kind, cmd.data, cmd.thread);
+    console.error(`[base-wrapper] sendRelayCommand: to=${cmd.to}, body=${cmd.body.substring(0, 50)}...`);
+
+    // Check if target is a channel (starts with #)
+    if (cmd.to.startsWith('#')) {
+      // Use CHANNEL_MESSAGE protocol for channel targets
+      console.error(`[base-wrapper] Sending CHANNEL_MESSAGE to ${cmd.to}`);
+      this.client.sendChannelMessage(cmd.to, cmd.body, {
+        thread: cmd.thread,
+        data: cmd.data,
+      });
+    } else {
+      // Use SEND protocol for direct messages and broadcasts
+      this.client.sendMessage(cmd.to, cmd.body, cmd.kind, cmd.data, cmd.thread);
+    }
   }
 
   // =========================================================================

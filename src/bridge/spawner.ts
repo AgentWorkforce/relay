@@ -79,7 +79,7 @@ function getMinimalRelayReminder(): string {
   return `# Quick Relay Reference
 - Send: \`->relay:Name <<<message>>>\`
 - ACK tasks, send DONE when complete
-- Use \`trail start/decision/complete\` for trajectories
+- Use \`trail start/decision/complete\` for trajectories. \`npx trail\` if trail not available
 - Output \`[[SESSION_END]]..[[/SESSION_END]]\` when done`;
 }
 
