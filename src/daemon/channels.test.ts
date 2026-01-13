@@ -401,6 +401,36 @@ describe('Router - Channel Support', () => {
       expect(received?.from).toBe('alice');
     });
 
+    it('should route message with case-insensitive member lookup', () => {
+      // Agent registered with 'Dev' (capitalized)
+      const agent = new MockConnection('conn-1', 'Dev', { entityType: 'agent' });
+      const user = new MockConnection('conn-2', 'alice', { entityType: 'user' });
+
+      router.register(agent);
+      router.register(user);
+
+      // Channel membership has 'dev' (lowercase) - simulating mismatch
+      router.handleChannelJoin(agent, createChannelJoinEnvelope('Dev', '#engineering'));
+      router.handleChannelJoin(user, createChannelJoinEnvelope('alice', '#engineering'));
+
+      agent.clearSent();
+      user.clearSent();
+
+      // Manually add 'dev' (lowercase) to channel to simulate case mismatch
+      // This would happen if channel membership was stored with different casing
+      const channel = '#test-case';
+      router.autoJoinChannel('dev', channel); // lowercase 'dev'
+      router.autoJoinChannel('alice', channel);
+
+      const msgEnvelope = createChannelMessageEnvelope('alice', channel, 'Hello Dev!');
+      router.routeChannelMessage(user, msgEnvelope);
+
+      // Should still deliver to Dev despite case mismatch
+      expect(agent.sendMock).toHaveBeenCalled();
+      const received = agent.sentEnvelopes.find(e => e.type === 'CHANNEL_MESSAGE');
+      expect(received?.from).toBe('alice');
+    });
+
     it('should persist channel messages', async () => {
       const alice = new MockConnection('conn-1', 'alice', { entityType: 'user' });
       const bob = new MockConnection('conn-2', 'bob', { entityType: 'user' });

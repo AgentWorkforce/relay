@@ -1259,9 +1259,22 @@ export class Router {
 
   /**
    * Get a connection by name (checks both agents and users).
+   * Uses case-insensitive lookup to handle mismatched casing.
    */
   private getConnectionByName(name: string): RoutableConnection | undefined {
-    return this.agents.get(name) ?? this.users.get(name);
+    // Try exact match first
+    const exact = this.agents.get(name) ?? this.users.get(name);
+    if (exact) return exact;
+
+    // Fall back to case-insensitive search
+    const lowerName = name.toLowerCase();
+    for (const [key, conn] of this.agents) {
+      if (key.toLowerCase() === lowerName) return conn;
+    }
+    for (const [key, conn] of this.users) {
+      if (key.toLowerCase() === lowerName) return conn;
+    }
+    return undefined;
   }
 
   /**
