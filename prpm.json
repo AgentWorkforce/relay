@@ -10,7 +10,7 @@
   "packages": [
     {
       "name": "using-agent-relay",
-      "version": "1.0.1",
+      "version": "1.1.0",
       "description": "Skill for coordinating multiple AI agents - enables real-time inter-agent messaging via PTY wrapper or file-based inbox system",
       "format": "claude",
       "subtype": "skill",
@@ -116,6 +116,525 @@
       ],
       "files": [
         "docs/agent-policy-snippet.md"
+      ]
+    },
+    {
+      "name": "lead-agent",
+      "version": "1.0.0",
+      "description": "Coordinator agent for multi-agent teams - delegates tasks, makes decisions, tracks progress without implementing",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "coordination",
+        "delegation",
+        "leadership",
+        "multi-agent",
+        "project-management"
+      ],
+      "files": [
+        ".claude/agents/lead.md"
+      ]
+    },
+    {
+      "name": "frontend-agent",
+      "version": "1.0.0",
+      "description": "Frontend development agent - creates distinctive, production-grade web interfaces with high design quality",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "frontend",
+        "react",
+        "css",
+        "design",
+        "ui-ux",
+        "web-development"
+      ],
+      "files": [
+        ".claude/agents/frontend.md"
+      ]
+    },
+    {
+      "name": "backend-agent",
+      "version": "1.0.0",
+      "description": "Backend development agent - APIs, services, server-side logic, and database integration",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "backend",
+        "api",
+        "server",
+        "database",
+        "services",
+        "nodejs"
+      ],
+      "files": [
+        ".claude/agents/backend.md"
+      ]
+    },
+    {
+      "name": "database-agent",
+      "version": "1.0.0",
+      "description": "Database specialist agent - schema design, query optimization, migrations, and data modeling",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "database",
+        "sql",
+        "postgresql",
+        "migrations",
+        "schema-design",
+        "optimization"
+      ],
+      "files": [
+        ".claude/agents/database.md"
+      ]
+    },
+    {
+      "name": "api-designer-agent",
+      "version": "1.0.0",
+      "description": "API design agent - REST and GraphQL API design, endpoint schemas, versioning, and documentation",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "api",
+        "rest",
+        "graphql",
+        "api-design",
+        "openapi",
+        "documentation"
+      ],
+      "files": [
+        ".claude/agents/api-designer.md"
+      ]
+    },
+    {
+      "name": "debugger-agent",
+      "version": "1.0.0",
+      "description": "Debugging specialist agent - systematic bug investigation, root cause analysis, and minimal targeted fixes",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "debugging",
+        "troubleshooting",
+        "root-cause-analysis",
+        "bug-fixing",
+        "investigation"
+      ],
+      "files": [
+        ".claude/agents/debugger.md"
+      ]
+    },
+    {
+      "name": "refactorer-agent",
+      "version": "1.0.0",
+      "description": "Refactoring specialist agent - code restructuring, technical debt reduction, and maintainability improvements",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "refactoring",
+        "technical-debt",
+        "code-quality",
+        "maintainability",
+        "clean-code"
+      ],
+      "files": [
+        ".claude/agents/refactorer.md"
+      ]
+    },
+    {
+      "name": "performance-agent",
+      "version": "1.0.0",
+      "description": "Performance optimization agent - profiling, bottleneck analysis, and performance improvements",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "performance",
+        "optimization",
+        "profiling",
+        "bottlenecks",
+        "benchmarking"
+      ],
+      "files": [
+        ".claude/agents/performance.md"
+      ]
+    },
+    {
+      "name": "tester-agent",
+      "version": "1.0.0",
+      "description": "Testing specialist agent - unit tests, integration tests, e2e tests, and test strategy",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "testing",
+        "unit-tests",
+        "integration-tests",
+        "e2e",
+        "test-coverage",
+        "tdd"
+      ],
+      "files": [
+        ".claude/agents/tester.md"
+      ]
+    },
+    {
+      "name": "security-agent",
+      "version": "1.0.0",
+      "description": "Security auditing agent - vulnerability assessment, OWASP compliance, and security best practices",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "security",
+        "vulnerability",
+        "owasp",
+        "audit",
+        "penetration-testing",
+        "compliance"
+      ],
+      "files": [
+        ".claude/agents/security.md"
+      ]
+    },
+    {
+      "name": "qa-agent",
+      "version": "1.0.0",
+      "description": "Quality assurance agent - test planning, defect tracking, and quality metrics",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "qa",
+        "quality-assurance",
+        "test-planning",
+        "defect-tracking",
+        "quality-metrics"
+      ],
+      "files": [
+        ".claude/agents/qa.md"
+      ]
+    },
+    {
+      "name": "accessibility-agent",
+      "version": "1.0.0",
+      "description": "Accessibility auditing agent - WCAG compliance, a11y testing, and inclusive design",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "accessibility",
+        "a11y",
+        "wcag",
+        "inclusive-design",
+        "screen-readers",
+        "aria"
+      ],
+      "files": [
+        ".claude/agents/accessibility.md"
+      ]
+    },
+    {
+      "name": "validator-agent",
+      "version": "1.0.0",
+      "description": "Validation specialist agent - input validation, schema enforcement, and data integrity",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "validation",
+        "input-validation",
+        "schema",
+        "data-integrity",
+        "sanitization"
+      ],
+      "files": [
+        ".claude/agents/validator.md"
+      ]
+    },
+    {
+      "name": "documentor-agent",
+      "version": "1.0.0",
+      "description": "Documentation specialist agent - technical docs, API documentation, and README files",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "documentation",
+        "technical-writing",
+        "api-docs",
+        "readme",
+        "jsdoc"
+      ],
+      "files": [
+        ".claude/agents/documentor.md"
+      ]
+    },
+    {
+      "name": "explainer-agent",
+      "version": "1.0.0",
+      "description": "Code explanation agent - architecture walkthroughs, code explanation, and knowledge transfer",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "explanation",
+        "architecture",
+        "code-review",
+        "knowledge-transfer",
+        "onboarding"
+      ],
+      "files": [
+        ".claude/agents/explainer.md"
+      ]
+    },
+    {
+      "name": "reviewer-agent",
+      "version": "1.0.0",
+      "description": "Code review agent - quality checks, best practices, and constructive feedback",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "code-review",
+        "best-practices",
+        "feedback",
+        "quality",
+        "pull-requests"
+      ],
+      "files": [
+        ".claude/agents/reviewer.md"
+      ]
+    },
+    {
+      "name": "researcher-agent",
+      "version": "1.0.0",
+      "description": "Research specialist agent - codebase exploration, investigation, and information gathering",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "research",
+        "exploration",
+        "investigation",
+        "codebase-analysis",
+        "information-gathering"
+      ],
+      "files": [
+        ".claude/agents/researcher.md"
+      ]
+    },
+    {
+      "name": "architect-agent",
+      "version": "1.0.0",
+      "description": "System architecture agent - design decisions, technical planning, and architectural patterns",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "architecture",
+        "system-design",
+        "technical-planning",
+        "design-patterns",
+        "scalability"
+      ],
+      "files": [
+        ".claude/agents/architect.md"
+      ]
+    },
+    {
+      "name": "devops-agent",
+      "version": "1.0.0",
+      "description": "DevOps specialist agent - CI/CD pipelines, infrastructure as code, and deployment automation",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "devops",
+        "ci-cd",
+        "infrastructure",
+        "automation",
+        "deployment",
+        "docker"
+      ],
+      "files": [
+        ".claude/agents/devops.md"
+      ]
+    },
+    {
+      "name": "devops-ci-agent",
+      "version": "1.0.0",
+      "description": "CI/CD specialist agent - pipeline configuration, build optimization, and continuous integration",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "ci-cd",
+        "pipelines",
+        "github-actions",
+        "jenkins",
+        "build-automation"
+      ],
+      "files": [
+        ".claude/agents/devops-ci.md"
+      ]
+    },
+    {
+      "name": "migrator-agent",
+      "version": "1.0.0",
+      "description": "Migration specialist agent - data migrations, schema changes, and version upgrades",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "migration",
+        "data-migration",
+        "schema-changes",
+        "version-upgrades",
+        "database"
+      ],
+      "files": [
+        ".claude/agents/migrator.md"
+      ]
+    },
+    {
+      "name": "deployer-agent",
+      "version": "1.0.0",
+      "description": "Deployment specialist agent - release management, deployment automation, and rollback strategies",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "deployment",
+        "release-management",
+        "rollback",
+        "blue-green",
+        "canary"
+      ],
+      "files": [
+        ".claude/agents/deployer.md"
+      ]
+    },
+    {
+      "name": "monitor-agent",
+      "version": "1.0.0",
+      "description": "Monitoring specialist agent - observability setup, alerting, and metrics configuration",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "monitoring",
+        "observability",
+        "alerting",
+        "metrics",
+        "logging",
+        "tracing"
+      ],
+      "files": [
+        ".claude/agents/monitor.md"
+      ]
+    },
+    {
+      "name": "sysadmin-agent",
+      "version": "1.0.0",
+      "description": "System administration agent - server configuration, system maintenance, and infrastructure management",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "sysadmin",
+        "linux",
+        "server-management",
+        "configuration",
+        "infrastructure"
+      ],
+      "files": [
+        ".claude/agents/sysadmin.md"
+      ]
+    },
+    {
+      "name": "data-agent",
+      "version": "1.0.0",
+      "description": "Data engineering agent - ETL pipelines, data processing, and data quality",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "data-engineering",
+        "etl",
+        "data-pipelines",
+        "data-quality",
+        "data-processing"
+      ],
+      "files": [
+        ".claude/agents/data.md"
+      ]
+    },
+    {
+      "name": "mobile-agent",
+      "version": "1.0.0",
+      "description": "Mobile development agent - React Native, iOS, Android, and cross-platform development",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "mobile",
+        "react-native",
+        "ios",
+        "android",
+        "cross-platform"
+      ],
+      "files": [
+        ".claude/agents/mobile.md"
+      ]
+    },
+    {
+      "name": "cli-agent",
+      "version": "1.0.0",
+      "description": "CLI development agent - command-line tools, terminal utilities, and Unix philosophy",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "cli",
+        "command-line",
+        "terminal",
+        "unix",
+        "shell-scripting"
+      ],
+      "files": [
+        ".claude/agents/cli.md"
+      ]
+    },
+    {
+      "name": "integrator-agent",
+      "version": "1.0.0",
+      "description": "Integration specialist agent - third-party APIs, webhooks, OAuth, and service integration",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "integration",
+        "api",
+        "webhooks",
+        "oauth",
+        "third-party"
+      ],
+      "files": [
+        ".claude/agents/integrator.md"
+      ]
+    },
+    {
+      "name": "prototyper-agent",
+      "version": "1.0.0",
+      "description": "Rapid prototyping agent - MVPs, proof of concepts, and quick validation",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "prototyping",
+        "mvp",
+        "proof-of-concept",
+        "rapid-development",
+        "validation"
+      ],
+      "files": [
+        ".claude/agents/prototyper.md"
+      ]
+    },
+    {
+      "name": "fixer-agent",
+      "version": "1.0.0",
+      "description": "Quick fix specialist agent - hotfixes, urgent patches, and rapid bug resolution",
+      "format": "claude",
+      "subtype": "agent",
+      "tags": [
+        "hotfix",
+        "quick-fix",
+        "urgent",
+        "bug-fix",
+        "patches"
+      ],
+      "files": [
+        ".claude/agents/fixer.md"
       ]
     }
   ]
