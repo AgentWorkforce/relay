@@ -1601,8 +1601,15 @@ export async function startDashboard(
     // These users are tracked in onlineUsers for presence but need to appear in the agents list
     // with cli: 'dashboard' so they show up in the sidebar for DM conversations
     for (const [username, state] of onlineUsers) {
-      // Don't overwrite existing entries (e.g., if user is also in team.json)
-      if (!agentsMap.has(username)) {
+      const existing = agentsMap.get(username);
+      if (existing) {
+        // Update existing entry to ensure cli: 'dashboard' for proper human/agent separation
+        // This fixes the bug where users appear as both human AND agent if they have a stale
+        // entry in agents.json with a different cli value
+        existing.cli = 'dashboard';
+        existing.status = 'online';
+        existing.avatarUrl = state.info.avatarUrl || existing.avatarUrl;
+      } else {
         agentsMap.set(username, {
           name: username,
           role: 'User',
