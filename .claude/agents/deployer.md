@@ -3,7 +3,6 @@ name: deployer
 description: Use for deployment automation, release management, rollouts, and production deployments.
 allowed-tools: Read, Grep, Glob, Bash, Edit, Write
 skills: using-agent-relay
-model: sonnet
 ---
 
 # Deployer Agent

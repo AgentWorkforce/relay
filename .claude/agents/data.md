@@ -3,7 +3,6 @@ name: data
 description: Use for data processing, ETL pipelines, data transformation, and batch processing tasks.
 allowed-tools: Read, Grep, Glob, Bash, Edit, Write
 skills: using-agent-relay
-model: sonnet
 ---
 
 # Data Agent
