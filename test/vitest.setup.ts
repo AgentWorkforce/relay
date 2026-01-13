@@ -1,3 +1,6 @@
+// Add jest-dom matchers for React component testing
+import '@testing-library/jest-dom/vitest';
+
 const setIfMissing = (key: string, value: string) => {
   if (!process.env[key]) {
     process.env[key] = value;
