@@ -478,13 +478,36 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [channelUnreadState, setChannelUnreadState] = useState<UnreadState | undefined>();
 
+  // Default channel IDs that should always be visible
+  const DEFAULT_CHANNEL_IDS = ['#general', '#engineering'];
+
   const setChannelListsFromResponse = useCallback((response: { channels: Channel[]; archivedChannels?: Channel[] }) => {
     const archived = [
       ...(response.archivedChannels || []),
       ...response.channels.filter(c => c.status === 'archived'),
     ];
-    const active = response.channels.filter(c => c.status !== 'archived');
-    setChannelsList(active);
+    const apiActive = response.channels.filter(c => c.status !== 'archived');
+
+    // Merge with default channels to ensure #general is always visible
+    // Default channels are added if not present in API response
+    const apiChannelIds = new Set(apiActive.map(c => c.id));
+    const defaultChannelsToAdd: Channel[] = DEFAULT_CHANNEL_IDS
+      .filter(id => !apiChannelIds.has(id))
+      .map(id => ({
+        id,
+        name: id.replace('#', ''),
+        description: id === '#general' ? 'General discussion for all agents' : 'Engineering discussion',
+        visibility: 'public' as const,
+        memberCount: 0,
+        unreadCount: 0,
+        hasMentions: false,
+        createdAt: new Date().toISOString(),
+        status: 'active' as const,
+        createdBy: 'system',
+        isDm: false,
+      }));
+
+    setChannelsList([...defaultChannelsToAdd, ...apiActive]);
     setArchivedChannelsList(archived);
   }, []);
 
@@ -1198,80 +1221,50 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   // Channel V1 Handlers
   // =============================================================================
 
+  // Default channels that should always be visible
+  const defaultChannels: Channel[] = [
+    {
+      id: '#general',
+      name: 'general',
+      description: 'General discussion for all agents',
+      visibility: 'public',
+      memberCount: 0,
+      unreadCount: 0,
+      hasMentions: false,
+      createdAt: new Date().toISOString(),
+      status: 'active',
+      createdBy: 'system',
+      isDm: false,
+    },
+    {
+      id: '#engineering',
+      name: 'engineering',
+      description: 'Engineering discussion',
+      visibility: 'public',
+      memberCount: 0,
+      unreadCount: 0,
+      hasMentions: false,
+      createdAt: new Date().toISOString(),
+      status: 'active',
+      createdBy: 'system',
+      isDm: false,
+    },
+  ];
+
   // Load channels on mount (they're always visible in sidebar, collapsed by default)
   useEffect(() => {
-    if (!effectiveActiveWorkspaceId) {
-      if (!isCloudMode) {
-        setChannelsList([
-          {
-            id: '#general',
-            name: 'general',
-            description: 'General discussion for all agents',
-            visibility: 'public',
-            memberCount: 0,
-            unreadCount: 0,
-            hasMentions: false,
-            createdAt: new Date().toISOString(),
-            status: 'active',
-            createdBy: 'system',
-            isDm: false,
-          },
-          {
-            id: '#engineering',
-            name: 'engineering',
-            description: 'Engineering discussion',
-            visibility: 'public',
-            memberCount: 0,
-            unreadCount: 0,
-            hasMentions: false,
-            createdAt: new Date().toISOString(),
-            status: 'active',
-            createdBy: 'system',
-            isDm: false,
-          },
-        ]);
-        setArchivedChannelsList([]);
-      } else {
-        setChannelsList([]);
-        setArchivedChannelsList([]);
-      }
-      return;
-    }
-
-    if (!isCloudMode) {
-      setChannelsList([
-        {
-          id: '#general',
-          name: 'general',
-          description: 'General discussion for all agents',
-          visibility: 'public',
-          memberCount: 0,
-          unreadCount: 0,
-          hasMentions: false,
-          createdAt: new Date().toISOString(),
-          status: 'active',
-          createdBy: 'system',
-          isDm: false,
-        },
-        {
-          id: '#engineering',
-          name: 'engineering',
-          description: 'Engineering discussion',
-          visibility: 'public',
-          memberCount: 0,
-          unreadCount: 0,
-          hasMentions: false,
-          createdAt: new Date().toISOString(),
-          status: 'active',
-          createdBy: 'system',
-          isDm: false,
-        },
-      ]);
+    // Always show default channels (#general, #engineering) regardless of mode
+    // These are the broadcast channels that exist by default
+    if (!effectiveActiveWorkspaceId || !isCloudMode) {
+      setChannelsList(defaultChannels);
       setArchivedChannelsList([]);
-      return;
+      if (!effectiveActiveWorkspaceId) return;
+      if (!isCloudMode) return;
     }
 
-    setChannelsList([]);
+    // In cloud mode with workspace, fetch channels from API
+    // but merge with default channels to ensure #general is always visible
+    setChannelsList(defaultChannels);
     setArchivedChannelsList([]);
     setIsChannelsLoading(true);
 
