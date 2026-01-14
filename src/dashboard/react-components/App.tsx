@@ -45,6 +45,7 @@ import { useCloudSessionOptional } from './CloudSessionProvider';
 import { WorkspaceProvider } from './WorkspaceContext';
 import { api, convertApiDecision, setActiveWorkspaceId as setApiWorkspaceId } from '../lib/api';
 import { cloudApi } from '../lib/cloudApi';
+import { mergeAgentsForDashboard } from '../lib/agent-merge';
 import type { CurrentUser } from './MessageList';
 
 /**
@@ -461,25 +462,11 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
 
   // Merge AI agents, human users, and local agents from linked daemons
   const combinedAgents = useMemo(() => {
-    const merged = [...(data?.agents ?? []), ...(data?.users ?? []), ...localAgents];
-    const byName = new Map<string, Agent>();
-
-    for (const agent of merged) {
-      const key = agent.name.toLowerCase();
-      const existing = byName.get(key);
-      // Local agents should preserve their isLocal flag when merging
-      if (existing) {
-        byName.set(key, {
-          ...existing,
-          ...agent,
-          isLocal: existing.isLocal || agent.isLocal,
-        });
-      } else {
-        byName.set(key, agent);
-      }
-    }
-
-    return Array.from(byName.values());
+    return mergeAgentsForDashboard({
+      agents: data?.agents,
+      users: data?.users,
+      localAgents,
+    });
   }, [data?.agents, data?.users, localAgents]);
 
   // Mark a DM conversation as seen (used for unread badges)
