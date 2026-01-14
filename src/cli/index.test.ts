@@ -50,8 +50,10 @@ describe('CLI', () => {
     });
 
     it('should show help when no args', async () => {
-      const { stdout } = await runCli('');
-      expect(stdout).toContain('Usage:');
+      const { stdout, stderr } = await runCli('');
+      // Commander outputs help to stderr when no command is provided
+      const output = stdout + stderr;
+      expect(output).toContain('Usage:');
     });
   });
 

@@ -1216,6 +1216,8 @@ export class TmuxWrapper extends BaseWrapper {
 
   /**
    * Wait for a spawned agent to come online, then send the task via relay.
+   * Uses the wrapper's own relay client so the message comes "from" this agent,
+   * not from the dashboard's relay client.
    */
   private async waitAndSendTask(agentName: string, task: string): Promise<void> {
     const maxWaitMs = 30000;
@@ -1233,22 +1235,17 @@ export class TmuxWrapper extends BaseWrapper {
         if (data.online) {
           this.logStderr(`${agentName} is online, sending task...`);
 
-          // Send task via relay
-          const sendResponse = await fetch(`http://localhost:${this.config.dashboardPort}/api/send`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              to: agentName,
-              message: task,
-              from: this.config.name,
-            }),
-          });
-          const sendResult = await sendResponse.json() as { success: boolean; error?: string };
-
-          if (sendResult.success) {
-            this.logStderr(`Task sent to ${agentName}`);
+          // Send task directly via our relay client (not dashboard API)
+          // This ensures the message comes "from" this agent, not from _DashboardUI
+          if (this.client.state === 'READY') {
+            const sent = this.client.sendMessage(agentName, task, 'message');
+            if (sent) {
+              this.logStderr(`Task sent to ${agentName}`);
+            } else {
+              this.logStderr(`Failed to send task to ${agentName}: sendMessage returned false`, true);
+            }
           } else {
-            this.logStderr(`Failed to send task to ${agentName}: ${sendResult.error}`, true);
+            this.logStderr(`Failed to send task to ${agentName}: relay client not ready (state: ${this.client.state})`, true);
           }
           return;
         }

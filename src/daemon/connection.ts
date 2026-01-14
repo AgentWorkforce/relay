@@ -378,6 +378,7 @@ export class Connection {
    */
   send(envelope: Envelope): boolean {
     if (this._state === 'CLOSED' || this._state === 'ERROR' || this._state === 'CLOSING') {
+      console.log(`[connection] Send to ${this._agentName} blocked - state: ${this._state}`);
       return false;
     }
 

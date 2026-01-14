@@ -306,7 +306,10 @@ export abstract class BaseWrapper extends EventEmitter {
     }
 
     console.log(`[base-wrapper] Sending message to ${cmd.to}: "${cmd.body.substring(0, 50)}..."`);
-    this.client.sendMessage(cmd.to, cmd.body, cmd.kind, cmd.data, cmd.thread);
+    const sent = this.client.sendMessage(cmd.to, cmd.body, cmd.kind, cmd.data, cmd.thread);
+    if (!sent) {
+      console.error(`[base-wrapper] Failed to send message to ${cmd.to} - sendMessage returned false`);
+    }
   }
 
   // =========================================================================

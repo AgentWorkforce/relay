@@ -519,6 +519,8 @@ export class RelayClient {
   }
 
   private handleDeliver(envelope: DeliverEnvelope): void {
+    console.log(`[relay-client:${this.config.agentName}] Received DELIVER from ${envelope.from}: "${envelope.payload.body?.substring(0, 40)}..."`);
+
     // Send ACK
     this.send({
       v: PROTOCOL_VERSION,
@@ -533,6 +535,7 @@ export class RelayClient {
 
     const duplicate = this.markDelivered(envelope.id);
     if (duplicate) {
+      console.log(`[relay-client:${this.config.agentName}] Duplicate delivery, skipping`);
       return;
     }
 
@@ -540,6 +543,8 @@ export class RelayClient {
     // Pass originalTo from delivery info so handlers know if this was a broadcast
     if (this.onMessage && envelope.from) {
       this.onMessage(envelope.from, envelope.payload, envelope.id, envelope.payload_meta, envelope.delivery.originalTo);
+    } else {
+      console.log(`[relay-client:${this.config.agentName}] No onMessage handler or no from field`);
     }
   }
 
