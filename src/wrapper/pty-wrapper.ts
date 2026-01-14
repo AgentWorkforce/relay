@@ -1432,7 +1432,11 @@ export class PtyWrapper extends BaseWrapper {
           } else {
             this.ptyProcess.write(inj);
           }
-          await sleep(INJECTION_CONSTANTS.ENTER_DELAY_MS);
+          // Wait longer for CLI to process the pasted content before sending Enter.
+          // The standard 50ms delay is too short for CLIs like Claude that need time
+          // to process bracketed paste content before accepting Enter.
+          await sleep(200);
+          // Send Enter key - use \r for PTY (carriage return)
           this.ptyProcess.write('\r');
         },
         log: (message: string) => console.log(`[pty:${this.config.name}] ${message}`),

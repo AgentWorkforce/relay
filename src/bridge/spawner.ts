@@ -97,13 +97,6 @@ function getRelayInstructions(agentName: string): string {
     '   DONE: Brief summary of what was completed>>>',
     '',
     '3. Close >>> must immediately follow content (no blank lines before it)',
-    '',
-    '## Session End',
-    '',
-    'When your work is complete, output:',
-    '[[SESSION_END]]Work complete.[[/SESSION_END]]',
-    '',
-    'This signals you are done and ready to be released.',
   ].join('\n');
 }
 
