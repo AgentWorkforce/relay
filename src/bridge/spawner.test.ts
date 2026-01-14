@@ -109,10 +109,9 @@ describe('AgentSpawner', () => {
     });
     expect(spawner.hasWorker('Dev1')).toBe(true);
     expect(mockPtyWrapper.start).toHaveBeenCalled();
-    // Task is written to PTY (may include injected snippets, so check task is included)
-    expect(mockPtyWrapper.write).toHaveBeenCalled();
-    const writeCall = mockPtyWrapper.write.mock.calls[0][0];
-    expect(writeCall).toContain('Finish the report');
+    // Note: Task is no longer written directly to PTY by spawner.
+    // The spawning wrapper waits for the agent to come online and sends it via relay.
+    // This test just verifies the spawn itself works.
   });
 
   it('adds --dangerously-skip-permissions for Claude variants', async () => {

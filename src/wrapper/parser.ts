@@ -946,12 +946,12 @@ export class OutputParser {
   private shouldFilterFencedInline(target: string, body: string): boolean {
     // Check for placeholder target names
     if (isPlaceholderTarget(target)) {
-      console.error(`[parser] Filtered message - placeholder target: ${target}`);
+      // Silently filter placeholder targets (common in documentation)
       return true;
     }
     // Check for instructional body content
     if (isInstructionalText(body)) {
-      console.error(`[parser] Filtered message to ${target} - instructional text detected. Body preview: ${body.substring(0, 100)}`);
+      // Silently filter instructional text (common in system prompts)
       return true;
     }
     return false;

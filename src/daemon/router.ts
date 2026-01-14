@@ -432,7 +432,7 @@ export class Router {
     const to = envelope.to;
     const topic = envelope.topic;
 
-    routerLog.debug(`${senderName} -> ${to}`, { preview: envelope.payload.body?.substring(0, 50) });
+    routerLog.info(`Route ${senderName} -> ${to}`, { preview: envelope.payload.body?.substring(0, 50) });
 
     if (to === '*') {
       // Broadcast to all (except sender)
@@ -531,7 +531,7 @@ export class Router {
 
     const deliver = this.createDeliverEnvelope(from, to, envelope, target);
     const sent = target.send(deliver);
-    routerLog.debug(`Delivered to ${to}`, { success: sent });
+    routerLog.info(`Delivered ${from} -> ${to}`, { success: sent, preview: envelope.payload.body?.substring(0, 40) });
     this.persistDeliverEnvelope(deliver);
     if (sent) {
       this.trackDelivery(target, deliver);

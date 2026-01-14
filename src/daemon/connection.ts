@@ -377,7 +377,8 @@ export class Connection {
    * Returns false if the connection is closed or the queue is full.
    */
   send(envelope: Envelope): boolean {
-    if (this._state === 'CLOSED' || this._state === 'ERROR') {
+    if (this._state === 'CLOSED' || this._state === 'ERROR' || this._state === 'CLOSING') {
+      console.log(`[connection] Send to ${this._agentName} blocked - state: ${this._state}`);
       return false;
     }
 
@@ -425,7 +426,7 @@ export class Connection {
    */
   private drain(): void {
     while (this.writeQueue.length > 0) {
-      if (this._state === 'CLOSED' || this._state === 'ERROR') {
+      if (this._state === 'CLOSED' || this._state === 'ERROR' || this._state === 'CLOSING') {
         this.draining = false;
         return;
       }
@@ -509,13 +510,21 @@ export class Connection {
     if (this._state === 'CLOSED' || this._state === 'CLOSING') return;
 
     this._state = 'CLOSING';
-    this.send({
-      v: PROTOCOL_VERSION,
-      type: 'BYE',
-      id: generateId(),
-      ts: Date.now(),
-      payload: {},
-    });
+
+    // Write BYE message directly (not via queue) to avoid race with socket.end()
+    try {
+      const byeFrame = encodeFrame({
+        v: PROTOCOL_VERSION,
+        type: 'BYE',
+        id: generateId(),
+        ts: Date.now(),
+        payload: {},
+      });
+      this.socket.write(byeFrame);
+    } catch {
+      // Ignore write errors during close
+    }
+
     this.socket.end();
   }
 }

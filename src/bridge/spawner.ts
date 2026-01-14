@@ -71,16 +71,33 @@ export type OnAgentDeathCallback = (info: {
 }) => void;
 
 /**
- * Get a minimal relay reminder.
- * Agents already have full relay docs via CLAUDE.md - this is just a brief reminder.
- * Loading full docs (400+ lines) overwhelms agents and causes "meandering".
+ * Get relay protocol instructions for a spawned agent.
+ * This provides the agent with the communication protocol it needs to work with the relay.
  */
-function getMinimalRelayReminder(): string {
-  return `# Quick Relay Reference
-- Send: \`->relay:Name <<<message>>>\`
-- ACK tasks, send DONE when complete
-- Use \`trail start/decision/complete\` for trajectories
-- Output \`[[SESSION_END]]..[[/SESSION_END]]\` when done`;
+function getRelayInstructions(agentName: string): string {
+  return [
+    '# Agent Relay Protocol',
+    '',
+    `You are agent "${agentName}" connected to Agent Relay for multi-agent coordination.`,
+    '',
+    '## Sending Messages',
+    '',
+    'Use fenced format for all messages:',
+    '->relay:TargetAgent <<<',
+    'Your message here.>>>',
+    '',
+    '## Communication Rules',
+    '',
+    '1. **ACK immediately** - When you receive a task:',
+    '   ->relay:Sender <<<',
+    '   ACK: Brief description of task received>>>',
+    '',
+    '2. **Report completion** - When done:',
+    '   ->relay:Sender <<<',
+    '   DONE: Brief summary of what was completed>>>',
+    '',
+    '3. Close >>> must immediately follow content (no blank lines before it)',
+  ].join('\n');
 }
 
 export class AgentSpawner {
@@ -286,6 +303,14 @@ export class AgentSpawner {
         args.push('--dangerously-bypass-approvals-and-sandbox');
       }
 
+      // Inject relay protocol instructions via CLI-specific system prompt
+      const relayInstructions = getRelayInstructions(name);
+      if (isClaudeCli && !args.includes('--append-system-prompt')) {
+        args.push('--append-system-prompt', relayInstructions);
+      } else if (isCodexCli && !args.some(a => a.includes('developer_instructions'))) {
+        args.push('--config', `developer_instructions=${relayInstructions}`);
+      }
+
       if (debug) console.log(`[spawner:debug] Spawning ${name} with: ${command} ${args.join(' ')}`);
 
       // Create PtyWrapper config
@@ -326,6 +351,8 @@ export class AgentSpawner {
         // Shadow agent configuration
         shadowOf: request.shadowOf,
         shadowSpeakOn: request.shadowSpeakOn,
+        // Skip continuity for spawned agents - they're short-lived workers
+        skipContinuity: true,
         // Only use callbacks if dashboardPort is not set (for backwards compatibility)
         onSpawn: this.dashboardPort ? undefined : async (workerName, workerCli, workerTask) => {
           // Handle nested spawn requests (legacy path, may fail in non-TTY)
@@ -413,68 +440,9 @@ export class AgentSpawner {
         };
       }
 
-      // Build the full message: minimal relay reminder + policy instructions (if any) + task
-      // Only build message if there's an actual task - empty task means interactive mode
-      let fullMessage = task || '';
-
-      // Only prepend relay reminder if we have an actual task
-      // Empty task = interactive mode, user will respond to prompts directly
-      if (fullMessage.trim()) {
-        // Prepend a brief relay reminder (agents have full docs via CLAUDE.md)
-        // Note: Previously loaded full 400+ line docs which overwhelmed agents
-        const relayReminder = getMinimalRelayReminder();
-        if (relayReminder) {
-          fullMessage = `${relayReminder}\n\n---\n\n${fullMessage}`;
-          if (debug) console.log(`[spawner:debug] Prepended relay reminder for ${name}`);
-        }
-      }
-
-      // Prepend policy instructions if enforcement is enabled (only if we have a task)
-      if (fullMessage.trim() && this.policyEnforcementEnabled && this.policyService) {
-        const policyInstruction = await this.policyService.getPolicyInstruction(name);
-        if (policyInstruction) {
-          fullMessage = `${policyInstruction}\n\n${fullMessage}`;
-          if (debug) console.log(`[spawner:debug] Prepended policy instructions to task for ${name}`);
-        }
-      }
-
-      // Send task via relay message if provided (not via direct PTY injection)
-      // This ensures the agent is ready to receive before processing the task
-      if (fullMessage && fullMessage.trim()) {
-        if (debug) console.log(`[spawner:debug] Will send task via relay: ${fullMessage.substring(0, 50)}...`);
-
-        // If we have dashboard API, send task as relay message
-        if (this.dashboardPort) {
-          // Wait a moment for the agent's relay client to be ready
-          await sleep(1000);
-          try {
-            const response = await fetch(`http://localhost:${this.dashboardPort}/api/send`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                to: name,
-                message: fullMessage,
-                from: '__spawner__',
-              }),
-            });
-            const result = await response.json() as { success: boolean; error?: string };
-            if (result.success) {
-              if (debug) console.log(`[spawner:debug] Task sent via relay to ${name}`);
-            } else {
-              console.warn(`[spawner] Failed to send task via relay: ${result.error}`);
-              // Fall back to direct injection
-              pty.write(fullMessage + '\r');
-            }
-          } catch (err: any) {
-            console.warn(`[spawner] Relay send failed, falling back to direct injection: ${err.message}`);
-            pty.write(fullMessage + '\r');
-          }
-        } else {
-          // No dashboard API available - use direct injection as fallback
-          if (debug) console.log(`[spawner:debug] No dashboard API, using direct injection`);
-          pty.write(fullMessage + '\r');
-        }
-      }
+      // Note: Task is NOT sent here. The spawning agent (wrapper) waits for the worker
+      // to come online and then sends the task via normal relay message.
+      // This avoids race conditions with the agent's readyForMessages state.
 
       // Track the worker
       const workerInfo: ActiveWorker = {

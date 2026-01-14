@@ -58,7 +58,7 @@ export const INJECTION_CONSTANTS = {
   /** Timeout for injection verification (ms) */
   VERIFICATION_TIMEOUT_MS: 2000,
   /** Delay between message and Enter key (ms) */
-  ENTER_DELAY_MS: 50,
+  ENTER_DELAY_MS: 100,
   /** Backoff multiplier for retries (ms per attempt) */
   RETRY_BACKOFF_MS: 300,
   /** Delay between processing queued messages (ms) */

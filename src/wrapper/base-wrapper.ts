@@ -79,6 +79,10 @@ export interface BaseWrapperConfig {
   idleBeforeInjectMs?: number;
   /** Confidence threshold for idle detection (0-1, default: 0.7) */
   idleConfidenceThreshold?: number;
+  /** Skip initial instruction injection (when using --append-system-prompt) */
+  skipInstructions?: boolean;
+  /** Skip continuity loading (for spawned agents that don't need session recovery) */
+  skipContinuity?: boolean;
 }
 
 /**
@@ -130,8 +134,10 @@ export abstract class BaseWrapper extends EventEmitter {
       quiet: true,
     });
 
-    // Initialize continuity manager
-    this.continuity = getContinuityManager({ defaultCli: this.cliType });
+    // Initialize continuity manager (skip for spawned agents that don't need session recovery)
+    if (!config.skipContinuity) {
+      this.continuity = getContinuityManager({ defaultCli: this.cliType });
+    }
 
     // Initialize universal idle detector for robust injection timing
     this.idleDetector = new UniversalIdleDetector({
@@ -294,9 +300,16 @@ export abstract class BaseWrapper extends EventEmitter {
     }
 
     // Only send if client ready
-    if (this.client.state !== 'READY') return;
+    if (this.client.state !== 'READY') {
+      console.error(`[base-wrapper] Skipped message to ${cmd.to} - client not ready (state: ${this.client.state})`);
+      return;
+    }
 
-    this.client.sendMessage(cmd.to, cmd.body, cmd.kind, cmd.data, cmd.thread);
+    console.log(`[base-wrapper] Sending message to ${cmd.to}: "${cmd.body.substring(0, 50)}..."`);
+    const sent = this.client.sendMessage(cmd.to, cmd.body, cmd.kind, cmd.data, cmd.thread);
+    if (!sent) {
+      console.error(`[base-wrapper] Failed to send message to ${cmd.to} - sendMessage returned false`);
+    }
   }
 
   // =========================================================================
