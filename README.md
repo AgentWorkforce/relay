@@ -44,7 +44,7 @@ Broadcasting to everyone>>>
 |---------|-------------|
 | `agent-relay <cmd>` | Wrap agent with messaging |
 | `agent-relay -n Name <cmd>` | Wrap with specific name |
-| `agent-relay up` | Start daemon + dashboard |
+| `agent-relay up` | Start daemon (add `--dashboard` for web UI) |
 | `agent-relay down` | Stop daemon |
 | `agent-relay status` | Check if running |
 | `agent-relay read <id>` | Read truncated message |
@@ -188,7 +188,7 @@ prpm install @agent-relay/agent-relay-snippet --location CLAUDE.md
 
 ## Dashboard
 
-`agent-relay up` starts a web dashboard at http://localhost:3888
+`agent-relay up --dashboard` starts a web dashboard at http://localhost:3888
 
 ![Agent Relay Dashboard](docs/dashboard.png)
 

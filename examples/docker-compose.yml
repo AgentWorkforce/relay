@@ -16,7 +16,7 @@ services:
     ports:
       - "3888:3888"
     command: >
-      sh -c "npm install && npm run build && node dist/cli/index.js up --port 3888"
+      sh -c "npm install && npm run build && node dist/cli/index.js up --dashboard --port 3888"
     healthcheck:
       test: ["CMD", "node", "-e", "require('net').connect(3888).on('error', () => process.exit(1))"]
       interval: 10s

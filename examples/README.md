@@ -43,8 +43,8 @@ Edit the values as needed. Agent-relay uses dotenv to load these automatically.
 All configuration can also be passed via CLI flags:
 
 ```bash
-# Custom port and agent name
-agent-relay up --port 4000
+# Start with dashboard on custom port
+agent-relay up --dashboard --port 4000
 agent-relay -n MyAgent claude
 ```
 

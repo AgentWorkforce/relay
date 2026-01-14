@@ -256,12 +256,12 @@ program
     }
   });
 
-// up - Start daemon + dashboard
+// up - Start daemon (dashboard disabled by default)
 program
   .command('up')
-  .description('Start daemon + dashboard')
-  .option('--no-dashboard', 'Disable web dashboard')
-  .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
+  .description('Start daemon (use --dashboard to enable web dashboard)')
+  .option('--dashboard', 'Enable web dashboard (disabled by default)')
+  .option('--port <port>', 'Dashboard port (requires --dashboard)', DEFAULT_DASHBOARD_PORT)
   .option('--spawn', 'Force spawn all agents from teams.json')
   .option('--no-spawn', 'Do not auto-spawn agents (just start daemon)')
   .option('--watch', 'Auto-restart daemon on crash (supervisor mode)')
@@ -279,8 +279,10 @@ program
       const startDaemon = (): void => {
         // Build args without --watch to prevent infinite recursion
         const args = ['up'];
-        if (options.dashboard === false) args.push('--no-dashboard');
-        if (options.port) args.push('--port', options.port);
+        if (options.dashboard === true) {
+          args.push('--dashboard');
+          if (options.port) args.push('--port', options.port);
+        }
         if (options.spawn === true) args.push('--spawn');
         if (options.spawn === false) args.push('--no-spawn');
 
@@ -352,6 +354,9 @@ program
       pidFilePath,
       storagePath: dbPath,
       teamDir: paths.teamDir,
+      // Enable daemon-based spawning
+      enableSpawner: true,
+      projectRoot: paths.projectRoot,
     });
 
     // Create spawner for auto-spawn (will be initialized after dashboard starts)
@@ -409,8 +414,8 @@ program
 
       let dashboardPort: number | undefined;
 
-      // Dashboard starts by default (use --no-dashboard to disable)
-      if (options.dashboard !== false) {
+      // Dashboard is disabled by default (use --dashboard to enable)
+      if (options.dashboard === true) {
         const port = parseInt(options.port, 10);
         const { startDashboard } = await import('../dashboard-server/server.js');
         dashboardPort = await startDashboard({
@@ -1613,23 +1618,70 @@ program
       return triggers as Array<'SESSION_END' | 'CODE_WRITTEN' | 'REVIEW_REQUEST' | 'EXPLICIT_ASK' | 'ALL_MESSAGES'>;
     };
 
+    // Build spawn request using the SpawnRequest type for consistency
+    const spawnRequest: SpawnRequest = {
+      name,
+      cli,
+      task: finalTask,
+      team: options.team,
+      spawnerName: options.spawner,
+      interactive: options.interactive,
+      cwd: options.cwd,
+      shadowMode: options.shadowMode as 'subagent' | 'process' | undefined,
+      shadowOf: options.shadowOf,
+      shadowAgent: options.shadowAgent,
+      shadowTriggers: parseTriggers(options.shadowTriggers),
+      shadowSpeakOn: parseTriggers(options.shadowSpeakOn),
+    };
+
+    // Try daemon socket first (preferred path)
     try {
-      // Build spawn request using the SpawnRequest type for consistency
-      const spawnRequest: SpawnRequest = {
+      const { getProjectPaths } = await import('../utils/project-namespace.js');
+      const paths = getProjectPaths();
+
+      const client = new RelayClient({
+        socketPath: paths.socketPath,
+        agentName: '__cli_spawner__',
+        quiet: true,
+        reconnect: false,
+        maxReconnectAttempts: 0,
+        reconnectDelayMs: 0,
+        reconnectMaxDelayMs: 0,
+      });
+
+      await client.connect();
+
+      const result = await client.spawn({
         name,
         cli,
         task: finalTask,
         team: options.team,
-        spawnerName: options.spawner,
-        interactive: options.interactive,
         cwd: options.cwd,
-        shadowMode: options.shadowMode as 'subagent' | 'process' | undefined,
+        interactive: options.interactive,
         shadowOf: options.shadowOf,
-        shadowAgent: options.shadowAgent,
-        shadowTriggers: parseTriggers(options.shadowTriggers),
         shadowSpeakOn: parseTriggers(options.shadowSpeakOn),
-      };
+      });
 
+      client.disconnect();
+
+      if (result.success) {
+        console.log(`Spawned agent: ${name} (pid: ${result.pid})`);
+        process.exit(0);
+      } else {
+        if (result.policyDecision) {
+          console.error(`Policy denied spawn: ${result.policyDecision.reason}`);
+        } else {
+          console.error(`Failed to spawn ${name}: ${result.error || 'Unknown error'}`);
+        }
+        process.exit(1);
+      }
+    } catch (daemonErr) {
+      // Fall through to HTTP API
+      console.log('Daemon not available, trying HTTP API...');
+    }
+
+    // Fall back to HTTP API
+    try {
       const response = await fetch(`http://localhost:${port}/api/spawn`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1670,6 +1722,40 @@ program
   .action(async (name: string, options: { port?: string }) => {
     const port = options.port || DEFAULT_DASHBOARD_PORT;
 
+    // Try daemon socket first (preferred path)
+    try {
+      const { getProjectPaths } = await import('../utils/project-namespace.js');
+      const paths = getProjectPaths();
+
+      const client = new RelayClient({
+        socketPath: paths.socketPath,
+        agentName: '__cli_releaser__',
+        quiet: true,
+        reconnect: false,
+        maxReconnectAttempts: 0,
+        reconnectDelayMs: 0,
+        reconnectMaxDelayMs: 0,
+      });
+
+      await client.connect();
+
+      const success = await client.release(name);
+
+      client.disconnect();
+
+      if (success) {
+        console.log(`Released agent: ${name}`);
+        process.exit(0);
+      } else {
+        console.error(`Failed to release ${name}: Agent not found`);
+        process.exit(1);
+      }
+    } catch (daemonErr) {
+      // Fall through to HTTP API
+      console.log('Daemon not available, trying HTTP API...');
+    }
+
+    // Fall back to HTTP API
     try {
       const response = await fetch(`http://localhost:${port}/api/spawned/${encodeURIComponent(name)}`, {
         method: 'DELETE',

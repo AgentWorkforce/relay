@@ -31,14 +31,14 @@ Environment=NODE_ENV=production
 Environment=AGENT_RELAY_DATA_DIR=/var/lib/agent-relay
 Environment=AGENT_RELAY_DASHBOARD_PORT=3888
 
-# Start the daemon with supervisor mode (--watch)
+# Start the daemon with supervisor mode (--watch) and dashboard enabled
 # This provides two layers of resilience:
 # 1. The --watch flag restarts the daemon if it crashes
 # 2. Systemd restarts the supervisor if it crashes
-ExecStart=/usr/bin/npx agent-relay up --watch --port 3888
+ExecStart=/usr/bin/npx agent-relay up --dashboard --watch --port 3888
 
 # Alternative: Run without --watch (rely on systemd alone)
-# ExecStart=/usr/bin/npx agent-relay up --port 3888
+# ExecStart=/usr/bin/npx agent-relay up --dashboard --port 3888
 
 # Graceful shutdown
 ExecStop=/usr/bin/npx agent-relay down

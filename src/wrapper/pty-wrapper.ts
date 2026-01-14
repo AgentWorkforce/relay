@@ -1178,68 +1178,21 @@ export class PtyWrapper extends BaseWrapper {
   }
 
   /**
-   * Execute spawn via API or callback.
-   * Overrides BaseWrapper to add PTY-specific logging and API path.
+   * Execute spawn via daemon, API, or callback.
+   * Delegates to BaseWrapper which tries daemon first.
    */
   protected override async executeSpawn(name: string, cli: string, task: string): Promise<void> {
-    console.log(`[pty:${this.config.name}] [SPAWN-DEBUG] executeSpawn called: name=${name}, cli=${cli}, task="${task.substring(0, 50)}..."`);
-    console.log(`[pty:${this.config.name}] [SPAWN-DEBUG] dashboardPort=${this.config.dashboardPort}, hasOnSpawn=${!!this.config.onSpawn}`);
-
-    if (this.config.dashboardPort) {
-      // Use dashboard API for spawning (works from spawned agents)
-      try {
-        const response = await fetch(`http://localhost:${this.config.dashboardPort}/api/spawn`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, cli, task }),
-        });
-        const result = await response.json() as { success: boolean; error?: string };
-        if (result.success) {
-          console.log(`[pty:${this.config.name}] Spawned ${name} via API`);
-        } else {
-          console.error(`[pty:${this.config.name}] Spawn failed: ${result.error}`);
-        }
-      } catch (err: any) {
-        console.error(`[pty:${this.config.name}] Spawn API call failed: ${err.message}`);
-      }
-    } else if (this.config.onSpawn) {
-      // Fall back to callback
-      try {
-        await this.config.onSpawn(name, cli, task);
-      } catch (err: any) {
-        console.error(`[pty:${this.config.name}] Spawn failed: ${err.message}`);
-      }
-    }
+    // Delegate to base which tries daemon first, then HTTP, then callback
+    await super.executeSpawn(name, cli, task);
   }
 
   /**
-   * Execute release via API or callback.
-   * Overrides BaseWrapper to add PTY-specific logging and API path.
+   * Execute release via daemon, API, or callback.
+   * Delegates to BaseWrapper which tries daemon first.
    */
   protected override async executeRelease(name: string): Promise<void> {
-    if (this.config.dashboardPort) {
-      // Use dashboard API for releasing
-      try {
-        const response = await fetch(`http://localhost:${this.config.dashboardPort}/api/spawned/${encodeURIComponent(name)}`, {
-          method: 'DELETE',
-        });
-        const result = await response.json() as { success: boolean; error?: string };
-        if (result.success) {
-          console.log(`[pty:${this.config.name}] Released ${name} via API`);
-        } else {
-          console.error(`[pty:${this.config.name}] Release failed: ${result.error}`);
-        }
-      } catch (err: any) {
-        console.error(`[pty:${this.config.name}] Release API call failed: ${err.message}`);
-      }
-    } else if (this.config.onRelease) {
-      // Fall back to callback
-      try {
-        await this.config.onRelease(name);
-      } catch (err: any) {
-        console.error(`[pty:${this.config.name}] Release failed: ${err.message}`);
-      }
-    }
+    // Delegate to base which tries daemon first, then HTTP, then callback
+    await super.executeRelease(name);
   }
 
   /**

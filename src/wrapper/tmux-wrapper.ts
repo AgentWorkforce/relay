@@ -1173,63 +1173,21 @@ export class TmuxWrapper extends BaseWrapper {
   }
 
   /**
-   * Execute spawn via API (if dashboardPort set) or callback
+   * Execute spawn via daemon, API, or callback.
+   * Delegates to BaseWrapper which tries daemon first.
    */
   protected override async executeSpawn(name: string, cli: string, task: string): Promise<void> {
-    if (this.config.dashboardPort) {
-      // Use dashboard API for spawning (works from any context, no terminal required)
-      try {
-        const response = await fetch(`http://localhost:${this.config.dashboardPort}/api/spawn`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, cli, task }),
-        });
-        const result = await response.json() as { success: boolean; error?: string };
-        if (result.success) {
-          this.logStderr(`Spawned ${name} via API`);
-        } else {
-          this.logStderr(`Spawn failed: ${result.error}`, true);
-        }
-      } catch (err: any) {
-        this.logStderr(`Spawn API call failed: ${err.message}`, true);
-      }
-    } else if (this.config.onSpawn) {
-      // Fall back to callback
-      try {
-        await this.config.onSpawn(name, cli, task);
-      } catch (err: any) {
-        this.logStderr(`Spawn failed: ${err.message}`, true);
-      }
-    }
+    // Delegate to base which tries daemon first, then HTTP, then callback
+    await super.executeSpawn(name, cli, task);
   }
 
   /**
-   * Execute release via API (if dashboardPort set) or callback
+   * Execute release via daemon, API, or callback.
+   * Delegates to BaseWrapper which tries daemon first.
    */
   protected override async executeRelease(name: string): Promise<void> {
-    if (this.config.dashboardPort) {
-      // Use dashboard API for release (works from any context, no terminal required)
-      try {
-        const response = await fetch(`http://localhost:${this.config.dashboardPort}/api/spawned/${encodeURIComponent(name)}`, {
-          method: 'DELETE',
-        });
-        const result = await response.json() as { success: boolean; error?: string };
-        if (result.success) {
-          this.logStderr(`Released ${name} via API`);
-        } else {
-          this.logStderr(`Release failed: ${result.error}`, true);
-        }
-      } catch (err: any) {
-        this.logStderr(`Release API call failed: ${err.message}`, true);
-      }
-    } else if (this.config.onRelease) {
-      // Fall back to callback
-      try {
-        await this.config.onRelease(name);
-      } catch (err: any) {
-        this.logStderr(`Release failed: ${err.message}`, true);
-      }
-    }
+    // Delegate to base which tries daemon first, then HTTP, then callback
+    await super.executeRelease(name);
   }
 
   /**
