@@ -45,3 +45,9 @@ export {
   type UseChannelsReturn,
   type ChannelMessage,
 } from './useChannels';
+export {
+  useWorkspaceMembers,
+  filterOnlineUsersByWorkspace,
+  type UseWorkspaceMembersOptions,
+  type UseWorkspaceMembersReturn,
+} from './useWorkspaceMembers';

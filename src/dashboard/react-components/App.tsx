@@ -41,6 +41,7 @@ import { useTrajectory } from './hooks/useTrajectory';
 import { useRecentRepos } from './hooks/useRecentRepos';
 import { useWorkspaceRepos } from './hooks/useWorkspaceRepos';
 import { usePresence, type UserPresence } from './hooks/usePresence';
+import { useWorkspaceMembers, filterOnlineUsersByWorkspace } from './hooks/useWorkspaceMembers';
 import { useCloudSessionOptional } from './CloudSessionProvider';
 import { WorkspaceProvider } from './WorkspaceContext';
 import { api, convertApiDecision, setActiveWorkspaceId as setApiWorkspaceId } from '../lib/api';
@@ -336,9 +337,21 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
       : undefined,
     [currentUser?.displayName, currentUser?.avatarUrl]
   );
-  const { onlineUsers, typingUsers, sendTyping, isConnected: isPresenceConnected } = usePresence({
+  const { onlineUsers: allOnlineUsers, typingUsers, sendTyping, isConnected: isPresenceConnected } = usePresence({
     currentUser: presenceUser,
   });
+
+  // Filter online users by workspace membership (cloud mode only)
+  const { memberUsernames } = useWorkspaceMembers({
+    workspaceId: effectiveActiveWorkspaceId ?? undefined,
+    enabled: isCloudMode && !!effectiveActiveWorkspaceId,
+  });
+
+  // Filter online users to only show those with access to current workspace
+  const onlineUsers = useMemo(
+    () => filterOnlineUsersByWorkspace(allOnlineUsers, memberUsernames),
+    [allOnlineUsers, memberUsernames]
+  );
 
   // User profile panel state
   const [selectedUserProfile, setSelectedUserProfile] = useState<UserPresence | null>(null);
