@@ -461,18 +461,20 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
 
   // Merge AI agents, human users, and local agents from linked daemons
   const combinedAgents = useMemo(() => {
-    const merged = [...(data?.agents ?? []), ...(data?.users ?? []), ...localAgents];
+    const merged = [...(data?.agents ?? []), ...(data?.users ?? []), ...localAgents]
+      .filter((agent) => agent.name.toLowerCase() !== 'dashboard');
     const byName = new Map<string, Agent>();
 
     for (const agent of merged) {
       const key = agent.name.toLowerCase();
       const existing = byName.get(key);
-      // Local agents should preserve their isLocal flag when merging
+      // Prefer non-local agents when names collide to avoid cloud agents showing as local.
       if (existing) {
+        const keepNonLocal = !existing.isLocal && agent.isLocal;
         byName.set(key, {
           ...existing,
           ...agent,
-          isLocal: existing.isLocal || agent.isLocal,
+          isLocal: keepNonLocal ? false : Boolean(agent.isLocal),
         });
       } else {
         byName.set(key, agent);
