@@ -33,7 +33,12 @@ export type MessageType =
   | 'CHANNEL_MESSAGE'
   | 'CHANNEL_INFO'
   | 'CHANNEL_MEMBERS'
-  | 'CHANNEL_TYPING';
+  | 'CHANNEL_TYPING'
+  // Spawn/release types (daemon-based agent spawning)
+  | 'SPAWN'
+  | 'SPAWN_RESULT'
+  | 'RELEASE'
+  | 'RELEASE_RESULT';
 
 export type PayloadKind = 'message' | 'action' | 'state' | 'thinking';
 
@@ -229,3 +234,71 @@ export interface ShadowUnbindPayload {
 
 export type ShadowBindEnvelope = Envelope<ShadowBindPayload>;
 export type ShadowUnbindEnvelope = Envelope<ShadowUnbindPayload>;
+
+// Spawn/release payloads
+export interface SpawnPayload {
+  /** Name for the new agent */
+  name: string;
+  /** CLI to use (claude, codex, gemini, etc.) */
+  cli: string;
+  /** Task description for the agent */
+  task: string;
+  /** Optional team name */
+  team?: string;
+  /** Working directory for the agent */
+  cwd?: string;
+  /** Socket path for the spawned agent to connect to */
+  socketPath?: string;
+  /** Name of the spawning agent (parent) */
+  spawnerName?: string;
+  /** Whether to run in interactive mode */
+  interactive?: boolean;
+  /** If set, spawn as a shadow of this agent */
+  shadowOf?: string;
+  /** Shadow speak-on triggers */
+  shadowSpeakOn?: SpeakOnTrigger[];
+  /** User ID for cloud persistence */
+  userId?: string;
+}
+
+export type SpawnPolicyDecision = {
+  allowed: boolean;
+  reason?: string;
+  quotaRemaining?: number;
+};
+
+export interface SpawnResultPayload {
+  /** Correlation ID - matches the original SPAWN envelope ID */
+  replyTo: string;
+  /** Whether the spawn succeeded */
+  success: boolean;
+  /** Name of the spawned agent */
+  name: string;
+  /** Process ID of the spawned agent (if successful) */
+  pid?: number;
+  /** Error message (if failed) */
+  error?: string;
+  /** Policy decision (if spawn was blocked by policy) */
+  policyDecision?: SpawnPolicyDecision;
+}
+
+export interface ReleasePayload {
+  /** Name of the agent to release */
+  name: string;
+}
+
+export interface ReleaseResultPayload {
+  /** Correlation ID - matches the original RELEASE envelope ID */
+  replyTo: string;
+  /** Whether the release succeeded */
+  success: boolean;
+  /** Name of the released agent */
+  name: string;
+  /** Error message (if failed) */
+  error?: string;
+}
+
+export type SpawnEnvelope = Envelope<SpawnPayload>;
+export type SpawnResultEnvelope = Envelope<SpawnResultPayload>;
+export type ReleaseEnvelope = Envelope<ReleasePayload>;
+export type ReleaseResultEnvelope = Envelope<ReleaseResultPayload>;

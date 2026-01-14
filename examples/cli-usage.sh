@@ -6,14 +6,14 @@
 # Starting the Daemon
 # ============================================
 
-# Start daemon with default settings (port 3888)
+# Start daemon only (dashboard disabled by default)
 agent-relay up
 
-# Start daemon on custom port
-agent-relay up --port 4000
+# Start daemon with web dashboard enabled
+agent-relay up --dashboard
 
-# Start daemon without web dashboard
-agent-relay up --no-dashboard
+# Start daemon with dashboard on custom port
+agent-relay up --dashboard --port 4000
 
 # Check if daemon is running
 agent-relay status

@@ -440,7 +440,7 @@ log "Detected workspace path: ${ACTUAL_WORKSPACE}"
 cd "${ACTUAL_WORKSPACE}"
 
 log "Starting agent-relay daemon on port ${PORT} from ${ACTUAL_WORKSPACE}"
-args=(/app/dist/cli/index.js up --port "${PORT}")
+args=(/app/dist/cli/index.js up --dashboard --port "${PORT}")
 
 if [[ "${SUPERVISOR_ENABLED:-true}" == "true" ]]; then
   args+=("--watch")

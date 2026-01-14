@@ -354,7 +354,30 @@ export abstract class BaseWrapper extends EventEmitter {
    * Execute a spawn command
    */
   protected async executeSpawn(name: string, cli: string, task: string): Promise<void> {
-    // Try dashboard API first
+    // Try daemon socket first (preferred path)
+    if (this.client.state === 'READY') {
+      try {
+        const result = await this.client.spawn({
+          name,
+          cli,
+          task,
+          cwd: this.config.cwd ?? process.cwd(),
+          socketPath: this.config.socketPath,
+        });
+        if (result.success) {
+          console.log(`[${this.config.name}] Spawned ${name} via daemon (pid: ${result.pid})`);
+          return;
+        }
+        console.error(`[${this.config.name}] Daemon spawn failed: ${result.error}`);
+        // Fall through to other methods
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[${this.config.name}] Daemon spawn error: ${msg}`);
+        // Fall through to other methods
+      }
+    }
+
+    // Try dashboard API as fallback (backwards compatibility)
     if (this.config.dashboardPort) {
       try {
         const response = await fetch(
@@ -371,7 +394,7 @@ export abstract class BaseWrapper extends EventEmitter {
       }
     }
 
-    // Use callback
+    // Use callback as final fallback
     if (this.config.onSpawn) {
       await this.config.onSpawn(name, cli, task);
     }
@@ -381,7 +404,24 @@ export abstract class BaseWrapper extends EventEmitter {
    * Execute a release command
    */
   protected async executeRelease(name: string): Promise<void> {
-    // Try dashboard API first
+    // Try daemon socket first (preferred path)
+    if (this.client.state === 'READY') {
+      try {
+        const success = await this.client.release(name);
+        if (success) {
+          console.log(`[${this.config.name}] Released ${name} via daemon`);
+          return;
+        }
+        console.error(`[${this.config.name}] Daemon release failed for ${name}`);
+        // Fall through to other methods
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[${this.config.name}] Daemon release error: ${msg}`);
+        // Fall through to other methods
+      }
+    }
+
+    // Try dashboard API as fallback (backwards compatibility)
     if (this.config.dashboardPort) {
       try {
         const response = await fetch(
@@ -394,7 +434,7 @@ export abstract class BaseWrapper extends EventEmitter {
       }
     }
 
-    // Use callback
+    // Use callback as final fallback
     if (this.config.onRelease) {
       await this.config.onRelease(name);
     }

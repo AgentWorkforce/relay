@@ -23,10 +23,17 @@ import {
   type SpeakOnTrigger,
   type LogPayload,
   type EntityType,
+  type SpawnPayload,
+  type SpawnResultPayload,
+  type ReleasePayload,
+  type ReleaseResultPayload,
+  type SpawnPolicyDecision,
   PROTOCOL_VERSION,
 } from '../protocol/types.js';
 import { encodeFrameLegacy, FrameParser } from '../protocol/framing.js';
-import { DEFAULT_SOCKET_PATH } from '../daemon/server.js';
+
+// Define locally to avoid circular dependency with daemon/server.js
+const DEFAULT_CLIENT_SOCKET_PATH = '/tmp/agent-relay.sock';
 
 export type ClientState = 'DISCONNECTED' | 'CONNECTING' | 'HANDSHAKING' | 'READY' | 'BACKOFF';
 
@@ -58,7 +65,7 @@ export interface ClientConfig {
 }
 
 const DEFAULT_CLIENT_CONFIG: ClientConfig = {
-  socketPath: DEFAULT_SOCKET_PATH,
+  socketPath: DEFAULT_CLIENT_SOCKET_PATH,
   agentName: 'agent',
   cli: undefined,
   quiet: false,
@@ -67,6 +74,29 @@ const DEFAULT_CLIENT_CONFIG: ClientConfig = {
   reconnectDelayMs: 100,
   reconnectMaxDelayMs: 30000,
 };
+
+/** Request to spawn a new agent via daemon */
+export interface SpawnRequest {
+  name: string;
+  cli: string;
+  task: string;
+  team?: string;
+  cwd?: string;
+  socketPath?: string;
+  interactive?: boolean;
+  shadowOf?: string;
+  shadowSpeakOn?: SpeakOnTrigger[];
+  userId?: string;
+}
+
+/** Result from a spawn request */
+export interface SpawnResult {
+  success: boolean;
+  name: string;
+  pid?: number;
+  error?: string;
+  policyDecision?: SpawnPolicyDecision;
+}
 
 /**
  * Circular buffer for O(1) deduplication with bounded memory.
@@ -126,6 +156,10 @@ export class RelayClient {
   // Write coalescing: batch multiple writes into single syscall
   private writeQueue: Buffer[] = [];
   private writeScheduled = false;
+
+  // Pending spawn/release requests (correlation ID -> resolve/reject)
+  private pendingSpawns = new Map<string, { resolve: (result: SpawnResult) => void; reject: (err: Error) => void }>();
+  private pendingReleases = new Map<string, { resolve: (success: boolean) => void; reject: (err: Error) => void }>();
 
   // Event handlers
   /**
@@ -241,6 +275,17 @@ export class RelayClient {
       this.socket.end();
       this.socket = undefined;
     }
+
+    // Reject any pending spawn/release requests
+    for (const pending of this.pendingSpawns.values()) {
+      pending.reject(new Error('Client disconnected'));
+    }
+    this.pendingSpawns.clear();
+
+    for (const pending of this.pendingReleases.values()) {
+      pending.reject(new Error('Client disconnected'));
+    }
+    this.pendingReleases.clear();
 
     this.setState('DISCONNECTED');
   }
@@ -375,6 +420,125 @@ export class RelayClient {
     });
   }
 
+  /**
+   * Spawn a new agent via the daemon.
+   * @param request - Spawn request parameters
+   * @param timeoutMs - Timeout in milliseconds (default: 30000)
+   * @returns Promise that resolves with spawn result
+   */
+  spawn(request: SpawnRequest, timeoutMs = 30000): Promise<SpawnResult> {
+    return new Promise((resolve, reject) => {
+      if (this._state !== 'READY') {
+        reject(new Error('Client not ready'));
+        return;
+      }
+
+      const envelopeId = generateId();
+
+      // Set up timeout
+      const timeout = setTimeout(() => {
+        this.pendingSpawns.delete(envelopeId);
+        reject(new Error(`Spawn request timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      // Store pending request
+      this.pendingSpawns.set(envelopeId, {
+        resolve: (result) => {
+          clearTimeout(timeout);
+          this.pendingSpawns.delete(envelopeId);
+          resolve(result);
+        },
+        reject: (err) => {
+          clearTimeout(timeout);
+          this.pendingSpawns.delete(envelopeId);
+          reject(err);
+        },
+      });
+
+      // Send SPAWN envelope
+      const payload: SpawnPayload = {
+        name: request.name,
+        cli: request.cli,
+        task: request.task,
+        team: request.team,
+        cwd: request.cwd,
+        socketPath: request.socketPath,
+        spawnerName: this.config.agentName,
+        interactive: request.interactive,
+        shadowOf: request.shadowOf,
+        shadowSpeakOn: request.shadowSpeakOn,
+        userId: request.userId,
+      };
+
+      const sent = this.send({
+        v: PROTOCOL_VERSION,
+        type: 'SPAWN',
+        id: envelopeId,
+        ts: Date.now(),
+        payload,
+      });
+
+      if (!sent) {
+        clearTimeout(timeout);
+        this.pendingSpawns.delete(envelopeId);
+        reject(new Error('Failed to send SPAWN envelope'));
+      }
+    });
+  }
+
+  /**
+   * Release (stop) an agent via the daemon.
+   * @param name - Name of the agent to release
+   * @param timeoutMs - Timeout in milliseconds (default: 10000)
+   * @returns Promise that resolves with success boolean
+   */
+  release(name: string, timeoutMs = 10000): Promise<boolean> {
+    return new Promise((resolve, reject) => {
+      if (this._state !== 'READY') {
+        reject(new Error('Client not ready'));
+        return;
+      }
+
+      const envelopeId = generateId();
+
+      // Set up timeout
+      const timeout = setTimeout(() => {
+        this.pendingReleases.delete(envelopeId);
+        reject(new Error(`Release request timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      // Store pending request
+      this.pendingReleases.set(envelopeId, {
+        resolve: (success) => {
+          clearTimeout(timeout);
+          this.pendingReleases.delete(envelopeId);
+          resolve(success);
+        },
+        reject: (err) => {
+          clearTimeout(timeout);
+          this.pendingReleases.delete(envelopeId);
+          reject(err);
+        },
+      });
+
+      // Send RELEASE envelope
+      const payload: ReleasePayload = { name };
+
+      const sent = this.send({
+        v: PROTOCOL_VERSION,
+        type: 'RELEASE',
+        id: envelopeId,
+        ts: Date.now(),
+        payload,
+      });
+
+      if (!sent) {
+        clearTimeout(timeout);
+        this.pendingReleases.delete(envelopeId);
+        reject(new Error('Failed to send RELEASE envelope'));
+      }
+    });
+  }
 
   /**
    * Send log/output data to the daemon for dashboard streaming.
@@ -504,6 +668,30 @@ export class RelayClient {
       case 'BUSY':
         console.warn('[client] Server busy, backing off');
         break;
+
+      case 'SPAWN_RESULT': {
+        const payload = envelope.payload as SpawnResultPayload;
+        const pending = this.pendingSpawns.get(payload.replyTo);
+        if (pending) {
+          pending.resolve({
+            success: payload.success,
+            name: payload.name,
+            pid: payload.pid,
+            error: payload.error,
+            policyDecision: payload.policyDecision,
+          });
+        }
+        break;
+      }
+
+      case 'RELEASE_RESULT': {
+        const payload = envelope.payload as ReleaseResultPayload;
+        const pending = this.pendingReleases.get(payload.replyTo);
+        if (pending) {
+          pending.resolve(payload.success);
+        }
+        break;
+      }
     }
   }
 
