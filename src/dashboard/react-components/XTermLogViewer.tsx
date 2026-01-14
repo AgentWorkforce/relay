@@ -549,17 +549,20 @@ export function XTermLogViewer({
         </div>
       )}
 
-      {/* Terminal container - don't use overflow-auto here, xterm-viewport handles scrolling */}
+      {/* Terminal container - keep a dedicated scroll boundary for mobile */}
       <div
-        ref={containerRef}
-        className="flex-1 touch-pan-y"
-        style={{
-          maxHeight,
-          minHeight: '200px',
-          overscrollBehavior: 'contain',
-          touchAction: 'pan-y',
-        }}
-      />
+        className="flex-1 min-h-0 overflow-hidden"
+        style={{ maxHeight, minHeight: '200px' }}
+      >
+        <div
+          ref={containerRef}
+          className="h-full w-full touch-pan-y"
+          style={{
+            overscrollBehavior: 'contain',
+            touchAction: 'pan-y',
+          }}
+        />
+      </div>
 
       {/* Footer status bar */}
       <div
