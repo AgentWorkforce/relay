@@ -786,7 +786,8 @@ export async function startDashboard(
   };
 
   // Start default relay client connection (non-blocking)
-  getRelayClient('Dashboard').catch(() => {});
+  // Use '_DashboardUI' to avoid conflicts with agents named 'Dashboard'
+  getRelayClient('_DashboardUI').catch(() => {});
 
   // User bridge for human-to-human and human-to-agent messaging
   const userBridge = new UserBridge({
@@ -980,9 +981,10 @@ export async function startDashboard(
       targets = [to];
     }
 
-    // Always use 'Dashboard' client to avoid name conflicts with actual agents
+    // Always use '_DashboardUI' client to avoid name conflicts with user agents
+    // (underscore prefix indicates system client, prevents collision if user names an agent "Dashboard")
     // The sender name is preserved in message history/logs but not used for the relay connection
-    const relayClient = await getRelayClient('Dashboard');
+    const relayClient = await getRelayClient('_DashboardUI');
     if (!relayClient || relayClient.state !== 'READY') {
       return res.status(503).json({ error: 'Relay daemon not connected' });
     }
@@ -4048,7 +4050,7 @@ Start by greeting the project leads and asking for status updates.`;
 
     // Try to send message to agent
     try {
-      const client = await getRelayClient('Dashboard');
+      const client = await getRelayClient('_DashboardUI');
       if (client) {
         await client.sendMessage(agentName, responseMessage, 'message');
       }
@@ -4083,7 +4085,7 @@ Start by greeting the project leads and asking for status updates.`;
     }
 
     try {
-      const client = await getRelayClient('Dashboard');
+      const client = await getRelayClient('_DashboardUI');
       if (client) {
         await client.sendMessage(agentName, responseMessage, 'message');
       }
@@ -4324,7 +4326,7 @@ Start by greeting the project leads and asking for status updates.`;
 
     // Send task to agent via relay
     try {
-      const client = await getRelayClient('Dashboard');
+      const client = await getRelayClient('_DashboardUI');
       if (client) {
         const taskMessage = `TASK ASSIGNED [${priority.toUpperCase()}]: ${title}\n\n${description || 'No additional details.'}`;
         await client.sendMessage(agentName, taskMessage, 'message');
@@ -4381,7 +4383,7 @@ Start by greeting the project leads and asking for status updates.`;
     // Notify agent of cancellation if task is still active
     if (task.status === 'pending' || task.status === 'assigned' || task.status === 'in_progress') {
       try {
-        const client = await getRelayClient('Dashboard');
+        const client = await getRelayClient('_DashboardUI');
         if (client) {
           await client.sendMessage(task.agentName, `TASK CANCELLED: ${task.title}`, 'message');
         }
@@ -4468,7 +4470,7 @@ Start by greeting the project leads and asking for status updates.`;
     }
 
     try {
-      const client = await getRelayClient('Dashboard');
+      const client = await getRelayClient('_DashboardUI');
       if (!client) {
         return res.status(503).json({
           success: false,

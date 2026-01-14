@@ -3,8 +3,8 @@
  * Agent Relay CLI
  *
  * Commands:
- *   relay claude                   - Start daemon + Mega coordinator with Claude
- *   relay codex                    - Start daemon + Mega coordinator with Codex
+ *   relay claude                   - Start daemon + Dashboard coordinator with Claude
+ *   relay codex                    - Start daemon + Dasbboard coordinator with Codex
  *   relay create-agent <cmd>       - Wrap agent with real-time messaging
  *   relay create-agent -n Name cmd - Wrap with specific agent name
  *   relay up                       - Start daemon + dashboard
@@ -510,9 +510,9 @@ program
     }
   });
 
-// System prompt for Mega agent - plain text to avoid shell escaping issues
+// System prompt for Dashboard agent - plain text to avoid shell escaping issues
 const MEGA_SYSTEM_PROMPT = [
-  'You are Mega, a lead coordinator in agent-relay. Your PRIMARY job is to delegate - you should almost NEVER do implementation work yourself.',
+  'You are Dashboard, a lead coordinator in agent-relay. Your PRIMARY job is to delegate - you should almost NEVER do implementation work yourself.',
   'ALWAYS SPAWN AGENTS: For any non-trivial task, spawn specialized workers. Staff projects with multiple agents working in parallel. One agent per task/file/feature.',
   'SPAWN: ->relay:spawn Name claude <<<detailed task>>> creates workers. RELEASE: ->relay:release Name when done.',
   'WORKFLOW: 1) Analyze the request 2) Break into parallel tasks 3) Spawn agents for each 4) Coordinate and review their work 5) Report completion.',
@@ -521,8 +521,8 @@ const MEGA_SYSTEM_PROMPT = [
   'RULES: Close with >>> immediately after content. One relay block per message. No preambles.',
 ].join(' ');
 
-// Helper function for starting Mega coordinator with a specific provider
-async function startMegaCoordinator(operator: string): Promise<void> {
+// Helper function for starting Dashboard coordinator with a specific provider
+async function startDashboardCoordinator(operator: string): Promise<void> {
   const { spawn } = await import('node:child_process');
   const { getProjectPaths } = await import('../utils/project-namespace.js');
   const { resolveTmux, TmuxNotFoundError } = await import('../utils/tmux-resolver.js');
@@ -537,7 +537,7 @@ async function startMegaCoordinator(operator: string): Promise<void> {
 
   const paths = getProjectPaths();
 
-  console.log(`Starting Mega with ${operator}...`);
+  console.log(`Starting Dashboard with ${operator}...`);
   console.log(`Project: ${paths.projectRoot}`);
   console.log(`Tmux: ${tmuxInfo.path} (v${tmuxInfo.version})`);
 
@@ -638,8 +638,8 @@ async function startMegaCoordinator(operator: string): Promise<void> {
     console.warn('Continuing without snippet installation...');
   }
 
-  // Step 3: Start Mega agent with system prompt
-  console.log(`[3/3] Starting Mega agent with ${operator}...`);
+  // Step 3: Start Dashboard agent with system prompt
+  console.log(`[3/3] Starting Dashboard agent with ${operator}...`);
   console.log('');
 
   const op = operator.toLowerCase();
@@ -657,10 +657,10 @@ async function startMegaCoordinator(operator: string): Promise<void> {
   }
 
   // Use '--' to separate agent-relay options from the command + its args
-  // Format: agent-relay create-agent -n Mega --skip-instructions --dashboard-port <port> -- claude --append-system-prompt "..."
+  // Format: agent-relay create-agent -n Dashboard --skip-instructions --dashboard-port <port> -- claude --append-system-prompt "..."
   const agentProc = spawn(
     process.execPath,
-    [process.argv[1], 'create-agent', '-n', 'Mega', '--skip-instructions', '--dashboard-port', String(dashboardPort), '--', operator, ...cliArgs],
+    [process.argv[1], 'create-agent', '-n', 'Dashboard', '--skip-instructions', '--dashboard-port', String(dashboardPort), '--', operator, ...cliArgs],
     { stdio: 'inherit' }
   );
 
@@ -678,20 +678,20 @@ async function startMegaCoordinator(operator: string): Promise<void> {
   });
 }
 
-// claude - Start daemon and spawn Mega coordinator with Claude
+// claude - Start daemon and spawn Dashboard coordinator with Claude
 program
   .command('claude')
-  .description('Start daemon and Mega coordinator with Claude')
+  .description('Start daemon and Dashboard coordinator with Claude')
   .action(async () => {
-    await startMegaCoordinator('claude');
+    await startDashboardCoordinator('claude');
   });
 
-// codex - Start daemon and spawn Mega coordinator with Codex
+// codex - Start daemon and spawn Dashboard coordinator with Codex
 program
   .command('codex')
-  .description('Start daemon and Mega coordinator with Codex')
+  .description('Start daemon and Dashboard coordinator with Codex')
   .action(async () => {
-    await startMegaCoordinator('codex');
+    await startDashboardCoordinator('codex');
   });
 
 // status - Check daemon status

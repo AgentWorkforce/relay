@@ -1468,6 +1468,7 @@ export class TmuxWrapper extends BaseWrapper {
     const truncatedBody = payload.body.substring(0, Math.min(DEBUG_LOG_TRUNCATE_LENGTH, payload.body.length));
     const channelInfo = originalTo === '*' ? ' [broadcast]' : '';
     this.logStderr(`← ${from}${channelInfo}: ${truncatedBody}...`);
+    console.log(`[tmux:${this.config.name}] Received message from ${from}, queuing for injection (queue length: ${this.messageQueue.length + 1})`);
 
     // Record in trajectory via trail
     this.trajectory?.message('received', from, this.config.name, payload.body);
@@ -1490,7 +1491,10 @@ export class TmuxWrapper extends BaseWrapper {
    */
   private checkForInjectionOpportunity(): void {
     if (this.messageQueue.length === 0) return;
-    if (this.isInjecting) return;
+    if (this.isInjecting) {
+      console.log(`[tmux:${this.config.name}] Injection in progress, skipping check`);
+      return;
+    }
     if (!this.running) return;
 
     // Use universal idle detector for more reliable detection (inherited from BaseWrapper)
