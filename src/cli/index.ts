@@ -6,6 +6,7 @@
  *   relay <cmd>         - Wrap agent with real-time messaging (default)
  *   relay -n Name cmd   - Wrap with specific agent name
  *   relay up            - Start daemon + dashboard
+ *   relay mega <op>     - Start daemon + Mega agent (e.g., mega claude)
  *   relay read <id>     - Read full message by ID
  *   relay agents        - List connected agents
  *   relay who           - Show currently active agents
@@ -68,6 +69,7 @@ program
   .option('--dashboard-port <port>', 'Dashboard port for spawn/release API (auto-detected if not set)')
   .option('--shadow <name>', 'Spawn a shadow agent with this name that monitors the primary')
   .option('--shadow-role <role>', 'Shadow role: reviewer, auditor, or triggers (comma-separated: SESSION_END,CODE_WRITTEN,REVIEW_REQUEST,EXPLICIT_ASK,ALL_MESSAGES)')
+  .option('--skip-instructions', 'Skip initial instruction injection (use with --append-system-prompt)')
   .argument('[command...]', 'Command to wrap (e.g., claude)')
   .action(async (commandParts, options) => {
     // If no command provided, show help
@@ -136,6 +138,7 @@ program
       relayPrefix: options.prefix,
       useInbox: true,
       inboxDir: paths.dataDir, // Use the project-specific data directory for the inbox
+      skipInstructions: options.skipInstructions,
       // Use dashboard API for spawn/release when available (preferred - works from any context)
       dashboardPort,
       // Wire up spawn/release callbacks as fallback (if no dashboardPort)
@@ -498,6 +501,113 @@ program
       fs.unlinkSync(pidPath);
       console.log('Cleaned up stale pid');
     }
+  });
+
+// System prompt for Mega agent - plain text to avoid shell escaping issues
+const MEGA_SYSTEM_PROMPT = [
+  'You are Mega, a lead coordinator in agent-relay. Your PRIMARY job is to delegate - you should almost NEVER do implementation work yourself.',
+  'ALWAYS SPAWN AGENTS: For any non-trivial task, spawn specialized workers. Staff projects with multiple agents working in parallel. One agent per task/file/feature.',
+  'SPAWN: ->relay:spawn Name claude <<<detailed task>>> creates workers. RELEASE: ->relay:release Name when done.',
+  'WORKFLOW: 1) Analyze the request 2) Break into parallel tasks 3) Spawn agents for each 4) Coordinate and review their work 5) Report completion.',
+  'PROTOCOL: Messages via ->relay:Target <<<content>>>. Broadcast: ->relay:* <<<content>>>. ACK tasks, DONE when complete.',
+  'TRACKING: Use trail (or npx trail) to document decisions.',
+  'RULES: Close with >>> immediately after content. One relay block per message. No preambles.',
+].join(' ');
+
+// mega - Start daemon and spawn Mega agent in one command
+program
+  .command('mega <operator>')
+  .description('Start daemon and spawn Mega agent (e.g., mega claude)')
+  .action(async (operator: string) => {
+    const { spawn } = await import('node:child_process');
+    const { getProjectPaths } = await import('../utils/project-namespace.js');
+    const { resolveTmux, TmuxNotFoundError } = await import('../utils/tmux-resolver.js');
+
+    // Check for tmux first
+    const tmuxInfo = resolveTmux();
+    if (!tmuxInfo) {
+      const error = new TmuxNotFoundError();
+      console.error(`Error: ${error.message}`);
+      process.exit(1);
+    }
+
+    const paths = getProjectPaths();
+
+    console.log(`Starting Mega with ${operator}...`);
+    console.log(`Project: ${paths.projectRoot}`);
+    console.log(`Tmux: ${tmuxInfo.path} (v${tmuxInfo.version})`);
+
+    // Step 1: Start daemon in background
+    console.log('\n[1/3] Starting daemon...');
+    const daemonProc = spawn(process.execPath, [process.argv[1], 'up'], {
+      stdio: 'ignore',
+      detached: true,
+    });
+    daemonProc.unref();
+
+    // Give daemon a moment to start
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+
+    // Step 2: Install prpm snippet via npx
+    console.log('[2/3] Installing agent-relay snippet...');
+    const prpmArgs = operator.toLowerCase() === 'claude'
+      ? ['prpm', 'install', '@agent-relay/agent-relay-snippet', '--location', 'CLAUDE.md']
+      : ['prpm', 'install', '@agent-relay/agent-relay-snippet'];
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const prpmProc = spawn('npx', prpmArgs, {
+          stdio: 'inherit',
+        });
+        prpmProc.on('close', (code) => {
+          if (code === 0) resolve();
+          else reject(new Error(`npx prpm exited with code ${code}`));
+        });
+        prpmProc.on('error', reject);
+      });
+    } catch (err: any) {
+      console.warn(`Warning: prpm install failed: ${err.message}`);
+      console.warn('Continuing without snippet installation...');
+    }
+
+    // Step 3: Start Mega agent with system prompt
+    console.log(`[3/3] Starting Mega agent with ${operator}...`);
+    console.log('');
+
+    const op = operator.toLowerCase();
+
+    // Build CLI-specific arguments for system prompt
+    // These args go AFTER the operator command, passed through to the CLI
+    let cliArgs: string[] = [];
+
+    if (op === 'claude') {
+      // Claude: --append-system-prompt <content> (takes content directly, not file)
+      cliArgs = ['--append-system-prompt', MEGA_SYSTEM_PROMPT];
+    } else if (op === 'codex') {
+      // Codex: --config developer_instructions="<content>"
+      cliArgs = ['--config', `developer_instructions=${MEGA_SYSTEM_PROMPT}`];
+    }
+
+    // Use '--' to separate agent-relay options from the command + its args
+    // Format: agent-relay -n Mega --skip-instructions -- claude --append-system-prompt "..."
+    const agentProc = spawn(
+      process.execPath,
+      [process.argv[1], '-n', 'Mega', '--skip-instructions', '--', operator, ...cliArgs],
+      { stdio: 'inherit' }
+    );
+
+    // Forward signals to agent process
+    process.on('SIGINT', () => {
+      agentProc.kill('SIGINT');
+    });
+
+    process.on('SIGTERM', () => {
+      agentProc.kill('SIGTERM');
+    });
+
+    agentProc.on('close', (code) => {
+      process.exit(code ?? 0);
+    });
   });
 
 // status - Check daemon status

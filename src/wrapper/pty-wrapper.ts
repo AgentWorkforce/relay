@@ -1409,6 +1409,7 @@ export class PtyWrapper extends BaseWrapper {
    */
   private injectInstructions(): void {
     if (!this.running) return;
+    if (this.config.skipInstructions) return;
 
     // Guard: Only inject once per session
     if (this.instructionsInjected) {

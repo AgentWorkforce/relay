@@ -558,6 +558,7 @@ export class TmuxWrapper extends BaseWrapper {
    */
   private async injectInstructions(): Promise<void> {
     if (!this.running) return;
+    if (this.config.skipInstructions) return;
 
     // Use escaped prefix (\->relay:) in examples to prevent parser from treating them as real commands
     const escapedPrefix = '\\' + this.relayPrefix;

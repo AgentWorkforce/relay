@@ -79,6 +79,8 @@ export interface BaseWrapperConfig {
   idleBeforeInjectMs?: number;
   /** Confidence threshold for idle detection (0-1, default: 0.7) */
   idleConfidenceThreshold?: number;
+  /** Skip initial instruction injection (when using --append-system-prompt) */
+  skipInstructions?: boolean;
 }
 
 /**
