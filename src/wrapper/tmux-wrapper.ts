@@ -298,11 +298,18 @@ export class TmuxWrapper extends BaseWrapper {
       return this.config.command;
     }
 
-    // Quote any argument that contains spaces, quotes, or special chars
+    // Quote any argument that contains spaces, quotes, or shell special chars
+    // Must handle: spaces, quotes, $, <, >, |, &, ;, (, ), `, etc.
     const quotedArgs = this.config.args.map(arg => {
-      if (arg.includes(' ') || arg.includes('"') || arg.includes("'") || arg.includes('$')) {
-        // Use double quotes and escape internal quotes
-        return `"${arg.replace(/"/g, '\\"')}"`;
+      if (/[\s"'$<>|&;()`,!\\]/.test(arg)) {
+        // Use double quotes and escape internal quotes and special chars
+        const escaped = arg
+          .replace(/\\/g, '\\\\')
+          .replace(/"/g, '\\"')
+          .replace(/\$/g, '\\$')
+          .replace(/`/g, '\\`')
+          .replace(/!/g, '\\!');
+        return `"${escaped}"`;
       }
       return arg;
     });
@@ -422,10 +429,13 @@ export class TmuxWrapper extends BaseWrapper {
       await this.waitForShellReady();
 
       // Send the command to run
+      this.logStderr('Sending command to tmux...');
       await this.sendKeysLiteral(fullCommand);
       await sleep(300);  // Give shell time to process the command literal
+      this.logStderr('Sending Enter...');
       await this.sendKeys('Enter');
-      await sleep(100);  // Ensure Enter is processed before we continue
+      await sleep(500);  // Ensure Enter is processed and command starts before we continue
+      this.logStderr('Command sent');
 
     } catch (err: any) {
       throw new Error(`Failed to create tmux session: ${err.message}`);
@@ -1659,7 +1669,14 @@ export class TmuxWrapper extends BaseWrapper {
    * Send special keys to tmux
    */
   private async sendKeys(keys: string): Promise<void> {
-    await execAsync(`"${this.tmuxPath}" send-keys -t ${this.sessionName} ${keys}`);
+    const cmd = `"${this.tmuxPath}" send-keys -t ${this.sessionName} ${keys}`;
+    try {
+      await execAsync(cmd);
+      this.logStderr(`[sendKeys] Sent: ${keys}`);
+    } catch (err: any) {
+      this.logStderr(`[sendKeys] Failed to send ${keys}: ${err.message}`, true);
+      throw err;
+    }
   }
 
   /**
@@ -1675,7 +1692,13 @@ export class TmuxWrapper extends BaseWrapper {
       .replace(/\$/g, '\\$')
       .replace(/`/g, '\\`')
       .replace(/!/g, '\\!');
-    await execAsync(`"${this.tmuxPath}" send-keys -t ${this.sessionName} -l "${escaped}"`);
+    try {
+      await execAsync(`"${this.tmuxPath}" send-keys -t ${this.sessionName} -l "${escaped}"`);
+      this.logStderr(`[sendKeysLiteral] Sent ${text.length} chars`);
+    } catch (err: any) {
+      this.logStderr(`[sendKeysLiteral] Failed: ${err.message}`, true);
+      throw err;
+    }
   }
 
   /**
