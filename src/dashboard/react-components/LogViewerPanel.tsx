@@ -69,15 +69,21 @@ export function LogViewerPanel({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, onClose]);
 
-  // Prevent body scroll when fullscreen
+  // Prevent body scroll when panel is open (fix mobile scroll capture)
   useEffect(() => {
-    if (isOpen && position === 'fullscreen') {
-      document.body.style.overflow = 'hidden';
-      return () => {
-        document.body.style.overflow = '';
-      };
-    }
-  }, [isOpen, position]);
+    if (!isOpen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    const previousOverscroll = document.body.style.overscrollBehavior;
+
+    document.body.style.overflow = 'hidden';
+    document.body.style.overscrollBehavior = 'none';
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.body.style.overscrollBehavior = previousOverscroll;
+    };
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -280,7 +286,7 @@ export function LogViewerPanel({
         </div>
 
         {/* Log viewer */}
-        <div className="flex-1 min-h-0">
+        <div className="flex-1 min-h-0 overflow-hidden">
           <LogViewer
             agentName={agent.name}
             mode="panel"

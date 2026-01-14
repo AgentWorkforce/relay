@@ -3,12 +3,14 @@
  * Agent Relay CLI
  *
  * Commands:
- *   relay <cmd>         - Wrap agent with real-time messaging (default)
- *   relay -n Name cmd   - Wrap with specific agent name
- *   relay up            - Start daemon + dashboard
- *   relay read <id>     - Read full message by ID
- *   relay agents        - List connected agents
- *   relay who           - Show currently active agents
+ *   relay claude                   - Start daemon + Dashboard coordinator with Claude
+ *   relay codex                    - Start daemon + Dasbboard coordinator with Codex
+ *   relay create-agent <cmd>       - Wrap agent with real-time messaging
+ *   relay create-agent -n Name cmd - Wrap with specific agent name
+ *   relay up                       - Start daemon + dashboard
+ *   relay read <id>                - Read full message by ID
+ *   relay agents                   - List connected agents
+ *   relay who                      - Show currently active agents
  */
 
 import { Command } from 'commander';
@@ -42,7 +44,7 @@ const execAsync = promisify(exec);
 
 // Check for updates in background (non-blocking)
 // Only show notification for interactive commands, not when wrapping agents or running update
-const interactiveCommands = ['up', 'down', 'status', 'agents', 'who', 'version', '--version', '-V', '--help', '-h'];
+const interactiveCommands = ['up', 'down', 'status', 'agents', 'who', 'version', '--version', '-V', '--help', '-h', 'create-agent', 'claude', 'codex'];
 const shouldCheckUpdates = process.argv.length > 2 &&
   interactiveCommands.includes(process.argv[2]);
 if (shouldCheckUpdates) {
@@ -60,21 +62,19 @@ program
   .description('Agent-to-agent messaging')
   .version(VERSION, '-V, --version', 'Output the version number');
 
-// Default action = wrap agent
+// create-agent - Wrap agent with real-time messaging
 program
+  .command('create-agent')
+  .description('Wrap an agent with real-time messaging')
   .option('-n, --name <name>', 'Agent name (auto-generated if not set)')
-  .option('-q, --quiet', 'Disable debug output', false)
+  .option('-d, --debug', 'Enable debug output')
   .option('--prefix <pattern>', 'Relay prefix pattern (default: ->relay:)')
   .option('--dashboard-port <port>', 'Dashboard port for spawn/release API (auto-detected if not set)')
   .option('--shadow <name>', 'Spawn a shadow agent with this name that monitors the primary')
   .option('--shadow-role <role>', 'Shadow role: reviewer, auditor, or triggers (comma-separated: SESSION_END,CODE_WRITTEN,REVIEW_REQUEST,EXPLICIT_ASK,ALL_MESSAGES)')
-  .argument('[command...]', 'Command to wrap (e.g., claude)')
+  .option('--skip-instructions', 'Skip initial instruction injection (use with --append-system-prompt)')
+  .argument('<command...>', 'Command to wrap (e.g., claude)')
   .action(async (commandParts, options) => {
-    // If no command provided, show help
-    if (!commandParts || commandParts.length === 0) {
-      program.help();
-      return;
-    }
 
     const { getProjectPaths } = await import('../utils/project-namespace.js');
     const { findAgentConfig, isClaudeCli, buildClaudeArgs } = await import('../utils/agent-config.js');
@@ -108,19 +108,28 @@ program
     if (options.dashboardPort) {
       dashboardPort = parseInt(options.dashboardPort, 10);
     } else {
-      // Try to detect if dashboard is running at default port
-      const defaultPort = parseInt(DEFAULT_DASHBOARD_PORT, 10);
-      try {
-        const response = await fetch(`http://localhost:${defaultPort}/api/status`, {
-          method: 'GET',
-          signal: AbortSignal.timeout(500), // Quick timeout for detection
-        });
-        if (response.ok) {
-          dashboardPort = defaultPort;
-          console.error(`Dashboard detected: http://localhost:${dashboardPort}`);
+      // Try to detect if dashboard is running at common ports
+      const portsToTry = [
+        parseInt(DEFAULT_DASHBOARD_PORT, 10),
+        3889, 3890, 3891, // Common fallback ports when default is in use
+      ];
+      for (const port of portsToTry) {
+        try {
+          const response = await fetch(`http://localhost:${port}/api/health`, {
+            method: 'GET',
+            signal: AbortSignal.timeout(300), // Quick timeout for detection
+          });
+          if (response.ok) {
+            const health = await response.json() as { status: string };
+            if (health.status === 'healthy') {
+              dashboardPort = port;
+              console.error(`Dashboard detected: http://localhost:${dashboardPort}`);
+              break;
+            }
+          }
+        } catch {
+          // Try next port
         }
-      } catch {
-        // Dashboard not running - spawn/release will use fallback callbacks
       }
     }
 
@@ -132,10 +141,11 @@ program
       command: mainCommand,
       args: finalArgs,
       socketPath: paths.socketPath,
-      debug: false,  // Use -q to keep quiet (debug off by default)
+      debug: options.debug ?? false,
       relayPrefix: options.prefix,
       useInbox: true,
       inboxDir: paths.dataDir, // Use the project-specific data directory for the inbox
+      skipInstructions: options.skipInstructions,
       // Use dashboard API for spawn/release when available (preferred - works from any context)
       dashboardPort,
       // Wire up spawn/release callbacks as fallback (if no dashboardPort)
@@ -498,6 +508,186 @@ program
       fs.unlinkSync(pidPath);
       console.log('Cleaned up stale pid');
     }
+  });
+
+// System prompt for Dashboard agent - plain text to avoid shell escaping issues
+const MEGA_SYSTEM_PROMPT = [
+  'You are Dashboard, a lead coordinator in agent-relay.',
+  'Your PRIMARY job is to delegate - you should almost NEVER do implementation work yourself.',
+  'ALWAYS SPAWN AGENTS: For any non-trivial task, spawn specialized workers.',
+].join(' ');
+
+// Helper function for starting Dashboard coordinator with a specific provider
+async function startDashboardCoordinator(operator: string): Promise<void> {
+  const { spawn } = await import('node:child_process');
+  const { getProjectPaths } = await import('../utils/project-namespace.js');
+  const { resolveTmux, TmuxNotFoundError } = await import('../utils/tmux-resolver.js');
+
+  // Check for tmux first
+  const tmuxInfo = resolveTmux();
+  if (!tmuxInfo) {
+    const error = new TmuxNotFoundError();
+    console.error(`Error: ${error.message}`);
+    process.exit(1);
+  }
+
+  const paths = getProjectPaths();
+
+  console.log(`Starting Dashboard with ${operator}...`);
+  console.log(`Project: ${paths.projectRoot}`);
+  console.log(`Tmux: ${tmuxInfo.path} (v${tmuxInfo.version})`);
+
+  // Step 1: Check if daemon is already running, start if needed
+  console.log('\n[1/3] Checking daemon...');
+
+  // Check if socket exists (daemon running)
+  const socketExists = fs.existsSync(paths.socketPath);
+
+  // Ports to try for dashboard detection
+  const portsToTry = [
+    parseInt(DEFAULT_DASHBOARD_PORT, 10),
+    3889, 3890, 3891,
+  ];
+
+  // Check if dashboard is responding for THIS project
+  let dashboardReady = false;
+  let detectedPort: number | undefined;
+
+  // Helper to check health at a port
+  const checkPort = async (port: number): Promise<boolean> => {
+    try {
+      const response = await fetch(`http://localhost:${port}/api/health`, {
+        signal: AbortSignal.timeout(500),
+      });
+      if (response.ok) {
+        const health = await response.json() as { status: string };
+        return health.status === 'healthy';
+      }
+    } catch {
+      // Port not responding
+    }
+    return false;
+  };
+
+  if (socketExists) {
+    for (const port of portsToTry) {
+      if (await checkPort(port)) {
+        dashboardReady = true;
+        detectedPort = port;
+        break;
+      }
+    }
+  }
+
+  if (dashboardReady && detectedPort) {
+    console.log(`Daemon already running at port ${detectedPort}, reusing...`);
+  } else {
+    console.log('Starting daemon...');
+    const daemonProc = spawn(process.execPath, [process.argv[1], 'up'], {
+      stdio: 'ignore',
+      detached: true,
+    });
+    daemonProc.unref();
+
+    // Wait for dashboard to be ready (up to 10 seconds)
+    const maxWait = 10000;
+    const startTime = Date.now();
+    while (Date.now() - startTime < maxWait) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      for (const port of portsToTry) {
+        if (await checkPort(port)) {
+          dashboardReady = true;
+          detectedPort = port;
+          break;
+        }
+      }
+      if (dashboardReady) break;
+    }
+
+    if (!dashboardReady) {
+      console.error('Warning: Dashboard may not be fully ready. Spawn might not work.');
+      detectedPort = parseInt(DEFAULT_DASHBOARD_PORT, 10); // Fallback
+    }
+  }
+
+  const dashboardPort = detectedPort || parseInt(DEFAULT_DASHBOARD_PORT, 10);
+
+  // Step 2: Install prpm snippet via npx
+  console.log('[2/3] Installing agent-relay snippet...');
+  const prpmArgs = operator.toLowerCase() === 'claude'
+    ? ['prpm', 'install', '@agent-relay/agent-relay-snippet', '--location', 'CLAUDE.md']
+    : ['prpm', 'install', '@agent-relay/agent-relay-snippet'];
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const prpmProc = spawn('npx', prpmArgs, {
+        stdio: 'inherit',
+      });
+      prpmProc.on('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`npx prpm exited with code ${code}`));
+      });
+      prpmProc.on('error', reject);
+    });
+  } catch (err: any) {
+    console.warn(`Warning: prpm install failed: ${err.message}`);
+    console.warn('Continuing without snippet installation...');
+  }
+
+  // Step 3: Start Dashboard agent with system prompt
+  console.log(`[3/3] Starting Dashboard agent with ${operator}...`);
+  console.log('');
+
+  const op = operator.toLowerCase();
+
+  // Build CLI-specific arguments for system prompt
+  // These args go AFTER the operator command, passed through to the CLI
+  let cliArgs: string[] = [];
+
+  if (op === 'claude') {
+    // Claude: --append-system-prompt <content> (takes content directly, not file)
+    cliArgs = ['--append-system-prompt', MEGA_SYSTEM_PROMPT];
+  } else if (op === 'codex') {
+    // Codex: --config developer_instructions="<content>"
+    cliArgs = ['--config', `developer_instructions=${MEGA_SYSTEM_PROMPT}`];
+  }
+
+  // Use '--' to separate agent-relay options from the command + its args
+  // Format: agent-relay create-agent -n Dashboard --skip-instructions --dashboard-port <port> -- claude --append-system-prompt "..."
+  const agentProc = spawn(
+    process.execPath,
+    [process.argv[1], 'create-agent', '-n', 'Dashboard', '--skip-instructions', '--dashboard-port', String(dashboardPort), '--', operator, ...cliArgs],
+    { stdio: 'inherit' }
+  );
+
+  // Forward signals to agent process
+  process.on('SIGINT', () => {
+    agentProc.kill('SIGINT');
+  });
+
+  process.on('SIGTERM', () => {
+    agentProc.kill('SIGTERM');
+  });
+
+  agentProc.on('close', (code) => {
+    process.exit(code ?? 0);
+  });
+}
+
+// claude - Start daemon and spawn Dashboard coordinator with Claude
+program
+  .command('claude')
+  .description('Start daemon and Dashboard coordinator with Claude')
+  .action(async () => {
+    await startDashboardCoordinator('claude');
+  });
+
+// codex - Start daemon and spawn Dashboard coordinator with Codex
+program
+  .command('codex')
+  .description('Start daemon and Dashboard coordinator with Codex')
+  .action(async () => {
+    await startDashboardCoordinator('codex');
   });
 
 // status - Check daemon status

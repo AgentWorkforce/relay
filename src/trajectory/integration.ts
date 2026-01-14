@@ -540,15 +540,41 @@ export async function listTrajectorySteps(trajectoryId?: string): Promise<{
   const trajectoryPaths = new Set<string>();
 
   if (trajectoryId) {
-    // Use specified trajectory
+    // Use specified trajectory - try multiple lookup strategies
+    let foundPath: string | null = null;
+
+    // Strategy 1: Look up by index key
     const entry = index?.trajectories[trajectoryId];
     if (entry) {
-      trajectoryPaths.add(entry.path);
-    } else {
-      const fallback = findActiveTrajectoryPathById(trajectoryDirs, trajectoryId);
-      if (fallback) {
-        trajectoryPaths.add(fallback);
+      foundPath = entry.path;
+      console.log('[trajectory] Found by index key:', trajectoryId, '->', foundPath);
+    }
+
+    // Strategy 2: If not found by key, search index entries by file's internal ID
+    // This handles cases where the index key differs from the file's internal ID
+    if (!foundPath && index) {
+      for (const [_key, indexEntry] of Object.entries(index.trajectories)) {
+        const trajectory = readTrajectoryFile(indexEntry.path);
+        if (trajectory && trajectory.id === trajectoryId) {
+          foundPath = indexEntry.path;
+          console.log('[trajectory] Found by file ID scan:', trajectoryId, '->', foundPath);
+          break;
+        }
       }
+    }
+
+    // Strategy 3: Fall back to active directory filename match
+    if (!foundPath) {
+      foundPath = findActiveTrajectoryPathById(trajectoryDirs, trajectoryId);
+      if (foundPath) {
+        console.log('[trajectory] Found by active dir fallback:', trajectoryId, '->', foundPath);
+      }
+    }
+
+    if (foundPath) {
+      trajectoryPaths.add(foundPath);
+    } else {
+      console.log('[trajectory] Not found:', trajectoryId);
     }
   } else {
     // Collect ALL active trajectories (not just the first one)
@@ -582,10 +608,13 @@ export async function listTrajectorySteps(trajectoryId?: string): Promise<{
     }
 
     // Extract events from all chapters
+    // Include trajectory ID in step IDs to ensure uniqueness across trajectories
+    // This prevents React key collisions when switching between trajectories
+    const trajId = trajectory.id || 'unknown';
     for (const chapter of trajectory.chapters || []) {
       for (const event of chapter.events || []) {
         steps.push({
-          id: `step-${stepIndex++}`,
+          id: `${trajId}-step-${stepIndex++}`,
           timestamp: event.ts || Date.now(),
           type: mapEventType(event.type),
           title: event.content?.slice(0, 50) || event.type || 'Event',
@@ -640,29 +669,39 @@ export async function getTrajectoryHistory(): Promise<{
   const seenIds = new Set<string>();
 
   if (index) {
-    for (const [id, entry] of Object.entries(index.trajectories)) {
+    for (const [indexKey, entry] of Object.entries(index.trajectories)) {
+      // Read the trajectory file to get the actual internal ID
+      // This ensures consistency between history list IDs and file content
+      const trajectory = entry.path ? readTrajectoryFile(entry.path) : null;
+
+      // Use the file's internal ID if available, otherwise fall back to index key
+      // This fixes the mismatch where index key differs from file's internal ID
+      const actualId = trajectory?.id || indexKey;
+
+      // Skip if we've already seen this ID (from a previous directory's index)
+      if (seenIds.has(actualId)) {
+        continue;
+      }
+
       const historyEntry: TrajectoryHistoryEntry = {
-        id,
-        title: entry.title,
+        id: actualId,
+        title: trajectory?.task?.title || entry.title,
         status: entry.status,
-        startedAt: entry.startedAt,
-        completedAt: entry.completedAt,
+        startedAt: trajectory?.startedAt || entry.startedAt,
+        completedAt: trajectory?.completedAt || entry.completedAt,
       };
 
-      // Try to read full trajectory for additional details
-      if (entry.path) {
-        const trajectory = readTrajectoryFile(entry.path);
-        if (trajectory) {
-          historyEntry.agents = trajectory.agents?.map(a => a.name);
-          if (trajectory.retrospective) {
-            historyEntry.summary = trajectory.retrospective.summary;
-            historyEntry.confidence = trajectory.retrospective.confidence;
-          }
+      // Add additional details from trajectory file
+      if (trajectory) {
+        historyEntry.agents = trajectory.agents?.map(a => a.name);
+        if (trajectory.retrospective) {
+          historyEntry.summary = trajectory.retrospective.summary;
+          historyEntry.confidence = trajectory.retrospective.confidence;
         }
       }
 
       trajectories.push(historyEntry);
-      seenIds.add(id);
+      seenIds.add(actualId);
     }
   }
 

@@ -141,6 +141,8 @@ export class AgentManager extends EventEmitter {
         args,
         cwd: workspacePath,
         logsDir: this.logsDir,
+        // Skip continuity for cloud-managed agents
+        skipContinuity: true,
         env: {
           CLOUD_API_URL: process.env.CLOUD_API_URL || '',
           WORKSPACE_TOKEN: process.env.WORKSPACE_TOKEN || '',
@@ -419,6 +421,8 @@ export class AgentManager extends EventEmitter {
         args,
         cwd: workspacePath,
         logsDir: this.logsDir,
+        // Skip continuity for cloud-managed agents
+        skipContinuity: true,
         env: {
           CLOUD_API_URL: process.env.CLOUD_API_URL || '',
           WORKSPACE_TOKEN: process.env.WORKSPACE_TOKEN || '',

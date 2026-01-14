@@ -66,6 +66,11 @@ export function useTrajectory(options: UseTrajectoryOptions = {}): UseTrajectory
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
   const hasLoadedInitialStepsRef = useRef(false);
   const hasInitializedRef = useRef(false);
+  // Track the latest selection to prevent stale fetches from overwriting data
+  const latestSelectionRef = useRef<string | null>(selectedTrajectoryId);
+  // Request counter to ensure only the most recent fetch updates state
+  // This is more robust than trajectory ID comparison for handling race conditions
+  const requestCounterRef = useRef(0);
 
   // Fetch trajectory status
   const fetchStatus = useCallback(async () => {
@@ -109,8 +114,12 @@ export function useTrajectory(options: UseTrajectoryOptions = {}): UseTrajectory
 
   // Fetch trajectory steps
   const fetchSteps = useCallback(async () => {
+    // Increment request counter and capture it for this request
+    // This ensures only the most recent request updates state
+    const requestId = ++requestCounterRef.current;
+    const trajectoryId = selectedTrajectoryId;
+
     try {
-      const trajectoryId = selectedTrajectoryId;
       const basePath = trajectoryId
         ? `/api/trajectory/steps?trajectoryId=${encodeURIComponent(trajectoryId)}`
         : '/api/trajectory/steps';
@@ -121,6 +130,17 @@ export function useTrajectory(options: UseTrajectoryOptions = {}): UseTrajectory
       const response = await fetch(url, { credentials: 'include' });
       const data = await response.json();
 
+      // Only update state if this is still the most recent request
+      // Check both request counter AND trajectory ID for double protection
+      if (requestId !== requestCounterRef.current) {
+        console.log('[useTrajectory] Ignoring superseded fetch (request', requestId, 'current', requestCounterRef.current, ')');
+        return;
+      }
+      if (trajectoryId !== latestSelectionRef.current) {
+        console.log('[useTrajectory] Ignoring stale fetch for', trajectoryId, 'current is', latestSelectionRef.current);
+        return;
+      }
+
       if (data.success) {
         setSteps(data.steps || []);
         setError(null);
@@ -128,19 +148,41 @@ export function useTrajectory(options: UseTrajectoryOptions = {}): UseTrajectory
         setError(data.error || 'Failed to fetch trajectory steps');
       }
     } catch (err: any) {
-      console.error('[useTrajectory] Steps fetch error:', err);
-      setError(err.message);
+      // Only update error state if this is still the current request
+      if (requestId === requestCounterRef.current && trajectoryId === latestSelectionRef.current) {
+        console.error('[useTrajectory] Steps fetch error:', err);
+        setError(err.message);
+      }
     }
   }, [apiBaseUrl, selectedTrajectoryId]);
 
   // Select a specific trajectory
   const selectTrajectory = useCallback((id: string | null) => {
+    // Normalize empty string to null for consistency
+    const normalizedId = id === '' ? null : id;
+
+    // Skip if already selected (prevents unnecessary re-fetches)
+    if (normalizedId === selectedTrajectoryId) {
+      return;
+    }
+
+    // Increment request counter to invalidate any in-flight fetches immediately
+    // This is crucial - it ensures that even if an old fetch completes after this,
+    // its request ID won't match and it will be ignored
+    requestCounterRef.current++;
+
+    // Update the ref immediately so in-flight fetches for other trajectories are ignored
+    latestSelectionRef.current = normalizedId;
+
+    // Clear steps immediately when switching trajectories to prevent showing stale data
+    setSteps([]);
+
     // Set loading immediately to avoid flash of empty state before effect runs
-    if (id !== null) {
+    if (normalizedId !== null) {
       setIsLoading(true);
     }
-    setSelectedTrajectoryId(id);
-  }, []);
+    setSelectedTrajectoryId(normalizedId);
+  }, [selectedTrajectoryId]);
 
   // Combined refresh function
   const refresh = useCallback(async () => {
@@ -148,6 +190,13 @@ export function useTrajectory(options: UseTrajectoryOptions = {}): UseTrajectory
     await Promise.all([fetchStatus(), fetchSteps(), fetchHistory()]);
     setIsLoading(false);
   }, [fetchStatus, fetchSteps, fetchHistory]);
+
+  // Keep the latestSelectionRef in sync with state
+  // This handles the initial value and any external changes
+  // Note: selectedTrajectoryId is already normalized by selectTrajectory
+  useEffect(() => {
+    latestSelectionRef.current = selectedTrajectoryId;
+  }, [selectedTrajectoryId]);
 
   // Initial fetch - only run once on mount
   // Note: Empty deps array is intentional - we use hasInitializedRef to ensure single execution
@@ -158,13 +207,15 @@ export function useTrajectory(options: UseTrajectoryOptions = {}): UseTrajectory
   }, [refresh]);
 
   // Re-fetch steps when selected trajectory changes
+  // Note: Initial fetch is handled by the refresh() call in the mount effect
   useEffect(() => {
+    // Skip the initial render - refresh() handles it
     if (!hasLoadedInitialStepsRef.current) {
       hasLoadedInitialStepsRef.current = true;
-      fetchSteps();
       return;
     }
 
+    // For subsequent selection changes, fetch with loading state management
     let cancelled = false;
     setIsLoading(true);
     fetchSteps().finally(() => {

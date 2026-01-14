@@ -18,14 +18,26 @@ sudo apt-get update && sudo apt-get install -y build-essential
 ## Quick Start
 
 ```bash
+# Start Mega coordinator with Claude (starts daemon automatically)
+agent-relay claude
+
+# Or with Codex
+agent-relay codex
+```
+
+The `claude` and `codex` commands start a Mega coordinator agent that can spawn and manage worker agents.
+
+### Manual Setup
+
+```bash
 # Terminal 1: Start daemon
 agent-relay up
 
 # Terminal 2: Start an agent
-agent-relay -n Alice claude
+agent-relay create-agent -n Alice claude
 
 # Terminal 3: Start another agent
-agent-relay -n Bob codex
+agent-relay create-agent -n Bob codex
 ```
 
 Agents communicate by outputting `->relay:` patterns. Always use the fenced format:
@@ -42,8 +54,10 @@ Broadcasting to everyone>>>
 
 | Command | Description |
 |---------|-------------|
-| `agent-relay <cmd>` | Wrap agent with messaging |
-| `agent-relay -n Name <cmd>` | Wrap with specific name |
+| `agent-relay claude` | Start daemon + Mega coordinator with Claude |
+| `agent-relay codex` | Start daemon + Mega coordinator with Codex |
+| `agent-relay create-agent <cmd>` | Wrap agent with messaging |
+| `agent-relay create-agent -n Name <cmd>` | Wrap with specific name |
 | `agent-relay up` | Start daemon + dashboard |
 | `agent-relay down` | Stop daemon |
 | `agent-relay status` | Check if running |
@@ -53,7 +67,7 @@ Broadcasting to everyone>>>
 ## How It Works
 
 1. `agent-relay up` starts a daemon that routes messages via Unix socket
-2. `agent-relay <cmd>` wraps your agent in tmux, parsing output for `->relay:` patterns
+2. `agent-relay create-agent <cmd>` wraps your agent in tmux, parsing output for `->relay:` patterns
 3. Messages are injected into recipient terminals in real-time
 
 ```
@@ -109,9 +123,9 @@ Agent names automatically match role definitions (case-insensitive):
 
 ```bash
 # If .claude/agents/lead.md exists:
-agent-relay -n Lead claude    # matches lead.md
-agent-relay -n LEAD claude    # matches lead.md
-agent-relay -n lead claude    # matches lead.md
+agent-relay create-agent -n Lead claude    # matches lead.md
+agent-relay create-agent -n LEAD claude    # matches lead.md
+agent-relay create-agent -n lead claude    # matches lead.md
 
 # Supported locations:
 # - .claude/agents/<name>.md
@@ -140,7 +154,7 @@ agent-relay bridge ~/auth ~/frontend ~/api
 ### Workflow
 
 1. **Start daemons** in each project: `agent-relay up`
-2. **Start agents** in each project: `agent-relay -n Alice claude`
+2. **Start agents** in each project: `agent-relay create-agent -n Alice claude`
 3. **Bridge** from anywhere: `agent-relay bridge ~/project1 ~/project2`
 
 ### Cross-Project Messaging

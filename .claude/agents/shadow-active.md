@@ -2,8 +2,7 @@
 name: shadow-active
 description: Actively monitors all agent activity and provides real-time guidance. Assign as a shadow for high-stakes or learning scenarios.
 allowed-tools: Read, Grep, Glob
-model: sonnet
-agentType: agent
+skills: using-agent-relay
 shadowRole: active
 shadowTriggers:
   - ALL_MESSAGES

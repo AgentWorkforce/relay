@@ -602,7 +602,7 @@ export function WorkspaceSettingsPanel({
 
                   {!providerStatus[provider.id] && (
                     <div className="mt-5 pt-5 border-t border-border-subtle">
-                      {connectingProvider === provider.id ? (
+                      {connectingProvider === provider.id && !showApiKeyFallback[provider.id] ? (
                         useTerminalSetup[provider.id] ? (
                           <TerminalProviderSetup
                             provider={{

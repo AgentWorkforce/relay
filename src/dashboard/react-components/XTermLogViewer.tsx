@@ -74,6 +74,7 @@ export function XTermLogViewer({
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [lineCount, setLineCount] = useState(0);
+  const [isTerminalReady, setIsTerminalReady] = useState(false);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
   const colors = getAgentColor(agentName);
@@ -110,6 +111,7 @@ export function XTermLogViewer({
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
     searchAddonRef.current = searchAddon;
+    setIsTerminalReady(true);
 
     // Handle resize
     const resizeObserver = new ResizeObserver(() => {
@@ -123,12 +125,13 @@ export function XTermLogViewer({
       terminalRef.current = null;
       fitAddonRef.current = null;
       searchAddonRef.current = null;
+      setIsTerminalReady(false);
     };
   }, []);
 
   // Mobile touch scrolling fallback for xterm viewport
   useEffect(() => {
-    if (!containerRef.current) return;
+    if (!containerRef.current || !isTerminalReady) return;
     if (typeof window !== 'undefined' &&
         !window.matchMedia('(pointer: coarse)').matches) {
       return;
@@ -138,29 +141,48 @@ export function XTermLogViewer({
     const viewport = container.querySelector('.xterm-viewport') as HTMLElement | null;
     if (!viewport) return;
 
-    let startY = 0;
-    let startScrollTop = 0;
+    let lastY = 0;
+    let lineHeightPx = 16;
+
+    const rows = container.querySelector('.xterm-rows') as HTMLElement | null;
+    if (rows) {
+      const computedLineHeight = parseFloat(window.getComputedStyle(rows).lineHeight);
+      if (!Number.isNaN(computedLineHeight)) {
+        lineHeightPx = computedLineHeight;
+      }
+    }
 
     const handleTouchStart = (event: TouchEvent) => {
       if (event.touches.length !== 1) return;
-      startY = event.touches[0].clientY;
-      startScrollTop = viewport.scrollTop;
+      lastY = event.touches[0].clientY;
     };
 
     const handleTouchMove = (event: TouchEvent) => {
       if (event.touches.length !== 1) return;
-      const delta = startY - event.touches[0].clientY;
-      viewport.scrollTop = startScrollTop + delta;
+      const currentY = event.touches[0].clientY;
+      const delta = lastY - currentY;
+      lastY = currentY;
+
+      const lineDelta = Math.round(delta / lineHeightPx);
+      if (lineDelta !== 0) {
+        terminalRef.current?.scrollLines(lineDelta);
+      } else {
+        viewport.scrollTop += delta;
+      }
+
+      if (viewport.scrollHeight > viewport.clientHeight) {
+        event.preventDefault();
+      }
     };
 
-    container.addEventListener('touchstart', handleTouchStart, { passive: true });
-    container.addEventListener('touchmove', handleTouchMove, { passive: true });
+    viewport.addEventListener('touchstart', handleTouchStart, { passive: true });
+    viewport.addEventListener('touchmove', handleTouchMove, { passive: false });
 
     return () => {
-      container.removeEventListener('touchstart', handleTouchStart);
-      container.removeEventListener('touchmove', handleTouchMove);
+      viewport.removeEventListener('touchstart', handleTouchStart);
+      viewport.removeEventListener('touchmove', handleTouchMove);
     };
-  }, []);
+  }, [isTerminalReady]);
 
   // Connect to WebSocket
   const connect = useCallback(() => {
@@ -356,7 +378,7 @@ export function XTermLogViewer({
 
   return (
     <div
-      className={`xterm-log-viewer flex flex-col rounded-xl overflow-hidden border border-[#2a2d35] shadow-2xl ${className}`}
+      className={`xterm-log-viewer flex flex-col min-h-0 rounded-xl overflow-hidden border border-[#2a2d35] shadow-2xl ${className}`}
       style={{
         background: 'linear-gradient(180deg, #0d0f14 0%, #0a0c10 100%)',
         boxShadow: `0 0 60px -15px ${colors.primary}25, 0 25px 50px -12px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255,255,255,0.02)`,
@@ -369,6 +391,7 @@ export function XTermLogViewer({
         .xterm-log-viewer .xterm {
           touch-action: pan-y !important;
           overscroll-behavior: contain;
+          height: 100%;
         }
         .xterm-log-viewer .xterm-viewport {
           -webkit-overflow-scrolling: touch !important;
@@ -377,6 +400,7 @@ export function XTermLogViewer({
           max-height: 100%;
           touch-action: pan-y !important;
           overscroll-behavior: contain;
+          pointer-events: auto;
         }
         .xterm-log-viewer .xterm-screen {
           touch-action: pan-y !important;
@@ -526,17 +550,20 @@ export function XTermLogViewer({
         </div>
       )}
 
-      {/* Terminal container - don't use overflow-auto here, xterm-viewport handles scrolling */}
+      {/* Terminal container - keep a dedicated scroll boundary for mobile */}
       <div
-        ref={containerRef}
-        className="flex-1 touch-pan-y"
-        style={{
-          maxHeight,
-          minHeight: '200px',
-          overscrollBehavior: 'contain',
-          touchAction: 'pan-y',
-        }}
-      />
+        className="flex-1 min-h-0 overflow-hidden"
+        style={{ height: maxHeight, maxHeight, minHeight: '200px' }}
+      >
+        <div
+          ref={containerRef}
+          className="h-full w-full touch-pan-y"
+          style={{
+            overscrollBehavior: 'contain',
+            touchAction: 'pan-y',
+          }}
+        />
+      </div>
 
       {/* Footer status bar */}
       <div
