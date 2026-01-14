@@ -319,6 +319,7 @@ export class PtyWrapper extends BaseWrapper {
         this.injectInstructions();
       }
       this.readyForMessages = true;
+      console.log(`[pty:${this.config.name}] Agent ready for messages (queueLen=${this.messageQueue.length}, interactive=${this.config.interactive})`);
       // Process any messages that arrived while waiting (skip in interactive mode)
       if (!this.config.interactive) {
         this.processMessageQueue();
@@ -327,6 +328,7 @@ export class PtyWrapper extends BaseWrapper {
       console.error(`[pty:${this.config.name}] Failed to wait for agent ready:`, err);
       // Fall back to marking ready anyway to avoid blocking forever
       this.readyForMessages = true;
+      console.log(`[pty:${this.config.name}] Agent ready for messages (fallback, queueLen=${this.messageQueue.length})`);
     });
   }
 
@@ -1179,11 +1181,13 @@ export class PtyWrapper extends BaseWrapper {
 
   /**
    * Execute spawn via API or callback.
-   * Overrides BaseWrapper to add PTY-specific logging and API path.
+   * After spawning, waits for the agent to come online and sends the task via relay.
    */
   protected override async executeSpawn(name: string, cli: string, task: string): Promise<void> {
     console.log(`[pty:${this.config.name}] [SPAWN-DEBUG] executeSpawn called: name=${name}, cli=${cli}, task="${task.substring(0, 50)}..."`);
     console.log(`[pty:${this.config.name}] [SPAWN-DEBUG] dashboardPort=${this.config.dashboardPort}, hasOnSpawn=${!!this.config.onSpawn}`);
+
+    let spawned = false;
 
     if (this.config.dashboardPort) {
       // Use dashboard API for spawning (works from spawned agents)
@@ -1191,11 +1195,12 @@ export class PtyWrapper extends BaseWrapper {
         const response = await fetch(`http://localhost:${this.config.dashboardPort}/api/spawn`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, cli, task }),
+          body: JSON.stringify({ name, cli }), // No task - we send it after agent is online
         });
         const result = await response.json() as { success: boolean; error?: string };
         if (result.success) {
           console.log(`[pty:${this.config.name}] Spawned ${name} via API`);
+          spawned = true;
         } else {
           console.error(`[pty:${this.config.name}] Spawn failed: ${result.error}`);
         }
@@ -1206,10 +1211,65 @@ export class PtyWrapper extends BaseWrapper {
       // Fall back to callback
       try {
         await this.config.onSpawn(name, cli, task);
+        spawned = true;
       } catch (err: any) {
         console.error(`[pty:${this.config.name}] Spawn failed: ${err.message}`);
       }
     }
+
+    // If spawn succeeded and we have a task, wait for agent to come online and send it
+    if (spawned && task && task.trim() && this.config.dashboardPort) {
+      await this.waitAndSendTask(name, task);
+    }
+  }
+
+  /**
+   * Wait for a spawned agent to come online, then send the task via relay.
+   */
+  private async waitAndSendTask(agentName: string, task: string): Promise<void> {
+    const maxWaitMs = 30000;
+    const pollIntervalMs = 500;
+    const startTime = Date.now();
+
+    console.log(`[pty:${this.config.name}] Waiting for ${agentName} to come online...`);
+
+    // Poll for agent to be online
+    while (Date.now() - startTime < maxWaitMs) {
+      try {
+        const response = await fetch(`http://localhost:${this.config.dashboardPort}/api/agents`);
+        const data = await response.json() as { agents?: Array<{ name: string; online?: boolean }> };
+        const agent = data.agents?.find(a => a.name === agentName);
+
+        if (agent?.online) {
+          console.log(`[pty:${this.config.name}] ${agentName} is online, sending task...`);
+
+          // Send task via relay
+          const sendResponse = await fetch(`http://localhost:${this.config.dashboardPort}/api/send`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              to: agentName,
+              message: task,
+              from: this.config.name,
+            }),
+          });
+          const sendResult = await sendResponse.json() as { success: boolean; error?: string };
+
+          if (sendResult.success) {
+            console.log(`[pty:${this.config.name}] Task sent to ${agentName}`);
+          } else {
+            console.error(`[pty:${this.config.name}] Failed to send task to ${agentName}: ${sendResult.error}`);
+          }
+          return;
+        }
+      } catch (err: any) {
+        // Ignore poll errors, keep trying
+      }
+
+      await sleep(pollIntervalMs);
+    }
+
+    console.error(`[pty:${this.config.name}] Timeout waiting for ${agentName} to come online`);
   }
 
   /**
@@ -1247,6 +1307,9 @@ export class PtyWrapper extends BaseWrapper {
    * Extends BaseWrapper to add PTY-specific behavior.
    */
   protected override handleIncomingMessage(from: string, payload: SendPayload, messageId: string, meta?: SendMeta, originalTo?: string): void {
+    const bodyPreview = payload.body.substring(0, 50).replace(/\n/g, '\\n');
+    console.log(`[pty:${this.config.name}] Message received from ${from}: "${bodyPreview}..." (readyForMessages=${this.readyForMessages}, queueLen=${this.messageQueue.length})`);
+
     // Call base class to handle deduplication and queuing
     super.handleIncomingMessage(from, payload, messageId, meta, originalTo);
 
@@ -1314,6 +1377,9 @@ export class PtyWrapper extends BaseWrapper {
       this.isInjecting = false;
       return;
     }
+
+    const bodyPreview = msg.body.substring(0, 50).replace(/\n/g, '\\n');
+    console.log(`[pty:${this.config.name}] Processing message from ${msg.from}: "${bodyPreview}..." (remaining=${this.messageQueue.length})`);
 
     try {
       // Wait for output to stabilize before injecting

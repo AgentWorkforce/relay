@@ -1174,20 +1174,24 @@ export class TmuxWrapper extends BaseWrapper {
   }
 
   /**
-   * Execute spawn via API (if dashboardPort set) or callback
+   * Execute spawn via API (if dashboardPort set) or callback.
+   * After spawning, waits for the agent to come online and sends the task via relay.
    */
   protected override async executeSpawn(name: string, cli: string, task: string): Promise<void> {
+    let spawned = false;
+
     if (this.config.dashboardPort) {
       // Use dashboard API for spawning (works from any context, no terminal required)
       try {
         const response = await fetch(`http://localhost:${this.config.dashboardPort}/api/spawn`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, cli, task }),
+          body: JSON.stringify({ name, cli }), // No task - we send it after agent is online
         });
         const result = await response.json() as { success: boolean; error?: string };
         if (result.success) {
           this.logStderr(`Spawned ${name} via API`);
+          spawned = true;
         } else {
           this.logStderr(`Spawn failed: ${result.error}`, true);
         }
@@ -1198,10 +1202,65 @@ export class TmuxWrapper extends BaseWrapper {
       // Fall back to callback
       try {
         await this.config.onSpawn(name, cli, task);
+        spawned = true;
       } catch (err: any) {
         this.logStderr(`Spawn failed: ${err.message}`, true);
       }
     }
+
+    // If spawn succeeded and we have a task, wait for agent to come online and send it
+    if (spawned && task && task.trim() && this.config.dashboardPort) {
+      await this.waitAndSendTask(name, task);
+    }
+  }
+
+  /**
+   * Wait for a spawned agent to come online, then send the task via relay.
+   */
+  private async waitAndSendTask(agentName: string, task: string): Promise<void> {
+    const maxWaitMs = 30000;
+    const pollIntervalMs = 500;
+    const startTime = Date.now();
+
+    this.logStderr(`Waiting for ${agentName} to come online...`);
+
+    // Poll for agent to be online
+    while (Date.now() - startTime < maxWaitMs) {
+      try {
+        const response = await fetch(`http://localhost:${this.config.dashboardPort}/api/agents`);
+        const data = await response.json() as { agents?: Array<{ name: string; online?: boolean }> };
+        const agent = data.agents?.find(a => a.name === agentName);
+
+        if (agent?.online) {
+          this.logStderr(`${agentName} is online, sending task...`);
+
+          // Send task via relay
+          const sendResponse = await fetch(`http://localhost:${this.config.dashboardPort}/api/send`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              to: agentName,
+              message: task,
+              from: this.config.name,
+            }),
+          });
+          const sendResult = await sendResponse.json() as { success: boolean; error?: string };
+
+          if (sendResult.success) {
+            this.logStderr(`Task sent to ${agentName}`);
+          } else {
+            this.logStderr(`Failed to send task to ${agentName}: ${sendResult.error}`, true);
+          }
+          return;
+        }
+      } catch (err: any) {
+        // Ignore poll errors, keep trying
+      }
+
+      await sleep(pollIntervalMs);
+    }
+
+    this.logStderr(`Timeout waiting for ${agentName} to come online`, true);
   }
 
   /**
@@ -1265,6 +1324,13 @@ export class TmuxWrapper extends BaseWrapper {
 
       // Strip common line prefixes (bullets, prompts) before checking for commands
       trimmed = trimmed.replace(linePrefixPattern, '');
+
+      // Fix for over-stripping: the linePrefixPattern includes - and > characters,
+      // which can accidentally strip the -> from ->relay:spawn, leaving just relay:spawn.
+      // If we detect this happened, restore the -> prefix.
+      if (/^(relay|thinking|continuity):/.test(trimmed)) {
+        trimmed = '->' + trimmed;
+      }
 
       // If we're in fenced spawn mode, accumulate lines until we see >>>
       if (this.pendingFencedSpawn) {
