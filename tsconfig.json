@@ -17,5 +17,5 @@
     "sourceMap": true
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/dashboard/**/*", "src/landing/**/*"]
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/dashboard/**/*", "src/dashboard-server/**/*", "src/landing/**/*"]
 }

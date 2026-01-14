@@ -5,7 +5,7 @@
  * Commands:
  *   relay <cmd>         - Wrap agent with real-time messaging (default)
  *   relay -n Name cmd   - Wrap with specific agent name
- *   relay up            - Start daemon + dashboard
+ *   relay up            - Start daemon
  *   relay read <id>     - Read full message by ID
  *   relay agents        - List connected agents
  *   relay who           - Show currently active agents
@@ -29,8 +29,6 @@ import { exec } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 dotenvConfig();
-
-const DEFAULT_DASHBOARD_PORT = process.env.AGENT_RELAY_DASHBOARD_PORT || '3888';
 
 // Read version from package.json
 const __filename = fileURLToPath(import.meta.url);
@@ -65,7 +63,6 @@ program
   .option('-n, --name <name>', 'Agent name (auto-generated if not set)')
   .option('-q, --quiet', 'Disable debug output', false)
   .option('--prefix <pattern>', 'Relay prefix pattern (default: ->relay:)')
-  .option('--dashboard-port <port>', 'Dashboard port for spawn/release API (auto-detected if not set)')
   .option('--shadow <name>', 'Spawn a shadow agent with this name that monitors the primary')
   .option('--shadow-role <role>', 'Shadow role: reviewer, auditor, or triggers (comma-separated: SESSION_END,CODE_WRITTEN,REVIEW_REQUEST,EXPLICIT_ASK,ALL_MESSAGES)')
   .argument('[command...]', 'Command to wrap (e.g., claude)')
@@ -102,30 +99,8 @@ program
     const { TmuxWrapper } = await import('../wrapper/tmux-wrapper.js');
     const { AgentSpawner } = await import('../bridge/spawner.js');
 
-    // Determine dashboard port for spawn/release API
-    // Priority: CLI flag > env var > auto-detect default port
-    let dashboardPort: number | undefined;
-    if (options.dashboardPort) {
-      dashboardPort = parseInt(options.dashboardPort, 10);
-    } else {
-      // Try to detect if dashboard is running at default port
-      const defaultPort = parseInt(DEFAULT_DASHBOARD_PORT, 10);
-      try {
-        const response = await fetch(`http://localhost:${defaultPort}/api/status`, {
-          method: 'GET',
-          signal: AbortSignal.timeout(500), // Quick timeout for detection
-        });
-        if (response.ok) {
-          dashboardPort = defaultPort;
-          console.error(`Dashboard detected: http://localhost:${dashboardPort}`);
-        }
-      } catch {
-        // Dashboard not running - spawn/release will use fallback callbacks
-      }
-    }
-
-    // Create spawner as fallback for direct spawn (if dashboard API not available)
-    const spawner = new AgentSpawner(paths.projectRoot, undefined, dashboardPort);
+    // Create spawner for spawn/release callbacks
+    const spawner = new AgentSpawner(paths.projectRoot);
 
     const wrapper = new TmuxWrapper({
       name: agentName,
@@ -136,9 +111,7 @@ program
       relayPrefix: options.prefix,
       useInbox: true,
       inboxDir: paths.dataDir, // Use the project-specific data directory for the inbox
-      // Use dashboard API for spawn/release when available (preferred - works from any context)
-      dashboardPort,
-      // Wire up spawn/release callbacks as fallback (if no dashboardPort)
+      // Wire up spawn/release callbacks
       onSpawn: async (workerName: string, workerCli: string, task: string) => {
         console.error(`[${agentName}] Spawning ${workerName} (${workerCli})...`);
         const result = await spawner.spawn({
@@ -256,12 +229,10 @@ program
     }
   });
 
-// up - Start daemon + dashboard
+// up - Start daemon
 program
   .command('up')
-  .description('Start daemon + dashboard')
-  .option('--no-dashboard', 'Disable web dashboard')
-  .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
+  .description('Start daemon')
   .option('--spawn', 'Force spawn all agents from teams.json')
   .option('--no-spawn', 'Do not auto-spawn agents (just start daemon)')
   .option('--watch', 'Auto-restart daemon on crash (supervisor mode)')
@@ -279,8 +250,6 @@ program
       const startDaemon = (): void => {
         // Build args without --watch to prevent infinite recursion
         const args = ['up'];
-        if (options.dashboard === false) args.push('--no-dashboard');
-        if (options.port) args.push('--port', options.port);
         if (options.spawn === true) args.push('--spawn');
         if (options.spawn === false) args.push('--no-spawn');
 
@@ -407,31 +376,6 @@ program
       await daemon.start();
       console.log('Daemon started.');
 
-      let dashboardPort: number | undefined;
-
-      // Dashboard starts by default (use --no-dashboard to disable)
-      if (options.dashboard !== false) {
-        const port = parseInt(options.port, 10);
-        const { startDashboard } = await import('../dashboard-server/server.js');
-        dashboardPort = await startDashboard({
-          port,
-          dataDir: paths.dataDir,
-          teamDir: paths.teamDir,
-          dbPath,
-          enableSpawner: true,
-          projectRoot: paths.projectRoot,
-        });
-        console.log(`Dashboard: http://localhost:${dashboardPort}`);
-
-        // Hook daemon log output to dashboard WebSocket
-        daemon.onLogOutput = (agentName, data, _timestamp) => {
-          const broadcast = (global as any).__broadcastLogOutput;
-          if (broadcast) {
-            broadcast(agentName, data);
-          }
-        };
-      }
-
       // Determine if we should auto-spawn agents
       // --spawn: force spawn
       // --no-spawn: never spawn
@@ -446,7 +390,7 @@ program
         console.log('');
         console.log('Auto-spawning agents from teams.json...');
 
-        spawner = new AgentSpawner(paths.projectRoot, undefined, dashboardPort);
+        spawner = new AgentSpawner(paths.projectRoot);
 
         for (const agent of teamsConfig.agents) {
           console.log(`  Spawning ${agent.name} (${agent.cli})...`);
@@ -1554,7 +1498,7 @@ program
   .argument('<name>', 'Agent name')
   .argument('<cli>', 'CLI to use (claude, codex, gemini, etc.)')
   .argument('[task]', 'Task description (can also be piped via stdin)')
-  .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
+  .option('--port <port>', 'Dashboard port', '3888')
   .option('--team <team>', 'Team name for the agent')
   .option('--spawner <name>', 'Name of the agent requesting the spawn (for policy enforcement)')
   .option('--interactive', 'Disable auto-accept of permission prompts (for auth setup flows)')
@@ -1576,7 +1520,7 @@ program
     shadowTriggers?: string;
     shadowSpeakOn?: string;
   }) => {
-    const port = options.port || DEFAULT_DASHBOARD_PORT;
+    const port = options.port || '3888';
 
     // Read task from stdin if not provided as argument
     let finalTask = task;
@@ -1666,9 +1610,9 @@ program
   .command('release')
   .description('Release a spawned agent via API (no terminal required)')
   .argument('<name>', 'Agent name to release')
-  .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
+  .option('--port <port>', 'Dashboard port', '3888')
   .action(async (name: string, options: { port?: string }) => {
-    const port = options.port || DEFAULT_DASHBOARD_PORT;
+    const port = options.port || '3888';
 
     try {
       const response = await fetch(`http://localhost:${port}/api/spawned/${encodeURIComponent(name)}`, {
@@ -2334,12 +2278,12 @@ program
   .command('metrics')
   .description('Show agent memory metrics and resource usage')
   .option('--agent <name>', 'Show metrics for specific agent')
-  .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
+  .option('--port <port>', 'Dashboard port', '3888')
   .option('--json', 'Output as JSON')
   .option('--watch', 'Continuously update metrics')
   .option('--interval <ms>', 'Update interval for watch mode', '5000')
   .action(async (options: { agent?: string; port?: string; json?: boolean; watch?: boolean; interval?: string }) => {
-    const port = options.port || DEFAULT_DASHBOARD_PORT;
+    const port = options.port || '3888';
 
     const fetchMetrics = async () => {
       try {
@@ -2480,12 +2424,12 @@ program
 program
   .command('health')
   .description('Show system health, crash insights, and recommendations')
-  .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
+  .option('--port <port>', 'Dashboard port', '3888')
   .option('--json', 'Output as JSON')
   .option('--crashes', 'Show recent crash history')
   .option('--alerts', 'Show unacknowledged alerts')
   .action(async (options: { port?: string; json?: boolean; crashes?: boolean; alerts?: boolean }) => {
-    const port = options.port || DEFAULT_DASHBOARD_PORT;
+    const port = options.port || '3888';
 
     try {
       const response = await fetch(`http://localhost:${port}/api/metrics/health`);
