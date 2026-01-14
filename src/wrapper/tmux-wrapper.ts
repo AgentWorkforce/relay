@@ -423,8 +423,9 @@ export class TmuxWrapper extends BaseWrapper {
 
       // Send the command to run
       await this.sendKeysLiteral(fullCommand);
-      await sleep(100);
+      await sleep(300);  // Give shell time to process the command literal
       await this.sendKeys('Enter');
+      await sleep(100);  // Ensure Enter is processed before we continue
 
     } catch (err: any) {
       throw new Error(`Failed to create tmux session: ${err.message}`);
@@ -1691,10 +1692,19 @@ export class TmuxWrapper extends BaseWrapper {
       .replace(/`/g, '\\`')
       .replace(/!/g, '\\!');
 
+    console.log(`[tmux:${this.config.name}] [PASTE-DEBUG] Sanitized length: ${sanitized.length}, escaped length: ${escaped.length}`);
+    console.log(`[tmux:${this.config.name}] [PASTE-DEBUG] First 100 chars: "${escaped.substring(0, 100)}"`);
+
     // Set tmux buffer then paste
     // Skip bracketed paste (-p) for CLIs that don't handle it properly (droid, other)
-    await execAsync(`"${this.tmuxPath}" set-buffer -- "${escaped}"`);
-    const useBracketedPaste = this.cliType === 'claude' || this.cliType === 'codex' || this.cliType === 'gemini' || this.cliType === 'opencode';
+    const setBufferCmd = `"${this.tmuxPath}" set-buffer -- "${escaped}"`;
+    console.log(`[tmux:${this.config.name}] [PASTE-DEBUG] set-buffer command length: ${setBufferCmd.length}`);
+    await execAsync(setBufferCmd);
+
+    // Disable bracketed paste for now - it seems to cause issues where content doesn't appear
+    // The [Pasted text #N +1 lines] indicators show but actual content is missing
+    const useBracketedPaste = false; // Was: this.cliType === 'claude' || this.cliType === 'codex' || this.cliType === 'gemini' || this.cliType === 'opencode';
+    console.log(`[tmux:${this.config.name}] [PASTE-DEBUG] Using bracketed paste: ${useBracketedPaste}, cliType: ${this.cliType}`);
     if (useBracketedPaste) {
       await execAsync(`"${this.tmuxPath}" paste-buffer -t ${this.sessionName} -p`);
     } else {
