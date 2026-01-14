@@ -1358,8 +1358,15 @@ export class PtyWrapper extends BaseWrapper {
           if (!this.ptyProcess || !this.running) {
             throw new Error('PTY process not running');
           }
-          // Write message to PTY, then send Enter separately after a small delay
-          this.ptyProcess.write(inj);
+          // Use bracketed paste mode for CLIs that support it (claude, codex, gemini)
+          // This prevents interleaving with CLI output and ensures clean input
+          const useBracketedPaste = this.cliType === 'claude' || this.cliType === 'codex' || this.cliType === 'gemini';
+          if (useBracketedPaste) {
+            // Bracketed paste: \x1b[200~ starts paste, \x1b[201~ ends paste
+            this.ptyProcess.write('\x1b[200~' + inj + '\x1b[201~');
+          } else {
+            this.ptyProcess.write(inj);
+          }
           await sleep(INJECTION_CONSTANTS.ENTER_DELAY_MS);
           this.ptyProcess.write('\r');
         },
