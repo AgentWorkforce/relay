@@ -378,7 +378,7 @@ export function XTermLogViewer({
 
   return (
     <div
-      className={`xterm-log-viewer flex flex-col rounded-xl overflow-hidden border border-[#2a2d35] shadow-2xl ${className}`}
+      className={`xterm-log-viewer flex flex-col min-h-0 rounded-xl overflow-hidden border border-[#2a2d35] shadow-2xl ${className}`}
       style={{
         background: 'linear-gradient(180deg, #0d0f14 0%, #0a0c10 100%)',
         boxShadow: `0 0 60px -15px ${colors.primary}25, 0 25px 50px -12px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255,255,255,0.02)`,
@@ -391,6 +391,7 @@ export function XTermLogViewer({
         .xterm-log-viewer .xterm {
           touch-action: pan-y !important;
           overscroll-behavior: contain;
+          height: 100%;
         }
         .xterm-log-viewer .xterm-viewport {
           -webkit-overflow-scrolling: touch !important;
@@ -552,7 +553,7 @@ export function XTermLogViewer({
       {/* Terminal container - keep a dedicated scroll boundary for mobile */}
       <div
         className="flex-1 min-h-0 overflow-hidden"
-        style={{ maxHeight, minHeight: '200px' }}
+        style={{ height: maxHeight, maxHeight, minHeight: '200px' }}
       >
         <div
           ref={containerRef}
