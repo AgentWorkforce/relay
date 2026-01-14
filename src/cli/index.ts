@@ -537,16 +537,63 @@ program
     console.log(`Project: ${paths.projectRoot}`);
     console.log(`Tmux: ${tmuxInfo.path} (v${tmuxInfo.version})`);
 
-    // Step 1: Start daemon in background
-    console.log('\n[1/3] Starting daemon...');
-    const daemonProc = spawn(process.execPath, [process.argv[1], 'up'], {
-      stdio: 'ignore',
-      detached: true,
-    });
-    daemonProc.unref();
+    // Step 1: Check if daemon is already running, start if needed
+    console.log('\n[1/3] Checking daemon...');
 
-    // Give daemon a moment to start
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    // Check if socket exists (daemon running)
+    const socketExists = fs.existsSync(paths.socketPath);
+
+    // Check if dashboard is responding for THIS project
+    let dashboardReady = false;
+    if (socketExists) {
+      try {
+        const response = await fetch(`http://localhost:${DEFAULT_DASHBOARD_PORT}/api/health`, {
+          signal: AbortSignal.timeout(1000),
+        });
+        if (response.ok) {
+          const health = await response.json() as { status: string };
+          dashboardReady = health.status === 'healthy';
+        }
+      } catch {
+        // Dashboard not responding
+      }
+    }
+
+    if (dashboardReady) {
+      console.log('Daemon already running, reusing...');
+    } else {
+      console.log('Starting daemon...');
+      const daemonProc = spawn(process.execPath, [process.argv[1], 'up'], {
+        stdio: 'ignore',
+        detached: true,
+      });
+      daemonProc.unref();
+
+      // Wait for dashboard to be ready (up to 10 seconds)
+      const maxWait = 10000;
+      const startTime = Date.now();
+      while (Date.now() - startTime < maxWait) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        try {
+          const response = await fetch(`http://localhost:${DEFAULT_DASHBOARD_PORT}/api/health`, {
+            signal: AbortSignal.timeout(1000),
+          });
+          if (response.ok) {
+            const health = await response.json() as { status: string };
+            if (health.status === 'healthy') {
+              dashboardReady = true;
+              break;
+            }
+          }
+        } catch {
+          // Keep waiting
+        }
+      }
+
+      if (!dashboardReady) {
+        console.error('Warning: Dashboard may not be fully ready. Spawn might not work.');
+      }
+    }
 
     // Step 2: Install prpm snippet via npx
     console.log('[2/3] Installing agent-relay snippet...');
