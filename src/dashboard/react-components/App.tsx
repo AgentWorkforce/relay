@@ -203,11 +203,14 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     : undefined;
 
   // Cloud workspaces state (for cloud mode)
+  // Includes owned, member, and contributor workspaces (via GitHub repo access)
   const [cloudWorkspaces, setCloudWorkspaces] = useState<Array<{
     id: string;
     name: string;
     status: string;
-    path?: string;
+    publicUrl?: string;
+    accessType?: 'owner' | 'member' | 'contributor';
+    permission?: 'admin' | 'write' | 'read';
   }>>([]);
   const [activeCloudWorkspaceId, setActiveCloudWorkspaceId] = useState<string | null>(null);
   const [isLoadingCloudWorkspaces, setIsLoadingCloudWorkspaces] = useState(false);
@@ -216,13 +219,14 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   const [localAgents, setLocalAgents] = useState<Agent[]>([]);
 
   // Fetch cloud workspaces when in cloud mode
+  // Uses getAccessibleWorkspaces to include contributor workspaces (via GitHub repos)
   useEffect(() => {
     if (!cloudSession?.user) return;
 
     const fetchCloudWorkspaces = async () => {
       setIsLoadingCloudWorkspaces(true);
       try {
-        const result = await cloudApi.getWorkspaceSummary();
+        const result = await cloudApi.getAccessibleWorkspaces();
         if (result.success && result.data.workspaces) {
           setCloudWorkspaces(result.data.workspaces);
           // Auto-select first workspace if none selected
@@ -295,10 +299,11 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   const effectiveWorkspaces = useMemo(() => {
     if (isCloudMode && cloudWorkspaces.length > 0) {
       // Convert cloud workspaces to the format expected by WorkspaceSelector
+      // Includes owned, member, and contributor workspaces
       return cloudWorkspaces.map(ws => ({
         id: ws.id,
         name: ws.name,
-        path: ws.path || `/workspace/${ws.name}`,
+        path: ws.publicUrl || `/workspace/${ws.name}`,
         status: ws.status === 'running' ? 'active' as const : 'inactive' as const,
         provider: 'claude' as const,
         lastActiveAt: new Date(),
