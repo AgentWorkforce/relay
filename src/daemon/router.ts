@@ -140,6 +140,15 @@ export class Router {
    * Register a connection after successful handshake.
    */
   register(connection: RoutableConnection): void {
+    routerLog.info('REGISTER_START', {
+      connId: connection.id.substring(0, 8),
+      agentName: connection.agentName,
+      entityType: connection.entityType,
+      cli: connection.cli,
+      totalConnections: this.connections.size,
+      totalAgents: this.agents.size,
+    });
+
     this.connections.set(connection.id, connection);
 
     if (connection.agentName) {
@@ -149,19 +158,40 @@ export class Router {
         // Handle existing user connection with same name (disconnect old)
         const existingUser = this.users.get(connection.agentName);
         if (existingUser && existingUser.id !== connection.id) {
+          routerLog.info('REGISTER_REPLACING_USER', {
+            name: connection.agentName,
+            oldConnId: existingUser.id.substring(0, 8),
+            newConnId: connection.id.substring(0, 8),
+          });
           existingUser.close();
           this.connections.delete(existingUser.id);
         }
         this.users.set(connection.agentName, connection);
-        routerLog.info(`User registered: ${connection.agentName}`);
+        routerLog.info('REGISTER_USER_COMPLETE', {
+          name: connection.agentName,
+          connId: connection.id.substring(0, 8),
+          totalUsers: this.users.size,
+        });
       } else {
         // Handle existing agent connection with same name (disconnect old)
         const existing = this.agents.get(connection.agentName);
         if (existing && existing.id !== connection.id) {
+          routerLog.info('REGISTER_REPLACING_AGENT', {
+            name: connection.agentName,
+            oldConnId: existing.id.substring(0, 8),
+            newConnId: connection.id.substring(0, 8),
+          });
           existing.close();
           this.connections.delete(existing.id);
         }
         this.agents.set(connection.agentName, connection);
+        routerLog.info('REGISTER_AGENT_COMPLETE', {
+          name: connection.agentName,
+          connId: connection.id.substring(0, 8),
+          cli: connection.cli,
+          totalAgents: this.agents.size,
+          allAgents: Array.from(this.agents.keys()),
+        });
         this.registry?.registerOrUpdate({
           name: connection.agentName,
           cli: connection.cli,
@@ -178,6 +208,12 @@ export class Router {
    * Unregister a connection.
    */
   unregister(connection: RoutableConnection): void {
+    routerLog.info('UNREGISTER_START', {
+      connId: connection.id.substring(0, 8),
+      agentName: connection.agentName,
+      entityType: connection.entityType,
+    });
+
     this.connections.delete(connection.id);
     if (connection.agentName) {
       const isUser = connection.entityType === 'user';
@@ -186,11 +222,20 @@ export class Router {
         const currentUser = this.users.get(connection.agentName);
         if (currentUser?.id === connection.id) {
           this.users.delete(connection.agentName);
+          routerLog.info('UNREGISTER_USER_REMOVED', {
+            name: connection.agentName,
+            remainingUsers: this.users.size,
+          });
         }
       } else {
         const current = this.agents.get(connection.agentName);
         if (current?.id === connection.id) {
           this.agents.delete(connection.agentName);
+          routerLog.info('UNREGISTER_AGENT_REMOVED', {
+            name: connection.agentName,
+            remainingAgents: this.agents.size,
+            allAgents: Array.from(this.agents.keys()),
+          });
         }
       }
 
@@ -210,6 +255,10 @@ export class Router {
     }
 
     this.clearPendingForConnection(connection.id);
+    routerLog.debug('UNREGISTER_COMPLETE', {
+      connId: connection.id.substring(0, 8),
+      totalConnections: this.connections.size,
+    });
   }
 
   /**
@@ -413,14 +462,31 @@ export class Router {
    */
   route(from: RoutableConnection, envelope: SendEnvelope): void {
     const senderName = from.agentName;
+    const routeStartTime = Date.now();
+
+    routerLog.info('ROUTE_START', {
+      messageId: envelope.id?.substring(0, 8),
+      from: senderName,
+      to: envelope.to,
+      kind: envelope.payload.kind,
+      connId: from.id.substring(0, 8),
+      bodyPreview: envelope.payload.body?.substring(0, 50),
+    });
+
     if (!senderName) {
-      routerLog.warn('Dropping message - sender has no name');
+      routerLog.warn('ROUTE_REJECTED - sender has no name', {
+        messageId: envelope.id?.substring(0, 8),
+        connId: from.id.substring(0, 8),
+      });
       return;
     }
 
     // Check rate limit
     if (!this.rateLimiter.tryAcquire(senderName)) {
-      routerLog.warn(`Rate limited: ${senderName}`);
+      routerLog.warn('ROUTE_RATE_LIMITED', {
+        from: senderName,
+        messageId: envelope.id?.substring(0, 8),
+      });
       return;
     }
 
@@ -432,13 +498,26 @@ export class Router {
     const to = envelope.to;
     const topic = envelope.topic;
 
-    routerLog.debug(`${senderName} -> ${to}`, { preview: envelope.payload.body?.substring(0, 50) });
-
     if (to === '*') {
       // Broadcast to all (except sender)
+      const agentCount = this.agents.size;
+      routerLog.info('ROUTE_BROADCAST', {
+        from: senderName,
+        messageId: envelope.id?.substring(0, 8),
+        targetCount: agentCount - 1,
+        topic,
+      });
       this.broadcast(senderName, envelope, topic);
     } else if (to) {
       // Direct message
+      const targetExists = this.agents.has(to) || this.users.has(to);
+      routerLog.info('ROUTE_DIRECT', {
+        from: senderName,
+        to,
+        messageId: envelope.id?.substring(0, 8),
+        targetExists,
+        targetType: this.agents.has(to) ? 'agent' : (this.users.has(to) ? 'user' : 'unknown'),
+      });
       this.sendDirect(senderName, to, envelope);
     }
 
@@ -449,6 +528,11 @@ export class Router {
     if (to && to !== '*') {
       this.routeToShadows(to, envelope, 'incoming', senderName);
     }
+
+    routerLog.debug('ROUTE_COMPLETE', {
+      messageId: envelope.id?.substring(0, 8),
+      durationMs: Date.now() - routeStartTime,
+    });
   }
 
   /**
@@ -517,30 +601,64 @@ export class Router {
   ): boolean {
     const target = this.agents.get(to) ?? this.users.get(to);
     const isUserTarget = target?.entityType === 'user';
+    const messageId = envelope.id?.substring(0, 8);
 
     // If agent not found locally, check if it's on a remote machine
     if (!target) {
       const remoteAgent = this.crossMachineHandler?.isRemoteAgent(to);
       if (remoteAgent) {
-        routerLog.info(`Routing to remote agent: ${to}`, { daemonName: remoteAgent.daemonName });
+        routerLog.info('SEND_DIRECT_REMOTE', {
+          messageId,
+          from,
+          to,
+          daemonName: remoteAgent.daemonName,
+        });
         return this.sendToRemoteAgent(from, to, envelope, remoteAgent);
       }
-      routerLog.warn(`Target "${to}" not found`, { availableAgents: Array.from(this.agents.keys()) });
+      routerLog.warn('SEND_DIRECT_TARGET_NOT_FOUND', {
+        messageId,
+        from,
+        to,
+        availableAgents: Array.from(this.agents.keys()),
+        availableUsers: Array.from(this.users.keys()),
+        note: 'Message may be lost - target not connected',
+      });
       return false;
     }
 
+    routerLog.info('SEND_DIRECT_DELIVERING', {
+      messageId,
+      from,
+      to,
+      targetConnId: target.id.substring(0, 8),
+      isUserTarget,
+    });
+
     const deliver = this.createDeliverEnvelope(from, to, envelope, target);
     const sent = target.send(deliver);
-    routerLog.debug(`Delivered to ${to}`, { success: sent });
-    this.persistDeliverEnvelope(deliver);
+
     if (sent) {
+      routerLog.info('SEND_DIRECT_DELIVERED', {
+        messageId,
+        deliverId: deliver.id.substring(0, 8),
+        to,
+        seq: deliver.delivery.seq,
+      });
       this.trackDelivery(target, deliver);
       this.registry?.recordReceive(to);
       // Only mark AI agents as processing; humans don't need processing indicators
       if (!isUserTarget) {
         this.setProcessing(to, deliver.id);
       }
+    } else {
+      routerLog.warn('SEND_DIRECT_FAILED', {
+        messageId,
+        to,
+        reason: 'target.send() returned false',
+      });
     }
+
+    this.persistDeliverEnvelope(deliver);
     return sent;
   }
 

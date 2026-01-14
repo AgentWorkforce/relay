@@ -3418,6 +3418,7 @@ export async function startDashboard(
       team,
       spawnerName,
       cwd,
+      socketPath,
       interactive,
       shadowMode,
       shadowAgent,
@@ -3442,6 +3443,7 @@ export async function startDashboard(
         team: team || undefined, // Optional team name
         spawnerName: spawnerName || undefined, // For policy enforcement
         cwd: cwd || undefined, // Working directory
+        socketPath: socketPath || undefined, // Inherit socket from parent for consistent daemon connection
         interactive, // Disables auto-accept for auth setup flows
         shadowMode,
         shadowAgent,

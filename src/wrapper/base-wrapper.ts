@@ -41,6 +41,16 @@ import {
 import { UniversalIdleDetector } from './idle-detector.js';
 
 /**
+ * Debug logging helper for wrapper events.
+ * Format: [RELAY:wrapper:timestamp] event_name | details
+ */
+function wrapperLog(agentName: string, event: string, details?: Record<string, unknown>): void {
+  const ts = new Date().toISOString();
+  const detailStr = details ? ` | ${JSON.stringify(details)}` : '';
+  console.log(`[RELAY:wrapper:${ts}] ${event} | agent=${agentName}${detailStr}`);
+}
+
+/**
  * Base configuration shared by all wrapper types
  */
 export interface BaseWrapperConfig {
@@ -79,6 +89,8 @@ export interface BaseWrapperConfig {
   idleBeforeInjectMs?: number;
   /** Confidence threshold for idle detection (0-1, default: 0.7) */
   idleConfidenceThreshold?: number;
+  /** Skip initial instruction injection (when using --append-system-prompt) */
+  skipInstructions?: boolean;
 }
 
 /**
@@ -120,6 +132,13 @@ export abstract class BaseWrapper extends EventEmitter {
     this.relayPrefix = config.relayPrefix ?? getDefaultRelayPrefix();
     this.cliType = config.cliType ?? detectCliType(config.command);
 
+    wrapperLog(config.name, 'WRAPPER_INIT', {
+      command: config.command,
+      cliType: this.cliType,
+      socketPath: config.socketPath,
+      cwd: config.cwd,
+    });
+
     // Initialize relay client with full config
     this.client = new RelayClient({
       agentName: config.name,
@@ -130,8 +149,10 @@ export abstract class BaseWrapper extends EventEmitter {
       quiet: true,
     });
 
-    // Initialize continuity manager
-    this.continuity = getContinuityManager({ defaultCli: this.cliType });
+    // Initialize continuity manager (opt-in via AGENT_RELAY_CONTINUITY=1)
+    if (process.env.AGENT_RELAY_CONTINUITY === '1') {
+      this.continuity = getContinuityManager({ defaultCli: this.cliType });
+    }
 
     // Initialize universal idle detector for robust injection timing
     this.idleDetector = new UniversalIdleDetector({
@@ -141,8 +162,18 @@ export abstract class BaseWrapper extends EventEmitter {
 
     // Set up message handler
     this.client.onMessage = (from, payload, messageId, meta, originalTo) => {
+      wrapperLog(config.name, 'CLIENT_MESSAGE_CALLBACK', {
+        from,
+        messageId: messageId.substring(0, 8),
+        kind: payload.kind,
+        clientState: this.client.state,
+      });
       this.handleIncomingMessage(from, payload, messageId, meta, originalTo);
     };
+
+    wrapperLog(config.name, 'WRAPPER_INIT_COMPLETE', {
+      clientState: this.client.state,
+    });
   }
 
   // =========================================================================
@@ -245,8 +276,22 @@ export abstract class BaseWrapper extends EventEmitter {
     meta?: SendMeta,
     originalTo?: string
   ): void {
+    wrapperLog(this.config.name, 'HANDLE_INCOMING_START', {
+      from,
+      messageId: messageId.substring(0, 8),
+      kind: payload.kind,
+      originalTo,
+      queueSizeBefore: this.messageQueue.length,
+    });
+
     // Deduplicate by message ID
-    if (this.receivedMessageIds.has(messageId)) return;
+    if (this.receivedMessageIds.has(messageId)) {
+      wrapperLog(this.config.name, 'HANDLE_INCOMING_DUPLICATE', {
+        messageId: messageId.substring(0, 8),
+        from,
+      });
+      return;
+    }
     this.receivedMessageIds.add(messageId);
 
     // Limit dedup set size
@@ -267,14 +312,32 @@ export abstract class BaseWrapper extends EventEmitter {
     };
 
     this.messageQueue.push(queuedMsg);
+
+    wrapperLog(this.config.name, 'HANDLE_INCOMING_QUEUED', {
+      from,
+      messageId: messageId.substring(0, 8),
+      queueSizeAfter: this.messageQueue.length,
+      isInjecting: this.isInjecting,
+    });
   }
 
   /**
    * Send a relay command via the client
    */
   protected sendRelayCommand(cmd: ParsedCommand): void {
+    wrapperLog(this.config.name, 'SEND_RELAY_CMD_START', {
+      to: cmd.to,
+      kind: cmd.kind,
+      bodyPreview: cmd.body.substring(0, 50),
+      clientState: this.client.state,
+    });
+
     // Validate target
     if (isPlaceholderTarget(cmd.to)) {
+      wrapperLog(this.config.name, 'SEND_RELAY_CMD_REJECTED', {
+        reason: 'Placeholder target',
+        to: cmd.to,
+      });
       console.error(`[base-wrapper] Skipped message - placeholder target: ${cmd.to}`);
       return;
     }
@@ -282,6 +345,9 @@ export abstract class BaseWrapper extends EventEmitter {
     // Create hash for deduplication (use first 100 chars of body)
     const hash = `${cmd.to}:${cmd.body.substring(0, 100)}`;
     if (this.sentMessageHashes.has(hash)) {
+      wrapperLog(this.config.name, 'SEND_RELAY_CMD_DUPLICATE', {
+        to: cmd.to,
+      });
       console.error(`[base-wrapper] Skipped duplicate message to ${cmd.to}`);
       return;
     }
@@ -294,7 +360,19 @@ export abstract class BaseWrapper extends EventEmitter {
     }
 
     // Only send if client ready
-    if (this.client.state !== 'READY') return;
+    if (this.client.state !== 'READY') {
+      wrapperLog(this.config.name, 'SEND_RELAY_CMD_BLOCKED', {
+        reason: 'Client not ready',
+        clientState: this.client.state,
+        to: cmd.to,
+      });
+      return;
+    }
+
+    wrapperLog(this.config.name, 'SEND_RELAY_CMD_SENDING', {
+      to: cmd.to,
+      kind: cmd.kind,
+    });
 
     this.client.sendMessage(cmd.to, cmd.body, cmd.kind, cmd.data, cmd.thread);
   }
@@ -351,50 +429,56 @@ export abstract class BaseWrapper extends EventEmitter {
   }
 
   /**
-   * Execute a spawn command
+   * Execute a spawn command via daemon socket
    */
   protected async executeSpawn(name: string, cli: string, task: string): Promise<void> {
-    // Try dashboard API first
-    if (this.config.dashboardPort) {
+    // Try daemon socket first (via RelayClient)
+    if (this.client.state === 'READY') {
       try {
-        const response = await fetch(
-          `http://localhost:${this.config.dashboardPort}/api/agents/spawn`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, cli, task }),
-          }
-        );
-        if (response.ok) return;
-      } catch {
-        // Fall through to callback
+        const result = await this.client.spawn({
+          name,
+          cli,
+          task,
+          cwd: this.config.cwd ?? process.cwd(),
+          socketPath: this.config.socketPath,
+        });
+        if (result.success) {
+          console.log(`[${this.config.name}] Spawned ${name} via daemon (pid: ${result.pid})`);
+          return;
+        }
+        console.warn(`[${this.config.name}] Daemon spawn failed: ${result.error}`);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[${this.config.name}] Daemon spawn error: ${message}`);
       }
     }
 
-    // Use callback
+    // Fall back to callback
     if (this.config.onSpawn) {
       await this.config.onSpawn(name, cli, task);
     }
   }
 
   /**
-   * Execute a release command
+   * Execute a release command via daemon socket
    */
   protected async executeRelease(name: string): Promise<void> {
-    // Try dashboard API first
-    if (this.config.dashboardPort) {
+    // Try daemon socket first (via RelayClient)
+    if (this.client.state === 'READY') {
       try {
-        const response = await fetch(
-          `http://localhost:${this.config.dashboardPort}/api/agents/${name}`,
-          { method: 'DELETE' }
-        );
-        if (response.ok) return;
-      } catch {
-        // Fall through to callback
+        const success = await this.client.release(name);
+        if (success) {
+          console.log(`[${this.config.name}] Released ${name} via daemon`);
+          return;
+        }
+        console.warn(`[${this.config.name}] Daemon release failed`);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[${this.config.name}] Daemon release error: ${message}`);
       }
     }
 
-    // Use callback
+    // Fall back to callback
     if (this.config.onRelease) {
       await this.config.onRelease(name);
     }

@@ -27,6 +27,11 @@ export type MessageType =
   | 'SHADOW_BIND'
   | 'SHADOW_UNBIND'
   | 'LOG' // Agent output for dashboard streaming
+  // Spawn/release types (daemon-managed agent lifecycle)
+  | 'SPAWN'
+  | 'SPAWN_RESULT'
+  | 'RELEASE'
+  | 'RELEASE_RESULT'
   // Channel messaging types
   | 'CHANNEL_JOIN'
   | 'CHANNEL_LEAVE'
@@ -229,3 +234,78 @@ export interface ShadowUnbindPayload {
 
 export type ShadowBindEnvelope = Envelope<ShadowBindPayload>;
 export type ShadowUnbindEnvelope = Envelope<ShadowUnbindPayload>;
+
+// Spawn/Release payloads (daemon-managed agent lifecycle)
+
+/** Request to spawn a new agent */
+export interface SpawnPayload {
+  /** Worker agent name */
+  name: string;
+  /** CLI tool (e.g., 'claude', 'claude:opus', 'codex') */
+  cli: string;
+  /** Initial task to inject */
+  task: string;
+  /** Optional team name to organize agents under */
+  team?: string;
+  /** Working directory for the agent */
+  cwd?: string;
+  /** Socket path to connect to (inherit from parent) */
+  socketPath?: string;
+  /** Name of the agent requesting the spawn (for policy enforcement) */
+  spawnerName?: string;
+  /** Interactive mode - disables auto-accept of permission prompts */
+  interactive?: boolean;
+  /** Primary agent to shadow (if this agent is a shadow) */
+  shadowOf?: string;
+  /** When the shadow should speak */
+  shadowSpeakOn?: SpeakOnTrigger[];
+  /** User ID for per-user credential storage */
+  userId?: string;
+}
+
+/** Policy decision details for spawn requests */
+export interface SpawnPolicyDecision {
+  allowed: boolean;
+  reason: string;
+  policySource: 'repo' | 'local' | 'workspace' | 'default';
+}
+
+/** Result of a spawn request */
+export interface SpawnResultPayload {
+  /** Correlation ID - the original request envelope ID */
+  replyTo: string;
+  /** Whether spawn succeeded */
+  success: boolean;
+  /** Agent name */
+  name: string;
+  /** PID of the spawned process */
+  pid?: number;
+  /** Error message if spawn failed */
+  error?: string;
+  /** Policy decision details if spawn was blocked by policy */
+  policyDecision?: SpawnPolicyDecision;
+}
+
+/** Request to release (terminate) an agent */
+export interface ReleasePayload {
+  /** Agent name to release */
+  name: string;
+}
+
+/** Result of a release request */
+export interface ReleaseResultPayload {
+  /** Correlation ID - the original request envelope ID */
+  replyTo: string;
+  /** Whether release succeeded */
+  success: boolean;
+  /** Agent name */
+  name: string;
+  /** Error message if release failed */
+  error?: string;
+}
+
+// Typed envelope helpers for spawn/release
+export type SpawnEnvelope = Envelope<SpawnPayload>;
+export type SpawnResultEnvelope = Envelope<SpawnResultPayload>;
+export type ReleaseEnvelope = Envelope<ReleasePayload>;
+export type ReleaseResultEnvelope = Envelope<ReleaseResultPayload>;

@@ -319,14 +319,19 @@ export class PtyWrapper extends BaseWrapper {
         this.injectInstructions();
       }
       this.readyForMessages = true;
-      // Process any messages that arrived while waiting (skip in interactive mode)
-      if (!this.config.interactive) {
-        this.processMessageQueue();
-      }
+      console.log(`[RELAY:pty:${new Date().toISOString()}] READY_FOR_MESSAGES | agent=${this.config.name} queueSize=${this.messageQueue.length} interactive=${!!this.config.interactive}`);
+      // CRITICAL FIX: Always process queued messages after becoming ready
+      // Previously skipped in interactive mode, causing first messages to be lost
+      // Messages can arrive via relay even in interactive mode (e.g., task from spawner)
+      this.processMessageQueue();
     }).catch(err => {
       console.error(`[pty:${this.config.name}] Failed to wait for agent ready:`, err);
       // Fall back to marking ready anyway to avoid blocking forever
       this.readyForMessages = true;
+      console.log(`[RELAY:pty:${new Date().toISOString()}] READY_FOR_MESSAGES_FALLBACK | agent=${this.config.name} queueSize=${this.messageQueue.length} error=${err?.message}`);
+      // CRITICAL FIX: Process queued messages even on error
+      // Previously missing, causing messages queued during startup to be lost
+      this.processMessageQueue();
     });
   }
 
@@ -1178,68 +1183,24 @@ export class PtyWrapper extends BaseWrapper {
   }
 
   /**
-   * Execute spawn via API or callback.
-   * Overrides BaseWrapper to add PTY-specific logging and API path.
+   * Execute spawn via daemon socket.
+   * Delegates to BaseWrapper which handles daemon socket and callback fallback.
    */
   protected override async executeSpawn(name: string, cli: string, task: string): Promise<void> {
     console.log(`[pty:${this.config.name}] [SPAWN-DEBUG] executeSpawn called: name=${name}, cli=${cli}, task="${task.substring(0, 50)}..."`);
-    console.log(`[pty:${this.config.name}] [SPAWN-DEBUG] dashboardPort=${this.config.dashboardPort}, hasOnSpawn=${!!this.config.onSpawn}`);
+    console.log(`[pty:${this.config.name}] [SPAWN-DEBUG] clientState=${this.client.state}, hasOnSpawn=${!!this.config.onSpawn}`);
 
-    if (this.config.dashboardPort) {
-      // Use dashboard API for spawning (works from spawned agents)
-      try {
-        const response = await fetch(`http://localhost:${this.config.dashboardPort}/api/spawn`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, cli, task }),
-        });
-        const result = await response.json() as { success: boolean; error?: string };
-        if (result.success) {
-          console.log(`[pty:${this.config.name}] Spawned ${name} via API`);
-        } else {
-          console.error(`[pty:${this.config.name}] Spawn failed: ${result.error}`);
-        }
-      } catch (err: any) {
-        console.error(`[pty:${this.config.name}] Spawn API call failed: ${err.message}`);
-      }
-    } else if (this.config.onSpawn) {
-      // Fall back to callback
-      try {
-        await this.config.onSpawn(name, cli, task);
-      } catch (err: any) {
-        console.error(`[pty:${this.config.name}] Spawn failed: ${err.message}`);
-      }
-    }
+    // Delegate to base wrapper which handles daemon socket and callback fallback
+    await super.executeSpawn(name, cli, task);
   }
 
   /**
-   * Execute release via API or callback.
-   * Overrides BaseWrapper to add PTY-specific logging and API path.
+   * Execute release via daemon socket.
+   * Delegates to BaseWrapper which handles daemon socket and callback fallback.
    */
   protected override async executeRelease(name: string): Promise<void> {
-    if (this.config.dashboardPort) {
-      // Use dashboard API for releasing
-      try {
-        const response = await fetch(`http://localhost:${this.config.dashboardPort}/api/spawned/${encodeURIComponent(name)}`, {
-          method: 'DELETE',
-        });
-        const result = await response.json() as { success: boolean; error?: string };
-        if (result.success) {
-          console.log(`[pty:${this.config.name}] Released ${name} via API`);
-        } else {
-          console.error(`[pty:${this.config.name}] Release failed: ${result.error}`);
-        }
-      } catch (err: any) {
-        console.error(`[pty:${this.config.name}] Release API call failed: ${err.message}`);
-      }
-    } else if (this.config.onRelease) {
-      // Fall back to callback
-      try {
-        await this.config.onRelease(name);
-      } catch (err: any) {
-        console.error(`[pty:${this.config.name}] Release failed: ${err.message}`);
-      }
-    }
+    // Delegate to base wrapper which handles daemon socket and callback fallback
+    await super.executeRelease(name);
   }
 
   /**
@@ -1297,13 +1258,23 @@ export class PtyWrapper extends BaseWrapper {
    * Uses shared injection logic with PTY-specific callbacks.
    */
   private async processMessageQueue(): Promise<void> {
+    const ts = new Date().toISOString();
+
     // Wait until instructions have been injected and agent is ready
-    if (!this.readyForMessages) return;
-    if (this.isInjecting || this.messageQueue.length === 0) return;
+    if (!this.readyForMessages) {
+      console.log(`[RELAY:pty:${ts}] QUEUE_SKIP_NOT_READY | agent=${this.config.name} queueSize=${this.messageQueue.length}`);
+      return;
+    }
+    if (this.isInjecting || this.messageQueue.length === 0) {
+      if (this.isInjecting) {
+        console.log(`[RELAY:pty:${ts}] QUEUE_SKIP_INJECTING | agent=${this.config.name} queueSize=${this.messageQueue.length}`);
+      }
+      return;
+    }
 
     // Health check: is agent still alive?
     if (!this.isAgentAlive()) {
-      console.error(`[pty:${this.config.name}] Agent not alive, cannot inject messages`);
+      console.error(`[RELAY:pty:${ts}] QUEUE_SKIP_NOT_ALIVE | agent=${this.config.name} queueSize=${this.messageQueue.length}`);
       return;
     }
 
@@ -1314,6 +1285,8 @@ export class PtyWrapper extends BaseWrapper {
       this.isInjecting = false;
       return;
     }
+
+    console.log(`[RELAY:pty:${ts}] QUEUE_PROCESSING | agent=${this.config.name} from=${msg.from} messageId=${msg.messageId.substring(0, 8)} remainingQueue=${this.messageQueue.length}`);
 
     try {
       // Wait for output to stabilize before injecting

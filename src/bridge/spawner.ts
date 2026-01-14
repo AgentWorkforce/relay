@@ -24,6 +24,16 @@ import type {
 } from './types.js';
 
 /**
+ * Debug logging helper for spawner events.
+ * Format: [RELAY:spawner:timestamp] event_name | details
+ */
+function spawnerLog(event: string, details?: Record<string, unknown>): void {
+  const ts = new Date().toISOString();
+  const detailStr = details ? ` | ${JSON.stringify(details)}` : '';
+  console.log(`[RELAY:spawner:${ts}] ${event}${detailStr}`);
+}
+
+/**
  * Cloud persistence handler interface.
  * Implement this to persist agent session data to cloud storage.
  */
@@ -224,8 +234,22 @@ export class AgentSpawner {
     const { name, cli, task, team, spawnerName, userId } = request;
     const debug = process.env.DEBUG_SPAWN === '1';
 
+    spawnerLog('SPAWN_START', {
+      name,
+      cli,
+      team,
+      spawnerName,
+      hasTask: !!task,
+      taskPreview: task?.substring(0, 50),
+      activeWorkerCount: this.activeWorkers.size,
+    });
+
     // Check if worker already exists
     if (this.activeWorkers.has(name)) {
+      spawnerLog('SPAWN_REJECTED', {
+        name,
+        reason: 'Worker already exists',
+      });
       return {
         success: false,
         name,
@@ -312,11 +336,14 @@ export class AgentSpawner {
         }
       }
 
+      // Use passed socketPath if provided (for spawn chain inheritance), otherwise use spawner's socket
+      const effectiveSocketPath = request.socketPath || this.socketPath;
+
       const ptyConfig: PtyWrapperConfig = {
         name,
         command,
         args,
-        socketPath: this.socketPath,
+        socketPath: effectiveSocketPath,
         cwd: agentCwd,
         logsDir: this.logsDir,
         dashboardPort: this.dashboardPort,
@@ -396,13 +423,33 @@ export class AgentSpawner {
       if (cloudListeners.summary) listeners.summary = cloudListeners.summary;
       if (cloudListeners.sessionEnd) listeners.sessionEnd = cloudListeners.sessionEnd;
 
+      spawnerLog('PTY_STARTING', {
+        name,
+        command,
+        argsCount: args.length,
+      });
+
       await pty.start();
 
+      spawnerLog('PTY_STARTED', {
+        name,
+        pid: pty.pid,
+      });
+
       if (debug) console.log(`[spawner:debug] PTY started, pid: ${pty.pid}`);
+
+      spawnerLog('WAITING_FOR_REGISTRATION', {
+        name,
+        timeoutMs: 30_000,
+      });
 
       // Wait for the agent to register with the daemon
       const registered = await this.waitForAgentRegistration(name, 30_000, 500);
       if (!registered) {
+        spawnerLog('REGISTRATION_TIMEOUT', {
+          name,
+          error: 'Worker failed to register within 30s',
+        });
         const error = `Worker ${name} failed to register within 30s`;
         console.error(`[spawner] ${error}`);
         await pty.kill();
@@ -412,6 +459,11 @@ export class AgentSpawner {
           error,
         };
       }
+
+      spawnerLog('REGISTRATION_SUCCESS', {
+        name,
+        pid: pty.pid,
+      });
 
       // Build the full message: minimal relay reminder + policy instructions (if any) + task
       // Only build message if there's an actual task - empty task means interactive mode
@@ -441,13 +493,28 @@ export class AgentSpawner {
       // Send task via relay message if provided (not via direct PTY injection)
       // This ensures the agent is ready to receive before processing the task
       if (fullMessage && fullMessage.trim()) {
+        spawnerLog('TASK_SENDING_START', {
+          name,
+          hasTask: true,
+          taskLength: fullMessage.length,
+          hasDashboardPort: !!this.dashboardPort,
+        });
+
         if (debug) console.log(`[spawner:debug] Will send task via relay: ${fullMessage.substring(0, 50)}...`);
 
         // If we have dashboard API, send task as relay message
         if (this.dashboardPort) {
           // Wait a moment for the agent's relay client to be ready
+          spawnerLog('TASK_WAITING_FOR_CLIENT', {
+            name,
+            waitMs: 1000,
+          });
           await sleep(1000);
           try {
+            spawnerLog('TASK_SENDING_VIA_RELAY', {
+              name,
+              dashboardPort: this.dashboardPort,
+            });
             const response = await fetch(`http://localhost:${this.dashboardPort}/api/send`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -459,21 +526,44 @@ export class AgentSpawner {
             });
             const result = await response.json() as { success: boolean; error?: string };
             if (result.success) {
+              spawnerLog('TASK_SENT_VIA_RELAY', {
+                name,
+                success: true,
+              });
               if (debug) console.log(`[spawner:debug] Task sent via relay to ${name}`);
             } else {
+              spawnerLog('TASK_RELAY_FAILED', {
+                name,
+                error: result.error,
+                fallback: 'direct_injection',
+              });
               console.warn(`[spawner] Failed to send task via relay: ${result.error}`);
               // Fall back to direct injection
               pty.write(fullMessage + '\r');
             }
           } catch (err: any) {
+            spawnerLog('TASK_RELAY_ERROR', {
+              name,
+              error: err.message,
+              fallback: 'direct_injection',
+            });
             console.warn(`[spawner] Relay send failed, falling back to direct injection: ${err.message}`);
             pty.write(fullMessage + '\r');
           }
         } else {
           // No dashboard API available - use direct injection as fallback
+          spawnerLog('TASK_DIRECT_INJECTION', {
+            name,
+            reason: 'No dashboard API',
+          });
           if (debug) console.log(`[spawner:debug] No dashboard API, using direct injection`);
           pty.write(fullMessage + '\r');
         }
+      } else {
+        spawnerLog('TASK_SKIPPED', {
+          name,
+          reason: 'No task provided (interactive mode)',
+        });
       }
 
       // Track the worker
@@ -496,12 +586,25 @@ export class AgentSpawner {
       const shadowInfo = request.shadowOf ? ` [shadow of: ${request.shadowOf}]` : '';
       console.log(`[spawner] Spawned ${name} (${cli})${teamInfo}${shadowInfo} [pid: ${pty.pid}]`);
 
+      spawnerLog('SPAWN_COMPLETE', {
+        name,
+        pid: pty.pid,
+        cli,
+        team,
+        shadowOf: request.shadowOf,
+        activeWorkerCount: this.activeWorkers.size,
+      });
+
       return {
         success: true,
         name,
         pid: pty.pid,
       };
     } catch (err: any) {
+      spawnerLog('SPAWN_ERROR', {
+        name,
+        error: err.message,
+      });
       console.error(`[spawner] Failed to spawn ${name}:`, err.message);
       if (debug) console.error(`[spawner:debug] Full error:`, err);
       return {

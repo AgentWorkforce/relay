@@ -51,11 +51,16 @@ function hashPath(projectPath: string): string {
 export function findProjectRoot(startDir: string = process.cwd()): string {
   let current = path.resolve(startDir);
   const root = path.parse(current).root;
+  const homeDir = os.homedir();
 
   const markers = ['.git', 'package.json', 'Cargo.toml', 'go.mod', 'pyproject.toml', '.agent-relay'];
 
   while (current !== root) {
     for (const marker of markers) {
+      // Skip .agent-relay in home directory - that's the data store, not a project marker
+      if (marker === '.agent-relay' && current === homeDir) {
+        continue;
+      }
       if (fs.existsSync(path.join(current, marker))) {
         return current;
       }

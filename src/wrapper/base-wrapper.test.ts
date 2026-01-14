@@ -210,6 +210,9 @@ describe('BaseWrapper', () => {
   let wrapper: TestWrapper;
 
   beforeEach(() => {
+    // Enable continuity for tests (opt-in via env var)
+    process.env.AGENT_RELAY_CONTINUITY = '1';
+
     // Reset mock continuity manager state
     mockContinuityManager.reset();
 
@@ -221,6 +224,8 @@ describe('BaseWrapper', () => {
 
   afterEach(() => {
     wrapper.stop();
+    // Clean up env var
+    delete process.env.AGENT_RELAY_CONTINUITY;
   });
 
   describe('message queue management', () => {

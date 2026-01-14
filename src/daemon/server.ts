@@ -22,6 +22,8 @@ import {
   createConsensusIntegration,
   type ConsensusIntegrationConfig,
 } from './consensus-integration.js';
+import { SpawnManager, type SpawnManagerConfig } from './spawn-manager.js';
+import type { SpawnPayload, ReleasePayload } from '../protocol/types.js';
 
 export interface DaemonConfig extends ConnectionConfig {
   socketPath: string;
@@ -38,6 +40,10 @@ export interface DaemonConfig extends ConnectionConfig {
   cloudUrl?: string;
   /** Consensus mechanism for multi-agent decisions (enabled by default, set to false to disable) */
   consensus?: boolean | Partial<ConsensusIntegrationConfig>;
+  /** Enable agent spawning via daemon (requires projectRoot) */
+  enableSpawner?: boolean;
+  /** Project root for spawner (required if enableSpawner is true) */
+  projectRoot?: string;
 }
 
 export const DEFAULT_SOCKET_PATH = '/tmp/agent-relay.sock';
@@ -61,6 +67,7 @@ export class Daemon {
   private cloudSync?: CloudSyncService;
   private remoteAgents: RemoteAgent[] = [];
   private consensus?: ConsensusIntegration;
+  private spawnManager?: SpawnManager;
 
   /** Callback for log output from agents (used by dashboard for streaming) */
   onLogOutput?: (agentName: string, data: string, timestamp: number) => void;
@@ -155,6 +162,15 @@ export class Daemon {
 
       this.consensus = createConsensusIntegration(this.router, consensusConfig);
       log.info('Consensus mechanism enabled');
+    }
+
+    // Initialize spawn manager (disabled by default, enable with enableSpawner: true)
+    if (this.config.enableSpawner && this.config.projectRoot) {
+      this.spawnManager = new SpawnManager({
+        projectRoot: this.config.projectRoot,
+        socketPath: this.config.socketPath,
+      });
+      log.info('Spawn manager enabled');
     }
 
     this.storageInitialized = true;
@@ -426,6 +442,12 @@ export class Daemon {
       this.processingStateInterval = undefined;
     }
 
+    // Release all spawned agents
+    if (this.spawnManager) {
+      await this.spawnManager.releaseAll();
+      this.spawnManager = undefined;
+    }
+
     // Close all active connections
     for (const connection of this.connections) {
       connection.close();
@@ -666,6 +688,24 @@ export class Daemon {
           }
         }
         break;
+
+      case 'SPAWN':
+        // Handle agent spawn requests
+        if (this.spawnManager) {
+          this.spawnManager.handleSpawn(connection, envelope as Envelope<SpawnPayload>);
+        } else {
+          log.warn('SPAWN request received but spawn manager not enabled');
+        }
+        break;
+
+      case 'RELEASE':
+        // Handle agent release requests
+        if (this.spawnManager) {
+          this.spawnManager.handleRelease(connection, envelope as Envelope<ReleasePayload>);
+        } else {
+          log.warn('RELEASE request received but spawn manager not enabled');
+        }
+        break;
     }
   }
 
@@ -703,6 +743,13 @@ export class Daemon {
    */
   get consensusEnabled(): boolean {
     return this.consensus?.enabled ?? false;
+  }
+
+  /**
+   * Get the spawn manager instance (if enabled).
+   */
+  getSpawnManager(): SpawnManager | undefined {
+    return this.spawnManager;
   }
 
   /**

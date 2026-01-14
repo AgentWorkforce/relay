@@ -43,6 +43,8 @@ export interface SpawnRequest {
   team?: string;
   /** Working directory for the agent (defaults to detected workspace) */
   cwd?: string;
+  /** Socket path to connect to (inherit from parent to ensure same daemon) */
+  socketPath?: string;
   /** Name of the agent requesting the spawn (for policy enforcement) */
   spawnerName?: string;
   /** Interactive mode - disables auto-accept of permission prompts (for auth setup flows) */

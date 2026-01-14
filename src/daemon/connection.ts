@@ -24,6 +24,17 @@ import {
 import { encodeFrameLegacy as encodeFrame, FrameParser } from '../protocol/framing.js';
 import { DEFAULT_CONNECTION_CONFIG } from '../config/relay-config.js';
 
+/**
+ * Debug logging helper for connection lifecycle events.
+ * Format: [RELAY:connection:timestamp] event_name | details
+ */
+function connectionLog(connectionId: string, agentName: string | undefined, event: string, details?: Record<string, unknown>): void {
+  const ts = new Date().toISOString();
+  const agent = agentName ?? 'unknown';
+  const detailStr = details ? ` | ${JSON.stringify(details)}` : '';
+  console.log(`[RELAY:connection:${ts}] ${event} | connId=${connectionId.substring(0, 8)} agent=${agent}${detailStr}`);
+}
+
 export type ConnectionState = 'CONNECTING' | 'HANDSHAKING' | 'ACTIVE' | 'CLOSING' | 'CLOSED' | 'ERROR';
 
 export interface ConnectionConfig {
@@ -104,8 +115,17 @@ export class Connection {
     this._sessionId = generateId();
     this._resumeToken = generateId();
 
+    connectionLog(this.id, undefined, 'CONNECTION_CREATED', {
+      state: 'CONNECTING',
+      sessionId: this._sessionId.substring(0, 8),
+    });
+
     this.setupSocketHandlers();
     this._state = 'HANDSHAKING';
+    connectionLog(this.id, undefined, 'STATE_TRANSITION', {
+      from: 'CONNECTING',
+      to: 'HANDSHAKING',
+    });
   }
 
   get state(): ConnectionState {
@@ -218,7 +238,18 @@ export class Connection {
   }
 
   private async handleHello(envelope: Envelope<HelloPayload>): Promise<void> {
+    connectionLog(this.id, envelope.payload.agent, 'HELLO_RECEIVED', {
+      currentState: this._state,
+      cli: envelope.payload.cli,
+      entityType: envelope.payload.entityType,
+      hasResumeToken: !!envelope.payload.session?.resume_token,
+    });
+
     if (this._state !== 'HANDSHAKING') {
+      connectionLog(this.id, envelope.payload.agent, 'HELLO_REJECTED', {
+        reason: 'Unexpected HELLO - not in HANDSHAKING state',
+        currentState: this._state,
+      });
       this.sendError('BAD_REQUEST', 'Unexpected HELLO', false);
       return;
     }
@@ -279,26 +310,67 @@ export class Connection {
       },
     };
 
+    connectionLog(this.id, this._agentName, 'WELCOME_SENDING', {
+      sessionId: this._sessionId.substring(0, 8),
+      isResumed: this._isResumed,
+    });
+
     this.send(welcome);
     this._state = 'ACTIVE';
     this.lastPongReceived = Date.now();
     this.startHeartbeat();
 
+    connectionLog(this.id, this._agentName, 'STATE_TRANSITION', {
+      from: 'HANDSHAKING',
+      to: 'ACTIVE',
+      sessionId: this._sessionId.substring(0, 8),
+    });
+
+    connectionLog(this.id, this._agentName, 'AGENT_NOW_ACTIVE', {
+      cli: this._cli,
+      entityType: this._entityType,
+      isResumed: this._isResumed,
+      readyToReceiveMessages: true,
+    });
+
     // Notify that connection is now active (for registration)
     if (this.onActive) {
+      connectionLog(this.id, this._agentName, 'CALLING_ON_ACTIVE_CALLBACK');
       this.onActive();
     }
   }
 
   private handleSend(envelope: Envelope<SendPayload>): void {
+    connectionLog(this.id, this._agentName, 'SEND_RECEIVED', {
+      messageId: envelope.id.substring(0, 8),
+      to: envelope.to,
+      kind: envelope.payload.kind,
+      currentState: this._state,
+      bodyPreview: envelope.payload.body?.substring(0, 50),
+    });
+
     if (this._state !== 'ACTIVE') {
+      connectionLog(this.id, this._agentName, 'SEND_REJECTED', {
+        reason: 'Not in ACTIVE state',
+        currentState: this._state,
+        messageId: envelope.id.substring(0, 8),
+      });
       this.sendError('BAD_REQUEST', 'Not in ACTIVE state', false);
       return;
     }
 
     // Forward to router via callback
     if (this.onMessage) {
+      connectionLog(this.id, this._agentName, 'SEND_FORWARDING_TO_ROUTER', {
+        messageId: envelope.id.substring(0, 8),
+        to: envelope.to,
+      });
       this.onMessage(envelope);
+    } else {
+      connectionLog(this.id, this._agentName, 'SEND_NO_ROUTER', {
+        messageId: envelope.id.substring(0, 8),
+        warning: 'onMessage callback not set',
+      });
     }
   }
 
@@ -474,7 +546,15 @@ export class Connection {
 
 
   private handleClose(): void {
+    const prevState = this._state;
     this._state = 'CLOSED';
+    connectionLog(this.id, this._agentName, 'CONNECTION_CLOSED', {
+      previousState: prevState,
+    });
+    connectionLog(this.id, this._agentName, 'STATE_TRANSITION', {
+      from: prevState,
+      to: 'CLOSED',
+    });
     this.stopHeartbeat();
     this.cleanup();
     if (this.onClose) {
@@ -483,7 +563,16 @@ export class Connection {
   }
 
   private handleError(err: Error): void {
+    const prevState = this._state;
     this._state = 'ERROR';
+    connectionLog(this.id, this._agentName, 'CONNECTION_ERROR', {
+      previousState: prevState,
+      error: err.message,
+    });
+    connectionLog(this.id, this._agentName, 'STATE_TRANSITION', {
+      from: prevState,
+      to: 'ERROR',
+    });
     this.stopHeartbeat();
     this.cleanup();
     if (this.onError) {

@@ -71,6 +71,108 @@ Broadcasting to everyone>>>
         └─────────────────┘
 ```
 
+<details>
+<summary><h2>For Agents (Quick Reference)</h2></summary>
+
+If you're an AI agent and need to start communicating immediately, here's everything you need:
+
+### Starting the Daemon
+
+Before sending messages, ensure the relay daemon is running:
+
+```bash
+agent-relay up &
+```
+
+**Important:** Run with `&` to background the process so you can continue working. Check status with `agent-relay status`.
+
+### Sending Messages
+
+**Always use the fenced format:**
+
+```
+->relay:AgentName <<<
+Your message here.>>>
+```
+
+```
+->relay:* <<<
+Broadcast to all agents.>>>
+```
+
+**CRITICAL:** Close multi-line messages with `>>>` immediately after your content (no blank lines before `>>>`).
+
+### Receiving Messages
+
+Messages appear as:
+```
+Relay message from Alice [abc123]: Message content here
+```
+
+If truncated, read the full message:
+```bash
+agent-relay read abc123
+```
+
+### Channel Routing
+
+Messages from `#general` include a `[#general]` indicator:
+```
+Relay message from Alice [abc123] [#general]: Hello everyone!
+```
+
+**When you see `[#general]`**: Reply to `*` (broadcast), NOT to the sender directly.
+
+### Communication Protocol
+
+**ACK immediately** when you receive a task:
+```
+->relay:Sender <<<
+ACK: Brief description of task received>>>
+```
+
+**Report completion** when done:
+```
+->relay:Sender <<<
+DONE: Brief summary of what was completed>>>
+```
+
+### Spawning Workers
+
+```
+->relay:spawn WorkerName claude <<<
+Task description here>>>
+
+->relay:release WorkerName
+```
+
+### Common Patterns
+
+```
+->relay:Lead <<<
+ACK: Starting /api/register implementation>>>
+
+->relay:Lead <<<
+STATUS: Working on auth module>>>
+
+->relay:Lead <<<
+DONE: Auth module complete>>>
+
+->relay:Developer <<<
+TASK: Implement /api/register>>>
+
+->relay:Architect <<<
+QUESTION: JWT or sessions?>>>
+```
+
+### Rules
+
+- Pattern must be at line start (whitespace OK)
+- Escape with `\->relay:` to output literally in documentation
+- Check daemon status: `agent-relay status`
+
+</details>
+
 ## Agent Communication
 
 ### Send Message

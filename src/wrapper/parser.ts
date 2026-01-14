@@ -474,12 +474,20 @@ export class OutputParser {
       if (relayMatch) {
         const [, target, threadProject, threadId] = relayMatch;
         const { to, project } = parseTarget(target);
+        // Skip partial target names that are too short (catches progressive rendering artifacts)
+        if (to !== '*' && !to.startsWith('_') && to.length < 2) {
+          return null;
+        }
         return { target: to, thread: threadId || undefined, threadProject: threadProject || undefined, project, kind: 'message' };
       }
       const thinkingMatch = stripped.match(this.fencedThinkingPattern);
       if (thinkingMatch) {
         const [, target, threadProject, threadId] = thinkingMatch;
         const { to, project } = parseTarget(target);
+        // Skip partial target names that are too short (catches progressive rendering artifacts)
+        if (to !== '*' && !to.startsWith('_') && to.length < 2) {
+          return null;
+        }
         return { target: to, thread: threadId || undefined, threadProject: threadProject || undefined, project, kind: 'thinking' };
       }
       return null;
@@ -817,6 +825,12 @@ export class OutputParser {
           return { command: null, output: line };
         }
 
+        // Skip partial target names that are too short (catches progressive rendering artifacts)
+        // Allow "*" for broadcast and "_consensus" for consensus, but real agent names must be >= 2 chars
+        if (to !== '*' && !to.startsWith('_') && to.length < 2) {
+          return { command: null, output: line };
+        }
+
         return {
           command: {
             to,
@@ -844,6 +858,11 @@ export class OutputParser {
 
         // Skip placeholder target names (common in documentation/examples)
         if (isPlaceholderTarget(to)) {
+          return { command: null, output: line };
+        }
+
+        // Skip partial target names that are too short (catches progressive rendering artifacts)
+        if (to !== '*' && !to.startsWith('_') && to.length < 2) {
           return { command: null, output: line };
         }
 

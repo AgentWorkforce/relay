@@ -558,6 +558,7 @@ export class TmuxWrapper extends BaseWrapper {
    */
   private async injectInstructions(): Promise<void> {
     if (!this.running) return;
+    if (this.config.skipInstructions) return;
 
     // Use escaped prefix (\->relay:) in examples to prevent parser from treating them as real commands
     const escapedPrefix = '\\' + this.relayPrefix;
@@ -1173,63 +1174,22 @@ export class TmuxWrapper extends BaseWrapper {
   }
 
   /**
-   * Execute spawn via API (if dashboardPort set) or callback
+   * Execute spawn via daemon socket.
+   * Delegates to BaseWrapper which handles daemon socket and callback fallback.
    */
   protected override async executeSpawn(name: string, cli: string, task: string): Promise<void> {
-    if (this.config.dashboardPort) {
-      // Use dashboard API for spawning (works from any context, no terminal required)
-      try {
-        const response = await fetch(`http://localhost:${this.config.dashboardPort}/api/spawn`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, cli, task }),
-        });
-        const result = await response.json() as { success: boolean; error?: string };
-        if (result.success) {
-          this.logStderr(`Spawned ${name} via API`);
-        } else {
-          this.logStderr(`Spawn failed: ${result.error}`, true);
-        }
-      } catch (err: any) {
-        this.logStderr(`Spawn API call failed: ${err.message}`, true);
-      }
-    } else if (this.config.onSpawn) {
-      // Fall back to callback
-      try {
-        await this.config.onSpawn(name, cli, task);
-      } catch (err: any) {
-        this.logStderr(`Spawn failed: ${err.message}`, true);
-      }
-    }
+    this.logStderr(`[SPAWN-DEBUG] Executing spawn: ${name} (${cli}), clientState=${this.client.state}`);
+    // Delegate to base wrapper which handles daemon socket and callback fallback
+    await super.executeSpawn(name, cli, task);
   }
 
   /**
-   * Execute release via API (if dashboardPort set) or callback
+   * Execute release via daemon socket.
+   * Delegates to BaseWrapper which handles daemon socket and callback fallback.
    */
   protected override async executeRelease(name: string): Promise<void> {
-    if (this.config.dashboardPort) {
-      // Use dashboard API for release (works from any context, no terminal required)
-      try {
-        const response = await fetch(`http://localhost:${this.config.dashboardPort}/api/spawned/${encodeURIComponent(name)}`, {
-          method: 'DELETE',
-        });
-        const result = await response.json() as { success: boolean; error?: string };
-        if (result.success) {
-          this.logStderr(`Released ${name} via API`);
-        } else {
-          this.logStderr(`Release failed: ${result.error}`, true);
-        }
-      } catch (err: any) {
-        this.logStderr(`Release API call failed: ${err.message}`, true);
-      }
-    } else if (this.config.onRelease) {
-      // Fall back to callback
-      try {
-        await this.config.onRelease(name);
-      } catch (err: any) {
-        this.logStderr(`Release failed: ${err.message}`, true);
-      }
-    }
+    // Delegate to base wrapper which handles daemon socket and callback fallback
+    await super.executeRelease(name);
   }
 
   /**
@@ -1245,6 +1205,24 @@ export class TmuxWrapper extends BaseWrapper {
     // Only process if we have API or callbacks configured
     const canSpawn = this.config.dashboardPort || this.config.onSpawn;
     const canRelease = this.config.dashboardPort || this.config.onRelease;
+
+    // Debug: Log spawn detection for diagnostics
+    if (content.includes('->relay:spawn')) {
+      this.logStderr(`[SPAWN-DEBUG] Spawn pattern detected in content`);
+      this.logStderr(`[SPAWN-DEBUG] canSpawn=${canSpawn} (dashboardPort=${this.config.dashboardPort}, hasOnSpawn=${!!this.config.onSpawn})`);
+      // Log the actual lines containing spawn
+      const spawnLines = content.split('\n').filter(l => l.includes('->relay:spawn'));
+      spawnLines.forEach((line, i) => {
+        this.logStderr(`[SPAWN-DEBUG] Line ${i}: "${line.substring(0, 100)}"`);
+      });
+    }
+
+    // Debug: Log release detection for diagnostics
+    if (content.includes('->relay:release')) {
+      this.logStderr(`[RELEASE-DEBUG] Release pattern detected in content`);
+      this.logStderr(`[RELEASE-DEBUG] canRelease=${canRelease} (dashboardPort=${this.config.dashboardPort}, hasOnRelease=${!!this.config.onRelease})`);
+    }
+
     if (!canSpawn && !canRelease) return;
 
     const lines = content.split('\n');
@@ -1378,6 +1356,11 @@ export class TmuxWrapper extends BaseWrapper {
           this.logStderr(`Release command: ${name}`);
           this.executeRelease(name);
         }
+      }
+
+      // Debug: Log when line contains spawn pattern but didn't match
+      if (trimmed.includes('->relay:spawn') && !trimmed.includes('\\->relay:')) {
+        this.logStderr(`[SPAWN-DEBUG] Line has spawn but didn't match patterns: "${trimmed.substring(0, 100)}"`);
       }
     }
   }
@@ -1526,7 +1509,8 @@ export class TmuxWrapper extends BaseWrapper {
         performInjection: async (inj: string) => {
           await this.pasteLiteral(inj);
           await sleep(INJECTION_CONSTANTS.ENTER_DELAY_MS);
-          await this.sendKeys('Enter');
+          // Use C-m (Ctrl+M = carriage return) instead of Enter for more reliable submission
+          await this.sendKeys('C-m');
         },
         log: (message: string) => this.logStderr(message),
         logError: (message: string) => this.logStderr(message, true),
@@ -1582,14 +1566,20 @@ export class TmuxWrapper extends BaseWrapper {
   }
 
   /**
-   * Send special keys to tmux
+   * Send special keys to tmux.
+   * Selects the pane first to ensure keys are processed even in inactive windows.
    */
   private async sendKeys(keys: string): Promise<void> {
+    // Select pane first to ensure keys work in inactive windows
+    await execAsync(`"${this.tmuxPath}" select-pane -t ${this.sessionName}`);
+    // Small delay to ensure pane is fully selected before sending keys
+    await sleep(20);
     await execAsync(`"${this.tmuxPath}" send-keys -t ${this.sessionName} ${keys}`);
   }
 
   /**
-   * Send literal text to tmux
+   * Send literal text to tmux.
+   * Selects the pane first to ensure text is sent even in inactive windows.
    */
   private async sendKeysLiteral(text: string): Promise<void> {
     // Escape for shell and use -l for literal
@@ -1601,11 +1591,16 @@ export class TmuxWrapper extends BaseWrapper {
       .replace(/\$/g, '\\$')
       .replace(/`/g, '\\`')
       .replace(/!/g, '\\!');
+    // Select pane first to ensure text is sent in inactive windows
+    await execAsync(`"${this.tmuxPath}" select-pane -t ${this.sessionName}`);
+    // Small delay to ensure pane is fully selected
+    await sleep(20);
     await execAsync(`"${this.tmuxPath}" send-keys -t ${this.sessionName} -l "${escaped}"`);
   }
 
   /**
    * Paste text using tmux buffer with optional bracketed paste to avoid interleaving with ongoing output.
+   * Selects the pane first to ensure paste works in inactive windows.
    * Some CLIs (like droid) don't handle bracketed paste sequences properly, so we skip -p for them.
    */
   private async pasteLiteral(text: string): Promise<void> {
@@ -1621,6 +1616,10 @@ export class TmuxWrapper extends BaseWrapper {
     // Set tmux buffer then paste
     // Skip bracketed paste (-p) for CLIs that don't handle it properly (droid, other)
     await execAsync(`"${this.tmuxPath}" set-buffer -- "${escaped}"`);
+    // Select pane first to ensure paste works in inactive windows
+    await execAsync(`"${this.tmuxPath}" select-pane -t ${this.sessionName}`);
+    // Small delay to ensure pane is fully selected
+    await sleep(20);
     const useBracketedPaste = this.cliType === 'claude' || this.cliType === 'codex' || this.cliType === 'gemini' || this.cliType === 'opencode';
     if (useBracketedPaste) {
       await execAsync(`"${this.tmuxPath}" paste-buffer -t ${this.sessionName} -p`);
