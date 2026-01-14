@@ -72,20 +72,22 @@ export function useMessages({
   const [optimisticMessages, setOptimisticMessages] = useState<Message[]>([]);
 
   // Clean up optimistic messages when they appear in the real messages list
-  // Match by content + from + to (since IDs will be different)
+  // Match by to + content only (not from, since server may use different sender like '_DashboardUI')
   useEffect(() => {
     if (optimisticMessages.length === 0) return;
 
     // Create a set of "fingerprints" for real messages (recent ones only)
+    // Use to + content only - the 'from' field may differ between optimistic (user's name)
+    // and real message (server may use '_DashboardUI' as relay client name)
     const recentMessages = messages.slice(-50); // Only check recent messages for performance
     const realFingerprints = new Set(
-      recentMessages.map((m) => `${m.from}:${m.to}:${m.content.slice(0, 100)}`)
+      recentMessages.map((m) => `${m.to}:${m.content.slice(0, 100)}`)
     );
 
     // Remove optimistic messages that now exist in real messages
     setOptimisticMessages((prev) =>
       prev.filter((opt) => {
-        const fingerprint = `${opt.from}:${opt.to}:${opt.content.slice(0, 100)}`;
+        const fingerprint = `${opt.to}:${opt.content.slice(0, 100)}`;
         return !realFingerprints.has(fingerprint);
       })
     );

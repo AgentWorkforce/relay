@@ -1002,8 +1002,9 @@ export async function startDashboard(
         }
       }
 
-      // Include attachments and channel context in the message data field
+      // Include attachments, channel context, and sender info in the message data field
       // For broadcasts (to='*'), include channel: 'general' so replies can be routed back
+      // For dashboard messages, include senderName so frontend can display actual user instead of '_DashboardUI'
       const isBroadcast = targets.length === 1 && targets[0] === '*';
       const messageData: Record<string, unknown> = {};
 
@@ -1013,6 +1014,12 @@ export async function startDashboard(
 
       if (isBroadcast) {
         messageData.channel = 'general';
+      }
+
+      // Include actual sender name for dashboard messages (relay client uses '_DashboardUI' but
+      // we want the real user's name displayed in message history)
+      if (senderName) {
+        messageData.senderName = senderName;
       }
 
       const hasMessageData = Object.keys(messageData).length > 0;
@@ -1256,9 +1263,11 @@ export async function startDashboard(
     // Filter out messages from/to internal system agents (e.g., __spawner__)
     .filter((row) => !isInternalAgent(row.from) && !isInternalAgent(row.to))
     .map((row) => {
-      // Extract attachments and channel from the data field if present
+      // Extract attachments, channel, and senderName from the data field if present
       let attachments: Attachment[] | undefined;
       let channel: string | undefined;
+      let effectiveFrom = row.from;
+
       if (row.data && typeof row.data === 'object') {
         if ('attachments' in row.data) {
           attachments = (row.data as { attachments: Attachment[] }).attachments;
@@ -1266,10 +1275,15 @@ export async function startDashboard(
         if ('channel' in row.data) {
           channel = (row.data as { channel: string }).channel;
         }
+        // For dashboard messages sent via _DashboardUI, use the actual sender name
+        // This provides proper attribution in message history
+        if ('senderName' in row.data && row.from === '_DashboardUI') {
+          effectiveFrom = (row.data as { senderName: string }).senderName;
+        }
       }
 
       return {
-        from: row.from,
+        from: effectiveFrom,
         to: row.to,
         content: row.body,
         timestamp: new Date(row.ts).toISOString(),
