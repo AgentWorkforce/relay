@@ -1084,7 +1084,7 @@ export async function createServer(): Promise<CloudServer> {
     let daemonWs: WebSocket | null = null;
 
     try {
-      // Find the workspace (needed to verify it exists)
+      // Find the workspace (needed to verify it exists and get its URL)
       const workspace = await db.workspaces.findById(workspaceId);
       if (!workspace) {
         clientWs.send(JSON.stringify({ type: 'error', message: 'Workspace not found' }));
@@ -1092,8 +1092,10 @@ export async function createServer(): Promise<CloudServer> {
         return;
       }
 
-      // Connect to local dashboard where the daemon actually runs
-      const dashboardUrl = await getLocalDashboardUrl();
+      // Connect to the workspace's dashboard where the agent was spawned
+      // IMPORTANT: Must use workspace.publicUrl (not getLocalDashboardUrl) because
+      // agents are spawned on the workspace server, so logs must connect there too
+      const dashboardUrl = workspace.publicUrl || await getLocalDashboardUrl();
       const baseUrl = dashboardUrl.replace(/^http/, 'ws').replace(/\/$/, '');
       const daemonWsUrl = `${baseUrl}/ws/logs/${encodeURIComponent(agentName)}`;
       console.log(`[ws/logs] Connecting to daemon: ${daemonWsUrl}`);
