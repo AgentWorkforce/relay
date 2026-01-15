@@ -106,6 +106,12 @@ export function sleep(ms: number): Promise<void> {
 export function buildInjectionString(msg: QueuedMessage): string {
   const shortId = msg.messageId.substring(0, 8);
 
+  // Use senderName from data if available (for dashboard messages sent via _DashboardUI)
+  // This allows showing the actual GitHub username instead of the system client name
+  const displayFrom = (msg.from === '_DashboardUI' && typeof msg.data?.senderName === 'string')
+    ? msg.data.senderName
+    : msg.from;
+
   // Strip ANSI and normalize whitespace
   const sanitizedBody = stripAnsi(msg.body).replace(/[\r\n]+/g, ' ').trim();
 
@@ -139,7 +145,7 @@ export function buildInjectionString(msg: QueuedMessage): string {
     }
   }
 
-  return `Relay message from ${msg.from} [${shortId}]${threadHint}${importanceHint}${channelHint}${attachmentHint}: ${sanitizedBody}`;
+  return `Relay message from ${displayFrom} [${shortId}]${threadHint}${importanceHint}${channelHint}${attachmentHint}: ${sanitizedBody}`;
 }
 
 /**
