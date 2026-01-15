@@ -171,7 +171,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   /**
    * Start the relay-pty process and connect to socket
    */
-  async start(): Promise<void> {
+  override async start(): Promise<void> {
     if (this.running) return;
 
     console.log(`[relay-pty-orchestrator:${this.config.name}] Starting...`);
@@ -210,7 +210,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   /**
    * Stop the relay-pty process gracefully
    */
-  async stop(): Promise<void> {
+  override async stop(): Promise<void> {
     if (!this.running) return;
     this.running = false;
 
