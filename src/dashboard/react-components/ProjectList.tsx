@@ -89,52 +89,67 @@ export function ProjectList({
     () => new Set(projects.map((p) => p.id))
   );
 
+  // Filter out system agents (setup agents and _DashboardUI)
+  // These should not appear in the sidebar but can still send/receive messages
+  const filterSystemAgents = (agents: Agent[]) =>
+    agents.filter(a => !a.name.startsWith('__setup__') && a.name !== '_DashboardUI');
+
   // Filter projects and agents based on search query
   const filteredData = useMemo(() => {
     const query = searchQuery.toLowerCase().trim();
+
+    // Always filter system agents first
+    const filteredLocalAgents = filterSystemAgents(localAgents);
+    const filteredBridgeAgents = filterSystemAgents(bridgeAgents);
+    const projectsWithFilteredAgents = projects.map(p => ({
+      ...p,
+      agents: filterSystemAgents(p.agents),
+    }));
+
     if (!query) {
-      return { projects, localAgents, bridgeAgents };
+      return { projects: projectsWithFilteredAgents, localAgents: filteredLocalAgents, bridgeAgents: filteredBridgeAgents };
     }
 
-    // Filter local agents
-    const filteredLocal = localAgents.filter(
+    // Filter local agents by search query (using pre-filtered agents)
+    const searchFilteredLocal = filteredLocalAgents.filter(
       (a) =>
         a.name.toLowerCase().includes(query) ||
         a.currentTask?.toLowerCase().includes(query)
     );
 
-    // Filter bridge agents
-    const filteredBridge = bridgeAgents.filter(
+    // Filter bridge agents by search query (using pre-filtered agents)
+    const searchFilteredBridge = filteredBridgeAgents.filter(
       (a) =>
         a.name.toLowerCase().includes(query) ||
         a.currentTask?.toLowerCase().includes(query)
     );
 
     // Filter projects (show project if name matches OR any agent matches)
-    const filteredProjects = projects
+    // Uses pre-filtered projects with system agents already removed
+    const searchFilteredProjects = projectsWithFilteredAgents
       .map((project) => {
         const projectNameMatches =
           project.name?.toLowerCase().includes(query) ||
           project.path.toLowerCase().includes(query);
 
-        const filteredAgents = project.agents.filter(
+        const searchFilteredAgents = project.agents.filter(
           (a) =>
             a.name.toLowerCase().includes(query) ||
             a.currentTask?.toLowerCase().includes(query)
         );
 
         // Include project if name matches or has matching agents
-        if (projectNameMatches || filteredAgents.length > 0) {
+        if (projectNameMatches || searchFilteredAgents.length > 0) {
           return {
             ...project,
-            agents: projectNameMatches ? project.agents : filteredAgents,
+            agents: projectNameMatches ? project.agents : searchFilteredAgents,
           };
         }
         return null;
       })
       .filter(Boolean) as Project[];
 
-    return { projects: filteredProjects, localAgents: filteredLocal, bridgeAgents: filteredBridge };
+    return { projects: searchFilteredProjects, localAgents: searchFilteredLocal, bridgeAgents: searchFilteredBridge };
   }, [projects, localAgents, bridgeAgents, searchQuery]);
 
   const toggleProject = (projectId: string) => {
