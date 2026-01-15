@@ -795,10 +795,8 @@ async function validateProviderToken(provider: string, token: string): Promise<b
         },
       },
       google: {
-        url: 'https://generativelanguage.googleapis.com/v1/models',
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        url: `https://generativelanguage.googleapis.com/v1/models?key=${encodeURIComponent(token)}`,
+        headers: {},
       },
     };
 

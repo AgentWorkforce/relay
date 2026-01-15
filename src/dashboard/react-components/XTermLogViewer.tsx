@@ -129,58 +129,83 @@ export function XTermLogViewer({
     };
   }, []);
 
-  // Mobile touch scrolling fallback for xterm viewport
+  // Mobile touch scrolling - attach handlers to container, not viewport
+  // xterm.js renders to a canvas which intercepts events; we need to handle
+  // touch scrolling at the container level and use xterm's scroll API directly
   useEffect(() => {
-    if (!containerRef.current || !isTerminalReady) return;
+    if (!containerRef.current || !isTerminalReady || !terminalRef.current) return;
+
+    // Only enable on touch devices
     if (typeof window !== 'undefined' &&
         !window.matchMedia('(pointer: coarse)').matches) {
       return;
     }
 
     const container = containerRef.current;
-    const viewport = container.querySelector('.xterm-viewport') as HTMLElement | null;
-    if (!viewport) return;
+    const terminal = terminalRef.current;
 
+    // Calculate line height from terminal settings
+    const fontSize = 12; // matches Terminal config
+    const lineHeight = 1.4; // matches Terminal config
+    const lineHeightPx = fontSize * lineHeight;
+
+    let startY = 0;
     let lastY = 0;
-    let lineHeightPx = 16;
-
-    const rows = container.querySelector('.xterm-rows') as HTMLElement | null;
-    if (rows) {
-      const computedLineHeight = parseFloat(window.getComputedStyle(rows).lineHeight);
-      if (!Number.isNaN(computedLineHeight)) {
-        lineHeightPx = computedLineHeight;
-      }
-    }
+    let scrollAccumulator = 0; // accumulate sub-line scroll deltas
+    let isTouchScrolling = false;
 
     const handleTouchStart = (event: TouchEvent) => {
       if (event.touches.length !== 1) return;
-      lastY = event.touches[0].clientY;
+      startY = event.touches[0].clientY;
+      lastY = startY;
+      scrollAccumulator = 0;
+      isTouchScrolling = false;
     };
 
     const handleTouchMove = (event: TouchEvent) => {
       if (event.touches.length !== 1) return;
+
       const currentY = event.touches[0].clientY;
-      const delta = lastY - currentY;
+      const delta = lastY - currentY; // positive = scroll down
       lastY = currentY;
 
-      const lineDelta = Math.round(delta / lineHeightPx);
-      if (lineDelta !== 0) {
-        terminalRef.current?.scrollLines(lineDelta);
-      } else {
-        viewport.scrollTop += delta;
+      // Determine if this is a scroll gesture (vs a tap)
+      if (!isTouchScrolling && Math.abs(currentY - startY) > 10) {
+        isTouchScrolling = true;
       }
 
-      if (viewport.scrollHeight > viewport.clientHeight) {
-        event.preventDefault();
+      if (!isTouchScrolling) return;
+
+      // Accumulate scroll delta for smooth scrolling
+      scrollAccumulator += delta;
+
+      // Convert accumulated pixels to lines and scroll
+      const linesToScroll = Math.trunc(scrollAccumulator / lineHeightPx);
+      if (linesToScroll !== 0) {
+        terminal.scrollLines(linesToScroll);
+        scrollAccumulator -= linesToScroll * lineHeightPx;
       }
+
+      // Prevent page scroll while scrolling terminal content
+      event.preventDefault();
     };
 
-    viewport.addEventListener('touchstart', handleTouchStart, { passive: true });
-    viewport.addEventListener('touchmove', handleTouchMove, { passive: false });
+    const handleTouchEnd = () => {
+      isTouchScrolling = false;
+      scrollAccumulator = 0;
+    };
+
+    // Attach to container - this captures touches over the entire terminal area
+    container.addEventListener('touchstart', handleTouchStart, { passive: true });
+    container.addEventListener('touchmove', handleTouchMove, { passive: false });
+    container.addEventListener('touchend', handleTouchEnd, { passive: true });
+    container.addEventListener('touchcancel', handleTouchEnd, { passive: true });
 
     return () => {
-      viewport.removeEventListener('touchstart', handleTouchStart);
-      viewport.removeEventListener('touchmove', handleTouchMove);
+      container.removeEventListener('touchstart', handleTouchStart);
+      container.removeEventListener('touchmove', handleTouchMove);
+      container.removeEventListener('touchend', handleTouchEnd);
+      container.removeEventListener('touchcancel', handleTouchEnd);
     };
   }, [isTerminalReady]);
 
@@ -384,43 +409,26 @@ export function XTermLogViewer({
         boxShadow: `0 0 60px -15px ${colors.primary}25, 0 25px 50px -12px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255,255,255,0.02)`,
       }}
     >
-      {/* Mobile touch scroll fix for xterm.js
-          xterm.js intercepts touch events on multiple elements (canvas, viewport, screen).
-          We need to allow vertical panning on all of them while still permitting taps. */}
+      {/* Mobile touch scroll styles for xterm.js
+          Touch scrolling is handled via JavaScript (touchstart/touchmove on container).
+          We set touch-action: none to prevent browser's default scroll handling
+          so our custom handler has full control. */}
       <style>{`
         .xterm-log-viewer .xterm {
-          touch-action: pan-y !important;
-          overscroll-behavior: contain;
           height: 100%;
         }
         .xterm-log-viewer .xterm-viewport {
-          -webkit-overflow-scrolling: touch !important;
-          overflow-y: auto !important;
           height: 100%;
           max-height: 100%;
-          touch-action: pan-y !important;
           overscroll-behavior: contain;
-          pointer-events: auto;
         }
-        .xterm-log-viewer .xterm-screen {
-          touch-action: pan-y !important;
-        }
-        .xterm-log-viewer .xterm-screen canvas {
-          touch-action: pan-y !important;
-        }
-        .xterm-log-viewer .xterm-helper-textarea {
-          touch-action: pan-y !important;
-        }
-        /* Ensure the xterm rows don't block scrolling */
-        .xterm-log-viewer .xterm-rows {
-          touch-action: pan-y !important;
-        }
-        /* Let touch scroll events reach the viewport on mobile Safari */
+        /* On touch devices, disable browser touch handling so our JS handler works */
         @media (pointer: coarse) {
+          .xterm-log-viewer .xterm,
+          .xterm-log-viewer .xterm-viewport,
           .xterm-log-viewer .xterm-screen,
-          .xterm-log-viewer .xterm-screen canvas,
-          .xterm-log-viewer .xterm-helper-textarea {
-            pointer-events: none;
+          .xterm-log-viewer .xterm-screen canvas {
+            touch-action: none;
           }
         }
       `}</style>
@@ -550,18 +558,14 @@ export function XTermLogViewer({
         </div>
       )}
 
-      {/* Terminal container - keep a dedicated scroll boundary for mobile */}
+      {/* Terminal container - touch handlers attached via useEffect */}
       <div
         className="flex-1 min-h-0 overflow-hidden"
         style={{ height: maxHeight, maxHeight, minHeight: '200px' }}
       >
         <div
           ref={containerRef}
-          className="h-full w-full touch-pan-y"
-          style={{
-            overscrollBehavior: 'contain',
-            touchAction: 'pan-y',
-          }}
+          className="h-full w-full"
         />
       </div>
 

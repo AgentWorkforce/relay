@@ -40,10 +40,13 @@ export function AgentList({
   const [allExpanded, setAllExpanded] = useState(true);
 
   // Filter out setup agents (temporary agents for provider auth)
-  // and then apply search filtering
+  // and system agents like _DashboardUI (used for dashboard message sending)
+  // then apply search filtering
   const filteredAgents = useMemo(() => {
-    const nonSetupAgents = agents.filter(a => !a.name.startsWith('__setup__'));
-    return filterAgents(nonSetupAgents, searchQuery);
+    const nonSystemAgents = agents.filter(a =>
+      !a.name.startsWith('__setup__') && a.name !== '_DashboardUI'
+    );
+    return filterAgents(nonSystemAgents, searchQuery);
   }, [agents, searchQuery]);
 
   const groups = useMemo(

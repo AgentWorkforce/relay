@@ -398,6 +398,32 @@ export const cloudApi = {
   },
 
   /**
+   * Get all accessible workspaces (owned + member + contributor via GitHub repos)
+   * This is the preferred method for the workspace selector dropdown
+   */
+  async getAccessibleWorkspaces() {
+    return cloudFetch<{
+      workspaces: Array<{
+        id: string;
+        name: string;
+        status: string;
+        publicUrl?: string;
+        providers?: string[];
+        repositories?: string[];
+        accessType: 'owner' | 'member' | 'contributor';
+        permission: 'admin' | 'write' | 'read';
+        createdAt: string;
+      }>;
+      summary: {
+        owned: number;
+        member: number;
+        contributor: number;
+        total: number;
+      };
+    }>('/api/workspaces/accessible');
+  },
+
+  /**
    * Get workspace status (live polling from compute provider)
    */
   async getWorkspaceStatus(id: string) {

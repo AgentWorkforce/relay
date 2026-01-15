@@ -61,6 +61,7 @@ import {
   type UnreadState,
   type CreateChannelRequest,
 } from './channels';
+import { useWorkspaceMembers, filterOnlineUsersByWorkspace } from './hooks/useWorkspaceMembers';
 import { useCloudSessionOptional } from './CloudSessionProvider';
 import { WorkspaceProvider } from './WorkspaceContext';
 import { api, convertApiDecision, setActiveWorkspaceId as setApiWorkspaceId, getCsrfToken } from '../lib/api';
@@ -222,11 +223,14 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     : undefined;
 
   // Cloud workspaces state (for cloud mode)
+  // Includes owned, member, and contributor workspaces (via GitHub repo access)
   const [cloudWorkspaces, setCloudWorkspaces] = useState<Array<{
     id: string;
     name: string;
     status: string;
-    path?: string;
+    publicUrl?: string;
+    accessType?: 'owner' | 'member' | 'contributor';
+    permission?: 'admin' | 'write' | 'read';
   }>>([]);
   const [activeCloudWorkspaceId, setActiveCloudWorkspaceId] = useState<string | null>(null);
   const [isLoadingCloudWorkspaces, setIsLoadingCloudWorkspaces] = useState(false);
@@ -235,18 +239,22 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   const [localAgents, setLocalAgents] = useState<Agent[]>([]);
 
   // Fetch cloud workspaces when in cloud mode
+  // Uses getAccessibleWorkspaces to include contributor workspaces (via GitHub repos)
   useEffect(() => {
     if (!cloudSession?.user) return;
 
     const fetchCloudWorkspaces = async () => {
       setIsLoadingCloudWorkspaces(true);
       try {
-        const result = await cloudApi.getWorkspaceSummary();
+        const result = await cloudApi.getAccessibleWorkspaces();
         if (result.success && result.data.workspaces) {
           setCloudWorkspaces(result.data.workspaces);
           // Auto-select first workspace if none selected
           if (!activeCloudWorkspaceId && result.data.workspaces.length > 0) {
-            setActiveCloudWorkspaceId(result.data.workspaces[0].id);
+            const firstWorkspaceId = result.data.workspaces[0].id;
+            setActiveCloudWorkspaceId(firstWorkspaceId);
+            // Sync immediately with api module to avoid race conditions
+            setApiWorkspaceId(firstWorkspaceId);
           }
         }
       } catch (err) {
@@ -320,10 +328,11 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   const effectiveWorkspaces = useMemo(() => {
     if (isCloudMode && cloudWorkspaces.length > 0) {
       // Convert cloud workspaces to the format expected by WorkspaceSelector
+      // Includes owned, member, and contributor workspaces
       return cloudWorkspaces.map(ws => ({
         id: ws.id,
         name: ws.name,
-        path: ws.path || `/workspace/${ws.name}`,
+        path: ws.publicUrl || `/workspace/${ws.name}`,
         status: ws.status === 'running' ? 'active' as const : 'inactive' as const,
         provider: 'claude' as const,
         lastActiveAt: new Date(),
@@ -336,9 +345,14 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   const effectiveIsLoading = isCloudMode ? isLoadingCloudWorkspaces : isOrchestratorLoading;
 
   // Sync the active workspace ID with the api module for cloud mode proxying
+  // This useEffect serves as a safeguard and handles initial load/edge cases
+  // The immediate sync in handleEffectiveWorkspaceSelect handles user-initiated changes
   useEffect(() => {
     if (isCloudMode && activeCloudWorkspaceId) {
       setApiWorkspaceId(activeCloudWorkspaceId);
+    } else if (isCloudMode && !activeCloudWorkspaceId) {
+      // In cloud mode but no workspace selected - clear the proxy
+      setApiWorkspaceId(null);
     } else if (!isCloudMode) {
       // Clear the workspace ID when not in cloud mode
       setApiWorkspaceId(null);
@@ -349,6 +363,9 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   const handleEffectiveWorkspaceSelect = useCallback(async (workspace: { id: string; name: string }) => {
     if (isCloudMode) {
       setActiveCloudWorkspaceId(workspace.id);
+      // Sync immediately with api module to avoid race conditions
+      // This ensures spawn/release calls use the correct workspace before the useEffect runs
+      setApiWorkspaceId(workspace.id);
     } else {
       await switchWorkspace(workspace.id);
     }
@@ -438,7 +455,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     }
   }, [appendChannelMessage, currentUser?.displayName, selectedChannelId]);
 
-  const { onlineUsers, typingUsers, sendTyping, isConnected: isPresenceConnected } = usePresence({
+  const { onlineUsers: allOnlineUsers, typingUsers, sendTyping, isConnected: isPresenceConnected } = usePresence({
     currentUser: presenceUser,
     onEvent: handlePresenceEvent,
   });
@@ -449,6 +466,18 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
       localStorage.setItem('relay_username', currentUser.displayName);
     }
   }, [currentUser?.displayName]);
+
+  // Filter online users by workspace membership (cloud mode only)
+  const { memberUsernames } = useWorkspaceMembers({
+    workspaceId: effectiveActiveWorkspaceId ?? undefined,
+    enabled: isCloudMode && !!effectiveActiveWorkspaceId,
+  });
+
+  // Filter online users to only show those with access to current workspace
+  const onlineUsers = useMemo(
+    () => filterOnlineUsersByWorkspace(allOnlineUsers, memberUsernames),
+    [allOnlineUsers, memberUsernames]
+  );
 
   // User profile panel state
   const [selectedUserProfile, setSelectedUserProfile] = useState<UserPresence | null>(null);
