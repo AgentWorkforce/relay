@@ -64,6 +64,7 @@ export function XTermInteractive({
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef(0);
+  const hasShownConnectedRef = useRef(false); // Prevent duplicate "Connected" messages
 
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
@@ -77,6 +78,9 @@ export function XTermInteractive({
   // Initialize terminal
   useEffect(() => {
     if (!containerRef.current) return;
+
+    // Reset connected message flag when agent changes
+    hasShownConnectedRef.current = false;
 
     const terminal = new Terminal({
       theme: TERMINAL_THEME,
@@ -145,8 +149,12 @@ export function XTermInteractive({
       setError(null);
       reconnectAttemptsRef.current = 0;
 
-      terminalRef.current?.writeln(`\x1b[90m[Connected to ${agentName} - Interactive Mode]\x1b[0m`);
-      terminalRef.current?.writeln(`\x1b[90m[You can type directly in this terminal]\x1b[0m\n`);
+      // Only show connected message once per session
+      if (!hasShownConnectedRef.current) {
+        hasShownConnectedRef.current = true;
+        terminalRef.current?.writeln(`\x1b[90m[Connected to ${agentName} - Interactive Mode]\x1b[0m`);
+        terminalRef.current?.writeln(`\x1b[90m[You can type directly in this terminal]\x1b[0m\n`);
+      }
     };
 
     ws.onclose = (event) => {

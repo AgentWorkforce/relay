@@ -98,6 +98,8 @@ export function TerminalProviderSetup({
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const shownAuthUrlsRef = useRef<Set<string>>(new Set());
+  const hasShownConnectedRef = useRef(false); // Prevent duplicate "Connected" messages
+  const onDataDisposableRef = useRef<{ dispose: () => void } | null>(null); // Track onData handler for cleanup
 
   const [isSpawning, setIsSpawning] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
@@ -225,10 +227,14 @@ export function TerminalProviderSetup({
     };
   }, []);
 
-  // Detect auth URLs in output
+  // Ref to hold authModalDismissed state for use in callbacks without causing re-renders
+  const authModalDismissedRef = useRef(authModalDismissed);
+  authModalDismissedRef.current = authModalDismissed;
+
+  // Detect auth URLs in output - uses ref to avoid dependency on authModalDismissed
   const detectAuthUrl = useCallback((content: string) => {
     // Don't show modal if user already dismissed it
-    if (authModalDismissed) return false;
+    if (authModalDismissedRef.current) return false;
 
     for (const pattern of AUTH_URL_PATTERNS) {
       const match = content.match(pattern);
@@ -248,13 +254,21 @@ export function TerminalProviderSetup({
       }
     }
     return false;
-  }, [authModalDismissed]);
+  }, []); // No dependencies - uses ref for mutable state
 
   // Connect WebSocket when agent is spawned
   useEffect(() => {
     if (!agentName || !workspaceId) return;
 
+    // Reset the connected message flag when agent changes
+    hasShownConnectedRef.current = false;
+
     const connectWebSocket = () => {
+      // Don't reconnect if we already have an open connection
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        return;
+      }
+
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${protocol}//${window.location.host}/ws/logs/${encodeURIComponent(workspaceId)}/${encodeURIComponent(agentName)}`;
 
@@ -265,15 +279,19 @@ export function TerminalProviderSetup({
       ws.onopen = () => {
         setIsConnected(true);
         setIsConnecting(false);
-        terminalRef.current?.writeln('\x1b[90m[Connected - Interactive Mode]\x1b[0m');
-        terminalRef.current?.writeln('\x1b[90m[Type directly to respond to prompts]\x1b[0m\n');
+        // Only show connected message once per session
+        if (!hasShownConnectedRef.current) {
+          hasShownConnectedRef.current = true;
+          terminalRef.current?.writeln('\x1b[90m[Connected - Interactive Mode]\x1b[0m');
+          terminalRef.current?.writeln('\x1b[90m[Type directly to respond to prompts]\x1b[0m\n');
+        }
       };
 
       ws.onclose = () => {
         setIsConnected(false);
         setIsConnecting(false);
 
-        // Reconnect after delay
+        // Reconnect after delay (only if not intentionally closed)
         reconnectTimeoutRef.current = setTimeout(connectWebSocket, 2000);
       };
 
@@ -301,12 +319,20 @@ export function TerminalProviderSetup({
         }
       };
 
-      // Handle user input
-      terminalRef.current?.onData((data: string) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'input', agent: agentName, data }));
-        }
-      });
+      // Clean up previous onData handler before adding new one
+      if (onDataDisposableRef.current) {
+        onDataDisposableRef.current.dispose();
+        onDataDisposableRef.current = null;
+      }
+
+      // Handle user input - store disposable for cleanup
+      if (terminalRef.current) {
+        onDataDisposableRef.current = terminalRef.current.onData((data: string) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'input', agent: agentName, data }));
+          }
+        });
+      }
     };
 
     connectWebSocket();
@@ -314,8 +340,14 @@ export function TerminalProviderSetup({
     return () => {
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      if (onDataDisposableRef.current) {
+        onDataDisposableRef.current.dispose();
+        onDataDisposableRef.current = null;
       }
       wsRef.current?.close();
+      wsRef.current = null;
     };
   }, [agentName, workspaceId, detectAuthUrl]);
 
