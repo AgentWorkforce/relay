@@ -18,6 +18,7 @@ use std::ffi::CString;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
@@ -284,6 +285,8 @@ pub struct AsyncPty {
     child_pid: Pid,
     /// Master FD (for resize)
     master_fd: RawFd,
+    /// Owned PTY for lifecycle management
+    pty: Option<Pty>,
 }
 
 impl AsyncPty {
@@ -310,16 +313,13 @@ impl AsyncPty {
             Self::writer_thread(writer_fd, writer_running, input_rx);
         });
 
-        // Keep pty alive but don't store it (it's not Send due to Termios)
-        // The threads will keep running and we use the raw fd
-        std::mem::forget(pty);
-
         Self {
             output_rx,
             input_tx,
             running,
             child_pid,
             master_fd,
+            pty: Some(pty),
         }
     }
 
@@ -427,6 +427,55 @@ impl AsyncPty {
     pub fn signal(&self, sig: Signal) -> Result<()> {
         signal::kill(self.child_pid, sig)?;
         Ok(())
+    }
+
+    /// Terminate the child process and reap it.
+    pub fn shutdown(&mut self) -> Result<()> {
+        self.running.store(false, Ordering::SeqCst);
+        let _ = self.signal(Signal::SIGTERM);
+
+        let start = Instant::now();
+        let mut reaped = false;
+        let mut sent_kill = false;
+
+        while start.elapsed() < Duration::from_secs(2) {
+            match waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG)) {
+                Ok(WaitStatus::Exited(_, _)) | Ok(WaitStatus::Signaled(_, _, _)) => {
+                    reaped = true;
+                    break;
+                }
+                Ok(WaitStatus::StillAlive) => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Ok(_) => {
+                    reaped = true;
+                    break;
+                }
+                Err(nix::errno::Errno::ECHILD) => {
+                    reaped = true;
+                    break;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+
+        if !reaped {
+            let _ = self.signal(Signal::SIGKILL);
+            sent_kill = true;
+        }
+
+        if sent_kill {
+            let _ = waitpid(self.child_pid, None);
+        }
+
+        self.pty.take();
+        Ok(())
+    }
+}
+
+impl Drop for AsyncPty {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
     }
 }
 

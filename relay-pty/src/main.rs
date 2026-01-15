@@ -293,6 +293,9 @@ async fn main() -> Result<()> {
     // Cleanup
     info!("Shutting down...");
 
+    // Terminate child and reap
+    let _ = async_pty.shutdown();
+
     // Restore terminal
     Pty::restore_terminal();
 
