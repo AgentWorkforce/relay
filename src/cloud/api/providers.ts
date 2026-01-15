@@ -393,6 +393,13 @@ providersRouter.post('/:provider/api-key', async (req: Request, res: Response) =
       });
       // 200 = valid, 401 = invalid key, 400/other = might still be valid key
       isValid = testRes.status !== 401;
+    } else if (provider === 'google') {
+      // Test Google/Gemini API key (uses query param auth, not Bearer token)
+      const testRes = await fetch(
+        `https://generativelanguage.googleapis.com/v1/models?key=${encodeURIComponent(apiKey)}`
+      );
+      // 200 = valid, 400/401/403 = invalid key
+      isValid = testRes.status === 200;
     } else {
       // For other providers, just accept the key
       isValid = true;
