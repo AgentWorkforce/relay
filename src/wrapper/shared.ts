@@ -17,6 +17,10 @@ export interface QueuedMessage {
   data?: Record<string, unknown>;
   /** Original 'to' field - '*' indicates broadcast */
   originalTo?: string;
+  /** Timestamp when message was queued (for TTL enforcement) */
+  queuedAt?: number;
+  /** Number of injection attempts (for max retry enforcement) */
+  injectionAttempts?: number;
 }
 
 /**
@@ -63,6 +67,12 @@ export const INJECTION_CONSTANTS = {
   RETRY_BACKOFF_MS: 300,
   /** Delay between processing queued messages (ms) */
   QUEUE_PROCESS_DELAY_MS: 500,
+  /** Maximum re-queue attempts before message is dropped (prevents infinite loops) */
+  MAX_REQUEUE_ATTEMPTS: 10,
+  /** Message TTL - drop messages older than this (ms, default 5 minutes) */
+  MESSAGE_TTL_MS: 5 * 60 * 1000,
+  /** Maximum queue size before applying backpressure */
+  MAX_QUEUE_SIZE: 100,
 } as const;
 
 /**

@@ -13,6 +13,7 @@
  */
 
 import { exec, execSync, spawn, ChildProcess } from 'node:child_process';
+import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
 import { promisify } from 'node:util';
 import { BaseWrapper, type BaseWrapperConfig } from './base-wrapper.js';
@@ -42,6 +43,7 @@ import { detectProviderAuthRevocation } from './auth-detection.js';
 import {
   type CliType,
   type InjectionCallbacks,
+  type QueuedMessage,
   stripAnsi,
   sleep,
   getDefaultRelayPrefix,
@@ -142,6 +144,8 @@ export class TmuxWrapper extends BaseWrapper {
   private authRevoked = false; // Track if auth has been revoked
   private lastAuthCheck = 0; // Timestamp of last auth check (throttle)
   private readonly AUTH_CHECK_INTERVAL = 5000; // Check auth status every 5 seconds max
+  private paneTty: string | null = null; // Cached pane TTY device path
+  private pendingTimeouts: Set<NodeJS.Timeout> = new Set(); // Track pending timeouts for cleanup on stop()
 
   constructor(config: TmuxWrapperConfig) {
     // Merge defaults with config
@@ -1478,6 +1482,12 @@ export class TmuxWrapper extends BaseWrapper {
       return;
     }
 
+    // Backpressure: reject if queue is at max capacity
+    if (this.messageQueue.length >= INJECTION_CONSTANTS.MAX_QUEUE_SIZE) {
+      this.logStderr(`← ${from}: DROPPED - queue full (${this.messageQueue.length}/${INJECTION_CONSTANTS.MAX_QUEUE_SIZE})`, true);
+      return;
+    }
+
     const truncatedBody = payload.body.substring(0, Math.min(DEBUG_LOG_TRUNCATE_LENGTH, payload.body.length));
     const channelInfo = originalTo === '*' ? ' [broadcast]' : '';
     this.logStderr(`← ${from}${channelInfo}: ${truncatedBody}...`);
@@ -1486,7 +1496,18 @@ export class TmuxWrapper extends BaseWrapper {
     this.trajectory?.message('received', from, this.config.name, payload.body);
 
     // Queue for injection - include originalTo so we can inform the agent how to route responses
-    this.messageQueue.push({ from, body: payload.body, messageId, thread: payload.thread, importance: meta?.importance, data: payload.data, originalTo });
+    // Add queuedAt timestamp for TTL enforcement
+    this.messageQueue.push({
+      from,
+      body: payload.body,
+      messageId,
+      thread: payload.thread,
+      importance: meta?.importance,
+      data: payload.data,
+      originalTo,
+      queuedAt: Date.now(),
+      injectionAttempts: 0,
+    });
 
     // Write to inbox if enabled
     if (this.inbox) {
@@ -1514,6 +1535,12 @@ export class TmuxWrapper extends BaseWrapper {
       return;
     }
 
+    // Backpressure: reject if queue is at max capacity
+    if (this.messageQueue.length >= INJECTION_CONSTANTS.MAX_QUEUE_SIZE) {
+      this.logStderr(`← ${from} [${channel}]: DROPPED - queue full (${this.messageQueue.length}/${INJECTION_CONSTANTS.MAX_QUEUE_SIZE})`, true);
+      return;
+    }
+
     const truncatedBody = body.substring(0, Math.min(DEBUG_LOG_TRUNCATE_LENGTH, body.length));
     this.logStderr(`← ${from} [${channel}]: ${truncatedBody}...`);
 
@@ -1532,6 +1559,8 @@ export class TmuxWrapper extends BaseWrapper {
         _mentions: envelope.payload.mentions,
       },
       originalTo: channel, // Set channel as the reply target
+      queuedAt: Date.now(),
+      injectionAttempts: 0,
     });
 
     // Write to inbox if enabled
@@ -1552,17 +1581,93 @@ export class TmuxWrapper extends BaseWrapper {
     if (this.isInjecting) return;
     if (!this.running) return;
 
+    // Don't inject if auth has been revoked - session is dead
+    if (this.authRevoked) {
+      this.logStderr('Auth revoked, skipping injection');
+      return;
+    }
+
+    // Prune expired messages from queue (TTL enforcement)
+    this.pruneExpiredMessages();
+    if (this.messageQueue.length === 0) return;
+
     // Use universal idle detector for more reliable detection (inherited from BaseWrapper)
     const idleResult = this.checkIdleForInjection();
 
     if (!idleResult.isIdle) {
       // Not idle yet, retry later
       const retryMs = this.config.injectRetryMs ?? 500;
-      setTimeout(() => this.checkForInjectionOpportunity(), retryMs);
+      this.scheduleRetry(retryMs);
       return;
     }
 
     this.injectNextMessage();
+  }
+
+  /**
+   * Prune messages that have exceeded their TTL.
+   * This prevents stale messages from accumulating in the queue.
+   */
+  private pruneExpiredMessages(): void {
+    const now = Date.now();
+    const ttl = INJECTION_CONSTANTS.MESSAGE_TTL_MS;
+
+    const expiredCount = this.messageQueue.filter(
+      (msg) => msg.queuedAt && now - msg.queuedAt > ttl
+    ).length;
+
+    if (expiredCount > 0) {
+      this.messageQueue = this.messageQueue.filter((msg) => {
+        if (msg.queuedAt && now - msg.queuedAt > ttl) {
+          this.logStderr(
+            `Message from ${msg.from} expired (age: ${Math.round((now - msg.queuedAt) / 1000)}s), dropping`,
+            true
+          );
+          return false;
+        }
+        return true;
+      });
+    }
+  }
+
+  /**
+   * Schedule a retry for injection opportunity check.
+   * Tracks the timeout so it can be canceled on stop().
+   */
+  private scheduleRetry(delayMs: number): void {
+    const timeout = setTimeout(() => {
+      this.pendingTimeouts.delete(timeout);
+      this.checkForInjectionOpportunity();
+    }, delayMs);
+    this.pendingTimeouts.add(timeout);
+  }
+
+  /**
+   * Re-queue a message with attempt tracking.
+   * Returns false if max attempts exceeded (message should be dropped).
+   */
+  private requeueMessage(msg: QueuedMessage, reason: string, retryDelayMs: number): boolean {
+    // Increment attempt counter
+    msg.injectionAttempts = (msg.injectionAttempts ?? 0) + 1;
+
+    // Check max attempts
+    if (msg.injectionAttempts >= INJECTION_CONSTANTS.MAX_REQUEUE_ATTEMPTS) {
+      this.logStderr(
+        `Message from ${msg.from} exceeded max attempts (${msg.injectionAttempts}), dropping: ${reason}`,
+        true
+      );
+      // Write to inbox as last resort if enabled
+      if (this.inbox) {
+        this.inbox.addMessage(msg.from, msg.body);
+        this.logStderr('Wrote dropped message to inbox as fallback');
+      }
+      return false;
+    }
+
+    this.logStderr(`${reason}, re-queuing (attempt ${msg.injectionAttempts}/${INJECTION_CONSTANTS.MAX_REQUEUE_ATTEMPTS})`);
+    this.messageQueue.unshift(msg);
+    this.scheduleRetry(retryDelayMs);
+    return true;
   }
 
   /**
@@ -1585,10 +1690,8 @@ export class TmuxWrapper extends BaseWrapper {
       const inputClear = await this.waitForClearInput(waitTimeoutMs, waitPollMs);
       if (!inputClear) {
         // Input still has text after timeout - DON'T clear forcefully, re-queue instead
-        this.logStderr('Input not clear, re-queuing injection');
-        this.messageQueue.unshift(msg);
+        this.requeueMessage(msg, 'Input not clear', this.config.injectRetryMs ?? 1000);
         this.isInjecting = false;
-        setTimeout(() => this.checkForInjectionOpportunity(), this.config.injectRetryMs ?? 1000);
         return;
       }
 
@@ -1598,10 +1701,8 @@ export class TmuxWrapper extends BaseWrapper {
         this.config.outputStabilityPollMs ?? 200
       );
       if (!stablePane) {
-        this.logStderr('Output still active, re-queuing injection');
-        this.messageQueue.unshift(msg);
+        this.requeueMessage(msg, 'Output still active', this.config.injectRetryMs ?? 500);
         this.isInjecting = false;
-        setTimeout(() => this.checkForInjectionOpportunity(), this.config.injectRetryMs ?? 500);
         return;
       }
 
@@ -1611,11 +1712,8 @@ export class TmuxWrapper extends BaseWrapper {
         const lastLine = await this.getLastLine();
         const cleanLine = stripAnsi(lastLine).trim();
         if (CLI_QUIRKS.isShellPrompt(cleanLine)) {
-          this.logStderr('Gemini at shell prompt, skipping injection to avoid shell execution');
-          // Re-queue the message for later
-          this.messageQueue.unshift(msg);
+          this.requeueMessage(msg, 'Gemini at shell prompt', 2000);
           this.isInjecting = false;
-          setTimeout(() => this.checkForInjectionOpportunity(), 2000);
           return;
         }
       }
@@ -1646,8 +1744,15 @@ export class TmuxWrapper extends BaseWrapper {
           }
         },
         performInjection: async (inj: string) => {
-          // Use send-keys -l (literal) instead of paste-buffer
-          // paste-buffer causes issues where Claude shows "[Pasted text]" but content doesn't appear
+          // Primary: Write directly to pane TTY (most reliable, bypasses tmux input layer)
+          const ttySuccess = await this.writeToTty(inj);
+          if (ttySuccess) {
+            return;
+          }
+
+          // Fallback: Use send-keys -l (literal) if TTY write fails
+          // This can happen if TTY permissions are restricted or session is in a weird state
+          this.logStderr('[performInjection] TTY write failed, falling back to send-keys');
           await this.sendKeysLiteral(inj);
           await sleep(INJECTION_CONSTANTS.ENTER_DELAY_MS);
           await this.sendKeys('Enter');
@@ -1762,6 +1867,75 @@ export class TmuxWrapper extends BaseWrapper {
   }
 
   /**
+   * Get the TTY device path for the tmux pane.
+   * This is cached for efficiency since the pane TTY doesn't change during a session.
+   */
+  private async getPaneTty(): Promise<string | null> {
+    if (this.paneTty) {
+      return this.paneTty;
+    }
+
+    try {
+      const { stdout } = await execAsync(
+        `"${this.tmuxPath}" display-message -t ${this.sessionName} -p "#{pane_tty}" 2>/dev/null`
+      );
+      const tty = stdout.trim();
+      if (tty && tty.startsWith('/dev/')) {
+        this.paneTty = tty;
+        this.logStderr(`Cached pane TTY: ${tty}`);
+        return tty;
+      }
+    } catch (err: any) {
+      this.logStderr(`Failed to get pane TTY: ${err?.message}`);
+    }
+    return null;
+  }
+
+  /**
+   * Write directly to the pane's TTY device.
+   * This is more reliable than send-keys because it bypasses tmux's input processing.
+   * Uses bracketed paste mode to prevent the CLI from interpreting special characters.
+   */
+  private async writeToTty(text: string): Promise<boolean> {
+    const tty = await this.getPaneTty();
+    if (!tty) {
+      return false;
+    }
+
+    try {
+      // Sanitize newlines for single-line injection
+      const sanitized = text.replace(/[\r\n]+/g, ' ');
+
+      // Use bracketed paste for CLIs that support it (Claude, Codex, Gemini)
+      // This prevents the CLI from executing commands mid-paste
+      const useBracketedPaste =
+        this.cliType === 'claude' || this.cliType === 'codex' || this.cliType === 'gemini';
+
+      let content: string;
+      if (useBracketedPaste) {
+        // Bracketed paste: \x1b[200~ starts paste, \x1b[201~ ends paste
+        content = `\x1b[200~${sanitized}\x1b[201~`;
+      } else {
+        content = sanitized;
+      }
+
+      // Write directly to the TTY device using async fs operations
+      // This avoids blocking the event loop on TTY writes
+      await fs.appendFile(tty, content);
+
+      // Send Enter key (carriage return)
+      await sleep(INJECTION_CONSTANTS.ENTER_DELAY_MS);
+      await fs.appendFile(tty, '\r');
+
+      this.logStderr(`[writeToTty] Wrote ${text.length} chars to ${tty}`);
+      return true;
+    } catch (err: any) {
+      this.logStderr(`[writeToTty] Failed: ${err?.message}`, true);
+      return false;
+    }
+  }
+
+  /**
    * Reset session-specific state for wrapper reuse.
    * Call this when starting a new session with the same wrapper instance.
    */
@@ -1769,6 +1943,7 @@ export class TmuxWrapper extends BaseWrapper {
     super.resetSessionState();
     // TmuxWrapper-specific state
     this.lastSummaryHash = '';
+    this.paneTty = null; // Clear cached TTY on session reset
   }
 
   /**
@@ -1949,6 +2124,12 @@ export class TmuxWrapper extends BaseWrapper {
 
     // Reset session state for potential reuse
     this.resetSessionState();
+
+    // Cancel all pending injection retry timeouts
+    for (const timeout of this.pendingTimeouts) {
+      clearTimeout(timeout);
+    }
+    this.pendingTimeouts.clear();
 
     // Stop polling
     if (this.pollTimer) {
