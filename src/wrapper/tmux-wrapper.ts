@@ -13,7 +13,7 @@
  */
 
 import { exec, execSync, spawn, ChildProcess } from 'node:child_process';
-import fs from 'node:fs/promises';
+import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { promisify } from 'node:util';
 import { BaseWrapper, type BaseWrapperConfig } from './base-wrapper.js';
@@ -1744,15 +1744,18 @@ export class TmuxWrapper extends BaseWrapper {
           }
         },
         performInjection: async (inj: string) => {
-          // Primary: Write directly to pane TTY (most reliable, bypasses tmux input layer)
-          const ttySuccess = await this.writeToTty(inj);
-          if (ttySuccess) {
+          // Primary: Use tmux paste-buffer with bracketed paste mode
+          // This is most reliable for TUI applications like Claude Code
+          const pasteSuccess = await this.pasteWithBracketedMode(inj);
+          if (pasteSuccess) {
+            // Paste succeeded, now send Enter to submit
+            await sleep(INJECTION_CONSTANTS.ENTER_DELAY_MS);
+            await this.sendKeys('Enter');
             return;
           }
 
-          // Fallback: Use send-keys -l (literal) if TTY write fails
-          // This can happen if TTY permissions are restricted or session is in a weird state
-          this.logStderr('[performInjection] TTY write failed, falling back to send-keys');
+          // Fallback: Use send-keys -l (literal) if paste fails
+          this.logStderr('[performInjection] paste-buffer failed, falling back to send-keys');
           await this.sendKeysLiteral(inj);
           await sleep(INJECTION_CONSTANTS.ENTER_DELAY_MS);
           await this.sendKeys('Enter');
@@ -1892,45 +1895,48 @@ export class TmuxWrapper extends BaseWrapper {
   }
 
   /**
-   * Write directly to the pane's TTY device.
-   * This is more reliable than send-keys because it bypasses tmux's input processing.
-   * Uses bracketed paste mode to prevent the CLI from interpreting special characters.
+   * Inject text using tmux paste-buffer with bracketed paste mode.
+   * This is more reliable than send-keys for longer text because it:
+   * 1. Uses bracketed paste to prevent interpretation of special chars
+   * 2. Sends all characters atomically via paste
+   * 3. Works better with TUI applications like Claude Code
    */
-  private async writeToTty(text: string): Promise<boolean> {
-    const tty = await this.getPaneTty();
-    if (!tty) {
-      return false;
-    }
-
+  private async pasteWithBracketedMode(text: string): Promise<boolean> {
     try {
       // Sanitize newlines for single-line injection
       const sanitized = text.replace(/[\r\n]+/g, ' ');
 
-      // Use bracketed paste for CLIs that support it (Claude, Codex, Gemini)
-      // This prevents the CLI from executing commands mid-paste
-      const useBracketedPaste =
-        this.cliType === 'claude' || this.cliType === 'codex' || this.cliType === 'gemini';
+      // For paste-buffer, we need to escape for shell AND for tmux buffer
+      // Use a temp file approach to avoid escaping issues
+      const tempFile = `/tmp/relay-inject-${Date.now()}.txt`;
+      fs.writeFileSync(tempFile, sanitized);
 
-      let content: string;
-      if (useBracketedPaste) {
-        // Bracketed paste: \x1b[200~ starts paste, \x1b[201~ ends paste
-        content = `\x1b[200~${sanitized}\x1b[201~`;
-      } else {
-        content = sanitized;
+      try {
+        // Load content into tmux buffer from file (avoids shell escaping issues)
+        await execAsync(`"${this.tmuxPath}" load-buffer "${tempFile}"`);
+
+        // Use bracketed paste for CLIs that support it
+        const useBracketedPaste =
+          this.cliType === 'claude' || this.cliType === 'codex' || this.cliType === 'gemini';
+
+        // Paste with -p flag for bracketed paste mode (if supported by CLI)
+        const pasteCmd = useBracketedPaste
+          ? `"${this.tmuxPath}" paste-buffer -p -t ${this.sessionName}`
+          : `"${this.tmuxPath}" paste-buffer -t ${this.sessionName}`;
+
+        await execAsync(pasteCmd);
+        this.logStderr(`[pasteWithBracketedMode] Pasted ${sanitized.length} chars`);
+        return true;
+      } finally {
+        // Clean up temp file
+        try {
+          fs.unlinkSync(tempFile);
+        } catch {
+          // Ignore cleanup errors
+        }
       }
-
-      // Write directly to the TTY device using async fs operations
-      // This avoids blocking the event loop on TTY writes
-      await fs.appendFile(tty, content);
-
-      // Send Enter key (carriage return)
-      await sleep(INJECTION_CONSTANTS.ENTER_DELAY_MS);
-      await fs.appendFile(tty, '\r');
-
-      this.logStderr(`[writeToTty] Wrote ${text.length} chars to ${tty}`);
-      return true;
     } catch (err: any) {
-      this.logStderr(`[writeToTty] Failed: ${err?.message}`, true);
+      this.logStderr(`[pasteWithBracketedMode] Failed: ${err?.message}`, true);
       return false;
     }
   }
