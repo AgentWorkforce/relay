@@ -176,11 +176,13 @@ daemonsRouter.get('/workspace/:workspaceId/agents', requireAuth, async (req: Req
     // Extract agents from each daemon's metadata
     const localAgents = daemons.flatMap((daemon) => {
       const metadata = daemon.metadata as Record<string, unknown> | null;
-      const agents = (metadata?.agents as Array<{ name: string; status: string }>) || [];
+      const agents = (metadata?.agents as Array<{ name: string; status: string; isHuman?: boolean; avatarUrl?: string }>) || [];
       return agents.map((agent) => ({
         name: agent.name,
         status: agent.status,
         isLocal: true,
+        isHuman: agent.isHuman,
+        avatarUrl: agent.avatarUrl,
         daemonId: daemon.id,
         daemonName: daemon.name,
         daemonStatus: daemon.status,
@@ -366,7 +368,7 @@ daemonsRouter.post('/agents', requireDaemonAuth as any, async (req: Request, res
     const allDaemons = await db.linkedDaemons.findByUserId(daemon.userId);
     const allAgents = allDaemons.flatMap((d) => {
       const metadata = d.metadata as Record<string, unknown> | null;
-      const dAgents = (metadata?.agents as Array<{ name: string; status: string }>) || [];
+      const dAgents = (metadata?.agents as Array<{ name: string; status: string; isHuman?: boolean; avatarUrl?: string }>) || [];
       return dAgents.map((a) => ({
         ...a,
         daemonId: d.id,
@@ -477,22 +479,8 @@ interface SyncMessageInput {
 
 /**
  * POST /api/daemons/messages/sync
- * Sync messages from daemon to cloud storage
- *
- * Accepts batches of messages and stores them in agent_messages table.
- * Uses upsert logic to handle duplicates (based on workspace_id + original_id).
- *
- * Request body:
- * {
- *   messages: SyncMessageInput[]
- * }
- *
- * Response:
- * {
- *   success: true,
- *   synced: number,    // Count of messages synced
- *   duplicates: number // Count of messages skipped (already existed)
- * }
+ * Bulk sync messages from local daemon to cloud storage.
+ * Messages are stored for backup/history - local SQLite is used for display.
  */
 daemonsRouter.post('/messages/sync', requireDaemonAuth as any, async (req: Request, res: Response) => {
   const daemon = (req as any).daemon;
@@ -506,7 +494,6 @@ daemonsRouter.post('/messages/sync', requireDaemonAuth as any, async (req: Reque
     return res.json({ success: true, synced: 0, duplicates: 0 });
   }
 
-  // Limit batch size to prevent abuse
   if (messages.length > 500) {
     return res.status(400).json({ error: 'Maximum batch size is 500 messages' });
   }
@@ -533,20 +520,16 @@ daemonsRouter.post('/messages/sync', requireDaemonAuth as any, async (req: Reque
   }
 
   try {
-    // Get user plan to determine retention policy
     const user = await db.users.findById(daemon.userId);
     const plan = user?.plan || 'free';
 
-    // Calculate expires_at based on plan
     let expiresAt: Date | null = null;
     if (plan === 'free') {
-      expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
+      expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
     } else if (plan === 'pro') {
-      expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000); // 90 days
+      expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
     }
-    // Enterprise: null (never expires)
 
-    // Transform to NewAgentMessage format
     const dbMessages = messages.map((msg) => ({
       workspaceId,
       daemonId: daemon.id,
@@ -577,11 +560,7 @@ daemonsRouter.post('/messages/sync', requireDaemonAuth as any, async (req: Reque
 
     console.log(`[message-sync] Synced ${synced} messages for daemon ${daemon.id}, ${duplicates} duplicates skipped (${result.durationMs}ms)`);
 
-    res.json({
-      success: true,
-      synced,
-      duplicates,
-    });
+    res.json({ success: true, synced, duplicates });
   } catch (error) {
     console.error('Error syncing messages:', error);
     res.status(500).json({ error: 'Failed to sync messages' });
@@ -590,7 +569,7 @@ daemonsRouter.post('/messages/sync', requireDaemonAuth as any, async (req: Reque
 
 /**
  * GET /api/daemons/messages/stats
- * Get message sync statistics for this daemon's workspace
+ * Get message sync statistics and database health.
  */
 daemonsRouter.get('/messages/stats', requireDaemonAuth as any, async (req: Request, res: Response) => {
   const daemon = (req as any).daemon;
@@ -600,12 +579,15 @@ daemonsRouter.get('/messages/stats', requireDaemonAuth as any, async (req: Reque
   }
 
   try {
-    // Get message count and pool health in parallel
-    const [count, poolHealth, poolStats] = await Promise.all([
-      db.agentMessages.countByWorkspace(daemon.workspaceId),
+    // Get message count via raw query and pool health in parallel
+    const pool = db.getRawPool();
+    const [countResult, poolHealth, poolStats] = await Promise.all([
+      pool.query('SELECT COUNT(*) FROM agent_messages WHERE workspace_id = $1', [daemon.workspaceId]),
       db.bulk.checkHealth(),
       Promise.resolve(db.bulk.getPoolStats()),
     ]);
+
+    const count = parseInt(countResult.rows[0]?.count || '0', 10);
 
     res.json({
       workspaceId: daemon.workspaceId,

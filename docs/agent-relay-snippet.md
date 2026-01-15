@@ -16,6 +16,11 @@ Your message here.>>>
 Broadcast to all agents.>>>
 ```
 
+```
+->relay:#channelname <<<
+Message to a specific channel.>>>
+```
+
 **CRITICAL:** Always close multi-line messages with `>>>` after the very last character.
 
 **WARNING:** Do NOT put blank lines before `>>>` - it must immediately follow your content:
@@ -58,22 +63,33 @@ Relay message from Alice [abc123]: Message content here
 
 ### Channel Routing (Important!)
 
-Messages from #general (broadcast channel) include a `[#general]` indicator:
+Messages from channels include a channel indicator like `[#general]` or `[#random]`:
 ```
 Relay message from Alice [abc123] [#general]: Hello everyone!
+Relay message from Bob [def456] [#random]: Anyone working on auth?
 ```
 
-**When you see `[#general]`**: Reply to `*` (broadcast), NOT to the sender directly.
+**When you see a channel indicator `[#channelname]`**: Reply to that channel directly using `->relay:#channelname`.
 
 ```
-# Correct - responds to #general channel
-->relay:* <<<
-Response to the group message.>>>
+# Correct - responds to the #general channel
+->relay:#general <<<
+Response to the general channel.>>>
+
+# Correct - responds to the #random channel
+->relay:#random <<<
+Response to the random channel.>>>
 
 # Wrong - sends as DM to sender instead of to the channel
 ->relay:Alice <<<
-Response to the group message.>>>
+Response to the channel message.>>>
+
+# Wrong - broadcasts to ALL agents instead of just the channel
+->relay:* <<<
+Response to the channel message.>>>
 ```
+
+**Note:** Always match the channel from the incoming message. If you receive `[#general]`, reply to `#general`. If you receive `[#random]`, reply to `#random`.
 
 If truncated, read full message:
 ```bash

@@ -341,10 +341,15 @@ export class TmuxWrapper extends BaseWrapper {
     }
 
     // Connect to relay daemon (in background, don't block)
-    this.client.connect().catch((err: Error) => {
-      // Connection failures will retry via client backoff; surface once to stderr.
-      this.logStderr(`Relay connect failed: ${err.message}. Will retry if enabled.`, true);
-    });
+    this.client.connect()
+      .then(() => {
+        this.logStderr(`Relay connected (state: ${this.client.state})`, true);
+      })
+      .catch((err: Error) => {
+        // Connection failures will retry via client backoff; surface once to stderr.
+        this.logStderr(`Relay connect failed: ${err.message}. Will retry if enabled.`, true);
+        this.logStderr(`Relay client state: ${this.client.state}`, true);
+      });
 
     // Kill any existing session with this name
     try {
@@ -1486,6 +1491,52 @@ export class TmuxWrapper extends BaseWrapper {
     // Write to inbox if enabled
     if (this.inbox) {
       this.inbox.addMessage(from, payload.body);
+    }
+
+    // Try to inject
+    this.checkForInjectionOpportunity();
+  }
+
+  /**
+   * Handle incoming channel message from relay.
+   * Channel messages include a channel indicator so the agent knows to reply to the channel.
+   */
+  protected override handleIncomingChannelMessage(
+    from: string,
+    channel: string,
+    body: string,
+    envelope: import('../protocol/types.js').Envelope<import('../protocol/channels.js').ChannelMessagePayload>
+  ): void {
+    const messageId = envelope.id;
+
+    if (this.hasSeenIncoming(messageId)) {
+      this.logStderr(`← ${from} [${channel}]: duplicate delivery (${messageId.substring(0, 8)})`);
+      return;
+    }
+
+    const truncatedBody = body.substring(0, Math.min(DEBUG_LOG_TRUNCATE_LENGTH, body.length));
+    this.logStderr(`← ${from} [${channel}]: ${truncatedBody}...`);
+
+    // Record in trajectory via trail
+    this.trajectory?.message('received', from, this.config.name, body);
+
+    // Queue for injection - include channel as originalTo so we can inform the agent how to route responses
+    this.messageQueue.push({
+      from,
+      body,
+      messageId,
+      thread: envelope.payload.thread,
+      data: {
+        _isChannelMessage: true,
+        _channel: channel,
+        _mentions: envelope.payload.mentions,
+      },
+      originalTo: channel, // Set channel as the reply target
+    });
+
+    // Write to inbox if enabled
+    if (this.inbox) {
+      this.inbox.addMessage(from, body);
     }
 
     // Try to inject

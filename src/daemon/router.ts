@@ -23,10 +23,12 @@ import type { StorageAdapter } from '../storage/adapter.js';
 import type { AgentRegistry } from './agent-registry.js';
 import { routerLog } from '../utils/logger.js';
 import { RateLimiter, NoOpRateLimiter, type RateLimitConfig } from './rate-limiter.js';
+import * as crypto from 'node:crypto';
 import {
   DeliveryTracker,
   type DeliveryReliabilityOptions,
 } from './delivery-tracker.js';
+import type { ChannelMembershipStore } from './channel-membership-store.js';
 
 export interface RoutableConnection {
   id: string;
@@ -76,6 +78,7 @@ interface ShadowRelationship extends ShadowConfig {
 
 export class Router {
   private storage?: StorageAdapter;
+  private channelMembershipStore?: ChannelMembershipStore;
   private connections: Map<string, RoutableConnection> = new Map(); // connectionId -> Connection
   private agents: Map<string, RoutableConnection> = new Map(); // agentName -> Connection
   private subscriptions: Map<string, Set<string>> = new Map(); // topic -> Set<agentName>
@@ -113,8 +116,10 @@ export class Router {
     crossMachineHandler?: CrossMachineHandler;
     /** Rate limit configuration. Set to null to disable rate limiting. */
     rateLimit?: Partial<RateLimitConfig> | null;
+    channelMembershipStore?: ChannelMembershipStore;
   } = {}) {
     this.storage = options.storage;
+    this.channelMembershipStore = options.channelMembershipStore;
     this.registry = options.registry;
     this.onProcessingStateChange = options.onProcessingStateChange;
     this.crossMachineHandler = options.crossMachineHandler;
@@ -127,6 +132,46 @@ export class Router {
     this.rateLimiter = options.rateLimit === null
       ? new NoOpRateLimiter()
       : new RateLimiter(options.rateLimit);
+  }
+
+  /**
+   * Restore channel memberships from persisted storage.
+   */
+  async restoreChannelMemberships(): Promise<void> {
+    if (!this.storage && !this.channelMembershipStore) return;
+
+    try {
+      if (this.channelMembershipStore) {
+        const memberships = await this.channelMembershipStore.loadMemberships();
+        for (const membership of memberships) {
+          this.handleMembershipUpdate({
+            channel: membership.channel,
+            member: membership.member,
+            action: 'join',
+          });
+        }
+      }
+
+      if (this.storage) {
+        const messages = await this.storage.getMessages({ order: 'asc' });
+        for (const msg of messages) {
+          const channel = msg.to;
+          const data = msg.data as Record<string, unknown> | undefined;
+          const membership = data?._channelMembership as { member?: string; action?: 'join' | 'leave' | 'invite' } | undefined;
+          if (!channel || !membership?.member) {
+            continue;
+          }
+          const action = membership.action ?? 'join';
+          this.handleMembershipUpdate({
+            channel,
+            member: membership.member,
+            action,
+          });
+        }
+      }
+    } catch (err) {
+      routerLog.error('Failed to restore channel memberships', { error: String(err) });
+    }
   }
 
   /**
@@ -181,32 +226,40 @@ export class Router {
     this.connections.delete(connection.id);
     if (connection.agentName) {
       const isUser = connection.entityType === 'user';
+      let wasCurrentConnection = false;
 
       if (isUser) {
         const currentUser = this.users.get(connection.agentName);
         if (currentUser?.id === connection.id) {
           this.users.delete(connection.agentName);
+          wasCurrentConnection = true;
         }
       } else {
         const current = this.agents.get(connection.agentName);
         if (current?.id === connection.id) {
           this.agents.delete(connection.agentName);
+          wasCurrentConnection = true;
         }
       }
 
-      // Remove from all subscriptions
-      for (const subscribers of this.subscriptions.values()) {
-        subscribers.delete(connection.agentName);
+      // Only clean up channel/subscription state if this was the current connection.
+      // If a new connection replaced this one, we don't want to remove channel memberships
+      // that the new connection should inherit.
+      if (wasCurrentConnection) {
+        // Remove from all subscriptions
+        for (const subscribers of this.subscriptions.values()) {
+          subscribers.delete(connection.agentName);
+        }
+
+        // Remove from all channels and notify remaining members
+        this.removeFromAllChannels(connection.agentName);
+
+        // Clean up shadow relationships
+        this.unbindShadow(connection.agentName);
+
+        // Clear processing state
+        this.clearProcessing(connection.agentName);
       }
-
-      // Remove from all channels and notify remaining members
-      this.removeFromAllChannels(connection.agentName);
-
-      // Clean up shadow relationships
-      this.unbindShadow(connection.agentName);
-
-      // Clear processing state
-      this.clearProcessing(connection.agentName);
     }
 
     this.clearPendingForConnection(connection.id);
@@ -893,18 +946,22 @@ export class Router {
   /**
    * Handle a CHANNEL_JOIN message.
    * Adds the member to the channel and notifies existing members.
+   * If payload.member is set, adds that member (admin mode).
+   * Otherwise, adds the connection's agent name.
    */
   handleChannelJoin(
     connection: RoutableConnection,
     envelope: Envelope<ChannelJoinPayload>
   ): void {
-    const memberName = connection.agentName;
+    // Use payload.member if provided (admin mode), otherwise use connection's name
+    const memberName = envelope.payload.member ?? connection.agentName;
     if (!memberName) {
-      routerLog.warn('CHANNEL_JOIN from connection without name');
+      routerLog.warn('CHANNEL_JOIN from connection without name and no member specified');
       return;
     }
 
     const channel = envelope.payload.channel;
+    const isAdminJoin = Boolean(envelope.payload.member);
 
     // Get or create channel
     let members = this.channels.get(channel);
@@ -919,51 +976,53 @@ export class Router {
       return;
     }
 
-    // Notify existing members about the new joiner
-    for (const existingMember of members) {
-      const memberConn = this.getConnectionByName(existingMember);
-      if (memberConn) {
-        const joinNotification: Envelope<ChannelJoinPayload> = {
-          v: PROTOCOL_VERSION,
-          type: 'CHANNEL_JOIN',
-          id: generateId(),
-          ts: Date.now(),
-          from: memberName,
-          payload: envelope.payload,
-        };
-        memberConn.send(joinNotification);
+    // Only notify existing members for non-admin joins (agents joining themselves)
+    // Admin joins are silent to avoid spamming notifications when syncing
+    if (!isAdminJoin) {
+      const existingMembers = members ? Array.from(members) : [];
+      for (const existingMember of existingMembers) {
+        const memberConn = this.getConnectionByName(existingMember);
+        if (memberConn) {
+          const joinNotification: Envelope<ChannelJoinPayload> = {
+            v: PROTOCOL_VERSION,
+            type: 'CHANNEL_JOIN',
+            id: generateId(),
+            ts: Date.now(),
+            from: memberName,
+            payload: envelope.payload,
+          };
+          memberConn.send(joinNotification);
+        }
       }
     }
 
-    // Add the new member
-    members.add(memberName);
-
-    // Track which channels this member is in
-    let memberChannelSet = this.memberChannels.get(memberName);
-    if (!memberChannelSet) {
-      memberChannelSet = new Set();
-      this.memberChannels.set(memberName, memberChannelSet);
+    const added = this.addChannelMember(channel, memberName, { persist: true });
+    if (!added) {
+      routerLog.debug(`${memberName} already in ${channel}`);
+      return;
     }
-    memberChannelSet.add(channel);
 
-    routerLog.info(`${memberName} joined ${channel} (${members.size} members)`);
+    routerLog.info(`${memberName} joined ${channel} (${this.channels.get(channel)?.size ?? 0} members)${isAdminJoin ? ' [admin]' : ''}`);
   }
 
   /**
    * Handle a CHANNEL_LEAVE message.
    * Removes the member from the channel and notifies remaining members.
+   * If payload.member is provided, removes that member instead (admin mode).
    */
   handleChannelLeave(
     connection: RoutableConnection,
     envelope: Envelope<ChannelLeavePayload>
   ): void {
-    const memberName = connection.agentName;
+    // Use payload.member if provided (admin mode), otherwise use connection's name
+    const memberName = envelope.payload.member ?? connection.agentName;
     if (!memberName) {
-      routerLog.warn('CHANNEL_LEAVE from connection without name');
+      routerLog.warn('CHANNEL_LEAVE from connection without name and no member specified');
       return;
     }
 
     const channel = envelope.payload.channel;
+    const isAdminRemove = Boolean(envelope.payload.member);
     const members = this.channels.get(channel);
 
     if (!members || !members.has(memberName)) {
@@ -971,41 +1030,35 @@ export class Router {
       return;
     }
 
-    // Remove from channel
-    members.delete(memberName);
+    const removed = this.removeChannelMember(channel, memberName, { persist: true });
+    if (!removed) {
+      routerLog.debug(`${memberName} not in ${channel}, ignoring leave`);
+      return;
+    }
 
-    // Remove from member's channel list
-    const memberChannelSet = this.memberChannels.get(memberName);
-    if (memberChannelSet) {
-      memberChannelSet.delete(channel);
-      if (memberChannelSet.size === 0) {
-        this.memberChannels.delete(memberName);
+    // Only notify remaining members for non-admin removes
+    // Admin removes are silent to avoid spamming notifications
+    if (!isAdminRemove) {
+      const remainingMembers = this.channels.get(channel);
+      if (remainingMembers) {
+        for (const remainingMember of remainingMembers) {
+          const memberConn = this.getConnectionByName(remainingMember);
+          if (memberConn) {
+            const leaveNotification: Envelope<ChannelLeavePayload> = {
+              v: PROTOCOL_VERSION,
+              type: 'CHANNEL_LEAVE',
+              id: generateId(),
+              ts: Date.now(),
+              from: memberName,
+              payload: envelope.payload,
+            };
+            memberConn.send(leaveNotification);
+          }
+        }
       }
     }
 
-    // Notify remaining members
-    for (const remainingMember of members) {
-      const memberConn = this.getConnectionByName(remainingMember);
-      if (memberConn) {
-        const leaveNotification: Envelope<ChannelLeavePayload> = {
-          v: PROTOCOL_VERSION,
-          type: 'CHANNEL_LEAVE',
-          id: generateId(),
-          ts: Date.now(),
-          from: memberName,
-          payload: envelope.payload,
-        };
-        memberConn.send(leaveNotification);
-      }
-    }
-
-    // Clean up empty channels
-    if (members.size === 0) {
-      this.channels.delete(channel);
-      routerLog.debug(`Channel ${channel} deleted (empty)`);
-    }
-
-    routerLog.info(`${memberName} left ${channel}`);
+    routerLog.info(`${memberName} left ${channel}${isAdminRemove ? ' [admin]' : ''}`);
   }
 
   /**
@@ -1024,20 +1077,38 @@ export class Router {
     const channel = envelope.payload.channel;
     const members = this.channels.get(channel);
 
+    routerLog.info(`routeChannelMessage: channel=${channel} sender=${senderName} members=${members ? Array.from(members).join(',') : 'NONE'}`);
+
     if (!members) {
-      routerLog.warn(`Message to non-existent channel ${channel}`);
+      routerLog.warn(`Message to non-existent channel ${channel} (available channels: ${Array.from(this.channels.keys()).join(', ')})`);
       return;
     }
 
-    if (!members.has(senderName)) {
-      routerLog.warn(`${senderName} not a member of ${channel}`);
+    // Case-insensitive membership check
+    const senderMemberName = this.findMemberInSet(members, senderName);
+    if (!senderMemberName) {
+      routerLog.warn(`${senderName} not a member of ${channel} (members: ${Array.from(members).join(', ')})`);
       return;
     }
 
-    // Route to all members except sender
+    // Route to all members except the sender (no echo)
+    const allMembers = Array.from(members);
+    routerLog.info(`Routing channel message from ${senderName} to ${channel}`, {
+      totalMembers: allMembers.length,
+      members: allMembers,
+    });
+
+    let deliveredCount = 0;
+    const undeliveredMembers: string[] = [];
+    const connectedAgents = Array.from(this.agents.keys());
+    const connectedUsers = Array.from(this.users.keys());
+    routerLog.info(`Connected entities: agents=[${connectedAgents.join(',')}] users=[${connectedUsers.join(',')}]`);
+
     for (const memberName of members) {
-      if (memberName === senderName) continue;
-
+      // Case-insensitive comparison to skip sender
+      if (this.namesMatch(memberName, senderName)) {
+        continue;
+      }
       const memberConn = this.getConnectionByName(memberName);
       if (memberConn) {
         const deliverEnvelope: Envelope<ChannelMessagePayload> = {
@@ -1048,14 +1119,30 @@ export class Router {
           from: senderName,
           payload: envelope.payload,
         };
-        memberConn.send(deliverEnvelope);
+        const sent = memberConn.send(deliverEnvelope);
+        if (sent) {
+          deliveredCount++;
+          routerLog.info(`Delivered to ${memberName} (${memberConn.entityType || 'agent'})`);
+        } else {
+          routerLog.warn(`Failed to send to ${memberName}`);
+          undeliveredMembers.push(memberName);
+        }
+      } else {
+        routerLog.warn(`Member ${memberName} is registered in channel but NOT connected to daemon - message not delivered`);
+        undeliveredMembers.push(memberName);
       }
     }
 
     // Persist channel message
     this.persistChannelMessage(envelope, senderName);
 
-    routerLog.debug(`${senderName} -> ${channel}: ${envelope.payload.body.substring(0, 50)}`);
+    const recipientCount = allMembers.length - 1; // Exclude sender
+    routerLog.info(`${senderName} -> ${channel}: delivered to ${deliveredCount}/${recipientCount} members`);
+
+    // Log warning if some members didn't receive the message
+    if (undeliveredMembers.length > 0) {
+      routerLog.warn(`Channel message undelivered to: [${undeliveredMembers.join(', ')}] - these agents may need to reconnect to the relay daemon`);
+    }
   }
 
   /**
@@ -1067,6 +1154,13 @@ export class Router {
   ): void {
     if (!this.storage) return;
 
+    const payloadData = {
+      ...envelope.payload.data,
+      _isChannelMessage: true,
+      _channel: envelope.payload.channel,
+      _mentions: envelope.payload.mentions,
+    };
+
     this.storage.saveMessage({
       id: envelope.id,
       ts: envelope.ts,
@@ -1075,12 +1169,7 @@ export class Router {
       topic: undefined,
       kind: 'message',
       body: envelope.payload.body,
-      data: {
-        ...envelope.payload.data,
-        _isChannelMessage: true,
-        _channel: envelope.payload.channel,
-        _mentions: envelope.payload.mentions,
-      },
+      data: payloadData,
       thread: envelope.payload.thread,
       status: 'unread',
       is_urgent: false,
@@ -1088,6 +1177,52 @@ export class Router {
     }).catch((err) => {
       routerLog.error('Failed to persist channel message', { error: String(err) });
     });
+  }
+
+  private persistChannelMembership(
+    channel: string,
+    member: string,
+    action: 'join' | 'leave',
+    opts?: { invitedBy?: string }
+  ): void {
+    if (this.storage) {
+      this.storage.saveMessage({
+        id: crypto.randomUUID(),
+        ts: Date.now(),
+        from: '__system__',
+        to: channel,
+        topic: undefined,
+        kind: 'state', // membership events stored as state
+        body: `${action}:${member}`,
+        data: {
+          _channelMembership: {
+            member,
+            action,
+            invitedBy: opts?.invitedBy,
+          },
+        },
+        status: 'read',
+        is_urgent: false,
+        is_broadcast: true,
+      }).catch((err) => {
+        routerLog.error('Failed to persist channel membership', { error: String(err) });
+      });
+    }
+
+    if (this.channelMembershipStore) {
+      const persistPromise = action === 'leave'
+        ? this.channelMembershipStore.removeMember(channel, member)
+        : this.channelMembershipStore.addMember(channel, member);
+
+      persistPromise.catch((err) => {
+        routerLog.error('Failed to sync channel membership to cloud store', {
+          channel,
+          member,
+          action,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }
   }
 
   /**
@@ -1136,8 +1271,143 @@ export class Router {
 
   /**
    * Get a connection by name (checks both agents and users).
+   * Uses case-insensitive lookup to handle mismatched casing.
    */
   private getConnectionByName(name: string): RoutableConnection | undefined {
-    return this.agents.get(name) ?? this.users.get(name);
+    // Try exact match first
+    const exact = this.agents.get(name) ?? this.users.get(name);
+    if (exact) return exact;
+
+    // Fall back to case-insensitive search
+    const lowerName = name.toLowerCase();
+    for (const [key, conn] of this.agents) {
+      if (key.toLowerCase() === lowerName) return conn;
+    }
+    for (const [key, conn] of this.users) {
+      if (key.toLowerCase() === lowerName) return conn;
+    }
+    return undefined;
+  }
+
+  /**
+   * Check if a member is in a Set (case-insensitive).
+   * Returns the actual stored name if found, undefined otherwise.
+   */
+  private findMemberInSet(members: Set<string>, name: string): string | undefined {
+    // Try exact match first
+    if (members.has(name)) return name;
+
+    // Fall back to case-insensitive search
+    const lowerName = name.toLowerCase();
+    for (const member of members) {
+      if (member.toLowerCase() === lowerName) return member;
+    }
+    return undefined;
+  }
+
+  /**
+   * Check if two names match (case-insensitive).
+   */
+  private namesMatch(a: string, b: string): boolean {
+    return a.toLowerCase() === b.toLowerCase();
+  }
+
+  /**
+   * Auto-join a member to a channel without notifications.
+   * Used for default channel membership (e.g., #general).
+   * @param memberName - The agent or user name to add
+   * @param channel - The channel to join (e.g., '#general')
+   */
+  autoJoinChannel(memberName: string, channel: string, options?: { persist?: boolean }): void {
+    // Get or create channel
+    let members = this.channels.get(channel);
+    if (!members) {
+      members = new Set();
+      this.channels.set(channel, members);
+    }
+
+    // Check if already a member
+    const added = this.addChannelMember(channel, memberName, { persist: options?.persist });
+    if (added) {
+      routerLog.debug(`Auto-joined ${memberName} to ${channel}`);
+    }
+  }
+
+  private addChannelMember(
+    channel: string,
+    memberName: string,
+    options?: { persist?: boolean }
+  ): boolean {
+    let members = this.channels.get(channel);
+    if (!members) {
+      members = new Set();
+      this.channels.set(channel, members);
+    }
+    // Case-insensitive check for existing membership
+    const existingMember = this.findMemberInSet(members, memberName);
+    if (existingMember) {
+      return false;
+    }
+    members.add(memberName);
+
+    const memberChannelSet = this.memberChannels.get(memberName) ?? new Set();
+    memberChannelSet.add(channel);
+    this.memberChannels.set(memberName, memberChannelSet);
+
+    if (options?.persist ?? true) {
+      this.persistChannelMembership(channel, memberName, 'join');
+    }
+
+    return true;
+  }
+
+  private removeChannelMember(
+    channel: string,
+    memberName: string,
+    options?: { persist?: boolean }
+  ): boolean {
+    const members = this.channels.get(channel);
+    if (!members) {
+      return false;
+    }
+
+    // Case-insensitive lookup to find actual stored name
+    const actualMemberName = this.findMemberInSet(members, memberName);
+    if (!actualMemberName) {
+      return false;
+    }
+
+    members.delete(actualMemberName);
+    if (members.size === 0) {
+      this.channels.delete(channel);
+    }
+
+    // Also try case-insensitive for memberChannels cleanup
+    const memberChannelSet = this.memberChannels.get(actualMemberName) ?? this.memberChannels.get(memberName);
+    if (memberChannelSet) {
+      memberChannelSet.delete(channel);
+      if (memberChannelSet.size === 0) {
+        this.memberChannels.delete(actualMemberName);
+        this.memberChannels.delete(memberName); // Clean up both potential keys
+      }
+    }
+
+    if (options?.persist ?? true) {
+      this.persistChannelMembership(channel, actualMemberName, 'leave');
+    }
+
+    return true;
+  }
+
+  handleMembershipUpdate(update: { channel: string; member: string; action: 'join' | 'leave' | 'invite' }) {
+    if (!update.channel || !update.member) {
+      return;
+    }
+
+    if (update.action === 'leave') {
+      this.removeChannelMember(update.channel, update.member, { persist: false });
+    } else {
+      this.addChannelMember(update.channel, update.member, { persist: false });
+    }
   }
 }

@@ -224,8 +224,11 @@ export class PtyWrapper extends BaseWrapper {
     }
 
     // Connect to relay daemon
+    const socketPath = this.config.socketPath ?? 'DEFAULT';
+    console.log(`[pty:${this.config.name}] Connecting to relay daemon at: ${socketPath}`);
     try {
       await this.client.connect();
+      console.log(`[pty:${this.config.name}] Relay connected (state: ${this.client.state})`);
 
       // If this is a shadow agent, bind to the primary after connecting
       if (this.config.shadowOf) {
@@ -239,6 +242,7 @@ export class PtyWrapper extends BaseWrapper {
       }
     } catch (err: any) {
       console.error(`[pty:${this.config.name}] Relay connect failed: ${err.message}`);
+      console.error(`[pty:${this.config.name}] Relay client state: ${this.client.state}`);
     }
 
     // Build command args
@@ -788,9 +792,15 @@ export class PtyWrapper extends BaseWrapper {
       'g'
     );
 
+    // Debug: Log if content contains relay prefix with fenced syntax
+    if (content.includes(this.relayPrefix) && content.includes('<<<')) {
+      console.error(`[pty:${this.config.name}] parseFencedMessages: Found relay+<<< in content`);
+    }
+
     let match;
     while ((match = fenceStartPattern.exec(content)) !== null) {
       const target = match[1];
+      console.error(`[pty:${this.config.name}] parseFencedMessages: MATCHED target=${target}`);
       const threadProject = match[2]; // Optional: project part of thread
       const threadId = match[3];      // Thread ID
       const startIdx = match.index + match[0].length;
@@ -1324,6 +1334,28 @@ export class PtyWrapper extends BaseWrapper {
     // PTY-specific: Dispatch message received hook
     this.hookRegistry.dispatchMessageReceived(from, payload.body, messageId).catch(err => {
       console.error(`[pty:${this.config.name}] Message received hook error:`, err);
+    });
+  }
+
+  /**
+   * Handle incoming channel message from relay.
+   * Extends BaseWrapper to add PTY-specific queue processing.
+   */
+  protected override handleIncomingChannelMessage(
+    from: string,
+    channel: string,
+    body: string,
+    envelope: import('../protocol/types.js').Envelope<import('../protocol/channels.js').ChannelMessagePayload>
+  ): void {
+    // Call base class to handle deduplication and queuing
+    super.handleIncomingChannelMessage(from, channel, body, envelope);
+
+    // PTY-specific: Process the message queue immediately
+    this.processMessageQueue();
+
+    // PTY-specific: Dispatch message received hook with channel info
+    this.hookRegistry.dispatchMessageReceived(from, body, envelope.id).catch(err => {
+      console.error(`[pty:${this.config.name}] Channel message received hook error:`, err);
     });
   }
 

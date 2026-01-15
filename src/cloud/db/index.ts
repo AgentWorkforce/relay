@@ -49,10 +49,11 @@ export type {
   CommentMention,
   NewCommentMention,
   AgentTriggerConfig,
-  // Agent message types
-  AgentMessage,
-  NewAgentMessage,
-  MessagePayloadMeta,
+  // Channel types
+  Channel,
+  NewChannel,
+  ChannelMember,
+  NewChannelMember,
 } from './schema.js';
 
 // Re-export schema tables for direct access if needed
@@ -71,7 +72,8 @@ export {
   ciFixAttempts as ciFixAttemptsTable,
   issueAssignments as issueAssignmentsTable,
   commentMentions as commentMentionsTable,
-  agentMessages as agentMessagesTable,
+  channels as channelsTable,
+  channelMembers as channelMembersTable,
 } from './schema.js';
 
 // Import query modules
@@ -92,10 +94,11 @@ import {
   ciFixAttemptQueries,
   issueAssignmentQueries,
   commentMentionQueries,
-  agentMessageQueries,
+  channelQueries,
+  channelMemberQueries,
 } from './drizzle.js';
 
-// Import bulk ingest utilities
+// Bulk ingest utilities for high-volume message sync to cloud
 import {
   bulkInsertMessages,
   streamingBulkInsert,
@@ -133,9 +136,10 @@ export const db = {
   // Issue and comment tracking
   issueAssignments: issueAssignmentQueries,
   commentMentions: commentMentionQueries,
-  // Agent messages (cloud-synced relay messages)
-  agentMessages: agentMessageQueries,
-  // Bulk ingest utilities (optimized high-volume operations)
+  // Channel operations (workspace-scoped messaging)
+  channels: channelQueries,
+  channelMembers: channelMemberQueries,
+  // Bulk ingest utilities for high-volume message sync
   bulk: {
     insertMessages: bulkInsertMessages,
     streamingInsert: streamingBulkInsert,
@@ -164,13 +168,12 @@ export {
   ciFixAttemptQueries,
   issueAssignmentQueries,
   commentMentionQueries,
-  agentMessageQueries,
 };
 
 // Export database utilities
 export { getDb, closeDb, runMigrations, getRawPool };
 
-// Export bulk ingest utilities
+// Bulk ingest utilities for direct import
 export {
   bulkInsertMessages,
   streamingBulkInsert,

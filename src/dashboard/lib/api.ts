@@ -111,6 +111,7 @@ const CLOUD_NATIVE_PATHS = [
   '/api/repos/',        // Repository management
   '/api/project-groups/', // Coordinators
   '/api/github-app/',   // GitHub App
+  '/api/channels',      // Channel proxy handled by dashboard server
 ];
 
 /**

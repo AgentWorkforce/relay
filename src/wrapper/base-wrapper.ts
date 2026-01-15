@@ -19,7 +19,8 @@ import { EventEmitter } from 'node:events';
 import { RelayClient } from './client.js';
 import type { ParsedCommand, ParsedSummary } from './parser.js';
 import { isPlaceholderTarget } from './parser.js';
-import type { SendPayload, SendMeta, SpeakOnTrigger } from '../protocol/types.js';
+import type { SendPayload, SendMeta, SpeakOnTrigger, Envelope } from '../protocol/types.js';
+import type { ChannelMessagePayload } from '../protocol/channels.js';
 import {
   type QueuedMessage,
   type InjectionMetrics,
@@ -145,9 +146,14 @@ export abstract class BaseWrapper extends EventEmitter {
       confidenceThreshold: config.idleConfidenceThreshold ?? DEFAULT_IDLE_CONFIDENCE_THRESHOLD,
     });
 
-    // Set up message handler
+    // Set up message handler for direct messages
     this.client.onMessage = (from, payload, messageId, meta, originalTo) => {
       this.handleIncomingMessage(from, payload, messageId, meta, originalTo);
+    };
+
+    // Set up channel message handler
+    this.client.onChannelMessage = (from, channel, body, envelope) => {
+      this.handleIncomingChannelMessage(from, channel, body, envelope);
     };
   }
 
@@ -276,6 +282,48 @@ export abstract class BaseWrapper extends EventEmitter {
   }
 
   /**
+   * Handle incoming channel message from relay.
+   * Channel messages include a channel indicator so the agent knows to reply to the channel.
+   */
+  protected handleIncomingChannelMessage(
+    from: string,
+    channel: string,
+    body: string,
+    envelope: Envelope<ChannelMessagePayload>
+  ): void {
+    const messageId = envelope.id;
+
+    // Deduplicate by message ID
+    if (this.receivedMessageIds.has(messageId)) return;
+    this.receivedMessageIds.add(messageId);
+
+    // Limit dedup set size
+    if (this.receivedMessageIds.size > 1000) {
+      const oldest = this.receivedMessageIds.values().next().value;
+      if (oldest) this.receivedMessageIds.delete(oldest);
+    }
+
+    // Queue the message with channel indicator in the body
+    // Format: "Relay message from Alice [abc123] [#general]: message body"
+    // This lets the agent know to reply to the channel, not the sender
+    const queuedMsg: QueuedMessage = {
+      from,
+      body,
+      messageId,
+      thread: envelope.payload.thread,
+      data: {
+        _isChannelMessage: true,
+        _channel: channel,
+        _mentions: envelope.payload.mentions,
+      },
+      originalTo: channel, // Set channel as the reply target
+    };
+
+    console.error(`[base-wrapper] Received channel message: from=${from} channel=${channel} id=${messageId.substring(0, 8)}`);
+    this.messageQueue.push(queuedMsg);
+  }
+
+  /**
    * Send a relay command via the client
    */
   protected sendRelayCommand(cmd: ParsedCommand): void {
@@ -301,14 +349,23 @@ export abstract class BaseWrapper extends EventEmitter {
 
     // Only send if client ready
     if (this.client.state !== 'READY') {
-      console.error(`[base-wrapper] Skipped message to ${cmd.to} - client not ready (state: ${this.client.state})`);
+      console.error(`[base-wrapper] Client not ready (state=${this.client.state}), dropping message to ${cmd.to}`);
       return;
     }
 
-    console.log(`[base-wrapper] Sending message to ${cmd.to}: "${cmd.body.substring(0, 50)}..."`);
-    const sent = this.client.sendMessage(cmd.to, cmd.body, cmd.kind, cmd.data, cmd.thread);
-    if (!sent) {
-      console.error(`[base-wrapper] Failed to send message to ${cmd.to} - sendMessage returned false`);
+    console.error(`[base-wrapper] sendRelayCommand: to=${cmd.to}, body=${cmd.body.substring(0, 50)}...`);
+
+    // Check if target is a channel (starts with #)
+    if (cmd.to.startsWith('#')) {
+      // Use CHANNEL_MESSAGE protocol for channel targets
+      console.error(`[base-wrapper] Sending CHANNEL_MESSAGE to ${cmd.to}`);
+      this.client.sendChannelMessage(cmd.to, cmd.body, {
+        thread: cmd.thread,
+        data: cmd.data,
+      });
+    } else {
+      // Use SEND protocol for direct messages and broadcasts
+      this.client.sendMessage(cmd.to, cmd.body, cmd.kind, cmd.data, cmd.thread);
     }
   }
 

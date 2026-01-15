@@ -116,7 +116,9 @@ export class AgentSpawner {
   constructor(projectRoot: string, _tmuxSession?: string, dashboardPort?: number) {
     const paths = getProjectPaths(projectRoot);
     this.projectRoot = paths.projectRoot;
-    this.agentsPath = path.join(paths.teamDir, 'agents.json');
+    // Use connected-agents.json (live socket connections) instead of agents.json (historical registry)
+    // This ensures spawned agents have actual daemon connections for channel message delivery
+    this.agentsPath = path.join(paths.teamDir, 'connected-agents.json');
     this.socketPath = paths.socketPath;
     this.logsDir = path.join(paths.teamDir, 'worker-logs');
     this.workersPath = path.join(paths.teamDir, 'workers.json');
@@ -337,6 +339,7 @@ export class AgentSpawner {
         }
       }
 
+      if (debug) console.log(`[spawner:debug] Socket path for ${name}: ${this.socketPath ?? 'undefined'}`);
       const ptyConfig: PtyWrapperConfig = {
         name,
         command,
@@ -753,15 +756,15 @@ export class AgentSpawner {
 
     try {
       const raw = JSON.parse(fs.readFileSync(this.agentsPath, 'utf-8'));
-      const agents: Array<{ name?: string }> = Array.isArray(raw?.agents)
-        ? raw.agents
-        : raw?.agents && typeof raw.agents === 'object'
-          ? Object.values(raw.agents)
-          : [];
+      // connected-agents.json format: { agents: string[], users: string[], updatedAt: number }
+      // agents is a string array of connected agent names (not objects)
+      const agents: string[] = Array.isArray(raw?.agents) ? raw.agents : [];
 
-      return agents.some((a) => a?.name === name);
+      // Case-insensitive check to match router behavior
+      const lowerName = name.toLowerCase();
+      return agents.some((a) => typeof a === 'string' && a.toLowerCase() === lowerName);
     } catch (err: any) {
-      console.error('[spawner] Failed to read agents registry:', err.message);
+      console.error('[spawner] Failed to read connected-agents.json:', err.message);
       return false;
     }
   }

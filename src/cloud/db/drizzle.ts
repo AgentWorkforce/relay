@@ -7,7 +7,7 @@
 
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
-import { eq, and, sql, desc, lt, isNull, isNotNull, inArray } from 'drizzle-orm';
+import { eq, and, sql, desc, lt, gt, isNull, isNotNull, count, inArray } from 'drizzle-orm';
 import * as schema from './schema.js';
 import { getConfig } from '../config.js';
 import { DEFAULT_POOL_CONFIG } from './bulk-ingest.js';
@@ -689,7 +689,6 @@ export interface LinkedDaemonQueries {
   delete(id: string): Promise<void>;
   markStale(): Promise<number>;
   getAllAgentsForUser(userId: string): Promise<DaemonAgentInfo[]>;
-  getAgentsForWorkspace(workspaceId: string): Promise<DaemonAgentInfo[]>;
   getPendingUpdates(id: string): Promise<DaemonUpdate[]>;
   queueUpdate(id: string, update: DaemonUpdate): Promise<void>;
   queueMessage(id: string, message: Record<string, unknown>): Promise<void>;
@@ -793,21 +792,6 @@ export const linkedDaemonQueries: LinkedDaemonQueries = {
       .select()
       .from(schema.linkedDaemons)
       .where(eq(schema.linkedDaemons.userId, userId));
-
-    return daemons.map((d) => ({
-      daemonId: d.id,
-      daemonName: d.name,
-      machineId: d.machineId,
-      agents: ((d.metadata as Record<string, unknown>)?.agents as Array<{ name: string; status: string }>) || [],
-    }));
-  },
-
-  async getAgentsForWorkspace(workspaceId: string): Promise<DaemonAgentInfo[]> {
-    const db = getDb();
-    const daemons = await db
-      .select()
-      .from(schema.linkedDaemons)
-      .where(eq(schema.linkedDaemons.workspaceId, workspaceId));
 
     return daemons.map((d) => ({
       daemonId: d.id,
@@ -1625,182 +1609,173 @@ export const commentMentionQueries: CommentMentionQueries = {
 };
 
 // ============================================================================
-// Agent Message Queries
+// Channel queries
 // ============================================================================
 
-export interface MessageQuery {
-  workspaceId: string;
-  limit?: number;
-  offset?: number;
-  fromAgent?: string;
-  toAgent?: string;
-  thread?: string;
-  channel?: string;
-  sinceTs?: Date;
-  beforeTs?: Date;
-  includeExpired?: boolean;
+export interface ChannelQueries {
+  findById(id: string): Promise<schema.Channel | null>;
+  findByWorkspaceId(workspaceId: string): Promise<schema.Channel[]>;
+  findByWorkspaceAndChannelId(workspaceId: string, channelId: string): Promise<schema.Channel | null>;
+  create(channel: schema.NewChannel): Promise<schema.Channel>;
+  update(id: string, updates: Partial<schema.NewChannel>): Promise<void>;
+  archive(id: string): Promise<void>;
+  unarchive(id: string): Promise<void>;
+  delete(id: string): Promise<void>;
 }
 
-export interface AgentMessageQueries {
-  create(data: schema.NewAgentMessage): Promise<schema.AgentMessage>;
-  createMany(data: schema.NewAgentMessage[]): Promise<schema.AgentMessage[]>;
-  findById(id: string): Promise<schema.AgentMessage | null>;
-  findByOriginalId(workspaceId: string, originalId: string): Promise<schema.AgentMessage | null>;
-  query(params: MessageQuery): Promise<schema.AgentMessage[]>;
-  getUnindexed(workspaceId: string, limit?: number): Promise<schema.AgentMessage[]>;
-  markIndexed(ids: string[]): Promise<void>;
-  deleteExpired(): Promise<number>;
-  countByWorkspace(workspaceId: string): Promise<number>;
-  getThreadMessages(workspaceId: string, thread: string, limit?: number): Promise<schema.AgentMessage[]>;
-}
-
-export const agentMessageQueries: AgentMessageQueries = {
-  async create(data: schema.NewAgentMessage): Promise<schema.AgentMessage> {
+export const channelQueries: ChannelQueries = {
+  async findById(id: string): Promise<schema.Channel | null> {
     const db = getDb();
-    const result = await db.insert(schema.agentMessages).values(data).returning();
+    const result = await db.select().from(schema.channels).where(eq(schema.channels.id, id));
+    return result[0] ?? null;
+  },
+
+  async findByWorkspaceId(workspaceId: string): Promise<schema.Channel[]> {
+    const db = getDb();
+    return db
+      .select()
+      .from(schema.channels)
+      .where(eq(schema.channels.workspaceId, workspaceId))
+      .orderBy(desc(schema.channels.lastActivityAt));
+  },
+
+  async findByWorkspaceAndChannelId(workspaceId: string, channelId: string): Promise<schema.Channel | null> {
+    const db = getDb();
+    const result = await db
+      .select()
+      .from(schema.channels)
+      .where(and(
+        eq(schema.channels.workspaceId, workspaceId),
+        eq(schema.channels.channelId, channelId)
+      ));
+    return result[0] ?? null;
+  },
+
+  async create(channel: schema.NewChannel): Promise<schema.Channel> {
+    const db = getDb();
+    const result = await db.insert(schema.channels).values(channel).returning();
     return result[0];
   },
 
-  async createMany(data: schema.NewAgentMessage[]): Promise<schema.AgentMessage[]> {
-    if (data.length === 0) return [];
-    const db = getDb();
-    const result = await db
-      .insert(schema.agentMessages)
-      .values(data)
-      .onConflictDoNothing() // Skip duplicates based on workspace_original_unique constraint
-      .returning();
-    return result;
-  },
-
-  async findById(id: string): Promise<schema.AgentMessage | null> {
-    const db = getDb();
-    const result = await db
-      .select()
-      .from(schema.agentMessages)
-      .where(eq(schema.agentMessages.id, id));
-    return result[0] ?? null;
-  },
-
-  async findByOriginalId(workspaceId: string, originalId: string): Promise<schema.AgentMessage | null> {
-    const db = getDb();
-    const result = await db
-      .select()
-      .from(schema.agentMessages)
-      .where(
-        and(
-          eq(schema.agentMessages.workspaceId, workspaceId),
-          eq(schema.agentMessages.originalId, originalId)
-        )
-      );
-    return result[0] ?? null;
-  },
-
-  async query(params: MessageQuery): Promise<schema.AgentMessage[]> {
-    const db = getDb();
-    const conditions = [eq(schema.agentMessages.workspaceId, params.workspaceId)];
-
-    if (params.fromAgent) {
-      conditions.push(eq(schema.agentMessages.fromAgent, params.fromAgent));
-    }
-    if (params.toAgent) {
-      conditions.push(eq(schema.agentMessages.toAgent, params.toAgent));
-    }
-    if (params.thread) {
-      conditions.push(eq(schema.agentMessages.thread, params.thread));
-    }
-    if (params.channel) {
-      conditions.push(eq(schema.agentMessages.channel, params.channel));
-    }
-    if (params.sinceTs) {
-      conditions.push(sql`${schema.agentMessages.messageTs} >= ${params.sinceTs}`);
-    }
-    if (params.beforeTs) {
-      conditions.push(sql`${schema.agentMessages.messageTs} < ${params.beforeTs}`);
-    }
-    if (!params.includeExpired) {
-      conditions.push(
-        sql`(${schema.agentMessages.expiresAt} IS NULL OR ${schema.agentMessages.expiresAt} > NOW())`
-      );
-    }
-
-    let query = db
-      .select()
-      .from(schema.agentMessages)
-      .where(and(...conditions))
-      .orderBy(desc(schema.agentMessages.messageTs));
-
-    if (params.limit) {
-      query = query.limit(params.limit) as typeof query;
-    }
-    if (params.offset) {
-      query = query.offset(params.offset) as typeof query;
-    }
-
-    return query;
-  },
-
-  async getUnindexed(workspaceId: string, limit = 100): Promise<schema.AgentMessage[]> {
-    const db = getDb();
-    return db
-      .select()
-      .from(schema.agentMessages)
-      .where(
-        and(
-          eq(schema.agentMessages.workspaceId, workspaceId),
-          isNull(schema.agentMessages.indexedAt),
-          sql`(${schema.agentMessages.expiresAt} IS NULL OR ${schema.agentMessages.expiresAt} > NOW())`
-        )
-      )
-      .orderBy(schema.agentMessages.messageTs)
-      .limit(limit);
-  },
-
-  async markIndexed(ids: string[]): Promise<void> {
-    if (ids.length === 0) return;
+  async update(id: string, updates: Partial<schema.NewChannel>): Promise<void> {
     const db = getDb();
     await db
-      .update(schema.agentMessages)
-      .set({ indexedAt: new Date() })
-      .where(inArray(schema.agentMessages.id, ids));
+      .update(schema.channels)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(schema.channels.id, id));
   },
 
-  async deleteExpired(): Promise<number> {
+  async archive(id: string): Promise<void> {
     const db = getDb();
-    const result = await db
-      .delete(schema.agentMessages)
-      .where(
-        and(
-          isNotNull(schema.agentMessages.expiresAt),
-          lt(schema.agentMessages.expiresAt, new Date())
-        )
-      )
-      .returning({ id: schema.agentMessages.id });
-    return result.length;
+    await db
+      .update(schema.channels)
+      .set({ status: 'archived', updatedAt: new Date() })
+      .where(eq(schema.channels.id, id));
   },
 
-  async countByWorkspace(workspaceId: string): Promise<number> {
+  async unarchive(id: string): Promise<void> {
     const db = getDb();
-    const result = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(schema.agentMessages)
-      .where(eq(schema.agentMessages.workspaceId, workspaceId));
-    return Number(result[0]?.count ?? 0);
+    await db
+      .update(schema.channels)
+      .set({ status: 'active', updatedAt: new Date() })
+      .where(eq(schema.channels.id, id));
   },
 
-  async getThreadMessages(workspaceId: string, thread: string, limit = 50): Promise<schema.AgentMessage[]> {
+  async delete(id: string): Promise<void> {
+    const db = getDb();
+    await db.delete(schema.channels).where(eq(schema.channels.id, id));
+  },
+};
+
+// ============================================================================
+// Channel Member queries
+// ============================================================================
+
+export interface ChannelMemberQueries {
+  findByChannelId(channelId: string): Promise<schema.ChannelMember[]>;
+  findByMemberId(memberId: string): Promise<schema.ChannelMember[]>;
+  findMembership(channelId: string, memberId: string): Promise<schema.ChannelMember | null>;
+  addMember(member: schema.NewChannelMember): Promise<schema.ChannelMember>;
+  removeMember(channelId: string, memberId: string): Promise<void>;
+  updateRole(channelId: string, memberId: string, role: string): Promise<void>;
+  countByChannelIds(channelIds: string[]): Promise<Map<string, number>>;
+}
+
+export const channelMemberQueries: ChannelMemberQueries = {
+  async findByChannelId(channelId: string): Promise<schema.ChannelMember[]> {
     const db = getDb();
     return db
       .select()
-      .from(schema.agentMessages)
-      .where(
-        and(
-          eq(schema.agentMessages.workspaceId, workspaceId),
-          eq(schema.agentMessages.thread, thread),
-          sql`(${schema.agentMessages.expiresAt} IS NULL OR ${schema.agentMessages.expiresAt} > NOW())`
-        )
-      )
-      .orderBy(schema.agentMessages.messageTs)
-      .limit(limit);
+      .from(schema.channelMembers)
+      .where(eq(schema.channelMembers.channelId, channelId));
+  },
+
+  async findByMemberId(memberId: string): Promise<schema.ChannelMember[]> {
+    const db = getDb();
+    return db
+      .select()
+      .from(schema.channelMembers)
+      .where(eq(schema.channelMembers.memberId, memberId));
+  },
+
+  async findMembership(channelId: string, memberId: string): Promise<schema.ChannelMember | null> {
+    const db = getDb();
+    const result = await db
+      .select()
+      .from(schema.channelMembers)
+      .where(and(
+        eq(schema.channelMembers.channelId, channelId),
+        eq(schema.channelMembers.memberId, memberId)
+      ));
+    return result[0] ?? null;
+  },
+
+  async addMember(member: schema.NewChannelMember): Promise<schema.ChannelMember> {
+    const db = getDb();
+    const result = await db.insert(schema.channelMembers).values(member).returning();
+    return result[0];
+  },
+
+  async removeMember(channelId: string, memberId: string): Promise<void> {
+    const db = getDb();
+    await db
+      .delete(schema.channelMembers)
+      .where(and(
+        eq(schema.channelMembers.channelId, channelId),
+        eq(schema.channelMembers.memberId, memberId)
+      ));
+  },
+
+  async updateRole(channelId: string, memberId: string, role: string): Promise<void> {
+    const db = getDb();
+    await db
+      .update(schema.channelMembers)
+      .set({ role })
+      .where(and(
+        eq(schema.channelMembers.channelId, channelId),
+        eq(schema.channelMembers.memberId, memberId)
+      ));
+  },
+
+  async countByChannelIds(channelIds: string[]): Promise<Map<string, number>> {
+    if (channelIds.length === 0) {
+      return new Map();
+    }
+    const db = getDb();
+    const results = await db
+      .select({
+        channelId: schema.channelMembers.channelId,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(schema.channelMembers)
+      .where(inArray(schema.channelMembers.channelId, channelIds))
+      .groupBy(schema.channelMembers.channelId);
+
+    const countMap = new Map<string, number>();
+    for (const row of results) {
+      countMap.set(row.channelId, row.count);
+    }
+    return countMap;
   },
 };
 

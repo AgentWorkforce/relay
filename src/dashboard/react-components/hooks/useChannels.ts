@@ -34,6 +34,8 @@ export interface UseChannelsOptions {
   autoConnect?: boolean;
   /** Callback when a message is received */
   onMessage?: (message: ChannelMessage) => void;
+  /** Workspace ID for cloud channel message subscription */
+  workspaceId?: string;
 }
 
 export interface UseChannelsReturn {
@@ -75,7 +77,7 @@ function getPresenceUrl(): string {
 const MAX_MESSAGES = 100;
 
 export function useChannels(options: UseChannelsOptions = {}): UseChannelsReturn {
-  const { currentUser, wsUrl, autoConnect = true, onMessage } = options;
+  const { currentUser, wsUrl, autoConnect = true, onMessage, workspaceId } = options;
 
   const [channels, setChannels] = useState<string[]>([]);
   const [messages, setMessages] = useState<ChannelMessage[]>([]);
@@ -86,8 +88,10 @@ export function useChannels(options: UseChannelsOptions = {}): UseChannelsReturn
   const isConnectingRef = useRef(false);
   const currentUserRef = useRef(currentUser);
   const onMessageRef = useRef(onMessage);
+  const workspaceIdRef = useRef(workspaceId);
   currentUserRef.current = currentUser;
   onMessageRef.current = onMessage;
+  workspaceIdRef.current = workspaceId;
 
   const connect = useCallback(() => {
     const user = currentUserRef.current;
@@ -116,6 +120,15 @@ export function useChannels(options: UseChannelsOptions = {}): UseChannelsReturn
               avatarUrl: currentUserInfo.avatarUrl,
             },
           }));
+
+          // Subscribe to channel messages for this workspace (cloud mode)
+          const wsId = workspaceIdRef.current;
+          if (wsId) {
+            ws.send(JSON.stringify({
+              type: 'subscribe_channels',
+              workspaceId: wsId,
+            }));
+          }
         }
       };
 
@@ -284,7 +297,7 @@ export function useChannels(options: UseChannelsOptions = {}): UseChannelsReturn
     return () => {
       disconnect();
     };
-  }, [autoConnect, currentUser?.username, connect, disconnect]);
+  }, [autoConnect, currentUser?.username, workspaceId, connect, disconnect]);
 
   // Send leave on page unload
   useEffect(() => {

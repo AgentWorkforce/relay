@@ -8,17 +8,11 @@
  */
 
 import { generateId } from '../utils/id-generator.js';
-import { PROTOCOL_VERSION, type Envelope } from './types.js';
+import { PROTOCOL_VERSION, type Envelope, type EntityType } from './types.js';
 
-// Re-export PROTOCOL_VERSION for convenience
+// Re-export for convenience
 export { PROTOCOL_VERSION };
-
-/**
- * Entity types in the relay system.
- * - 'agent': AI agent (Claude, GPT, etc.)
- * - 'user': Human user (via dashboard)
- */
-export type EntityType = 'agent' | 'user';
+// EntityType is already exported from types.js, don't re-export here
 
 /**
  * Extended message types for channels.
@@ -53,7 +47,7 @@ export interface MessageAttachment {
   id: string;
   filename: string;
   mimeType: string;
-  size: number;
+  size?: number; // Optional for URL-referenced attachments
   url?: string;
   data?: string; // Base64 for inline
 }
@@ -69,6 +63,12 @@ export interface ChannelJoinPayload {
   displayName?: string;
   /** Optional avatar URL */
   avatarUrl?: string;
+  /**
+   * Optional member name to add to channel.
+   * If provided, adds this member instead of the sender.
+   * Used for admin operations (e.g., adding agents via dashboard).
+   */
+  member?: string;
 }
 
 /**
@@ -80,6 +80,12 @@ export interface ChannelLeavePayload {
   channel: string;
   /** Optional reason for leaving */
   reason?: string;
+  /**
+   * Optional member name to remove from channel.
+   * If provided, removes this member instead of the sender.
+   * Used for admin operations (e.g., removing members via dashboard).
+   */
+  member?: string;
 }
 
 /**

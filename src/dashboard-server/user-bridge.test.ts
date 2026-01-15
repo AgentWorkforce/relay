@@ -51,8 +51,13 @@ class MockRelayClient {
   public agentName: string;
   public entityType?: string;
   public sentMessages: Array<{ to: string; body: string; kind: string; thread?: string }> = [];
+  public channelJoins: Array<{ channel: string; displayName?: string }> = [];
+  public channelLeaves: Array<{ channel: string; reason?: string }> = [];
+  public channelMessages: Array<{ channel: string; body: string; options?: { thread?: string; data?: Record<string, unknown> } }> = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   public onMessage?: (from: string, payload: any, messageId: string, meta?: any, originalTo?: string) => void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  public onChannelMessage?: (from: string, channel: string, body: string, envelope: any) => void;
 
   constructor(options: { socketPath: string; agentName: string; entityType?: string }) {
     this.agentName = options.agentName;
@@ -82,13 +87,52 @@ class MockRelayClient {
     return true;
   }
 
-  // Test helper to simulate receiving a message
-  simulateIncomingMessage(from: string, body: string, envelope: unknown): void {
-    this.onMessage?.(from, envelope, 'test-msg-id', undefined, undefined);
+  // Channel operations
+  joinChannel(channel: string, displayName?: string): boolean {
+    this.channelJoins.push({ channel, displayName });
+    return true;
+  }
+
+  leaveChannel(channel: string, reason?: string): boolean {
+    this.channelLeaves.push({ channel, reason });
+    return true;
+  }
+
+  sendChannelMessage(
+    channel: string,
+    body: string,
+    options?: { thread?: string; mentions?: string[]; attachments?: unknown[]; data?: Record<string, unknown> }
+  ): boolean {
+    this.channelMessages.push({
+      channel,
+      body,
+      options: {
+        thread: options?.thread,
+        data: options?.data,
+      },
+    });
+    return true;
+  }
+
+  // Test helper to simulate receiving a direct message
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  simulateIncomingMessage(from: string, body: string, envelope: any): void {
+    // Pass the payload from the envelope, not the entire envelope
+    const payload = envelope?.payload || { body };
+    this.onMessage?.(from, payload, 'test-msg-id', undefined, undefined);
+  }
+
+  // Test helper to simulate receiving a channel message
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  simulateIncomingChannelMessage(from: string, channel: string, body: string, envelope: any): void {
+    this.onChannelMessage?.(from, channel, body, envelope);
   }
 
   clearSent(): void {
     this.sentMessages = [];
+    this.channelJoins = [];
+    this.channelLeaves = [];
+    this.channelMessages = [];
   }
 }
 
@@ -197,10 +241,10 @@ describe('UserBridge', () => {
     it('should send channel join to relay daemon', async () => {
       await bridge.joinChannel('alice', '#general');
 
-      expect(mockRelayClient.sentMessages).toContainEqual(
+      expect(mockRelayClient.channelJoins).toContainEqual(
         expect.objectContaining({
-          to: '#general',
-          kind: 'channel_join',
+          channel: '#general',
+          displayName: 'alice',
         })
       );
     });
@@ -208,10 +252,9 @@ describe('UserBridge', () => {
     it('should send channel leave to relay daemon', async () => {
       await bridge.leaveChannel('alice', '#general');
 
-      expect(mockRelayClient.sentMessages).toContainEqual(
+      expect(mockRelayClient.channelLeaves).toContainEqual(
         expect.objectContaining({
-          to: '#general',
-          kind: 'channel_leave',
+          channel: '#general',
         })
       );
     });
@@ -245,11 +288,10 @@ describe('UserBridge', () => {
     it('should send channel message via relay client', async () => {
       await bridge.sendChannelMessage('alice', '#general', 'Hello everyone!');
 
-      expect(mockRelayClient.sentMessages).toContainEqual(
+      expect(mockRelayClient.channelMessages).toContainEqual(
         expect.objectContaining({
-          to: '#general',
+          channel: '#general',
           body: 'Hello everyone!',
-          kind: 'message',
         })
       );
     });
@@ -283,11 +325,11 @@ describe('UserBridge', () => {
         thread: 'parent-msg-123',
       });
 
-      expect(mockRelayClient.sentMessages).toContainEqual(
+      expect(mockRelayClient.channelMessages).toContainEqual(
         expect.objectContaining({
-          to: '#general',
+          channel: '#general',
           body: 'Reply to thread',
-          thread: 'parent-msg-123',
+          options: { thread: 'parent-msg-123' },
         })
       );
     });
@@ -300,7 +342,7 @@ describe('UserBridge', () => {
     });
 
     it('should forward incoming channel messages to WebSocket', () => {
-      mockRelayClient.simulateIncomingMessage('bob', 'Hello Alice!', {
+      mockRelayClient.simulateIncomingChannelMessage('bob', '#general', 'Hello Alice!', {
         type: 'CHANNEL_MESSAGE',
         payload: {
           channel: '#general',

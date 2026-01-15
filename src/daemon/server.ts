@@ -10,6 +10,7 @@ import os from 'node:os';
 import { Connection, type ConnectionConfig, DEFAULT_CONFIG } from './connection.js';
 import { Router } from './router.js';
 import type { Envelope, ShadowBindPayload, ShadowUnbindPayload, LogPayload, SendEnvelope } from '../protocol/types.js';
+import type { ChannelJoinPayload, ChannelLeavePayload, ChannelMessagePayload } from '../protocol/channels.js';
 import { createStorageAdapter, type StorageAdapter, type StorageConfig } from '../storage/adapter.js';
 import { SqliteStorageAdapter } from '../storage/sqlite-adapter.js';
 import { getProjectPaths } from '../utils/project-namespace.js';
@@ -22,6 +23,7 @@ import {
   createConsensusIntegration,
   type ConsensusIntegrationConfig,
 } from './consensus-integration.js';
+import type { ChannelMembershipStore } from './channel-membership-store.js';
 
 export interface DaemonConfig extends ConnectionConfig {
   socketPath: string;
@@ -61,6 +63,7 @@ export class Daemon {
   private cloudSync?: CloudSyncService;
   private remoteAgents: RemoteAgent[] = [];
   private consensus?: ConsensusIntegration;
+  private cloudSyncDebounceTimer?: NodeJS.Timeout;
 
   /** Callback for log output from agents (used by dashboard for streaming) */
   onLogOutput?: (agentName: string, data: string, timestamp: number) => void;
@@ -122,6 +125,28 @@ export class Daemon {
   }
 
   /**
+   * Write currently connected agents to connected-agents.json for CLI consumption.
+   * This file contains agents with active socket connections (vs agents.json which is historical).
+   */
+  private writeConnectedAgentsFile(): void {
+    try {
+      const connectedAgents = this.router.getAgents();
+      const connectedUsers = this.router.getUsers();
+      const targetPath = path.join(this.config.teamDir ?? path.dirname(this.config.socketPath), 'connected-agents.json');
+      const data = JSON.stringify({
+        agents: connectedAgents,
+        users: connectedUsers,
+        updatedAt: Date.now(),
+      }, null, 2);
+      const tempPath = `${targetPath}.tmp`;
+      fs.writeFileSync(tempPath, data, 'utf-8');
+      fs.renameSync(tempPath, targetPath);
+    } catch (err) {
+      log.error('Failed to write connected-agents.json', { error: String(err) });
+    }
+  }
+
+  /**
    * Initialize storage adapter (called during start).
    */
   private async initStorage(): Promise<void> {
@@ -137,6 +162,27 @@ export class Daemon {
       this.storage = await createStorageAdapter(storagePath, this.config.storageConfig);
     }
 
+    let channelMembershipStore: ChannelMembershipStore | undefined;
+    const workspaceId = process.env.RELAY_WORKSPACE_ID
+      || process.env.AGENT_RELAY_WORKSPACE_ID
+      || process.env.WORKSPACE_ID;
+    const databaseUrl = process.env.CLOUD_DATABASE_URL
+      || process.env.DATABASE_URL
+      || process.env.AGENT_RELAY_STORAGE_URL;
+    const isPostgresUrl = databaseUrl?.startsWith('postgres://') || databaseUrl?.startsWith('postgresql://');
+
+    if (workspaceId && isPostgresUrl && databaseUrl) {
+      try {
+        const { CloudChannelMembershipStore } = await import('./channel-membership-store.js');
+        channelMembershipStore = new CloudChannelMembershipStore({ workspaceId, databaseUrl });
+        log.info('Channel membership store enabled (cloud DB)', { workspaceId });
+      } catch (err) {
+        log.error('Failed to initialize channel membership store', { error: String(err) });
+      }
+    } else {
+      log.debug('Channel membership store disabled (missing workspaceId or Postgres database URL)');
+    }
+
     this.router = new Router({
       storage: this.storage,
       registry: this.registry,
@@ -145,6 +191,7 @@ export class Daemon {
         sendCrossMachineMessage: this.sendCrossMachineMessage.bind(this),
         isRemoteAgent: this.isRemoteAgent.bind(this),
       },
+      channelMembershipStore,
     });
 
     // Initialize consensus (enabled by default, can be disabled with consensus: false)
@@ -394,18 +441,67 @@ export class Daemon {
 
   /**
    * Notify cloud sync about local agent changes.
+   * Debounced to prevent flooding the cloud API with rapid connect/disconnect events.
    */
   private notifyCloudSync(): void {
     if (!this.cloudSync?.isConnected()) return;
 
-    const agents = Array.from(this.connections)
-      .filter(c => c.agentName)
+    // Debounce: clear any pending sync and schedule a new one
+    if (this.cloudSyncDebounceTimer) {
+      clearTimeout(this.cloudSyncDebounceTimer);
+    }
+
+    this.cloudSyncDebounceTimer = setTimeout(() => {
+      this.cloudSyncDebounceTimer = undefined;
+      this.doCloudSync();
+    }, 1000); // 1 second debounce
+  }
+
+  /**
+   * Actually perform the cloud sync (called after debounce).
+   */
+  private doCloudSync(): void {
+    if (!this.cloudSync?.isConnected()) return;
+
+    // Get AI agents (exclude internal ones like Dashboard)
+    const aiAgents = Array.from(this.connections)
+      .filter(c => {
+        if (!c.agentName) return false;
+        if (c.entityType === 'user') return false;
+        if (this.isInternalAgent(c.agentName)) return false;
+        return true;
+      })
       .map(c => ({
         name: c.agentName!,
         status: 'online',
+        isHuman: false,
       }));
 
-    this.cloudSync.updateAgents(agents);
+    // Get human users (entityType === 'user', exclude Dashboard)
+    const humanUsers = Array.from(this.connections)
+      .filter(c => {
+        if (!c.agentName) return false;
+        if (c.entityType !== 'user') return false;
+        if (this.isInternalAgent(c.agentName)) return false;
+        return true;
+      })
+      .map(c => ({
+        name: c.agentName!,
+        status: 'online',
+        isHuman: true,
+        avatarUrl: c.avatarUrl,
+      }));
+
+    this.cloudSync.updateAgents([...aiAgents, ...humanUsers]);
+  }
+
+  /**
+   * Check if an agent is internal (should be hidden from cloud sync and listings).
+   */
+  private isInternalAgent(name: string): boolean {
+    if (name.startsWith('__')) return true;
+    // Dashboard and cli are internal system agents
+    return name === 'Dashboard' || name === 'cli';
   }
 
   /**
@@ -418,6 +514,12 @@ export class Daemon {
     if (this.cloudSync) {
       this.cloudSync.stop();
       this.cloudSync = undefined;
+    }
+
+    // Clear cloud sync debounce timer
+    if (this.cloudSyncDebounceTimer) {
+      clearTimeout(this.cloudSyncDebounceTimer);
+      this.cloudSyncDebounceTimer = undefined;
     }
 
     // Stop processing state updates
@@ -519,6 +621,9 @@ export class Daemon {
           workingDirectory: connection.workingDirectory,
         });
 
+        // Auto-join all agents to #general channel
+        this.router.autoJoinChannel(connection.agentName, '#general');
+
         // Record session start
         if (this.storage instanceof SqliteStorageAdapter) {
           const projectPaths = getProjectPaths();
@@ -556,6 +661,9 @@ export class Daemon {
 
       // Notify cloud sync about agent changes
       this.notifyCloudSync();
+
+      // Update connected agents file for CLI
+      this.writeConnectedAgentsFile();
     };
 
     connection.onClose = () => {
@@ -575,6 +683,9 @@ export class Daemon {
 
       // Notify cloud sync about agent changes
       this.notifyCloudSync();
+
+      // Update connected agents file for CLI
+      this.writeConnectedAgentsFile();
     };
 
     connection.onError = (error: Error) => {
@@ -591,6 +702,9 @@ export class Daemon {
         this.storage.endSession(connection.sessionId, { closedBy: 'error' })
           .catch(err => log.error('Failed to record session end', { error: String(err) }));
       }
+
+      // Update connected agents file for CLI
+      this.writeConnectedAgentsFile();
     };
   }
 
@@ -601,6 +715,16 @@ export class Daemon {
     switch (envelope.type) {
       case 'SEND': {
         const sendEnvelope = envelope as SendEnvelope;
+
+        const membershipUpdate = (sendEnvelope.payload.data as { _channelMembershipUpdate?: { channel?: string; member?: string; action?: 'join' | 'leave' | 'invite' } })?._channelMembershipUpdate;
+        if (membershipUpdate && sendEnvelope.to === '_router') {
+          this.router.handleMembershipUpdate({
+            channel: membershipUpdate.channel ?? '',
+            member: membershipUpdate.member ?? '',
+            action: membershipUpdate.action ?? 'join',
+          });
+          return;
+        }
 
         // Check for consensus commands (messages to _consensus)
         if (this.consensus?.enabled && sendEnvelope.to === '_consensus') {
@@ -666,6 +790,28 @@ export class Daemon {
           }
         }
         break;
+
+      // Channel messaging handlers
+      case 'CHANNEL_JOIN': {
+        const channelEnvelope = envelope as Envelope<ChannelJoinPayload>;
+        log.info(`Channel join: ${connection.agentName} -> ${channelEnvelope.payload.channel}`);
+        this.router.handleChannelJoin(connection, channelEnvelope);
+        break;
+      }
+
+      case 'CHANNEL_LEAVE': {
+        const channelEnvelope = envelope as Envelope<ChannelLeavePayload>;
+        log.info(`Channel leave: ${connection.agentName} <- ${channelEnvelope.payload.channel}`);
+        this.router.handleChannelLeave(connection, channelEnvelope);
+        break;
+      }
+
+      case 'CHANNEL_MESSAGE': {
+        const channelEnvelope = envelope as Envelope<ChannelMessagePayload>;
+        log.info(`CHANNEL_MESSAGE received: from=${connection.agentName} channel=${channelEnvelope.payload.channel}`);
+        this.router.routeChannelMessage(connection, channelEnvelope);
+        break;
+      }
     }
   }
 

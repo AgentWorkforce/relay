@@ -190,8 +190,6 @@ export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
   }),
   members: many(workspaceMembers),
   repositories: many(repositories),
-  linkedDaemons: many(linkedDaemons),
-  messages: many(agentMessages),
 }));
 
 // ============================================================================
@@ -325,7 +323,6 @@ export const repositoriesRelations = relations(repositories, ({ one }) => ({
 export const linkedDaemons = pgTable('linked_daemons', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
   name: varchar('name', { length: 255 }).notNull(),
   machineId: varchar('machine_id', { length: 255 }).notNull(),
   apiKeyHash: varchar('api_key_hash', { length: 255 }).notNull(),
@@ -334,17 +331,18 @@ export const linkedDaemons = pgTable('linked_daemons', {
   metadata: jsonb('metadata').notNull().default({}),
   pendingUpdates: jsonb('pending_updates').notNull().default([]),
   messageQueue: jsonb('message_queue').notNull().default([]),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
   userMachineIdx: unique('linked_daemons_user_machine_unique').on(table.userId, table.machineId),
   userIdIdx: index('idx_linked_daemons_user_id').on(table.userId),
-  workspaceIdIdx: index('idx_linked_daemons_workspace_id').on(table.workspaceId),
   apiKeyHashIdx: index('idx_linked_daemons_api_key_hash').on(table.apiKeyHash),
   statusIdx: index('idx_linked_daemons_status').on(table.status),
+  workspaceIdIdx: index('idx_linked_daemons_workspace_id').on(table.workspaceId),
 }));
 
-export const linkedDaemonsRelations = relations(linkedDaemons, ({ one, many }) => ({
+export const linkedDaemonsRelations = relations(linkedDaemons, ({ one }) => ({
   user: one(users, {
     fields: [linkedDaemons.userId],
     references: [users.id],
@@ -353,7 +351,6 @@ export const linkedDaemonsRelations = relations(linkedDaemons, ({ one, many }) =
     fields: [linkedDaemons.workspaceId],
     references: [workspaces.id],
   }),
-  messages: many(agentMessages),
 }));
 
 // ============================================================================
@@ -388,6 +385,74 @@ export const usageRecords = pgTable('usage_records', {
   userIdIdx: index('idx_usage_records_user_id').on(table.userId),
   recordedAtIdx: index('idx_usage_records_recorded_at').on(table.recordedAt),
 }));
+
+// ============================================================================
+// Channels (workspace-scoped messaging channels)
+// ============================================================================
+
+export const channels = pgTable('channels', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').notNull().references(() => workspaces.id, { onDelete: 'cascade' }),
+  /** Channel identifier (e.g., '#general', '#random', 'dm:user1:user2') */
+  channelId: varchar('channel_id', { length: 255 }).notNull(),
+  /** Display name (without # prefix) */
+  name: varchar('name', { length: 255 }).notNull(),
+  description: text('description'),
+  /** Channel type: 'public', 'private', 'dm' */
+  visibility: varchar('visibility', { length: 50 }).notNull().default('public'),
+  /** Channel status: 'active', 'archived' */
+  status: varchar('status', { length: 50 }).notNull().default('active'),
+  createdBy: varchar('created_by', { length: 255 }),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  lastActivityAt: timestamp('last_activity_at'),
+}, (table) => ({
+  workspaceChannelIdx: unique('channels_workspace_channel_unique').on(table.workspaceId, table.channelId),
+  workspaceIdIdx: index('idx_channels_workspace_id').on(table.workspaceId),
+  statusIdx: index('idx_channels_status').on(table.status),
+}));
+
+export const channelsRelations = relations(channels, ({ one, many }) => ({
+  workspace: one(workspaces, {
+    fields: [channels.workspaceId],
+    references: [workspaces.id],
+  }),
+  members: many(channelMembers),
+}));
+
+// ============================================================================
+// Channel Members (who's in each channel)
+// ============================================================================
+
+export const channelMembers = pgTable('channel_members', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  channelId: uuid('channel_id').notNull().references(() => channels.id, { onDelete: 'cascade' }),
+  /** Member identifier (username or agent name) */
+  memberId: varchar('member_id', { length: 255 }).notNull(),
+  /** Member type: 'user' or 'agent' */
+  memberType: varchar('member_type', { length: 50 }).notNull().default('user'),
+  /** Role in channel: 'owner', 'admin', 'member' */
+  role: varchar('role', { length: 50 }).notNull().default('member'),
+  joinedAt: timestamp('joined_at').defaultNow().notNull(),
+  invitedBy: varchar('invited_by', { length: 255 }),
+}, (table) => ({
+  channelMemberIdx: unique('channel_members_channel_member_unique').on(table.channelId, table.memberId),
+  channelIdIdx: index('idx_channel_members_channel_id').on(table.channelId),
+  memberIdIdx: index('idx_channel_members_member_id').on(table.memberId),
+}));
+
+export const channelMembersRelations = relations(channelMembers, ({ one }) => ({
+  channel: one(channels, {
+    fields: [channelMembers.channelId],
+    references: [channels.id],
+  }),
+}));
+
+// Type exports for channels
+export type Channel = typeof channels.$inferSelect;
+export type NewChannel = typeof channels.$inferInsert;
+export type ChannelMember = typeof channelMembers.$inferSelect;
+export type NewChannelMember = typeof channelMembers.$inferInsert;
 
 // ============================================================================
 // Agent Sessions (cloud persistence for PtyWrapper agents)
@@ -823,99 +888,3 @@ export type NewIssueAssignment = typeof issueAssignments.$inferInsert;
 export type CommentMention = typeof commentMentions.$inferSelect;
 export type NewCommentMention = typeof commentMentions.$inferInsert;
 
-// ============================================================================
-// Agent Messages (cloud-synced message history)
-// ============================================================================
-
-/**
- * Message payload metadata (mirrors SendMeta from protocol)
- */
-export interface MessagePayloadMeta {
-  requires_ack?: boolean;
-  ttl_ms?: number;
-  importance?: number; // 0-100, 100 is highest
-  replyTo?: string;    // Correlation ID for replies
-}
-
-/**
- * Agent messages table - stores all relay messages for search and history.
- *
- * Retention policy:
- * - Free tier: 30 days (enforced via expires_at)
- * - Pro tier: 90 days
- * - Enterprise: Unlimited (no expires_at set)
- *
- * Messages are synced from daemon SQLite to cloud PostgreSQL.
- */
-export const agentMessages = pgTable('agent_messages', {
-  id: uuid('id').primaryKey().defaultRandom(),
-
-  // Scoping
-  workspaceId: uuid('workspace_id').notNull().references(() => workspaces.id, { onDelete: 'cascade' }),
-  daemonId: uuid('daemon_id').references(() => linkedDaemons.id, { onDelete: 'set null' }),
-
-  // Original message ID from daemon (for deduplication)
-  originalId: varchar('original_id', { length: 255 }).notNull(),
-
-  // Core message fields (aligned with StoredMessage)
-  fromAgent: varchar('from_agent', { length: 255 }).notNull(),
-  toAgent: varchar('to_agent', { length: 255 }).notNull(), // '*' for broadcast
-  body: text('body').notNull(),
-
-  // Message classification
-  kind: varchar('kind', { length: 50 }).notNull().default('message'), // message, action, state, thinking
-  topic: varchar('topic', { length: 255 }),
-  thread: varchar('thread', { length: 255 }), // Thread ID for grouping
-  channel: varchar('channel', { length: 255 }), // Channel name if channel message
-
-  // Flags
-  isBroadcast: boolean('is_broadcast').notNull().default(false),
-  isUrgent: boolean('is_urgent').notNull().default(false),
-
-  // Optional structured data
-  data: jsonb('data').$type<Record<string, unknown>>(),
-  payloadMeta: jsonb('payload_meta').$type<MessagePayloadMeta>(),
-
-  // Timestamps
-  messageTs: timestamp('message_ts').notNull(), // Original message timestamp from daemon
-  createdAt: timestamp('created_at').defaultNow().notNull(), // When synced to cloud
-  expiresAt: timestamp('expires_at'), // Retention policy - null = never expires
-
-  // Search/indexing tracking
-  indexedAt: timestamp('indexed_at'), // When sent to Algolia (null = not indexed)
-}, (table) => ({
-  // Primary lookups
-  workspaceIdIdx: index('idx_agent_messages_workspace_id').on(table.workspaceId),
-  daemonIdIdx: index('idx_agent_messages_daemon_id').on(table.daemonId),
-
-  // Deduplication - prevent duplicate sync
-  workspaceOriginalIdx: unique('agent_messages_workspace_original_unique').on(table.workspaceId, table.originalId),
-
-  // Query patterns
-  fromAgentIdx: index('idx_agent_messages_from_agent').on(table.fromAgent),
-  toAgentIdx: index('idx_agent_messages_to_agent').on(table.toAgent),
-  threadIdx: index('idx_agent_messages_thread').on(table.thread),
-  channelIdx: index('idx_agent_messages_channel').on(table.channel),
-  messageTsIdx: index('idx_agent_messages_message_ts').on(table.messageTs),
-
-  // Retention cleanup
-  expiresAtIdx: index('idx_agent_messages_expires_at').on(table.expiresAt),
-
-  // Search indexing queue
-  indexedAtIdx: index('idx_agent_messages_indexed_at').on(table.indexedAt),
-}));
-
-export const agentMessagesRelations = relations(agentMessages, ({ one }) => ({
-  workspace: one(workspaces, {
-    fields: [agentMessages.workspaceId],
-    references: [workspaces.id],
-  }),
-  daemon: one(linkedDaemons, {
-    fields: [agentMessages.daemonId],
-    references: [linkedDaemons.id],
-  }),
-}));
-
-// Type exports for messages
-export type AgentMessage = typeof agentMessages.$inferSelect;
-export type NewAgentMessage = typeof agentMessages.$inferInsert;

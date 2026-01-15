@@ -735,6 +735,7 @@ program
     const os = await import('node:os');
     const paths = getProjectPaths();
     const agentsPath = path.join(paths.teamDir, 'agents.json');
+    const connectedAgentsPath = path.join(paths.teamDir, 'connected-agents.json');
 
     // Load registered agents
     const allAgents = loadAgents(agentsPath);
@@ -744,6 +745,25 @@ program
 
     // Load spawned workers
     const workers = readWorkersMetadata(paths.projectRoot);
+
+    // Load currently connected agents (agents with active socket connections)
+    let connectedAgentNames: Set<string> = new Set();
+    let connectedUpdatedAt = 0;
+    try {
+      if (fs.existsSync(connectedAgentsPath)) {
+        const connectedData = JSON.parse(fs.readFileSync(connectedAgentsPath, 'utf-8'));
+        connectedAgentNames = new Set([
+          ...(connectedData.agents || []),
+          ...(connectedData.users || []),
+        ]);
+        connectedUpdatedAt = connectedData.updatedAt || 0;
+      }
+    } catch {
+      // If file doesn't exist or is invalid, fall back to registry-based status
+    }
+
+    // Check if connected-agents.json is fresh (within 30 seconds)
+    const isConnectedAgentsStale = Date.now() - connectedUpdatedAt > 30_000;
 
     // Merge agents and workers
     interface CombinedAgent {
@@ -762,9 +782,18 @@ program
     // Add registered agents
     agents.forEach((agent) => {
       const worker = workers.find(w => w.name === agent.name);
+      // Use connected-agents.json if fresh, otherwise fall back to registry lastSeen
+      let status: string;
+      if (!isConnectedAgentsStale && connectedAgentNames.size > 0) {
+        // We have fresh connected-agents data - use actual connection status
+        status = connectedAgentNames.has(agent.name ?? '') ? 'ONLINE' : 'OFFLINE';
+      } else {
+        // Fall back to registry-based status
+        status = getAgentStatus(agent);
+      }
       combined.push({
         name: agent.name ?? 'unknown',
-        status: getAgentStatus(agent),
+        status,
         cli: agent.cli ?? '-',
         lastSeen: agent.lastSeen,
         team: worker?.team,
