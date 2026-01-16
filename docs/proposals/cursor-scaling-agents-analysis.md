@@ -4,6 +4,8 @@
 **Research Date:** January 2026
 **Analysis Date:** January 16, 2026
 
+> **⚠️ UPDATE:** See `cursor-analysis-existing-features-audit.md` for a comprehensive audit of what agent-relay already has. This addendum shows we're further along than originally estimated - many proposals build on existing infrastructure.
+
 ---
 
 ## Executive Summary
@@ -852,18 +854,22 @@ async start() {
 
 ## Priority Matrix
 
-| Proposal                      | Impact | Complexity | Priority | Effort   | ROI  |
-|-------------------------------|--------|------------|----------|----------|------|
-| 4. Role-Based Model Selection | High   | Low        | **P0**   | 1-2 days | ⭐⭐⭐ |
-| 5. Prompt-First Architecture  | High   | Medium     | **P0**   | 2-3 days | ⭐⭐⭐ |
-| 1. Hierarchical Agent Roles   | High   | Medium     | **P1**   | 2-3 days | ⭐⭐  |
-| 3. Automatic Fresh Starts     | Medium | Medium     | **P2**   | 3-4 days | ⭐⭐  |
-| 2. Optimistic Concurrency     | High   | High       | **P2**   | 1 week   | ⭐   |
+> **Note:** These estimates assume building from scratch. See `cursor-analysis-existing-features-audit.md` for updated estimates that account for existing infrastructure (StatelessLeadCoordinator, Continuity, Consensus, etc.). Actual effort is ~40% lower.
+
+| Proposal                      | Impact | Complexity | Priority | Effort (Original) | Effort (Updated) | ROI  |
+|-------------------------------|--------|------------|----------|-------------------|------------------|------|
+| 4. Role-Based Model Selection | High   | Low        | **P0**   | 1-2 days | **0.5 day** | ⭐⭐⭐ |
+| 5. Prompt-First Architecture  | High   | Medium     | **P0**   | 2-3 days | **2-3 days** | ⭐⭐⭐ |
+| 1. Hierarchical Agent Roles   | High   | Medium     | **P1**   | 2-3 days | **1-2 days** | ⭐⭐  |
+| 3. Automatic Fresh Starts     | Medium | Medium     | **P2**   | 3-4 days | **2 days** | ⭐⭐  |
+| 2. Optimistic Concurrency     | High   | High       | **P2**   | 1 week   | **1 week** | ⭐   |
 
 **Legend:**
 - **P0:** Quick wins - high impact, low/medium complexity
 - **P1:** High value - implement after P0
 - **P2:** Important but complex - plan carefully
+
+**Updated Total for P0 Quick Wins:** 2.5-3.5 days (down from 3-5 days)
 
 ---
 
