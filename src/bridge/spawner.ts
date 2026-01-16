@@ -11,7 +11,7 @@ import { sleep } from './utils.js';
 import { getProjectPaths } from '../utils/project-namespace.js';
 import { resolveCommand } from '../utils/command-resolver.js';
 import { RelayPtyOrchestrator, type RelayPtyOrchestratorConfig } from '../wrapper/relay-pty-orchestrator.js';
-import { PtyWrapper, type PtyWrapperConfig, type SummaryEvent, type SessionEndEvent } from '../wrapper/pty-wrapper.js';
+import type { SummaryEvent, SessionEndEvent } from '../wrapper/pty-wrapper.js';
 import { selectShadowCli } from './shadow-cli.js';
 
 // Get the directory where this module is located (for binary path resolution)
@@ -62,8 +62,8 @@ interface ListenerBindings {
   sessionEnd?: (event: SessionEndEvent) => void;
 }
 
-/** Type alias for the wrapper - can be either RelayPtyOrchestrator or PtyWrapper */
-type AgentWrapper = RelayPtyOrchestrator | PtyWrapper;
+/** Type alias for the wrapper - uses RelayPtyOrchestrator (relay-pty Rust binary) */
+type AgentWrapper = RelayPtyOrchestrator;
 
 interface ActiveWorker extends WorkerInfo {
   pty: AgentWrapper;
@@ -478,8 +478,16 @@ export class AgentSpawner {
 
       if (debug) console.log(`[spawner:debug] Socket path for ${name}: ${this.socketPath ?? 'undefined'}`);
 
-      // Check if relay-pty binary is available - use PtyWrapper as fallback
-      const useRelayPty = hasRelayPtyBinary();
+      // Require relay-pty binary - no fallback to node-pty
+      if (!hasRelayPtyBinary()) {
+        const error = 'relay-pty binary not found. Install with: npm run build:relay-pty';
+        console.error(`[spawner] ${error}`);
+        return {
+          success: false,
+          name,
+          error,
+        };
+      }
 
       // Common exit handler for both wrapper types
       const onExitHandler = (code: number) => {
@@ -528,50 +536,25 @@ export class AgentSpawner {
         await this.release(workerName);
       };
 
-      // Create the appropriate wrapper based on binary availability
-      let pty: AgentWrapper;
-
-      if (useRelayPty) {
-        const ptyConfig: RelayPtyOrchestratorConfig = {
-          name,
-          command,
-          args,
-          socketPath: this.socketPath,
-          cwd: agentCwd,
-          dashboardPort: this.dashboardPort,
-          env: userEnv,
-          streamLogs: true,
-          shadowOf: request.shadowOf,
-          shadowSpeakOn: request.shadowSpeakOn,
-          skipContinuity: true,
-          onSpawn: onSpawnHandler,
-          onRelease: onReleaseHandler,
-          onExit: onExitHandler,
-        };
-        pty = new RelayPtyOrchestrator(ptyConfig);
-        if (debug) console.log(`[spawner:debug] Using RelayPtyOrchestrator for ${name}`);
-      } else {
-        const ptyConfig: PtyWrapperConfig = {
-          name,
-          command,
-          args,
-          socketPath: this.socketPath,
-          cwd: agentCwd,
-          dashboardPort: this.dashboardPort,
-          env: userEnv,
-          streamLogs: true,
-          shadowOf: request.shadowOf,
-          shadowSpeakOn: request.shadowSpeakOn,
-          skipContinuity: true,
-          onSpawn: onSpawnHandler,
-          onRelease: onReleaseHandler,
-          onExit: onExitHandler,
-          logsDir: this.logsDir,
-          allowSpawn: true,
-        };
-        pty = new PtyWrapper(ptyConfig);
-        if (debug) console.log(`[spawner:debug] Using PtyWrapper fallback for ${name}`);
-      }
+      // Create RelayPtyOrchestrator (relay-pty Rust binary)
+      const ptyConfig: RelayPtyOrchestratorConfig = {
+        name,
+        command,
+        args,
+        socketPath: this.socketPath,
+        cwd: agentCwd,
+        dashboardPort: this.dashboardPort,
+        env: userEnv,
+        streamLogs: true,
+        shadowOf: request.shadowOf,
+        shadowSpeakOn: request.shadowSpeakOn,
+        skipContinuity: true,
+        onSpawn: onSpawnHandler,
+        onRelease: onReleaseHandler,
+        onExit: onExitHandler,
+      };
+      const pty = new RelayPtyOrchestrator(ptyConfig);
+      if (debug) console.log(`[spawner:debug] Using RelayPtyOrchestrator for ${name}`);
 
       // Track listener references for proper cleanup
       const listeners: ListenerBindings = {};
