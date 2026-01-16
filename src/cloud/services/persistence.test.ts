@@ -64,12 +64,12 @@ describe('CloudPersistenceService', () => {
     mockDb.set.mockReturnThis();
   });
 
-  describe('bindToPtyWrapper', () => {
+  describe('bindToRelayPtyOrchestrator', () => {
     it('creates a session and returns session ID', async () => {
       const sessionId = 'session-abc';
       mockDb.returning.mockResolvedValue([{ id: sessionId }]);
 
-      const result = await service.bindToPtyWrapper(mockWrapper as any);
+      const result = await service.bindToRelayPtyOrchestrator(mockWrapper as any);
 
       expect(result).toBe(sessionId);
       expect(mockDb.insert).toHaveBeenCalled();
@@ -85,7 +85,7 @@ describe('CloudPersistenceService', () => {
     it('throws error when session creation fails', async () => {
       mockDb.returning.mockResolvedValue([]);
 
-      await expect(service.bindToPtyWrapper(mockWrapper as any)).rejects.toThrow(
+      await expect(service.bindToRelayPtyOrchestrator(mockWrapper as any)).rejects.toThrow(
         'Failed to create session for agent TestAgent'
       );
     });
@@ -93,21 +93,21 @@ describe('CloudPersistenceService', () => {
     it('binds event listeners for summary and session-end', async () => {
       mockDb.returning.mockResolvedValue([{ id: 'session-123' }]);
 
-      await service.bindToPtyWrapper(mockWrapper as any);
+      await service.bindToRelayPtyOrchestrator(mockWrapper as any);
 
       expect(mockWrapper.listenerCount('summary')).toBe(1);
       expect(mockWrapper.listenerCount('session-end')).toBe(1);
     });
   });
 
-  describe('unbindFromPtyWrapper', () => {
+  describe('unbindFromRelayPtyOrchestrator', () => {
     it('removes event listeners', async () => {
       mockDb.returning.mockResolvedValue([{ id: 'session-123' }]);
-      await service.bindToPtyWrapper(mockWrapper as any);
+      await service.bindToRelayPtyOrchestrator(mockWrapper as any);
 
       expect(mockWrapper.listenerCount('summary')).toBe(1);
 
-      service.unbindFromPtyWrapper(mockWrapper as any);
+      service.unbindFromRelayPtyOrchestrator(mockWrapper as any);
 
       expect(mockWrapper.listenerCount('summary')).toBe(0);
       expect(mockWrapper.listenerCount('session-end')).toBe(0);
@@ -115,14 +115,14 @@ describe('CloudPersistenceService', () => {
 
     it('does nothing if wrapper was not bound', () => {
       // Should not throw
-      service.unbindFromPtyWrapper(mockWrapper as any);
+      service.unbindFromRelayPtyOrchestrator(mockWrapper as any);
     });
   });
 
   describe('event handling', () => {
     beforeEach(async () => {
       mockDb.returning.mockResolvedValue([{ id: 'session-123' }]);
-      await service.bindToPtyWrapper(mockWrapper as any);
+      await service.bindToRelayPtyOrchestrator(mockWrapper as any);
     });
 
     it('persists summary events to database', async () => {
@@ -163,7 +163,7 @@ describe('CloudPersistenceService', () => {
       callbackWrapper.name = 'CallbackAgent';
 
       mockDb.returning.mockResolvedValueOnce([{ id: 'session-789' }]);
-      await serviceWithCallback.bindToPtyWrapper(callbackWrapper as any);
+      await serviceWithCallback.bindToRelayPtyOrchestrator(callbackWrapper as any);
 
       mockDb.returning.mockResolvedValueOnce([{ id: 'summary-abc' }]);
 
@@ -207,7 +207,7 @@ describe('CloudPersistenceService', () => {
       });
 
       mockDb.returning.mockResolvedValueOnce([{ id: 'session-end-test' }]);
-      await serviceWithCallback.bindToPtyWrapper(mockWrapper as any);
+      await serviceWithCallback.bindToRelayPtyOrchestrator(mockWrapper as any);
 
       mockWrapper.emit('session-end', {
         agentName: 'TestAgent',
@@ -249,7 +249,7 @@ describe('CloudPersistenceService', () => {
   describe('getSessionId', () => {
     it('returns session ID for bound wrapper', async () => {
       mockDb.returning.mockResolvedValue([{ id: 'tracked-session' }]);
-      await service.bindToPtyWrapper(mockWrapper as any);
+      await service.bindToRelayPtyOrchestrator(mockWrapper as any);
 
       const sessionId = service.getSessionId(mockWrapper as any);
 
@@ -266,12 +266,12 @@ describe('CloudPersistenceService', () => {
   describe('destroy', () => {
     it('unbinds all wrappers', async () => {
       mockDb.returning.mockResolvedValue([{ id: 'session-1' }]);
-      await service.bindToPtyWrapper(mockWrapper as any);
+      await service.bindToRelayPtyOrchestrator(mockWrapper as any);
 
       const wrapper2 = new MockPtyWrapper();
       wrapper2.name = 'Agent2';
       mockDb.returning.mockResolvedValue([{ id: 'session-2' }]);
-      await service.bindToPtyWrapper(wrapper2 as any);
+      await service.bindToRelayPtyOrchestrator(wrapper2 as any);
 
       service.destroy();
 

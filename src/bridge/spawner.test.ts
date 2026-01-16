@@ -8,8 +8,8 @@ import { AgentSpawner, readWorkersMetadata, getWorkerLogsDir } from './spawner.j
 
 const PROJECT_ROOT = '/project/root';
 
-// Mock PtyWrapper
-const mockPtyWrapper = {
+// Mock RelayPtyOrchestrator
+const mockPtyOrchestrator = {
   start: vi.fn(),
   stop: vi.fn(),
   kill: vi.fn(),
@@ -22,11 +22,12 @@ const mockPtyWrapper = {
   pid: 12345,
   logPath: '/team/worker-logs/test.log',
   name: 'TestWorker',
+  getAgentId: vi.fn(() => 'agent-id-123'),
 };
 
-vi.mock('../wrapper/pty-wrapper.js', () => {
+vi.mock('../wrapper/relay-pty-orchestrator.js', () => {
   return {
-    PtyWrapper: vi.fn().mockImplementation(() => mockPtyWrapper),
+    RelayPtyOrchestrator: vi.fn().mockImplementation(() => mockPtyOrchestrator),
   };
 });
 
@@ -85,9 +86,9 @@ describe('AgentSpawner', () => {
     });
     writeFileSyncMock.mockImplementation(() => {});
     mkdirSyncMock.mockImplementation(() => undefined);
-    mockPtyWrapper.start.mockResolvedValue(undefined);
-    mockPtyWrapper.isRunning = true;
-    mockPtyWrapper.pid = 12345;
+    mockPtyOrchestrator.start.mockResolvedValue(undefined);
+    mockPtyOrchestrator.isRunning = true;
+    mockPtyOrchestrator.pid = 12345;
     waitForAgentRegistrationMock = vi
       .spyOn(AgentSpawner.prototype as any, 'waitForAgentRegistration')
       .mockResolvedValue(true);
@@ -108,15 +109,15 @@ describe('AgentSpawner', () => {
       pid: 12345,
     });
     expect(spawner.hasWorker('Dev1')).toBe(true);
-    expect(mockPtyWrapper.start).toHaveBeenCalled();
+    expect(mockPtyOrchestrator.start).toHaveBeenCalled();
     // Note: Task is no longer written directly to PTY by spawner.
     // The spawning wrapper waits for the agent to come online and sends it via relay.
     // This test just verifies the spawn itself works.
   });
 
   it('adds --dangerously-skip-permissions for Claude variants', async () => {
-    const { PtyWrapper } = await import('../wrapper/pty-wrapper.js');
-    const PtyWrapperMock = PtyWrapper as Mock;
+    const { RelayPtyOrchestrator } = await import('../wrapper/relay-pty-orchestrator.js');
+    const RelayPtyOrchestratorMock = RelayPtyOrchestrator as Mock;
 
     const spawner = new AgentSpawner(projectRoot);
     await spawner.spawn({
@@ -126,15 +127,15 @@ describe('AgentSpawner', () => {
       // team is optional - agents are flat by default
     });
 
-    // Check the PtyWrapper was constructed with --dangerously-skip-permissions
-    const constructorCall = PtyWrapperMock.mock.calls[0][0];
+    // Check the RelayPtyOrchestrator was constructed with --dangerously-skip-permissions
+    const constructorCall = RelayPtyOrchestratorMock.mock.calls[0][0];
     expect(constructorCall.command).toBe('claude:opus');
     expect(constructorCall.args).toContain('--dangerously-skip-permissions');
   });
 
   it('does NOT add --dangerously-skip-permissions for non-Claude CLIs', async () => {
-    const { PtyWrapper } = await import('../wrapper/pty-wrapper.js');
-    const PtyWrapperMock = PtyWrapper as Mock;
+    const { RelayPtyOrchestrator } = await import('../wrapper/relay-pty-orchestrator.js');
+    const RelayPtyOrchestratorMock = RelayPtyOrchestrator as Mock;
 
     const spawner = new AgentSpawner(projectRoot);
     await spawner.spawn({
@@ -144,8 +145,8 @@ describe('AgentSpawner', () => {
       // team is optional - agents are flat by default
     });
 
-    // Check the PtyWrapper was constructed without --dangerously-skip-permissions
-    const constructorCall = PtyWrapperMock.mock.calls[0][0];
+    // Check the RelayPtyOrchestrator was constructed without --dangerously-skip-permissions
+    const constructorCall = RelayPtyOrchestratorMock.mock.calls[0][0];
     expect(constructorCall.command).toBe('codex');
     expect(constructorCall.args).not.toContain('--dangerously-skip-permissions');
   });
@@ -173,7 +174,7 @@ describe('AgentSpawner', () => {
   });
 
   it('returns failure when PtyWrapper.start() throws', async () => {
-    mockPtyWrapper.start.mockRejectedValueOnce(new Error('PTY spawn failed'));
+    mockPtyOrchestrator.start.mockRejectedValueOnce(new Error('PTY spawn failed'));
 
     const spawner = new AgentSpawner(projectRoot);
     const result = await spawner.spawn({
@@ -201,7 +202,7 @@ describe('AgentSpawner', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('failed to register');
-    expect(mockPtyWrapper.kill).toHaveBeenCalled();
+    expect(mockPtyOrchestrator.kill).toHaveBeenCalled();
     expect(spawner.hasWorker('Late')).toBe(false);
   });
 
@@ -218,13 +219,13 @@ describe('AgentSpawner', () => {
       // team is optional - agents are flat by default
     });
 
-    mockPtyWrapper.isRunning = false; // Simulate graceful stop
+    mockPtyOrchestrator.isRunning = false; // Simulate graceful stop
 
     const result = await spawner.release('Worker');
 
     expect(result).toBe(true);
     expect(spawner.hasWorker('Worker')).toBe(false);
-    expect(mockPtyWrapper.stop).toHaveBeenCalled();
+    expect(mockPtyOrchestrator.stop).toHaveBeenCalled();
   });
 
   it('force kills worker if still running after stop', async () => {
@@ -240,13 +241,13 @@ describe('AgentSpawner', () => {
       // team is optional - agents are flat by default
     });
 
-    mockPtyWrapper.isRunning = true; // Still running after stop
+    mockPtyOrchestrator.isRunning = true; // Still running after stop
 
     const result = await spawner.release('Stubborn');
 
     expect(result).toBe(true);
-    expect(mockPtyWrapper.stop).toHaveBeenCalled();
-    expect(mockPtyWrapper.kill).toHaveBeenCalled();
+    expect(mockPtyOrchestrator.stop).toHaveBeenCalled();
+    expect(mockPtyOrchestrator.kill).toHaveBeenCalled();
   });
 
   it('returns false when releasing a missing worker', async () => {
@@ -266,7 +267,7 @@ describe('AgentSpawner', () => {
     await spawner.spawn({ name: 'A', cli: 'claude', task: 'Task A', requestedBy: 'Lead' });
     await spawner.spawn({ name: 'B', cli: 'claude', task: 'Task B', requestedBy: 'Lead' });
 
-    mockPtyWrapper.isRunning = false;
+    mockPtyOrchestrator.isRunning = false;
 
     await spawner.releaseAll();
 
@@ -292,7 +293,7 @@ describe('AgentSpawner', () => {
   });
 
   it('getWorkerOutput returns output from PtyWrapper', async () => {
-    mockPtyWrapper.getOutput.mockReturnValue(['line1', 'line2', 'line3']);
+    mockPtyOrchestrator.getOutput.mockReturnValue(['line1', 'line2', 'line3']);
 
     const spawner = new AgentSpawner(projectRoot);
     await spawner.spawn({ name: 'Dev', cli: 'claude', task: '', requestedBy: 'Lead' });
@@ -300,7 +301,7 @@ describe('AgentSpawner', () => {
     const output = spawner.getWorkerOutput('Dev', 2);
 
     expect(output).toEqual(['line1', 'line2', 'line3']);
-    expect(mockPtyWrapper.getOutput).toHaveBeenCalledWith(2);
+    expect(mockPtyOrchestrator.getOutput).toHaveBeenCalledWith(2);
   });
 
   it('getWorkerOutput returns null for unknown worker', async () => {
