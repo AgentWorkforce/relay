@@ -194,6 +194,34 @@ export class UserBridge {
   }
 
   /**
+   * Update the WebSocket for an existing user session.
+   * This is needed when a user reconnects or opens a new tab,
+   * so messages are forwarded to the active WebSocket.
+   */
+  updateWebSocket(username: string, newWebSocket: WebSocket): boolean {
+    const session = this.users.get(username);
+    if (!session) {
+      console.log(`[user-bridge] Cannot update WebSocket - user ${username} not registered`);
+      return false;
+    }
+
+    // Remove the close handler from old WebSocket to prevent auto-unregister
+    session.webSocket.removeAllListeners('close');
+
+    // Update to new WebSocket
+    session.webSocket = newWebSocket;
+
+    // Set up close handler on new WebSocket
+    newWebSocket.on('close', () => {
+      // Note: The server manages multi-tab connections and will call
+      // unregisterUser when all connections are closed
+    });
+
+    console.log(`[user-bridge] Updated WebSocket for user ${username}`);
+    return true;
+  }
+
+  /**
    * Get list of all registered users.
    */
   getRegisteredUsers(): string[] {

@@ -835,4 +835,118 @@ describe('useDirectMessage', () => {
       expect(visible).toHaveLength(2);
     });
   });
+
+  describe('GitHub username vs _DashboardUI routing', () => {
+    /**
+     * BUG FIX TEST: Messages to GitHub username should be visible
+     *
+     * When an agent sends a message TO a user's GitHub username,
+     * the message should appear in the user's DM view.
+     *
+     * Scenario:
+     * - User "khaliqgant" is viewing DMs
+     * - Lead agent sends message to "khaliqgant"
+     * - Message should be visible to khaliqgant
+     */
+    it('should show messages sent TO user GitHub username', () => {
+      const ctx: DirectMessageTestContext = {
+        currentHuman: createAgent('khaliqgant', true), // Viewing own DMs
+        currentUserName: 'khaliqgant', // User's GitHub username
+        messages: [
+          createMessage('Lead', 'khaliqgant', 'Hello khaliqgant, here is an update'),
+        ],
+        agents: [createAgent('Lead')], // Lead is an AI agent
+        selectedDmAgents: ['Lead'], // Lead was invited to conversation
+        removedDmAgents: [],
+      };
+
+      const visible = filterVisibleMessages(ctx);
+
+      // Message from Lead to khaliqgant should be visible
+      expect(visible).toHaveLength(1);
+      expect(visible[0].content).toBe('Hello khaliqgant, here is an update');
+    });
+
+    /**
+     * _DashboardUI messages should NOT appear in DM view
+     *
+     * _DashboardUI is a system client, not a real participant.
+     * Messages addressed to _DashboardUI should not be shown.
+     */
+    it('should NOT show messages sent TO _DashboardUI', () => {
+      const ctx: DirectMessageTestContext = {
+        currentHuman: createAgent('khaliqgant', true),
+        currentUserName: 'khaliqgant',
+        messages: [
+          createMessage('Lead', '_DashboardUI', 'Message to system client'),
+        ],
+        agents: [createAgent('Lead')],
+        selectedDmAgents: ['Lead'],
+        removedDmAgents: [],
+      };
+
+      const visible = filterVisibleMessages(ctx);
+
+      // Message to _DashboardUI should NOT be visible (it's not a participant)
+      expect(visible).toHaveLength(0);
+    });
+
+    /**
+     * Both GitHub username AND _DashboardUI messages in same conversation
+     *
+     * When an agent sends to both targets, only the GitHub username
+     * message should be visible.
+     */
+    it('should show GitHub username messages but not _DashboardUI messages', () => {
+      const ctx: DirectMessageTestContext = {
+        currentHuman: createAgent('khaliqgant', true),
+        currentUserName: 'khaliqgant',
+        messages: [
+          createMessage('Lead', 'khaliqgant', 'Direct to user'),
+          createMessage('Lead', '_DashboardUI', 'To system client'),
+          createMessage('khaliqgant', 'Lead', 'Reply from user'),
+        ],
+        agents: [createAgent('Lead')],
+        selectedDmAgents: ['Lead'],
+        removedDmAgents: [],
+      };
+
+      const visible = filterVisibleMessages(ctx);
+
+      // Only 2 messages visible (Lead->khaliqgant and khaliqgant->Lead)
+      // Lead->_DashboardUI should be filtered out
+      expect(visible).toHaveLength(2);
+      expect(visible.map(m => m.to)).not.toContain('_DashboardUI');
+    });
+
+    /**
+     * Edge case: currentUserName is different from currentHuman.name
+     *
+     * When viewing another user's DMs (e.g., admin view),
+     * messages to currentUserName should still be filtered correctly.
+     */
+    it('should use effectiveUserName (currentUserName) for filtering, not currentHuman.name', () => {
+      const ctx: DirectMessageTestContext = {
+        currentHuman: createAgent('alice', true), // Viewing DMs with alice
+        currentUserName: 'bob', // Current logged-in user is bob
+        messages: [
+          createMessage('Lead', 'bob', 'Message to bob (current user)'),
+          createMessage('Lead', 'alice', 'Message to alice (DM partner)'),
+          createMessage('Lead', 'charlie', 'Message to charlie (third party)'),
+        ],
+        agents: [createAgent('Lead')],
+        selectedDmAgents: ['Lead'],
+        removedDmAgents: [],
+      };
+
+      const visible = filterVisibleMessages(ctx);
+
+      // Lead->bob and Lead->alice should be visible
+      // Lead->charlie should NOT be visible
+      expect(visible).toHaveLength(2);
+      expect(visible.map(m => m.to)).toContain('bob');
+      expect(visible.map(m => m.to)).toContain('alice');
+      expect(visible.map(m => m.to)).not.toContain('charlie');
+    });
+  });
 });

@@ -2340,6 +2340,11 @@ export async function startDashboard(
               // Add this connection to existing user
               existing.connections.add(ws);
               existing.info.lastSeen = now;
+
+              // Update userBridge to use the new WebSocket for message delivery
+              // This ensures messages are sent to an active connection, not a stale one
+              userBridge.updateWebSocket(username, ws);
+
               // Only log at milestones to reduce noise
               const count = existing.connections.size;
               if (count === 2 || count === 5 || count === 10 || count % 50 === 0) {
