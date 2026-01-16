@@ -6,12 +6,17 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { sleep } from './utils.js';
 import { getProjectPaths } from '../utils/project-namespace.js';
 import { resolveCommand } from '../utils/command-resolver.js';
 import { RelayPtyOrchestrator, type RelayPtyOrchestratorConfig } from '../wrapper/relay-pty-orchestrator.js';
-import type { SummaryEvent, SessionEndEvent } from '../wrapper/pty-wrapper.js';
+import { PtyWrapper, type PtyWrapperConfig, type SummaryEvent, type SessionEndEvent } from '../wrapper/pty-wrapper.js';
 import { selectShadowCli } from './shadow-cli.js';
+
+// Get the directory where this module is located (for binary path resolution)
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 import { AgentPolicyService, type CloudPolicyFetcher } from '../policy/agent-policy.js';
 import { buildClaudeArgs } from '../utils/agent-config.js';
 import { getUserDirectoryService } from '../daemon/user-directory.js';
@@ -56,8 +61,11 @@ interface ListenerBindings {
   sessionEnd?: (event: SessionEndEvent) => void;
 }
 
+/** Type alias for the wrapper - can be either RelayPtyOrchestrator or PtyWrapper */
+type AgentWrapper = RelayPtyOrchestrator | PtyWrapper;
+
 interface ActiveWorker extends WorkerInfo {
-  pty: RelayPtyOrchestrator;
+  pty: AgentWrapper;
   logFile?: string;
   listeners?: ListenerBindings;
   userId?: string;
@@ -99,6 +107,63 @@ function getRelayInstructions(agentName: string): string {
     '',
     '3. Close >>> must immediately follow content (no blank lines before it)',
   ].join('\n');
+}
+
+/**
+ * Check if the relay-pty binary is available.
+ * Returns the path to the binary if found, null otherwise.
+ *
+ * Search order:
+ * 1. bin/relay-pty in package root (installed by postinstall)
+ * 2. relay-pty/target/release/relay-pty (local Rust build)
+ * 3. /usr/local/bin/relay-pty (global install)
+ */
+function findRelayPtyBinary(): string | null {
+  // Get the package root (three levels up from dist/bridge/)
+  const packageRoot = path.join(__dirname, '..', '..');
+
+  const candidates = [
+    // Primary: installed by postinstall from platform-specific binary
+    path.join(packageRoot, 'bin', 'relay-pty'),
+    // Development: local Rust build
+    path.join(packageRoot, 'relay-pty', 'target', 'release', 'relay-pty'),
+    path.join(packageRoot, 'relay-pty', 'target', 'debug', 'relay-pty'),
+    // Local build in cwd (for development)
+    path.join(process.cwd(), 'relay-pty', 'target', 'release', 'relay-pty'),
+    // Installed globally
+    '/usr/local/bin/relay-pty',
+    // In node_modules (when installed as dependency)
+    path.join(process.cwd(), 'node_modules', 'agent-relay', 'bin', 'relay-pty'),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+/** Cached result of relay-pty binary check */
+let relayPtyBinaryPath: string | null | undefined;
+let relayPtyBinaryChecked = false;
+
+/**
+ * Check if relay-pty binary is available (cached).
+ * Returns true if the binary exists, false otherwise.
+ */
+function hasRelayPtyBinary(): boolean {
+  if (!relayPtyBinaryChecked) {
+    relayPtyBinaryPath = findRelayPtyBinary();
+    relayPtyBinaryChecked = true;
+    if (relayPtyBinaryPath) {
+      console.log(`[spawner] relay-pty binary found: ${relayPtyBinaryPath}`);
+    } else {
+      console.log('[spawner] relay-pty binary not found, will use PtyWrapper fallback');
+    }
+  }
+  return relayPtyBinaryPath !== null;
 }
 
 export class AgentSpawner {
@@ -195,7 +260,7 @@ export class AgentSpawner {
    * Bind cloud persistence event handlers to a RelayPtyOrchestrator.
    * Returns the listener references for cleanup.
    */
-  private bindCloudPersistenceEvents(name: string, pty: RelayPtyOrchestrator): Partial<ListenerBindings> {
+  private bindCloudPersistenceEvents(name: string, pty: AgentWrapper): Partial<ListenerBindings> {
     if (!this.cloudPersistence) return {};
 
     const summaryListener = async (event: SummaryEvent) => {
@@ -223,7 +288,7 @@ export class AgentSpawner {
   /**
    * Unbind all tracked listeners from a RelayPtyOrchestrator.
    */
-  private unbindListeners(pty: RelayPtyOrchestrator, listeners?: ListenerBindings): void {
+  private unbindListeners(pty: AgentWrapper, listeners?: ListenerBindings): void {
     if (!listeners) return;
 
     if (listeners.output) {
@@ -341,70 +406,101 @@ export class AgentSpawner {
       }
 
       if (debug) console.log(`[spawner:debug] Socket path for ${name}: ${this.socketPath ?? 'undefined'}`);
-      const ptyConfig: RelayPtyOrchestratorConfig = {
-        name,
-        command,
-        args,
-        socketPath: this.socketPath,
-        cwd: agentCwd,
-        dashboardPort: this.dashboardPort,
-        env: userEnv,
-        streamLogs: true,
-        // Shadow agent configuration
-        shadowOf: request.shadowOf,
-        shadowSpeakOn: request.shadowSpeakOn,
-        // Skip continuity for spawned agents - they're short-lived workers
-        skipContinuity: true,
-        // Only use callbacks if dashboardPort is not set (for backwards compatibility)
-        onSpawn: this.dashboardPort ? undefined : async (workerName, workerCli, workerTask) => {
-          // Handle nested spawn requests (legacy path, may fail in non-TTY)
-          if (debug) console.log(`[spawner:debug] Nested spawn: ${workerName}`);
-          await this.spawn({
-            name: workerName,
-            cli: workerCli,
-            task: workerTask,
-            // Nested spawns don't inherit team - they're flat by default
-            userId,
+
+      // Check if relay-pty binary is available - use PtyWrapper as fallback
+      const useRelayPty = hasRelayPtyBinary();
+
+      // Common exit handler for both wrapper types
+      const onExitHandler = (code: number) => {
+        if (debug) console.log(`[spawner:debug] Worker ${name} exited with code ${code}`);
+
+        // Get the agentId and clean up listeners before removing from active workers
+        const worker = this.activeWorkers.get(name);
+        const agentId = worker?.pty?.getAgentId?.();
+        if (worker?.listeners) {
+          this.unbindListeners(worker.pty, worker.listeners);
+        }
+
+        this.activeWorkers.delete(name);
+        try {
+          this.saveWorkersMetadata();
+        } catch (err) {
+          console.error(`[spawner] Failed to save metadata on exit:`, err);
+        }
+
+        // Notify if agent died unexpectedly (non-zero exit)
+        if (code !== 0 && code !== null && this.onAgentDeath) {
+          this.onAgentDeath({
+            name,
+            exitCode: code,
+            agentId,
+            resumeInstructions: agentId
+              ? `To resume this agent's work, use: --resume ${agentId}`
+              : undefined,
           });
-        },
-        onRelease: this.dashboardPort ? undefined : async (workerName) => {
-          // Handle release requests from workers (legacy path)
-          if (debug) console.log(`[spawner:debug] Release request: ${workerName}`);
-          await this.release(workerName);
-        },
-        onExit: (code) => {
-          if (debug) console.log(`[spawner:debug] Worker ${name} exited with code ${code}`);
-
-          // Get the agentId and clean up listeners before removing from active workers
-          const worker = this.activeWorkers.get(name);
-          const agentId = worker?.pty?.getAgentId?.();
-          if (worker?.listeners) {
-            this.unbindListeners(worker.pty, worker.listeners);
-          }
-
-          this.activeWorkers.delete(name);
-          try {
-            this.saveWorkersMetadata();
-          } catch (err) {
-            console.error(`[spawner] Failed to save metadata on exit:`, err);
-          }
-
-          // Notify if agent died unexpectedly (non-zero exit)
-          if (code !== 0 && code !== null && this.onAgentDeath) {
-            this.onAgentDeath({
-              name,
-              exitCode: code,
-              agentId,
-              resumeInstructions: agentId
-                ? `To resume this agent's work, use: --resume ${agentId}`
-                : undefined,
-            });
-          }
-        },
+        }
       };
 
-      // Create and start the relay-pty orchestrator
-      const pty = new RelayPtyOrchestrator(ptyConfig);
+      // Common spawn/release handlers
+      const onSpawnHandler = this.dashboardPort ? undefined : async (workerName: string, workerCli: string, workerTask: string) => {
+        if (debug) console.log(`[spawner:debug] Nested spawn: ${workerName}`);
+        await this.spawn({
+          name: workerName,
+          cli: workerCli,
+          task: workerTask,
+          userId,
+        });
+      };
+
+      const onReleaseHandler = this.dashboardPort ? undefined : async (workerName: string) => {
+        if (debug) console.log(`[spawner:debug] Release request: ${workerName}`);
+        await this.release(workerName);
+      };
+
+      // Create the appropriate wrapper based on binary availability
+      let pty: AgentWrapper;
+
+      if (useRelayPty) {
+        const ptyConfig: RelayPtyOrchestratorConfig = {
+          name,
+          command,
+          args,
+          socketPath: this.socketPath,
+          cwd: agentCwd,
+          dashboardPort: this.dashboardPort,
+          env: userEnv,
+          streamLogs: true,
+          shadowOf: request.shadowOf,
+          shadowSpeakOn: request.shadowSpeakOn,
+          skipContinuity: true,
+          onSpawn: onSpawnHandler,
+          onRelease: onReleaseHandler,
+          onExit: onExitHandler,
+        };
+        pty = new RelayPtyOrchestrator(ptyConfig);
+        if (debug) console.log(`[spawner:debug] Using RelayPtyOrchestrator for ${name}`);
+      } else {
+        const ptyConfig: PtyWrapperConfig = {
+          name,
+          command,
+          args,
+          socketPath: this.socketPath,
+          cwd: agentCwd,
+          dashboardPort: this.dashboardPort,
+          env: userEnv,
+          streamLogs: true,
+          shadowOf: request.shadowOf,
+          shadowSpeakOn: request.shadowSpeakOn,
+          skipContinuity: true,
+          onSpawn: onSpawnHandler,
+          onRelease: onReleaseHandler,
+          onExit: onExitHandler,
+          logsDir: this.logsDir,
+          allowSpawn: true,
+        };
+        pty = new PtyWrapper(ptyConfig);
+        if (debug) console.log(`[spawner:debug] Using PtyWrapper fallback for ${name}`);
+      }
 
       // Track listener references for proper cleanup
       const listeners: ListenerBindings = {};
