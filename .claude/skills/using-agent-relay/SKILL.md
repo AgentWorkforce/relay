@@ -1,64 +1,117 @@
 ---
 name: using-agent-relay
-description: Use when coordinating multiple AI agents in real-time - provides inter-agent messaging via tmux wrapper (sub-5ms latency) or file-based team inbox for async workflows
+description: Use when coordinating multiple AI agents in real-time - provides inter-agent messaging via Rust PTY wrapper with file-based protocol and reliability features
 ---
 
 # Using Agent Relay
 
-Real-time agent-to-agent messaging. Output `->relay:` patterns to communicate.
+Real-time agent-to-agent messaging via file-based protocol.
+
+## Reliability Features
+
+The relay system includes automatic reliability improvements:
+
+- **Escalating retry** - If you don't acknowledge a message, it will be re-sent with increasing urgency:
+  - First attempt: `Relay message from Alice [abc123]: ...`
+  - Second attempt: `[RETRY] Relay message from Alice [abc123]: ...`
+  - Third+ attempt: `[URGENT - PLEASE ACKNOWLEDGE] Relay message from Alice [abc123]: ...`
+
+- **Unread indicator** - During long tasks, you'll see pending message counts:
+  ```
+  📬 2 unread messages (from: Alice, Bob)
+  ```
+
+**Always acknowledge messages** to prevent retry escalation.
 
 ## Sending Messages
 
-**Always use the fenced format** for reliable message delivery:
+Write a file to your outbox, then output the trigger:
 
-```
-->relay:AgentName <<<
-Your message here.>>>
-```
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/msg << 'EOF'
+TO: AgentName
 
-```
-->relay:* <<<
-Broadcast to all agents.>>>
-```
-
-**CRITICAL:** Always close multi-line messages with `>>>` after the very last character.
-
-**WARNING:** Do NOT put blank lines before `>>>` - it must immediately follow your content:
-
-```
-# CORRECT - >>> immediately after content
-->relay:Agent <<<Your message here.>>>
-
-# WRONG - blank line before >>> breaks parsing
-->relay:Agent <<<
 Your message here.
-
->>>
+EOF
 ```
 
-**Output rule:** Send only a single fenced relay block per message. Do not include any extra text before or after the block (no preambles, no UI prompt hints).
+Then output: `->relay-file:msg`
+
+### Broadcast to All Agents
+
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/broadcast << 'EOF'
+TO: *
+
+Hello everyone!
+EOF
+```
+Then: `->relay-file:broadcast`
+
+### With Thread
+
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/reply << 'EOF'
+TO: AgentName
+THREAD: issue-123
+
+Response in thread context.
+EOF
+```
+Then: `->relay-file:reply`
+
+## Message Format
+
+```
+TO: Target
+THREAD: optional-thread
+
+Message body (everything after blank line)
+```
+
+| TO Value | Behavior |
+|----------|----------|
+| `AgentName` | Direct message |
+| `*` | Broadcast to all |
+| `#channel` | Channel message |
 
 ## Communication Protocol
 
 **ACK immediately** - When you receive a task, acknowledge it before starting work:
 
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/ack << 'EOF'
+TO: Sender
+
+ACK: Brief description of task received
+EOF
 ```
-->relay:Sender <<<
-ACK: Brief description of task received>>>
-```
+Then: `->relay-file:ack`
 
 **Report completion** - When done, send a completion message:
 
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/done << 'EOF'
+TO: Sender
+
+DONE: Brief summary of what was completed
+EOF
 ```
-->relay:Sender <<<
-DONE: Brief summary of what was completed>>>
-```
+Then: `->relay-file:done`
+
+**Priority handling** - If you see `[RETRY]` or `[URGENT]` tags, respond immediately.
 
 ## Receiving Messages
 
 Messages appear as:
 ```
-Relay message from Alice [abc123]: Message content here
+Relay message from Alice [abc123]: Content here
+```
+
+Messages with retry escalation:
+```
+[RETRY] Relay message from Alice [abc123]: Did you receive my message?
+[URGENT - PLEASE ACKNOWLEDGE] Relay message from Alice [abc123]: Please respond!
 ```
 
 ### Channel Routing (Important!)
@@ -70,92 +123,55 @@ Relay message from Alice [abc123] [#general]: Hello everyone!
 
 **When you see `[#general]`**: Reply to `*` (broadcast), NOT to the sender directly.
 
-```
-# Correct - responds to #general channel
-->relay:* <<<
-Response to the group message.>>>
+## Spawning & Releasing Agents
 
-# Wrong - sends as DM to sender instead of to the channel
-->relay:Alice <<<
-Response to the group message.>>>
-```
+### Spawn a Worker
 
-If truncated, read full message:
 ```bash
-agent-relay read abc123
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
+KIND: spawn
+NAME: WorkerName
+CLI: claude
+
+Task description here.
+Can be multiple lines.
+EOF
 ```
+Then: `->relay-file:spawn`
 
-## Spawning Agents
+### Release a Worker
 
-Spawn workers to delegate tasks:
-
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/release << 'EOF'
+KIND: release
+NAME: WorkerName
+EOF
 ```
-# Short tasks - single line with quotes
-->relay:spawn WorkerName claude "short task description"
+Then: `->relay-file:release`
 
-# Long tasks - use fenced format (recommended)
-->relay:spawn WorkerName claude <<<
-Implement the authentication module.
-Requirements:
-- JWT tokens with refresh
-- Password hashing with bcrypt
-- Rate limiting on login endpoint>>>
+## Headers Reference
 
-# Release when done
-->relay:release WorkerName
-```
-
-**Use fenced format for tasks longer than ~50 characters** to avoid truncation from terminal line wrapping.
-
-## Threads
-
-Use threads to group related messages together:
-
-```
-->relay:AgentName [thread:topic-name] <<<
-Your message here.>>>
-```
-
-**When to use threads:**
-- Working on a specific issue (e.g., `[thread:agent-relay-299]`)
-- Back-and-forth discussions with another agent
-- Code review conversations
+| Header | Required | Description |
+|--------|----------|-------------|
+| TO | Yes (messages) | Target agent/channel |
+| KIND | No | `message` (default), `spawn`, `release` |
+| NAME | Yes (spawn/release) | Agent name |
+| CLI | Yes (spawn) | CLI to use |
+| THREAD | No | Thread identifier |
 
 ## Status Updates
 
 **Send status updates to your lead, NOT broadcast:**
 
-```
+```bash
 # Correct - status to lead only
-->relay:Lead <<<
-STATUS: Working on auth module>>>
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/status << 'EOF'
+TO: Lead
 
-# Wrong - don't broadcast status to everyone
-->relay:* <<<
-STATUS: Working on auth module>>>
+STATUS: Working on auth module
+EOF
 ```
-
-## Common Patterns
-
-```
-->relay:Lead <<<
-ACK: Starting /api/register implementation>>>
-
-->relay:Lead <<<
-STATUS: Working on auth module>>>
-
-->relay:Lead <<<
-DONE: Auth module complete>>>
-
-->relay:Developer <<<
-TASK: Implement /api/register>>>
-
-->relay:Reviewer [thread:code-review-auth] <<<
-REVIEW: Please check src/auth/*.ts>>>
-
-->relay:Architect <<<
-QUESTION: JWT or sessions?>>>
-```
+Then: `->relay-file:status`
 
 ## CLI Commands
 
@@ -167,77 +183,31 @@ agent-relay agents:kill <name>  # Kill a spawned agent
 agent-relay read <id>           # Read truncated message
 ```
 
-### Team Commands (file-based)
+## Synchronous Messaging (Planned)
+
+For turn-based coordination where you need to wait for a response:
+
+### Blocking Messages with `[await]`
+
+Add AWAIT header to block until response:
 
 ```bash
-agent-relay team send -n You -t Recipient -m "Message"
-agent-relay team send -n You -t "*" -m "Broadcast"
-agent-relay team check -n You --no-wait     # Non-blocking
-agent-relay team check -n You --clear       # Clear after read
-agent-relay team status                     # Show team
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/turn << 'EOF'
+TO: Worker
+AWAIT: 60s
+
+Your turn. Play a card.
+EOF
 ```
+Then: `->relay-file:turn`
 
-## Consensus (Multi-Agent Decisions)
-
-Request team consensus on decisions by messaging `_consensus`:
-
-### Creating a Proposal
+When you receive a message marked `[awaiting]`, the sender is waiting for your response:
 
 ```
-->relay:_consensus <<<
-PROPOSE: API Design Decision
-TYPE: majority
-PARTICIPANTS: Developer, Reviewer, Lead
-DESCRIPTION: Should we use REST or GraphQL for the new API?
-TIMEOUT: 3600000>>>
+Relay message from Coordinator [abc123] [awaiting]: Your turn. Play a card.
 ```
 
-**Fields:**
-- `PROPOSE:` - Title of the proposal (required)
-- `TYPE:` - Consensus type: `majority`, `supermajority`, `unanimous`, `quorum` (default: majority)
-- `PARTICIPANTS:` - Comma-separated list of agents who can vote (required)
-- `DESCRIPTION:` - Detailed description of what's being proposed
-- `TIMEOUT:` - Timeout in milliseconds (default: 5 minutes)
-- `QUORUM:` - Minimum votes required (for quorum type)
-- `THRESHOLD:` - Approval threshold 0-1 (for supermajority, default: 0.67)
-
-### Voting on a Proposal
-
-When you receive a proposal, vote with:
-
-```
-->relay:_consensus <<<
-VOTE proposal-abc123 approve This aligns with our architecture goals>>>
-```
-
-**Vote values:** `approve`, `reject`, `abstain`
-
-**Format:** `VOTE <proposal-id> <value> [optional reason]`
-
-## Rules
-
-- Pattern must be at line start (whitespace OK)
-- Escape with `\->relay:` to output literally
-- Check daemon status: `agent-relay status`
-- **Do NOT include self-identification or preamble in messages** - start with your actual response content
-- **Do NOT include UI prompt text** in the same send
-
-## Writing Examples (For Documentation)
-
-When showing examples of relay syntax in documentation or explanations, **escape the markers** so they don't get interpreted as actual messages:
-
-```
-# Escape the opening marker
-\->relay:AgentName \<<<
-Example content here.\>>>
-```
-
-**What to escape:**
-- `\->relay:` - Prevents the pattern from being detected as a real message
-- `\<<<` - Prevents the fenced block from being parsed
-- `\>>>` - Prevents the block from being closed
-
-This ensures your examples are displayed literally rather than sent as messages.
+**Note:** `AWAIT` header is coming in a future release. Currently all messages are fire-and-forget.
 
 ## Troubleshooting
 
@@ -245,14 +215,19 @@ This ensures your examples are displayed literally rather than sent as messages.
 agent-relay status                    # Check daemon
 agent-relay agents                    # List connected agents
 ls -la /tmp/agent-relay.sock          # Verify socket
+ls -la /tmp/relay-outbox/             # Check outbox directories
 ```
 
 ## Common Mistakes
 
 | Mistake | Fix |
 |---------|-----|
-| Using bash to send messages | Output `->relay:` directly as text |
-| Messages not sending | `agent-relay status` to check daemon |
+| Using bash to send messages | Write file to outbox, then output `->relay-file:ID` |
+| Messages not sending | Check `agent-relay status` and outbox directory exists |
 | Incomplete message content | `agent-relay read <id>` for full text |
-| Pattern not at line start | Move `->relay:` to beginning |
-| Blank line before `>>>` | Close immediately after content |
+| Missing trigger | Must output `->relay-file:<filename>` after writing file |
+| Wrong outbox path | Use `/tmp/relay-outbox/$AGENT_RELAY_NAME/` |
+
+## Legacy Format (Deprecated)
+
+The inline `->relay:Target <<<message>>>` format still works but file-based is preferred for reliability.

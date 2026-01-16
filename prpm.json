@@ -28,7 +28,7 @@
     },
     {
       "name": "agent-relay-snippet",
-      "version": "1.0.5",
+      "version": "1.1.0",
       "description": "AGENTS.md / CLAUDE.md snippet for agents on how to use agent-relay",
       "format": "generic",
       "subtype": "snippet",
@@ -43,7 +43,7 @@
     },
     {
       "name": "agent-relay-protocol",
-      "version": "1.0.1",
+      "version": "1.1.0",
       "description": "Internal protocol snippet with session persistence, continuity, and trajectory tracking for dashboard integration",
       "format": "generic",
       "subtype": "snippet",

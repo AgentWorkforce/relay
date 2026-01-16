@@ -159,102 +159,130 @@ relay team status
 
 ### Sending Messages (Real-Time Mode)
 
-**Always use the fenced format** for reliable message delivery:
+Write a file to your outbox, then output the trigger:
 
-```
-->relay:AgentName <<<
-Your message here.>>>
-```
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/msg << 'EOF'
+TO: AgentName
 
+Your message here.
+EOF
 ```
-->relay:* <<<
-Broadcast to all agents.>>>
-```
+Then output: `->relay-file:msg`
 
-**CRITICAL:** Always end with `>>>` at the end of the last line of content!
+**Broadcast to all:**
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/broadcast << 'EOF'
+TO: *
 
-**Block format** (structured data):
+Hello everyone!
+EOF
 ```
-[[RELAY]]{"to":"AgentName","type":"message","body":"Your message"}[[/RELAY]]
-```
+Then: `->relay-file:broadcast`
 
 ### Receiving Messages
 
 Messages appear in your terminal as:
 ```
-Relay message from SenderName: Message content here
+Relay message from SenderName [abc123]: Message content here
 ```
 
-Or in your inbox file as:
-```markdown
-## Message from SenderName | 2024-01-15T10:30:00Z
-Message content here
+With retry escalation:
+```
+[RETRY] Relay message from SenderName [abc123]: Did you receive this?
+[URGENT - PLEASE ACKNOWLEDGE] Relay message from SenderName [abc123]: Please respond!
 ```
 
 ---
 
-## Mode 1: Tmux Wrapper (Real-Time) - RECOMMENDED
+## Mode 1: Relay-PTY Wrapper (Real-Time) - RECOMMENDED
 
-Use this when you're wrapped with `relay wrap`.
+Use this when you're wrapped with `relay wrap` or `relay create-agent`.
 
 ### CRITICAL: How to Send Messages
 
-**You (the AI agent) must OUTPUT the ->relay pattern as part of your response.** Do not wait for user input. The pattern is detected from your terminal output. **Always use the fenced format.**
+Write a file to your outbox with headers, then output the `->relay-file:` trigger.
 
-**Correct - Output this directly:**
-```
-->relay:PlayerO <<<
-I've finished the API refactor. Ready for your review.>>>
-```
-
-**Wrong - Don't use bash commands for real-time messaging:**
+**Step 1: Write the message file:**
 ```bash
-# This uses file-based inbox, NOT real-time socket delivery
-relay team send -n MyName -t PlayerO -m "message"
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/msg << 'EOF'
+TO: PlayerO
+
+I've finished the API refactor. Ready for your review.
+EOF
 ```
 
-### Pattern Requirements
+**Step 2: Output the trigger:**
+```
+->relay-file:msg
+```
 
-The `->relay:` pattern must appear on its own line. It can have common terminal/markdown prefixes:
+The wrapper detects the trigger and sends the message via the relay daemon.
+
+### Message Format
 
 ```
-->relay:AgentName <<<             Works
-  ->relay:AgentName <<<           Works (leading whitespace OK)
-> ->relay:AgentName <<<           Works (input prompt OK)
-$ ->relay:AgentName <<<           Works (shell prompt OK)
-- ->relay:AgentName <<<           Works (list items OK)
-Some text ->relay:AgentName <<<   Won't work (not at line start)
+TO: Target
+THREAD: optional-thread
+
+Message body (everything after blank line)
+Can span multiple lines.
 ```
+
+**Headers:**
+| Header | Required | Description |
+|--------|----------|-------------|
+| TO | Yes | Target agent, `*` for broadcast, `#channel` for channels |
+| THREAD | No | Thread identifier for grouped conversations |
+| KIND | No | `message` (default), `spawn`, `release` |
 
 ### Examples
 
 **Direct message:**
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/turn << 'EOF'
+TO: PlayerO
+
+Your turn! I played X at center.
+EOF
 ```
-->relay:PlayerO <<<
-Your turn! I played X at center.>>>
-```
+Then: `->relay-file:turn`
 
 **Broadcast to all agents:**
-```
-->relay:* <<<
-I've completed the authentication module. Ready for review.>>>
-```
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/done << 'EOF'
+TO: *
 
-**Structured data:**
+I've completed the authentication module. Ready for review.
+EOF
 ```
-[[RELAY]]
-{"to": "PlayerO", "type": "action", "body": "Task completed", "data": {"files": ["auth.ts"]}}
-[[/RELAY]]
+Then: `->relay-file:done`
+
+**With thread context:**
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/reply << 'EOF'
+TO: Developer
+THREAD: auth-review
+
+Looks good! Just one minor issue on line 45.
+EOF
 ```
+Then: `->relay-file:reply`
 
 ### Receiving Messages
 
 When another agent sends you a message, it appears in your terminal as:
 ```
-Relay message from PlayerO: Their message content here
+Relay message from PlayerO [abc123]: Their message content here
 ```
 
-Respond by outputting another `->relay:` pattern.
+Messages with retry escalation (acknowledge immediately!):
+```
+[RETRY] Relay message from PlayerO [abc123]: Did you receive my message?
+[URGENT - PLEASE ACKNOWLEDGE] Relay message from PlayerO [abc123]: Please respond!
+```
+
+Respond by writing a new message file and outputting the trigger.
 
 ### IMPORTANT: Handling Truncated Messages
 

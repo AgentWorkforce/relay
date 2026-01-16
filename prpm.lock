@@ -127,9 +127,9 @@
       "installedPath": ".claude/skills/github-oauth-nango-integration/SKILL.md"
     },
     "@agent-relay/agent-relay-snippet#agents.md:AGENTS.md": {
-      "version": "1.0.5",
-      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-relay%2Fagent-relay-snippet/1.0.5.tar.gz",
-      "integrity": "sha256-cec9b1a517a9858d4c2583cac4addf074796a19583ed506797a1d7467bda5c90",
+      "version": "1.1.0",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-relay%2Fagent-relay-snippet/1.1.0.tar.gz",
+      "integrity": "sha256-ca014551ae0ab0249f094c9fab5e1aefd575239a62acaf314cb1dfb9c04623e5",
       "format": "agents.md",
       "subtype": "snippet",
       "sourceFormat": "generic",
@@ -144,9 +144,9 @@
       }
     },
     "@agent-relay/agent-relay-protocol#agents.md:AGENTS.md": {
-      "version": "1.0.1",
-      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-relay%2Fagent-relay-protocol/1.0.1.tar.gz",
-      "integrity": "sha256-64f1f0eb15985079ac30594e8c7a5f41012f8efec80d8c5dc2059f11e2565f65",
+      "version": "1.1.0",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-relay%2Fagent-relay-protocol/1.1.0.tar.gz",
+      "integrity": "sha256-d23a8576881f5c2b5b0c843fdb1438881a6b78812e55b1d0f110dfc7830b3e51",
       "format": "agents.md",
       "subtype": "snippet",
       "sourceFormat": "generic",
@@ -188,5 +188,5 @@
       }
     }
   },
-  "generated": "2026-01-08T20:50:49.376Z"
+  "generated": "2026-01-16T11:56:37.896Z"
 }

@@ -212,30 +212,34 @@ Agent output: ->relay:Dashboard ACK:correlation-123 I received and processed you
 
 **Recommendation:** Start with Option A (automatic) for simplicity. Add Option B later for cases where agent needs to indicate "I've not just received, but completed processing."
 
-## Agent Syntax
+## Agent Syntax (File-Based)
 
-Agents choose blocking vs fire-and-forget via syntax:
+Agents choose blocking vs fire-and-forget via the AWAIT header:
 
 ### Fire-and-Forget (Default)
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/msg << 'EOF'
+TO: Target
+
+Hello, this is a normal message
+EOF
 ```
-->relay:Target Hello, this is a normal message
-```
+Then: `->relay-file:msg`
+
 Message sent, agent continues immediately. Current behavior.
 
 ### Blocking/Await
-```
-->relay:Target [await] Your turn. Play a card.
-->relay:Target [await:30s] Your turn. (with timeout)
-```
-Agent's wrapper blocks until response received or timeout. Response injected back to agent.
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/turn << 'EOF'
+TO: Target
+AWAIT: 30s
 
-### Fenced Format with Await
+Your turn. Play a card.
+EOF
 ```
-->relay:Target [await:60s] <<<
-Your hand is: 3C, 5H, 9D, KS
-Please play a card.
->>>
-```
+Then: `->relay-file:turn`
+
+Agent's wrapper blocks until response received or timeout. Response injected back to agent.
 
 ### Responding to Awaited Messages
 When an agent receives a message that requires response:
@@ -244,9 +248,14 @@ Relay message from Coordinator [abc123] [awaiting]: Your turn. Play a card.
 ```
 
 The `[awaiting]` tag tells the agent they should respond. Agent responds normally:
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/reply << 'EOF'
+TO: Coordinator
+
+I play 3C
+EOF
 ```
-->relay:Coordinator I play 3C
-```
+Then: `->relay-file:reply`
 
 The system correlates by thread/conversation context.
 
@@ -254,48 +263,83 @@ The system correlates by thread/conversation context.
 
 ### Pattern 1: Turn-Based Game (Blocking)
 
-```typescript
-// Coordinator agent outputs:
-->relay:North [await:60s] Your turn. Play a card.
+```bash
+# Coordinator writes blocking request
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/turn << 'EOF'
+TO: North
+AWAIT: 60s
 
-// North receives:
-// Relay message from Coordinator [abc123] [awaiting]: Your turn. Play a card.
-
-// North responds:
-->relay:Coordinator I play 3C
-
-// Coordinator receives response, then continues:
-->relay:East [await:60s] Your turn. Play a card.
+Your turn. Play a card.
+EOF
 ```
+Then: `->relay-file:turn`
+
+North receives:
+```
+Relay message from Coordinator [abc123] [awaiting]: Your turn. Play a card.
+```
+
+North responds:
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/play << 'EOF'
+TO: Coordinator
+
+I play 3C
+EOF
+```
+Then: `->relay-file:play`
+
+Coordinator receives response, then continues to East.
 
 ### Pattern 2: Fanout with Barrier (Blocking)
 
-```typescript
-// Send all hands, wait for all ACKs
-->relay:North [await] Your hand: 3C, 5H, 9D
-->relay:East [await] Your hand: 2D, 7S, KC
-->relay:South [await] Your hand: 4H, 8C, QS
-->relay:West [await] Your hand: 6D, JH, AS
+```bash
+# Send all hands, wait for all ACKs
+# (Each written to separate files, triggers sent in sequence)
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/north << 'EOF'
+TO: North
+AWAIT: 60s
 
-// All must ACK before coordinator continues
+Your hand: 3C, 5H, 9D
+EOF
 ```
+Then: `->relay-file:north` (repeat for East, South, West)
+
+All must ACK before coordinator continues.
 
 ### Pattern 3: Fire-and-Forget Broadcast
 
-```typescript
-// Notify all players without waiting
-->relay:* Game starting in 30 seconds!
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/announce << 'EOF'
+TO: *
+
+Game starting in 30 seconds!
+EOF
 ```
+Then: `->relay-file:announce`
 
 ### Pattern 4: Mixed Mode
 
-```typescript
-// Fire-and-forget status update
-->relay:Dashboard STATUS: Starting round 3
+```bash
+# Fire-and-forget status update
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/status << 'EOF'
+TO: Dashboard
 
-// Blocking turn request
-->relay:North [await:60s] Your turn
+STATUS: Starting round 3
+EOF
 ```
+Then: `->relay-file:status`
+
+```bash
+# Blocking turn request
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/turn << 'EOF'
+TO: North
+AWAIT: 60s
+
+Your turn
+EOF
+```
+Then: `->relay-file:turn`
 
 ## Client API
 
