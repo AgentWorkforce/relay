@@ -452,6 +452,27 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
         isRead: selectedChannelId === channelId,
       };
       appendChannelMessage(channelId, msg, { incrementUnread: selectedChannelId !== channelId });
+    } else if (event?.type === 'direct_message') {
+      // Handle direct messages sent to the user's GitHub username
+      const sender = event.from || 'unknown';
+      const recipient = currentUser?.displayName;
+      if (!recipient) return;
+
+      // Create DM channel ID with sorted participants for consistency
+      const participants = [sender, recipient].sort();
+      const dmChannelId = `dm:${participants.join(':')}`;
+
+      const msg: ChannelApiMessage = {
+        id: event.id ?? `dm-${Date.now()}`,
+        channelId: dmChannelId,
+        from: sender,
+        fromEntityType: 'agent', // DMs to user are typically from agents
+        content: event.body ?? '',
+        timestamp: event.timestamp || new Date().toISOString(),
+        threadId: event.thread,
+        isRead: selectedChannelId === dmChannelId,
+      };
+      appendChannelMessage(dmChannelId, msg, { incrementUnread: selectedChannelId !== dmChannelId });
     }
   }, [appendChannelMessage, currentUser?.displayName, selectedChannelId]);
 
