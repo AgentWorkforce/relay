@@ -1,7 +1,7 @@
 ---
 name: migrator
 description: Use for data migrations, database schema changes, version upgrades, and data transformation tasks.
-allowed-tools: Read, Grep, Glob, Bash, Edit, Write
+tools: Read, Grep, Glob, Bash, Edit, Write
 skills: using-agent-relay
 ---
 

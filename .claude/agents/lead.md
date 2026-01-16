@@ -1,7 +1,7 @@
 ---
 name: lead
 description: Use when coordinating multi-agent teams. Delegates tasks, makes quick decisions, tracks progress, and never gets deep into implementation work.
-allowed-tools: Read, Grep, Glob, Bash, Task, AskUserQuestion
+tools: Read, Grep, Glob, Bash, Task, AskUserQuestion
 model: sonnet
 skills: using-beads-bv, using-agent-relay
 ---

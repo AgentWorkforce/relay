@@ -1,7 +1,7 @@
 ---
 name: shadow-reviewer
 description: Reviews code changes for quality, security, and best practices. Assign as a shadow to monitor another agent's code output.
-allowed-tools: Read, Grep, Glob
+tools: Read, Grep, Glob
 skills: using-agent-relay
 shadowRole: reviewer
 shadowTriggers:

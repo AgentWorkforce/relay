@@ -1,7 +1,7 @@
 ---
 name: fixer
 description: Use for quick fixes, hotfixes, urgent patches, and time-sensitive bug repairs.
-allowed-tools: Read, Grep, Glob, Bash, Edit, Write
+tools: Read, Grep, Glob, Bash, Edit, Write
 skills: using-agent-relay
 ---
 
