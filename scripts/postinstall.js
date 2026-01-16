@@ -3,14 +3,16 @@
  * Postinstall Script for agent-relay
  *
  * This script runs after npm install to:
- * 1. Install dashboard dependencies
- * 2. Patch agent-trajectories CLI
- * 3. Check for tmux availability
+ * 1. Install relay-pty binary for current platform
+ * 2. Install dashboard dependencies
+ * 3. Patch agent-trajectories CLI
+ * 4. Check for tmux availability (fallback)
  */
 
 import { execSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -39,6 +41,86 @@ function success(msg) {
 
 function warn(msg) {
   console.log(`${colors.yellow}[warn]${colors.reset} ${msg}`);
+}
+
+/**
+ * Get the platform-specific binary name for relay-pty
+ * Returns null if platform is not supported
+ */
+function getRelayPtyBinaryName() {
+  const platform = os.platform();
+  const arch = os.arch();
+
+  // Map Node.js arch to Rust target arch
+  const archMap = {
+    'arm64': 'arm64',
+    'x64': 'x64',
+  };
+
+  // Map Node.js platform to Rust target platform
+  const platformMap = {
+    'darwin': 'darwin',
+    'linux': 'linux',
+  };
+
+  const targetPlatform = platformMap[platform];
+  const targetArch = archMap[arch];
+
+  if (!targetPlatform || !targetArch) {
+    return null;
+  }
+
+  return `relay-pty-${targetPlatform}-${targetArch}`;
+}
+
+/**
+ * Install the relay-pty binary for the current platform
+ */
+function installRelayPtyBinary() {
+  const pkgRoot = getPackageRoot();
+  const binaryName = getRelayPtyBinaryName();
+
+  if (!binaryName) {
+    warn(`Unsupported platform: ${os.platform()}-${os.arch()}`);
+    warn('relay-pty binary not available, will fall back to tmux mode');
+    return false;
+  }
+
+  const sourcePath = path.join(pkgRoot, 'bin', binaryName);
+  const targetPath = path.join(pkgRoot, 'bin', 'relay-pty');
+
+  // Check if platform-specific binary exists
+  if (!fs.existsSync(sourcePath)) {
+    warn(`relay-pty binary not found for ${os.platform()}-${os.arch()}`);
+    warn('Will fall back to tmux mode');
+    return false;
+  }
+
+  // Check if already installed (and is a symlink or copy of correct binary)
+  if (fs.existsSync(targetPath)) {
+    try {
+      // Check if it's already the right binary by comparing size
+      const sourceStats = fs.statSync(sourcePath);
+      const targetStats = fs.statSync(targetPath);
+      if (sourceStats.size === targetStats.size) {
+        info('relay-pty binary already installed');
+        return true;
+      }
+    } catch {
+      // Continue to reinstall
+    }
+  }
+
+  // Copy the binary (symlinks don't work well across npm install)
+  try {
+    fs.copyFileSync(sourcePath, targetPath);
+    fs.chmodSync(targetPath, 0o755);
+    success(`Installed relay-pty binary for ${os.platform()}-${os.arch()}`);
+    return true;
+  } catch (err) {
+    warn(`Failed to install relay-pty binary: ${err.message}`);
+    return false;
+  }
 }
 
 /**
@@ -140,6 +222,9 @@ function patchAgentTrajectories() {
  * Main postinstall routine
  */
 async function main() {
+  // Install relay-pty binary for current platform (primary mode)
+  const hasRelayPty = installRelayPtyBinary();
+
   // Ensure trail CLI captures agent info on start
   patchAgentTrajectories();
 
@@ -151,18 +236,23 @@ async function main() {
     return;
   }
 
-  // Check if system tmux is available
-  if (hasSystemTmux()) {
-    info('System tmux found');
+  // If relay-pty is installed, we're good
+  if (hasRelayPty) {
+    info('Using relay-pty for agent communication (fast mode)');
     return;
   }
 
-  // Recommend user installs tmux manually
-  warn('tmux not found on system');
-  info('To use tmux mode, install tmux:');
-  info('  macOS:  brew install tmux');
-  info('  Ubuntu: sudo apt install tmux');
-  info('  Or use PTY mode via the dashboard (no tmux required)');
+  // Fall back to tmux check
+  if (hasSystemTmux()) {
+    info('System tmux found (fallback mode)');
+    return;
+  }
+
+  // Neither relay-pty nor tmux available
+  warn('Neither relay-pty nor tmux available');
+  info('Agent spawning will not work without one of:');
+  info('  1. relay-pty binary (included for darwin-arm64, darwin-x64, linux-x64)');
+  info('  2. tmux: brew install tmux (macOS) or apt install tmux (Linux)');
 }
 
 main().catch((err) => {

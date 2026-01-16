@@ -1,8 +1,14 @@
 # Source code (TypeScript)
 src/
 
-# Pre-built binaries (downloaded at install time via postinstall.js)
+# Rust source code (we ship pre-built binaries in bin/)
+relay-pty/
+
+# Tmux binary (users should install system tmux)
 bin/tmux
+
+# Trajectories (development artifacts)
+.trajectories/
 
 # Source maps (not needed for production)
 **/*.js.map

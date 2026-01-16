@@ -40,6 +40,44 @@ permissions:
   id-token: write
 
 jobs:
+  # Build Rust binaries for all platforms
+  build-binaries:
+    name: Build relay-pty (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary_name: relay-pty-darwin-arm64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            binary_name: relay-pty-darwin-x64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_name: relay-pty-linux-x64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Build relay-pty
+        working-directory: relay-pty
+        run: cargo build --release
+
+      - name: Copy binary with platform name
+        run: cp relay-pty/target/release/relay-pty bin/${{ matrix.binary_name }}
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.binary_name }}
+          path: bin/${{ matrix.binary_name }}
+          retention-days: 1
+
   validate:
     name: Validate and Test
     runs-on: ubuntu-latest
@@ -143,7 +181,7 @@ jobs:
 
   publish:
     name: Publish to NPM
-    needs: [validate, version]
+    needs: [validate, version, build-binaries]
     runs-on: ubuntu-latest
     env:
       NPM_CONFIG_FUND: false
@@ -170,6 +208,19 @@ jobs:
         with:
           name: versioned-package
           path: .
+
+      - name: Download relay-pty binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: relay-pty-*
+          path: bin/
+          merge-multiple: true
+
+      - name: Make binaries executable
+        run: chmod +x bin/relay-pty-*
+
+      - name: List binaries
+        run: ls -la bin/
 
       - name: Install dependencies
         run: npm ci
