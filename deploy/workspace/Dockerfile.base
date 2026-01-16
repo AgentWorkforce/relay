@@ -1,10 +1,35 @@
 # Agent Relay Workspace Base Image
 # Contains all CLI tools and system dependencies that rarely change
-# Rebuild only when updating CLI versions
+# Rebuild only when updating CLI versions or relay-pty binary
 
+# ============================================================================
+# Stage 1: Build Rust relay-pty binary
+# ============================================================================
+FROM rust:1.75-slim AS rust-builder
+
+WORKDIR /build
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy relay-pty source
+COPY relay-pty/ ./
+
+# Build release binary
+RUN cargo build --release
+
+# ============================================================================
+# Stage 2: Final base image with CLIs + relay-pty binary
+# ============================================================================
 FROM node:20-slim
 
 WORKDIR /app
+
+# Copy relay-pty binary from builder stage
+COPY --from=rust-builder /build/target/release/relay-pty /usr/local/bin/relay-pty
+RUN chmod +x /usr/local/bin/relay-pty
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \

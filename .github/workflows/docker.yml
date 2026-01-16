@@ -32,12 +32,13 @@ permissions:
   packages: write
 
 jobs:
-  # Base image - only builds when explicitly requested or Dockerfile.base changes
+  # Base image - only builds when explicitly requested or Dockerfile.base/relay-pty changes
   build-base:
     runs-on: ubuntu-latest
     if: |
       github.event.inputs.build_base == 'true' ||
-      contains(github.event.head_commit.modified, 'deploy/workspace/Dockerfile.base')
+      contains(github.event.head_commit.modified, 'deploy/workspace/Dockerfile.base') ||
+      contains(github.event.head_commit.modified, 'relay-pty/')
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
