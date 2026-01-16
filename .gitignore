@@ -7,6 +7,9 @@ dist/
 # Bundled tmux binary (downloaded at install time)
 bin/tmux
 
+# Platform-specific relay-pty binary (created by postinstall)
+bin/relay-pty
+
 # TypeScript build info (if enabled later)
 *.tsbuildinfo
 
