@@ -104,7 +104,7 @@ The **Dashboard** is a reference implementation of the relay protocol, providing
 
 ## Dashboard
 
-`agent-relay up` starts a web dashboard at http://localhost:3888
+The dashboard starts automatically with any command (`agent-relay claude`, `agent-relay up`, etc.) at http://localhost:3888
 
 Features:
 - Real-time agent presence and status
@@ -174,6 +174,9 @@ echo "->relay-file:msg"
 Install the messaging skill for your agents:
 
 ```bash
+# Install snippet for AGENTS.md
+prpm install @agent-relay/agent-relay-snippet
+
 # Install snippet for CLAUDE.md
 prpm install @agent-relay/agent-relay-snippet --location CLAUDE.md
 ```
@@ -218,4 +221,4 @@ MIT
 
 ---
 
-**Links:** [Documentation](https://github.com/AgentWorkforce/relay/tree/main/docs) | [Issues](https://github.com/AgentWorkforce/relay/issues) | [Cloud](https://agentworkforce.dev)
+**Links:** [Documentation](https://github.com/AgentWorkforce/relay/tree/main/docs) | [Issues](https://github.com/AgentWorkforce/relay/issues) | [Cloud](https://agent-relay.com)
