@@ -167,6 +167,10 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   private backpressureActive = false;
   private readyForMessages = false;
 
+  // Unread message indicator state
+  private lastUnreadIndicatorTime = 0;
+  private readonly UNREAD_INDICATOR_COOLDOWN_MS = 5000; // Don't spam indicators
+
   // Note: sessionEndProcessed and lastSummaryRawContent are inherited from BaseWrapper
 
   constructor(config: RelayPtyOrchestratorConfig) {
@@ -457,12 +461,16 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     // Feed to idle detector
     this.feedIdleDetectorOutput(data);
 
-    // Emit output event
-    this.emit('output', data);
+    // Check for unread messages and append indicator if needed
+    const indicator = this.formatUnreadIndicator();
+    const outputWithIndicator = indicator ? data + indicator : data;
+
+    // Emit output event (with indicator if present)
+    this.emit('output', outputWithIndicator);
 
     // Stream to daemon if configured
     if (this.config.streamLogs !== false && this.client.state === 'READY') {
-      this.client.sendLog(data);
+      this.client.sendLog(outputWithIndicator);
     }
 
     // Parse for relay commands
@@ -472,6 +480,38 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     const cleanContent = stripAnsi(this.rawBuffer);
     this.checkForSummary(cleanContent);
     this.checkForSessionEnd(cleanContent);
+  }
+
+  /**
+   * Format an unread message indicator if there are pending messages.
+   * Returns empty string if no pending messages or within cooldown period.
+   *
+   * Example output:
+   * ───────────────────────────
+   * 📬 2 unread messages (from: Alice, Bob)
+   */
+  private formatUnreadIndicator(): string {
+    const queueLength = this.messageQueue.length;
+    if (queueLength === 0) {
+      return '';
+    }
+
+    // Check cooldown to avoid spamming
+    const now = Date.now();
+    if (now - this.lastUnreadIndicatorTime < this.UNREAD_INDICATOR_COOLDOWN_MS) {
+      return '';
+    }
+    this.lastUnreadIndicatorTime = now;
+
+    // Collect unique sender names
+    const senders = [...new Set(this.messageQueue.map(m => m.from))];
+    const senderList = senders.slice(0, 3).join(', ');
+    const moreCount = senders.length > 3 ? ` +${senders.length - 3} more` : '';
+
+    const line = '─'.repeat(27);
+    const messageWord = queueLength === 1 ? 'message' : 'messages';
+
+    return `\n${line}\n📬 ${queueLength} unread ${messageWord} (from: ${senderList}${moreCount})\n`;
   }
 
   /**

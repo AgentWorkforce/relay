@@ -1257,14 +1257,6 @@ export class OutputParser {
 }
 
 /**
- * Format a relay command for injection into agent input.
- */
-export function formatIncomingMessage(from: string, body: string, kind: PayloadKind = 'message'): string {
-  const prefix = kind === 'thinking' ? '[THINKING]' : '[MSG]';
-  return `\n${prefix} from ${from}: ${body}\n`;
-}
-
-/**
  * Parsed message metadata block from agent output.
  */
 export interface ParsedMessageMetadata {

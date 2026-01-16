@@ -201,10 +201,21 @@ impl QueuedMessage {
         }
     }
 
-    /// Format as relay message for injection
+    /// Format as relay message for injection with escalating urgency based on retry count.
+    ///
+    /// Retry escalation:
+    /// - Attempt 1 (retries=0): "Relay message from..."
+    /// - Attempt 2 (retries=1): "[RETRY] Relay message from..."
+    /// - Attempt 3+ (retries>=2): "[URGENT - PLEASE ACKNOWLEDGE] Relay message from..."
     pub fn format_for_injection(&self) -> String {
         let short_id = &self.id[..self.id.len().min(7)];
-        format!("Relay message from {} [{}]: {}", self.from, short_id, self.body)
+        let base_msg = format!("Relay message from {} [{}]: {}", self.from, short_id, self.body);
+
+        match self.retries {
+            0 => base_msg,
+            1 => format!("[RETRY] {}", base_msg),
+            _ => format!("[URGENT - PLEASE ACKNOWLEDGE] {}", base_msg),
+        }
     }
 }
 
@@ -274,5 +285,42 @@ mod tests {
         );
         let formatted = msg.format_for_injection();
         assert_eq!(formatted, "Relay message from Bob [abc1234]: Test message");
+    }
+
+    #[test]
+    fn test_queued_message_format_with_retry_escalation() {
+        let mut msg = QueuedMessage::new(
+            "abc1234567890".to_string(),
+            "Alice".to_string(),
+            "Important task".to_string(),
+            0,
+        );
+
+        // First attempt (retries=0) - no prefix
+        assert_eq!(
+            msg.format_for_injection(),
+            "Relay message from Alice [abc1234]: Important task"
+        );
+
+        // Second attempt (retries=1) - RETRY prefix
+        msg.retries = 1;
+        assert_eq!(
+            msg.format_for_injection(),
+            "[RETRY] Relay message from Alice [abc1234]: Important task"
+        );
+
+        // Third attempt (retries=2) - URGENT prefix
+        msg.retries = 2;
+        assert_eq!(
+            msg.format_for_injection(),
+            "[URGENT - PLEASE ACKNOWLEDGE] Relay message from Alice [abc1234]: Important task"
+        );
+
+        // Fourth attempt (retries=3) - still URGENT
+        msg.retries = 3;
+        assert_eq!(
+            msg.format_for_injection(),
+            "[URGENT - PLEASE ACKNOWLEDGE] Relay message from Alice [abc1234]: Important task"
+        );
     }
 }
