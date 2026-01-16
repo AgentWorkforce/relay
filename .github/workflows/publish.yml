@@ -50,7 +50,7 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             binary_name: relay-pty-darwin-arm64
-          - os: macos-13
+          - os: macos-latest
             target: x86_64-apple-darwin
             binary_name: relay-pty-darwin-x64
           - os: ubuntu-latest
@@ -63,13 +63,15 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Build relay-pty
         working-directory: relay-pty
-        run: cargo build --release
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Copy binary with platform name
-        run: cp relay-pty/target/release/relay-pty bin/${{ matrix.binary_name }}
+        run: cp relay-pty/target/${{ matrix.target }}/release/relay-pty bin/${{ matrix.binary_name }}
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
