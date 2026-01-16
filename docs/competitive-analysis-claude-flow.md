@@ -137,7 +137,46 @@ This document analyzes [claude-flow](https://github.com/ruvnet/claude-flow) (v3.
 
 **agent-relay**: Makes no self-learning claims. Focuses on reliable message passing and session continuity.
 
-### 5. Security
+### 5. Rust/Native Code Claims
+
+**claude-flow** claims:
+- "Deep Rust integrations (both napi-rs & wasm)"
+- "Built on npm RuVector with deep Rust integrations"
+- "RuVector-backed retrieval"
+
+**Reality**: GitHub API shows **0% Rust code** in the claude-flow repository:
+```
+Languages breakdown (from GitHub API):
+- TypeScript: 64.2%
+- JavaScript: 34.4%
+- Python: 13.8%
+- Shell: 4.5%
+- Rust: 0%
+```
+
+They *use* the `ruvector` npm package (a separate project) which has Rust bindings internally. This is not "deep Rust integrations" - it's using a dependency.
+
+**agent-relay**: Has **3,145 lines of actual Rust code** in `/relay-pty/`:
+
+| Module | Lines | Purpose |
+|--------|-------|---------|
+| `parser.rs` | 973 | Output pattern detection with ANSI handling |
+| `pty.rs` | 516 | PTY management via nix crate |
+| `main.rs` | 401 | Tokio async runtime, signal handling |
+| `socket.rs` | 339 | Unix socket server for injection |
+| `queue.rs` | 344 | Message queue with backpressure |
+| `protocol.rs` | 326 | Wire protocol definitions |
+| `inject.rs` | 246 | Message injection with retry logic |
+
+This is production Rust code we wrote - not a dependency:
+- Async runtime (tokio)
+- Real PTY handling (nix)
+- Signal management (SIGINT, SIGTERM, SIGWINCH)
+- Backpressure and flow control
+
+**Analysis**: This is the clearest technical differentiation. claude-flow claims Rust but has none. agent-relay doesn't heavily market Rust but actually uses it for the performance-critical PTY layer.
+
+### 6. Security
 
 **claude-flow**: Claims CVE-hardened protections, AIDefence real-time threat detection, prompt injection prevention.
 
@@ -240,6 +279,48 @@ This document analyzes [claude-flow](https://github.com/ruvnet/claude-flow) (v3.
 - Lead with technical accuracy and transparency
 - Demo videos showing actual multi-agent coordination
 - Case studies with heterogeneous AI teams (Claude + Codex)
+
+---
+
+## Reddit Marketing Claims Analysis (January 2026)
+
+The following claims were made on Reddit promoting claude-flow v3:
+
+| Claim | Evidence | Verdict |
+|-------|----------|---------|
+| **"500,000 downloads"** | npm API: 438,068 downloads (last year) | Approaching - **Plausible** |
+| **"100,000 monthly active users"** | No evidence. Downloads ≠ MAU. CI/CD inflates. | **Unverifiable** |
+| **"250,000 lines redesigned"** | ~25MB TS/JS in repo (could be 200-400K lines) | **Technically possible** but includes generated/bundled code |
+| **"Deep Rust integrations (napi-rs & wasm)"** | GitHub API: 0% Rust in repo | **False** - Uses npm dependency |
+| **"Built on npm RuVector"** | RuVector is separate project, just a dependency | **Misleading attribution** |
+| **"Real multi-agent swarm"** | Single-process MCP server | **Marketing spin** |
+| **"54+ specialized agents"** | 5 YAML files in agents/ folder | **Inflated ~10x** |
+| **"Self-learning <0.05ms adaptation"** | TypeScript codebase, no ML training code | **Unverified/Implausible** |
+| **"Runs fully offline"** | Ollama integration exists | **True** |
+| **"Background workers don't consume tokens"** | Local retrieval for some tasks | **Partially true** |
+| **"Most powerful swarm system on the planet"** | Single-process, no actual multi-agent | **Marketing hyperbole** |
+
+### The Rust Deception
+
+This deserves special attention. The claim of "deep Rust integrations (both napi-rs & wasm)" while having **zero Rust code** in the repository is materially misleading.
+
+Comparison:
+- **claude-flow**: Claims Rust, has 0 lines, uses `ruvector` npm package
+- **agent-relay**: Doesn't heavily market Rust, has 3,145 lines of actual Rust in `relay-pty/`
+
+### The "Multi-Agent Swarm" Reality
+
+Their architecture runs in a single process:
+```
+Claude Code → MCP Server → "Swarm Coordinator" → Task handlers (same process)
+```
+
+Our architecture coordinates actual separate processes:
+```
+Terminal 1: Claude  ─┐
+Terminal 2: Codex   ─┼─→ Relay Daemon ─→ Real IPC
+Terminal 3: Gemini  ─┘   (separate)      (actual messaging)
+```
 
 ---
 
