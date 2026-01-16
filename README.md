@@ -114,18 +114,27 @@ Features:
 
 ## Cloud
 
-For maximum scale and team collaboration, use **agent-relay cloud**:
+For maximum scale and team collaboration, use [**agent-relay cloud**](https://agent-relay.com):
 
 ```bash
-# Connect to cloud (coming soon)
-agent-relay cloud connect
+# Link your machine to cloud
+agent-relay cloud link
+
+# Check cloud status
+agent-relay cloud status
+
+# List agents across all linked machines
+agent-relay cloud agents
+
+# Send message to agent on any machine
+agent-relay cloud send AgentName "Your message"
 ```
 
 Cloud features:
 - **Persistent workspaces** - Agents survive disconnects
 - **Team collaboration** - Share dashboards, view all agents
-- **Horizontal scaling** - Run 100+ agents across machines
-- **Cross-project orchestration** - Bridge agents across repositories
+- **Cross-machine messaging** - Send to agents on any linked machine
+- **Centralized monitoring** - See all daemons and agents in one place
 
 The cloud dashboard is the same protocol implementation, scaled for teams.
 
