@@ -19,15 +19,24 @@ vi.mock('node:net', () => ({
   createConnection: vi.fn(),
 }));
 
-// Create a mock for existsSync that we can control
-const mockExistsSync = vi.fn((path: string) => {
-  // Simulate relay-pty binary exists at any relay-pty path
-  return typeof path === 'string' && path.includes('relay-pty');
-});
-
-vi.mock('node:fs', () => ({
-  existsSync: mockExistsSync,
+const { mockExistsSync } = vi.hoisted(() => ({
+  mockExistsSync: vi.fn((path: string) => {
+    // Simulate relay-pty binary exists at any relay-pty path
+    return typeof path === 'string' && path.includes('relay-pty');
+  }),
 }));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    existsSync: mockExistsSync,
+    default: {
+      ...actual,
+      existsSync: mockExistsSync,
+    },
+  };
+});
 
 // Mock the client module
 vi.mock('./client.js', () => ({
@@ -67,6 +76,7 @@ function createMockProcess(): ChildProcess {
   proc.killed = false;
   proc.kill = vi.fn(() => {
     proc.killed = true;
+    setTimeout(() => proc.emit('exit', 0, null), 0);
     return true;
   });
   proc.exitCode = null;
