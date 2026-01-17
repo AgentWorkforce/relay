@@ -412,6 +412,13 @@ export class AgentSpawner {
         args.push('--config', `developer_instructions=${relayInstructions}`);
       }
 
+      // Codex requires an initial prompt in TTY mode (unlike Claude which waits for input)
+      // Pass the task as the initial prompt, or a generic "ready" message if no task
+      if (isCodexCli) {
+        const initialPrompt = task || 'You are ready. Wait for messages from the relay system.';
+        args.push(initialPrompt);
+      }
+
       if (debug) console.log(`[spawner:debug] Spawning ${name} with: ${command} ${args.join(' ')}`);
 
       // Create PtyWrapper config
