@@ -14,7 +14,7 @@
 
 import { eq, and, desc } from 'drizzle-orm';
 import type { RelayPtyOrchestrator } from '../../wrapper/relay-pty-orchestrator.js';
-import type { SummaryEvent, SessionEndEvent } from '../../wrapper/pty-wrapper.js';
+import type { SummaryEvent, SessionEndEvent } from '../../wrapper/wrapper-types.js';
 import { getDb } from '../db/drizzle.js';
 import { agentSessions, agentSummaries } from '../db/schema.js';
 

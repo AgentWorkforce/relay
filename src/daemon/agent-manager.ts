@@ -10,7 +10,7 @@ import { createLogger } from '../resiliency/logger.js';
 import { getSupervisor } from '../resiliency/supervisor.js';
 import { detectProvider } from '../resiliency/provider-context.js';
 import { RelayPtyOrchestrator, type RelayPtyOrchestratorConfig } from '../wrapper/relay-pty-orchestrator.js';
-import type { SummaryEvent, SessionEndEvent } from '../wrapper/pty-wrapper.js';
+import type { SummaryEvent, SessionEndEvent } from '../wrapper/wrapper-types.js';
 import { resolveCommand } from '../utils/command-resolver.js';
 import type {
   Agent,

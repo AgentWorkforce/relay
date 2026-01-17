@@ -11,7 +11,7 @@ import { sleep } from './utils.js';
 import { getProjectPaths } from '../utils/project-namespace.js';
 import { resolveCommand } from '../utils/command-resolver.js';
 import { RelayPtyOrchestrator, type RelayPtyOrchestratorConfig } from '../wrapper/relay-pty-orchestrator.js';
-import type { SummaryEvent, SessionEndEvent } from '../wrapper/pty-wrapper.js';
+import type { SummaryEvent, SessionEndEvent } from '../wrapper/wrapper-types.js';
 import { selectShadowCli } from './shadow-cli.js';
 
 // Get the directory where this module is located (for binary path resolution)

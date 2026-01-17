@@ -4,14 +4,13 @@
  * Handles CLI proxy authentication for Claude Code and other providers.
  * Spawns CLI tools via PTY to get auth URLs, captures tokens.
  *
- * We use node-pty instead of child_process.spawn because:
- * 1. Many CLIs detect if they're in a TTY and behave differently
- * 2. Interactive OAuth flows often require TTY for proper output
- * 3. PTY ensures the CLI outputs auth URLs correctly
+ * Uses relay-pty binary for PTY emulation, which provides:
+ * 1. TTY detection for CLIs that behave differently in non-TTY
+ * 2. Proper interactive OAuth flow handling
+ * 3. Better Node.js version compatibility (no native compilation)
  */
 
 import { Router, Request, Response } from 'express';
-import type { IPty } from 'node-pty';
 import * as crypto from 'crypto';
 import { requireAuth } from './auth.js';
 import { db } from '../db/index.js';
@@ -67,7 +66,7 @@ onboardingRouter.use(requireAuth);
 interface CLIAuthSession {
   userId: string;
   provider: string;
-  process?: IPty;
+  process?: { kill: () => void };
   authUrl?: string;
   callbackUrl?: string;
   status: 'starting' | 'waiting_auth' | 'success' | 'error' | 'timeout';
