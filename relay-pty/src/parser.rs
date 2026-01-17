@@ -130,48 +130,37 @@ fn file_relay_pattern() -> &'static Regex {
 }
 
 fn relay_pattern() -> &'static Regex {
-    RELAY_PATTERN.get_or_init(|| {
-        Regex::new(r"(?m)^[\s>$%#\-*]*->relay:(\S+)\s+(.+)$").unwrap()
-    })
+    RELAY_PATTERN
+        .get_or_init(|| Regex::new(r"(?m)^[\s>$%#\-*]*->relay:(\S+)\s+(.+)$").unwrap())
 }
 
 fn fenced_pattern() -> &'static Regex {
-    FENCED_PATTERN.get_or_init(|| {
-        Regex::new(r"(?ms)->relay:(\S+)\s+<<<\s*(.*?)>>>").unwrap()
-    })
+    FENCED_PATTERN.get_or_init(|| Regex::new(r"(?ms)->relay:(\S+)\s+<<<\s*(.*?)>>>").unwrap())
 }
 
 /// Spawn with fenced task: ->relay:spawn AgentName cli <<<task>>>
 fn spawn_fenced_pattern() -> &'static Regex {
-    SPAWN_FENCED_PATTERN.get_or_init(|| {
-        Regex::new(r"(?ms)->relay:spawn\s+(\w+)\s+(\w+)\s*<<<\s*(.*?)>>>").unwrap()
-    })
+    SPAWN_FENCED_PATTERN
+        .get_or_init(|| Regex::new(r"(?ms)->relay:spawn\s+(\w+)\s+(\w+)\s*<<<\s*(.*?)>>>").unwrap())
 }
 
 /// Spawn with quoted task: ->relay:spawn AgentName cli "task"
 fn spawn_single_pattern() -> &'static Regex {
-    SPAWN_SINGLE_PATTERN.get_or_init(|| {
-        Regex::new(r#"(?m)->relay:spawn\s+(\w+)\s+(\w+)\s+"([^"]+)""#).unwrap()
-    })
+    SPAWN_SINGLE_PATTERN
+        .get_or_init(|| Regex::new(r#"(?m)->relay:spawn\s+(\w+)\s+(\w+)\s+"([^"]+)""#).unwrap())
 }
 
 /// Release: ->relay:release AgentName
 fn release_pattern() -> &'static Regex {
-    RELEASE_PATTERN.get_or_init(|| {
-        Regex::new(r"(?m)->relay:release\s+(\w+)").unwrap()
-    })
+    RELEASE_PATTERN.get_or_init(|| Regex::new(r"(?m)->relay:release\s+(\w+)").unwrap())
 }
 
 fn thread_pattern() -> &'static Regex {
-    THREAD_PATTERN.get_or_init(|| {
-        Regex::new(r"\[thread:([^\]]+)\]").unwrap()
-    })
+    THREAD_PATTERN.get_or_init(|| Regex::new(r"\[thread:([^\]]+)\]").unwrap())
 }
 
 fn ansi_pattern() -> &'static Regex {
-    ANSI_PATTERN.get_or_init(|| {
-        Regex::new(r"\x1B\[[0-9;]*[A-Za-z]|\x1B\].*?\x07").unwrap()
-    })
+    ANSI_PATTERN.get_or_init(|| Regex::new(r"\x1B\[[0-9;]*[A-Za-z]|\x1B\].*?\x07").unwrap())
 }
 
 /// Output parser state
@@ -191,8 +180,8 @@ pub struct OutputParser {
 impl OutputParser {
     /// Create a new output parser
     pub fn new(agent_name: String, prompt_pattern: &str) -> Self {
-        let prompt_regex = Regex::new(prompt_pattern)
-            .unwrap_or_else(|_| Regex::new(r"^[>$%#] $").unwrap());
+        let prompt_regex =
+            Regex::new(prompt_pattern).unwrap_or_else(|_| Regex::new(r"^[>$%#] $").unwrap());
 
         Self {
             agent_name,
@@ -204,9 +193,13 @@ impl OutputParser {
     }
 
     /// Create a new output parser with outbox path for file-based messages
-    pub fn with_outbox(agent_name: String, prompt_pattern: &str, outbox_path: std::path::PathBuf) -> Self {
-        let prompt_regex = Regex::new(prompt_pattern)
-            .unwrap_or_else(|_| Regex::new(r"^[>$%#] $").unwrap());
+    pub fn with_outbox(
+        agent_name: String,
+        prompt_pattern: &str,
+        outbox_path: std::path::PathBuf,
+    ) -> Self {
+        let prompt_regex =
+            Regex::new(prompt_pattern).unwrap_or_else(|_| Regex::new(r"^[>$%#] $").unwrap());
 
         Self {
             agent_name,
@@ -230,8 +223,11 @@ impl OutputParser {
 
         // Debug: check if buffer contains relay pattern
         if clean.contains("->relay:") {
-            debug!("Buffer contains ->relay: pattern, buffer len={}, last_parsed={}",
-                   self.buffer.len(), self.last_parsed_pos);
+            debug!(
+                "Buffer contains ->relay: pattern, buffer len={}, last_parsed={}",
+                self.buffer.len(),
+                self.last_parsed_pos
+            );
         }
 
         // Parse commands from buffer
@@ -265,7 +261,10 @@ impl OutputParser {
 
         // Debug: show what we're searching
         if search_text.contains("->relay:") || search_text.contains("->relay-file:") {
-            debug!("Searching for relay commands in {} bytes of text", search_text.len());
+            debug!(
+                "Searching for relay commands in {} bytes of text",
+                search_text.len()
+            );
         }
 
         // 0. Parse file-based format: ->relay-file:ID
@@ -284,7 +283,10 @@ impl OutputParser {
                 let (file_content, file_path) = if file_path_txt.exists() {
                     (std::fs::read_to_string(&file_path_txt).ok(), file_path_txt)
                 } else if file_path_json.exists() {
-                    (std::fs::read_to_string(&file_path_json).ok(), file_path_json)
+                    (
+                        std::fs::read_to_string(&file_path_json).ok(),
+                        file_path_json,
+                    )
                 } else {
                     debug!("Relay file not found: {:?} or {:?}", file_path_txt, file_path_json);
                     continue;
@@ -296,7 +298,8 @@ impl OutputParser {
                 };
 
                 // Try header format first (simpler, more robust)
-                let msg: Option<RelayMessage> = if let Some(parsed) = parse_header_format(&content) {
+                let msg: Option<RelayMessage> = if let Some(parsed) = parse_header_format(&content)
+                {
                     debug!("Parsed header format successfully");
                     Some(parsed)
                 } else {
@@ -413,7 +416,10 @@ impl OutputParser {
                 raw.to_string(),
             );
 
-            debug!("Parsed spawn command: {} spawning {} with {}", self.agent_name, name, cli);
+            debug!(
+                "Parsed spawn command: {} spawning {} with {}",
+                self.agent_name, name, cli
+            );
             commands.push(cmd);
         }
 
@@ -432,7 +438,10 @@ impl OutputParser {
                 raw.to_string(),
             );
 
-            debug!("Parsed spawn command (single): {} spawning {} with {}", self.agent_name, name, cli);
+            debug!(
+                "Parsed spawn command (single): {} spawning {} with {}",
+                self.agent_name, name, cli
+            );
             commands.push(cmd);
         }
 
@@ -447,7 +456,10 @@ impl OutputParser {
                 raw.to_string(),
             );
 
-            debug!("Parsed release command: {} releasing {}", self.agent_name, name);
+            debug!(
+                "Parsed release command: {} releasing {}",
+                self.agent_name, name
+            );
             commands.push(cmd);
         }
 
@@ -507,7 +519,10 @@ impl OutputParser {
                     }
                 }
 
-                debug!("Parsed single-line message: {} -> {}", self.agent_name, target);
+                debug!(
+                    "Parsed single-line message: {} -> {}",
+                    self.agent_name, target
+                );
                 commands.push(cmd);
             }
         }
@@ -532,9 +547,9 @@ impl OutputParser {
 
         // Also check common prompt patterns
         let common_prompts = [
-            "> ",    // Claude
-            "$ ",    // Shell
-            ">>> ",  // Gemini
+            "> ",      // Claude
+            "$ ",      // Shell
+            ">>> ",    // Gemini
             "codex> ", // Codex
         ];
 
@@ -613,7 +628,8 @@ fn sanitize_json_from_shell(json: &str) -> String {
                             result.push(c);
                         }
                         // Invalid escapes from bash - just output the character
-                        '!' | '[' | ']' | '(' | ')' | '{' | '}' | '$' | '`' | '\'' | ' ' | '*' | '?' | '#' | '~' | '=' | '%' | '^' | '&' | ';' | '|' | '<' | '>' => {
+                        '!' | '[' | ']' | '(' | ')' | '{' | '}' | '$' | '`' | '\'' | ' ' | '*'
+                        | '?' | '#' | '~' | '=' | '%' | '^' | '&' | ';' | '|' | '<' | '>' => {
                             chars.next(); // consume the next char
                             result.push(next); // output just the character, not the backslash
                         }
@@ -758,7 +774,10 @@ mod tests {
         assert_eq!(result.commands[0].kind, "spawn");
         assert_eq!(result.commands[0].spawn_name, Some("Worker1".to_string()));
         assert_eq!(result.commands[0].spawn_cli, Some("claude".to_string()));
-        assert_eq!(result.commands[0].spawn_task, Some("Do the thing".to_string()));
+        assert_eq!(
+            result.commands[0].spawn_task,
+            Some("Do the thing".to_string())
+        );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
@@ -838,7 +857,10 @@ mod tests {
         std::fs::write(temp_dir.join(format!("{}.json", msg_id)), json).unwrap();
 
         let mut parser = OutputParser::with_outbox("Alice".to_string(), r"^> $", temp_dir.clone());
-        let input = format!("I'm going to send a message now.\n->relay-file:{}\nAnd that's done.\n", msg_id);
+        let input = format!(
+            "I'm going to send a message now.\n->relay-file:{}\nAnd that's done.\n",
+            msg_id
+        );
         let result = parser.process(input.as_bytes());
 
         assert_eq!(result.commands.len(), 1);
@@ -904,7 +926,8 @@ mod tests {
 
     #[test]
     fn test_parse_header_format_spawn() {
-        let content = "KIND: spawn\nNAME: Worker1\nCLI: claude\n\nImplement the auth module\nWith JWT tokens";
+        let content =
+            "KIND: spawn\nNAME: Worker1\nCLI: claude\n\nImplement the auth module\nWith JWT tokens";
         let msg = parse_header_format(content).unwrap();
         assert_eq!(msg.kind, "spawn");
         assert_eq!(msg.name, Some("Worker1".to_string()));
@@ -966,7 +989,11 @@ mod tests {
         assert_eq!(result.commands[0].kind, "spawn");
         assert_eq!(result.commands[0].spawn_name, Some("TicTacToe".to_string()));
         assert_eq!(result.commands[0].spawn_cli, Some("claude".to_string()));
-        assert!(result.commands[0].spawn_task.as_ref().unwrap().contains("tic-tac-toe"));
+        assert!(result.commands[0]
+            .spawn_task
+            .as_ref()
+            .unwrap()
+            .contains("tic-tac-toe"));
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
