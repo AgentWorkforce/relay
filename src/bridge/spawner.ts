@@ -1,6 +1,6 @@
 /**
  * Agent Spawner
- * Handles spawning and releasing worker agents via node-pty.
+ * Handles spawning and releasing worker agents via relay-pty.
  * Workers run headlessly with output capture for logs.
  */
 
@@ -337,7 +337,7 @@ export class AgentSpawner {
   }
 
   /**
-   * Spawn a new worker agent using node-pty
+   * Spawn a new worker agent using relay-pty
    */
   async spawn(request: SpawnRequest): Promise<SpawnResult> {
     const { name, cli, task, team, spawnerName, userId } = request;

@@ -1,5 +1,5 @@
 /**
- * Unit tests for AgentSpawner (node-pty based)
+ * Unit tests for AgentSpawner (relay-pty based)
  */
 
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
