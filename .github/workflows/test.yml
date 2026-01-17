@@ -72,3 +72,35 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+  rust-test:
+    name: Rust Tests (relay-pty)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+      fail-fast: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: relay-pty
+
+      - name: Run Rust tests
+        working-directory: relay-pty
+        run: cargo test --release
+
+      - name: Check Rust formatting
+        working-directory: relay-pty
+        run: cargo fmt --check
+
+      - name: Run Clippy lints
+        working-directory: relay-pty
+        run: cargo clippy -- -D warnings
