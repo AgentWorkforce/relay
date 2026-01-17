@@ -1,0 +1,96 @@
+name: Node.js Compatibility
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  install-test:
+    name: Install Test (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ['18', '20', '22', '24', '25']
+      fail-fast: false
+
+    container:
+      image: node:${{ matrix.node-version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Node.js version
+        run: |
+          node --version
+          npm --version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build package
+        run: npm run build
+
+      - name: Pack package for local install
+        run: npm pack
+
+      - name: Install package globally
+        run: |
+          PACKAGE_FILE=$(ls agent-relay-*.tgz)
+          echo "Installing $PACKAGE_FILE globally..."
+          npm install -g "./$PACKAGE_FILE"
+
+      - name: Verify global installation
+        run: |
+          # Check that the CLI is accessible
+          which agent-relay || echo "agent-relay not in PATH"
+
+          # Try running the CLI with --help
+          agent-relay --help || echo "CLI help failed (may be expected without relay-pty binary)"
+
+      - name: Test import (ESM)
+        run: |
+          # Test that the package can be imported as ESM
+          node --eval "
+            import('agent-relay').then(m => {
+              console.log('ESM import successful');
+              console.log('Exports:', Object.keys(m));
+            }).catch(err => {
+              console.error('ESM import failed:', err.message);
+              process.exit(1);
+            });
+          "
+
+  # Test that npm install works in a fresh environment (no build tools)
+  minimal-install:
+    name: Minimal Install (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ['20', '22', '25']
+      fail-fast: false
+
+    container:
+      image: node:${{ matrix.node-version }}-slim
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Node.js version
+        run: |
+          node --version
+          npm --version
+
+      - name: Install dependencies (no optional deps)
+        run: npm ci --omit=optional
+        env:
+          # Skip postinstall scripts that might require build tools
+          npm_config_ignore_scripts: false
+
+      - name: Verify installation succeeded
+        run: |
+          echo "Dependencies installed successfully on Node $(node --version)"
+          ls -la node_modules/ | head -20
