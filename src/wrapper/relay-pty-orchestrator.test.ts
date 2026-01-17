@@ -104,8 +104,16 @@ describe('RelayPtyOrchestrator', () => {
   const mockSpawn = spawn as unknown as ReturnType<typeof vi.fn>;
   const mockCreateConnection = createConnection as unknown as ReturnType<typeof vi.fn>;
 
+  // Save original WORKSPACE_ID to restore after each test
+  let originalWorkspaceId: string | undefined;
+
   beforeEach(() => {
     vi.clearAllMocks();
+
+    // Save and clear WORKSPACE_ID to test legacy paths by default
+    // Tests that need workspace namespacing can set it explicitly
+    originalWorkspaceId = process.env.WORKSPACE_ID;
+    delete process.env.WORKSPACE_ID;
 
     // Reset existsSync mock to default implementation
     mockExistsSync.mockImplementation((path: string) => {
@@ -128,6 +136,13 @@ describe('RelayPtyOrchestrator', () => {
     if (orchestrator?.isRunning) {
       await orchestrator.stop();
     }
+
+    // Restore original WORKSPACE_ID
+    if (originalWorkspaceId !== undefined) {
+      process.env.WORKSPACE_ID = originalWorkspaceId;
+    } else {
+      delete process.env.WORKSPACE_ID;
+    }
   });
 
   describe('constructor', () => {
@@ -138,6 +153,49 @@ describe('RelayPtyOrchestrator', () => {
       });
 
       expect(orchestrator.getSocketPath()).toBe('/tmp/relay-pty-TestAgent.sock');
+    });
+
+    it('uses workspace-namespaced paths when WORKSPACE_ID is in config.env', () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+        env: { WORKSPACE_ID: 'ws-12345' },
+      });
+
+      expect(orchestrator.getSocketPath()).toBe('/tmp/relay/ws-12345/sockets/TestAgent.sock');
+      expect(orchestrator.outboxPath).toBe('/tmp/relay/ws-12345/outbox/TestAgent');
+    });
+
+    it('uses workspace-namespaced paths when WORKSPACE_ID is in process.env', () => {
+      const originalEnv = process.env.WORKSPACE_ID;
+      process.env.WORKSPACE_ID = 'ws-cloud-99';
+
+      try {
+        orchestrator = new RelayPtyOrchestrator({
+          name: 'CloudAgent',
+          command: 'claude',
+        });
+
+        expect(orchestrator.getSocketPath()).toBe('/tmp/relay/ws-cloud-99/sockets/CloudAgent.sock');
+        expect(orchestrator.outboxPath).toBe('/tmp/relay/ws-cloud-99/outbox/CloudAgent');
+      } finally {
+        if (originalEnv === undefined) {
+          delete process.env.WORKSPACE_ID;
+        } else {
+          process.env.WORKSPACE_ID = originalEnv;
+        }
+      }
+    });
+
+    it('uses legacy paths when WORKSPACE_ID is not set', () => {
+      // beforeEach already clears WORKSPACE_ID
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'LocalAgent',
+        command: 'claude',
+      });
+
+      expect(orchestrator.getSocketPath()).toBe('/tmp/relay-pty-LocalAgent.sock');
+      expect(orchestrator.outboxPath).toBe('/tmp/relay-outbox/LocalAgent');
     });
   });
 

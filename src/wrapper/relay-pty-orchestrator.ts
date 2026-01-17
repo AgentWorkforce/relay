@@ -7,7 +7,9 @@
  *
  * Architecture:
  * 1. Spawn relay-pty --name {agentName} -- {command} as child process
- * 2. Connect to /tmp/relay-pty-{agentName}.sock for injection
+ * 2. Connect to socket for injection:
+ *    - With WORKSPACE_ID: /tmp/relay/{workspaceId}/sockets/{agentName}.sock
+ *    - Without: /tmp/relay-pty-{agentName}.sock (legacy)
  * 3. Parse stdout for relay commands (relay-pty echoes all output)
  * 4. Translate SEND envelopes → inject messages via socket
  *
@@ -17,7 +19,7 @@
 import { spawn, ChildProcess } from 'node:child_process';
 import { createConnection, Socket } from 'node:net';
 import { join, dirname } from 'node:path';
-import { existsSync, unlinkSync } from 'node:fs';
+import { existsSync, unlinkSync, mkdirSync } from 'node:fs';
 import { getProjectPaths } from '../utils/project-namespace.js';
 import { fileURLToPath } from 'node:url';
 
@@ -175,14 +177,27 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   constructor(config: RelayPtyOrchestratorConfig) {
     super(config);
     this.config = config;
-    this.socketPath = `/tmp/relay-pty-${config.name}.sock`;
+
+    // Check for workspace namespacing (for multi-tenant cloud deployment)
+    // WORKSPACE_ID can be in process.env or passed via config.env
+    const workspaceId = config.env?.WORKSPACE_ID || process.env.WORKSPACE_ID;
+
+    if (workspaceId) {
+      // Workspace-namespaced paths for cloud multi-tenant isolation
+      const workspaceDir = `/tmp/relay/${workspaceId}`;
+      this.socketPath = `${workspaceDir}/sockets/${config.name}.sock`;
+      this._outboxPath = `${workspaceDir}/outbox/${config.name}`;
+    } else {
+      // Legacy paths for local development
+      this.socketPath = `/tmp/relay-pty-${config.name}.sock`;
+      this._outboxPath = `/tmp/relay-outbox/${config.name}`;
+    }
+
     // Generate log path using same project paths as daemon
     // Use cwd from config if specified, otherwise detect from current directory
     const paths = getProjectPaths(config.cwd);
     this._logPath = join(paths.teamDir, 'worker-logs', `${config.name}.log`);
-    // Outbox for file-based relay messages (agent writes here)
-    // Use fixed /tmp path so agents can find it without configuration
-    this._outboxPath = `/tmp/relay-outbox/${config.name}`;
+
     // Check if we're running interactively (stdin is a TTY)
     this.isInteractive = process.stdin.isTTY === true;
   }
@@ -221,6 +236,17 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     if (this.running) return;
 
     this.log(` Starting...`);
+
+    // Ensure socket directory exists (for workspace-namespaced paths)
+    const socketDir = dirname(this.socketPath);
+    try {
+      if (!existsSync(socketDir)) {
+        mkdirSync(socketDir, { recursive: true });
+        this.log(` Created socket directory: ${socketDir}`);
+      }
+    } catch (err: any) {
+      this.logError(` Failed to create socket directory: ${err.message}`);
+    }
 
     // Clean up any stale socket from previous crashed process
     try {
