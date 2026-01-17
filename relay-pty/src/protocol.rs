@@ -209,7 +209,10 @@ impl QueuedMessage {
     /// - Attempt 3+ (retries>=2): "[URGENT - PLEASE ACKNOWLEDGE] Relay message from..."
     pub fn format_for_injection(&self) -> String {
         let short_id = &self.id[..self.id.len().min(7)];
-        let base_msg = format!("Relay message from {} [{}]: {}", self.from, short_id, self.body);
+        let base_msg = format!(
+            "Relay message from {} [{}]: {}",
+            self.from, short_id, self.body
+        );
 
         match self.retries {
             0 => base_msg,

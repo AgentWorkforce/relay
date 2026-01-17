@@ -95,7 +95,9 @@ impl SocketServer {
                     let shutdown_tx = self.shutdown_tx.clone();
 
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, queue, status_tx, shutdown_tx).await {
+                        if let Err(e) =
+                            handle_connection(stream, queue, status_tx, shutdown_tx).await
+                        {
                             error!("Connection error: {}", e);
                         }
                     });
@@ -172,7 +174,10 @@ async fn handle_request(
             body,
             priority,
         } => {
-            debug!("Inject request: {} from {} (priority {})", id, from, priority);
+            debug!(
+                "Inject request: {} from {} (priority {})",
+                id, from, priority
+            );
 
             let msg = QueuedMessage::new(id.clone(), from, body, priority);
             let queued = queue.enqueue(msg).await;
@@ -197,7 +202,11 @@ async fn handle_request(
         InjectRequest::Status => {
             let (tx, rx) = tokio::sync::oneshot::channel();
 
-            if status_tx.send(StatusQuery { response_tx: tx }).await.is_ok() {
+            if status_tx
+                .send(StatusQuery { response_tx: tx })
+                .await
+                .is_ok()
+            {
                 match rx.await {
                     Ok(info) => InjectResponse::Status {
                         agent_idle: info.agent_idle,
@@ -243,7 +252,13 @@ impl SocketClient {
     }
 
     /// Send an injection request
-    pub async fn inject(&self, id: String, from: String, body: String, priority: i32) -> Result<InjectResponse> {
+    pub async fn inject(
+        &self,
+        id: String,
+        from: String,
+        body: String,
+        priority: i32,
+    ) -> Result<InjectResponse> {
         self.send_request(InjectRequest::Inject {
             id,
             from,

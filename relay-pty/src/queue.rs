@@ -7,8 +7,8 @@
 //! - Retry tracking
 
 use crate::protocol::{InjectResponse, InjectStatus, QueuedMessage};
-use std::collections::{BinaryHeap, HashSet};
 use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{mpsc, Mutex, Notify};
@@ -35,7 +35,10 @@ impl PartialOrd for PriorityMessage {
 impl Ord for PriorityMessage {
     fn cmp(&self, other: &Self) -> Ordering {
         // Reverse ordering for min-heap (lower priority number = higher priority)
-        other.0.priority.cmp(&self.0.priority)
+        other
+            .0
+            .priority
+            .cmp(&self.0.priority)
             .then_with(|| other.0.queued_at.cmp(&self.0.queued_at))
     }
 }
