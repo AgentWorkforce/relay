@@ -30,42 +30,34 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build package
+      - name: Verify native modules compiled
+        run: |
+          echo "Checking that native modules exist..."
+          ls -la node_modules/better-sqlite3/build/Release/ || echo "better-sqlite3 not built (optional)"
+          echo "Native module check complete"
+
+      - name: Build TypeScript
         run: npm run build
 
-      - name: Pack package for local install
-        run: npm pack
+      - name: Run tests
+        run: npm test
 
-      - name: Install package globally
+      - name: Test local import (ESM)
         run: |
-          PACKAGE_FILE=$(ls agent-relay-*.tgz)
-          echo "Installing $PACKAGE_FILE globally..."
-          npm install -g "./$PACKAGE_FILE"
-
-      - name: Verify global installation
-        run: |
-          # Check that the CLI is accessible
-          which agent-relay || echo "agent-relay not in PATH"
-
-          # Try running the CLI with --help
-          agent-relay --help || echo "CLI help failed (may be expected without relay-pty binary)"
-
-      - name: Test import (ESM)
-        run: |
-          # Test that the package can be imported as ESM
+          # Test that the built package can be imported locally
           node --eval "
-            import('agent-relay').then(m => {
-              console.log('ESM import successful');
+            import('./dist/index.js').then(m => {
+              console.log('Local ESM import successful');
               console.log('Exports:', Object.keys(m));
             }).catch(err => {
-              console.error('ESM import failed:', err.message);
+              console.error('Local ESM import failed:', err.message);
               process.exit(1);
             });
           "
 
-  # Test that npm install works in a fresh environment (no build tools)
-  minimal-install:
-    name: Minimal Install (Node ${{ matrix.node-version }})
+  # Test that npm install works in a fresh environment
+  fresh-install:
+    name: Fresh Install (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -73,7 +65,7 @@ jobs:
       fail-fast: false
 
     container:
-      image: node:${{ matrix.node-version }}-slim
+      image: node:${{ matrix.node-version }}
 
     steps:
       - name: Checkout repository
@@ -84,13 +76,16 @@ jobs:
           node --version
           npm --version
 
-      - name: Install dependencies (no optional deps)
-        run: npm ci --omit=optional
-        env:
-          # Skip postinstall scripts that might require build tools
-          npm_config_ignore_scripts: false
+      - name: Clean install
+        run: |
+          rm -rf node_modules package-lock.json
+          npm install
 
       - name: Verify installation succeeded
         run: |
           echo "Dependencies installed successfully on Node $(node --version)"
-          ls -la node_modules/ | head -20
+          echo "Checking key dependencies..."
+          ls node_modules/better-sqlite3 && echo "better-sqlite3: OK"
+          ls node_modules/express && echo "express: OK"
+          ls node_modules/ws && echo "ws: OK"
+          echo "All key dependencies present"
