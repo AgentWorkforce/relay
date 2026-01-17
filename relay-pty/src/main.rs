@@ -302,6 +302,19 @@ async fn main() -> Result<()> {
             // Handle PTY output
             result = async_pty.recv() => {
                 if let Some(data) = result {
+                    // Check for cursor position query (CSI 6n) and respond
+                    // Codex CLI sends this query and waits for response - without it, Codex times out
+                    // Pattern: ESC [ 6 n or ESC [ ? 6 n
+                    let text = String::from_utf8_lossy(&data);
+                    if text.contains("\x1b[6n") || text.contains("\x1b[?6n") {
+                        debug!("Detected cursor position query (CSI 6n), sending response");
+                        // Respond with cursor at position (1, 1): ESC [ 1 ; 1 R
+                        let response = b"\x1b[1;1R";
+                        if let Err(e) = async_pty.send(response.to_vec()).await {
+                            warn!("Failed to send cursor position response: {}", e);
+                        }
+                    }
+
                     // Write to stdout
                     stdout.write_all(&data).await?;
                     stdout.flush().await?;
@@ -314,7 +327,6 @@ async fn main() -> Result<()> {
                     }
 
                     // Parse output
-                    let text = String::from_utf8_lossy(&data);
                     let parse_result = parser.process(&data);
 
                     // Update injector state
