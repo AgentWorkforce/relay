@@ -104,11 +104,21 @@ export interface SendPayload {
   thread?: string;
 }
 
+export interface SyncMeta {
+  /** Correlation ID for matching responses */
+  correlationId: string;
+  /** Optional timeout for blocking sends (ms) */
+  timeoutMs?: number;
+  /** Whether sender should block awaiting ACK */
+  blocking: boolean;
+}
+
 export interface SendMeta {
   requires_ack?: boolean;
   ttl_ms?: number;
   importance?: number; // 0-100, 100 is highest
   replyTo?: string;    // Correlation ID for replies
+  sync?: SyncMeta;
 }
 
 export interface DeliveryInfo {
@@ -124,6 +134,9 @@ export interface AckPayload {
   seq: number;
   cumulative_seq?: number;
   sack?: number[];
+  correlationId?: string;
+  response?: boolean;
+  responseData?: unknown;
 }
 
 export interface NackPayload {
