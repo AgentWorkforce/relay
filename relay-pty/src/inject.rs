@@ -241,7 +241,7 @@ fn current_timestamp_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::sync::mpsc;
+    use tokio::sync::{broadcast, mpsc};
 
     fn test_config(idle_timeout_ms: u64) -> Config {
         Config {
@@ -262,7 +262,7 @@ mod tests {
     #[tokio::test]
     async fn test_update_from_parse_sets_idle() {
         let (pty_tx, _pty_rx) = mpsc::channel(1);
-        let (response_tx, _response_rx) = mpsc::channel(1);
+        let (response_tx, _response_rx) = broadcast::channel(1);
         let queue = Arc::new(MessageQueue::new(1, response_tx));
         let injector = Injector::new(pty_tx, queue, test_config(600000));
 
@@ -273,7 +273,7 @@ mod tests {
     #[tokio::test]
     async fn test_record_output_clears_idle_on_non_relay() {
         let (pty_tx, _pty_rx) = mpsc::channel(1);
-        let (response_tx, _response_rx) = mpsc::channel(1);
+        let (response_tx, _response_rx) = broadcast::channel(1);
         let queue = Arc::new(MessageQueue::new(1, response_tx));
         let injector = Injector::new(pty_tx, queue, test_config(600000));
 
@@ -289,16 +289,5 @@ mod tests {
         assert!(is_relay_echo("Relay message from Alice [abc]: Hi\n"));
         assert!(is_relay_echo("\nRelay message from Bob [def]: Yo\n\n"));
         assert!(!is_relay_echo("Some other output\n"));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_silence_detection() {
-        // This is a basic structure test
-        // Full integration tests require PTY setup
     }
 }

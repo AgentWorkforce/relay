@@ -307,13 +307,14 @@ mod tests {
     use super::*;
     use crate::protocol::InjectStatus;
     use tempfile::tempdir;
+    use tokio::sync::broadcast;
 
     #[tokio::test]
     async fn test_socket_server_client() {
         let dir = tempdir().unwrap();
         let socket_path = dir.path().join("test.sock").to_string_lossy().to_string();
 
-        let (response_tx, _response_rx) = mpsc::channel(16);
+        let (response_tx, _response_rx) = broadcast::channel(16);
         let (status_tx, _status_rx) = mpsc::channel(16);
         let (shutdown_tx, _shutdown_rx) = mpsc::channel(1);
 
@@ -356,7 +357,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_request_status_channel_closed() {
-        let (response_tx, _response_rx) = mpsc::channel(1);
+        let (response_tx, _response_rx) = broadcast::channel(1);
         let (status_tx, status_rx) = mpsc::channel(1);
         drop(status_rx);
         let (shutdown_tx, _shutdown_rx) = mpsc::channel(1);
@@ -375,7 +376,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_request_shutdown() {
-        let (response_tx, _response_rx) = mpsc::channel(1);
+        let (response_tx, _response_rx) = broadcast::channel(1);
         let (status_tx, _status_rx) = mpsc::channel(1);
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
 
@@ -394,7 +395,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_request_duplicate_inject() {
-        let (response_tx, _response_rx) = mpsc::channel(4);
+        let (response_tx, _response_rx) = broadcast::channel(4);
         let (status_tx, _status_rx) = mpsc::channel(1);
         let (shutdown_tx, _shutdown_rx) = mpsc::channel(1);
 
