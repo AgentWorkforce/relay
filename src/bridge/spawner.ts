@@ -677,6 +677,7 @@ export class AgentSpawner {
               body: JSON.stringify({
                 to: name,
                 message: task,
+                from: spawnerName, // Include spawner name so message appears from correct agent
               }),
             }
           );

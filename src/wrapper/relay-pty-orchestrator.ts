@@ -737,7 +737,12 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     const response = await fetch(`http://localhost:${this.config.dashboardPort}/api/spawn`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, cli, task }),
+      body: JSON.stringify({
+        name,
+        cli,
+        task,
+        spawnerName: this.config.name, // Include spawner name so task appears from correct agent
+      }),
     });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
