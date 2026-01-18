@@ -275,10 +275,25 @@ export abstract class BaseWrapper extends EventEmitter {
       thread: payload.thread,
       importance: meta?.importance,
       data: payload.data,
+      sync: meta?.sync,
       originalTo,
     };
 
     this.messageQueue.push(queuedMsg);
+  }
+
+  /**
+   * Send an ACK for a sync message after processing completes.
+   */
+  protected sendSyncAck(messageId: string, sync: SendMeta['sync'] | undefined, response: boolean, responseData?: unknown): void {
+    if (!sync?.correlationId) return;
+    this.client.sendAck({
+      ack_id: messageId,
+      seq: 0,
+      correlationId: sync.correlationId,
+      response,
+      responseData,
+    });
   }
 
   /**

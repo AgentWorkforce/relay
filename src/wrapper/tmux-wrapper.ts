@@ -1486,7 +1486,16 @@ export class TmuxWrapper extends BaseWrapper {
     this.trajectory?.message('received', from, this.config.name, payload.body);
 
     // Queue for injection - include originalTo so we can inform the agent how to route responses
-    this.messageQueue.push({ from, body: payload.body, messageId, thread: payload.thread, importance: meta?.importance, data: payload.data, originalTo });
+    this.messageQueue.push({
+      from,
+      body: payload.body,
+      messageId,
+      thread: payload.thread,
+      importance: meta?.importance,
+      data: payload.data,
+      sync: meta?.sync,
+      originalTo,
+    });
 
     // Write to inbox if enabled
     if (this.inbox) {
@@ -1662,6 +1671,7 @@ export class TmuxWrapper extends BaseWrapper {
 
       if (result.success) {
         this.logStderr(`Injection complete (attempt ${result.attempts})`);
+        this.sendSyncAck(msg.messageId, msg.sync, true);
       } else {
         // All retries failed - log and optionally fall back to inbox
         this.logStderr(
@@ -1674,10 +1684,12 @@ export class TmuxWrapper extends BaseWrapper {
           this.inbox.addMessage(msg.from, msg.body);
           this.logStderr('Wrote message to inbox as fallback');
         }
+        this.sendSyncAck(msg.messageId, msg.sync, false, { error: 'injection_failed' });
       }
 
     } catch (err: any) {
       this.logStderr(`Injection failed: ${err.message}`, true);
+      this.sendSyncAck(msg.messageId, msg.sync, false, { error: err.message });
     } finally {
       this.isInjecting = false;
 
