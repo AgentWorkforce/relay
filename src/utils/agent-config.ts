@@ -21,6 +21,8 @@ export interface AgentConfig {
   allowedTools?: string[];
   /** Agent type */
   agentType?: string;
+  /** Agent role for prompt composition (planner, worker, reviewer, lead, shadow) */
+  role?: string;
 }
 
 /**
@@ -103,6 +105,7 @@ export function findAgentConfig(agentName: string, projectRoot?: string): AgentC
             description: frontmatter.description,
             allowedTools: frontmatter['allowed-tools']?.split(',').map(t => t.trim()),
             agentType: frontmatter.agentType,
+            role: frontmatter.role,
           };
         }
       }

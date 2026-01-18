@@ -104,6 +104,10 @@ export class WorkspaceManager extends EventEmitter {
       this.activeWorkspaceId = undefined;
     }
 
+    // Clean up workspace temp directory if it exists
+    // (for workspace-namespaced paths: /tmp/relay/{workspaceId}/)
+    this.cleanupWorkspaceTempDir(workspaceId);
+
     this.workspaces.delete(workspaceId);
     this.saveWorkspaces();
 
@@ -330,6 +334,29 @@ export class WorkspaceManager extends EventEmitter {
    */
   private emitEvent(event: DaemonEvent): void {
     this.emit('event', event);
+  }
+
+  /**
+   * Clean up workspace temp directory
+   * Removes /tmp/relay/{workspaceId}/ which contains sockets and outbox
+   */
+  private cleanupWorkspaceTempDir(workspaceId: string): void {
+    const workspaceTempDir = path.join('/tmp', 'relay', workspaceId);
+
+    try {
+      if (fs.existsSync(workspaceTempDir)) {
+        // Recursively remove the directory
+        fs.rmSync(workspaceTempDir, { recursive: true, force: true });
+        logger.info('Cleaned up workspace temp directory', { workspaceId, path: workspaceTempDir });
+      }
+    } catch (err) {
+      // Log but don't fail - cleanup is best-effort
+      logger.warn('Failed to clean up workspace temp directory', {
+        workspaceId,
+        path: workspaceTempDir,
+        error: String(err),
+      });
+    }
   }
 }
 

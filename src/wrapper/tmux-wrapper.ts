@@ -464,6 +464,7 @@ export class TmuxWrapper extends BaseWrapper {
 
     // Initialize idle detector with the tmux pane PID for process state inspection
     this.initializeIdleDetectorPid();
+    this.startStuckDetection();
 
     // Wait for agent to be ready, then inject instructions
     // This replaces the fixed 3-second delay with actual readiness detection
@@ -1938,6 +1939,7 @@ export class TmuxWrapper extends BaseWrapper {
     if (!this.running) return;
     this.running = false;
     this.activityState = 'disconnected';
+    this.stopStuckDetection();
 
     // Auto-save continuity state before shutdown (fire and forget)
     // Pass sessionEndData to populate handoff (fixes empty handoff issue)

@@ -7,7 +7,9 @@
  *
  * Architecture:
  * 1. Spawn relay-pty --name {agentName} -- {command} as child process
- * 2. Connect to /tmp/relay-pty-{agentName}.sock for injection
+ * 2. Connect to socket for injection:
+ *    - With WORKSPACE_ID: /tmp/relay/{workspaceId}/sockets/{agentName}.sock
+ *    - Without: /tmp/relay-pty-{agentName}.sock (legacy)
  * 3. Parse stdout for relay commands (relay-pty echoes all output)
  * 4. Translate SEND envelopes → inject messages via socket
  *
@@ -16,8 +18,9 @@
 
 import { spawn, ChildProcess } from 'node:child_process';
 import { createConnection, Socket } from 'node:net';
+import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
-import { existsSync, unlinkSync } from 'node:fs';
+import { existsSync, unlinkSync, mkdirSync } from 'node:fs';
 import { getProjectPaths } from '../utils/project-namespace.js';
 import { fileURLToPath } from 'node:url';
 
@@ -38,6 +41,12 @@ import {
 // ============================================================================
 // Types for relay-pty socket protocol
 // ============================================================================
+
+const MAX_SOCKET_PATH_LENGTH = 107;
+
+function hashWorkspaceId(workspaceId: string): string {
+  return createHash('sha256').update(workspaceId).digest('hex').slice(0, 12);
+}
 
 /**
  * Request types sent to relay-pty socket
@@ -175,14 +184,52 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   constructor(config: RelayPtyOrchestratorConfig) {
     super(config);
     this.config = config;
-    this.socketPath = `/tmp/relay-pty-${config.name}.sock`;
+
+    // Check for workspace namespacing (for multi-tenant cloud deployment)
+    // WORKSPACE_ID can be in process.env or passed via config.env
+    const workspaceId = config.env?.WORKSPACE_ID || process.env.WORKSPACE_ID;
+
+    if (workspaceId) {
+      // Workspace-namespaced paths for cloud multi-tenant isolation
+      const getWorkspacePaths = (id: string) => {
+        const workspaceDir = `/tmp/relay/${id}`;
+        return {
+          workspaceDir,
+          socketPath: `${workspaceDir}/sockets/${config.name}.sock`,
+          outboxPath: `${workspaceDir}/outbox/${config.name}`,
+        };
+      };
+
+      let paths = getWorkspacePaths(workspaceId);
+      if (paths.socketPath.length > MAX_SOCKET_PATH_LENGTH) {
+        const hashedWorkspaceId = hashWorkspaceId(workspaceId);
+        const hashedPaths = getWorkspacePaths(hashedWorkspaceId);
+        console.warn(
+          `[relay-pty-orchestrator:${config.name}] Socket path too long (${paths.socketPath.length} chars); using hashed workspace id ${hashedWorkspaceId}`
+        );
+        paths = hashedPaths;
+      }
+
+      if (paths.socketPath.length > MAX_SOCKET_PATH_LENGTH) {
+        throw new Error(`Socket path exceeds ${MAX_SOCKET_PATH_LENGTH} chars: ${paths.socketPath.length}`);
+      }
+
+      this.socketPath = paths.socketPath;
+      this._outboxPath = paths.outboxPath;
+    } else {
+      // Legacy paths for local development
+      this.socketPath = `/tmp/relay-pty-${config.name}.sock`;
+      this._outboxPath = `/tmp/relay-outbox/${config.name}`;
+    }
+    if (this.socketPath.length > MAX_SOCKET_PATH_LENGTH) {
+      throw new Error(`Socket path exceeds ${MAX_SOCKET_PATH_LENGTH} chars: ${this.socketPath.length}`);
+    }
+
     // Generate log path using same project paths as daemon
     // Use cwd from config if specified, otherwise detect from current directory
     const paths = getProjectPaths(config.cwd);
     this._logPath = join(paths.teamDir, 'worker-logs', `${config.name}.log`);
-    // Outbox for file-based relay messages (agent writes here)
-    // Use fixed /tmp path so agents can find it without configuration
-    this._outboxPath = `/tmp/relay-outbox/${config.name}`;
+
     // Check if we're running interactively (stdin is a TTY)
     this.isInteractive = process.stdin.isTTY === true;
   }
@@ -222,6 +269,17 @@ export class RelayPtyOrchestrator extends BaseWrapper {
 
     this.log(` Starting...`);
 
+    // Ensure socket directory exists (for workspace-namespaced paths)
+    const socketDir = dirname(this.socketPath);
+    try {
+      if (!existsSync(socketDir)) {
+        mkdirSync(socketDir, { recursive: true });
+        this.log(` Created socket directory: ${socketDir}`);
+      }
+    } catch (err: any) {
+      this.logError(` Failed to create socket directory: ${err.message}`);
+    }
+
     // Clean up any stale socket from previous crashed process
     try {
       if (existsSync(this.socketPath)) {
@@ -256,6 +314,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
 
     this.running = true;
     this.readyForMessages = true;
+    this.startStuckDetection();
 
     this.log(` Ready for messages`);
     this.log(` Socket connected: ${this.socketConnected}`);
@@ -271,6 +330,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   override async stop(): Promise<void> {
     if (!this.running) return;
     this.running = false;
+    this.stopStuckDetection();
 
     this.log(` Stopping...`);
 

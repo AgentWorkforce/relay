@@ -1,0 +1,25 @@
+{
+  "id": "traj_yc3lmi81o4id",
+  "version": 1,
+  "task": {
+    "title": "agent-relay-512: Role-specific prompts",
+    "source": {
+      "system": "plain",
+      "id": "agent-relay-512"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-01-17T08:30:59.892Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/data/repos/relay",
+  "tags": [],
+  "completedAt": "2026-01-17T08:32:04.330Z",
+  "retrospective": {
+    "summary": "Added Rust test job to CI workflow. Runs cargo test, fmt check, and clippy on ubuntu and macos.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
+}

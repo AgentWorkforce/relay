@@ -40,6 +40,7 @@ import {
   type ContinuityManager,
 } from '../continuity/index.js';
 import { UniversalIdleDetector } from './idle-detector.js';
+import { StuckDetector, type StuckEvent, type StuckReason } from './stuck-detector.js';
 
 /**
  * Base configuration shared by all wrapper types
@@ -119,6 +120,9 @@ export abstract class BaseWrapper extends EventEmitter {
   // Universal idle detection (shared across all wrapper types)
   protected idleDetector: UniversalIdleDetector;
 
+  // Stuck detection (extended idle, error loops, output loops)
+  protected stuckDetector: StuckDetector;
+
   constructor(config: BaseWrapperConfig) {
     super();
     this.config = config;
@@ -144,6 +148,17 @@ export abstract class BaseWrapper extends EventEmitter {
     this.idleDetector = new UniversalIdleDetector({
       minSilenceMs: config.idleBeforeInjectMs ?? DEFAULT_IDLE_BEFORE_INJECT_MS,
       confidenceThreshold: config.idleConfidenceThreshold ?? DEFAULT_IDLE_CONFIDENCE_THRESHOLD,
+    });
+
+    // Initialize stuck detector for extended idle and loop detection
+    this.stuckDetector = new StuckDetector();
+    this.stuckDetector.on('stuck', (event: StuckEvent) => {
+      console.warn(`[${config.name}] Agent stuck: ${event.reason} - ${event.details}`);
+      this.emit('stuck', event);
+    });
+    this.stuckDetector.on('unstuck', () => {
+      console.log(`[${config.name}] Agent unstuck`);
+      this.emit('unstuck');
     });
 
     // Set up message handler for direct messages
@@ -218,11 +233,40 @@ export abstract class BaseWrapper extends EventEmitter {
   }
 
   /**
-   * Feed output to the idle detector.
+   * Start stuck detection. Call after the agent process starts.
+   */
+  protected startStuckDetection(): void {
+    this.stuckDetector.start();
+  }
+
+  /**
+   * Stop stuck detection. Call when the agent process stops.
+   */
+  protected stopStuckDetection(): void {
+    this.stuckDetector.stop();
+  }
+
+  /**
+   * Check if the agent is currently stuck.
+   */
+  isStuck(): boolean {
+    return this.stuckDetector.getIsStuck();
+  }
+
+  /**
+   * Get the reason for being stuck (if stuck).
+   */
+  getStuckReason(): StuckReason | null {
+    return this.stuckDetector.getStuckReason();
+  }
+
+  /**
+   * Feed output to the idle and stuck detectors.
    * Call this whenever new output is received from the agent.
    */
   protected feedIdleDetectorOutput(output: string): void {
     this.idleDetector.onOutput(output);
+    this.stuckDetector.onOutput(output);
   }
 
   /**

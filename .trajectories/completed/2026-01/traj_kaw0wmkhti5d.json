@@ -1,0 +1,25 @@
+{
+  "id": "traj_kaw0wmkhti5d",
+  "version": 1,
+  "task": {
+    "title": "Add Rust tests to CI workflow",
+    "source": {
+      "system": "plain",
+      "id": "agent-relay-506"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-01-17T08:30:10.206Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/data/repos/relay",
+  "tags": [],
+  "completedAt": "2026-01-17T08:30:50.174Z",
+  "retrospective": {
+    "summary": "Documented StatelessLeadCoordinator, Consensus, Continuity in INTEGRATION-GUIDE.md and created EXAMPLES.md with 3 scenarios",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
+}

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-18T13:55:54.206Z",
+  "lastUpdated": "2026-01-17T08:30:10.220Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -702,19 +702,32 @@
       "completedAt": "2026-01-16T21:59:33.734Z",
       "path": ".trajectories/completed/2026-01/traj_6q0b9kzmdb1f.json"
     },
-    "traj_qt6gh6tzb1fy": {
-      "title": "Fix user direct message routing - messages to khaliqgant not reaching destination",
+    "traj_v6hbi0c9ctqj": {
+      "title": "Tasks from TASKS_2026_01_16.md - Cloud deployment, workspace namespacing, and quick wins",
       "status": "completed",
-      "startedAt": "2026-01-18T08:07:17.560Z",
-      "completedAt": "2026-01-18T08:48:40.914Z",
-      "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_qt6gh6tzb1fy.json"
+      "startedAt": "2026-01-17T06:30:47.033Z",
+      "completedAt": "2026-01-17T06:39:49.141Z",
+      "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_v6hbi0c9ctqj.json"
     },
-    "traj_ggnbx19i58id": {
-      "title": "Investigate and fix relay message delivery delays/drops",
+    "traj_f7h08tknz4oy": {
+      "title": "Model selection hookup - wire up model field from agent profiles to spawner",
+      "status": "abandoned",
+      "startedAt": "2026-01-17T08:27:07.035Z",
+      "completedAt": "2026-01-17T08:27:46.876Z",
+      "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_f7h08tknz4oy.json"
+    },
+    "traj_ts01xzyj8uwm": {
+      "title": "agent-relay-511: Documentation sprint",
       "status": "completed",
-      "startedAt": "2026-01-18T13:10:38.589Z",
-      "completedAt": "2026-01-18T13:55:53.715Z",
-      "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_ggnbx19i58id.json"
+      "startedAt": "2026-01-17T08:27:52.340Z",
+      "completedAt": "2026-01-17T08:29:35.666Z",
+      "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_ts01xzyj8uwm.json"
+    },
+    "traj_kaw0wmkhti5d": {
+      "title": "Add Rust tests to CI workflow",
+      "status": "active",
+      "startedAt": "2026-01-17T08:30:10.206Z",
+      "path": "/data/repos/relay/.trajectories/active/traj_kaw0wmkhti5d.json"
     }
   }
 }

@@ -916,6 +916,226 @@ trajectory export ENG-456 --format markdown
 
 ---
 
+---
+
+## Advanced Features
+
+### StatelessLeadCoordinator
+
+The StatelessLeadCoordinator enables hierarchical agent teams where a lead agent reads from Beads and assigns tasks to workers.
+
+**Key Principles:**
+- Lead is a coordinator, not a state holder
+- Beads is the single source of truth for task state
+- Any agent can become lead by reading from Beads
+- Tasks are assigned by updating Beads, not in-memory
+
+**Usage:**
+
+```typescript
+import { StatelessLeadCoordinator } from 'agent-relay/resiliency';
+
+const lead = new StatelessLeadCoordinator({
+  beadsDir: '.beads',
+  agentName: 'Lead',
+  agentId: 'lead-001',
+  pollIntervalMs: 5000,
+  heartbeatIntervalMs: 10000,
+  leaseDurationMs: 300000, // 5 minutes
+  sendRelay: async (to, message) => {
+    // Send via relay client
+  },
+  getAvailableWorkers: async () => ['Worker1', 'Worker2'],
+});
+
+// Start coordinating
+await lead.start();
+
+// Events
+lead.on('taskAssigned', ({ task, worker }) => {
+  console.log(`Assigned ${task.title} to ${worker}`);
+});
+
+lead.on('taskCompleted', ({ task, worker }) => {
+  console.log(`${worker} completed ${task.title}`);
+});
+```
+
+**How it works:**
+1. Lead polls Beads for tasks with `status: 'open'`
+2. When a task is ready, Lead assigns it to an available worker
+3. Worker updates Beads when starting (`status: 'in_progress'`)
+4. Worker updates Beads when done (`status: 'closed'`)
+5. If lead crashes, new lead picks up from Beads (no state lost)
+
+---
+
+### Consensus
+
+The Consensus mechanism enables distributed decision-making across multiple agents.
+
+**Consensus Types:**
+- **Majority** - Simple >50% agreement
+- **Supermajority** - 2/3 or configurable threshold
+- **Unanimous** - All participants must agree
+- **Weighted** - Votes weighted by agent role/expertise
+- **Quorum** - Minimum participation required
+
+**Use Cases:**
+- Code review approval (2+ agents approve)
+- Architecture decisions (lead + majority)
+- Deployment gates (all critical agents agree)
+- Task assignment (weighted by expertise)
+
+**Via Relay Messages:**
+
+```bash
+# Propose a decision
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/propose << 'EOF'
+TO: _consensus
+
+PROPOSE: Should we use JWT or sessions for auth?
+TYPE: majority
+PARTICIPANTS: Backend, Security, Lead
+TIMEOUT: 300000
+OPTIONS: JWT, Sessions
+EOF
+```
+Then: `->relay-file:propose`
+
+**Programmatic Usage:**
+
+```typescript
+import { ConsensusManager, ConsensusType } from 'agent-relay/daemon';
+
+const consensus = new ConsensusManager();
+
+// Create a proposal
+const proposal = await consensus.propose({
+  title: 'Use JWT for authentication',
+  description: 'JWT provides stateless auth suitable for our microservices',
+  proposer: 'Backend',
+  consensusType: 'supermajority',
+  participants: ['Backend', 'Security', 'Lead', 'Frontend'],
+  threshold: 0.67, // 2/3 required
+  expiresAt: Date.now() + 300000, // 5 min timeout
+});
+
+// Vote on a proposal
+await consensus.vote(proposal.id, {
+  agent: 'Security',
+  value: 'approve',
+  reason: 'JWT with short expiry is secure',
+});
+
+// Check result
+const result = await consensus.getProposal(proposal.id);
+if (result.status === 'approved') {
+  console.log('Consensus reached!');
+}
+```
+
+**Events:**
+
+```typescript
+consensus.on('proposed', (proposal) => { /* new proposal */ });
+consensus.on('voted', (proposal, vote) => { /* vote cast */ });
+consensus.on('resolved', (proposal) => { /* consensus reached */ });
+consensus.on('expired', (proposal) => { /* timeout */ });
+```
+
+---
+
+### Continuity
+
+The Continuity system enables session persistence and cross-session handoffs.
+
+**Core Concepts:**
+- **Ledger** - Ephemeral within-session state (current task, completed items, decisions)
+- **Handoff** - Permanent cross-session transfer document (summary, next steps, learnings)
+
+**When to Use:**
+- Save ledger before long-running operations (builds, tests)
+- Create handoff on context limit or session end
+- Search handoffs to resume previous work
+
+**Via Relay Messages:**
+
+```bash
+# Save current state
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/continuity << 'EOF'
+KIND: continuity
+ACTION: save
+
+Current task: Implementing user authentication
+Completed: User model, JWT utils
+In progress: Login endpoint
+Key decisions: Using refresh tokens
+Files: src/auth/*.ts
+EOF
+```
+Then: `->relay-file:continuity`
+
+```bash
+# Load previous context
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/load << 'EOF'
+KIND: continuity
+ACTION: load
+EOF
+```
+Then: `->relay-file:load`
+
+```bash
+# Search past handoffs
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/search << 'EOF'
+KIND: continuity
+ACTION: search
+
+Query: authentication implementation
+EOF
+```
+Then: `->relay-file:search`
+
+**Programmatic Usage:**
+
+```typescript
+import { ContinuityManager } from 'agent-relay/continuity';
+
+const continuity = new ContinuityManager();
+await continuity.initialize();
+
+// Save a ledger
+await continuity.saveLedger('MyAgent', {
+  currentTask: 'Implementing auth',
+  completed: ['User model', 'JWT utils'],
+  inProgress: ['Login endpoint'],
+  keyDecisions: [{ decision: 'Use JWT', reasoning: 'Stateless' }],
+});
+
+// Create a handoff (on session end)
+const handoff = await continuity.createHandoff('MyAgent', {
+  summary: 'Auth 80% complete, login endpoint next',
+  taskDescription: 'User authentication system',
+  completedWork: ['User model', 'JWT utils', 'Middleware'],
+  nextSteps: ['Complete login', 'Add refresh tokens', 'Tests'],
+  triggerReason: 'session_end',
+});
+
+// Get startup context for new session
+const context = await continuity.getStartupContext('MyAgent');
+console.log(context.formatted); // Markdown to inject
+```
+
+**Handoff Triggers:**
+- `manual` - Explicitly saved by agent
+- `trajectory_complete` - Trail completed
+- `context_limit` - Context approaching limit
+- `auto_restart` - Agent restarting
+- `crash` - Agent crashed
+- `session_end` - Session ending normally
+
+---
+
 ## Next Steps
 
 1. **Phase 1:** Get claude-mem working in your project
