@@ -63,6 +63,8 @@ export interface CrossMachineHandler {
     metadata?: Record<string, unknown>
   ): Promise<boolean>;
   isRemoteAgent(agentName: string): RemoteAgentInfo | undefined;
+  /** Check if a user is on a remote machine (connected via cloud dashboard) */
+  isRemoteUser?(userName: string): RemoteAgentInfo | undefined;
 }
 
 interface ProcessingState {
@@ -577,6 +579,12 @@ export class Router {
       if (remoteAgent) {
         routerLog.info(`Routing to remote agent: ${to}`, { daemonName: remoteAgent.daemonName });
         return this.sendToRemoteAgent(from, to, envelope, remoteAgent);
+      }
+      // Also check if it's a remote user (human connected via cloud dashboard)
+      const remoteUser = this.crossMachineHandler?.isRemoteUser?.(to);
+      if (remoteUser) {
+        routerLog.info(`Routing to remote user: ${to}`, { daemonName: remoteUser.daemonName });
+        return this.sendToRemoteAgent(from, to, envelope, remoteUser);
       }
       routerLog.warn(`Target "${to}" not found`, { availableAgents: Array.from(this.agents.keys()) });
       return false;

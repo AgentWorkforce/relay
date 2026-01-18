@@ -62,6 +62,7 @@ export class Daemon {
   private processingStateInterval?: NodeJS.Timeout;
   private cloudSync?: CloudSyncService;
   private remoteAgents: RemoteAgent[] = [];
+  private remoteUsers: RemoteAgent[] = [];
   private consensus?: ConsensusIntegration;
   private cloudSyncDebounceTimer?: NodeJS.Timeout;
 
@@ -190,6 +191,7 @@ export class Daemon {
       crossMachineHandler: {
         sendCrossMachineMessage: this.sendCrossMachineMessage.bind(this),
         isRemoteAgent: this.isRemoteAgent.bind(this),
+        isRemoteUser: this.isRemoteUser.bind(this),
       },
       channelMembershipStore,
     });
@@ -306,6 +308,12 @@ export class Daemon {
         this.remoteAgents = agents;
         log.info('Remote agents updated', { count: agents.length });
         this.writeRemoteAgentsFile();
+      });
+
+      // Listen for remote user updates (humans connected via cloud dashboard)
+      this.cloudSync.on('remote-users-updated', (users: RemoteAgent[]) => {
+        this.remoteUsers = users;
+        log.info('Remote users updated', { count: users.length });
       });
 
       // Listen for cross-machine messages
@@ -437,6 +445,13 @@ export class Daemon {
    */
   isRemoteAgent(agentName: string): RemoteAgent | undefined {
     return this.remoteAgents.find(a => a.name === agentName);
+  }
+
+  /**
+   * Check if a user is on a remote machine (connected via cloud dashboard).
+   */
+  isRemoteUser(userName: string): RemoteAgent | undefined {
+    return this.remoteUsers.find(u => u.name === userName);
   }
 
   /**
