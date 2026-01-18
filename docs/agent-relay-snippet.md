@@ -16,6 +16,23 @@ EOF
 
 Then output: `->relay-file:msg`
 
+## Synchronous Messaging
+
+By default, messages are fire-and-forget. Add `[await]` to block until the recipient ACKs:
+
+```
+->relay:AgentB [await] Please confirm
+```
+
+Custom timeout (seconds or minutes):
+
+```
+->relay:AgentB [await:30s] Please confirm
+->relay:AgentB [await:5m] Please confirm
+```
+
+Recipients auto-ACK after processing when a correlation ID is present.
+
 ## Message Format
 
 ```
