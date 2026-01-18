@@ -1,5 +1,4 @@
 ---
-model: sonnet
 name: architect
 description: System design and architecture decisions. Technical planning, tradeoff analysis, and design documentation.
 tools: Read, Grep, Glob, Write, Edit

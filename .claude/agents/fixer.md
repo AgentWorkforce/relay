@@ -1,5 +1,4 @@
 ---
-model: sonnet
 name: fixer
 description: Use for quick fixes, hotfixes, urgent patches, and time-sensitive bug repairs.
 tools: Read, Grep, Glob, Bash, Edit, Write

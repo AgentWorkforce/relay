@@ -1,5 +1,4 @@
 ---
-model: sonnet
 name: database
 description: Database design, queries, migrations, and data modeling. Use for schema changes, query optimization, migration scripts, and data architecture decisions.
 tools: Read, Write, Edit, Grep, Glob, Bash, WebSearch, WebFetch

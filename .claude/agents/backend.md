@@ -1,5 +1,4 @@
 ---
-model: sonnet
 name: backend
 description: General backend development - server-side logic, business logic, integrations, and system architecture. Use for implementing APIs, services, middleware, and backend features.
 tools: Read, Write, Edit, Grep, Glob, Bash, WebSearch, WebFetch

@@ -1,5 +1,4 @@
 ---
-model: sonnet
 name: security
 description: Security auditing, vulnerability assessment, and secure coding review. Identifies OWASP risks and recommends mitigations.
 tools: Read, Grep, Glob, Bash, WebSearch

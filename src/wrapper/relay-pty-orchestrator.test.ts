@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
 import type { Socket } from 'node:net';
+import { createHash } from 'node:crypto';
 
 // Mock modules before importing the class
 vi.mock('node:child_process', () => ({
@@ -164,6 +165,20 @@ describe('RelayPtyOrchestrator', () => {
 
       expect(orchestrator.getSocketPath()).toBe('/tmp/relay/ws-12345/sockets/TestAgent.sock');
       expect(orchestrator.outboxPath).toBe('/tmp/relay/ws-12345/outbox/TestAgent');
+    });
+
+    it('hashes workspace id when socket path is too long', () => {
+      const longWorkspaceId = `ws-${'a'.repeat(140)}`;
+      const hashedWorkspaceId = createHash('sha256').update(longWorkspaceId).digest('hex').slice(0, 12);
+
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'LongAgent',
+        command: 'claude',
+        env: { WORKSPACE_ID: longWorkspaceId },
+      });
+
+      expect(orchestrator.getSocketPath()).toBe(`/tmp/relay/${hashedWorkspaceId}/sockets/LongAgent.sock`);
+      expect(orchestrator.outboxPath).toBe(`/tmp/relay/${hashedWorkspaceId}/outbox/LongAgent`);
     });
 
     it('uses workspace-namespaced paths when WORKSPACE_ID is in process.env', () => {

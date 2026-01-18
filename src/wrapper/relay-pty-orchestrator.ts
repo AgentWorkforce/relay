@@ -18,6 +18,7 @@
 
 import { spawn, ChildProcess } from 'node:child_process';
 import { createConnection, Socket } from 'node:net';
+import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { existsSync, unlinkSync, mkdirSync } from 'node:fs';
 import { getProjectPaths } from '../utils/project-namespace.js';
@@ -40,6 +41,12 @@ import {
 // ============================================================================
 // Types for relay-pty socket protocol
 // ============================================================================
+
+const MAX_SOCKET_PATH_LENGTH = 107;
+
+function hashWorkspaceId(workspaceId: string): string {
+  return createHash('sha256').update(workspaceId).digest('hex').slice(0, 12);
+}
 
 /**
  * Request types sent to relay-pty socket
@@ -184,13 +191,38 @@ export class RelayPtyOrchestrator extends BaseWrapper {
 
     if (workspaceId) {
       // Workspace-namespaced paths for cloud multi-tenant isolation
-      const workspaceDir = `/tmp/relay/${workspaceId}`;
-      this.socketPath = `${workspaceDir}/sockets/${config.name}.sock`;
-      this._outboxPath = `${workspaceDir}/outbox/${config.name}`;
+      const getWorkspacePaths = (id: string) => {
+        const workspaceDir = `/tmp/relay/${id}`;
+        return {
+          workspaceDir,
+          socketPath: `${workspaceDir}/sockets/${config.name}.sock`,
+          outboxPath: `${workspaceDir}/outbox/${config.name}`,
+        };
+      };
+
+      let paths = getWorkspacePaths(workspaceId);
+      if (paths.socketPath.length > MAX_SOCKET_PATH_LENGTH) {
+        const hashedWorkspaceId = hashWorkspaceId(workspaceId);
+        const hashedPaths = getWorkspacePaths(hashedWorkspaceId);
+        console.warn(
+          `[relay-pty-orchestrator:${config.name}] Socket path too long (${paths.socketPath.length} chars); using hashed workspace id ${hashedWorkspaceId}`
+        );
+        paths = hashedPaths;
+      }
+
+      if (paths.socketPath.length > MAX_SOCKET_PATH_LENGTH) {
+        throw new Error(`Socket path exceeds ${MAX_SOCKET_PATH_LENGTH} chars: ${paths.socketPath.length}`);
+      }
+
+      this.socketPath = paths.socketPath;
+      this._outboxPath = paths.outboxPath;
     } else {
       // Legacy paths for local development
       this.socketPath = `/tmp/relay-pty-${config.name}.sock`;
       this._outboxPath = `/tmp/relay-outbox/${config.name}`;
+    }
+    if (this.socketPath.length > MAX_SOCKET_PATH_LENGTH) {
+      throw new Error(`Socket path exceeds ${MAX_SOCKET_PATH_LENGTH} chars: ${this.socketPath.length}`);
     }
 
     // Generate log path using same project paths as daemon
@@ -282,6 +314,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
 
     this.running = true;
     this.readyForMessages = true;
+    this.startStuckDetection();
 
     this.log(` Ready for messages`);
     this.log(` Socket connected: ${this.socketConnected}`);
@@ -297,6 +330,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   override async stop(): Promise<void> {
     if (!this.running) return;
     this.running = false;
+    this.stopStuckDetection();
 
     this.log(` Stopping...`);
 

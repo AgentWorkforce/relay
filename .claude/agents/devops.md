@@ -1,5 +1,4 @@
 ---
-model: sonnet
 name: devops
 description: CI/CD pipelines, deployment automation, and infrastructure as code. Use for build systems, Docker, Kubernetes, and cloud infrastructure.
 tools: Read, Grep, Glob, Bash, Edit, Write

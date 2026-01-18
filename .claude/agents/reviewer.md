@@ -1,5 +1,4 @@
 ---
-model: sonnet
 name: reviewer
 description: Code review for quality, security, and best practices. Direct invocation for reviewing PRs, commits, or specific files.
 tools: Read, Grep, Glob, Bash

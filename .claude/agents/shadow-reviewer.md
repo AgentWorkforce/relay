@@ -1,5 +1,4 @@
 ---
-model: sonnet
 name: shadow-reviewer
 description: Reviews code changes for quality, security, and best practices. Assign as a shadow to monitor another agent's code output.
 tools: Read, Grep, Glob

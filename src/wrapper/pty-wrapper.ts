@@ -287,6 +287,7 @@ export class PtyWrapper extends BaseWrapper {
       this.setIdleDetectorPid(this.ptyProcess.pid);
       console.log(`[pty:${this.config.name}] Idle detector initialized with PID ${this.ptyProcess.pid}`);
     }
+    this.startStuckDetection();
 
     // Skip hooks and continuity in interactive mode - user handles all prompts directly
     if (!this.config.interactive) {
@@ -311,6 +312,7 @@ export class PtyWrapper extends BaseWrapper {
     // Handle exit
     this.ptyProcess.onExit(({ exitCode }) => {
       this.running = false;
+      this.stopStuckDetection();
       this.emit('exit', exitCode);
       this.config.onExit?.(exitCode);
       this.client.destroy();
@@ -1575,6 +1577,7 @@ export class PtyWrapper extends BaseWrapper {
   async stop(): Promise<void> {
     if (!this.running) return;
     this.running = false;
+    this.stopStuckDetection();
 
     // Auto-save continuity state before stopping
     // Pass sessionEndData to populate handoff (fixes empty handoff issue)

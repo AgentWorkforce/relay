@@ -1,5 +1,4 @@
 ---
-model: sonnet
 name: tester
 description: Test writing (unit, integration, e2e). Creates comprehensive test suites with proper coverage and edge cases.
 tools: Read, Write, Edit, Grep, Glob, Bash
