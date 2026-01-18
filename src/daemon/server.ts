@@ -9,7 +9,16 @@ import path from 'node:path';
 import os from 'node:os';
 import { Connection, type ConnectionConfig, DEFAULT_CONFIG } from './connection.js';
 import { Router } from './router.js';
-import type { Envelope, ShadowBindPayload, ShadowUnbindPayload, LogPayload, SendEnvelope } from '../protocol/types.js';
+import type {
+  Envelope,
+  ShadowBindPayload,
+  ShadowUnbindPayload,
+  LogPayload,
+  SendEnvelope,
+  AckPayload,
+  ErrorPayload,
+  PROTOCOL_VERSION,
+} from '../protocol/types.js';
 import type { ChannelJoinPayload, ChannelLeavePayload, ChannelMessagePayload } from '../protocol/channels.js';
 import { createStorageAdapter, type StorageAdapter, type StorageConfig } from '../storage/adapter.js';
 import { SqliteStorageAdapter } from '../storage/sqlite-adapter.js';
@@ -50,12 +59,20 @@ export const DEFAULT_DAEMON_CONFIG: DaemonConfig = {
   pidFilePath: `${DEFAULT_SOCKET_PATH}.pid`,
 };
 
+interface PendingAck {
+  correlationId: string;
+  connectionId: string;
+  connection: Connection;
+  timeoutHandle: NodeJS.Timeout;
+}
+
 export class Daemon {
   private server: net.Server;
   private router!: Router;
   private config: DaemonConfig;
   private running = false;
   private connections: Set<Connection> = new Set();
+  private pendingAcks: Map<string, PendingAck> = new Map();
   private storage?: StorageAdapter;
   private storageInitialized = false;
   private registry?: AgentRegistry;
@@ -71,6 +88,7 @@ export class Daemon {
 
   /** Interval for writing processing state file (500ms for responsive UI) */
   private static readonly PROCESSING_STATE_INTERVAL_MS = 500;
+  private static readonly DEFAULT_SYNC_TIMEOUT_MS = 30000;
 
   constructor(config: Partial<DaemonConfig> = {}) {
     this.config = { ...DEFAULT_DAEMON_CONFIG, ...config };
@@ -628,7 +646,7 @@ export class Daemon {
     };
 
     connection.onAck = (envelope) => {
-      this.router.handleAck(connection, envelope);
+      this.handleAck(connection, envelope);
     };
 
     // Update lastSeen on successful heartbeat to keep agent status fresh
@@ -707,6 +725,7 @@ export class Daemon {
     connection.onClose = () => {
       log.debug('Connection closed', { agent: connection.agentName ?? connection.id });
       this.connections.delete(connection);
+      this.clearPendingAcksForConnection(connection.id);
       this.router.unregister(connection);
       // Registry handles persistence internally via touch() -> save()
       if (connection.agentName) {
@@ -729,6 +748,7 @@ export class Daemon {
     connection.onError = (error: Error) => {
       log.error('Connection error', { error: error.message });
       this.connections.delete(connection);
+      this.clearPendingAcksForConnection(connection.id);
       this.router.unregister(connection);
       // Registry handles persistence internally via touch() -> save()
       if (connection.agentName) {
@@ -775,6 +795,18 @@ export class Daemon {
               proposalId: result.result?.proposal?.id,
             });
             // Don't route consensus commands to the router
+            return;
+          }
+        }
+
+        const syncMeta = sendEnvelope.payload_meta?.sync;
+        if (syncMeta?.blocking) {
+          if (!syncMeta.correlationId) {
+            this.sendErrorEnvelope(connection, 'Missing sync correlationId for blocking SEND');
+            return;
+          }
+          const registered = this.registerPendingAck(connection, syncMeta.correlationId, syncMeta.timeoutMs);
+          if (!registered) {
             return;
           }
         }
@@ -851,6 +883,76 @@ export class Daemon {
         break;
       }
     }
+  }
+
+  private handleAck(connection: Connection, envelope: Envelope<AckPayload>): void {
+    this.router.handleAck(connection, envelope);
+
+    const correlationId = envelope.payload.correlationId;
+    if (!correlationId) return;
+
+    const pending = this.pendingAcks.get(correlationId);
+    if (!pending) return;
+
+    clearTimeout(pending.timeoutHandle);
+    this.pendingAcks.delete(correlationId);
+
+    const forwardAck: Envelope<AckPayload> = {
+      v: envelope.v,
+      type: 'ACK',
+      id: generateId(),
+      ts: Date.now(),
+      from: connection.agentName,
+      to: pending.connection.agentName,
+      payload: envelope.payload,
+    };
+
+    pending.connection.send(forwardAck);
+  }
+
+  private registerPendingAck(connection: Connection, correlationId: string, timeoutMs?: number): boolean {
+    if (this.pendingAcks.has(correlationId)) {
+      this.sendErrorEnvelope(connection, `Duplicate correlationId: ${correlationId}`);
+      return false;
+    }
+
+    const timeout = timeoutMs ?? Daemon.DEFAULT_SYNC_TIMEOUT_MS;
+    const timeoutHandle = setTimeout(() => {
+      this.pendingAcks.delete(correlationId);
+      this.sendErrorEnvelope(connection, `ACK timeout after ${timeout}ms`);
+    }, timeout);
+
+    this.pendingAcks.set(correlationId, {
+      correlationId,
+      connectionId: connection.id,
+      connection,
+      timeoutHandle,
+    });
+
+    return true;
+  }
+
+  private clearPendingAcksForConnection(connectionId: string): void {
+    for (const [correlationId, pending] of this.pendingAcks.entries()) {
+      if (pending.connectionId !== connectionId) continue;
+      clearTimeout(pending.timeoutHandle);
+      this.pendingAcks.delete(correlationId);
+    }
+  }
+
+  private sendErrorEnvelope(connection: Connection, message: string): void {
+    const errorEnvelope: Envelope<ErrorPayload> = {
+      v: PROTOCOL_VERSION,
+      type: 'ERROR',
+      id: generateId(),
+      ts: Date.now(),
+      payload: {
+        code: 'INTERNAL',
+        message,
+        fatal: false,
+      },
+    };
+    connection.send(errorEnvelope);
   }
 
   /**
