@@ -49,6 +49,12 @@ EOF
 echo "->relay-file:msg"
 ```
 
+Synchronous messaging (wait for ACK):
+```
+->relay:Bob [await] Please confirm
+->relay:Bob [await:30s] Please confirm within 30 seconds
+```
+
 Or broadcast to all:
 ```bash
 cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/broadcast << 'EOF'
