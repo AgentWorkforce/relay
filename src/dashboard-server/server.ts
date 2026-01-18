@@ -1189,6 +1189,12 @@ export async function startDashboard(
   app.post('/api/send', async (req, res) => {
     const { to, message, thread, attachments: attachmentIds, from: senderName } = req.body;
 
+    // DEBUG: Trace message routing through /api/send
+    console.log(`[api/send] === MESSAGE TRACE ===`);
+    console.log(`[api/send] to=${to}, from=${senderName || 'not-specified'}`);
+    console.log(`[api/send] message length=${message?.length}, thread=${thread || 'none'}`);
+    console.log(`[api/send] message preview: ${message?.substring(0, 100)}...`);
+
     if (!to || !message) {
       return res.status(400).json({ error: 'Missing "to" or "message" field' });
     }
@@ -2753,7 +2759,10 @@ export async function startDashboard(
       return res.status(400).json({ error: 'channel and invites are required' });
     }
 
-    const channelId = channel.startsWith('#') ? channel : `#${channel}`;
+    // Don't add '#' prefix to DM channels (they use 'dm:' prefix)
+    const channelId = channel.startsWith('dm:')
+      ? channel
+      : (channel.startsWith('#') ? channel : `#${channel}`);
     const inviteList = invites.split(',').map((s) => s.trim()).filter(Boolean);
 
     try {
@@ -2805,7 +2814,10 @@ export async function startDashboard(
       return res.status(400).json({ error: 'username and channel required' });
     }
     const workspaceId = resolveWorkspaceId(req);
-    const channelId = channel.startsWith('#') ? channel : `#${channel}`;
+    // Don't add '#' prefix to DM channels (they use 'dm:' prefix)
+    const channelId = channel.startsWith('dm:')
+      ? channel
+      : (channel.startsWith('#') ? channel : `#${channel}`);
 
     let success = false;
 
@@ -3097,7 +3109,10 @@ export async function startDashboard(
       const joinedChannels: string[] = [];
       const channelList = channels || ['#general'];
       for (const channel of channelList) {
-        const channelId = channel.startsWith('#') ? channel : `#${channel}`;
+        // Don't add '#' prefix to DM channels (they use 'dm:' prefix)
+        const channelId = channel.startsWith('dm:')
+          ? channel
+          : (channel.startsWith('#') ? channel : `#${channel}`);
         const joined = client.joinChannel(channelId, username);
         if (joined) {
           joinedChannels.push(channelId);
@@ -3117,10 +3132,14 @@ export async function startDashboard(
    */
   app.post('/api/channels/message', express.json(), async (req, res) => {
     // Build marker - if you don't see this, you're running old code
-    console.log('[channel-msg] === BUILD v3 === Handler called');
+    console.log('[channel-msg] === BUILD v4 === Handler called');
 
     const { username, channel, body, thread } = req.body;
-    console.log(`[channel-msg] Request: username=${username}, channel=${channel}`);
+    // DEBUG: Enhanced tracing for DM message routing
+    console.log(`[channel-msg] === MESSAGE TRACE ===`);
+    console.log(`[channel-msg] username=${username}, channel=${channel}`);
+    console.log(`[channel-msg] isDM=${channel?.startsWith('dm:')}, thread=${thread || 'none'}`);
+    console.log(`[channel-msg] body length=${body?.length}, preview: ${body?.substring(0, 100)}...`);
 
     if (!username || !channel || !body) {
       console.log('[channel-msg] Missing required fields');
@@ -3128,7 +3147,10 @@ export async function startDashboard(
     }
 
     const workspaceId = resolveWorkspaceId(req);
-    const channelId = channel.startsWith('#') ? channel : `#${channel}`;
+    // Don't add '#' prefix to DM channels (they use 'dm:' prefix)
+    const channelId = channel.startsWith('dm:')
+      ? channel
+      : (channel.startsWith('#') ? channel : `#${channel}`);
 
     // SIMPLE APPROACH: Always try relay client first for sending
     // userBridge is only useful for users connected via local WebSocket

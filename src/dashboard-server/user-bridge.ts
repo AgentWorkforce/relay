@@ -318,19 +318,28 @@ export class UserBridge {
     body: string,
     options?: SendMessageOptions
   ): Promise<boolean> {
+    // DEBUG: Trace direct message routing
+    console.log(`[user-bridge] === DM TRACE ===`);
+    console.log(`[user-bridge] sendDirectMessage: from=${fromUsername} to=${toName}`);
+    console.log(`[user-bridge] body length=${body?.length}, preview: ${body?.substring(0, 100)}...`);
+
     const session = this.users.get(fromUsername);
     if (!session) {
       console.warn(`[user-bridge] Cannot send DM - user ${fromUsername} not registered`);
+      console.log(`[user-bridge] Registered users: ${Array.from(this.users.keys()).join(', ')}`);
       return false;
     }
 
-    return session.relayClient.sendMessage(
+    console.log(`[user-bridge] Sending via relay client for ${fromUsername}`);
+    const result = session.relayClient.sendMessage(
       toName,
       body,
       'message',
       options?.data,
       options?.thread
     );
+    console.log(`[user-bridge] Send result: ${result}`);
+    return result;
   }
 
   /**

@@ -106,11 +106,24 @@ export function sleep(ms: number): Promise<void> {
 export function buildInjectionString(msg: QueuedMessage): string {
   const shortId = msg.messageId.substring(0, 8);
 
+  // DEBUG: Trace message formatting
+  console.log(`[buildInjectionString] === FORMAT TRACE ===`);
+  console.log(`[buildInjectionString] from=${msg.from}, messageId=${msg.messageId}`);
+  console.log(`[buildInjectionString] senderName=${msg.data?.senderName || 'none'}`);
+  console.log(`[buildInjectionString] body preview: ${msg.body?.substring(0, 100)}...`);
+
+  // Check if body already contains "Relay message from" (nested message detection)
+  if (msg.body?.includes('Relay message from')) {
+    console.log(`[buildInjectionString] WARNING: Body already contains 'Relay message from' - potential nested message!`);
+  }
+
   // Use senderName from data if available (for dashboard messages sent via _DashboardUI)
   // This allows showing the actual GitHub username instead of the system client name
   const displayFrom = (msg.from === '_DashboardUI' && typeof msg.data?.senderName === 'string')
     ? msg.data.senderName
     : msg.from;
+
+  console.log(`[buildInjectionString] displayFrom=${displayFrom} (original from=${msg.from})`);
 
   // Strip ANSI and normalize whitespace
   const sanitizedBody = stripAnsi(msg.body).replace(/[\r\n]+/g, ' ').trim();
