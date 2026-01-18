@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-16T22:11:20.916Z",
+  "lastUpdated": "2026-01-18T08:48:41.397Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -701,6 +701,13 @@
       "startedAt": "2026-01-16T21:56:12.907Z",
       "completedAt": "2026-01-16T21:59:33.734Z",
       "path": ".trajectories/completed/2026-01/traj_6q0b9kzmdb1f.json"
+    },
+    "traj_qt6gh6tzb1fy": {
+      "title": "Fix user direct message routing - messages to khaliqgant not reaching destination",
+      "status": "completed",
+      "startedAt": "2026-01-18T08:07:17.560Z",
+      "completedAt": "2026-01-18T08:48:40.914Z",
+      "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_qt6gh6tzb1fy.json"
     }
   }
 }
