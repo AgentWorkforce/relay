@@ -50,6 +50,8 @@ import { adminRouter } from './api/admin.js';
 import { consensusRouter } from './api/consensus.js';
 import { db } from './db/index.js';
 import { validateSshSecurityConfig } from './services/ssh-security.js';
+import { registerUserPresence, unregisterUserPresence, updateUserLastSeen } from './services/presence-registry.js';
+import { cloudMessageBus, type CloudMessage } from './services/cloud-message-bus.js';
 
 /**
  * Proxy a request to the user's primary running workspace
@@ -1530,6 +1532,8 @@ export async function createServer(): Promise<CloudServer> {
             if (existing) {
               existing.connections.add(ws);
               existing.info.lastSeen = now;
+              // Update last seen in shared presence registry
+              updateUserLastSeen(username);
               // Only log at milestones to reduce noise
               const count = existing.connections.size;
               if (count === 2 || count === 5 || count === 10 || count % 50 === 0) {
@@ -1540,6 +1544,9 @@ export async function createServer(): Promise<CloudServer> {
                 info: { username, avatarUrl, connectedAt: now, lastSeen: now },
                 connections: new Set([ws]),
               });
+
+              // Register with shared presence registry for cross-module access
+              registerUserPresence({ username, avatarUrl, connectedAt: now, lastSeen: now });
 
               console.log(`[cloud] User ${username} came online`);
               broadcastPresence({
@@ -1561,6 +1568,8 @@ export async function createServer(): Promise<CloudServer> {
               userState.connections.delete(ws);
               if (userState.connections.size === 0) {
                 onlineUsers.delete(clientUsername);
+                // Unregister from shared presence registry
+                unregisterUserPresence(clientUsername);
                 console.log(`[cloud] User ${clientUsername} went offline`);
                 broadcastPresence({ type: 'presence_leave', username: clientUsername });
               }
@@ -1572,6 +1581,8 @@ export async function createServer(): Promise<CloudServer> {
           const userState = onlineUsers.get(clientUsername);
           if (userState) {
             userState.info.lastSeen = new Date().toISOString();
+            // Update last seen in shared presence registry
+            updateUserLastSeen(clientUsername);
           }
 
           broadcastPresence({
@@ -1623,6 +1634,8 @@ export async function createServer(): Promise<CloudServer> {
           userState.connections.delete(ws);
           if (userState.connections.size === 0) {
             onlineUsers.delete(clientUsername);
+            // Unregister from shared presence registry
+            unregisterUserPresence(clientUsername);
             console.log(`[cloud] User ${clientUsername} disconnected`);
             broadcastPresence({ type: 'presence_leave', username: clientUsername });
           }
@@ -1637,6 +1650,38 @@ export async function createServer(): Promise<CloudServer> {
 
   wssPresence.on('error', (err) => {
     console.error('[cloud] Presence WebSocket server error:', err);
+  });
+
+  // Subscribe to cloud message bus for delivering messages to cloud users
+  cloudMessageBus.on('user-message', ({ username, message }: { username: string; message: CloudMessage }) => {
+    const userState = onlineUsers.get(username);
+    if (!userState) {
+      console.warn(`[cloud] Cannot deliver message to ${username}: user not online`);
+      return;
+    }
+
+    // Deliver to all of the user's WebSocket connections
+    const payload = JSON.stringify({
+      type: 'direct_message',
+      from: message.from.agent,
+      body: message.body,
+      timestamp: message.timestamp,
+      metadata: {
+        ...message.metadata,
+        daemonId: message.from.daemonId,
+        daemonName: message.from.daemonName,
+      },
+    });
+
+    let delivered = 0;
+    userState.connections.forEach((ws) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(payload);
+        delivered++;
+      }
+    });
+
+    console.log(`[cloud] Delivered message to ${username} (${delivered} connections)`);
   });
 
   return {

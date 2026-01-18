@@ -96,3 +96,22 @@ export {
   getWorkspaceKeepaliveService,
   createWorkspaceKeepaliveService,
 } from './workspace-keepalive.js';
+
+// Presence registry (shared registry for tracking online users)
+export {
+  registerUserPresence,
+  unregisterUserPresence,
+  updateUserLastSeen,
+  isUserOnline,
+  getOnlineUser,
+  getOnlineUsers,
+  getOnlineUsersForDiscovery,
+  clearAllPresence,
+  type PresenceUserInfo,
+} from './presence-registry.js';
+
+// Cloud message bus (event-based message delivery for cloud users)
+export {
+  cloudMessageBus,
+  type CloudMessage,
+} from './cloud-message-bus.js';

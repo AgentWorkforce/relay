@@ -13,6 +13,8 @@ import { Router, Request, Response } from 'express';
 import { randomBytes, createHash } from 'crypto';
 import { requireAuth } from './auth.js';
 import { db } from '../db/index.js';
+import { getOnlineUsersForDiscovery, isUserOnline } from '../services/presence-registry.js';
+import { cloudMessageBus } from '../services/cloud-message-bus.js';
 
 export const daemonsRouter = Router();
 
@@ -377,9 +379,13 @@ daemonsRouter.post('/agents', requireDaemonAuth as any, async (req: Request, res
       }));
     });
 
+    // Get online users from presence registry (for cross-machine user routing)
+    const allUsers = getOnlineUsersForDiscovery();
+
     res.json({
       success: true,
       allAgents, // Return all agents across all linked daemons
+      allUsers, // Return online users for cross-machine routing
     });
   } catch (error) {
     console.error('Error syncing agents:', error);
@@ -400,6 +406,30 @@ daemonsRouter.post('/message', requireDaemonAuth as any, async (req: Request, re
   }
 
   try {
+    // Special case: messages to cloud users (daemonId = 'cloud')
+    if (targetDaemonId === 'cloud') {
+      // Verify user is online
+      if (!isUserOnline(targetAgent)) {
+        return res.status(404).json({ error: 'User not online' });
+      }
+
+      // Send via cloud message bus for WebSocket delivery
+      cloudMessageBus.sendToUser(targetAgent, {
+        from: {
+          daemonId: daemon.id,
+          daemonName: daemon.name,
+          agent: message.from,
+        },
+        to: targetAgent,
+        body: message.content,
+        timestamp: new Date().toISOString(),
+        metadata: message.metadata,
+      });
+
+      console.log(`[daemons] Message sent to cloud user ${targetAgent} from ${message.from}`);
+      return res.json({ success: true, message: 'Message sent to cloud user' });
+    }
+
     // Verify target daemon belongs to same user
     const targetDaemon = await db.linkedDaemons.findById(targetDaemonId);
 
