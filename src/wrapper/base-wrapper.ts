@@ -319,10 +319,25 @@ export abstract class BaseWrapper extends EventEmitter {
       thread: payload.thread,
       importance: meta?.importance,
       data: payload.data,
+      sync: meta?.sync,
       originalTo,
     };
 
     this.messageQueue.push(queuedMsg);
+  }
+
+  /**
+   * Send an ACK for a sync message after processing completes.
+   */
+  protected sendSyncAck(messageId: string, sync: SendMeta['sync'] | undefined, response: boolean, responseData?: unknown): void {
+    if (!sync?.correlationId) return;
+    this.client.sendAck({
+      ack_id: messageId,
+      seq: 0,
+      correlationId: sync.correlationId,
+      response,
+      responseData,
+    });
   }
 
   /**
@@ -399,6 +414,15 @@ export abstract class BaseWrapper extends EventEmitter {
 
     console.error(`[base-wrapper] sendRelayCommand: to=${cmd.to}, body=${cmd.body.substring(0, 50)}...`);
 
+    let sendMeta: SendMeta | undefined;
+    if (cmd.meta) {
+      sendMeta = {
+        importance: cmd.meta.importance,
+        replyTo: cmd.meta.replyTo,
+        requires_ack: cmd.meta.ackRequired,
+      };
+    }
+
     // Check if target is a channel (starts with #)
     if (cmd.to.startsWith('#')) {
       // Use CHANNEL_MESSAGE protocol for channel targets
@@ -409,7 +433,18 @@ export abstract class BaseWrapper extends EventEmitter {
       });
     } else {
       // Use SEND protocol for direct messages and broadcasts
-      this.client.sendMessage(cmd.to, cmd.body, cmd.kind, cmd.data, cmd.thread);
+      if (cmd.sync?.blocking) {
+        this.client.sendAndWait(cmd.to, cmd.body, {
+          timeoutMs: cmd.sync.timeoutMs,
+          kind: cmd.kind,
+          data: cmd.data,
+          thread: cmd.thread,
+        }).catch((err) => {
+          console.error(`[base-wrapper] sendAndWait failed for ${cmd.to}: ${err.message}`);
+        });
+      } else {
+        this.client.sendMessage(cmd.to, cmd.body, cmd.kind, cmd.data, cmd.thread, sendMeta);
+      }
     }
   }
 

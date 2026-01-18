@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import type { Envelope, ErrorPayload, WelcomePayload, DeliverEnvelope } from '../protocol/types.js';
+import { describe, it, expect, vi } from 'vitest';
+import type { Envelope, ErrorPayload, WelcomePayload, DeliverEnvelope, AckPayload } from '../protocol/types.js';
 import { RelayClient } from './client.js';
 
 describe('RelayClient', () => {
@@ -189,6 +189,58 @@ describe('RelayClient', () => {
       (client as any)._state = 'CONNECTING';
       const result = client.sendMessage('Alice', 'Hello');
       expect(result).toBe(false);
+    });
+  });
+
+  describe('sendAndWait', () => {
+    it('resolves when matching ACK arrives', async () => {
+      const client = new RelayClient({ reconnect: false });
+      (client as any)._state = 'READY';
+      const sendMock = vi.fn().mockReturnValue(true);
+      (client as any).send = sendMock;
+
+      const promise = client.sendAndWait('Bob', 'ping', { timeoutMs: 1000 });
+      const sentEnvelope = sendMock.mock.calls[0][0];
+      const correlationId = sentEnvelope.payload_meta.sync.correlationId;
+
+      const ackEnvelope: Envelope<AckPayload> = {
+        v: 1,
+        type: 'ACK',
+        id: 'ack-1',
+        ts: Date.now(),
+        payload: {
+          ack_id: 'd-1',
+          seq: 1,
+          correlationId,
+          response: true,
+        },
+      };
+
+      (client as any).processFrame(ackEnvelope);
+
+      await expect(promise).resolves.toMatchObject({ correlationId, response: true });
+    });
+
+    it('rejects on timeout', async () => {
+      vi.useFakeTimers();
+      try {
+        const client = new RelayClient({ reconnect: false });
+        (client as any)._state = 'READY';
+        const sendMock = vi.fn().mockReturnValue(true);
+        (client as any).send = sendMock;
+
+        const promise = client.sendAndWait('Bob', 'ping', { timeoutMs: 50 });
+        await vi.advanceTimersByTimeAsync(60);
+
+        await expect(promise).rejects.toThrow('ACK timeout');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('rejects when not ready', async () => {
+      const client = new RelayClient({ reconnect: false });
+      await expect(client.sendAndWait('Bob', 'ping')).rejects.toThrow('Client not ready');
     });
   });
 

@@ -1503,9 +1503,13 @@ export class PtyWrapper extends BaseWrapper {
           from: msg.from,
           attempts: result.attempts,
         });
+        this.sendSyncAck(msg.messageId, msg.sync, false, { error: 'injection_failed' });
+      } else {
+        this.sendSyncAck(msg.messageId, msg.sync, true);
       }
     } catch (err: any) {
       console.error(`[pty:${this.config.name}] Injection failed: ${err.message}`);
+      this.sendSyncAck(msg.messageId, msg.sync, false, { error: err.message });
     } finally {
       this.isInjecting = false;
 

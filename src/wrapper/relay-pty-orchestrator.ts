@@ -1017,8 +1017,10 @@ export class RelayPtyOrchestrator extends BaseWrapper {
         this.logError(` Injection failed for message ${msg.messageId.substring(0, 8)}`);
         this.injectionMetrics.failed++;
         this.config.onInjectionFailed?.(msg.messageId, 'Injection failed');
+        this.sendSyncAck(msg.messageId, msg.sync, false, { error: 'injection_failed' });
       } else {
         this.injectionMetrics.successFirstTry++;
+        this.sendSyncAck(msg.messageId, msg.sync, true);
       }
 
       this.injectionMetrics.total++;
@@ -1026,6 +1028,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       this.logError(` Injection error: ${err.message}`);
       this.injectionMetrics.failed++;
       this.injectionMetrics.total++;
+      this.sendSyncAck(msg.messageId, msg.sync, false, { error: err.message });
     } finally {
       this.isInjecting = false;
 
