@@ -117,6 +117,28 @@ pub struct ParsedRelayCommand {
     pub release_name: Option<String>,
 }
 
+/// Parsed continuity command from file-based relay output
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContinuityCommand {
+    /// Type identifier (always "continuity")
+    #[serde(rename = "type")]
+    pub cmd_type: String,
+    /// Action to perform: save, load, uncertain
+    pub action: String,
+    /// Continuity content (may be empty for load)
+    pub content: String,
+}
+
+impl ContinuityCommand {
+    pub fn new(action: String, content: String) -> Self {
+        Self {
+            cmd_type: "continuity".to_string(),
+            action,
+            content,
+        }
+    }
+}
+
 impl ParsedRelayCommand {
     pub fn new_message(from: String, to: String, body: String, raw: String) -> Self {
         Self {
@@ -247,9 +269,18 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
+        let workspace_id = std::env::var("WORKSPACE_ID")
+            .ok()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty());
+        let socket_path = workspace_id
+            .as_ref()
+            .map(|id| format!("/tmp/relay/{}/sockets/agent.sock", id))
+            .unwrap_or_else(|| "/tmp/relay-pty-agent.sock".to_string());
+
         Self {
             name: "agent".to_string(),
-            socket_path: "/tmp/relay-pty-agent.sock".to_string(),
+            socket_path,
             prompt_pattern: r"^[>$%#] $".to_string(),
             idle_timeout_ms: 500,
             queue_max: 50,
