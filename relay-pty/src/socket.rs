@@ -4,15 +4,19 @@
 //! - JSON-framed injection requests
 //! - Status queries
 //! - Shutdown commands
+//!
+//! For injection requests, the connection stays open and streams all status
+//! updates (Queued → Injecting → Delivered/Failed) back to the client.
 
-use crate::protocol::{InjectRequest, InjectResponse, QueuedMessage};
+use crate::protocol::{InjectRequest, InjectResponse, InjectStatus, QueuedMessage};
 use crate::queue::MessageQueue;
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, error, info, warn};
 
 /// Socket server for injection requests
@@ -111,6 +115,9 @@ impl SocketServer {
 }
 
 /// Handle a single client connection
+///
+/// For injection requests, this connection will stay open and stream all
+/// status updates until the final status (Delivered/Failed) is received.
 async fn handle_connection(
     stream: UnixStream,
     queue: Arc<MessageQueue>,
@@ -121,39 +128,129 @@ async fn handle_connection(
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
 
+    // Subscribe to response notifications
+    let mut response_rx = queue.subscribe_responses();
+
+    // Track message IDs we're waiting for final responses on
+    let mut pending_ids: HashSet<String> = HashSet::new();
+
     debug!("New client connection");
 
     loop {
-        line.clear();
-        let bytes_read = reader.read_line(&mut line).await?;
+        tokio::select! {
+            // Handle incoming requests from client
+            result = reader.read_line(&mut line) => {
+                let bytes_read = result?;
 
-        if bytes_read == 0 {
-            debug!("Client disconnected");
-            break;
-        }
+                if bytes_read == 0 {
+                    debug!("Client disconnected");
+                    break;
+                }
 
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    line.clear();
+                    continue;
+                }
 
-        // Parse JSON request
-        let response = match serde_json::from_str::<InjectRequest>(trimmed) {
-            Ok(request) => handle_request(request, &queue, &status_tx, &shutdown_tx).await,
-            Err(e) => InjectResponse::Error {
-                message: format!("Invalid JSON: {}", e),
-            },
-        };
+                // Parse JSON request
+                match serde_json::from_str::<InjectRequest>(trimmed) {
+                    Ok(request) => {
+                        // For inject requests, track the ID BEFORE calling handle_request
+                        // This prevents a race where the "Queued" broadcast arrives before
+                        // we've added the ID to pending_ids
+                        let inject_id = if let InjectRequest::Inject { ref id, .. } = request {
+                            debug!("Pre-tracking message {} for response streaming", id);
+                            pending_ids.insert(id.clone());
+                            Some(id.clone())
+                        } else {
+                            None
+                        };
 
-        // Send response
-        let response_json = serde_json::to_string(&response)?;
-        writer.write_all(response_json.as_bytes()).await?;
-        writer.write_all(b"\n").await?;
-        writer.flush().await?;
+                        let response = handle_request(request, &queue, &status_tx, &shutdown_tx).await;
 
-        // Check for shutdown
-        if matches!(response, InjectResponse::ShutdownAck) {
-            break;
+                        // For successful inject requests, ID is already tracked, broadcast handles responses
+                        // For failed inject requests (Error response), remove tracking and send error
+                        // For non-inject requests, send response immediately
+                        match (&response, &inject_id) {
+                            (InjectResponse::InjectResult { .. }, Some(_)) => {
+                                // Success - ID already tracked, broadcast will deliver responses
+                                // Don't send response here - broadcast will deliver it
+                            }
+                            (InjectResponse::Error { .. }, Some(id)) => {
+                                // Inject request failed - remove tracking and send error
+                                debug!("Inject request {} failed, removing tracking", id);
+                                pending_ids.remove(id);
+                                let response_json = serde_json::to_string(&response)?;
+                                writer.write_all(response_json.as_bytes()).await?;
+                                writer.write_all(b"\n").await?;
+                                writer.flush().await?;
+                            }
+                            _ => {
+                                // Non-inject request - send response immediately
+                                let response_json = serde_json::to_string(&response)?;
+                                writer.write_all(response_json.as_bytes()).await?;
+                                writer.write_all(b"\n").await?;
+                                writer.flush().await?;
+                            }
+                        }
+
+                        // Check for shutdown
+                        if matches!(response, InjectResponse::ShutdownAck) {
+                            return Ok(());
+                        }
+                    }
+                    Err(e) => {
+                        let response = InjectResponse::Error {
+                            message: format!("Invalid JSON: {}", e),
+                        };
+                        let response_json = serde_json::to_string(&response)?;
+                        writer.write_all(response_json.as_bytes()).await?;
+                        writer.write_all(b"\n").await?;
+                        writer.flush().await?;
+                    }
+                }
+
+                line.clear();
+            }
+
+            // Handle response notifications from the queue
+            result = response_rx.recv() => {
+                match result {
+                    Ok(response) => {
+                        // Only forward responses for message IDs we're tracking
+                        if let InjectResponse::InjectResult { ref id, ref status, .. } = response {
+                            if pending_ids.contains(id) {
+                                debug!("Forwarding response for message {}: {:?}", id, status);
+
+                                let response_json = serde_json::to_string(&response)?;
+                                writer.write_all(response_json.as_bytes()).await?;
+                                writer.write_all(b"\n").await?;
+                                writer.flush().await?;
+
+                                // Remove from pending if this is a final status
+                                if matches!(status, InjectStatus::Delivered | InjectStatus::Failed) {
+                                    debug!("Message {} reached final state: {:?}", id, status);
+                                    pending_ids.remove(id);
+
+                                    // Close connection if no more pending messages
+                                    if pending_ids.is_empty() {
+                                        debug!("All messages delivered, closing connection");
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!("Response receiver lagged by {} messages", n);
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        debug!("Response channel closed");
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -161,6 +258,9 @@ async fn handle_connection(
 }
 
 /// Handle a single request
+///
+/// For inject requests, returns None on success (queue broadcasts the response),
+/// or an Error response if the message was rejected.
 async fn handle_request(
     request: InjectRequest,
     queue: &Arc<MessageQueue>,
@@ -183,18 +283,19 @@ async fn handle_request(
             let queued = queue.enqueue(msg).await;
 
             if queued {
+                // Success - the queue will broadcast the Queued status,
+                // and later Injecting/Delivered/Failed statuses.
+                // Return a placeholder that won't be sent (handled in handle_connection)
                 InjectResponse::InjectResult {
                     id,
-                    status: crate::protocol::InjectStatus::Queued,
+                    status: InjectStatus::Queued,
                     timestamp: current_timestamp_ms(),
                     error: None,
                 }
             } else {
-                InjectResponse::InjectResult {
-                    id,
-                    status: crate::protocol::InjectStatus::Failed,
-                    timestamp: current_timestamp_ms(),
-                    error: Some("Message rejected (duplicate or backpressure)".to_string()),
+                // Rejection - must tell the client directly since broadcast won't have this
+                InjectResponse::Error {
+                    message: format!("Message {} rejected (duplicate or backpressure)", id),
                 }
             }
         }
@@ -311,7 +412,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let socket_path = dir.path().join("test.sock").to_string_lossy().to_string();
 
-        let (response_tx, _response_rx) = mpsc::channel(16);
+        let (response_tx, _response_rx) = broadcast::channel(16);
         let (status_tx, _status_rx) = mpsc::channel(16);
         let (shutdown_tx, _shutdown_rx) = mpsc::channel(1);
 

@@ -31,7 +31,7 @@ use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::select;
 use tokio::signal::unix::{signal, SignalKind};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -171,13 +171,14 @@ async fn main() -> Result<()> {
     let mut async_pty = AsyncPty::new(pty);
 
     // Create channels
-    let (response_tx, mut response_rx) = mpsc::channel(64);
+    // Broadcast channel for response notifications (socket server subscribes to this)
+    let (response_tx, _response_rx) = broadcast::channel(64);
     let (status_tx, mut status_rx) = mpsc::channel::<StatusQuery>(16);
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
     let (inject_tx, mut inject_rx) = mpsc::channel::<Vec<u8>>(64);
 
-    // Create message queue
-    let queue = Arc::new(MessageQueue::new(config.queue_max, response_tx.clone()));
+    // Create message queue with broadcast sender
+    let queue = Arc::new(MessageQueue::new(config.queue_max, response_tx));
 
     // Create injector
     let injector = Arc::new(Injector::new(inject_tx, Arc::clone(&queue), config.clone()));
@@ -349,10 +350,8 @@ async fn main() -> Result<()> {
                 let _ = query.response_tx.send(info);
             }
 
-            // Handle response notifications (for logging)
-            Some(response) = response_rx.recv() => {
-                debug!("Response: {:?}", response);
-            }
+            // Note: Response notifications are handled by the socket server
+            // which subscribes to the queue's broadcast channel directly
         }
 
         // Check if child is still running

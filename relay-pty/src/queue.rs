@@ -10,7 +10,7 @@ use crate::protocol::{InjectResponse, InjectStatus, QueuedMessage};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashSet};
 use std::time::Instant;
-use tokio::sync::{mpsc, Mutex, Notify};
+use tokio::sync::{broadcast, Mutex, Notify};
 use tracing::{debug, info, warn};
 
 /// Wrapper for priority queue ordering (reversed for min-heap behavior)
@@ -52,13 +52,13 @@ pub struct MessageQueue {
     max_size: usize,
     /// Notifier for new messages
     notify: Notify,
-    /// Channel for sending responses
-    response_tx: mpsc::Sender<InjectResponse>,
+    /// Broadcast channel for sending responses (multiple receivers can subscribe)
+    response_tx: broadcast::Sender<InjectResponse>,
 }
 
 impl MessageQueue {
     /// Create a new message queue
-    pub fn new(max_size: usize, response_tx: mpsc::Sender<InjectResponse>) -> Self {
+    pub fn new(max_size: usize, response_tx: broadcast::Sender<InjectResponse>) -> Self {
         Self {
             queue: Mutex::new(BinaryHeap::new()),
             seen_ids: Mutex::new(HashSet::new()),
@@ -66,6 +66,11 @@ impl MessageQueue {
             notify: Notify::new(),
             response_tx,
         }
+    }
+
+    /// Subscribe to response notifications
+    pub fn subscribe_responses(&self) -> broadcast::Receiver<InjectResponse> {
+        self.response_tx.subscribe()
     }
 
     /// Add a message to the queue
@@ -92,13 +97,10 @@ impl MessageQueue {
             );
 
             // Send backpressure notification
-            let _ = self
-                .response_tx
-                .send(InjectResponse::Backpressure {
-                    queue_length: queue.len(),
-                    accept: false,
-                })
-                .await;
+            let _ = self.response_tx.send(InjectResponse::Backpressure {
+                queue_length: queue.len(),
+                accept: false,
+            });
 
             return false;
         }
@@ -107,29 +109,23 @@ impl MessageQueue {
         queue.push(PriorityMessage(msg));
         debug!("Enqueued message {}, queue size: {}", msg_id, queue.len());
 
-        // Send queued response
-        let _ = self
-            .response_tx
-            .send(InjectResponse::InjectResult {
-                id: msg_id,
-                status: InjectStatus::Queued,
-                timestamp: current_timestamp_ms(),
-                error: None,
-            })
-            .await;
+        // Send queued response (broadcast to all subscribers)
+        let _ = self.response_tx.send(InjectResponse::InjectResult {
+            id: msg_id,
+            status: InjectStatus::Queued,
+            timestamp: current_timestamp_ms(),
+            error: None,
+        });
 
         // Notify waiters
         self.notify.notify_one();
 
         // Send backpressure recovery if we were near capacity
         if queue.len() == self.max_size / 2 {
-            let _ = self
-                .response_tx
-                .send(InjectResponse::Backpressure {
-                    queue_length: queue.len(),
-                    accept: true,
-                })
-                .await;
+            let _ = self.response_tx.send(InjectResponse::Backpressure {
+                queue_length: queue.len(),
+                accept: true,
+            });
         }
 
         true
@@ -183,17 +179,14 @@ impl MessageQueue {
         self.notify.notify_one();
     }
 
-    /// Report injection result
-    pub async fn report_result(&self, id: String, status: InjectStatus, error: Option<String>) {
-        let _ = self
-            .response_tx
-            .send(InjectResponse::InjectResult {
-                id,
-                status,
-                timestamp: current_timestamp_ms(),
-                error,
-            })
-            .await;
+    /// Report injection result (broadcast to all subscribers)
+    pub fn report_result(&self, id: String, status: InjectStatus, error: Option<String>) {
+        let _ = self.response_tx.send(InjectResponse::InjectResult {
+            id,
+            status,
+            timestamp: current_timestamp_ms(),
+            error,
+        });
     }
 
     /// Clear seen IDs (for long-running sessions)
@@ -239,7 +232,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_priority_ordering() {
-        let (tx, _rx) = mpsc::channel(16);
+        let (tx, _rx) = broadcast::channel(16);
         let queue = MessageQueue::new(10, tx);
 
         // Enqueue messages with different priorities
@@ -283,7 +276,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_deduplication() {
-        let (tx, _rx) = mpsc::channel(16);
+        let (tx, _rx) = broadcast::channel(16);
         let queue = MessageQueue::new(10, tx);
 
         let result1 = queue
@@ -311,7 +304,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_backpressure() {
-        let (tx, _rx) = mpsc::channel(16);
+        let (tx, _rx) = broadcast::channel(16);
         let queue = MessageQueue::new(2, tx);
 
         queue

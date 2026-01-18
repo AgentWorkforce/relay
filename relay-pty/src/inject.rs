@@ -113,16 +113,14 @@ impl Injector {
 
             // Report injecting status
             self.queue
-                .report_result(msg.id.clone(), InjectStatus::Injecting, None)
-                .await;
+                .report_result(msg.id.clone(), InjectStatus::Injecting, None);
 
             // Try to inject
             match self.inject_message(&msg).await {
                 Ok(true) => {
                     info!("Message {} delivered successfully", msg.id);
                     self.queue
-                        .report_result(msg.id.clone(), InjectStatus::Delivered, None)
-                        .await;
+                        .report_result(msg.id.clone(), InjectStatus::Delivered, None);
                 }
                 Ok(false) => {
                     // Verification failed, retry
@@ -137,20 +135,20 @@ impl Injector {
                         self.queue.retry(msg).await;
                     } else {
                         error!("Message {} failed after {} retries", msg.id, msg.retries);
-                        self.queue
-                            .report_result(
-                                msg.id.clone(),
-                                InjectStatus::Failed,
-                                Some("Verification failed after retries".to_string()),
-                            )
-                            .await;
+                        self.queue.report_result(
+                            msg.id.clone(),
+                            InjectStatus::Failed,
+                            Some("Verification failed after retries".to_string()),
+                        );
                     }
                 }
                 Err(e) => {
                     error!("Injection error for {}: {}", msg.id, e);
-                    self.queue
-                        .report_result(msg.id.clone(), InjectStatus::Failed, Some(e.to_string()))
-                        .await;
+                    self.queue.report_result(
+                        msg.id.clone(),
+                        InjectStatus::Failed,
+                        Some(e.to_string()),
+                    );
                 }
             }
         }
