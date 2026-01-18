@@ -9,6 +9,7 @@
  */
 
 import net from 'node:net';
+import { randomUUID } from 'node:crypto';
 import { generateId } from '../utils/id-generator.js';
 import {
   type Envelope,
@@ -18,6 +19,7 @@ import {
   type SendMeta,
   type SendEnvelope,
   type DeliverEnvelope,
+  type AckPayload,
   type ErrorPayload,
   type PayloadKind,
   type SpeakOnTrigger,
@@ -38,6 +40,10 @@ import { encodeFrameLegacy, FrameParser } from '../protocol/framing.js';
 import { DEFAULT_SOCKET_PATH } from '../daemon/server.js';
 
 export type ClientState = 'DISCONNECTED' | 'CONNECTING' | 'HANDSHAKING' | 'READY' | 'BACKOFF';
+
+export interface SyncOptions {
+  timeoutMs?: number;
+}
 
 export interface ClientConfig {
   socketPath: string;
@@ -135,6 +141,8 @@ export class RelayClient {
   // Write coalescing: batch multiple writes into single syscall
   private writeQueue: Buffer[] = [];
   private writeScheduled = false;
+
+  private pendingSyncAcks: Map<string, { resolve: (ack: AckPayload) => void; reject: (err: Error) => void; timeoutHandle: NodeJS.Timeout }> = new Map();
 
   // Event handlers
   /**
@@ -300,6 +308,53 @@ export class RelayClient {
     };
 
     return this.send(envelope);
+  }
+
+  /**
+   * Send a message and wait for a correlated ACK response.
+   */
+  async sendAndWait(to: string, body: string, options: SyncOptions = {}): Promise<AckPayload> {
+    if (this._state !== 'READY') {
+      throw new Error('Client not ready');
+    }
+
+    const correlationId = randomUUID();
+    const timeoutMs = options.timeoutMs ?? 30000;
+
+    return new Promise<AckPayload>((resolve, reject) => {
+      const timeoutHandle = setTimeout(() => {
+        this.pendingSyncAcks.delete(correlationId);
+        reject(new Error(`ACK timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      this.pendingSyncAcks.set(correlationId, { resolve, reject, timeoutHandle });
+
+      const envelope: SendEnvelope = {
+        v: PROTOCOL_VERSION,
+        type: 'SEND',
+        id: generateId(),
+        ts: Date.now(),
+        to,
+        payload: {
+          kind: 'message',
+          body,
+        },
+        payload_meta: {
+          sync: {
+            correlationId,
+            timeoutMs,
+            blocking: true,
+          },
+        },
+      };
+
+      const sent = this.send(envelope);
+      if (!sent) {
+        clearTimeout(timeoutHandle);
+        this.pendingSyncAcks.delete(correlationId);
+        reject(new Error('Failed to send message'));
+      }
+    });
   }
 
   /**
@@ -656,6 +711,10 @@ export class RelayClient {
         this.handlePing(envelope);
         break;
 
+      case 'ACK':
+        this.handleAck(envelope as Envelope<AckPayload>);
+        break;
+
       case 'ERROR':
         this.handleErrorFrame(envelope as Envelope<ErrorPayload>);
         break;
@@ -705,6 +764,18 @@ export class RelayClient {
     } else {
       console.log(`[relay-client:${this.config.agentName}] No onMessage handler or no from field`);
     }
+  }
+
+  private handleAck(envelope: Envelope<AckPayload>): void {
+    const correlationId = envelope.payload.correlationId;
+    if (!correlationId) return;
+
+    const pending = this.pendingSyncAcks.get(correlationId);
+    if (!pending) return;
+
+    clearTimeout(pending.timeoutHandle);
+    this.pendingSyncAcks.delete(correlationId);
+    pending.resolve(envelope.payload);
   }
 
   private handleChannelMessage(envelope: Envelope<ChannelMessagePayload> & { from?: string }): void {
@@ -778,6 +849,7 @@ export class RelayClient {
   private handleDisconnect(): void {
     this.parser.reset();
     this.socket = undefined;
+    this.rejectPendingSyncAcks(new Error('Disconnected while awaiting ACK'));
 
     // Don't reconnect if permanently destroyed
     if (this._destroyed) {
@@ -801,6 +873,14 @@ export class RelayClient {
     console.error('[client] Error:', error.message);
     if (this.onError) {
       this.onError(error);
+    }
+  }
+
+  private rejectPendingSyncAcks(error: Error): void {
+    for (const [correlationId, pending] of this.pendingSyncAcks.entries()) {
+      clearTimeout(pending.timeoutHandle);
+      pending.reject(error);
+      this.pendingSyncAcks.delete(correlationId);
     }
   }
 
