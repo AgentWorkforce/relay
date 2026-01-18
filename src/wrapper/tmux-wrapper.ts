@@ -954,12 +954,11 @@ export class TmuxWrapper extends BaseWrapper {
 
     // Convert ParsedMessageMetadata to SendMeta if present
     let sendMeta: SendMeta | undefined;
-    if (cmd.meta || cmd.sync) {
+    if (cmd.meta) {
       sendMeta = {
         importance: cmd.meta.importance,
         replyTo: cmd.meta.replyTo,
         requires_ack: cmd.meta.ackRequired,
-        sync: cmd.sync,
       };
     }
 

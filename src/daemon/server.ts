@@ -9,15 +9,15 @@ import path from 'node:path';
 import os from 'node:os';
 import { Connection, type ConnectionConfig, DEFAULT_CONFIG } from './connection.js';
 import { Router } from './router.js';
-import type {
-  Envelope,
-  ShadowBindPayload,
-  ShadowUnbindPayload,
-  LogPayload,
-  SendEnvelope,
-  AckPayload,
-  ErrorPayload,
+import {
   PROTOCOL_VERSION,
+  type Envelope,
+  type ShadowBindPayload,
+  type ShadowUnbindPayload,
+  type LogPayload,
+  type SendEnvelope,
+  type AckPayload,
+  type ErrorPayload,
 } from '../protocol/types.js';
 import type { ChannelJoinPayload, ChannelLeavePayload, ChannelMessagePayload } from '../protocol/channels.js';
 import { createStorageAdapter, type StorageAdapter, type StorageConfig } from '../storage/adapter.js';

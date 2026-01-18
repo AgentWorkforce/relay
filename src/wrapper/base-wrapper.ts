@@ -371,12 +371,11 @@ export abstract class BaseWrapper extends EventEmitter {
     console.error(`[base-wrapper] sendRelayCommand: to=${cmd.to}, body=${cmd.body.substring(0, 50)}...`);
 
     let sendMeta: SendMeta | undefined;
-    if (cmd.meta || cmd.sync) {
+    if (cmd.meta) {
       sendMeta = {
-        importance: cmd.meta?.importance,
-        replyTo: cmd.meta?.replyTo,
-        requires_ack: cmd.meta?.ackRequired,
-        sync: cmd.sync,
+        importance: cmd.meta.importance,
+        replyTo: cmd.meta.replyTo,
+        requires_ack: cmd.meta.ackRequired,
       };
     }
 
