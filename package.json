@@ -25,6 +25,7 @@
     "dev:local": "npm run build && npm link && echo '✓ agent-relay linked globally'",
     "dev:unlink": "npm unlink -g agent-relay && echo '✓ agent-relay unlinked'",
     "dev:rebuild": "npm run build && echo '✓ Rebuilt (linked version updated)'",
+    "build:rust": "cd relay-pty && cargo build --release && cp target/release/relay-pty ../bin/relay-pty && echo '✓ relay-pty binary built and copied to bin/'",
     "start": "node dist/cli/index.js",
     "daemon": "node dist/daemon/server.js",
     "dashboard": "node dist/dashboard-server/start.js",

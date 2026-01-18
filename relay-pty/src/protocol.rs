@@ -470,7 +470,8 @@ mod tests {
         let msg = QueuedMessage::new(
             "xyz7890".to_string(),
             "Lead".to_string(),
-            "Relay message from Lead [abc12345] [thread:proj-1] [!!] [#dev]: Critical fix needed".to_string(),
+            "Relay message from Lead [abc12345] [thread:proj-1] [!!] [#dev]: Critical fix needed"
+                .to_string(),
             0,
         );
         assert_eq!(
@@ -581,12 +582,7 @@ mod tests {
 
     #[test]
     fn test_empty_body() {
-        let msg = QueuedMessage::new(
-            "xyz7890".to_string(),
-            "Bob".to_string(),
-            "".to_string(),
-            0,
-        );
+        let msg = QueuedMessage::new("xyz7890".to_string(), "Bob".to_string(), "".to_string(), 0);
         assert_eq!(
             msg.format_for_injection(),
             "Relay message from Bob [xyz7890]: "
@@ -713,8 +709,8 @@ mod tests {
         // This happens when messages are relayed through different agents
         let msg = QueuedMessage::new(
             "xyz7890".to_string(),
-            "Relay".to_string(),  // Actual sender in QueuedMessage
-            "Relay message from Alice [orig123]: Original message".to_string(),  // Shows Alice
+            "Relay".to_string(), // Actual sender in QueuedMessage
+            "Relay message from Alice [orig123]: Original message".to_string(), // Shows Alice
             0,
         );
         // Should preserve Alice as the displayed sender

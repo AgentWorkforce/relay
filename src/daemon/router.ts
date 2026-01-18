@@ -199,7 +199,9 @@ export class Router {
    */
   markSpawning(agentName: string): void {
     this.spawningAgents.set(agentName, Date.now());
-    routerLog.info(`Agent marked as spawning: ${agentName}`);
+    routerLog.info(`Agent marked as spawning: ${agentName}`, {
+      currentSpawning: Array.from(this.spawningAgents.keys()),
+    });
     // Clean up stale spawning entries
     this.cleanupStaleSpawning();
   }
@@ -661,13 +663,18 @@ export class Router {
 
       // Check if agent is currently spawning (pre-HELLO) - queue for delivery after registration
       // This handles the race condition between spawn completion and HELLO handshake
-      if (this.isSpawning(to)) {
+      const spawning = this.isSpawning(to);
+      routerLog.debug(`Spawning check for "${to}": ${spawning}`, {
+        spawningAgents: Array.from(this.spawningAgents.keys()),
+        hasStorage: !!this.storage,
+      });
+      if (spawning) {
         routerLog.info(`Target "${to}" is spawning, queueing message for delivery after registration`);
         this.persistMessageForOfflineAgent(from, to, envelope);
         return true; // Message accepted (queued), not dropped
       }
 
-      routerLog.warn(`Target "${to}" not found and unknown`, { availableAgents: Array.from(this.agents.keys()) });
+      routerLog.warn(`Target "${to}" not found and unknown`, { availableAgents: Array.from(this.agents.keys()), spawningAgents: Array.from(this.spawningAgents.keys()) });
       return false;
     }
 
@@ -850,6 +857,12 @@ export class Router {
       routerLog.warn('Cannot queue offline message: no storage configured');
       return;
     }
+
+    routerLog.info(`Persisting offline message for "${to}"`, {
+      from,
+      messageId: envelope.id,
+      bodyPreview: envelope.payload.body?.substring(0, 50),
+    });
 
     this.storage.saveMessage({
       id: envelope.id || generateId(),

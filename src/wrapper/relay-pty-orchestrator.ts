@@ -680,20 +680,45 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       this.spawnViaDashboardApi(name, cli, task)
         .then(() => {
           this.log(` Dashboard spawn succeeded for ${name}`);
+          this.sendInitialTaskMessage(name, task);
         })
         .catch(err => {
           this.logError(` Dashboard spawn failed: ${err.message}`);
           if (this.config.onSpawn) {
             this.log(` Falling back to onSpawn callback`);
-            this.config.onSpawn(name, cli, task);
+            Promise.resolve(this.config.onSpawn(name, cli, task))
+              .then(() => this.sendInitialTaskMessage(name, task))
+              .catch(e => this.logError(` onSpawn callback failed: ${e.message}`));
           }
         });
     } else if (this.config.onSpawn) {
       this.log(` Using onSpawn callback directly`);
-      this.config.onSpawn(name, cli, task);
+      Promise.resolve(this.config.onSpawn(name, cli, task))
+        .then(() => this.sendInitialTaskMessage(name, task))
+        .catch(e => this.logError(` onSpawn callback failed: ${e.message}`));
     } else {
       this.logError(` No spawn mechanism available!`);
     }
+  }
+
+  /**
+   * Send the initial task message to a newly spawned agent.
+   * Only sends if task is non-empty after trimming.
+   */
+  private sendInitialTaskMessage(name: string, task: string): void {
+    const trimmedTask = task?.trim();
+    if (!trimmedTask) {
+      this.log(` No task to send to ${name} (empty or whitespace)`);
+      return;
+    }
+
+    this.log(` Sending initial task to ${name}`);
+    this.sendRelayCommand({
+      to: name,
+      kind: 'message',
+      body: trimmedTask,
+      raw: '[spawn-task]',
+    });
   }
 
   /**

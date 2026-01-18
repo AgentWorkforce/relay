@@ -191,10 +191,16 @@ impl MessageQueue {
             error,
         }) {
             Ok(receiver_count) => {
-                debug!("Broadcast sent to {} receivers for message {}", receiver_count, short_id);
+                debug!(
+                    "Broadcast sent to {} receivers for message {}",
+                    receiver_count, short_id
+                );
             }
             Err(e) => {
-                warn!("Failed to broadcast status for message {}: {:?}", short_id, e);
+                warn!(
+                    "Failed to broadcast status for message {}: {:?}",
+                    short_id, e
+                );
             }
         }
     }

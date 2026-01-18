@@ -629,6 +629,161 @@ describe('RelayPtyOrchestrator', () => {
       expect(sessionEndHandler.mock.calls[0][0].agentName).toBe('TestAgent');
     });
   });
+
+  describe('spawn with auto-send task', () => {
+    let fetchMock: ReturnType<typeof vi.fn>;
+    let originalFetch: typeof globalThis.fetch;
+
+    beforeEach(() => {
+      originalFetch = globalThis.fetch;
+      fetchMock = vi.fn();
+      globalThis.fetch = fetchMock;
+    });
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
+    it('sends initial task message after dashboard spawn succeeds', async () => {
+      // Mock successful spawn API response
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ success: true }),
+      });
+
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'LeadAgent',
+        command: 'claude',
+        dashboardPort: 3000,
+      });
+
+      await orchestrator.start();
+
+      // Access the private method via prototype - simulate spawn command detection
+      // We'll trigger it by emitting spawn command in output
+      mockProcess.stdout!.emit('data', Buffer.from(
+        '->relay:spawn Worker claude "Implement feature X"\n'
+      ));
+
+      // Wait for async spawn processing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Verify spawn API was called
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://localhost:3000/api/spawn',
+        expect.objectContaining({
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+
+      // Verify task message was sent via sendRelayCommand (which uses client.sendMessage)
+      const { RelayClient } = await import('./client.js');
+      const mockClientInstance = (RelayClient as any).mock.results[0].value;
+      expect(mockClientInstance.sendMessage).toHaveBeenCalledWith(
+        'Worker',
+        'Implement feature X',
+        'message',
+        undefined,
+        undefined
+      );
+    });
+
+    it('sends initial task message after onSpawn callback succeeds', async () => {
+      const onSpawnMock = vi.fn().mockResolvedValue(undefined);
+
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'LeadAgent',
+        command: 'claude',
+        onSpawn: onSpawnMock,
+      });
+
+      await orchestrator.start();
+
+      // Trigger spawn command
+      mockProcess.stdout!.emit('data', Buffer.from(
+        '->relay:spawn Developer claude "Fix the bug"\n'
+      ));
+
+      // Wait for async spawn processing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Verify onSpawn was called
+      expect(onSpawnMock).toHaveBeenCalledWith('Developer', 'claude', 'Fix the bug');
+
+      // Verify task message was sent
+      const { RelayClient } = await import('./client.js');
+      const mockClientInstance = (RelayClient as any).mock.results[0].value;
+      expect(mockClientInstance.sendMessage).toHaveBeenCalledWith(
+        'Developer',
+        'Fix the bug',
+        'message',
+        undefined,
+        undefined
+      );
+    });
+
+    it('does not send task message when task is empty', async () => {
+      const onSpawnMock = vi.fn().mockResolvedValue(undefined);
+
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'LeadAgent',
+        command: 'claude',
+        onSpawn: onSpawnMock,
+      });
+
+      await orchestrator.start();
+
+      // Clear any previous calls
+      const { RelayClient } = await import('./client.js');
+      const mockClientInstance = (RelayClient as any).mock.results[0].value;
+      mockClientInstance.sendMessage.mockClear();
+
+      // Trigger spawn command with empty task (using fenced format with whitespace only)
+      mockProcess.stdout!.emit('data', Buffer.from(
+        '->relay:spawn Worker claude ""\n'
+      ));
+
+      // Wait for async spawn processing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Verify no task message was sent (empty task)
+      expect(mockClientInstance.sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('does not double-send task for duplicate spawn commands', async () => {
+      const onSpawnMock = vi.fn().mockResolvedValue(undefined);
+
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'LeadAgent',
+        command: 'claude',
+        onSpawn: onSpawnMock,
+      });
+
+      await orchestrator.start();
+
+      const { RelayClient } = await import('./client.js');
+      const mockClientInstance = (RelayClient as any).mock.results[0].value;
+      mockClientInstance.sendMessage.mockClear();
+
+      // Trigger same spawn command twice
+      mockProcess.stdout!.emit('data', Buffer.from(
+        '->relay:spawn Worker claude "Task A"\n'
+      ));
+      mockProcess.stdout!.emit('data', Buffer.from(
+        '->relay:spawn Worker claude "Task A"\n'
+      ));
+
+      // Wait for async spawn processing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // onSpawn should only be called once (deduplication)
+      expect(onSpawnMock).toHaveBeenCalledTimes(1);
+
+      // Task message should only be sent once
+      expect(mockClientInstance.sendMessage).toHaveBeenCalledTimes(1);
+    });
+  });
 });
 
 describe('RelayPtyOrchestrator integration', () => {
