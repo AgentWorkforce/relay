@@ -169,13 +169,16 @@ async fn handle_connection(
 
                         let response = handle_request(request, &queue, &status_tx, &shutdown_tx).await;
 
-                        // For successful inject requests, ID is already tracked, broadcast handles responses
-                        // For failed inject requests (Error response), remove tracking and send error
-                        // For non-inject requests, send response immediately
+                        // Send the initial response to the client
+                        // For inject requests, this is the "Queued" status
+                        // Subsequent status updates (Injecting, Delivered, Failed) come via broadcast
                         match (&response, &inject_id) {
                             (InjectResponse::InjectResult { .. }, Some(_)) => {
-                                // Success - ID already tracked, broadcast will deliver responses
-                                // Don't send response here - broadcast will deliver it
+                                // Send the Queued response immediately
+                                let response_json = serde_json::to_string(&response)?;
+                                writer.write_all(response_json.as_bytes()).await?;
+                                writer.write_all(b"\n").await?;
+                                writer.flush().await?;
                             }
                             (InjectResponse::Error { .. }, Some(id)) => {
                                 // Inject request failed - remove tracking and send error
@@ -232,12 +235,8 @@ async fn handle_connection(
                                 if matches!(status, InjectStatus::Delivered | InjectStatus::Failed) {
                                     debug!("Message {} reached final state: {:?}", id, status);
                                     pending_ids.remove(id);
-
-                                    // Close connection if no more pending messages
-                                    if pending_ids.is_empty() {
-                                        debug!("All messages delivered, closing connection");
-                                        return Ok(());
-                                    }
+                                    // Keep connection open for subsequent messages
+                                    // Node.js orchestrator maintains a persistent socket
                                 }
                             }
                         }

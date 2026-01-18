@@ -148,6 +148,23 @@ export class Daemon {
   }
 
   /**
+   * Mark an agent as spawning (before HELLO completes).
+   * Messages sent to this agent will be queued for delivery after registration.
+   * Call this before starting the agent's PTY process.
+   */
+  markSpawning(agentName: string): void {
+    this.router.markSpawning(agentName);
+  }
+
+  /**
+   * Clear the spawning flag for an agent.
+   * Called when spawn fails or is cancelled (successful registration clears automatically).
+   */
+  clearSpawning(agentName: string): void {
+    this.router.clearSpawning(agentName);
+  }
+
+  /**
    * Initialize storage adapter (called during start).
    */
   private async initStorage(): Promise<void> {

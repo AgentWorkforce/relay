@@ -895,9 +895,12 @@ export class RelayPtyOrchestrator extends BaseWrapper {
    * Handle injection result response
    */
   private handleInjectResult(response: InjectResultResponse): void {
+    this.log(` handleInjectResult: id=${response.id.substring(0, 8)} status=${response.status}`);
+
     const pending = this.pendingInjections.get(response.id);
     if (!pending) {
       // Response for unknown message - might be from a previous session
+      this.log(` No pending injection found for ${response.id.substring(0, 8)}`);
       return;
     }
 
@@ -971,7 +974,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     // Create promise for result
     return new Promise<boolean>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.logError(` Inject timeout for ${msg.messageId.substring(0, 8)}`);
+        this.logError(` Inject timeout for ${msg.messageId.substring(0, 8)} after 30s`);
         this.pendingInjections.delete(msg.messageId);
         resolve(false); // Timeout = failure
       }, 30000); // 30 second timeout for injection
@@ -981,10 +984,10 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       // Send request
       this.sendSocketRequest(request)
         .then(() => {
-          this.log(` Socket request sent successfully`);
+          this.log(` Socket request sent for ${msg.messageId.substring(0, 8)}`);
         })
         .catch((err) => {
-          this.logError(` Socket request failed: ${err.message}`);
+          this.logError(` Socket request failed for ${msg.messageId.substring(0, 8)}: ${err.message}`);
           clearTimeout(timeout);
           this.pendingInjections.delete(msg.messageId);
           resolve(false);

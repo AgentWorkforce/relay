@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-18T16:45:09.421Z",
+  "lastUpdated": "2026-01-18T21:47:11.153Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -736,6 +736,13 @@
       "startedAt": "2026-01-18T16:44:27.199Z",
       "completedAt": "2026-01-18T16:45:09.409Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_s7r8z79gusy3.json"
+    },
+    "traj_pgb7sj7dvgb1": {
+      "title": "Investigate spawn timing issue where messages sent with spawn don't arrive",
+      "status": "completed",
+      "startedAt": "2026-01-18T21:46:03.754Z",
+      "completedAt": "2026-01-18T21:47:11.127Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_pgb7sj7dvgb1.json"
     }
   }
 }
