@@ -43,6 +43,9 @@ export type ClientState = 'DISCONNECTED' | 'CONNECTING' | 'HANDSHAKING' | 'READY
 
 export interface SyncOptions {
   timeoutMs?: number;
+  kind?: PayloadKind;
+  data?: Record<string, unknown>;
+  thread?: string;
 }
 
 export interface ClientConfig {
@@ -339,6 +342,7 @@ export class RelayClient {
 
     const correlationId = randomUUID();
     const timeoutMs = options.timeoutMs ?? 30000;
+    const kind = options.kind ?? 'message';
 
     return new Promise<AckPayload>((resolve, reject) => {
       const timeoutHandle = setTimeout(() => {
@@ -355,8 +359,10 @@ export class RelayClient {
         ts: Date.now(),
         to,
         payload: {
-          kind: 'message',
+          kind,
           body,
+          data: options.data,
+          thread: options.thread,
         },
         payload_meta: {
           sync: {

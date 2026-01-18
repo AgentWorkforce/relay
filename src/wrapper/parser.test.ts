@@ -301,6 +301,16 @@ Let me know if that works.
       expect(result.commands[0].body).toBe('Multi-line\nreview comments');
     });
 
+    it('handles await syntax in fenced messages', () => {
+      const input = '->relay:agent2 [await:5m] <<<\nPlease confirm\n>>>\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].sync?.blocking).toBe(true);
+      expect(result.commands[0].sync?.timeoutMs).toBe(300000);
+      expect(result.commands[0].body).toBe('Please confirm');
+    });
+
     it('handles cross-project thread syntax in fenced messages', () => {
       const input = '->relay:Backend [thread:frontend-app:auth-flow] <<<\nCan you check the session handling?\n>>>\n';
       const result = parser.parse(input);
@@ -1036,6 +1046,25 @@ Out3
         threadProject: 'frontend-app',
         body: 'Can you check session handling?',
       });
+    });
+
+    it('parses inline await tag with default timeout', () => {
+      const result = parser.parse('->relay:agent [await] Please confirm\n');
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0]).toMatchObject({
+        to: 'agent',
+        body: 'Please confirm',
+        sync: { blocking: true, timeoutMs: undefined },
+      });
+    });
+
+    it('parses inline await tag with timeout', () => {
+      const result = parser.parse('->relay:agent [await:30s] Please confirm\n');
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0]?.sync?.timeoutMs).toBe(30000);
+      expect(result.commands[0]?.sync?.blocking).toBe(true);
     });
 
     it('handles cross-project thread with cross-project target', () => {

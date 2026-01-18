@@ -954,12 +954,28 @@ export class TmuxWrapper extends BaseWrapper {
 
     // Convert ParsedMessageMetadata to SendMeta if present
     let sendMeta: SendMeta | undefined;
-    if (cmd.meta) {
+    if (cmd.meta || cmd.sync) {
       sendMeta = {
         importance: cmd.meta.importance,
         replyTo: cmd.meta.replyTo,
         requires_ack: cmd.meta.ackRequired,
+        sync: cmd.sync,
       };
+    }
+
+    if (cmd.sync?.blocking) {
+      this.client.sendAndWait(cmd.to, cmd.body, {
+        timeoutMs: cmd.sync.timeoutMs,
+        kind: cmd.kind,
+        data: cmd.data,
+        thread: cmd.thread,
+      }).then(() => {
+        this.sentMessageHashes.add(msgHash);
+        this.queuedMessageHashes.delete(msgHash);
+      }).catch((err) => {
+        this.logStderr(`sendAndWait failed for ${cmd.to}: ${err.message}`, true);
+      });
+      return;
     }
 
     const success = this.client.sendMessage(cmd.to, cmd.body, cmd.kind, cmd.data, cmd.thread, sendMeta);
