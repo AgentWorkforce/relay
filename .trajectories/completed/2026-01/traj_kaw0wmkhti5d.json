@@ -8,7 +8,7 @@
       "id": "agent-relay-506"
     }
   },
-  "status": "completed",
+  "status": "abandoned",
   "startedAt": "2026-01-17T08:30:10.206Z",
   "agents": [],
   "chapters": [],
@@ -16,10 +16,5 @@
   "filesChanged": [],
   "projectId": "/data/repos/relay",
   "tags": [],
-  "completedAt": "2026-01-17T08:30:50.174Z",
-  "retrospective": {
-    "summary": "Documented StatelessLeadCoordinator, Consensus, Continuity in INTEGRATION-GUIDE.md and created EXAMPLES.md with 3 scenarios",
-    "approach": "Standard approach",
-    "confidence": 0.9
-  }
+  "completedAt": "2026-01-18T16:44:23.163Z"
 }

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-17T08:30:10.220Z",
+  "lastUpdated": "2026-01-18T16:45:09.421Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -725,9 +725,17 @@
     },
     "traj_kaw0wmkhti5d": {
       "title": "Add Rust tests to CI workflow",
-      "status": "active",
+      "status": "abandoned",
       "startedAt": "2026-01-17T08:30:10.206Z",
-      "path": "/data/repos/relay/.trajectories/active/traj_kaw0wmkhti5d.json"
+      "completedAt": "2026-01-18T16:44:23.163Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_kaw0wmkhti5d.json"
+    },
+    "traj_s7r8z79gusy3": {
+      "title": "Fix relay-pty injection timeout - broadcast socket protocol redesign",
+      "status": "completed",
+      "startedAt": "2026-01-18T16:44:27.199Z",
+      "completedAt": "2026-01-18T16:45:09.409Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_s7r8z79gusy3.json"
     }
   }
 }
