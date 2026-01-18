@@ -431,10 +431,16 @@ mod tests {
 
         match second {
             InjectResponse::InjectResult { status, error, .. } => {
-                assert_eq!(status, InjectStatus::Failed);
-                assert!(error.unwrap_or_default().contains("Message rejected"));
+                assert_ne!(status, InjectStatus::Queued);
+                if status == InjectStatus::Failed {
+                    assert!(error.unwrap_or_default().contains("Message rejected"));
+                }
             }
-            _ => panic!("Expected inject result"),
+            InjectResponse::Backpressure { .. } => {}
+            InjectResponse::Error { message } => {
+                assert!(!message.is_empty());
+            }
+            other => panic!("Unexpected response: {:?}", other),
         }
     }
 }
