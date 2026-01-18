@@ -5,6 +5,8 @@
  * This script runs in a Docker container and tests each provider's
  * CLI OAuth flow to ensure URL extraction works correctly.
  *
+ * Uses relay-pty binary for PTY emulation (no node-pty dependency).
+ *
  * Exit codes:
  *   0 - All tests passed
  *   1 - One or more tests failed
@@ -13,8 +15,14 @@
  *   { "results": [...], "summary": { "passed": N, "failed": N } }
  */
 
-import * as pty from 'node-pty';
-import { writeFileSync } from 'fs';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { existsSync, writeFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // Provider configurations - must match CLI_AUTH_CONFIG in onboarding.ts
 const PROVIDERS = {
@@ -78,6 +86,32 @@ function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
 }
 
+/**
+ * Find the relay-pty binary path.
+ */
+function findRelayPtyBinary(): string | null {
+  // Get the package root (three levels up from scripts/test-cli-auth/)
+  const packageRoot = join(__dirname, '..', '..');
+
+  const candidates = [
+    // Primary: installed by postinstall from platform-specific binary
+    join(packageRoot, 'bin', 'relay-pty'),
+    // Development: local Rust build
+    join(packageRoot, 'relay-pty', 'target', 'release', 'relay-pty'),
+    join(packageRoot, 'relay-pty', 'target', 'debug', 'relay-pty'),
+    // Installed globally
+    '/usr/local/bin/relay-pty',
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
 async function testProvider(providerId: string): Promise<TestResult> {
   const config = PROVIDERS[providerId as keyof typeof PROVIDERS];
   if (!config) {
@@ -108,15 +142,29 @@ async function testProvider(providerId: string): Promise<TestResult> {
     output: '',
   };
 
+  const relayPtyPath = findRelayPtyBinary();
+  if (!relayPtyPath) {
+    result.error = 'relay-pty binary not found';
+    return result;
+  }
+
   return new Promise((resolve) => {
     const respondedPrompts = new Set<number>();
 
     try {
-      const proc = pty.spawn(config.command, config.args, {
-        name: 'xterm-256color',
-        cols: 120,
-        rows: 30,
+      const sessionName = `test-${randomUUID().substring(0, 8)}`;
+      const relayArgs = [
+        '--name', sessionName,
+        '--rows', '30',
+        '--cols', '120',
+        '--log-level', 'error',
+        '--', config.command,
+        ...config.args,
+      ];
+
+      const proc: ChildProcess = spawn(relayPtyPath, relayArgs, {
         env: { ...process.env, TERM: 'xterm-256color', NO_COLOR: '1' },
+        stdio: ['pipe', 'pipe', 'pipe'],
       });
 
       const timeout = setTimeout(() => {
@@ -126,7 +174,7 @@ async function testProvider(providerId: string): Promise<TestResult> {
         resolve(result);
       }, 15000);
 
-      proc.onData((data: string) => {
+      const handleData = (data: string) => {
         result.output += data;
         const cleanText = stripAnsi(data);
 
@@ -138,7 +186,7 @@ async function testProvider(providerId: string): Promise<TestResult> {
             result.promptsHandled++;
             setTimeout(() => {
               try {
-                proc.write(config.prompts[i].response);
+                proc.stdin?.write(config.prompts[i].response);
               } catch {
                 // Process may have exited
               }
@@ -152,9 +200,12 @@ async function testProvider(providerId: string): Promise<TestResult> {
           result.urlExtracted = match[1];
           result.urlValid = result.urlExtracted.startsWith(config.expectedUrlPrefix);
         }
-      });
+      };
 
-      proc.onExit(({ exitCode }) => {
+      proc.stdout?.on('data', (data: Buffer) => handleData(data.toString()));
+      proc.stderr?.on('data', (data: Buffer) => handleData(data.toString()));
+
+      proc.on('exit', (exitCode) => {
         clearTimeout(timeout);
         result.exitCode = exitCode;
         result.duration = Date.now() - startTime;
@@ -169,10 +220,17 @@ async function testProvider(providerId: string): Promise<TestResult> {
         resolve(result);
       });
 
+      proc.on('error', (err) => {
+        clearTimeout(timeout);
+        result.error = err.message;
+        result.duration = Date.now() - startTime;
+        resolve(result);
+      });
+
       // Send signal to continue after prompts are done
       setTimeout(() => {
         try {
-          proc.write('\n');
+          proc.stdin?.write('\n');
         } catch {
           // Ignore
         }

@@ -5,6 +5,8 @@
  * Tests the prompt handling and URL extraction for each provider
  * using mock CLIs that simulate the real interactive flows.
  *
+ * Uses relay-pty binary for PTY emulation (no node-pty dependency).
+ *
  * Usage:
  *   npx tsx scripts/test-cli-auth/test-oauth-flow.ts [provider]
  *
@@ -13,9 +15,11 @@
  *   npx tsx scripts/test-cli-auth/test-oauth-flow.ts claude    # Test Claude only
  */
 
-import * as pty from 'node-pty';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import path, { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import {
   CLI_AUTH_CONFIG,
   stripAnsiCodes,
@@ -24,7 +28,7 @@ import {
 } from '../../src/cloud/api/onboarding.js';
 
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname = dirname(__filename);
 
 interface TestResult {
   provider: string;
@@ -34,6 +38,32 @@ interface TestResult {
   successDetected: boolean;
   output: string;
   error?: string;
+}
+
+/**
+ * Find the relay-pty binary path.
+ */
+function findRelayPtyBinary(): string | null {
+  // Get the package root (three levels up from scripts/test-cli-auth/)
+  const packageRoot = join(__dirname, '..', '..');
+
+  const candidates = [
+    // Primary: installed by postinstall from platform-specific binary
+    join(packageRoot, 'bin', 'relay-pty'),
+    // Development: local Rust build
+    join(packageRoot, 'relay-pty', 'target', 'release', 'relay-pty'),
+    join(packageRoot, 'relay-pty', 'target', 'debug', 'relay-pty'),
+    // Installed globally
+    '/usr/local/bin/relay-pty',
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -62,6 +92,12 @@ async function testProvider(providerId: string): Promise<TestResult> {
     output: '',
   };
 
+  const relayPtyPath = findRelayPtyBinary();
+  if (!relayPtyPath) {
+    result.error = 'relay-pty binary not found';
+    return result;
+  }
+
   return new Promise((resolve) => {
     const mockCliPath = path.join(__dirname, 'mock-cli.sh');
     const respondedPrompts = new Set<string>();
@@ -71,12 +107,19 @@ async function testProvider(providerId: string): Promise<TestResult> {
                              providerId === 'openai' ? 'codex' :
                              providerId === 'google' ? 'gemini' : providerId;
 
-    const proc = pty.spawn('bash', [mockCliPath, mockProviderName, '0.2'], {
-      name: 'xterm-256color',
-      cols: 120,
-      rows: 30,
+    const sessionName = `test-${randomUUID().substring(0, 8)}`;
+    const relayArgs = [
+      '--name', sessionName,
+      '--rows', '30',
+      '--cols', '120',
+      '--log-level', 'error',
+      '--', 'bash', mockCliPath, mockProviderName, '0.2',
+    ];
+
+    const proc: ChildProcess = spawn(relayPtyPath, relayArgs, {
       cwd: __dirname,
       env: { ...process.env, TERM: 'xterm-256color' },
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
 
     const timeout = setTimeout(() => {
@@ -85,7 +128,7 @@ async function testProvider(providerId: string): Promise<TestResult> {
       resolve(result);
     }, 10000);
 
-    proc.onData((data: string) => {
+    const handleData = (data: string) => {
       result.output += data;
 
       // Check for matching prompts and auto-respond
@@ -95,7 +138,7 @@ async function testProvider(providerId: string): Promise<TestResult> {
         result.promptsResponded.push(matchingPrompt.description);
         setTimeout(() => {
           try {
-            proc.write(matchingPrompt.response);
+            proc.stdin?.write(matchingPrompt.response);
           } catch {
             // Process may have exited
           }
@@ -113,9 +156,12 @@ async function testProvider(providerId: string): Promise<TestResult> {
       if (matchesSuccessPattern(data, config.successPatterns)) {
         result.successDetected = true;
       }
-    });
+    };
 
-    proc.onExit(({ exitCode }) => {
+    proc.stdout?.on('data', (data: Buffer) => handleData(data.toString()));
+    proc.stderr?.on('data', (data: Buffer) => handleData(data.toString()));
+
+    proc.on('exit', (exitCode) => {
       clearTimeout(timeout);
 
       // Determine if test passed
@@ -129,10 +175,16 @@ async function testProvider(providerId: string): Promise<TestResult> {
       setTimeout(() => resolve(result), 100);
     });
 
+    proc.on('error', (err) => {
+      clearTimeout(timeout);
+      result.error = err.message;
+      resolve(result);
+    });
+
     // For mock CLI, send signal to continue after prompts
     setTimeout(() => {
       try {
-        proc.write('\n'); // Signal to continue
+        proc.stdin?.write('\n'); // Signal to continue
       } catch {
         // Ignore
       }

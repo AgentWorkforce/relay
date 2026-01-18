@@ -3,12 +3,18 @@
  *
  * Handles CLI-based authentication (claude, codex, etc.) via PTY.
  * Runs inside the workspace container where CLI tools are installed.
+ *
+ * Uses relay-pty binary for PTY emulation, providing better Node.js
+ * version compatibility by avoiding native module compilation.
  */
 
-import * as pty from 'node-pty';
-import * as crypto from 'crypto';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import * as fs from 'fs/promises';
 import * as os from 'os';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import * as crypto from 'crypto';
 import { createLogger } from '../resiliency/logger.js';
 import {
   CLI_AUTH_CONFIG,
@@ -22,11 +28,52 @@ import {
 } from '../shared/cli-auth-config.js';
 import { getUserDirectoryService } from './user-directory.js';
 
+// Get the directory where this module is located
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
 const logger = createLogger('cli-auth');
 
 // Re-export for consumers
 export { CLI_AUTH_CONFIG, getSupportedProviders };
 export type { CLIAuthConfig, PromptHandler };
+
+/**
+ * Find the relay-pty binary path.
+ * Returns null if not found.
+ */
+function findRelayPtyBinary(): string | null {
+  // Get the package root (two levels up from dist/daemon/)
+  const packageRoot = join(__dirname, '..', '..');
+
+  const candidates = [
+    // Primary: installed by postinstall from platform-specific binary
+    join(packageRoot, 'bin', 'relay-pty'),
+    // Development: local Rust build
+    join(packageRoot, 'relay-pty', 'target', 'release', 'relay-pty'),
+    join(packageRoot, 'relay-pty', 'target', 'debug', 'relay-pty'),
+    // Local build in cwd (for development)
+    join(process.cwd(), 'relay-pty', 'target', 'release', 'relay-pty'),
+    // Installed globally
+    '/usr/local/bin/relay-pty',
+    // In node_modules (when installed as dependency)
+    join(process.cwd(), 'node_modules', 'agent-relay', 'bin', 'relay-pty'),
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+/** Process wrapper interface for session management */
+interface ProcessWrapper {
+  write: (data: string) => void;
+  kill: () => void;
+}
 
 /**
  * Auth session state
@@ -48,7 +95,7 @@ interface AuthSession {
   output: string;
   promptsHandled: string[];
   createdAt: Date;
-  process?: pty.IPty;
+  process?: ProcessWrapper;
 }
 
 // Active sessions
@@ -127,6 +174,14 @@ export async function startCLIAuth(
     // No existing credentials, proceed with auth flow
   }
 
+  // Find relay-pty binary
+  const relayPtyPath = findRelayPtyBinary();
+  if (!relayPtyPath) {
+    session.status = 'error';
+    session.error = 'relay-pty binary not found. Build with: cd relay-pty && cargo build --release';
+    return session;
+  }
+
   // Use device flow args if requested and supported
   const args = options.useDeviceFlow && config.deviceFlowArgs
     ? config.deviceFlowArgs
@@ -176,10 +231,17 @@ export async function startCLIAuth(
       }
     }
 
-    const proc = pty.spawn(config.command, args, {
-      name: 'xterm-256color',
-      cols: 120,
-      rows: 30,
+    // Build relay-pty arguments
+    const relayArgs = [
+      '--name', `auth-${sessionId.substring(0, 8)}`,
+      '--rows', '30',
+      '--cols', '120',
+      '--log-level', 'error', // Suppress relay-pty logs
+      '--', config.command,
+      ...args,
+    ];
+
+    const proc: ChildProcess = spawn(relayPtyPath, relayArgs, {
       cwd: process.cwd(),
       env: {
         ...process.env,
@@ -189,10 +251,16 @@ export async function startCLIAuth(
         // Don't set BROWSER - let CLI fail to open browser and fall back to manual paste mode
         // Setting BROWSER: 'echo' caused CLI to think browser opened and wait for callback that never came
         DISPLAY: '',
-      } as Record<string, string>,
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    session.process = proc;
+    // Create wrapper for session management
+    const processWrapper: ProcessWrapper = {
+      write: (data: string) => proc.stdin?.write(data),
+      kill: () => proc.kill(),
+    };
+    session.process = processWrapper;
 
     // Timeout handler - give user plenty of time to complete OAuth flow
     // 5 minutes should be enough for even slow OAuth flows
@@ -206,11 +274,8 @@ export async function startCLIAuth(
       }
     }, config.waitTimeout + OAUTH_COMPLETION_TIMEOUT);
 
-    // Note: Removed keep-alive mechanism that sent ' \b' every 20 seconds
-    // It was interfering with OAuth code paste, causing "invalid code" errors
-    // CLIs like Claude don't actually need stdin keep-alive during auth wait
-
-    proc.onData((data: string) => {
+    // Handle data from PTY output
+    const handleData = (data: string) => {
       session.output += data;
       const cleanText = stripAnsiCodes(data);
 
@@ -242,7 +307,7 @@ export async function startCLIAuth(
           const delay = matchingPrompt.delay ?? 100;
           setTimeout(() => {
             try {
-              proc.write(matchingPrompt.response);
+              proc.stdin?.write(matchingPrompt.response);
             } catch {
               // Process may have exited
             }
@@ -300,9 +365,19 @@ export async function startCLIAuth(
           }
         }, 500);
       }
+    };
+
+    // Handle stdout (main PTY output)
+    proc.stdout?.on('data', (data: Buffer) => {
+      handleData(data.toString());
     });
 
-    proc.onExit(async ({ exitCode }) => {
+    // Handle stderr (relay-pty logs and some CLI output)
+    proc.stderr?.on('data', (data: Buffer) => {
+      handleData(data.toString());
+    });
+
+    proc.on('exit', async (exitCode) => {
       clearTimeout(timeout);
       clearTimeout(authUrlTimeout);
 
@@ -344,6 +419,15 @@ export async function startCLIAuth(
       }
 
       // Resolve in case we're still waiting
+      resolveAuthUrl();
+    });
+
+    proc.on('error', (err) => {
+      clearTimeout(timeout);
+      clearTimeout(authUrlTimeout);
+      session.status = 'error';
+      session.error = err.message;
+      logger.error('CLI process error', { error: err.message });
       resolveAuthUrl();
     });
   } catch (err) {

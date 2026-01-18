@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
 import { CloudPersistenceService } from './persistence.js';
-import type { SummaryEvent, SessionEndEvent } from '../../wrapper/pty-wrapper.js';
+import type { SummaryEvent, SessionEndEvent } from '../../wrapper/wrapper-types.js';
 
 // Mock the database
 const mockDb = {
