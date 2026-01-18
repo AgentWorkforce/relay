@@ -71,6 +71,30 @@
             "reasoning": "User (khaliqgant) explicitly requested sustainable long-term fix instead of quick win. Redirecting to implement full offline message queue with TTL, delivery status tracking, sender notifications, and production-ready quality. Higher effort but proper architectural solution."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1768743720432,
+          "type": "decision",
+          "content": "User questioning if full solution is over-engineered: User questioning if full solution is over-engineered",
+          "raw": {
+            "question": "User questioning if full solution is over-engineered",
+            "chosen": "User questioning if full solution is over-engineered",
+            "alternatives": [],
+            "reasoning": "khaliqgant concerned that comprehensive 4-5 day implementation may be too much. Sent comparison of quick fix (1-2 hours, basic queue, existing infrastructure) vs full solution (production-grade, new table, TTL, retry, metrics). Waiting for user decision on approach."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1768743869873,
+          "type": "decision",
+          "content": "Approved quick fix implementation with TDD: Approved quick fix implementation with TDD",
+          "raw": {
+            "question": "Approved quick fix implementation with TDD",
+            "chosen": "Approved quick fix implementation with TDD",
+            "alternatives": [],
+            "reasoning": "User chose quick fix over full solution. 1-2 hours implementation using existing infrastructure (registry + storage). TDD approach with tests written first, but tests and build run only in CI, not locally."
+          },
+          "significance": "high"
         }
       ]
     }
