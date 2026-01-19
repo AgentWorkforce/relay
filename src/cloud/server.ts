@@ -1038,6 +1038,13 @@ export async function createServer(): Promise<CloudServer> {
     await proxyToLocalDashboard(req, res, '/api/channels/users');
   });
 
+  // Bridge API - returns empty state in cloud mode
+  // Bridge is for local multi-project coordination; cloud workspaces are already separate
+  // MUST be before teamsRouter to avoid auth interception
+  app.get('/api/bridge', requireAuth, (_req, res) => {
+    res.json({ projects: [], messages: [], connected: false });
+  });
+
   // Test helper routes (only available in non-production)
   // MUST be before teamsRouter to avoid auth interception
   if (process.env.NODE_ENV !== 'production') {
