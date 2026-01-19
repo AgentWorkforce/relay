@@ -508,6 +508,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_spawn_empty_command_fails() {
+        let result = Pty::spawn(&[], None, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_get_terminal_size() {
         // This test may fail in CI without a terminal
         let size = get_terminal_size();

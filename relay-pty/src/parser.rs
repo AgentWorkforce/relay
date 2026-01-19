@@ -3,10 +3,11 @@
 //! Scans agent output for:
 //! - `<<<RELAY_JSON>>>...<<<END_RELAY>>>` structured JSON format (preferred)
 //! - `->relay:` commands (messages, broadcasts, spawns) - legacy format
+//! - `KIND: continuity` file-based messages via `->relay-file:ID`
 //! - Prompt patterns (to detect idle state)
 //! - `->pty:ready` explicit ready signal
 
-use crate::protocol::{ParsedRelayCommand, SyncMeta};
+use crate::protocol::{ContinuityCommand, ParsedRelayCommand};
 use regex::Regex;
 use serde::Deserialize;
 use std::sync::OnceLock;
@@ -37,8 +38,15 @@ struct RelayMessage {
     cli: Option<String>,
     /// Optional thread identifier
     thread: Option<String>,
-    /// Optional await timeout in milliseconds (for blocking messages)
-    await_timeout_ms: Option<u64>,
+}
+
+/// Structured continuity message (parsed from header format)
+#[derive(Debug, Default)]
+struct ContinuityMessage {
+    /// Action: save, load, uncertain
+    action: String,
+    /// Content body
+    content: String,
 }
 
 /// JSON format (for backwards compatibility)
@@ -64,45 +72,6 @@ struct JsonRelayMessage {
     /// Optional thread identifier
     #[serde(default)]
     thread: Option<String>,
-}
-
-/// Parse AWAIT header value into milliseconds.
-/// Supported formats:
-/// - `30s` - 30 seconds
-/// - `1m` - 1 minute
-/// - `1h` - 1 hour
-/// - `30000` - 30000 milliseconds (bare number)
-/// - Empty/`true` - uses default (returns Some(0) to indicate "use default")
-fn parse_await_value(value: &str) -> Option<u64> {
-    let value = value.trim();
-
-    // Empty or "true" means blocking with default timeout
-    if value.is_empty() || value.eq_ignore_ascii_case("true") {
-        return Some(0); // 0 means "use default timeout"
-    }
-
-    // Try parsing with time suffix
-    let len = value.len();
-    if len >= 2 {
-        let (num_str, suffix) = value.split_at(len - 1);
-        if let Ok(num) = num_str.parse::<u64>() {
-            match suffix.to_lowercase().as_str() {
-                "s" => return Some(num * 1000),
-                "m" => return Some(num * 60 * 1000),
-                "h" => return Some(num * 60 * 60 * 1000),
-                _ => {}
-            }
-        }
-    }
-
-    // Try parsing as bare number (milliseconds)
-    if let Ok(ms) = value.parse::<u64>() {
-        return Some(ms);
-    }
-
-    // Invalid format - still treat as blocking with default
-    debug!("Invalid AWAIT value '{}', using default timeout", value);
-    Some(0)
 }
 
 /// Parse simple header-based format:
@@ -140,9 +109,6 @@ fn parse_header_format(content: &str) -> Option<RelayMessage> {
                 "NAME" => msg.name = Some(value),
                 "CLI" => msg.cli = Some(value),
                 "THREAD" => msg.thread = Some(value),
-                "AWAIT" => {
-                    msg.await_timeout_ms = parse_await_value(&value);
-                }
                 _ => {} // Ignore unknown headers
             }
         }
@@ -162,6 +128,59 @@ fn parse_header_format(content: &str) -> Option<RelayMessage> {
     }
 
     Some(msg)
+}
+
+/// Parse header-based continuity format:
+/// ```
+/// KIND: continuity
+/// ACTION: save
+///
+/// Body content here
+/// ```
+fn parse_continuity_format(content: &str) -> Option<ContinuityMessage> {
+    let mut msg = ContinuityMessage::default();
+
+    let parts: Vec<&str> = content.splitn(2, "\n\n").collect();
+    let headers = parts.first()?;
+    let body = parts
+        .get(1)
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    let mut kind = None;
+
+    for line in headers.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some(colon_pos) = line.find(':') {
+            let key = line[..colon_pos].trim().to_uppercase();
+            let value = line[colon_pos + 1..].trim().to_string();
+
+            match key.as_str() {
+                "KIND" => kind = Some(value.to_lowercase()),
+                "ACTION" => msg.action = value.to_lowercase(),
+                _ => {}
+            }
+        }
+    }
+
+    if kind.as_deref() != Some("continuity") {
+        return None;
+    }
+
+    if msg.action.is_empty() {
+        return None;
+    }
+
+    msg.content = body;
+
+    match msg.action.as_str() {
+        "save" | "load" | "uncertain" => Some(msg),
+        _ => None,
+    }
 }
 
 /// Pattern for file-based relay format: ->relay-file:ID
@@ -274,10 +293,20 @@ impl OutputParser {
         }
 
         // Parse commands from buffer
-        let commands = self.parse_commands();
+        let parse_output = self.parse_commands();
 
-        if !commands.is_empty() {
-            debug!("Parsed {} commands from buffer", commands.len());
+        if !parse_output.commands.is_empty() {
+            debug!(
+                "Parsed {} relay commands from buffer",
+                parse_output.commands.len()
+            );
+        }
+
+        if !parse_output.continuity_commands.is_empty() {
+            debug!(
+                "Parsed {} continuity commands from buffer",
+                parse_output.continuity_commands.len()
+            );
         }
 
         // Check for prompt
@@ -291,15 +320,17 @@ impl OutputParser {
         }
 
         ParseResult {
-            commands,
+            commands: parse_output.commands,
+            continuity_commands: parse_output.continuity_commands,
             is_idle: is_idle || ready_signal,
             ready_signal,
         }
     }
 
-    /// Parse relay commands from the buffer
-    fn parse_commands(&mut self) -> Vec<ParsedRelayCommand> {
+    /// Parse relay and continuity commands from the buffer
+    fn parse_commands(&mut self) -> ParseOutput {
         let mut commands = Vec::new();
+        let mut continuity_commands = Vec::new();
         let search_text = &self.buffer[self.last_parsed_pos..];
 
         // Debug: show what we're searching
@@ -343,7 +374,16 @@ impl OutputParser {
                     continue;
                 };
 
-                // Try header format first (simpler, more robust)
+                // Try continuity header format first
+                if let Some(continuity) = parse_continuity_format(&content) {
+                    debug!("Parsed continuity header format successfully");
+                    let cmd = ContinuityCommand::new(continuity.action, continuity.content);
+                    continuity_commands.push(cmd);
+                    let _ = std::fs::remove_file(&file_path);
+                    continue;
+                }
+
+                // Try relay header format next (simpler, more robust)
                 let msg: Option<RelayMessage> = if let Some(parsed) = parse_header_format(&content)
                 {
                     debug!("Parsed header format successfully");
@@ -361,7 +401,6 @@ impl OutputParser {
                                 name: json_msg.name,
                                 cli: json_msg.cli,
                                 thread: json_msg.thread,
-                                await_timeout_ms: None, // JSON format doesn't support AWAIT yet
                             })
                         }
                         Err(e) => {
@@ -416,17 +455,6 @@ impl OutputParser {
                             if let Some(thread) = msg.thread {
                                 cmd = cmd.with_thread(thread);
                             }
-                            // Apply sync metadata if AWAIT header was present
-                            if let Some(timeout_ms) = msg.await_timeout_ms {
-                                cmd = cmd.with_sync(SyncMeta {
-                                    blocking: true,
-                                    timeout_ms: if timeout_ms > 0 {
-                                        Some(timeout_ms)
-                                    } else {
-                                        None
-                                    },
-                                });
-                            }
                             Some(cmd)
                         } else {
                             debug!("File message missing 'to' field");
@@ -444,9 +472,12 @@ impl OutputParser {
         }
 
         // If we found file commands, skip legacy parsing
-        if !commands.is_empty() {
+        if !commands.is_empty() || !continuity_commands.is_empty() {
             self.last_parsed_pos = self.buffer.len();
-            return commands;
+            return ParseOutput {
+                commands,
+                continuity_commands,
+            };
         }
 
         // Legacy format parsing below...
@@ -590,7 +621,10 @@ impl OutputParser {
             self.last_parsed_pos = self.buffer.len();
         }
 
-        commands
+        ParseOutput {
+            commands,
+            continuity_commands,
+        }
     }
 
     /// Check if the buffer ends with a prompt pattern
@@ -650,10 +684,18 @@ impl OutputParser {
 pub struct ParseResult {
     /// Parsed relay commands
     pub commands: Vec<ParsedRelayCommand>,
+    /// Parsed continuity commands
+    pub continuity_commands: Vec<ContinuityCommand>,
     /// Whether agent appears idle
     pub is_idle: bool,
     /// Whether explicit ready signal was received
     pub ready_signal: bool,
+}
+
+/// Intermediate output from parsing
+struct ParseOutput {
+    commands: Vec<ParsedRelayCommand>,
+    continuity_commands: Vec<ContinuityCommand>,
 }
 
 /// Strip ANSI escape sequences from text
@@ -1036,10 +1078,7 @@ mod tests {
         std::fs::create_dir_all(&temp_dir).unwrap();
 
         let msg_id = "spawn-worker";
-        let content = concat!(
-            "KIND: spawn\nNAME: TicTacToe\nCLI: claude\n\n",
-            "Play tic-tac-toe against the user.\nYou are O, they are X."
-        );
+        let content = "KIND: spawn\nNAME: TicTacToe\nCLI: claude\n\nPlay tic-tac-toe against the user.\nYou are O, they are X.";
         std::fs::write(temp_dir.join(msg_id), content).unwrap();
 
         let mut parser = OutputParser::with_outbox("Alice".to_string(), r"^> $", temp_dir.clone());
@@ -1059,178 +1098,102 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
-    // =========================================================================
-    // AWAIT header parsing tests
-    // =========================================================================
-
     #[test]
-    fn test_parse_await_value_seconds() {
-        assert_eq!(parse_await_value("30s"), Some(30_000));
-        assert_eq!(parse_await_value("1s"), Some(1_000));
-        assert_eq!(parse_await_value("120s"), Some(120_000));
-    }
-
-    #[test]
-    fn test_parse_await_value_minutes() {
-        assert_eq!(parse_await_value("1m"), Some(60_000));
-        assert_eq!(parse_await_value("5m"), Some(300_000));
-        assert_eq!(parse_await_value("30m"), Some(1_800_000));
-    }
-
-    #[test]
-    fn test_parse_await_value_hours() {
-        assert_eq!(parse_await_value("1h"), Some(3_600_000));
-        assert_eq!(parse_await_value("2h"), Some(7_200_000));
-    }
-
-    #[test]
-    fn test_parse_await_value_milliseconds() {
-        assert_eq!(parse_await_value("30000"), Some(30_000));
-        assert_eq!(parse_await_value("1000"), Some(1_000));
-        assert_eq!(parse_await_value("60000"), Some(60_000));
-    }
-
-    #[test]
-    fn test_parse_await_value_default() {
-        // Empty or "true" means blocking with default timeout (represented as 0)
-        assert_eq!(parse_await_value(""), Some(0));
-        assert_eq!(parse_await_value("true"), Some(0));
-        assert_eq!(parse_await_value("TRUE"), Some(0));
-        assert_eq!(parse_await_value("True"), Some(0));
-    }
-
-    #[test]
-    fn test_parse_await_value_invalid() {
-        // Invalid values still return Some(0) to indicate "blocking with default"
-        assert_eq!(parse_await_value("invalid"), Some(0));
-        assert_eq!(parse_await_value("30x"), Some(0));
-    }
-
-    #[test]
-    fn test_parse_header_format_with_await_seconds() {
-        let content = "TO: Bob\nAWAIT: 30s\n\nBlocking message";
-        let msg = parse_header_format(content).unwrap();
-        assert_eq!(msg.to, Some("Bob".to_string()));
-        assert_eq!(msg.await_timeout_ms, Some(30_000));
-    }
-
-    #[test]
-    fn test_parse_header_format_with_await_minutes() {
-        let content = "TO: Bob\nAWAIT: 1m\n\nBlocking message";
-        let msg = parse_header_format(content).unwrap();
-        assert_eq!(msg.await_timeout_ms, Some(60_000));
-    }
-
-    #[test]
-    fn test_parse_header_format_with_await_default() {
-        let content = "TO: Bob\nAWAIT: true\n\nBlocking message with default timeout";
-        let msg = parse_header_format(content).unwrap();
-        assert_eq!(msg.await_timeout_ms, Some(0)); // 0 means default timeout
-    }
-
-    #[test]
-    fn test_parse_header_format_no_await() {
-        let content = "TO: Bob\n\nNon-blocking message";
-        let msg = parse_header_format(content).unwrap();
-        assert_eq!(msg.await_timeout_ms, None);
-    }
-
-    #[test]
-    fn test_file_relay_with_await() {
-        let temp_dir = std::env::temp_dir().join("relay-test-await");
+    fn test_file_relay_continuity_save() {
+        let temp_dir = std::env::temp_dir().join("relay-test-continuity-save");
         std::fs::create_dir_all(&temp_dir).unwrap();
 
-        let msg_id = "test-await-001";
-        let content = "TO: Bob\nAWAIT: 30s\n\nYour turn. Play a card.";
+        let msg_id = "continuity";
+        let content = "KIND: continuity\nACTION: save\n\nCurrent task: testing continuity parsing.";
         std::fs::write(temp_dir.join(msg_id), content).unwrap();
 
         let mut parser = OutputParser::with_outbox("Alice".to_string(), r"^> $", temp_dir.clone());
         let input = format!("->relay-file:{}\n", msg_id);
+        let result = parser.process(input.as_bytes());
+
+        assert_eq!(result.continuity_commands.len(), 1);
+        assert_eq!(result.continuity_commands[0].action, "save");
+        assert!(result.continuity_commands[0]
+            .content
+            .contains("testing continuity parsing"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_file_relay_continuity_load() {
+        let temp_dir = std::env::temp_dir().join("relay-test-continuity-load");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let msg_id = "load";
+        let content = "KIND: continuity\nACTION: load\n";
+        std::fs::write(temp_dir.join(msg_id), content).unwrap();
+
+        let mut parser = OutputParser::with_outbox("Alice".to_string(), r"^> $", temp_dir.clone());
+        let input = format!("->relay-file:{}\n", msg_id);
+        let result = parser.process(input.as_bytes());
+
+        assert_eq!(result.continuity_commands.len(), 1);
+        assert_eq!(result.continuity_commands[0].action, "load");
+        assert_eq!(result.continuity_commands[0].content, "");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_file_relay_continuity_uncertain() {
+        let temp_dir = std::env::temp_dir().join("relay-test-continuity-uncertain");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let msg_id = "uncertain";
+        let content = "KIND: continuity\nACTION: uncertain\n\nAPI rate limit handling unclear.";
+        std::fs::write(temp_dir.join(msg_id), content).unwrap();
+
+        let mut parser = OutputParser::with_outbox("Alice".to_string(), r"^> $", temp_dir.clone());
+        let input = format!("->relay-file:{}\n", msg_id);
+        let result = parser.process(input.as_bytes());
+
+        assert_eq!(result.continuity_commands.len(), 1);
+        assert_eq!(result.continuity_commands[0].action, "uncertain");
+        assert!(result.continuity_commands[0].content.contains("rate limit"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_parse_header_format_defaults_to_message() {
+        let content = "TO: Bob\n\nHello there!";
+        let msg = parse_header_format(content).unwrap();
+        assert_eq!(msg.kind, "message");
+        assert_eq!(msg.to, Some("Bob".to_string()));
+        assert_eq!(msg.body, Some("Hello there!".to_string()));
+    }
+
+    #[test]
+    fn test_parse_continuity_format_rejects_invalid_action() {
+        let content = "KIND: continuity\nACTION: maybe\n\nNot a valid action";
+        let msg = parse_continuity_format(content);
+        assert!(msg.is_none());
+    }
+
+    #[test]
+    fn test_file_relay_skips_legacy_parsing_when_file_found() {
+        let temp_dir = std::env::temp_dir().join("relay-test-file-priority");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let msg_id = "test-file-priority";
+        let content = "TO: Bob\n\nHello from file.";
+        std::fs::write(temp_dir.join(msg_id), content).unwrap();
+
+        let mut parser = OutputParser::with_outbox("Alice".to_string(), r"^> $", temp_dir.clone());
+        let input = format!(
+            "->relay-file:{}\n->relay:Charlie This should be ignored.\n",
+            msg_id
+        );
         let result = parser.process(input.as_bytes());
 
         assert_eq!(result.commands.len(), 1);
         assert_eq!(result.commands[0].to, "Bob");
-        assert!(result.commands[0].body.contains("Your turn"));
-
-        // Check sync metadata
-        let sync = result.commands[0]
-            .sync
-            .as_ref()
-            .expect("sync should be present");
-        assert!(sync.blocking);
-        assert_eq!(sync.timeout_ms, Some(30_000));
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_file_relay_with_await_default_timeout() {
-        let temp_dir = std::env::temp_dir().join("relay-test-await-default");
-        std::fs::create_dir_all(&temp_dir).unwrap();
-
-        let msg_id = "test-await-default";
-        let content = "TO: Bob\nAWAIT: true\n\nBlocking with default timeout";
-        std::fs::write(temp_dir.join(msg_id), content).unwrap();
-
-        let mut parser = OutputParser::with_outbox("Alice".to_string(), r"^> $", temp_dir.clone());
-        let input = format!("->relay-file:{}\n", msg_id);
-        let result = parser.process(input.as_bytes());
-
-        assert_eq!(result.commands.len(), 1);
-
-        // Check sync metadata - timeout_ms should be None for default
-        let sync = result.commands[0]
-            .sync
-            .as_ref()
-            .expect("sync should be present");
-        assert!(sync.blocking);
-        assert_eq!(sync.timeout_ms, None); // 0 converted to None
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_file_relay_with_await_and_thread() {
-        let temp_dir = std::env::temp_dir().join("relay-test-await-thread");
-        std::fs::create_dir_all(&temp_dir).unwrap();
-
-        let msg_id = "test-await-thread";
-        let content = "TO: Bob\nAWAIT: 60s\nTHREAD: game-123\n\nYour move in the game";
-        std::fs::write(temp_dir.join(msg_id), content).unwrap();
-
-        let mut parser = OutputParser::with_outbox("Alice".to_string(), r"^> $", temp_dir.clone());
-        let input = format!("->relay-file:{}\n", msg_id);
-        let result = parser.process(input.as_bytes());
-
-        assert_eq!(result.commands.len(), 1);
-        assert_eq!(result.commands[0].thread, Some("game-123".to_string()));
-
-        let sync = result.commands[0]
-            .sync
-            .as_ref()
-            .expect("sync should be present");
-        assert!(sync.blocking);
-        assert_eq!(sync.timeout_ms, Some(60_000));
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_file_relay_without_await() {
-        let temp_dir = std::env::temp_dir().join("relay-test-no-await");
-        std::fs::create_dir_all(&temp_dir).unwrap();
-
-        let msg_id = "test-no-await";
-        let content = "TO: Bob\n\nFire and forget message";
-        std::fs::write(temp_dir.join(msg_id), content).unwrap();
-
-        let mut parser = OutputParser::with_outbox("Alice".to_string(), r"^> $", temp_dir.clone());
-        let input = format!("->relay-file:{}\n", msg_id);
-        let result = parser.process(input.as_bytes());
-
-        assert_eq!(result.commands.len(), 1);
-        // No sync metadata for non-blocking messages
-        assert!(result.commands[0].sync.is_none());
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

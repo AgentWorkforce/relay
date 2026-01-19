@@ -2,7 +2,7 @@
  * Unit tests for AgentSpawner (node-pty based)
  */
 
-import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
 import fs from 'node:fs';
 import { AgentSpawner, readWorkersMetadata, getWorkerLogsDir } from './spawner.js';
 
@@ -62,12 +62,25 @@ const readFileSyncMock = vi.spyOn(fs, 'readFileSync');
 const writeFileSyncMock = vi.spyOn(fs, 'writeFileSync');
 const mkdirSyncMock = vi.spyOn(fs, 'mkdirSync');
 let waitForAgentRegistrationMock: ReturnType<typeof vi.spyOn>;
+let originalEnv: Record<string, string | undefined>;
 
 describe('AgentSpawner', () => {
   const projectRoot = PROJECT_ROOT;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    originalEnv = {
+      GH_TOKEN: process.env.GH_TOKEN,
+      CLOUD_API_URL: process.env.CLOUD_API_URL,
+      AGENT_RELAY_CLOUD_URL: process.env.AGENT_RELAY_CLOUD_URL,
+      WORKSPACE_ID: process.env.WORKSPACE_ID,
+      WORKSPACE_TOKEN: process.env.WORKSPACE_TOKEN,
+    };
+    delete process.env.GH_TOKEN;
+    delete process.env.CLOUD_API_URL;
+    delete process.env.AGENT_RELAY_CLOUD_URL;
+    delete process.env.WORKSPACE_ID;
+    delete process.env.WORKSPACE_TOKEN;
     // Mock file system calls with path-aware responses
     existsSyncMock.mockImplementation((filePath: string) => {
       // Snippet files don't exist in test environment
@@ -92,6 +105,16 @@ describe('AgentSpawner', () => {
     waitForAgentRegistrationMock = vi
       .spyOn(AgentSpawner.prototype as any, 'waitForAgentRegistration')
       .mockResolvedValue(true);
+  });
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries(originalEnv)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
   });
 
   it('spawns a worker and tracks it with PID', async () => {
@@ -204,6 +227,22 @@ describe('AgentSpawner', () => {
     expect(result.error).toContain('failed to register');
     expect(mockPtyOrchestrator.kill).toHaveBeenCalled();
     expect(spawner.hasWorker('Late')).toBe(false);
+  });
+
+  it('passes GH_TOKEN from parent env to spawned agent', async () => {
+    process.env.GH_TOKEN = 'gh-token-123';
+    const { RelayPtyOrchestrator } = await import('../wrapper/relay-pty-orchestrator.js');
+    const RelayPtyOrchestratorMock = RelayPtyOrchestrator as Mock;
+
+    const spawner = new AgentSpawner(projectRoot);
+    await spawner.spawn({
+      name: 'TokenAgent',
+      cli: 'claude',
+      task: '',
+    });
+
+    const constructorCall = RelayPtyOrchestratorMock.mock.calls[RelayPtyOrchestratorMock.mock.calls.length - 1][0];
+    expect(constructorCall.env?.GH_TOKEN).toBe('gh-token-123');
   });
 
   it('releases a worker and removes tracking', async () => {
