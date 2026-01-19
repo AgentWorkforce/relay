@@ -639,7 +639,7 @@ export class AgentSpawner {
         try {
           // Wait for the CLI to be ready (has produced output AND is idle)
           // This is more reliable than a random sleep because it waits for actual signals
-          if (useRelayPty && 'waitUntilCliReady' in pty) {
+          if ('waitUntilCliReady' in pty) {
             const orchestrator = pty as RelayPtyOrchestrator;
             const ready = await orchestrator.waitUntilCliReady(15000, 100);
             if (!ready) {
