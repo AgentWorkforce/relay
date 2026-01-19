@@ -176,16 +176,21 @@ export function SpawnModal({
 
   // Fetch connected providers when modal opens in cloud mode
   useEffect(() => {
-    if (!isOpen || !isCloudMode) {
+    if (!isOpen || !isCloudMode || !workspaceId) {
       return;
     }
 
     const fetchProviders = async () => {
       setIsLoadingCredentials(true);
       try {
-        const result = await cloudApi.getMe();
-        if (result.success && result.data.connectedProviders) {
-          const providers = new Set(result.data.connectedProviders.map(p => p.provider));
+        // Get workspace-specific provider connection status
+        const result = await cloudApi.getProviders(workspaceId);
+        if (result.success && result.data.providers) {
+          const providers = new Set(
+            result.data.providers
+              .filter(p => p.isConnected)
+              .map(p => p.id)
+          );
           setConnectedProviders(providers);
         }
       } catch (err) {
@@ -196,7 +201,7 @@ export function SpawnModal({
     };
 
     fetchProviders();
-  }, [isOpen, isCloudMode]);
+  }, [isOpen, isCloudMode, workspaceId]);
 
   const SPEAK_ON_OPTIONS: { value: SpeakOnTrigger; label: string; description: string }[] = [
     { value: 'EXPLICIT_ASK', label: 'Explicit Ask', description: 'When directly asked' },

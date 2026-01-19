@@ -7,7 +7,7 @@
 
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
-import { eq, and, sql, desc, lt, gt, isNull, isNotNull, count, inArray } from 'drizzle-orm';
+import { eq, and, or, sql, desc, lt, isNull, isNotNull, inArray } from 'drizzle-orm';
 import * as schema from './schema.js';
 import { getConfig } from '../config.js';
 import { DEFAULT_POOL_CONFIG } from './bulk-ingest.js';
@@ -325,12 +325,23 @@ export const githubInstallationQueries: GitHubInstallationQueries = {
 
 // ============================================================================
 // Credential Queries (connected provider registry - no token storage)
+// Credentials are workspace-scoped: tokens are stored on workspace daemons
 // ============================================================================
 
 export interface CredentialQueries {
+  /** Get all credentials for a user (across all workspaces) */
   findByUserId(userId: string): Promise<schema.Credential[]>;
+  /** Get all credentials for a user in a specific workspace */
+  findByUserAndWorkspace(userId: string, workspaceId: string): Promise<schema.Credential[]>;
+  /** Get a specific provider credential for a user in a workspace */
+  findByUserWorkspaceAndProvider(userId: string, workspaceId: string, provider: string): Promise<schema.Credential | null>;
+  /** @deprecated Use findByUserWorkspaceAndProvider for workspace-scoped queries */
   findByUserAndProvider(userId: string, provider: string): Promise<schema.Credential | null>;
+  /** Upsert credential (unique on userId + provider + workspaceId) */
   upsert(data: schema.NewCredential): Promise<schema.Credential>;
+  /** Delete credential for a specific workspace */
+  deleteForWorkspace(userId: string, workspaceId: string, provider: string): Promise<void>;
+  /** @deprecated Use deleteForWorkspace for workspace-scoped deletions */
   delete(userId: string, provider: string): Promise<void>;
 }
 
@@ -340,7 +351,37 @@ export const credentialQueries: CredentialQueries = {
     return db.select().from(schema.credentials).where(eq(schema.credentials.userId, userId));
   },
 
+  async findByUserAndWorkspace(userId: string, workspaceId: string): Promise<schema.Credential[]> {
+    const db = getDb();
+    // Return credentials for this workspace OR legacy credentials (NULL workspace_id)
+    // This ensures backward compatibility with existing credentials
+    return db
+      .select()
+      .from(schema.credentials)
+      .where(and(
+        eq(schema.credentials.userId, userId),
+        or(
+          eq(schema.credentials.workspaceId, workspaceId),
+          isNull(schema.credentials.workspaceId)
+        )
+      ));
+  },
+
+  async findByUserWorkspaceAndProvider(userId: string, workspaceId: string, provider: string): Promise<schema.Credential | null> {
+    const db = getDb();
+    const result = await db
+      .select()
+      .from(schema.credentials)
+      .where(and(
+        eq(schema.credentials.userId, userId),
+        eq(schema.credentials.workspaceId, workspaceId),
+        eq(schema.credentials.provider, provider)
+      ));
+    return result[0] ?? null;
+  },
+
   async findByUserAndProvider(userId: string, provider: string): Promise<schema.Credential | null> {
+    // Legacy: returns first match (any workspace) - use findByUserWorkspaceAndProvider instead
     const db = getDb();
     const result = await db
       .select()
@@ -355,7 +396,7 @@ export const credentialQueries: CredentialQueries = {
       .insert(schema.credentials)
       .values(data)
       .onConflictDoUpdate({
-        target: [schema.credentials.userId, schema.credentials.provider],
+        target: [schema.credentials.userId, schema.credentials.provider, schema.credentials.workspaceId],
         set: {
           scopes: data.scopes,
           providerAccountId: data.providerAccountId,
@@ -367,7 +408,19 @@ export const credentialQueries: CredentialQueries = {
     return result[0];
   },
 
+  async deleteForWorkspace(userId: string, workspaceId: string, provider: string): Promise<void> {
+    const db = getDb();
+    await db
+      .delete(schema.credentials)
+      .where(and(
+        eq(schema.credentials.userId, userId),
+        eq(schema.credentials.workspaceId, workspaceId),
+        eq(schema.credentials.provider, provider)
+      ));
+  },
+
   async delete(userId: string, provider: string): Promise<void> {
+    // Legacy: deletes all workspace credentials for this provider
     const db = getDb();
     await db
       .delete(schema.credentials)

@@ -113,6 +113,7 @@ type ProviderType = keyof typeof PROVIDERS;
 // In-memory store for active device flows (use Redis in production)
 interface ActiveDeviceFlow {
   userId: string;
+  workspaceId: string;
   provider: ProviderType;
   deviceCode: string;
   userCode: string;
@@ -163,12 +164,22 @@ async function deleteFlow(flowId: string): Promise<void> {
 /**
  * GET /api/providers
  * List all providers with connection status
+ *
+ * Query: ?workspaceId=xxx (optional - if provided, shows workspace-specific connection status)
  */
 providersRouter.get('/', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
+  const { workspaceId } = req.query;
 
   try {
-    const credentials = await db.credentials.findByUserId(userId);
+    // If workspaceId is provided, get workspace-specific credentials
+    // Otherwise get all user credentials (legacy behavior for backwards compatibility)
+    let credentials;
+    if (workspaceId && typeof workspaceId === 'string') {
+      credentials = await db.credentials.findByUserAndWorkspace(userId, workspaceId);
+    } else {
+      credentials = await db.credentials.findByUserId(userId);
+    }
 
     const providers = Object.entries(PROVIDERS).map(([id, provider]) => {
       const credential = credentials.find((c) => c.provider === id);
@@ -186,8 +197,9 @@ providersRouter.get('/', async (req: Request, res: Response) => {
       };
     });
 
-    // Add GitHub (always connected via signup)
-    const githubCred = credentials.find((c) => c.provider === 'github');
+    // Add GitHub (always connected via signup - not workspace-specific)
+    const allCredentials = await db.credentials.findByUserId(userId);
+    const githubCred = allCredentials.find((c) => c.provider === 'github');
     providers.unshift({
       id: 'github',
       name: 'GitHub',
@@ -211,11 +223,18 @@ providersRouter.get('/', async (req: Request, res: Response) => {
 /**
  * POST /api/providers/:provider/connect
  * Start auth flow for a provider (device flow or CLI instructions)
+ *
+ * Body: { workspaceId: string }
  */
 providersRouter.post('/:provider/connect', async (req: Request, res: Response) => {
   const { provider } = req.params as { provider: ProviderType };
   const userId = req.session.userId!;
+  const { workspaceId } = req.body;
   const config = getConfig();
+
+  if (!workspaceId || typeof workspaceId !== 'string') {
+    return res.status(400).json({ error: 'workspaceId is required' });
+  }
 
   const providerConfig = PROVIDERS[provider];
   if (!providerConfig) {
@@ -286,6 +305,7 @@ providersRouter.post('/:provider/connect', async (req: Request, res: Response) =
 
     const flow: ActiveDeviceFlow = {
       userId,
+      workspaceId,
       provider,
       deviceCode: data.device_code,
       userCode: data.user_code,
@@ -319,10 +339,17 @@ providersRouter.post('/:provider/connect', async (req: Request, res: Response) =
  * POST /api/providers/:provider/verify
  * Verify CLI-based auth completed (for Claude, Codex)
  * User calls this after running the CLI login command
+ *
+ * Body: { workspaceId: string, email?: string }
  */
 providersRouter.post('/:provider/verify', async (req: Request, res: Response) => {
   const { provider } = req.params as { provider: ProviderType };
   const userId = req.session.userId!;
+  const { workspaceId, email } = req.body;
+
+  if (!workspaceId || typeof workspaceId !== 'string') {
+    return res.status(400).json({ error: 'workspaceId is required' });
+  }
 
   const providerConfig = PROVIDERS[provider];
   if (!providerConfig || providerConfig.authStrategy !== 'cli') {
@@ -334,13 +361,14 @@ providersRouter.post('/:provider/verify', async (req: Request, res: Response) =>
   // In production, we'd verify by making a test API call with the credentials
 
   try {
-    // Mark as connected (tokens are not stored centrally - CLI tools
-    // authenticate directly on workspace instances)
+    // Mark as connected for this specific workspace
+    // (tokens are not stored centrally - CLI tools authenticate directly on workspace instances)
     await db.credentials.upsert({
       userId,
+      workspaceId,
       provider,
       scopes: [], // CLI auth doesn't use scopes
-      providerAccountEmail: req.body.email, // User can optionally provide
+      providerAccountEmail: email, // User can optionally provide
     });
 
     res.json({
@@ -357,14 +385,20 @@ providersRouter.post('/:provider/verify', async (req: Request, res: Response) =>
 /**
  * POST /api/providers/:provider/api-key
  * Connect a provider using an API key (for cloud-hosted workspaces)
+ *
+ * Body: { apiKey: string, workspaceId: string }
  */
 providersRouter.post('/:provider/api-key', async (req: Request, res: Response) => {
   const { provider } = req.params as { provider: ProviderType };
   const userId = req.session.userId!;
-  const { apiKey } = req.body;
+  const { apiKey, workspaceId } = req.body;
 
   if (!apiKey || typeof apiKey !== 'string') {
     return res.status(400).json({ error: 'API key is required' });
+  }
+
+  if (!workspaceId || typeof workspaceId !== 'string') {
+    return res.status(400).json({ error: 'workspaceId is required' });
   }
 
   const providerConfig = PROVIDERS[provider];
@@ -409,21 +443,22 @@ providersRouter.post('/:provider/api-key', async (req: Request, res: Response) =
       return res.status(400).json({ error: 'Invalid API key' });
     }
 
-    // Mark provider as connected (tokens are not stored centrally - CLI tools
-    // authenticate directly on workspace instances)
+    // Mark provider as connected for this specific workspace
     const scopes = isDeviceFlowProvider(providerConfig) ? providerConfig.scopes : [];
     await db.credentials.upsert({
       userId,
+      workspaceId,
       provider,
       scopes,
     });
 
-    await setProviderApiKeyEnv(userId, provider, apiKey);
+    // Set API key env var on the specific workspace
+    await setProviderApiKeyEnv(userId, provider, apiKey, workspaceId);
 
     res.json({
       success: true,
       message: `${providerConfig.displayName} connected`,
-      note: 'API key validated. Configure this key on your workspace for usage.',
+      note: 'API key validated and configured on workspace.',
     });
   } catch (error) {
     console.error(`Error connecting ${provider} with API key:`, error);
@@ -465,18 +500,32 @@ providersRouter.get('/:provider/status/:flowId', (req: Request, res: Response) =
 
 /**
  * DELETE /api/providers/:provider
- * Disconnect a provider
+ * Disconnect a provider from a specific workspace
+ *
+ * Query: ?workspaceId=xxx
  */
 providersRouter.delete('/:provider', async (req: Request, res: Response) => {
-  const { provider } = req.params;
+  const providerParam = req.params.provider;
   const userId = req.session.userId!;
+  const workspaceIdParam = req.query.workspaceId;
 
-  if (provider === 'github') {
+  if (typeof providerParam !== 'string') {
+    return res.status(400).json({ error: 'Invalid provider' });
+  }
+
+  if (providerParam === 'github') {
     return res.status(400).json({ error: 'Cannot disconnect GitHub' });
   }
 
+  if (!workspaceIdParam || typeof workspaceIdParam !== 'string') {
+    return res.status(400).json({ error: 'workspaceId query parameter is required' });
+  }
+
+  const workspaceId = workspaceIdParam;
+  const provider = providerParam;
+
   try {
-    await db.credentials.delete(userId, provider);
+    await db.credentials.deleteForWorkspace(userId, workspaceId, provider);
     res.json({ success: true });
   } catch (error) {
     console.error(`Error disconnecting ${provider}:`, error);
@@ -573,7 +622,7 @@ async function pollForToken(flowId: string, provider: ProviderType, clientId: st
       }
 
       // Success! Store tokens
-      await storeProviderTokens(current.userId, provider, {
+      await storeProviderTokens(current.userId, current.workspaceId, provider, {
         accessToken: data.access_token!,
         refreshToken: data.refresh_token,
         expiresIn: data.expires_in,
@@ -607,6 +656,7 @@ async function pollForToken(flowId: string, provider: ProviderType, clientId: st
  */
 async function storeProviderTokens(
   userId: string,
+  workspaceId: string,
   provider: ProviderType,
   tokens: {
     accessToken: string;
@@ -634,9 +684,10 @@ async function storeProviderTokens(
     }
   }
 
-  // Mark provider as connected (without storing tokens)
+  // Mark provider as connected for this specific workspace (without storing tokens)
   await db.credentials.upsert({
     userId,
+    workspaceId,
     provider,
     scopes: tokens.scope?.split(' '),
     providerAccountId: userInfo.id,

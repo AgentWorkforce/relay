@@ -97,6 +97,9 @@ export const githubInstallationsRelations = relations(githubInstallations, ({ on
 export const credentials = pgTable('credentials', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  // Workspace-specific credentials - tokens are stored on the workspace daemon
+  // Note: workspaceId uses a raw SQL reference to avoid circular dependency with workspaces table
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
   provider: varchar('provider', { length: 50 }).notNull(),
   scopes: text('scopes').array(),
   providerAccountId: varchar('provider_account_id', { length: 255 }),
@@ -104,14 +107,20 @@ export const credentials = pgTable('credentials', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
-  userProviderIdx: unique('credentials_user_provider_unique').on(table.userId, table.provider),
+  // Unique constraint: one credential per provider per workspace per user
+  userProviderWorkspaceIdx: unique('credentials_user_provider_workspace_unique').on(table.userId, table.provider, table.workspaceId),
   userIdIdx: index('idx_credentials_user_id').on(table.userId),
+  workspaceIdIdx: index('idx_credentials_workspace_id').on(table.workspaceId),
 }));
 
 export const credentialsRelations = relations(credentials, ({ one }) => ({
   user: one(users, {
     fields: [credentials.userId],
     references: [users.id],
+  }),
+  workspace: one(workspaces, {
+    fields: [credentials.workspaceId],
+    references: [workspaces.id],
   }),
 }));
 
@@ -190,6 +199,7 @@ export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
   }),
   members: many(workspaceMembers),
   repositories: many(repositories),
+  credentials: many(credentials),
 }));
 
 // ============================================================================

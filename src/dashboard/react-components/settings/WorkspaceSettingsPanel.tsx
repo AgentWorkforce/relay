@@ -168,10 +168,10 @@ export function WorkspaceSettingsPanel({
       setIsLoading(true);
       setError(null);
 
-      const [wsResult, reposResult, userResult] = await Promise.all([
+      const [wsResult, reposResult, providersResult] = await Promise.all([
         cloudApi.getWorkspaceDetails(workspaceId),
         cloudApi.getRepos(),
-        cloudApi.getMe(),
+        cloudApi.getProviders(workspaceId),
       ]);
 
       if (wsResult.success) {
@@ -187,19 +187,21 @@ export function WorkspaceSettingsPanel({
         setAvailableRepos(reposResult.data.repositories);
       }
 
-      // Mark connected providers from user credentials (not workspace config)
-      if (userResult.success) {
+      // Mark connected providers for this workspace
+      if (providersResult.success) {
         // Map backend IDs to frontend IDs for consistency
         const BACKEND_TO_FRONTEND_MAP: Record<string, string> = {
           openai: 'codex', // Backend stores 'openai', frontend uses 'codex'
         };
         const connected: Record<string, boolean> = {};
-        userResult.data.connectedProviders.forEach((p) => {
-          connected[p.provider] = true;
-          // Also mark the frontend ID as connected if there's a mapping
-          const frontendId = BACKEND_TO_FRONTEND_MAP[p.provider];
-          if (frontendId) {
-            connected[frontendId] = true;
+        providersResult.data.providers.forEach((p) => {
+          if (p.isConnected) {
+            connected[p.id] = true;
+            // Also mark the frontend ID as connected if there's a mapping
+            const frontendId = BACKEND_TO_FRONTEND_MAP[p.id];
+            if (frontendId) {
+              connected[frontendId] = true;
+            }
           }
         });
         setProviderStatus(connected);
