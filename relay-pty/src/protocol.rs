@@ -84,6 +84,16 @@ pub enum InjectStatus {
     Failed,
 }
 
+/// Synchronization metadata for blocking messages
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncMeta {
+    /// Whether sender should block awaiting response
+    pub blocking: bool,
+    /// Optional timeout in milliseconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
 /// Parsed relay command from agent output
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedRelayCommand {
@@ -103,6 +113,9 @@ pub struct ParsedRelayCommand {
     /// Optional thread identifier
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread: Option<String>,
+    /// Optional sync metadata for blocking messages
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync: Option<SyncMeta>,
     /// For spawn: agent name to spawn
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spawn_name: Option<String>,
@@ -149,6 +162,7 @@ impl ParsedRelayCommand {
             body,
             raw,
             thread: None,
+            sync: None,
             spawn_name: None,
             spawn_cli: None,
             spawn_task: None,
@@ -165,6 +179,7 @@ impl ParsedRelayCommand {
             body: task.clone(),
             raw,
             thread: None,
+            sync: None,
             spawn_name: Some(name),
             spawn_cli: Some(cli),
             spawn_task: Some(task),
@@ -181,6 +196,7 @@ impl ParsedRelayCommand {
             body: name.clone(),
             raw,
             thread: None,
+            sync: None,
             spawn_name: None,
             spawn_cli: None,
             spawn_task: None,
@@ -190,6 +206,11 @@ impl ParsedRelayCommand {
 
     pub fn with_thread(mut self, thread: String) -> Self {
         self.thread = Some(thread);
+        self
+    }
+
+    pub fn with_sync(mut self, sync: SyncMeta) -> Self {
+        self.sync = Some(sync);
         self
     }
 }

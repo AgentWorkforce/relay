@@ -50,6 +50,21 @@
     "release_name": {
       "type": "string",
       "description": "For release commands: name of the agent to release"
+    },
+    "sync": {
+      "type": "object",
+      "description": "Sync metadata for blocking messages (when AWAIT header is present)",
+      "properties": {
+        "blocking": {
+          "type": "boolean",
+          "description": "Whether this is a blocking send that waits for ACK"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "description": "Timeout in milliseconds (absent means use default timeout)"
+        }
+      },
+      "required": ["blocking"]
     }
   },
   "required": ["type", "kind", "from", "to", "body", "raw"],
@@ -108,6 +123,19 @@
       "to": "#general",
       "body": "Has anyone seen the new API docs?",
       "raw": "->relay-file:msg-004"
+    },
+    {
+      "_comment": "Blocking message with sync (AWAIT header)",
+      "type": "relay_command",
+      "kind": "message",
+      "from": "Coordinator",
+      "to": "North",
+      "body": "Your turn. Play a card.",
+      "raw": "->relay-file:turn-001",
+      "sync": {
+        "blocking": true,
+        "timeout_ms": 30000
+      }
     },
     {
       "_comment": "Spawn command",

@@ -154,7 +154,12 @@ interface Envelope {
   },
   "payload_meta": {
     "requires_ack": true,
-    "ttl_ms": 60000
+    "ttl_ms": 60000,
+    "sync": {
+      "correlationId": "c-123",
+      "timeoutMs": 5000,
+      "blocking": true
+    }
   }
 }
 ```
@@ -190,7 +195,12 @@ interface Envelope {
   "ts": 1734440000103,
   "payload": {
     "ack_id": "d-001",
-    "seq": 42
+    "seq": 42,
+    "correlationId": "c-123",
+    "response": true,
+    "responseData": {
+      "status": "ok"
+    }
   }
 }
 ```
