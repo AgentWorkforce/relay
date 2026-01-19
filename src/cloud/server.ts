@@ -644,19 +644,20 @@ export async function createServer(): Promise<CloudServer> {
           });
           addedMembers.push({ id: invitee.id, type: invitee.type, role: 'member' });
 
-          // For agent members, sync to local daemon's in-memory channel membership
+          // For agent members, sync to workspace daemon's in-memory channel membership
+          // IMPORTANT: Must use workspace.publicUrl where agents are connected
           if (invitee.type === 'agent') {
             try {
               const channelName = channelId.startsWith('#') ? channelId : `#${channelId}`;
-              // Route to local dashboard where the daemon and channel routing lives
-              const dashboardUrl = await getLocalDashboardUrl();
+              // Route to workspace's dashboard where agents are connected
+              const dashboardUrl = workspace.publicUrl || await getLocalDashboardUrl();
               const joinResponse = await fetch(`${dashboardUrl}/api/channels/admin-join`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ channel: channelName, member: invitee.id, workspaceId }),
               });
               const joinResult = await joinResponse.json() as { success: boolean; warning?: string };
-              console.log(`[channels] Synced agent ${invitee.id} to channel ${channelName} via local dashboard`);
+              console.log(`[channels] Synced agent ${invitee.id} to channel ${channelName} via workspace daemon`);
               // Check for warning about unconnected agent
               if (joinResult.warning) {
                 memberWarnings.push({ member: invitee.id, warning: joinResult.warning });
@@ -737,8 +738,10 @@ export async function createServer(): Promise<CloudServer> {
       }
 
       // Also subscribe the user on the daemon side for real-time messages
+      // IMPORTANT: Must use workspace.publicUrl where agents are connected
       try {
-        const dashboardUrl = await getLocalDashboardUrl();
+        const workspace = await db.workspaces.findById(workspaceId);
+        const dashboardUrl = workspace?.publicUrl || await getLocalDashboardUrl();
         const channelWithHash = rawChannelId.startsWith('#') ? rawChannelId : `#${rawChannelId}`;
         await fetch(`${dashboardUrl}/api/channels/subscribe`, {
           method: 'POST',
@@ -749,7 +752,7 @@ export async function createServer(): Promise<CloudServer> {
             workspaceId,
           }),
         });
-        console.log(`[cloud] Subscribed ${memberId} to ${channelWithHash} on local daemon`);
+        console.log(`[cloud] Subscribed ${memberId} to ${channelWithHash} on workspace daemon`);
       } catch (err) {
         // Non-fatal - daemon sync is best-effort
         console.warn(`[cloud] Failed to sync join to daemon:`, err);
@@ -903,8 +906,38 @@ export async function createServer(): Promise<CloudServer> {
   // =========================================================================
 
   app.post('/api/channels/message', requireAuth, express.json(), async (req, res) => {
-    // Route to local dashboard where relay daemon and channel routing lives
-    await proxyToLocalDashboard(req, res, '/api/channels/message', { method: 'POST', body: req.body });
+    // Route to the workspace's dashboard where the daemon and agents run
+    // IMPORTANT: Must use workspace.publicUrl (not getLocalDashboardUrl) because
+    // agents are connected to the workspace's daemon, so messages must route there
+    const { workspaceId } = req.body;
+    let dashboardUrl = await getLocalDashboardUrl(); // Default for local mode
+
+    if (workspaceId) {
+      try {
+        const workspace = await db.workspaces.findById(workspaceId);
+        if (workspace?.publicUrl) {
+          dashboardUrl = workspace.publicUrl;
+        }
+      } catch (err) {
+        console.warn(`[channel-message] Failed to lookup workspace ${workspaceId}:`, err);
+      }
+    }
+
+    const targetUrl = `${dashboardUrl}/api/channels/message`;
+    console.log(`[channel-message] POST ${targetUrl}`);
+
+    try {
+      const proxyRes = await fetch(targetUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req.body),
+      });
+      const data = await proxyRes.json();
+      res.status(proxyRes.status).json(data);
+    } catch (error) {
+      console.error('[channel-message] Error:', error);
+      res.status(502).json({ error: 'Failed to send message to workspace' });
+    }
   });
 
   app.get('/api/channels/:channel/messages', requireAuth, async (req, res) => {
@@ -1213,11 +1246,13 @@ export async function createServer(): Promise<CloudServer> {
         return;
       }
 
-      // Connect to local dashboard where the daemon actually runs
-      const dashboardUrl = await getLocalDashboardUrl();
+      // Connect to the workspace's dashboard where the daemon and agents run
+      // IMPORTANT: Must use workspace.publicUrl (not getLocalDashboardUrl) because
+      // agents are connected to the workspace's daemon, so channels must connect there too
+      const dashboardUrl = workspace.publicUrl || await getLocalDashboardUrl();
       const baseUrl = dashboardUrl.replace(/^http/, 'ws').replace(/\/$/, '');
       const daemonWsUrl = `${baseUrl}/ws/presence`;
-      console.log(`[ws/channels] Connecting to daemon: ${daemonWsUrl}`);
+      console.log(`[ws/channels] Connecting to workspace daemon: ${daemonWsUrl}`);
 
       daemonWs = new WebSocket(daemonWsUrl, { perMessageDeflate: false });
 
@@ -1233,15 +1268,20 @@ export async function createServer(): Promise<CloudServer> {
 
       daemonWs.on('message', (data) => {
         // Forward daemon messages to client
-        // Only forward channel_message type messages for this user
+        // Forward channel_message, direct_message, and presence updates for this user
         try {
           const msg = JSON.parse(data.toString());
           if (msg.type === 'channel_message') {
-            // Only forward if this message is for this user
-            if (msg.targetUser === username) {
-              console.log(`[ws/channels] Forwarding channel message to ${username}: ${msg.from} -> ${msg.channel}`);
-              clientWs.send(data.toString());
-            }
+            // Channel messages are sent to all members - the user's connection
+            // to the daemon via UserBridge ensures they only receive messages
+            // for channels they've joined
+            console.log(`[ws/channels] Forwarding channel message to ${username}: ${msg.from} -> ${msg.channel}`);
+            clientWs.send(data.toString());
+          }
+          // Forward direct messages from agents to this cloud user
+          if (msg.type === 'direct_message') {
+            console.log(`[ws/channels] Forwarding direct message to ${username}: ${msg.from}`);
+            clientWs.send(data.toString());
           }
           // Also forward presence updates so client stays in sync
           if (msg.type === 'presence_join' || msg.type === 'presence_leave' || msg.type === 'presence_list') {

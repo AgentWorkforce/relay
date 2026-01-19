@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-19T05:38:25.458Z",
+  "lastUpdated": "2026-01-19T07:52:50.901Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -750,6 +750,20 @@
       "startedAt": "2026-01-19T05:37:41.642Z",
       "completedAt": "2026-01-19T05:38:25.432Z",
       "path": "/home/user/relay/.trajectories/completed/2026-01/traj_xt2nmidh3zvg.json"
+    },
+    "traj_dgp7y3p13rdn": {
+      "title": "Fix cloud channel/message routing to use workspace.publicUrl",
+      "status": "completed",
+      "startedAt": "2026-01-19T07:49:42.730Z",
+      "completedAt": "2026-01-19T07:50:07.232Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_dgp7y3p13rdn.json"
+    },
+    "traj_2x4lzg8vcsqh": {
+      "title": "Fix cloud message routing broken by commit 5569296",
+      "status": "completed",
+      "startedAt": "2026-01-19T07:51:56.573Z",
+      "completedAt": "2026-01-19T07:52:50.889Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_2x4lzg8vcsqh.json"
     }
   }
 }
