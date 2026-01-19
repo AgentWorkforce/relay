@@ -428,6 +428,9 @@ program
           dbPath,
           enableSpawner: true,
           projectRoot: paths.projectRoot,
+          // Pass spawn tracking callbacks so messages can be queued before HELLO completes
+          onMarkSpawning: (name) => daemon.markSpawning(name),
+          onClearSpawning: (name) => daemon.clearSpawning(name),
         });
         console.log(`Dashboard: http://localhost:${dashboardPort}`);
 

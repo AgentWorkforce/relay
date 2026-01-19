@@ -388,6 +388,16 @@ export interface DashboardOptions {
   projectRoot?: string;
   /** Tmux session name for workers */
   tmuxSession?: string;
+  /**
+   * Callback to mark an agent as spawning (before HELLO completes).
+   * Messages sent to this agent will be queued for delivery after registration.
+   */
+  onMarkSpawning?: (agentName: string) => void;
+  /**
+   * Callback to clear the spawning flag for an agent.
+   * Called when spawn fails or is cancelled.
+   */
+  onClearSpawning?: (agentName: string) => void;
 }
 
 export async function startDashboard(port: number, dataDir: string, teamDir: string, dbPath?: string): Promise<number>;
@@ -403,7 +413,7 @@ export async function startDashboard(
     ? { port: portOrOptions, dataDir: dataDirArg!, teamDir: teamDirArg!, dbPath: dbPathArg }
     : portOrOptions;
 
-  const { port, dataDir, teamDir, dbPath, enableSpawner, projectRoot, tmuxSession } = options;
+  const { port, dataDir, teamDir, dbPath, enableSpawner, projectRoot, tmuxSession, onMarkSpawning, onClearSpawning } = options;
 
   console.log('Starting dashboard...');
 
@@ -595,8 +605,15 @@ export async function startDashboard(
   console.log(`[dashboard] Workspace path: ${workspacePath}`);
 
   // Pass dashboard port to spawner so spawned agents can call spawn/release APIs for nested spawning
+  // Also pass spawn tracking callbacks so messages can be queued before HELLO completes
   const spawner: AgentSpawner | undefined = enableSpawner
-    ? new AgentSpawner(workspacePath, tmuxSession, port)
+    ? new AgentSpawner({
+        projectRoot: workspacePath,
+        tmuxSession,
+        dashboardPort: port,
+        onMarkSpawning,
+        onClearSpawning,
+      })
     : undefined;
 
   // Initialize cloud persistence and memory monitoring if enabled (RELAY_CLOUD_ENABLED=true)

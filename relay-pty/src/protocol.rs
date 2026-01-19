@@ -203,11 +203,27 @@ impl QueuedMessage {
 
     /// Format as relay message for injection with escalating urgency based on retry count.
     ///
-    /// Retry escalation:
+    /// If the body is already formatted (starts with "Relay message from"), it will be used
+    /// as-is to avoid double-formatting. This happens when the Node.js orchestrator has
+    /// already called buildInjectionString() before sending to the socket.
+    ///
+    /// Retry escalation (only applied to newly formatted messages):
     /// - Attempt 1 (retries=0): "Relay message from..."
     /// - Attempt 2 (retries=1): "[RETRY] Relay message from..."
     /// - Attempt 3+ (retries>=2): "[URGENT - PLEASE ACKNOWLEDGE] Relay message from..."
     pub fn format_for_injection(&self) -> String {
+        // Check if body is already formatted (from Node.js buildInjectionString)
+        // This prevents double-wrapping with "Relay message from..."
+        if self.body.starts_with("Relay message from ") {
+            // Already formatted - just apply retry prefixes if needed
+            return match self.retries {
+                0 => self.body.clone(),
+                1 => format!("[RETRY] {}", self.body),
+                _ => format!("[URGENT - PLEASE ACKNOWLEDGE] {}", self.body),
+            };
+        }
+
+        // Not pre-formatted - apply full formatting
         let short_id = &self.id[..self.id.len().min(7)];
         let base_msg = format!(
             "Relay message from {} [{}]: {}",
@@ -324,6 +340,383 @@ mod tests {
         assert_eq!(
             msg.format_for_injection(),
             "[URGENT - PLEASE ACKNOWLEDGE] Relay message from Alice [abc1234]: Important task"
+        );
+    }
+
+    #[test]
+    fn test_queued_message_format_preformatted() {
+        // When body is already formatted (from Node.js buildInjectionString),
+        // it should NOT be double-wrapped
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Alice".to_string(),
+            "Relay message from Alice [abc12345]: Hello world".to_string(),
+            0,
+        );
+
+        // Should return body as-is (no double-wrapping)
+        assert_eq!(
+            msg.format_for_injection(),
+            "Relay message from Alice [abc12345]: Hello world"
+        );
+    }
+
+    #[test]
+    fn test_queued_message_format_preformatted_with_retry() {
+        let mut msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Alice".to_string(),
+            "Relay message from Alice [abc12345]: Hello world".to_string(),
+            0,
+        );
+
+        // Retry should prepend to pre-formatted body
+        msg.retries = 1;
+        assert_eq!(
+            msg.format_for_injection(),
+            "[RETRY] Relay message from Alice [abc12345]: Hello world"
+        );
+
+        msg.retries = 2;
+        assert_eq!(
+            msg.format_for_injection(),
+            "[URGENT - PLEASE ACKNOWLEDGE] Relay message from Alice [abc12345]: Hello world"
+        );
+    }
+
+    // =========================================================================
+    // Extensive tests for pre-formatted message detection
+    // =========================================================================
+
+    #[test]
+    fn test_preformatted_with_thread_hint() {
+        // Node.js buildInjectionString adds thread hints
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Alice".to_string(),
+            "Relay message from Alice [abc12345] [thread:task-123]: Please review".to_string(),
+            0,
+        );
+        // Should preserve thread hint, not double-wrap
+        assert_eq!(
+            msg.format_for_injection(),
+            "Relay message from Alice [abc12345] [thread:task-123]: Please review"
+        );
+    }
+
+    #[test]
+    fn test_preformatted_with_importance_high() {
+        // High importance indicator [!!]
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Lead".to_string(),
+            "Relay message from Lead [abc12345] [!!]: URGENT task".to_string(),
+            0,
+        );
+        assert_eq!(
+            msg.format_for_injection(),
+            "Relay message from Lead [abc12345] [!!]: URGENT task"
+        );
+    }
+
+    #[test]
+    fn test_preformatted_with_importance_medium() {
+        // Medium importance indicator [!]
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Lead".to_string(),
+            "Relay message from Lead [abc12345] [!]: Important task".to_string(),
+            0,
+        );
+        assert_eq!(
+            msg.format_for_injection(),
+            "Relay message from Lead [abc12345] [!]: Important task"
+        );
+    }
+
+    #[test]
+    fn test_preformatted_with_channel_hint() {
+        // Channel messages include [#channel]
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Alice".to_string(),
+            "Relay message from Alice [abc12345] [#general]: Hello team".to_string(),
+            0,
+        );
+        assert_eq!(
+            msg.format_for_injection(),
+            "Relay message from Alice [abc12345] [#general]: Hello team"
+        );
+    }
+
+    #[test]
+    fn test_preformatted_with_broadcast_hint() {
+        // Broadcast messages show [#general] (default channel)
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Lead".to_string(),
+            "Relay message from Lead [abc12345] [#general]: Broadcast message".to_string(),
+            0,
+        );
+        assert_eq!(
+            msg.format_for_injection(),
+            "Relay message from Lead [abc12345] [#general]: Broadcast message"
+        );
+    }
+
+    #[test]
+    fn test_preformatted_with_multiple_hints() {
+        // Combined: thread + importance + channel
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Lead".to_string(),
+            "Relay message from Lead [abc12345] [thread:proj-1] [!!] [#dev]: Critical fix needed"
+                .to_string(),
+            0,
+        );
+        assert_eq!(
+            msg.format_for_injection(),
+            "Relay message from Lead [abc12345] [thread:proj-1] [!!] [#dev]: Critical fix needed"
+        );
+    }
+
+    #[test]
+    fn test_preformatted_dashboard_sender() {
+        // Dashboard messages show actual username instead of _DashboardUI
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "_DashboardUI".to_string(),
+            "Relay message from john_doe [abc12345]: Task from dashboard".to_string(),
+            0,
+        );
+        // Should preserve the displayed sender (john_doe), not wrap with _DashboardUI
+        assert_eq!(
+            msg.format_for_injection(),
+            "Relay message from john_doe [abc12345]: Task from dashboard"
+        );
+    }
+
+    #[test]
+    fn test_preformatted_system_sender() {
+        // System messages (from 'system' sender)
+        let msg = QueuedMessage::new(
+            "init-123".to_string(),
+            "system".to_string(),
+            "Relay message from system [init-123]: Agent initialized".to_string(),
+            0,
+        );
+        assert_eq!(
+            msg.format_for_injection(),
+            "Relay message from system [init-123]: Agent initialized"
+        );
+    }
+
+    // =========================================================================
+    // Edge cases that should NOT be treated as pre-formatted
+    // =========================================================================
+
+    #[test]
+    fn test_similar_but_not_preformatted_missing_space() {
+        // Missing space after "from" - should NOT match
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Bob".to_string(),
+            "Relay message fromAlice: not formatted correctly".to_string(),
+            0,
+        );
+        // Should wrap normally since it doesn't match exact prefix
+        assert_eq!(
+            msg.format_for_injection(),
+            "Relay message from Bob [xyz7890]: Relay message fromAlice: not formatted correctly"
+        );
+    }
+
+    #[test]
+    fn test_similar_but_not_preformatted_lowercase() {
+        // Lowercase "relay" - should NOT match
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Bob".to_string(),
+            "relay message from Alice: lowercase".to_string(),
+            0,
+        );
+        assert_eq!(
+            msg.format_for_injection(),
+            "Relay message from Bob [xyz7890]: relay message from Alice: lowercase"
+        );
+    }
+
+    #[test]
+    fn test_body_mentions_relay_in_middle() {
+        // "Relay message from" appears in middle of text
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Bob".to_string(),
+            "I saw a Relay message from Alice earlier".to_string(),
+            0,
+        );
+        assert_eq!(
+            msg.format_for_injection(),
+            "Relay message from Bob [xyz7890]: I saw a Relay message from Alice earlier"
+        );
+    }
+
+    #[test]
+    fn test_body_with_quoted_relay_message() {
+        // User is quoting a relay message
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Bob".to_string(),
+            "User said: \"Relay message from Alice [abc]: test\"".to_string(),
+            0,
+        );
+        assert_eq!(
+            msg.format_for_injection(),
+            "Relay message from Bob [xyz7890]: User said: \"Relay message from Alice [abc]: test\""
+        );
+    }
+
+    // =========================================================================
+    // Special characters and content edge cases
+    // =========================================================================
+
+    #[test]
+    fn test_empty_body() {
+        let msg = QueuedMessage::new("xyz7890".to_string(), "Bob".to_string(), "".to_string(), 0);
+        assert_eq!(
+            msg.format_for_injection(),
+            "Relay message from Bob [xyz7890]: "
+        );
+    }
+
+    #[test]
+    fn test_body_with_newlines() {
+        // Body with newlines (should be preserved in raw format)
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Bob".to_string(),
+            "Line 1\nLine 2\nLine 3".to_string(),
+            0,
+        );
+        assert_eq!(
+            msg.format_for_injection(),
+            "Relay message from Bob [xyz7890]: Line 1\nLine 2\nLine 3"
+        );
+    }
+
+    #[test]
+    fn test_body_with_unicode() {
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Bob".to_string(),
+            "Hello 你好 مرحبا 🚀".to_string(),
+            0,
+        );
+        assert_eq!(
+            msg.format_for_injection(),
+            "Relay message from Bob [xyz7890]: Hello 你好 مرحبا 🚀"
+        );
+    }
+
+    #[test]
+    fn test_body_with_special_chars() {
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Bob".to_string(),
+            "Special: <>&\"'`$(){}[]|\\".to_string(),
+            0,
+        );
+        assert_eq!(
+            msg.format_for_injection(),
+            "Relay message from Bob [xyz7890]: Special: <>&\"'`$(){}[]|\\"
+        );
+    }
+
+    #[test]
+    fn test_very_long_message() {
+        let long_body = "x".repeat(10000);
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Bob".to_string(),
+            long_body.clone(),
+            0,
+        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.starts_with("Relay message from Bob [xyz7890]: "));
+        assert!(formatted.ends_with(&long_body));
+    }
+
+    #[test]
+    fn test_preformatted_very_long_message() {
+        let long_content = "y".repeat(10000);
+        let preformatted = format!("Relay message from Alice [abc12345]: {}", long_content);
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "System".to_string(),
+            preformatted.clone(),
+            0,
+        );
+        // Should return as-is without double-wrapping
+        assert_eq!(msg.format_for_injection(), preformatted);
+    }
+
+    #[test]
+    fn test_sender_with_underscore() {
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "worker_1".to_string(),
+            "Task complete".to_string(),
+            0,
+        );
+        assert_eq!(
+            msg.format_for_injection(),
+            "Relay message from worker_1 [xyz7890]: Task complete"
+        );
+    }
+
+    #[test]
+    fn test_sender_with_numbers() {
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Agent42".to_string(),
+            "Status update".to_string(),
+            0,
+        );
+        assert_eq!(
+            msg.format_for_injection(),
+            "Relay message from Agent42 [xyz7890]: Status update"
+        );
+    }
+
+    #[test]
+    fn test_short_message_id() {
+        // ID shorter than 7 chars
+        let msg = QueuedMessage::new(
+            "abc".to_string(),
+            "Bob".to_string(),
+            "Short ID".to_string(),
+            0,
+        );
+        assert_eq!(
+            msg.format_for_injection(),
+            "Relay message from Bob [abc]: Short ID"
+        );
+    }
+
+    #[test]
+    fn test_preformatted_different_senders() {
+        // The 'from' field in QueuedMessage differs from the displayed sender
+        // This happens when messages are relayed through different agents
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Relay".to_string(), // Actual sender in QueuedMessage
+            "Relay message from Alice [orig123]: Original message".to_string(), // Shows Alice
+            0,
+        );
+        // Should preserve Alice as the displayed sender
+        assert_eq!(
+            msg.format_for_injection(),
+            "Relay message from Alice [orig123]: Original message"
         );
     }
 }

@@ -101,8 +101,18 @@ export class Router {
   /** Reverse lookup: member name -> Set of channels they're in */
   private memberChannels: Map<string, Set<string>> = new Map();
 
+  /**
+   * Agents that are currently being spawned but haven't completed HELLO yet.
+   * Maps agent name to timestamp when spawn started.
+   * Messages sent to these agents will be queued for delivery after HELLO completes.
+   */
+  private spawningAgents: Map<string, number> = new Map();
+
   /** Default timeout for processing indicator (30 seconds) */
   private static readonly PROCESSING_TIMEOUT_MS = 30_000;
+
+  /** Timeout for spawning agent entries (60 seconds) */
+  private static readonly SPAWNING_TIMEOUT_MS = 60_000;
 
   /** Callback when processing state changes (for real-time dashboard updates) */
   private onProcessingStateChange?: () => void;
@@ -184,6 +194,56 @@ export class Router {
   }
 
   /**
+   * Mark an agent as spawning (before HELLO completes).
+   * Messages sent to this agent will be queued for delivery after registration.
+   */
+  markSpawning(agentName: string): void {
+    this.spawningAgents.set(agentName, Date.now());
+    routerLog.info(`Agent marked as spawning: ${agentName}`, {
+      currentSpawning: Array.from(this.spawningAgents.keys()),
+    });
+    // Clean up stale spawning entries
+    this.cleanupStaleSpawning();
+  }
+
+  /**
+   * Clear the spawning flag for an agent.
+   * Called when agent completes registration or spawn fails.
+   */
+  clearSpawning(agentName: string): void {
+    if (this.spawningAgents.delete(agentName)) {
+      routerLog.debug(`Agent spawning flag cleared: ${agentName}`);
+    }
+  }
+
+  /**
+   * Check if an agent is currently spawning.
+   */
+  isSpawning(agentName: string): boolean {
+    const timestamp = this.spawningAgents.get(agentName);
+    if (!timestamp) return false;
+    // Check if spawn has timed out
+    if (Date.now() - timestamp > Router.SPAWNING_TIMEOUT_MS) {
+      this.spawningAgents.delete(agentName);
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Clean up spawning entries older than SPAWNING_TIMEOUT_MS.
+   */
+  private cleanupStaleSpawning(): void {
+    const now = Date.now();
+    for (const [name, timestamp] of this.spawningAgents) {
+      if (now - timestamp > Router.SPAWNING_TIMEOUT_MS) {
+        this.spawningAgents.delete(name);
+        routerLog.debug(`Cleaned up stale spawning entry: ${name}`);
+      }
+    }
+  }
+
+  /**
    * Register a connection after successful handshake.
    */
   register(connection: RoutableConnection): void {
@@ -209,6 +269,8 @@ export class Router {
           this.connections.delete(existing.id);
         }
         this.agents.set(connection.agentName, connection);
+        // Clear spawning flag now that agent has completed registration
+        this.clearSpawning(connection.agentName);
         this.registry?.registerOrUpdate({
           name: connection.agentName,
           cli: connection.cli,
@@ -599,7 +661,20 @@ export class Router {
         return true; // Message accepted (queued), not dropped
       }
 
-      routerLog.warn(`Target "${to}" not found and unknown`, { availableAgents: Array.from(this.agents.keys()) });
+      // Check if agent is currently spawning (pre-HELLO) - queue for delivery after registration
+      // This handles the race condition between spawn completion and HELLO handshake
+      const spawning = this.isSpawning(to);
+      routerLog.debug(`Spawning check for "${to}": ${spawning}`, {
+        spawningAgents: Array.from(this.spawningAgents.keys()),
+        hasStorage: !!this.storage,
+      });
+      if (spawning) {
+        routerLog.info(`Target "${to}" is spawning, queueing message for delivery after registration`);
+        this.persistMessageForOfflineAgent(from, to, envelope);
+        return true; // Message accepted (queued), not dropped
+      }
+
+      routerLog.warn(`Target "${to}" not found and unknown`, { availableAgents: Array.from(this.agents.keys()), spawningAgents: Array.from(this.spawningAgents.keys()) });
       return false;
     }
 
@@ -782,6 +857,12 @@ export class Router {
       routerLog.warn('Cannot queue offline message: no storage configured');
       return;
     }
+
+    routerLog.info(`Persisting offline message for "${to}"`, {
+      from,
+      messageId: envelope.id,
+      bodyPreview: envelope.payload.body?.substring(0, 50),
+    });
 
     this.storage.saveMessage({
       id: envelope.id || generateId(),

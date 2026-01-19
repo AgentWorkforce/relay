@@ -1001,11 +1001,54 @@ class FlyProvisioner implements ComputeProvisioner {
 
     const appName = `ar-${workspaceId.substring(0, 8)}`;
 
+    // Get current machine config first to merge with new specs
+    // This is critical - Fly.io replaces the entire config, so we must preserve
+    // existing settings (image, services, auto_stop, other env vars, etc.)
+    const getResponse = await fetchWithRetry(
+      `https://api.machines.dev/v1/apps/${appName}/machines/${machineId}`,
+      {
+        headers: {
+          Authorization: `Bearer ${this.apiToken}`,
+        },
+      }
+    );
+
+    if (!getResponse.ok) {
+      throw new Error(`Failed to get machine config for resize: ${await getResponse.text()}`);
+    }
+
+    const machine = await getResponse.json() as {
+      config: Record<string, unknown> & {
+        guest?: Record<string, unknown>;
+        env?: Record<string, string>;
+      };
+    };
+
+    // Merge new specs into existing config, preserving everything else
+    const updatedConfig = {
+      ...machine.config,
+      guest: {
+        ...(machine.config.guest || {}),
+        // Use tier-specific CPU type (shared for cost, performance for power)
+        cpu_kind: tier.cpuKind,
+        cpus: tier.cpuCores,
+        memory_mb: tier.memoryMb,
+      },
+      env: {
+        ...(machine.config.env || {}),
+        MAX_AGENTS: String(tier.maxAgents),
+      },
+    };
+
     // Update machine configuration
     // If running: reboots with new specs (unless skip_launch: true)
     // If stopped: config saved, applies on next start
-    await fetchWithRetry(
-      `https://api.machines.dev/v1/apps/${appName}/machines/${machineId}`,
+    const updateUrl = skipRestart
+      ? `https://api.machines.dev/v1/apps/${appName}/machines/${machineId}?skip_launch=true`
+      : `https://api.machines.dev/v1/apps/${appName}/machines/${machineId}`;
+
+    const updateResponse = await fetchWithRetry(
+      updateUrl,
       {
         method: 'POST',
         headers: {
@@ -1013,21 +1056,14 @@ class FlyProvisioner implements ComputeProvisioner {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          config: {
-            guest: {
-              // Use tier-specific CPU type (shared for cost, performance for power)
-              cpu_kind: tier.cpuKind,
-              cpus: tier.cpuCores,
-              memory_mb: tier.memoryMb,
-            },
-            env: {
-              MAX_AGENTS: String(tier.maxAgents),
-            },
-          },
-          skip_launch: skipRestart, // If true, don't restart - changes apply on next start
+          config: updatedConfig,
         }),
       }
     );
+
+    if (!updateResponse.ok) {
+      throw new Error(`Failed to resize machine: ${await updateResponse.text()}`);
+    }
 
     const restartNote = skipRestart ? ' (will apply on next restart)' : ' (restarting)';
     console.log(`[fly] Resized workspace ${workspaceId.substring(0, 8)} to ${tier.name} (${tier.cpuCores} CPU, ${tier.memoryMb}MB RAM)${restartNote}`);
@@ -1093,10 +1129,11 @@ class FlyProvisioner implements ComputeProvisioner {
     const _cpus = machine.config?.guest?.cpus || 1;
     const memoryMb = machine.config?.guest?.memory_mb || 512;
 
-    // Map to nearest tier
-    if (memoryMb >= 4096) return RESOURCE_TIERS.xlarge;
-    if (memoryMb >= 2048) return RESOURCE_TIERS.large;
-    if (memoryMb >= 1024) return RESOURCE_TIERS.medium;
+    // Map to nearest tier based on actual tier thresholds:
+    // small: 2048MB, medium: 4096MB, large: 8192MB, xlarge: 16384MB
+    if (memoryMb >= 16384) return RESOURCE_TIERS.xlarge;
+    if (memoryMb >= 8192) return RESOURCE_TIERS.large;
+    if (memoryMb >= 4096) return RESOURCE_TIERS.medium;
     return RESOURCE_TIERS.small;
   }
 

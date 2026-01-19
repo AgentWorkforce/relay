@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-18T16:45:09.421Z",
+  "lastUpdated": "2026-01-19T08:30:13.102Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -736,6 +736,48 @@
       "startedAt": "2026-01-18T16:44:27.199Z",
       "completedAt": "2026-01-18T16:45:09.409Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_s7r8z79gusy3.json"
+    },
+    "traj_pgb7sj7dvgb1": {
+      "title": "Investigate spawn timing issue where messages sent with spawn don't arrive",
+      "status": "completed",
+      "startedAt": "2026-01-18T21:46:03.754Z",
+      "completedAt": "2026-01-18T21:47:11.127Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_pgb7sj7dvgb1.json"
+    },
+    "traj_xt2nmidh3zvg": {
+      "title": "Fix workspace upgrade scaling bugs",
+      "status": "completed",
+      "startedAt": "2026-01-19T05:37:41.642Z",
+      "completedAt": "2026-01-19T05:38:25.432Z",
+      "path": "/home/user/relay/.trajectories/completed/2026-01/traj_xt2nmidh3zvg.json"
+    },
+    "traj_dgp7y3p13rdn": {
+      "title": "Fix cloud channel/message routing to use workspace.publicUrl",
+      "status": "completed",
+      "startedAt": "2026-01-19T07:49:42.730Z",
+      "completedAt": "2026-01-19T07:50:07.232Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_dgp7y3p13rdn.json"
+    },
+    "traj_2x4lzg8vcsqh": {
+      "title": "Fix cloud message routing broken by commit 5569296",
+      "status": "completed",
+      "startedAt": "2026-01-19T07:51:56.573Z",
+      "completedAt": "2026-01-19T07:52:50.889Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_2x4lzg8vcsqh.json"
+    },
+    "traj_g6exx9z1bbx6": {
+      "title": "Fix cloud channel routing for agent messages",
+      "status": "completed",
+      "startedAt": "2026-01-19T07:58:21.481Z",
+      "completedAt": "2026-01-19T07:58:43.069Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_g6exx9z1bbx6.json"
+    },
+    "traj_ymhw3r9gxc4t": {
+      "title": "Fix cloud message routing - outbox path mismatch",
+      "status": "completed",
+      "startedAt": "2026-01-19T08:23:04.969Z",
+      "completedAt": "2026-01-19T08:30:13.089Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_ymhw3r9gxc4t.json"
     }
   }
 }

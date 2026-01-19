@@ -64,18 +64,18 @@ class MockConnection implements Pick<Connection, 'id' | 'agentName' | 'sessionId
 /**
  * Helper to create a SEND envelope.
  */
-function createSendEnvelope(from: string, to: string, topic?: string): Envelope<SendPayload> {
+function createSendEnvelope(from: string, to: string, topic?: string, body?: string): Envelope<SendPayload> {
   return {
     v: 1,
     type: 'SEND',
-    id: 'msg-1',
+    id: `msg-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     ts: Date.now(),
     from,
     to,
     topic,
     payload: {
       kind: 'message',
-      body: 'test message',
+      body: body ?? 'test message',
     },
   };
 }
@@ -1620,6 +1620,187 @@ describe('Router', () => {
       expect(receiver.sentEnvelopes.length).toBe(1);
       const queuedMsg = saved.find(m => m.data?._offlineQueued === true);
       expect(queuedMsg).toBeUndefined();
+    });
+  });
+
+  describe('spawning agent message queueing', () => {
+    let saved: StoredMessage[] = [];
+    let statusUpdates: { id: string; status: string }[] = [];
+
+    // Storage mock that tracks saved messages
+    const createStorage = (): StorageAdapter => ({
+      saveMessage: async (msg: StoredMessage) => { saved.push(msg); },
+      getMessages: async (opts?: { to?: string; unreadOnly?: boolean }) => {
+        let result = saved;
+        if (opts?.to) result = result.filter(m => m.to === opts.to);
+        if (opts?.unreadOnly) result = result.filter(m => m.status === 'unread');
+        return result;
+      },
+      getMessage: async () => undefined,
+      updateMessageStatus: async (id, status) => {
+        statusUpdates.push({ id, status });
+        const msg = saved.find(m => m.id === id);
+        if (msg) msg.status = status;
+      },
+      deleteMessage: async () => {},
+    } as unknown as StorageAdapter);
+
+    beforeEach(() => {
+      saved = [];
+      statusUpdates = [];
+    });
+
+    it('should queue message for spawning agent', async () => {
+      const storage = createStorage();
+      const router = new Router({ storage });
+
+      const sender = new MockConnection('conn-1', 'agent1');
+      router.register(sender);
+
+      // Mark worker as spawning (before HELLO completes)
+      router.markSpawning('spawning-worker');
+
+      // Send to spawning agent
+      const envelope = createSendEnvelope('agent1', 'spawning-worker');
+      router.route(sender, envelope);
+
+      // Wait for async storage operation
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      // Message should be queued
+      const queuedMsg = saved.find(m => m.to === 'spawning-worker');
+      expect(queuedMsg).toBeDefined();
+      expect(queuedMsg?.data?._offlineQueued).toBe(true);
+    });
+
+    it('should deliver queued messages when spawning agent connects', async () => {
+      const storage = createStorage();
+      const router = new Router({ storage });
+
+      const sender = new MockConnection('conn-1', 'agent1');
+      router.register(sender);
+
+      // Mark worker as spawning
+      router.markSpawning('spawning-worker');
+
+      // Send messages while spawning (undefined topic, custom body)
+      router.route(sender, createSendEnvelope('agent1', 'spawning-worker', undefined, 'First task'));
+      router.route(sender, createSendEnvelope('agent1', 'spawning-worker', undefined, 'Second task'));
+
+      // Wait for async storage
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      // Verify messages were queued
+      expect(saved.filter(m => m.to === 'spawning-worker').length).toBe(2);
+
+      // Worker connects (HELLO completes)
+      const worker = new MockConnection('conn-2', 'spawning-worker');
+      router.register(worker);
+
+      // Deliver pending messages
+      await router.deliverPendingMessages(worker);
+
+      // Worker should receive both queued messages
+      expect(worker.sentEnvelopes.length).toBe(2);
+      expect((worker.sentEnvelopes[0] as any).payload.body).toBe('First task');
+      expect((worker.sentEnvelopes[1] as any).payload.body).toBe('Second task');
+
+      // Messages should be marked as read
+      expect(statusUpdates.filter(u => u.status === 'read').length).toBe(2);
+    });
+
+    it('should not queue after spawning agent registers', async () => {
+      const storage = createStorage();
+      const router = new Router({ storage });
+
+      const sender = new MockConnection('conn-1', 'agent1');
+      router.register(sender);
+
+      // Mark worker as spawning
+      router.markSpawning('spawning-worker');
+
+      // Worker completes registration (HELLO)
+      const worker = new MockConnection('conn-2', 'spawning-worker');
+      router.register(worker);
+
+      // Spawning flag should be cleared
+      expect(router.isSpawning('spawning-worker')).toBe(false);
+
+      // Send to now-connected agent
+      const envelope = createSendEnvelope('agent1', 'spawning-worker');
+      router.route(sender, envelope);
+
+      // Should deliver directly, not queue
+      expect(worker.sentEnvelopes.length).toBe(1);
+      const queuedMsg = saved.find(m => m.data?._offlineQueued === true);
+      expect(queuedMsg).toBeUndefined();
+    });
+
+    it('should clear spawning flag manually', () => {
+      const storage = createStorage();
+      const router = new Router({ storage });
+
+      router.markSpawning('test-agent');
+      expect(router.isSpawning('test-agent')).toBe(true);
+
+      router.clearSpawning('test-agent');
+      expect(router.isSpawning('test-agent')).toBe(false);
+    });
+
+    it('should not queue for unknown non-spawning agent', async () => {
+      const storage = createStorage();
+      const router = new Router({ storage });
+
+      const sender = new MockConnection('conn-1', 'agent1');
+      router.register(sender);
+
+      // Don't mark as spawning - agent is completely unknown
+      const envelope = createSendEnvelope('agent1', 'unknown-agent');
+      router.route(sender, envelope);
+
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      // Should NOT be queued (unknown agent)
+      expect(saved.length).toBe(0);
+    });
+
+    it('should handle multiple spawning agents simultaneously', async () => {
+      const storage = createStorage();
+      const router = new Router({ storage });
+
+      const sender = new MockConnection('conn-1', 'lead');
+      router.register(sender);
+
+      // Spawn multiple workers
+      router.markSpawning('worker-1');
+      router.markSpawning('worker-2');
+
+      // Send tasks to both (undefined topic, custom body)
+      router.route(sender, createSendEnvelope('lead', 'worker-1', undefined, 'Task for worker 1'));
+      router.route(sender, createSendEnvelope('lead', 'worker-2', undefined, 'Task for worker 2'));
+
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      // Both should be queued
+      expect(saved.filter(m => m.to === 'worker-1').length).toBe(1);
+      expect(saved.filter(m => m.to === 'worker-2').length).toBe(1);
+
+      // Worker 1 connects first
+      const worker1 = new MockConnection('conn-2', 'worker-1');
+      router.register(worker1);
+      await router.deliverPendingMessages(worker1);
+
+      expect(worker1.sentEnvelopes.length).toBe(1);
+      expect(router.isSpawning('worker-1')).toBe(false);
+      expect(router.isSpawning('worker-2')).toBe(true); // Still spawning
+
+      // Worker 2 connects
+      const worker2 = new MockConnection('conn-3', 'worker-2');
+      router.register(worker2);
+      await router.deliverPendingMessages(worker2);
+
+      expect(worker2.sentEnvelopes.length).toBe(1);
+      expect(router.isSpawning('worker-2')).toBe(false);
     });
   });
 });

@@ -18,9 +18,35 @@ After modifying `src/cloud/db/schema.ts`:
 1. **Generate migration**: `npm run db:generate`
 2. **Review the generated SQL** in `src/cloud/db/migrations/`
 3. **Verify it's incremental** - should only contain ALTER/CREATE statements for changes, NOT recreate entire schema
-4. **Test locally**: Restart server or run `npm run db:migrate`
+4. **VERIFY JOURNAL TIMESTAMPS** - Check `migrations/meta/_journal.json` and ensure the new migration's `when` timestamp is GREATER than all previous entries
+5. **Test locally**: Restart server or run `npm run db:migrate`
 
 ## Common Issues
+
+### Journal Timestamp Disorder (CRITICAL)
+
+**Drizzle uses journal timestamps to determine which migrations to run.** If a new migration has a timestamp BEFORE an already-applied migration, it will be SKIPPED.
+
+**After running `db:generate`, ALWAYS verify:**
+
+1. Open `migrations/meta/_journal.json`
+2. Check that all timestamps (`when` field) are in ascending order
+3. The newest migration MUST have the highest timestamp
+
+**Fix if timestamps are out of order:**
+```bash
+# Get current timestamp in milliseconds
+node -e "console.log(Date.now())"
+
+# Update the journal entry's "when" field to be > previous migration
+```
+
+Example bad journal (migration 0014 has timestamp BEFORE 0012 - will be skipped!):
+```json
+{ "idx": 11, "when": 1767915620397, "tag": "0012_agent_messages" },  // 2026-01-08
+{ "idx": 12, "when": 1736640000000, "tag": "0013_drop_channels" },   // 2025-01-12 ← WRONG!
+{ "idx": 13, "when": 1736726400000, "tag": "0014_channels" }         // 2025-01-13 ← WRONG!
+```
 
 ### Full Schema Recreation Instead of Incremental
 

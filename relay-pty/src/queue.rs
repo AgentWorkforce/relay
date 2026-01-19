@@ -181,12 +181,28 @@ impl MessageQueue {
 
     /// Report injection result (broadcast to all subscribers)
     pub fn report_result(&self, id: String, status: InjectStatus, error: Option<String>) {
-        let _ = self.response_tx.send(InjectResponse::InjectResult {
-            id,
+        let short_id = &id[..id.len().min(8)];
+        debug!("Broadcasting status {:?} for message {}", status, short_id);
+
+        match self.response_tx.send(InjectResponse::InjectResult {
+            id: id.clone(),
             status,
             timestamp: current_timestamp_ms(),
             error,
-        });
+        }) {
+            Ok(receiver_count) => {
+                debug!(
+                    "Broadcast sent to {} receivers for message {}",
+                    receiver_count, short_id
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to broadcast status for message {}: {:?}",
+                    short_id, e
+                );
+            }
+        }
     }
 
     /// Clear seen IDs (for long-running sessions)

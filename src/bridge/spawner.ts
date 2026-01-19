@@ -200,6 +200,23 @@ function hasRelayPtyBinary(): boolean {
   return relayPtyBinaryPath !== null;
 }
 
+/** Options for AgentSpawner constructor */
+export interface AgentSpawnerOptions {
+  projectRoot: string;
+  tmuxSession?: string;
+  dashboardPort?: number;
+  /**
+   * Callback to mark an agent as spawning (before HELLO completes).
+   * Messages sent to this agent will be queued for delivery after registration.
+   */
+  onMarkSpawning?: (agentName: string) => void;
+  /**
+   * Callback to clear the spawning flag for an agent.
+   * Called when spawn fails or is cancelled.
+   */
+  onClearSpawning?: (agentName: string) => void;
+}
+
 export class AgentSpawner {
   private activeWorkers: Map<string, ActiveWorker> = new Map();
   private agentsPath: string;
@@ -212,9 +229,18 @@ export class AgentSpawner {
   private cloudPersistence?: CloudPersistenceHandler;
   private policyService?: AgentPolicyService;
   private policyEnforcementEnabled = false;
+  private onMarkSpawning?: (agentName: string) => void;
+  private onClearSpawning?: (agentName: string) => void;
 
-  constructor(projectRoot: string, _tmuxSession?: string, dashboardPort?: number) {
-    const paths = getProjectPaths(projectRoot);
+  constructor(projectRoot: string, _tmuxSession?: string, dashboardPort?: number);
+  constructor(options: AgentSpawnerOptions);
+  constructor(projectRootOrOptions: string | AgentSpawnerOptions, _tmuxSession?: string, dashboardPort?: number) {
+    // Handle both old and new constructor signatures
+    const options: AgentSpawnerOptions = typeof projectRootOrOptions === 'string'
+      ? { projectRoot: projectRootOrOptions, tmuxSession: _tmuxSession, dashboardPort }
+      : projectRootOrOptions;
+
+    const paths = getProjectPaths(options.projectRoot);
     this.projectRoot = paths.projectRoot;
     // Use connected-agents.json (live socket connections) instead of agents.json (historical registry)
     // This ensures spawned agents have actual daemon connections for channel message delivery
@@ -222,7 +248,11 @@ export class AgentSpawner {
     this.socketPath = paths.socketPath;
     this.logsDir = path.join(paths.teamDir, 'worker-logs');
     this.workersPath = path.join(paths.teamDir, 'workers.json');
-    this.dashboardPort = dashboardPort;
+    this.dashboardPort = options.dashboardPort;
+
+    // Store spawn tracking callbacks
+    this.onMarkSpawning = options.onMarkSpawning;
+    this.onClearSpawning = options.onClearSpawning;
 
     // Ensure logs directory exists
     fs.mkdirSync(this.logsDir, { recursive: true });
@@ -575,6 +605,13 @@ export class AgentSpawner {
       if (cloudListeners.summary) listeners.summary = cloudListeners.summary;
       if (cloudListeners.sessionEnd) listeners.sessionEnd = cloudListeners.sessionEnd;
 
+      // Mark agent as spawning BEFORE starting PTY
+      // This allows messages sent to this agent to be queued until HELLO completes
+      if (this.onMarkSpawning) {
+        this.onMarkSpawning(name);
+        if (debug) console.log(`[spawner:debug] Marked ${name} as spawning`);
+      }
+
       await pty.start();
 
       if (debug) console.log(`[spawner:debug] PTY started, pid: ${pty.pid}`);
@@ -584,6 +621,10 @@ export class AgentSpawner {
       if (!registered) {
         const error = `Worker ${name} failed to register within 30s`;
         console.error(`[spawner] ${error}`);
+        // Clear spawning flag since spawn failed
+        if (this.onClearSpawning) {
+          this.onClearSpawning(name);
+        }
         await pty.kill();
         return {
           success: false,
@@ -592,9 +633,47 @@ export class AgentSpawner {
         };
       }
 
-      // Note: Task is NOT sent here. The spawning agent (wrapper) waits for the worker
-      // to come online and then sends the task via normal relay message.
-      // This avoids race conditions with the agent's readyForMessages state.
+      // Send task to the newly spawned agent if provided
+      // We do this AFTER registration AND after the CLI is ready to receive input
+      if (task && task.trim() && this.dashboardPort) {
+        try {
+          // Wait for the CLI to be ready (has produced output AND is idle)
+          // This is more reliable than a random sleep because it waits for actual signals
+          if ('waitUntilCliReady' in pty) {
+            const orchestrator = pty as RelayPtyOrchestrator;
+            const ready = await orchestrator.waitUntilCliReady(15000, 100);
+            if (!ready) {
+              console.warn(`[spawner] CLI for ${name} did not become ready within timeout, sending task anyway`);
+            } else if (debug) {
+              console.log(`[spawner:debug] CLI for ${name} is ready to receive messages`);
+            }
+          } else {
+            // PtyWrapper fallback - use short delay as it doesn't have waitUntilCliReady
+            await sleep(500);
+          }
+
+          const sendResponse = await fetch(
+            `http://localhost:${this.dashboardPort}/api/send`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                to: name,
+                message: task,
+                from: spawnerName, // Include spawner name so message appears from correct agent
+              }),
+            }
+          );
+
+          if (sendResponse.ok) {
+            if (debug) console.log(`[spawner:debug] Task sent to ${name}`);
+          } else {
+            console.error(`[spawner] Failed to send task to ${name}: ${sendResponse.status}`);
+          }
+        } catch (err: any) {
+          console.error(`[spawner] Error sending task to ${name}:`, err.message);
+        }
+      }
 
       // Track the worker
       const workerInfo: ActiveWorker = {
@@ -624,6 +703,10 @@ export class AgentSpawner {
     } catch (err: any) {
       console.error(`[spawner] Failed to spawn ${name}:`, err.message);
       if (debug) console.error(`[spawner:debug] Full error:`, err);
+      // Clear spawning flag since spawn failed
+      if (this.onClearSpawning) {
+        this.onClearSpawning(name);
+      }
       return {
         success: false,
         name,

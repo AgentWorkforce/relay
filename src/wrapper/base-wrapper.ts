@@ -479,7 +479,7 @@ export abstract class BaseWrapper extends EventEmitter {
     if (this.config.dashboardPort) {
       try {
         const response = await fetch(
-          `http://localhost:${this.config.dashboardPort}/api/agents/spawn`,
+          `http://localhost:${this.config.dashboardPort}/api/spawn`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
