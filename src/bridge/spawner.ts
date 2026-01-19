@@ -83,8 +83,11 @@ export type OnAgentDeathCallback = (info: {
 /**
  * Get relay protocol instructions for a spawned agent.
  * This provides the agent with the communication protocol it needs to work with the relay.
+ *
+ * @param agentName - The agent's name
+ * @param outboxPath - The outbox directory path (workspace-aware)
  */
-function getRelayInstructions(agentName: string): string {
+function getRelayInstructions(agentName: string, outboxPath: string): string {
   return [
     '# Agent Relay Protocol',
     '',
@@ -95,7 +98,7 @@ function getRelayInstructions(agentName: string): string {
     'Write a file to your outbox, then output the trigger:',
     '',
     '```bash',
-    `cat > /tmp/relay-outbox/${agentName}/msg << 'EOF'`,
+    `cat > ${outboxPath}/msg << 'EOF'`,
     'TO: TargetAgent',
     '',
     'Your message here.',
@@ -108,7 +111,7 @@ function getRelayInstructions(agentName: string): string {
     '',
     '1. **ACK immediately** - When you receive a task:',
     '```bash',
-    `cat > /tmp/relay-outbox/${agentName}/ack << 'EOF'`,
+    `cat > ${outboxPath}/ack << 'EOF'`,
     'TO: Sender',
     '',
     'ACK: Brief description of task received',
@@ -118,7 +121,7 @@ function getRelayInstructions(agentName: string): string {
     '',
     '2. **Report completion** - When done:',
     '```bash',
-    `cat > /tmp/relay-outbox/${agentName}/done << 'EOF'`,
+    `cat > ${outboxPath}/done << 'EOF'`,
     'TO: Sender',
     '',
     'DONE: Brief summary of what was completed',
@@ -182,6 +185,21 @@ function findRelayPtyBinary(): string | null {
 /** Cached result of relay-pty binary check */
 let relayPtyBinaryPath: string | null | undefined;
 let relayPtyBinaryChecked = false;
+
+/**
+ * Get the outbox path for an agent, accounting for workspace namespacing.
+ * When WORKSPACE_ID is set, uses /tmp/relay/{workspaceId}/outbox/{agentName}.
+ * Otherwise falls back to legacy /tmp/relay-outbox/{agentName}.
+ *
+ * @param agentName - The agent's name
+ * @param workspaceId - Optional workspace ID from environment
+ */
+function getOutboxPath(agentName: string, workspaceId?: string): string {
+  if (workspaceId) {
+    return `/tmp/relay/${workspaceId}/outbox/${agentName}`;
+  }
+  return `/tmp/relay-outbox/${agentName}`;
+}
 
 /**
  * Check if relay-pty binary is available (cached).
@@ -443,7 +461,10 @@ export class AgentSpawner {
       }
 
       // Inject relay protocol instructions via CLI-specific system prompt
-      let relayInstructions = getRelayInstructions(name);
+      // Calculate workspace-aware outbox path for relay instructions
+      const workspaceId = process.env.WORKSPACE_ID;
+      const outboxPath = getOutboxPath(name, workspaceId);
+      let relayInstructions = getRelayInstructions(name, outboxPath);
 
       // Compose role-specific prompts if agent has a role defined in .claude/agents/
       const agentConfigForRole = isClaudeCli ? findAgentConfig(name, this.projectRoot) : null;
