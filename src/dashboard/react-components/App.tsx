@@ -64,7 +64,7 @@ import {
 import { useWorkspaceMembers, filterOnlineUsersByWorkspace } from './hooks/useWorkspaceMembers';
 import { useCloudSessionOptional } from './CloudSessionProvider';
 import { WorkspaceProvider } from './WorkspaceContext';
-import { api, convertApiDecision, setActiveWorkspaceId as setApiWorkspaceId, getCsrfToken } from '../lib/api';
+import { api, convertApiDecision, setActiveWorkspaceId as setApiWorkspaceId, getActiveWorkspaceId, getCsrfToken } from '../lib/api';
 import { cloudApi } from '../lib/cloudApi';
 import { mergeAgentsForDashboard } from '../lib/agent-merge';
 import type { CurrentUser } from './MessageList';
@@ -232,7 +232,8 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     accessType?: 'owner' | 'member' | 'contributor';
     permission?: 'admin' | 'write' | 'read';
   }>>([]);
-  const [activeCloudWorkspaceId, setActiveCloudWorkspaceId] = useState<string | null>(null);
+  // Initialize from API module if already set (e.g., by DashboardPage when connecting to workspace)
+  const [activeCloudWorkspaceId, setActiveCloudWorkspaceId] = useState<string | null>(() => getActiveWorkspaceId());
   const [isLoadingCloudWorkspaces, setIsLoadingCloudWorkspaces] = useState(false);
 
   // Local agents from linked daemons
@@ -249,8 +250,20 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
         const result = await cloudApi.getAccessibleWorkspaces();
         if (result.success && result.data.workspaces) {
           setCloudWorkspaces(result.data.workspaces);
-          // Auto-select first workspace if none selected
-          if (!activeCloudWorkspaceId && result.data.workspaces.length > 0) {
+          const workspaceIds = new Set(result.data.workspaces.map(w => w.id));
+          // Validate current selection exists, or auto-select first workspace
+          if (activeCloudWorkspaceId && !workspaceIds.has(activeCloudWorkspaceId)) {
+            // Current workspace no longer exists, clear selection to trigger auto-select
+            if (result.data.workspaces.length > 0) {
+              const firstWorkspaceId = result.data.workspaces[0].id;
+              setActiveCloudWorkspaceId(firstWorkspaceId);
+              setApiWorkspaceId(firstWorkspaceId);
+            } else {
+              setActiveCloudWorkspaceId(null);
+              setApiWorkspaceId(null);
+            }
+          } else if (!activeCloudWorkspaceId && result.data.workspaces.length > 0) {
+            // No selection yet, auto-select first workspace
             const firstWorkspaceId = result.data.workspaces[0].id;
             setActiveCloudWorkspaceId(firstWorkspaceId);
             // Sync immediately with api module to avoid race conditions
@@ -2789,6 +2802,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           onClose={() => setIsFullSettingsOpen(false)}
           settings={settings}
           onUpdateSettings={updateSettings}
+          activeWorkspaceId={effectiveActiveWorkspaceId}
         />
       )}
 
