@@ -291,6 +291,49 @@ export class AgentSpawner {
     return this.policyService;
   }
 
+  private async fetchGhTokenFromCloud(): Promise<string | null> {
+    const cloudApiUrl = process.env.CLOUD_API_URL || process.env.AGENT_RELAY_CLOUD_URL;
+    const workspaceId = process.env.WORKSPACE_ID;
+    const workspaceToken = process.env.WORKSPACE_TOKEN;
+
+    if (!cloudApiUrl || !workspaceId || !workspaceToken) {
+      return null;
+    }
+
+    const normalizedUrl = cloudApiUrl.replace(/\/$/, '');
+    const url = `${normalizedUrl}/api/git/token?workspaceId=${encodeURIComponent(workspaceId)}`;
+
+    try {
+      const response = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${workspaceToken}`,
+        },
+      });
+
+      if (!response.ok) {
+        console.warn(`[spawner] Failed to fetch GH token from cloud: ${response.status} ${response.statusText}`);
+        return null;
+      }
+
+      const data = await response.json() as { userToken?: string | null; token?: string | null };
+      return data.userToken || data.token || null;
+    } catch (err) {
+      console.warn('[spawner] Failed to fetch GH token from cloud', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+
+  private async resolveGhToken(): Promise<string | null> {
+    const cloudToken = await this.fetchGhTokenFromCloud();
+    if (cloudToken) {
+      return cloudToken;
+    }
+
+    return process.env.GH_TOKEN || null;
+  }
+
   /**
    * Set the dashboard port (for nested spawn API calls).
    * Called after the dashboard server starts and we know the actual port.
@@ -504,6 +547,17 @@ export class AgentSpawner {
             error: err instanceof Error ? err.message : String(err),
           });
         }
+      }
+
+      const mergedUserEnv = { ...(userEnv ?? {}) };
+      if (!mergedUserEnv.GH_TOKEN) {
+        const ghToken = await this.resolveGhToken();
+        if (ghToken) {
+          mergedUserEnv.GH_TOKEN = ghToken;
+        }
+      }
+      if (Object.keys(mergedUserEnv).length > 0) {
+        userEnv = mergedUserEnv;
       }
 
       if (debug) console.log(`[spawner:debug] Socket path for ${name}: ${this.socketPath ?? 'undefined'}`);
