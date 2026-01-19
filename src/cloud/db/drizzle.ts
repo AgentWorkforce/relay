@@ -7,7 +7,7 @@
 
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
-import { eq, and, or, sql, desc, lt, gt, isNull, isNotNull, count, inArray } from 'drizzle-orm';
+import { eq, and, or, sql, desc, lt, isNull, isNotNull, inArray } from 'drizzle-orm';
 import * as schema from './schema.js';
 import { getConfig } from '../config.js';
 import { DEFAULT_POOL_CONFIG } from './bulk-ingest.js';
