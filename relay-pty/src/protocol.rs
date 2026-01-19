@@ -203,11 +203,27 @@ impl QueuedMessage {
 
     /// Format as relay message for injection with escalating urgency based on retry count.
     ///
-    /// Retry escalation:
+    /// If the body is already formatted (starts with "Relay message from"), it will be used
+    /// as-is to avoid double-formatting. This happens when the Node.js orchestrator has
+    /// already called buildInjectionString() before sending to the socket.
+    ///
+    /// Retry escalation (only applied to newly formatted messages):
     /// - Attempt 1 (retries=0): "Relay message from..."
     /// - Attempt 2 (retries=1): "[RETRY] Relay message from..."
     /// - Attempt 3+ (retries>=2): "[URGENT - PLEASE ACKNOWLEDGE] Relay message from..."
     pub fn format_for_injection(&self) -> String {
+        // Check if body is already formatted (from Node.js buildInjectionString)
+        // This prevents double-wrapping with "Relay message from..."
+        if self.body.starts_with("Relay message from ") {
+            // Already formatted - just apply retry prefixes if needed
+            return match self.retries {
+                0 => self.body.clone(),
+                1 => format!("[RETRY] {}", self.body),
+                _ => format!("[URGENT - PLEASE ACKNOWLEDGE] {}", self.body),
+            };
+        }
+
+        // Not pre-formatted - apply full formatting
         let short_id = &self.id[..self.id.len().min(7)];
         let base_msg = format!(
             "Relay message from {} [{}]: {}",
@@ -324,6 +340,63 @@ mod tests {
         assert_eq!(
             msg.format_for_injection(),
             "[URGENT - PLEASE ACKNOWLEDGE] Relay message from Alice [abc1234]: Important task"
+        );
+    }
+
+    #[test]
+    fn test_queued_message_format_preformatted() {
+        // When body is already formatted (from Node.js buildInjectionString),
+        // it should NOT be double-wrapped
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Alice".to_string(),
+            "Relay message from Alice [abc12345]: Hello world".to_string(),
+            0,
+        );
+
+        // Should return body as-is (no double-wrapping)
+        assert_eq!(
+            msg.format_for_injection(),
+            "Relay message from Alice [abc12345]: Hello world"
+        );
+    }
+
+    #[test]
+    fn test_queued_message_format_preformatted_with_retry() {
+        let mut msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Alice".to_string(),
+            "Relay message from Alice [abc12345]: Hello world".to_string(),
+            0,
+        );
+
+        // Retry should prepend to pre-formatted body
+        msg.retries = 1;
+        assert_eq!(
+            msg.format_for_injection(),
+            "[RETRY] Relay message from Alice [abc12345]: Hello world"
+        );
+
+        msg.retries = 2;
+        assert_eq!(
+            msg.format_for_injection(),
+            "[URGENT - PLEASE ACKNOWLEDGE] Relay message from Alice [abc12345]: Hello world"
+        );
+    }
+
+    #[test]
+    fn test_preformatted_with_thread_hint() {
+        // Node.js buildInjectionString adds thread hints
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Alice".to_string(),
+            "Relay message from Alice [abc12345] [thread:task-123]: Please review".to_string(),
+            0,
+        );
+        // Should preserve thread hint, not double-wrap
+        assert_eq!(
+            msg.format_for_injection(),
+            "Relay message from Alice [abc12345] [thread:task-123]: Please review"
         );
     }
 }
