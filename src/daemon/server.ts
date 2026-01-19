@@ -27,12 +27,17 @@ import { AgentRegistry } from './agent-registry.js';
 import { daemonLog as log } from '../utils/logger.js';
 import { getCloudSync, type CloudSyncService, type RemoteAgent, type CrossMachineMessage } from './cloud-sync.js';
 import { generateId } from '../utils/id-generator.js';
+import { AgentSpawner } from '../bridge/spawner.js';
 import {
   ConsensusIntegration,
   createConsensusIntegration,
   type ConsensusIntegrationConfig,
 } from './consensus-integration.js';
 import type { ChannelMembershipStore } from './channel-membership-store.js';
+import { DEFAULT_SOCKET_PATH } from './constants.js';
+
+// Re-export for backward compatibility
+export { DEFAULT_SOCKET_PATH };
 
 export interface DaemonConfig extends ConnectionConfig {
   socketPath: string;
@@ -49,9 +54,11 @@ export interface DaemonConfig extends ConnectionConfig {
   cloudUrl?: string;
   /** Consensus mechanism for multi-agent decisions (enabled by default, set to false to disable) */
   consensus?: boolean | Partial<ConsensusIntegrationConfig>;
+  /** Project root for agent spawning (defaults to cwd) */
+  projectRoot?: string;
+  /** Enable cloud spawning (handle __spawner__ messages) */
+  cloudSpawning?: boolean;
 }
-
-export const DEFAULT_SOCKET_PATH = '/tmp/agent-relay.sock';
 
 export const DEFAULT_DAEMON_CONFIG: DaemonConfig = {
   ...DEFAULT_CONFIG,
@@ -82,6 +89,7 @@ export class Daemon {
   private remoteUsers: RemoteAgent[] = [];
   private consensus?: ConsensusIntegration;
   private cloudSyncDebounceTimer?: NodeJS.Timeout;
+  private spawner?: AgentSpawner;
 
   /** Callback for log output from agents (used by dashboard for streaming) */
   onLogOutput?: (agentName: string, data: string, timestamp: number) => void;
@@ -441,6 +449,18 @@ export class Daemon {
         this.cloudSync.setStorage(this.storage);
       }
 
+      // Initialize spawner for cloud-triggered agent spawning
+      // This handles __spawner__ messages from webhooks/CI triggers
+      if (this.config.cloudSpawning !== false && hasEnvApiKey) {
+        const projectRoot = this.config.projectRoot || process.env.WORKSPACE_CWD || process.cwd();
+        this.spawner = new AgentSpawner({
+          projectRoot,
+          onMarkSpawning: (name) => this.markSpawning(name),
+          onClearSpawning: (name) => this.clearSpawning(name),
+        });
+        log.info('Cloud spawning enabled', { projectRoot });
+      }
+
       log.info('Cloud sync enabled');
     } catch (err) {
       log.error('Failed to initialize cloud sync', { error: String(err) });
@@ -477,6 +497,14 @@ export class Daemon {
       to: msg.to,
     });
 
+    // Handle __spawner__ messages (cloud-triggered agent spawning)
+    if (msg.to === '__spawner__') {
+      this.handleSpawnCommand(msg).catch((err) => {
+        log.error('Failed to handle spawn command', { error: String(err) });
+      });
+      return;
+    }
+
     // Find local agent
     const targetConnection = Array.from(this.connections).find(
       c => c.agentName === msg.to
@@ -508,6 +536,62 @@ export class Daemon {
     };
 
     this.router.route(targetConnection, envelope);
+  }
+
+  /**
+   * Handle spawn command from cloud (webhooks, CI triggers, etc.)
+   */
+  private async handleSpawnCommand(msg: CrossMachineMessage): Promise<void> {
+    if (!this.spawner) {
+      log.warn('Spawn command received but spawner not initialized');
+      return;
+    }
+
+    try {
+      // Parse spawn command from message content
+      const command = JSON.parse(msg.content) as {
+        type: string;
+        agentName: string;
+        cli?: string;
+        task?: string;
+        metadata?: Record<string, unknown>;
+      };
+
+      if (command.type !== 'spawn_agent') {
+        log.warn('Unknown spawn command type', { type: command.type });
+        return;
+      }
+
+      log.info('Spawning agent from cloud command', {
+        name: command.agentName,
+        cli: command.cli || 'claude',
+        metadata: command.metadata,
+      });
+
+      // Spawn the agent
+      const result = await this.spawner.spawn({
+        name: command.agentName,
+        cli: command.cli || 'claude',
+        task: command.task || '',
+      });
+
+      if (result.success) {
+        log.info('Agent spawned successfully', {
+          name: command.agentName,
+          pid: result.pid,
+        });
+      } else {
+        log.error('Failed to spawn agent', {
+          name: command.agentName,
+          error: result.error,
+        });
+      }
+    } catch (err) {
+      log.error('Failed to parse spawn command', {
+        error: String(err),
+        content: msg.content.substring(0, 200),
+      });
+    }
   }
 
   /**
@@ -631,6 +715,12 @@ export class Daemon {
    */
   async stop(): Promise<void> {
     if (!this.running) return;
+
+    // Release all spawned agents
+    if (this.spawner) {
+      await this.spawner.releaseAll();
+      this.spawner = undefined;
+    }
 
     // Stop cloud sync
     if (this.cloudSync) {

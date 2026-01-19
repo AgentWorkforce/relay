@@ -37,7 +37,7 @@ import type {
   MessageAttachment,
 } from '../protocol/channels.js';
 import { encodeFrameLegacy, FrameParser } from '../protocol/framing.js';
-import { DEFAULT_SOCKET_PATH } from '../daemon/server.js';
+import { DEFAULT_SOCKET_PATH } from '../daemon/constants.js';
 
 export type ClientState = 'DISCONNECTED' | 'CONNECTING' | 'HANDSHAKING' | 'READY' | 'BACKOFF';
 
