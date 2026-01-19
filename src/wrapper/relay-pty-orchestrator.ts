@@ -20,7 +20,7 @@ import { spawn, ChildProcess } from 'node:child_process';
 import { createConnection, Socket } from 'node:net';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
-import { existsSync, unlinkSync, mkdirSync } from 'node:fs';
+import { existsSync, unlinkSync, mkdirSync, symlinkSync, lstatSync, rmSync } from 'node:fs';
 import { getProjectPaths } from '../utils/project-namespace.js';
 import { fileURLToPath } from 'node:url';
 
@@ -155,6 +155,8 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   private socketPath: string;
   private _logPath: string;
   private _outboxPath: string;
+  private _legacyOutboxPath: string; // Legacy path for symlink creation
+  private _workspaceId?: string; // For symlink setup
   private socket?: Socket;
   private socketConnected = false;
 
@@ -188,9 +190,13 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     super(config);
     this.config = config;
 
+    // Legacy outbox path - agents always write here (used for symlink setup)
+    this._legacyOutboxPath = `/tmp/relay-outbox/${config.name}`;
+
     // Check for workspace namespacing (for multi-tenant cloud deployment)
     // WORKSPACE_ID can be in process.env or passed via config.env
     const workspaceId = config.env?.WORKSPACE_ID || process.env.WORKSPACE_ID;
+    this._workspaceId = workspaceId;
 
     if (workspaceId) {
       // Workspace-namespaced paths for cloud multi-tenant isolation
@@ -222,7 +228,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     } else {
       // Legacy paths for local development
       this.socketPath = `/tmp/relay-pty-${config.name}.sock`;
-      this._outboxPath = `/tmp/relay-outbox/${config.name}`;
+      this._outboxPath = this._legacyOutboxPath;
     }
     if (this.socketPath.length > MAX_SOCKET_PATH_LENGTH) {
       throw new Error(`Socket path exceeds ${MAX_SOCKET_PATH_LENGTH} chars: ${this.socketPath.length}`);
@@ -230,8 +236,8 @@ export class RelayPtyOrchestrator extends BaseWrapper {
 
     // Generate log path using same project paths as daemon
     // Use cwd from config if specified, otherwise detect from current directory
-    const paths = getProjectPaths(config.cwd);
-    this._logPath = join(paths.teamDir, 'worker-logs', `${config.name}.log`);
+    const projectPaths = getProjectPaths(config.cwd);
+    this._logPath = join(projectPaths.teamDir, 'worker-logs', `${config.name}.log`);
 
     // Check if we're running interactively (stdin is a TTY)
     this.isInteractive = process.stdin.isTTY === true;
@@ -291,6 +297,68 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       }
     } catch (err: any) {
       this.logError(` Failed to clean up socket: ${err.message}`);
+    }
+
+    // Set up outbox symlink for workspace namespacing
+    // Agents write to legacy path (/tmp/relay-outbox/{name}), symlink points to workspace path
+    // This allows agents to use simple instructions while maintaining workspace isolation
+    if (this._workspaceId) {
+      try {
+        // Ensure workspace outbox directory exists
+        const outboxDir = dirname(this._outboxPath);
+        if (!existsSync(outboxDir)) {
+          mkdirSync(outboxDir, { recursive: true });
+        }
+        if (!existsSync(this._outboxPath)) {
+          mkdirSync(this._outboxPath, { recursive: true });
+        }
+
+        // Ensure legacy outbox parent directory exists
+        const legacyOutboxParent = dirname(this._legacyOutboxPath);
+        if (!existsSync(legacyOutboxParent)) {
+          mkdirSync(legacyOutboxParent, { recursive: true });
+        }
+
+        // Create symlink from legacy path to workspace path
+        // If legacy path exists as a regular directory, remove it first
+        if (existsSync(this._legacyOutboxPath)) {
+          try {
+            const stats = lstatSync(this._legacyOutboxPath);
+            if (stats.isSymbolicLink()) {
+              // Already a symlink - remove and recreate to ensure correct target
+              unlinkSync(this._legacyOutboxPath);
+            } else if (stats.isDirectory()) {
+              // Regular directory - remove it (may have stale files from previous run)
+              rmSync(this._legacyOutboxPath, { recursive: true, force: true });
+            }
+          } catch {
+            // Ignore errors during cleanup
+          }
+        }
+
+        // Create the symlink: legacy path -> workspace path
+        symlinkSync(this._outboxPath, this._legacyOutboxPath);
+        this.log(` Created outbox symlink: ${this._legacyOutboxPath} -> ${this._outboxPath}`);
+      } catch (err: any) {
+        this.logError(` Failed to set up outbox symlink: ${err.message}`);
+        // Fall back to creating legacy directory directly
+        try {
+          if (!existsSync(this._legacyOutboxPath)) {
+            mkdirSync(this._legacyOutboxPath, { recursive: true });
+          }
+        } catch {
+          // Ignore
+        }
+      }
+    } else {
+      // No workspace ID - just ensure legacy outbox directory exists
+      try {
+        if (!existsSync(this._legacyOutboxPath)) {
+          mkdirSync(this._legacyOutboxPath, { recursive: true });
+        }
+      } catch (err: any) {
+        this.logError(` Failed to create outbox directory: ${err.message}`);
+      }
     }
 
     // Find relay-pty binary
