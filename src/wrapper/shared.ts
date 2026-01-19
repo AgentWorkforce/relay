@@ -143,7 +143,7 @@ export function buildInjectionString(msg: QueuedMessage): string {
   // Channel indicator for channel messages and broadcasts
   // originalTo will be '*' for broadcasts or the channel name (e.g., '#general') for channel messages
   const channelHint = msg.originalTo === '*'
-    ? ' [#general]'
+    ? ' [broadcast]'
     : msg.originalTo?.startsWith('#')
       ? ` [${msg.originalTo}]`
       : '';

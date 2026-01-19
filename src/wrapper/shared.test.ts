@@ -98,7 +98,7 @@ describe('buildInjectionString', () => {
         originalTo: '*',
       };
       const result = buildInjectionString(msg);
-      expect(result).toContain('[#general]');
+      expect(result).toContain('[broadcast]');
     });
 
     it('includes channel hint for channel messages', () => {
