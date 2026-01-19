@@ -19,7 +19,7 @@ teamsRouter.use(requireAuth);
  */
 teamsRouter.get('/workspaces/:workspaceId/members', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { workspaceId } = req.params;
+  const workspaceId = req.params.workspaceId as string;
 
   try {
     // Check user has access to workspace
@@ -69,7 +69,7 @@ teamsRouter.get('/workspaces/:workspaceId/members', async (req: Request, res: Re
  */
 teamsRouter.post('/workspaces/:workspaceId/members', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { workspaceId } = req.params;
+  const workspaceId = req.params.workspaceId as string;
   const { githubUsername, role = 'member' } = req.body;
 
   if (!githubUsername) {
@@ -153,7 +153,8 @@ teamsRouter.post('/workspaces/:workspaceId/members', async (req: Request, res: R
  */
 teamsRouter.patch('/workspaces/:workspaceId/members/:memberId', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { workspaceId, memberId } = req.params;
+  const workspaceId = req.params.workspaceId as string;
+  const memberId = req.params.memberId as string;
   const { role } = req.body;
 
   const validRoles: WorkspaceMemberRole[] = ['admin', 'member', 'viewer'];
@@ -198,7 +199,8 @@ teamsRouter.patch('/workspaces/:workspaceId/members/:memberId', async (req: Requ
  */
 teamsRouter.delete('/workspaces/:workspaceId/members/:memberId', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { workspaceId, memberId } = req.params;
+  const workspaceId = req.params.workspaceId as string;
+  const memberId = req.params.memberId as string;
 
   try {
     const members = await db.workspaceMembers.findByWorkspaceId(workspaceId);
@@ -274,7 +276,7 @@ teamsRouter.get('/invites', async (req: Request, res: Response) => {
  */
 teamsRouter.post('/invites/:inviteId/accept', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { inviteId } = req.params;
+  const inviteId = req.params.inviteId as string;
 
   try {
     const invites = await db.workspaceMembers.getPendingInvites(userId);
@@ -303,7 +305,7 @@ teamsRouter.post('/invites/:inviteId/accept', async (req: Request, res: Response
  */
 teamsRouter.post('/invites/:inviteId/decline', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { inviteId } = req.params;
+  const inviteId = req.params.inviteId as string;
 
   try {
     const invites = await db.workspaceMembers.getPendingInvites(userId);

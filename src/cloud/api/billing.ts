@@ -155,7 +155,7 @@ billingRouter.get('/plans', (req, res) => {
  * Get a specific plan by tier
  */
 billingRouter.get('/plans/:tier', (req, res) => {
-  const { tier } = req.params;
+  const tier = req.params.tier as string;
 
   try {
     const plan = getPlan(tier as SubscriptionTier);

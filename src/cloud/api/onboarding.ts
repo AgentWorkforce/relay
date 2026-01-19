@@ -114,7 +114,7 @@ setInterval(() => {
  */
 onboardingRouter.post('/cli/:provider/start', async (req: Request, res: Response) => {
   console.log('[onboarding] Route handler entered! provider:', req.params.provider);
-  const { provider } = req.params;
+  const provider = req.params.provider as string;
   const userId = req.session.userId!;
   const { workspaceId, useDeviceFlow: requestedDeviceFlow } = req.body; // Optional: specific workspace, device flow option
 
@@ -250,7 +250,8 @@ onboardingRouter.post('/cli/:provider/start', async (req: Request, res: Response
  * Check status of CLI auth session - forwards to workspace daemon
  */
 onboardingRouter.get('/cli/:provider/status/:sessionId', async (req: Request, res: Response) => {
-  const { provider, sessionId } = req.params;
+  const provider = req.params.provider as string;
+  const sessionId = req.params.sessionId as string;
   const userId = req.session.userId!;
 
   const session = activeSessions.get(sessionId);
@@ -306,7 +307,8 @@ onboardingRouter.get('/cli/:provider/status/:sessionId', async (req: Request, re
  * 2. Direct: Uses token from body or session
  */
 onboardingRouter.post('/cli/:provider/complete/:sessionId', async (req: Request, res: Response) => {
-  const { provider, sessionId } = req.params;
+  const provider = req.params.provider as string;
+  const sessionId = req.params.sessionId as string;
   const userId = req.session.userId!;
   const { token, authCode } = req.body; // token for direct mode, authCode for Codex redirect
 
@@ -447,7 +449,8 @@ onboardingRouter.post('/cli/:provider/complete/:sessionId', async (req: Request,
  * Used when OAuth returns a code that must be pasted into the CLI
  */
 onboardingRouter.post('/cli/:provider/code/:sessionId', async (req: Request, res: Response) => {
-  const { provider, sessionId } = req.params;
+  const provider = req.params.provider as string;
+  const sessionId = req.params.sessionId as string;
   const userId = req.session.userId!;
   const { code, state } = req.body; // state is optional, used for Codex OAuth
 
@@ -530,7 +533,8 @@ onboardingRouter.post('/cli/:provider/code/:sessionId', async (req: Request, res
  * Cancel a CLI auth session
  */
 onboardingRouter.post('/cli/:provider/cancel/:sessionId', async (req: Request, res: Response) => {
-  const { provider, sessionId } = req.params;
+  const provider = req.params.provider as string;
+  const sessionId = req.params.sessionId as string;
   const userId = req.session.userId!;
 
   const session = activeSessions.get(sessionId);
@@ -558,7 +562,7 @@ onboardingRouter.post('/cli/:provider/cancel/:sessionId', async (req: Request, r
  * Used by terminal-based setup where the CLI stores credentials locally.
  */
 onboardingRouter.post('/mark-connected/:provider', async (req: Request, res: Response) => {
-  const { provider } = req.params;
+  const provider = req.params.provider as string;
   const userId = req.session.userId!;
 
   // Validate provider
@@ -592,7 +596,7 @@ onboardingRouter.post('/mark-connected/:provider', async (req: Request, res: Res
  * Directly store a token (for manual paste flow)
  */
 onboardingRouter.post('/token/:provider', async (req: Request, res: Response) => {
-  const { provider } = req.params;
+  const provider = req.params.provider as string;
   const userId = req.session.userId!;
   const { token, email } = req.body;
 

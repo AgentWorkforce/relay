@@ -175,7 +175,7 @@ codexAuthHelperRouter.post('/callback', async (req: Request, res: Response) => {
  * The dashboard polls this to know when the CLI has captured the callback.
  */
 codexAuthHelperRouter.get('/status/:authSessionId', requireAuth, async (req: Request, res: Response) => {
-  const { authSessionId } = req.params;
+  const authSessionId = req.params.authSessionId as string;
   const session = pendingAuthSessions.get(authSessionId);
 
   if (!session || session.userId !== req.session.userId) {
@@ -206,7 +206,7 @@ codexAuthHelperRouter.get('/status/:authSessionId', requireAuth, async (req: Req
  * Authentication: Requires either session auth OR a valid CLI token.
  */
 codexAuthHelperRouter.get('/tunnel-info/:workspaceId', async (req: Request, res: Response) => {
-  const { workspaceId } = req.params;
+  const workspaceId = req.params.workspaceId as string;
   const { token } = req.query;
 
   // Authenticate via CLI token or session
@@ -314,7 +314,7 @@ codexAuthHelperRouter.get('/tunnel-info/:workspaceId', async (req: Request, res:
  * Authentication: Requires either session auth OR a valid CLI token.
  */
 codexAuthHelperRouter.get('/auth-status/:workspaceId', async (req: Request, res: Response) => {
-  const { workspaceId } = req.params;
+  const workspaceId = req.params.workspaceId as string;
   const { token } = req.query;
 
   // Authenticate via CLI token or session

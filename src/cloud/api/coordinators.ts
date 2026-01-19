@@ -167,7 +167,7 @@ coordinatorsRouter.post('/', async (req: Request, res: Response) => {
  */
 coordinatorsRouter.get('/:id', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
 
   // Skip if this looks like a coordinator route
   if (id === 'coordinators') {
@@ -217,7 +217,7 @@ coordinatorsRouter.get('/:id', async (req: Request, res: Response) => {
  */
 coordinatorsRouter.patch('/:id', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
   const { name, description, color, icon } = req.body;
 
   try {
@@ -304,7 +304,7 @@ coordinatorsRouter.patch('/:id', async (req: Request, res: Response) => {
  */
 coordinatorsRouter.delete('/:id', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
 
   try {
     const group = await db.projectGroups.findById(id);
@@ -346,7 +346,7 @@ coordinatorsRouter.delete('/:id', async (req: Request, res: Response) => {
  */
 coordinatorsRouter.post('/:id/repositories', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
   const { repositoryIds } = req.body;
 
   if (!repositoryIds || !Array.isArray(repositoryIds) || repositoryIds.length === 0) {
@@ -409,7 +409,8 @@ coordinatorsRouter.post('/:id/repositories', async (req: Request, res: Response)
  */
 coordinatorsRouter.delete('/:id/repositories/:repoId', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id, repoId } = req.params;
+  const id = req.params.id as string;
+  const repoId = req.params.repoId as string;
 
   try {
     const group = await db.projectGroups.findById(id);
@@ -497,7 +498,7 @@ coordinatorsRouter.put('/reorder', async (req: Request, res: Response) => {
  */
 coordinatorsRouter.get('/:groupId/coordinator', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { groupId } = req.params;
+  const groupId = req.params.groupId as string;
 
   try {
     const group = await db.projectGroups.findById(groupId);
@@ -527,7 +528,7 @@ coordinatorsRouter.get('/:groupId/coordinator', async (req: Request, res: Respon
  */
 coordinatorsRouter.put('/:groupId/coordinator', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { groupId } = req.params;
+  const groupId = req.params.groupId as string;
   const { name, model, systemPrompt, capabilities } = req.body;
 
   try {
@@ -575,7 +576,7 @@ coordinatorsRouter.put('/:groupId/coordinator', async (req: Request, res: Respon
  */
 coordinatorsRouter.post('/:groupId/coordinator/enable', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { groupId } = req.params;
+  const groupId = req.params.groupId as string;
 
   try {
     const group = await db.projectGroups.findById(groupId);
@@ -631,7 +632,7 @@ coordinatorsRouter.post('/:groupId/coordinator/enable', async (req: Request, res
  */
 coordinatorsRouter.post('/:groupId/coordinator/disable', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { groupId } = req.params;
+  const groupId = req.params.groupId as string;
 
   try {
     const group = await db.projectGroups.findById(groupId);
@@ -702,7 +703,7 @@ coordinatorsRouter.get('/coordinators/active', async (req: Request, res: Respons
  */
 coordinatorsRouter.post('/:groupId/coordinator/message', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { groupId } = req.params;
+  const groupId = req.params.groupId as string;
   const { workspaceId, agentName, message, thread } = req.body;
 
   if (!workspaceId || !agentName || !message) {
@@ -744,7 +745,7 @@ coordinatorsRouter.post('/:groupId/coordinator/message', async (req: Request, re
  */
 coordinatorsRouter.post('/:groupId/coordinator/broadcast', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { groupId } = req.params;
+  const groupId = req.params.groupId as string;
   const { message, thread } = req.body;
 
   if (!message) {
@@ -817,7 +818,7 @@ coordinatorsRouter.post('/coordinator/route', async (req: Request, res: Response
  */
 coordinatorsRouter.get('/:groupId/coordinator/status', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { groupId } = req.params;
+  const groupId = req.params.groupId as string;
 
   try {
     const group = await db.projectGroups.findById(groupId);

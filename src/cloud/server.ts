@@ -941,7 +941,7 @@ export async function createServer(): Promise<CloudServer> {
   });
 
   app.get('/api/channels/:channel/messages', requireAuth, async (req, res) => {
-    const channel = encodeURIComponent(req.params.channel);
+    const channel = encodeURIComponent(req.params.channel as string);
     const params = new URLSearchParams();
     if (req.query.limit) params.set('limit', req.query.limit as string);
     if (req.query.before) params.set('before', req.query.before as string);
@@ -953,7 +953,7 @@ export async function createServer(): Promise<CloudServer> {
    * GET /api/channels/:channel/members - Get members of a channel
    */
   app.get('/api/channels/:channel/members', requireAuth, async (req, res) => {
-    const channel = encodeURIComponent(req.params.channel);
+    const channel = encodeURIComponent(req.params.channel as string);
     await proxyToLocalDashboard(req, res, `/api/channels/${channel}/members`);
   });
 

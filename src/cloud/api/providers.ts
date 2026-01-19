@@ -436,7 +436,7 @@ providersRouter.post('/:provider/api-key', async (req: Request, res: Response) =
  * Check status of device flow
  */
 providersRouter.get('/:provider/status/:flowId', (req: Request, res: Response) => {
-  const { flowId } = req.params;
+  const flowId = req.params.flowId as string;
   const userId = req.session.userId!;
 
   loadFlow(flowId)
@@ -468,7 +468,7 @@ providersRouter.get('/:provider/status/:flowId', (req: Request, res: Response) =
  * Disconnect a provider
  */
 providersRouter.delete('/:provider', async (req: Request, res: Response) => {
-  const { provider } = req.params;
+  const provider = req.params.provider as string;
   const userId = req.session.userId!;
 
   if (provider === 'github') {
@@ -489,7 +489,7 @@ providersRouter.delete('/:provider', async (req: Request, res: Response) => {
  * Cancel a device flow
  */
 providersRouter.delete('/:provider/flow/:flowId', (req: Request, res: Response) => {
-  const { flowId } = req.params;
+  const flowId = req.params.flowId as string;
   const userId = req.session.userId!;
 
   loadFlow(flowId)

@@ -155,7 +155,7 @@ daemonsRouter.get('/', requireAuth, async (req: Request, res: Response) => {
  */
 daemonsRouter.get('/workspace/:workspaceId/agents', requireAuth, async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { workspaceId } = req.params;
+  const workspaceId = req.params.workspaceId as string;
 
   try {
     // Verify user has access to this workspace
@@ -215,7 +215,7 @@ daemonsRouter.get('/workspace/:workspaceId/agents', requireAuth, async (req: Req
  */
 daemonsRouter.delete('/:id', requireAuth, async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
 
   try {
     const daemon = await db.linkedDaemons.findById(id);

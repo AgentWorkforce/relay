@@ -389,7 +389,7 @@ export async function checkWorkspaceAccess(
  */
 export function requireWorkspaceAccess(req: Request, res: Response, next: NextFunction): void {
   const userId = req.session.userId;
-  const workspaceId = req.params.id || req.params.workspaceId;
+  const workspaceId = (req.params.id || req.params.workspaceId) as string;
 
   if (!userId) {
     res.status(401).json({ error: 'Authentication required' });
@@ -866,7 +866,7 @@ workspacesRouter.get('/accessible', async (req: Request, res: Response) => {
  * Uses requireWorkspaceAccess middleware for auto-access via GitHub repos
  */
 workspacesRouter.get('/:id', requireWorkspaceAccess, async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const id = req.params.id as string;
   const _workspaceAccess = (req as any).workspaceAccess;
 
   try {
@@ -908,7 +908,7 @@ workspacesRouter.get('/:id', requireWorkspaceAccess, async (req: Request, res: R
  */
 workspacesRouter.get('/:id/status', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
 
   try {
     const workspace = await db.workspaces.findById(id);
@@ -948,7 +948,7 @@ workspacesRouter.get('/:id/status', async (req: Request, res: Response) => {
  */
 workspacesRouter.post('/:id/restart', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
 
   try {
     const workspace = await db.workspaces.findById(id);
@@ -977,7 +977,7 @@ workspacesRouter.post('/:id/restart', async (req: Request, res: Response) => {
  */
 workspacesRouter.post('/:id/stop', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
 
   try {
     const workspace = await db.workspaces.findById(id);
@@ -1006,7 +1006,7 @@ workspacesRouter.post('/:id/stop', async (req: Request, res: Response) => {
  */
 workspacesRouter.delete('/:id', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
 
   try {
     const workspace = await db.workspaces.findById(id);
@@ -1035,7 +1035,7 @@ workspacesRouter.delete('/:id', async (req: Request, res: Response) => {
  */
 workspacesRouter.post('/:id/repos', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
   const { repositoryIds } = req.body;
 
   if (!repositoryIds || !Array.isArray(repositoryIds)) {
@@ -1108,7 +1108,7 @@ workspacesRouter.post('/:id/repos', async (req: Request, res: Response) => {
  */
 workspacesRouter.get('/:id/repos', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
 
   try {
     const workspace = await db.workspaces.findById(id);
@@ -1149,7 +1149,7 @@ workspacesRouter.get('/:id/repos', async (req: Request, res: Response) => {
  */
 workspacesRouter.get('/:id/repo-collaborators', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
 
   try {
     const workspace = await db.workspaces.findById(id);
@@ -1286,7 +1286,8 @@ workspacesRouter.get('/:id/repo-collaborators', async (req: Request, res: Respon
  */
 workspacesRouter.delete('/:id/repos/:repoId', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id, repoId } = req.params;
+  const id = req.params.id as string;
+  const repoId = req.params.repoId as string;
 
   try {
     const workspace = await db.workspaces.findById(id);
@@ -1328,7 +1329,7 @@ workspacesRouter.delete('/:id/repos/:repoId', async (req: Request, res: Response
  */
 workspacesRouter.patch('/:id', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
   const { name } = req.body;
 
   try {
@@ -1382,7 +1383,7 @@ workspacesRouter.patch('/:id', async (req: Request, res: Response) => {
  * Called by workspace container when spawning new agents
  */
 workspacesRouter.post('/:id/autoscale', async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const id = req.params.id as string;
   const { agentCount } = req.body;
 
   if (typeof agentCount !== 'number' || agentCount < 0) {
@@ -1464,7 +1465,7 @@ workspacesRouter.post('/:id/autoscale', async (req: Request, res: Response) => {
  */
 workspacesRouter.post('/:id/domain', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
   const { domain } = req.body;
 
   if (!domain || typeof domain !== 'string') {
@@ -1533,7 +1534,7 @@ workspacesRouter.post('/:id/domain', async (req: Request, res: Response) => {
  */
 workspacesRouter.post('/:id/domain/verify', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
 
   try {
     const workspace = await db.workspaces.findById(id);
@@ -1600,7 +1601,7 @@ workspacesRouter.post('/:id/domain/verify', async (req: Request, res: Response) 
  */
 workspacesRouter.delete('/:id/domain', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
 
   try {
     const workspace = await db.workspaces.findById(id);
@@ -1694,7 +1695,7 @@ async function removeDomainFromCompute(workspace: Workspace): Promise<void> {
  */
 workspacesRouter.all('/:id/proxy/{*proxyPath}', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
   // Express 5 wildcard params return an array of path segments, not a slash-separated string
   const proxyPathParam = req.params.proxyPath;
   const proxyPath = Array.isArray(proxyPathParam) ? proxyPathParam.join('/') : proxyPathParam;
@@ -1835,7 +1836,7 @@ workspacesRouter.all('/:id/proxy/{*proxyPath}', async (req: Request, res: Respon
  */
 workspacesRouter.post('/:id/agents', async (req: Request, res: Response) => {
   const userId = req.session.userId;
-  const { id } = req.params;
+  const id = req.params.id as string;
   const { name, provider, task, temporary: _temporary, interactive } = req.body;
 
   if (!userId) {
@@ -1916,7 +1917,7 @@ workspacesRouter.post('/:id/agents', async (req: Request, res: Response) => {
  */
 workspacesRouter.get('/:id/agents', async (req: Request, res: Response) => {
   const userId = req.session.userId;
-  const { id } = req.params;
+  const id = req.params.id as string;
 
   if (!userId) {
     return res.status(401).json({ error: 'Not authenticated' });
@@ -1962,7 +1963,8 @@ workspacesRouter.get('/:id/agents', async (req: Request, res: Response) => {
  */
 workspacesRouter.delete('/:id/agents/:agentName', async (req: Request, res: Response) => {
   const userId = req.session.userId;
-  const { id, agentName } = req.params;
+  const id = req.params.id as string;
+  const agentName = req.params.agentName as string;
 
   if (!userId) {
     return res.status(401).json({ error: 'Not authenticated' });

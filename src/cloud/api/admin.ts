@@ -127,7 +127,7 @@ adminRouter.post('/workspaces/update-image', async (req: Request, res: Response)
  * - error?: Error message (if applicable)
  */
 adminRouter.post('/workspaces/:id/update-image', async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const id = req.params.id as string;
   const {
     image,
     force = false,
@@ -181,7 +181,7 @@ adminRouter.post('/workspaces/:id/update-image', async (req: Request, res: Respo
  * - agents: Array of { name, status }
  */
 adminRouter.get('/workspaces/:id/agents', async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const id = req.params.id as string;
 
   try {
     // Query workspace directly from DB and check agents via daemon API

@@ -56,7 +56,7 @@ nangoAuthRouter.get('/login-session', async (req: Request, res: Response) => {
  * Poll for login completion after Nango connect UI
  */
 nangoAuthRouter.get('/login-status/:connectionId', async (req: Request, res: Response) => {
-  const { connectionId } = req.params;
+  const connectionId = req.params.connectionId as string;
 
   try {
     // Check if a user exists with this incoming connection
@@ -125,7 +125,7 @@ nangoAuthRouter.get('/repo-session', requireAuth, async (req: Request, res: Resp
  */
 nangoAuthRouter.get('/repo-status/:connectionId', requireAuth, async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { connectionId: _connectionId } = req.params;
+  const _connectionId = req.params.connectionId as string;
 
   try {
     const user = await db.users.findById(userId);

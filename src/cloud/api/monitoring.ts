@@ -327,7 +327,7 @@ monitoringRouter.get('/overview', requireAuth, async (req: Request, res: Respons
  */
 monitoringRouter.get('/agents/:agentName/metrics', requireAuth, async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { agentName } = req.params;
+  const agentName = req.params.agentName as string;
   const { daemonId, hours = '24' } = req.query;
 
   try {
@@ -446,7 +446,7 @@ monitoringRouter.get('/crashes', requireAuth, async (req: Request, res: Response
  */
 monitoringRouter.get('/crashes/:id', requireAuth, async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
 
   try {
     const db = getDb();
@@ -531,7 +531,7 @@ monitoringRouter.get('/alerts', requireAuth, async (req: Request, res: Response)
  */
 monitoringRouter.post('/alerts/:id/acknowledge', requireAuth, async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
 
   try {
     const db = getDb();

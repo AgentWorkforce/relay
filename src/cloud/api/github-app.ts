@@ -144,7 +144,7 @@ githubAppRouter.get('/clone-token', async (req: Request, res: Response) => {
  */
 githubAppRouter.post('/repos/:id/issues', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
   const { title, body, labels } = req.body;
 
   if (!title || typeof title !== 'string') {
@@ -187,7 +187,7 @@ githubAppRouter.post('/repos/:id/issues', async (req: Request, res: Response) =>
  */
 githubAppRouter.post('/repos/:id/pulls', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
   const { title, body, head, base } = req.body;
 
   if (!title || !head || !base) {
@@ -230,7 +230,7 @@ githubAppRouter.post('/repos/:id/pulls', async (req: Request, res: Response) => 
  */
 githubAppRouter.post('/repos/:id/comments', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
   const { issueNumber, body } = req.body;
 
   if (!issueNumber || !body) {

@@ -437,7 +437,8 @@ reposRouter.get('/search', async (req: Request, res: Response) => {
  */
 reposRouter.get('/check-access/:owner/:repo', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { owner, repo } = req.params;
+  const owner = req.params.owner as string;
+  const repo = req.params.repo as string;
 
   if (!owner || !repo) {
     return res.status(400).json({ error: 'Owner and repo parameters are required' });
@@ -588,7 +589,7 @@ reposRouter.post('/check-access-bulk', async (req: Request, res: Response) => {
  */
 reposRouter.get('/:id', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
 
   try {
     const repositories = await db.repositories.findByUserId(userId);
@@ -623,7 +624,7 @@ reposRouter.get('/:id', async (req: Request, res: Response) => {
  */
 reposRouter.post('/:id/sync', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
 
   try {
     const repositories = await db.repositories.findByUserId(userId);
@@ -698,7 +699,7 @@ reposRouter.post('/:id/sync', async (req: Request, res: Response) => {
  */
 reposRouter.delete('/:id', async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { id } = req.params;
+  const id = req.params.id as string;
 
   try {
     const repositories = await db.repositories.findByUserId(userId);
