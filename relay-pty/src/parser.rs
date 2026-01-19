@@ -1159,4 +1159,42 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
+
+    #[test]
+    fn test_parse_header_format_defaults_to_message() {
+        let content = "TO: Bob\n\nHello there!";
+        let msg = parse_header_format(content).unwrap();
+        assert_eq!(msg.kind, "message");
+        assert_eq!(msg.to, Some("Bob".to_string()));
+        assert_eq!(msg.body, Some("Hello there!".to_string()));
+    }
+
+    #[test]
+    fn test_parse_continuity_format_rejects_invalid_action() {
+        let content = "KIND: continuity\nACTION: maybe\n\nNot a valid action";
+        let msg = parse_continuity_format(content);
+        assert!(msg.is_none());
+    }
+
+    #[test]
+    fn test_file_relay_skips_legacy_parsing_when_file_found() {
+        let temp_dir = std::env::temp_dir().join("relay-test-file-priority");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let msg_id = "test-file-priority";
+        let content = "TO: Bob\n\nHello from file.";
+        std::fs::write(temp_dir.join(msg_id), content).unwrap();
+
+        let mut parser = OutputParser::with_outbox("Alice".to_string(), r"^> $", temp_dir.clone());
+        let input = format!(
+            "->relay-file:{}\n->relay:Charlie This should be ignored.\n",
+            msg_id
+        );
+        let result = parser.process(input.as_bytes());
+
+        assert_eq!(result.commands.len(), 1);
+        assert_eq!(result.commands[0].to, "Bob");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 }

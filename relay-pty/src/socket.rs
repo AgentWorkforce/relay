@@ -451,4 +451,39 @@ mod tests {
             other => panic!("Unexpected response: {:?}", other),
         }
     }
+
+    #[tokio::test]
+    async fn test_handle_connection_invalid_json() {
+        let (response_tx, _response_rx) = broadcast::channel(1);
+        let (status_tx, _status_rx) = mpsc::channel(1);
+        let (shutdown_tx, _shutdown_rx) = mpsc::channel(1);
+
+        let queue = Arc::new(MessageQueue::new(1, response_tx));
+        let (server_stream, client_stream) = UnixStream::pair().unwrap();
+
+        let server_handle = tokio::spawn(async move {
+            handle_connection(server_stream, queue, status_tx, shutdown_tx)
+                .await
+                .unwrap();
+        });
+
+        let (reader, mut writer) = client_stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        writer.write_all(b"not json\n").await.unwrap();
+        writer.flush().await.unwrap();
+
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        let response: InjectResponse = serde_json::from_str(line.trim()).unwrap();
+        match response {
+            InjectResponse::Error { message } => {
+                assert!(message.contains("Invalid JSON"));
+            }
+            other => panic!("Unexpected response: {:?}", other),
+        }
+
+        drop(writer);
+        server_handle.abort();
+    }
 }

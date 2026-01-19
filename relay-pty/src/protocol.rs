@@ -295,6 +295,7 @@ impl Default for Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
 
     #[test]
     fn test_inject_request_serialization() {
@@ -310,6 +311,18 @@ mod tests {
     }
 
     #[test]
+    fn test_inject_request_default_priority() {
+        let json = r#"{"type":"inject","id":"msg-1","from":"Alice","body":"Hello"}"#;
+        let req: InjectRequest = serde_json::from_str(json).unwrap();
+        match req {
+            InjectRequest::Inject { priority, .. } => {
+                assert_eq!(priority, 0);
+            }
+            _ => panic!("Expected inject request"),
+        }
+    }
+
+    #[test]
     fn test_queued_message_format() {
         let msg = QueuedMessage::new(
             "abc1234567890".to_string(),
@@ -319,6 +332,20 @@ mod tests {
         );
         let formatted = msg.format_for_injection();
         assert_eq!(formatted, "Relay message from Bob [abc1234]: Test message");
+    }
+
+    #[test]
+    fn test_config_default_with_workspace_id() {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+
+        std::env::set_var("WORKSPACE_ID", "workspace-123");
+        let config = Config::default();
+        assert_eq!(
+            config.socket_path,
+            "/tmp/relay/workspace-123/sockets/agent.sock"
+        );
+        std::env::remove_var("WORKSPACE_ID");
     }
 
     #[test]

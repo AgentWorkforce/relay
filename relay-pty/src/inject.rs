@@ -284,6 +284,32 @@ mod tests {
         assert!(!injector.check_idle());
     }
 
+    #[tokio::test]
+    async fn test_record_output_keeps_idle_on_relay_echo() {
+        let (pty_tx, _pty_rx) = mpsc::channel(1);
+        let (response_tx, _response_rx) = broadcast::channel(1);
+        let queue = Arc::new(MessageQueue::new(1, response_tx));
+        let injector = Injector::new(pty_tx, queue, test_config(600000));
+
+        injector.update_from_parse(&test_parse_result(true));
+        assert!(injector.check_idle());
+
+        injector
+            .record_output("Relay message from Alice [abc]: Hi\n")
+            .await;
+        assert!(injector.check_idle());
+    }
+
+    #[test]
+    fn test_idle_timeout_zero_is_immediately_idle() {
+        let (pty_tx, _pty_rx) = mpsc::channel(1);
+        let (response_tx, _response_rx) = broadcast::channel(1);
+        let queue = Arc::new(MessageQueue::new(1, response_tx));
+        let injector = Injector::new(pty_tx, queue, test_config(0));
+
+        assert!(injector.check_idle());
+    }
+
     #[test]
     fn test_is_relay_echo() {
         assert!(is_relay_echo("Relay message from Alice [abc]: Hi\n"));
