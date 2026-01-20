@@ -421,6 +421,7 @@ export class Daemon {
       this.cloudSync.on('remote-users-updated', (users: RemoteAgent[]) => {
         this.remoteUsers = users;
         log.info('Remote users updated', { count: users.length });
+        this.writeRemoteUsersFile();
       });
 
       // Listen for cross-machine messages
@@ -465,6 +466,28 @@ export class Daemon {
       fs.renameSync(tempPath, targetPath);
     } catch (err) {
       log.error('Failed to write remote-agents.json', { error: String(err) });
+    }
+  }
+
+  /**
+   * Write remote users to file for dashboard consumption.
+   * Remote users are humans connected via the cloud dashboard.
+   */
+  private writeRemoteUsersFile(): void {
+    try {
+      const targetPath = path.join(
+        this.config.teamDir ?? path.dirname(this.config.socketPath),
+        'remote-users.json'
+      );
+      const data = JSON.stringify({
+        users: this.remoteUsers,
+        updatedAt: Date.now(),
+      }, null, 2);
+      const tempPath = `${targetPath}.tmp`;
+      fs.writeFileSync(tempPath, data, 'utf-8');
+      fs.renameSync(tempPath, targetPath);
+    } catch (err) {
+      log.error('Failed to write remote-users.json', { error: String(err) });
     }
   }
 

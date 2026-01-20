@@ -563,7 +563,7 @@ onboardingRouter.post('/mark-connected/:provider', async (req: Request, res: Res
   const userId = req.session.userId!;
 
   // Validate provider
-  const validProviders = ['anthropic', 'openai', 'google', 'github'];
+  const validProviders = ['anthropic', 'openai', 'google', 'github', 'opencode', 'factory'];
   if (!validProviders.includes(provider)) {
     return res.status(400).json({ error: 'Invalid provider' });
   }
@@ -743,6 +743,8 @@ function getProviderScopes(provider: string): string[] {
     openai: ['codex:execute', 'chat:write'],
     google: ['generative-language'],
     github: ['read:user', 'user:email', 'repo'],
+    opencode: ['code:execute'],
+    factory: ['droid:execute'],
   };
   return scopes[provider] || [];
 }

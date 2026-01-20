@@ -564,7 +564,19 @@ async function handleInstallationRepositoriesForward(
   connectionId: string
 ): Promise<void> {
   const { action, installation, repositories_added, repositories_removed, sender } = body;
-  if (!installation || !sender) return;
+  console.log(`[nango-webhook] handleInstallationRepositoriesForward called`, {
+    action,
+    installation: installation?.id,
+    sender: sender?.login,
+    connectionId,
+    repositories_added: repositories_added?.map(r => r.full_name),
+    repositories_removed: repositories_removed?.map(r => r.full_name),
+  });
+
+  if (!installation || !sender) {
+    console.log(`[nango-webhook] Missing installation or sender, skipping`);
+    return;
+  }
 
   const installationId = String(installation.id);
   console.log(`[nango-webhook] Repositories ${action} for ${installation.account.login}`);
@@ -575,18 +587,24 @@ async function handleInstallationRepositoriesForward(
     console.error(`[nango-webhook] Installation ${installationId} not found in database`);
     return;
   }
+  console.log(`[nango-webhook] Found installation: ${dbInstallation.id}`);
 
   // Find user who triggered this
   const user = await db.users.findByGithubId(String(sender.id));
   if (!user) {
-    console.error(`[nango-webhook] User ${sender.login} not found in database`);
+    console.error(`[nango-webhook] User ${sender.login} (github id: ${sender.id}) not found in database`);
     return;
   }
+  console.log(`[nango-webhook] Found user: ${user.id} (${user.githubUsername})`);
+
+  console.log(`[nango-webhook] Processing action: ${action}, repos_added: ${repositories_added?.length}, repos_removed: ${repositories_removed?.length}`);
 
   if (action === 'added' && repositories_added) {
+    console.log(`[nango-webhook] Adding ${repositories_added.length} repos for user ${user.id}`);
     const workspacesToJoin = new Set<string>();
 
     for (const repo of repositories_added) {
+      console.log(`[nango-webhook] Upserting repo: ${repo.full_name}`);
       const syncedRepo = await db.repositories.upsert({
         userId: user.id,
         githubFullName: repo.full_name,
@@ -597,6 +615,7 @@ async function handleInstallationRepositoriesForward(
         syncStatus: 'synced',
         lastSyncedAt: new Date(),
       });
+      console.log(`[nango-webhook] Upserted repo: ${syncedRepo.id}, syncStatus: ${syncedRepo.syncStatus}, nangoConnectionId: ${syncedRepo.nangoConnectionId}`);
 
       // Check if repo is part of an existing workspace
       // Look for ANY user's record of this repo that has a workspaceId

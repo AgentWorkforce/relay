@@ -1088,6 +1088,8 @@ export interface MemberManagementPanelProps {
   isLoading?: boolean;
   availableUsers?: { id: string; name: string }[];
   availableAgents?: { name: string }[];
+  /** Workspace ID for fetching available members (cloud mode) */
+  workspaceId?: string;
 }
 
 export function MemberManagementPanel({
@@ -1100,13 +1102,43 @@ export function MemberManagementPanel({
   onUpdateRole,
   currentUserId,
   isLoading = false,
-  availableUsers = [],
-  availableAgents = [],
+  availableUsers: propAvailableUsers = [],
+  availableAgents: propAvailableAgents = [],
+  workspaceId,
 }: MemberManagementPanelProps) {
   const [showAddMember, setShowAddMember] = useState(false);
   const [addMemberType, setAddMemberType] = useState<'user' | 'agent'>('user');
   const [selectedMemberId, setSelectedMemberId] = useState('');
   const [selectedRole, setSelectedRole] = useState<'admin' | 'member' | 'read_only'>('member');
+  const [fetchedUsers, setFetchedUsers] = useState<AvailableMember[]>([]);
+  const [fetchedAgents, setFetchedAgents] = useState<AvailableMember[]>([]);
+  const [isFetching, setIsFetching] = useState(false);
+
+  // Fetch available members when modal opens
+  useEffect(() => {
+    if (isOpen) {
+      setIsFetching(true);
+      getAvailableMembers(workspaceId)
+        .then(({ members: users, agents }) => {
+          setFetchedUsers(users);
+          setFetchedAgents(agents);
+        })
+        .catch((err) => {
+          console.error('[MemberManagementPanel] Failed to fetch available members:', err);
+        })
+        .finally(() => {
+          setIsFetching(false);
+        });
+    }
+  }, [isOpen, workspaceId]);
+
+  // Combine fetched data with props for backwards compatibility
+  const availableUsers = fetchedUsers.length > 0
+    ? fetchedUsers.map(u => ({ id: u.id, name: u.displayName || u.id }))
+    : propAvailableUsers;
+  const availableAgents = fetchedAgents.length > 0
+    ? fetchedAgents.map(a => ({ name: a.displayName || a.id }))
+    : propAvailableAgents;
 
   if (!isOpen) return null;
 
@@ -1209,8 +1241,11 @@ export function MemberManagementPanel({
                 value={selectedMemberId}
                 onChange={(e) => setSelectedMemberId(e.target.value)}
                 className="flex-1 px-3 py-2 bg-bg-deep border border-border-subtle rounded-lg text-text-primary text-sm focus:outline-none focus:border-accent-cyan/50"
+                disabled={isFetching}
               >
-                <option value="">Select {addMemberType}...</option>
+                <option value="">
+                  {isFetching ? 'Loading...' : `Select ${addMemberType}...`}
+                </option>
                 {addMemberType === 'user'
                   ? filteredUsers.map(u => (
                       <option key={u.id} value={u.id}>{u.name}</option>

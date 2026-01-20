@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-20T01:07:54.114Z",
+  "lastUpdated": "2026-01-20T20:34:54.892Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -785,6 +785,62 @@
       "startedAt": "2026-01-20T01:05:48.915Z",
       "completedAt": "2026-01-20T01:07:53.723Z",
       "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_6rcdr2rwcjkc.json"
+    },
+    "traj_iaj0h4tbsdc2": {
+      "title": "Fix remote users not visible in cloud mode",
+      "status": "completed",
+      "startedAt": "2026-01-20T12:32:24.953Z",
+      "completedAt": "2026-01-20T12:32:47.748Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_iaj0h4tbsdc2.json"
+    },
+    "traj_u1h7knzgvcpf": {
+      "title": "Fix AI provider name casing in WorkspaceSettingsPanel",
+      "status": "completed",
+      "startedAt": "2026-01-20T12:35:09.581Z",
+      "completedAt": "2026-01-20T12:35:27.556Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_u1h7knzgvcpf.json"
+    },
+    "traj_m6zeqsf01ram": {
+      "title": "Fix channel communication for cloud users",
+      "status": "completed",
+      "startedAt": "2026-01-20T12:52:21.728Z",
+      "completedAt": "2026-01-20T12:52:37.278Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_m6zeqsf01ram.json"
+    },
+    "traj_pwcprdcrjdko": {
+      "title": "Fix cloud channel communication for human users",
+      "status": "completed",
+      "startedAt": "2026-01-20T14:51:47.474Z",
+      "completedAt": "2026-01-20T14:52:20.137Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_pwcprdcrjdko.json"
+    },
+    "traj_y3np8c306yks": {
+      "title": "Fix cloud channel message delivery to all human users",
+      "status": "completed",
+      "startedAt": "2026-01-20T14:58:27.712Z",
+      "completedAt": "2026-01-20T14:58:53.112Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_y3np8c306yks.json"
+    },
+    "traj_k0om34q1skol": {
+      "title": "Fix header to show correct channel name",
+      "status": "completed",
+      "startedAt": "2026-01-20T19:55:46.807Z",
+      "completedAt": "2026-01-20T19:56:01.584Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_k0om34q1skol.json"
+    },
+    "traj_xt3iuim9goh4": {
+      "title": "Implement Activity Feed v1 - unified timeline of workspace events",
+      "status": "abandoned",
+      "startedAt": "2026-01-20T20:15:04.250Z",
+      "completedAt": "2026-01-20T20:21:08.641Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_xt3iuim9goh4.json"
+    },
+    "traj_a6yc7dh6oiz0": {
+      "title": "Fix cloud channel communication issues",
+      "status": "completed",
+      "startedAt": "2026-01-20T20:34:18.721Z",
+      "completedAt": "2026-01-20T20:34:54.864Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_a6yc7dh6oiz0.json"
     }
   }
 }

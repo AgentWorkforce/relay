@@ -6,7 +6,8 @@
  */
 
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import type { Agent, Project, Message, AgentSummary } from '../types';
+import type { Agent, Project, Message, AgentSummary, ActivityEvent } from '../types';
+import { ActivityFeed } from './ActivityFeed';
 import { Sidebar } from './layout/Sidebar';
 import { Header } from './layout/Header';
 import { MessageList } from './MessageList';
@@ -80,6 +81,9 @@ function isHumanSender(sender: string, agentNames: Set<string>): boolean {
 }
 
 const SETTINGS_STORAGE_KEY = 'dashboard-settings';
+
+/** Special ID for the Activity feed (broadcasts) */
+export const ACTIVITY_FEED_ID = '__activity__';
 
 type LegacyDashboardSettings = {
   theme?: 'dark' | 'light' | 'system';
@@ -394,7 +398,21 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   );
 
   // Channel state: selectedChannelId must be declared before callbacks that use it
-  const [selectedChannelId, setSelectedChannelId] = useState<string | undefined>();
+  // Default to Activity feed on load
+  const [selectedChannelId, setSelectedChannelId] = useState<string | undefined>(ACTIVITY_FEED_ID);
+
+  // Activity feed state - unified timeline of workspace events
+  const [activityEvents, setActivityEvents] = useState<ActivityEvent[]>([]);
+
+  // Helper to add activity events
+  const addActivityEvent = useCallback((event: Omit<ActivityEvent, 'id' | 'timestamp'>) => {
+    const newEvent: ActivityEvent = {
+      ...event,
+      id: `activity-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      timestamp: new Date().toISOString(),
+    };
+    setActivityEvents(prev => [newEvent, ...prev].slice(0, 200)); // Keep last 200 events
+  }, []);
 
   // Member management state
   const [showMemberPanel, setShowMemberPanel] = useState(false);
@@ -450,15 +468,85 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   }, [currentUser?.displayName, selectedChannelId]);
 
   const handlePresenceEvent = useCallback((event: any) => {
-    if (event?.type === 'channel_message') {
+    // Activity feed: capture presence join/leave events
+    if (event?.type === 'presence_join' && event.user) {
+      const user = event.user;
+      // Skip self
+      if (user.username !== currentUser?.displayName) {
+        addActivityEvent({
+          type: 'user_joined',
+          actor: user.username,
+          actorAvatarUrl: user.avatarUrl,
+          actorType: 'user',
+          title: 'came online',
+        });
+      }
+    } else if (event?.type === 'presence_leave' && event.username) {
+      // Skip self
+      if (event.username !== currentUser?.displayName) {
+        addActivityEvent({
+          type: 'user_left',
+          actor: event.username,
+          actorType: 'user',
+          title: 'went offline',
+        });
+      }
+    } else if (event?.type === 'agent_spawned' && event.agent) {
+      // Agent spawned event from backend
+      addActivityEvent({
+        type: 'agent_spawned',
+        actor: event.agent.name || event.agent,
+        actorType: 'agent',
+        title: 'was spawned',
+        description: event.task,
+        metadata: { cli: event.cli, task: event.task, spawnedBy: event.spawnedBy },
+      });
+    } else if (event?.type === 'agent_released' && event.agent) {
+      // Agent released event from backend
+      addActivityEvent({
+        type: 'agent_released',
+        actor: event.agent.name || event.agent,
+        actorType: 'agent',
+        title: 'was released',
+        metadata: { releasedBy: event.releasedBy },
+      });
+    } else if (event?.type === 'channel_created') {
+      // Another user created a channel - add it to the list
+      const newChannel = event.channel;
+      if (!newChannel || !newChannel.id) return;
+
+      setChannelsList(prev => {
+        // Don't add if already exists
+        if (prev.some(c => c.id === newChannel.id)) return prev;
+
+        const channel: Channel = {
+          id: newChannel.id,
+          name: newChannel.name || newChannel.id,
+          description: newChannel.description,
+          visibility: newChannel.visibility || 'public',
+          status: newChannel.status || 'active',
+          createdAt: newChannel.createdAt || new Date().toISOString(),
+          createdBy: newChannel.createdBy || 'unknown',
+          memberCount: newChannel.memberCount || 1,
+          unreadCount: newChannel.unreadCount || 0,
+          hasMentions: newChannel.hasMentions || false,
+          isDm: newChannel.isDm || false,
+        };
+        console.log('[App] Channel created via WebSocket:', channel.id);
+        return [...prev, channel];
+      });
+    } else if (event?.type === 'channel_message') {
       const channelId = event.channel as string | undefined;
       if (!channelId) return;
       const sender = event.from || 'unknown';
+      // Use server-provided entity type if available, otherwise derive locally
+      const fromEntityType = event.fromEntityType || (currentUser?.displayName && sender === currentUser.displayName ? 'user' : 'agent');
       const msg: ChannelApiMessage = {
         id: event.id ?? `ws-${Date.now()}`,
         channelId,
         from: sender,
-        fromEntityType: currentUser?.displayName && sender === currentUser.displayName ? 'user' : 'agent',
+        fromEntityType,
+        fromAvatarUrl: event.fromAvatarUrl,
         content: event.body ?? '',
         timestamp: event.timestamp || new Date().toISOString(),
         threadId: event.thread,
@@ -475,11 +563,14 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
       const participants = [sender, recipient].sort();
       const dmChannelId = `dm:${participants.join(':')}`;
 
+      // Use server-provided entity type if available
+      const fromEntityType = event.fromEntityType || 'agent';
       const msg: ChannelApiMessage = {
         id: event.id ?? `dm-${Date.now()}`,
         channelId: dmChannelId,
         from: sender,
-        fromEntityType: 'agent', // DMs to user are typically from agents
+        fromEntityType,
+        fromAvatarUrl: event.fromAvatarUrl,
         content: event.body ?? '',
         timestamp: event.timestamp || new Date().toISOString(),
         threadId: event.thread,
@@ -487,11 +578,12 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
       };
       appendChannelMessage(dmChannelId, msg, { incrementUnread: selectedChannelId !== dmChannelId });
     }
-  }, [appendChannelMessage, currentUser?.displayName, selectedChannelId]);
+  }, [addActivityEvent, appendChannelMessage, currentUser?.displayName, selectedChannelId]);
 
   const { onlineUsers: allOnlineUsers, typingUsers, sendTyping, isConnected: isPresenceConnected } = usePresence({
     currentUser: presenceUser,
     onEvent: handlePresenceEvent,
+    workspaceId: effectiveActiveWorkspaceId ?? undefined,
   });
 
   // Keep local username for channel API calls
@@ -789,14 +881,16 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
 
     // Filter messages that belong to this channel
     const filtered = messages.filter(m => {
+      // Activity feed shows broadcasts (to='*')
+      if (selectedChannelId === ACTIVITY_FEED_ID) {
+        return m.to === '*' || m.isBroadcast;
+      }
       // Check if message is explicitly for this channel (CHANNEL_MESSAGE format)
       if (m.to === selectedChannelId) return true;
       // Check channel property for channel messages
       if (m.channel === selectedChannelId) return true;
       // Legacy: messages with this channel as thread
       if (m.thread === selectedChannelId) return true;
-      // For #general, also include broadcasts without a thread
-      if (selectedChannelId === '#general' && m.to === '*' && !m.thread) return true;
       return false;
     });
 
@@ -1412,6 +1506,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   }, []);
 
   // Handler for inviting members to a channel
+  // Note: InviteToChannelModal is given agents as availableMembers, so all invitees are agents
   const handleInviteSubmit = useCallback(async (members: string[]) => {
     if (!inviteChannelTarget) return;
     setIsInvitingToChannel(true);
@@ -1423,13 +1518,16 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
         headers['X-CSRF-Token'] = csrfToken;
       }
 
+      // Send invites with type info - all members from invite modal are agents
+      const invites = members.map(name => ({ id: name, type: 'agent' as const }));
+
       const response = await fetch('/api/channels/invite', {
         method: 'POST',
         headers,
         credentials: 'include',
         body: JSON.stringify({
           channel: inviteChannelTarget.name,
-          invites: members.join(','),
+          invites,
           workspaceId: effectiveActiveWorkspaceId,
         }),
       });
@@ -1734,7 +1832,8 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
       // Switch to the channel we just messaged
       if (to === '*') {
         selectAgent(null);
-        setCurrentChannel('general');
+        setSelectedChannelId(ACTIVITY_FEED_ID);
+        setViewMode('channels');
       } else {
         const targetAgent = agents.find((a) => a.name === to);
         if (targetAgent) {
@@ -2101,12 +2200,17 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
 
       if (settings.notifications.desktop && typeof window !== 'undefined' && 'Notification' in window) {
         if (Notification.permission === 'granted') {
-          const channelLabel = message.to === '*' ? '#general' : message.to;
+          const channelLabel = message.to === '*' ? 'Activity' : message.to;
           const body = message.content.split('\n')[0].slice(0, 160);
           const notification = new Notification(`${message.from} → ${channelLabel}`, { body });
           notification.onclick = () => {
             window.focus();
-            setCurrentChannel(message.to === '*' ? 'general' : message.from);
+            if (message.to === '*') {
+              setSelectedChannelId(ACTIVITY_FEED_ID);
+              setViewMode('channels');
+            } else {
+              setCurrentChannel(message.from);
+            }
             notification.close();
           };
         }
@@ -2246,6 +2350,13 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
             hasMentions: c.hasMentions,
           }))}
           selectedChannelId={selectedChannelId}
+          isActivitySelected={selectedChannelId === ACTIVITY_FEED_ID}
+          activityUnreadCount={0}
+          onActivitySelect={() => {
+            setSelectedChannelId(ACTIVITY_FEED_ID);
+            selectAgent(null);
+            setViewMode('channels');
+          }}
           onChannelSelect={(channel) => {
             const fullChannel =
               channelsList.find(c => c.id === channel.id) ||
@@ -2306,6 +2417,8 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           projects={mergedProjects}
           currentProject={mergedProjects.find(p => p.id === currentProject) || null}
           recentProjects={getRecentProjects(mergedProjects)}
+          viewMode={viewMode}
+          selectedChannelName={selectedChannel?.name}
           onProjectChange={handleProjectSelect}
           onCommandPaletteOpen={handleCommandPaletteOpen}
           onSettingsClick={handleSettingsClick}
@@ -2397,6 +2510,11 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
                   isLoading={!data}
                 />
               </div>
+            ) : selectedChannelId === ACTIVITY_FEED_ID ? (
+              <ActivityFeed
+                events={activityEvents}
+                maxEvents={100}
+              />
             ) : viewMode === 'channels' && selectedChannel ? (
               <ChannelViewV1
                 channel={selectedChannel}
@@ -2625,6 +2743,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           onUpdateRole={() => {}}
           currentUserId={currentUser?.displayName}
           availableAgents={agents.map(a => ({ name: a.name }))}
+          workspaceId={effectiveActiveWorkspaceId ?? undefined}
         />
       )}
 

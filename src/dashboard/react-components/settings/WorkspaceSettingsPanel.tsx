@@ -72,7 +72,7 @@ interface AIProvider {
 const AI_PROVIDERS: AIProvider[] = [
   {
     id: 'anthropic',
-    name: 'Anthropic',
+    name: 'anthropic', // Must be lowercase to match backend validation
     displayName: 'Claude',
     description: 'Claude Code - recommended for code tasks',
     color: '#D97757',
@@ -83,7 +83,7 @@ const AI_PROVIDERS: AIProvider[] = [
   },
   {
     id: 'codex',
-    name: 'OpenAI',
+    name: 'openai', // Must be lowercase to match backend validation
     displayName: 'Codex',
     description: 'Codex - OpenAI coding assistant',
     color: '#10A37F',
@@ -95,7 +95,7 @@ const AI_PROVIDERS: AIProvider[] = [
   },
   {
     id: 'google',
-    name: 'Google',
+    name: 'google', // Must be lowercase to match backend validation
     displayName: 'Gemini',
     description: 'Gemini - Google AI coding assistant',
     color: '#4285F4',
@@ -106,7 +106,7 @@ const AI_PROVIDERS: AIProvider[] = [
   },
   {
     id: 'opencode',
-    name: 'OpenCode',
+    name: 'opencode', // Must be lowercase to match backend validation
     displayName: 'OpenCode',
     description: 'OpenCode - AI coding assistant',
     color: '#00D4AA',
@@ -115,7 +115,7 @@ const AI_PROVIDERS: AIProvider[] = [
   },
   {
     id: 'droid',
-    name: 'Factory',
+    name: 'factory', // Must be lowercase to match backend validation
     displayName: 'Droid',
     description: 'Droid - Factory AI coding agent',
     color: '#6366F1',

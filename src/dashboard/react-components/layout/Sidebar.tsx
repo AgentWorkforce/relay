@@ -50,6 +50,12 @@ export interface SidebarProps {
   currentThread?: string | null;
   /** Total unread thread count for notification badge */
   totalUnreadThreadCount?: number;
+  /** Whether Activity feed is selected */
+  isActivitySelected?: boolean;
+  /** Unread count for Activity (broadcasts) */
+  activityUnreadCount?: number;
+  /** Handler when Activity is selected */
+  onActivitySelect?: () => void;
   /** Channels for the collapsible channels section */
   channels?: SidebarChannel[];
   /** Archived channels for the collapsible archived section */
@@ -110,6 +116,9 @@ export function Sidebar({
   activeThreads = [],
   currentThread,
   totalUnreadThreadCount = 0,
+  isActivitySelected = false,
+  activityUnreadCount = 0,
+  onActivitySelect,
   channels = [],
   archivedChannels = [],
   selectedChannelId,
@@ -314,6 +323,29 @@ export function Sidebar({
           />
         </div>
       )}
+
+      {/* Activity Section - Broadcasts */}
+      <div className="border-b border-border-subtle px-2 py-2">
+        <button
+          onClick={onActivitySelect}
+          className={`
+            w-full flex items-center gap-2 px-2 py-2 rounded-lg text-left text-sm transition-colors
+            ${isActivitySelected
+              ? 'bg-accent-cyan/10 text-text-primary border border-accent-cyan/30'
+              : 'hover:bg-bg-hover text-text-secondary hover:text-text-primary border border-transparent'}
+          `}
+        >
+          <ActivityIcon />
+          <span className={`flex-1 ${activityUnreadCount > 0 ? 'font-semibold text-text-primary' : ''}`}>
+            Activity
+          </span>
+          {activityUnreadCount > 0 && (
+            <span className="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-accent-cyan/20 text-accent-cyan">
+              {activityUnreadCount}
+            </span>
+          )}
+        </button>
+      </div>
 
       {/* Channels Section - Collapsible */}
       <div className="border-b border-border-subtle">
@@ -878,6 +910,14 @@ function MetricsIcon() {
       <path d="M18 17V9" />
       <path d="M13 17V5" />
       <path d="M8 17v-3" />
+    </svg>
+  );
+}
+
+function ActivityIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
     </svg>
   );
 }

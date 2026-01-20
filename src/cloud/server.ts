@@ -201,6 +201,30 @@ export async function createServer(): Promise<CloudServer> {
   const RATE_LIMIT_MAX = process.env.NODE_ENV === 'development' ? 1000 : 300;
   const rateLimits = new Map<string, { count: number; resetAt: number }>();
 
+  // Track channel WebSocket clients by workspaceId for broadcasting channel events
+  const channelClientsByWorkspace = new Map<string, Set<WebSocket>>();
+
+  /**
+   * Broadcast a channel event to all connected clients in a workspace.
+   * Used for notifying clients about channel creation, archiving, etc.
+   */
+  const broadcastToWorkspaceChannelClients = (workspaceId: string, message: object) => {
+    const clients = channelClientsByWorkspace.get(workspaceId);
+    if (!clients || clients.size === 0) {
+      console.log(`[ws/channels] No clients connected for workspace ${workspaceId}, skipping broadcast`);
+      return;
+    }
+    const payload = JSON.stringify(message);
+    let sentCount = 0;
+    for (const client of clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(payload);
+        sentCount++;
+      }
+    }
+    console.log(`[ws/channels] Broadcast to ${sentCount}/${clients.size} clients in workspace ${workspaceId}`);
+  };
+
   app.use((req: Request, res: Response, next: NextFunction) => {
     // Skip rate limiting for localhost in development
     if (process.env.NODE_ENV === 'development') {
@@ -499,8 +523,10 @@ export async function createServer(): Promise<CloudServer> {
       const memberCounts = await db.channelMembers.countByChannelIds(channelUuids);
 
       // Transform to API response format
+      // IMPORTANT: Channel IDs must include # prefix to match daemon convention
+      // The daemon uses "#channelName" format for CHANNEL_MESSAGE routing
       const mapChannel = (c: typeof allChannels[0]) => ({
-        id: c.channelId,
+        id: c.channelId.startsWith('#') ? c.channelId : `#${c.channelId}`,
         name: c.name,
         description: c.description,
         visibility: c.visibility,
@@ -671,10 +697,51 @@ export async function createServer(): Promise<CloudServer> {
         }
       }
 
+      // Subscribe the channel creator to the daemon for real-time messages
+      // Use # prefix for channel ID to match daemon convention
+      const normalizedChannelId = channel.channelId.startsWith('#') ? channel.channelId : `#${channel.channelId}`;
+      try {
+        const workspace = await db.workspaces.findById(workspaceId);
+        const dashboardUrl = workspace?.publicUrl || await getLocalDashboardUrl();
+        await fetch(`${dashboardUrl}/api/channels/subscribe`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: createdBy,
+            channels: [normalizedChannelId],
+            workspaceId,
+          }),
+        });
+        console.log(`[channels] Subscribed creator ${createdBy} to ${normalizedChannelId} on workspace daemon`);
+      } catch (err) {
+        // Non-fatal - daemon sync is best-effort
+        console.warn(`[channels] Failed to sync creator to daemon:`, err);
+      }
+
+      // Broadcast channel creation to all connected clients in this workspace
+      const channelData = {
+        id: normalizedChannelId,
+        name: channel.name,
+        description: channel.description,
+        visibility: channel.visibility,
+        status: channel.status,
+        createdAt: channel.createdAt.toISOString(),
+        createdBy: channel.createdBy,
+        memberCount: addedMembers.length,
+        unreadCount: 0,
+        hasMentions: false,
+        isDm: false,
+      };
+      broadcastToWorkspaceChannelClients(workspaceId, {
+        type: 'channel_created',
+        channel: channelData,
+      });
+      console.log(`[channels] Broadcast channel_created event for ${channelId} to workspace ${workspaceId}`);
+
       res.status(201).json({
         success: true,
         channel: {
-          id: channel.channelId,
+          id: normalizedChannelId,
           name: channel.name,
           description: channel.description,
           visibility: channel.visibility,
@@ -798,7 +865,11 @@ export async function createServer(): Promise<CloudServer> {
   });
 
   /**
-   * POST /api/channels/invite - Invite users to a channel
+   * POST /api/channels/invite - Invite users or agents to a channel
+   * Invites can be:
+   * - Array of strings (usernames, assumed to be users)
+   * - Comma-separated string of usernames
+   * - Array of objects with { id: string, type: 'user' | 'agent' }
    */
   app.post('/api/channels/invite', requireAuth, express.json(), async (req, res) => {
     try {
@@ -816,28 +887,70 @@ export async function createServer(): Promise<CloudServer> {
         return res.status(404).json({ error: 'Channel not found' });
       }
 
-      const inviteList = typeof invites === 'string'
-        ? invites.split(',').map((s: string) => s.trim()).filter(Boolean)
-        : invites;
+      // Get workspace for daemon sync
+      const workspace = await db.workspaces.findById(workspaceId);
+
+      // Normalize invite list to { id, type } format
+      type InviteItem = { id: string; type: 'user' | 'agent' };
+      let inviteList: InviteItem[];
+
+      if (typeof invites === 'string') {
+        // Comma-separated string - assume users
+        inviteList = invites.split(',').map((s: string) => s.trim()).filter(Boolean)
+          .map(id => ({ id, type: 'user' as const }));
+      } else if (Array.isArray(invites)) {
+        // Array - could be strings or objects
+        inviteList = invites.map(item => {
+          if (typeof item === 'string') {
+            return { id: item, type: 'user' as const };
+          }
+          return { id: item.id, type: item.type || 'user' };
+        });
+      } else {
+        return res.status(400).json({ error: 'invites must be a string or array' });
+      }
 
       const results = [];
+      const agentWarnings: Array<{ member: string; warning: string }> = [];
+
       for (const invitee of inviteList) {
-        const existing = await db.channelMembers.findMembership(channel.id, invitee);
+        const existing = await db.channelMembers.findMembership(channel.id, invitee.id);
         if (!existing) {
           await db.channelMembers.addMember({
             channelId: channel.id,
-            memberId: invitee,
-            memberType: 'user',
+            memberId: invitee.id,
+            memberType: invitee.type,
             role: 'member',
             invitedBy,
           });
-          results.push({ username: invitee, success: true });
+
+          // For agents, sync to workspace daemon's in-memory channel membership
+          if (invitee.type === 'agent' && workspace) {
+            try {
+              const channelName = `#${channelId}`;
+              const dashboardUrl = workspace.publicUrl || await getLocalDashboardUrl();
+              const joinResponse = await fetch(`${dashboardUrl}/api/channels/admin-join`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ channel: channelName, member: invitee.id, workspaceId }),
+              });
+              const joinResult = await joinResponse.json() as { success: boolean; warning?: string };
+              console.log(`[channels] Synced agent ${invitee.id} to channel ${channelName} via workspace daemon`);
+              if (joinResult.warning) {
+                agentWarnings.push({ member: invitee.id, warning: joinResult.warning });
+              }
+            } catch (err) {
+              console.warn(`[channels] Failed to sync agent ${invitee.id} to daemon:`, err);
+            }
+          }
+
+          results.push({ id: invitee.id, type: invitee.type, success: true });
         } else {
-          results.push({ username: invitee, success: true, reason: 'already_member' });
+          results.push({ id: invitee.id, type: invitee.type, success: true, reason: 'already_member' });
         }
       }
 
-      res.json({ channel: channelId, invited: results });
+      res.json({ channel: channelId, invited: results, warnings: agentWarnings.length > 0 ? agentWarnings : undefined });
     } catch (error) {
       console.error('[channels] Error inviting to channel:', error);
       res.status(500).json({ error: 'Failed to invite to channel' });
@@ -951,10 +1064,90 @@ export async function createServer(): Promise<CloudServer> {
 
   /**
    * GET /api/channels/:channel/members - Get members of a channel
+   * Cloud mode: Query database for channel members instead of proxying to local dashboard
    */
   app.get('/api/channels/:channel/members', requireAuth, async (req, res) => {
-    const channel = encodeURIComponent(req.params.channel);
-    await proxyToLocalDashboard(req, res, `/api/channels/${channel}/members`);
+    const channelParam = req.params.channel;
+    const workspaceId = req.query.workspaceId as string | undefined;
+    const userId = req.session.userId!;
+
+    try {
+      // Find the channel in the database
+      // Channel ID can be passed as "random" or "#random" - normalize to find in DB
+      const channelName = channelParam.replace(/^#/, '');
+
+      // Get workspace ID - either from query param or user's default workspace
+      let targetWorkspaceId = workspaceId;
+      if (!targetWorkspaceId) {
+        const memberships = await db.workspaceMembers.findByUserId(userId);
+        if (memberships.length > 0) {
+          targetWorkspaceId = memberships[0].workspaceId;
+        }
+      }
+
+      if (!targetWorkspaceId) {
+        return res.json({ members: [] });
+      }
+
+      // Verify user has access to this workspace
+      const canView = await db.workspaceMembers.canView(targetWorkspaceId, userId);
+      if (!canView) {
+        const workspace = await db.workspaces.findById(targetWorkspaceId);
+        if (!workspace || workspace.userId !== userId) {
+          return res.status(403).json({ error: 'Access denied' });
+        }
+      }
+
+      // Find the channel by name and workspace
+      const channels = await db.channels.findByWorkspaceId(targetWorkspaceId);
+      const channel = channels.find(c =>
+        c.channelId === channelName ||
+        c.channelId === `#${channelName}` ||
+        c.name === channelName
+      );
+
+      if (!channel) {
+        // Channel not found in database - return empty or fallback to dashboard proxy
+        console.log(`[channels] Channel ${channelParam} not found in database, proxying to dashboard`);
+        const encodedChannel = encodeURIComponent(channelParam);
+        return proxyToLocalDashboard(req, res, `/api/channels/${encodedChannel}/members`);
+      }
+
+      // Get all members of this channel from the database
+      const channelMembers = await db.channelMembers.findByChannelId(channel.id);
+
+      // Build response with entity type info and user details
+      const members = await Promise.all(
+        channelMembers.map(async (member) => {
+          let displayName = member.memberId;
+          let avatarUrl: string | undefined;
+
+          // If it's a user, look up their details (stored by GitHub username)
+          if (member.memberType === 'user') {
+            const user = await db.users.findByGithubUsername(member.memberId);
+            if (user) {
+              displayName = user.githubUsername || member.memberId;
+              avatarUrl = user.avatarUrl || undefined;
+            }
+          }
+
+          return {
+            id: member.memberId,
+            displayName,
+            avatarUrl,
+            entityType: member.memberType,
+            role: member.role || 'member',
+            status: 'offline', // TODO: Get actual online status from daemon
+            joinedAt: member.joinedAt.toISOString(),
+          };
+        })
+      );
+
+      return res.json({ members });
+    } catch (error) {
+      console.error('[channels] Error getting channel members:', error);
+      return res.status(500).json({ error: 'Failed to get channel members' });
+    }
   });
 
   /**
@@ -1036,6 +1229,14 @@ export async function createServer(): Promise<CloudServer> {
 
   app.get('/api/channels/users', requireAuth, async (req, res) => {
     await proxyToLocalDashboard(req, res, '/api/channels/users');
+  });
+
+  /**
+   * POST /api/channels/admin-remove - Remove a member from a channel (admin operation)
+   * Proxies to workspace dashboard where the daemon maintains channel membership
+   */
+  app.post('/api/channels/admin-remove', requireAuth, express.json(), async (req, res) => {
+    await proxyToLocalDashboard(req, res, '/api/channels/admin-remove');
   });
 
   // Bridge API - returns empty state in cloud mode
@@ -1242,6 +1443,13 @@ export async function createServer(): Promise<CloudServer> {
   wssChannels.on('connection', async (clientWs: WebSocket, workspaceId: string, username: string) => {
     console.log(`[ws/channels] Client connected for workspace=${workspaceId} user=${username}`);
 
+    // Track client for broadcasting channel events
+    if (!channelClientsByWorkspace.has(workspaceId)) {
+      channelClientsByWorkspace.set(workspaceId, new Set());
+    }
+    channelClientsByWorkspace.get(workspaceId)!.add(clientWs);
+    console.log(`[ws/channels] Now tracking ${channelClientsByWorkspace.get(workspaceId)!.size} clients for workspace ${workspaceId}`);
+
     let daemonWs: WebSocket | null = null;
 
     try {
@@ -1323,6 +1531,14 @@ export async function createServer(): Promise<CloudServer> {
 
       clientWs.on('close', () => {
         console.log(`[ws/channels] Client disconnected for ${username}`);
+        // Remove from tracking
+        const clients = channelClientsByWorkspace.get(workspaceId);
+        if (clients) {
+          clients.delete(clientWs);
+          if (clients.size === 0) {
+            channelClientsByWorkspace.delete(workspaceId);
+          }
+        }
         // Send leave message to daemon
         if (daemonWs && daemonWs.readyState === WebSocket.OPEN) {
           daemonWs.send(JSON.stringify({
@@ -1336,6 +1552,14 @@ export async function createServer(): Promise<CloudServer> {
 
       clientWs.on('error', (err) => {
         console.error(`[ws/channels] Client WebSocket error:`, err);
+        // Remove from tracking
+        const clients = channelClientsByWorkspace.get(workspaceId);
+        if (clients) {
+          clients.delete(clientWs);
+          if (clients.size === 0) {
+            channelClientsByWorkspace.delete(workspaceId);
+          }
+        }
         if (daemonWs && daemonWs.readyState === WebSocket.OPEN) {
           daemonWs.close();
         }
@@ -1459,48 +1683,86 @@ export async function createServer(): Promise<CloudServer> {
         return;
       }
 
-      // Use local dashboard URL where the daemon actually runs
-      const dashboardUrl = await getLocalDashboardUrl();
+      // Use workspace's public URL where the daemon actually runs
+      // IMPORTANT: Must use workspace.publicUrl (not getLocalDashboardUrl) because
+      // the daemon and userBridge are on the workspace server, not the cloud server
+      const dashboardUrl = workspace.publicUrl || await getLocalDashboardUrl();
       const daemonWsUrl = dashboardUrl.replace(/^http/, 'ws').replace(/\/$/, '') + '/ws/presence';
       console.log(`[cloud] Connecting channel proxy to daemon: ${daemonWsUrl} for ${username}`);
 
-      // First, register the user for channel messages on the daemon side
-      // This creates a relay client for them so they receive channel messages
-      try {
-        const subscribeRes = await fetch(`${dashboardUrl}/api/channels/subscribe`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            username,
-            channels: ['#general'], // Start with general, others can be joined later
-            workspaceId,
-          }),
-        });
-        if (subscribeRes.ok) {
-          const result = (await subscribeRes.json()) as { channels?: string[] };
-          console.log(`[cloud] Subscribed ${username} to channels: ${result.channels?.join(', ')}`);
-        } else {
-          console.warn(`[cloud] Failed to subscribe ${username} to channels: ${subscribeRes.status}`);
-        }
-      } catch (err) {
-        console.warn(`[cloud] Error subscribing ${username} to channels:`, err);
-        // Continue anyway - we can still set up the proxy
-      }
-
       const daemonWs = new WebSocket(daemonWsUrl, { perMessageDeflate: false });
 
-      daemonWs.on('open', () => {
+      daemonWs.on('open', async () => {
         console.log(`[cloud] Channel proxy connected for ${username} in workspace ${workspaceId}`);
+
+        // Send presence join to register with userBridge on dashboard-server
+        // This creates a relay client for the user so they can receive channel messages
+        daemonWs.send(JSON.stringify({
+          type: 'presence',
+          action: 'join',
+          user: { username },
+        }));
+        console.log(`[cloud] Sent presence join for ${username} to register with userBridge`);
+
+        // Wait briefly for userBridge registration to complete, then subscribe to channels
+        // This ensures the user is registered before we try to join channels via userBridge
+        await new Promise(resolve => setTimeout(resolve, 200));
+
+        try {
+          // Get all channels the user is a member of
+          const memberships = await db.channelMembers.findByMemberId(username);
+          const userChannels: string[] = ['#general']; // Always include #general
+
+          // Look up channel details to get the channelId string (like '#foobar')
+          for (const membership of memberships) {
+            const channel = await db.channels.findById(membership.channelId);
+            if (channel && channel.workspaceId === workspaceId) {
+              // Normalize channel ID with # prefix
+              const channelIdStr = channel.channelId.startsWith('#')
+                ? channel.channelId
+                : `#${channel.channelId}`;
+              if (!userChannels.includes(channelIdStr)) {
+                userChannels.push(channelIdStr);
+              }
+            }
+          }
+
+          console.log(`[cloud] Subscribing ${username} to ${userChannels.length} channels: ${userChannels.join(', ')}`);
+
+          const subscribeRes = await fetch(`${dashboardUrl}/api/channels/subscribe`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              username,
+              channels: userChannels,
+              workspaceId,
+            }),
+          });
+          if (subscribeRes.ok) {
+            const result = (await subscribeRes.json()) as { channels?: string[] };
+            console.log(`[cloud] Subscribed ${username} to channels: ${result.channels?.join(', ')}`);
+          } else {
+            console.warn(`[cloud] Failed to subscribe ${username} to channels: ${subscribeRes.status}`);
+          }
+        } catch (err) {
+          console.warn(`[cloud] Error subscribing ${username} to channels:`, err);
+        }
       });
 
       daemonWs.on('message', (data) => {
         try {
           const msg = JSON.parse(data.toString());
-          // Forward channel messages targeted at this user
-          if (msg.type === 'channel_message' && msg.targetUser === username) {
-            console.log(`[cloud] Forwarding channel message to ${username}: ${msg.from} -> ${msg.channel}`);
-            if (clientWs.readyState === WebSocket.OPEN) {
-              clientWs.send(data.toString());
+          // Forward channel messages to this user
+          // userBridge sends messages directly to registered users (no targetUser filter needed)
+          // getRelayClient fallback broadcasts with targetUser field
+          if (msg.type === 'channel_message') {
+            // Either the message is for this user specifically (targetUser match)
+            // or it's a direct send from userBridge (no targetUser, meaning it's for us)
+            if (!msg.targetUser || msg.targetUser === username) {
+              console.log(`[cloud] Forwarding channel message to ${username}: ${msg.from} -> ${msg.channel}`);
+              if (clientWs.readyState === WebSocket.OPEN) {
+                clientWs.send(data.toString());
+              }
             }
           }
         } catch {

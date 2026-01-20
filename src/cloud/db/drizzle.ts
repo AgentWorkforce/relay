@@ -1128,6 +1128,10 @@ export const repositoryQueries: RepositoryQueries = {
           githubId: data.githubId,
           defaultBranch: data.defaultBranch,
           isPrivate: data.isPrivate,
+          syncStatus: data.syncStatus,
+          nangoConnectionId: data.nangoConnectionId,
+          installationId: data.installationId,
+          lastSyncedAt: data.lastSyncedAt,
           updatedAt: new Date(),
         },
       })

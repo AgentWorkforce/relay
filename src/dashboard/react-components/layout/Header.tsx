@@ -21,6 +21,10 @@ export interface HeaderProps {
   currentProject?: Project | null;
   /** Recently accessed projects for quick switching */
   recentProjects?: Project[];
+  /** Current view mode */
+  viewMode?: 'local' | 'fleet' | 'channels';
+  /** Selected channel name (for channels view) */
+  selectedChannelName?: string;
   /** Callback when user switches project */
   onProjectChange?: (project: Project) => void;
   onCommandPaletteOpen?: () => void;
@@ -48,6 +52,8 @@ export function Header({
   projects = [],
   currentProject,
   recentProjects = [],
+  viewMode,
+  selectedChannelName,
   onProjectChange,
   onCommandPaletteOpen,
   onSettingsClick,
@@ -61,7 +67,10 @@ export function Header({
   onMenuClick,
   hasUnreadNotifications,
 }: HeaderProps) {
-  const isGeneral = currentChannel === 'general';
+  // In channels view, use selectedChannelName; otherwise use currentChannel
+  const isChannelsView = viewMode === 'channels';
+  const displayChannel = isChannelsView && selectedChannelName ? selectedChannelName : currentChannel;
+  const isGeneral = displayChannel === 'general';
   const colors = selectedAgent ? getAgentColor(selectedAgent.name) : null;
   const hasMultipleProjects = projects.length > 1;
 
@@ -103,7 +112,12 @@ export function Header({
       <div className="w-px h-6 bg-border-subtle mr-3 max-md:hidden" />
 
       <div className="flex items-center gap-2 sm:gap-3 flex-1 min-w-0">
-        {isGeneral ? (
+        {isChannelsView && selectedChannelName ? (
+          <>
+            <span className="text-accent-cyan text-base sm:text-lg font-mono">#</span>
+            <span className="font-display font-semibold text-sm sm:text-base text-text-primary truncate max-w-[100px] sm:max-w-none">{selectedChannelName}</span>
+          </>
+        ) : isGeneral ? (
           <>
             <span className="text-accent-cyan text-base sm:text-lg font-mono">#</span>
             <span className="font-display font-semibold text-sm sm:text-base text-text-primary truncate max-w-[100px] sm:max-w-none">general</span>

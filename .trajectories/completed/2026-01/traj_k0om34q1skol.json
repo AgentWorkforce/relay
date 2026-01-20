@@ -1,0 +1,49 @@
+{
+  "id": "traj_k0om34q1skol",
+  "version": 1,
+  "task": {
+    "title": "Fix header to show correct channel name"
+  },
+  "status": "completed",
+  "startedAt": "2026-01-20T19:55:46.807Z",
+  "agents": [
+    {
+      "name": "khaliqgant",
+      "role": "lead",
+      "joinedAt": "2026-01-20T19:55:46.808Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_bm0idl80cjzu",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-20T19:55:53.943Z",
+      "events": [
+        {
+          "ts": 1768938953943,
+          "type": "decision",
+          "content": "Added viewMode and selectedChannelName props to Header: Added viewMode and selectedChannelName props to Header",
+          "raw": {
+            "question": "Added viewMode and selectedChannelName props to Header",
+            "chosen": "Added viewMode and selectedChannelName props to Header",
+            "alternatives": [],
+            "reasoning": "Header was using currentChannel which is for the old message view. In channels view, it needs to know about viewMode and the selected channel name to display correctly."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-20T19:56:01.584Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-01-20T19:56:01.584Z",
+  "retrospective": {
+    "summary": "Fixed header to show correct channel name when in channels view. Added viewMode and selectedChannelName props to Header component. Now displays #random when viewing #random instead of always showing #general.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  }
+}

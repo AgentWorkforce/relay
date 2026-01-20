@@ -6,6 +6,7 @@
  */
 
 import React, { useRef, useEffect, useLayoutEffect, useState, useCallback } from 'react';
+import { ACTIVITY_FEED_ID } from './App';
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 // Only import languages we actually need (saves ~300KB)
@@ -164,20 +165,23 @@ export function MessageList({
       return true;
     }
 
-    if (currentChannel === 'general') {
-      // Show messages that are broadcasts (to='*' or isBroadcast flag)
-      // Also show messages that have channel='general' in their metadata
-      // This includes agent replies to broadcasts that preserve the channel context
-      return msg.to === '*' || msg.isBroadcast || msg.channel === 'general';
+    // Activity feed shows broadcasts
+    if (currentChannel === ACTIVITY_FEED_ID) {
+      return msg.to === '*' || msg.isBroadcast;
+    }
+    // #general channel shows only actual channel messages (not broadcasts)
+    if (currentChannel === 'general' || currentChannel === '#general') {
+      return msg.channel === 'general' || msg.channel === '#general' ||
+             msg.to === '#general' || msg.to === 'general';
     }
     return msg.from === currentChannel || msg.to === currentChannel;
   });
 
-  // Deduplicate broadcast messages in #general channel
+  // Deduplicate broadcast messages in Activity feed
   // When a broadcast is sent to '*', the backend delivers it to each recipient separately,
   // causing the same message to appear multiple times. Deduplication removes duplicates
   // by grouping broadcasts with the same sender, content, and timestamp.
-  const filteredMessages = currentChannel === 'general'
+  const filteredMessages = currentChannel === ACTIVITY_FEED_ID
     ? deduplicateBroadcasts(channelFilteredMessages)
     : channelFilteredMessages;
 
@@ -417,6 +421,18 @@ function MessageItem({
       {isFromCurrentUser && currentUser?.avatarUrl ? (
         <img
           src={currentUser.avatarUrl}
+          alt={displayName}
+          className={`shrink-0 rounded-lg sm:rounded-xl border-2 object-cover ${
+            compactMode ? 'w-7 h-7 sm:w-8 sm:h-8' : 'w-8 h-8 sm:w-10 sm:h-10'
+          }`}
+          style={{
+            borderColor: provider.color,
+            boxShadow: `0 0 16px ${provider.color}30`,
+          }}
+        />
+      ) : senderUser?.avatarUrl ? (
+        <img
+          src={senderUser.avatarUrl}
           alt={displayName}
           className={`shrink-0 rounded-lg sm:rounded-xl border-2 object-cover ${
             compactMode ? 'w-7 h-7 sm:w-8 sm:h-8' : 'w-8 h-8 sm:w-10 sm:h-10'

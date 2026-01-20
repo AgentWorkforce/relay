@@ -142,10 +142,11 @@ export function buildInjectionString(msg: QueuedMessage): string {
 
   // Channel indicator for channel messages and broadcasts
   // originalTo will be '*' for broadcasts or the channel name (e.g., '#general') for channel messages
+  // Make it clear that replies should go to the channel, not the sender
   const channelHint = msg.originalTo === '*'
-    ? ' [#general]'
+    ? ' [#general] (reply to #general, not sender)'
     : msg.originalTo?.startsWith('#')
-      ? ` [${msg.originalTo}]`
+      ? ` [${msg.originalTo}] (reply to ${msg.originalTo}, not sender)`
       : '';
 
   // Extract attachment file paths if present
