@@ -84,6 +84,16 @@ pub enum InjectStatus {
     Failed,
 }
 
+/// Synchronization metadata for blocking messages
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncMeta {
+    /// Whether sender should block awaiting response
+    pub blocking: bool,
+    /// Optional timeout in milliseconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
 /// Parsed relay command from agent output
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedRelayCommand {
@@ -103,6 +113,9 @@ pub struct ParsedRelayCommand {
     /// Optional thread identifier
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread: Option<String>,
+    /// Optional sync metadata for blocking messages
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync: Option<SyncMeta>,
     /// For spawn: agent name to spawn
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spawn_name: Option<String>,
@@ -117,6 +130,28 @@ pub struct ParsedRelayCommand {
     pub release_name: Option<String>,
 }
 
+/// Parsed continuity command from file-based relay output
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContinuityCommand {
+    /// Type identifier (always "continuity")
+    #[serde(rename = "type")]
+    pub cmd_type: String,
+    /// Action to perform: save, load, uncertain
+    pub action: String,
+    /// Continuity content (may be empty for load)
+    pub content: String,
+}
+
+impl ContinuityCommand {
+    pub fn new(action: String, content: String) -> Self {
+        Self {
+            cmd_type: "continuity".to_string(),
+            action,
+            content,
+        }
+    }
+}
+
 impl ParsedRelayCommand {
     pub fn new_message(from: String, to: String, body: String, raw: String) -> Self {
         Self {
@@ -127,6 +162,7 @@ impl ParsedRelayCommand {
             body,
             raw,
             thread: None,
+            sync: None,
             spawn_name: None,
             spawn_cli: None,
             spawn_task: None,
@@ -143,6 +179,7 @@ impl ParsedRelayCommand {
             body: task.clone(),
             raw,
             thread: None,
+            sync: None,
             spawn_name: Some(name),
             spawn_cli: Some(cli),
             spawn_task: Some(task),
@@ -159,6 +196,7 @@ impl ParsedRelayCommand {
             body: name.clone(),
             raw,
             thread: None,
+            sync: None,
             spawn_name: None,
             spawn_cli: None,
             spawn_task: None,
@@ -168,6 +206,11 @@ impl ParsedRelayCommand {
 
     pub fn with_thread(mut self, thread: String) -> Self {
         self.thread = Some(thread);
+        self
+    }
+
+    pub fn with_sync(mut self, sync: SyncMeta) -> Self {
+        self.sync = Some(sync);
         self
     }
 }
@@ -263,9 +306,18 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
+        let workspace_id = std::env::var("WORKSPACE_ID")
+            .ok()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty());
+        let socket_path = workspace_id
+            .as_ref()
+            .map(|id| format!("/tmp/relay/{}/sockets/agent.sock", id))
+            .unwrap_or_else(|| "/tmp/relay-pty-agent.sock".to_string());
+
         Self {
             name: "agent".to_string(),
-            socket_path: "/tmp/relay-pty-agent.sock".to_string(),
+            socket_path,
             prompt_pattern: r"^[>$%#] $".to_string(),
             idle_timeout_ms: 500,
             queue_max: 50,
@@ -280,6 +332,7 @@ impl Default for Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
 
     #[test]
     fn test_inject_request_serialization() {
@@ -295,6 +348,18 @@ mod tests {
     }
 
     #[test]
+    fn test_inject_request_default_priority() {
+        let json = r#"{"type":"inject","id":"msg-1","from":"Alice","body":"Hello"}"#;
+        let req: InjectRequest = serde_json::from_str(json).unwrap();
+        match req {
+            InjectRequest::Inject { priority, .. } => {
+                assert_eq!(priority, 0);
+            }
+            _ => panic!("Expected inject request"),
+        }
+    }
+
+    #[test]
     fn test_queued_message_format() {
         let msg = QueuedMessage::new(
             "abc1234567890".to_string(),
@@ -304,6 +369,20 @@ mod tests {
         );
         let formatted = msg.format_for_injection();
         assert_eq!(formatted, "Relay message from Bob [abc1234]: Test message");
+    }
+
+    #[test]
+    fn test_config_default_with_workspace_id() {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+
+        std::env::set_var("WORKSPACE_ID", "workspace-123");
+        let config = Config::default();
+        assert_eq!(
+            config.socket_path,
+            "/tmp/relay/workspace-123/sockets/agent.sock"
+        );
+        std::env::remove_var("WORKSPACE_ID");
     }
 
     #[test]

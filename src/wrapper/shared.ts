@@ -5,6 +5,8 @@
  * wrapper implementations and reduce duplication.
  */
 
+import type { SyncMeta } from '../protocol/types.js';
+
 /**
  * Message queued for injection into an agent's terminal
  */
@@ -15,6 +17,7 @@ export interface QueuedMessage {
   thread?: string;
   importance?: number;
   data?: Record<string, unknown>;
+  sync?: SyncMeta;
   /** Original 'to' field - '*' indicates broadcast */
   originalTo?: string;
 }

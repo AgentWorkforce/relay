@@ -31,6 +31,11 @@
       "description": "Thread identifier for grouping related messages",
       "examples": ["feature-123", "code-review-42"]
     },
+    "AWAIT": {
+      "type": "string",
+      "description": "Blocking/await timeout for sync messaging. When present, sender blocks until recipient ACKs or timeout. Formats: '30s' (seconds), '1m' (minutes), '1h' (hours), '30000' (milliseconds), 'true' (default timeout)",
+      "examples": ["30s", "1m", "60000", "true"]
+    },
     "body": {
       "type": "string",
       "description": "Message content or task description (everything after the blank line)"
@@ -83,6 +88,12 @@
       "_comment": "Channel message",
       "TO": "#general",
       "body": "Has anyone seen the new API docs?"
+    },
+    {
+      "_comment": "Blocking message (sync)",
+      "TO": "North",
+      "AWAIT": "30s",
+      "body": "Your turn. Play a card."
     },
     {
       "_comment": "Spawn agent",

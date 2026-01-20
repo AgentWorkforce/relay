@@ -45,7 +45,7 @@ struct Args {
     #[arg(short, long)]
     name: String,
 
-    /// Unix socket path (default: /tmp/relay-pty-{name}.sock)
+    /// Unix socket path (default: /tmp/relay-pty-{name}.sock or /tmp/relay/{WORKSPACE_ID}/sockets/{name}.sock)
     #[arg(short, long)]
     socket: Option<String>,
 
@@ -89,7 +89,7 @@ struct Args {
     #[arg(long)]
     log_file: Option<String>,
 
-    /// Outbox directory for file-based relay messages
+    /// Outbox directory for file-based relay messages (default: /tmp/relay/{WORKSPACE_ID}/outbox/{name} when set)
     #[arg(long)]
     outbox: Option<String>,
 
@@ -116,9 +116,24 @@ async fn main() -> Result<()> {
     info!("Command: {:?}", args.command);
 
     // Build configuration
-    let socket_path = args
-        .socket
-        .unwrap_or_else(|| format!("/tmp/relay-pty-{}.sock", args.name));
+    let workspace_id = std::env::var("WORKSPACE_ID")
+        .ok()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty());
+
+    let socket_path = args.socket.unwrap_or_else(|| {
+        if let Some(ref workspace_id) = workspace_id {
+            format!("/tmp/relay/{}/sockets/{}.sock", workspace_id, args.name)
+        } else {
+            format!("/tmp/relay-pty-{}.sock", args.name)
+        }
+    });
+
+    let outbox_path = args.outbox.or_else(|| {
+        workspace_id
+            .as_ref()
+            .map(|id| format!("/tmp/relay/{}/outbox/{}", id, args.name))
+    });
 
     let config = Config {
         name: args.name.clone(),
@@ -184,7 +199,7 @@ async fn main() -> Result<()> {
     let injector = Arc::new(Injector::new(inject_tx, Arc::clone(&queue), config.clone()));
 
     // Create output parser
-    let mut parser = if let Some(ref outbox) = args.outbox {
+    let mut parser = if let Some(ref outbox) = outbox_path {
         let outbox_path = std::path::PathBuf::from(outbox);
         // Create outbox directory if needed
         if !outbox_path.exists() {
@@ -328,6 +343,10 @@ async fn main() -> Result<()> {
                     // Output parsed commands as JSON if enabled
                     if json_output {
                         for cmd in parse_result.commands {
+                            let json = serde_json::to_string(&cmd)?;
+                            eprintln!("{}", json);
+                        }
+                        for cmd in parse_result.continuity_commands {
                             let json = serde_json::to_string(&cmd)?;
                             eprintln!("{}", json);
                         }

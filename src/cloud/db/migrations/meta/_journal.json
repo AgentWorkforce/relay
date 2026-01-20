@@ -99,6 +99,13 @@
       "when": 1768088400000,
       "tag": "0014_channels",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "5",
+      "when": 1768856957548,
+      "tag": "0015_credentials_workspace_scope",
+      "breakpoints": true
     }
   ]
 }

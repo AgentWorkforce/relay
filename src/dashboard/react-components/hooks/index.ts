@@ -51,3 +51,7 @@ export {
   type UseWorkspaceMembersOptions,
   type UseWorkspaceMembersReturn,
 } from './useWorkspaceMembers';
+export {
+  usePinnedAgents,
+  type UsePinnedAgentsReturn,
+} from './usePinnedAgents';

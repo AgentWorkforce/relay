@@ -28,6 +28,8 @@ export interface SettingsPageProps {
   settings: Settings;
   /** Update dashboard settings */
   onUpdateSettings: (updater: (prev: Settings) => Settings) => void;
+  /** Active workspace ID from parent (synced with App.tsx) */
+  activeWorkspaceId?: string | null;
 }
 
 interface WorkspaceSummary {
@@ -42,11 +44,20 @@ export function SettingsPage({
   onClose,
   settings,
   onUpdateSettings,
+  activeWorkspaceId,
 }: SettingsPageProps) {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'workspace' | 'team' | 'billing'>(initialTab);
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
+  // Initialize with activeWorkspaceId from parent if provided
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(activeWorkspaceId ?? null);
   const [isLoadingWorkspaces, setIsLoadingWorkspaces] = useState(true);
+
+  // Sync selectedWorkspaceId when activeWorkspaceId prop changes
+  useEffect(() => {
+    if (activeWorkspaceId) {
+      setSelectedWorkspaceId(activeWorkspaceId);
+    }
+  }, [activeWorkspaceId]);
 
   // Load workspaces
   useEffect(() => {
@@ -55,12 +66,16 @@ export function SettingsPage({
       const result = await cloudApi.getWorkspaceSummary();
       if (result.success && result.data.workspaces.length > 0) {
         setWorkspaces(result.data.workspaces);
-        setSelectedWorkspaceId(result.data.workspaces[0].id);
+        // Only auto-select first workspace if no workspace is selected
+        // (either from prop or previous user selection)
+        if (!selectedWorkspaceId) {
+          setSelectedWorkspaceId(result.data.workspaces[0].id);
+        }
       }
       setIsLoadingWorkspaces(false);
     }
     loadWorkspaces();
-  }, []);
+  }, [selectedWorkspaceId]);
 
   const updateSettings = useCallback((updater: (prev: Settings) => Settings) => {
     onUpdateSettings(updater);

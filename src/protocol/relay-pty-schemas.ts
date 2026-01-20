@@ -29,6 +29,14 @@
  * Hello Bob, can you review PR #42?
  * ```
  *
+ * @example Blocking Message (sync)
+ * ```
+ * TO: Bob
+ * AWAIT: 30s
+ *
+ * Your turn. Play a card.
+ * ```
+ *
  * @example Spawn
  * ```
  * KIND: spawn
@@ -62,6 +70,13 @@ export interface RelayFileFormat {
 
   /** Thread identifier for grouping related messages */
   THREAD?: string;
+
+  /**
+   * Blocking/await timeout for sync messaging.
+   * Formats: "30s" (seconds), "1m" (minutes), "1h" (hours), "30000" (ms), "true" (default timeout)
+   * When present, the sender blocks until recipient ACKs or timeout.
+   */
+  AWAIT?: string;
 
   // === Body (after blank line) ===
 
@@ -110,6 +125,14 @@ export interface ParsedRelayCommand {
 
   /** Thread identifier (optional) */
   thread?: string;
+
+  /** Sync metadata for blocking messages (when AWAIT header present) */
+  sync?: {
+    /** Whether this is a blocking send */
+    blocking: boolean;
+    /** Timeout in milliseconds (undefined means use default) */
+    timeout_ms?: number;
+  };
 
   /** For spawn: agent name to spawn */
   spawn_name?: string;
@@ -168,16 +191,40 @@ export type InjectRequest =
 export type InjectResponse =
   | {
       type: 'inject_result';
+      /** Message ID this response is for */
       id: string;
+      /** Status of the injection */
       status: 'queued' | 'injecting' | 'delivered' | 'failed';
+      /** Unix timestamp in milliseconds */
       timestamp: number;
+      /** Optional error message */
       error?: string;
     }
   | {
-      type: 'status_result';
+      type: 'status';
+      /** Whether agent appears idle (ready for injection) */
       agent_idle: boolean;
+      /** Number of messages in queue */
       queue_length: number;
+      /** Cursor position [x, y] */
+      cursor_position?: [number, number];
+      /** Milliseconds since last output */
       last_output_ms: number;
+    }
+  | {
+      type: 'backpressure';
+      /** Current queue length */
+      queue_length: number;
+      /** Whether new messages are accepted */
+      accept: boolean;
+    }
+  | {
+      type: 'shutdown_ack';
+    }
+  | {
+      type: 'error';
+      /** Error message */
+      message: string;
     };
 
 // =============================================================================

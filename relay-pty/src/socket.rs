@@ -1,6 +1,7 @@
 //! Unix domain socket server for receiving injection requests.
 //!
-//! Provides a socket interface at `/tmp/relay-pty-{name}.sock` that accepts:
+//! Provides a socket interface at `/tmp/relay-pty-{name}.sock` or
+//! `/tmp/relay/{WORKSPACE_ID}/sockets/{name}.sock` that accepts:
 //! - JSON-framed injection requests
 //! - Status queries
 //! - Shutdown commands
@@ -404,7 +405,9 @@ impl SocketClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::InjectStatus;
     use tempfile::tempdir;
+    use tokio::sync::broadcast;
 
     #[tokio::test]
     async fn test_socket_server_client() {
@@ -449,6 +452,138 @@ mod tests {
         assert!(matches!(response, InjectResponse::InjectResult { .. }));
 
         // Cleanup
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_handle_request_status_channel_closed() {
+        let (response_tx, _response_rx) = broadcast::channel(1);
+        let (status_tx, status_rx) = mpsc::channel(1);
+        drop(status_rx);
+        let (shutdown_tx, _shutdown_rx) = mpsc::channel(1);
+
+        let queue = Arc::new(MessageQueue::new(1, response_tx));
+
+        let response =
+            handle_request(InjectRequest::Status, &queue, &status_tx, &shutdown_tx).await;
+
+        match response {
+            InjectResponse::Error { message } => {
+                assert!(message.contains("Status channel closed"));
+            }
+            _ => panic!("Expected error response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_request_shutdown() {
+        let (response_tx, _response_rx) = broadcast::channel(1);
+        let (status_tx, _status_rx) = mpsc::channel(1);
+        let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
+
+        let queue = Arc::new(MessageQueue::new(1, response_tx));
+
+        let response =
+            handle_request(InjectRequest::Shutdown, &queue, &status_tx, &shutdown_tx).await;
+        assert!(matches!(response, InjectResponse::ShutdownAck));
+
+        let received =
+            tokio::time::timeout(tokio::time::Duration::from_millis(200), shutdown_rx.recv())
+                .await
+                .ok()
+                .flatten();
+        assert!(received.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_handle_request_duplicate_inject() {
+        let (response_tx, _response_rx) = broadcast::channel(4);
+        let (status_tx, _status_rx) = mpsc::channel(1);
+        let (shutdown_tx, _shutdown_rx) = mpsc::channel(1);
+
+        let queue = Arc::new(MessageQueue::new(1, response_tx));
+
+        let first = handle_request(
+            InjectRequest::Inject {
+                id: "msg-1".to_string(),
+                from: "Alice".to_string(),
+                body: "Hello".to_string(),
+                priority: 0,
+            },
+            &queue,
+            &status_tx,
+            &shutdown_tx,
+        )
+        .await;
+
+        assert!(matches!(
+            first,
+            InjectResponse::InjectResult {
+                status: InjectStatus::Queued,
+                ..
+            }
+        ));
+
+        let second = handle_request(
+            InjectRequest::Inject {
+                id: "msg-1".to_string(),
+                from: "Alice".to_string(),
+                body: "Hello again".to_string(),
+                priority: 0,
+            },
+            &queue,
+            &status_tx,
+            &shutdown_tx,
+        )
+        .await;
+
+        match second {
+            InjectResponse::InjectResult { status, error, .. } => {
+                assert_ne!(status, InjectStatus::Queued);
+                if status == InjectStatus::Failed {
+                    assert!(error.unwrap_or_default().contains("Message rejected"));
+                }
+            }
+            InjectResponse::Backpressure { .. } => {}
+            InjectResponse::Error { message } => {
+                assert!(!message.is_empty());
+            }
+            other => panic!("Unexpected response: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_connection_invalid_json() {
+        let (response_tx, _response_rx) = broadcast::channel(1);
+        let (status_tx, _status_rx) = mpsc::channel(1);
+        let (shutdown_tx, _shutdown_rx) = mpsc::channel(1);
+
+        let queue = Arc::new(MessageQueue::new(1, response_tx));
+        let (server_stream, client_stream) = UnixStream::pair().unwrap();
+
+        let server_handle = tokio::spawn(async move {
+            handle_connection(server_stream, queue, status_tx, shutdown_tx)
+                .await
+                .unwrap();
+        });
+
+        let (reader, mut writer) = client_stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        writer.write_all(b"not json\n").await.unwrap();
+        writer.flush().await.unwrap();
+
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        let response: InjectResponse = serde_json::from_str(line.trim()).unwrap();
+        match response {
+            InjectResponse::Error { message } => {
+                assert!(message.contains("Invalid JSON"));
+            }
+            other => panic!("Unexpected response: {:?}", other),
+        }
+
+        drop(writer);
         server_handle.abort();
     }
 }

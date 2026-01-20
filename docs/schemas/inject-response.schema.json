@@ -40,7 +40,7 @@
       "properties": {
         "type": {
           "type": "string",
-          "const": "status_result",
+          "const": "status",
           "description": "Response type for status queries"
         },
         "agent_idle": {
@@ -52,6 +52,13 @@
           "minimum": 0,
           "description": "Number of messages waiting in the injection queue"
         },
+        "cursor_position": {
+          "type": "array",
+          "items": { "type": "integer" },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "Cursor position [x, y] in the terminal (optional)"
+        },
         "last_output_ms": {
           "type": "integer",
           "minimum": 0,
@@ -59,6 +66,58 @@
         }
       },
       "required": ["type", "agent_idle", "queue_length", "last_output_ms"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Backpressure notification when queue is full",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "backpressure",
+          "description": "Response type for backpressure notification"
+        },
+        "queue_length": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Current number of messages in the queue"
+        },
+        "accept": {
+          "type": "boolean",
+          "description": "Whether new messages are being accepted"
+        }
+      },
+      "required": ["type", "queue_length", "accept"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Acknowledgment of shutdown request",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "shutdown_ack",
+          "description": "Response type for shutdown acknowledgment"
+        }
+      },
+      "required": ["type"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Error response",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "error",
+          "description": "Response type for errors"
+        },
+        "message": {
+          "type": "string",
+          "description": "Error message describing what went wrong"
+        }
+      },
+      "required": ["type", "message"],
       "additionalProperties": false
     }
   ],
@@ -94,17 +153,39 @@
     },
     {
       "_comment": "Status query response - agent idle",
-      "type": "status_result",
+      "type": "status",
       "agent_idle": true,
       "queue_length": 0,
+      "cursor_position": [0, 24],
       "last_output_ms": 5000
     },
     {
       "_comment": "Status query response - agent busy",
-      "type": "status_result",
+      "type": "status",
       "agent_idle": false,
       "queue_length": 3,
       "last_output_ms": 150
+    },
+    {
+      "_comment": "Backpressure - queue full",
+      "type": "backpressure",
+      "queue_length": 50,
+      "accept": false
+    },
+    {
+      "_comment": "Backpressure - accepting again",
+      "type": "backpressure",
+      "queue_length": 25,
+      "accept": true
+    },
+    {
+      "_comment": "Shutdown acknowledgment",
+      "type": "shutdown_ack"
+    },
+    {
+      "_comment": "Error response",
+      "type": "error",
+      "message": "Invalid request format"
     }
   ]
 }
