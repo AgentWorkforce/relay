@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-20T01:07:54.114Z",
+  "lastUpdated": "2026-01-20T10:19:43.555Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -785,6 +785,20 @@
       "startedAt": "2026-01-20T01:05:48.915Z",
       "completedAt": "2026-01-20T01:07:53.723Z",
       "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_6rcdr2rwcjkc.json"
+    },
+    "traj_6q1hgacuxleb": {
+      "title": "P0 model selection hookup",
+      "status": "completed",
+      "startedAt": "2026-01-20T06:58:37.327Z",
+      "completedAt": "2026-01-20T08:46:06.037Z",
+      "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_6q1hgacuxleb.json"
+    },
+    "traj_k6gzxok6zlag": {
+      "title": "Fix Cargo.lock version incompatibility in Docker build",
+      "status": "completed",
+      "startedAt": "2026-01-20T10:12:27.149Z",
+      "completedAt": "2026-01-20T10:19:43.000Z",
+      "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_k6gzxok6zlag.json"
     }
   }
 }

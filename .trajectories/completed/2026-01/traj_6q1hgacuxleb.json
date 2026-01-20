@@ -1,0 +1,101 @@
+{
+  "id": "traj_6q1hgacuxleb",
+  "version": 1,
+  "task": {
+    "title": "P0 model selection hookup",
+    "source": {
+      "system": "plain",
+      "id": "agent-relay-510"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-01-20T06:58:37.327Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-01-20T06:58:43.006Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_ovlu6hasu5pl",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-20T06:58:43.006Z",
+      "events": [
+        {
+          "ts": 1768892323007,
+          "type": "decision",
+          "content": "Only default to claude:sonnet when request CLI is plain 'claude' and profile lacks model: Only default to claude:sonnet when request CLI is plain 'claude' and profile lacks model",
+          "raw": {
+            "question": "Only default to claude:sonnet when request CLI is plain 'claude' and profile lacks model",
+            "chosen": "Only default to claude:sonnet when request CLI is plain 'claude' and profile lacks model",
+            "alternatives": [],
+            "reasoning": "Avoid overriding explicit CLI variants while still honoring profile defaults"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1768892449676,
+          "type": "decision",
+          "content": "Changed AckPayload.response from boolean to string for richer response bodies: Changed AckPayload.response from boolean to string for richer response bodies",
+          "raw": {
+            "question": "Changed AckPayload.response from boolean to string for richer response bodies",
+            "chosen": "Changed AckPayload.response from boolean to string for richer response bodies",
+            "alternatives": [],
+            "reasoning": "Design doc specifies string for response body, enables status codes like OK/ERROR and custom response text"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1768898494042,
+          "type": "decision",
+          "content": "Changed AckPayload.response from boolean to string for richer response status codes: Changed AckPayload.response from boolean to string for richer response status codes",
+          "raw": {
+            "question": "Changed AckPayload.response from boolean to string for richer response status codes",
+            "chosen": "Changed AckPayload.response from boolean to string for richer response status codes",
+            "alternatives": [],
+            "reasoning": "Design doc specifies string for response body, enables status codes like OK/ERROR"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1768898500418,
+          "type": "decision",
+          "content": "Used correlation-based ACK matching for pending request tracking: Used correlation-based ACK matching for pending request tracking",
+          "raw": {
+            "question": "Used correlation-based ACK matching for pending request tracking",
+            "chosen": "Used correlation-based ACK matching for pending request tracking",
+            "alternatives": [],
+            "reasoning": "Daemon tracks correlationId to match ACK responses to original blocking SEND requests"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1768898506891,
+          "type": "decision",
+          "content": "Added 6 comprehensive daemon tests for ACK correlation and timeout handling: Added 6 comprehensive daemon tests for ACK correlation and timeout handling",
+          "raw": {
+            "question": "Added 6 comprehensive daemon tests for ACK correlation and timeout handling",
+            "chosen": "Added 6 comprehensive daemon tests for ACK correlation and timeout handling",
+            "alternatives": [],
+            "reasoning": "Tests cover duplicate correlationId, missing correlationId, connection cleanup, unmatched ACK, and default timeout behavior"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-20T08:46:06.037Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/data/repos/relay",
+  "tags": [],
+  "completedAt": "2026-01-20T08:46:06.037Z",
+  "retrospective": {
+    "summary": "Mapped agent profile models to CLI variants, wired spawner to use model mapping with cost tracking, and added model defaults to agent profiles",
+    "approach": "Standard approach",
+    "confidence": 0.8
+  }
+}

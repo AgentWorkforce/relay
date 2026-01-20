@@ -1,0 +1,20 @@
+{
+  "id": "traj_j3t1fuhgt169",
+  "version": 1,
+  "task": {
+    "title": "Deploy relay-pty in workspace base image",
+    "source": {
+      "system": "plain",
+      "id": "agent-relay-504"
+    }
+  },
+  "status": "abandoned",
+  "startedAt": "2026-01-20T06:53:00.247Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/data/repos/relay",
+  "tags": [],
+  "completedAt": "2026-01-20T06:53:17.328Z"
+}
