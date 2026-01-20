@@ -212,13 +212,13 @@ describe('RelayClient', () => {
           ack_id: 'd-1',
           seq: 1,
           correlationId,
-          response: true,
+          response: 'OK',
         },
       };
 
       (client as any).processFrame(ackEnvelope);
 
-      await expect(promise).resolves.toMatchObject({ correlationId, response: true });
+      await expect(promise).resolves.toMatchObject({ correlationId, response: 'OK' });
     });
 
     it('rejects on timeout', async () => {

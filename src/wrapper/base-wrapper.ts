@@ -328,8 +328,9 @@ export abstract class BaseWrapper extends EventEmitter {
 
   /**
    * Send an ACK for a sync message after processing completes.
+   * @param response - Response status: 'OK' for success, 'ERROR' for failure
    */
-  protected sendSyncAck(messageId: string, sync: SendMeta['sync'] | undefined, response: boolean, responseData?: unknown): void {
+  protected sendSyncAck(messageId: string, sync: SendMeta['sync'] | undefined, response: string, responseData?: unknown): void {
     if (!sync?.correlationId) return;
     this.client.sendAck({
       ack_id: messageId,
