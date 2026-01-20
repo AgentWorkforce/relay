@@ -1147,6 +1147,177 @@ Out3
       expect(result.commands[0].body).toBe('Broadcast to all');
     });
   });
+
+  describe('[await] syntax for blocking sends', () => {
+    it('parses [await] with no timeout (default 30s)', () => {
+      const result = parser.parse('->relay:Target [await] Please confirm\n');
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0]).toMatchObject({
+        to: 'Target',
+        kind: 'message',
+        body: 'Please confirm',
+        blocking: true,
+        timeoutMs: 30000, // default 30s
+      });
+    });
+
+    it('parses [await:5s] with 5 second timeout', () => {
+      const result = parser.parse('->relay:Agent [await:5s] Quick check\n');
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0]).toMatchObject({
+        to: 'Agent',
+        kind: 'message',
+        body: 'Quick check',
+        blocking: true,
+        timeoutMs: 5000,
+      });
+    });
+
+    it('parses [await:1m] with 1 minute timeout', () => {
+      const result = parser.parse('->relay:Agent [await:1m] Long operation\n');
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0]).toMatchObject({
+        to: 'Agent',
+        kind: 'message',
+        body: 'Long operation',
+        blocking: true,
+        timeoutMs: 60000,
+      });
+    });
+
+    it('parses [await:500ms] with millisecond precision', () => {
+      const result = parser.parse('->relay:Agent [await:500ms] Fast ping\n');
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0]).toMatchObject({
+        to: 'Agent',
+        kind: 'message',
+        body: 'Fast ping',
+        blocking: true,
+        timeoutMs: 500,
+      });
+    });
+
+    it('backward compatible - no [await] means fire-and-forget', () => {
+      const result = parser.parse('->relay:Agent Normal message\n');
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0].to).toBe('Agent');
+      expect(result.commands[0].body).toBe('Normal message');
+      expect(result.commands[0].blocking).toBeUndefined();
+      expect(result.commands[0].timeoutMs).toBeUndefined();
+    });
+
+    it('handles [await] with thread syntax', () => {
+      const result = parser.parse('->relay:Agent [await:10s] [thread:task-123] Threaded blocking\n');
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0]).toMatchObject({
+        to: 'Agent',
+        kind: 'message',
+        body: 'Threaded blocking',
+        blocking: true,
+        timeoutMs: 10000,
+        thread: 'task-123',
+      });
+    });
+
+    it('handles [await] with cross-project syntax', () => {
+      const result = parser.parse('->relay:other-project:Agent [await:2m] Cross-project blocking\n');
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0]).toMatchObject({
+        to: 'Agent',
+        project: 'other-project',
+        blocking: true,
+        timeoutMs: 120000,
+        body: 'Cross-project blocking',
+      });
+    });
+
+    it('parses [await] in fenced inline format', () => {
+      const input = '->relay:Agent [await:30s] <<<\nMulti-line\nblocking message\n>>>\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0]).toMatchObject({
+        to: 'Agent',
+        kind: 'message',
+        body: 'Multi-line\nblocking message',
+        blocking: true,
+        timeoutMs: 30000,
+      });
+    });
+
+    it('parses [await] with no timeout in fenced format', () => {
+      const input = '->relay:Agent [await] <<<\nBlocking fenced\n>>>\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0]).toMatchObject({
+        to: 'Agent',
+        blocking: true,
+        timeoutMs: 30000, // default
+        body: 'Blocking fenced',
+      });
+    });
+
+    it('parses [await] in ->thinking: variant', () => {
+      const result = parser.parse('->thinking:Agent [await:5s] Thinking out loud\n');
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0]).toMatchObject({
+        to: 'Agent',
+        kind: 'thinking',
+        blocking: true,
+        timeoutMs: 5000,
+        body: 'Thinking out loud',
+      });
+    });
+
+    it('handles invalid timeout unit as default 30s', () => {
+      const result = parser.parse('->relay:Agent [await:10x] Bad unit\n');
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0]).toMatchObject({
+        to: 'Agent',
+        blocking: true,
+        timeoutMs: 30000, // default fallback for invalid unit
+        body: 'Bad unit',
+      });
+    });
+
+    it('handles [await:2m] with cross-project thread', () => {
+      const result = parser.parse('->relay:Backend [await:2m] [thread:frontend:auth-flow] Verify tokens\n');
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0]).toMatchObject({
+        to: 'Backend',
+        blocking: true,
+        timeoutMs: 120000,
+        thread: 'auth-flow',
+        threadProject: 'frontend',
+        body: 'Verify tokens',
+      });
+    });
+
+    it('parses [await] in fenced format with thread syntax', () => {
+      const input = '->relay:Agent [await:15s] [thread:review-456] <<<\nDetailed review\nwith multiple lines\n>>>\n';
+      const result = parser.parse(input);
+
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0]).toMatchObject({
+        to: 'Agent',
+        blocking: true,
+        timeoutMs: 15000,
+        thread: 'review-456',
+        body: 'Detailed review\nwith multiple lines',
+      });
+    });
+  });
 });
 
 describe('parseSummaryFromOutput', () => {

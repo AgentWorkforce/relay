@@ -28,6 +28,10 @@ export interface ParsedCommand {
   threadProject?: string;
   raw: string;
   meta?: ParsedMessageMetadata;
+  /** True if [await] syntax was used - indicates blocking send */
+  blocking?: boolean;
+  /** Timeout in milliseconds for blocking send (default 30000ms) */
+  timeoutMs?: number;
 }
 
 export interface ParserOptions {
@@ -170,8 +174,49 @@ function escapeRegex(str: string): string {
 }
 
 /**
+ * Default timeout for blocking sends (30 seconds)
+ */
+const DEFAULT_AWAIT_TIMEOUT_MS = 30000;
+
+/**
+ * Parse timeout string from [await:Ns] syntax.
+ * Supports: ms (milliseconds), s (seconds), m (minutes)
+ *
+ * @param timeoutStr - Timeout string like "30s", "5m", "500ms"
+ * @returns Timeout in milliseconds, or default 30s if invalid
+ */
+function parseTimeout(timeoutStr: string | undefined): number {
+  if (!timeoutStr) {
+    return DEFAULT_AWAIT_TIMEOUT_MS;
+  }
+
+  const match = timeoutStr.match(/^(\d+)([a-z]+)$/);
+  if (!match) {
+    return DEFAULT_AWAIT_TIMEOUT_MS;
+  }
+
+  const [, value, unit] = match;
+  const numValue = parseInt(value, 10);
+
+  switch (unit) {
+    case 'ms':
+      return numValue;
+    case 's':
+      return numValue * 1000;
+    case 'm':
+      return numValue * 60000;
+    default:
+      return DEFAULT_AWAIT_TIMEOUT_MS;
+  }
+}
+
+/**
  * Build inline pattern for a given prefix
  * Allow common input prefixes: >, $, %, #, →, ➜, bullets (●•◦‣⁃-*⏺◆◇○□■), box chars (│┃┆┇┊┋╎╏), and their variations
+ *
+ * Supports optional await syntax for blocking sends:
+ * - ->relay:Target [await] message (default 30s timeout)
+ * - ->relay:Target [await:30s] message (custom timeout)
  *
  * Supports optional thread syntax:
  * - ->relay:Target [thread:id] message (local thread)
@@ -180,20 +225,25 @@ function escapeRegex(str: string): string {
  */
 function buildInlinePattern(prefix: string): RegExp {
   const escaped = escapeRegex(prefix);
-  // Group 1: target, Group 2: optional thread project, Group 3: thread ID, Group 4: message body
+  // Group 1: target, Group 2: optional await timeout, Group 3: optional thread project, Group 4: thread ID, Group 5: message body
   // Includes box drawing characters (│┃┆┇┊┋╎╏) and sparkle (✦) for Gemini CLI output
-  return new RegExp(`^(?:\\s*(?:[>$%#→➜›»●•◦‣⁃\\-*⏺◆◇○□■│┃┆┇┊┋╎╏✦]\\s*)*)?${escaped}(\\S+)(?:\\s+\\[thread:(?:([\\w-]+):)?([\\w-]+)\\])?\\s+(.+)$`);
+  return new RegExp(`^(?:\\s*(?:[>$%#→➜›»●•◦‣⁃\\-*⏺◆◇○□■│┃┆┇┊┋╎╏✦]\\s*)*)?${escaped}(\\S+)(?:\\s+\\[await(?::([\\w]+))?\\])?(?:\\s+\\[thread:(?:([\\w-]+):)?([\\w-]+)\\])?\\s+(.+)$`);
 }
 
 /**
  * Build fenced inline pattern for multi-line messages: ->relay:Target <<<
  * This opens a fenced block that continues until >>> is seen on its own line.
+ *
+ * Supports optional await syntax for blocking sends:
+ * - ->relay:Target [await] <<< (default 30s timeout)
+ * - ->relay:Target [await:30s] <<< (custom timeout)
+ *
  * Supports cross-project thread syntax: [thread:project:id]
- * Group 1: target, Group 2: optional thread project, Group 3: thread ID
+ * Group 1: target, Group 2: optional await timeout, Group 3: optional thread project, Group 4: thread ID
  */
 function buildFencedInlinePattern(prefix: string): RegExp {
   const escaped = escapeRegex(prefix);
-  return new RegExp(`^(?:\\s*(?:[>$%#→➜›»●•◦‣⁃\\-*⏺◆◇○□■│┃┆┇┊┋╎╏✦]\\s*)*)?${escaped}(\\S+)(?:\\s+\\[thread:(?:([\\w-]+):)?([\\w-]+)\\])?\\s+<<<\\s*$`);
+  return new RegExp(`^(?:\\s*(?:[>$%#→➜›»●•◦‣⁃\\-*⏺◆◇○□■│┃┆┇┊┋╎╏✦]\\s*)*)?${escaped}(\\S+)(?:\\s+\\[await(?::([\\w]+))?\\])?(?:\\s+\\[thread:(?:([\\w-]+):)?([\\w-]+)\\])?\\s+<<<\\s*$`);
 }
 
 /**
@@ -295,6 +345,8 @@ export class OutputParser {
   private fencedInlineProject: string | undefined = undefined;
   private fencedInlineRaw: string[] = [];
   private fencedInlineKind: 'message' | 'thinking' = 'message';
+  private fencedInlineBlocking: boolean | undefined = undefined;
+  private fencedInlineTimeoutMs: number | undefined = undefined;
 
   // Dynamic patterns based on prefix configuration
   private inlineRelayPattern: RegExp;
@@ -485,19 +537,37 @@ export class OutputParser {
       return this.inlineRelayPattern.test(line) || this.inlineThinkingPattern.test(line);
     };
 
-    const isFencedInlineStart = (line: string): { target: string; thread?: string; threadProject?: string; project?: string; kind: 'message' | 'thinking' } | null => {
+    const isFencedInlineStart = (line: string): { target: string; thread?: string; threadProject?: string; project?: string; kind: 'message' | 'thinking'; blocking?: boolean; timeoutMs?: number } | null => {
       const stripped = stripAnsi(line);
       const relayMatch = stripped.match(this.fencedRelayPattern);
       if (relayMatch) {
-        const [, target, threadProject, threadId] = relayMatch;
+        const [, target, awaitTimeout, threadProject, threadId] = relayMatch;
         const { to, project } = parseTarget(target);
-        return { target: to, thread: threadId || undefined, threadProject: threadProject || undefined, project, kind: 'message' };
+        const hasAwait = awaitTimeout !== undefined || stripped.includes('[await]');
+        return {
+          target: to,
+          thread: threadId || undefined,
+          threadProject: threadProject || undefined,
+          project,
+          kind: 'message',
+          blocking: hasAwait ? true : undefined,
+          timeoutMs: hasAwait ? parseTimeout(awaitTimeout) : undefined,
+        };
       }
       const thinkingMatch = stripped.match(this.fencedThinkingPattern);
       if (thinkingMatch) {
-        const [, target, threadProject, threadId] = thinkingMatch;
+        const [, target, awaitTimeout, threadProject, threadId] = thinkingMatch;
         const { to, project } = parseTarget(target);
-        return { target: to, thread: threadId || undefined, threadProject: threadProject || undefined, project, kind: 'thinking' };
+        const hasAwait = awaitTimeout !== undefined || stripped.includes('[await]');
+        return {
+          target: to,
+          thread: threadId || undefined,
+          threadProject: threadProject || undefined,
+          project,
+          kind: 'thinking',
+          blocking: hasAwait ? true : undefined,
+          timeoutMs: hasAwait ? parseTimeout(awaitTimeout) : undefined,
+        };
       }
       return null;
     };
@@ -619,6 +689,8 @@ export class OutputParser {
         this.fencedInlineThreadProject = fencedStart.threadProject;
         this.fencedInlineProject = fencedStart.project;
         this.fencedInlineKind = fencedStart.kind;
+        this.fencedInlineBlocking = fencedStart.blocking;
+        this.fencedInlineTimeoutMs = fencedStart.timeoutMs;
         this.fencedInlineBuffer = '';
         this.fencedInlineRaw = [line];
 
@@ -851,7 +923,7 @@ export class OutputParser {
     if (this.options.enableInline) {
       const relayMatch = stripped.match(this.inlineRelayPattern);
       if (relayMatch) {
-        const [raw, target, threadProject, threadId, body] = relayMatch;
+        const [raw, target, awaitTimeout, threadProject, threadId, body] = relayMatch;
 
         // Skip instructional/example text (common in system prompts)
         if (isInstructionalText(body)) {
@@ -867,6 +939,9 @@ export class OutputParser {
           return { command: null, output: line };
         }
 
+        // Determine if [await] was used - either with timeout or without
+        const hasAwait = awaitTimeout !== undefined || stripped.includes('[await]');
+
         return {
           command: {
             to,
@@ -876,6 +951,8 @@ export class OutputParser {
             threadProject: threadProject || undefined, // undefined if local thread
             project, // undefined if local, set if cross-project
             raw,
+            blocking: hasAwait ? true : undefined,
+            timeoutMs: hasAwait ? parseTimeout(awaitTimeout) : undefined,
           },
           output: null, // Don't output relay commands
         };
@@ -883,7 +960,7 @@ export class OutputParser {
 
       const thinkingMatch = stripped.match(this.inlineThinkingPattern);
       if (thinkingMatch) {
-        const [raw, target, threadProject, threadId, body] = thinkingMatch;
+        const [raw, target, awaitTimeout, threadProject, threadId, body] = thinkingMatch;
 
         // Skip instructional/example text (common in system prompts)
         if (isInstructionalText(body)) {
@@ -897,6 +974,9 @@ export class OutputParser {
           return { command: null, output: line };
         }
 
+        // Determine if [await] was used - either with timeout or without
+        const hasAwait = awaitTimeout !== undefined || stripped.includes('[await]');
+
         return {
           command: {
             to,
@@ -906,6 +986,8 @@ export class OutputParser {
             threadProject: threadProject || undefined,
             project,
             raw,
+            blocking: hasAwait ? true : undefined,
+            timeoutMs: hasAwait ? parseTimeout(awaitTimeout) : undefined,
           },
           output: null,
         };
@@ -1044,6 +1126,8 @@ export class OutputParser {
             threadProject: this.fencedInlineThreadProject,
             project: this.fencedInlineProject,
             raw: this.fencedInlineRaw.join('\n'),
+            blocking: this.fencedInlineBlocking,
+            timeoutMs: this.fencedInlineTimeoutMs,
           };
           commands.push(command);
         }
@@ -1057,6 +1141,8 @@ export class OutputParser {
         this.fencedInlineProject = undefined;
         this.fencedInlineRaw = [];
         this.fencedInlineKind = 'message';
+        this.fencedInlineBlocking = undefined;
+        this.fencedInlineTimeoutMs = undefined;
 
         // Process remaining lines in normal mode
         const remainingLines = lines.slice(i);
@@ -1084,6 +1170,8 @@ export class OutputParser {
               threadProject: this.fencedInlineThreadProject,
               project: this.fencedInlineProject,
               raw: this.fencedInlineRaw.join('\n'),
+              blocking: this.fencedInlineBlocking,
+              timeoutMs: this.fencedInlineTimeoutMs,
             };
             commands.push(command);
           }
@@ -1098,6 +1186,8 @@ export class OutputParser {
         this.fencedInlineProject = undefined;
         this.fencedInlineRaw = [];
         this.fencedInlineKind = 'message';
+        this.fencedInlineBlocking = undefined;
+        this.fencedInlineTimeoutMs = undefined;
 
         // Process remaining lines (including this one) in normal mode
         const remainingLines = lines.slice(i);
@@ -1137,6 +1227,8 @@ export class OutputParser {
             threadProject: this.fencedInlineThreadProject,
             project: this.fencedInlineProject,
             raw: this.fencedInlineRaw.join('\n'),
+            blocking: this.fencedInlineBlocking,
+            timeoutMs: this.fencedInlineTimeoutMs,
           };
           commands.push(command);
         }
@@ -1150,6 +1242,8 @@ export class OutputParser {
         this.fencedInlineProject = undefined;
         this.fencedInlineRaw = [];
         this.fencedInlineKind = 'message';
+        this.fencedInlineBlocking = undefined;
+        this.fencedInlineTimeoutMs = undefined;
 
         // Process remaining lines after the fence close
         // Only process if there's actual content after the closing fence
@@ -1191,6 +1285,8 @@ export class OutputParser {
         this.fencedInlineProject = undefined;
         this.fencedInlineRaw = [];
         this.fencedInlineKind = 'message';
+        this.fencedInlineBlocking = undefined;
+        this.fencedInlineTimeoutMs = undefined;
         return { commands, output: '' };
       }
 
@@ -1205,6 +1301,8 @@ export class OutputParser {
         this.fencedInlineProject = undefined;
         this.fencedInlineRaw = [];
         this.fencedInlineKind = 'message';
+        this.fencedInlineBlocking = undefined;
+        this.fencedInlineTimeoutMs = undefined;
         return { commands, output: '' };
       }
     }
@@ -1232,6 +1330,8 @@ export class OutputParser {
     this.fencedInlineProject = undefined;
     this.fencedInlineRaw = [];
     this.fencedInlineKind = 'message';
+    this.fencedInlineBlocking = undefined;
+    this.fencedInlineTimeoutMs = undefined;
     return result;
   }
 
@@ -1253,6 +1353,8 @@ export class OutputParser {
     this.fencedInlineProject = undefined;
     this.fencedInlineRaw = [];
     this.fencedInlineKind = 'message';
+    this.fencedInlineBlocking = undefined;
+    this.fencedInlineTimeoutMs = undefined;
   }
 }
 
