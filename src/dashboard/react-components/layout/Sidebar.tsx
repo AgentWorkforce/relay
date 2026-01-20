@@ -8,6 +8,7 @@
 import React, { useState, useEffect } from 'react';
 import type { Agent, Project } from '../../types';
 import type { ThreadInfo } from '../hooks/useMessages';
+import { usePinnedAgents } from '../hooks/usePinnedAgents';
 import { AgentList } from '../AgentList';
 import { ProjectList } from '../ProjectList';
 import { ThreadList } from '../ThreadList';
@@ -216,6 +217,9 @@ export function Sidebar({
   const filteredHumanMembers = humanMembers.filter(
     (m) => !searchQuery || m.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  // Pinned agents for quick access
+  const { pinnedAgents, togglePin, isMaxPinned } = usePinnedAgents();
 
   // Determine if we should show unified project view
   const hasProjects = projects.length > 0;
@@ -525,10 +529,13 @@ export function Sidebar({
             agents={aiAgents}
             selectedAgent={selectedAgent}
             searchQuery={searchQuery}
+            pinnedAgents={pinnedAgents}
+            isMaxPinned={isMaxPinned}
             onAgentSelect={(agent) => onAgentSelect?.(agent)}
             onReleaseClick={onReleaseClick}
             onLogsClick={onLogsClick}
             onProfileClick={onProfileClick}
+            onPinToggle={(agent) => togglePin(agent.name)}
             compact={true}
             showGroupStats={true}
           />

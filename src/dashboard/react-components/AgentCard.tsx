@@ -23,11 +23,17 @@ export interface AgentCardProps {
   showBreadcrumb?: boolean;
   compact?: boolean;
   displayNameOverride?: string;
+  /** Whether the agent is pinned to the top */
+  isPinned?: boolean;
+  /** Whether max pins has been reached (disables pin button for unpinned agents) */
+  isMaxPinned?: boolean;
   onClick?: (agent: Agent) => void;
   onMessageClick?: (agent: Agent) => void;
   onReleaseClick?: (agent: Agent) => void;
   onLogsClick?: (agent: Agent) => void;
   onProfileClick?: (agent: Agent) => void;
+  /** Handler for pin/unpin toggle */
+  onPinToggle?: (agent: Agent) => void;
 }
 
 /**
@@ -66,11 +72,14 @@ export function AgentCard({
   showBreadcrumb = false,
   compact = false,
   displayNameOverride,
+  isPinned = false,
+  isMaxPinned = false,
   onClick,
   onMessageClick,
   onReleaseClick,
   onLogsClick,
   onProfileClick,
+  onPinToggle,
 }: AgentCardProps) {
   const colors = getAgentColor(agent.name);
   const initials = getAgentInitials(agent.name);
@@ -103,6 +112,11 @@ export function AgentCard({
   const handleProfileClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     onProfileClick?.(agent);
+  };
+
+  const handlePinToggle = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onPinToggle?.(agent);
   };
 
   if (compact) {
@@ -179,6 +193,14 @@ export function AgentCard({
                 Local
               </span>
             )}
+            {isPinned && (
+              <span
+                className="inline-flex items-center text-amber-400"
+                title="Pinned to top"
+              >
+                <PinIcon size={12} filled />
+              </span>
+            )}
           </div>
           {!displayNameOverride && (
             <span className="text-[10px] text-text-muted truncate font-mono opacity-70 mt-0.5">
@@ -188,6 +210,24 @@ export function AgentCard({
 
           {/* Actions & Status */}
           <div className="mt-2 flex items-center flex-wrap gap-2">
+            {onPinToggle && (
+              <button
+                className={`
+                  relative bg-transparent border border-transparent p-1.5 cursor-pointer
+                  flex items-center justify-center rounded-md transition-all duration-200
+                  ${isPinned
+                    ? 'text-amber-400 hover:bg-amber-400/10 hover:border-amber-400/30'
+                    : 'text-text-dim hover:bg-amber-400/10 hover:border-amber-400/30 hover:text-amber-400'}
+                  ${!isPinned && isMaxPinned ? 'opacity-40 cursor-not-allowed' : ''}
+                  hover:shadow-[0_0_12px_rgba(251,191,36,0.25)]
+                `}
+                onClick={handlePinToggle}
+                title={isPinned ? 'Unpin from top' : isMaxPinned ? 'Maximum pins reached (5)' : 'Pin to top'}
+                disabled={!isPinned && isMaxPinned}
+              >
+                <PinIcon size={16} filled={isPinned} />
+              </button>
+            )}
             {onProfileClick && (
               <button
                 className="relative bg-transparent border border-transparent text-text-dim p-1.5 cursor-pointer
@@ -302,6 +342,14 @@ export function AgentCard({
                 Local
               </span>
             )}
+            {isPinned && (
+              <span
+                className="inline-flex items-center text-amber-400"
+                title="Pinned to top"
+              >
+                <PinIcon size={14} filled />
+              </span>
+            )}
             {agent.needsAttention && (
               <span className="bg-red-500 text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center" title="Needs Attention - Agent requires user input or has pending decisions">!</span>
             )}
@@ -354,6 +402,23 @@ export function AgentCard({
           )}
         </div>
         <div className="flex gap-1.5">
+          {onPinToggle && (
+            <button
+              className={`
+                relative bg-gradient-to-b rounded-md py-1.5 px-2.5 cursor-pointer flex items-center justify-center gap-1 transition-all duration-200 overflow-hidden
+                ${isPinned
+                  ? 'from-[#3a2a1a] to-[#2a1f0f] text-amber-400 border border-amber-600/50 shadow-[inset_0_1px_0_rgba(251,191,36,0.1),0_2px_4px_rgba(0,0,0,0.3)] hover:shadow-[inset_0_1px_0_rgba(251,191,36,0.2),0_0_12px_rgba(251,191,36,0.4),0_2px_8px_rgba(0,0,0,0.4)]'
+                  : 'from-[#2a2a2a] to-[#1a1a1a] text-text-muted border border-[#404040] shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_2px_4px_rgba(0,0,0,0.3)] hover:from-[#3a2a1a] hover:to-[#2a1f0f] hover:text-amber-400 hover:border-amber-600/50 hover:shadow-[inset_0_1px_0_rgba(251,191,36,0.1),0_0_12px_rgba(251,191,36,0.3),0_2px_8px_rgba(0,0,0,0.4)]'}
+                ${!isPinned && isMaxPinned ? 'opacity-40 cursor-not-allowed' : 'hover:scale-105'}
+                active:scale-[0.98]
+              `}
+              onClick={handlePinToggle}
+              title={isPinned ? 'Unpin from top' : isMaxPinned ? 'Maximum pins reached (5)' : 'Pin to top'}
+              disabled={!isPinned && isMaxPinned}
+            >
+              <PinIcon size={16} filled={isPinned} />
+            </button>
+          )}
           {onProfileClick && (
             <button
               className="relative bg-gradient-to-b from-[#2a1a3a] to-[#1a0f2a] text-[#a855f7] border border-[#402060] rounded-md py-1.5 px-2.5 cursor-pointer flex items-center justify-center gap-1 transition-all duration-200 shadow-[inset_0_1px_0_rgba(168,85,247,0.1),0_2px_4px_rgba(0,0,0,0.3)] overflow-hidden hover:bg-gradient-to-b hover:from-[#402060] hover:to-[#301a50] hover:border-[#a855f7] hover:shadow-[inset_0_1px_0_rgba(168,85,247,0.2),0_0_12px_rgba(168,85,247,0.4),0_2px_8px_rgba(0,0,0,0.4)] hover:scale-105 active:scale-[0.98]"
@@ -499,6 +564,24 @@ function ProfileIcon() {
     >
       <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
       <circle cx="12" cy="7" r="4" />
+    </svg>
+  );
+}
+
+function PinIcon({ size = 16, filled = false }: { size?: number; filled?: boolean }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill={filled ? 'currentColor' : 'none'}
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M12 17v5" />
+      <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6a2 2 0 0 0-2-2h-2a2 2 0 0 0-2 2v4.76Z" />
     </svg>
   );
 }

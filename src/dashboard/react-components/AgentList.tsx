@@ -15,11 +15,17 @@ export interface AgentListProps {
   agents: Agent[];
   selectedAgent?: string;
   searchQuery?: string;
+  /** Array of pinned agent names */
+  pinnedAgents?: string[];
+  /** Whether max pins has been reached */
+  isMaxPinned?: boolean;
   onAgentSelect?: (agent: Agent) => void;
   onAgentMessage?: (agent: Agent) => void;
   onReleaseClick?: (agent: Agent) => void;
   onLogsClick?: (agent: Agent) => void;
   onProfileClick?: (agent: Agent) => void;
+  /** Handler for pin/unpin toggle */
+  onPinToggle?: (agent: Agent) => void;
   compact?: boolean;
   showGroupStats?: boolean;
 }
@@ -28,16 +34,20 @@ export function AgentList({
   agents,
   selectedAgent,
   searchQuery = '',
+  pinnedAgents = [],
+  isMaxPinned = false,
   onAgentSelect,
   onAgentMessage,
   onReleaseClick,
   onLogsClick,
   onProfileClick,
+  onPinToggle,
   compact = false,
   showGroupStats = true,
 }: AgentListProps) {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [allExpanded, setAllExpanded] = useState(true);
+  const [isPinnedExpanded, setIsPinnedExpanded] = useState(true);
 
   // Filter out setup agents (temporary agents for provider auth)
   // and system agents like _DashboardUI (used for dashboard message sending)
@@ -49,9 +59,25 @@ export function AgentList({
     return filterAgents(nonSystemAgents, searchQuery);
   }, [agents, searchQuery]);
 
+  // Separate pinned and unpinned agents
+  const { pinnedAgentsList, unpinnedAgents } = useMemo(() => {
+    const pinned: Agent[] = [];
+    const unpinned: Agent[] = [];
+    for (const agent of filteredAgents) {
+      if (pinnedAgents.includes(agent.name)) {
+        pinned.push(agent);
+      } else {
+        unpinned.push(agent);
+      }
+    }
+    // Sort pinned agents by their order in pinnedAgents array
+    pinned.sort((a, b) => pinnedAgents.indexOf(a.name) - pinnedAgents.indexOf(b.name));
+    return { pinnedAgentsList: pinned, unpinnedAgents: unpinned };
+  }, [filteredAgents, pinnedAgents]);
+
   const groups = useMemo(
-    () => groupAgents(filteredAgents),
-    [filteredAgents]
+    () => groupAgents(unpinnedAgents),
+    [unpinnedAgents]
   );
 
   // Initialize all groups as expanded
@@ -114,6 +140,43 @@ export function AgentList({
         </div>
       )}
 
+      {/* Pinned Agents Section */}
+      {pinnedAgentsList.length > 0 && (
+        <div className="mb-2">
+          <button
+            className="flex items-center gap-2 w-full py-2 px-3 bg-transparent border-none cursor-pointer text-sm text-left rounded transition-colors duration-200 relative hover:bg-amber-400/5"
+            onClick={() => setIsPinnedExpanded(!isPinnedExpanded)}
+          >
+            <div className="absolute left-0 top-1 bottom-1 w-[3px] rounded-sm bg-amber-400" />
+            <PinnedChevronIcon expanded={isPinnedExpanded} />
+            <PinHeaderIcon />
+            <span className="font-semibold text-amber-400">Pinned</span>
+            <span className="text-text-muted font-normal">({pinnedAgentsList.length})</span>
+          </button>
+
+          {isPinnedExpanded && (
+            <div className="py-1 pl-4 flex flex-col gap-1">
+              {pinnedAgentsList.map((agent) => (
+                <AgentCard
+                  key={agent.name}
+                  agent={agent}
+                  isSelected={agent.name === selectedAgent}
+                  compact={compact}
+                  isPinned={true}
+                  isMaxPinned={isMaxPinned}
+                  onClick={onAgentSelect}
+                  onMessageClick={onAgentMessage}
+                  onReleaseClick={onReleaseClick}
+                  onLogsClick={onLogsClick}
+                  onProfileClick={onProfileClick}
+                  onPinToggle={onPinToggle}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {groups.map((group) => (
         <AgentGroupComponent
           key={group.prefix}
@@ -122,12 +185,15 @@ export function AgentList({
           selectedAgent={selectedAgent}
           compact={compact}
           showStats={showGroupStats}
+          pinnedAgents={pinnedAgents}
+          isMaxPinned={isMaxPinned}
           onToggle={() => toggleGroup(group.prefix)}
           onAgentSelect={onAgentSelect}
           onAgentMessage={onAgentMessage}
           onReleaseClick={onReleaseClick}
           onLogsClick={onLogsClick}
           onProfileClick={onProfileClick}
+          onPinToggle={onPinToggle}
         />
       ))}
     </div>
@@ -140,12 +206,15 @@ interface AgentGroupComponentProps {
   selectedAgent?: string;
   compact?: boolean;
   showStats?: boolean;
+  pinnedAgents?: string[];
+  isMaxPinned?: boolean;
   onToggle: () => void;
   onAgentSelect?: (agent: Agent) => void;
   onAgentMessage?: (agent: Agent) => void;
   onReleaseClick?: (agent: Agent) => void;
   onLogsClick?: (agent: Agent) => void;
   onProfileClick?: (agent: Agent) => void;
+  onPinToggle?: (agent: Agent) => void;
 }
 
 function AgentGroupComponent({
@@ -154,12 +223,15 @@ function AgentGroupComponent({
   selectedAgent,
   compact,
   showStats,
+  pinnedAgents = [],
+  isMaxPinned = false,
   onToggle,
   onAgentSelect,
   onAgentMessage,
   onReleaseClick,
   onLogsClick,
   onProfileClick,
+  onPinToggle,
 }: AgentGroupComponentProps) {
   const stats = showStats ? getGroupStats(group.agents) : null;
 
@@ -179,11 +251,14 @@ function AgentGroupComponent({
           agent={agent}
           isSelected={agent.name === selectedAgent}
           compact={compact}
+          isPinned={pinnedAgents.includes(agent.name)}
+          isMaxPinned={isMaxPinned}
           onClick={onAgentSelect}
           onMessageClick={onAgentMessage}
           onReleaseClick={onReleaseClick}
           onLogsClick={onLogsClick}
           onProfileClick={onProfileClick}
+          onPinToggle={onPinToggle}
         />
       </div>
     );
@@ -234,11 +309,14 @@ function AgentGroupComponent({
               isSelected={agent.name === selectedAgent}
               compact={compact}
               displayNameOverride={getAgentDisplayName(agent.name)}
+              isPinned={pinnedAgents.includes(agent.name)}
+              isMaxPinned={isMaxPinned}
               onClick={onAgentSelect}
               onMessageClick={onAgentMessage}
               onReleaseClick={onReleaseClick}
               onLogsClick={onLogsClick}
               onProfileClick={onProfileClick}
+              onPinToggle={onPinToggle}
             />
           ))}
         </div>
@@ -293,6 +371,41 @@ function SearchIcon() {
     >
       <circle cx="11" cy="11" r="8" />
       <line x1="21" y1="21" x2="16.65" y2="16.65" />
+    </svg>
+  );
+}
+
+function PinnedChevronIcon({ expanded }: { expanded: boolean }) {
+  return (
+    <svg
+      className={`text-amber-400 transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`}
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+    >
+      <polyline points="9 18 15 12 9 6" />
+    </svg>
+  );
+}
+
+function PinHeaderIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="text-amber-400"
+    >
+      <path d="M12 17v5" />
+      <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6a2 2 0 0 0-2-2h-2a2 2 0 0 0-2 2v4.76Z" />
     </svg>
   );
 }
