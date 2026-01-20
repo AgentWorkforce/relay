@@ -106,7 +106,7 @@ export interface SendPayload {
 
 export interface SyncMeta {
   /** Correlation ID for matching responses */
-  correlationId: string;
+  correlationId?: string;
   /** Optional timeout for blocking sends (ms) */
   timeoutMs?: number;
   /** Whether sender should block awaiting ACK */

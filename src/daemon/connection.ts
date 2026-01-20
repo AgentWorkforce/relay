@@ -47,6 +47,9 @@ export interface ConnectionConfig {
   writeQueueHighWaterMark?: number;
   /** Low water mark - release backpressure when queue drops below this (default: 500) */
   writeQueueLowWaterMark?: number;
+
+  /** Optional resolver for blocking ACKs keyed by correlationId */
+  pendingAckResolver?: (connection: Connection, correlationId: string, payload: AckPayload) => void;
 }
 
 export const DEFAULT_CONFIG: ConnectionConfig = {
@@ -200,9 +203,7 @@ export class Connection {
         this.handleSend(envelope as Envelope<SendPayload>);
         break;
       case 'ACK':
-        if (this.onAck) {
-          this.onAck(envelope as Envelope<AckPayload>);
-        }
+        this.handleAck(envelope as Envelope<AckPayload>);
         break;
       case 'PONG':
         this.handlePong(envelope as Envelope<PongPayload>);
@@ -287,6 +288,18 @@ export class Connection {
     // Notify that connection is now active (for registration)
     if (this.onActive) {
       this.onActive();
+    }
+  }
+
+  private handleAck(envelope: Envelope<AckPayload>): void {
+    const correlationId = envelope.payload.correlationId
+      ?? (envelope as { meta?: { correlationId?: string } }).meta?.correlationId;
+    if (correlationId && this.config.pendingAckResolver) {
+      this.config.pendingAckResolver(this, correlationId, envelope.payload);
+    }
+
+    if (this.onAck) {
+      this.onAck(envelope);
     }
   }
 

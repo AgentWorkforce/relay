@@ -7,6 +7,7 @@ import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { Connection, type ConnectionConfig, DEFAULT_CONFIG } from './connection.js';
 import { Router } from './router.js';
 import {
@@ -63,7 +64,17 @@ interface PendingAck {
   correlationId: string;
   connectionId: string;
   connection: Connection;
+  promise: Promise<AckPayload>;
+  resolve: (payload: AckPayload) => void;
+  reject: (error: Error) => void;
   timeoutHandle: NodeJS.Timeout;
+}
+
+class TimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TimeoutError';
+  }
 }
 
 export class Daemon {
@@ -710,7 +721,12 @@ export class Daemon {
     // Provide processing state callback for heartbeat exemption
     const isProcessing = (agentName: string) => this.router.isAgentProcessing(agentName);
 
-    const connection = new Connection(socket, { ...this.config, resumeHandler, isProcessing });
+    const connection = new Connection(socket, {
+      ...this.config,
+      resumeHandler,
+      isProcessing,
+      pendingAckResolver: this.resolvePendingAck.bind(this),
+    });
     this.connections.add(connection);
 
     connection.onMessage = (envelope: Envelope) => {
@@ -841,7 +857,7 @@ export class Daemon {
   /**
    * Handle incoming message from a connection.
    */
-  private handleMessage(connection: Connection, envelope: Envelope): void {
+  private handleMessage(connection: Connection, envelope: Envelope): Promise<AckPayload> | void {
     switch (envelope.type) {
       case 'SEND': {
         const sendEnvelope = envelope as SendEnvelope;
@@ -873,14 +889,21 @@ export class Daemon {
 
         const syncMeta = sendEnvelope.payload_meta?.sync;
         if (syncMeta?.blocking) {
-          if (!syncMeta.correlationId) {
-            this.sendErrorEnvelope(connection, 'Missing sync correlationId for blocking SEND');
+          const correlationId = syncMeta.correlationId ?? randomUUID();
+          const pending = this.registerPendingAck(connection, correlationId, syncMeta.timeoutMs);
+          if (!pending) {
             return;
           }
-          const registered = this.registerPendingAck(connection, syncMeta.correlationId, syncMeta.timeoutMs);
-          if (!registered) {
-            return;
-          }
+          sendEnvelope.payload_meta = {
+            ...sendEnvelope.payload_meta,
+            sync: {
+              ...syncMeta,
+              correlationId,
+            },
+          };
+
+          this.router.route(connection, sendEnvelope);
+          return pending.promise;
         }
 
         this.router.route(connection, sendEnvelope);
@@ -963,45 +986,62 @@ export class Daemon {
     const correlationId = envelope.payload.correlationId;
     if (!correlationId) return;
 
+    this.resolvePendingAck(connection, correlationId, envelope.payload);
+  }
+
+  private resolvePendingAck(connection: Connection, correlationId: string, payload: AckPayload): void {
     const pending = this.pendingAcks.get(correlationId);
     if (!pending) return;
 
     clearTimeout(pending.timeoutHandle);
     this.pendingAcks.delete(correlationId);
+    pending.resolve(payload);
 
     const forwardAck: Envelope<AckPayload> = {
-      v: envelope.v,
+      v: PROTOCOL_VERSION,
       type: 'ACK',
       id: generateId(),
       ts: Date.now(),
       from: connection.agentName,
       to: pending.connection.agentName,
-      payload: envelope.payload,
+      payload,
     };
 
     pending.connection.send(forwardAck);
   }
 
-  private registerPendingAck(connection: Connection, correlationId: string, timeoutMs?: number): boolean {
+  private registerPendingAck(connection: Connection, correlationId: string, timeoutMs?: number): PendingAck | null {
     if (this.pendingAcks.has(correlationId)) {
       this.sendErrorEnvelope(connection, `Duplicate correlationId: ${correlationId}`);
-      return false;
+      return null;
     }
 
     const timeout = timeoutMs ?? Daemon.DEFAULT_SYNC_TIMEOUT_MS;
+    let resolve!: (payload: AckPayload) => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<AckPayload>((resolveFn, rejectFn) => {
+      resolve = resolveFn;
+      reject = rejectFn;
+    });
     const timeoutHandle = setTimeout(() => {
       this.pendingAcks.delete(correlationId);
-      this.sendErrorEnvelope(connection, `ACK timeout after ${timeout}ms`);
+      const error = new TimeoutError(`ACK timeout after ${timeout}ms`);
+      reject(error);
+      this.sendErrorEnvelope(connection, error.message);
     }, timeout);
 
-    this.pendingAcks.set(correlationId, {
+    const pending: PendingAck = {
       correlationId,
       connectionId: connection.id,
       connection,
+      promise,
+      resolve: resolve!,
+      reject: reject!,
       timeoutHandle,
-    });
+    };
+    this.pendingAcks.set(correlationId, pending);
 
-    return true;
+    return pending;
   }
 
   private clearPendingAcksForConnection(connectionId: string): void {
@@ -1009,6 +1049,7 @@ export class Daemon {
       if (pending.connectionId !== connectionId) continue;
       clearTimeout(pending.timeoutHandle);
       this.pendingAcks.delete(correlationId);
+      pending.reject(new Error('Connection closed before ACK received'));
     }
   }
 
