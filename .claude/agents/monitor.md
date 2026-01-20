@@ -1,5 +1,6 @@
 ---
 name: monitor
+model: claude-sonnet-4
 description: Use for monitoring setup, alerting configuration, observability, and performance analysis.
 tools: Read, Grep, Glob, Bash, Edit, Write
 skills: using-agent-relay

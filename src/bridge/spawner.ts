@@ -19,6 +19,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 import { AgentPolicyService, type CloudPolicyFetcher } from '../policy/agent-policy.js';
 import { buildClaudeArgs, findAgentConfig } from '../utils/agent-config.js';
+import { mapModelToCli } from '../utils/model-mapping.js';
 import { composeForAgent, type AgentRole } from '../wrapper/prompt-composer.js';
 import { getUserDirectoryService } from '../daemon/user-directory.js';
 import type {
@@ -413,7 +414,7 @@ export class AgentSpawner {
    * Spawn a new worker agent using node-pty
    */
   async spawn(request: SpawnRequest): Promise<SpawnResult> {
-    const { name, cli, task, team, spawnerName, userId } = request;
+    const { name, cli: requestedCli, task, team, spawnerName, userId } = request;
     const debug = process.env.DEBUG_SPAWN === '1';
 
     // Check if worker already exists
@@ -425,9 +426,32 @@ export class AgentSpawner {
       };
     }
 
+    const agentConfig = findAgentConfig(name, this.projectRoot);
+    const cliParts = requestedCli.split(' ');
+    const requestedCommand = cliParts[0];
+    const args = cliParts.slice(1);
+    const modelFromProfile = agentConfig?.model?.trim();
+
+    let commandName = requestedCommand;
+    if (modelFromProfile) {
+      commandName = mapModelToCli(modelFromProfile);
+    } else if (requestedCommand === 'claude') {
+      commandName = mapModelToCli();
+    }
+
+    const effectiveCli = [commandName, ...args].join(' ').trim();
+    const modelForLogging = modelFromProfile
+      ?? (commandName === 'claude:opus'
+        ? 'claude-opus-4'
+        : commandName === 'claude:sonnet'
+          ? 'claude-sonnet-4'
+          : commandName === 'codex'
+            ? 'codex'
+            : undefined);
+
     // Policy enforcement: check if the spawner is authorized to spawn this agent
     if (this.policyEnforcementEnabled && this.policyService && spawnerName) {
-      const decision = await this.policyService.canSpawn(spawnerName, name, cli);
+      const decision = await this.policyService.canSpawn(spawnerName, name, effectiveCli);
       if (!decision.allowed) {
         console.warn(`[spawner] Policy blocked spawn: ${spawnerName} -> ${name}: ${decision.reason}`);
         return {
@@ -443,11 +467,6 @@ export class AgentSpawner {
     }
 
     try {
-      // Parse CLI command
-      const cliParts = cli.split(' ');
-      const commandName = cliParts[0];
-      const args = cliParts.slice(1);
-
       // Resolve full path to avoid posix_spawnp failures
       const command = resolveCommand(commandName);
       console.log(`[spawner] Resolved '${commandName}' -> '${command}'`);
@@ -465,18 +484,18 @@ export class AgentSpawner {
       // Apply agent config (model, --agent flag) from .claude/agents/ if available
       // This ensures spawned agents respect their profile settings
       if (isClaudeCli) {
-        // Get agent config for model tracking
-        const agentConfig = findAgentConfig(name, this.projectRoot);
-        const model = agentConfig?.model || 'sonnet'; // Default to sonnet
-
         const configuredArgs = buildClaudeArgs(name, args, this.projectRoot);
         // Replace args with configured version (includes --model and --agent if found)
         args.length = 0;
         args.push(...configuredArgs);
-
-        // Cost tracking: log which model is being used
-        console.log(`[spawner] Agent ${name}: model=${model}, cli=${cli}`);
         if (debug) console.log(`[spawner:debug] Applied agent config for ${name}: ${args.join(' ')}`);
+      }
+
+      // Cost tracking: log which model is being used
+      if (modelForLogging) {
+        console.log(`[spawner] Cost tracking: agent=${name}, model=${modelForLogging}, cli=${effectiveCli}`);
+      } else {
+        console.log(`[spawner] Cost tracking: agent=${name}, cli=${effectiveCli}`);
       }
 
       // Add --dangerously-bypass-approvals-and-sandbox for Codex agents
@@ -489,7 +508,7 @@ export class AgentSpawner {
       let relayInstructions = getRelayInstructions(name);
 
       // Compose role-specific prompts if agent has a role defined in .claude/agents/
-      const agentConfigForRole = isClaudeCli ? findAgentConfig(name, this.projectRoot) : null;
+      const agentConfigForRole = isClaudeCli ? agentConfig : null;
       if (agentConfigForRole?.role) {
         const validRoles: AgentRole[] = ['planner', 'worker', 'reviewer', 'lead', 'shadow'];
         const role = agentConfigForRole.role.toLowerCase() as AgentRole;
@@ -749,7 +768,7 @@ export class AgentSpawner {
       // Track the worker
       const workerInfo: ActiveWorker = {
         name,
-        cli,
+        cli: effectiveCli,
         task,
         team,
         userId,
@@ -764,7 +783,7 @@ export class AgentSpawner {
 
       const teamInfo = team ? ` [team: ${team}]` : '';
       const shadowInfo = request.shadowOf ? ` [shadow of: ${request.shadowOf}]` : '';
-      console.log(`[spawner] Spawned ${name} (${cli})${teamInfo}${shadowInfo} [pid: ${pty.pid}]`);
+      console.log(`[spawner] Spawned ${name} (${effectiveCli})${teamInfo}${shadowInfo} [pid: ${pty.pid}]`);
 
       return {
         success: true,

@@ -1,5 +1,6 @@
 ---
 name: documentor
+model: claude-sonnet-4
 description: Technical documentation, API docs, READMEs. Creates clear, comprehensive documentation for codebases.
 tools: Read, Grep, Glob, Write, Edit
 skills: using-agent-relay

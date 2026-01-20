@@ -1,5 +1,6 @@
 ---
 name: tester
+model: claude-sonnet-4
 description: Test writing (unit, integration, e2e). Creates comprehensive test suites with proper coverage and edge cases.
 tools: Read, Write, Edit, Grep, Glob, Bash
 skills: using-agent-relay

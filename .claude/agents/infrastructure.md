@@ -1,5 +1,6 @@
 ---
 name: infrastructure
+model: claude-sonnet-4
 description: Cloud infrastructure, Kubernetes, orchestration, and infrastructure as code. Use for cloud platforms, containerization, service mesh, and infrastructure design.
 tools: Read, Grep, Glob, Bash, Edit, Write
 skills: using-agent-relay

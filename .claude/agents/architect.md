@@ -1,5 +1,6 @@
 ---
 name: architect
+model: claude-sonnet-4
 description: System design and architecture decisions. Technical planning, tradeoff analysis, and design documentation.
 tools: Read, Grep, Glob, Write, Edit
 skills: using-agent-relay

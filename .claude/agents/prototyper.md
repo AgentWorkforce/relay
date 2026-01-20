@@ -1,5 +1,6 @@
 ---
 name: prototyper
+model: claude-sonnet-4
 description: Use for rapid prototyping, MVPs, proof-of-concepts, and quick experimental implementations.
 tools: Read, Grep, Glob, Bash, Edit, Write
 skills: using-agent-relay

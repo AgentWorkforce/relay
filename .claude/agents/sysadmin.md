@@ -1,5 +1,6 @@
 ---
 name: sysadmin
+model: claude-sonnet-4
 description: Use for system administration, server configuration, security hardening, and infrastructure management.
 tools: Read, Grep, Glob, Bash, Edit, Write
 skills: using-agent-relay

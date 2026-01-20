@@ -1,5 +1,6 @@
 ---
 name: performance
+model: claude-sonnet-4
 description: Performance optimization and profiling. Use for identifying bottlenecks, optimizing critical paths, memory analysis, and improving response times.
 tools: Read, Write, Edit, Grep, Glob, Bash, WebSearch, WebFetch
 skills: using-agent-relay

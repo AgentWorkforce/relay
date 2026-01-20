@@ -1,5 +1,6 @@
 ---
 name: debugger
+model: claude-sonnet-4
 description: Bug investigation and root cause analysis. Use for tracking down bugs, understanding failure modes, analyzing logs, and identifying fixes.
 tools: Read, Write, Edit, Grep, Glob, Bash, WebSearch, WebFetch
 skills: using-agent-relay

@@ -1,5 +1,6 @@
 ---
 name: qa
+model: claude-sonnet-4
 description: Quality assurance, testing protocols, and defect management. Creates test plans and validates feature completeness.
 tools: Read, Grep, Glob, Bash, WebFetch
 skills: using-agent-relay

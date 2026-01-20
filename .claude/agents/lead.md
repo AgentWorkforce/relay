@@ -1,6 +1,6 @@
 ---
 name: lead
-model: haiku
+model: claude-sonnet-4
 description: Use when coordinating multi-agent teams. Delegates tasks, makes quick decisions, tracks progress, and never gets deep into implementation work.
 tools: Read, Grep, Glob, Bash, Task, AskUserQuestion
 skills: using-beads-bv, using-agent-relay

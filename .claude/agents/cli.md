@@ -1,5 +1,6 @@
 ---
 name: cli
+model: claude-sonnet-4
 description: Use for CLI tool development, command-line interfaces, terminal utilities, and shell scripting.
 tools: Read, Grep, Glob, Bash, Edit, Write
 skills: using-agent-relay

@@ -1,5 +1,6 @@
 ---
 name: data
+model: claude-sonnet-4
 description: Use for data processing, ETL pipelines, data transformation, and batch processing tasks.
 tools: Read, Grep, Glob, Bash, Edit, Write
 skills: using-agent-relay

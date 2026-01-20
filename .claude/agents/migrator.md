@@ -1,5 +1,6 @@
 ---
 name: migrator
+model: claude-sonnet-4
 description: Use for data migrations, database schema changes, version upgrades, and data transformation tasks.
 tools: Read, Grep, Glob, Bash, Edit, Write
 skills: using-agent-relay

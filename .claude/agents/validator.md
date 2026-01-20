@@ -1,5 +1,6 @@
 ---
 name: validator
+model: claude-sonnet-4
 description: Input validation, data integrity, and schema enforcement. Ensures data quality at system boundaries.
 tools: Read, Write, Edit, Grep, Glob, Bash
 skills: using-agent-relay

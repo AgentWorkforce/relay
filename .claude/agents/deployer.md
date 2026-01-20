@@ -1,5 +1,6 @@
 ---
 name: deployer
+model: claude-sonnet-4
 description: Use for deployment automation, release management, rollouts, and production deployments.
 tools: Read, Grep, Glob, Bash, Edit, Write
 skills: using-agent-relay

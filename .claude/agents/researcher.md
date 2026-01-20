@@ -1,5 +1,6 @@
 ---
 name: researcher
+model: claude-sonnet-4
 description: Research tasks and codebase exploration. Investigates questions, finds patterns, and gathers information.
 tools: Read, Grep, Glob, Bash, WebSearch, WebFetch
 skills: using-agent-relay

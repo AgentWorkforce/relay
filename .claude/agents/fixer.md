@@ -1,5 +1,6 @@
 ---
 name: fixer
+model: claude-sonnet-4
 description: Use for quick fixes, hotfixes, urgent patches, and time-sensitive bug repairs.
 tools: Read, Grep, Glob, Bash, Edit, Write
 skills: using-agent-relay

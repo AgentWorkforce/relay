@@ -1,5 +1,6 @@
 ---
 name: api-designer
+model: claude-sonnet-4
 description: REST and GraphQL API design - endpoint design, request/response schemas, versioning, and documentation. Use for designing new APIs or evolving existing ones.
 tools: Read, Write, Edit, Grep, Glob, Bash, WebSearch, WebFetch
 skills: using-agent-relay

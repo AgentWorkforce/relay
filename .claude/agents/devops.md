@@ -1,5 +1,6 @@
 ---
 name: devops
+model: claude-sonnet-4
 description: CI/CD pipelines, build automation, and pipeline optimization. Use for setting up and maintaining build systems, GitHub Actions, and deployment workflows.
 tools: Read, Grep, Glob, Bash, Edit, Write
 skills: using-agent-relay

@@ -1,5 +1,6 @@
 ---
 name: shadow-auditor
+model: claude-sonnet-4
 description: Audits agent decisions and session outcomes for compliance and quality. Assign as a shadow for end-of-session review.
 tools: Read, Grep, Glob
 skills: using-agent-relay
