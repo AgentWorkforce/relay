@@ -134,8 +134,11 @@ export interface AckPayload {
   seq: number;
   cumulative_seq?: number;
   sack?: number[];
+  /** Correlation ID for matching ACK to original SEND (sync messaging) */
   correlationId?: string;
-  response?: boolean;
+  /** Response status or short body for request-response pattern */
+  response?: string;
+  /** Structured response payload for sync messaging */
   responseData?: unknown;
 }
 

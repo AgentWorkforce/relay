@@ -58,7 +58,7 @@ describe('Daemon pending ACK tracking', () => {
         ack_id: 'd-1',
         seq: 1,
         correlationId: 'corr-1',
-        response: true,
+        response: 'OK',
       },
     };
 
