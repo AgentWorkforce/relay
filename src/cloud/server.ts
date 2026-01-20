@@ -697,9 +697,28 @@ export async function createServer(): Promise<CloudServer> {
         }
       }
 
-      // Broadcast channel creation to all connected clients in this workspace
+      // Subscribe the channel creator to the daemon for real-time messages
       // Use # prefix for channel ID to match daemon convention
       const normalizedChannelId = channel.channelId.startsWith('#') ? channel.channelId : `#${channel.channelId}`;
+      try {
+        const workspace = await db.workspaces.findById(workspaceId);
+        const dashboardUrl = workspace?.publicUrl || await getLocalDashboardUrl();
+        await fetch(`${dashboardUrl}/api/channels/subscribe`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: createdBy,
+            channels: [normalizedChannelId],
+            workspaceId,
+          }),
+        });
+        console.log(`[channels] Subscribed creator ${createdBy} to ${normalizedChannelId} on workspace daemon`);
+      } catch (err) {
+        // Non-fatal - daemon sync is best-effort
+        console.warn(`[channels] Failed to sync creator to daemon:`, err);
+      }
+
+      // Broadcast channel creation to all connected clients in this workspace
       const channelData = {
         id: normalizedChannelId,
         name: channel.name,
@@ -1556,12 +1575,32 @@ export async function createServer(): Promise<CloudServer> {
         await new Promise(resolve => setTimeout(resolve, 200));
 
         try {
+          // Get all channels the user is a member of
+          const memberships = await db.channelMembers.findByMemberId(username);
+          const userChannels: string[] = ['#general']; // Always include #general
+
+          // Look up channel details to get the channelId string (like '#foobar')
+          for (const membership of memberships) {
+            const channel = await db.channels.findById(membership.channelId);
+            if (channel && channel.workspaceId === workspaceId) {
+              // Normalize channel ID with # prefix
+              const channelIdStr = channel.channelId.startsWith('#')
+                ? channel.channelId
+                : `#${channel.channelId}`;
+              if (!userChannels.includes(channelIdStr)) {
+                userChannels.push(channelIdStr);
+              }
+            }
+          }
+
+          console.log(`[cloud] Subscribing ${username} to ${userChannels.length} channels: ${userChannels.join(', ')}`);
+
           const subscribeRes = await fetch(`${dashboardUrl}/api/channels/subscribe`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               username,
-              channels: ['#general'], // Start with general, others can be joined later
+              channels: userChannels,
               workspaceId,
             }),
           });
