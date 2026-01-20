@@ -479,11 +479,14 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
       const channelId = event.channel as string | undefined;
       if (!channelId) return;
       const sender = event.from || 'unknown';
+      // Use server-provided entity type if available, otherwise derive locally
+      const fromEntityType = event.fromEntityType || (currentUser?.displayName && sender === currentUser.displayName ? 'user' : 'agent');
       const msg: ChannelApiMessage = {
         id: event.id ?? `ws-${Date.now()}`,
         channelId,
         from: sender,
-        fromEntityType: currentUser?.displayName && sender === currentUser.displayName ? 'user' : 'agent',
+        fromEntityType,
+        fromAvatarUrl: event.fromAvatarUrl,
         content: event.body ?? '',
         timestamp: event.timestamp || new Date().toISOString(),
         threadId: event.thread,
@@ -500,11 +503,14 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
       const participants = [sender, recipient].sort();
       const dmChannelId = `dm:${participants.join(':')}`;
 
+      // Use server-provided entity type if available
+      const fromEntityType = event.fromEntityType || 'agent';
       const msg: ChannelApiMessage = {
         id: event.id ?? `dm-${Date.now()}`,
         channelId: dmChannelId,
         from: sender,
-        fromEntityType: 'agent', // DMs to user are typically from agents
+        fromEntityType,
+        fromAvatarUrl: event.fromAvatarUrl,
         content: event.body ?? '',
         timestamp: event.timestamp || new Date().toISOString(),
         threadId: event.thread,
@@ -2332,6 +2338,8 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           projects={mergedProjects}
           currentProject={mergedProjects.find(p => p.id === currentProject) || null}
           recentProjects={getRecentProjects(mergedProjects)}
+          viewMode={viewMode}
+          selectedChannelName={selectedChannel?.name}
           onProjectChange={handleProjectSelect}
           onCommandPaletteOpen={handleCommandPaletteOpen}
           onSettingsClick={handleSettingsClick}
