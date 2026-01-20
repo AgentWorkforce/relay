@@ -96,6 +96,8 @@ export function usePresence(options: UsePresenceOptions = {}): UsePresenceReturn
   currentUserRef.current = currentUser; // Keep ref in sync with prop
   const workspaceIdRef = useRef(workspaceId);
   workspaceIdRef.current = workspaceId; // Keep ref in sync with prop
+  const onEventRef = useRef(onEvent);
+  onEventRef.current = onEvent; // Keep ref in sync with callback prop
 
   // Clear stale typing indicators (after 3 seconds of no update)
   useEffect(() => {
@@ -182,6 +184,8 @@ export function usePresence(options: UsePresenceOptions = {}): UsePresenceReturn
                 const filtered = prev.filter((u) => u.username !== msg.user.username);
                 return [...filtered, msg.user];
               });
+              // Also forward to onEvent for activity feed
+              onEventRef.current?.(msg);
               break;
 
             case 'presence_leave':
@@ -192,6 +196,8 @@ export function usePresence(options: UsePresenceOptions = {}): UsePresenceReturn
               setTypingUsers((prev) =>
                 prev.filter((t) => t.username !== msg.username)
               );
+              // Also forward to onEvent for activity feed
+              onEventRef.current?.(msg);
               break;
 
             case 'typing':
@@ -218,7 +224,7 @@ export function usePresence(options: UsePresenceOptions = {}): UsePresenceReturn
               break;
 
             default:
-              onEvent?.(msg);
+              onEventRef.current?.(msg);
           }
         } catch (e) {
           console.error('[usePresence] Failed to parse message:', e);

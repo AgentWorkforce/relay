@@ -1000,6 +1000,12 @@ export async function startDashboard(
       client.onChannelMessage = (from, channel, body, envelope) => {
         console.log(`[dashboard] *** CHANNEL MESSAGE RECEIVED *** for ${senderName}: ${from} -> ${channel}`);
 
+        // Look up sender's avatar from presence (if they're an online user)
+        const senderPresence = onlineUsers.get(from);
+        const fromAvatarUrl = senderPresence?.info.avatarUrl;
+        // Determine entity type: user if they have presence state, agent otherwise
+        const fromEntityType: 'user' | 'agent' = senderPresence ? 'user' : 'agent';
+
         // Broadcast to presence WebSocket clients so cloud can forward to its users
         // Include the target user so cloud knows who to forward to
         broadcastChannelMessage({
@@ -1007,6 +1013,8 @@ export async function startDashboard(
           targetUser: senderName,
           channel,
           from,
+          fromAvatarUrl,
+          fromEntityType,
           body,
           thread: envelope?.payload?.thread,
           mentions: envelope?.payload?.mentions,
@@ -1061,6 +1069,14 @@ export async function startDashboard(
     },
     loadPersistedChannels: (username: string) =>
       loadPersistedChannelsForUser(username, defaultWorkspaceId),
+    // Look up user info (avatar URL) from presence
+    lookupUserInfo: (username: string) => {
+      const presence = onlineUsers.get(username);
+      if (presence) {
+        return { avatarUrl: presence.info.avatarUrl };
+      }
+      return undefined;
+    },
   });
 
   // Bridge client for cross-project messaging
@@ -2345,6 +2361,8 @@ export async function startDashboard(
     targetUser: string;
     channel: string;
     from: string;
+    fromAvatarUrl?: string;
+    fromEntityType?: 'user' | 'agent';
     body: string;
     thread?: string;
     mentions?: string[];
@@ -3135,16 +3153,24 @@ export async function startDashboard(
       messages.sort((a, b) => a.ts - b.ts);
 
       res.json({
-        messages: messages.map((m) => ({
-          id: m.id,
-          channelId: channelId,
-          from: m.from,
-          fromEntityType: 'user',
-          content: m.body,
-          timestamp: new Date(m.ts).toISOString(),
-          threadId: m.thread || undefined,
-          isRead: true,
-        })),
+        messages: messages.map((m) => {
+          // Look up sender's avatar from presence (if they're currently online)
+          const senderPresence = onlineUsers.get(m.from);
+          const fromAvatarUrl = senderPresence?.info.avatarUrl;
+          // Determine entity type: user if they have presence state, agent otherwise
+          const fromEntityType: 'user' | 'agent' = senderPresence ? 'user' : 'agent';
+          return {
+            id: m.id,
+            channelId: channelId,
+            from: m.from,
+            fromEntityType,
+            fromAvatarUrl,
+            content: m.body,
+            timestamp: new Date(m.ts).toISOString(),
+            threadId: m.thread || undefined,
+            isRead: true,
+          };
+        }),
         hasMore: messages.length === limit,
       });
     } catch (err) {
@@ -4506,6 +4532,15 @@ export async function startDashboard(
       if (result.success) {
         // Broadcast update to WebSocket clients
         broadcastData().catch(() => {});
+        // Broadcast agent_spawned event to activity feed
+        broadcastPresence({
+          type: 'agent_spawned',
+          agent: { name },
+          cli,
+          task,
+          spawnedBy: spawnerName || 'Dashboard',
+          timestamp: new Date().toISOString(),
+        });
       }
 
       res.json(result);
@@ -4734,6 +4769,13 @@ Start by greeting the project leads and asking for status updates.`;
 
       if (released) {
         broadcastData().catch(() => {});
+        // Broadcast agent_released event to activity feed
+        broadcastPresence({
+          type: 'agent_released',
+          agent: { name },
+          releasedBy: 'Dashboard',
+          timestamp: new Date().toISOString(),
+        });
       }
 
       res.json({

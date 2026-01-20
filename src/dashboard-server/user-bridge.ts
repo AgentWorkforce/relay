@@ -64,12 +64,21 @@ interface UserSession {
 }
 
 /**
+ * User info for avatar lookups
+ */
+export interface UserInfo {
+  avatarUrl?: string;
+}
+
+/**
  * Options for creating a UserBridge
  */
 export interface UserBridgeOptions {
   socketPath: string;
   createRelayClient: RelayClientFactory;
   loadPersistedChannels?: (username: string) => Promise<string[]>;
+  /** Optional callback to look up user info (avatar URL) by username */
+  lookupUserInfo?: (username: string) => UserInfo | undefined;
 }
 
 /**
@@ -88,12 +97,14 @@ export class UserBridge {
   private readonly socketPath: string;
   private readonly createRelayClient: RelayClientFactory;
   private readonly loadPersistedChannels?: (username: string) => Promise<string[]>;
+  private readonly lookupUserInfo?: (username: string) => UserInfo | undefined;
   private readonly users = new Map<string, UserSession>();
 
   constructor(options: UserBridgeOptions) {
     this.socketPath = options.socketPath;
     this.createRelayClient = options.createRelayClient;
     this.loadPersistedChannels = options.loadPersistedChannels;
+    this.lookupUserInfo = options.lookupUserInfo;
   }
 
   /**
@@ -366,10 +377,18 @@ export class UserBridge {
     const ws = session.webSocket;
     if (ws.readyState !== 1) return; // Not OPEN
 
+    // Look up sender's avatar if lookup function is available
+    const senderInfo = this.lookupUserInfo?.(from);
+    const fromAvatarUrl = senderInfo?.avatarUrl;
+    // Determine entity type: user if they have info, agent otherwise
+    const fromEntityType: 'user' | 'agent' = senderInfo ? 'user' : 'agent';
+
     // Direct message (DELIVER)
     ws.send(JSON.stringify({
       type: 'direct_message',
       from,
+      fromAvatarUrl,
+      fromEntityType,
       body: payloadObj?.body || body,
       timestamp: new Date().toISOString(),
     }));
@@ -393,12 +412,20 @@ export class UserBridge {
 
     console.log(`[user-bridge] Forwarding channel message to ${username}: ${from} -> ${channel}`);
 
+    // Look up sender's avatar if lookup function is available
+    const senderInfo = this.lookupUserInfo?.(from);
+    const fromAvatarUrl = senderInfo?.avatarUrl;
+    // Determine entity type: user if they have info, agent otherwise
+    const fromEntityType: 'user' | 'agent' = senderInfo ? 'user' : 'agent';
+
     // Channel message
     const env = envelope as { payload?: { thread?: string; mentions?: string[] } } | undefined;
     ws.send(JSON.stringify({
       type: 'channel_message',
       channel,
       from,
+      fromAvatarUrl,
+      fromEntityType,
       body,
       thread: env?.payload?.thread,
       mentions: env?.payload?.mentions,

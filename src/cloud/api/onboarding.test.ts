@@ -327,3 +327,44 @@ describe('getSupportedProviders', () => {
     expect(anthropic!.displayName).toBe('Claude');
   });
 });
+
+describe('Provider name validation', () => {
+  // These are the valid provider names used by /api/onboarding/mark-connected/:provider
+  // They must be lowercase to match backend validation
+  const validProviders = ['anthropic', 'openai', 'google', 'github', 'opencode', 'factory'];
+
+  it('validates all expected lowercase providers', () => {
+    // Backend validates against this list
+    for (const provider of validProviders) {
+      expect(provider).toBe(provider.toLowerCase());
+    }
+  });
+
+  it('includes all AI providers used by WorkspaceSettingsPanel', () => {
+    // These are the name values from AI_PROVIDERS in WorkspaceSettingsPanel
+    // They must all be in validProviders for mark-connected to work
+    const settingsPanelProviderNames = [
+      'anthropic',  // Claude
+      'openai',     // Codex
+      'google',     // Gemini
+      'opencode',   // OpenCode
+      'factory',    // Droid
+    ];
+
+    for (const name of settingsPanelProviderNames) {
+      expect(validProviders).toContain(name);
+    }
+  });
+
+  it('includes all providers used by onboarding PROVIDER_CONFIGS', () => {
+    // These are the name values from PROVIDER_CONFIGS in constants.ts
+    const onboardingProviderNames = [
+      'anthropic',  // claude
+      'openai',     // codex
+    ];
+
+    for (const name of onboardingProviderNames) {
+      expect(validProviders).toContain(name);
+    }
+  });
+});

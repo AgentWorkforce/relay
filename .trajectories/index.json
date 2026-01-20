@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-20T19:56:01.617Z",
+  "lastUpdated": "2026-01-20T20:34:54.892Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -827,6 +827,20 @@
       "startedAt": "2026-01-20T19:55:46.807Z",
       "completedAt": "2026-01-20T19:56:01.584Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_k0om34q1skol.json"
+    },
+    "traj_xt3iuim9goh4": {
+      "title": "Implement Activity Feed v1 - unified timeline of workspace events",
+      "status": "abandoned",
+      "startedAt": "2026-01-20T20:15:04.250Z",
+      "completedAt": "2026-01-20T20:21:08.641Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_xt3iuim9goh4.json"
+    },
+    "traj_a6yc7dh6oiz0": {
+      "title": "Fix cloud channel communication issues",
+      "status": "completed",
+      "startedAt": "2026-01-20T20:34:18.721Z",
+      "completedAt": "2026-01-20T20:34:54.864Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_a6yc7dh6oiz0.json"
     }
   }
 }
