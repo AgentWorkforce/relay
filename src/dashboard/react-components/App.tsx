@@ -450,7 +450,32 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   }, [currentUser?.displayName, selectedChannelId]);
 
   const handlePresenceEvent = useCallback((event: any) => {
-    if (event?.type === 'channel_message') {
+    if (event?.type === 'channel_created') {
+      // Another user created a channel - add it to the list
+      const newChannel = event.channel;
+      if (!newChannel || !newChannel.id) return;
+
+      setChannelsList(prev => {
+        // Don't add if already exists
+        if (prev.some(c => c.id === newChannel.id)) return prev;
+
+        const channel: Channel = {
+          id: newChannel.id,
+          name: newChannel.name || newChannel.id,
+          description: newChannel.description,
+          visibility: newChannel.visibility || 'public',
+          status: newChannel.status || 'active',
+          createdAt: newChannel.createdAt || new Date().toISOString(),
+          createdBy: newChannel.createdBy || 'unknown',
+          memberCount: newChannel.memberCount || 1,
+          unreadCount: newChannel.unreadCount || 0,
+          hasMentions: newChannel.hasMentions || false,
+          isDm: newChannel.isDm || false,
+        };
+        console.log('[App] Channel created via WebSocket:', channel.id);
+        return [...prev, channel];
+      });
+    } else if (event?.type === 'channel_message') {
       const channelId = event.channel as string | undefined;
       if (!channelId) return;
       const sender = event.from || 'unknown';
@@ -492,6 +517,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   const { onlineUsers: allOnlineUsers, typingUsers, sendTyping, isConnected: isPresenceConnected } = usePresence({
     currentUser: presenceUser,
     onEvent: handlePresenceEvent,
+    workspaceId: effectiveActiveWorkspaceId ?? undefined,
   });
 
   // Keep local username for channel API calls
