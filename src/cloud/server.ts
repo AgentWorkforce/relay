@@ -1231,6 +1231,14 @@ export async function createServer(): Promise<CloudServer> {
     await proxyToLocalDashboard(req, res, '/api/channels/users');
   });
 
+  /**
+   * POST /api/channels/admin-remove - Remove a member from a channel (admin operation)
+   * Proxies to workspace dashboard where the daemon maintains channel membership
+   */
+  app.post('/api/channels/admin-remove', requireAuth, express.json(), async (req, res) => {
+    await proxyToLocalDashboard(req, res, '/api/channels/admin-remove');
+  });
+
   // Bridge API - returns empty state in cloud mode
   // Bridge is for local multi-project coordination; cloud workspaces are already separate
   // MUST be before teamsRouter to avoid auth interception
