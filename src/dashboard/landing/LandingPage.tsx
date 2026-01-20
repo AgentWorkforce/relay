@@ -8,6 +8,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './styles.css';
 import { Logo, LogoIcon, LogoHero } from '../react-components/Logo';
+import { getRecentPosts, type BlogPost } from './blogData';
 
 // Agent providers with their signature colors
 const PROVIDERS = {
@@ -47,6 +48,7 @@ export function LandingPage() {
         <LiveDemoSection />
         <FeaturesSection />
         <ProvidersSection />
+        <BlogSection />
         <PricingSection />
         <CTASection />
       </main>
@@ -497,6 +499,59 @@ function ProvidersSection() {
       </div>
     </section>
   );
+}
+
+function BlogSection() {
+  const recentPosts = getRecentPosts(3);
+
+  if (recentPosts.length === 0) {
+    return null;
+  }
+
+  return (
+    <section id="blog" className="blog-section">
+      <div className="section-header">
+        <span className="section-tag">Blog</span>
+        <h2>Latest Insights</h2>
+        <p>Thoughts on AI agent orchestration and multi-agent systems.</p>
+      </div>
+
+      <div className="blog-preview-grid">
+        {recentPosts.map((post) => (
+          <a key={post.slug} href={`/blog/${post.slug}`} className="blog-preview-card">
+            <div className="blog-preview-meta">
+              <span className="blog-preview-date">{formatDate(post.date)}</span>
+              <span className="blog-preview-divider">·</span>
+              <span className="blog-preview-time">{post.readTime}</span>
+            </div>
+            <h3 className="blog-preview-title">{post.title}</h3>
+            <p className="blog-preview-excerpt">{post.excerpt}</p>
+            <div className="blog-preview-tags">
+              {post.tags.map((tag) => (
+                <span key={tag} className="blog-preview-tag">{tag}</span>
+              ))}
+            </div>
+            <span className="blog-preview-link">
+              Read more <span className="arrow">→</span>
+            </span>
+          </a>
+        ))}
+      </div>
+
+      <div className="blog-section-cta">
+        <a href="/blog" className="btn-ghost">View All Posts →</a>
+      </div>
+    </section>
+  );
+}
+
+function formatDate(dateString: string): string {
+  const date = new Date(dateString);
+  return date.toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
 }
 
 function PricingSection() {
