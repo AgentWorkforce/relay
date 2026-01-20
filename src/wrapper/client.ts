@@ -345,12 +345,32 @@ export class RelayClient {
     const kind = options.kind ?? 'message';
 
     return new Promise<AckPayload>((resolve, reject) => {
+      let resolved = false;
+
       const timeoutHandle = setTimeout(() => {
+        if (resolved) return;
+        resolved = true;
         this.pendingSyncAcks.delete(correlationId);
         reject(new Error(`ACK timeout after ${timeoutMs}ms`));
       }, timeoutMs);
 
-      this.pendingSyncAcks.set(correlationId, { resolve, reject, timeoutHandle });
+      this.pendingSyncAcks.set(correlationId, {
+        resolve: (ack: AckPayload) => {
+          if (resolved) return;
+          resolved = true;
+          clearTimeout(timeoutHandle);
+          this.pendingSyncAcks.delete(correlationId);
+          resolve(ack);
+        },
+        reject: (err: Error) => {
+          if (resolved) return;
+          resolved = true;
+          clearTimeout(timeoutHandle);
+          this.pendingSyncAcks.delete(correlationId);
+          reject(err);
+        },
+        timeoutHandle,
+      });
 
       const envelope: SendEnvelope = {
         v: PROTOCOL_VERSION,
@@ -375,6 +395,7 @@ export class RelayClient {
 
       const sent = this.send(envelope);
       if (!sent) {
+        resolved = true;
         clearTimeout(timeoutHandle);
         this.pendingSyncAcks.delete(correlationId);
         reject(new Error('Failed to send message'));
@@ -387,6 +408,100 @@ export class RelayClient {
    */
   broadcast(body: string, kind: PayloadKind = 'message', data?: Record<string, unknown>): boolean {
     return this.sendMessage('*', body, kind, data);
+  }
+
+  /**
+   * Broadcast a message to all agents and wait for ACKs from all recipients.
+   * @param body - Message body
+   * @param options - Options including timeout, kind, data, thread
+   * @returns Promise that resolves with array of AckPayloads from all recipients
+   * @throws Error if any recipient times out
+   */
+  async broadcastAndWait(body: string, options: SyncOptions = {}): Promise<AckPayload[]> {
+    if (this._state !== 'READY') {
+      throw new Error('Client not ready');
+    }
+
+    const correlationId = randomUUID();
+    const timeoutMs = options.timeoutMs ?? 30000;
+    const kind = options.kind ?? 'message';
+
+    return new Promise<AckPayload[]>((resolve, reject) => {
+      const receivedAcks: AckPayload[] = [];
+      let recipientCount: number | undefined;
+      let resolved = false;
+
+      const checkComplete = (): void => {
+        if (resolved) return;
+        // Once we know recipient count and have all ACKs, resolve
+        if (recipientCount !== undefined && receivedAcks.length >= recipientCount) {
+          resolved = true;
+          clearTimeout(timeoutHandle);
+          this.pendingSyncAcks.delete(correlationId);
+          resolve(receivedAcks);
+        }
+      };
+
+      const timeoutHandle = setTimeout(() => {
+        if (resolved) return;
+        resolved = true;
+        this.pendingSyncAcks.delete(correlationId);
+        reject(new Error(`Broadcast ACK timeout after ${timeoutMs}ms (received ${receivedAcks.length}/${recipientCount ?? '?'})`));
+      }, timeoutMs);
+
+      // Store pending ACK handler that collects multiple responses
+      this.pendingSyncAcks.set(correlationId, {
+        resolve: (ack: AckPayload) => {
+          if (resolved) return;
+          receivedAcks.push(ack);
+          // Extract recipient count from first ACK's responseData if available
+          if (recipientCount === undefined && ack.responseData && typeof ack.responseData === 'object') {
+            const data = ack.responseData as Record<string, unknown>;
+            if (typeof data.broadcastRecipientCount === 'number') {
+              recipientCount = data.broadcastRecipientCount;
+            }
+          }
+          checkComplete();
+        },
+        reject: (err: Error) => {
+          if (resolved) return;
+          resolved = true;
+          clearTimeout(timeoutHandle);
+          this.pendingSyncAcks.delete(correlationId);
+          reject(err);
+        },
+        timeoutHandle,
+      });
+
+      const envelope: SendEnvelope = {
+        v: PROTOCOL_VERSION,
+        type: 'SEND',
+        id: generateId(),
+        ts: Date.now(),
+        to: '*',
+        payload: {
+          kind,
+          body,
+          data: options.data,
+          thread: options.thread,
+        },
+        payload_meta: {
+          sync: {
+            correlationId,
+            timeoutMs,
+            blocking: true,
+          },
+        },
+      };
+
+      const sent = this.send(envelope);
+      if (!sent) {
+        resolved = true;
+        clearTimeout(timeoutHandle);
+        this.pendingSyncAcks.delete(correlationId);
+        reject(new Error('Failed to send broadcast'));
+      }
+    });
   }
 
   // =============================================================================
@@ -798,8 +913,8 @@ export class RelayClient {
     const pending = this.pendingSyncAcks.get(correlationId);
     if (!pending) return;
 
-    clearTimeout(pending.timeoutHandle);
-    this.pendingSyncAcks.delete(correlationId);
+    // Call resolve - the handler manages its own cleanup
+    // (for sendAndWait, resolve cleans up; for broadcastAndWait, it accumulates)
     pending.resolve(envelope.payload);
   }
 

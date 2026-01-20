@@ -245,6 +245,88 @@ describe('RelayClient', () => {
     });
   });
 
+  describe('broadcastAndWait', () => {
+    it('resolves when all ACKs received', async () => {
+      const client = new RelayClient({ reconnect: false });
+      (client as any)._state = 'READY';
+      const sendMock = vi.fn().mockReturnValue(true);
+      (client as any).send = sendMock;
+
+      const promise = client.broadcastAndWait('ping', { timeoutMs: 1000 });
+      const sentEnvelope = sendMock.mock.calls[0][0];
+      const correlationId = sentEnvelope.payload_meta.sync.correlationId;
+
+      // First ACK includes recipient count
+      const ack1: Envelope<AckPayload> = {
+        v: 1,
+        type: 'ACK',
+        id: 'ack-1',
+        ts: Date.now(),
+        payload: {
+          ack_id: 'd-1',
+          seq: 1,
+          correlationId,
+          response: 'OK',
+          responseData: { from: 'Agent1', broadcastRecipientCount: 2 },
+        },
+      };
+
+      const ack2: Envelope<AckPayload> = {
+        v: 1,
+        type: 'ACK',
+        id: 'ack-2',
+        ts: Date.now(),
+        payload: {
+          ack_id: 'd-2',
+          seq: 2,
+          correlationId,
+          response: 'OK',
+          responseData: { from: 'Agent2' },
+        },
+      };
+
+      (client as any).processFrame(ack1);
+      (client as any).processFrame(ack2);
+
+      const result = await promise;
+      expect(result).toHaveLength(2);
+      expect(result[0].response).toBe('OK');
+      expect(result[1].response).toBe('OK');
+    });
+
+    it('rejects on timeout', async () => {
+      vi.useFakeTimers();
+      try {
+        const client = new RelayClient({ reconnect: false });
+        (client as any)._state = 'READY';
+        const sendMock = vi.fn().mockReturnValue(true);
+        (client as any).send = sendMock;
+
+        const promise = client.broadcastAndWait('ping', { timeoutMs: 50 });
+        const rejection = expect(promise).rejects.toThrow('Broadcast ACK timeout');
+        await vi.advanceTimersByTimeAsync(60);
+
+        await rejection;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('rejects when not ready', async () => {
+      const client = new RelayClient({ reconnect: false });
+      await expect(client.broadcastAndWait('ping')).rejects.toThrow('Client not ready');
+    });
+
+    it('rejects when send fails', async () => {
+      const client = new RelayClient({ reconnect: false });
+      (client as any)._state = 'READY';
+      const sendMock = vi.fn().mockReturnValue(false);
+      (client as any).send = sendMock;
+
+      await expect(client.broadcastAndWait('ping')).rejects.toThrow('Failed to send broadcast');
+    });
+  });
+
   describe('disconnect', () => {
     it('should transition to DISCONNECTED state', () => {
       const client = new RelayClient({ reconnect: false });
