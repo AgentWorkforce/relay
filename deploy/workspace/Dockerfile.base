@@ -4,8 +4,10 @@
 
 # ============================================================================
 # Stage 1: Build Rust relay-pty binary
+# Cargo.lock v4 requires Cargo >=1.78; keep Rust >=1.83.
 # ============================================================================
-FROM rust:1.83-slim AS rust-builder
+ARG RUST_VERSION=1.83
+FROM rust:${RUST_VERSION}-slim AS rust-builder
 
 WORKDIR /build
 
