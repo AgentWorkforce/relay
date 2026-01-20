@@ -311,6 +311,12 @@ export abstract class BaseWrapper extends EventEmitter {
       if (oldest) this.receivedMessageIds.delete(oldest);
     }
 
+    // Auto-ACK for sync messages with correlationId
+    // This acknowledges receipt so the sender doesn't block indefinitely
+    if (meta?.sync?.correlationId) {
+      this.sendSyncAck(messageId, meta.sync, 'OK', { from: this.config.name });
+    }
+
     // Queue the message
     const queuedMsg: QueuedMessage = {
       from,

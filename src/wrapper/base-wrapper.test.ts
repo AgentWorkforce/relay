@@ -17,9 +17,14 @@ vi.mock('./client.js', () => ({
     name,
     state: 'READY' as string,
     sentMessages: [] as Array<{ to: string; body: string; kind: string; meta?: unknown }>,
+    sentAcks: [] as Array<{ ack_id: string; correlationId?: string; response?: string; responseData?: unknown }>,
     onMessage: null as ((from: string, payload: any, messageId: string, meta?: any, originalTo?: string) => void) | null,
     sendMessage: vi.fn().mockImplementation(function(this: any, to: string, body: string, kind: string, meta?: unknown) {
       this.sentMessages.push({ to, body, kind, meta });
+      return true;
+    }),
+    sendAck: vi.fn().mockImplementation(function(this: any, payload: any) {
+      this.sentAcks.push(payload);
       return true;
     }),
     destroy: vi.fn(),
@@ -290,6 +295,86 @@ describe('BaseWrapper', () => {
 
       // Set should not grow unbounded
       expect(wrapper.testReceivedMessageIds.size).toBeLessThanOrEqual(1001);
+    });
+  });
+
+  describe('auto-ACK for sync messages', () => {
+    it('sends auto-ACK when message has correlationId', () => {
+      wrapper.testHandleIncomingMessage(
+        'Sender',
+        { body: 'Hello', kind: 'message' },
+        'msg-1',
+        { sync: { correlationId: 'corr-123', blocking: true } }
+      );
+
+      expect(wrapper.testClient.sentAcks).toHaveLength(1);
+      expect(wrapper.testClient.sentAcks[0].ack_id).toBe('msg-1');
+      expect(wrapper.testClient.sentAcks[0].correlationId).toBe('corr-123');
+      expect(wrapper.testClient.sentAcks[0].response).toBe('OK');
+    });
+
+    it('includes agent name in responseData', () => {
+      wrapper.testHandleIncomingMessage(
+        'Sender',
+        { body: 'Hello', kind: 'message' },
+        'msg-1',
+        { sync: { correlationId: 'corr-123', blocking: true } }
+      );
+
+      expect(wrapper.testClient.sentAcks[0].responseData).toEqual({ from: 'TestAgent' });
+    });
+
+    it('does not send ACK without correlationId', () => {
+      wrapper.testHandleIncomingMessage(
+        'Sender',
+        { body: 'Hello', kind: 'message' },
+        'msg-1'
+      );
+
+      expect(wrapper.testClient.sentAcks).toHaveLength(0);
+    });
+
+    it('does not send ACK without sync meta', () => {
+      wrapper.testHandleIncomingMessage(
+        'Sender',
+        { body: 'Hello', kind: 'message' },
+        'msg-1',
+        { importance: 80 }
+      );
+
+      expect(wrapper.testClient.sentAcks).toHaveLength(0);
+    });
+
+    it('still queues message after auto-ACK', () => {
+      wrapper.testHandleIncomingMessage(
+        'Sender',
+        { body: 'Hello', kind: 'message' },
+        'msg-1',
+        { sync: { correlationId: 'corr-123', blocking: true } }
+      );
+
+      // Both ACK sent AND message queued
+      expect(wrapper.testClient.sentAcks).toHaveLength(1);
+      expect(wrapper.testMessageQueue).toHaveLength(1);
+      expect(wrapper.testMessageQueue[0].body).toBe('Hello');
+    });
+
+    it('does not duplicate ACK on duplicate message', () => {
+      wrapper.testHandleIncomingMessage(
+        'Sender',
+        { body: 'Hello', kind: 'message' },
+        'msg-1',
+        { sync: { correlationId: 'corr-123', blocking: true } }
+      );
+      wrapper.testHandleIncomingMessage(
+        'Sender',
+        { body: 'Hello again', kind: 'message' },
+        'msg-1', // Same ID - deduped
+        { sync: { correlationId: 'corr-123', blocking: true } }
+      );
+
+      // Only one ACK sent due to deduplication
+      expect(wrapper.testClient.sentAcks).toHaveLength(1);
     });
   });
 
