@@ -202,4 +202,211 @@ describe('RelayClient', () => {
       expect(client.state).toBe('DISCONNECTED');
     });
   });
+
+  describe('spawn (SDK Contract)', () => {
+    it('should have spawn method', () => {
+      const client = new RelayClient({ reconnect: false });
+      expect(typeof client.spawn).toBe('function');
+    });
+
+    it('should reject when not connected', async () => {
+      const client = new RelayClient({ reconnect: false });
+      await expect(
+        client.spawn({ name: 'TestWorker', cli: 'claude', task: 'Test task' })
+      ).rejects.toThrow('Client not ready');
+    });
+
+    it('should reject when in wrong state', async () => {
+      const client = new RelayClient({ reconnect: false });
+      (client as any)._state = 'CONNECTING';
+      await expect(
+        client.spawn({ name: 'TestWorker', cli: 'claude', task: 'Test task' })
+      ).rejects.toThrow('Client not ready');
+    });
+
+    it('should handle SPAWN_RESULT response', async () => {
+      const client = new RelayClient({ reconnect: false });
+      (client as any)._state = 'READY';
+
+      // Mock the socket write to capture the envelope
+      let sentEnvelope: any;
+      (client as any).socket = {
+        write: (data: Buffer) => {
+          // Parse the frame to get the envelope
+          const length = data.readUInt32BE(0);
+          const json = data.subarray(4, 4 + length).toString('utf-8');
+          sentEnvelope = JSON.parse(json);
+          return true;
+        },
+      };
+
+      // Start spawn request (will pend)
+      const spawnPromise = client.spawn({
+        name: 'Worker1',
+        cli: 'claude',
+        task: 'Do something',
+      });
+
+      // Give time for the request to be sent
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Verify the request was sent
+      expect(sentEnvelope).toBeDefined();
+      expect(sentEnvelope.type).toBe('SPAWN');
+      expect(sentEnvelope.payload.name).toBe('Worker1');
+      expect(sentEnvelope.payload.cli).toBe('claude');
+
+      // Simulate SPAWN_RESULT response
+      const resultEnvelope = {
+        v: 1,
+        type: 'SPAWN_RESULT',
+        id: 'result-1',
+        ts: Date.now(),
+        payload: {
+          replyTo: sentEnvelope.id,
+          success: true,
+          name: 'Worker1',
+          pid: 12345,
+        },
+      };
+      (client as any).processFrame(resultEnvelope);
+
+      // Await the spawn result
+      const result = await spawnPromise;
+      expect(result.success).toBe(true);
+      expect(result.name).toBe('Worker1');
+      expect(result.pid).toBe(12345);
+    });
+
+    it('should handle spawn failure', async () => {
+      const client = new RelayClient({ reconnect: false });
+      (client as any)._state = 'READY';
+
+      let sentEnvelope: any;
+      (client as any).socket = {
+        write: (data: Buffer) => {
+          const length = data.readUInt32BE(0);
+          const json = data.subarray(4, 4 + length).toString('utf-8');
+          sentEnvelope = JSON.parse(json);
+          return true;
+        },
+      };
+
+      const spawnPromise = client.spawn({
+        name: 'FailWorker',
+        cli: 'nonexistent',
+        task: 'Will fail',
+      });
+
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Simulate failure response
+      const resultEnvelope = {
+        v: 1,
+        type: 'SPAWN_RESULT',
+        id: 'result-2',
+        ts: Date.now(),
+        payload: {
+          replyTo: sentEnvelope.id,
+          success: false,
+          name: 'FailWorker',
+          error: 'Command not found',
+        },
+      };
+      (client as any).processFrame(resultEnvelope);
+
+      const result = await spawnPromise;
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Command not found');
+    });
+  });
+
+  describe('release (SDK Contract)', () => {
+    it('should have release method', () => {
+      const client = new RelayClient({ reconnect: false });
+      expect(typeof client.release).toBe('function');
+    });
+
+    it('should reject when not connected', async () => {
+      const client = new RelayClient({ reconnect: false });
+      await expect(client.release('SomeWorker')).rejects.toThrow('Client not ready');
+    });
+
+    it('should handle RELEASE_RESULT response', async () => {
+      const client = new RelayClient({ reconnect: false });
+      (client as any)._state = 'READY';
+
+      let sentEnvelope: any;
+      (client as any).socket = {
+        write: (data: Buffer) => {
+          const length = data.readUInt32BE(0);
+          const json = data.subarray(4, 4 + length).toString('utf-8');
+          sentEnvelope = JSON.parse(json);
+          return true;
+        },
+      };
+
+      const releasePromise = client.release('Worker1');
+
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(sentEnvelope).toBeDefined();
+      expect(sentEnvelope.type).toBe('RELEASE');
+      expect(sentEnvelope.payload.name).toBe('Worker1');
+
+      // Simulate RELEASE_RESULT response
+      const resultEnvelope = {
+        v: 1,
+        type: 'RELEASE_RESULT',
+        id: 'release-result-1',
+        ts: Date.now(),
+        payload: {
+          replyTo: sentEnvelope.id,
+          success: true,
+          name: 'Worker1',
+        },
+      };
+      (client as any).processFrame(resultEnvelope);
+
+      const success = await releasePromise;
+      expect(success).toBe(true);
+    });
+
+    it('should handle release failure', async () => {
+      const client = new RelayClient({ reconnect: false });
+      (client as any)._state = 'READY';
+
+      let sentEnvelope: any;
+      (client as any).socket = {
+        write: (data: Buffer) => {
+          const length = data.readUInt32BE(0);
+          const json = data.subarray(4, 4 + length).toString('utf-8');
+          sentEnvelope = JSON.parse(json);
+          return true;
+        },
+      };
+
+      const releasePromise = client.release('NonExistent');
+
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Simulate failure response
+      const resultEnvelope = {
+        v: 1,
+        type: 'RELEASE_RESULT',
+        id: 'release-result-2',
+        ts: Date.now(),
+        payload: {
+          replyTo: sentEnvelope.id,
+          success: false,
+          name: 'NonExistent',
+          error: 'Worker not found',
+        },
+      };
+      (client as any).processFrame(resultEnvelope);
+
+      const success = await releasePromise;
+      expect(success).toBe(false);
+    });
+  });
 });
