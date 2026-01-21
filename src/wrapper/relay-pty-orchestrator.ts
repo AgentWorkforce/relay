@@ -189,6 +189,10 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   // Track whether any output has been received from the CLI
   private hasReceivedOutput = false;
 
+  // Queue monitor for stuck message detection
+  private queueMonitorTimer?: NodeJS.Timeout;
+  private readonly QUEUE_MONITOR_INTERVAL_MS = 30000; // Check every 30 seconds
+
   // Note: sessionEndProcessed and lastSummaryRawContent are inherited from BaseWrapper
 
   constructor(config: RelayPtyOrchestratorConfig) {
@@ -391,6 +395,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     this.running = true;
     this.readyForMessages = true;
     this.startStuckDetection();
+    this.startQueueMonitor();
 
     this.log(` Ready for messages`);
     this.log(` Socket connected: ${this.socketConnected}`);
@@ -407,6 +412,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     if (!this.running) return;
     this.running = false;
     this.stopStuckDetection();
+    this.stopQueueMonitor();
 
     this.log(` Stopping...`);
 
@@ -1265,6 +1271,86 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     this.log(` Body preview: ${payload.body?.substring(0, 100) ?? '(no body)'}...`);
     super.handleIncomingMessage(from, payload, messageId, meta, originalTo);
     this.log(` Queue length after add: ${this.messageQueue.length}`);
+    this.processMessageQueue();
+  }
+
+  // =========================================================================
+  // Queue monitor - Detect and process stuck messages
+  // =========================================================================
+
+  /**
+   * Start the queue monitor to periodically check for stuck messages.
+   * This ensures messages don't get orphaned in the queue when the agent is idle.
+   */
+  private startQueueMonitor(): void {
+    if (this.queueMonitorTimer) {
+      return; // Already started
+    }
+
+    this.log(` Starting queue monitor (interval: ${this.QUEUE_MONITOR_INTERVAL_MS}ms)`);
+
+    this.queueMonitorTimer = setInterval(() => {
+      this.checkForStuckQueue();
+    }, this.QUEUE_MONITOR_INTERVAL_MS);
+
+    // Don't keep process alive just for queue monitoring
+    this.queueMonitorTimer.unref?.();
+  }
+
+  /**
+   * Stop the queue monitor.
+   */
+  private stopQueueMonitor(): void {
+    if (this.queueMonitorTimer) {
+      clearInterval(this.queueMonitorTimer);
+      this.queueMonitorTimer = undefined;
+      this.log(` Queue monitor stopped`);
+    }
+  }
+
+  /**
+   * Check for messages stuck in the queue and process them if the agent is idle.
+   *
+   * This handles cases where:
+   * 1. Messages arrived while the agent was busy and the retry mechanism failed
+   * 2. Socket disconnection/reconnection left messages orphaned
+   * 3. Injection timeouts occurred without proper queue resumption
+   */
+  private checkForStuckQueue(): void {
+    // Skip if not ready for messages
+    if (!this.readyForMessages || !this.running) {
+      return;
+    }
+
+    // Skip if queue is empty
+    if (this.messageQueue.length === 0) {
+      return;
+    }
+
+    // Skip if currently injecting (processing is in progress)
+    if (this.isInjecting) {
+      return;
+    }
+
+    // Skip if backpressure is active
+    if (this.backpressureActive) {
+      return;
+    }
+
+    // Check if the agent is idle (high confidence)
+    const idleResult = this.idleDetector.checkIdle({ minSilenceMs: 2000 });
+    if (!idleResult.isIdle) {
+      // Agent is still working, let it finish
+      return;
+    }
+
+    // We have messages in the queue, agent is idle, not currently injecting
+    // This is a stuck queue situation - trigger processing
+    const senders = [...new Set(this.messageQueue.map(m => m.from))];
+    this.log(` ⚠️ Queue monitor: Found ${this.messageQueue.length} stuck message(s) from [${senders.join(', ')}]`);
+    this.log(` ⚠️ Agent is idle (confidence: ${(idleResult.confidence * 100).toFixed(0)}%), triggering queue processing`);
+
+    // Process the queue
     this.processMessageQueue();
   }
 
