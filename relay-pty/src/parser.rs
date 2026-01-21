@@ -350,7 +350,10 @@ impl OutputParser {
 
                 // Log spawn-related triggers at info level for visibility
                 if msg_id == "spawn" || msg_id.starts_with("spawn") || msg_id == "release" {
-                    info!("Found file relay trigger: {} (outbox: {:?})", msg_id, outbox);
+                    info!(
+                        "Found file relay trigger: {} (outbox: {:?})",
+                        msg_id, outbox
+                    );
                 } else {
                     debug!("Found file relay: {}", msg_id);
                 }
@@ -430,7 +433,8 @@ impl OutputParser {
                 let cmd = match msg.kind.as_str() {
                     "spawn" => {
                         if let (Some(name), Some(cli)) = (&msg.name, &msg.cli) {
-                            let task_preview = msg.body
+                            let task_preview = msg
+                                .body
                                 .as_ref()
                                 .map(|b| &b[..b.len().min(50)])
                                 .unwrap_or("");
