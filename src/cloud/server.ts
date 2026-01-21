@@ -1054,13 +1054,56 @@ export async function createServer(): Promise<CloudServer> {
   });
 
   app.get('/api/channels/:channel/messages', requireAuth, async (req, res) => {
+    // Route to the workspace's dashboard where the daemon stores messages
+    // IMPORTANT: Must use workspace.publicUrl (not getLocalDashboardUrl) because
+    // messages are stored in the workspace's daemon SQLite, not the cloud server's
+    const workspaceId = req.query.workspaceId as string | undefined;
+    let dashboardUrl = await getLocalDashboardUrl(); // Default for local mode
+
+    if (workspaceId) {
+      try {
+        const workspace = await db.workspaces.findById(workspaceId);
+        if (workspace?.publicUrl) {
+          dashboardUrl = workspace.publicUrl;
+        }
+      } catch (err) {
+        console.warn(`[channel-messages] Failed to lookup workspace ${workspaceId}:`, err);
+      }
+    }
+
     const channel = encodeURIComponent(req.params.channel);
     const params = new URLSearchParams();
     if (req.query.limit) params.set('limit', req.query.limit as string);
     if (req.query.before) params.set('before', req.query.before as string);
-    if (req.query.workspaceId) params.set('workspaceId', req.query.workspaceId as string);
+    if (workspaceId) params.set('workspaceId', workspaceId);
     const queryString = params.toString() ? `?${params.toString()}` : '';
-    await proxyToLocalDashboard(req, res, `/api/channels/${channel}/messages${queryString}`);
+
+    const targetUrl = `${dashboardUrl}/api/channels/${channel}/messages${queryString}`;
+    console.log(`[channel-messages] GET ${targetUrl}`);
+
+    try {
+      const proxyRes = await fetch(targetUrl, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      const contentType = proxyRes.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        const text = await proxyRes.text();
+        console.error(`[channel-messages] Non-JSON response from ${targetUrl}: ${text.substring(0, 100)}`);
+        res.status(502).json({
+          error: 'Workspace dashboard not available or returned non-JSON response',
+          hint: 'Make sure the workspace daemon is running',
+        });
+        return;
+      }
+
+      const data = await proxyRes.json();
+      res.status(proxyRes.status).json(data);
+    } catch (error) {
+      console.error('[channel-messages] Error:', error);
+      res.status(502).json({ error: 'Failed to fetch messages from workspace' });
+    }
   });
 
   /**
