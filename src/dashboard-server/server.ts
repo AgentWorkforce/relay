@@ -2844,11 +2844,15 @@ export async function startDashboard(
 
   /**
    * POST /api/channels/invite - Invite members to a channel
+   * Invites can be:
+   * - Array of strings (usernames, assumed to be agents)
+   * - Comma-separated string of usernames
+   * - Array of objects with { id: string, type: 'user' | 'agent' }
    */
   app.post('/api/channels/invite', express.json(), async (req, res) => {
     const { channel, invites, invitedBy } = req.body as {
       channel: string;
-      invites: string; // comma-separated usernames
+      invites: string | string[] | Array<{ id: string; type?: 'user' | 'agent' }>;
       invitedBy?: string;
     };
     const workspaceId = resolveWorkspaceId(req);
@@ -2861,15 +2865,34 @@ export async function startDashboard(
     const channelId = channel.startsWith('dm:')
       ? channel
       : (channel.startsWith('#') ? channel : `#${channel}`);
-    const inviteList = invites.split(',').map((s) => s.trim()).filter(Boolean);
+
+    // Normalize invite list to array of { id, type }
+    type InviteItem = { id: string; type: 'user' | 'agent' };
+    let inviteList: InviteItem[];
+
+    if (typeof invites === 'string') {
+      // Comma-separated string - assume agents (legacy behavior)
+      inviteList = invites.split(',').map((s: string) => s.trim()).filter(Boolean)
+        .map(id => ({ id, type: 'agent' as const }));
+    } else if (Array.isArray(invites)) {
+      // Array - could be strings or objects
+      inviteList = invites.map(item => {
+        if (typeof item === 'string') {
+          return { id: item, type: 'agent' as const };
+        }
+        return { id: item.id, type: item.type || 'agent' };
+      });
+    } else {
+      return res.status(400).json({ error: 'invites must be a string or array' });
+    }
 
     try {
-      const results: Array<{ username: string; success: boolean; reason?: string }> = [];
+      const results: Array<{ id: string; type: string; success: boolean; reason?: string }> = [];
       for (const invitee of inviteList) {
         let success = false;
         let reason: string | undefined;
-        if (userBridge.isUserRegistered(invitee)) {
-          success = await userBridge.joinChannel(invitee, channelId);
+        if (userBridge.isUserRegistered(invitee.id)) {
+          success = await userBridge.joinChannel(invitee.id, channelId);
           if (!success) {
             reason = 'join_failed';
           }
@@ -2878,12 +2901,12 @@ export async function startDashboard(
           reason = 'pending';
         }
 
-        await persistChannelMembershipEvent(channelId, invitee, 'invite', {
+        await persistChannelMembershipEvent(channelId, invitee.id, 'invite', {
           invitedBy,
           workspaceId,
         });
 
-        results.push({ username: invitee, success, reason });
+        results.push({ id: invitee.id, type: invitee.type, success, reason });
       }
 
       res.json({ channel: channelId, invited: results });
