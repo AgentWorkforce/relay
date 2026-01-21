@@ -42,8 +42,8 @@ export const BILLING_PLANS: Record<SubscriptionTier, BillingPlan> = {
     id: 'pro',
     name: 'Pro',
     description: 'For professional developers building with AI agents',
-    priceMonthly: 4900, // $49/month
-    priceYearly: 47000, // $470/year (2 months free)
+    priceMonthly: 6900, // $69/month
+    priceYearly: 69000, // $690/year (2 months free)
     stripePriceIdMonthly: process.env.STRIPE_PRO_MONTHLY_PRICE_ID,
     stripePriceIdYearly: process.env.STRIPE_PRO_YEARLY_PRICE_ID,
     limits: {
@@ -75,8 +75,8 @@ export const BILLING_PLANS: Record<SubscriptionTier, BillingPlan> = {
     id: 'team',
     name: 'Team',
     description: 'For growing teams with advanced needs',
-    priceMonthly: 9900, // $99/month
-    priceYearly: 99000, // $990/year (2 months free)
+    priceMonthly: 12900, // $129/month
+    priceYearly: 129000, // $1290/year (2 months free)
     stripePriceIdMonthly: process.env.STRIPE_TEAM_MONTHLY_PRICE_ID,
     stripePriceIdYearly: process.env.STRIPE_TEAM_YEARLY_PRICE_ID,
     limits: {

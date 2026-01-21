@@ -370,10 +370,11 @@ export interface ResourceTier {
 
 // Resource tiers sized for Claude Code agents (~1-2GB RAM per agent)
 // cpuKind: 'shared' = cheaper but can be throttled, 'performance' = dedicated
+// Note: Team tier (large) uses shared CPUs for better margins (~50% vs ~7% with perf)
 export const RESOURCE_TIERS: Record<string, ResourceTier> = {
   small: { name: 'small', cpuCores: 2, memoryMb: 2048, maxAgents: 2, cpuKind: 'shared' },
   medium: { name: 'medium', cpuCores: 2, memoryMb: 4096, maxAgents: 5, cpuKind: 'shared' },
-  large: { name: 'large', cpuCores: 4, memoryMb: 8192, maxAgents: 10, cpuKind: 'performance' },
+  large: { name: 'large', cpuCores: 4, memoryMb: 8192, maxAgents: 10, cpuKind: 'shared' },
   xlarge: { name: 'xlarge', cpuCores: 8, memoryMb: 16384, maxAgents: 20, cpuKind: 'performance' },
 };
 

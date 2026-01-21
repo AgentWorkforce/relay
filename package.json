@@ -46,6 +46,8 @@
     "db:migrate:verify": "node scripts/verify-schema.js",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
+    "stripe:setup": "npx tsx scripts/setup-stripe-products.ts",
+    "stripe:setup:dry": "npx tsx scripts/setup-stripe-products.ts --dry-run",
     "services:up": "docker compose -f docker-compose.dev.yml up -d postgres redis && echo '✓ Postgres and Redis running'",
     "services:down": "docker compose -f docker-compose.dev.yml down",
     "services:logs": "docker compose -f docker-compose.dev.yml logs -f postgres redis",

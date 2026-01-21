@@ -75,13 +75,14 @@ export {
   createComputeEnforcementService,
 } from './compute-enforcement.js';
 
-// Intro expiration (auto-resize after free tier intro period)
+// Intro expiration (auto-resize/destroy after free tier intro period)
 export {
   IntroExpirationService,
   IntroExpirationConfig,
   IntroStatus,
   ExpirationResult as IntroExpirationResult,
   INTRO_PERIOD_DAYS,
+  DESTROY_GRACE_PERIOD_DAYS,
   getIntroStatus,
   getIntroExpirationService,
   startIntroExpirationService,

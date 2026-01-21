@@ -45,7 +45,7 @@ const PLANS = [
   {
     id: 'pro',
     name: 'Pro',
-    price: 49,
+    price: 69,
     period: '/month',
     tagline: 'For professional developers',
     description: 'Build with AI agents daily. Includes auto-scaling and session persistence.',
@@ -75,7 +75,7 @@ const PLANS = [
   {
     id: 'team',
     name: 'Team',
-    price: 99,
+    price: 129,
     period: '/month',
     tagline: 'For growing teams',
     description: 'Dedicated CPUs, priority support, and team collaboration features.',

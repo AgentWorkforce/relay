@@ -513,7 +513,7 @@ function PricingSection() {
     },
     {
       name: 'Pro',
-      price: '$49',
+      price: '$69',
       period: '/month',
       description: 'For professional developers',
       features: ['5 workspaces', '10 repositories', '5 concurrent agents', '50 compute hours/month', 'Auto-scaling', 'Session persistence', 'Email support'],
@@ -522,7 +522,7 @@ function PricingSection() {
     },
     {
       name: 'Team',
-      price: '$99',
+      price: '$129',
       period: '/month',
       description: 'For growing teams',
       features: ['20 workspaces', '100 repositories', '50 concurrent agents', '500 compute hours/month', 'Dedicated CPU', 'Priority support', 'Audit logs'],

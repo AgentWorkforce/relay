@@ -1,15 +1,18 @@
 /**
  * Intro Expiration Service
  *
- * Handles auto-resize of workspaces when the free tier introductory period expires.
- * Free users get Pro-level resources (2 CPU / 4GB) for the first 14 days,
- * then get automatically downsized to standard free tier (1 CPU / 2GB).
+ * Handles auto-resize and auto-destroy of free tier workspaces:
+ * 1. Resize: Free users get Pro-level resources (2 CPU / 4GB) for the first 14 days,
+ *    then get automatically downsized to standard free tier (1 CPU / 2GB).
+ * 2. Destroy: Free workspaces inactive for 7+ days after intro expires get auto-destroyed
+ *    to prevent ongoing infrastructure costs for churned users.
  */
 
 import { db } from '../db/index.js';
 import { getProvisioner } from '../provisioner/index.js';
 
 export const INTRO_PERIOD_DAYS = 14;
+export const DESTROY_GRACE_PERIOD_DAYS = 7; // Days of inactivity after intro before auto-destroy
 
 export interface IntroExpirationConfig {
   enabled: boolean;
@@ -32,7 +35,7 @@ export interface ExpirationResult {
   userId: string;
   workspaceId: string;
   workspaceName: string;
-  action: 'resized' | 'skipped' | 'error';
+  action: 'resized' | 'destroyed' | 'skipped' | 'error';
   reason?: string;
 }
 
@@ -144,7 +147,7 @@ export class IntroExpirationService {
 
       for (const user of expiredUsers) {
         try {
-          const userResults = await this.checkAndResizeUserWorkspaces(user.id);
+          const userResults = await this.checkAndProcessUserWorkspaces(user.id, user.createdAt);
           results.push(...userResults);
         } catch (err) {
           console.error(`[intro-expiration] Error checking user ${user.id}:`, err);
@@ -153,11 +156,12 @@ export class IntroExpirationService {
 
       // Summary
       const resized = results.filter((r) => r.action === 'resized').length;
+      const destroyed = results.filter((r) => r.action === 'destroyed').length;
       const skipped = results.filter((r) => r.action === 'skipped').length;
       const errors = results.filter((r) => r.action === 'error').length;
 
-      if (resized > 0 || errors > 0) {
-        console.log(`[intro-expiration] Results: ${resized} resized, ${skipped} skipped, ${errors} errors`);
+      if (resized > 0 || destroyed > 0 || errors > 0) {
+        console.log(`[intro-expiration] Results: ${resized} resized, ${destroyed} destroyed, ${skipped} skipped, ${errors} errors`);
       }
 
       return results;
@@ -168,25 +172,67 @@ export class IntroExpirationService {
   }
 
   /**
-   * Check and resize workspaces for a user whose intro period has expired
+   * Check and process workspaces for a user whose intro period has expired
+   * - Resize workspaces that are still at intro-tier resources
+   * - Destroy workspaces that have been inactive for DESTROY_GRACE_PERIOD_DAYS
    */
-  private async checkAndResizeUserWorkspaces(userId: string): Promise<ExpirationResult[]> {
+  private async checkAndProcessUserWorkspaces(userId: string, userCreatedAt: Date): Promise<ExpirationResult[]> {
     const results: ExpirationResult[] = [];
     const provisioner = getProvisioner();
 
     // Get user's workspaces
     const workspaces = await db.workspaces.findByUserId(userId);
 
+    // Calculate when intro period expired for this user
+    const introExpiredAt = new Date(userCreatedAt.getTime() + INTRO_PERIOD_DAYS * 24 * 60 * 60 * 1000);
+    const destroyThreshold = new Date(introExpiredAt.getTime() + DESTROY_GRACE_PERIOD_DAYS * 24 * 60 * 60 * 1000);
+    const now = new Date();
+
     for (const workspace of workspaces) {
       try {
         // Check if workspace has intro-sized resources
-        // We detect this by checking if it has 4GB memory (intro size) vs 2GB (standard)
         const config = workspace.config as Record<string, unknown> | null;
         const resourceTier = config?.resourceTier as string | undefined;
 
-        // Skip if already resized to standard free tier
-        // Intro workspaces would have been provisioned with medium tier (4GB)
-        // Standard free tier is small (2GB)
+        // Check last activity via linked daemons
+        const daemons = await db.linkedDaemons.findByWorkspaceId(workspace.id);
+        const lastActivity = daemons.length > 0
+          ? daemons.reduce((latest, d) => {
+              const seen = d.lastSeenAt ? new Date(d.lastSeenAt) : new Date(0);
+              return seen > latest ? seen : latest;
+            }, new Date(0))
+          : workspace.updatedAt; // Fall back to workspace updatedAt
+
+        // Check if workspace should be destroyed (inactive for grace period after intro)
+        const daysSinceActivity = (now.getTime() - lastActivity.getTime()) / (1000 * 60 * 60 * 24);
+        const shouldDestroy = now > destroyThreshold && daysSinceActivity >= DESTROY_GRACE_PERIOD_DAYS;
+
+        if (shouldDestroy) {
+          console.log(`[intro-expiration] Destroying inactive free workspace ${workspace.name} (${daysSinceActivity.toFixed(1)} days inactive)`);
+
+          try {
+            await provisioner.deprovision(workspace.id);
+            results.push({
+              userId,
+              workspaceId: workspace.id,
+              workspaceName: workspace.name,
+              action: 'destroyed',
+              reason: `Inactive for ${Math.round(daysSinceActivity)} days after intro period expired`,
+            });
+          } catch (deprovisionErr) {
+            console.error(`[intro-expiration] Failed to destroy workspace ${workspace.id}:`, deprovisionErr);
+            results.push({
+              userId,
+              workspaceId: workspace.id,
+              workspaceName: workspace.name,
+              action: 'error',
+              reason: `Failed to destroy: ${deprovisionErr instanceof Error ? deprovisionErr.message : 'Unknown error'}`,
+            });
+          }
+          continue;
+        }
+
+        // Skip resize if already at standard free tier
         if (resourceTier === 'small') {
           results.push({
             userId,
@@ -210,14 +256,13 @@ export class IntroExpirationService {
           continue;
         }
 
-        // Resize to standard free tier (small: 1 CPU / 2GB)
+        // Resize to standard free tier (small: 2 CPU / 2GB)
         // Use skipRestart=true to not disrupt running agents
-        // The config is saved and will apply on next restart
         console.log(`[intro-expiration] Resizing workspace ${workspace.name} to standard free tier`);
 
         await provisioner.resize(workspace.id, {
           name: 'small',
-          cpuCores: 1,
+          cpuCores: 2,
           cpuKind: 'shared',
           memoryMb: 2048,
           maxAgents: 2,
@@ -232,7 +277,7 @@ export class IntroExpirationService {
         });
 
       } catch (err) {
-        console.error(`[intro-expiration] Failed to resize workspace ${workspace.id}:`, err);
+        console.error(`[intro-expiration] Failed to process workspace ${workspace.id}:`, err);
         results.push({
           userId,
           workspaceId: workspace.id,
