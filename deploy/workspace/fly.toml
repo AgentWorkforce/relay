@@ -30,7 +30,9 @@ primary_region = "sjc"
 [[vm]]
   cpu_kind = "shared"
   cpus = 1
-  memory_mb = 512
+  # Memory: 512MB is too tight for AI CLI agents (Claude uses 200-400MB alone)
+  # Recommend 1024MB minimum, 2048MB for multi-agent workloads
+  memory_mb = 1024
 
 # NOTE: Volumes are now created explicitly via the provisioner API
 # with automatic daily snapshots enabled and configurable retention.

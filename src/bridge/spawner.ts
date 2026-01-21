@@ -435,6 +435,18 @@ export class AgentSpawner {
       };
     }
 
+    // Enforce agent limit based on plan (MAX_AGENTS is set by provisioner based on plan)
+    const maxAgents = parseInt(process.env.MAX_AGENTS || '10', 10);
+    const currentAgentCount = this.activeWorkers.size;
+    if (currentAgentCount >= maxAgents) {
+      console.warn(`[spawner] Agent limit reached: ${currentAgentCount}/${maxAgents}`);
+      return {
+        success: false,
+        name,
+        error: `Agent limit reached (${currentAgentCount}/${maxAgents}). Upgrade your plan for more agents.`,
+      };
+    }
+
     // Policy enforcement: check if the spawner is authorized to spawn this agent
     if (this.policyEnforcementEnabled && this.policyService && spawnerName) {
       const decision = await this.policyService.canSpawn(spawnerName, name, cli);
