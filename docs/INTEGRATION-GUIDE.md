@@ -922,64 +922,152 @@ trajectory export ENG-456 --format markdown
 
 ### StatelessLeadCoordinator
 
-The StatelessLeadCoordinator enables hierarchical agent teams where a lead agent reads from Beads and assigns tasks to workers.
+The StatelessLeadCoordinator enables hierarchical agent teams where a lead agent reads from Beads and assigns tasks to workers. This enables crash-resilient coordination where any agent can take over as lead.
 
 **Key Principles:**
-- Lead is a coordinator, not a state holder
-- Beads is the single source of truth for task state
-- Any agent can become lead by reading from Beads
-- Tasks are assigned by updating Beads, not in-memory
+- **Stateless**: Lead is a coordinator, not a state holder
+- **Beads as truth**: Beads JSONL is the single source of truth for task state
+- **Failover-ready**: Any agent can become lead by reading from Beads
+- **Lease-based**: Tasks have time-limited leases to handle worker crashes
 
-**Usage:**
+**Basic Usage:**
 
 ```typescript
-import { StatelessLeadCoordinator } from 'agent-relay/resiliency';
+import { StatelessLeadCoordinator, createStatelessLead } from 'agent-relay/resiliency';
 
+// Quick setup with defaults
+const lead = createStatelessLead(
+  '.beads',           // beadsDir
+  'Lead',             // agentName
+  'lead-001',         // agentId
+  {
+    sendRelay: async (to, message) => {
+      // Send task via relay
+      await relayClient.send(to, message);
+    },
+    getAvailableWorkers: async () => {
+      // Return workers not currently assigned
+      return ['Worker1', 'Worker2', 'Worker3'];
+    },
+  }
+);
+
+// Start coordinating
+await lead.start();
+```
+
+**Full Configuration:**
+
+```typescript
 const lead = new StatelessLeadCoordinator({
   beadsDir: '.beads',
   agentName: 'Lead',
   agentId: 'lead-001',
-  pollIntervalMs: 5000,
-  heartbeatIntervalMs: 10000,
-  leaseDurationMs: 300000, // 5 minutes
-  sendRelay: async (to, message) => {
-    // Send via relay client
-  },
-  getAvailableWorkers: async () => ['Worker1', 'Worker2'],
+  pollIntervalMs: 5000,       // How often to check for ready tasks
+  heartbeatIntervalMs: 10000, // How often to write heartbeat
+  leaseDurationMs: 300000,    // 5 min lease on assigned tasks
+  sendRelay: async (to, message) => { /* ... */ },
+  getAvailableWorkers: async () => { /* ... */ },
+});
+```
+
+**Event Handling:**
+
+```typescript
+// Task assigned to worker
+lead.on('assigned', ({ taskId, worker, leaseExpires }) => {
+  console.log(`Assigned ${taskId} to ${worker}`);
 });
 
-// Start coordinating
-await lead.start();
-
-// Events
-lead.on('taskAssigned', ({ task, worker }) => {
-  console.log(`Assigned ${task.title} to ${worker}`);
+// Task completed by worker
+lead.on('completed', ({ taskId, worker, reason }) => {
+  console.log(`${worker} completed ${taskId}`);
 });
 
-lead.on('taskCompleted', ({ task, worker }) => {
-  console.log(`${worker} completed ${task.title}`);
+// Task blocked by worker
+lead.on('blocked', ({ taskId, worker, reason }) => {
+  console.log(`${taskId} blocked: ${reason}`);
 });
+
+// Lease renewed (worker still working)
+lead.on('leaseRenewed', ({ taskId, worker, leaseExpires }) => {
+  console.log(`Renewed lease for ${taskId}`);
+});
+
+// Error during coordination
+lead.on('error', (err) => {
+  console.error('Lead error:', err);
+});
+```
+
+**Worker Integration:**
+
+Workers respond to the Lead to report progress:
+
+```typescript
+// Worker receives task message from Lead:
+// "TASK [task-123]: Implement user authentication\n\nDescription here..."
+
+// Worker reports completion
+await lead.completeTask('task-123', 'Worker1', 'Auth implemented');
+
+// Worker reports blocked
+await lead.blockTask('task-123', 'Worker1', 'Missing API key');
+
+// Worker renews lease (still working on long task)
+await lead.renewLease('task-123', 'Worker1');
+```
+
+**Beads Task Format:**
+
+Tasks in `.beads/issues.jsonl`:
+
+```json
+{"id": "task-123", "title": "Implement auth", "status": "open", "priority": 1}
+{"id": "task-124", "title": "Add tests", "status": "in_progress", "assignee": "Worker1", "leaseExpires": 1737500000000}
+{"id": "task-125", "title": "Deploy", "status": "closed", "priority": 3}
 ```
 
 **How it works:**
 1. Lead polls Beads for tasks with `status: 'open'`
 2. When a task is ready, Lead assigns it to an available worker
-3. Worker updates Beads when starting (`status: 'in_progress'`)
-4. Worker updates Beads when done (`status: 'closed'`)
-5. If lead crashes, new lead picks up from Beads (no state lost)
+3. Lead updates Beads with `status: 'in_progress'`, assignee, and lease expiry
+4. Lead sends task to worker via relay message
+5. Worker completes/blocks and Lead updates Beads
+6. If lead crashes, new lead reads Beads and continues (no state lost)
+7. If worker crashes, lease expires and task becomes available again
+
+**Lead Heartbeat (for failover):**
+
+```typescript
+// Check if current lead is stale (for watchdog)
+const isStale = await StatelessLeadCoordinator.isLeaderStale('.beads', 30000);
+if (isStale) {
+  // Take over as new lead
+  const newLead = createStatelessLead('.beads', 'NewLead', 'new-lead-id', callbacks);
+  await newLead.start();
+}
+```
 
 ---
 
 ### Consensus
 
-The Consensus mechanism enables distributed decision-making across multiple agents.
+The Consensus mechanism enables distributed decision-making across multiple agents. Agents can propose decisions, vote, and receive results through the special `_consensus` target.
+
+**The `_consensus` Target:**
+
+`_consensus` is a special relay target that routes messages to the daemon's consensus engine. It's not an agent - it's a system endpoint that:
+- Receives PROPOSE commands to create proposals
+- Receives VOTE commands to cast votes
+- Broadcasts results back to participants when consensus is reached
 
 **Consensus Types:**
 - **Majority** - Simple >50% agreement
-- **Supermajority** - 2/3 or configurable threshold
-- **Unanimous** - All participants must agree
+- **Supermajority** - 2/3 or configurable threshold (default 0.67)
+- **Unanimous** - All participants must approve
 - **Weighted** - Votes weighted by agent role/expertise
-- **Quorum** - Minimum participation required
+- **Quorum** - Minimum participation required before evaluating
 
 **Use Cases:**
 - Code review approval (2+ agents approve)
@@ -987,97 +1075,189 @@ The Consensus mechanism enables distributed decision-making across multiple agen
 - Deployment gates (all critical agents agree)
 - Task assignment (weighted by expertise)
 
-**Via Relay Messages:**
+**Creating a Proposal (via Relay):**
 
 ```bash
-# Propose a decision
 cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/propose << 'EOF'
 TO: _consensus
 
-PROPOSE: Should we use JWT or sessions for auth?
-TYPE: majority
-PARTICIPANTS: Backend, Security, Lead
-TIMEOUT: 300000
-OPTIONS: JWT, Sessions
+PROPOSE: Approve PR #42 - Add authentication feature
+TYPE: quorum
+PARTICIPANTS: Security, Backend, QA
+QUORUM: 2
+TIMEOUT: 600000
+DESCRIPTION: Review the authentication implementation for security and code quality.
+Changes: src/auth/*.ts, tests/auth/*.test.ts
 EOF
 ```
 Then: `->relay-file:propose`
 
+**Proposal Fields:**
+- `PROPOSE:` (required) - Title of the proposal
+- `TYPE:` - `majority`, `supermajority`, `unanimous`, `weighted`, `quorum` (default: `majority`)
+- `PARTICIPANTS:` (required) - Comma-separated agent names who can vote
+- `QUORUM:` - Minimum votes required (for quorum type)
+- `THRESHOLD:` - Threshold for supermajority (0-1, default 0.67)
+- `TIMEOUT:` - Milliseconds until expiry (default: 5 minutes)
+- `DESCRIPTION:` - Detailed description (can span multiple lines)
+
+**Voting on a Proposal (via Relay):**
+
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/vote << 'EOF'
+TO: _consensus
+
+VOTE prop_1737500000_abc12345 approve
+
+Security checks passed. No vulnerabilities found.
+EOF
+```
+Then: `->relay-file:vote`
+
+Or as a single line:
+```bash
+echo "VOTE prop_1737500000_abc12345 approve Security looks good" | ...
+```
+
+**Vote Format:**
+```
+VOTE <proposal-id> <approve|reject|abstain> [reason]
+```
+
+**Receiving Results:**
+
+When consensus is reached (or proposal expires), participants receive:
+```
+Relay message from _consensus [abc123]:
+
+CONSENSUS RESULT: Approve PR #42 - Add authentication feature
+Decision: APPROVED
+Participation: 100.0%
+
+Approve: 3 | Reject: 0 | Abstain: 0
+```
+
 **Programmatic Usage:**
 
 ```typescript
-import { ConsensusManager, ConsensusType } from 'agent-relay/daemon';
+import { ConsensusIntegration, createConsensusIntegration } from 'agent-relay/daemon';
 
-const consensus = new ConsensusManager();
+// Create with router (typically in daemon setup)
+const consensus = createConsensusIntegration(router, {
+  enabled: true,
+  autoBroadcast: true,       // Auto-send proposals to participants
+  autoResultBroadcast: true, // Auto-send results when resolved
+});
 
 // Create a proposal
-const proposal = await consensus.propose({
+const proposal = consensus.createProposal({
   title: 'Use JWT for authentication',
-  description: 'JWT provides stateless auth suitable for our microservices',
+  description: 'JWT provides stateless auth suitable for microservices',
   proposer: 'Backend',
   consensusType: 'supermajority',
   participants: ['Backend', 'Security', 'Lead', 'Frontend'],
-  threshold: 0.67, // 2/3 required
-  expiresAt: Date.now() + 300000, // 5 min timeout
+  threshold: 0.67,
+  timeoutMs: 300000, // 5 minutes
 });
 
-// Vote on a proposal
-await consensus.vote(proposal.id, {
-  agent: 'Security',
-  value: 'approve',
-  reason: 'JWT with short expiry is secure',
-});
-
-// Check result
-const result = await consensus.getProposal(proposal.id);
-if (result.status === 'approved') {
-  console.log('Consensus reached!');
+// Process incoming vote (from message handler)
+const result = consensus.processIncomingMessage('Security', 'VOTE prop_xxx approve Looks good');
+if (result.isConsensusCommand) {
+  console.log('Vote processed:', result.result);
 }
+
+// Get pending votes for an agent
+const pendingVotes = consensus.getPendingVotes('Security');
+
+// Get proposal status
+const proposalStatus = consensus.getProposal(proposal.id);
+console.log('Status:', proposalStatus.status); // 'pending', 'approved', 'rejected', 'expired'
+```
+
+**Consensus Engine (Lower Level):**
+
+```typescript
+import { ConsensusEngine, createConsensusEngine } from 'agent-relay/daemon';
+
+const engine = createConsensusEngine({
+  defaultTimeoutMs: 5 * 60 * 1000,
+  defaultConsensusType: 'majority',
+  defaultThreshold: 0.67,
+  allowVoteChange: true,  // Allow re-voting before resolution
+  autoResolve: true,      // Resolve when outcome is mathematically certain
+});
+
+// Create proposal
+const proposal = engine.createProposal({
+  title: 'Deploy to production',
+  description: 'Ship v2.0',
+  proposer: 'Lead',
+  participants: ['Lead', 'Security', 'QA'],
+  consensusType: 'unanimous',
+});
+
+// Cast votes
+engine.vote(proposal.id, 'Lead', 'approve', 'All tests pass');
+engine.vote(proposal.id, 'Security', 'approve', 'Security audit complete');
+engine.vote(proposal.id, 'QA', 'approve', 'E2E tests pass');
+
+// Listen for resolution
+engine.on('proposal:resolved', (proposal, result) => {
+  console.log(`Decision: ${result.decision}`);
+  console.log(`Participation: ${(result.participation * 100).toFixed(1)}%`);
+});
 ```
 
 **Events:**
 
 ```typescript
-consensus.on('proposed', (proposal) => { /* new proposal */ });
-consensus.on('voted', (proposal, vote) => { /* vote cast */ });
-consensus.on('resolved', (proposal) => { /* consensus reached */ });
-consensus.on('expired', (proposal) => { /* timeout */ });
+engine.on('proposal:created', (proposal) => { /* new proposal */ });
+engine.on('proposal:voted', (proposal, vote) => { /* vote cast */ });
+engine.on('proposal:resolved', (proposal, result) => { /* consensus reached */ });
+engine.on('proposal:expired', (proposal) => { /* timeout without consensus */ });
+engine.on('proposal:cancelled', (proposal) => { /* proposer cancelled */ });
 ```
 
 ---
 
 ### Continuity
 
-The Continuity system enables session persistence and cross-session handoffs.
+The Continuity system enables session persistence and cross-session handoffs. It preserves agent context across restarts, crashes, and context limits.
 
 **Core Concepts:**
-- **Ledger** - Ephemeral within-session state (current task, completed items, decisions)
-- **Handoff** - Permanent cross-session transfer document (summary, next steps, learnings)
+
+| Concept | Persistence | Purpose |
+|---------|-------------|---------|
+| **Ledger** | Ephemeral (overwritten each save) | Current session state: task, progress, decisions |
+| **Handoff** | Permanent (immutable archive) | Cross-session transfer: summary, next steps, learnings |
 
 **When to Use:**
-- Save ledger before long-running operations (builds, tests)
-- Create handoff on context limit or session end
-- Search handoffs to resume previous work
+- **Save ledger** before long-running operations (builds, tests, waiting for user)
+- **Create handoff** on context limit, session end, or task completion
+- **Search handoffs** to resume previous work or learn from past decisions
+- **Mark uncertain** for items that need verification in future sessions
 
 **Via Relay Messages:**
 
+**Save Ledger (within session):**
 ```bash
-# Save current state
 cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/continuity << 'EOF'
 KIND: continuity
 ACTION: save
 
 Current task: Implementing user authentication
-Completed: User model, JWT utils
-In progress: Login endpoint
-Key decisions: Using refresh tokens
-Files: src/auth/*.ts
+Completed: User model, JWT utils, Password hashing
+In progress: Login endpoint, Session management
+Blocked: OAuth integration (waiting for client ID)
+Key decisions: Using JWT with refresh tokens
+Uncertain: Rate limit handling unclear
+Files: src/auth/*.ts, src/middleware/auth.ts
 EOF
 ```
 Then: `->relay-file:continuity`
 
+**Load Previous Context (auto-loads on startup):**
 ```bash
-# Load previous context
 cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/load << 'EOF'
 KIND: continuity
 ACTION: load
@@ -1085,46 +1265,149 @@ EOF
 ```
 Then: `->relay-file:load`
 
+Response injected:
+```markdown
+## Previous Session Context
+
+**Current Task:** Implementing user authentication
+
+**Completed:**
+- User model
+- JWT utils
+- Password hashing
+
+**In Progress:**
+- Login endpoint
+- Session management
+
+**Key Decisions:**
+- Using JWT with refresh tokens
+
+**Uncertain (verify these):**
+- UNCONFIRMED: Rate limit handling unclear
+```
+
+**Search Past Handoffs:**
 ```bash
-# Search past handoffs
 cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/search << 'EOF'
 KIND: continuity
 ACTION: search
 
-Query: authentication implementation
+Query: authentication JWT tokens
 EOF
 ```
 Then: `->relay-file:search`
 
+**Create Handoff (on task/session completion):**
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/handoff << 'EOF'
+KIND: continuity
+ACTION: handoff
+
+Summary: User authentication 80% complete
+Task: Implement user authentication system
+Completed work:
+- User model with Drizzle ORM
+- JWT token generation and validation
+- Password hashing with bcrypt
+- Auth middleware for protected routes
+Next steps:
+- Complete login endpoint
+- Add refresh token rotation
+- Write integration tests
+Key decisions:
+- JWT over sessions: Stateless, scales horizontally
+- Bcrypt over Argon2: Simpler, well-audited
+Learnings:
+- Token refresh should happen server-side
+- Consider adding device fingerprinting
+EOF
+```
+Then: `->relay-file:handoff`
+
+**Mark Uncertainty:**
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/uncertain << 'EOF'
+KIND: continuity
+ACTION: uncertain
+
+API rate limit handling unclear - needs investigation
+EOF
+```
+Then: `->relay-file:uncertain`
+
 **Programmatic Usage:**
 
 ```typescript
-import { ContinuityManager } from 'agent-relay/continuity';
+import { ContinuityManager, getContinuityManager } from 'agent-relay/continuity';
 
-const continuity = new ContinuityManager();
+// Get singleton instance
+const continuity = getContinuityManager();
 await continuity.initialize();
 
-// Save a ledger
+// Save a ledger (current session state)
 await continuity.saveLedger('MyAgent', {
   currentTask: 'Implementing auth',
   completed: ['User model', 'JWT utils'],
   inProgress: ['Login endpoint'],
-  keyDecisions: [{ decision: 'Use JWT', reasoning: 'Stateless' }],
+  blocked: ['OAuth - waiting for client ID'],
+  keyDecisions: [{
+    decision: 'Use JWT',
+    reasoning: 'Stateless, scales horizontally',
+    alternatives: ['Sessions'],
+    confidence: 0.9
+  }],
+  uncertainItems: ['Rate limit handling'],
+  fileContext: [
+    { path: 'src/auth/jwt.ts', description: 'Token generation' },
+    { path: 'src/middleware/auth.ts', lines: [10, 50], description: 'Auth middleware' }
+  ],
 });
 
-// Create a handoff (on session end)
+// Create a handoff (permanent record)
 const handoff = await continuity.createHandoff('MyAgent', {
   summary: 'Auth 80% complete, login endpoint next',
   taskDescription: 'User authentication system',
   completedWork: ['User model', 'JWT utils', 'Middleware'],
   nextSteps: ['Complete login', 'Add refresh tokens', 'Tests'],
-  triggerReason: 'session_end',
-});
+  learnings: ['Token refresh should be server-side'],
+}, 'session_end');
 
 // Get startup context for new session
 const context = await continuity.getStartupContext('MyAgent');
-console.log(context.formatted); // Markdown to inject
+if (context) {
+  console.log(context.formatted); // Markdown to inject into agent
+}
+
+// Search past handoffs
+const results = await continuity.searchHandoffs('authentication', {
+  agentName: 'MyAgent',
+  limit: 5,
+  since: new Date('2025-01-01'),
+});
+
+// Add uncertain item
+await continuity.addUncertainItem('MyAgent', 'Rate limit handling unclear');
+
+// Get brief status
+const status = await continuity.getBriefStatus('MyAgent');
+console.log(status); // "Working on: Implementing auth | 3 completed | 1 blocked"
+
+// List all agents with continuity data
+const agents = await continuity.listAgents();
 ```
+
+**Ledger Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `currentTask` | string | Current work focus |
+| `completed` | string[] | Completed items |
+| `inProgress` | string[] | Work in progress |
+| `blocked` | string[] | Blocked items with reasons |
+| `keyDecisions` | Decision[] | Decisions with reasoning |
+| `uncertainItems` | string[] | Items needing verification |
+| `fileContext` | FileRef[] | Relevant files |
 
 **Handoff Triggers:**
 - `manual` - Explicitly saved by agent
@@ -1133,6 +1416,16 @@ console.log(context.formatted); // Markdown to inject
 - `auto_restart` - Agent restarting
 - `crash` - Agent crashed
 - `session_end` - Session ending normally
+
+**Auto-Save on Exit:**
+
+```typescript
+// In wrapper shutdown handler
+await continuity.autoSave('MyAgent', 'session_end', {
+  summary: 'Work session completed',
+  completedTasks: ['Implemented login', 'Added tests'],
+});
+```
 
 ---
 

@@ -209,6 +209,19 @@ npm install && npm run build
 npm run dev  # Start daemon + dashboard in dev mode
 ```
 
+## Advanced Features
+
+Beyond basic messaging, agent-relay includes:
+
+| Feature | Description | Guide |
+|---------|-------------|-------|
+| **StatelessLeadCoordinator** | Hierarchical teams with crash-resilient lead coordination | [INTEGRATION-GUIDE.md](docs/INTEGRATION-GUIDE.md#statelessleadcoordinator) |
+| **Consensus Voting** | Distributed decision-making via `_consensus` target | [INTEGRATION-GUIDE.md](docs/INTEGRATION-GUIDE.md#consensus) |
+| **Session Continuity** | Persist state across restarts and context limits | [INTEGRATION-GUIDE.md](docs/INTEGRATION-GUIDE.md#continuity) |
+| **Work Trajectories** | Record work history for future agents | [agent-relay-protocol.md](docs/agent-relay-protocol.md) |
+
+See [EXAMPLES.md](docs/EXAMPLES.md) for end-to-end scenarios.
+
 ## Philosophy
 
 **Do one thing well**: Real-time agent messaging with <5ms latency.
