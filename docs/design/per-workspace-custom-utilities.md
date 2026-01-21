@@ -44,7 +44,7 @@ export interface CustomUtilitiesConfig {
   systemPackages?: SystemPackageSpec[];
 
   /** Custom environment variables */
-  environmentVariables?: Record<string, string>;
+  environmentVariables?: EnvironmentVariableSpec[];
 
   /** Custom setup scripts to run */
   setupScripts?: SetupScriptSpec[];
@@ -67,19 +67,36 @@ export interface SystemPackageSpec {
   name: string;
   /** Alternative package name if different from 'name' */
   aptPackage?: string;
+  /** Version constraint (note: apt version pinning is limited) */
+  version?: string;
+}
+
+export interface EnvironmentVariableSpec {
+  /** Variable name */
+  name: string;
+  /** Variable value (plaintext for non-secrets, vault reference for secrets) */
+  value: string;
+  /** If true, value is stored encrypted in Vault, not in workspace config */
+  isSecret?: boolean;
+  /** Description shown in UI */
+  description?: string;
 }
 
 export interface SetupScriptSpec {
   /** Script identifier for logging/tracking */
   name: string;
-  /** Script content (base64 encoded for safety) */
-  content: string;
+  /** Script content (base64 encoded for safety). Either content or sourceUrl required. */
+  content?: string;
+  /** URL to fetch script from (alternative to base64 content). Must be HTTPS. */
+  sourceUrl?: string;
   /** Run as root (default: false, runs as workspace user) */
   runAsRoot?: boolean;
   /** Run order (lower runs first, default: 100) */
   order?: number;
   /** Execution timeout in milliseconds (default: 300000 = 5 minutes) */
   timeoutMs?: number;
+  /** Dependencies that must be installed first (e.g., ["apt:curl", "npm:typescript"]) */
+  dependsOn?: string[];
 }
 
 export interface InstallationStatus {
@@ -151,24 +168,39 @@ install_custom_utilities() {
     done
   fi
 
-  # Set environment variables
-  local env_vars=$(echo "$CUSTOM_UTILITIES" | jq -r '.environmentVariables // {} | to_entries[] | "export \(.key)=\"\(.value)\""')
+  # Set environment variables (resolve vault references at runtime)
+  local env_vars=$(echo "$CUSTOM_UTILITIES" | jq -r '.environmentVariables[]? | "export \(.name)=\"\(.value)\""')
   if [[ -n "$env_vars" ]]; then
     echo "# Custom workspace environment variables" >> /etc/profile.d/workspace-env.sh
+    # Note: vault: prefixed values are resolved by the daemon at agent spawn time
     echo "$env_vars" >> /etc/profile.d/workspace-env.sh
   fi
 
-  # Run setup scripts (sorted by order)
+  # Run setup scripts (sorted by order, respecting dependencies)
   local scripts=$(echo "$CUSTOM_UTILITIES" | jq -r '.setupScripts | sort_by(.order // 100)[]? | @base64')
   for script_b64 in $scripts; do
     local script=$(echo "$script_b64" | base64 -d)
     local script_name=$(echo "$script" | jq -r '.name')
-    local script_content=$(echo "$script" | jq -r '.content' | base64 -d)
+    local script_content=$(echo "$script" | jq -r '.content // empty')
+    local script_url=$(echo "$script" | jq -r '.sourceUrl // empty')
     local run_as_root=$(echo "$script" | jq -r '.runAsRoot // false')
 
     log "Running setup script: $script_name"
     local script_file="/tmp/setup-${script_name}.sh"
-    echo "$script_content" > "$script_file"
+
+    # Get script content from URL or base64
+    if [[ -n "$script_url" ]]; then
+      log "Fetching script from: $script_url"
+      curl -fsSL "$script_url" > "$script_file" || {
+        update_status "$status_file" "script:$script_name" "failed" "Failed to fetch script from URL"
+        continue
+      }
+    elif [[ -n "$script_content" ]]; then
+      echo "$script_content" | base64 -d > "$script_file"
+    else
+      update_status "$status_file" "script:$script_name" "failed" "No content or sourceUrl provided"
+      continue
+    fi
     chmod +x "$script_file"
 
     if [[ "$run_as_root" == "true" ]]; then
@@ -440,14 +472,33 @@ async function installUtilitiesAsync(jobId: string, config: CustomUtilitiesConfi
     await fs.appendFile('/etc/profile.d/workspace-env.sh', `\n# Custom utilities\n${envLines}\n`);
   }
 
-  // Run setup scripts
+  // Run setup scripts (respecting dependencies)
   const scripts = [...(config.setupScripts || [])].sort((a, b) => (a.order || 100) - (b.order || 100));
   for (const script of scripts) {
     const key = `script:${script.name}`;
-    const content = Buffer.from(script.content, 'base64').toString('utf-8');
     const scriptFile = `/tmp/setup-${script.name}-${jobId}.sh`;
 
     try {
+      // Check dependencies are installed
+      for (const dep of script.dependsOn || []) {
+        const depStatus = finalStatus.items?.[dep];
+        if (!depStatus || depStatus.status !== 'installed') {
+          throw new Error(`Dependency not installed: ${dep}`);
+        }
+      }
+
+      // Get script content from URL or base64
+      let content: string;
+      if (script.sourceUrl) {
+        const res = await fetch(script.sourceUrl);
+        if (!res.ok) throw new Error(`Failed to fetch script: ${res.status}`);
+        content = await res.text();
+      } else if (script.content) {
+        content = Buffer.from(script.content, 'base64').toString('utf-8');
+      } else {
+        throw new Error('No content or sourceUrl provided');
+      }
+
       await fs.writeFile(scriptFile, content, { mode: 0o755 });
       const cmd = script.runAsRoot ? `bash ${scriptFile}` : `sudo -u workspace bash ${scriptFile}`;
       await execAsync(cmd);
@@ -619,6 +670,50 @@ function validateUtilitiesConfig(config: CustomUtilitiesConfig): ValidationResul
 - Maximum 10 installation requests per hour per workspace
 - Maximum 5 concurrent installation jobs per user
 
+### Secret Storage (Environment Variables)
+
+Environment variables marked as `isSecret: true` are stored differently:
+
+1. **Non-secrets**: Stored directly in workspace config JSONB (visible in API responses)
+2. **Secrets**: Stored in Vault, workspace config only contains reference
+
+```typescript
+// Secret storage flow
+async function setEnvironmentVariable(workspaceId: string, spec: EnvironmentVariableSpec) {
+  if (spec.isSecret) {
+    // Store in Vault, get reference
+    const vaultPath = `workspaces/${workspaceId}/env/${spec.name}`;
+    await vault.write(vaultPath, { value: spec.value });
+
+    // Store reference in config (not the actual value)
+    return { name: spec.name, value: `vault:${vaultPath}`, isSecret: true };
+  } else {
+    // Store directly in config
+    return spec;
+  }
+}
+
+// At runtime, resolve vault references
+async function resolveEnvironmentVariables(specs: EnvironmentVariableSpec[]): Promise<Record<string, string>> {
+  const result: Record<string, string> = {};
+  for (const spec of specs) {
+    if (spec.value.startsWith('vault:')) {
+      const vaultPath = spec.value.replace('vault:', '');
+      const secret = await vault.read(vaultPath);
+      result[spec.name] = secret.value;
+    } else {
+      result[spec.name] = spec.value;
+    }
+  }
+  return result;
+}
+```
+
+**UI Behavior:**
+- Secrets show `***hidden***` in dashboard
+- "Reveal" button requires re-authentication
+- Audit log tracks secret access
+
 ## Implementation Phases
 
 ### Phase 1: Schema & Config (No Migration)
@@ -650,20 +745,83 @@ function validateUtilitiesConfig(config: CustomUtilitiesConfig): ValidationResul
 
 ## Decisions (Resolved)
 
-1. **Package allowlist scope**: Start strict with common packages (build-essential, curl, wget, git, jq, htop, tree, vim, nano, redis-tools, postgresql-client, mysql-client, python3, python3-pip, ruby, golang-go). Owners can request additions through support.
+1. **Package allowlist scope**: Start strict with common packages (build-essential, curl, wget, git, jq, htop, tree, vim, nano, redis-tools, postgresql-client, mysql-client, python3, python3-pip, ruby, golang-go).
+
+   **Allowlist expansion process:**
+   - Dashboard shows "Request Package" button for unlisted packages
+   - Creates support ticket with package name, use case, and security review request
+   - Approved packages added to allowlist in next release
+   - High-demand packages (>5 requests) prioritized for review
 
 2. **Script execution timeout**: 5 minutes default, configurable per-script via `timeoutMs` field in `SetupScriptSpec`.
 
-3. **Utility templates**: Implement starter templates:
+3. **Utility templates**: Implement starter templates with one-click install:
    - **Python dev**: python3, python3-pip, virtualenv, black, mypy
    - **Node dev**: node (latest LTS), npm globals (typescript, eslint, prettier)
-   - **Fly CLI**: flyctl, wireguard-tools
+   - **Fly CLI**: See template below
+
+### Fly CLI Template (Built-in)
+
+Since `flyctl` is not available via apt, provide a pre-built template:
+
+```json
+{
+  "name": "Fly CLI",
+  "description": "Fly.io deployment CLI with wireguard support",
+  "systemPackages": [
+    { "name": "wireguard-tools" }
+  ],
+  "setupScripts": [{
+    "name": "install-flyctl",
+    "sourceUrl": "https://fly.io/install.sh",
+    "runAsRoot": false,
+    "order": 10
+  }],
+  "environmentVariables": [{
+    "name": "FLY_API_TOKEN",
+    "value": "",
+    "isSecret": true,
+    "description": "Your Fly.io API token (get from fly tokens create)"
+  }]
+}
+```
+
+This template:
+1. Installs wireguard-tools via apt (in allowlist)
+2. Runs official Fly install script from URL (no base64 needed)
+3. Prompts user for API token (stored securely in Vault)
 
 4. **Billing implications**: Deferred - not counted toward usage metrics initially.
+
+## Reprovisioning & Recovery
+
+When a workspace is reprovisioned (e.g., after machine failure or manual reprovisioning):
+
+1. **Config is source of truth**: `customUtilities` in workspace config drives reinstallation
+2. **Automatic reinstall**: `entrypoint.sh` reads `CUSTOM_UTILITIES` env var and reinstalls all utilities
+3. **Idempotent installation**: Scripts should be written to handle re-runs gracefully
+4. **Status reset**: Installation status resets to track new installation
+
+**User expectation**: After reprovisioning, all configured utilities are automatically available without manual intervention.
+
+## Amendments Log
+
+### 2026-01-21: Secret Storage & Script URLs
+
+Added based on security review:
+
+1. **EnvironmentVariableSpec interface**: Added `isSecret` flag for Vault integration
+2. **Vault storage for secrets**: Secrets stored encrypted, config only has references
+3. **sourceUrl for scripts**: Alternative to base64 content, supports fetching from HTTPS URLs
+4. **dependsOn for scripts**: Cross-type dependency declaration (e.g., script depends on apt package)
+5. **Fly CLI template**: Pre-built template with proper install flow
+6. **Allowlist expansion UI**: Self-service package request button in dashboard
+7. **System package versions**: Added optional `version` field (with caveat about apt limitations)
 
 ## Next Steps
 
 - [x] Design document created
+- [x] Security review amendments (2026-01-21)
 - [ ] DashboardUI review for implementation priority
 - [ ] Create implementation beads/tasks if approved
 - [ ] Phase 1-4 implementation
@@ -671,3 +829,4 @@ function validateUtilitiesConfig(config: CustomUtilitiesConfig): ValidationResul
 ---
 
 *Design approved by Lead on 2026-01-15*
+*Amended with security improvements on 2026-01-21*
