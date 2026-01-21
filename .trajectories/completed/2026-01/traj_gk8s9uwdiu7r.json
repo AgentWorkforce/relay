@@ -1,0 +1,53 @@
+{
+  "id": "traj_gk8s9uwdiu7r",
+  "version": 1,
+  "task": {
+    "title": "Fix channel membership restoration on daemon startup",
+    "source": {
+      "system": "plain",
+      "id": "PR-252"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-01-21T10:47:05.236Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-01-21T10:47:37.478Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_mpnvck0gvox1",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-21T10:47:37.478Z",
+      "events": [
+        {
+          "ts": 1768992457556,
+          "type": "decision",
+          "content": "Found restoreChannelMemberships() was never called: Found restoreChannelMemberships() was never called",
+          "raw": {
+            "question": "Found restoreChannelMemberships() was never called",
+            "chosen": "Found restoreChannelMemberships() was never called",
+            "alternatives": [],
+            "reasoning": "Method existed but missing call in Daemon.start() meant memberships were never loaded from DB"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-21T10:48:05.878Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/data/repos/relay",
+  "tags": [],
+  "completedAt": "2026-01-21T10:48:05.878Z",
+  "retrospective": {
+    "summary": "Added missing call to restoreChannelMemberships() in Daemon.start() - channel memberships now load from cloud DB on startup",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  }
+}

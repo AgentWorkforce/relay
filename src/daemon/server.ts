@@ -253,6 +253,9 @@ export class Daemon {
     // Initialize storage
     await this.initStorage();
 
+    // Restore channel memberships from persisted storage (cloud DB or SQLite)
+    await this.router.restoreChannelMemberships();
+
     // Initialize cloud sync if configured
     await this.initCloudSync();
 

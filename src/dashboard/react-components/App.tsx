@@ -1600,6 +1600,39 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
     }
   }, [selectedChannel, effectiveActiveWorkspaceId]);
 
+  // Add member handler (for MemberManagementPanel)
+  const handleAddMember = useCallback(async (memberId: string, memberType: 'user' | 'agent', _role: 'admin' | 'member' | 'read_only') => {
+    if (!selectedChannel || !effectiveActiveWorkspaceId) return;
+    try {
+      const csrfToken = getCsrfToken();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (csrfToken) {
+        headers['X-CSRF-Token'] = csrfToken;
+      }
+
+      const response = await fetch('/api/channels/invite', {
+        method: 'POST',
+        headers,
+        credentials: 'include',
+        body: JSON.stringify({
+          channel: selectedChannel.name,
+          invites: [{ id: memberId, type: memberType }],
+          workspaceId: effectiveActiveWorkspaceId,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to add member');
+      }
+
+      // Refresh members list
+      const members = await getChannelMembers(effectiveActiveWorkspaceId, selectedChannel.id);
+      setChannelMembers(members);
+    } catch (err) {
+      console.error('Failed to add member:', err);
+    }
+  }, [selectedChannel, effectiveActiveWorkspaceId]);
+
   // Archive channel handler
   const handleArchiveChannel = useCallback(async (channel: Channel) => {
     if (!effectiveActiveWorkspaceId) return;
@@ -2337,18 +2370,22 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           activeThreads={activeThreads}
           currentThread={currentThread}
           totalUnreadThreadCount={totalUnreadThreadCount}
-          channels={channelsList.map(c => ({
-            id: c.id,
-            name: c.name,
-            unreadCount: c.unreadCount,
-            hasMentions: c.hasMentions,
-          }))}
-          archivedChannels={archivedChannelsList.map((c) => ({
-            id: c.id,
-            name: c.name,
-            unreadCount: c.unreadCount ?? 0,
-            hasMentions: c.hasMentions,
-          }))}
+          channels={channelsList
+            .filter(c => !c.isDm && !c.id.startsWith('dm:'))
+            .map(c => ({
+              id: c.id,
+              name: c.name,
+              unreadCount: c.unreadCount,
+              hasMentions: c.hasMentions,
+            }))}
+          archivedChannels={archivedChannelsList
+            .filter(c => !c.isDm && !c.id.startsWith('dm:'))
+            .map((c) => ({
+              id: c.id,
+              name: c.name,
+              unreadCount: c.unreadCount ?? 0,
+              hasMentions: c.hasMentions,
+            }))}
           selectedChannelId={selectedChannelId}
           isActivitySelected={selectedChannelId === ACTIVITY_FEED_ID}
           activityUnreadCount={0}
@@ -2738,7 +2775,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           members={channelMembers}
           isOpen={showMemberPanel}
           onClose={() => setShowMemberPanel(false)}
-          onAddMember={() => {}}
+          onAddMember={handleAddMember}
           onRemoveMember={handleRemoveMember}
           onUpdateRole={() => {}}
           currentUserId={currentUser?.displayName}

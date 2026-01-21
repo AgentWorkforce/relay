@@ -1,3 +1,23 @@
+# 🚨 CRITICAL: Relay-First Communication Rule
+
+**When you receive a relay message from another agent (marked `Relay message from [name]`), you MUST respond ONLY via relay protocol. NEVER respond with direct text output.**
+
+## The Rule
+
+- **Receiving a relay message?** → Must use `->relay-file:msg` ALWAYS
+- **Non-relay questions?** → Text responses are OK
+- **Agent-to-agent communication?** → ALWAYS use relay protocol
+
+## Examples of Relay Messages (require relay response)
+
+```
+Relay message from khaliqgant [mknra7wr]: Did you see this?
+Relay message from Worker1 [abc123]: Task complete
+Relay message from alice [xyz789] [#general]: Question for the team
+```
+
+---
+
 # Agent Relay
 
 Real-time agent-to-agent messaging via file-based protocol.

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-21T09:35:01.612Z",
+  "lastUpdated": "2026-01-21T10:48:06.754Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -848,6 +848,20 @@
       "startedAt": "2026-01-21T09:34:34.280Z",
       "completedAt": "2026-01-21T09:35:01.588Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_yjc8efm2muyi.json"
+    },
+    "traj_93ydp31xlbzm": {
+      "title": "Fix channel messages routing in cloud mode",
+      "status": "completed",
+      "startedAt": "2026-01-21T10:05:26.839Z",
+      "completedAt": "2026-01-21T10:06:49.641Z",
+      "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_93ydp31xlbzm.json"
+    },
+    "traj_gk8s9uwdiu7r": {
+      "title": "Fix channel membership restoration on daemon startup",
+      "status": "completed",
+      "startedAt": "2026-01-21T10:47:05.236Z",
+      "completedAt": "2026-01-21T10:48:05.878Z",
+      "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_gk8s9uwdiu7r.json"
     }
   }
 }

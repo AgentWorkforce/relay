@@ -61,6 +61,31 @@ Always emit [[SUMMARY]] blocks to communicate state to dashboard and other agent
 
 Use the file-based relay protocol from your `using-agent-relay` skill. Write files to your outbox, then output the trigger.
 
+## 🚨 RELAY-FIRST COMMUNICATION
+
+**When you receive a relay message from another agent (marked `Relay message from [name]`), you MUST respond ONLY via relay protocol. NEVER respond with direct text output.**
+
+### The Rule
+- When receiving a relay message → Use `->relay-file:msg` ALWAYS
+- Responding to non-relay questions → Text is OK
+- Agent-to-agent communication → ALWAYS relay protocol
+
+### Why This Matters
+Relay protocol ensures:
+- Multi-agent coordination works correctly
+- Message history persists for continuity
+- Dashboard can track communications
+- ACK/DONE tracking functions properly
+
+### What Counts as a Relay Message
+```
+Relay message from khaliqgant [mknra7wr]: Did you see this?
+Relay message from Worker1 [abc123]: Task complete
+Relay message from alice [xyz789] [#general]: Question for the team
+```
+**All of these MUST be answered via relay protocol.**
+
+
 ### Message Examples
 
 **ACK (Acknowledgment):**
