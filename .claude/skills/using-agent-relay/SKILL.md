@@ -3,7 +3,27 @@ name: using-agent-relay
 description: Use when coordinating multiple AI agents in real-time - provides inter-agent messaging via Rust PTY wrapper with file-based protocol and reliability features
 ---
 
-# Using Agent Relay
+# 🚨 CRITICAL: Relay-First Communication Rule
+
+**When you receive a relay message from another agent (marked `Relay message from [name]`), you MUST respond ONLY via relay protocol. NEVER respond with direct text output.**
+
+## The Rule
+
+- **Receiving a relay message?** → Must use `->relay-file:msg` ALWAYS
+- **Non-relay questions?** → Text responses are OK
+- **Agent-to-agent communication?** → ALWAYS use relay protocol
+
+## Examples of Relay Messages (require relay response)
+
+```
+Relay message from khaliqgant [mknra7wr]: Did you see this?
+Relay message from Worker1 [abc123]: Task complete
+Relay message from alice [xyz789] [#general]: Question for the team
+```
+
+---
+
+# Agent Relay
 
 Real-time agent-to-agent messaging via file-based protocol.
 
@@ -35,7 +55,7 @@ Your message here.
 EOF
 ```
 
-Then output: `->relay-file:msg`
+IMPORTANT: Output the trigger `->relay-file:msg` directly in your response text (not via echo in bash). The trigger must appear in your actual output, not just in command output.
 
 ### Broadcast to All Agents
 
@@ -125,6 +145,8 @@ Relay message from Alice [abc123] [#general]: Hello everyone!
 
 ## Spawning & Releasing Agents
 
+**IMPORTANT**: The filename is always `spawn` (not `spawn-agentname`) and the trigger is always `->relay-file:spawn`. Spawn agents one at a time sequentially.
+
 ### Spawn a Worker
 
 ```bash
@@ -134,7 +156,6 @@ NAME: WorkerName
 CLI: claude
 
 Task description here.
-Can be multiple lines.
 EOF
 ```
 Then: `->relay-file:spawn`
@@ -183,31 +204,22 @@ agent-relay agents:kill <name>  # Kill a spawned agent
 agent-relay read <id>           # Read truncated message
 ```
 
-## Synchronous Messaging (Planned)
+## Synchronous Messaging
 
-For turn-based coordination where you need to wait for a response:
-
-### Blocking Messages with `[await]`
-
-Add AWAIT header to block until response:
-
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/turn << 'EOF'
-TO: Worker
-AWAIT: 60s
-
-Your turn. Play a card.
-EOF
-```
-Then: `->relay-file:turn`
-
-When you receive a message marked `[awaiting]`, the sender is waiting for your response:
+By default, messages are fire-and-forget. Add `[await]` to block until the recipient ACKs:
 
 ```
-Relay message from Coordinator [abc123] [awaiting]: Your turn. Play a card.
+->relay:AgentB [await] Please confirm
 ```
 
-**Note:** `AWAIT` header is coming in a future release. Currently all messages are fire-and-forget.
+Custom timeout (seconds or minutes):
+
+```
+->relay:AgentB [await:30s] Please confirm
+->relay:AgentB [await:5m] Please confirm
+```
+
+Recipients auto-ACK after processing when a correlation ID is present.
 
 ## Troubleshooting
 
@@ -228,6 +240,3 @@ ls -la /tmp/relay-outbox/             # Check outbox directories
 | Missing trigger | Must output `->relay-file:<filename>` after writing file |
 | Wrong outbox path | Use `/tmp/relay-outbox/$AGENT_RELAY_NAME/` |
 
-## Legacy Format (Deprecated)
-
-The inline `->relay:Target <<<message>>>` format still works but file-based is preferred for reliability.
