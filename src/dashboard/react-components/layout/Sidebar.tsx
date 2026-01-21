@@ -371,7 +371,7 @@ export function Sidebar({
           <ChevronIcon className={`transition-transform ${isChannelsSectionCollapsed ? '' : 'rotate-180'}`} />
         </button>
         {!isChannelsSectionCollapsed && (
-          <div className="px-2 pb-2 space-y-0.5">
+          <div className="px-2 pb-2 space-y-0.5 max-h-40 md:max-h-none overflow-y-auto">
             {channels.map(channel => (
               <div key={channel.id} className="group relative">
                 <button
@@ -462,7 +462,7 @@ export function Sidebar({
               <ChevronIcon className={`transition-transform ${isArchivedCollapsed ? '' : 'rotate-180'}`} />
             </button>
             {!isArchivedCollapsed && (
-              <div className="px-2 pb-2 space-y-0.5">
+              <div className="px-2 pb-2 space-y-0.5 max-h-32 md:max-h-none overflow-y-auto">
                 {archivedChannels.map((channel) => (
                   <div key={channel.id} className="group relative">
                     <button
