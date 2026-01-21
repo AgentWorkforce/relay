@@ -1058,6 +1058,7 @@ export async function createServer(): Promise<CloudServer> {
     const params = new URLSearchParams();
     if (req.query.limit) params.set('limit', req.query.limit as string);
     if (req.query.before) params.set('before', req.query.before as string);
+    if (req.query.workspaceId) params.set('workspaceId', req.query.workspaceId as string);
     const queryString = params.toString() ? `?${params.toString()}` : '';
     await proxyToLocalDashboard(req, res, `/api/channels/${channel}/messages${queryString}`);
   });
