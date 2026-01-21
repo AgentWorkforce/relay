@@ -389,7 +389,8 @@ function MessageItem({
   const displayName = isFromCurrentUser && currentUser
     ? currentUser.displayName
     : message.from;
-  const hasReplies = message.replyCount && message.replyCount > 0;
+  const replyCount = message.threadSummary?.replyCount ?? message.replyCount ?? 0;
+  const hasReplies = replyCount > 0;
 
   // Look up agent or user for sender (for clickable profile)
   const senderAgent = agents.find(a => a.name.toLowerCase() === message.from.toLowerCase() && !a.isHuman);
@@ -525,11 +526,11 @@ function MessageItem({
                 : 'text-text-muted bg-transparent opacity-0 group-hover:opacity-100 hover:text-accent-cyan hover:bg-accent-cyan/10'}
             `}
             onClick={() => onThreadClick?.(message.thread || message.id)}
-            title={message.thread ? `View thread: ${message.thread}` : (hasReplies ? `${message.replyCount} ${message.replyCount === 1 ? 'reply' : 'replies'}` : 'Reply in thread')}
+            title={message.thread ? `View thread: ${message.thread}` : (hasReplies ? `${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}` : 'Reply in thread')}
           >
             <ThreadIcon />
             {hasReplies && (
-              <span className="text-xs font-medium">{message.replyCount}</span>
+              <span className="text-xs font-medium">{replyCount}</span>
             )}
           </button>
         </div>

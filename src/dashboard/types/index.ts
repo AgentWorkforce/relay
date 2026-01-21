@@ -3,6 +3,9 @@
  */
 
 import type { AgentStatus } from '../lib/colors';
+import type { ThreadMetadata } from './threading';
+
+export type { ThreadMetadata } from './threading';
 
 // Agent Types
 export interface Agent {
@@ -95,6 +98,7 @@ export interface Attachment {
   data?: string;
 }
 
+
 // Message Types
 export interface Message {
   id: string;
@@ -106,6 +110,7 @@ export interface Message {
   isBroadcast?: boolean;
   isRead?: boolean;
   replyCount?: number;
+  threadSummary?: ThreadMetadata;
   /** Message delivery status: sending → acked (received by agent) */
   status?: MessageStatus;
   /** Attachments (images, files) */

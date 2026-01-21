@@ -20,6 +20,7 @@ import { listTrajectorySteps, getTrajectoryStatus, getTrajectoryHistory } from '
 import { loadTeamsConfig } from '../bridge/teams-config.js';
 import { getMemoryMonitor } from '../resiliency/memory-monitor.js';
 import { detectWorkspacePath } from '../utils/project-namespace.js';
+import type { ThreadMetadata } from '../dashboard/types/threading.js';
 import {
   startCLIAuth,
   getAuthSession,
@@ -1564,7 +1565,33 @@ export async function startDashboard(
     return name.startsWith('__');
   };
 
-  const mapStoredMessages = (rows: StoredMessage[]): Message[] => rows
+  const buildThreadSummaryMap = (rows: StoredMessage[]): Map<string, ThreadMetadata> => {
+    const summaries = new Map<string, ThreadMetadata>();
+
+    for (const row of rows) {
+      if (!row.thread) {
+        continue;
+      }
+
+      const threadId = row.thread;
+      const existing = summaries.get(threadId);
+      const participants = existing ? new Set(existing.participants) : new Set<string>();
+      participants.add(row.from);
+
+      const isNewer = !existing || row.ts >= existing.lastReplyAt;
+      summaries.set(threadId, {
+        threadId,
+        replyCount: existing ? existing.replyCount + 1 : 1,
+        participants: Array.from(participants),
+        lastReplyAt: isNewer ? row.ts : existing.lastReplyAt,
+        lastReplyPreview: isNewer ? row.body : existing.lastReplyPreview,
+      });
+    }
+
+    return summaries;
+  };
+
+  const mapStoredMessages = (rows: StoredMessage[], threadSummaries?: Map<string, ThreadMetadata>): Message[] => rows
     // Filter out messages from/to internal system agents (e.g., __spawner__)
     .filter((row) => !isInternalAgent(row.from) && !isInternalAgent(row.to))
     // Filter out channel messages - these are shown in the channels view, not the agent messages view
@@ -1575,6 +1602,16 @@ export async function startDashboard(
       return true;
     })
     .map((row) => {
+      const summaryFromReplies = threadSummaries?.get(row.id);
+      const fallbackSummary = (!summaryFromReplies && row.replyCount && row.replyCount > 0)
+        ? {
+          threadId: row.id,
+          replyCount: row.replyCount,
+          participants: Array.from(new Set([row.from, row.to])),
+          lastReplyAt: row.ts,
+        }
+        : undefined;
+      const threadSummary = summaryFromReplies ?? fallbackSummary;
       // Extract attachments, channel, and senderName from the data field if present
       let attachments: Attachment[] | undefined;
       let channel: string | undefined;
@@ -1602,7 +1639,8 @@ export async function startDashboard(
         id: row.id,
         thread: row.thread,
         isBroadcast: row.is_broadcast,
-        replyCount: row.replyCount,
+        replyCount: threadSummary?.replyCount ?? row.replyCount,
+        threadSummary,
         status: row.status,
         attachments,
         channel,
@@ -1612,8 +1650,9 @@ export async function startDashboard(
   const getMessages = async (agents: any[]): Promise<Message[]> => {
     if (storage) {
       const rows = await storage.getMessages({ limit: 100, order: 'desc' });
+      const threadSummaries = buildThreadSummaryMap(rows);
       // Dashboard expects oldest first
-      return mapStoredMessages(rows).reverse();
+      return mapStoredMessages(rows, threadSummaries).reverse();
     }
 
     // Fallback to file-based inbox parsing
@@ -3187,6 +3226,7 @@ export async function startDashboard(
 
       // Sort ascending for UI
       messages.sort((a, b) => a.ts - b.ts);
+      const threadSummaries = buildThreadSummaryMap(messages);
 
       res.json({
         messages: messages.map((m) => {
@@ -3195,6 +3235,15 @@ export async function startDashboard(
           const fromAvatarUrl = senderPresence?.info.avatarUrl;
           // Determine entity type: user if they have presence state, agent otherwise
           const fromEntityType: 'user' | 'agent' = senderPresence ? 'user' : 'agent';
+          const summaryFromReplies = threadSummaries.get(m.id);
+          const threadSummary = summaryFromReplies ?? (m.replyCount && m.replyCount > 0
+            ? {
+              threadId: m.id,
+              replyCount: m.replyCount,
+              participants: [],
+              lastReplyAt: m.ts,
+            }
+            : undefined);
           return {
             id: m.id,
             channelId: channelId,
@@ -3204,6 +3253,7 @@ export async function startDashboard(
             content: m.body,
             timestamp: new Date(m.ts).toISOString(),
             threadId: m.thread || undefined,
+            threadSummary,
             isRead: true,
           };
         }),

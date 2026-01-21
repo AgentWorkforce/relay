@@ -2608,6 +2608,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
               thread: cm.threadId,
               isRead: cm.isRead,
               replyCount: cm.threadSummary?.replyCount,
+              threadSummary: cm.threadSummary,
             });
 
             let originalMessage: Message | null = null;
