@@ -11,7 +11,7 @@ use crate::protocol::{ContinuityCommand, ParsedRelayCommand};
 use regex::Regex;
 use serde::Deserialize;
 use std::sync::OnceLock;
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 /// Regex patterns (compiled once)
 static RELAY_PATTERN: OnceLock<Regex> = OnceLock::new();
@@ -348,7 +348,15 @@ impl OutputParser {
                 let msg_id = caps.get(1).map(|m| m.as_str()).unwrap_or("");
                 let raw = caps.get(0).map(|m| m.as_str()).unwrap_or("");
 
-                debug!("Found file relay: {}", msg_id);
+                // Log spawn-related triggers at info level for visibility
+                if msg_id == "spawn" || msg_id.starts_with("spawn") || msg_id == "release" {
+                    info!(
+                        "Found file relay trigger: {} (outbox: {:?})",
+                        msg_id, outbox
+                    );
+                } else {
+                    debug!("Found file relay: {}", msg_id);
+                }
 
                 // Try reading file (with or without .json extension)
                 let file_path_txt = outbox.join(msg_id);
@@ -362,10 +370,18 @@ impl OutputParser {
                         file_path_json,
                     )
                 } else {
-                    debug!(
-                        "Relay file not found: {:?} or {:?}",
-                        file_path_txt, file_path_json
-                    );
+                    // Log missing spawn files at warn level for visibility
+                    if msg_id == "spawn" || msg_id.starts_with("spawn") || msg_id == "release" {
+                        warn!(
+                            "Spawn/release file not found: {:?} or {:?}",
+                            file_path_txt, file_path_json
+                        );
+                    } else {
+                        debug!(
+                            "Relay file not found: {:?} or {:?}",
+                            file_path_txt, file_path_json
+                        );
+                    }
                     continue;
                 };
 
@@ -417,7 +433,15 @@ impl OutputParser {
                 let cmd = match msg.kind.as_str() {
                     "spawn" => {
                         if let (Some(name), Some(cli)) = (&msg.name, &msg.cli) {
-                            debug!("Parsed file spawn: {} with {}", name, cli);
+                            let task_preview = msg
+                                .body
+                                .as_ref()
+                                .map(|b| &b[..b.len().min(50)])
+                                .unwrap_or("");
+                            info!(
+                                "SPAWN PARSED: {} spawning {} with {} (task: {}...)",
+                                self.agent_name, name, cli, task_preview
+                            );
                             Some(ParsedRelayCommand::new_spawn(
                                 self.agent_name.clone(),
                                 name.clone(),
@@ -426,20 +450,23 @@ impl OutputParser {
                                 raw.to_string(),
                             ))
                         } else {
-                            debug!("File spawn missing name or cli");
+                            warn!(
+                                "SPAWN FAILED: File spawn missing name ({:?}) or cli ({:?})",
+                                msg.name, msg.cli
+                            );
                             None
                         }
                     }
                     "release" => {
                         if let Some(name) = &msg.name {
-                            debug!("Parsed file release: {}", name);
+                            info!("RELEASE PARSED: {} releasing {}", self.agent_name, name);
                             Some(ParsedRelayCommand::new_release(
                                 self.agent_name.clone(),
                                 name.clone(),
                                 raw.to_string(),
                             ))
                         } else {
-                            debug!("File release missing name");
+                            warn!("RELEASE FAILED: File release missing name");
                             None
                         }
                     }

@@ -678,10 +678,20 @@ export class RelayPtyOrchestrator extends BaseWrapper {
         try {
           const parsed = JSON.parse(line);
           if (parsed.type === 'relay_command' && parsed.kind) {
-            this.log(`Rust parsed [${parsed.kind}]: ${parsed.from} -> ${parsed.to}`);
+            // Always log spawn/release commands for visibility (they're important for debugging)
+            if (parsed.kind === 'spawn' || parsed.kind === 'release') {
+              console.log(`[relay-pty:${this.config.name}] Rust parsed [${parsed.kind}]: ${JSON.stringify({
+                spawn_name: parsed.spawn_name,
+                spawn_cli: parsed.spawn_cli,
+                spawn_task: parsed.spawn_task?.substring(0, 50),
+                release_name: parsed.release_name,
+              })}`);
+            } else {
+              this.log(`Rust parsed [${parsed.kind}]: ${parsed.from} -> ${parsed.to}`);
+            }
             this.handleRustParsedCommand(parsed);
           }
-        } catch {
+        } catch (e) {
           // Not JSON, just log (only in debug mode)
           if (this.config.debug) {
             console.error(`[relay-pty:${this.config.name}] ${line}`);
@@ -753,36 +763,37 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   private handleSpawnCommand(name: string, cli: string, task: string): void {
     const key = `spawn:${name}:${cli}`;
     if (this.processedSpawnCommands.has(key)) {
-      this.log(` Spawn already processed: ${key}`);
+      console.log(`[relay-pty:${this.config.name}] Spawn already processed: ${key}`);
       return;
     }
     this.processedSpawnCommands.add(key);
 
-    this.log(` Spawn: ${name} (${cli})`);
-    this.log(` dashboardPort=${this.config.dashboardPort}, onSpawn=${!!this.config.onSpawn}`);
+    // Always log spawn attempts for visibility
+    console.log(`[relay-pty:${this.config.name}] SPAWN REQUEST: ${name} (${cli})`);
+    console.log(`[relay-pty:${this.config.name}]   dashboardPort=${this.config.dashboardPort}, onSpawn=${!!this.config.onSpawn}`);
 
     // Try dashboard API first, fall back to callback
     // The spawner will send the task after waitUntilCliReady()
     if (this.config.dashboardPort) {
-      this.log(` Calling dashboard API at port ${this.config.dashboardPort}`);
+      console.log(`[relay-pty:${this.config.name}]   Calling dashboard API at port ${this.config.dashboardPort}`);
       this.spawnViaDashboardApi(name, cli, task)
         .then(() => {
-          this.log(` Dashboard spawn succeeded for ${name}`);
+          console.log(`[relay-pty:${this.config.name}] SPAWN SUCCESS: ${name} via dashboard API`);
         })
         .catch(err => {
-          this.logError(` Dashboard spawn failed: ${err.message}`);
+          console.error(`[relay-pty:${this.config.name}] SPAWN FAILED: ${name} - ${err.message}`);
           if (this.config.onSpawn) {
-            this.log(` Falling back to onSpawn callback`);
+            console.log(`[relay-pty:${this.config.name}]   Falling back to onSpawn callback`);
             Promise.resolve(this.config.onSpawn(name, cli, task))
-              .catch(e => this.logError(` onSpawn callback failed: ${e.message}`));
+              .catch(e => console.error(`[relay-pty:${this.config.name}] SPAWN CALLBACK FAILED: ${e.message}`));
           }
         });
     } else if (this.config.onSpawn) {
-      this.log(` Using onSpawn callback directly`);
+      console.log(`[relay-pty:${this.config.name}]   Using onSpawn callback directly`);
       Promise.resolve(this.config.onSpawn(name, cli, task))
-        .catch(e => this.logError(` onSpawn callback failed: ${e.message}`));
+        .catch(e => console.error(`[relay-pty:${this.config.name}] SPAWN CALLBACK FAILED: ${e.message}`));
     } else {
-      this.logError(` No spawn mechanism available!`);
+      console.error(`[relay-pty:${this.config.name}] SPAWN FAILED: No spawn mechanism available! (dashboardPort=${this.config.dashboardPort}, onSpawn=${!!this.config.onSpawn})`);
     }
   }
 
@@ -813,18 +824,36 @@ export class RelayPtyOrchestrator extends BaseWrapper {
    * Spawn agent via dashboard API
    */
   private async spawnViaDashboardApi(name: string, cli: string, task: string): Promise<void> {
-    const response = await fetch(`http://localhost:${this.config.dashboardPort}/api/spawn`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name,
-        cli,
-        task,
-        spawnerName: this.config.name, // Include spawner name so task appears from correct agent
-      }),
-    });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+    const url = `http://localhost:${this.config.dashboardPort}/api/spawn`;
+    const body = {
+      name,
+      cli,
+      task,
+      spawnerName: this.config.name, // Include spawner name so task appears from correct agent
+    };
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.text().catch(() => 'unknown');
+        throw new Error(`HTTP ${response.status}: ${errorBody}`);
+      }
+
+      const result = await response.json().catch(() => ({})) as { success?: boolean; error?: string };
+      if (result.success === false) {
+        throw new Error(result.error || 'Spawn failed without specific error');
+      }
+    } catch (err: any) {
+      // Enhance error with context
+      if (err.code === 'ECONNREFUSED') {
+        throw new Error(`Dashboard not reachable at ${url} (connection refused)`);
+      }
+      throw err;
     }
   }
 
