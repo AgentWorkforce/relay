@@ -100,8 +100,7 @@ const AI_PROVIDERS: AIProvider[] = [
     description: 'Gemini - Google AI coding assistant',
     color: '#4285F4',
     cliCommand: 'gemini',
-    apiKeyUrl: 'https://aistudio.google.com/app/apikey',
-    apiKeyName: 'API key',
+    // No apiKeyUrl - Gemini uses interactive terminal where user can choose OAuth or API key
     supportsOAuth: true,
   },
   {
@@ -120,6 +119,15 @@ const AI_PROVIDERS: AIProvider[] = [
     description: 'Droid - Factory AI coding agent',
     color: '#6366F1',
     cliCommand: 'droid',
+    supportsOAuth: true,
+  },
+  {
+    id: 'cursor',
+    name: 'cursor', // Must be lowercase to match backend validation
+    displayName: 'Cursor',
+    description: 'Cursor - AI-first code editor agent',
+    color: '#7C3AED',
+    cliCommand: 'agent',
     supportsOAuth: true,
   },
 ];
@@ -143,9 +151,11 @@ export function WorkspaceSettingsPanel({
   const [showApiKeyFallback, setShowApiKeyFallback] = useState<Record<string, boolean>>({});
   // Device flow preference for providers that support it
   const [useDeviceFlow, setUseDeviceFlow] = useState<Record<string, boolean>>({});
-  // Use terminal-based setup (default for Claude only - Codex uses CLI helper flow)
+  // Use terminal-based setup (default for Claude, Cursor, and Gemini - Codex uses CLI helper flow)
   const [useTerminalSetup, setUseTerminalSetup] = useState<Record<string, boolean>>({
     anthropic: true, // Default to terminal for Claude
+    cursor: true,    // Default to terminal for Cursor
+    google: true,    // Default to terminal for Gemini - allows choosing OAuth or API key
   });
 
   // Repo sync state
@@ -238,7 +248,7 @@ export function WorkspaceSettingsPanel({
         method: 'POST',
         credentials: 'include',
         headers,
-        body: JSON.stringify({ token: apiKeyInput.trim() }),
+        body: JSON.stringify({ token: apiKeyInput.trim(), workspaceId }),
       });
 
       if (!res.ok) {

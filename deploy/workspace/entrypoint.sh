@@ -29,6 +29,7 @@ if [[ "$(id -u)" == "0" ]]; then
     # - Allow password auth (for CLI simplicity)
     # - Listen on port 3022 (non-privileged)
     # - Allow TCP forwarding (for port tunneling)
+    mkdir -p /etc/ssh/sshd_config.d
     cat > /etc/ssh/sshd_config.d/workspace.conf <<SSHEOF
 Port ${SSH_PORT}
 PasswordAuthentication yes

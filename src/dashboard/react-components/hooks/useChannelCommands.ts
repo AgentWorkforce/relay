@@ -65,8 +65,8 @@ export function useChannelCommands(
     }
   }, []);
 
-  // Join channel action
-  const joinChannel = useCallback(async (channelName: string) => {
+  // Join channel action (reserved for future use)
+  const _joinChannel = useCallback(async (channelName: string) => {
     try {
       // Normalize channel name
       const normalized = channelName.startsWith('#') ? channelName.slice(1) : channelName;

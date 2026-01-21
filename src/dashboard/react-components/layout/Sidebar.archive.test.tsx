@@ -4,6 +4,27 @@ import { act } from 'react-dom/test-utils';
 import { createRoot, type Root } from 'react-dom/client';
 import { Sidebar, type SidebarProps, type SidebarChannel } from './Sidebar';
 
+// Mock localStorage with proper reset between tests
+let localStorageStore: Record<string, string> = {};
+
+const mockLocalStorage = {
+  getItem: vi.fn((key: string) => localStorageStore[key] ?? null),
+  setItem: vi.fn((key: string, value: string) => {
+    localStorageStore[key] = value;
+  }),
+  removeItem: vi.fn((key: string) => {
+    delete localStorageStore[key];
+  }),
+  clear: vi.fn(() => {
+    localStorageStore = {};
+  }),
+};
+
+Object.defineProperty(window, 'localStorage', {
+  value: mockLocalStorage,
+  writable: true,
+});
+
 function getButtonByText(container: HTMLElement, text: string): HTMLButtonElement | null {
   const buttons = Array.from(container.querySelectorAll('button'));
   return (buttons.find((btn) => btn.textContent?.includes(text)) ?? null) as HTMLButtonElement | null;
@@ -38,7 +59,8 @@ describe('Sidebar channel archive controls', () => {
   beforeEach(() => {
     container = document.createElement('div');
     document.body.appendChild(container);
-    localStorage.clear();
+    localStorageStore = {};
+    vi.clearAllMocks();
   });
 
   afterEach(() => {

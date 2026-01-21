@@ -807,7 +807,7 @@ testHelpersRouter.delete('/workspace/:id', async (req: Request, res: Response) =
   }
 
   try {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const workspace = await db.workspaces.findById(id);
 
     if (!workspace) {

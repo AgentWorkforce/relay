@@ -12,6 +12,15 @@
 # For interactive testing:
 #   docker run --rm -it cli-oauth-test-real bash
 
+# Build stage for relay-pty
+# Note: Cargo.lock v4 requires Rust 1.78+
+FROM rust:1.82-slim AS builder
+
+WORKDIR /build
+COPY relay-pty/ ./relay-pty/
+RUN cd relay-pty && cargo build --release
+
+# Runtime stage
 FROM node:20-slim
 
 # Install system dependencies (matches deploy/workspace/Dockerfile)
@@ -27,6 +36,10 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# Copy relay-pty binary from builder
+COPY --from=builder /build/relay-pty/target/release/relay-pty /app/bin/relay-pty
+RUN chmod +x /app/bin/relay-pty
 
 # Install npm-based CLIs globally as root (npm -g requires root)
 RUN npm install -g @openai/codex || echo "Codex install failed"
@@ -50,8 +63,8 @@ RUN curl -fsSL https://claude.ai/install.sh | bash || echo "Claude install faile
 # Droid - uses official install script
 RUN curl -fsSL https://app.factory.ai/cli | sh || echo "Droid install failed"
 
-# Add user's local bin to PATH
-ENV PATH="/home/testuser/.local/bin:$PATH"
+# Add user's local bin and relay-pty to PATH
+ENV PATH="/app/bin:/home/testuser/.local/bin:$PATH"
 
 # Copy test files and source dependencies
 # Context is repo root, so paths are relative to that
@@ -66,6 +79,10 @@ COPY --chown=testuser:testuser src/shared/cli-auth-config.ts /app/src/shared/
 
 # Install test dependencies
 RUN npm install
+
+# Verify relay-pty is available
+RUN echo "=== Checking relay-pty ===" && \
+    which relay-pty && relay-pty --version || echo "relay-pty: not found"
 
 # Verify which CLIs are installed
 RUN echo "=== Installed CLIs ===" && \

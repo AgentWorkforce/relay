@@ -57,6 +57,10 @@ const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
     dir: '.factory',
     credentialsFile: 'credentials.json',
   },
+  cursor: {
+    dir: '.cursor',
+    credentialsFile: 'auth.json',
+  },
 };
 
 /**
@@ -207,6 +211,40 @@ export class UserDirectoryService {
 
     const providerDir = this.ensureProviderDir(userId, provider);
     return path.join(providerDir, config.credentialsFile);
+  }
+
+  /**
+   * Write an API key to the appropriate credential file for a provider.
+   * Handles provider-specific formats (e.g., Gemini uses .env format).
+   *
+   * @param userId - User ID
+   * @param provider - Provider name (gemini, google, etc.)
+   * @param apiKey - The API key to write
+   * @returns Path to the written credential file
+   */
+  writeApiKeyCredential(userId: string, provider: string, apiKey: string): string {
+    this.validateUserId(userId);
+    const userHome = this.getUserHome(userId);
+
+    // Gemini CLI reads from ~/.gemini/.env with GEMINI_API_KEY
+    if (provider === 'gemini' || provider === 'google') {
+      const geminiDir = path.join(userHome, '.gemini');
+      this.ensureDirectory(geminiDir);
+      const envPath = path.join(geminiDir, '.env');
+      fs.writeFileSync(envPath, `GEMINI_API_KEY="${apiKey}"\n`, { mode: 0o600 });
+      logger.info(`Wrote Gemini API key for user ${userId} to ${envPath}`);
+      return envPath;
+    }
+
+    // For other providers, use JSON format in the standard credential path
+    const credPath = this.getProviderCredentialPath(userId, provider);
+    const credDir = path.dirname(credPath);
+    this.ensureDirectory(credDir);
+
+    const credData = { apiKey, createdAt: new Date().toISOString() };
+    fs.writeFileSync(credPath, JSON.stringify(credData, null, 2), { mode: 0o600 });
+    logger.info(`Wrote ${provider} API key for user ${userId} to ${credPath}`);
+    return credPath;
   }
 
   /**

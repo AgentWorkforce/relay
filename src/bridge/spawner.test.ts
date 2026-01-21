@@ -1,5 +1,5 @@
 /**
- * Unit tests for AgentSpawner (node-pty based)
+ * Unit tests for AgentSpawner (relay-pty based)
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
@@ -156,21 +156,22 @@ describe('AgentSpawner', () => {
     expect(constructorCall.args).toContain('--dangerously-skip-permissions');
   });
 
-  it('does NOT add --dangerously-skip-permissions for non-Claude CLIs', async () => {
+  it('adds --force for Cursor CLIs (not --dangerously-skip-permissions)', async () => {
     const { RelayPtyOrchestrator } = await import('../wrapper/relay-pty-orchestrator.js');
     const RelayPtyOrchestratorMock = RelayPtyOrchestrator as Mock;
 
     const spawner = new AgentSpawner(projectRoot);
     await spawner.spawn({
-      name: 'Codex1',
-      cli: 'codex',
+      name: 'Cursor1',
+      cli: 'agent', // Cursor CLI installs as 'agent'
       task: '',
       // team is optional - agents are flat by default
     });
 
-    // Check the RelayPtyOrchestrator was constructed without --dangerously-skip-permissions
+    // Check the RelayPtyOrchestrator was constructed with --force but not --dangerously-skip-permissions
     const constructorCall = RelayPtyOrchestratorMock.mock.calls[0][0];
-    expect(constructorCall.command).toBe('codex');
+    expect(constructorCall.command).toBe('agent');
+    expect(constructorCall.args).toContain('--force');
     expect(constructorCall.args).not.toContain('--dangerously-skip-permissions');
   });
 

@@ -78,7 +78,7 @@
     "@nangohq/node": "^0.69.20",
     "@types/jsonwebtoken": "^9.0.10",
     "agent-trajectories": "^0.2.3",
-    "better-sqlite3": "^9.4.3",
+    "better-sqlite3": "^12.6.2",
     "chokidar": "^5.0.0",
     "commander": "^12.1.0",
     "compare-versions": "^6.1.1",
@@ -91,7 +91,6 @@
     "helmet": "^8.1.0",
     "http-proxy-middleware": "^3.0.5",
     "jsonwebtoken": "^9.0.3",
-    "node-pty": "1.0.0",
     "pg": "^8.16.3",
     "redis": "^5.10.0",
     "ssh2": "^1.17.0",
@@ -118,7 +117,7 @@
     "@vitest/coverage-v8": "^2.1.8",
     "concurrently": "^9.2.1",
     "drizzle-kit": "^0.31.8",
-    "esbuild": "^0.24.0",
+    "esbuild": "^0.27.2",
     "eslint": "^8.57.1",
     "jsdom": "^25.0.1",
     "typescript": "^5.9.3",
@@ -126,5 +125,9 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "overrides": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   }
 }

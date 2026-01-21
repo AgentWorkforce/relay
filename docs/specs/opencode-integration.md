@@ -1157,7 +1157,7 @@ RELAY_OPENCODE_PREFER_LOCAL=true
 
 **File:** `src/wrapper/opencode-wrapper.ts`
 
-A new wrapper class that extends `BaseWrapper` and uses OpenCode's HTTP API instead of node-pty.
+A new wrapper class that extends `BaseWrapper` and uses OpenCode's HTTP API instead of relay-pty.
 
 ```typescript
 import { BaseWrapper, BaseWrapperConfig } from './base-wrapper.js';

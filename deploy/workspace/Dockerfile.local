@@ -2,12 +2,30 @@
 # Builds everything locally without depending on pre-built base image
 # Use this for local development on Apple Silicon or when base image is unavailable
 
-# Build stage - compile TypeScript
+# Stage 1: Build Rust relay-pty binary
+# Cargo.lock v4 requires Cargo >=1.78; keep Rust >=1.83.
+ARG RUST_VERSION=1.83
+FROM rust:${RUST_VERSION}-slim AS rust-builder
+
+WORKDIR /build
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy relay-pty source
+COPY relay-pty/ ./
+
+# Build release binary
+RUN cargo build --release
+
+# Stage 2: Build TypeScript
 FROM node:20-slim AS builder
 
 WORKDIR /app
 
-# Install build dependencies for native modules (node-pty, better-sqlite3)
+# Install build dependencies for native modules (better-sqlite3)
 RUN apt-get update && apt-get install -y \
     python3 \
     make \
@@ -50,7 +68,10 @@ RUN apt-get update && apt-get install -y \
     make \
     g++ \
     procps \
-    && rm -rf /var/lib/apt/lists/*
+    openssh-server \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /run/sshd \
+    && ssh-keygen -A
 
 # Install GitHub CLI (gh)
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
@@ -87,6 +108,10 @@ COPY deploy/workspace/codex.config.toml ./deploy/workspace/codex.config.toml
 COPY deploy/workspace/git-credential-relay /usr/local/bin/git-credential-relay
 RUN chmod +x /entrypoint.sh /usr/local/bin/git-credential-relay
 
+# Copy relay-pty binary from Rust builder stage
+COPY --from=rust-builder /build/target/release/relay-pty /usr/local/bin/relay-pty
+RUN chmod +x /usr/local/bin/relay-pty
+
 # Create symlink for agent-relay CLI
 RUN ln -sf /app/dist/cli/index.js /usr/local/bin/agent-relay && \
     chmod +x /app/dist/cli/index.js 2>/dev/null || true
@@ -95,6 +120,13 @@ RUN ln -sf /app/dist/cli/index.js /usr/local/bin/agent-relay && \
 RUN chown -R workspace:workspace /app
 
 USER workspace
+
+# Install user-space CLIs (ones that require user-space installation)
+# Droid
+RUN curl -fsSL https://app.factory.ai/cli | sh || true
+
+# Cursor
+RUN curl -fsSL https://cursor.com/install | bash || true
 
 # Environment
 ENV NODE_ENV=production

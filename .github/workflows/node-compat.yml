@@ -1,0 +1,91 @@
+name: Node.js Compatibility
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  install-test:
+    name: Install Test (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ['18', '20', '22', '24', '25']
+      fail-fast: false
+
+    container:
+      image: node:${{ matrix.node-version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Node.js version
+        run: |
+          node --version
+          npm --version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify native modules compiled
+        run: |
+          echo "Checking that native modules exist..."
+          ls -la node_modules/better-sqlite3/build/Release/ || echo "better-sqlite3 not built (optional)"
+          echo "Native module check complete"
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Run tests
+        run: npm test
+
+      - name: Test local import (ESM)
+        run: |
+          # Test that the built package can be imported locally
+          node --eval "
+            import('./dist/index.js').then(m => {
+              console.log('Local ESM import successful');
+              console.log('Exports:', Object.keys(m));
+            }).catch(err => {
+              console.error('Local ESM import failed:', err.message);
+              process.exit(1);
+            });
+          "
+
+  # Test that npm install works in a fresh environment
+  fresh-install:
+    name: Fresh Install (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ['20', '22', '25']
+      fail-fast: false
+
+    container:
+      image: node:${{ matrix.node-version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Node.js version
+        run: |
+          node --version
+          npm --version
+
+      - name: Clean install
+        run: |
+          rm -rf node_modules package-lock.json
+          npm install
+
+      - name: Verify installation succeeded
+        run: |
+          echo "Dependencies installed successfully on Node $(node --version)"
+          echo "Checking key dependencies..."
+          ls node_modules/better-sqlite3 && echo "better-sqlite3: OK"
+          ls node_modules/express && echo "express: OK"
+          ls node_modules/ws && echo "ws: OK"
+          echo "All key dependencies present"

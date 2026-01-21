@@ -12,7 +12,6 @@ import {
   InMemoryDLQAdapter,
   createDLQAdapter,
   type DLQStorageAdapter,
-  type DeadLetter,
   type MessageEnvelope,
   type DLQFailureReason,
 } from './dlq-adapter.js';
@@ -424,7 +423,7 @@ function runAdapterTests(
           await adapter.acknowledge(dl.id); // Acknowledged entries are removed first
         }
 
-        const result = await adapter.cleanup(168, 5);
+        const _result = await adapter.cleanup(168, 5);
 
         const remaining = await adapter.query();
         expect(remaining.length).toBeLessThanOrEqual(5);

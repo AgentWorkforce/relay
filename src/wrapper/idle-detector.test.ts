@@ -316,7 +316,7 @@ describe('UniversalIdleDetector', () => {
       }, 50);
 
       const start = Date.now();
-      const result = await detector.waitForIdle(300, 50);
+      const _result = await detector.waitForIdle(300, 50);
       const elapsed = Date.now() - start;
 
       clearInterval(interval);

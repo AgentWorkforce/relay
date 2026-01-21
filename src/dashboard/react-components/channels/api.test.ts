@@ -5,7 +5,7 @@
  * Uses mock fetch for testing without real API calls.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { Channel, ChannelMessage, ChannelMember, SearchResult } from './types';
 
 // Mock the USE_REAL_API to always be true for these tests
@@ -776,7 +776,7 @@ describe('Unread UI', () => {
 
   describe('Unread separator display', () => {
     it('should identify first unread message for separator', () => {
-      const messages: ChannelMessage[] = [
+      const _messages: ChannelMessage[] = [
         { id: 'msg-1', channelId: 'ch-1', from: 'alice', fromEntityType: 'user', content: 'Read message', timestamp: '2024-01-01T10:00:00Z', isPinned: false, isRead: true },
         { id: 'msg-2', channelId: 'ch-1', from: 'bob', fromEntityType: 'user', content: 'First unread', timestamp: '2024-01-01T11:00:00Z', isPinned: false, isRead: false },
         { id: 'msg-3', channelId: 'ch-1', from: 'alice', fromEntityType: 'user', content: 'Second unread', timestamp: '2024-01-01T12:00:00Z', isPinned: false, isRead: false },
@@ -1074,7 +1074,7 @@ describe('Archive Functionality', () => {
     });
 
     it('should allow viewing messages in archived channel', () => {
-      const channel: Channel = {
+      const _channel: Channel = {
         id: 'ch-1', name: 'archived-channel', visibility: 'public', status: 'archived',
         createdAt: '', createdBy: '', memberCount: 5, unreadCount: 0,
         hasMentions: false, isDm: false,
@@ -1501,7 +1501,7 @@ describe('Admin Tools', () => {
 
     it('should handle 404 for non-existent member', () => {
       const errorCode = 404;
-      const errorMessage = 'Member not found';
+      const _errorMessage = 'Member not found';
 
       const isNotFoundError = errorCode === 404;
       expect(isNotFoundError).toBe(true);
@@ -1509,7 +1509,7 @@ describe('Admin Tools', () => {
 
     it('should handle 409 conflict for duplicate member', () => {
       const errorCode = 409;
-      const errorMessage = 'Member already exists in channel';
+      const _errorMessage = 'Member already exists in channel';
 
       const isConflictError = errorCode === 409;
       expect(isConflictError).toBe(true);

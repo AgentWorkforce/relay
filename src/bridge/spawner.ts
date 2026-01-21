@@ -1,6 +1,6 @@
 /**
  * Agent Spawner
- * Handles spawning and releasing worker agents via node-pty.
+ * Handles spawning and releasing worker agents via relay-pty.
  * Workers run headlessly with output capture for logs.
  */
 
@@ -11,7 +11,7 @@ import { sleep } from './utils.js';
 import { getProjectPaths } from '../utils/project-namespace.js';
 import { resolveCommand } from '../utils/command-resolver.js';
 import { RelayPtyOrchestrator, type RelayPtyOrchestratorConfig } from '../wrapper/relay-pty-orchestrator.js';
-import { PtyWrapper, type PtyWrapperConfig, type SummaryEvent, type SessionEndEvent } from '../wrapper/pty-wrapper.js';
+import type { SummaryEvent, SessionEndEvent } from '../wrapper/wrapper-types.js';
 import { selectShadowCli } from './shadow-cli.js';
 
 // Get the directory where this module is located (for binary path resolution)
@@ -29,6 +29,16 @@ import type {
   SpawnWithShadowResult,
   SpeakOnTrigger,
 } from './types.js';
+
+/**
+ * CLI command mapping for providers
+ * Maps provider names to actual CLI command names
+ */
+const CLI_COMMAND_MAP: Record<string, string> = {
+  cursor: 'agent',  // Cursor CLI installs as 'agent'
+  google: 'gemini', // Google provider uses 'gemini' CLI
+  // Other providers use their name as the command (claude, codex, etc.)
+};
 
 /**
  * Cloud persistence handler interface.
@@ -62,8 +72,8 @@ interface ListenerBindings {
   sessionEnd?: (event: SessionEndEvent) => void;
 }
 
-/** Type alias for the wrapper - can be either RelayPtyOrchestrator or PtyWrapper */
-type AgentWrapper = RelayPtyOrchestrator | PtyWrapper;
+/** Type alias for the wrapper - uses RelayPtyOrchestrator (relay-pty Rust binary) */
+type AgentWrapper = RelayPtyOrchestrator;
 
 interface ActiveWorker extends WorkerInfo {
   pty: AgentWrapper;
@@ -410,7 +420,7 @@ export class AgentSpawner {
   }
 
   /**
-   * Spawn a new worker agent using node-pty
+   * Spawn a new worker agent using relay-pty
    */
   async spawn(request: SpawnRequest): Promise<SpawnResult> {
     const { name, cli, task, team, spawnerName, userId } = request;
@@ -443,10 +453,15 @@ export class AgentSpawner {
     }
 
     try {
-      // Parse CLI command
+      // Parse CLI command and apply mapping (e.g., cursor -> agent)
       const cliParts = cli.split(' ');
-      const commandName = cliParts[0];
+      const rawCommandName = cliParts[0];
+      const commandName = CLI_COMMAND_MAP[rawCommandName] || rawCommandName;
       const args = cliParts.slice(1);
+
+      if (commandName !== rawCommandName) {
+        console.log(`[spawner] Mapped CLI '${rawCommandName}' -> '${commandName}'`);
+      }
 
       // Resolve full path to avoid posix_spawnp failures
       const command = resolveCommand(commandName);
@@ -460,6 +475,12 @@ export class AgentSpawner {
       const isClaudeCli = commandName.startsWith('claude');
       if (isClaudeCli && !args.includes('--dangerously-skip-permissions')) {
         args.push('--dangerously-skip-permissions');
+      }
+
+      // Add --force for Cursor agents (CLI is 'agent', may be passed as 'cursor')
+      const isCursorCli = commandName === 'agent' || rawCommandName === 'cursor';
+      if (isCursorCli && !args.includes('--force')) {
+        args.push('--force');
       }
 
       // Apply agent config (model, --agent flag) from .claude/agents/ if available
@@ -483,6 +504,12 @@ export class AgentSpawner {
       const isCodexCli = commandName.startsWith('codex');
       if (isCodexCli && !args.includes('--dangerously-bypass-approvals-and-sandbox')) {
         args.push('--dangerously-bypass-approvals-and-sandbox');
+      }
+
+      // Add --yolo for Gemini agents (auto-accept all prompts)
+      const isGeminiCli = commandName === 'gemini';
+      if (isGeminiCli && !args.includes('--yolo')) {
+        args.push('--yolo');
       }
 
       // Inject relay protocol instructions via CLI-specific system prompt
@@ -562,8 +589,16 @@ export class AgentSpawner {
 
       if (debug) console.log(`[spawner:debug] Socket path for ${name}: ${this.socketPath ?? 'undefined'}`);
 
-      // Check if relay-pty binary is available - use PtyWrapper as fallback
-      const useRelayPty = hasRelayPtyBinary();
+      // Require relay-pty binary
+      if (!hasRelayPtyBinary()) {
+        const error = 'relay-pty binary not found. Install with: npm run build:relay-pty';
+        console.error(`[spawner] ${error}`);
+        return {
+          success: false,
+          name,
+          error,
+        };
+      }
 
       // Common exit handler for both wrapper types
       const onExitHandler = (code: number) => {
@@ -612,50 +647,25 @@ export class AgentSpawner {
         await this.release(workerName);
       };
 
-      // Create the appropriate wrapper based on binary availability
-      let pty: AgentWrapper;
-
-      if (useRelayPty) {
-        const ptyConfig: RelayPtyOrchestratorConfig = {
-          name,
-          command,
-          args,
-          socketPath: this.socketPath,
-          cwd: agentCwd,
-          dashboardPort: this.dashboardPort,
-          env: userEnv,
-          streamLogs: true,
-          shadowOf: request.shadowOf,
-          shadowSpeakOn: request.shadowSpeakOn,
-          skipContinuity: true,
-          onSpawn: onSpawnHandler,
-          onRelease: onReleaseHandler,
-          onExit: onExitHandler,
-        };
-        pty = new RelayPtyOrchestrator(ptyConfig);
-        if (debug) console.log(`[spawner:debug] Using RelayPtyOrchestrator for ${name}`);
-      } else {
-        const ptyConfig: PtyWrapperConfig = {
-          name,
-          command,
-          args,
-          socketPath: this.socketPath,
-          cwd: agentCwd,
-          dashboardPort: this.dashboardPort,
-          env: userEnv,
-          streamLogs: true,
-          shadowOf: request.shadowOf,
-          shadowSpeakOn: request.shadowSpeakOn,
-          skipContinuity: true,
-          onSpawn: onSpawnHandler,
-          onRelease: onReleaseHandler,
-          onExit: onExitHandler,
-          logsDir: this.logsDir,
-          allowSpawn: true,
-        };
-        pty = new PtyWrapper(ptyConfig);
-        if (debug) console.log(`[spawner:debug] Using PtyWrapper fallback for ${name}`);
-      }
+      // Create RelayPtyOrchestrator (relay-pty Rust binary)
+      const ptyConfig: RelayPtyOrchestratorConfig = {
+        name,
+        command,
+        args,
+        socketPath: this.socketPath,
+        cwd: agentCwd,
+        dashboardPort: this.dashboardPort,
+        env: userEnv,
+        streamLogs: true,
+        shadowOf: request.shadowOf,
+        shadowSpeakOn: request.shadowSpeakOn,
+        skipContinuity: true,
+        onSpawn: onSpawnHandler,
+        onRelease: onReleaseHandler,
+        onExit: onExitHandler,
+      };
+      const pty = new RelayPtyOrchestrator(ptyConfig);
+      if (debug) console.log(`[spawner:debug] Using RelayPtyOrchestrator for ${name}`);
 
       // Track listener references for proper cleanup
       const listeners: ListenerBindings = {};
@@ -710,7 +720,7 @@ export class AgentSpawner {
         try {
           // Wait for the CLI to be ready (has produced output AND is idle)
           // This is more reliable than a random sleep because it waits for actual signals
-          if (useRelayPty && 'waitUntilCliReady' in pty) {
+          if ('waitUntilCliReady' in pty) {
             const orchestrator = pty as RelayPtyOrchestrator;
             const ready = await orchestrator.waitUntilCliReady(15000, 100);
             if (!ready) {

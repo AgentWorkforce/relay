@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   composeForAgent,
   getAvailableRoles,
@@ -7,7 +7,6 @@ import {
   type AgentProfile,
 } from './prompt-composer.js';
 import fs from 'node:fs/promises';
-import path from 'node:path';
 
 // Mock fs module
 vi.mock('node:fs/promises');

@@ -4,14 +4,13 @@
  * Handles CLI proxy authentication for Claude Code and other providers.
  * Spawns CLI tools via PTY to get auth URLs, captures tokens.
  *
- * We use node-pty instead of child_process.spawn because:
- * 1. Many CLIs detect if they're in a TTY and behave differently
- * 2. Interactive OAuth flows often require TTY for proper output
- * 3. PTY ensures the CLI outputs auth URLs correctly
+ * Uses relay-pty binary for PTY emulation, which provides:
+ * 1. TTY detection for CLIs that behave differently in non-TTY
+ * 2. Proper interactive OAuth flow handling
+ * 3. Better Node.js version compatibility (no native compilation)
  */
 
 import { Router, Request, Response } from 'express';
-import type { IPty } from 'node-pty';
 import * as crypto from 'crypto';
 import { requireAuth } from './auth.js';
 import { db } from '../db/index.js';
@@ -67,7 +66,7 @@ onboardingRouter.use(requireAuth);
 interface CLIAuthSession {
   userId: string;
   provider: string;
-  process?: IPty;
+  process?: { kill: () => void };
   authUrl?: string;
   callbackUrl?: string;
   status: 'starting' | 'waiting_auth' | 'success' | 'error' | 'timeout';
@@ -82,6 +81,7 @@ interface CLIAuthSession {
   createdAt: Date;
   output: string; // Accumulated output for debugging
   // Workspace delegation fields (set when auth runs in workspace daemon)
+  workspaceId?: string;
   workspaceUrl?: string;
   workspaceSessionId?: string;
 }
@@ -115,7 +115,7 @@ setInterval(() => {
  */
 onboardingRouter.post('/cli/:provider/start', async (req: Request, res: Response) => {
   console.log('[onboarding] Route handler entered! provider:', req.params.provider);
-  const { provider } = req.params;
+  const provider = req.params.provider as string;
   const userId = req.session.userId!;
   const { workspaceId, useDeviceFlow: requestedDeviceFlow } = req.body; // Optional: specific workspace, device flow option
 
@@ -225,6 +225,7 @@ onboardingRouter.post('/cli/:provider/start', async (req: Request, res: Response
       createdAt: new Date(),
       output: '',
       // Store workspace info for status polling and auth code forwarding
+      workspaceId: workspace.id,
       workspaceUrl,
       workspaceSessionId: workspaceSession.sessionId,
     };
@@ -251,7 +252,8 @@ onboardingRouter.post('/cli/:provider/start', async (req: Request, res: Response
  * Check status of CLI auth session - forwards to workspace daemon
  */
 onboardingRouter.get('/cli/:provider/status/:sessionId', async (req: Request, res: Response) => {
-  const { provider, sessionId } = req.params;
+  const provider = req.params.provider as string;
+  const sessionId = req.params.sessionId as string;
   const userId = req.session.userId!;
 
   const session = activeSessions.get(sessionId);
@@ -307,7 +309,8 @@ onboardingRouter.get('/cli/:provider/status/:sessionId', async (req: Request, re
  * 2. Direct: Uses token from body or session
  */
 onboardingRouter.post('/cli/:provider/complete/:sessionId', async (req: Request, res: Response) => {
-  const { provider, sessionId } = req.params;
+  const provider = req.params.provider as string;
+  const sessionId = req.params.sessionId as string;
   const userId = req.session.userId!;
   const { token, authCode } = req.body; // token for direct mode, authCode for Codex redirect
 
@@ -425,6 +428,7 @@ onboardingRouter.post('/cli/:provider/complete/:sessionId', async (req: Request,
     // authenticate directly on workspace instances)
     await db.credentials.upsert({
       userId,
+      workspaceId: session.workspaceId,
       provider,
       scopes: getProviderScopes(provider),
     });
@@ -448,7 +452,8 @@ onboardingRouter.post('/cli/:provider/complete/:sessionId', async (req: Request,
  * Used when OAuth returns a code that must be pasted into the CLI
  */
 onboardingRouter.post('/cli/:provider/code/:sessionId', async (req: Request, res: Response) => {
-  const { provider, sessionId } = req.params;
+  const provider = req.params.provider as string;
+  const sessionId = req.params.sessionId as string;
   const userId = req.session.userId!;
   const { code, state } = req.body; // state is optional, used for Codex OAuth
 
@@ -531,7 +536,8 @@ onboardingRouter.post('/cli/:provider/code/:sessionId', async (req: Request, res
  * Cancel a CLI auth session
  */
 onboardingRouter.post('/cli/:provider/cancel/:sessionId', async (req: Request, res: Response) => {
-  const { provider, sessionId } = req.params;
+  const provider = req.params.provider as string;
+  const sessionId = req.params.sessionId as string;
   const userId = req.session.userId!;
 
   const session = activeSessions.get(sessionId);
@@ -559,11 +565,12 @@ onboardingRouter.post('/cli/:provider/cancel/:sessionId', async (req: Request, r
  * Used by terminal-based setup where the CLI stores credentials locally.
  */
 onboardingRouter.post('/mark-connected/:provider', async (req: Request, res: Response) => {
-  const { provider } = req.params;
+  const provider = req.params.provider as string;
   const userId = req.session.userId!;
+  const { workspaceId } = req.body;
 
   // Validate provider
-  const validProviders = ['anthropic', 'openai', 'google', 'github', 'opencode', 'factory'];
+  const validProviders = ['anthropic', 'openai', 'google', 'github', 'opencode', 'factory', 'cursor'];
   if (!validProviders.includes(provider)) {
     return res.status(400).json({ error: 'Invalid provider' });
   }
@@ -572,11 +579,12 @@ onboardingRouter.post('/mark-connected/:provider', async (req: Request, res: Res
     // Mark provider as connected (tokens are stored by CLI on workspace)
     await db.credentials.upsert({
       userId,
+      workspaceId,
       provider,
       scopes: getProviderScopes(provider),
     });
 
-    console.log(`[onboarding] Marked ${provider} as connected for user ${userId}`);
+    console.log(`[onboarding] Marked ${provider} as connected for user ${userId} workspace ${workspaceId}`);
 
     res.json({
       success: true,
@@ -593,9 +601,9 @@ onboardingRouter.post('/mark-connected/:provider', async (req: Request, res: Res
  * Directly store a token (for manual paste flow)
  */
 onboardingRouter.post('/token/:provider', async (req: Request, res: Response) => {
-  const { provider } = req.params;
+  const provider = req.params.provider as string;
   const userId = req.session.userId!;
-  const { token, email } = req.body;
+  const { token, email, workspaceId } = req.body;
 
   if (!token) {
     return res.status(400).json({ error: 'Token is required' });
@@ -615,9 +623,11 @@ onboardingRouter.post('/token/:provider', async (req: Request, res: Response) =>
       provider,
       scopes: getProviderScopes(provider),
       providerAccountEmail: email,
+      workspaceId,
     });
 
-    await setProviderApiKeyEnv(userId, provider, token);
+    // Set env var and write credential file to workspace
+    await setProviderApiKeyEnv(userId, provider, token, workspaceId);
 
     res.json({
       success: true,
@@ -646,7 +656,7 @@ onboardingRouter.get('/status', async (req: Request, res: Response) => {
 
     const connectedProviders = credentials.map(c => c.provider);
     const hasAIProvider = connectedProviders.some(p =>
-      ['anthropic', 'openai', 'google'].includes(p)
+      ['anthropic', 'openai', 'google', 'cursor'].includes(p)
     );
 
     res.json({
@@ -745,6 +755,7 @@ function getProviderScopes(provider: string): string[] {
     github: ['read:user', 'user:email', 'repo'],
     opencode: ['code:execute'],
     factory: ['droid:execute'],
+    cursor: ['cursor:execute', 'code:write'],
   };
   return scopes[provider] || [];
 }

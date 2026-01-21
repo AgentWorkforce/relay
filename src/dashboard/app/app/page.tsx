@@ -12,8 +12,8 @@ import { App } from '../../react-components/App';
 import { CloudSessionProvider } from '../../react-components/CloudSessionProvider';
 import { LogoIcon } from '../../react-components/Logo';
 import { setActiveWorkspaceId } from '../../lib/api';
-import { ProviderAuthFlow } from '../../react-components/ProviderAuthFlow';
 import { ProvisioningProgress } from '../../react-components/ProvisioningProgress';
+import { ProviderConnectionList, type ProviderInfo } from '../../react-components/ProviderConnectionList';
 
 interface Workspace {
   id: string;
@@ -34,20 +34,6 @@ interface Repository {
   hasNangoConnection: boolean;
 }
 
-interface ProviderInfo {
-  id: string;
-  name: string;
-  displayName: string;
-  color: string;
-  cliCommand?: string;
-  /** Whether this provider supports device flow (code displayed on screen) */
-  supportsDeviceFlow?: boolean;
-  /** Whether standard flow redirects to a URL the user must copy (shows "not found" page) */
-  requiresUrlCopy?: boolean;
-}
-
-// ProviderAuthState simplified - now using ProviderAuthFlow shared component
-
 type PageState = 'loading' | 'local' | 'select-workspace' | 'no-workspaces' | 'provisioning' | 'connect-provider' | 'connecting' | 'connected' | 'error';
 
 interface ProvisioningInfo {
@@ -61,8 +47,10 @@ interface ProvisioningInfo {
 const AI_PROVIDERS: ProviderInfo[] = [
   { id: 'anthropic', name: 'Anthropic', displayName: 'Claude', color: '#D97757', cliCommand: 'claude' },
   { id: 'codex', name: 'OpenAI', displayName: 'Codex', color: '#10A37F', cliCommand: 'codex login', supportsDeviceFlow: true, requiresUrlCopy: true },
+  { id: 'google', name: 'Google', displayName: 'Gemini', color: '#4285F4', cliCommand: 'gemini' },
   { id: 'opencode', name: 'OpenCode', displayName: 'OpenCode', color: '#00D4AA', cliCommand: 'opencode' },
   { id: 'droid', name: 'Factory', displayName: 'Droid', color: '#6366F1', cliCommand: 'droid' },
+  { id: 'cursor', name: 'Cursor', displayName: 'Cursor', color: '#7C3AED', cliCommand: 'agent' },
 ];
 
 // Force cloud mode via env var - prevents silent fallback to local mode
@@ -78,7 +66,6 @@ export default function DashboardPage() {
   // Track cloud mode for potential future use
   const [_isCloudMode, setIsCloudMode] = useState(FORCE_CLOUD_MODE);
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
-  const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
   const [provisioningInfo, setProvisioningInfo] = useState<ProvisioningInfo | null>(null);
   const [connectedProviders, setConnectedProviders] = useState<string[]>([]);
 
@@ -311,34 +298,17 @@ export default function DashboardPage() {
     }
   }, [connectToWorkspace, csrfToken]);
 
-  // Handle connecting an AI provider
-  // For Claude, redirect to the interactive xterm setup page
-  // For others, use the inline ProviderAuthFlow component
-  const handleConnectProvider = useCallback((provider: ProviderInfo) => {
-    if (!selectedWorkspace) return;
-
-    // For Claude (anthropic), use the xterm-based interactive setup
-    if (provider.id === 'anthropic') {
-      window.location.href = `/providers/setup/claude?workspace=${selectedWorkspace.id}`;
-      return;
-    }
-
-    setConnectingProvider(provider.id);
-  }, [selectedWorkspace]);
+  // Handle provider connection success
+  const handleProviderConnected = useCallback((providerId: string) => {
+    setConnectedProviders(prev => [...new Set([...prev, providerId])]);
+  }, []);
 
   // Skip provider connection and continue to workspace
   const handleSkipProvider = useCallback(() => {
     if (selectedWorkspace) {
-      setConnectingProvider(null);
       connectToWorkspace(selectedWorkspace);
     }
   }, [selectedWorkspace, connectToWorkspace]);
-
-  // Connect another provider after successful auth
-  const handleConnectAnother = useCallback(() => {
-    setConnectingProvider(null);
-    // Stay on connect-provider screen
-  }, []);
 
   const handleStartWorkspace = useCallback(async (workspace: Workspace) => {
     setState('loading');
@@ -510,221 +480,16 @@ export default function DashboardPage() {
             </p>
           </div>
 
-          {/* Provider auth flow - using shared component */}
-          {connectingProvider && (() => {
-            const provider = AI_PROVIDERS.find(p => p.id === connectingProvider);
-            if (!provider) return null;
-            return (
-              <div className="mb-6 bg-bg-primary/80 backdrop-blur-sm border border-border-subtle rounded-2xl p-6">
-                <ProviderAuthFlow
-                  provider={{
-                    id: provider.id,
-                    name: provider.name,
-                    displayName: provider.displayName,
-                    color: provider.color,
-                    requiresUrlCopy: provider.requiresUrlCopy,
-                    supportsDeviceFlow: provider.supportsDeviceFlow,
-                  }}
-                  workspaceId={selectedWorkspace!.id}
-                  csrfToken={csrfToken || undefined}
-                  onSuccess={() => {
-                    // Add provider to connected list
-                    setConnectedProviders(prev => [...new Set([...prev, provider.id])]);
-                    // Show success state briefly, then offer options
-                    setConnectingProvider(null);
-                    // Stay on connect-provider screen to allow connecting more providers
-                    // User can click "Continue to Dashboard" or connect another
-                  }}
-                  onCancel={() => {
-                    setConnectingProvider(null);
-                  }}
-                  onError={() => {
-                    setConnectingProvider(null);
-                  }}
-                />
-
-                {/* After success, show options to connect another or continue */}
-                <div className="mt-4 pt-4 border-t border-border-subtle space-y-3">
-                  <button
-                    onClick={handleConnectAnother}
-                    className="w-full py-3 px-4 bg-bg-tertiary border border-border-subtle text-white rounded-xl text-center hover:border-accent-cyan/50 transition-colors"
-                  >
-                    Connect Another Provider
-                  </button>
-                  <button
-                    onClick={handleSkipProvider}
-                    className="w-full py-3 px-4 bg-gradient-to-r from-accent-cyan to-[#00b8d9] text-bg-deep font-semibold rounded-xl text-center hover:shadow-glow-cyan transition-all"
-                  >
-                    Continue to Dashboard
-                  </button>
-                </div>
-              </div>
-            );
-          })()}
-
-          {/* Provider list */}
-          {!connectingProvider && (
-            <div className="bg-bg-primary/80 backdrop-blur-sm border border-border-subtle rounded-2xl p-6">
-              <h2 className="text-lg font-semibold text-white mb-4">Choose an AI Provider</h2>
-              <div className="space-y-3">
-                {AI_PROVIDERS.map((provider) => (
-                  <div key={provider.id}>
-                    {/* Special expanded section for Claude with interactive terminal setup */}
-                    {provider.id === 'anthropic' ? (
-                      <div className={`p-4 bg-bg-tertiary rounded-xl border space-y-4 ${connectedProviders.includes(provider.id) ? 'border-green-500/50' : 'border-border-subtle'}`}>
-                        <div className="flex items-center gap-3">
-                          <div
-                            className="w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold flex-shrink-0 relative"
-                            style={{ backgroundColor: provider.color }}
-                          >
-                            {provider.displayName[0]}
-                            {connectedProviders.includes(provider.id) && (
-                              <div className="absolute -top-1 -right-1 w-5 h-5 bg-green-500 rounded-full flex items-center justify-center">
-                                <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                                </svg>
-                              </div>
-                            )}
-                          </div>
-                          <div className="flex-1">
-                            <p className="text-white font-medium">{provider.displayName}</p>
-                            <p className="text-text-muted text-sm">{provider.name}</p>
-                          </div>
-                          {connectedProviders.includes(provider.id) && (
-                            <span className="text-green-400 text-sm font-medium">Connected</span>
-                          )}
-                        </div>
-
-                        {!connectedProviders.includes(provider.id) && (
-                          <>
-                            {/* Info about interactive terminal setup */}
-                            <div className="p-3 bg-accent-cyan/10 border border-accent-cyan/30 rounded-lg">
-                              <p className="text-sm text-accent-cyan font-medium mb-1">Interactive terminal setup</p>
-                              <p className="text-xs text-accent-cyan/80">
-                                Connect Claude using an interactive terminal. You&apos;ll see the Claude CLI start up
-                                and can complete the OAuth login directly in the terminal.
-                              </p>
-                            </div>
-
-                            {/* Main connect button */}
-                            <button
-                              onClick={() => handleConnectProvider(provider)}
-                              className="w-full flex items-center justify-center gap-2 p-3 bg-gradient-to-r from-accent-cyan to-[#00b8d9] text-bg-deep font-semibold rounded-xl hover:shadow-glow-cyan transition-all"
-                            >
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                              </svg>
-                              Connect with Claude
-                            </button>
-
-                            {/* Fallback link */}
-                            <button
-                              onClick={() => setConnectingProvider(provider.id)}
-                              className="w-full text-center text-xs text-text-muted hover:text-white transition-colors"
-                            >
-                              Having issues? Try the popup-based login instead
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    ) : provider.id === 'codex' ? (
-                      /* Special expanded section for Codex with CLI auth flow */
-                      <div className={`p-4 bg-bg-tertiary rounded-xl border space-y-4 ${connectedProviders.includes(provider.id) || connectedProviders.includes('openai') ? 'border-green-500/50' : 'border-border-subtle'}`}>
-                        <div className="flex items-center gap-3">
-                          <div
-                            className="w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold flex-shrink-0 relative"
-                            style={{ backgroundColor: provider.color }}
-                          >
-                            {provider.displayName[0]}
-                            {(connectedProviders.includes(provider.id) || connectedProviders.includes('openai')) && (
-                              <div className="absolute -top-1 -right-1 w-5 h-5 bg-green-500 rounded-full flex items-center justify-center">
-                                <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                                </svg>
-                              </div>
-                            )}
-                          </div>
-                          <div className="flex-1">
-                            <p className="text-white font-medium">{provider.displayName}</p>
-                            <p className="text-text-muted text-sm">{provider.name}</p>
-                          </div>
-                          {(connectedProviders.includes(provider.id) || connectedProviders.includes('openai')) && (
-                            <span className="text-green-400 text-sm font-medium">Connected</span>
-                          )}
-                        </div>
-
-                        {!(connectedProviders.includes(provider.id) || connectedProviders.includes('openai')) && (
-                          <>
-                            {/* Info about CLI auth flow */}
-                            <div className="p-3 bg-accent-cyan/10 border border-accent-cyan/30 rounded-lg">
-                              <p className="text-sm text-accent-cyan font-medium mb-1">CLI-assisted authentication</p>
-                              <p className="text-xs text-accent-cyan/80">
-                                Codex auth uses a CLI command to capture the OAuth callback locally.
-                                Click the button below and we&apos;ll show you a command with a unique session token
-                                to run in your terminal before signing in with OpenAI.
-                              </p>
-                            </div>
-
-                            {/* Single connect button */}
-                            <button
-                              onClick={() => handleConnectProvider(provider)}
-                              className="w-full flex items-center justify-center gap-2 p-3 bg-gradient-to-r from-accent-cyan to-[#00b8d9] text-bg-deep font-semibold rounded-xl hover:shadow-glow-cyan transition-all"
-                            >
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                              </svg>
-                              Connect with Codex
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    ) : (
-                      /* Standard provider button */
-                      <button
-                        onClick={() => handleConnectProvider(provider)}
-                        className={`w-full flex items-center gap-3 p-4 bg-bg-tertiary rounded-xl border transition-colors text-left ${connectedProviders.includes(provider.id) ? 'border-green-500/50' : 'border-border-subtle hover:border-accent-cyan/50'}`}
-                      >
-                        <div
-                          className="w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold flex-shrink-0 relative"
-                          style={{ backgroundColor: provider.color }}
-                        >
-                          {provider.displayName[0]}
-                          {connectedProviders.includes(provider.id) && (
-                            <div className="absolute -top-1 -right-1 w-5 h-5 bg-green-500 rounded-full flex items-center justify-center">
-                              <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                              </svg>
-                            </div>
-                          )}
-                        </div>
-                        <div className="flex-1">
-                          <p className="text-white font-medium">{provider.displayName}</p>
-                          <p className="text-text-muted text-sm">{provider.name}</p>
-                        </div>
-                        {connectedProviders.includes(provider.id) ? (
-                          <span className="text-green-400 text-sm font-medium">Connected</span>
-                        ) : (
-                          <svg className="w-5 h-5 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                          </svg>
-                        )}
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Skip button */}
-          <div className="mt-6 text-center">
-            <button
-              onClick={handleSkipProvider}
-              className="text-text-muted hover:text-white transition-colors text-sm"
-            >
-              Skip for now - I'll connect later
-            </button>
-          </div>
+          {/* Shared provider connection component */}
+          <ProviderConnectionList
+            providers={AI_PROVIDERS}
+            connectedProviders={connectedProviders}
+            workspaceId={selectedWorkspace.id}
+            csrfToken={csrfToken || undefined}
+            onProviderConnected={handleProviderConnected}
+            onContinue={handleSkipProvider}
+            showDetailedInfo={true}
+          />
         </div>
       </div>
     );

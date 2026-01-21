@@ -1281,7 +1281,7 @@ export class TmuxWrapper extends BaseWrapper {
           }
           return;
         }
-      } catch (err: any) {
+      } catch (_err: unknown) {
         // Ignore poll errors, keep trying
       }
 

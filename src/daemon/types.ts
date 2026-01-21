@@ -5,7 +5,7 @@
 
 export type WorkspaceStatus = 'active' | 'inactive' | 'error';
 export type AgentStatus = 'running' | 'idle' | 'crashed' | 'restarting' | 'stopped';
-export type ProviderType = 'claude' | 'codex' | 'gemini' | 'generic';
+export type ProviderType = 'claude' | 'codex' | 'gemini' | 'cursor' | 'generic';
 
 /**
  * Workspace represents a connected repository/project

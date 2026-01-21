@@ -4,8 +4,10 @@
 
 # ============================================================================
 # Stage 1: Build Rust relay-pty binary
+# Cargo.lock v4 requires Cargo >=1.78; keep Rust >=1.83.
 # ============================================================================
-FROM rust:1.83-slim AS rust-builder
+ARG RUST_VERSION=1.83
+FROM rust:${RUST_VERSION}-slim AS rust-builder
 
 WORKDIR /build
 
@@ -74,6 +76,9 @@ USER workspace
 # Install user-space CLIs (ones that require user-space installation)
 # Droid
 RUN curl -fsSL https://app.factory.ai/cli | sh
+
+# Cursor
+RUN curl -fsSL https://cursor.com/install | bash
 
 # Set PATH for user CLIs
 ENV PATH="/home/workspace/.local/bin:$PATH"

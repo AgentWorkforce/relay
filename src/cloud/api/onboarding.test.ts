@@ -331,7 +331,7 @@ describe('getSupportedProviders', () => {
 describe('Provider name validation', () => {
   // These are the valid provider names used by /api/onboarding/mark-connected/:provider
   // They must be lowercase to match backend validation
-  const validProviders = ['anthropic', 'openai', 'google', 'github', 'opencode', 'factory'];
+  const validProviders = ['anthropic', 'openai', 'google', 'github', 'opencode', 'factory', 'cursor'];
 
   it('validates all expected lowercase providers', () => {
     // Backend validates against this list
@@ -349,6 +349,7 @@ describe('Provider name validation', () => {
       'google',     // Gemini
       'opencode',   // OpenCode
       'factory',    // Droid
+      'cursor',     // Cursor
     ];
 
     for (const name of settingsPanelProviderNames) {

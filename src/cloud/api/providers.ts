@@ -90,6 +90,15 @@ const PROVIDERS: Record<string, Provider> = {
     credentialPath: '~/.factory/credentials.json',
     color: '#6366F1',
   },
+  cursor: {
+    name: 'Cursor',
+    displayName: 'Cursor',
+    description: 'Cursor - AI-first code editor agent',
+    authStrategy: 'cli',
+    cliCommand: 'agent',
+    credentialPath: '~/.cursor/auth.json',
+    color: '#7C3AED',
+  },
   google: {
     name: 'Google',
     displayName: 'Gemini',
@@ -471,7 +480,7 @@ providersRouter.post('/:provider/api-key', async (req: Request, res: Response) =
  * Check status of device flow
  */
 providersRouter.get('/:provider/status/:flowId', (req: Request, res: Response) => {
-  const { flowId } = req.params;
+  const flowId = req.params.flowId as string;
   const userId = req.session.userId!;
 
   loadFlow(flowId)
@@ -538,7 +547,7 @@ providersRouter.delete('/:provider', async (req: Request, res: Response) => {
  * Cancel a device flow
  */
 providersRouter.delete('/:provider/flow/:flowId', (req: Request, res: Response) => {
-  const { flowId } = req.params;
+  const flowId = req.params.flowId as string;
   const userId = req.session.userId!;
 
   loadFlow(flowId)

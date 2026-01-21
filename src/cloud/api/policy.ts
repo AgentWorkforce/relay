@@ -16,7 +16,7 @@ export const policyRouter = Router();
  * Get the agent policy for a workspace
  */
 policyRouter.get('/:workspaceId', async (req: Request, res: Response) => {
-  const { workspaceId } = req.params;
+  const workspaceId = req.params.workspaceId as string;
   const userId = (req as any).userId;
 
   if (!userId) {
@@ -57,7 +57,7 @@ policyRouter.get('/:workspaceId', async (req: Request, res: Response) => {
  * Update the agent policy for a workspace
  */
 policyRouter.put('/:workspaceId', async (req: Request, res: Response) => {
-  const { workspaceId } = req.params;
+  const workspaceId = req.params.workspaceId as string;
   const userId = (req as any).userId;
   const policy = req.body.policy as WorkspaceAgentPolicy;
 
@@ -114,7 +114,7 @@ policyRouter.put('/:workspaceId', async (req: Request, res: Response) => {
  * Reset workspace policy to defaults
  */
 policyRouter.delete('/:workspaceId', async (req: Request, res: Response) => {
-  const { workspaceId } = req.params;
+  const workspaceId = req.params.workspaceId as string;
   const userId = (req as any).userId;
 
   if (!userId) {
@@ -158,7 +158,7 @@ policyRouter.delete('/:workspaceId', async (req: Request, res: Response) => {
  * Uses workspace token authentication (not user auth)
  */
 policyRouter.get('/:workspaceId/internal', async (req: Request, res: Response) => {
-  const { workspaceId } = req.params;
+  const workspaceId = req.params.workspaceId as string;
 
   // This endpoint should be called with the workspace token
   // The git.ts file has the token verification logic we can reuse

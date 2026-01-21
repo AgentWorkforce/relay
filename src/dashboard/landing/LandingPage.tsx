@@ -16,6 +16,7 @@ const PROVIDERS = {
   gemini: { name: 'Gemini', color: '#4285F4', icon: '◇' },
   opencode: { name: 'OpenCode', color: '#00D4AA', icon: '◆' },
   droid: { name: 'Droid', color: '#6366F1', icon: '⬢' },
+  cursor: { name: 'Cursor', color: '#7C3AED', icon: '✎' },
 };
 
 // Simulated agent messages for the live demo

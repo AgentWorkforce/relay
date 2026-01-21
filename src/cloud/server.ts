@@ -1071,10 +1071,12 @@ export async function createServer(): Promise<CloudServer> {
       }
     }
 
-    const channel = encodeURIComponent(req.params.channel);
+    const channel = encodeURIComponent(String(req.params.channel));
     const params = new URLSearchParams();
-    if (req.query.limit) params.set('limit', req.query.limit as string);
-    if (req.query.before) params.set('before', req.query.before as string);
+    const limit = Array.isArray(req.query.limit) ? req.query.limit[0] : req.query.limit;
+    const before = Array.isArray(req.query.before) ? req.query.before[0] : req.query.before;
+    if (limit) params.set('limit', String(limit));
+    if (before) params.set('before', String(before));
     if (workspaceId) params.set('workspaceId', workspaceId);
     const queryString = params.toString() ? `?${params.toString()}` : '';
 
@@ -1111,7 +1113,7 @@ export async function createServer(): Promise<CloudServer> {
    * Cloud mode: Query database for channel members instead of proxying to local dashboard
    */
   app.get('/api/channels/:channel/members', requireAuth, async (req, res) => {
-    const channelParam = req.params.channel;
+    const channelParam = req.params.channel as string;
     const workspaceId = req.query.workspaceId as string | undefined;
     const userId = req.session.userId!;
 

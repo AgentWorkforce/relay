@@ -10,7 +10,7 @@ import { createLogger } from '../resiliency/logger.js';
 import { getSupervisor } from '../resiliency/supervisor.js';
 import { detectProvider } from '../resiliency/provider-context.js';
 import { RelayPtyOrchestrator, type RelayPtyOrchestratorConfig } from '../wrapper/relay-pty-orchestrator.js';
-import type { SummaryEvent, SessionEndEvent } from '../wrapper/pty-wrapper.js';
+import type { SummaryEvent, SessionEndEvent } from '../wrapper/wrapper-types.js';
 import { resolveCommand } from '../utils/command-resolver.js';
 import type {
   Agent,
@@ -120,6 +120,9 @@ export class AgentManager extends EventEmitter {
       }
       if (provider === 'codex' && !args.includes('--dangerously-bypass-approvals-and-sandbox')) {
         args.push('--dangerously-bypass-approvals-and-sandbox');
+      }
+      if (provider === 'cursor' && !args.includes('--force')) {
+        args.push('--force');
       }
 
       // Create agent record
@@ -413,6 +416,9 @@ export class AgentManager extends EventEmitter {
       }
       if (agent.provider === 'codex' && !args.includes('--dangerously-bypass-approvals-and-sandbox')) {
         args.push('--dangerously-bypass-approvals-and-sandbox');
+      }
+      if (agent.provider === 'cursor' && !args.includes('--force')) {
+        args.push('--force');
       }
 
       // Create new PTY

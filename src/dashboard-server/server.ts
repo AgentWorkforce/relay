@@ -927,6 +927,9 @@ export async function startDashboard(
   // Map of senderName -> RelayClient for per-user connections
   const socketPath = path.join(dataDir, 'relay.sock');
   const relayClients = new Map<string, RelayClient>();
+  // Forward declaration - initialized later, used by getRelayClient to avoid duplicate connections
+  // eslint-disable-next-line prefer-const
+  let userBridge: UserBridge | undefined;
   const notifyDaemonOfMembershipUpdate = async (
     channel: string,
     member: string,
@@ -955,6 +958,16 @@ export async function startDashboard(
     const existing = relayClients.get(senderName);
     if (existing && existing.state === 'READY') {
       return existing;
+    }
+
+    // Check if userBridge has a client for this user (avoid duplicate connections)
+    // This prevents the connection storm where two clients fight for the same name
+    if (userBridge) {
+      const userBridgeClient = userBridge.getRelayClient(senderName);
+      if (userBridgeClient && userBridgeClient.state === 'READY') {
+        console.log(`[dashboard] Reusing userBridge client for ${senderName}`);
+        return userBridgeClient as unknown as RelayClient;
+      }
     }
 
     // Check if there's already a pending connection for this sender
@@ -1046,7 +1059,7 @@ export async function startDashboard(
   getRelayClient('_DashboardUI').catch(() => {});
 
   // User bridge for human-to-human and human-to-agent messaging
-  const userBridge = new UserBridge({
+  userBridge = new UserBridge({
     socketPath,
     createRelayClient: async (options) => {
       const client = new RelayClient({
@@ -3210,7 +3223,7 @@ export async function startDashboard(
    * conflict and break message routing.
    */
   app.post('/api/channels/subscribe', express.json(), async (req, res) => {
-    const { username, channels, workspaceId } = req.body;
+    const { username, channels, workspaceId: _workspaceId } = req.body;
     console.log(`[channel-debug] SUBSCRIBE request: username=${username}, channels=${JSON.stringify(channels)}`);
 
     if (!username) {
@@ -3775,6 +3788,42 @@ export async function startDashboard(
     } catch (_error) {
       // File doesn't exist or is invalid
       res.json({ authenticated: false });
+    }
+  });
+
+  /**
+   * POST /api/credentials/apikey - Write API key credential to user's home directory
+   * Used by cloud API to persist API keys to workspace filesystem
+   */
+  app.post('/api/credentials/apikey', express.json(), async (req, res) => {
+    const { userId, provider, apiKey } = req.body;
+
+    if (!userId || typeof userId !== 'string') {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+    if (!provider || typeof provider !== 'string') {
+      return res.status(400).json({ error: 'provider is required' });
+    }
+    if (!apiKey || typeof apiKey !== 'string') {
+      return res.status(400).json({ error: 'apiKey is required' });
+    }
+
+    try {
+      // Dynamically import to avoid loading user-directory in all cases
+      const { getUserDirectoryService } = await import('../daemon/user-directory.js');
+      const userDirService = getUserDirectoryService();
+      const credPath = userDirService.writeApiKeyCredential(userId, provider, apiKey);
+
+      console.log(`[credentials] Wrote ${provider} API key for user ${userId} to ${credPath}`);
+
+      res.json({
+        success: true,
+        message: `${provider} API key saved`,
+        path: credPath,
+      });
+    } catch (err) {
+      console.error(`[credentials] Failed to write ${provider} API key for user ${userId}:`, err);
+      res.status(500).json({ error: 'Failed to write credential file' });
     }
   });
 

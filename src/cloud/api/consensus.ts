@@ -91,7 +91,7 @@ consensusRouter.get(
   requireAuth,
   async (req: Request, res: Response) => {
     try {
-      const { workspaceId } = req.params;
+      const workspaceId = req.params.workspaceId as string;
       const { status, agent } = req.query;
 
       const proposalsMap = getProposalsForWorkspace(workspaceId);
@@ -134,7 +134,8 @@ consensusRouter.get(
   requireAuth,
   async (req: Request, res: Response) => {
     try {
-      const { workspaceId, proposalId } = req.params;
+      const workspaceId = req.params.workspaceId as string;
+      const proposalId = req.params.proposalId as string;
 
       const proposalsMap = getProposalsForWorkspace(workspaceId);
       const proposal = proposalsMap.get(proposalId);
@@ -160,7 +161,8 @@ consensusRouter.get(
   requireAuth,
   async (req: Request, res: Response) => {
     try {
-      const { workspaceId, agentName } = req.params;
+      const workspaceId = req.params.workspaceId as string;
+      const agentName = req.params.agentName as string;
 
       const proposalsMap = getProposalsForWorkspace(workspaceId);
       const proposals = Array.from(proposalsMap.values()).filter(p => {
@@ -187,7 +189,7 @@ consensusRouter.get(
   requireAuth,
   async (req: Request, res: Response) => {
     try {
-      const { workspaceId } = req.params;
+      const workspaceId = req.params.workspaceId as string;
 
       const proposalsMap = getProposalsForWorkspace(workspaceId);
       const stats = computeStats(proposalsMap);
@@ -303,7 +305,7 @@ consensusRouter.delete(
         return res.status(400).json({ error: 'Daemon not associated with a workspace' });
       }
 
-      const { proposalId } = req.params;
+      const proposalId = req.params.proposalId as string;
 
       const proposalsMap = getProposalsForWorkspace(daemon.workspaceId);
       const deleted = proposalsMap.delete(proposalId);

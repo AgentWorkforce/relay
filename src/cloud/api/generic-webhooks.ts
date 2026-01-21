@@ -15,7 +15,7 @@ export const genericWebhooksRouter = Router();
  * Receive a webhook from any configured source
  */
 genericWebhooksRouter.post('/:source', async (req: Request, res: Response) => {
-  const { source } = req.params;
+  const source = req.params.source as string;
 
   // For Slack URL verification challenge
   if (source === 'slack' && req.body?.type === 'url_verification') {

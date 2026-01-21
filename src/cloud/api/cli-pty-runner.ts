@@ -4,11 +4,18 @@
  * Shared module for running CLI auth flows via PTY.
  * Used by both production (onboarding.ts) and tests (ci-test-real-clis.ts).
  *
- * This module has minimal dependencies (only node-pty) so it can be
- * used in isolated test containers without the full server stack.
+ * Uses the relay-pty Rust binary for PTY emulation.
  */
 
-import * as pty from 'node-pty';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
+
+// Get the directory where this module is located
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // Import shared config and utilities
 import {
@@ -72,11 +79,42 @@ export interface PTYAuthOptions {
 }
 
 /**
- * Run CLI auth flow via PTY
+ * Find the relay-pty binary path.
+ * Returns null if not found.
+ */
+function findRelayPtyBinary(): string | null {
+  // Get the package root (four levels up from dist/cloud/api/)
+  const packageRoot = join(__dirname, '..', '..', '..');
+
+  const candidates = [
+    // Primary: installed by postinstall from platform-specific binary
+    join(packageRoot, 'bin', 'relay-pty'),
+    // Development: local Rust build
+    join(packageRoot, 'relay-pty', 'target', 'release', 'relay-pty'),
+    join(packageRoot, 'relay-pty', 'target', 'debug', 'relay-pty'),
+    // Local build in cwd (for development)
+    join(process.cwd(), 'relay-pty', 'target', 'release', 'relay-pty'),
+    // Installed globally
+    '/usr/local/bin/relay-pty',
+    // In node_modules (when installed as dependency)
+    join(process.cwd(), 'node_modules', 'agent-relay', 'bin', 'relay-pty'),
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Run CLI auth flow via PTY using relay-pty binary
  *
  * This is the core PTY runner used by both production and tests.
  * It handles:
- * - Spawning the CLI with proper TTY emulation
+ * - Spawning the CLI with proper TTY emulation via relay-pty
  * - Auto-responding to interactive prompts
  * - Extracting auth URLs from output
  * - Detecting success patterns
@@ -99,12 +137,29 @@ export async function runCLIAuthViaPTY(
 
   const respondedPrompts = new Set<string>();
 
+  // Find relay-pty binary
+  const relayPtyPath = findRelayPtyBinary();
+  if (!relayPtyPath) {
+    result.error = 'relay-pty binary not found. Build with: cd relay-pty && cargo build --release';
+    return result;
+  }
+
   return new Promise((resolve) => {
     try {
-      const proc = pty.spawn(config.command, config.args, {
-        name: 'xterm-256color',
-        cols: 120,
-        rows: 30,
+      // Generate unique name for this auth session
+      const sessionName = `auth-${randomUUID().substring(0, 8)}`;
+
+      // Build relay-pty arguments
+      const relayArgs = [
+        '--name', sessionName,
+        '--rows', '30',
+        '--cols', '120',
+        '--log-level', 'error', // Suppress relay-pty logs
+        '--', config.command,
+        ...config.args,
+      ];
+
+      const proc: ChildProcess = spawn(relayPtyPath, relayArgs, {
         cwd: options.cwd || process.cwd(),
         env: {
           ...process.env,
@@ -114,7 +169,8 @@ export async function runCLIAuthViaPTY(
           BROWSER: 'echo',
           DISPLAY: '',
           ...options.env,
-        } as Record<string, string>,
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
       });
 
       // Timeout handler
@@ -124,12 +180,14 @@ export async function runCLIAuthViaPTY(
         resolve(result);
       }, config.waitTimeout + 5000);
 
-      proc.onData((data: string) => {
-        result.output += data;
-        options.onOutput?.(data);
+      // Handle stdout (main PTY output)
+      proc.stdout?.on('data', (data: Buffer) => {
+        const text = data.toString();
+        result.output += text;
+        options.onOutput?.(text);
 
         // Check for matching prompts and auto-respond
-        const matchingPrompt = findMatchingPrompt(data, config.prompts, respondedPrompts);
+        const matchingPrompt = findMatchingPrompt(text, config.prompts, respondedPrompts);
         if (matchingPrompt) {
           respondedPrompts.add(matchingPrompt.description);
           result.promptsHandled.push(matchingPrompt.description);
@@ -138,7 +196,7 @@ export async function runCLIAuthViaPTY(
           const delay = matchingPrompt.delay ?? 100;
           setTimeout(() => {
             try {
-              proc.write(matchingPrompt.response);
+              proc.stdin?.write(matchingPrompt.response);
             } catch {
               // Process may have exited
             }
@@ -146,7 +204,7 @@ export async function runCLIAuthViaPTY(
         }
 
         // Look for auth URL
-        const cleanText = stripAnsiCodes(data);
+        const cleanText = stripAnsiCodes(text);
         const match = cleanText.match(config.urlPattern);
         if (match && match[1] && !result.authUrl) {
           result.authUrl = match[1];
@@ -154,18 +212,34 @@ export async function runCLIAuthViaPTY(
         }
 
         // Check for success indicators
-        if (matchesSuccessPattern(data, config.successPatterns)) {
+        if (matchesSuccessPattern(text, config.successPatterns)) {
           result.success = true;
         }
       });
 
-      proc.onExit(({ exitCode }) => {
+      // Handle stderr (relay-pty logs, usually minimal)
+      proc.stderr?.on('data', (data: Buffer) => {
+        const text = data.toString();
+        // Also check stderr for output (some CLIs write to stderr)
+        result.output += text;
+        options.onOutput?.(text);
+
+        // Check stderr for auth URLs too
+        const cleanText = stripAnsiCodes(text);
+        const match = cleanText.match(config.urlPattern);
+        if (match && match[1] && !result.authUrl) {
+          result.authUrl = match[1];
+          options.onAuthUrl?.(result.authUrl);
+        }
+      });
+
+      proc.on('exit', (code) => {
         clearTimeout(timeout);
-        result.exitCode = exitCode;
+        result.exitCode = code;
 
         // Consider it a success if we got a URL (main goal)
         // or if exit code was 0 with success pattern
-        if (result.authUrl || (exitCode === 0 && result.success)) {
+        if (result.authUrl || (code === 0 && result.success)) {
           result.success = true;
         }
 
@@ -175,10 +249,15 @@ export async function runCLIAuthViaPTY(
 
         resolve(result);
       });
+
+      proc.on('error', (err) => {
+        clearTimeout(timeout);
+        result.error = err.message;
+        resolve(result);
+      });
     } catch (err) {
       result.error = err instanceof Error ? err.message : 'Unknown error';
       resolve(result);
     }
   });
 }
-

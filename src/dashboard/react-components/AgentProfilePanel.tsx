@@ -22,7 +22,13 @@ const PROVIDER_CONFIG: Record<string, { label: string; color: string; icon: stri
   gemini: { label: 'Gemini', color: '#4285f4', icon: '✨' },
   droid: { label: 'Droid', color: '#ff6b35', icon: '🤖' },
   opencode: { label: 'OpenCode', color: '#a855f7', icon: '💻' },
+  cursor: { label: 'Cursor', color: '#00b4d8', icon: '🖱️' },
   other: { label: 'AI Agent', color: '#8d8d8e', icon: '🤖' },
+};
+
+/** Map CLI commands to provider names (for CLIs with different command names) */
+const CLI_TO_PROVIDER_MAP: Record<string, string> = {
+  agent: 'cursor', // Cursor CLI installs as 'agent'
 };
 
 export interface AgentProfilePanelProps {
@@ -191,7 +197,9 @@ export function AgentProfilePanel({
           {/* Provider Display - Prominent like GitHub link for users */}
           {agent.cli && (() => {
             const cliLower = agent.cli.toLowerCase();
-            const providerInfo = PROVIDER_CONFIG[cliLower] || PROVIDER_CONFIG.other;
+            // Map CLI command to provider (e.g., 'agent' -> 'cursor')
+            const providerKey = CLI_TO_PROVIDER_MAP[cliLower] || cliLower;
+            const providerInfo = PROVIDER_CONFIG[providerKey] || PROVIDER_CONFIG.other;
             return (
               <div
                 className="flex items-center gap-2 mt-3 px-3 py-2 rounded-lg border"

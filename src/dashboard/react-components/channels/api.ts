@@ -408,7 +408,7 @@ export async function unarchiveChannel(
  */
 export async function deleteChannel(
   _workspaceId: string,
-  channelId: string
+  _channelId: string
 ): Promise<void> {
   // Daemon deletes automatically when empty; nothing to do client-side
   return;
@@ -419,8 +419,8 @@ export async function deleteChannel(
  */
 export async function markRead(
   _workspaceId: string,
-  channelId: string,
-  upToMessageId?: string
+  _channelId: string,
+  _upToMessageId?: string
 ): Promise<void> {
   // TODO: add mark-read to daemon; no-op for now
   return;

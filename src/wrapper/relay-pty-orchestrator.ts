@@ -35,6 +35,7 @@ import {
   stripAnsi,
   sleep,
   buildInjectionString,
+  verifyInjection,
   INJECTION_CONSTANTS,
 } from './shared.js';
 
@@ -173,6 +174,10 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     resolve: (success: boolean) => void;
     reject: (error: Error) => void;
     timeout: NodeJS.Timeout;
+    from: string;        // For verification pattern matching
+    shortId: string;     // First 8 chars of messageId for verification
+    retryCount: number;  // Track retry attempts
+    originalBody: string; // Original injection content for retries
   }> = new Map();
   private backpressureActive = false;
   private readyForMessages = false;
@@ -453,7 +458,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   /**
    * Inject content into the agent via socket
    */
-  protected async performInjection(content: string): Promise<void> {
+  protected async performInjection(_content: string): Promise<void> {
     // This is called by BaseWrapper but we handle injection differently
     // via the socket protocol in processMessageQueue
     throw new Error('Use injectMessage() instead of performInjection()');
@@ -913,7 +918,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     }
 
     // Reject all pending injections
-    for (const [id, pending] of this.pendingInjections) {
+    for (const [_id, pending] of this.pendingInjections) {
       clearTimeout(pending.timeout);
       pending.reject(new Error('Socket disconnected'));
     }
@@ -950,7 +955,11 @@ export class RelayPtyOrchestrator extends BaseWrapper {
 
       switch (response.type) {
         case 'inject_result':
-          this.handleInjectResult(response);
+          // handleInjectResult is async (does verification), but we don't await here
+          // Errors are handled internally by the method
+          this.handleInjectResult(response).catch((err: Error) => {
+            this.logError(` Error handling inject result: ${err.message}`);
+          });
           break;
 
         case 'status':
@@ -977,8 +986,10 @@ export class RelayPtyOrchestrator extends BaseWrapper {
 
   /**
    * Handle injection result response
+   * After Rust reports 'delivered', verifies the message appeared in output.
+   * If verification fails, retries up to MAX_RETRIES times.
    */
-  private handleInjectResult(response: InjectResultResponse): void {
+  private async handleInjectResult(response: InjectResultResponse): Promise<void> {
     this.log(` handleInjectResult: id=${response.id.substring(0, 8)} status=${response.status}`);
 
     const pending = this.pendingInjections.get(response.id);
@@ -989,18 +1000,125 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     }
 
     if (response.status === 'delivered') {
-      clearTimeout(pending.timeout);
-      this.pendingInjections.delete(response.id);
-      pending.resolve(true);
-      this.log(` Message ${response.id.substring(0, 8)} delivered`);
+      // Rust says it sent the message + Enter key
+      // Now verify the message actually appeared in the terminal output
+      this.log(` Message ${pending.shortId} marked delivered by Rust, verifying in output...`);
+
+      // Give a brief moment for output to be captured
+      await sleep(100);
+
+      // Verify the message pattern appears in captured output
+      const verified = await verifyInjection(
+        pending.shortId,
+        pending.from,
+        async () => this.getCleanOutput()
+      );
+
+      if (verified) {
+        clearTimeout(pending.timeout);
+        this.pendingInjections.delete(response.id);
+        // Update metrics based on retry count (0 = first try)
+        if (pending.retryCount === 0) {
+          this.injectionMetrics.successFirstTry++;
+        } else {
+          this.injectionMetrics.successWithRetry++;
+          this.log(` Message ${pending.shortId} succeeded on attempt ${pending.retryCount + 1}`);
+        }
+        this.injectionMetrics.total++;
+        pending.resolve(true);
+        this.log(` Message ${pending.shortId} verified in output ✓`);
+      } else {
+        // Message was "delivered" but not found in output
+        // This is the bug case - Enter key may not have been processed
+        this.log(` Message ${pending.shortId} NOT found in output after delivery`);
+
+        // Check if we should retry
+        if (pending.retryCount < INJECTION_CONSTANTS.MAX_RETRIES - 1) {
+          this.log(` Retrying injection (attempt ${pending.retryCount + 2}/${INJECTION_CONSTANTS.MAX_RETRIES})`);
+          clearTimeout(pending.timeout);
+          this.pendingInjections.delete(response.id);
+
+          // Wait before retry with backoff
+          await sleep(INJECTION_CONSTANTS.RETRY_BACKOFF_MS * (pending.retryCount + 1));
+
+          // IMPORTANT: Check again if message appeared (late verification / race condition fix)
+          // The previous injection may have succeeded but verification timed out
+          const lateVerified = await verifyInjection(
+            pending.shortId,
+            pending.from,
+            async () => this.getCleanOutput()
+          );
+          if (lateVerified) {
+            this.log(` Message ${pending.shortId} found on late verification, skipping retry`);
+            if (pending.retryCount === 0) {
+              this.injectionMetrics.successFirstTry++;
+            } else {
+              this.injectionMetrics.successWithRetry++;
+            }
+            this.injectionMetrics.total++;
+            pending.resolve(true);
+            return;
+          }
+
+          // Re-inject by sending another socket request
+          // The original promise will be resolved when this retry completes
+          // Prepend [RETRY] to help agent notice this is a retry
+          const retryBody = pending.originalBody.startsWith('[RETRY]')
+            ? pending.originalBody
+            : `[RETRY] ${pending.originalBody}`;
+          const retryRequest: InjectRequest = {
+            type: 'inject',
+            id: response.id,
+            from: pending.from,
+            body: retryBody,
+            priority: 1, // Higher priority for retries
+          };
+
+          // Create new pending entry with incremented retry count
+          const newTimeout = setTimeout(() => {
+            this.logError(` Retry timeout for ${pending.shortId}`);
+            this.pendingInjections.delete(response.id);
+            pending.resolve(false);
+          }, 30000);
+
+          this.pendingInjections.set(response.id, {
+            ...pending,
+            timeout: newTimeout,
+            retryCount: pending.retryCount + 1,
+            originalBody: retryBody, // Use retry body for subsequent retries
+          });
+
+          this.sendSocketRequest(retryRequest).catch((err) => {
+            this.logError(` Retry request failed: ${err.message}`);
+            clearTimeout(newTimeout);
+            this.pendingInjections.delete(response.id);
+            pending.resolve(false);
+          });
+        } else {
+          // Max retries exceeded
+          this.logError(` Message ${pending.shortId} failed after ${INJECTION_CONSTANTS.MAX_RETRIES} attempts - NOT found in output`);
+          clearTimeout(pending.timeout);
+          this.pendingInjections.delete(response.id);
+          this.injectionMetrics.failed++;
+          this.injectionMetrics.total++;
+          pending.resolve(false);
+          this.emit('injection-failed', {
+            messageId: response.id,
+            from: pending.from,
+            error: 'Message delivered but not verified in output after max retries',
+          });
+        }
+      }
     } else if (response.status === 'failed') {
       clearTimeout(pending.timeout);
       this.pendingInjections.delete(response.id);
+      this.injectionMetrics.failed++;
+      this.injectionMetrics.total++;
       pending.resolve(false);
-      this.logError(` Message ${response.id.substring(0, 8)} failed: ${response.error}`);
+      this.logError(` Message ${pending.shortId} failed: ${response.error}`);
       this.emit('injection-failed', {
         messageId: response.id,
-        from: 'unknown',
+        from: pending.from,
         error: response.error ?? 'Unknown error',
       });
     }
@@ -1032,8 +1150,9 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   /**
    * Inject a message into the agent via socket
    */
-  private async injectMessage(msg: QueuedMessage): Promise<boolean> {
-    this.log(` === INJECT START: ${msg.messageId.substring(0, 8)} from ${msg.from} ===`);
+  private async injectMessage(msg: QueuedMessage, retryCount = 0): Promise<boolean> {
+    const shortId = msg.messageId.substring(0, 8);
+    this.log(` === INJECT START: ${shortId} from ${msg.from} (attempt ${retryCount + 1}) ===`);
 
     if (!this.socket || !this.socketConnected) {
       this.logError(` Cannot inject - socket not connected`);
@@ -1058,20 +1177,28 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     // Create promise for result
     return new Promise<boolean>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.logError(` Inject timeout for ${msg.messageId.substring(0, 8)} after 30s`);
+        this.logError(` Inject timeout for ${shortId} after 30s`);
         this.pendingInjections.delete(msg.messageId);
         resolve(false); // Timeout = failure
       }, 30000); // 30 second timeout for injection
 
-      this.pendingInjections.set(msg.messageId, { resolve, reject, timeout });
+      this.pendingInjections.set(msg.messageId, {
+        resolve,
+        reject,
+        timeout,
+        from: msg.from,
+        shortId,
+        retryCount,
+        originalBody: content,
+      });
 
       // Send request
       this.sendSocketRequest(request)
         .then(() => {
-          this.log(` Socket request sent for ${msg.messageId.substring(0, 8)}`);
+          this.log(` Socket request sent for ${shortId}`);
         })
         .catch((err) => {
-          this.logError(` Socket request failed for ${msg.messageId.substring(0, 8)}: ${err.message}`);
+          this.logError(` Socket request failed for ${shortId}: ${err.message}`);
           clearTimeout(timeout);
           this.pendingInjections.delete(msg.messageId);
           resolve(false);
@@ -1100,19 +1227,17 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     try {
       const success = await this.injectMessage(msg);
 
+      // Metrics are now tracked in handleInjectResult which knows about retries
       if (!success) {
         this.logError(` Injection failed for message ${msg.messageId.substring(0, 8)}`);
-        this.injectionMetrics.failed++;
         this.config.onInjectionFailed?.(msg.messageId, 'Injection failed');
         this.sendSyncAck(msg.messageId, msg.sync, false, { error: 'injection_failed' });
       } else {
-        this.injectionMetrics.successFirstTry++;
         this.sendSyncAck(msg.messageId, msg.sync, true);
       }
-
-      this.injectionMetrics.total++;
     } catch (err: any) {
       this.logError(` Injection error: ${err.message}`);
+      // Track metrics for exceptions (not handled by handleInjectResult)
       this.injectionMetrics.failed++;
       this.injectionMetrics.total++;
       this.sendSyncAck(msg.messageId, msg.sync, false, { error: err.message });

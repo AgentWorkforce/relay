@@ -22,7 +22,7 @@ The CLI OAuth flow works as follows:
 ```
 ┌─────────────────┐      ┌──────────────┐      ┌─────────────────┐
 │  Dashboard UI   │─────▶│  Onboarding  │─────▶│  CLI via PTY    │
-│  (React)        │      │  API         │      │  (node-pty)     │
+│  (React)        │      │  API         │      │  (relay-pty)    │
 └─────────────────┘      └──────────────┘      └─────────────────┘
          ▲                      │                      │
          │                      │                      ▼

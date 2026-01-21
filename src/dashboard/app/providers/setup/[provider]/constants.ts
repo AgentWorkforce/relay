@@ -25,4 +25,11 @@ export const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
     color: '#10A37F',
     agentCommand: 'codex',
   },
+  cursor: {
+    id: 'cursor',
+    name: 'cursor',
+    displayName: 'Cursor',
+    color: '#7C3AED', // Purple for Cursor
+    agentCommand: 'cursor',
+  },
 };

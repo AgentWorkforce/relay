@@ -384,6 +384,7 @@ export function TerminalProviderSetup({
         method: 'POST',
         credentials: 'include',
         headers,
+        body: JSON.stringify({ workspaceId }),
       });
 
       if (!response.ok) {
@@ -395,7 +396,7 @@ export function TerminalProviderSetup({
 
     await cleanupAgent();
     setIsComplete(true);
-  }, [cleanupAgent, provider.id, provider.name, csrfToken]);
+  }, [cleanupAgent, provider.id, provider.name, csrfToken, workspaceId]);
 
   const handleDone = useCallback(() => {
     onSuccess?.();

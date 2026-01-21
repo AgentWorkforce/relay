@@ -479,7 +479,7 @@ export class SQLiteDLQAdapter implements DLQStorageAdapter {
 // PostgreSQL Adapter
 // =============================================================================
 
-import type { Pool as PgPool, PoolClient } from 'pg';
+import type { Pool as PgPool } from 'pg';
 
 const DLQ_POSTGRES_SCHEMA = `
 CREATE TABLE IF NOT EXISTS dead_letters (

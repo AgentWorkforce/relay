@@ -63,7 +63,7 @@ vi.mock('../continuity/index.js', () => ({
 // Now import after mocks
 import { spawn } from 'node:child_process';
 import { createConnection } from 'node:net';
-import { RelayPtyOrchestrator, type RelayPtyOrchestratorConfig } from './relay-pty-orchestrator.js';
+import { RelayPtyOrchestrator } from './relay-pty-orchestrator.js';
 
 /**
  * Create a mock ChildProcess
@@ -470,6 +470,14 @@ describe('RelayPtyOrchestrator', () => {
 
       await new Promise(resolve => setTimeout(resolve, 50));
 
+      // Simulate output containing the injected message pattern
+      // This is needed because handleInjectResult now verifies the message appeared in output
+      mockProcess.stdout?.emit('data', Buffer.from(
+        'Relay message from Sender [msg-456]: Test message\n'
+      ));
+
+      await new Promise(resolve => setTimeout(resolve, 50));
+
       // Simulate successful delivery response
       mockSocket.emit('data', Buffer.from(JSON.stringify({
         type: 'inject_result',
@@ -478,11 +486,13 @@ describe('RelayPtyOrchestrator', () => {
         timestamp: Date.now(),
       }) + '\n'));
 
-      await new Promise(resolve => setTimeout(resolve, 50));
+      // Allow time for async verification (verifyInjection polls for up to 2 seconds)
+      await new Promise(resolve => setTimeout(resolve, 200));
 
       // Check metrics
       const metrics = orchestrator.getInjectionMetrics();
       expect(metrics.total).toBeGreaterThan(0);
+      expect(metrics.successFirstTry).toBeGreaterThan(0);
     });
 
     it('handles backpressure', async () => {

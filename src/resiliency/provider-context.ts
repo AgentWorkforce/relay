@@ -14,7 +14,7 @@ import { ContextPersistence, getContextPersistence, Handoff } from './context-pe
 
 const logger = createLogger('provider-context');
 
-export type ProviderType = 'claude' | 'codex' | 'gemini' | 'generic';
+export type ProviderType = 'claude' | 'codex' | 'gemini' | 'cursor' | 'generic';
 
 export interface ProviderContextConfig {
   provider: ProviderType;

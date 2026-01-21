@@ -10,7 +10,7 @@
  * - WebSocket proxy connections
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // Mock fetch globally
 const mockFetch = vi.fn();

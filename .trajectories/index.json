@@ -842,6 +842,13 @@
       "completedAt": "2026-01-20T20:34:54.864Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_a6yc7dh6oiz0.json"
     },
+    "traj_yjc8efm2muyi": {
+      "title": "Fix workspace container SSH configuration",
+      "status": "completed",
+      "startedAt": "2026-01-21T09:34:34.280Z",
+      "completedAt": "2026-01-21T09:35:01.588Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_yjc8efm2muyi.json"
+    },
     "traj_93ydp31xlbzm": {
       "title": "Fix channel messages routing in cloud mode",
       "status": "completed",

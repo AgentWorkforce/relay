@@ -9,6 +9,7 @@ import React, { useState, useEffect } from 'react';
 import type { Agent, Project } from '../../types';
 import type { ThreadInfo } from '../hooks/useMessages';
 import { usePinnedAgents } from '../hooks/usePinnedAgents';
+import { useWorkspaceStatus } from '../hooks/useWorkspaceStatus';
 import { AgentList } from '../AgentList';
 import { ProjectList } from '../ProjectList';
 import { ThreadList } from '../ThreadList';
@@ -230,6 +231,10 @@ export function Sidebar({
   // Pinned agents for quick access
   const { pinnedAgents, togglePin, isMaxPinned } = usePinnedAgents();
 
+  // Check if workspace is stopped - hide channels when stopped
+  const { workspace } = useWorkspaceStatus();
+  const isWorkspaceStopped = workspace?.isStopped ?? false;
+
   // Determine if we should show unified project view
   const hasProjects = projects.length > 0;
 
@@ -347,7 +352,8 @@ export function Sidebar({
         </button>
       </div>
 
-      {/* Channels Section - Collapsible */}
+      {/* Channels Section - Collapsible (hidden when workspace stopped) */}
+      {!isWorkspaceStopped && (
       <div className="border-b border-border-subtle">
         <button
           className="w-full flex items-center justify-between px-3 py-2 text-xs font-semibold text-text-muted uppercase tracking-wide hover:bg-bg-hover transition-colors"
@@ -494,6 +500,7 @@ export function Sidebar({
           </div>
         )}
       </div>
+      )}
 
       {/* Agent/Project List */}
       <div className="flex-1 overflow-y-auto px-2">

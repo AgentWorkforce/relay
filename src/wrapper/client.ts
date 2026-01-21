@@ -28,8 +28,6 @@ import {
   PROTOCOL_VERSION,
 } from '../protocol/types.js';
 import type {
-  ChannelJoinPayload,
-  ChannelLeavePayload,
   ChannelMessagePayload,
   ChannelJoinEnvelope,
   ChannelLeaveEnvelope,

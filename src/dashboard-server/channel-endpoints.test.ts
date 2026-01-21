@@ -9,7 +9,7 @@
  * - GET /api/channels/:channel/members - Get channel members
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 
 // Mock RelayClient
 class MockRelayClient {
@@ -24,7 +24,7 @@ class MockRelayClient {
     this.entityType = options.entityType;
   }
 
-  joinChannel(channel: string, displayName?: string): boolean {
+  joinChannel(channel: string, _displayName?: string): boolean {
     if (this.state !== 'READY') return false;
     this.joinedChannels.push(channel);
     return true;
@@ -36,7 +36,7 @@ class MockRelayClient {
     return true;
   }
 
-  adminJoinChannel(channel: string, member: string): boolean {
+  adminJoinChannel(_channel: string, _member: string): boolean {
     if (this.state !== 'READY') return false;
     // Simulates admin adding another member
     return true;
@@ -414,7 +414,7 @@ async function simulateSubscribe(
   relayClients: Map<string, MockRelayClient>,
   params: { username: string; channels?: string[]; workspaceId?: string }
 ): Promise<{ success: boolean; channels?: string[]; error?: string }> {
-  const { username, channels = ['#general'], workspaceId } = params;
+  const { username, channels = ['#general'], workspaceId: _workspaceId } = params;
 
   if (!username) {
     return { success: false, error: 'username is required' };
