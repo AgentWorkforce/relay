@@ -772,6 +772,227 @@ describe('RelayPtyOrchestrator', () => {
       expect(onSpawnMock).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('queue monitor', () => {
+    it('starts queue monitor on start()', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      // Spy on setInterval
+      const setIntervalSpy = vi.spyOn(global, 'setInterval');
+
+      await orchestrator.start();
+
+      // Queue monitor should be started (30 second interval)
+      expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 30000);
+
+      setIntervalSpy.mockRestore();
+    });
+
+    it('stops queue monitor on stop()', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      const clearIntervalSpy = vi.spyOn(global, 'clearInterval');
+
+      await orchestrator.start();
+      await orchestrator.stop();
+
+      // Queue monitor should be cleared
+      expect(clearIntervalSpy).toHaveBeenCalled();
+
+      clearIntervalSpy.mockRestore();
+    });
+
+    it('triggers processMessageQueue when queue has stuck messages and agent is idle', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Directly add a message to the queue (simulating a message that got stuck)
+      (orchestrator as any).messageQueue.push({
+        from: 'Alice',
+        body: 'Test message',
+        messageId: 'msg-123',
+        kind: 'message',
+      });
+
+      // Verify message is in queue
+      expect(orchestrator.pendingMessageCount).toBe(1);
+
+      // Spy on processMessageQueue to verify it gets called
+      const processQueueSpy = vi.spyOn(orchestrator as any, 'processMessageQueue');
+
+      // Simulate time passing (agent becomes idle - need 2000ms silence for checkForStuckQueue)
+      // Mock the idle detector to report idle
+      const idleDetector = (orchestrator as any).idleDetector;
+      vi.spyOn(idleDetector, 'checkIdle').mockReturnValue({
+        isIdle: true,
+        confidence: 0.9,
+        signals: [{ source: 'output_silence', confidence: 0.9, timestamp: Date.now() }],
+      });
+
+      // Manually trigger the queue check (simulating timer firing)
+      (orchestrator as any).checkForStuckQueue();
+
+      // processMessageQueue should have been called
+      expect(processQueueSpy).toHaveBeenCalled();
+
+      processQueueSpy.mockRestore();
+    });
+
+    it('does not trigger processing when agent is busy', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Set isInjecting to true (agent is busy)
+      (orchestrator as any).isInjecting = true;
+
+      // Add a message to the queue directly
+      (orchestrator as any).messageQueue.push({
+        from: 'Bob',
+        body: 'Test message 2',
+        messageId: 'msg-456',
+        kind: 'message',
+      });
+
+      // Mock idle detector to report idle (to isolate the isInjecting check)
+      const idleDetector = (orchestrator as any).idleDetector;
+      vi.spyOn(idleDetector, 'checkIdle').mockReturnValue({
+        isIdle: true,
+        confidence: 0.9,
+        signals: [],
+      });
+
+      // Spy on processMessageQueue
+      const processQueueSpy = vi.spyOn(orchestrator as any, 'processMessageQueue');
+
+      // Trigger queue check while busy
+      (orchestrator as any).checkForStuckQueue();
+
+      // processMessageQueue should NOT be called because isInjecting=true
+      expect(processQueueSpy).not.toHaveBeenCalled();
+
+      // Reset
+      (orchestrator as any).isInjecting = false;
+      processQueueSpy.mockRestore();
+    });
+
+    it('does not trigger processing when backpressure is active', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Simulate backpressure
+      mockSocket.emit('data', Buffer.from(JSON.stringify({
+        type: 'backpressure',
+        accept: false,
+        queue_length: 50,
+      }) + '\n'));
+
+      expect(orchestrator.isBackpressureActive()).toBe(true);
+
+      // Add a message to the queue
+      (orchestrator as any).messageQueue.push({
+        from: 'Carol',
+        body: 'Test message 3',
+        messageId: 'msg-789',
+        kind: 'message',
+      });
+
+      // Mock idle detector to report idle (to isolate the backpressure check)
+      const idleDetector = (orchestrator as any).idleDetector;
+      vi.spyOn(idleDetector, 'checkIdle').mockReturnValue({
+        isIdle: true,
+        confidence: 0.9,
+        signals: [],
+      });
+
+      // Spy on processMessageQueue
+      const processQueueSpy = vi.spyOn(orchestrator as any, 'processMessageQueue');
+
+      // Trigger queue check with backpressure active
+      (orchestrator as any).checkForStuckQueue();
+
+      // processMessageQueue should NOT be called because backpressure is active
+      expect(processQueueSpy).not.toHaveBeenCalled();
+
+      processQueueSpy.mockRestore();
+    });
+
+    it('does not trigger processing when queue is empty', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Queue should be empty
+      expect(orchestrator.pendingMessageCount).toBe(0);
+
+      // Spy on processMessageQueue
+      const processQueueSpy = vi.spyOn(orchestrator as any, 'processMessageQueue');
+
+      // Trigger queue check with empty queue
+      (orchestrator as any).checkForStuckQueue();
+
+      // processMessageQueue should not be called
+      expect(processQueueSpy).not.toHaveBeenCalled();
+
+      processQueueSpy.mockRestore();
+    });
+
+    it('does not trigger processing when agent is not idle', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Add a message to the queue
+      (orchestrator as any).messageQueue.push({
+        from: 'Dave',
+        body: 'Test message 4',
+        messageId: 'msg-999',
+        kind: 'message',
+      });
+
+      // Mock idle detector to report NOT idle (agent is still working)
+      const idleDetector = (orchestrator as any).idleDetector;
+      vi.spyOn(idleDetector, 'checkIdle').mockReturnValue({
+        isIdle: false,
+        confidence: 0.3,
+        signals: [],
+      });
+
+      // Spy on processMessageQueue
+      const processQueueSpy = vi.spyOn(orchestrator as any, 'processMessageQueue');
+
+      // Trigger queue check while agent is active
+      (orchestrator as any).checkForStuckQueue();
+
+      // processMessageQueue should NOT be called because agent is not idle
+      expect(processQueueSpy).not.toHaveBeenCalled();
+
+      processQueueSpy.mockRestore();
+    });
+  });
 });
 
 describe('RelayPtyOrchestrator integration', () => {

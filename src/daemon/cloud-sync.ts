@@ -262,6 +262,10 @@ export class CloudSyncService extends EventEmitter {
         avatarUrl: info.avatarUrl,
       }));
 
+      // Use AbortController for timeout (10 second timeout for heartbeat)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+
       const response = await fetch(`${this.config.cloudUrl}/api/daemons/heartbeat`, {
         method: 'POST',
         headers: {
@@ -275,7 +279,8 @@ export class CloudSyncService extends EventEmitter {
             memoryUsage: process.memoryUsage(),
           },
         }),
-      });
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeoutId));
 
       if (!response.ok) {
         if (response.status === 401) {
@@ -302,7 +307,22 @@ export class CloudSyncService extends EventEmitter {
         this.syncMessagesToCloud(),
       ]);
     } catch (error) {
-      log.error('Heartbeat error', { error: String(error) });
+      // Provide more specific error messages for common issues
+      const errorMessage = String(error);
+      if (error instanceof Error && error.name === 'AbortError') {
+        log.error('Heartbeat timeout (10s)', { url: this.config.cloudUrl });
+      } else if (errorMessage.includes('fetch failed') || errorMessage.includes('ECONNREFUSED')) {
+        log.error('Heartbeat network error - cloud server unreachable', {
+          url: this.config.cloudUrl,
+          error: errorMessage,
+        });
+      } else if (errorMessage.includes('ENOTFOUND') || errorMessage.includes('getaddrinfo')) {
+        log.error('Heartbeat DNS error - cannot resolve cloud server', {
+          url: this.config.cloudUrl,
+        });
+      } else {
+        log.error('Heartbeat error', { error: errorMessage });
+      }
       this.emit('error', error);
     }
   }

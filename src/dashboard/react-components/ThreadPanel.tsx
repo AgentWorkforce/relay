@@ -9,6 +9,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import type { Message, Attachment } from '../types';
 import { getAgentColor, getAgentInitials } from '../lib/colors';
 import type { CurrentUser } from './MessageList';
+import { formatMessageBody } from './utils/messageFormatting';
 
 export interface ThreadPanelProps {
   /** The original message that started the thread */
@@ -308,44 +309,6 @@ function ThreadAttachments({ attachments }: ThreadAttachmentsProps) {
       )}
     </>
   );
-}
-
-function formatMessageBody(content: string): React.ReactNode {
-  const normalizedContent = content
-    .replace(/\\n/g, '\n')
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n');
-
-  const lines = normalizedContent.split('\n');
-
-  return lines.map((line, i) => (
-    <React.Fragment key={i}>
-      {i > 0 && <br />}
-      {formatLine(line)}
-    </React.Fragment>
-  ));
-}
-
-function formatLine(line: string): React.ReactNode {
-  const urlRegex = /(https?:\/\/[^\s]+)/g;
-  const parts = line.split(urlRegex);
-
-  return parts.map((part, i) => {
-    if (urlRegex.test(part)) {
-      return (
-        <a
-          key={i}
-          href={part}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-accent hover:underline"
-        >
-          {part}
-        </a>
-      );
-    }
-    return part;
-  });
 }
 
 function formatTimestamp(timestamp: string | number): string {

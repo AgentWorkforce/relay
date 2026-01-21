@@ -5,6 +5,8 @@
  * Defines data models, API contracts, and component props.
  */
 
+import type { ThreadMetadata } from '../../types/threading';
+
 /**
  * Channel visibility types.
  */
@@ -106,18 +108,7 @@ export interface MessageAttachment {
 /**
  * Thread summary for message display.
  */
-export interface ThreadSummary {
-  /** Thread ID (same as parent message ID) */
-  id: string;
-  /** Number of replies */
-  replyCount: number;
-  /** Participants in the thread */
-  participants: string[];
-  /** Last reply timestamp */
-  lastReplyAt: string;
-  /** Last reply preview */
-  lastReplyPreview?: string;
-}
+export type ThreadSummary = ThreadMetadata;
 
 /**
  * Message in a channel.
@@ -440,10 +431,10 @@ export const MOCK_MESSAGES: ChannelMessage[] = [
     content: 'I\'ll be reviewing the authentication PRs today.',
     timestamp: new Date(Date.now() - 6000000).toISOString(),
     threadSummary: {
-      id: 'msg-2',
+      threadId: 'msg-2',
       replyCount: 3,
       participants: ['Lead', 'Frontend'],
-      lastReplyAt: new Date(Date.now() - 3600000).toISOString(),
+      lastReplyAt: Date.now() - 3600000,
       lastReplyPreview: 'Sounds good, let me know if you need help.',
     },
     isRead: true,
