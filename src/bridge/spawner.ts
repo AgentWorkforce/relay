@@ -36,7 +36,8 @@ import type {
  */
 const CLI_COMMAND_MAP: Record<string, string> = {
   cursor: 'agent',  // Cursor CLI installs as 'agent'
-  // Other providers use their name as the command (claude, codex, gemini, etc.)
+  google: 'gemini', // Google provider uses 'gemini' CLI
+  // Other providers use their name as the command (claude, codex, etc.)
 };
 
 /**
