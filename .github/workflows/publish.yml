@@ -3,6 +3,15 @@ name: Publish Package
 on:
   workflow_dispatch:
     inputs:
+      package:
+        description: "Package to publish"
+        required: true
+        type: choice
+        options:
+          - both
+          - main
+          - sdk
+        default: "both"
       version:
         description: "Version bump type"
         required: true
@@ -44,6 +53,7 @@ jobs:
   build-binaries:
     name: Build relay-pty (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
+    if: github.event.inputs.package == 'both' || github.event.inputs.package == 'main'
     strategy:
       matrix:
         include:
@@ -127,7 +137,7 @@ jobs:
           fi
 
   version:
-    name: Version Package
+    name: Version Packages
     needs: validate
     runs-on: ubuntu-latest
     env:
@@ -148,7 +158,7 @@ jobs:
           cache: "npm"
           cache-dependency-path: package-lock.json
 
-      - name: Version package
+      - name: Version packages
         id: bump
         run: |
           VERSION_STRATEGY="${{ needs.validate.outputs.version_strategy }}"
@@ -169,6 +179,12 @@ jobs:
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "New version: $NEW_VERSION"
 
+          # Sync SDK version to match main package
+          echo "Syncing SDK version to $NEW_VERSION"
+          cd packages/sdk
+          npm version "$NEW_VERSION" --no-git-tag-version --allow-same-version
+          cd ../..
+
       - name: Update package-lock.json
         run: npm install --package-lock-only
 
@@ -179,12 +195,78 @@ jobs:
           path: |
             package.json
             package-lock.json
+            packages/sdk/package.json
           retention-days: 1
 
-  publish:
-    name: Publish to NPM
-    needs: [validate, version, build-binaries]
+  publish-sdk:
+    name: Publish SDK to NPM
+    needs: [validate, version]
     runs-on: ubuntu-latest
+    if: github.event.inputs.package == 'both' || github.event.inputs.package == 'sdk'
+    env:
+      NPM_CONFIG_FUND: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Update npm to latest
+        run: npm install -g npm@latest
+
+      - name: Download versioned files
+        uses: actions/download-artifact@v4
+        with:
+          name: versioned-package
+          path: .
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build SDK
+        run: npm run build:sdk
+
+      - name: Preview SDK package contents
+        working-directory: packages/sdk
+        run: npm pack --dry-run
+
+      - name: Dry run check (SDK)
+        if: github.event.inputs.dry_run == 'true'
+        working-directory: packages/sdk
+        run: |
+          echo "Dry run - would publish SDK:"
+          echo "  Version: ${{ needs.version.outputs.new_version }}"
+          echo "  Tag: ${{ github.event.inputs.tag }}"
+          npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }}
+
+      - name: Publish SDK to NPM (Trusted Publishing)
+        if: github.event.inputs.dry_run != 'true'
+        working-directory: packages/sdk
+        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }}
+
+      - name: Report SDK published
+        if: github.event.inputs.dry_run != 'true'
+        run: |
+          echo "Published @agent-relay/sdk@${{ needs.version.outputs.new_version }}"
+          echo "NPM Tag: ${{ github.event.inputs.tag }}"
+
+  publish-main:
+    name: Publish Main Package to NPM
+    needs: [validate, version, build-binaries, publish-sdk]
+    runs-on: ubuntu-latest
+    if: |
+      always() &&
+      (github.event.inputs.package == 'both' || github.event.inputs.package == 'main') &&
+      (needs.publish-sdk.result == 'success' || needs.publish-sdk.result == 'skipped')
     env:
       NPM_CONFIG_FUND: false
 
@@ -253,11 +335,14 @@ jobs:
 
   create-git-tag:
     name: Create Git Tag and Release
-    needs: [validate, version, publish]
+    needs: [validate, version, publish-sdk, publish-main]
     runs-on: ubuntu-latest
     env:
       NPM_CONFIG_FUND: false
-    if: github.event.inputs.dry_run != 'true'
+    if: |
+      always() &&
+      github.event.inputs.dry_run != 'true' &&
+      (needs.publish-sdk.result == 'success' || needs.publish-main.result == 'success')
 
     steps:
       - name: Checkout code
@@ -281,14 +366,16 @@ jobs:
         run: |
           NEW_VERSION="${{ needs.version.outputs.new_version }}"
           TAG="${{ github.event.inputs.tag }}"
+          PACKAGE="${{ github.event.inputs.package }}"
 
-          git add package.json package-lock.json
+          git add package.json package-lock.json packages/sdk/package.json
 
           if git diff --staged --quiet; then
             echo "No version changes to commit"
           else
             git commit -m "chore(release): v${NEW_VERSION}" \
-              -m "NPM Tag: ${TAG}"
+              -m "NPM Tag: ${TAG}" \
+              -m "Packages: ${PACKAGE}"
 
             git push origin HEAD:main
             echo "Version changes committed and pushed"
@@ -313,14 +400,17 @@ jobs:
             ### NPM Tag
             `${{ github.event.inputs.tag }}`
 
+            ### Packages Published
+            ${{ github.event.inputs.package == 'both' && '- `agent-relay`\n- `@agent-relay/sdk`' || github.event.inputs.package == 'sdk' && '- `@agent-relay/sdk`' || '- `agent-relay`' }}
+
             ### Installation
 
             ```bash
-            # Install globally
+            # Install CLI globally
             npm install -g agent-relay@${{ needs.version.outputs.new_version }}
 
-            # Or install latest
-            npm install -g agent-relay@latest
+            # Install SDK as dependency
+            npm install @agent-relay/sdk@${{ needs.version.outputs.new_version }}
             ```
           generate_release_notes: true
         env:
@@ -328,7 +418,7 @@ jobs:
 
   summary:
     name: Publish Summary
-    needs: [validate, version, publish]
+    needs: [validate, version, publish-sdk, publish-main]
     runs-on: ubuntu-latest
     if: always()
 
@@ -337,20 +427,48 @@ jobs:
         run: |
           echo "## NPM Publish Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Package**: agent-relay" >> $GITHUB_STEP_SUMMARY
+          echo "**Package Selection**: \`${{ github.event.inputs.package }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**Version**: \`${{ needs.version.outputs.new_version }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**Version Strategy**: \`${{ needs.validate.outputs.version_strategy }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**NPM Tag**: \`${{ github.event.inputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**Dry Run**: \`${{ github.event.inputs.dry_run }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
+          echo "### Package Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ github.event.inputs.package }}" = "both" ] || [ "${{ github.event.inputs.package }}" = "sdk" ]; then
+            if [ "${{ needs.publish-sdk.result }}" = "success" ]; then
+              echo "- ✅ **@agent-relay/sdk**: Published" >> $GITHUB_STEP_SUMMARY
+            elif [ "${{ needs.publish-sdk.result }}" = "skipped" ]; then
+              echo "- ⏭️ **@agent-relay/sdk**: Skipped" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- ❌ **@agent-relay/sdk**: Failed" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+
+          if [ "${{ github.event.inputs.package }}" = "both" ] || [ "${{ github.event.inputs.package }}" = "main" ]; then
+            if [ "${{ needs.publish-main.result }}" = "success" ]; then
+              echo "- ✅ **agent-relay**: Published" >> $GITHUB_STEP_SUMMARY
+            elif [ "${{ needs.publish-main.result }}" = "skipped" ]; then
+              echo "- ⏭️ **agent-relay**: Skipped" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- ❌ **agent-relay**: Failed" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
             echo "This was a dry run - no packages were actually published" >> $GITHUB_STEP_SUMMARY
           else
-            echo "Package successfully published to NPM" >> $GITHUB_STEP_SUMMARY
+            echo "### Installation" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "Install:" >> $GITHUB_STEP_SUMMARY
             echo '```bash' >> $GITHUB_STEP_SUMMARY
+            echo "# CLI" >> $GITHUB_STEP_SUMMARY
             echo "npm install -g agent-relay@latest" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "# SDK" >> $GITHUB_STEP_SUMMARY
+            echo "npm install @agent-relay/sdk@latest" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
           fi
