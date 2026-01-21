@@ -48,6 +48,7 @@ import { gitRouter } from './api/git.js';
 import { codexAuthHelperRouter } from './api/codex-auth-helper.js';
 import { adminRouter } from './api/admin.js';
 import { consensusRouter } from './api/consensus.js';
+import { complianceRouter } from './api/compliance.js';
 import { db } from './db/index.js';
 import { validateSshSecurityConfig } from './services/ssh-security.js';
 import { registerUserPresence, unregisterUserPresence, updateUserLastSeen } from './services/presence-registry.js';
@@ -358,6 +359,7 @@ export async function createServer(): Promise<CloudServer> {
   app.use('/api/usage', usageRouter);
   app.use('/api/project-groups', coordinatorsRouter);
   app.use('/api/github-app', githubAppRouter);
+  app.use('/api/compliance', complianceRouter);        // ToS compliance for team credentials
 
   // Trajectory proxy routes - auto-detect user's workspace and forward
   // These are convenience routes so the dashboard doesn't need to know the workspace ID

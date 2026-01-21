@@ -116,3 +116,21 @@ export {
   cloudMessageBus,
   type CloudMessage,
 } from './cloud-message-bus.js';
+
+// Credential routing (ToS compliance for team workspaces)
+export {
+  routeCredentials,
+  hasRequiredCredentials,
+  getMissingProviders,
+  getCredentialPolicy,
+  checkWorkspaceCompliance,
+  getUsageLogs,
+  getUsageSummary,
+  type CredentialRouteContext,
+  type CredentialRouteResult,
+  type CredentialSource,
+  type CredentialUsageLog,
+  type WorkspaceCredentialPolicy,
+  type ResolvedCredentialPolicy,
+  type ComplianceCheckResult,
+} from './credential-router.js';

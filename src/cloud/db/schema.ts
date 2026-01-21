@@ -162,6 +162,16 @@ export interface WorkspaceAgentPolicy {
   };
 }
 
+// Credential policy for ToS compliance in team workspaces
+export interface WorkspaceCredentialPolicy {
+  /** Whether team members can fall back to workspace owner's credentials */
+  allowCredentialFallback?: boolean;
+  /** Providers that require per-user authentication */
+  requirePerUserAuth?: string[];
+  /** Whether to log all credential usage for compliance */
+  auditCredentialUsage?: boolean;
+}
+
 // Workspace configuration type
 export interface WorkspaceConfig {
   providers?: string[];
@@ -171,6 +181,8 @@ export interface WorkspaceConfig {
   resourceTier?: 'small' | 'medium' | 'large' | 'xlarge';
   /** Agent policy for this workspace (enforced when repos don't have agents.md) */
   agentPolicy?: WorkspaceAgentPolicy;
+  /** Credential policy for ToS compliance in team workspaces */
+  credentialPolicy?: WorkspaceCredentialPolicy;
 }
 
 export const workspaces = pgTable('workspaces', {
