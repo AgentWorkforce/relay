@@ -77,6 +77,9 @@ USER workspace
 # Droid
 RUN curl -fsSL https://app.factory.ai/cli | sh
 
+# Cursor
+RUN curl -fsSL https://cursor.com/install | bash
+
 # Set PATH for user CLIs
 ENV PATH="/home/workspace/.local/bin:$PATH"
 

@@ -90,6 +90,15 @@ const PROVIDERS: Record<string, Provider> = {
     credentialPath: '~/.factory/credentials.json',
     color: '#6366F1',
   },
+  cursor: {
+    name: 'Cursor',
+    displayName: 'Cursor',
+    description: 'Cursor - AI-first code editor agent',
+    authStrategy: 'cli',
+    cliCommand: 'cursor',
+    credentialPath: '~/.cursor/auth.json',
+    color: '#7C3AED',
+  },
   google: {
     name: 'Google',
     displayName: 'Gemini',

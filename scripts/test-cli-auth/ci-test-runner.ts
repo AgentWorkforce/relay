@@ -5,7 +5,7 @@
  * This script runs in a Docker container and tests each provider's
  * CLI OAuth flow to ensure URL extraction works correctly.
  *
- * Uses relay-pty binary for PTY emulation (no node-pty dependency).
+ * Uses relay-pty binary for PTY emulation.
  *
  * Exit codes:
  *   0 - All tests passed

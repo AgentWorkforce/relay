@@ -122,6 +122,15 @@ const AI_PROVIDERS: AIProvider[] = [
     cliCommand: 'droid',
     supportsOAuth: true,
   },
+  {
+    id: 'cursor',
+    name: 'cursor', // Must be lowercase to match backend validation
+    displayName: 'Cursor',
+    description: 'Cursor - AI-first code editor agent',
+    color: '#7C3AED',
+    cliCommand: 'cursor',
+    supportsOAuth: true,
+  },
 ];
 
 export function WorkspaceSettingsPanel({

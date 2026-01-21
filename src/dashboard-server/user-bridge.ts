@@ -108,6 +108,15 @@ export class UserBridge {
   }
 
   /**
+   * Get the relay client for a user if they are registered.
+   * This allows external code to reuse the userBridge's relay client
+   * instead of creating a duplicate connection.
+   */
+  getRelayClient(username: string): IRelayClient | undefined {
+    return this.users.get(username)?.relayClient;
+  }
+
+  /**
    * Register a user with the relay daemon.
    * Creates a relay client connection for the user.
    */

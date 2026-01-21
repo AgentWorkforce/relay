@@ -1067,7 +1067,7 @@ export async function createServer(): Promise<CloudServer> {
    * Cloud mode: Query database for channel members instead of proxying to local dashboard
    */
   app.get('/api/channels/:channel/members', requireAuth, async (req, res) => {
-    const channelParam = req.params.channel;
+    const channelParam = req.params.channel as string;
     const workspaceId = req.query.workspaceId as string | undefined;
     const userId = req.session.userId!;
 

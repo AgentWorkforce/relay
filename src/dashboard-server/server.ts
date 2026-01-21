@@ -927,6 +927,8 @@ export async function startDashboard(
   // Map of senderName -> RelayClient for per-user connections
   const socketPath = path.join(dataDir, 'relay.sock');
   const relayClients = new Map<string, RelayClient>();
+  // Forward declaration - initialized later, used by getRelayClient to avoid duplicate connections
+  let userBridge: UserBridge | undefined;
   const notifyDaemonOfMembershipUpdate = async (
     channel: string,
     member: string,
@@ -955,6 +957,16 @@ export async function startDashboard(
     const existing = relayClients.get(senderName);
     if (existing && existing.state === 'READY') {
       return existing;
+    }
+
+    // Check if userBridge has a client for this user (avoid duplicate connections)
+    // This prevents the connection storm where two clients fight for the same name
+    if (userBridge) {
+      const userBridgeClient = userBridge.getRelayClient(senderName);
+      if (userBridgeClient && userBridgeClient.state === 'READY') {
+        console.log(`[dashboard] Reusing userBridge client for ${senderName}`);
+        return userBridgeClient as unknown as RelayClient;
+      }
     }
 
     // Check if there's already a pending connection for this sender
@@ -1046,7 +1058,7 @@ export async function startDashboard(
   getRelayClient('_DashboardUI').catch(() => {});
 
   // User bridge for human-to-human and human-to-agent messaging
-  const userBridge = new UserBridge({
+  userBridge = new UserBridge({
     socketPath,
     createRelayClient: async (options) => {
       const client = new RelayClient({

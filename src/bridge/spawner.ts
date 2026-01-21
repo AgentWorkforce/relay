@@ -562,7 +562,7 @@ export class AgentSpawner {
 
       if (debug) console.log(`[spawner:debug] Socket path for ${name}: ${this.socketPath ?? 'undefined'}`);
 
-      // Require relay-pty binary - no fallback to node-pty
+      // Require relay-pty binary
       if (!hasRelayPtyBinary()) {
         const error = 'relay-pty binary not found. Install with: npm run build:relay-pty';
         console.error(`[spawner] ${error}`);

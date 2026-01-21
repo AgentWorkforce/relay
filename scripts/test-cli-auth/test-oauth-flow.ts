@@ -5,7 +5,7 @@
  * Tests the prompt handling and URL extraction for each provider
  * using mock CLIs that simulate the real interactive flows.
  *
- * Uses relay-pty binary for PTY emulation (no node-pty dependency).
+ * Uses relay-pty binary for PTY emulation.
  *
  * Usage:
  *   npx tsx scripts/test-cli-auth/test-oauth-flow.ts [provider]

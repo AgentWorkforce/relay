@@ -4,8 +4,7 @@
  * Shared module for running CLI auth flows via PTY.
  * Used by both production (onboarding.ts) and tests (ci-test-real-clis.ts).
  *
- * This module uses the relay-pty Rust binary for PTY emulation,
- * removing the dependency on node-pty for better Node.js version compatibility.
+ * Uses the relay-pty Rust binary for PTY emulation.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';

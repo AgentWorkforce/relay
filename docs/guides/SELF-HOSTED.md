@@ -44,7 +44,7 @@ Choose self-hosted if you need:
 
 - **Node.js** 20+
 - **tmux** installed
-- **Build tools** (for node-pty compilation)
+- **Rust toolchain** (for relay-pty compilation, or use prebuilt binary)
 - Network access to `agent-relay.com` for auth
 
 ### Linux/Ubuntu

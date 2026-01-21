@@ -25,7 +25,7 @@ export interface SpawnConfig {
 
 function deriveShadowMode(command: string): 'subagent' | 'process' {
   const base = command.trim().split(' ')[0].toLowerCase();
-  if (base.startsWith('claude') || base === 'codex' || base === 'opencode' || base === 'gemini' || base === 'droid') return 'subagent';
+  if (base.startsWith('claude') || base === 'codex' || base === 'opencode' || base === 'gemini' || base === 'droid' || base === 'cursor') return 'subagent';
   return 'process';
 }
 
@@ -92,6 +92,14 @@ const AGENT_TEMPLATES = [
     description: 'Factory Droid agent',
     icon: '🤖',
     providerId: 'droid',
+  },
+  {
+    id: 'cursor',
+    name: 'Cursor',
+    command: 'cursor',
+    description: 'Cursor AI agent',
+    icon: '📝',
+    providerId: 'cursor',
   },
   {
     id: 'custom',

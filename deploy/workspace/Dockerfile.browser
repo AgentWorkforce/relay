@@ -8,7 +8,7 @@ FROM node:20-slim AS builder
 
 WORKDIR /app
 
-# Install build dependencies for native modules (node-pty, better-sqlite3)
+# Install build dependencies for native modules (better-sqlite3)
 RUN apt-get update && apt-get install -y \
     python3 \
     make \
@@ -119,6 +119,9 @@ RUN mkdir -p /home/workspace/.claude && \
     echo '{"theme":"dark","hasCompletedOnboarding":true}' > /home/workspace/.claude/settings.local.json
 # Droid (requires user-space installation)
 RUN curl -fsSL https://app.factory.ai/cli | sh
+
+# Cursor
+RUN curl -fsSL https://cursor.com/install | bash
 
 # ============================================================================
 # Environment

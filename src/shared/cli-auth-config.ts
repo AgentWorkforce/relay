@@ -248,6 +248,62 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
     ],
     successPatterns: [/success/i, /authenticated/i, /logged\s*in/i],
   },
+  cursor: {
+    command: 'cursor',
+    args: [],
+    urlPattern: /(https:\/\/[^\s]+)/,
+    credentialPath: '~/.cursor/auth.json',
+    displayName: 'Cursor',
+    waitTimeout: 30000,
+    prompts: [
+      {
+        // Workspace Trust screen - must press 'a' to trust
+        // "Do you want to mark this workspace as trusted?"
+        // "[a] Trust this workspace"
+        // "[q] Quit"
+        pattern: /workspace\s*trust|mark\s*this\s*workspace\s*as\s*trusted|trust\s*this\s*workspace|\[a\]\s*trust/i,
+        response: 'a',
+        delay: 300,
+        description: 'Workspace trust prompt',
+      },
+      {
+        // Generic trust directory prompt (similar to Claude)
+        pattern: /trust\s*(this|the)?\s*(files|directory|folder|workspace)|do\s*you\s*trust/i,
+        response: '\r',
+        delay: 300,
+        description: 'Trust directory prompt',
+      },
+      {
+        // Login success - press enter to continue
+        pattern: /login\s*successful|logged\s*in.*press\s*enter|press\s*enter\s*to\s*continue/i,
+        response: '\r',
+        delay: 200,
+        description: 'Login success prompt',
+      },
+      {
+        // Generic enter prompt (fallback)
+        pattern: /press\s*enter|enter\s*to\s*(confirm|continue|proceed)/i,
+        response: '\r',
+        delay: 300,
+        description: 'Generic enter prompt',
+      },
+    ],
+    successPatterns: [/success/i, /authenticated/i, /logged\s*in/i, /you.*(?:are|now).*logged/i],
+    errorPatterns: [
+      {
+        pattern: /oauth\s*error|auth.*failed|authentication\s*error/i,
+        message: 'Authentication failed',
+        recoverable: true,
+        hint: 'Please try logging in again.',
+      },
+      {
+        pattern: /network\s*error|ENOTFOUND|ECONNREFUSED|timeout/i,
+        message: 'Network error during authentication',
+        recoverable: true,
+        hint: 'Please check your internet connection and try again.',
+      },
+    ],
+  },
 };
 
 /**
