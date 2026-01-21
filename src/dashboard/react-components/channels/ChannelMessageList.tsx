@@ -10,6 +10,7 @@
 
 import React, { useRef, useEffect, useCallback, useState, useMemo } from 'react';
 import type { ChannelMessage, ChannelMessageListProps, UnreadState } from './types';
+import { formatMessageBody } from '../utils/messageFormatting';
 
 export function ChannelMessageList({
   messages,
@@ -253,7 +254,7 @@ function MessageItem({
 
           {/* Message content */}
           <div className="text-sm text-text-primary whitespace-pre-wrap break-words">
-            <MessageContent content={message.content} mentions={message.mentions} />
+            {formatMessageBody(message.content, { mentions: message.mentions })}
           </div>
 
           {/* Attachments */}
@@ -299,51 +300,6 @@ function Avatar({
       {name.charAt(0).toUpperCase()}
     </div>
   );
-}
-
-function MessageContent({
-  content,
-  mentions,
-}: {
-  content: string;
-  mentions?: string[];
-}) {
-  if (!mentions || mentions.length === 0) {
-    return <>{content}</>;
-  }
-
-  // Highlight mentions
-  let parts: React.ReactNode[] = [content];
-
-  mentions.forEach(mention => {
-    const pattern = new RegExp(`@${mention}\\b`, 'g');
-    parts = parts.flatMap((part, i) => {
-      if (typeof part !== 'string') return part;
-      const segments: React.ReactNode[] = [];
-      let lastIndex = 0;
-      let match;
-
-      while ((match = pattern.exec(part)) !== null) {
-        if (match.index > lastIndex) {
-          segments.push(part.slice(lastIndex, match.index));
-        }
-        segments.push(
-          <span key={`${i}-${match.index}`} className="px-1 py-0.5 bg-accent-cyan/20 text-accent-cyan rounded">
-            @{mention}
-          </span>
-        );
-        lastIndex = match.index + match[0].length;
-      }
-
-      if (lastIndex < part.length) {
-        segments.push(part.slice(lastIndex));
-      }
-
-      return segments.length > 0 ? segments : [part];
-    });
-  });
-
-  return <>{parts}</>;
 }
 
 function AttachmentPreview({ attachment }: { attachment: NonNullable<ChannelMessage['attachments']>[0] }) {
