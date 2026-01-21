@@ -1,0 +1,15 @@
+{
+  "id": "traj_1no1q3ewbco2",
+  "version": 1,
+  "task": {
+    "title": "Fix channel invite member buttons not working"
+  },
+  "status": "active",
+  "startedAt": "2026-01-21T07:51:22.529Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/data/repos/relay",
+  "tags": []
+}

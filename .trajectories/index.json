@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-20T20:34:54.892Z",
+  "lastUpdated": "2026-01-21T07:51:22.533Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -841,6 +841,12 @@
       "startedAt": "2026-01-20T20:34:18.721Z",
       "completedAt": "2026-01-20T20:34:54.864Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_a6yc7dh6oiz0.json"
+    },
+    "traj_1no1q3ewbco2": {
+      "title": "Fix channel invite member buttons not working",
+      "status": "active",
+      "startedAt": "2026-01-21T07:51:22.529Z",
+      "path": "/data/repos/relay/.trajectories/active/traj_1no1q3ewbco2.json"
     }
   }
 }
