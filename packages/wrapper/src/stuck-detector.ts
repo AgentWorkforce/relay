@@ -3,19 +3,20 @@
  *
  * Implements agent-relay-501: Stuck detection heuristics
  *
- * Detects five stuck conditions:
+ * Detects six stuck conditions:
  * 1. Extended idle (no output for 10+ minutes)
  * 2. Error loop (same error message repeated 3+ times)
  * 3. Output loop (same output pattern repeated 3+ times)
  * 4. Tool loop (same file operated on 10+ times in 5 minutes)
  * 5. Output flood (abnormally high output rate suggesting infinite loop)
+ * 6. Message intent without action (agent says "I'll send a message" but doesn't use relay protocol)
  *
  * Emits 'stuck' event when detected, with reason and details.
  */
 
 import { EventEmitter } from 'node:events';
 
-export type StuckReason = 'extended_idle' | 'error_loop' | 'output_loop' | 'tool_loop' | 'output_flood';
+export type StuckReason = 'extended_idle' | 'error_loop' | 'output_loop' | 'tool_loop' | 'output_flood' | 'message_intent_without_action';
 
 /**
  * Tracked tool invocation for loop detection
@@ -63,6 +64,10 @@ export interface StuckDetectorConfig {
   outputFloodLinesPerMinute?: number;
   /** Minimum duration before flood detection activates (ms, default: 2 minutes) */
   outputFloodMinDurationMs?: number;
+  /** Time to wait for relay action after detecting intent (ms, default: 30 seconds) */
+  messageIntentTimeoutMs?: number;
+  /** Number of unfulfilled intents before considered stuck (default: 2) */
+  messageIntentThreshold?: number;
 }
 
 const DEFAULT_CONFIG: Required<StuckDetectorConfig> = {
@@ -84,7 +89,24 @@ const DEFAULT_CONFIG: Required<StuckDetectorConfig> = {
   toolLoopWindowMs: 5 * 60 * 1000, // 5 minute window for tool loop detection
   outputFloodLinesPerMinute: 5000, // 5000+ lines/min is abnormal
   outputFloodMinDurationMs: 2 * 60 * 1000, // Wait 2 minutes before flood detection
+  messageIntentTimeoutMs: 30 * 1000, // 30 seconds to fulfill intent
+  messageIntentThreshold: 2, // 2 unfulfilled intents = stuck
 };
+
+/**
+ * Patterns that indicate the agent intends to send a message.
+ * If detected but no ->relay: or ->relay-file: follows, agent may be stuck.
+ */
+const MESSAGE_INTENT_PATTERNS = [
+  /i'?ll send (?:a )?message/i,
+  /let me (?:send|message|notify|inform)/i,
+  /sending (?:a )?message to/i,
+  /i'?ll (?:notify|inform|contact|reach out to)/i,
+  /i'?ll message/i,
+  /let me reach out/i,
+  /i need to (?:send|message|notify)/i,
+  /going to (?:send|message|notify)/i,
+];
 
 /** Patterns to extract tool invocations from Claude Code output */
 const TOOL_PATTERNS = [
@@ -93,6 +115,13 @@ const TOOL_PATTERNS = [
   // Alternative patterns without symbols
   /\b(Read|Write|Edit)\s*\(\s*([^)]+)\s*\)/g,
 ];
+
+/** Tracked message intent for detection */
+interface MessageIntent {
+  detectedAt: number;
+  text: string;
+  fulfilled: boolean;
+}
 
 export class StuckDetector extends EventEmitter {
   private config: Required<StuckDetectorConfig>;
@@ -108,6 +137,10 @@ export class StuckDetector extends EventEmitter {
   // Output flood detection
   private outputLineCount = 0;
   private outputStartTime = Date.now();
+
+  // Message intent detection (agent says "I'll send" but doesn't use protocol)
+  private pendingIntents: MessageIntent[] = [];
+  private unfulfilledIntentCount = 0;
 
   constructor(config: StuckDetectorConfig = {}) {
     super();
@@ -127,6 +160,8 @@ export class StuckDetector extends EventEmitter {
     this.toolInvocations = [];
     this.outputLineCount = 0;
     this.outputStartTime = Date.now();
+    this.pendingIntents = [];
+    this.unfulfilledIntentCount = 0;
 
     this.checkInterval = setInterval(() => {
       this.checkStuck();
@@ -157,6 +192,19 @@ export class StuckDetector extends EventEmitter {
     // Extract and track tool invocations
     this.extractToolInvocations(chunk);
 
+    // Check for message intent fulfillment (->relay: or ->relay-file:)
+    if (/->relay[:\-]/.test(chunk)) {
+      // Mark all pending intents as fulfilled
+      for (const intent of this.pendingIntents) {
+        if (!intent.fulfilled) {
+          intent.fulfilled = true;
+        }
+      }
+    }
+
+    // Detect new message intents (agent says it will send but hasn't yet)
+    this.detectMessageIntent(chunk);
+
     // Normalize and store recent output
     const normalized = this.normalizeOutput(chunk);
     if (normalized.length >= this.config.minLoopLength) {
@@ -175,6 +223,42 @@ export class StuckDetector extends EventEmitter {
       this.stuckReason = null;
       this.emit('unstuck', { timestamp: Date.now() });
     }
+  }
+
+  /**
+   * Detect when agent expresses intent to send a message.
+   * Tracks these intents to see if they're fulfilled with actual relay commands.
+   */
+  private detectMessageIntent(chunk: string): void {
+    // Strip ANSI for cleaner matching
+    // eslint-disable-next-line no-control-regex
+    const clean = chunk.replace(/\x1B(?:\[[0-9;?]*[A-Za-z]|\].*?(?:\x07|\x1B\\)|[@-Z\\-_])/g, '');
+
+    for (const pattern of MESSAGE_INTENT_PATTERNS) {
+      const match = clean.match(pattern);
+      if (match) {
+        this.pendingIntents.push({
+          detectedAt: Date.now(),
+          text: match[0],
+          fulfilled: false,
+        });
+        break; // Only track one intent per chunk
+      }
+    }
+
+    // Prune old intents (beyond timeout window)
+    const now = Date.now();
+    const oldIntents = this.pendingIntents.filter(
+      i => !i.fulfilled && now - i.detectedAt > this.config.messageIntentTimeoutMs
+    );
+
+    // Count unfulfilled intents that have timed out
+    this.unfulfilledIntentCount += oldIntents.length;
+
+    // Keep only recent intents
+    this.pendingIntents = this.pendingIntents.filter(
+      i => i.fulfilled || now - i.detectedAt <= this.config.messageIntentTimeoutMs
+    );
   }
 
   /**
@@ -303,6 +387,19 @@ export class StuckDetector extends EventEmitter {
         timestamp: Date.now(),
         linesPerMinute: flood.linesPerMinute,
       });
+      return;
+    }
+
+    // Check 6: Message intent without action (agent says "I'll send" but doesn't use protocol)
+    if (this.unfulfilledIntentCount >= this.config.messageIntentThreshold) {
+      this.emitStuck({
+        reason: 'message_intent_without_action',
+        details: `Agent expressed intent to send ${this.unfulfilledIntentCount} message(s) but didn't use relay protocol`,
+        timestamp: Date.now(),
+        repetitions: this.unfulfilledIntentCount,
+      });
+      // Reset count after emitting to allow recovery
+      this.unfulfilledIntentCount = 0;
       return;
     }
   }
@@ -476,6 +573,8 @@ export class StuckDetector extends EventEmitter {
     this.toolInvocations = [];
     this.outputLineCount = 0;
     this.outputStartTime = Date.now();
+    this.pendingIntents = [];
+    this.unfulfilledIntentCount = 0;
   }
 
   /**
