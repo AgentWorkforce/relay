@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-21T22:30:12.356Z",
+  "lastUpdated": "2026-01-22T08:19:34.279Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -883,6 +883,27 @@
       "startedAt": "2026-01-21T22:10:45.793Z",
       "completedAt": "2026-01-21T22:30:11.795Z",
       "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_jl5pp8rdu8up.json"
+    },
+    "traj_4lcghlrot4vs": {
+      "title": "Investigate git-credential-relay blocker",
+      "status": "completed",
+      "startedAt": "2026-01-22T08:01:01.162Z",
+      "completedAt": "2026-01-22T08:08:59.319Z",
+      "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_4lcghlrot4vs.json"
+    },
+    "traj_s37dndilyyr0": {
+      "title": "Implement git credential relay GH_TOKEN fallback",
+      "status": "completed",
+      "startedAt": "2026-01-22T08:15:29.721Z",
+      "completedAt": "2026-01-22T08:18:03.557Z",
+      "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_s37dndilyyr0.json"
+    },
+    "traj_dwvjn9kpo59t": {
+      "title": "Fix git-credential-relay CLOUD_API_URL dependency",
+      "status": "completed",
+      "startedAt": "2026-01-22T08:19:18.842Z",
+      "completedAt": "2026-01-22T08:19:33.967Z",
+      "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_dwvjn9kpo59t.json"
     }
   }
 }
