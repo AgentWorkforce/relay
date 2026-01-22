@@ -1572,17 +1572,14 @@ You are **${this.config.name}** in a multi-agent relay system. Here's how to com
 **Sending Messages:**
 \`\`\`bash
 cat > /tmp/relay-outbox/${this.config.name}/msg << 'EOF'
-TO: AgentName
+TO: *
 
 Your message here
 EOF
 \`\`\`
 Then output: \`->relay-file:msg\`
 
-**Special Targets:**
-- \`TO: *\` — Broadcast to all agents
-- \`TO: #channel\` — Send to a channel
-- \`TO: lead\` — Send to your lead agent
+Use \`TO: *\` to broadcast to all agents, or \`TO: AgentName\` for a specific agent.
 
 **Spawning Agents:**
 \`\`\`bash
@@ -1600,7 +1597,8 @@ Then output: \`->relay-file:spawn\`
 - Always ACK when you receive a task: "ACK: Brief description"
 - Send DONE when complete: "DONE: What was accomplished"
 - Keep your lead informed of progress
-- Use \`->relay-file:filename\` to trigger message send after writing file`;
+
+📖 See **AGENTS.md** in the project root for full protocol documentation.`;
 
     this.log(` Sending periodic protocol reminder (session: ${sessionDurationMinutes}m)`);
     this.injectProtocolReminder(reminder);

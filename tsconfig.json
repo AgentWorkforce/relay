@@ -47,6 +47,8 @@
       "@relay/cloud/*": ["packages/cloud/src/*"],
       "@relay/daemon": ["packages/daemon/src/index.ts"],
       "@relay/daemon/*": ["packages/daemon/src/*"],
+      "@relay/dashboard-server": ["packages/dashboard-server/src/index.ts"],
+      "@relay/dashboard-server/*": ["packages/dashboard-server/src/*"],
       "@agent-relay/wrapper": ["packages/wrapper/src/index.ts"],
       "@agent-relay/wrapper/*": ["packages/wrapper/src/*"]
     }

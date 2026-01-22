@@ -3,17 +3,28 @@
  *
  * Implements agent-relay-501: Stuck detection heuristics
  *
- * Detects three stuck conditions:
+ * Detects five stuck conditions:
  * 1. Extended idle (no output for 10+ minutes)
  * 2. Error loop (same error message repeated 3+ times)
  * 3. Output loop (same output pattern repeated 3+ times)
+ * 4. Tool loop (same file operated on 10+ times in 5 minutes)
+ * 5. Output flood (abnormally high output rate suggesting infinite loop)
  *
  * Emits 'stuck' event when detected, with reason and details.
  */
 
 import { EventEmitter } from 'node:events';
 
-export type StuckReason = 'extended_idle' | 'error_loop' | 'output_loop';
+export type StuckReason = 'extended_idle' | 'error_loop' | 'output_loop' | 'tool_loop' | 'output_flood';
+
+/**
+ * Tracked tool invocation for loop detection
+ */
+interface ToolInvocation {
+  tool: string;      // 'Read', 'Write', 'Edit', 'Bash', etc.
+  target: string;    // File path or command
+  timestamp: number;
+}
 
 export interface StuckEvent {
   reason: StuckReason;
@@ -25,6 +36,12 @@ export interface StuckEvent {
   repeatedContent?: string;
   /** Number of repetitions (for loops) */
   repetitions?: number;
+  /** Target file/command (for tool_loop) */
+  targetFile?: string;
+  /** Tool name (for tool_loop) */
+  toolName?: string;
+  /** Output rate in lines per minute (for output_flood) */
+  linesPerMinute?: number;
 }
 
 export interface StuckDetectorConfig {
@@ -38,6 +55,14 @@ export interface StuckDetectorConfig {
   minLoopLength?: number;
   /** Error patterns to detect (regexes) */
   errorPatterns?: RegExp[];
+  /** Threshold for same file operations before considered stuck (default: 10) */
+  toolLoopThreshold?: number;
+  /** Time window for tool loop detection (ms, default: 5 minutes) */
+  toolLoopWindowMs?: number;
+  /** Output lines per minute threshold for flood detection (default: 5000) */
+  outputFloodLinesPerMinute?: number;
+  /** Minimum duration before flood detection activates (ms, default: 2 minutes) */
+  outputFloodMinDurationMs?: number;
 }
 
 const DEFAULT_CONFIG: Required<StuckDetectorConfig> = {
@@ -55,7 +80,19 @@ const DEFAULT_CONFIG: Required<StuckDetectorConfig> = {
     /command not found/i,
     /no such file/i,
   ],
+  toolLoopThreshold: 10, // Same file operated on 10+ times = likely stuck
+  toolLoopWindowMs: 5 * 60 * 1000, // 5 minute window for tool loop detection
+  outputFloodLinesPerMinute: 5000, // 5000+ lines/min is abnormal
+  outputFloodMinDurationMs: 2 * 60 * 1000, // Wait 2 minutes before flood detection
 };
+
+/** Patterns to extract tool invocations from Claude Code output */
+const TOOL_PATTERNS = [
+  // Claude Code tool patterns: ⏺ Write(path), ⏺ Read(path), etc.
+  /[⏺●]\s*(Read|Write|Edit|Glob|Grep|Bash)\(([^)]+)\)/g,
+  // Alternative patterns without symbols
+  /\b(Read|Write|Edit)\s*\(\s*([^)]+)\s*\)/g,
+];
 
 export class StuckDetector extends EventEmitter {
   private config: Required<StuckDetectorConfig>;
@@ -64,6 +101,13 @@ export class StuckDetector extends EventEmitter {
   private checkInterval: NodeJS.Timeout | null = null;
   private isStuck = false;
   private stuckReason: StuckReason | null = null;
+
+  // Tool loop detection
+  private toolInvocations: ToolInvocation[] = [];
+
+  // Output flood detection
+  private outputLineCount = 0;
+  private outputStartTime = Date.now();
 
   constructor(config: StuckDetectorConfig = {}) {
     super();
@@ -80,6 +124,9 @@ export class StuckDetector extends EventEmitter {
     this.stuckReason = null;
     this.lastOutputTime = Date.now();
     this.recentOutputs = [];
+    this.toolInvocations = [];
+    this.outputLineCount = 0;
+    this.outputStartTime = Date.now();
 
     this.checkInterval = setInterval(() => {
       this.checkStuck();
@@ -103,6 +150,13 @@ export class StuckDetector extends EventEmitter {
   onOutput(chunk: string): void {
     this.lastOutputTime = Date.now();
 
+    // Track output volume (count newlines)
+    const lineCount = (chunk.match(/\n/g) || []).length;
+    this.outputLineCount += lineCount;
+
+    // Extract and track tool invocations
+    this.extractToolInvocations(chunk);
+
     // Normalize and store recent output
     const normalized = this.normalizeOutput(chunk);
     if (normalized.length >= this.config.minLoopLength) {
@@ -121,6 +175,52 @@ export class StuckDetector extends EventEmitter {
       this.stuckReason = null;
       this.emit('unstuck', { timestamp: Date.now() });
     }
+  }
+
+  /**
+   * Extract tool invocations from output and track them.
+   */
+  private extractToolInvocations(chunk: string): void {
+    const now = Date.now();
+
+    // Strip ANSI codes for cleaner matching
+    // eslint-disable-next-line no-control-regex
+    const clean = chunk.replace(/\x1B(?:\[[0-9;?]*[A-Za-z]|\].*?(?:\x07|\x1B\\)|[@-Z\\-_])/g, '');
+
+    // Track what we've already matched in this chunk to prevent duplicates
+    const matchedInChunk = new Set<string>();
+
+    for (const pattern of TOOL_PATTERNS) {
+      // Reset lastIndex for global regex
+      pattern.lastIndex = 0;
+      let match;
+      while ((match = pattern.exec(clean)) !== null) {
+        const tool = match[1];
+        const target = match[2].trim();
+
+        // Normalize file paths (remove ~ prefix, trailing whitespace)
+        const normalizedTarget = target
+          .replace(/^~\//, '')
+          .replace(/\s+$/, '');
+
+        // Deduplicate within this chunk (multiple patterns may match same invocation)
+        const key = `${tool}:${normalizedTarget}`;
+        if (matchedInChunk.has(key)) continue;
+        matchedInChunk.add(key);
+
+        this.toolInvocations.push({
+          tool,
+          target: normalizedTarget,
+          timestamp: now,
+        });
+      }
+    }
+
+    // Prune old invocations outside the window
+    const windowStart = now - this.config.toolLoopWindowMs;
+    this.toolInvocations = this.toolInvocations.filter(
+      inv => inv.timestamp >= windowStart
+    );
   }
 
   /**
@@ -176,6 +276,32 @@ export class StuckDetector extends EventEmitter {
         timestamp: Date.now(),
         repeatedContent: outputLoop.output.substring(0, 100),
         repetitions: outputLoop.count,
+      });
+      return;
+    }
+
+    // Check 4: Tool loop (same file operated on repeatedly)
+    const toolLoop = this.detectToolLoop();
+    if (toolLoop) {
+      this.emitStuck({
+        reason: 'tool_loop',
+        details: `${toolLoop.tool} called on "${toolLoop.target}" ${toolLoop.count} times in ${Math.round(this.config.toolLoopWindowMs / 60000)} minutes`,
+        timestamp: Date.now(),
+        targetFile: toolLoop.target,
+        toolName: toolLoop.tool,
+        repetitions: toolLoop.count,
+      });
+      return;
+    }
+
+    // Check 5: Output flood (abnormally high output rate)
+    const flood = this.detectOutputFlood();
+    if (flood) {
+      this.emitStuck({
+        reason: 'output_flood',
+        details: `Abnormally high output: ${flood.linesPerMinute.toFixed(0)} lines/min over ${Math.round(flood.durationMs / 60000)} minutes`,
+        timestamp: Date.now(),
+        linesPerMinute: flood.linesPerMinute,
       });
       return;
     }
@@ -237,6 +363,79 @@ export class StuckDetector extends EventEmitter {
   }
 
   /**
+   * Detect when the same file is being operated on repeatedly.
+   * This catches cases like an agent repeatedly reading/writing the same file
+   * in a loop, even if the output content differs each time.
+   */
+  private detectToolLoop(): { tool: string; target: string; count: number } | null {
+    if (this.toolInvocations.length < this.config.toolLoopThreshold) {
+      return null;
+    }
+
+    // Count operations per file (combining all tool types)
+    const fileCounts = new Map<string, { count: number; tools: Set<string> }>();
+
+    for (const inv of this.toolInvocations) {
+      const existing = fileCounts.get(inv.target);
+      if (existing) {
+        existing.count++;
+        existing.tools.add(inv.tool);
+      } else {
+        fileCounts.set(inv.target, { count: 1, tools: new Set([inv.tool]) });
+      }
+    }
+
+    // Find files that exceed the threshold
+    for (const [target, data] of Array.from(fileCounts.entries())) {
+      if (data.count >= this.config.toolLoopThreshold) {
+        // Report the most common tool used on this file
+        const toolCounts = new Map<string, number>();
+        for (const inv of this.toolInvocations) {
+          if (inv.target === target) {
+            toolCounts.set(inv.tool, (toolCounts.get(inv.tool) || 0) + 1);
+          }
+        }
+
+        let maxTool = 'Unknown';
+        let maxCount = 0;
+        for (const [tool, toolCount] of Array.from(toolCounts.entries())) {
+          if (toolCount > maxCount) {
+            maxTool = tool;
+            maxCount = toolCount;
+          }
+        }
+
+        return { tool: maxTool, target, count: data.count };
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Detect abnormally high output rates that suggest an infinite loop.
+   * Only triggers after minimum duration to avoid false positives during
+   * normal high-output operations (like builds or tests).
+   */
+  private detectOutputFlood(): { linesPerMinute: number; durationMs: number } | null {
+    const durationMs = Date.now() - this.outputStartTime;
+
+    // Don't check until minimum duration has passed
+    if (durationMs < this.config.outputFloodMinDurationMs) {
+      return null;
+    }
+
+    const durationMinutes = durationMs / 60000;
+    const linesPerMinute = this.outputLineCount / durationMinutes;
+
+    if (linesPerMinute >= this.config.outputFloodLinesPerMinute) {
+      return { linesPerMinute, durationMs };
+    }
+
+    return null;
+  }
+
+  /**
    * Emit stuck event.
    */
   private emitStuck(event: StuckEvent): void {
@@ -274,6 +473,29 @@ export class StuckDetector extends EventEmitter {
     this.stuckReason = null;
     this.lastOutputTime = Date.now();
     this.recentOutputs = [];
+    this.toolInvocations = [];
+    this.outputLineCount = 0;
+    this.outputStartTime = Date.now();
+  }
+
+  /**
+   * Get current output statistics (useful for debugging).
+   */
+  getOutputStats(): { lineCount: number; durationMs: number; linesPerMinute: number } {
+    const durationMs = Date.now() - this.outputStartTime;
+    const durationMinutes = Math.max(durationMs / 60000, 0.001); // Avoid division by zero
+    return {
+      lineCount: this.outputLineCount,
+      durationMs,
+      linesPerMinute: this.outputLineCount / durationMinutes,
+    };
+  }
+
+  /**
+   * Get recent tool invocations (useful for debugging).
+   */
+  getToolInvocations(): ToolInvocation[] {
+    return [...this.toolInvocations];
   }
 }
 

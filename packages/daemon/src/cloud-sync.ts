@@ -1,0 +1,582 @@
+/**
+ * Cloud Sync Service
+ *
+ * Handles automatic bridging between local daemons via the cloud:
+ * - Heartbeat to report status
+ * - Agent discovery across machines
+ * - Cross-machine message relay
+ * - Credential sync from cloud
+ */
+
+import { EventEmitter } from 'events';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import { randomBytes } from 'crypto';
+import { createLogger } from '@relay/utils/logger';
+import type { StorageAdapter, StoredMessage } from '@relay/storage/adapter';
+import { SyncQueue, type SyncQueueConfig, type SyncQueueStats } from './sync-queue.js';
+import { getRepoFullNameFromPath } from '@relay/utils/git-remote';
+
+const log = createLogger('cloud-sync');
+
+export interface CloudSyncConfig {
+  apiKey?: string;
+  cloudUrl: string;
+  heartbeatInterval: number; // ms
+  enabled: boolean;
+  /** Enable message sync to cloud (default: true if connected) */
+  messageSyncEnabled?: boolean;
+  /** Batch size for message sync (default: 100) */
+  messageSyncBatchSize?: number;
+
+  // Optimized sync queue options
+  /** Use optimized sync queue with compression and spillover (default: true) */
+  useOptimizedSync?: boolean;
+  /** Sync queue configuration */
+  syncQueue?: Partial<SyncQueueConfig>;
+
+  // Project context for workspace resolution
+  /** Project directory for git remote detection (defaults to cwd) */
+  projectDirectory?: string;
+}
+
+export interface RemoteAgent {
+  name: string;
+  status: string;
+  daemonId: string;
+  daemonName: string;
+  machineId: string;
+}
+
+export interface CrossMachineMessage {
+  from: {
+    daemonId: string;
+    daemonName: string;
+    agent: string;
+  };
+  to: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+  timestamp: string;
+}
+
+export class CloudSyncService extends EventEmitter {
+  private config: CloudSyncConfig;
+  private heartbeatTimer?: NodeJS.Timeout;
+  private machineId: string;
+  private localAgents: Map<string, { name: string; status: string; isHuman?: boolean; avatarUrl?: string }> = new Map();
+  private remoteAgents: RemoteAgent[] = [];
+  private remoteUsers: RemoteAgent[] = [];
+  private connected = false;
+  private storage: StorageAdapter | null = null;
+  private lastMessageSyncTs: number = 0;
+  private messageSyncInProgress = false;
+
+  // Project context for workspace resolution
+  private projectDirectory: string;
+  private repoFullName: string | null = null;
+
+  // Optimized sync queue
+  private syncQueue: SyncQueue | null = null;
+
+  constructor(config: Partial<CloudSyncConfig> = {}) {
+    super();
+
+    this.config = {
+      apiKey: config.apiKey || process.env.AGENT_RELAY_API_KEY,
+      cloudUrl: config.cloudUrl || process.env.AGENT_RELAY_CLOUD_URL || 'https://agent-relay.com',
+      heartbeatInterval: config.heartbeatInterval || 30000, // 30 seconds
+      enabled: config.enabled ?? true,
+      useOptimizedSync: config.useOptimizedSync ?? true,
+      syncQueue: config.syncQueue,
+      projectDirectory: config.projectDirectory,
+    };
+
+    // Generate or load machine ID for consistent identification
+    this.machineId = this.getMachineId();
+
+    // Initialize project context for workspace resolution
+    this.projectDirectory = this.config.projectDirectory || process.cwd();
+    this.repoFullName = getRepoFullNameFromPath(this.projectDirectory);
+    if (this.repoFullName) {
+      log.info('Detected git repository', { repoFullName: this.repoFullName });
+    }
+
+    // Initialize optimized sync queue if enabled and API key is available
+    if (this.config.useOptimizedSync && this.config.apiKey) {
+      this.syncQueue = new SyncQueue({
+        cloudUrl: this.config.cloudUrl,
+        apiKey: this.config.apiKey,
+        ...this.config.syncQueue,
+      });
+    }
+  }
+
+  /**
+   * Get or create a persistent machine ID
+   */
+  private getMachineId(): string {
+    const dataDir = process.env.AGENT_RELAY_DATA_DIR ||
+      path.join(os.homedir(), '.local', 'share', 'agent-relay');
+
+    const machineIdPath = path.join(dataDir, 'machine-id');
+
+    try {
+      if (fs.existsSync(machineIdPath)) {
+        return fs.readFileSync(machineIdPath, 'utf-8').trim();
+      }
+
+      // Generate new machine ID
+      const machineId = `${os.hostname()}-${randomBytes(8).toString('hex')}`;
+
+      fs.mkdirSync(dataDir, { recursive: true });
+      fs.writeFileSync(machineIdPath, machineId);
+
+      return machineId;
+    } catch {
+      // Fallback: generate ephemeral ID
+      return `${os.hostname()}-${Date.now().toString(36)}`;
+    }
+  }
+
+  /**
+   * Start the cloud sync service
+   */
+  async start(): Promise<void> {
+    if (!this.config.enabled || !this.config.apiKey) {
+      log.info('Disabled (no API key configured)');
+      log.info('Run `agent-relay cloud link` to connect to cloud');
+      return;
+    }
+
+    log.info('Starting cloud sync', { url: this.config.cloudUrl });
+
+    // Recover any spilled messages from previous runs
+    if (this.syncQueue) {
+      const { recovered, failed } = await this.syncQueue.recoverSpilledMessages();
+      if (recovered > 0 || failed > 0) {
+        log.info('Recovered spilled messages', { recovered, failed });
+      }
+    }
+
+    // Initial heartbeat
+    await this.sendHeartbeat();
+
+    // Start periodic heartbeat
+    this.heartbeatTimer = setInterval(
+      () => this.sendHeartbeat().catch((err) => log.error('Heartbeat failed', { error: String(err) })),
+      this.config.heartbeatInterval
+    );
+
+    this.connected = true;
+    this.emit('connected');
+  }
+
+  /**
+   * Stop the cloud sync service
+   */
+  async stop(): Promise<void> {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
+
+    // Gracefully close sync queue (flushes pending messages)
+    if (this.syncQueue) {
+      await this.syncQueue.close();
+    }
+
+    this.connected = false;
+    this.emit('disconnected');
+  }
+
+  /**
+   * Update local agent list (called by daemon when agents change)
+   */
+  updateAgents(agents: Array<{ name: string; status: string; isHuman?: boolean; avatarUrl?: string }>): void {
+    this.localAgents.clear();
+    for (const agent of agents) {
+      this.localAgents.set(agent.name, agent);
+    }
+
+    // Trigger immediate sync if connected
+    if (this.connected) {
+      this.syncAgents().catch((err) => log.error('Agent sync failed', { error: String(err) }));
+    }
+  }
+
+  /**
+   * Get all remote agents (from other machines)
+   */
+  getRemoteAgents(): RemoteAgent[] {
+    return this.remoteAgents;
+  }
+
+  /**
+   * Send a message to an agent on another machine
+   */
+  async sendCrossMachineMessage(
+    targetDaemonId: string,
+    targetAgent: string,
+    fromAgent: string,
+    content: string,
+    metadata?: Record<string, unknown>
+  ): Promise<void> {
+    if (!this.connected) {
+      throw new Error('Not connected to cloud');
+    }
+
+    const response = await fetch(`${this.config.cloudUrl}/api/daemons/message`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.config.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        targetDaemonId,
+        targetAgent,
+        message: {
+          from: fromAgent,
+          content,
+          metadata,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Failed to send cross-machine message: ${error}`);
+    }
+  }
+
+  /**
+   * Send heartbeat to cloud
+   */
+  private async sendHeartbeat(): Promise<void> {
+    try {
+      const agents = Array.from(this.localAgents.entries()).map(([name, info]) => ({
+        name,
+        status: info.status,
+        isHuman: info.isHuman,
+        avatarUrl: info.avatarUrl,
+      }));
+
+      // Use AbortController for timeout (10 second timeout for heartbeat)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+      const response = await fetch(`${this.config.cloudUrl}/api/daemons/heartbeat`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.config.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          agents,
+          metrics: {
+            uptime: process.uptime(),
+            memoryUsage: process.memoryUsage(),
+          },
+        }),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeoutId));
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          log.error('Invalid API key. Run `agent-relay cloud link` to re-authenticate.');
+          this.stop();
+          return;
+        }
+        throw new Error(`Heartbeat failed: ${response.status}`);
+      }
+
+      const data = await response.json() as { commands?: Array<{ type: string; payload: unknown }> };
+
+      // Process any pending commands from cloud
+      if (data.commands && data.commands.length > 0) {
+        for (const cmd of data.commands) {
+          this.emit('command', cmd);
+        }
+      }
+
+      // Fetch messages, sync agents, and sync local messages to cloud
+      await Promise.all([
+        this.fetchMessages(),
+        this.syncAgents(),
+        this.syncMessagesToCloud(),
+      ]);
+    } catch (error) {
+      // Provide more specific error messages for common issues
+      const errorMessage = String(error);
+      if (error instanceof Error && error.name === 'AbortError') {
+        log.error('Heartbeat timeout (10s)', { url: this.config.cloudUrl });
+      } else if (errorMessage.includes('fetch failed') || errorMessage.includes('ECONNREFUSED')) {
+        log.error('Heartbeat network error - cloud server unreachable', {
+          url: this.config.cloudUrl,
+          error: errorMessage,
+        });
+      } else if (errorMessage.includes('ENOTFOUND') || errorMessage.includes('getaddrinfo')) {
+        log.error('Heartbeat DNS error - cannot resolve cloud server', {
+          url: this.config.cloudUrl,
+        });
+      } else {
+        log.error('Heartbeat error', { error: errorMessage });
+      }
+      this.emit('error', error);
+    }
+  }
+
+  /**
+   * Sync agents with cloud and get remote agents
+   */
+  private async syncAgents(): Promise<void> {
+    const agents = Array.from(this.localAgents.entries()).map(([name, info]) => ({
+      name,
+      status: info.status,
+      isHuman: info.isHuman,
+      avatarUrl: info.avatarUrl,
+    }));
+
+    const response = await fetch(`${this.config.cloudUrl}/api/daemons/agents`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.config.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ agents }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Agent sync failed: ${response.status}`);
+    }
+
+    const data = await response.json() as { allAgents: RemoteAgent[]; allUsers?: RemoteAgent[] };
+
+    // Filter out our own agents
+    this.remoteAgents = data.allAgents.filter(
+      (a) => !this.localAgents.has(a.name)
+    );
+
+    if (this.remoteAgents.length > 0) {
+      this.emit('remote-agents-updated', this.remoteAgents);
+    }
+
+    // Handle remote users (humans connected via cloud dashboard)
+    if (data.allUsers) {
+      this.remoteUsers = data.allUsers.filter(
+        (u) => !this.localAgents.has(u.name)
+      );
+
+      if (this.remoteUsers.length > 0) {
+        this.emit('remote-users-updated', this.remoteUsers);
+      }
+    }
+  }
+
+  /**
+   * Fetch queued messages from cloud
+   */
+  private async fetchMessages(): Promise<void> {
+    const response = await fetch(`${this.config.cloudUrl}/api/daemons/messages`, {
+      headers: {
+        Authorization: `Bearer ${this.config.apiKey}`,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Message fetch failed: ${response.status}`);
+    }
+
+    const data = await response.json() as { messages: CrossMachineMessage[] };
+
+    for (const msg of data.messages) {
+      this.emit('cross-machine-message', msg);
+    }
+  }
+
+  /**
+   * Sync credentials from cloud (pull latest tokens)
+   */
+  async syncCredentials(): Promise<Array<{
+    provider: string;
+    accessToken: string;
+    tokenType?: string;
+    expiresAt?: string;
+  }>> {
+    if (!this.connected) {
+      throw new Error('Not connected to cloud');
+    }
+
+    const response = await fetch(`${this.config.cloudUrl}/api/daemons/credentials`, {
+      headers: {
+        Authorization: `Bearer ${this.config.apiKey}`,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Credential sync failed: ${response.status}`);
+    }
+
+    const data = await response.json() as {
+      credentials: Array<{
+        provider: string;
+        accessToken: string;
+        tokenType?: string;
+        expiresAt?: string;
+      }>;
+    };
+
+    return data.credentials;
+  }
+
+  /**
+   * Check if connected to cloud
+   */
+  isConnected(): boolean {
+    return this.connected;
+  }
+
+  /**
+   * Get machine ID
+   */
+  getMachineIdentifier(): string {
+    return this.machineId;
+  }
+
+  /**
+   * Set the storage adapter for message sync
+   */
+  setStorage(storage: StorageAdapter): void {
+    this.storage = storage;
+    log.info('Storage adapter configured for message sync');
+  }
+
+  /**
+   * Queue a single message for sync to cloud.
+   * Use this for real-time sync as messages are created.
+   * Falls back to batch sync if optimized queue is not enabled.
+   */
+  async queueMessageForSync(message: StoredMessage): Promise<void> {
+    if (!this.connected || this.config.messageSyncEnabled === false) {
+      return;
+    }
+
+    if (this.syncQueue) {
+      await this.syncQueue.enqueue(message);
+    }
+    // If no sync queue, messages will be synced on next heartbeat via syncMessagesToCloud
+  }
+
+  /**
+   * Get sync queue statistics (if optimized sync is enabled).
+   */
+  getSyncQueueStats(): SyncQueueStats | null {
+    return this.syncQueue?.getStats() ?? null;
+  }
+
+  /**
+   * Force flush the sync queue.
+   */
+  async flushSyncQueue(): Promise<void> {
+    if (this.syncQueue) {
+      await this.syncQueue.flush();
+    }
+  }
+
+  /**
+   * Sync local messages to cloud storage
+   *
+   * Reads messages from local SQLite since last sync and posts them
+   * to the cloud API for centralized storage and search.
+   */
+  async syncMessagesToCloud(): Promise<{ synced: number; duplicates: number }> {
+    // Skip if disabled, not connected, no storage, or sync in progress
+    if (!this.connected || !this.storage || this.messageSyncInProgress) {
+      return { synced: 0, duplicates: 0 };
+    }
+
+    if (this.config.messageSyncEnabled === false) {
+      return { synced: 0, duplicates: 0 };
+    }
+
+    this.messageSyncInProgress = true;
+
+    try {
+      const batchSize = this.config.messageSyncBatchSize || 100;
+
+      // Get messages since last sync
+      const messages = await this.storage.getMessages({
+        sinceTs: this.lastMessageSyncTs > 0 ? this.lastMessageSyncTs : undefined,
+        limit: batchSize,
+        order: 'asc',
+      });
+
+      if (messages.length === 0) {
+        return { synced: 0, duplicates: 0 };
+      }
+
+      // Transform to API format
+      const syncPayload = messages.map((msg: StoredMessage) => ({
+        id: msg.id,
+        ts: msg.ts,
+        from: msg.from,
+        to: msg.to,
+        body: msg.body,
+        kind: msg.kind,
+        topic: msg.topic,
+        thread: msg.thread,
+        is_broadcast: msg.is_broadcast,
+        is_urgent: msg.is_urgent,
+        data: msg.data,
+        payload_meta: msg.payloadMeta,
+      }));
+
+      // Post to cloud with repo context for workspace resolution
+      const response = await fetch(`${this.config.cloudUrl}/api/daemons/messages/sync`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.config.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messages: syncPayload,
+          repoFullName: this.repoFullName,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Message sync failed: ${response.status} - ${errorText}`);
+      }
+
+      const result = await response.json() as { synced: number; duplicates: number };
+
+      // Update last sync timestamp to the newest message we synced
+      if (messages.length > 0) {
+        this.lastMessageSyncTs = Math.max(...messages.map((m: StoredMessage) => m.ts));
+      }
+
+      if (result.synced > 0) {
+        log.info(`Synced ${result.synced} messages to cloud`, { duplicates: result.duplicates });
+      }
+
+      return result;
+    } catch (error) {
+      log.error('Message sync error', { error: String(error) });
+      return { synced: 0, duplicates: 0 };
+    } finally {
+      this.messageSyncInProgress = false;
+    }
+  }
+}
+
+// Singleton instance
+let _cloudSync: CloudSyncService | null = null;
+
+export function getCloudSync(config?: Partial<CloudSyncConfig>): CloudSyncService {
+  if (!_cloudSync) {
+    _cloudSync = new CloudSyncService(config);
+  }
+  return _cloudSync;
+}

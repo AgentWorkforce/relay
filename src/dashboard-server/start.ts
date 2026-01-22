@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
  * Standalone dashboard starter for local development
+ * @deprecated Import from '@relay/dashboard-server' instead.
  */
-
-import { startDashboard } from './server.js';
-import { getProjectPaths } from '../utils/project-namespace.js';
+import { startDashboard } from '@relay/dashboard-server';
+import { getProjectPaths } from '@relay/config';
 
 const port = parseInt(process.env.DASHBOARD_PORT || '3888', 10);
 const paths = getProjectPaths();

@@ -6,7 +6,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "agent-relay": "dist/cli/index.js"
+    "agent-relay": "dist/src/cli/index.js"
   },
   "workspaces": [
     "packages/*"
@@ -16,7 +16,7 @@
   },
   "scripts": {
     "postinstall": "npm rebuild better-sqlite3 && node scripts/postinstall.js",
-    "build": "npm run clean && npm run build:protocol && npm run build:config && npm run build:storage && npm run build:state && npm run build:policy && npm run build:trajectory && npm run build:hooks && npm run build:memory && npm run build:utils && npm run build:continuity && npm run build:resiliency && npm run build:user-directory && npm run build:wrapper && npm run build:bridge && npm run build:cloud && npm run build:sdk && tsc && npm run build:dashboard",
+    "build": "npm run clean && npm run build:protocol && npm run build:config && npm run build:storage && npm run build:state && npm run build:policy && npm run build:trajectory && npm run build:hooks && npm run build:memory && npm run build:utils && npm run build:continuity && npm run build:resiliency && npm run build:user-directory && npm run build:wrapper && npm run build:bridge && npm run build:cloud && npm run build:daemon && npm run build:dashboard-server && npm run build:sdk && tsc && npm run build:dashboard",
     "build:state": "cd packages/state && npm run build",
     "build:policy": "cd packages/policy && npm run build",
     "build:memory": "cd packages/memory && npm run build",
@@ -32,20 +32,22 @@
     "build:user-directory": "cd packages/user-directory && npm run build",
     "build:wrapper": "cd packages/wrapper && npm run build",
     "build:cloud": "cd packages/cloud && npm run build",
+    "build:daemon": "cd packages/daemon && npm run build",
+    "build:dashboard-server": "cd packages/dashboard-server && npm run build",
     "build:sdk": "cd packages/sdk && npm run build",
     "build:dashboard": "cd src/dashboard && npm run build",
-    "postbuild": "chmod +x dist/cli/index.js && mkdir -p dist/dashboard && cp -r src/dashboard/out dist/dashboard/",
+    "postbuild": "chmod +x dist/src/cli/index.js && mkdir -p dist/dashboard && cp -r src/dashboard/out dist/dashboard/",
     "dev:watch": "tsc -w",
-    "predev": "npm run clean && tsc && chmod +x dist/cli/index.js",
+    "predev": "npm run clean && tsc && chmod +x dist/src/cli/index.js",
     "dev": "concurrently -n daemon,next -c blue,magenta \"npm run dev:daemon\" \"npm run dev:next\"",
-    "dev:daemon": "node dist/cli/index.js up --dashboard --port 3889",
+    "dev:daemon": "node dist/src/cli/index.js up --dashboard --port 3889",
     "dev:next": "cd src/dashboard && npm run dev",
-    "dev:simple": "node dist/cli/index.js up --dashboard --port 3888",
+    "dev:simple": "node dist/src/cli/index.js up --dashboard --port 3888",
     "dev:local": "npm run build && npm link && echo '\u2713 agent-relay linked globally'",
     "dev:unlink": "npm unlink -g agent-relay && echo '\u2713 agent-relay unlinked'",
     "dev:rebuild": "npm run build && echo '\u2713 Rebuilt (linked version updated)'",
     "build:rust": "cd relay-pty && cargo build --release && cp target/release/relay-pty ../bin/relay-pty && echo '\u2713 relay-pty binary built and copied to bin/'",
-    "start": "node dist/cli/index.js",
+    "start": "node dist/src/cli/index.js",
     "daemon": "node dist/daemon/server.js",
     "dashboard": "node dist/dashboard-server/start.js",
     "pretest": "npm run build",
