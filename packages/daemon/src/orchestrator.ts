@@ -11,10 +11,10 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { EventEmitter } from 'events';
 import { WebSocketServer, WebSocket } from 'ws';
-import { createLogger, metrics, getSupervisor } from '@relay/resiliency';
+import { createLogger, metrics, getSupervisor } from '@agent-relay/resiliency';
 import { Daemon } from './server.js';
-import { AgentSpawner } from '@relay/bridge';
-import { getProjectPaths } from '@relay/config';
+import { AgentSpawner } from '@agent-relay/bridge';
+import { getProjectPaths } from '@agent-relay/config';
 import type {
   Workspace,
   Agent,

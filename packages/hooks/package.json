@@ -1,5 +1,5 @@
 {
-  "name": "@relay/hooks",
+  "name": "@agent-relay/hooks",
   "version": "0.1.0",
   "description": "Hook emitter, registry, and trajectory hooks for Agent Relay",
   "type": "module",
@@ -34,9 +34,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@relay/protocol": "0.1.0",
-    "@relay/config": "0.1.0",
-    "@relay/trajectory": "0.1.0"
+    "@agent-relay/protocol": "0.1.0",
+    "@agent-relay/config": "0.1.0",
+    "@agent-relay/trajectory": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",

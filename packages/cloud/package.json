@@ -1,5 +1,5 @@
 {
-  "name": "@relay/cloud",
+  "name": "@agent-relay/cloud",
   "version": "0.1.0",
   "description": "Cloud API server and services for Agent Relay",
   "type": "module",
@@ -32,10 +32,10 @@
   },
   "dependencies": {
     "@agent-relay/wrapper": "0.1.0",
-    "@relay/config": "0.1.0",
-    "@relay/resiliency": "0.1.0",
-    "@relay/storage": "0.1.0",
-    "@relay/protocol": "0.1.0"
+    "@agent-relay/config": "0.1.0",
+    "@agent-relay/resiliency": "0.1.0",
+    "@agent-relay/storage": "0.1.0",
+    "@agent-relay/protocol": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",

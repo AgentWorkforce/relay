@@ -1,5 +1,5 @@
 {
-  "name": "@relay/user-directory",
+  "name": "@agent-relay/user-directory",
   "version": "0.1.0",
   "description": "User directory service for agent-relay (per-user credential storage)",
   "type": "module",
@@ -19,7 +19,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@relay/resiliency": "0.1.0"
+    "@agent-relay/resiliency": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",

@@ -72,16 +72,16 @@ COPY --chown=testuser:testuser scripts/test-cli-auth/ci-test-real-clis.ts /app/
 COPY --chown=testuser:testuser scripts/test-cli-auth/package.json /app/
 
 # Copy source modules from packages (after package extraction)
-# cli-pty-runner.ts imports from '@relay/config/cli-auth-config'
+# cli-pty-runner.ts imports from '@agent-relay/config/cli-auth-config'
 COPY --chown=testuser:testuser packages/cloud/src/api/cli-pty-runner.ts /app/src/cloud/api/
 
-# Set up @relay/config package for the import to work
+# Set up @agent-relay/config package for the import to work
 # tsx can handle .ts files, so we copy source directly and set up proper exports
-COPY --chown=testuser:testuser packages/config/package.json /app/node_modules/@relay/config/
-COPY --chown=testuser:testuser packages/config/src/ /app/node_modules/@relay/config/src/
+COPY --chown=testuser:testuser packages/config/package.json /app/node_modules/@agent-relay/config/
+COPY --chown=testuser:testuser packages/config/src/ /app/node_modules/@agent-relay/config/src/
 
 # Create dist symlink so subpath exports work (package.json points to dist/)
-RUN cd /app/node_modules/@relay/config && ln -s src dist
+RUN cd /app/node_modules/@agent-relay/config && ln -s src dist
 
 # Install test dependencies
 RUN npm install

@@ -1,5 +1,5 @@
 {
-  "name": "@relay/bridge",
+  "name": "@agent-relay/bridge",
   "version": "0.1.0",
   "description": "Multi-project bridge client utilities for Relay",
   "type": "module",
@@ -22,11 +22,11 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@relay/protocol": "0.1.0",
-    "@relay/config": "0.1.0",
-    "@relay/utils": "0.1.0",
-    "@relay/policy": "0.1.0",
-    "@relay/user-directory": "0.1.0",
+    "@agent-relay/protocol": "0.1.0",
+    "@agent-relay/config": "0.1.0",
+    "@agent-relay/utils": "0.1.0",
+    "@agent-relay/policy": "0.1.0",
+    "@agent-relay/user-directory": "0.1.0",
     "@agent-relay/wrapper": "0.1.0"
   },
   "devDependencies": {

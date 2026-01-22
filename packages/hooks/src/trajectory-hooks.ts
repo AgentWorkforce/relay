@@ -22,7 +22,7 @@ import {
   detectErrors,
   getCompactTrailInstructions,
   type PDEROPhase,
-} from '@relay/trajectory';
+} from '@agent-relay/trajectory';
 
 /**
  * Options for trajectory hooks

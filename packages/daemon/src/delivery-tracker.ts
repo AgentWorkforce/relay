@@ -1,6 +1,6 @@
-import type { DeliverEnvelope, AckPayload, Envelope } from '@relay/protocol/types';
-import type { StorageAdapter } from '@relay/storage/adapter';
-import { routerLog } from '@relay/utils/logger';
+import type { DeliverEnvelope, AckPayload, Envelope } from '@agent-relay/protocol/types';
+import type { StorageAdapter } from '@agent-relay/storage/adapter';
+import { routerLog } from '@agent-relay/utils/logger';
 
 export interface DeliveryReliabilityOptions {
   /** How long to wait for an ACK before retrying (ms) */

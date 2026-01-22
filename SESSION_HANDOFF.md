@@ -36,10 +36,10 @@ Trajectory and Hooks MUST build BEFORE Memory
 Write to /tmp/relay-outbox/[Agent]/msg with TO: Lead header
 
 ### Package Paths
-- Config: @relay/config/*
-- Daemon: @relay/daemon/*
+- Config: @agent-relay/config/*
+- Daemon: @agent-relay/daemon/*
 - Wrapper: @agent-relay/wrapper/*
-- Cloud: @relay/cloud/*
+- Cloud: @agent-relay/cloud/*
 
 ## Immediate Next Steps
 

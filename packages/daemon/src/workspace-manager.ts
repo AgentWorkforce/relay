@@ -7,7 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { EventEmitter } from 'events';
 import { execSync } from 'child_process';
-import { createLogger } from '@relay/resiliency';
+import { createLogger } from '@agent-relay/resiliency';
 import type {
   Workspace,
   WorkspaceStatus,

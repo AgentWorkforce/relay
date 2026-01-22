@@ -1,5 +1,5 @@
 {
-  "name": "@relay/dashboard-server",
+  "name": "@agent-relay/dashboard-server",
   "version": "0.1.0",
   "description": "Relay dashboard server - HTTP/WebSocket server for agent coordination",
   "type": "module",
@@ -19,16 +19,16 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@relay/protocol": "0.1.0",
-    "@relay/config": "0.1.0",
-    "@relay/storage": "0.1.0",
-    "@relay/bridge": "0.1.0",
-    "@relay/utils": "0.1.0",
-    "@relay/resiliency": "0.1.0",
-    "@relay/trajectory": "0.1.0",
-    "@relay/cloud": "0.1.0",
-    "@relay/daemon": "0.1.0",
-    "@relay/user-directory": "0.1.0",
+    "@agent-relay/protocol": "0.1.0",
+    "@agent-relay/config": "0.1.0",
+    "@agent-relay/storage": "0.1.0",
+    "@agent-relay/bridge": "0.1.0",
+    "@agent-relay/utils": "0.1.0",
+    "@agent-relay/resiliency": "0.1.0",
+    "@agent-relay/trajectory": "0.1.0",
+    "@agent-relay/cloud": "0.1.0",
+    "@agent-relay/daemon": "0.1.0",
+    "@agent-relay/user-directory": "0.1.0",
     "@agent-relay/wrapper": "0.1.0",
     "express": "^4.21.2",
     "ws": "^8.18.3"

@@ -11,7 +11,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { findAgentConfig, type AgentConfig } from '@relay/config/agent-config';
+import { findAgentConfig, type AgentConfig } from '@agent-relay/config/agent-config';
 
 import os from 'node:os';
 

@@ -15,7 +15,7 @@ export {
   type MessageQuery,
   type StorageAdapter,
   type StorageConfig,
-} from '@relay/storage/adapter';
+} from '@agent-relay/storage/adapter';
 
 // Memory types and adapters for external consumers
 export {
@@ -53,4 +53,4 @@ export {
   InMemoryDLQAdapter,
   createDLQAdapter,
   DEFAULT_DLQ_CONFIG,
-} from '@relay/storage/dlq-adapter';
+} from '@agent-relay/storage/dlq-adapter';

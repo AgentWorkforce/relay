@@ -22,7 +22,7 @@ import {
   isPlaceholderTargetFast,
   stripAnsiFast,
   StaticPatterns,
-} from '@relay/utils/precompiled-patterns';
+} from '@agent-relay/utils/precompiled-patterns';
 
 import {
   AgentSigningManager,
@@ -43,7 +43,7 @@ import {
   type DLQConfig,
   type DeadLetter,
   type DLQStats,
-} from '@relay/storage/dlq-adapter';
+} from '@agent-relay/storage/dlq-adapter';
 
 import {
   ContextCompactor,
@@ -54,7 +54,7 @@ import {
   type Message,
   type CompactionConfig,
   type CompactionResult,
-} from '@relay/memory';
+} from '@agent-relay/memory';
 
 import {
   ConsensusEngine,

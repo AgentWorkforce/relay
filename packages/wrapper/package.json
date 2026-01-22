@@ -28,9 +28,9 @@
   },
   "dependencies": {
     "@agent-relay/api-types": "*",
-    "@relay/protocol": "0.1.0",
-    "@relay/config": "0.1.0",
-    "@relay/continuity": "0.1.0"
+    "@agent-relay/protocol": "0.1.0",
+    "@agent-relay/config": "0.1.0",
+    "@agent-relay/continuity": "0.1.0"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

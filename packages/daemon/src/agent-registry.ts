@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { generateId } from '@agent-relay/wrapper';
-import { createLogger } from '@relay/utils/logger';
+import { createLogger } from '@agent-relay/utils/logger';
 
 const log = createLogger('registry');
 

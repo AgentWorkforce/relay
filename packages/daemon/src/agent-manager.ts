@@ -6,10 +6,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { EventEmitter } from 'events';
-import { createLogger, getSupervisor, detectProvider } from '@relay/resiliency';
+import { createLogger, getSupervisor, detectProvider } from '@agent-relay/resiliency';
 import { RelayPtyOrchestrator, type RelayPtyOrchestratorConfig } from '@agent-relay/wrapper';
 import type { SummaryEvent, SessionEndEvent } from '@agent-relay/wrapper';
-import { resolveCommand } from '@relay/utils/command-resolver';
+import { resolveCommand } from '@agent-relay/utils/command-resolver';
 import type {
   Agent,
   ProviderType,

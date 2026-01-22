@@ -19,8 +19,8 @@ import { EventEmitter } from 'node:events';
 import { RelayClient } from './client.js';
 import type { ParsedCommand, ParsedSummary } from './parser.js';
 import { isPlaceholderTarget } from './parser.js';
-import type { SendPayload, SendMeta, SpeakOnTrigger, Envelope } from '@relay/protocol/types';
-import type { ChannelMessagePayload } from '@relay/protocol/channels';
+import type { SendPayload, SendMeta, SpeakOnTrigger, Envelope } from '@agent-relay/protocol/types';
+import type { ChannelMessagePayload } from '@agent-relay/protocol/channels';
 import {
   type QueuedMessage,
   type InjectionMetrics,
@@ -32,13 +32,13 @@ import {
 import {
   DEFAULT_IDLE_BEFORE_INJECT_MS,
   DEFAULT_IDLE_CONFIDENCE_THRESHOLD,
-} from '@relay/config/relay-config';
+} from '@agent-relay/config/relay-config';
 import {
   getContinuityManager,
   parseContinuityCommand,
   hasContinuityCommand,
   type ContinuityManager,
-} from '@relay/continuity';
+} from '@agent-relay/continuity';
 import { UniversalIdleDetector } from './idle-detector.js';
 import { StuckDetector, type StuckEvent, type StuckReason } from './stuck-detector.js';
 

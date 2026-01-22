@@ -1,5 +1,5 @@
 {
-  "name": "@relay/state",
+  "name": "@agent-relay/state",
   "version": "0.1.0",
   "description": "Agent state persistence for non-hook CLIs (Codex, Gemini, etc.)",
   "type": "module",

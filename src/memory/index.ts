@@ -1,4 +1,4 @@
 /**
- * @deprecated Import from '@relay/memory' instead.
+ * @deprecated Import from '@agent-relay/memory' instead.
  */
-export * from '@relay/memory';
+export * from '@agent-relay/memory';

@@ -5,6 +5,6 @@
  */
 
 /**
- * @deprecated Import from '@relay/hooks' instead.
+ * @deprecated Import from '@agent-relay/hooks' instead.
  */
-export * from '@relay/hooks';
+export * from '@agent-relay/hooks';

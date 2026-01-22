@@ -9,8 +9,8 @@ import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sleep } from './utils.js';
-import { getProjectPaths } from '@relay/config';
-import { resolveCommand } from '@relay/utils/command-resolver';
+import { getProjectPaths } from '@agent-relay/config';
+import { resolveCommand } from '@agent-relay/utils/command-resolver';
 import { RelayPtyOrchestrator, type RelayPtyOrchestratorConfig } from '@agent-relay/wrapper';
 import type { SummaryEvent, SessionEndEvent } from '@agent-relay/wrapper';
 import { selectShadowCli } from './shadow-cli.js';
@@ -18,10 +18,10 @@ import { selectShadowCli } from './shadow-cli.js';
 // Get the directory where this module is located (for binary path resolution)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-import { AgentPolicyService, type CloudPolicyFetcher } from '@relay/policy';
-import { buildClaudeArgs, findAgentConfig } from '@relay/config/agent-config';
+import { AgentPolicyService, type CloudPolicyFetcher } from '@agent-relay/policy';
+import { buildClaudeArgs, findAgentConfig } from '@agent-relay/config/agent-config';
 import { composeForAgent, type AgentRole } from '@agent-relay/wrapper';
-import { getUserDirectoryService } from '@relay/user-directory';
+import { getUserDirectoryService } from '@agent-relay/user-directory';
 import type {
   SpawnRequest,
   SpawnResult,

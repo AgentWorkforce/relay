@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { BaseWrapper } from './base-wrapper.js';
 import type { QueuedMessage } from './shared.js';
 import type { ParsedSummary } from './parser.js';
-import type { SendPayload, SendMeta } from '@relay/protocol/types';
+import type { SendPayload, SendMeta } from '@agent-relay/protocol/types';
 
 // Mock the client module
 vi.mock('./client.js', () => ({
@@ -27,7 +27,7 @@ vi.mock('./client.js', () => ({
 }));
 
 // Mock the continuity module
-vi.mock('@relay/continuity', () => ({
+vi.mock('@agent-relay/continuity', () => ({
   getContinuityManager: vi.fn(() => mockContinuityManager),
   parseContinuityCommand: vi.fn(),
   hasContinuityCommand: vi.fn(() => false),

@@ -1,5 +1,5 @@
 {
-  "name": "@relay/storage",
+  "name": "@agent-relay/storage",
   "version": "0.1.0",
   "description": "Storage adapters and interfaces for Relay message/session persistence",
   "type": "module",
@@ -50,7 +50,7 @@
     }
   },
   "dependencies": {
-    "@relay/protocol": "0.1.0"
+    "@agent-relay/protocol": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",

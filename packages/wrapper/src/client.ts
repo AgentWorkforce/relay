@@ -36,16 +36,16 @@ import {
   type LogPayload,
   type EntityType,
   PROTOCOL_VERSION,
-} from '@relay/protocol/types';
+} from '@agent-relay/protocol/types';
 import type {
   ChannelMessagePayload,
   ChannelJoinEnvelope,
   ChannelLeaveEnvelope,
   ChannelMessageEnvelope,
   MessageAttachment,
-} from '@relay/protocol/channels';
-import { encodeFrameLegacy, FrameParser } from '@relay/protocol/framing';
-import { DEFAULT_SOCKET_PATH } from '@relay/config/relay-config';
+} from '@agent-relay/protocol/channels';
+import { encodeFrameLegacy, FrameParser } from '@agent-relay/protocol/framing';
+import { DEFAULT_SOCKET_PATH } from '@agent-relay/config/relay-config';
 
 export type ClientState = 'DISCONNECTED' | 'CONNECTING' | 'HANDSHAKING' | 'READY' | 'BACKOFF';
 

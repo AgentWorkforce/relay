@@ -1,5 +1,5 @@
 {
-  "name": "@relay/policy",
+  "name": "@agent-relay/policy",
   "version": "0.1.0",
   "description": "Agent policy management with multi-level fallback (repo, local PRPM, cloud workspace)",
   "type": "module",
@@ -22,7 +22,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@relay/config": "0.1.0"
+    "@agent-relay/config": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",

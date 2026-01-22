@@ -1,4 +1,4 @@
-import type { PayloadKind, SendMeta } from '@relay/protocol/types';
+import type { PayloadKind, SendMeta } from '@agent-relay/protocol/types';
 
 export type MessageStatus = 'unread' | 'read' | 'acked' | 'failed';
 

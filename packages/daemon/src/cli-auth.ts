@@ -15,7 +15,7 @@ import * as os from 'os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as crypto from 'crypto';
-import { createLogger } from '@relay/resiliency';
+import { createLogger } from '@agent-relay/resiliency';
 import {
   CLI_AUTH_CONFIG,
   stripAnsiCodes,
@@ -25,8 +25,8 @@ import {
   getSupportedProviders,
   type CLIAuthConfig,
   type PromptHandler,
-} from '@relay/config/cli-auth-config';
-import { getUserDirectoryService } from '@relay/user-directory';
+} from '@agent-relay/config/cli-auth-config';
+import { getUserDirectoryService } from '@agent-relay/user-directory';
 
 // Get the directory where this module is located
 const __filename = fileURLToPath(import.meta.url);

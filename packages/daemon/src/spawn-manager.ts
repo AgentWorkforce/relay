@@ -13,9 +13,9 @@ import {
   type ReleaseResultPayload,
   type MessageType,
   PROTOCOL_VERSION,
-} from '@relay/protocol/types';
-import { AgentSpawner, type CloudPersistenceHandler, type OnAgentDeathCallback } from '@relay/bridge';
-import type { CloudPolicyFetcher } from '@relay/policy';
+} from '@agent-relay/protocol/types';
+import { AgentSpawner, type CloudPersistenceHandler, type OnAgentDeathCallback } from '@agent-relay/bridge';
+import type { CloudPolicyFetcher } from '@agent-relay/policy';
 import type { Connection } from './connection.js';
 
 export interface SpawnManagerConfig {

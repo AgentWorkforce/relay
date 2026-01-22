@@ -13,15 +13,15 @@ import {
   type SpeakOnTrigger,
   type EntityType,
   PROTOCOL_VERSION,
-} from '@relay/protocol/types';
+} from '@agent-relay/protocol/types';
 import type {
   ChannelJoinPayload,
   ChannelLeavePayload,
   ChannelMessagePayload,
-} from '@relay/protocol/channels';
-import type { StorageAdapter } from '@relay/storage/adapter';
+} from '@agent-relay/protocol/channels';
+import type { StorageAdapter } from '@agent-relay/storage/adapter';
 import type { AgentRegistry } from './agent-registry.js';
-import { routerLog } from '@relay/utils/logger';
+import { routerLog } from '@agent-relay/utils/logger';
 import { RateLimiter, NoOpRateLimiter, type RateLimitConfig } from './rate-limiter.js';
 import * as crypto from 'node:crypto';
 import {

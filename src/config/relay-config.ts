@@ -1,4 +1,4 @@
 /**
- * @deprecated Import from '@relay/config/relay-config' instead.
+ * @deprecated Import from '@agent-relay/config/relay-config' instead.
  */
-export * from '@relay/config/relay-config';
+export * from '@agent-relay/config/relay-config';

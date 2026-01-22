@@ -20,13 +20,13 @@ import { OutputParser, type ParsedCommand, type ParsedSummary, parseSummaryWithD
 import {
   hasContinuityCommand,
   parseContinuityCommand,
-} from '@relay/continuity';
+} from '@agent-relay/continuity';
 import { InboxManager } from './inbox.js';
-import type { SendPayload, SendMeta } from '@relay/protocol/types';
-import { SqliteStorageAdapter } from '@relay/storage/sqlite-adapter';
-import { getProjectPaths } from '@relay/config/project-namespace';
+import type { SendPayload, SendMeta } from '@agent-relay/protocol/types';
+import { SqliteStorageAdapter } from '@agent-relay/storage/sqlite-adapter';
+import { getProjectPaths } from '@agent-relay/config/project-namespace';
 import { getTmuxPath } from '@agent-relay/wrapper';
-import { findAgentConfig } from '@relay/config/agent-config';
+import { findAgentConfig } from '@agent-relay/config/agent-config';
 import {
   TrajectoryIntegration,
   getTrajectoryIntegration,
@@ -37,7 +37,7 @@ import {
   getTrailEnvVars,
   type PDEROPhase,
 } from '@agent-relay/wrapper';
-import { escapeForShell } from '@relay/config/bridge-utils';
+import { escapeForShell } from '@agent-relay/config/bridge-utils';
 import { detectProviderAuthRevocation } from './auth-detection.js';
 import {
   type CliType,
@@ -51,7 +51,7 @@ import {
   CLI_QUIRKS,
 } from './shared.js';
 import { getTmuxPanePid } from './idle-detector.js';
-import { DEFAULT_TMUX_WRAPPER_CONFIG } from '@relay/config/relay-config';
+import { DEFAULT_TMUX_WRAPPER_CONFIG } from '@agent-relay/config/relay-config';
 
 const execAsync = promisify(exec);
 
@@ -1530,7 +1530,7 @@ export class TmuxWrapper extends BaseWrapper {
     from: string,
     channel: string,
     body: string,
-    envelope: import('@relay/protocol/types').Envelope<import('@relay/protocol/channels').ChannelMessagePayload>
+    envelope: import('@agent-relay/protocol/types').Envelope<import('@agent-relay/protocol/channels').ChannelMessagePayload>
   ): void {
     const messageId = envelope.id;
 

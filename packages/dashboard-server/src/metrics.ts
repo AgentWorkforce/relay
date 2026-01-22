@@ -4,7 +4,7 @@
  */
 
 // Storage types imported for documentation, not currently used in computation
-// import type { StorageAdapter, StoredMessage } from '@relay/storage/adapter';
+// import type { StorageAdapter, StoredMessage } from '@agent-relay/storage/adapter';
 
 export interface AgentMetrics {
   name: string;

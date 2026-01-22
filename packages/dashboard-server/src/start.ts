@@ -4,7 +4,7 @@
  */
 
 import { startDashboard } from './server.js';
-import { getProjectPaths } from '@relay/config';
+import { getProjectPaths } from '@agent-relay/config';
 
 const port = parseInt(process.env.DASHBOARD_PORT || '3888', 10);
 const paths = getProjectPaths();

@@ -13,10 +13,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { randomBytes } from 'crypto';
-import { createLogger } from '@relay/utils/logger';
-import type { StorageAdapter, StoredMessage } from '@relay/storage/adapter';
+import { createLogger } from '@agent-relay/utils/logger';
+import type { StorageAdapter, StoredMessage } from '@agent-relay/storage/adapter';
 import { SyncQueue, type SyncQueueConfig, type SyncQueueStats } from './sync-queue.js';
-import { getRepoFullNameFromPath } from '@relay/utils/git-remote';
+import { getRepoFullNameFromPath } from '@agent-relay/utils/git-remote';
 
 const log = createLogger('cloud-sync');
 

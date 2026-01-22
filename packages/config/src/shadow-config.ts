@@ -21,7 +21,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type { SpeakOnTrigger } from '@relay/protocol/types';
+import type { SpeakOnTrigger } from '@agent-relay/protocol/types';
 
 /** Shadow role definition */
 export interface ShadowRoleConfig {

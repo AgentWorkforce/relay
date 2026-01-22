@@ -28,7 +28,7 @@ import {
   getSupportedProviders,
   type CLIAuthConfig,
   type PromptHandler,
-} from '@relay/config/cli-auth-config';
+} from '@agent-relay/config/cli-auth-config';
 
 // Re-export everything from shared config for backward compatibility
 export {

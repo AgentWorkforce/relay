@@ -12,7 +12,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execSync, spawn } from 'child_process';
 import { EventEmitter } from 'events';
-import { createLogger } from '@relay/resiliency';
+import { createLogger } from '@agent-relay/resiliency';
 
 const logger = createLogger('repo-manager');
 

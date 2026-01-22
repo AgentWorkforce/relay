@@ -1,5 +1,5 @@
 import { Pool } from 'pg';
-import { createLogger } from '@relay/utils/logger';
+import { createLogger } from '@agent-relay/utils/logger';
 
 const log = createLogger('channel-membership-store');
 

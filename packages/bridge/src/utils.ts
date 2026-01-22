@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
-import { getProjectPaths } from '@relay/config/project-namespace';
+import { getProjectPaths } from '@agent-relay/config/project-namespace';
 
 export const execAsync = promisify(exec);
 

@@ -1,4 +1,4 @@
 /**
- * @deprecated Import from '@relay/trajectory' instead.
+ * @deprecated Import from '@agent-relay/trajectory' instead.
  */
-export * from '@relay/trajectory';
+export * from '@agent-relay/trajectory';

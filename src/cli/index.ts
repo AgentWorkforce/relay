@@ -15,12 +15,12 @@
 
 import { Command } from 'commander';
 import { config as dotenvConfig } from 'dotenv';
-import { Daemon } from '@relay/daemon';
+import { Daemon } from '@agent-relay/daemon';
 import { RelayClient, RelayPtyOrchestrator, getTmuxPath } from '@agent-relay/wrapper';
-import { AgentSpawner, readWorkersMetadata, getWorkerLogsDir, selectShadowCli } from '@relay/bridge';
-import type { SpawnRequest, SpawnResult } from '@relay/bridge';
-import { generateAgentName, checkForUpdatesInBackground, checkForUpdates } from '@relay/utils';
-import { getShadowForAgent } from '@relay/config';
+import { AgentSpawner, readWorkersMetadata, getWorkerLogsDir, selectShadowCli } from '@agent-relay/bridge';
+import type { SpawnRequest, SpawnResult } from '@agent-relay/bridge';
+import { generateAgentName, checkForUpdatesInBackground, checkForUpdates } from '@agent-relay/utils';
+import { getShadowForAgent } from '@agent-relay/config';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -86,8 +86,8 @@ program
   .argument('<command...>', 'Command to wrap (e.g., claude)')
   .action(async (commandParts, options) => {
 
-    const { getProjectPaths } = await import('@relay/config');
-    const { findAgentConfig, isClaudeCli, buildClaudeArgs } = await import('@relay/config');
+    const { getProjectPaths } = await import('@agent-relay/config');
+    const { findAgentConfig, isClaudeCli, buildClaudeArgs } = await import('@agent-relay/config');
     const paths = getProjectPaths();
 
     const [mainCommand, ...commandArgs] = commandParts;
@@ -347,9 +347,9 @@ program
       startDaemon();
       return;
     }
-    const { ensureProjectDir } = await import('@relay/config');
-    const { loadTeamsConfig } = await import('@relay/config');
-    const { AgentSpawner } = await import('@relay/bridge');
+    const { ensureProjectDir } = await import('@agent-relay/config');
+    const { loadTeamsConfig } = await import('@agent-relay/config');
+    const { AgentSpawner } = await import('@agent-relay/bridge');
 
     const paths = ensureProjectDir();
     const socketPath = paths.socketPath;
@@ -432,7 +432,7 @@ program
       // Dashboard is disabled by default (use --dashboard to enable)
       if (options.dashboard === true) {
         const port = parseInt(options.port, 10);
-        const { startDashboard } = await import('@relay/dashboard-server');
+        const { startDashboard } = await import('@agent-relay/dashboard-server');
         dashboardPort = await startDashboard({
           port,
           dataDir: paths.dataDir,
@@ -509,7 +509,7 @@ program
   .command('down')
   .description('Stop daemon')
   .action(async () => {
-    const { getProjectPaths } = await import('@relay/config');
+    const { getProjectPaths } = await import('@agent-relay/config');
     const paths = getProjectPaths();
     const pidPath = pidFilePathForSocket(paths.socketPath);
 
@@ -538,7 +538,7 @@ const MEGA_SYSTEM_PROMPT = [
 // Helper function for starting Dashboard coordinator with a specific provider
 async function startDashboardCoordinator(operator: string): Promise<void> {
   const { spawn } = await import('node:child_process');
-  const { getProjectPaths } = await import('@relay/config');
+  const { getProjectPaths } = await import('@agent-relay/config');
 
   const paths = getProjectPaths();
 
@@ -703,7 +703,7 @@ program
   .command('status')
   .description('Check daemon status')
   .action(async () => {
-    const { getProjectPaths } = await import('@relay/config');
+    const { getProjectPaths } = await import('@agent-relay/config');
     const paths = getProjectPaths();
     const relaySessions = await discoverRelaySessions();
 
@@ -739,7 +739,7 @@ program
   .option('--remote', 'Include agents from other linked machines (requires cloud link)')
   .option('--json', 'Output as JSON')
   .action(async (options) => {
-    const { getProjectPaths } = await import('@relay/config');
+    const { getProjectPaths } = await import('@agent-relay/config');
     const os = await import('node:os');
     const paths = getProjectPaths();
     const agentsPath = path.join(paths.teamDir, 'agents.json');
@@ -929,7 +929,7 @@ program
   .option('--all', 'Include internal/CLI agents')
   .option('--json', 'Output as JSON')
   .action(async (options) => {
-    const { getProjectPaths } = await import('@relay/config');
+    const { getProjectPaths } = await import('@agent-relay/config');
     const paths = getProjectPaths();
     const agentsPath = path.join(paths.teamDir, 'agents.json');
 
@@ -968,8 +968,8 @@ program
   .description('Read full message by ID (for truncated messages)')
   .argument('<id>', 'Message ID')
   .action(async (messageId) => {
-    const { getProjectPaths } = await import('@relay/config');
-    const { createStorageAdapter } = await import('@relay/storage/adapter');
+    const { getProjectPaths } = await import('@agent-relay/config');
+    const { createStorageAdapter } = await import('@agent-relay/storage/adapter');
 
     const paths = getProjectPaths();
     const adapter = await createStorageAdapter(paths.dbPath);
@@ -1007,8 +1007,8 @@ program
   .option('--since <time>', 'Since time (e.g., "1h", "2024-01-01")')
   .option('--json', 'Output as JSON')
   .action(async (options: { limit?: string; from?: string; to?: string; since?: string; json?: boolean }) => {
-    const { getProjectPaths } = await import('@relay/config');
-    const { createStorageAdapter } = await import('@relay/storage/adapter');
+    const { getProjectPaths } = await import('@agent-relay/config');
+    const { createStorageAdapter } = await import('@agent-relay/storage/adapter');
 
     const paths = getProjectPaths();
     const adapter = await createStorageAdapter(paths.dbPath);
@@ -1140,9 +1140,9 @@ program
   .option('--cli <tool>', 'CLI tool override for all projects')
   .option('--architect [cli]', 'Spawn an architect agent to coordinate all projects (default: claude)')
   .action(async (projectPaths: string[], options) => {
-    const { resolveProjects, validateDaemons } = await import('@relay/config');
-    const { MultiProjectClient } = await import('@relay/bridge');
-    const { getProjectPaths } = await import('@relay/config');
+    const { resolveProjects, validateDaemons } = await import('@agent-relay/config');
+    const { MultiProjectClient } = await import('@agent-relay/bridge');
+    const { getProjectPaths } = await import('@agent-relay/config');
     const fs = await import('node:fs');
     const pathModule = await import('node:path');
 
@@ -1500,7 +1500,7 @@ program
   .option('--dry-run', 'Show what would be cleaned without actually doing it')
   .option('--force', 'Kill all relay sessions regardless of connection status')
   .action(async (options: { dryRun?: boolean; force?: boolean }) => {
-    const { getProjectPaths } = await import('@relay/config');
+    const { getProjectPaths } = await import('@agent-relay/config');
     const paths = getProjectPaths();
     const agentsPath = path.join(paths.teamDir, 'agents.json');
 
@@ -1743,7 +1743,7 @@ program
   .option('-n, --lines <n>', 'Number of lines to show', '50')
   .option('-f, --follow', 'Follow output (like tail -f)')
   .action(async (name: string, options: { lines?: string; follow?: boolean }) => {
-    const { getProjectPaths } = await import('@relay/config');
+    const { getProjectPaths } = await import('@agent-relay/config');
     const paths = getProjectPaths();
     const logsDir = getWorkerLogsDir(paths.projectRoot);
     const logFile = path.join(logsDir, `${name}.log`);
@@ -1871,7 +1871,7 @@ program
 
     // Try daemon socket first (preferred path)
     try {
-      const { getProjectPaths } = await import('@relay/config');
+      const { getProjectPaths } = await import('@agent-relay/config');
       const paths = getProjectPaths();
 
       // TODO: Re-enable daemon-based spawning when client.spawn() is implemented
@@ -1927,7 +1927,7 @@ program
 
     // Try daemon socket first (preferred path)
     try {
-      const { getProjectPaths } = await import('@relay/config');
+      const { getProjectPaths } = await import('@agent-relay/config');
       const paths = getProjectPaths();
 
       const client = new RelayClient({
@@ -1983,7 +1983,7 @@ program
   .argument('<name>', 'Agent name')
   .option('--force', 'Skip graceful shutdown, kill immediately')
   .action(async (name: string, options: { force?: boolean }) => {
-    const { getProjectPaths } = await import('@relay/config');
+    const { getProjectPaths } = await import('@agent-relay/config');
     const paths = getProjectPaths();
     const workers = readWorkersMetadata(paths.projectRoot);
     const worker = workers.find(w => w.name === name);
@@ -2235,7 +2235,7 @@ cloudCommand
     console.log('');
 
     // Check if daemon is running and connected
-    const { getProjectPaths } = await import('@relay/config');
+    const { getProjectPaths } = await import('@agent-relay/config');
     const paths = getProjectPaths();
 
     if (fs.existsSync(paths.socketPath)) {
@@ -2334,8 +2334,8 @@ program
   .allowUnknownOption()
   .action(async (args: string[]) => {
     const { spawn } = await import('node:child_process');
-    const { getProjectPaths } = await import('@relay/config');
-    const { getPrimaryTrajectoriesDir, ensureTrajectoriesDir } = await import('@relay/config/trajectory-config');
+    const { getProjectPaths } = await import('@agent-relay/config');
+    const { getPrimaryTrajectoriesDir, ensureTrajectoriesDir } = await import('@agent-relay/config/trajectory-config');
 
     const paths = getProjectPaths();
 
@@ -2908,7 +2908,7 @@ program
     outputDir?: string;
     exposeGc?: boolean;
   }) => {
-    const { getProjectPaths } = await import('@relay/config');
+    const { getProjectPaths } = await import('@agent-relay/config');
 
     if (!commandParts || commandParts.length === 0) {
       console.error('No command specified');

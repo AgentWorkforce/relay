@@ -22,7 +22,7 @@ import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { existsSync, unlinkSync, mkdirSync, symlinkSync, lstatSync, rmSync, watch, readdirSync } from 'node:fs';
 import type { FSWatcher } from 'node:fs';
-import { getProjectPaths } from '@relay/config/project-namespace';
+import { getProjectPaths } from '@agent-relay/config/project-namespace';
 import { fileURLToPath } from 'node:url';
 
 // Get the directory where this module is located
@@ -30,7 +30,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 import { BaseWrapper, type BaseWrapperConfig } from './base-wrapper.js';
 import { parseSummaryWithDetails, parseSessionEndFromOutput } from './parser.js';
-import type { SendPayload, SendMeta } from '@relay/protocol/types';
+import type { SendPayload, SendMeta } from '@agent-relay/protocol/types';
 import {
   type QueuedMessage,
   stripAnsi,

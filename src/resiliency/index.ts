@@ -1,4 +1,4 @@
 /**
- * @deprecated Import from '@relay/resiliency' instead.
+ * @deprecated Import from '@agent-relay/resiliency' instead.
  */
-export * from '@relay/resiliency';
+export * from '@agent-relay/resiliency';

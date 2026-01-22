@@ -18,13 +18,13 @@ import {
   type SendEnvelope,
   type AckPayload,
   type ErrorPayload,
-} from '@relay/protocol/types';
-import type { ChannelJoinPayload, ChannelLeavePayload, ChannelMessagePayload } from '@relay/protocol/channels';
-import { createStorageAdapter, type StorageAdapter, type StorageConfig } from '@relay/storage/adapter';
-import { SqliteStorageAdapter } from '@relay/storage/sqlite-adapter';
-import { getProjectPaths } from '@relay/config';
+} from '@agent-relay/protocol/types';
+import type { ChannelJoinPayload, ChannelLeavePayload, ChannelMessagePayload } from '@agent-relay/protocol/channels';
+import { createStorageAdapter, type StorageAdapter, type StorageConfig } from '@agent-relay/storage/adapter';
+import { SqliteStorageAdapter } from '@agent-relay/storage/sqlite-adapter';
+import { getProjectPaths } from '@agent-relay/config';
 import { AgentRegistry } from './agent-registry.js';
-import { daemonLog as log } from '@relay/utils/logger';
+import { daemonLog as log } from '@agent-relay/utils/logger';
 import { getCloudSync, type CloudSyncService, type RemoteAgent, type CrossMachineMessage } from './cloud-sync.js';
 import { generateId } from '@agent-relay/wrapper';
 import {

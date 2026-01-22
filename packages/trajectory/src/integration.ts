@@ -17,12 +17,12 @@
 import { spawn, execSync } from 'node:child_process';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { getProjectPaths } from '@relay/config/project-namespace';
+import { getProjectPaths } from '@agent-relay/config/project-namespace';
 import {
   getPrimaryTrajectoriesDir,
   getAllTrajectoriesDirs,
   getTrajectoryEnvVars,
-} from '@relay/config/trajectory-config';
+} from '@agent-relay/config/trajectory-config';
 
 /**
  * Trajectory index file structure

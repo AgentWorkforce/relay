@@ -1,4 +1,4 @@
 /**
- * @deprecated Import from '@relay/config/cli-auth-config' instead.
+ * @deprecated Import from '@agent-relay/config/cli-auth-config' instead.
  */
-export * from '@relay/config/cli-auth-config';
+export * from '@agent-relay/config/cli-auth-config';

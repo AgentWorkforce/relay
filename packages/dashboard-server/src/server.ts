@@ -7,19 +7,19 @@ import os from 'os';
 import crypto from 'crypto';
 import { exec } from 'child_process';
 import { fileURLToPath } from 'url';
-import { SqliteStorageAdapter } from '@relay/storage/sqlite-adapter';
-import type { StorageAdapter, StoredMessage } from '@relay/storage/adapter';
+import { SqliteStorageAdapter } from '@agent-relay/storage/sqlite-adapter';
+import type { StorageAdapter, StoredMessage } from '@agent-relay/storage/adapter';
 import { RelayClient } from '@agent-relay/wrapper';
 import { UserBridge } from './user-bridge.js';
 import { computeNeedsAttention } from './needs-attention.js';
 import { computeSystemMetrics, formatPrometheusMetrics } from './metrics.js';
-import { MultiProjectClient } from '@relay/bridge';
-import { AgentSpawner, type CloudPersistenceHandler } from '@relay/bridge';
-import type { ProjectConfig, SpawnRequest } from '@relay/bridge';
-import { listTrajectorySteps, getTrajectoryStatus, getTrajectoryHistory } from '@relay/trajectory';
-import { loadTeamsConfig } from '@relay/config';
-import { getMemoryMonitor } from '@relay/resiliency';
-import { detectWorkspacePath } from '@relay/config';
+import { MultiProjectClient } from '@agent-relay/bridge';
+import { AgentSpawner, type CloudPersistenceHandler } from '@agent-relay/bridge';
+import type { ProjectConfig, SpawnRequest } from '@agent-relay/bridge';
+import { listTrajectorySteps, getTrajectoryStatus, getTrajectoryHistory } from '@agent-relay/trajectory';
+import { loadTeamsConfig } from '@agent-relay/config';
+import { getMemoryMonitor } from '@agent-relay/resiliency';
+import { detectWorkspacePath } from '@agent-relay/config';
 import type { ThreadMetadata } from './types/threading.js';
 import {
   startCLIAuth,
@@ -28,7 +28,7 @@ import {
   submitAuthCode,
   completeAuthSession,
   getSupportedProviders,
-} from '@relay/daemon';
+} from '@agent-relay/daemon';
 import { HealthWorkerManager, getHealthPort } from './health-worker-manager.js';
 
 /**
@@ -55,8 +55,8 @@ async function initCloudPersistence(workspaceId: string): Promise<CloudPersisten
 
   try {
     // Dynamic import to avoid loading cloud dependencies unless enabled
-    const { getDb } = await import('@relay/cloud/db/drizzle');
-    const { agentSessions, agentSummaries } = await import('@relay/cloud/db/schema');
+    const { getDb } = await import('@agent-relay/cloud/db/drizzle');
+    const { agentSessions, agentSummaries } = await import('@agent-relay/cloud/db/schema');
     const { eq } = await import('drizzle-orm');
 
     const db = getDb();
@@ -3860,7 +3860,7 @@ export async function startDashboard(
 
     try {
       // Dynamically import to avoid loading user-directory in all cases
-      const { getUserDirectoryService } = await import('@relay/user-directory');
+      const { getUserDirectoryService } = await import('@agent-relay/user-directory');
       const userDirService = getUserDirectoryService();
       const credPath = userDirService.writeApiKeyCredential(userId, provider, apiKey);
 
@@ -5050,7 +5050,7 @@ Start by greeting the project leads and asking for status updates.`;
    */
   app.get('/api/settings', async (_req, res) => {
     try {
-      const { readRelayConfig, shouldStoreInRepo, getTrajectoriesStorageDescription } = await import('@relay/config/trajectory-config');
+      const { readRelayConfig, shouldStoreInRepo, getTrajectoriesStorageDescription } = await import('@agent-relay/config/trajectory-config');
       const config = readRelayConfig();
 
       res.json({
@@ -5086,7 +5086,7 @@ Start by greeting the project leads and asking for status updates.`;
    */
   app.get('/api/settings/trajectory', async (_req, res) => {
     try {
-      const { readRelayConfig, shouldStoreInRepo, getTrajectoriesStorageDescription } = await import('@relay/config/trajectory-config');
+      const { readRelayConfig, shouldStoreInRepo, getTrajectoriesStorageDescription } = await import('@agent-relay/config/trajectory-config');
       const config = readRelayConfig();
 
       res.json({
@@ -5138,8 +5138,8 @@ Start by greeting the project leads and asking for status updates.`;
         });
       }
 
-      const { getRelayConfigPath, readRelayConfig } = await import('@relay/config/trajectory-config');
-      const { getProjectPaths } = await import('@relay/config');
+      const { getRelayConfigPath, readRelayConfig } = await import('@agent-relay/config/trajectory-config');
+      const { getProjectPaths } = await import('@agent-relay/config');
       const { projectRoot: _projectRoot } = getProjectPaths();
 
       // Read existing config

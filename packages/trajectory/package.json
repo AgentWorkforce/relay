@@ -1,5 +1,5 @@
 {
-  "name": "@relay/trajectory",
+  "name": "@agent-relay/trajectory",
   "version": "0.1.0",
   "description": "Trajectory integration utilities (trail/PDERO) for Relay",
   "type": "module",
@@ -22,7 +22,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@relay/config": "0.1.0"
+    "@agent-relay/config": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",

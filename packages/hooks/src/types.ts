@@ -5,8 +5,8 @@
  * and modify behavior at various points in the agent lifecycle.
  */
 
-import type { SendPayload } from '@relay/protocol/types';
-import { PROTOCOL_VERSION } from '@relay/protocol';
+import type { SendPayload } from '@agent-relay/protocol/types';
+import { PROTOCOL_VERSION } from '@agent-relay/protocol';
 
 /**
  * A message in the conversation history
