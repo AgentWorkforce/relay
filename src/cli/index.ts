@@ -3310,62 +3310,201 @@ program
     }
   });
 
-// setup - Initial setup wizard
-program
-  .command('setup')
-  .description('Set up Agent Relay for your environment')
-  .option('--mcp', 'Install MCP server for AI editors')
-  .option('--skip-mcp', 'Skip MCP installation prompt')
-  .action(async (options) => {
-    const readline = await import('node:readline');
+// init - First-time setup wizard for Agent Relay
+async function runInit(options: { yes?: boolean; skipDaemon?: boolean; skipMcp?: boolean }) {
+  const readline = await import('node:readline');
+  const { existsSync } = await import('node:fs');
+  const { spawn } = await import('node:child_process');
 
+  // Helper to prompt user
+  const prompt = async (question: string, defaultYes = true): Promise<boolean> => {
+    if (options.yes) return true;
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const suffix = defaultYes ? '[Y/n]' : '[y/N]';
+    const answer = await new Promise<string>((resolve) => {
+      rl.question(`${question} ${suffix} `, resolve);
+    });
+    rl.close();
+    const normalized = answer.toLowerCase().trim();
+    if (!normalized) return defaultYes;
+    return normalized === 'y' || normalized === 'yes';
+  };
+
+  // Banner
+  console.log('');
+  console.log('  ╭─────────────────────────────────────╮');
+  console.log('  │                                     │');
+  console.log('  │   🚀 Agent Relay - First Time Setup │');
+  console.log('  │                                     │');
+  console.log('  │   Real-time AI agent communication  │');
+  console.log('  │                                     │');
+  console.log('  ╰─────────────────────────────────────╯');
+  console.log('');
+
+  // Step 1: Detect environment
+  const isCloud = !!process.env.WORKSPACE_ID;
+  if (isCloud) {
+    console.log('  ℹ  Detected: Cloud workspace');
+    console.log('     MCP tools are pre-configured in cloud environments.');
     console.log('');
-    console.log('Agent Relay Setup');
-    console.log('=================');
-    console.log('');
+    return;
+  }
 
-    // Check if MCP should be installed
-    let installMcp = options.mcp;
+  console.log('  ℹ  Detected: Local environment');
+  console.log('');
 
-    if (!installMcp && !options.skipMcp) {
-      // Prompt user
-      const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout,
-      });
-
-      const answer = await new Promise<string>((resolve) => {
-        rl.question('Install MCP server for AI editors (Claude Code, Cursor)? [Y/n] ', resolve);
-      });
-      rl.close();
-
-      installMcp = !answer || answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes';
+  // Step 2: Check daemon status
+  let daemonRunning = false;
+  const socketPath = process.env.RELAY_SOCKET;
+  if (socketPath && existsSync(socketPath)) {
+    daemonRunning = true;
+  } else {
+    // Check default locations
+    const { homedir } = await import('node:os');
+    const { join } = await import('node:path');
+    const platform = process.platform;
+    let dataDir: string;
+    if (platform === 'darwin') {
+      dataDir = join(homedir(), 'Library', 'Application Support', 'agent-relay');
+    } else if (platform === 'win32') {
+      dataDir = join(process.env.APPDATA || homedir(), 'agent-relay');
+    } else {
+      dataDir = join(process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'), 'agent-relay');
     }
+    const defaultSocket = join(dataDir, 'projects', 'default', 'daemon.sock');
+    if (existsSync(defaultSocket)) {
+      daemonRunning = true;
+    }
+  }
 
-    if (installMcp) {
+  if (daemonRunning) {
+    console.log('  ✓  Daemon is already running');
+  } else {
+    console.log('  ○  Daemon is not running');
+  }
+  console.log('');
+
+  // Step 3: Install MCP for editors
+  let mcpInstalled = false;
+  if (!options.skipMcp) {
+    console.log('  ┌─ Step 1: MCP Server for AI Editors ─────────────────────┐');
+    console.log('  │                                                          │');
+    console.log('  │  MCP (Model Context Protocol) gives AI editors native    │');
+    console.log('  │  tools for agent communication:                          │');
+    console.log('  │                                                          │');
+    console.log('  │    • relay_send    - Send messages to agents/channels    │');
+    console.log('  │    • relay_spawn   - Create worker agents                │');
+    console.log('  │    • relay_inbox   - Check for messages                  │');
+    console.log('  │    • relay_who     - List online agents                  │');
+    console.log('  │                                                          │');
+    console.log('  │  Supported editors: Claude Code, Cursor, VS Code         │');
+    console.log('  │                                                          │');
+    console.log('  └──────────────────────────────────────────────────────────┘');
+    console.log('');
+
+    const shouldInstallMcp = await prompt('  Install MCP server for your AI editors?');
+
+    if (shouldInstallMcp) {
       console.log('');
-      console.log('Installing MCP server for AI editors...');
+      console.log('  Installing MCP server...');
       try {
         const { runInstall } = await import('@agent-relay/mcp/install');
-        runInstall({ editor: undefined }); // Auto-detect editors
+        runInstall({ editor: undefined });
+        mcpInstalled = true;
       } catch (err: any) {
         if (err.code === 'ERR_MODULE_NOT_FOUND') {
-          console.log('Note: MCP package not found. Run: npm install @agent-relay/mcp');
+          console.log('  ⚠  MCP package not bundled. Install separately:');
+          console.log('     npm install -g @agent-relay/mcp');
         } else {
-          console.error('Error installing MCP:', err.message);
+          console.error('  ✗  Error:', err.message);
         }
       }
+      console.log('');
     }
+  }
 
+  // Step 4: Start daemon
+  if (!daemonRunning && !options.skipDaemon) {
+    console.log('  ┌─ Step 2: Start the Relay Daemon ─────────────────────────┐');
+    console.log('  │                                                          │');
+    console.log('  │  The daemon manages agent connections and message        │');
+    console.log('  │  routing. It runs in the background.                     │');
+    console.log('  │                                                          │');
+    console.log('  └──────────────────────────────────────────────────────────┘');
     console.log('');
-    console.log('Setup complete!');
+
+    const shouldStartDaemon = await prompt('  Start the relay daemon now?');
+
+    if (shouldStartDaemon) {
+      console.log('');
+      console.log('  Starting daemon...');
+
+      // Start daemon in background
+      const daemonProcess = spawn(process.execPath, [process.argv[1], 'up', '--background'], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      daemonProcess.unref();
+
+      // Wait a moment for it to start
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+
+      console.log('  ✓  Daemon started in background');
+      console.log('');
+      daemonRunning = true;
+    }
+  }
+
+  // Summary
+  console.log('  ╭─────────────────────────────────────────────────────────╮');
+  console.log('  │                    Setup Complete!                      │');
+  console.log('  ╰─────────────────────────────────────────────────────────╯');
+  console.log('');
+
+  if (mcpInstalled || daemonRunning) {
+    console.log('  Status:');
+    if (mcpInstalled) console.log('    ✓  MCP server configured for editors');
+    if (daemonRunning) console.log('    ✓  Daemon running');
     console.log('');
-    console.log('Next steps:');
-    console.log('  1. Start the daemon: agent-relay up');
-    console.log('  2. Open your AI editor (Claude Code, Cursor)');
-    console.log('  3. The relay tools will be available automatically');
-    console.log('');
-  });
+  }
+
+  console.log('  Quick Start:');
+  console.log('');
+  console.log('    1. Open Claude Code (or Cursor)');
+  console.log('');
+  console.log('    2. The relay tools are ready! Try asking Claude:');
+  console.log('       "Use relay_who to see online agents"');
+  console.log('');
+  console.log('    3. Spawn a worker agent:');
+  console.log('       "Spawn a worker named TestRunner to run the tests"');
+  console.log('');
+
+  console.log('  Commands:');
+  console.log('    agent-relay up        Start daemon with dashboard');
+  console.log('    agent-relay status    Check daemon status');
+  console.log('    agent-relay who       List online agents');
+  console.log('');
+
+  console.log('  Dashboard: http://localhost:3888 (when daemon is running)');
+  console.log('');
+}
+
+program
+  .command('init')
+  .description('First-time setup wizard - install MCP and start daemon')
+  .option('-y, --yes', 'Accept all defaults (non-interactive)')
+  .option('--skip-daemon', 'Skip daemon startup prompt')
+  .option('--skip-mcp', 'Skip MCP installation prompt')
+  .action(runInit);
+
+// setup - Alias for init (backwards compatibility)
+program
+  .command('setup')
+  .description('Alias for "init" - first-time setup wizard')
+  .option('-y, --yes', 'Accept all defaults')
+  .option('--skip-daemon', 'Skip daemon startup')
+  .option('--skip-mcp', 'Skip MCP installation')
+  .action(runInit);
 
 // mcp - MCP server management
 program

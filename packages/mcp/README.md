@@ -2,135 +2,168 @@
 
 MCP (Model Context Protocol) server for Agent Relay - gives AI agents native tools for inter-agent communication.
 
-## Installation
+## Quick Start
 
-### Quick Install (Recommended)
+The fastest way to get started with Agent Relay and MCP:
 
 ```bash
+# Install Agent Relay globally
+npm install -g agent-relay
+
+# Run the setup wizard
+agent-relay init
+```
+
+The wizard will:
+1. Configure MCP for your AI editors (Claude Code, Cursor)
+2. Offer to start the daemon
+3. Show you how to use the relay tools
+
+## Manual Installation
+
+### Install MCP for Editors
+
+```bash
+# Auto-detect and configure all supported editors
 npx @agent-relay/mcp install
+
+# Or configure specific editors
+npx @agent-relay/mcp install --editor claude    # Claude Code
+npx @agent-relay/mcp install --editor cursor    # Cursor
+npx @agent-relay/mcp install --editor vscode    # VS Code
+npx @agent-relay/mcp install --editor windsurf  # Windsurf
 ```
 
-This auto-detects supported editors and configures them.
-
-### Editor-Specific Install
+### Start the Daemon
 
 ```bash
-# Claude Desktop
-npx @agent-relay/mcp install --editor claude
+# Start with dashboard
+agent-relay up
 
-# Claude Code
-npx @agent-relay/mcp install --editor claude-code
-
-# Cursor
-npx @agent-relay/mcp install --editor cursor
-
-# VS Code
-npx @agent-relay/mcp install --editor vscode
-
-# Windsurf
-npx @agent-relay/mcp install --editor windsurf
+# Or just the daemon
+agent-relay up --no-dashboard
 ```
+
+### Verify It Works
+
+Open Claude Code (or Cursor) and ask:
+> "Use relay_who to see online agents"
+
+You should see yourself listed!
 
 ## Available Tools
 
-Once installed, AI agents have access to these tools:
+Once configured, AI agents have access to these tools:
 
-### `relay_send`
-Send messages to other agents, channels, or broadcast.
-
+### `relay_send` - Send Messages
 ```
-relay_send(to="Alice", message="Hello!")
-relay_send(to="#general", message="Team update")
-relay_send(to="*", message="Broadcast")
-```
-
-### `relay_inbox`
-Check inbox for pending messages.
-
-```
-relay_inbox()
-relay_inbox(from="Lead", limit=5)
+relay_send(to="Alice", message="Hello!")           # Direct message
+relay_send(to="#general", message="Team update")   # Channel message
+relay_send(to="*", message="Announcement")         # Broadcast
+relay_send(to="Worker", message="Do this", await_response=true)  # Wait for reply
 ```
 
-### `relay_who`
-List online agents.
-
+### `relay_inbox` - Check Messages
 ```
-relay_who()
-```
-
-### `relay_spawn`
-Spawn a worker agent.
-
-```
-relay_spawn(name="Worker1", cli="claude", task="Run tests")
+relay_inbox()                        # Get unread messages
+relay_inbox(from="Lead", limit=5)    # Filter by sender
+relay_inbox(channel="#general")       # Filter by channel
 ```
 
-### `relay_release`
-Release a worker agent.
-
+### `relay_who` - List Agents
 ```
-relay_release(name="Worker1")
-```
-
-### `relay_status`
-Get connection status.
-
-```
-relay_status()
+relay_who()                          # List all online agents
+relay_who(include_idle=false)        # Only active agents
 ```
 
-## CLI Commands
+### `relay_spawn` - Create Workers
+```
+relay_spawn(name="TestRunner", cli="claude", task="Run the test suite")
+relay_spawn(name="Reviewer", cli="codex", task="Review this PR", model="gpt-4")
+```
+
+### `relay_release` - Stop Workers
+```
+relay_release(name="TestRunner")
+relay_release(name="TestRunner", reason="Tests completed")
+```
+
+### `relay_status` - Connection Info
+```
+relay_status()   # Shows: connected, agent name, project, daemon version
+```
+
+## Troubleshooting
+
+### "Daemon not running" error
+
+The relay daemon must be running for MCP tools to work:
 
 ```bash
-# Install for all detected editors
-npx @agent-relay/mcp install
+# Check status
+agent-relay status
 
-# Install for specific editor
-npx @agent-relay/mcp install --editor cursor
+# Start daemon
+agent-relay up
+```
 
-# Show installation status
+### Tools not showing in editor
+
+1. Restart your editor after installing MCP
+2. Check the MCP configuration was created:
+   - Claude Code: `~/.claude/settings.json`
+   - Cursor: `~/.cursor/mcp.json`
+
+### Check installation status
+
+```bash
 npx @agent-relay/mcp install --status
+```
 
-# List supported editors
-npx @agent-relay/mcp install --list
+## CLI Reference
 
-# Uninstall
-npx @agent-relay/mcp install --uninstall
+```bash
+# Installation
+npx @agent-relay/mcp install              # Auto-detect editors
+npx @agent-relay/mcp install --editor X   # Specific editor
+npx @agent-relay/mcp install --status     # Show status
+npx @agent-relay/mcp install --list       # List supported editors
+npx @agent-relay/mcp install --uninstall  # Remove configuration
+npx @agent-relay/mcp install --dry-run    # Preview changes
 
-# Dry run (show what would be done)
-npx @agent-relay/mcp install --dry-run
-
-# Run server manually (used by editors)
+# Server (used by editors)
 npx @agent-relay/mcp serve
 ```
+
+## Resources & Prompts
+
+The MCP server provides:
+
+**Resources** (live data):
+- `relay://agents` - Online agents list
+- `relay://inbox` - Your inbox contents
+- `relay://project` - Project configuration
+
+**Prompts** (documentation):
+- `relay_protocol` - Full protocol documentation
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `RELAY_SOCKET` | Override daemon socket path |
+| `RELAY_PROJECT` | Override project name |
+| `RELAY_AGENT_NAME` | Override agent name |
+| `DEBUG` or `RELAY_DEBUG` | Enable debug logging |
+
+## Cloud Workspaces
+
+In cloud environments (with `WORKSPACE_ID` set), MCP is pre-configured and uses workspace-specific sockets automatically.
 
 ## Requirements
 
 - Node.js 18+
-- Agent Relay daemon running (`agent-relay daemon start`)
-
-## Resources
-
-The MCP server provides these resources:
-
-- `relay://agents` - Live list of online agents
-- `relay://inbox` - Current inbox contents
-- `relay://project` - Project configuration
-
-## Prompts
-
-- `relay_protocol` - Full protocol documentation
-
-## Cloud Workspaces
-
-In cloud environments with `WORKSPACE_ID` and `CLOUD_API_URL` set, the server automatically discovers workspace-specific sockets.
-
-## Environment Variables
-
-- `RELAY_SOCKET` - Override socket path
-- `RELAY_PROJECT` - Override project name
-- `RELAY_AGENT_NAME` - Override agent name
+- Agent Relay daemon running
 
 ## License
 
