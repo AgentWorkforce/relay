@@ -87,6 +87,7 @@ export interface UserBridgeOptions {
 export interface SendMessageOptions {
   thread?: string;
   data?: Record<string, unknown>;
+  attachments?: unknown[];
 }
 
 /**
@@ -317,6 +318,7 @@ export class UserBridge {
     return session.relayClient.sendChannelMessage(channel, body, {
       thread: options?.thread,
       data: options?.data,
+      attachments: options?.attachments,
     });
   }
 
@@ -447,7 +449,11 @@ export class UserBridge {
       });
       await tempClient.connect();
 
-      // Give daemon time to complete handshake
+      // Give daemon time to complete handshake before sending admin commands.
+      // 100ms is sufficient for local Unix socket handshake (typically <10ms),
+      // but provides margin for the daemon to process the HELLO message and
+      // set up internal state. This is a temporary client created just for
+      // the admin operation, not a long-lived session.
       await new Promise(resolve => setTimeout(resolve, 100));
 
       if (tempClient.adminJoinChannel) {
@@ -491,7 +497,11 @@ export class UserBridge {
       });
       await tempClient.connect();
 
-      // Give daemon time to complete handshake
+      // Give daemon time to complete handshake before sending admin commands.
+      // 100ms is sufficient for local Unix socket handshake (typically <10ms),
+      // but provides margin for the daemon to process the HELLO message and
+      // set up internal state. This is a temporary client created just for
+      // the admin operation, not a long-lived session.
       await new Promise(resolve => setTimeout(resolve, 100));
 
       if (tempClient.adminRemoveMember) {

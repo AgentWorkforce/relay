@@ -61,11 +61,28 @@ RUN ln -sf /app/dist/src/cli/index.js /usr/local/bin/agent-relay && \
 # Fix ownership
 RUN chown -R workspace:workspace /app
 
+# === MCP Server for Agent Relay ===
+# Pre-configure MCP so all CLI tools (Claude, Codex, Cursor) have relay tools available
+
+# Configure Claude Code MCP settings
+RUN mkdir -p /home/workspace/.claude && \
+    echo '{"mcpServers":{"agent-relay":{"command":"node","args":["/app/dist/src/cli/index.js","mcp","serve"]}}}' \
+    > /home/workspace/.claude/settings.json && \
+    chown -R workspace:workspace /home/workspace/.claude
+
+# Configure Cursor MCP settings
+RUN mkdir -p /home/workspace/.cursor && \
+    echo '{"mcpServers":{"agent-relay":{"command":"node","args":["/app/dist/src/cli/index.js","mcp","serve"]}}}' \
+    > /home/workspace/.cursor/mcp.json && \
+    chown -R workspace:workspace /home/workspace/.cursor
+
 # Run entrypoint as root so it can start sshd; entrypoint drops to workspace via gosu
 USER root
 
 # Environment
 ENV NODE_ENV=production
+# MCP socket discovery uses RELAY_PROJECT to find the daemon socket
+ENV RELAY_PROJECT=${WORKSPACE_ID:-default}
 ENV PORT=3888
 ENV AGENT_RELAY_DATA_DIR=/data
 ENV AGENT_RELAY_DASHBOARD_PORT=3888

@@ -3,6 +3,10 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  ListPromptsRequestSchema,
+  GetPromptRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { RelayClient } from './client.js';
 import {
@@ -25,6 +29,15 @@ import {
   relayStatusSchema,
   handleRelayStatus,
 } from './tools/index.js';
+import { protocolPrompt, getProtocolPrompt } from './prompts/index.js';
+import {
+  agentsResource,
+  getAgentsResource,
+  inboxResource,
+  getInboxResource,
+  projectResource,
+  getProjectResource,
+} from './resources/index.js';
 
 /**
  * All available relay tools
@@ -37,6 +50,16 @@ const TOOLS = [
   relayReleaseTool,
   relayStatusTool,
 ];
+
+/**
+ * All available prompts
+ */
+const PROMPTS = [protocolPrompt];
+
+/**
+ * All available resources
+ */
+const RESOURCES = [agentsResource, inboxResource, projectResource];
 
 /**
  * MCP Server configuration options
@@ -61,6 +84,8 @@ export function createMCPServer(client: RelayClient, config?: MCPServerConfig): 
     {
       capabilities: {
         tools: {},
+        prompts: {},
+        resources: {},
       },
     }
   );
@@ -145,6 +170,78 @@ export function createMCPServer(client: RelayClient, config?: MCPServerConfig): 
         ],
         isError: true,
       };
+    }
+  });
+
+  // Register prompt listing handler
+  server.setRequestHandler(ListPromptsRequestSchema, async () => ({
+    prompts: PROMPTS,
+  }));
+
+  // Register prompt get handler
+  server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+    const { name } = request.params;
+
+    if (name === 'relay_protocol') {
+      return {
+        description: 'Agent Relay protocol documentation',
+        messages: [
+          {
+            role: 'user' as const,
+            content: { type: 'text' as const, text: getProtocolPrompt() },
+          },
+        ],
+      };
+    }
+
+    throw new Error(`Unknown prompt: ${name}`);
+  });
+
+  // Register resource listing handler
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+    resources: RESOURCES,
+  }));
+
+  // Register resource read handler
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    const { uri } = request.params;
+
+    switch (uri) {
+      case 'relay://agents':
+        return {
+          contents: [
+            {
+              uri,
+              mimeType: 'application/json',
+              text: await getAgentsResource(client),
+            },
+          ],
+        };
+
+      case 'relay://inbox':
+        return {
+          contents: [
+            {
+              uri,
+              mimeType: 'application/json',
+              text: await getInboxResource(client),
+            },
+          ],
+        };
+
+      case 'relay://project':
+        return {
+          contents: [
+            {
+              uri,
+              mimeType: 'application/json',
+              text: await getProjectResource(client),
+            },
+          ],
+        };
+
+      default:
+        throw new Error(`Unknown resource: ${uri}`);
     }
   });
 

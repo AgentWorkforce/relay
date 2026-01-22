@@ -203,8 +203,11 @@ export function discoverSocket(options: CloudConnectionOptions = {}): DiscoveryR
           isCloud: false,
         };
       }
-    } catch {
-      // Invalid config, continue to next method
+    } catch (err) {
+      // Invalid config (malformed JSON, permission error, etc.), continue to next method
+      if (process.env.DEBUG || process.env.RELAY_DEBUG) {
+        console.debug('[cloud] Failed to read cwd config:', cwdConfig, err);
+      }
     }
   }
 
@@ -229,8 +232,11 @@ export function discoverSocket(options: CloudConnectionOptions = {}): DiscoveryR
           };
         }
       }
-    } catch {
-      // Directory read failed, return null
+    } catch (err) {
+      // Directory read failed (permission error, etc.), return null
+      if (process.env.DEBUG || process.env.RELAY_DEBUG) {
+        console.debug('[cloud] Failed to scan projects directory:', projectsDir, err);
+      }
     }
   }
 

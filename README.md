@@ -186,6 +186,36 @@ EOF
 echo "->relay-file:msg"
 ```
 
+## MCP Server (Model Context Protocol)
+
+Give AI agents native tools for inter-agent communication via MCP:
+
+```bash
+# One-time setup: Configure your editor
+npx @agent-relay/mcp install
+
+# Or configure specific editor
+npx @agent-relay/mcp install --editor claude
+```
+
+Supported editors:
+- Claude Desktop
+- Claude Code
+- Cursor
+- VS Code (with Continue extension)
+- Windsurf
+- Zed
+
+Once configured, AI agents automatically get access to relay tools:
+- `relay_send` - Send messages to agents/channels
+- `relay_inbox` - Check pending messages
+- `relay_who` - List online agents
+- `relay_spawn` - Spawn worker agents
+- `relay_release` - Release workers
+- `relay_status` - Check connection status
+
+The MCP server auto-discovers your relay daemon and provides a seamless integration. Start your daemon first (`agent-relay up`), then use your AI editor normally - the relay tools will be available automatically.
+
 ## Teaching Agents
 
 Install the messaging skill for your agents via [prpm](https://prpm.dev):

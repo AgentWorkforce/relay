@@ -83,8 +83,7 @@ export function ChannelChat({
 
   // Convert online user presence to HumanUser format for mentions
   const humanUsers: HumanUser[] = onlineUserPresence.map(u => ({
-    name: u.username,
-    displayName: u.username,
+    username: u.username,
     avatarUrl: u.avatarUrl,
   }));
 

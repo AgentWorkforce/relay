@@ -3,7 +3,9 @@
  */
 
 import { createConnection, type Socket } from 'node:net';
+import { randomUUID } from 'node:crypto';
 import { discoverSocket } from './cloud.js';
+import { DaemonNotRunningError } from './errors.js';
 
 export interface RelayClient {
   send(to: string, message: string, options?: { thread?: string }): Promise<void>;
@@ -26,22 +28,34 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   const { agentName, project = 'default', timeout = 5000 } = options;
   const discovery = discoverSocket({ socketPath: options.socketPath });
   const socketPath = discovery?.socketPath || options.socketPath || '/tmp/relay-daemon.sock';
-  let requestId = 0;
-  const generateId = () => agentName + '-' + (++requestId) + '-' + Date.now();
+  // Use randomUUID for collision-resistant request IDs
+  const generateId = () => `${agentName}-${randomUUID()}`;
 
   async function request<T>(type: string, payload: unknown): Promise<T> {
     return new Promise((resolve, reject) => {
       const id = generateId();
       const req = { type, id, payload };
-      const socket: Socket = createConnection(socketPath);
+      let timedOut = false;
       let buffer = '';
-      const timeoutId = setTimeout(() => { socket.destroy(); reject(new Error('Request timeout')); }, timeout);
+
+      const socket: Socket = createConnection(socketPath);
+
+      const timeoutId = setTimeout(() => {
+        timedOut = true;
+        socket.destroy();
+        reject(new Error(`Request timeout after ${timeout}ms`));
+      }, timeout);
 
       socket.on('connect', () => socket.write(JSON.stringify(req) + '\n'));
+
       socket.on('data', (data) => {
+        // Ignore data if we've already timed out
+        if (timedOut) return;
+
         buffer += data.toString();
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
+
         for (const line of lines) {
           if (!line.trim()) continue;
           try {
@@ -53,10 +67,25 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
               else resolve(response.payload as T);
               return;
             }
-          } catch {}
+          } catch (parseError) {
+            // Log parse errors in debug mode for easier troubleshooting
+            if (process.env.DEBUG || process.env.RELAY_DEBUG) {
+              console.error('[RelayClient] Failed to parse daemon response:', line, parseError);
+            }
+          }
         }
       });
-      socket.on('error', (err) => { clearTimeout(timeoutId); reject(err); });
+
+      socket.on('error', (err) => {
+        clearTimeout(timeoutId);
+        // Provide user-friendly error for common connection failures
+        const errno = (err as NodeJS.ErrnoException).code;
+        if (errno === 'ECONNREFUSED' || errno === 'ENOENT') {
+          reject(new DaemonNotRunningError(`Cannot connect to daemon at ${socketPath}`));
+        } else {
+          reject(err);
+        }
+      });
     });
   }
 

@@ -3369,10 +3369,22 @@ export async function startDashboard(
    */
   app.post('/api/channels/message', express.json(), async (req, res) => {
     // Build marker - if you don't see this, you're running old code
-    const { username, channel, body, thread } = req.body;
+    const { username, channel, body, thread, attachmentIds } = req.body;
 
     if (!username || !channel || !body) {
       return res.status(400).json({ error: 'username, channel, and body required' });
+    }
+
+    // Resolve attachments if provided
+    let attachments: Attachment[] | undefined;
+    if (attachmentIds && Array.isArray(attachmentIds) && attachmentIds.length > 0) {
+      attachments = [];
+      for (const id of attachmentIds) {
+        const attachment = attachmentRegistry.get(id);
+        if (attachment) {
+          attachments.push(attachment);
+        }
+      }
     }
 
     const workspaceId = resolveWorkspaceId(req);
@@ -3397,6 +3409,7 @@ export async function startDashboard(
       success = await userBridge.sendChannelMessage(username, channelId, body, {
         thread,
         data: workspaceId ? { _workspaceId: workspaceId } : undefined,
+        attachments,
       });
       console.log(`[channel-msg] userBridge result: ${success}`);
     }
@@ -3417,6 +3430,7 @@ export async function startDashboard(
           success = client.sendChannelMessage(channelId, body, {
             thread,
             data: workspaceId ? { _workspaceId: workspaceId } : undefined,
+            attachments,
           });
           console.log(`[channel-msg] sendChannelMessage result: ${success}`);
         } else {

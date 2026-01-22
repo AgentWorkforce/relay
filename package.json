@@ -16,7 +16,8 @@
   },
   "scripts": {
     "postinstall": "npm rebuild better-sqlite3 && node scripts/postinstall.js",
-    "build": "npm run clean && npm run build:protocol && npm run build:config && npm run build:storage && npm run build:state && npm run build:policy && npm run build:trajectory && npm run build:hooks && npm run build:memory && npm run build:utils && npm run build:continuity && npm run build:resiliency && npm run build:user-directory && npm run build:wrapper && npm run build:bridge && npm run build:cloud && npm run build:daemon && npm run build:dashboard-server && npm run build:sdk && npm run build:api-types && npm run build:spawner && tsc && npm run build:dashboard",
+    "build": "npm run clean && npm run build:protocol && npm run build:config && npm run build:storage && npm run build:state && npm run build:policy && npm run build:trajectory && npm run build:hooks && npm run build:memory && npm run build:utils && npm run build:continuity && npm run build:resiliency && npm run build:user-directory && npm run build:wrapper && npm run build:bridge && npm run build:cloud && npm run build:daemon && npm run build:dashboard-server && npm run build:sdk && npm run build:api-types && npm run build:spawner && npm run build:mcp && tsc && npm run build:dashboard",
+    "build:mcp": "cd packages/mcp && npm run build",
     "build:state": "cd packages/state && npm run build",
     "build:policy": "cd packages/policy && npm run build",
     "build:memory": "cd packages/memory && npm run build",

@@ -3310,4 +3310,97 @@ program
     }
   });
 
+// setup - Initial setup wizard
+program
+  .command('setup')
+  .description('Set up Agent Relay for your environment')
+  .option('--mcp', 'Install MCP server for AI editors')
+  .option('--skip-mcp', 'Skip MCP installation prompt')
+  .action(async (options) => {
+    const readline = await import('node:readline');
+
+    console.log('');
+    console.log('Agent Relay Setup');
+    console.log('=================');
+    console.log('');
+
+    // Check if MCP should be installed
+    let installMcp = options.mcp;
+
+    if (!installMcp && !options.skipMcp) {
+      // Prompt user
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+      });
+
+      const answer = await new Promise<string>((resolve) => {
+        rl.question('Install MCP server for AI editors (Claude Code, Cursor)? [Y/n] ', resolve);
+      });
+      rl.close();
+
+      installMcp = !answer || answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes';
+    }
+
+    if (installMcp) {
+      console.log('');
+      console.log('Installing MCP server for AI editors...');
+      try {
+        const { runInstall } = await import('@agent-relay/mcp/install');
+        runInstall({ editor: undefined }); // Auto-detect editors
+      } catch (err: any) {
+        if (err.code === 'ERR_MODULE_NOT_FOUND') {
+          console.log('Note: MCP package not found. Run: npm install @agent-relay/mcp');
+        } else {
+          console.error('Error installing MCP:', err.message);
+        }
+      }
+    }
+
+    console.log('');
+    console.log('Setup complete!');
+    console.log('');
+    console.log('Next steps:');
+    console.log('  1. Start the daemon: agent-relay up');
+    console.log('  2. Open your AI editor (Claude Code, Cursor)');
+    console.log('  3. The relay tools will be available automatically');
+    console.log('');
+  });
+
+// mcp - MCP server management
+program
+  .command('mcp')
+  .description('Manage MCP server for AI editors')
+  .argument('<command>', 'Command to run (install, serve)')
+  .option('-e, --editor <name>', 'Editor to configure')
+  .option('-g, --global', 'Install globally')
+  .action(async (cmd, options) => {
+    try {
+      if (cmd === 'install') {
+        const { runInstall } = await import('@agent-relay/mcp/install');
+        runInstall(options);
+      } else if (cmd === 'serve') {
+        const { createRelayClient, runMCPServer, discoverSocket } = await import('@agent-relay/mcp');
+        const discovery = discoverSocket();
+        const client = createRelayClient({
+          agentName: process.env.RELAY_AGENT_NAME || `mcp-${process.pid}`,
+          socketPath: discovery?.socketPath,
+          project: discovery?.project,
+        });
+        await runMCPServer(client);
+      } else {
+        console.error(`Unknown mcp command: ${cmd}`);
+        process.exit(1);
+      }
+    } catch (err: any) {
+      if (err.code === 'ERR_MODULE_NOT_FOUND') {
+        console.error('Error: @agent-relay/mcp package not found.');
+        console.error('This command requires the MCP package to be installed.');
+      } else {
+        console.error('Error running MCP command:', err);
+      }
+      process.exit(1);
+    }
+  });
+
 program.parse();

@@ -1,12 +1,23 @@
 {
   "name": "@agent-relay/mcp",
   "version": "0.1.0",
-  "description": "MCP server for Agent Relay - messaging tools",
+  "description": "MCP server for Agent Relay - native messaging tools for AI agents in Claude, Cursor, and VS Code",
+  "author": "Agent Workforce Inc.",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/AgentWorkforce/relay#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentWorkforce/relay.git",
+    "directory": "packages/mcp"
+  },
+  "bugs": {
+    "url": "https://github.com/AgentWorkforce/relay/issues"
+  },
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "agent-relay-mcp": "./dist/bin.js"
+    "agent-relay-mcp": "dist/bin.js"
   },
   "exports": {
     ".": {
@@ -14,14 +25,20 @@
       "import": "./dist/index.js"
     },
     "./install": {
-      "types": "./dist/install.d.ts",
-      "import": "./dist/install.js"
+      "types": "./dist/install-cli.d.ts",
+      "import": "./dist/install-cli.js"
     }
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublishOnly": "npm run clean && npm run build && npm test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
@@ -32,7 +49,14 @@
     "typescript": "^5.9.3",
     "vitest": "^2.1.9"
   },
-  "keywords": ["mcp", "agent-relay", "ai-agents", "claude", "cursor", "vscode"],
+  "keywords": [
+    "mcp",
+    "agent-relay",
+    "ai-agents",
+    "claude",
+    "cursor",
+    "vscode"
+  ],
   "publishConfig": {
     "access": "public"
   }

@@ -644,6 +644,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
 
       // Broadcast crash notification if not a graceful stop
       if (!this.isGracefulStop && this.client.state === 'READY') {
+        const canBroadcast = typeof (this.client as any).broadcast === 'function';
         const isNormalExit = exitCode === 0;
         const wasKilled = signal === 'SIGKILL' || signal === 'SIGTERM' || exitCode === 137;
 
@@ -660,19 +661,23 @@ export class RelayPtyOrchestrator extends BaseWrapper {
           const message = `AGENT CRASHED: "${this.config.name}" has died unexpectedly (${reason}).${contextInfo}`;
 
           this.log(` Broadcasting crash notification: ${message}`);
-          this.client.broadcast(message, 'message', {
-            isSystemMessage: true,
-            agentName: this.config.name,
-            exitCode,
-            signal: signal || undefined,
-            crashType: 'unexpected_exit',
-            crashContext: {
-              likelyCause: crashContext.likelyCause,
-              peakMemory: crashContext.peakMemory,
-              averageMemory: crashContext.averageMemory,
-              memoryTrend: crashContext.memoryTrend,
-            },
-          });
+          if (canBroadcast) {
+            this.client.broadcast(message, 'message', {
+              isSystemMessage: true,
+              agentName: this.config.name,
+              exitCode,
+              signal: signal || undefined,
+              crashType: 'unexpected_exit',
+              crashContext: {
+                likelyCause: crashContext.likelyCause,
+                peakMemory: crashContext.peakMemory,
+                averageMemory: crashContext.averageMemory,
+                memoryTrend: crashContext.memoryTrend,
+              },
+            });
+          } else {
+            this.log(' broadcast skipped: client.broadcast not available');
+          }
         }
       }
 
@@ -1996,7 +2001,12 @@ Then output: \`->relay-file:spawn\`
     // will never be set. Trust that the process is ready if it's running.
     if (this.isInteractive) {
       this.log(` Interactive mode - trusting process is ready`);
-      // Give a brief moment for the CLI to initialize
+      // Give a brief moment for the CLI to initialize its TUI.
+      // 500ms is a conservative estimate based on typical CLI startup times:
+      // - Claude CLI: ~200-300ms to show initial prompt
+      // - Codex/Gemini: ~300-400ms
+      // This delay is only used in interactive mode where we can't detect output.
+      // In non-interactive mode, we poll for actual output instead.
       await sleep(500);
       return this.running;
     }

@@ -1,5 +1,6 @@
 // Client interface
 export type { RelayClient } from './client.js';
+export { createRelayClient } from './client.js';
 
 // Server
 export { createMCPServer, runMCPServer, type MCPServerConfig } from './server.js';
@@ -31,3 +32,39 @@ export {
   handleRelayStatus,
   type RelayStatusInput,
 } from './tools/index.js';
+
+// Prompts
+export { protocolPrompt, getProtocolPrompt, PROTOCOL_DOCUMENTATION } from './prompts/index.js';
+
+// Resources
+export {
+  agentsResource,
+  getAgentsResource,
+  inboxResource,
+  getInboxResource,
+  projectResource,
+  getProjectResource,
+} from './resources/index.js';
+
+// Errors
+export {
+  RelayError,
+  DaemonNotRunningError,
+  AgentNotFoundError,
+  TimeoutError,
+  ConnectionError,
+  ChannelNotFoundError,
+  SpawnError,
+} from './errors.js';
+
+// Cloud/Discovery
+export {
+  discoverSocket,
+  detectCloudWorkspace,
+  isCloudWorkspace,
+  getCloudSocketPath,
+  getConnectionInfo,
+  type DiscoveryResult,
+  type CloudWorkspace,
+  type CloudConnectionInfo,
+} from './cloud.js';

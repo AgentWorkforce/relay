@@ -105,10 +105,28 @@ switch (command) {
 
   case 'serve':
     // Dynamic import to avoid loading server code when not needed
-    import('./index.js').catch((err) => {
-      console.error('Failed to start MCP server:', err.message);
-      process.exit(1);
-    });
+    (async () => {
+      try {
+        const { createRelayClient, runMCPServer, discoverSocket } = await import('./index.js');
+
+        // Discover socket or use default agent name
+        const discovery = discoverSocket();
+        const agentName = process.env.RELAY_AGENT_NAME || `mcp-${process.pid}`;
+
+        // Create client and run server
+        const client = createRelayClient({
+          agentName,
+          socketPath: discovery?.socketPath,
+          project: discovery?.project,
+        });
+
+        await runMCPServer(client);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('Failed to start MCP server:', message);
+        process.exit(1);
+      }
+    })();
     break;
 
   case 'help':

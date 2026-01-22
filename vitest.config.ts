@@ -11,6 +11,7 @@ export default defineConfig({
       'test/**/*.test.ts',
       'test/**/*.test.tsx',
       'packages/**/src/**/*.test.ts',
+      'packages/**/tests/**/*.test.ts',
     ],
     // Use jsdom environment for frontend tests
     environmentMatchGlobs: [

@@ -1,54 +1,75 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { RelayClient } from '../src/client.js';
 import {
   handleRelaySend,
+  relaySendSchema,
   handleRelayInbox,
+  relayInboxSchema,
   handleRelayWho,
+  relayWhoSchema,
   handleRelaySpawn,
   handleRelayRelease,
   handleRelayStatus,
 } from '../src/tools/index.js';
 
-describe('relay_send', () => {
-  const mockClient = {
+/**
+ * Creates a mock RelayClient with all methods stubbed.
+ * Only specify the methods you need for each test.
+ */
+function createMockClient(overrides: Partial<Record<keyof RelayClient, ReturnType<typeof vi.fn>>> = {}): RelayClient {
+  return {
     send: vi.fn(),
     sendAndWait: vi.fn(),
+    spawn: vi.fn(),
+    release: vi.fn(),
+    getStatus: vi.fn(),
+    getInbox: vi.fn(),
+    listAgents: vi.fn(),
+    ...overrides,
   };
+}
+
+describe('relay_send', () => {
+  let mockClient: RelayClient;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockClient = createMockClient();
   });
 
   it('sends a direct message', async () => {
-    mockClient.send.mockResolvedValue(undefined);
+    vi.mocked(mockClient.send).mockResolvedValue(undefined);
 
-    const result = await handleRelaySend(mockClient as any, {
+    const input = relaySendSchema.parse({
       to: 'Alice',
       message: 'Hello',
     });
+    const result = await handleRelaySend(mockClient, input);
 
     expect(result).toBe('Message sent to Alice');
     expect(mockClient.send).toHaveBeenCalledWith('Alice', 'Hello', { thread: undefined });
   });
 
   it('sends to a channel', async () => {
-    mockClient.send.mockResolvedValue(undefined);
+    vi.mocked(mockClient.send).mockResolvedValue(undefined);
 
-    const result = await handleRelaySend(mockClient as any, {
+    const input = relaySendSchema.parse({
       to: '#general',
       message: 'Team update',
     });
+    const result = await handleRelaySend(mockClient, input);
 
     expect(result).toBe('Message sent to #general');
     expect(mockClient.send).toHaveBeenCalledWith('#general', 'Team update', { thread: undefined });
   });
 
   it('awaits response when requested', async () => {
-    mockClient.sendAndWait.mockResolvedValue({
+    vi.mocked(mockClient.sendAndWait).mockResolvedValue({
       from: 'Worker',
       content: 'Done!',
     });
 
-    const result = await handleRelaySend(mockClient as any, {
+    const result = await handleRelaySend(mockClient, {
       to: 'Worker',
       message: 'Process this',
       await_response: true,
@@ -65,25 +86,26 @@ describe('relay_send', () => {
 });
 
 describe('relay_inbox', () => {
-  const mockClient = {
-    getInbox: vi.fn(),
-  };
+  let mockClient: RelayClient;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockClient = createMockClient();
   });
 
   it('returns no messages message when inbox empty', async () => {
-    mockClient.getInbox.mockResolvedValue([]);
+    vi.mocked(mockClient.getInbox).mockResolvedValue([]);
 
-    const result = await handleRelayInbox(mockClient as any, {});
+    const input = relayInboxSchema.parse({});
+    const result = await handleRelayInbox(mockClient, input);
 
     expect(result).toBe('No messages in inbox.');
-    expect(mockClient.getInbox).toHaveBeenCalledWith({});
+    // After parsing, limit and unread_only have defaults
+    expect(mockClient.getInbox).toHaveBeenCalledWith({ limit: 10, unread_only: true });
   });
 
   it('formats messages with channel and thread', async () => {
-    mockClient.getInbox.mockResolvedValue([
+    vi.mocked(mockClient.getInbox).mockResolvedValue([
       {
         id: '123',
         from: 'Lead',
@@ -98,11 +120,12 @@ describe('relay_inbox', () => {
       },
     ]);
 
-    const result = await handleRelayInbox(mockClient as any, {
+    const input = relayInboxSchema.parse({
       limit: 5,
       unread_only: true,
       from: 'Lead',
     });
+    const result = await handleRelayInbox(mockClient, input);
 
     expect(mockClient.getInbox).toHaveBeenCalledWith({
       limit: 5,
@@ -116,31 +139,33 @@ describe('relay_inbox', () => {
 });
 
 describe('relay_who', () => {
-  const mockClient = {
-    listAgents: vi.fn(),
-  };
+  let mockClient: RelayClient;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockClient = createMockClient();
   });
 
   it('returns message when no agents online', async () => {
-    mockClient.listAgents.mockResolvedValue([]);
+    vi.mocked(mockClient.listAgents).mockResolvedValue([]);
 
-    const result = await handleRelayWho(mockClient as any, {});
+    const input = relayWhoSchema.parse({});
+    const result = await handleRelayWho(mockClient, input);
 
     expect(result).toBe('No agents online.');
-    expect(mockClient.listAgents).toHaveBeenCalledWith({});
+    // After parsing, include_idle has a default of true
+    expect(mockClient.listAgents).toHaveBeenCalledWith({ include_idle: true });
   });
 
   it('lists agents with status and parent info', async () => {
-    mockClient.listAgents.mockResolvedValue([
+    vi.mocked(mockClient.listAgents).mockResolvedValue([
       { name: 'Alice', cli: 'claude', idle: false },
       { name: 'Bob', cli: 'codex', idle: true },
       { name: 'Worker1', cli: 'claude', idle: false, parent: 'Alice' },
     ]);
 
-    const result = await handleRelayWho(mockClient as any, { include_idle: true, project: 'proj' });
+    const input = relayWhoSchema.parse({ include_idle: true, project: 'proj' });
+    const result = await handleRelayWho(mockClient, input);
 
     expect(mockClient.listAgents).toHaveBeenCalledWith({ include_idle: true, project: 'proj' });
     expect(result).toContain('3 agent(s) online:');
@@ -151,18 +176,17 @@ describe('relay_who', () => {
 });
 
 describe('relay_spawn', () => {
-  const mockClient = {
-    spawn: vi.fn(),
-  };
+  let mockClient: RelayClient;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockClient = createMockClient();
   });
 
   it('returns success message when worker spawns', async () => {
-    mockClient.spawn.mockResolvedValue({ success: true });
+    vi.mocked(mockClient.spawn).mockResolvedValue({ success: true });
 
-    const result = await handleRelaySpawn(mockClient as any, {
+    const result = await handleRelaySpawn(mockClient, {
       name: 'TestRunner',
       cli: 'claude',
       task: 'Run tests',
@@ -181,9 +205,9 @@ describe('relay_spawn', () => {
   });
 
   it('returns failure message when spawn fails', async () => {
-    mockClient.spawn.mockResolvedValue({ success: false, error: 'Busy' });
+    vi.mocked(mockClient.spawn).mockResolvedValue({ success: false, error: 'Busy' });
 
-    const result = await handleRelaySpawn(mockClient as any, {
+    const result = await handleRelaySpawn(mockClient, {
       name: 'Worker',
       cli: 'codex',
       task: 'Do thing',
@@ -195,18 +219,17 @@ describe('relay_spawn', () => {
 });
 
 describe('relay_release', () => {
-  const mockClient = {
-    release: vi.fn(),
-  };
+  let mockClient: RelayClient;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockClient = createMockClient();
   });
 
   it('returns success message when worker released', async () => {
-    mockClient.release.mockResolvedValue({ success: true });
+    vi.mocked(mockClient.release).mockResolvedValue({ success: true });
 
-    const result = await handleRelayRelease(mockClient as any, {
+    const result = await handleRelayRelease(mockClient, {
       name: 'Worker1',
       reason: 'done',
     });
@@ -216,9 +239,9 @@ describe('relay_release', () => {
   });
 
   it('returns failure message when release fails', async () => {
-    mockClient.release.mockResolvedValue({ success: false, error: 'not found' });
+    vi.mocked(mockClient.release).mockResolvedValue({ success: false, error: 'not found' });
 
-    const result = await handleRelayRelease(mockClient as any, {
+    const result = await handleRelayRelease(mockClient, {
       name: 'Worker2',
     });
 
@@ -227,16 +250,15 @@ describe('relay_release', () => {
 });
 
 describe('relay_status', () => {
-  const mockClient = {
-    getStatus: vi.fn(),
-  };
+  let mockClient: RelayClient;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockClient = createMockClient();
   });
 
   it('formats status output', async () => {
-    mockClient.getStatus.mockResolvedValue({
+    vi.mocked(mockClient.getStatus).mockResolvedValue({
       connected: true,
       agentName: 'AgentA',
       project: 'proj',
@@ -245,7 +267,7 @@ describe('relay_status', () => {
       uptime: '1h',
     });
 
-    const result = await handleRelayStatus(mockClient as any, {});
+    const result = await handleRelayStatus(mockClient, {});
 
     expect(result).toContain('Connected: Yes');
     expect(result).toContain('Agent Name: AgentA');
