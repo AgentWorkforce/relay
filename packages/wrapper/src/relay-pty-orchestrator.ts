@@ -505,16 +505,17 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       return this.config.relayPtyPath;
     }
 
-    // Get the package root (two levels up from dist/wrapper/)
-    const packageRoot = join(__dirname, '..', '..');
+    // Get the project root (four levels up from packages/wrapper/dist/)
+    // packages/wrapper/dist/ -> packages/wrapper -> packages -> project root
+    const projectRoot = join(__dirname, '..', '..', '..', '..');
 
     // Check common locations (ordered by priority)
     const candidates = [
       // Primary: installed by postinstall from platform-specific binary
-      join(packageRoot, 'bin', 'relay-pty'),
+      join(projectRoot, 'bin', 'relay-pty'),
       // Development: local Rust build
-      join(packageRoot, 'relay-pty', 'target', 'release', 'relay-pty'),
-      join(packageRoot, 'relay-pty', 'target', 'debug', 'relay-pty'),
+      join(projectRoot, 'relay-pty', 'target', 'release', 'relay-pty'),
+      join(projectRoot, 'relay-pty', 'target', 'debug', 'relay-pty'),
       // Local build in cwd (for development)
       join(process.cwd(), 'relay-pty', 'target', 'release', 'relay-pty'),
       join(process.cwd(), 'relay-pty', 'target', 'debug', 'relay-pty'),

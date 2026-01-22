@@ -83,15 +83,16 @@ export interface PTYAuthOptions {
  * Returns null if not found.
  */
 function findRelayPtyBinary(): string | null {
-  // Get the package root (four levels up from dist/cloud/api/)
-  const packageRoot = join(__dirname, '..', '..', '..');
+  // Get the project root (five levels up from packages/cloud/dist/api/)
+  // packages/cloud/dist/api/ -> packages/cloud/dist -> packages/cloud -> packages -> project root
+  const projectRoot = join(__dirname, '..', '..', '..', '..', '..');
 
   const candidates = [
     // Primary: installed by postinstall from platform-specific binary
-    join(packageRoot, 'bin', 'relay-pty'),
+    join(projectRoot, 'bin', 'relay-pty'),
     // Development: local Rust build
-    join(packageRoot, 'relay-pty', 'target', 'release', 'relay-pty'),
-    join(packageRoot, 'relay-pty', 'target', 'debug', 'relay-pty'),
+    join(projectRoot, 'relay-pty', 'target', 'release', 'relay-pty'),
+    join(projectRoot, 'relay-pty', 'target', 'debug', 'relay-pty'),
     // Local build in cwd (for development)
     join(process.cwd(), 'relay-pty', 'target', 'release', 'relay-pty'),
     // Installed globally

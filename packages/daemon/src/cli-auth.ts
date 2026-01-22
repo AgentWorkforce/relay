@@ -43,15 +43,16 @@ export type { CLIAuthConfig, PromptHandler };
  * Returns null if not found.
  */
 function findRelayPtyBinary(): string | null {
-  // Get the package root (two levels up from dist/daemon/)
-  const packageRoot = join(__dirname, '..', '..');
+  // Get the project root (four levels up from packages/daemon/dist/)
+  // packages/daemon/dist/ -> packages/daemon -> packages -> project root
+  const projectRoot = join(__dirname, '..', '..', '..', '..');
 
   const candidates = [
     // Primary: installed by postinstall from platform-specific binary
-    join(packageRoot, 'bin', 'relay-pty'),
+    join(projectRoot, 'bin', 'relay-pty'),
     // Development: local Rust build
-    join(packageRoot, 'relay-pty', 'target', 'release', 'relay-pty'),
-    join(packageRoot, 'relay-pty', 'target', 'debug', 'relay-pty'),
+    join(projectRoot, 'relay-pty', 'target', 'release', 'relay-pty'),
+    join(projectRoot, 'relay-pty', 'target', 'debug', 'relay-pty'),
     // Local build in cwd (for development)
     join(process.cwd(), 'relay-pty', 'target', 'release', 'relay-pty'),
     // Installed globally

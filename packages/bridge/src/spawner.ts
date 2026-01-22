@@ -193,15 +193,16 @@ function getRelayInstructions(agentName: string): string {
  * 3. /usr/local/bin/relay-pty (global install)
  */
 function findRelayPtyBinary(): string | null {
-  // Get the package root (three levels up from dist/bridge/)
-  const packageRoot = path.join(__dirname, '..', '..');
+  // Get the project root (four levels up from packages/bridge/dist/)
+  // packages/bridge/dist/ -> packages/bridge -> packages -> project root
+  const projectRoot = path.join(__dirname, '..', '..', '..', '..');
 
   const candidates = [
     // Primary: installed by postinstall from platform-specific binary
-    path.join(packageRoot, 'bin', 'relay-pty'),
+    path.join(projectRoot, 'bin', 'relay-pty'),
     // Development: local Rust build
-    path.join(packageRoot, 'relay-pty', 'target', 'release', 'relay-pty'),
-    path.join(packageRoot, 'relay-pty', 'target', 'debug', 'relay-pty'),
+    path.join(projectRoot, 'relay-pty', 'target', 'release', 'relay-pty'),
+    path.join(projectRoot, 'relay-pty', 'target', 'debug', 'relay-pty'),
     // Local build in cwd (for development)
     path.join(process.cwd(), 'relay-pty', 'target', 'release', 'relay-pty'),
     // Installed globally
