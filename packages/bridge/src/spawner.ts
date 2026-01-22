@@ -849,80 +849,15 @@ export class AgentSpawner {
 
       // Send task to the newly spawned agent if provided
       // We do this AFTER registration AND after the orchestrator is ready to receive messages
-      if (task && task.trim() && this.dashboardPort) {
+      if (task && task.trim()) {
         try {
-          // Wait for the orchestrator to be fully ready (CLI ready + socket connected)
-          // This prevents the race condition where messages arrive before the orchestrator
-          // can inject them into the CLI
-          if ('waitUntilReadyForMessages' in pty) {
-            const orchestrator = pty as RelayPtyOrchestrator;
-            const ready = await orchestrator.waitUntilReadyForMessages(20000, 100);
-            if (!ready) {
-              console.warn(`[spawner] Orchestrator for ${name} did not become ready within timeout, sending task anyway`);
-            } else if (debug) {
-              console.log(`[spawner:debug] Orchestrator for ${name} is ready to receive messages`);
-            }
-          } else if ('waitUntilCliReady' in pty) {
-            // Fallback to old method if new method not available
-            const orchestrator = pty as RelayPtyOrchestrator;
-            const ready = await orchestrator.waitUntilCliReady(15000, 100);
-            if (!ready) {
-              console.warn(`[spawner] CLI for ${name} did not become ready within timeout, sending task anyway`);
-            } else if (debug) {
-              console.log(`[spawner:debug] CLI for ${name} is ready to receive messages`);
-            }
-          } else {
-            // PtyWrapper fallback - use short delay as it doesn't have waitUntilCliReady
-            await sleep(500);
+          if ('waitUntilCliReady' in pty) {
+            await (pty as RelayPtyOrchestrator).waitUntilCliReady(15000, 100);
           }
-
-          // Send task with retry logic for reliability
-          const maxRetries = 3;
-          const retryDelayMs = 2000;
-          let lastError: Error | null = null;
-          let success = false;
-
-          for (let attempt = 1; attempt <= maxRetries; attempt++) {
-            try {
-              const sendResponse = await fetch(
-                `http://localhost:${this.dashboardPort}/api/send`,
-                {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    to: name,
-                    message: task,
-                    from: spawnerName, // Include spawner name so message appears from correct agent
-                  }),
-                }
-              );
-
-              if (sendResponse.ok) {
-                if (debug) console.log(`[spawner:debug] Task sent to ${name} (attempt ${attempt})`);
-                success = true;
-                break;
-              } else {
-                const errorText = await sendResponse.text().catch(() => 'Unknown error');
-                lastError = new Error(`HTTP ${sendResponse.status}: ${errorText}`);
-                if (attempt < maxRetries) {
-                  console.warn(`[spawner] Task send attempt ${attempt} failed for ${name}: ${sendResponse.status}, retrying in ${retryDelayMs}ms...`);
-                  await sleep(retryDelayMs);
-                }
-              }
-            } catch (err: any) {
-              lastError = err;
-              if (attempt < maxRetries) {
-                console.warn(`[spawner] Task send attempt ${attempt} failed for ${name}: ${err.message}, retrying in ${retryDelayMs}ms...`);
-                await sleep(retryDelayMs);
-              }
-            }
-          }
-
-          if (!success) {
-            console.error(`[spawner] Failed to send task to ${name} after ${maxRetries} attempts:`, lastError?.message);
-          }
+          pty.write(task + '\n');
+          if (debug) console.log(`[spawner:debug] Task injected to ${name} via PTY`);
         } catch (err: any) {
-          console.error(`[spawner] Error in task delivery for ${name}:`, err.message);
+          console.error(`[spawner] Error injecting task for ${name}:`, err.message);
         }
       }
 
