@@ -34,7 +34,7 @@ Your message here.
 EOF
 ```
 
-Then output: `->relay-file:msg`
+IMPORTANT: Output the trigger `->relay-file:msg` directly in your response text (not via echo in bash). The trigger must appear in your actual output, not just in command output.
 
 ## Synchronous Messaging
 
@@ -69,6 +69,8 @@ Message body (everything after blank line)
 | `#channel` | Channel message |
 
 ## Spawning & Releasing
+
+**IMPORTANT**: The filename is always `spawn` (not `spawn-agentname`) and the trigger is always `->relay-file:spawn`. Spawn agents one at a time sequentially.
 
 ```bash
 # Spawn
