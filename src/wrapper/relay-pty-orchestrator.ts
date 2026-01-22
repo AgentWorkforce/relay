@@ -20,8 +20,9 @@ import { spawn, ChildProcess } from 'node:child_process';
 import { createConnection, Socket } from 'node:net';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
-import { existsSync, unlinkSync, mkdirSync, symlinkSync, lstatSync, rmSync } from 'node:fs';
-import { getProjectPaths } from '../utils/project-namespace.js';
+import { existsSync, unlinkSync, mkdirSync, symlinkSync, lstatSync, rmSync, watch, readdirSync } from 'node:fs';
+import type { FSWatcher } from 'node:fs';
+import { getProjectPaths } from '@relay/config/project-namespace';
 import { fileURLToPath } from 'node:url';
 
 // Get the directory where this module is located
@@ -192,6 +193,11 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   // Queue monitor for stuck message detection
   private queueMonitorTimer?: NodeJS.Timeout;
   private readonly QUEUE_MONITOR_INTERVAL_MS = 30000; // Check every 30 seconds
+
+  // Protocol monitor for detecting agent mistakes (e.g., empty AGENT_RELAY_NAME)
+  private protocolWatcher?: FSWatcher;
+  private protocolReminderCooldown = 0; // Prevent spam
+  private readonly PROTOCOL_REMINDER_COOLDOWN_MS = 30000; // 30 second cooldown between reminders
 
   // Note: sessionEndProcessed and lastSummaryRawContent are inherited from BaseWrapper
 
@@ -396,6 +402,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     this.readyForMessages = true;
     this.startStuckDetection();
     this.startQueueMonitor();
+    this.startProtocolMonitor();
 
     this.log(` Ready for messages`);
     this.log(` Socket connected: ${this.socketConnected}`);
@@ -413,6 +420,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     this.running = false;
     this.stopStuckDetection();
     this.stopQueueMonitor();
+    this.stopProtocolMonitor();
 
     this.log(` Stopping...`);
 
@@ -1334,6 +1342,173 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       clearInterval(this.queueMonitorTimer);
       this.queueMonitorTimer = undefined;
       this.log(` Queue monitor stopped`);
+    }
+  }
+
+  // =========================================================================
+  // Protocol monitoring (detect agent mistakes like empty AGENT_RELAY_NAME)
+  // =========================================================================
+
+  /**
+   * Start watching for protocol issues in the outbox directory.
+   * Detects common mistakes like:
+   * - Empty AGENT_RELAY_NAME causing files at /tmp/relay-outbox//
+   * - Files created directly in /tmp/relay-outbox/ instead of agent subdirectory
+   */
+  private startProtocolMonitor(): void {
+    const parentDir = '/tmp/relay-outbox';
+
+    // Ensure parent directory exists
+    try {
+      if (!existsSync(parentDir)) {
+        mkdirSync(parentDir, { recursive: true });
+      }
+    } catch {
+      // Ignore - directory may already exist
+    }
+
+    try {
+      this.protocolWatcher = watch(parentDir, (eventType, filename) => {
+        if (eventType === 'rename' && filename) {
+          // Check for files directly in parent (not in agent subdirectory)
+          // This happens when $AGENT_RELAY_NAME is empty
+          const fullPath = `${parentDir}/${filename}`;
+          try {
+            // If it's a file (not directory) directly in the parent, that's an issue
+            if (existsSync(fullPath) && !lstatSync(fullPath).isDirectory()) {
+              this.handleProtocolIssue('file_in_root', filename);
+            }
+            // Check for empty-named directory (double slash symptom)
+            if (filename === '' || filename.startsWith('/')) {
+              this.handleProtocolIssue('empty_agent_name', filename);
+            }
+          } catch {
+            // Ignore stat errors
+          }
+        }
+      });
+
+      // Don't keep process alive just for protocol monitoring
+      this.protocolWatcher.unref?.();
+      this.log(` Protocol monitor started`);
+    } catch (err: any) {
+      // Don't fail start() if protocol monitoring fails
+      this.logError(` Failed to start protocol monitor: ${err.message}`);
+    }
+
+    // Also do an initial scan for existing issues
+    this.scanForProtocolIssues();
+  }
+
+  /**
+   * Stop the protocol monitor.
+   */
+  private stopProtocolMonitor(): void {
+    if (this.protocolWatcher) {
+      this.protocolWatcher.close();
+      this.protocolWatcher = undefined;
+      this.log(` Protocol monitor stopped`);
+    }
+  }
+
+  /**
+   * Scan for existing protocol issues (called once at startup).
+   */
+  private scanForProtocolIssues(): void {
+    const parentDir = '/tmp/relay-outbox';
+    try {
+      if (!existsSync(parentDir)) return;
+
+      const entries = readdirSync(parentDir);
+      for (const entry of entries) {
+        const fullPath = `${parentDir}/${entry}`;
+        try {
+          // Check for files directly in parent (should only be directories)
+          if (!lstatSync(fullPath).isDirectory()) {
+            this.handleProtocolIssue('file_in_root', entry);
+            break; // Only report once
+          }
+        } catch {
+          // Ignore stat errors
+        }
+      }
+    } catch {
+      // Ignore scan errors
+    }
+  }
+
+  /**
+   * Handle a detected protocol issue by injecting a helpful reminder.
+   */
+  private handleProtocolIssue(issue: 'empty_agent_name' | 'file_in_root', filename: string): void {
+    const now = Date.now();
+
+    // Respect cooldown to avoid spamming
+    if (now - this.protocolReminderCooldown < this.PROTOCOL_REMINDER_COOLDOWN_MS) {
+      return;
+    }
+    this.protocolReminderCooldown = now;
+
+    this.log(` Protocol issue detected: ${issue} (${filename})`);
+
+    const reminders: Record<string, string> = {
+      empty_agent_name: `⚠️ **Protocol Issue Detected**
+
+Your \`$AGENT_RELAY_NAME\` environment variable appears to be empty or unset.
+Your agent name is: **${this.config.name}**
+
+Correct outbox path: \`/tmp/relay-outbox/${this.config.name}/\`
+
+When writing relay files, use:
+\`\`\`bash
+cat > /tmp/relay-outbox/${this.config.name}/msg << 'EOF'
+TO: TargetAgent
+
+Your message here
+EOF
+\`\`\`
+Then output: \`->relay-file:msg\``,
+
+      file_in_root: `⚠️ **Protocol Issue Detected**
+
+Found file "${filename}" directly in \`/tmp/relay-outbox/\` instead of in your agent's subdirectory.
+Your agent name is: **${this.config.name}**
+
+Correct outbox path: \`/tmp/relay-outbox/${this.config.name}/\`
+
+Files should be created in your agent's directory:
+\`\`\`bash
+cat > /tmp/relay-outbox/${this.config.name}/${filename} << 'EOF'
+TO: TargetAgent
+
+Your message here
+EOF
+\`\`\``,
+    };
+
+    const reminder = reminders[issue];
+    if (reminder) {
+      this.injectProtocolReminder(reminder);
+    }
+  }
+
+  /**
+   * Inject a protocol reminder message to the agent.
+   */
+  private injectProtocolReminder(message: string): void {
+    const queuedMsg: QueuedMessage = {
+      from: 'system',
+      body: message,
+      messageId: `protocol-reminder-${Date.now()}`,
+      importance: 2, // Higher priority
+    };
+
+    this.messageQueue.unshift(queuedMsg); // Add to front of queue
+    this.log(` Queued protocol reminder (queue size: ${this.messageQueue.length})`);
+
+    // Trigger processing if not already in progress
+    if (!this.isInjecting && this.readyForMessages) {
+      this.processMessageQueue();
     }
   }
 

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-22T08:17:24.810Z",
+  "lastUpdated": "2026-01-22T08:39:49.562Z",
   "trajectories": {
     "traj_ddtj404on2bq": {
       "title": "@relay/api-types extraction",
@@ -18,9 +18,10 @@
     },
     "traj_ek20h4o864ch": {
       "title": "@relay/spawner types extraction (Phase 2A)",
-      "status": "active",
+      "status": "abandoned",
       "startedAt": "2026-01-22T08:17:24.808Z",
-      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/active/traj_ek20h4o864ch.json"
+      "completedAt": "2026-01-22T08:39:29.427Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_ek20h4o864ch.json"
     },
     "traj_yvdadtvdgnz3": {
       "title": "Full cloud e2e flow review",
@@ -658,6 +659,12 @@
       "startedAt": "2026-01-21T22:10:45.793Z",
       "completedAt": "2026-01-21T22:30:11.795Z",
       "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_jl5pp8rdu8up.json"
+    },
+    "traj_ydfl1a3y9293": {
+      "title": "Design CLI-agnostic auto-continuity for lead agents",
+      "status": "active",
+      "startedAt": "2026-01-22T08:39:34.581Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/active/traj_ydfl1a3y9293.json"
     }
   }
 }

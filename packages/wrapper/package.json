@@ -10,17 +10,13 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./client": {
-      "types": "./dist/client.d.ts",
-      "import": "./dist/client.js"
+    "./id-generator": {
+      "types": "./dist/id-generator.d.ts",
+      "import": "./dist/id-generator.js"
     },
-    "./parser": {
-      "types": "./dist/parser.d.ts",
-      "import": "./dist/parser.js"
-    },
-    "./tmux": {
-      "types": "./dist/tmux-wrapper.d.ts",
-      "import": "./dist/tmux-wrapper.js"
+    "./tmux-resolver": {
+      "types": "./dist/tmux-resolver.d.ts",
+      "import": "./dist/tmux-resolver.js"
     }
   },
   "scripts": {

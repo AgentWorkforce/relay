@@ -24,9 +24,9 @@ import {
 import { InboxManager } from './inbox.js';
 import type { SendPayload, SendMeta } from '@relay/protocol/types';
 import { SqliteStorageAdapter } from '../storage/sqlite-adapter.js';
-import { getProjectPaths } from '../utils/project-namespace.js';
+import { getProjectPaths } from '@relay/config/project-namespace';
 import { getTmuxPath } from '../utils/tmux-resolver.js';
-import { findAgentConfig } from '../utils/agent-config.js';
+import { findAgentConfig } from '@relay/config/agent-config';
 import {
   TrajectoryIntegration,
   getTrajectoryIntegration,
@@ -37,7 +37,7 @@ import {
   getTrailEnvVars,
   type PDEROPhase,
 } from '../trajectory/integration.js';
-import { escapeForShell } from '../bridge/utils.js';
+import { escapeForShell } from '@relay/config/bridge-utils';
 import { detectProviderAuthRevocation } from './auth-detection.js';
 import {
   type CliType,
@@ -51,7 +51,7 @@ import {
   CLI_QUIRKS,
 } from './shared.js';
 import { getTmuxPanePid } from './idle-detector.js';
-import { DEFAULT_TMUX_WRAPPER_CONFIG } from '../config/relay-config.js';
+import { DEFAULT_TMUX_WRAPPER_CONFIG } from '@relay/config/relay-config';
 
 const execAsync = promisify(exec);
 

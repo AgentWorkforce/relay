@@ -32,7 +32,7 @@ import {
 import {
   DEFAULT_IDLE_BEFORE_INJECT_MS,
   DEFAULT_IDLE_CONFIDENCE_THRESHOLD,
-} from '../config/relay-config.js';
+} from '@relay/config/relay-config';
 import {
   getContinuityManager,
   parseContinuityCommand,
