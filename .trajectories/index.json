@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-22T08:09:10.844Z",
+  "lastUpdated": "2026-01-22T08:17:24.810Z",
   "trajectories": {
     "traj_ddtj404on2bq": {
       "title": "@relay/api-types extraction",
@@ -8,6 +8,19 @@
       "startedAt": "2026-01-22T07:56:19.509Z",
       "completedAt": "2026-01-22T08:09:10.805Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_ddtj404on2bq.json"
+    },
+    "traj_dm7di6f3plxd": {
+      "title": "@relay/wrapper extraction",
+      "status": "completed",
+      "startedAt": "2026-01-22T08:12:48.651Z",
+      "completedAt": "2026-01-22T08:17:24.388Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_dm7di6f3plxd.json"
+    },
+    "traj_ek20h4o864ch": {
+      "title": "@relay/spawner types extraction (Phase 2A)",
+      "status": "active",
+      "startedAt": "2026-01-22T08:17:24.808Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/active/traj_ek20h4o864ch.json"
     }
   }
 }
