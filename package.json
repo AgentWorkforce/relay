@@ -16,7 +16,7 @@
   },
   "scripts": {
     "postinstall": "npm rebuild better-sqlite3 && node scripts/postinstall.js",
-    "build": "npm run clean && npm run build:protocol && npm run build:config && npm run build:storage && npm run build:state && npm run build:policy && npm run build:trajectory && npm run build:hooks && npm run build:memory && npm run build:utils && npm run build:continuity && npm run build:resiliency && npm run build:user-directory && npm run build:wrapper && npm run build:bridge && npm run build:cloud && npm run build:daemon && npm run build:dashboard-server && npm run build:sdk && tsc && npm run build:dashboard",
+    "build": "npm run clean && npm run build:protocol && npm run build:config && npm run build:storage && npm run build:state && npm run build:policy && npm run build:trajectory && npm run build:hooks && npm run build:memory && npm run build:utils && npm run build:continuity && npm run build:resiliency && npm run build:user-directory && npm run build:wrapper && npm run build:bridge && npm run build:cloud && npm run build:daemon && npm run build:dashboard-server && npm run build:sdk && npm run build:api-types && npm run build:spawner && tsc && npm run build:dashboard",
     "build:state": "cd packages/state && npm run build",
     "build:policy": "cd packages/policy && npm run build",
     "build:memory": "cd packages/memory && npm run build",
@@ -35,6 +35,8 @@
     "build:daemon": "cd packages/daemon && npm run build",
     "build:dashboard-server": "cd packages/dashboard-server && npm run build",
     "build:sdk": "cd packages/sdk && npm run build",
+    "build:api-types": "cd packages/api-types && npm run build",
+    "build:spawner": "cd packages/spawner && npm run build",
     "build:dashboard": "cd src/dashboard && npm run build",
     "postbuild": "chmod +x dist/src/cli/index.js && mkdir -p dist/dashboard && cp -r src/dashboard/out dist/dashboard/",
     "dev:watch": "tsc -w",
