@@ -998,7 +998,9 @@ export async function startDashboard(
     const connectionPromise = (async (): Promise<RelayClient | undefined> => {
       // Create new client for this sender
       // Default to 'user' entityType for non-Dashboard senders (human users)
-      const resolvedEntityType = entityType ?? (senderName === 'Dashboard' ? undefined : 'user');
+      // System clients (starting with '_') should NOT be users - they're internal clients
+      const isSystemClient = senderName.startsWith('_') || senderName === 'Dashboard';
+      const resolvedEntityType = entityType ?? (isSystemClient ? undefined : 'user');
       const client = new RelayClient({
         socketPath,
         agentName: senderName,

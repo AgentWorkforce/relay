@@ -707,9 +707,9 @@ export class RelayPtyOrchestrator extends BaseWrapper {
           ? `AGENT RECOVERED: "${this.config.name}" memory usage returned to normal.`
           : `AGENT RESOURCE ALERT: "${this.config.name}" - ${alert.message} (${formatBytes(alert.currentRss)})`;
 
-        this.log(` Sending resource alert to dashboard: ${message}`);
-        // Send to _DashboardUI only - agents don't need to know about each other's resource usage
-        this.client.sendMessage('_DashboardUI', message, 'message', {
+        this.log(` Sending resource alert to users: ${message}`);
+        // Send to all human users - agents don't need to know about each other's resource usage
+        this.client.sendMessage('@users', message, 'message', {
           isSystemMessage: true,
           agentName: this.config.name,
           alertType: alert.type,
