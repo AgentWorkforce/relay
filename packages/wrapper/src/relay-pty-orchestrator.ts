@@ -206,6 +206,9 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   private readonly PERIODIC_REMINDER_INTERVAL_MS = 45 * 60 * 1000; // 45 minutes
   private sessionStartTime = 0;
 
+  // Track if agent is being gracefully stopped (vs crashed)
+  private isGracefulStop = false;
+
   // Note: sessionEndProcessed and lastSummaryRawContent are inherited from BaseWrapper
 
   constructor(config: RelayPtyOrchestratorConfig) {
@@ -430,6 +433,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
    */
   override async stop(): Promise<void> {
     if (!this.running) return;
+    this.isGracefulStop = true; // Mark as graceful to prevent crash broadcast
     this.running = false;
     this.stopStuckDetection();
     this.stopQueueMonitor();
@@ -607,6 +611,30 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       const exitCode = code ?? (signal === 'SIGKILL' ? 137 : 1);
       this.log(` Process exited: code=${exitCode} signal=${signal}`);
       this.running = false;
+
+      // Broadcast crash notification if not a graceful stop
+      if (!this.isGracefulStop && this.client.state === 'READY') {
+        const isNormalExit = exitCode === 0;
+        const wasKilled = signal === 'SIGKILL' || signal === 'SIGTERM' || exitCode === 137;
+
+        if (!isNormalExit) {
+          const reason = wasKilled
+            ? `killed by signal ${signal || 'SIGKILL'}`
+            : `exit code ${exitCode}`;
+
+          const message = `AGENT CRASHED: "${this.config.name}" has died unexpectedly (${reason}).`;
+
+          this.log(` Broadcasting crash notification: ${message}`);
+          this.client.broadcast(message, 'message', {
+            isSystemMessage: true,
+            agentName: this.config.name,
+            exitCode,
+            signal: signal || undefined,
+            crashType: 'unexpected_exit',
+          });
+        }
+      }
+
       this.emit('exit', exitCode);
       this.config.onExit?.(exitCode);
     });
@@ -1976,6 +2004,7 @@ Then output: \`->relay-file:spawn\`
    * Kill the process forcefully
    */
   async kill(): Promise<void> {
+    this.isGracefulStop = true; // Mark as intentional to prevent crash broadcast
     if (this.relayPtyProcess && !this.relayPtyProcess.killed) {
       this.relayPtyProcess.kill('SIGKILL');
     }
