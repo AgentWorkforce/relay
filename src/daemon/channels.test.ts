@@ -738,4 +738,234 @@ describe('Router - Channel Support', () => {
       expect(delivered.payload.body).toBe('User to agent direct message');
     });
   });
+
+  describe('Channel Auto-Rejoin', () => {
+    /**
+     * Helper to create a channel membership message (for storage).
+     */
+    function createChannelMembershipMessage(
+      memberName: string,
+      channel: string,
+      action: 'join' | 'leave',
+      ts: number = Date.now()
+    ): StoredMessage {
+      return {
+        id: `mem-${Date.now()}-${Math.random()}`,
+        ts,
+        from: '__system__',
+        to: channel,
+        kind: 'state',
+        body: `${action}:${memberName}`,
+        data: {
+          _channelMembership: {
+            member: memberName,
+            action,
+          },
+        },
+        status: 'read',
+        is_urgent: false,
+      };
+    }
+
+    it('should auto-rejoin agent to persisted channels on connect', async () => {
+      const saved: StoredMessage[] = [];
+      const storage: StorageAdapter = {
+        init: async () => {},
+        saveMessage: async (message) => { saved.push(message); },
+        getMessages: async () => saved,
+        getChannelMembershipsForAgent: async (memberName: string) => {
+          // Return channels where alice is a member
+          const channels = new Set<string>();
+          for (const msg of saved) {
+            const membership = (msg.data as any)?._channelMembership;
+            if (membership?.member === memberName) {
+              if (membership.action === 'join') {
+                channels.add(msg.to);
+              } else if (membership.action === 'leave') {
+                channels.delete(msg.to);
+              }
+            }
+          }
+          return Array.from(channels);
+        },
+      };
+
+      const router = new Router({ storage });
+
+      // Simulate alice was in #general and #engineering before disconnect
+      saved.push(createChannelMembershipMessage('alice', '#general', 'join', 1000));
+      saved.push(createChannelMembershipMessage('alice', '#engineering', 'join', 2000));
+
+      // Alice reconnects
+      const alice = new MockConnection('conn-1', 'alice');
+      router.register(alice);
+
+      // Auto-rejoin
+      await router.autoRejoinChannelsForAgent('alice');
+
+      // Verify alice is back in both channels
+      expect(router.getChannelMembers('#general')).toContain('alice');
+      expect(router.getChannelMembers('#engineering')).toContain('alice');
+    });
+
+    it('should not notify other members during auto-rejoin (silent mode)', async () => {
+      const saved: StoredMessage[] = [];
+      const storage: StorageAdapter = {
+        init: async () => {},
+        saveMessage: async (message) => { saved.push(message); },
+        getMessages: async () => saved,
+        getChannelMembershipsForAgent: async (memberName: string) => {
+          const channels = new Set<string>();
+          for (const msg of saved) {
+            const membership = (msg.data as any)?._channelMembership;
+            if (membership?.member === memberName && membership.action === 'join') {
+              channels.add(msg.to);
+            }
+          }
+          return Array.from(channels);
+        },
+      };
+
+      const router = new Router({ storage });
+
+      // Bob is already in #general
+      const bob = new MockConnection('conn-1', 'bob');
+      router.register(bob);
+      router.handleChannelJoin(bob, createChannelJoinEnvelope('bob', '#general'));
+      bob.clearSent();
+
+      // Alice was in #general before disconnect
+      saved.push(createChannelMembershipMessage('alice', '#general', 'join', 1000));
+
+      // Alice reconnects
+      const alice = new MockConnection('conn-2', 'alice');
+      router.register(alice);
+      await router.autoRejoinChannelsForAgent('alice');
+
+      // Bob should NOT receive a join notification (silent rejoin)
+      expect(bob.sentEnvelopes.filter(e => e.type === 'CHANNEL_JOIN')).toHaveLength(0);
+    });
+
+    it('should handle agent with no persisted channels', async () => {
+      const storage: StorageAdapter = {
+        init: async () => {},
+        saveMessage: async () => {},
+        getMessages: async () => [],
+        getChannelMembershipsForAgent: async () => [],
+      };
+
+      const router = new Router({ storage });
+
+      const alice = new MockConnection('conn-1', 'alice');
+      router.register(alice);
+
+      // Should not throw
+      await router.autoRejoinChannelsForAgent('alice');
+
+      // Alice should not be in any channels
+      expect(router.getChannels()).toHaveLength(0);
+    });
+
+    it('should skip rejoin if already in channel (avoid duplicates)', async () => {
+      const saved: StoredMessage[] = [];
+      const storage: StorageAdapter = {
+        init: async () => {},
+        saveMessage: async (message) => { saved.push(message); },
+        getMessages: async () => saved,
+        getChannelMembershipsForAgent: async (memberName: string) => {
+          const channels = new Set<string>();
+          for (const msg of saved) {
+            const membership = (msg.data as any)?._channelMembership;
+            if (membership?.member === memberName && membership.action === 'join') {
+              channels.add(msg.to);
+            }
+          }
+          return Array.from(channels);
+        },
+      };
+
+      const router = new Router({ storage });
+
+      // Alice is already in #general (manually joined)
+      const alice = new MockConnection('conn-1', 'alice');
+      router.register(alice);
+      router.handleChannelJoin(alice, createChannelJoinEnvelope('alice', '#general'));
+
+      // Persisted state also says alice was in #general
+      saved.push(createChannelMembershipMessage('alice', '#general', 'join', 1000));
+
+      alice.clearSent();
+
+      // Auto-rejoin
+      await router.autoRejoinChannelsForAgent('alice');
+
+      // Should only appear once
+      const members = router.getChannelMembers('#general');
+      const aliceCount = members.filter(m => m === 'alice').length;
+      expect(aliceCount).toBe(1);
+
+      // Should not send duplicate join notification
+      expect(alice.sentEnvelopes.filter(e => e.type === 'CHANNEL_JOIN')).toHaveLength(0);
+    });
+
+    it('should respect join/leave order from storage', async () => {
+      const saved: StoredMessage[] = [];
+      const storage: StorageAdapter = {
+        init: async () => {},
+        saveMessage: async (message) => { saved.push(message); },
+        getMessages: async () => saved,
+        getChannelMembershipsForAgent: async (memberName: string) => {
+          // Get most recent action per channel
+          const latestActions = new Map<string, { action: string; ts: number }>();
+          for (const msg of saved) {
+            const membership = (msg.data as any)?._channelMembership;
+            if (membership?.member === memberName) {
+              const channel = msg.to;
+              const current = latestActions.get(channel);
+              if (!current || msg.ts > current.ts) {
+                latestActions.set(channel, { action: membership.action, ts: msg.ts });
+              }
+            }
+          }
+          // Return only channels where latest action is 'join'
+          return Array.from(latestActions.entries())
+            .filter(([, data]) => data.action === 'join')
+            .map(([channel]) => channel);
+        },
+      };
+
+      const router = new Router({ storage });
+
+      // Alice joins, then leaves #general
+      saved.push(createChannelMembershipMessage('alice', '#general', 'join', 1000));
+      saved.push(createChannelMembershipMessage('alice', '#general', 'leave', 2000));
+
+      const alice = new MockConnection('conn-1', 'alice');
+      router.register(alice);
+      await router.autoRejoinChannelsForAgent('alice');
+
+      // Alice should NOT be in #general (left it)
+      expect(router.getChannelMembers('#general')).not.toContain('alice');
+    });
+
+    it('should handle storage adapter without getChannelMembershipsForAgent', async () => {
+      // Storage adapter without the optional method
+      const storage: StorageAdapter = {
+        init: async () => {},
+        saveMessage: async () => {},
+        getMessages: async () => [],
+      };
+
+      const router = new Router({ storage });
+
+      const alice = new MockConnection('conn-1', 'alice');
+      router.register(alice);
+
+      // Should not throw
+      await router.autoRejoinChannelsForAgent('alice');
+
+      // Alice should not be in any channels
+      expect(router.getChannels()).toHaveLength(0);
+    });
+  });
 });

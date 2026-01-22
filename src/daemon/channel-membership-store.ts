@@ -12,6 +12,7 @@ export interface ChannelMembershipStore {
   loadMemberships(): Promise<ChannelMembershipRecord[]>;
   addMember(channel: string, member: string): Promise<void>;
   removeMember(channel: string, member: string): Promise<void>;
+  loadMembershipsForAgent?(memberName: string): Promise<ChannelMembershipRecord[]>;
 }
 
 export interface CloudChannelMembershipStoreOptions {
@@ -150,6 +151,40 @@ export class CloudChannelMembershipStore implements ChannelMembershipStore {
       return channelId;
     }
     return `#${channelId}`;
+  }
+
+  /**
+   * Load channel memberships for a specific agent/user from Postgres.
+   * @param memberName - The agent or user name
+   * @returns Array of channel records for this member
+   */
+  async loadMembershipsForAgent(memberName: string): Promise<ChannelMembershipRecord[]> {
+    try {
+      const result = await this.pool.query(
+        `
+          SELECT c.channel_id AS channel_id
+          FROM channel_members cm
+          INNER JOIN channels c ON cm.channel_id = c.id
+          WHERE c.workspace_id = $1
+            AND cm.member_id = $2
+            AND c.status != 'archived'
+        `,
+        [this.workspaceId, memberName],
+      );
+
+      return result.rows
+        .map((row) => ({
+          channel: this.formatChannelId(row.channel_id as string | null),
+          member: memberName,
+        }))
+        .filter((row): row is ChannelMembershipRecord => Boolean(row.channel));
+    } catch (err) {
+      log.error('Failed to load channel memberships for agent from cloud DB', {
+        member: memberName,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return [];
+    }
   }
 
   /**

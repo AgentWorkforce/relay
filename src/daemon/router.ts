@@ -187,6 +187,82 @@ export class Router {
   }
 
   /**
+   * Auto-rejoin channels for a specific agent based on persisted memberships.
+   * This is called when an agent connects/reconnects to restore their channel memberships
+   * after a daemon restart or reconnection.
+   * Uses admin join mode to avoid spamming notifications to channel members.
+   * @param agentName - The agent name to auto-rejoin
+   */
+  async autoRejoinChannelsForAgent(agentName: string): Promise<void> {
+    if (!this.storage && !this.channelMembershipStore) {
+      return; // No persistence configured
+    }
+
+    try {
+      const channelsToRejoin = new Set<string>();
+
+      // Query Cloud DB if available (takes priority if both exist)
+      if (this.channelMembershipStore?.loadMembershipsForAgent) {
+        const cloudMemberships = await this.channelMembershipStore.loadMembershipsForAgent(agentName);
+        for (const membership of cloudMemberships) {
+          channelsToRejoin.add(membership.channel);
+        }
+      }
+
+      // Query SQLite if available
+      if (this.storage?.getChannelMembershipsForAgent) {
+        const sqliteChannels = await this.storage.getChannelMembershipsForAgent(agentName);
+        for (const channel of sqliteChannels) {
+          channelsToRejoin.add(channel);
+        }
+      }
+
+      if (channelsToRejoin.size === 0) {
+        return; // Agent wasn't in any channels
+      }
+
+      const connection = this.getConnectionByName(agentName);
+      if (!connection) {
+        routerLog.warn(`Cannot auto-rejoin channels for ${agentName}: connection not found`);
+        return;
+      }
+
+      // Rejoin all channels using admin mode (silent)
+      for (const channel of channelsToRejoin) {
+        // Skip if already in channel (handles race condition with explicit joins)
+        const members = this.channels.get(channel);
+        if (members?.has(agentName)) {
+          continue;
+        }
+
+        // Create admin join envelope (payload.member makes it silent)
+        const joinEnvelope: Envelope<ChannelJoinPayload> = {
+          v: PROTOCOL_VERSION,
+          type: 'CHANNEL_JOIN',
+          id: generateId(),
+          ts: Date.now(),
+          from: '__system__',
+          payload: {
+            channel,
+            member: agentName, // Admin mode: specifying member makes join silent
+          },
+        };
+
+        this.handleChannelJoin(connection, joinEnvelope);
+        routerLog.debug(`Auto-rejoined ${agentName} to ${channel}`);
+      }
+
+      if (channelsToRejoin.size > 0) {
+        routerLog.info(`Auto-rejoined ${agentName} to ${channelsToRejoin.size} channel(s): ${Array.from(channelsToRejoin).join(', ')}`);
+      }
+    } catch (err) {
+      routerLog.error(`Failed to auto-rejoin channels for ${agentName}`, {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
    * Set or update the cross-machine handler.
    */
   setCrossMachineHandler(handler: CrossMachineHandler): void {

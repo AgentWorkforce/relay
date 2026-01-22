@@ -229,4 +229,11 @@ export class BatchedSqliteAdapter extends SqliteStorageAdapter {
     // Status updates should be immediate, not batched
     return super.updateMessageStatus(id, status);
   }
+
+  /**
+   * Get channel memberships for an agent - delegates to SQLite (read-only, not batched).
+   */
+  async getChannelMembershipsForAgent(memberName: string): Promise<string[]> {
+    return super.getChannelMembershipsForAgent?.(memberName) ?? [];
+  }
 }

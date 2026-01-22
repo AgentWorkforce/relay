@@ -933,4 +933,47 @@ export class SqliteStorageAdapter implements StorageAdapter {
 
     return counts;
   }
+
+  // ============ Channel Membership Management ============
+
+  /**
+   * Get all channel memberships for a specific agent/user.
+   * Uses window function to get the most recent membership action per channel.
+   * Only returns channels where the most recent action is 'join'.
+   * @param memberName - The agent or user name
+   * @returns Array of channel names (with # prefix)
+   */
+  async getChannelMembershipsForAgent(memberName: string): Promise<string[]> {
+    if (!this.db) {
+      throw new Error('SqliteStorageAdapter not initialized');
+    }
+
+    // Query messages with _channelMembership metadata for this agent
+    // Use window function to get most recent action per channel
+    // Filter for 'join' actions only (ignore 'leave')
+    const stmt = this.db.prepare(`
+      WITH membership_events AS (
+        SELECT
+          recipient AS channel,
+          json_extract(data, '$._channelMembership.member') AS member,
+          json_extract(data, '$._channelMembership.action') AS action,
+          ts,
+          ROW_NUMBER() OVER (
+            PARTITION BY recipient
+            ORDER BY ts DESC
+          ) AS rn
+        FROM messages
+        WHERE kind = 'state'
+          AND data LIKE '%_channelMembership%'
+          AND json_extract(data, '$._channelMembership.member') = ?
+      )
+      SELECT DISTINCT channel
+      FROM membership_events
+      WHERE rn = 1 AND action = 'join'
+      ORDER BY channel
+    `);
+
+    const rows = stmt.all(memberName) as Array<{ channel: string }>;
+    return rows.map(row => row.channel);
+  }
 }
