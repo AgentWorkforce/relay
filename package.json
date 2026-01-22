@@ -66,8 +66,8 @@
     "codex",
     "gemini"
   ],
-  "author": "Khaliq Gant",
-  "license": "MIT",
+  "author": "AgentWorkforce <hi@agent-relay.com>",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AgentWorkforce/relay.git"

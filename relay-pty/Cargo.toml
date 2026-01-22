@@ -3,7 +3,7 @@ name = "relay-pty"
 version = "0.1.0"
 edition = "2021"
 description = "PTY wrapper for reliable agent message injection"
-license = "MIT"
+license = "Apache-2.0"
 authors = ["Agent Workforce"]
 
 [dependencies]
