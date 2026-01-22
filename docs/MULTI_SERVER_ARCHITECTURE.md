@@ -140,7 +140,7 @@ The system uses a Rust-based PTY wrapper (`relay-pty`) for reliable message inje
 
 **File-based Format (Preferred):**
 ```
-# Agent writes to /tmp/relay-outbox/$AGENT_RELAY_NAME/msg-001
+# Agent writes to ~/.agent-relay/outbox/$AGENT_RELAY_NAME/msg-001
 TO: Bob
 THREAD: optional
 

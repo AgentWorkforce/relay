@@ -48,7 +48,7 @@ The relay system includes automatic reliability improvements:
 Write a file to your outbox, then output the trigger:
 
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/msg << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/msg << 'EOF'
 TO: AgentName
 
 Your message here.
@@ -60,7 +60,7 @@ IMPORTANT: Output the trigger `->relay-file:msg` directly in your response text 
 ### Broadcast to All Agents
 
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/broadcast << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/broadcast << 'EOF'
 TO: *
 
 Hello everyone!
@@ -71,7 +71,7 @@ Then: `->relay-file:broadcast`
 ### With Thread
 
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/reply << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/reply << 'EOF'
 TO: AgentName
 THREAD: issue-123
 
@@ -100,7 +100,7 @@ Message body (everything after blank line)
 **ACK immediately** - When you receive a task, acknowledge it before starting work:
 
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/ack << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/ack << 'EOF'
 TO: Sender
 
 ACK: Brief description of task received
@@ -111,7 +111,7 @@ Then: `->relay-file:ack`
 **Report completion** - When done, send a completion message:
 
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/done << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/done << 'EOF'
 TO: Sender
 
 DONE: Brief summary of what was completed
@@ -150,7 +150,7 @@ Relay message from Alice [abc123] [#general]: Hello everyone!
 ### Spawn a Worker
 
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
 KIND: spawn
 NAME: WorkerName
 CLI: claude
@@ -163,7 +163,7 @@ Then: `->relay-file:spawn`
 ### Release a Worker
 
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/release << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/release << 'EOF'
 KIND: release
 NAME: WorkerName
 EOF
@@ -186,7 +186,7 @@ Then: `->relay-file:release`
 
 ```bash
 # Correct - status to lead only
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/status << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/status << 'EOF'
 TO: Lead
 
 STATUS: Working on auth module
@@ -227,7 +227,7 @@ Recipients auto-ACK after processing when a correlation ID is present.
 agent-relay status                    # Check daemon
 agent-relay agents                    # List connected agents
 ls -la /tmp/agent-relay.sock          # Verify socket
-ls -la /tmp/relay-outbox/             # Check outbox directories
+ls -la ~/.agent-relay/outbox/             # Check outbox directories
 ```
 
 ## Common Mistakes
@@ -238,5 +238,5 @@ ls -la /tmp/relay-outbox/             # Check outbox directories
 | Messages not sending | Check `agent-relay status` and outbox directory exists |
 | Incomplete message content | `agent-relay read <id>` for full text |
 | Missing trigger | Must output `->relay-file:<filename>` after writing file |
-| Wrong outbox path | Use `/tmp/relay-outbox/$AGENT_RELAY_NAME/` |
+| Wrong outbox path | Use `~/.agent-relay/outbox/$AGENT_RELAY_NAME/` |
 

@@ -39,7 +39,7 @@ Agents communicate via file-based messaging:
 
 ```bash
 # Write message to outbox
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/msg << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/msg << 'EOF'
 TO: Bob
 
 Hey, can you help with this task?
@@ -57,7 +57,7 @@ Synchronous messaging (wait for ACK):
 
 Or broadcast to all:
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/broadcast << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/broadcast << 'EOF'
 TO: *
 
 Message to all agents
@@ -176,7 +176,7 @@ agent-relay bridge ~/auth ~/frontend ~/api
 
 Cross-project messaging uses `project:agent` format in the TO header:
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/msg << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/msg << 'EOF'
 TO: auth:Lead
 
 Please review the token refresh logic

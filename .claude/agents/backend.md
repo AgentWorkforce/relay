@@ -53,7 +53,7 @@ You are an expert backend developer specializing in server-side logic, business 
 
 ### Starting Work
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/starting << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/starting << 'EOF'
 TO: Lead
 
 **BACKEND:** Starting [feature/task name]
@@ -66,7 +66,7 @@ Then: `->relay-file:starting`
 
 ### Progress Update
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/status << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/status << 'EOF'
 TO: Lead
 
 **STATUS:** [Current state]
@@ -79,7 +79,7 @@ Then: `->relay-file:status`
 
 ### Completion
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/done << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/done << 'EOF'
 TO: Lead
 
 **DONE:** [Feature/task name]
@@ -94,7 +94,7 @@ Then: `->relay-file:done`
 
 ### Asking Questions
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/question << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/question << 'EOF'
 TO: Lead
 
 **QUESTION:** [Technical question]

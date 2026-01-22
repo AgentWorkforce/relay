@@ -96,7 +96,7 @@ You are a data migration specialist focused on safe, reversible database changes
 
 When starting migration:
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/migration << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/migration << 'EOF'
 TO: Lead
 
 MIGRATION: Starting user_profiles schema update
@@ -110,7 +110,7 @@ Then: `->relay-file:migration`
 
 When complete:
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/done << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/done << 'EOF'
 TO: Lead
 
 DONE: Migration completed

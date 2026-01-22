@@ -94,7 +94,7 @@ Speed Layer: Stream → Process → Serve (real-time)
 
 Pipeline status:
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/status << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/status << 'EOF'
 TO: Lead
 
 STATUS: ETL pipeline running
@@ -108,7 +108,7 @@ Then: `->relay-file:status`
 
 Completion:
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/done << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/done << 'EOF'
 TO: Lead
 
 DONE: Daily ETL complete

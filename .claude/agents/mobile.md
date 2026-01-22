@@ -97,7 +97,7 @@ View ← ViewModel ← Repository ← DataSource
 
 Development update:
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/status << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/status << 'EOF'
 TO: Lead
 
 STATUS: Mobile feature progress
@@ -111,7 +111,7 @@ Then: `->relay-file:status`
 
 Completion:
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/done << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/done << 'EOF'
 TO: Lead
 
 DONE: ProfileEdit screen complete

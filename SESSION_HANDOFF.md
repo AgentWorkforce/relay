@@ -33,7 +33,7 @@ Maintain 2468 passing tests throughout
 Trajectory and Hooks MUST build BEFORE Memory
 
 ### Relay Protocol
-Write to /tmp/relay-outbox/[Agent]/msg with TO: Lead header
+Write to ~/.agent-relay/outbox/[Agent]/msg with TO: Lead header
 
 ### Package Paths
 - Config: @agent-relay/config/*
@@ -51,7 +51,7 @@ Write to /tmp/relay-outbox/[Agent]/msg with TO: Lead header
 
 ## Key Files
 
-- Handoff notes: /tmp/relay-outbox/Lead/session-handoff
+- Handoff notes: ~/.agent-relay/outbox/Lead/session-handoff
 - Phase 6 plan: .beads/phase6-execution-plan.md
 - Cloud package: packages/cloud/ (COMPLETE)
 - Dashboard-server: packages/dashboard-server/ (IN PROGRESS)

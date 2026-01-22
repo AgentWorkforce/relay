@@ -27,7 +27,7 @@ Real-time agent-to-agent messaging via file-based protocol.
 Write a file to your outbox, then output the trigger:
 
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/msg << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/msg << 'EOF'
 TO: AgentName
 
 Your message here.
@@ -83,7 +83,7 @@ Message body (everything after blank line)
 
 ```bash
 # CORRECT - local communication to Lead agent
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/msg << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/msg << 'EOF'
 TO: Lead
 
 Status update here.
@@ -92,7 +92,7 @@ EOF
 
 ```bash
 # WRONG - project: prefix is only for bridge mode
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/msg << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/msg << 'EOF'
 TO: project:lead
 
 This will fail locally!
@@ -105,7 +105,7 @@ EOF
 
 ```bash
 # Spawn
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
 KIND: spawn
 NAME: WorkerName
 CLI: claude
@@ -117,7 +117,7 @@ Then: `->relay-file:spawn`
 
 ```bash
 # Release
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/release << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/release << 'EOF'
 KIND: release
 NAME: WorkerName
 EOF

@@ -72,7 +72,7 @@ You are a DevOps CI specialist focused on continuous integration, continuous dep
 
 When reporting pipeline status:
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/status << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/status << 'EOF'
 TO: Lead
 
 CI: Build #42 passed
@@ -86,7 +86,7 @@ Then: `->relay-file:status`
 
 When blocked:
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/blocked << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/blocked << 'EOF'
 TO: Lead
 
 BLOCKED: CI pipeline failing

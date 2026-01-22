@@ -158,7 +158,8 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   private socketPath: string;
   private _logPath: string;
   private _outboxPath: string;
-  private _legacyOutboxPath: string; // Legacy path for symlink creation
+  private _legacyOutboxPath: string; // Legacy /tmp/relay-outbox path for backwards compat
+  private _canonicalOutboxPath: string; // Canonical ~/.agent-relay/outbox path (agents write here)
   private _workspaceId?: string; // For symlink setup
   private socket?: Socket;
   private socketConnected = false;
@@ -211,8 +212,12 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     super(config);
     this.config = config;
 
-    // Legacy outbox path - agents always write here (used for symlink setup)
-    this._legacyOutboxPath = `/tmp/relay-outbox/${config.name}`;
+    // Get project paths (used for logs and local mode)
+    const projectPaths = getProjectPaths(config.cwd);
+
+    // Canonical outbox path - agents ALWAYS write here (transparent symlink in workspace mode)
+    // Uses ~/.agent-relay/outbox/{agentName}/ so agents don't need to know about workspace IDs
+    this._canonicalOutboxPath = join(projectPaths.dataDir, 'outbox', config.name);
 
     // Check for workspace namespacing (for multi-tenant cloud deployment)
     // WORKSPACE_ID can be in process.env or passed via config.env
@@ -220,7 +225,8 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     this._workspaceId = workspaceId;
 
     if (workspaceId) {
-      // Workspace-namespaced paths for cloud multi-tenant isolation
+      // Workspace mode: relay-pty watches the actual workspace path
+      // Canonical path (~/.agent-relay/outbox/) will be symlinked to workspace path
       const getWorkspacePaths = (id: string) => {
         const workspaceDir = `/tmp/relay/${id}`;
         return {
@@ -245,19 +251,23 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       }
 
       this.socketPath = paths.socketPath;
+      // relay-pty watches the actual workspace path
       this._outboxPath = paths.outboxPath;
+      // Legacy path for backwards compat (older agents might still use /tmp/relay-outbox)
+      this._legacyOutboxPath = `/tmp/relay-outbox/${config.name}`;
     } else {
-      // Legacy paths for local development
-      this.socketPath = `/tmp/relay-pty-${config.name}.sock`;
-      this._outboxPath = this._legacyOutboxPath;
+      // Local mode: use ~/.agent-relay paths directly (no symlinks needed)
+      this._outboxPath = this._canonicalOutboxPath;
+      // Socket at ~/.agent-relay/{projectId}/sockets/{agentName}.sock
+      this.socketPath = join(projectPaths.dataDir, 'sockets', `${config.name}.sock`);
+      // No legacy path needed for local mode
+      this._legacyOutboxPath = this._outboxPath;
     }
     if (this.socketPath.length > MAX_SOCKET_PATH_LENGTH) {
       throw new Error(`Socket path exceeds ${MAX_SOCKET_PATH_LENGTH} chars: ${this.socketPath.length}`);
     }
 
-    // Generate log path using same project paths as daemon
-    // Use cwd from config if specified, otherwise detect from current directory
-    const projectPaths = getProjectPaths(config.cwd);
+    // Generate log path using project paths
     this._logPath = join(projectPaths.teamDir, 'worker-logs', `${config.name}.log`);
 
     // Check if we're running interactively (stdin is a TTY)
@@ -320,66 +330,60 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       this.logError(` Failed to clean up socket: ${err.message}`);
     }
 
-    // Set up outbox symlink for workspace namespacing
-    // Agents write to legacy path (/tmp/relay-outbox/{name}), symlink points to workspace path
-    // This allows agents to use simple instructions while maintaining workspace isolation
-    if (this._workspaceId) {
-      try {
-        // Ensure workspace outbox directory exists
-        const outboxDir = dirname(this._outboxPath);
-        if (!existsSync(outboxDir)) {
-          mkdirSync(outboxDir, { recursive: true });
-        }
-        if (!existsSync(this._outboxPath)) {
-          mkdirSync(this._outboxPath, { recursive: true });
-        }
+    // Set up outbox directory structure
+    // - Workspace mode:
+    //   1. Create actual workspace path /tmp/relay/{workspaceId}/outbox/{name}
+    //   2. Symlink canonical ~/.agent-relay/outbox/{name} -> workspace path
+    //   3. Optional: symlink /tmp/relay-outbox/{name} -> workspace path (backwards compat)
+    // - Local mode: just create ~/.agent-relay/{projectId}/outbox/{name} directly
+    try {
+      // Ensure the actual outbox directory exists (where relay-pty watches)
+      const outboxDir = dirname(this._outboxPath);
+      if (!existsSync(outboxDir)) {
+        mkdirSync(outboxDir, { recursive: true });
+      }
+      if (!existsSync(this._outboxPath)) {
+        mkdirSync(this._outboxPath, { recursive: true });
+      }
+      this.log(` Created outbox directory: ${this._outboxPath}`);
 
-        // Ensure legacy outbox parent directory exists
-        const legacyOutboxParent = dirname(this._legacyOutboxPath);
-        if (!existsSync(legacyOutboxParent)) {
-          mkdirSync(legacyOutboxParent, { recursive: true });
-        }
-
-        // Create symlink from legacy path to workspace path
-        // If legacy path exists as a regular directory, remove it first
-        if (existsSync(this._legacyOutboxPath)) {
-          try {
-            const stats = lstatSync(this._legacyOutboxPath);
-            if (stats.isSymbolicLink()) {
-              // Already a symlink - remove and recreate to ensure correct target
-              unlinkSync(this._legacyOutboxPath);
-            } else if (stats.isDirectory()) {
-              // Regular directory - remove it (may have stale files from previous run)
-              rmSync(this._legacyOutboxPath, { recursive: true, force: true });
+      // In workspace mode, create symlinks so agents can use canonical path
+      if (this._workspaceId) {
+        // Helper to create a symlink, cleaning up existing path first
+        const createSymlinkSafe = (linkPath: string, targetPath: string) => {
+          const linkParent = dirname(linkPath);
+          if (!existsSync(linkParent)) {
+            mkdirSync(linkParent, { recursive: true });
+          }
+          if (existsSync(linkPath)) {
+            try {
+              const stats = lstatSync(linkPath);
+              if (stats.isSymbolicLink()) {
+                unlinkSync(linkPath);
+              } else if (stats.isDirectory()) {
+                rmSync(linkPath, { recursive: true, force: true });
+              }
+            } catch {
+              // Ignore cleanup errors
             }
-          } catch {
-            // Ignore errors during cleanup
           }
+          symlinkSync(targetPath, linkPath);
+          this.log(` Created symlink: ${linkPath} -> ${targetPath}`);
+        };
+
+        // Symlink canonical path (~/.agent-relay/outbox/{name}) -> workspace path
+        // This is the PRIMARY symlink - agents write to canonical path, relay-pty watches workspace path
+        if (this._canonicalOutboxPath !== this._outboxPath) {
+          createSymlinkSafe(this._canonicalOutboxPath, this._outboxPath);
         }
 
-        // Create the symlink: legacy path -> workspace path
-        symlinkSync(this._outboxPath, this._legacyOutboxPath);
-        this.log(` Created outbox symlink: ${this._legacyOutboxPath} -> ${this._outboxPath}`);
-      } catch (err: any) {
-        this.logError(` Failed to set up outbox symlink: ${err.message}`);
-        // Fall back to creating legacy directory directly
-        try {
-          if (!existsSync(this._legacyOutboxPath)) {
-            mkdirSync(this._legacyOutboxPath, { recursive: true });
-          }
-        } catch {
-          // Ignore
+        // Also create legacy /tmp/relay-outbox symlink for backwards compat with older agents
+        if (this._legacyOutboxPath !== this._outboxPath && this._legacyOutboxPath !== this._canonicalOutboxPath) {
+          createSymlinkSafe(this._legacyOutboxPath, this._outboxPath);
         }
       }
-    } else {
-      // No workspace ID - just ensure legacy outbox directory exists
-      try {
-        if (!existsSync(this._legacyOutboxPath)) {
-          mkdirSync(this._legacyOutboxPath, { recursive: true });
-        }
-      } catch (err: any) {
-        this.logError(` Failed to create outbox directory: ${err.message}`);
-      }
+    } catch (err: any) {
+      this.logError(` Failed to set up outbox: ${err.message}`);
     }
 
     // Find relay-pty binary

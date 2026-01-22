@@ -90,7 +90,7 @@ Relay message from alice [xyz789] [#general]: Question for the team
 
 **ACK (Acknowledgment):**
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/ack << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/ack << 'EOF'
 TO: Sender
 
 ACK: Brief description of task received

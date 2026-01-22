@@ -218,7 +218,7 @@ Agents choose blocking vs fire-and-forget via the AWAIT header:
 
 ### Fire-and-Forget (Default)
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/msg << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/msg << 'EOF'
 TO: Target
 
 Hello, this is a normal message
@@ -230,7 +230,7 @@ Message sent, agent continues immediately. Current behavior.
 
 ### Blocking/Await
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/turn << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/turn << 'EOF'
 TO: Target
 AWAIT: 30s
 
@@ -249,7 +249,7 @@ Relay message from Coordinator [abc123] [awaiting]: Your turn. Play a card.
 
 The `[awaiting]` tag tells the agent they should respond. Agent responds normally:
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/reply << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/reply << 'EOF'
 TO: Coordinator
 
 I play 3C
@@ -265,7 +265,7 @@ The system correlates by thread/conversation context.
 
 ```bash
 # Coordinator writes blocking request
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/turn << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/turn << 'EOF'
 TO: North
 AWAIT: 60s
 
@@ -281,7 +281,7 @@ Relay message from Coordinator [abc123] [awaiting]: Your turn. Play a card.
 
 North responds:
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/play << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/play << 'EOF'
 TO: Coordinator
 
 I play 3C
@@ -296,7 +296,7 @@ Coordinator receives response, then continues to East.
 ```bash
 # Send all hands, wait for all ACKs
 # (Each written to separate files, triggers sent in sequence)
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/north << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/north << 'EOF'
 TO: North
 AWAIT: 60s
 
@@ -310,7 +310,7 @@ All must ACK before coordinator continues.
 ### Pattern 3: Fire-and-Forget Broadcast
 
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/announce << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/announce << 'EOF'
 TO: *
 
 Game starting in 30 seconds!
@@ -322,7 +322,7 @@ Then: `->relay-file:announce`
 
 ```bash
 # Fire-and-forget status update
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/status << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/status << 'EOF'
 TO: Dashboard
 
 STATUS: Starting round 3
@@ -332,7 +332,7 @@ Then: `->relay-file:status`
 
 ```bash
 # Blocking turn request
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/turn << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/turn << 'EOF'
 TO: North
 AWAIT: 60s
 

@@ -991,7 +991,7 @@ The Consensus mechanism enables distributed decision-making across multiple agen
 
 ```bash
 # Propose a decision
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/propose << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/propose << 'EOF'
 TO: _consensus
 
 PROPOSE: Should we use JWT or sessions for auth?
@@ -1063,7 +1063,7 @@ The Continuity system enables session persistence and cross-session handoffs.
 
 ```bash
 # Save current state
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/continuity << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/continuity << 'EOF'
 KIND: continuity
 ACTION: save
 
@@ -1078,7 +1078,7 @@ Then: `->relay-file:continuity`
 
 ```bash
 # Load previous context
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/load << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/load << 'EOF'
 KIND: continuity
 ACTION: load
 EOF
@@ -1087,7 +1087,7 @@ Then: `->relay-file:load`
 
 ```bash
 # Search past handoffs
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/search << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/search << 'EOF'
 KIND: continuity
 ACTION: search
 

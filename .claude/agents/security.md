@@ -134,7 +134,7 @@ You are a security specialist focused on identifying vulnerabilities, assessing 
 
 **Acknowledge audit request:**
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/ack << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/ack << 'EOF'
 TO: Sender
 
 ACK: Beginning security audit of [scope]
@@ -144,7 +144,7 @@ Then: `->relay-file:ack`
 
 **Report findings:**
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/report << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/report << 'EOF'
 TO: Sender
 
 SECURITY AUDIT COMPLETE:
@@ -158,7 +158,7 @@ Then: `->relay-file:report`
 
 **Escalate critical issues:**
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/escalate << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/escalate << 'EOF'
 TO: Lead
 
 CRITICAL SECURITY ISSUE: [brief description]

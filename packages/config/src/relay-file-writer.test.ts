@@ -74,11 +74,14 @@ describe('RelayFileWriter', () => {
   });
 
   describe('getOutboxPath', () => {
-    it('should return legacy path for local mode', () => {
+    it('should return canonical path for local mode', () => {
       const writer = new RelayFileWriter('TestAgent');
       const outboxPath = writer.getOutboxPath();
+      const paths = writer.getPaths();
 
-      expect(outboxPath).toBe('/tmp/relay-outbox/TestAgent');
+      // Should return the canonical path (same as agentOutbox)
+      expect(outboxPath).toBe(paths.agentOutbox);
+      expect(outboxPath).toContain('TestAgent');
     });
 
     it('should return workspace path for workspace mode', () => {
@@ -321,16 +324,19 @@ describe('Utility Functions', () => {
   });
 
   describe('getAgentOutboxTemplate', () => {
-    it('should return template with variable', () => {
+    it('should return template with canonical path', () => {
       const template = getAgentOutboxTemplate();
 
-      expect(template).toBe('/tmp/relay-outbox/$AGENT_RELAY_NAME');
+      // Should use canonical ~/.agent-relay path
+      expect(template).toContain('/outbox/$AGENT_RELAY_NAME');
+      expect(template).not.toContain('/tmp/');
     });
 
     it('should accept custom variable name', () => {
       const template = getAgentOutboxTemplate('${name}');
 
-      expect(template).toBe('/tmp/relay-outbox/${name}');
+      expect(template).toContain('/outbox/${name}');
+      expect(template).not.toContain('/tmp/');
     });
   });
 

@@ -105,7 +105,7 @@ You are a deployment specialist focused on safe, reliable releases. You manage r
 
 Deployment start:
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/deploy << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/deploy << 'EOF'
 TO: Lead
 
 DEPLOY: Starting v2.4.1 rollout
@@ -119,7 +119,7 @@ Then: `->relay-file:deploy`
 
 Progress update:
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/progress << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/progress << 'EOF'
 TO: Lead
 
 DEPLOY: Progress update
@@ -133,7 +133,7 @@ Then: `->relay-file:progress`
 
 Completion:
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/done << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/done << 'EOF'
 TO: Lead
 
 DONE: v2.4.1 deployed successfully

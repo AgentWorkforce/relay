@@ -62,7 +62,7 @@ You are an expert database specialist focusing on data modeling, schema design, 
 
 ### Starting Work
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/starting << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/starting << 'EOF'
 TO: Lead
 
 **DATABASE:** Starting [task name]
@@ -75,7 +75,7 @@ Then: `->relay-file:starting`
 
 ### Schema Change Proposal
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/proposal << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/proposal << 'EOF'
 TO: Lead
 
 **SCHEMA CHANGE:** [Description]
@@ -92,7 +92,7 @@ Then: `->relay-file:proposal`
 
 ### Completion
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/done << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/done << 'EOF'
 TO: Lead
 
 **DONE:** [Task name]

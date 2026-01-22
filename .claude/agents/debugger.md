@@ -70,7 +70,7 @@ You are an expert debugger specializing in systematic bug investigation and root
 
 ### Starting Investigation
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/starting << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/starting << 'EOF'
 TO: Lead
 
 **DEBUG:** Investigating [bug description]
@@ -83,7 +83,7 @@ Then: `->relay-file:starting`
 
 ### Progress Update
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/status << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/status << 'EOF'
 TO: Lead
 
 **DEBUG STATUS:** [Bug name]
@@ -100,7 +100,7 @@ Then: `->relay-file:status`
 
 ### Root Cause Found
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/rootcause << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/rootcause << 'EOF'
 TO: Lead
 
 **ROOT CAUSE:** [Bug name]
@@ -117,7 +117,7 @@ Then: `->relay-file:rootcause`
 
 ### Fix Complete
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/done << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/done << 'EOF'
 TO: Lead
 
 **FIXED:** [Bug name]

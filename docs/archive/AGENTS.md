@@ -162,7 +162,7 @@ relay team status
 Write a file to your outbox, then output the trigger:
 
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/msg << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/msg << 'EOF'
 TO: AgentName
 
 Your message here.
@@ -172,7 +172,7 @@ Then output: `->relay-file:msg`
 
 **Broadcast to all:**
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/broadcast << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/broadcast << 'EOF'
 TO: *
 
 Hello everyone!
@@ -205,7 +205,7 @@ Write a file to your outbox with headers, then output the `->relay-file:` trigge
 
 **Step 1: Write the message file:**
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/msg << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/msg << 'EOF'
 TO: PlayerO
 
 I've finished the API refactor. Ready for your review.
@@ -240,7 +240,7 @@ Can span multiple lines.
 
 **Direct message:**
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/turn << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/turn << 'EOF'
 TO: PlayerO
 
 Your turn! I played X at center.
@@ -250,7 +250,7 @@ Then: `->relay-file:turn`
 
 **Broadcast to all agents:**
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/done << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/done << 'EOF'
 TO: *
 
 I've completed the authentication module. Ready for review.
@@ -260,7 +260,7 @@ Then: `->relay-file:done`
 
 **With thread context:**
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/reply << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/reply << 'EOF'
 TO: Developer
 THREAD: auth-review
 

@@ -153,7 +153,9 @@ describe('RelayPtyOrchestrator', () => {
         command: 'claude',
       });
 
-      expect(orchestrator.getSocketPath()).toBe('/tmp/relay-pty-TestAgent.sock');
+      // Local mode uses ~/.agent-relay paths
+      expect(orchestrator.getSocketPath()).toContain('.agent-relay');
+      expect(orchestrator.getSocketPath()).toContain('TestAgent.sock');
     });
 
     it('uses workspace-namespaced paths when WORKSPACE_ID is in config.env', () => {
@@ -202,15 +204,19 @@ describe('RelayPtyOrchestrator', () => {
       }
     });
 
-    it('uses legacy paths when WORKSPACE_ID is not set', () => {
+    it('uses canonical ~/.agent-relay paths when WORKSPACE_ID is not set', () => {
       // beforeEach already clears WORKSPACE_ID
       orchestrator = new RelayPtyOrchestrator({
         name: 'LocalAgent',
         command: 'claude',
       });
 
-      expect(orchestrator.getSocketPath()).toBe('/tmp/relay-pty-LocalAgent.sock');
-      expect(orchestrator.outboxPath).toBe('/tmp/relay-outbox/LocalAgent');
+      // Local mode uses ~/.agent-relay paths, not /tmp
+      expect(orchestrator.getSocketPath()).toContain('.agent-relay');
+      expect(orchestrator.getSocketPath()).toContain('LocalAgent.sock');
+      expect(orchestrator.outboxPath).toContain('.agent-relay');
+      expect(orchestrator.outboxPath).toContain('outbox/LocalAgent');
+      expect(orchestrator.outboxPath).not.toContain('/tmp/');
     });
   });
 
@@ -269,7 +275,10 @@ describe('RelayPtyOrchestrator', () => {
       expect(args).toContain('--name');
       expect(args).toContain('TestAgent');
       expect(args).toContain('--socket');
-      expect(args).toContain('/tmp/relay-pty-TestAgent.sock');
+      // Socket path should be in ~/.agent-relay for local mode
+      const socketArg = args[args.indexOf('--socket') + 1];
+      expect(socketArg).toContain('.agent-relay');
+      expect(socketArg).toContain('TestAgent.sock');
       expect(args).toContain('--idle-timeout');
       expect(args).toContain('1000');
       expect(args).toContain('--');
@@ -336,10 +345,11 @@ describe('RelayPtyOrchestrator', () => {
 
       await orchestrator.start();
 
-      expect(mockCreateConnection).toHaveBeenCalledWith(
-        '/tmp/relay-pty-TestAgent.sock',
-        expect.any(Function)
-      );
+      // Should connect to the socket at ~/.agent-relay path for local mode
+      expect(mockCreateConnection).toHaveBeenCalled();
+      const socketPath = mockCreateConnection.mock.calls[0][0];
+      expect(socketPath).toContain('.agent-relay');
+      expect(socketPath).toContain('TestAgent.sock');
     });
 
     it('retries socket connection on failure', async () => {

@@ -159,7 +159,7 @@ npx pa11y https://example.com
 
 **Acknowledge audit request:**
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/ack << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/ack << 'EOF'
 TO: Sender
 
 ACK: Starting accessibility audit for [scope]
@@ -169,7 +169,7 @@ Then: `->relay-file:ack`
 
 **Report findings:**
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/report << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/report << 'EOF'
 TO: Sender
 
 A11Y AUDIT COMPLETE:
@@ -184,7 +184,7 @@ Then: `->relay-file:report`
 
 **Recommend priority fixes:**
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/priority << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/priority << 'EOF'
 TO: Lead
 
 A11Y PRIORITY: [component] blocks keyboard users

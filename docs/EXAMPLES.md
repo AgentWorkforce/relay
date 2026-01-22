@@ -111,7 +111,7 @@ A PR needs approval from at least 2 of 3 reviewers (Security, Backend, QA).
 
 ```bash
 # Lead proposes the review
-cat > /tmp/relay-outbox/Lead/propose << 'EOF'
+cat > ~/.agent-relay/outbox/Lead/propose << 'EOF'
 TO: _consensus
 
 PROPOSE: Approve PR #42 - Add password reset feature
@@ -136,7 +136,7 @@ EOF
 
 ```bash
 # Security approves
-cat > /tmp/relay-outbox/Security/vote << 'EOF'
+cat > ~/.agent-relay/outbox/Security/vote << 'EOF'
 TO: _consensus
 PROPOSAL: pr-42-review
 VOTE: approve
@@ -151,7 +151,7 @@ EOF
 
 ```bash
 # Backend approves with suggestions
-cat > /tmp/relay-outbox/Backend/vote << 'EOF'
+cat > ~/.agent-relay/outbox/Backend/vote << 'EOF'
 TO: _consensus
 PROPOSAL: pr-42-review
 VOTE: approve
@@ -165,7 +165,7 @@ EOF
 
 ```bash
 # QA approves
-cat > /tmp/relay-outbox/QA/vote << 'EOF'
+cat > ~/.agent-relay/outbox/QA/vote << 'EOF'
 TO: _consensus
 PROPOSAL: pr-42-review
 VOTE: approve
@@ -214,7 +214,7 @@ User: Implement real-time notifications using WebSockets
 FeatureWorker works for 30 minutes...
 
 # Save progress before a long build
-cat > /tmp/relay-outbox/FeatureWorker/continuity << 'EOF'
+cat > ~/.agent-relay/outbox/FeatureWorker/continuity << 'EOF'
 KIND: continuity
 ACTION: save
 
@@ -282,7 +282,7 @@ FeatureWorker continues from where it left off...
 
 ```bash
 # Worker finishing up
-cat > /tmp/relay-outbox/FeatureWorker/handoff << 'EOF'
+cat > ~/.agent-relay/outbox/FeatureWorker/handoff << 'EOF'
 KIND: continuity
 ACTION: handoff
 
@@ -318,7 +318,7 @@ Then: `->relay-file:handoff`
 
 ```bash
 # New agent needs to understand WS implementation
-cat > /tmp/relay-outbox/NewWorker/search << 'EOF'
+cat > ~/.agent-relay/outbox/NewWorker/search << 'EOF'
 KIND: continuity
 ACTION: search
 
@@ -354,7 +354,7 @@ Summary: Evaluated WebSocket libraries and architecture patterns
 
 ### Spawn a Worker
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
 KIND: spawn
 NAME: WorkerName
 CLI: claude --agent worker-type
@@ -366,7 +366,7 @@ Then: `->relay-file:spawn`
 
 ### Send a Message
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/msg << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/msg << 'EOF'
 TO: TargetAgent
 
 Your message here.
@@ -376,7 +376,7 @@ Then: `->relay-file:msg`
 
 ### Broadcast to All
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/broadcast << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/broadcast << 'EOF'
 TO: *
 
 Message for everyone.
@@ -386,7 +386,7 @@ Then: `->relay-file:broadcast`
 
 ### Save Continuity
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/continuity << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/continuity << 'EOF'
 KIND: continuity
 ACTION: save
 
@@ -399,7 +399,7 @@ Then: `->relay-file:continuity`
 
 ### Create Handoff
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/handoff << 'EOF'
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/handoff << 'EOF'
 KIND: continuity
 ACTION: handoff
 

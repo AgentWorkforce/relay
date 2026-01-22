@@ -203,20 +203,16 @@ export class RelayFileWriter {
 
   /**
    * Get the outbox path that agents should write to.
-   * For cloud: uses workspace path directly
-   * For local: uses legacy path (which may be symlinked)
+   * Always returns the canonical ~/.agent-relay path.
+   * In workspace mode, this path is symlinked to the actual workspace path.
    */
   getOutboxPath(): string {
-    // In workspace mode, agents use the workspace path directly
-    if (this.paths.isWorkspace) {
-      return this.paths.agentOutbox;
-    }
-    // For local mode, use legacy path for backward compatibility
-    return path.join(this.paths.legacyOutboxDir, this.agentName);
+    // Always use the canonical path - symlinks handle workspace routing
+    return this.paths.agentOutbox;
   }
 
   /**
-   * Get the legacy outbox path (for symlink creation).
+   * Get the legacy outbox path (for backwards compatibility symlinks).
    */
   getLegacyOutboxPath(): string {
     return path.join(this.paths.legacyOutboxDir, this.agentName);
@@ -224,70 +220,62 @@ export class RelayFileWriter {
 
   /**
    * Ensure all necessary directories exist for this agent.
-   * Also sets up symlinks for backward compatibility in workspace mode.
+   * In workspace mode, also sets up symlinks from canonical path to workspace path.
    */
   async ensureDirectories(): Promise<void> {
-    // Create agent-specific directories
+    // Create agent-specific directories at canonical path
     await fs.promises.mkdir(this.paths.agentOutbox, { recursive: true });
     await fs.promises.mkdir(this.paths.agentAttachments, { recursive: true });
     await fs.promises.mkdir(this.paths.metaDir, { recursive: true });
 
-    // In workspace mode, create symlink from legacy path to workspace path
+    // In workspace mode, set up symlinks so canonical path routes to workspace
+    // (Note: The orchestrator handles symlink setup, this is just for standalone use)
     if (this.paths.isWorkspace) {
-      await this.setupLegacySymlink();
-    } else {
-      // For local mode, ensure legacy outbox exists
-      const legacyPath = path.join(this.paths.legacyOutboxDir, this.agentName);
-      await fs.promises.mkdir(legacyPath, { recursive: true });
+      await this.setupWorkspaceSymlinks();
     }
   }
 
   /**
-   * Set up symlink from legacy outbox path to workspace outbox path.
-   * This allows agents to use simple instructions while maintaining workspace isolation.
+   * Set up symlinks for workspace mode.
+   * Creates symlink from legacy /tmp/relay-outbox path to workspace path.
+   * (The orchestrator creates the canonical→workspace symlink)
    */
-  private async setupLegacySymlink(): Promise<void> {
+  private async setupWorkspaceSymlinks(): Promise<void> {
     const legacyPath = path.join(this.paths.legacyOutboxDir, this.agentName);
-    const legacyParent = path.dirname(legacyPath);
 
     try {
-      // Ensure legacy parent directory exists
-      await fs.promises.mkdir(legacyParent, { recursive: true });
-
-      // Check if legacy path exists
-      try {
-        const stats = await fs.promises.lstat(legacyPath);
-
-        if (stats.isSymbolicLink()) {
-          // Already a symlink - verify it points to correct location
-          const target = await fs.promises.readlink(legacyPath);
-          if (target === this.paths.agentOutbox) {
-            return; // Already correctly configured
-          }
-          // Wrong target - remove and recreate
-          await fs.promises.unlink(legacyPath);
-        } else if (stats.isDirectory()) {
-          // Regular directory - remove it (may have stale files)
-          await fs.promises.rm(legacyPath, { recursive: true, force: true });
-        }
-      } catch (err: any) {
-        if (err.code !== 'ENOENT') {
-          throw err;
-        }
-        // Path doesn't exist - good, we'll create the symlink
-      }
-
-      // Create symlink: legacy path -> workspace path
-      await fs.promises.symlink(this.paths.agentOutbox, legacyPath);
+      await this.createSymlinkSafe(legacyPath, this.paths.agentOutbox);
     } catch (err: any) {
-      console.error(`[relay-file-writer] Failed to setup legacy symlink: ${err.message}`);
-      // Fall back to creating the directory directly
-      try {
-        await fs.promises.mkdir(legacyPath, { recursive: true });
-      } catch {
-        // Ignore
-      }
+      console.error(`[relay-file-writer] Failed to setup workspace symlinks: ${err.message}`);
     }
+  }
+
+  /**
+   * Helper to create a symlink, cleaning up existing path first.
+   */
+  private async createSymlinkSafe(linkPath: string, targetPath: string): Promise<void> {
+    const linkParent = path.dirname(linkPath);
+    await fs.promises.mkdir(linkParent, { recursive: true });
+
+    try {
+      const stats = await fs.promises.lstat(linkPath);
+      if (stats.isSymbolicLink()) {
+        const target = await fs.promises.readlink(linkPath);
+        if (target === targetPath) {
+          return; // Already correctly configured
+        }
+        await fs.promises.unlink(linkPath);
+      } else if (stats.isDirectory()) {
+        await fs.promises.rm(linkPath, { recursive: true, force: true });
+      }
+    } catch (err: any) {
+      if (err.code !== 'ENOENT') {
+        throw err;
+      }
+      // Path doesn't exist - proceed to create symlink
+    }
+
+    await fs.promises.symlink(targetPath, linkPath);
   }
 
   /**
@@ -492,14 +480,18 @@ export function getBaseRelayPaths(workspaceId?: string): RelayPaths {
  * Get the outbox path that should be used in agent instructions.
  * This is the path agents will write to in their bash commands.
  *
+ * Uses the canonical ~/.agent-relay/outbox/ path - symlinks handle
+ * routing to workspace paths in cloud mode transparently.
+ *
  * @param agentNameVar - Variable name for agent (default: '$AGENT_RELAY_NAME')
  * @returns Path template for agent instructions
  */
 export function getAgentOutboxTemplate(agentNameVar = '$AGENT_RELAY_NAME'): string {
-  // Always use the legacy path in instructions since:
-  // 1. It's simpler for agents to remember
-  // 2. Symlinks handle the mapping to workspace paths
-  return `${LEGACY_OUTBOX_BASE}/${agentNameVar}`;
+  // Use canonical path: ~/.agent-relay/outbox/{agentName}
+  // In workspace mode, this is symlinked to the actual workspace path
+  // Agents don't need to know about workspace IDs
+  const baseDir = getBaseDir();
+  return `${baseDir}/outbox/${agentNameVar}`;
 }
 
 /**
