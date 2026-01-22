@@ -1,5 +1,5 @@
 import type { DeliverEnvelope, AckPayload, Envelope } from '@relay/protocol/types';
-import type { StorageAdapter } from '../storage/adapter.js';
+import type { StorageAdapter } from '/storage/adapter';
 import { routerLog } from '../utils/logger.js';
 
 export interface DeliveryReliabilityOptions {

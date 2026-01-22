@@ -14,7 +14,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { randomBytes } from 'crypto';
 import { createLogger } from '../utils/logger.js';
-import type { StorageAdapter, StoredMessage } from '../storage/adapter.js';
+import type { StorageAdapter, StoredMessage } from '/storage/adapter';
 import { SyncQueue, type SyncQueueConfig, type SyncQueueStats } from './sync-queue.js';
 import { getRepoFullNameFromPath } from '../utils/git-remote.js';
 

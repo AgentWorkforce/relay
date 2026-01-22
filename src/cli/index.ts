@@ -961,7 +961,7 @@ program
   .argument('<id>', 'Message ID')
   .action(async (messageId) => {
     const { getProjectPaths } = await import('../utils/project-namespace.js');
-    const { createStorageAdapter } = await import('../storage/adapter.js');
+    const { createStorageAdapter } = await import('/storage/adapter');
 
     const paths = getProjectPaths();
     const adapter = await createStorageAdapter(paths.dbPath);
@@ -1000,7 +1000,7 @@ program
   .option('--json', 'Output as JSON')
   .action(async (options: { limit?: string; from?: string; to?: string; since?: string; json?: boolean }) => {
     const { getProjectPaths } = await import('../utils/project-namespace.js');
-    const { createStorageAdapter } = await import('../storage/adapter.js');
+    const { createStorageAdapter } = await import('/storage/adapter');
 
     const paths = getProjectPaths();
     const adapter = await createStorageAdapter(paths.dbPath);

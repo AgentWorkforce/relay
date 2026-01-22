@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { SyncQueue } from './sync-queue.js';
-import type { StoredMessage } from '../storage/adapter.js';
+import type { StoredMessage } from '/storage/adapter';
 
 const makeMessage = (overrides: Partial<StoredMessage> = {}): StoredMessage => ({
   id: overrides.id ?? `msg-${Math.random().toString(36).slice(2, 10)}`,

@@ -4,7 +4,7 @@
  */
 
 // Storage types imported for documentation, not currently used in computation
-// import type { StorageAdapter, StoredMessage } from '../storage/adapter.js';
+// import type { StorageAdapter, StoredMessage } from '/storage/adapter';
 
 export interface AgentMetrics {
   name: string;
