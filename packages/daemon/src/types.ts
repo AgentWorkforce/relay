@@ -41,6 +41,8 @@ export interface Agent {
   task?: string;
   spawnedAt: Date;
   lastHealthCheck?: Date;
+  rssBytes?: number;
+  cpuPercent?: number;
   restartCount: number;
   logFile?: string;
   /** Unique agent ID for session resume */
@@ -76,6 +78,7 @@ export interface DaemonEvent {
     | 'agent:output'
     | 'agent:summary'
     | 'agent:session-end'
+    | 'agent:resource-alert'
     | 'agent:injection-failed'
     | 'message:received'
     | 'message:sent';

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-22T15:24:57.811Z",
+  "lastUpdated": "2026-01-22T19:55:46.827Z",
   "trajectories": {
     "traj_ddtj404on2bq": {
       "title": "@relay/api-types extraction",
@@ -113,6 +113,19 @@
       "startedAt": "2026-01-22T15:23:31.764Z",
       "completedAt": "2026-01-22T15:24:57.788Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_99ft32q3lry0.json"
+    },
+    "traj_mur7dlt8645u": {
+      "title": "Complete ledger integration - remove /tmp dependency",
+      "status": "completed",
+      "startedAt": "2026-01-22T19:33:27.211Z",
+      "completedAt": "2026-01-22T19:33:49.368Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_mur7dlt8645u.json"
+    },
+    "traj_27g6ighqgptb": {
+      "title": "Integrate PR #265 channel auto-rejoin into refactored packages",
+      "status": "active",
+      "startedAt": "2026-01-22T19:55:46.824Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/active/traj_27g6ighqgptb.json"
     }
   }
 }

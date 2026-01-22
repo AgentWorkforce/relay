@@ -11,7 +11,15 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { EventEmitter } from 'events';
 import { WebSocketServer, WebSocket } from 'ws';
-import { createLogger, metrics, getSupervisor } from '@agent-relay/resiliency';
+import {
+  createLogger,
+  metrics,
+  getSupervisor,
+  getMemoryMonitor,
+  formatBytes,
+  type MemoryAlert,
+  type MemorySnapshot,
+} from '@agent-relay/resiliency';
 import { Daemon } from './server.js';
 import { AgentSpawner } from '@agent-relay/bridge';
 import { getProjectPaths } from '@agent-relay/config';
@@ -54,6 +62,24 @@ interface ManagedWorkspace extends Workspace {
   spawner?: AgentSpawner;
 }
 
+interface AgentHealthState {
+  key: string;
+  workspaceId: string;
+  agentName: string;
+  pid: number;
+  lastHeartbeatAt?: Date;
+  lastSampleAt?: Date;
+  lastRssBytes?: number;
+  lastCpuPercent?: number;
+  releasing?: boolean;
+  lastCpuAlertAt?: number;
+}
+
+const HEARTBEAT_INTERVAL_MS = 10_000;
+const RESOURCE_ALERT_COOLDOWN_MS = 60_000;
+const parsedCpuThreshold = parseFloat(process.env.AGENT_CPU_ALERT_THRESHOLD || '300');
+const CPU_ALERT_THRESHOLD = Number.isFinite(parsedCpuThreshold) ? parsedCpuThreshold : 300;
+
 export class Orchestrator extends EventEmitter {
   private config: OrchestratorConfig;
   private workspaces = new Map<string, ManagedWorkspace>();
@@ -71,6 +97,13 @@ export class Orchestrator extends EventEmitter {
   // Track alive status for ping/pong keepalive
   private clientAlive = new WeakMap<WebSocket, boolean>();
   private pingInterval?: NodeJS.Timeout;
+  private heartbeatInterval?: NodeJS.Timeout;
+  private memoryMonitor = getMemoryMonitor({ checkIntervalMs: 10_000 });
+  private agentHealth = new Map<string, AgentHealthState>();
+
+  // Event handler references for cleanup
+  private memorySampleHandler?: (event: { name: string; snapshot: MemorySnapshot }) => void;
+  private memoryAlertHandler?: (alert: MemoryAlert) => void;
 
   constructor(config: Partial<OrchestratorConfig> = {}) {
     super();
@@ -127,6 +160,8 @@ export class Orchestrator extends EventEmitter {
       });
     }, 30000);
 
+    this.startHealthMonitoring();
+
     return new Promise((resolve) => {
       this.server!.listen(this.config.port, this.config.host, () => {
         logger.info('Orchestrator started', {
@@ -148,6 +183,23 @@ export class Orchestrator extends EventEmitter {
       clearInterval(this.pingInterval);
       this.pingInterval = undefined;
     }
+
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = undefined;
+    }
+
+    // Clean up memory monitor event handlers before stopping
+    if (this.memorySampleHandler) {
+      this.memoryMonitor.off('sample', this.memorySampleHandler);
+      this.memorySampleHandler = undefined;
+    }
+    if (this.memoryAlertHandler) {
+      this.memoryMonitor.off('alert', this.memoryAlertHandler);
+      this.memoryAlertHandler = undefined;
+    }
+
+    this.memoryMonitor.stop();
 
     // Stop all workspace daemons
     for (const [id] of this.workspaces) {
@@ -370,7 +422,17 @@ export class Orchestrator extends EventEmitter {
       restartCount: 0,
     };
 
-    logger.info('Agent spawned', { id: agent.id, name: agent.name, workspaceId });
+    // Register for health monitoring if we have a PID
+    if (result.pid) {
+      this.registerAgentHealth(workspaceId, request.name, result.pid);
+    } else {
+      logger.warn('Agent spawned without PID - health monitoring disabled', {
+        workspaceId,
+        agentName: request.name,
+      });
+    }
+
+    logger.info('Agent spawned', { id: agent.id, name: agent.name, workspaceId, pid: result.pid });
 
     this.broadcastEvent({
       type: 'agent:spawned',
@@ -390,18 +452,43 @@ export class Orchestrator extends EventEmitter {
     const workspace = this.workspaces.get(workspaceId);
     if (!workspace?.spawner) return false;
 
-    const released = await workspace.spawner.release(agentName);
+    // Mark as releasing BEFORE stopping to prevent crash announcement
+    this.markAgentReleasing(workspaceId, agentName);
 
-    if (released) {
-      this.broadcastEvent({
-        type: 'agent:stopped',
+    try {
+      const released = await workspace.spawner.release(agentName);
+
+      if (released) {
+        // Unregister from health monitoring after successful release
+        this.unregisterAgentHealth(workspaceId, agentName);
+
+        this.broadcastEvent({
+          type: 'agent:stopped',
+          workspaceId,
+          data: { name: agentName },
+          timestamp: new Date(),
+        });
+
+        logger.info('Agent stopped gracefully', { workspaceId, agentName });
+      } else {
+        // Release failed - clear the releasing flag
+        const health = this.getAgentHealth(workspaceId, agentName);
+        if (health) {
+          health.releasing = false;
+        }
+      }
+
+      return released;
+    } catch (err) {
+      // Release threw an exception - clean up health tracking to avoid stuck state
+      this.unregisterAgentHealth(workspaceId, agentName);
+      logger.error('Agent release failed with exception', {
         workspaceId,
-        data: { name: agentName },
-        timestamp: new Date(),
+        agentName,
+        error: String(err),
       });
+      throw err;
     }
-
-    return released;
   }
 
   /**
@@ -411,17 +498,25 @@ export class Orchestrator extends EventEmitter {
     const workspace = this.workspaces.get(workspaceId);
     if (!workspace?.spawner) return [];
 
-    return workspace.spawner.getActiveWorkers().map((w) => ({
-      id: w.name,
-      name: w.name,
-      workspaceId,
-      provider: this.detectProviderFromCli(w.cli),
-      status: 'running' as const,
-      pid: w.pid,
-      task: w.task,
-      spawnedAt: new Date(w.spawnedAt),
-      restartCount: 0,
-    }));
+    return workspace.spawner.getActiveWorkers().map((w) => {
+      // Get health data for this agent
+      const health = this.getAgentHealth(workspaceId, w.name);
+
+      return {
+        id: w.name,
+        name: w.name,
+        workspaceId,
+        provider: this.detectProviderFromCli(w.cli),
+        status: 'running' as const,
+        pid: w.pid,
+        task: w.task,
+        spawnedAt: new Date(w.spawnedAt),
+        lastHealthCheck: health?.lastHeartbeatAt,
+        rssBytes: health?.lastRssBytes,
+        cpuPercent: health?.lastCpuPercent,
+        restartCount: 0,
+      };
+    });
   }
 
   // === Private Methods ===
@@ -502,9 +597,20 @@ export class Orchestrator extends EventEmitter {
     const workspace = this.workspaces.get(workspaceId);
     if (!workspace) return;
 
+    // Mark all agents as releasing to prevent crash announcements
+    const workspaceHealth = this.getWorkspaceAgentHealth(workspaceId);
+    for (const health of workspaceHealth) {
+      this.markAgentReleasing(workspaceId, health.agentName);
+    }
+
     // Release all agents first
     if (workspace.spawner) {
       await workspace.spawner.releaseAll();
+    }
+
+    // Clean up health monitoring for all agents in this workspace
+    for (const health of workspaceHealth) {
+      this.unregisterAgentHealth(workspaceId, health.agentName);
     }
 
     // Stop daemon
@@ -887,6 +993,318 @@ export class Orchestrator extends EventEmitter {
       gitRemote: w.gitRemote,
       gitBranch: w.gitBranch,
     };
+  }
+
+  // === Health Monitoring ===
+
+  /**
+   * Start agent health monitoring.
+   * Monitors PIDs for liveness and tracks memory/CPU usage.
+   */
+  private startHealthMonitoring(): void {
+    // Start the memory monitor
+    this.memoryMonitor.start();
+
+    // Listen for memory samples to update health state
+    // Store handler reference for cleanup
+    this.memorySampleHandler = (event: { name: string; snapshot: MemorySnapshot }) => {
+      const health = this.agentHealth.get(event.name);
+      if (health) {
+        health.lastSampleAt = new Date();
+        health.lastRssBytes = event.snapshot.rssBytes;
+        health.lastCpuPercent = event.snapshot.cpuPercent;
+
+        // Check for high CPU usage and broadcast alert
+        if (event.snapshot.cpuPercent >= CPU_ALERT_THRESHOLD) {
+          this.broadcastResourceAlert(health, 'cpu', event.snapshot.cpuPercent);
+        }
+      }
+    };
+    this.memoryMonitor.on('sample', this.memorySampleHandler);
+
+    // Listen for memory alerts and broadcast to agents
+    // Store handler reference for cleanup
+    this.memoryAlertHandler = (alert: MemoryAlert) => {
+      const health = this.agentHealth.get(alert.agentName);
+      if (health && alert.type !== 'recovered') {
+        this.broadcastResourceAlert(health, 'memory', alert.currentRss, alert);
+      }
+    };
+    this.memoryMonitor.on('alert', this.memoryAlertHandler);
+
+    // Start heartbeat interval to check PIDs are alive
+    this.heartbeatInterval = setInterval(() => {
+      this.checkAgentHeartbeats();
+    }, HEARTBEAT_INTERVAL_MS);
+
+    logger.info('Health monitoring started', {
+      heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
+      cpuAlertThreshold: CPU_ALERT_THRESHOLD,
+    });
+  }
+
+  /**
+   * Check all registered agents' PIDs are still alive.
+   * If a PID has died unexpectedly, broadcast a crash notification.
+   */
+  private checkAgentHeartbeats(): void {
+    // Collect crashed agents first to avoid modifying map during iteration
+    const crashedAgents: AgentHealthState[] = [];
+
+    for (const [key, health] of this.agentHealth) {
+      const isAlive = this.isProcessAlive(health.pid);
+
+      if (isAlive) {
+        // Only update heartbeat timestamp for alive processes
+        health.lastHeartbeatAt = new Date();
+      } else if (!health.releasing) {
+        // Agent died unexpectedly - mark for crash handling
+        // Immediately remove from map to prevent duplicate handling on next interval
+        this.agentHealth.delete(key);
+        crashedAgents.push(health);
+      }
+      // If !isAlive && health.releasing, agent is being gracefully stopped - skip
+    }
+
+    // Now handle crashes outside the iteration
+    for (const health of crashedAgents) {
+      logger.warn('Agent heartbeat failed - process died', {
+        workspaceId: health.workspaceId,
+        agentName: health.agentName,
+        pid: health.pid,
+      });
+
+      this.handleAgentCrash(health);
+    }
+  }
+
+  /**
+   * Check if a process is alive by sending signal 0.
+   */
+  private isProcessAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Handle an agent crash - unregister and broadcast to other agents.
+   * Note: Agent is already removed from agentHealth map before this is called.
+   */
+  private handleAgentCrash(health: AgentHealthState): void {
+    const workspace = this.workspaces.get(health.workspaceId);
+
+    // Get crash context from memory monitor for analysis
+    const crashContext = this.memoryMonitor.getCrashContext(health.agentName);
+
+    // Unregister from memory monitor (agent already removed from agentHealth map)
+    this.memoryMonitor.unregister(health.agentName);
+
+    // Broadcast crash to dashboard via WebSocket
+    this.broadcastEvent({
+      type: 'agent:crashed',
+      workspaceId: health.workspaceId,
+      data: {
+        name: health.agentName,
+        pid: health.pid,
+        crashContext: {
+          likelyCause: crashContext.likelyCause,
+          peakMemory: crashContext.peakMemory,
+          averageMemory: crashContext.averageMemory,
+          memoryTrend: crashContext.memoryTrend,
+          analysisNotes: crashContext.analysisNotes,
+        },
+      },
+      timestamp: new Date(),
+    });
+
+    // Broadcast to all connected agents in the workspace via relay
+    const message = crashContext.likelyCause !== 'unknown'
+      ? `AGENT CRASHED: "${health.agentName}" has died unexpectedly (PID: ${health.pid}). Likely cause: ${crashContext.likelyCause}. ${crashContext.analysisNotes.slice(0, 2).join('. ')}`
+      : `AGENT CRASHED: "${health.agentName}" has died unexpectedly (PID: ${health.pid}).`;
+
+    workspace?.daemon?.broadcastSystemMessage(message, {
+      agentName: health.agentName,
+      pid: health.pid,
+      likelyCause: crashContext.likelyCause,
+      crashType: 'heartbeat_failure',
+    });
+
+    logger.error('Agent crashed', {
+      workspaceId: health.workspaceId,
+      agentName: health.agentName,
+      pid: health.pid,
+      likelyCause: crashContext.likelyCause,
+    });
+  }
+
+  /**
+   * Broadcast a resource alert (memory or CPU) to agents.
+   */
+  private broadcastResourceAlert(
+    health: AgentHealthState,
+    resourceType: 'memory' | 'cpu',
+    currentValue: number,
+    memoryAlert?: MemoryAlert
+  ): void {
+    // CPU alert cooldown to avoid spamming
+    if (resourceType === 'cpu') {
+      const now = Date.now();
+      if (health.lastCpuAlertAt && now - health.lastCpuAlertAt < RESOURCE_ALERT_COOLDOWN_MS) {
+        return; // Still in cooldown
+      }
+      health.lastCpuAlertAt = now;
+    }
+
+    const workspace = this.workspaces.get(health.workspaceId);
+
+    // Broadcast to dashboard
+    this.broadcastEvent({
+      type: 'agent:resource-alert',
+      workspaceId: health.workspaceId,
+      agentId: health.agentName,
+      data: {
+        name: health.agentName,
+        resourceType,
+        currentValue,
+        alertLevel: memoryAlert?.type ?? 'high_cpu',
+        message: memoryAlert?.message ??
+          `Agent "${health.agentName}" is running at ${currentValue.toFixed(1)}% CPU`,
+        recommendation: memoryAlert?.recommendation ??
+          'Consider reducing workload or checking for runaway processes',
+      },
+      timestamp: new Date(),
+    });
+
+    // Broadcast to agents
+    const message = resourceType === 'memory'
+      ? `RESOURCE ALERT: "${health.agentName}" memory usage is ${memoryAlert?.type ?? 'high'} (${formatBytes(currentValue)}). ${memoryAlert?.recommendation ?? ''}`
+      : `RESOURCE ALERT: "${health.agentName}" is running at ${currentValue.toFixed(1)}% CPU. Consider reducing workload.`;
+
+    workspace?.daemon?.broadcastSystemMessage(message, {
+      agentName: health.agentName,
+      resourceType,
+      alertLevel: memoryAlert?.type ?? 'high_cpu',
+    });
+
+    logger.warn('Resource alert', {
+      workspaceId: health.workspaceId,
+      agentName: health.agentName,
+      resourceType,
+      currentValue: resourceType === 'memory' ? formatBytes(currentValue) : `${currentValue.toFixed(1)}%`,
+      alertLevel: memoryAlert?.type ?? 'high_cpu',
+    });
+  }
+
+  /**
+   * Register an agent for health monitoring.
+   */
+  private registerAgentHealth(workspaceId: string, agentName: string, pid: number): void {
+    const key = `${workspaceId}:${agentName}`;
+
+    // Guard against double-registration - update PID instead
+    if (this.agentHealth.has(key)) {
+      logger.warn('Agent already registered for health monitoring, updating PID', {
+        workspaceId,
+        agentName,
+        newPid: pid,
+      });
+      this.updateAgentHealthPid(workspaceId, agentName, pid);
+      return;
+    }
+
+    this.agentHealth.set(key, {
+      key,
+      workspaceId,
+      agentName,
+      pid,
+      lastHeartbeatAt: new Date(),
+    });
+
+    // Register with memory monitor
+    this.memoryMonitor.register(agentName, pid);
+
+    logger.info('Agent registered for health monitoring', {
+      workspaceId,
+      agentName,
+      pid,
+    });
+  }
+
+  /**
+   * Update PID for an agent (after restart).
+   *
+   * This method is intended for agent restart scenarios where the agent process
+   * is restarted with a new PID but should maintain continuity in health tracking.
+   * Currently unused but reserved for future auto-restart functionality.
+   *
+   * @param workspaceId - The workspace ID
+   * @param agentName - The agent name
+   * @param newPid - The new process ID after restart
+   */
+  private updateAgentHealthPid(workspaceId: string, agentName: string, newPid: number): void {
+    const key = `${workspaceId}:${agentName}`;
+    const health = this.agentHealth.get(key);
+
+    if (health) {
+      health.pid = newPid;
+      health.releasing = false;
+      health.lastHeartbeatAt = new Date();
+      this.memoryMonitor.updatePid(agentName, newPid);
+
+      logger.info('Agent health PID updated', {
+        workspaceId,
+        agentName,
+        newPid,
+      });
+    } else {
+      // Register new
+      this.registerAgentHealth(workspaceId, agentName, newPid);
+    }
+  }
+
+  /**
+   * Mark an agent as releasing (to avoid crash announcement).
+   */
+  private markAgentReleasing(workspaceId: string, agentName: string): void {
+    const key = `${workspaceId}:${agentName}`;
+    const health = this.agentHealth.get(key);
+
+    if (health) {
+      health.releasing = true;
+      logger.debug('Agent marked as releasing', { workspaceId, agentName });
+    }
+  }
+
+  /**
+   * Unregister an agent from health monitoring.
+   */
+  private unregisterAgentHealth(workspaceId: string, agentName: string): void {
+    const key = `${workspaceId}:${agentName}`;
+    this.agentHealth.delete(key);
+    this.memoryMonitor.unregister(agentName);
+
+    logger.debug('Agent unregistered from health monitoring', {
+      workspaceId,
+      agentName,
+    });
+  }
+
+  /**
+   * Get health state for an agent.
+   */
+  private getAgentHealth(workspaceId: string, agentName: string): AgentHealthState | undefined {
+    return this.agentHealth.get(`${workspaceId}:${agentName}`);
+  }
+
+  /**
+   * Get health states for all agents in a workspace.
+   */
+  private getWorkspaceAgentHealth(workspaceId: string): AgentHealthState[] {
+    return Array.from(this.agentHealth.values()).filter((h) => h.workspaceId === workspaceId);
   }
 }
 
