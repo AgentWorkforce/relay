@@ -53,6 +53,10 @@
     "./bridge-utils": {
       "types": "./dist/bridge-utils.d.ts",
       "import": "./dist/bridge-utils.js"
+    },
+    "./relay-file-writer": {
+      "types": "./dist/relay-file-writer.d.ts",
+      "import": "./dist/relay-file-writer.js"
     }
   },
   "files": [

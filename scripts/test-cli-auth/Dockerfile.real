@@ -77,12 +77,21 @@ COPY --chown=testuser:testuser scripts/test-cli-auth/package.json /app/scripts/t
 COPY --chown=testuser:testuser packages/cloud/src/api/cli-pty-runner.ts /app/packages/cloud/src/api/
 
 # Set up @agent-relay/config package for the import to work
-# tsx can handle .ts files, so we copy source directly and set up proper exports
+# Copy package.json and source, then build to dist/
 COPY --chown=testuser:testuser packages/config/package.json /app/node_modules/@agent-relay/config/
 COPY --chown=testuser:testuser packages/config/src/ /app/node_modules/@agent-relay/config/src/
+COPY --chown=testuser:testuser packages/config/tsconfig.json /app/node_modules/@agent-relay/config/
 
-# Create dist symlink so subpath exports work (package.json points to dist/)
-RUN cd /app/node_modules/@agent-relay/config && ln -s src dist
+# Also need @agent-relay/protocol since config depends on it
+COPY --chown=testuser:testuser packages/protocol/package.json /app/node_modules/@agent-relay/protocol/
+COPY --chown=testuser:testuser packages/protocol/src/ /app/node_modules/@agent-relay/protocol/src/
+COPY --chown=testuser:testuser packages/protocol/tsconfig.json /app/node_modules/@agent-relay/protocol/
+
+# Build protocol first (config depends on it)
+RUN cd /app/node_modules/@agent-relay/protocol && npm install --ignore-scripts && npx tsc
+
+# Build config package
+RUN cd /app/node_modules/@agent-relay/config && npm install --ignore-scripts && npx tsc
 
 # Install test dependencies (from scripts/test-cli-auth directory)
 RUN cd /app/scripts/test-cli-auth && npm install
