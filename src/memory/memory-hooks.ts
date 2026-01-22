@@ -13,7 +13,7 @@ import type {
   SessionEndContext,
   OutputContext,
   HookResult,
-} from '../hooks/types.js';
+} from '@relay/hooks';
 import type {
   MemoryAdapter,
   MemoryConfig,

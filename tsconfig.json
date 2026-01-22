@@ -28,7 +28,11 @@
       "@relay/continuity": ["packages/continuity/src/index.ts"],
       "@relay/continuity/*": ["packages/continuity/src/*"],
       "@relay/trajectory": ["packages/trajectory/src/index.ts"],
-      "@relay/trajectory/*": ["packages/trajectory/src/*"]
+      "@relay/trajectory/*": ["packages/trajectory/src/*"],
+      "@relay/hooks": ["packages/hooks/src/index.ts"],
+      "@relay/hooks/*": ["packages/hooks/src/*"],
+      "@relay/memory": ["src/memory/index.ts"],
+      "@relay/memory/*": ["src/memory/*"]
     }
   },
   "include": ["src/**/*"],
