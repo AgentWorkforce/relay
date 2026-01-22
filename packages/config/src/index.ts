@@ -1,5 +1,6 @@
 export * from './relay-config.js';
 export * from './bridge-config.js';
+export * from './bridge-utils.js';
 export * from './teams-config.js';
 export * from './shadow-config.js';
 export * from './trajectory-config.js';
