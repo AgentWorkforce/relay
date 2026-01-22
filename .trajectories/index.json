@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-22T12:23:26.204Z",
+  "lastUpdated": "2026-01-22T14:01:19.896Z",
   "trajectories": {
     "traj_ddtj404on2bq": {
       "title": "@relay/api-types extraction",
@@ -92,6 +92,13 @@
       "startedAt": "2026-01-22T12:14:21.544Z",
       "completedAt": "2026-01-22T12:23:26.168Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_ta548lw6b2mx.json"
+    },
+    "traj_qk8r7suia1lm": {
+      "title": "NPM package extraction cleanup - scripts and paths",
+      "status": "completed",
+      "startedAt": "2026-01-22T14:00:41.663Z",
+      "completedAt": "2026-01-22T14:01:19.870Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_qk8r7suia1lm.json"
     }
   }
 }
