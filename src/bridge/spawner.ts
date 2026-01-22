@@ -5,6 +5,7 @@
  */
 
 import fs from 'node:fs';
+import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sleep } from './utils.js';
@@ -39,6 +40,35 @@ const CLI_COMMAND_MAP: Record<string, string> = {
   google: 'gemini', // Google provider uses 'gemini' CLI
   // Other providers use their name as the command (claude, codex, etc.)
 };
+
+function extractGhTokenFromHosts(content: string): string | null {
+  const lines = content.split(/\r?\n/);
+  let inGithubSection = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    if (!line.startsWith(' ') && !line.startsWith('\t')) {
+      const host = trimmed.replace(/:$/, '');
+      inGithubSection = host === 'github.com';
+      continue;
+    }
+    if (!inGithubSection) {
+      continue;
+    }
+    const match = line.match(/^\s*(oauth_token|token):\s*(.+)$/);
+    if (!match) {
+      continue;
+    }
+    let token = match[2].split('#')[0].trim();
+    token = token.replace(/^['"]|['"]$/g, '');
+    if (token) {
+      return token;
+    }
+  }
+  return null;
+}
 
 /**
  * Cloud persistence handler interface.
@@ -338,13 +368,70 @@ export class AgentSpawner {
     }
   }
 
-  private async resolveGhToken(): Promise<string | null> {
+  private resolveGhTokenFromHostsFile(homeDir?: string): string | null {
+    const resolvedHome = homeDir || process.env.HOME;
+    const configHome = process.env.XDG_CONFIG_HOME || (resolvedHome ? path.join(resolvedHome, '.config') : undefined);
+    const candidates = new Set<string>();
+    if (configHome) {
+      candidates.add(path.join(configHome, 'gh', 'hosts.yml'));
+    }
+    if (resolvedHome) {
+      candidates.add(path.join(resolvedHome, '.config', 'gh', 'hosts.yml'));
+    }
+
+    for (const hostPath of candidates) {
+      if (!hostPath || !fs.existsSync(hostPath)) {
+        continue;
+      }
+      try {
+        const content = fs.readFileSync(hostPath, 'utf8');
+        const token = extractGhTokenFromHosts(content);
+        if (token) {
+          return token;
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return null;
+  }
+
+  private async resolveGhTokenFromGhCli(): Promise<string | null> {
+    const ghPath = fs.existsSync('/usr/bin/gh') ? '/usr/bin/gh' : null;
+    if (!ghPath) {
+      return null;
+    }
+
+    return await new Promise((resolve) => {
+      execFile(ghPath, ['auth', 'token', '--hostname', 'github.com'], { timeout: 5000 }, (err, stdout) => {
+        if (err) {
+          resolve(null);
+          return;
+        }
+        const token = stdout.trim();
+        resolve(token || null);
+      });
+    });
+  }
+
+  private async resolveGhToken(homeDir?: string): Promise<string | null> {
     const cloudToken = await this.fetchGhTokenFromCloud();
     if (cloudToken) {
       return cloudToken;
     }
 
-    return process.env.GH_TOKEN || null;
+    const envToken = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+    if (envToken) {
+      return envToken;
+    }
+
+    const hostsToken = this.resolveGhTokenFromHostsFile(homeDir);
+    if (hostsToken) {
+      return hostsToken;
+    }
+
+    return await this.resolveGhTokenFromGhCli();
   }
 
   /**
@@ -593,7 +680,7 @@ export class AgentSpawner {
 
       const mergedUserEnv = { ...(userEnv ?? {}) };
       if (!mergedUserEnv.GH_TOKEN) {
-        const ghToken = await this.resolveGhToken();
+        const ghToken = await this.resolveGhToken(userEnv?.HOME);
         if (ghToken) {
           mergedUserEnv.GH_TOKEN = ghToken;
         }
