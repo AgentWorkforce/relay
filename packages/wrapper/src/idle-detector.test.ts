@@ -382,4 +382,52 @@ describe('UniversalIdleDetector', () => {
       }
     });
   });
+
+  describe('editor mode detection', () => {
+    it('detects vim INSERT mode', () => {
+      detector.onOutput('Some output\n-- INSERT --');
+      expect(detector.isInEditorMode()).toBe(true);
+    });
+
+    it('detects vim REPLACE mode', () => {
+      detector.onOutput('Some output\n-- REPLACE --');
+      expect(detector.isInEditorMode()).toBe(true);
+    });
+
+    it('detects vim VISUAL mode', () => {
+      detector.onOutput('Some output\n-- VISUAL --');
+      expect(detector.isInEditorMode()).toBe(true);
+    });
+
+    it('detects vim VISUAL LINE mode', () => {
+      detector.onOutput('Some output\n-- VISUAL LINE --');
+      expect(detector.isInEditorMode()).toBe(true);
+    });
+
+    it('detects vim VISUAL BLOCK mode', () => {
+      detector.onOutput('Some output\n-- VISUAL BLOCK --');
+      expect(detector.isInEditorMode()).toBe(true);
+    });
+
+    it('returns false for normal output', () => {
+      detector.onOutput('This is just regular output from Claude');
+      expect(detector.isInEditorMode()).toBe(false);
+    });
+
+    it('returns false for empty buffer', () => {
+      expect(detector.isInEditorMode()).toBe(false);
+    });
+
+    it('includes inEditorMode in checkIdle result', () => {
+      detector.onOutput('Some output\n-- INSERT --');
+      const result = detector.checkIdle();
+      expect(result.inEditorMode).toBe(true);
+    });
+
+    it('includes inEditorMode=false when not in editor', () => {
+      detector.onOutput('Normal output');
+      const result = detector.checkIdle();
+      expect(result.inEditorMode).toBe(false);
+    });
+  });
 });

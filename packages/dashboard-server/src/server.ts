@@ -4006,13 +4006,13 @@ export async function startDashboard(
       if (spawner) {
         const activeWorkers = spawner.getActiveWorkers();
         for (const worker of activeWorkers) {
-          // Get memory usage via /proc filesystem
+          // Get memory and CPU usage
           let rssBytes = 0;
-          const cpuPercent = 0;
+          let cpuPercent = 0;
 
           if (worker.pid) {
             try {
-              // Use /proc filesystem instead of ps command (not available in all containers)
+              // Try /proc filesystem first (Linux)
               const statusPath = `/proc/${worker.pid}/status`;
               if (fs.existsSync(statusPath)) {
                 const status = fs.readFileSync(statusPath, 'utf8');
@@ -4021,11 +4021,18 @@ export async function startDashboard(
                 if (rssMatch) {
                   rssBytes = parseInt(rssMatch[1], 10) * 1024; // Convert kB to bytes
                 }
+              } else if (process.platform === 'darwin') {
+                // macOS: Use ps command to get RSS and CPU
+                const { execSync } = await import('child_process');
+                const psOutput = execSync(`ps -o rss=,pcpu= -p ${worker.pid}`, { encoding: 'utf8' }).trim();
+                if (psOutput) {
+                  const [rssStr, cpuStr] = psOutput.split(/\s+/);
+                  if (rssStr) rssBytes = parseInt(rssStr, 10) * 1024; // ps reports RSS in KB
+                  if (cpuStr) cpuPercent = parseFloat(cpuStr);
+                }
               }
-              // Note: CPU percentage requires sampling /proc/[pid]/stat over time
-              // which is more complex. Leaving at 0 for now.
             } catch {
-              // Process may have exited or /proc not accessible
+              // Process may have exited or command failed
             }
           }
 

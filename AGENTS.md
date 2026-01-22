@@ -162,7 +162,7 @@ Advanced features for session continuity and trajectory tracking.
 Save your state for session recovery using file-based format (same as messaging):
 
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/continuity << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/continuity << 'EOF'
 KIND: continuity
 ACTION: save
 
@@ -187,7 +187,7 @@ Then: `->relay-file:continuity`
 Context auto-loads on startup. To manually request:
 
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/load << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/load << 'EOF'
 KIND: continuity
 ACTION: load
 EOF
@@ -199,7 +199,7 @@ Then: `->relay-file:load`
 Flag items needing future verification:
 
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/uncertain << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/uncertain << 'EOF'
 KIND: continuity
 ACTION: uncertain
 
@@ -286,7 +286,7 @@ Real-time agent-to-agent messaging via file-based protocol.
 Write a file to your outbox, then output the trigger:
 
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/msg << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
 TO: AgentName
 
 Your message here.
@@ -333,7 +333,7 @@ Message body (everything after blank line)
 
 ```bash
 # Spawn
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/spawn << 'EOF'
 KIND: spawn
 NAME: WorkerName
 CLI: claude
@@ -345,7 +345,7 @@ Then: `->relay-file:spawn`
 
 ```bash
 # Release
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/release << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/release << 'EOF'
 KIND: release
 NAME: WorkerName
 EOF

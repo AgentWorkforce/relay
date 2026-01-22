@@ -22,6 +22,8 @@ export interface IdleResult {
   isIdle: boolean;
   confidence: number;
   signals: IdleSignal[];
+  /** True if agent appears to be in an editor mode (vim INSERT, etc.) */
+  inEditorMode?: boolean;
 }
 
 export interface IdleDetectorConfig {
@@ -138,6 +140,40 @@ export class UniversalIdleDetector {
   }
 
   /**
+   * Check if the agent is in an editor mode (vim INSERT, REPLACE, etc.).
+   * When in editor mode, message injection should be delayed.
+   */
+  isInEditorMode(): boolean {
+    // Check the last portion of output for editor mode indicators
+    const lastOutput = this.outputBuffer.slice(-500);
+
+    // Vim/Neovim mode indicators
+    const editorModePatterns = [
+      /-- INSERT --/i,
+      /-- REPLACE --/i,
+      /-- VISUAL --/i,
+      /-- VISUAL LINE --/i,
+      /-- VISUAL BLOCK --/i,
+      /-- SELECT --/i,
+      /-- TERMINAL --/i,
+      // Emacs indicators
+      /\*\*\* Emacs/,
+      /M-x/,
+      // nano indicators
+      /GNU nano/,
+      /\^G Get Help/,
+      // less/more pager
+      /:\s*$/,  // Pager prompt
+      /lines \d+-\d+/,  // Pager line indicator
+      // Git interactive rebase
+      /pick [a-f0-9]+/,
+      /# Rebase [a-f0-9]+/,
+    ];
+
+    return editorModePatterns.some(pattern => pattern.test(lastOutput));
+  }
+
+  /**
    * Check if the last output ends "naturally" (complete thought vs mid-sentence).
    * Helps distinguish between pauses in output and waiting for input.
    */
@@ -214,6 +250,7 @@ export class UniversalIdleDetector {
             timestamp: Date.now(),
             details: 'process running',
           }],
+          inEditorMode: this.isInEditorMode(),
         };
       }
     }
@@ -244,7 +281,7 @@ export class UniversalIdleDetector {
 
     // No signals = not idle
     if (signals.length === 0) {
-      return { isIdle: false, confidence: 0, signals: [] };
+      return { isIdle: false, confidence: 0, signals: [], inEditorMode: this.isInEditorMode() };
     }
 
     // Combine signals
@@ -257,6 +294,7 @@ export class UniversalIdleDetector {
       isIdle: combinedConfidence >= this.config.confidenceThreshold,
       confidence: combinedConfidence,
       signals,
+      inEditorMode: this.isInEditorMode(),
     };
   }
 
