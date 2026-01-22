@@ -509,6 +509,17 @@ export class AgentManager extends EventEmitter {
     const agent = this.agents.get(agentId);
     if (!agent) return;
 
+    // Forward output for streaming subscribers
+    pty.on('output', (output: string) => {
+      this.emitEvent({
+        type: 'agent:output',
+        workspaceId: agent.workspaceId,
+        agentId,
+        data: { output, agentName: agent.name },
+        timestamp: new Date(),
+      });
+    });
+
     // Forward summary events
     pty.on('summary', async (event: SummaryEvent) => {
       logger.info('Agent summary', {

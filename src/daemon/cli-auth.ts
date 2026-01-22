@@ -15,7 +15,7 @@ import * as os from 'os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as crypto from 'crypto';
-import { createLogger } from '../resiliency/logger.js';
+import { createLogger } from '@relay/resiliency';
 import {
   CLI_AUTH_CONFIG,
   stripAnsiCodes,

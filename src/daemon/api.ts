@@ -6,8 +6,7 @@
 import * as http from 'http';
 import WebSocket, { WebSocketServer, WebSocket as WS } from 'ws';
 import { EventEmitter } from 'events';
-import { createLogger } from '../resiliency/logger.js';
-import { metrics } from '../resiliency/metrics.js';
+import { createLogger, metrics } from '@relay/resiliency';
 import { getWorkspaceManager, WorkspaceManager } from './workspace-manager.js';
 import { getAgentManager, AgentManager } from './agent-manager.js';
 import type {

@@ -6,9 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { EventEmitter } from 'events';
-import { createLogger } from '../resiliency/logger.js';
-import { getSupervisor } from '../resiliency/supervisor.js';
-import { detectProvider } from '../resiliency/provider-context.js';
+import { createLogger, getSupervisor, detectProvider } from '@relay/resiliency';
 import { RelayPtyOrchestrator, type RelayPtyOrchestratorConfig } from '../wrapper/relay-pty-orchestrator.js';
 import type { SummaryEvent, SessionEndEvent } from '../wrapper/wrapper-types.js';
 import { resolveCommand } from '../utils/command-resolver.js';

@@ -55,6 +55,9 @@ export class DaemonApi extends EventEmitter {
   private config: ApiDaemonConfig;
   private allowedOrigins: Set<string>;
   private allowAllOrigins: boolean;
+  // Track output subscriptions per agent/client
+  private outputSubscribers = new Map<string, Set<WS>>();
+  private wsSubscriptions = new WeakMap<WS, Set<string>>();
 
   // Track alive status for ping/pong keepalive
   private clientAlive = new WeakMap<WS, boolean>();
@@ -119,6 +122,106 @@ export class DaemonApi extends EventEmitter {
       }
     }
     return null;
+  }
+
+  /**
+   * Track an output subscription for a client/agent pair
+   */
+  private addOutputSubscription(ws: WS, agentId: string): void {
+    const subscribers = this.outputSubscribers.get(agentId) ?? new Set<WS>();
+    subscribers.add(ws);
+    this.outputSubscribers.set(agentId, subscribers);
+
+    const wsAgents = this.wsSubscriptions.get(ws) ?? new Set<string>();
+    wsAgents.add(agentId);
+    this.wsSubscriptions.set(ws, wsAgents);
+  }
+
+  /**
+   * Remove output subscriptions for a client. If agentId is provided, only that
+   * subscription is removed.
+   */
+  private removeOutputSubscription(ws: WS, agentId?: string): void {
+    const wsAgents = this.wsSubscriptions.get(ws);
+    if (!wsAgents) return;
+
+    const removeForAgent = (id: string): void => {
+      const agentSubscribers = this.outputSubscribers.get(id);
+      agentSubscribers?.delete(ws);
+      if (agentSubscribers && agentSubscribers.size === 0) {
+        this.outputSubscribers.delete(id);
+      }
+    };
+
+    if (agentId) {
+      wsAgents.delete(agentId);
+      removeForAgent(agentId);
+    } else {
+      for (const id of wsAgents) {
+        removeForAgent(id);
+      }
+      this.wsSubscriptions.delete(ws);
+    }
+  }
+
+  /**
+   * Send a snapshot of recent output to the client.
+   */
+  private sendOutputSnapshot(ws: WS, agentId: string, limit?: number): boolean {
+    const normalizedLimit = this.normalizeLimit(limit) ?? 200;
+    const output = this.agentManager.getOutput(agentId, normalizedLimit);
+    if (output === null) {
+      this.sendToClient(ws, { type: 'error', data: { message: `Agent ${agentId} not found` } });
+      return false;
+    }
+
+    const agent = this.agentManager.get(agentId);
+    this.sendToClient(ws, {
+      type: 'output:init',
+      data: {
+        agentId,
+        workspaceId: agent?.workspaceId,
+        output,
+      },
+    });
+    return true;
+  }
+
+  /**
+   * Broadcast output events only to subscribed clients
+   */
+  private broadcastOutputEvent(event: DaemonEvent): void {
+    if (!this.wss || !event.agentId) return;
+    const subscribers = this.outputSubscribers.get(event.agentId);
+    if (!subscribers?.size) return;
+
+    const data = event.data as { output?: string; agentName?: string } | undefined;
+    const message = JSON.stringify({
+      type: 'output:append',
+      data: {
+        agentId: event.agentId,
+        workspaceId: event.workspaceId,
+        output: data?.output ?? event.data,
+        agentName: data?.agentName,
+        timestamp: event.timestamp,
+      },
+    });
+
+    for (const ws of subscribers) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(message);
+      }
+    }
+  }
+
+  /**
+   * Clamp and normalize requested output limit
+   */
+  private normalizeLimit(value: unknown): number | undefined {
+    const num = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(num)) return undefined;
+    const limit = Math.floor(num);
+    return Math.min(2000, Math.max(1, limit));
   }
 
   /**

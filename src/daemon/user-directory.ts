@@ -22,7 +22,12 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { createLogger } from '../resiliency/logger.js';
+import { createLogger } from '@relay/resiliency';
+
+/**
+ * @deprecated Import from '@relay/user-directory' instead.
+ */
+export * from '@relay/user-directory';
 
 const logger = createLogger('user-directory');
 
