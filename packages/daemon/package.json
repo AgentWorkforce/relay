@@ -27,6 +27,7 @@
     "@relay/policy": "0.1.0",
     "@relay/memory": "0.1.0",
     "@relay/resiliency": "0.1.0",
+    "@relay/user-directory": "0.1.0",
     "@agent-relay/wrapper": "0.1.0",
     "ws": "^8.18.3",
     "better-sqlite3": "^12.6.2",

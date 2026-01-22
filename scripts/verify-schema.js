@@ -9,7 +9,7 @@
  */
 
 import pg from 'pg';
-import * as schema from '../dist/cloud/db/schema.js';
+import * as schema from '../packages/cloud/dist/db/schema.js';
 
 const { Pool } = pg;
 
