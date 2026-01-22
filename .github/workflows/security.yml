@@ -1,0 +1,145 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run weekly on Sundays at midnight
+    - cron: '0 0 * * 0'
+
+jobs:
+  # NPM audit for known vulnerabilities
+  npm-audit:
+    name: NPM Audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit
+        run: |
+          echo "=== Running npm audit ==="
+          # Fail on high and critical vulnerabilities
+          npm audit --audit-level=high || {
+            echo ""
+            echo "WARNING: Vulnerabilities found. Review and fix or document exceptions."
+            echo "Run 'npm audit' locally for details."
+            exit 1
+          }
+
+  # Dependency review for PRs
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          # Allow specific packages if needed
+          # allow-licenses: MIT, Apache-2.0
+
+  # CodeQL analysis for code security
+  codeql:
+    name: CodeQL Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          queries: security-extended
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:javascript-typescript"
+
+  # Secret scanning (check for accidentally committed secrets)
+  secrets-scan:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        run: |
+          wget -q https://github.com/gitleaks/gitleaks/releases/download/v8.18.1/gitleaks_8.18.1_linux_x64.tar.gz
+          tar -xzf gitleaks_8.18.1_linux_x64.tar.gz
+          chmod +x gitleaks
+
+      - name: Run gitleaks
+        run: |
+          ./gitleaks detect --source . --verbose --redact || {
+            echo ""
+            echo "WARNING: Potential secrets detected in codebase."
+            echo "Review the findings above and remove or rotate any exposed secrets."
+            exit 1
+          }
+
+  # License compliance check
+  license-check:
+    name: License Compliance
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check licenses
+        run: |
+          echo "=== Checking dependency licenses ==="
+          npx license-checker --production --summary || true
+
+          # Check for problematic licenses
+          echo ""
+          echo "Checking for restricted licenses..."
+          RESTRICTED=$(npx license-checker --production --onlyAllow "MIT;Apache-2.0;ISC;BSD-2-Clause;BSD-3-Clause;0BSD;CC0-1.0;Unlicense;Python-2.0;BlueOak-1.0.0;CC-BY-4.0" 2>&1 || true)
+
+          if echo "$RESTRICTED" | grep -q "UNKNOWN"; then
+            echo "WARNING: Some packages have unknown licenses"
+            echo "$RESTRICTED" | grep "UNKNOWN" | head -20
+          fi
+
+          echo "License check complete"

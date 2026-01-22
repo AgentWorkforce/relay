@@ -900,14 +900,25 @@ export async function startDashboard(
   const attachmentRegistry = new Map<string, Attachment>();
 
   // Serve dashboard static files at root (built with `next build` in src/dashboard)
-  // __dirname is dist/dashboard-server, dashboard is at ../dashboard/out (relative to dist)
-  // But in source it's at ../dashboard/out (relative to src/dashboard-server)
-  const dashboardDistDir = path.join(__dirname, '..', 'dashboard', 'out');
-  const dashboardSourceDir = path.join(__dirname, '..', '..', 'src', 'dashboard', 'out');
+  // Find repo root by traversing up from __dirname until we find dist/dashboard/out or src/dashboard/out
+  // This handles both direct paths and npm workspace symlinks
+  const findDashboardDir = (): string | null => {
+    let current = __dirname;
+    // Try up to 10 levels up
+    for (let i = 0; i < 10; i++) {
+      const distPath = path.join(current, 'dist', 'dashboard', 'out');
+      const srcPath = path.join(current, 'src', 'dashboard', 'out');
+      if (fs.existsSync(distPath)) return distPath;
+      if (fs.existsSync(srcPath)) return srcPath;
+      const parent = path.dirname(current);
+      if (parent === current) break; // reached root
+      current = parent;
+    }
+    return null;
+  };
 
-  // Check which path exists (dist or src)
-  const dashboardDir = fs.existsSync(dashboardDistDir) ? dashboardDistDir : dashboardSourceDir;
-  if (fs.existsSync(dashboardDir)) {
+  const dashboardDir = findDashboardDir();
+  if (dashboardDir) {
     console.log(`[dashboard] Serving from: ${dashboardDir}`);
     // Serve Next.js static export with .html extension handling
     app.use(express.static(dashboardDir, { extensions: ['html'] }));
@@ -921,7 +932,7 @@ export async function startDashboard(
       res.sendFile(path.join(dashboardDir, 'app.html'));
     });
   } else {
-    console.error('[dashboard] Dashboard not found at:', dashboardDistDir, 'or', dashboardSourceDir);
+    console.error('[dashboard] Dashboard not found - searched from:', __dirname);
   }
 
   // Relay clients for sending messages from dashboard
