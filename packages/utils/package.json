@@ -1,0 +1,59 @@
+{
+  "name": "@relay/utils",
+  "version": "0.1.0",
+  "description": "Shared utilities for agent-relay: logging, name generation, command resolution, update checking",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./logger": {
+      "types": "./dist/logger.d.ts",
+      "import": "./dist/logger.js"
+    },
+    "./name-generator": {
+      "types": "./dist/name-generator.d.ts",
+      "import": "./dist/name-generator.js"
+    },
+    "./command-resolver": {
+      "types": "./dist/command-resolver.d.ts",
+      "import": "./dist/command-resolver.js"
+    },
+    "./update-checker": {
+      "types": "./dist/update-checker.d.ts",
+      "import": "./dist/update-checker.js"
+    },
+    "./git-remote": {
+      "types": "./dist/git-remote.d.ts",
+      "import": "./dist/git-remote.js"
+    },
+    "./precompiled-patterns": {
+      "types": "./dist/precompiled-patterns.d.ts",
+      "import": "./dist/precompiled-patterns.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.3",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "compare-versions": "^6.1.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

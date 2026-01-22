@@ -348,13 +348,6 @@ export function manageContext(
 // =============================================================================
 
 export {
-  // Patterns
-  getCompiledPatterns,
-  isInstructionalTextFast,
-  isPlaceholderTargetFast,
-  stripAnsiFast,
-  StaticPatterns,
-
   // Signing
   AgentSigningManager,
   loadSigningConfig,

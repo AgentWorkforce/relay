@@ -1,3 +1,4 @@
-export * from './name-generator.js';
-export * from './logger.js';
-export * from './precompiled-patterns.js';
+/**
+ * @deprecated Import from '@relay/utils' instead.
+ */
+export * from '@relay/utils';

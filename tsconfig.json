@@ -31,8 +31,14 @@
       "@relay/trajectory/*": ["packages/trajectory/src/*"],
       "@relay/hooks": ["packages/hooks/src/index.ts"],
       "@relay/hooks/*": ["packages/hooks/src/*"],
-      "@relay/memory": ["src/memory/index.ts"],
-      "@relay/memory/*": ["src/memory/*"]
+      "@relay/state": ["packages/state/src/index.ts"],
+      "@relay/state/*": ["packages/state/src/*"],
+      "@relay/policy": ["packages/policy/src/index.ts"],
+      "@relay/policy/*": ["packages/policy/src/*"],
+      "@relay/memory": ["packages/memory/src/index.ts"],
+      "@relay/memory/*": ["packages/memory/src/*"],
+      "@relay/utils": ["packages/utils/src/index.ts"],
+      "@relay/utils/*": ["packages/utils/src/*"]
     }
   },
   "include": ["src/**/*"],

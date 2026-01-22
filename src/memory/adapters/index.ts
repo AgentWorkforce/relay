@@ -1,8 +1,5 @@
 /**
- * Memory Adapters
- *
- * Export all available memory adapter implementations.
+ * @deprecated Import from '@relay/memory' instead.
  */
-
-export { InMemoryAdapter, type InMemoryAdapterOptions } from './inmemory.js';
-export { SupermemoryAdapter, type SupermemoryAdapterOptions } from './supermemory.js';
+export { InMemoryAdapter, SupermemoryAdapter } from '@relay/memory';
+export type { InMemoryAdapterOptions, SupermemoryAdapterOptions } from '@relay/memory';
