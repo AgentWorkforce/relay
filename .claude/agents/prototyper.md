@@ -114,7 +114,7 @@ STILL avoid even in prototypes:
 
 Starting prototype:
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/ack << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/ack << 'EOF'
 TO: Lead
 
 ACK: Starting prototype for [feature]
@@ -128,7 +128,7 @@ Then: `->relay-file:ack`
 
 Progress update:
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/status << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/status << 'EOF'
 TO: Lead
 
 STATUS: Prototype progress
@@ -142,7 +142,7 @@ Then: `->relay-file:status`
 
 Completion:
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/done << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/done << 'EOF'
 TO: Lead
 
 DONE: Prototype ready for feedback

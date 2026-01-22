@@ -104,7 +104,7 @@ You are an observability specialist focused on monitoring, alerting, and perform
 
 When setting up monitoring:
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/status << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/status << 'EOF'
 TO: Lead
 
 STATUS: Setting up observability for payment-service
@@ -118,7 +118,7 @@ Then: `->relay-file:status`
 
 When reporting issues found:
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/alert-review << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/alert-review << 'EOF'
 TO: Lead
 
 ALERT-REVIEW: Found monitoring gaps

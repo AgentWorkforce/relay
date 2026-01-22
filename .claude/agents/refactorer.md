@@ -85,7 +85,7 @@ You are an expert at code refactoring and technical debt reduction. You improve 
 
 ### Starting Work
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/starting << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/starting << 'EOF'
 TO: Lead
 
 **REFACTOR:** Starting [area/component]
@@ -100,7 +100,7 @@ Then: `->relay-file:starting`
 
 ### Progress Update
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/status << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/status << 'EOF'
 TO: Lead
 
 **REFACTOR STATUS:** [Area]
@@ -116,7 +116,7 @@ Then: `->relay-file:status`
 
 ### Completion
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/done << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/done << 'EOF'
 TO: Lead
 
 **REFACTOR DONE:** [Area/component]
@@ -133,7 +133,7 @@ Then: `->relay-file:done`
 
 ### Scope Question
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/question << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/question << 'EOF'
 TO: Lead
 
 **REFACTOR SCOPE:** [Question]

@@ -80,7 +80,7 @@ You are an expert API designer specializing in RESTful and GraphQL API design. Y
 
 ### Starting Work
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/starting << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/starting << 'EOF'
 TO: Lead
 
 **API:** Designing [endpoint/feature]
@@ -93,7 +93,7 @@ Then: `->relay-file:starting`
 
 ### Design Proposal
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/proposal << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/proposal << 'EOF'
 TO: Lead
 
 **API DESIGN:** [Feature name]
@@ -113,7 +113,7 @@ Then: `->relay-file:proposal`
 
 ### Completion
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/done << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/done << 'EOF'
 TO: Lead
 
 **DONE:** [API feature]

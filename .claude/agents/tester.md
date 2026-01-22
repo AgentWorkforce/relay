@@ -110,7 +110,7 @@ it('works correctly')
 
 **Acknowledge tasks:**
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/ack << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/ack << 'EOF'
 TO: Sender
 
 ACK: Writing tests for [component/feature]
@@ -120,7 +120,7 @@ Then: `->relay-file:ack`
 
 **Report completion:**
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/done << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/done << 'EOF'
 TO: Sender
 
 DONE: Created X unit tests, Y integration tests
@@ -132,7 +132,7 @@ Then: `->relay-file:done`
 
 **Ask for clarification:**
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/question << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/question << 'EOF'
 TO: Sender
 
 QUESTION: Should I prioritize coverage for [A] or [B]?

@@ -115,7 +115,7 @@ apt-get install --only-upgrade $(apt-get --just-print upgrade 2>&1 | grep -i sec
 
 When reporting system status:
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/status << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/status << 'EOF'
 TO: Lead
 
 STATUS: Server audit complete
@@ -130,7 +130,7 @@ Then: `->relay-file:status`
 
 When implementing changes:
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/change << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/change << 'EOF'
 TO: Lead
 
 CHANGE: Applying security hardening to prod-db-01
@@ -145,7 +145,7 @@ Then: `->relay-file:change`
 
 Completion:
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/done << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/done << 'EOF'
 TO: Lead
 
 DONE: Security hardening applied

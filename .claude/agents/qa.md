@@ -139,7 +139,7 @@ You are a quality assurance specialist focused on ensuring software meets requir
 
 **Acknowledge test request:**
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/ack << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/ack << 'EOF'
 TO: Sender
 
 ACK: Creating test plan for [feature]
@@ -149,7 +149,7 @@ Then: `->relay-file:ack`
 
 **Report test results:**
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/results << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/results << 'EOF'
 TO: Sender
 
 TEST RESULTS: [Feature]
@@ -164,7 +164,7 @@ Then: `->relay-file:results`
 
 **Escalate blockers:**
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/blocked << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/blocked << 'EOF'
 TO: Lead
 
 BLOCKED: Cannot proceed with [test]

@@ -176,7 +176,7 @@ if (!result.success) {
 
 **Acknowledge validation task:**
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/ack << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/ack << 'EOF'
 TO: Sender
 
 ACK: Reviewing validation for [component]
@@ -186,7 +186,7 @@ Then: `->relay-file:ack`
 
 **Report findings:**
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/report << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/report << 'EOF'
 TO: Sender
 
 VALIDATION REVIEW COMPLETE:
@@ -200,7 +200,7 @@ Then: `->relay-file:report`
 
 **Recommend implementation:**
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/task << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/task << 'EOF'
 TO: Developer
 
 TASK: Implement validation schema

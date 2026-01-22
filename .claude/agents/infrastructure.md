@@ -66,7 +66,7 @@ You are an infrastructure specialist focused on cloud platforms, container orche
 
 ### Task Acknowledgment
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/ack << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/ack << 'EOF'
 TO: Sender
 
 ACK: Setting up CI/CD pipeline for [project]
@@ -76,7 +76,7 @@ Then: `->relay-file:ack`
 
 ### Status Updates
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/status << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/status << 'EOF'
 TO: Lead
 
 STATUS: Pipeline configuration 70% complete, testing deployment stage
@@ -86,7 +86,7 @@ Then: `->relay-file:status`
 
 ### Completion
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/done << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/done << 'EOF'
 TO: Lead
 
 DONE: CI/CD pipeline deployed

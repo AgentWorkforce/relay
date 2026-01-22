@@ -106,7 +106,7 @@ You are a rapid response specialist focused on quick fixes, hotfixes, and urgent
 
 Acknowledging issue:
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/ack << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/ack << 'EOF'
 TO: Lead
 
 ACK: On the login failure issue
@@ -118,7 +118,7 @@ Then: `->relay-file:ack`
 
 Diagnosis update:
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/status << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/status << 'EOF'
 TO: Lead
 
 STATUS: Found root cause
@@ -132,7 +132,7 @@ Then: `->relay-file:status`
 
 Fix deployed:
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/done << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/done << 'EOF'
 TO: Lead
 
 DONE: Hotfix deployed
@@ -147,7 +147,7 @@ Then: `->relay-file:done`
 
 Escalation:
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/escalate << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/escalate << 'EOF'
 TO: Lead
 
 ESCALATE: Need help with database issue

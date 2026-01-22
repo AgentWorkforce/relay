@@ -123,7 +123,7 @@ echo '{"status": "success", "count": 42}'
 
 Implementation status:
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/status << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/status << 'EOF'
 TO: Lead
 
 STATUS: CLI tool progress
@@ -137,7 +137,7 @@ Then: `->relay-file:status`
 
 Completion:
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/done << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/done << 'EOF'
 TO: Lead
 
 DONE: CLI tool complete

@@ -28,7 +28,7 @@ You are an expert frontend designer and developer. You create production-grade c
 
 ### Starting Work
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/starting << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/starting << 'EOF'
 TO: Lead
 
 **FRONTEND:** Starting [component/page name]
@@ -41,7 +41,7 @@ Then: `->relay-file:starting`
 
 ### Completion
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/done << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/done << 'EOF'
 TO: Lead
 
 **COMPLETE:** [Component name]

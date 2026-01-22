@@ -124,7 +124,7 @@ Then: Dead letter queue
 
 Integration status:
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/status << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/status << 'EOF'
 TO: Lead
 
 STATUS: Stripe integration progress
@@ -138,7 +138,7 @@ Then: `->relay-file:status`
 
 When blocked:
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/blocked << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/blocked << 'EOF'
 TO: Lead
 
 BLOCKED: GitHub integration issue
@@ -152,7 +152,7 @@ Then: `->relay-file:blocked`
 
 Completion:
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/done << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/done << 'EOF'
 TO: Lead
 
 DONE: Slack integration complete

@@ -90,7 +90,7 @@ You are an expert performance engineer specializing in identifying bottlenecks, 
 
 ### Starting Investigation
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/starting << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/starting << 'EOF'
 TO: Lead
 
 **PERF:** Investigating [area/endpoint]
@@ -104,7 +104,7 @@ Then: `->relay-file:starting`
 
 ### Profiling Results
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/analysis << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/analysis << 'EOF'
 TO: Lead
 
 **PERF ANALYSIS:** [Area]
@@ -123,7 +123,7 @@ Then: `->relay-file:analysis`
 
 ### Optimization Complete
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/done << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/done << 'EOF'
 TO: Lead
 
 **PERF DONE:** [Area]
@@ -142,7 +142,7 @@ Then: `->relay-file:done`
 
 ### Performance Concern
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/warning << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/warning << 'EOF'
 TO: Lead
 
 **PERF WARNING:** [Concern]
