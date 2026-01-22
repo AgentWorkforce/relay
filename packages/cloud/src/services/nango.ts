@@ -16,16 +16,27 @@ export interface GithubUserProfile {
 }
 
 class NangoService {
-  private client: Nango;
-  private secret: string;
+  private _client: Nango | null = null;
+  private _secret: string | null = null;
 
-  constructor() {
-    const config = getConfig();
-    this.secret = config.nango.secretKey;
-    this.client = new Nango({
-      secretKey: config.nango.secretKey,
-      ...(config.nango.host ? { host: config.nango.host } : {}),
-    });
+  /** Lazily initialize client on first use to avoid requiring env vars at import */
+  private get client(): Nango {
+    if (!this._client) {
+      const config = getConfig();
+      this._secret = config.nango.secretKey;
+      this._client = new Nango({
+        secretKey: config.nango.secretKey,
+        ...(config.nango.host ? { host: config.nango.host } : {}),
+      });
+    }
+    return this._client;
+  }
+
+  private get secret(): string {
+    if (!this._secret) {
+      this._secret = getConfig().nango.secretKey;
+    }
+    return this._secret;
   }
 
   /**
