@@ -32,6 +32,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Build packages
+        run: npm run build
+
       - name: Run onboarding unit tests
         run: npx vitest run packages/cloud/src/api/onboarding.test.ts
 
