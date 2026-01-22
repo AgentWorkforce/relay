@@ -236,7 +236,7 @@ agent-relay is a messaging layer, not a framework. It integrates with:
 
 ## License
 
-MIT
+Apache-2.0 - Copyright 2025 Agent Workforce Incorporated
 
 ---
 
