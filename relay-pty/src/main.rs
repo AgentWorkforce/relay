@@ -10,6 +10,7 @@
 #![allow(dead_code)]
 
 mod inject;
+mod outbox_monitor;
 mod parser;
 mod protocol;
 mod pty;
@@ -19,6 +20,7 @@ mod socket;
 use anyhow::{Context, Result};
 use clap::Parser;
 use inject::Injector;
+use outbox_monitor::OutboxMonitor;
 use parser::OutputParser;
 use protocol::Config;
 use pty::{AsyncPty, Pty};
@@ -92,6 +94,12 @@ struct Args {
     /// Outbox directory for file-based relay messages (default: /tmp/relay/{WORKSPACE_ID}/outbox/{name} when set)
     #[arg(long)]
     outbox: Option<String>,
+
+    /// Timeout in seconds before an outbox file is considered stale (default: 60)
+    /// A stale file indicates the agent wrote a message but forgot to trigger it.
+    /// Set to 0 to disable stale file detection.
+    #[arg(long, default_value = "60")]
+    stale_outbox_timeout: u64,
 
     /// Command to run (after --)
     #[arg(last = true, required = true)]
@@ -212,6 +220,38 @@ async fn main() -> Result<()> {
     } else {
         OutputParser::new(config.name.clone(), &config.prompt_pattern)
     };
+
+    // Create outbox monitor for stale file detection
+    let mut outbox_monitor: Option<OutboxMonitor> = if let Some(ref outbox) = outbox_path {
+        if args.stale_outbox_timeout > 0 {
+            let outbox_pathbuf = std::path::PathBuf::from(outbox);
+            let mut monitor = outbox_monitor::create_outbox_monitor(
+                args.name.clone(),
+                &outbox_pathbuf,
+                args.stale_outbox_timeout,
+            );
+            if let Err(e) = monitor.start() {
+                warn!("Failed to start outbox monitor: {}", e);
+                None
+            } else {
+                // Initialize tracking for existing files
+                monitor.init().await;
+                info!(
+                    "Stale outbox detection enabled (timeout: {}s)",
+                    args.stale_outbox_timeout
+                );
+                Some(monitor)
+            }
+        } else {
+            info!("Stale outbox detection disabled (timeout set to 0)");
+            None
+        }
+    } else {
+        None
+    };
+
+    // Interval for checking stale outbox files
+    let mut stale_check_interval = tokio::time::interval(std::time::Duration::from_secs(10));
 
     // Start socket server
     let socket_server = SocketServer::new(
@@ -367,6 +407,20 @@ async fn main() -> Result<()> {
                     last_output_ms: injector.silence_ms(),
                 };
                 let _ = query.response_tx.send(info);
+            }
+
+            // Check for stale outbox files periodically
+            _ = stale_check_interval.tick() => {
+                if let Some(ref mut monitor) = outbox_monitor {
+                    let stale_files = monitor.check_stale().await;
+                    for stale in stale_files {
+                        // Always emit stale file events to stderr as JSON
+                        // (regardless of --json-output flag since this is important)
+                        if let Ok(json) = serde_json::to_string(&stale) {
+                            eprintln!("{}", json);
+                        }
+                    }
+                }
             }
 
             // Note: Response notifications are handled by the socket server

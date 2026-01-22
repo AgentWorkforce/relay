@@ -152,6 +152,36 @@ impl ContinuityCommand {
     }
 }
 
+/// Event emitted when a file in the outbox has been sitting without a trigger.
+/// This indicates the agent wrote a relay message file but forgot to output
+/// the `->relay-file:ID` trigger to actually send it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StaleOutboxFile {
+    /// Type identifier (always "stale_outbox_file")
+    #[serde(rename = "type")]
+    pub event_type: String,
+    /// Name of the stale file (without path)
+    pub file: String,
+    /// Full path to the file
+    pub path: String,
+    /// Age of the file in seconds
+    pub age_seconds: u64,
+    /// Agent name
+    pub agent: String,
+}
+
+impl StaleOutboxFile {
+    pub fn new(file: String, path: String, age_seconds: u64, agent: String) -> Self {
+        Self {
+            event_type: "stale_outbox_file".to_string(),
+            file,
+            path,
+            age_seconds,
+            agent,
+        }
+    }
+}
+
 impl ParsedRelayCommand {
     pub fn new_message(from: String, to: String, body: String, raw: String) -> Self {
         Self {
