@@ -4,7 +4,8 @@
  *
  * Commands:
  *   relay claude                   - Start daemon + Dashboard coordinator with Claude
- *   relay codex                    - Start daemon + Dasbboard coordinator with Codex
+ *   relay codex                    - Start daemon + Dashboard coordinator with Codex
+ *   relay browser                  - Start a browser automation agent (browser-use)
  *   relay create-agent <cmd>       - Wrap agent with real-time messaging
  *   relay create-agent -n Name cmd - Wrap with specific agent name
  *   relay up                       - Start daemon + dashboard
@@ -46,7 +47,7 @@ const execAsync = promisify(exec);
 
 // Check for updates in background (non-blocking)
 // Only show notification for interactive commands, not when wrapping agents or running update
-const interactiveCommands = ['up', 'down', 'status', 'agents', 'who', 'version', '--version', '-V', '--help', '-h', 'create-agent', 'claude', 'codex'];
+const interactiveCommands = ['up', 'down', 'status', 'agents', 'who', 'version', '--version', '-V', '--help', '-h', 'create-agent', 'claude', 'codex', 'browser'];
 const shouldCheckUpdates = process.argv.length > 2 &&
   interactiveCommands.includes(process.argv[2]);
 if (shouldCheckUpdates) {
@@ -684,6 +685,75 @@ program
   .description('Start daemon and Dashboard coordinator with Codex')
   .action(async () => {
     await startDashboardCoordinator('codex');
+  });
+
+// browser - Start a browser automation agent (requires browser-use Python package)
+program
+  .command('browser')
+  .description('Start a browser automation agent powered by browser-use')
+  .option('-n, --name <name>', 'Agent name (default: Browser)')
+  .option('--model <model>', 'LLM model to use (default: gpt-4o)')
+  .option('--headless', 'Run browser in headless mode (default)')
+  .option('--no-headless', 'Run browser with visible UI')
+  .option('--timeout <seconds>', 'Task timeout in seconds (default: 300)')
+  .option('--check', 'Check if browser-use dependencies are installed')
+  .action(async (options) => {
+    const { BrowserWrapper } = await import('../browser/browser-wrapper.js');
+    const { getProjectPaths } = await import('../utils/project-namespace.js');
+    const paths = getProjectPaths();
+
+    // Check dependencies if requested
+    if (options.check) {
+      console.log('Checking browser-use dependencies...');
+      const deps = await BrowserWrapper.checkDependencies();
+      if (deps.available) {
+        console.log(`✓ Python: ${deps.pythonVersion}`);
+        console.log(`✓ browser-use: ${deps.browserUseVersion || 'installed'}`);
+        console.log('\nBrowser agent is ready to use!');
+      } else {
+        console.error(`✗ ${deps.error}`);
+        console.log('\nTo install browser-use:');
+        console.log('  pip install browser-use langchain-openai langchain-anthropic');
+        console.log('  playwright install chromium');
+        process.exit(1);
+      }
+      return;
+    }
+
+    const agentName = options.name ?? 'Browser';
+    console.log(`Starting browser agent: ${agentName}`);
+    console.log(`Project: ${paths.projectId}`);
+
+    const wrapper = new BrowserWrapper({
+      name: agentName,
+      model: options.model,
+      headless: options.headless !== false,
+      timeout: options.timeout ? parseInt(options.timeout, 10) : undefined,
+      socketPath: paths.socketPath,
+      cwd: paths.projectRoot,
+    });
+
+    process.on('SIGINT', async () => {
+      console.log('\nStopping browser agent...');
+      await wrapper.stop();
+      process.exit(0);
+    });
+
+    try {
+      await wrapper.start();
+      console.log(`Browser agent ready. Send tasks via relay messages to "${agentName}"`);
+      // Keep running
+      await new Promise(() => {});
+    } catch (err) {
+      console.error('Failed to start browser agent:', err);
+      const deps = await BrowserWrapper.checkDependencies();
+      if (!deps.available) {
+        console.log('\nMissing dependencies. To install:');
+        console.log('  pip install browser-use langchain-openai langchain-anthropic');
+        console.log('  playwright install chromium');
+      }
+      process.exit(1);
+    }
   });
 
 // status - Check daemon status
