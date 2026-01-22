@@ -16,7 +16,7 @@ import { computeSystemMetrics, formatPrometheusMetrics } from './metrics.js';
 import { MultiProjectClient } from '../bridge/multi-project-client.js';
 import { AgentSpawner, type CloudPersistenceHandler } from '../bridge/spawner.js';
 import type { ProjectConfig, SpawnRequest } from '../bridge/types.js';
-import { listTrajectorySteps, getTrajectoryStatus, getTrajectoryHistory } from '../trajectory/integration.js';
+import { listTrajectorySteps, getTrajectoryStatus, getTrajectoryHistory } from '@relay/trajectory';
 import { loadTeamsConfig } from '../bridge/teams-config.js';
 import { getMemoryMonitor } from '../resiliency/memory-monitor.js';
 import { detectWorkspacePath } from '../utils/project-namespace.js';

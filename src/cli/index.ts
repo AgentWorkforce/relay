@@ -2327,7 +2327,7 @@ program
   .action(async (args: string[]) => {
     const { spawn } = await import('node:child_process');
     const { getProjectPaths } = await import('../utils/project-namespace.js');
-    const { getPrimaryTrajectoriesDir, ensureTrajectoriesDir } = await import('../trajectory/config.js');
+    const { getPrimaryTrajectoriesDir, ensureTrajectoriesDir } = await import('@relay/config/trajectory-config');
 
     const paths = getProjectPaths();
 

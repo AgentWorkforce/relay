@@ -1,3 +1,5 @@
+export type PDEROPhase = 'plan' | 'design' | 'execute' | 'review' | 'observe';
+
 /**
  * Continuity System Types
  *
@@ -5,8 +7,6 @@
  * Works with any CLI (Claude, Codex, Gemini, custom) via output
  * pattern detection and PTY injection.
  */
-
-import type { PDEROPhase } from '../trajectory/integration.js';
 
 /**
  * A decision recorded during agent work

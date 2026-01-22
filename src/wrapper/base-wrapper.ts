@@ -38,7 +38,7 @@ import {
   parseContinuityCommand,
   hasContinuityCommand,
   type ContinuityManager,
-} from '../continuity/index.js';
+} from '@relay/continuity/index.js';
 import { UniversalIdleDetector } from './idle-detector.js';
 import { StuckDetector, type StuckEvent, type StuckReason } from './stuck-detector.js';
 

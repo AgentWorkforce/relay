@@ -27,7 +27,7 @@ vi.mock('./client.js', () => ({
 }));
 
 // Mock the continuity module
-vi.mock('../continuity/index.js', () => ({
+vi.mock('@relay/continuity', () => ({
   getContinuityManager: vi.fn(() => mockContinuityManager),
   parseContinuityCommand: vi.fn(),
   hasContinuityCommand: vi.fn(() => false),

@@ -6,7 +6,7 @@
     "lib": ["ES2022"],
     "types": ["node"],
     "outDir": "./dist",
-    "rootDir": "./src",
+    "rootDir": ".",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -22,7 +22,13 @@
       "@relay/config": ["packages/config/src/index.ts"],
       "@relay/config/*": ["packages/config/src/*"],
       "@relay/storage": ["packages/storage/src/index.ts"],
-      "@relay/storage/*": ["packages/storage/src/*"]
+      "@relay/storage/*": ["packages/storage/src/*"],
+      "@relay/bridge": ["packages/bridge/src/index.ts"],
+      "@relay/bridge/*": ["packages/bridge/src/*"],
+      "@relay/continuity": ["packages/continuity/src/index.ts"],
+      "@relay/continuity/*": ["packages/continuity/src/*"],
+      "@relay/trajectory": ["packages/trajectory/src/index.ts"],
+      "@relay/trajectory/*": ["packages/trajectory/src/*"]
     }
   },
   "include": ["src/**/*"],
