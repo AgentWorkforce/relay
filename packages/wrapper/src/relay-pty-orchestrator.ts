@@ -1055,6 +1055,23 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       // Now verify the message actually appeared in the terminal output
       this.log(` Message ${pending.shortId} marked delivered by Rust, verifying in output...`);
 
+      // In interactive mode, we can't verify because stdout goes directly to terminal
+      // Trust Rust's "delivered" status in this case
+      if (this.isInteractive) {
+        this.log(` Interactive mode - trusting Rust delivery status`);
+        clearTimeout(pending.timeout);
+        this.pendingInjections.delete(response.id);
+        if (pending.retryCount === 0) {
+          this.injectionMetrics.successFirstTry++;
+        } else {
+          this.injectionMetrics.successWithRetry++;
+        }
+        this.injectionMetrics.total++;
+        pending.resolve(true);
+        this.log(` Message ${pending.shortId} delivered (interactive mode) ✓`);
+        return;
+      }
+
       // Give a brief moment for output to be captured
       await sleep(100);
 
