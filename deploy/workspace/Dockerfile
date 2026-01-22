@@ -24,6 +24,7 @@ RUN npm ci
 # Copy source files for build
 COPY tsconfig*.json ./
 COPY src ./src
+COPY packages ./packages
 
 # Build the TypeScript (skip dashboard build for workspace image)
 RUN npx tsc
@@ -39,6 +40,7 @@ WORKDIR /app
 
 # Copy from builder
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/packages ./packages
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package*.json ./
 
@@ -53,8 +55,8 @@ COPY deploy/workspace/gh-relay /usr/local/bin/gh
 RUN chmod +x /entrypoint.sh /usr/local/bin/git-credential-relay /usr/local/bin/gh
 
 # Create symlink for agent-relay CLI
-RUN ln -sf /app/dist/cli/index.js /usr/local/bin/agent-relay && \
-    chmod +x /app/dist/cli/index.js 2>/dev/null || true
+RUN ln -sf /app/dist/src/cli/index.js /usr/local/bin/agent-relay && \
+    chmod +x /app/dist/src/cli/index.js 2>/dev/null || true
 
 # Fix ownership
 RUN chown -R workspace:workspace /app

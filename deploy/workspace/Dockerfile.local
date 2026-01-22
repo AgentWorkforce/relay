@@ -43,6 +43,7 @@ RUN npm ci
 # Copy source files for build
 COPY tsconfig*.json ./
 COPY src ./src
+COPY packages ./packages
 
 # Build the TypeScript (skip dashboard build for workspace image)
 RUN npx tsc
@@ -96,6 +97,7 @@ RUN useradd -m -u 1001 -s /bin/bash workspace \
 
 # Copy from builder
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/packages ./packages
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package*.json ./
 
@@ -113,8 +115,8 @@ COPY --from=rust-builder /build/target/release/relay-pty /usr/local/bin/relay-pt
 RUN chmod +x /usr/local/bin/relay-pty
 
 # Create symlink for agent-relay CLI
-RUN ln -sf /app/dist/cli/index.js /usr/local/bin/agent-relay && \
-    chmod +x /app/dist/cli/index.js 2>/dev/null || true
+RUN ln -sf /app/dist/src/cli/index.js /usr/local/bin/agent-relay && \
+    chmod +x /app/dist/src/cli/index.js 2>/dev/null || true
 
 # Fix ownership
 RUN chown -R workspace:workspace /app

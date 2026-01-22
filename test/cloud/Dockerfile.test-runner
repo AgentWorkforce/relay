@@ -15,6 +15,7 @@ RUN npm ci
 
 # Copy source and test files
 COPY src ./src
+COPY packages ./packages
 COPY test ./test
 COPY vitest.config.ts ./
 
