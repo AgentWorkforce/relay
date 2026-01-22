@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-21T13:22:37.501Z",
+  "lastUpdated": "2026-01-21T22:30:12.356Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -869,6 +869,20 @@
       "startedAt": "2026-01-21T13:21:06.825Z",
       "completedAt": "2026-01-21T13:22:37.470Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_u70pksfivjhp.json"
+    },
+    "traj_mvqthi1oitfo": {
+      "title": "Fix mobile channels scrolling - make channels section scrollable when there are many channels on mobile",
+      "status": "completed",
+      "startedAt": "2026-01-21T17:36:44.996Z",
+      "completedAt": "2026-01-21T19:08:35.954Z",
+      "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_mvqthi1oitfo.json"
+    },
+    "traj_jl5pp8rdu8up": {
+      "title": "Fix spawn timing race condition",
+      "status": "completed",
+      "startedAt": "2026-01-21T22:10:45.793Z",
+      "completedAt": "2026-01-21T22:30:11.795Z",
+      "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_jl5pp8rdu8up.json"
     }
   }
 }

@@ -228,8 +228,10 @@ export interface AgentSpawnerOptions {
 }
 
 export class AgentSpawner {
+  private static readonly ONLINE_THRESHOLD_MS = 30_000;
   private activeWorkers: Map<string, ActiveWorker> = new Map();
   private agentsPath: string;
+  private registryPath: string;
   private projectRoot: string;
   private socketPath?: string;
   private logsDir: string;
@@ -255,6 +257,7 @@ export class AgentSpawner {
     // Use connected-agents.json (live socket connections) instead of agents.json (historical registry)
     // This ensures spawned agents have actual daemon connections for channel message delivery
     this.agentsPath = path.join(paths.teamDir, 'connected-agents.json');
+    this.registryPath = path.join(paths.teamDir, 'agents.json');
     this.socketPath = paths.socketPath;
     this.logsDir = path.join(paths.teamDir, 'worker-logs');
     this.workersPath = path.join(paths.teamDir, 'workers.json');
@@ -1055,7 +1058,7 @@ export class AgentSpawner {
   }
 
   /**
-   * Wait for an agent to appear in the registry (agents.json)
+   * Wait for an agent to appear in the connected list and registry (connected-agents.json + agents.json).
    */
   private async waitForAgentRegistration(
     name: string,
@@ -1076,6 +1079,10 @@ export class AgentSpawner {
   }
 
   private isAgentRegistered(name: string): boolean {
+    return this.isAgentConnected(name) && this.isAgentRecentlySeen(name);
+  }
+
+  private isAgentConnected(name: string): boolean {
     if (!this.agentsPath) return false;
     if (!fs.existsSync(this.agentsPath)) return false;
 
@@ -1084,12 +1091,37 @@ export class AgentSpawner {
       // connected-agents.json format: { agents: string[], users: string[], updatedAt: number }
       // agents is a string array of connected agent names (not objects)
       const agents: string[] = Array.isArray(raw?.agents) ? raw.agents : [];
+      const updatedAt = typeof raw?.updatedAt === 'number' ? raw.updatedAt : 0;
+      const isFresh = Date.now() - updatedAt <= AgentSpawner.ONLINE_THRESHOLD_MS;
+
+      if (!isFresh) return false;
 
       // Case-insensitive check to match router behavior
       const lowerName = name.toLowerCase();
       return agents.some((a) => typeof a === 'string' && a.toLowerCase() === lowerName);
     } catch (err: any) {
       console.error('[spawner] Failed to read connected-agents.json:', err.message);
+      return false;
+    }
+  }
+
+  private isAgentRecentlySeen(name: string): boolean {
+    if (!this.registryPath) return false;
+    if (!fs.existsSync(this.registryPath)) return false;
+
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.registryPath, 'utf-8'));
+      const agents = Array.isArray(raw?.agents)
+        ? raw.agents
+        : typeof raw?.agents === 'object' && raw?.agents !== null
+          ? Object.values(raw.agents)
+          : [];
+      const lowerName = name.toLowerCase();
+      const agent = agents.find((entry) => typeof entry?.name === 'string' && entry.name.toLowerCase() === lowerName);
+      if (!agent?.lastSeen) return false;
+      return Date.now() - new Date(agent.lastSeen).getTime() <= AgentSpawner.ONLINE_THRESHOLD_MS;
+    } catch (err: any) {
+      console.error('[spawner] Failed to read agents.json:', err.message);
       return false;
     }
   }

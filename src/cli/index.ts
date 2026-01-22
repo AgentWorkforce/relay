@@ -457,7 +457,12 @@ program
         console.log('');
         console.log('Auto-spawning agents from teams.json...');
 
-        spawner = new AgentSpawner(paths.projectRoot, undefined, dashboardPort);
+        spawner = new AgentSpawner({
+          projectRoot: paths.projectRoot,
+          dashboardPort,
+          onMarkSpawning: (name) => daemon.markSpawning(name),
+          onClearSpawning: (name) => daemon.clearSpawning(name),
+        });
 
         for (const agent of teamsConfig.agents) {
           console.log(`  Spawning ${agent.name} (${agent.cli})...`);

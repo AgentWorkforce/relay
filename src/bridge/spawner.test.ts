@@ -349,6 +349,62 @@ describe('AgentSpawner', () => {
     const output = spawner.getWorkerOutput('Unknown');
     expect(output).toBeNull();
   });
+
+  describe('isAgentRegistered', () => {
+    it('returns true when connected and registry are fresh', () => {
+      const now = new Date().toISOString();
+      readFileSyncMock.mockImplementation((filePath: string) => {
+        if (filePath.includes('connected-agents.json')) {
+          return JSON.stringify({ agents: ['Dev1'], users: [], updatedAt: Date.now() });
+        }
+        if (filePath.includes('agents.json')) {
+          return JSON.stringify({ agents: [{ name: 'Dev1', lastSeen: now }] });
+        }
+        return '';
+      });
+
+      const spawner = new AgentSpawner(projectRoot);
+      const registered = (spawner as any).isAgentRegistered('Dev1');
+
+      expect(registered).toBe(true);
+    });
+
+    it('returns false when connected list is stale', () => {
+      const now = new Date().toISOString();
+      readFileSyncMock.mockImplementation((filePath: string) => {
+        if (filePath.includes('connected-agents.json')) {
+          return JSON.stringify({ agents: ['Dev1'], users: [], updatedAt: Date.now() - 60_000 });
+        }
+        if (filePath.includes('agents.json')) {
+          return JSON.stringify({ agents: [{ name: 'Dev1', lastSeen: now }] });
+        }
+        return '';
+      });
+
+      const spawner = new AgentSpawner(projectRoot);
+      const registered = (spawner as any).isAgentRegistered('Dev1');
+
+      expect(registered).toBe(false);
+    });
+
+    it('returns false when registry is stale', () => {
+      const old = new Date(Date.now() - 60_000).toISOString();
+      readFileSyncMock.mockImplementation((filePath: string) => {
+        if (filePath.includes('connected-agents.json')) {
+          return JSON.stringify({ agents: ['Dev1'], users: [], updatedAt: Date.now() });
+        }
+        if (filePath.includes('agents.json')) {
+          return JSON.stringify({ agents: [{ name: 'Dev1', lastSeen: old }] });
+        }
+        return '';
+      });
+
+      const spawner = new AgentSpawner(projectRoot);
+      const registered = (spawner as any).isAgentRegistered('Dev1');
+
+      expect(registered).toBe(false);
+    });
+  });
 });
 
 describe('readWorkersMetadata', () => {
