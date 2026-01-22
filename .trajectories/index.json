@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-22T12:21:14.522Z",
+  "lastUpdated": "2026-01-22T12:23:26.204Z",
   "trajectories": {
     "traj_ddtj404on2bq": {
       "title": "@relay/api-types extraction",
@@ -88,9 +88,10 @@
     },
     "traj_ta548lw6b2mx": {
       "title": "Complete Phase 6: Wrapper tests, CLI extraction, final integrations",
-      "status": "active",
+      "status": "completed",
       "startedAt": "2026-01-22T12:14:21.544Z",
-      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/active/traj_ta548lw6b2mx.json"
+      "completedAt": "2026-01-22T12:23:26.168Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_ta548lw6b2mx.json"
     }
   }
 }
