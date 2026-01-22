@@ -343,7 +343,11 @@ export class Orchestrator extends EventEmitter {
 
     // Ensure spawner exists
     if (!workspace.spawner) {
-      workspace.spawner = new AgentSpawner(workspace.path);
+      workspace.spawner = new AgentSpawner({
+        projectRoot: workspace.path,
+        onMarkSpawning: (name) => workspace.daemon?.markSpawning(name),
+        onClearSpawning: (name) => workspace.daemon?.clearSpawning(name),
+      });
     }
 
     const result = await workspace.spawner.spawn({
@@ -445,7 +449,11 @@ export class Orchestrator extends EventEmitter {
       workspace.status = 'active';
 
       // Create spawner
-      workspace.spawner = new AgentSpawner(workspace.path);
+      workspace.spawner = new AgentSpawner({
+        projectRoot: workspace.path,
+        onMarkSpawning: (name) => workspace.daemon?.markSpawning(name),
+        onClearSpawning: (name) => workspace.daemon?.clearSpawning(name),
+      });
 
       // Set up agent death notifications
       workspace.spawner.setOnAgentDeath((info) => {

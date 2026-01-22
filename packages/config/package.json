@@ -1,0 +1,81 @@
+{
+  "name": "@relay/config",
+  "version": "0.1.0",
+  "description": "Shared configuration schemas and loaders for Agent Relay",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./relay-config": {
+      "types": "./dist/relay-config.d.ts",
+      "import": "./dist/relay-config.js"
+    },
+    "./bridge-config": {
+      "types": "./dist/bridge-config.d.ts",
+      "import": "./dist/bridge-config.js"
+    },
+    "./teams-config": {
+      "types": "./dist/teams-config.d.ts",
+      "import": "./dist/teams-config.js"
+    },
+    "./shadow-config": {
+      "types": "./dist/shadow-config.d.ts",
+      "import": "./dist/shadow-config.js"
+    },
+    "./trajectory-config": {
+      "types": "./dist/trajectory-config.d.ts",
+      "import": "./dist/trajectory-config.js"
+    },
+    "./agent-config": {
+      "types": "./dist/agent-config.d.ts",
+      "import": "./dist/agent-config.js"
+    },
+    "./cli-auth-config": {
+      "types": "./dist/cli-auth-config.d.ts",
+      "import": "./dist/cli-auth-config.js"
+    },
+    "./cloud-config": {
+      "types": "./dist/cloud-config.d.ts",
+      "import": "./dist/cloud-config.js"
+    },
+    "./project-namespace": {
+      "types": "./dist/project-namespace.d.ts",
+      "import": "./dist/project-namespace.js"
+    },
+    "./schemas": {
+      "types": "./dist/schemas.d.ts",
+      "import": "./dist/schemas.js"
+    },
+    "./bridge-utils": {
+      "types": "./dist/bridge-utils.d.ts",
+      "import": "./dist/bridge-utils.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@relay/protocol": "0.1.0",
+    "zod": "^3.23.8",
+    "zod-to-json-schema": "^3.23.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.3",
+    "typescript": "^5.9.3",
+    "vitest": "^3.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

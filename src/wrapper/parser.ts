@@ -13,7 +13,7 @@
  * - Block format is preferred for structured data
  */
 
-import type { PayloadKind } from '../protocol/types.js';
+import type { PayloadKind } from '@relay/protocol/types';
 
 export interface ParsedCommand {
   to: string;

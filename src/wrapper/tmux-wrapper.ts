@@ -22,7 +22,7 @@ import {
   parseContinuityCommand,
 } from '../continuity/index.js';
 import { InboxManager } from './inbox.js';
-import type { SendPayload, SendMeta } from '../protocol/types.js';
+import type { SendPayload, SendMeta } from '@relay/protocol/types';
 import { SqliteStorageAdapter } from '../storage/sqlite-adapter.js';
 import { getProjectPaths } from '../utils/project-namespace.js';
 import { getTmuxPath } from '../utils/tmux-resolver.js';
@@ -1530,7 +1530,7 @@ export class TmuxWrapper extends BaseWrapper {
     from: string,
     channel: string,
     body: string,
-    envelope: import('../protocol/types.js').Envelope<import('../protocol/channels.js').ChannelMessagePayload>
+    envelope: import('@relay/protocol/types').Envelope<import('@relay/protocol/channels').ChannelMessagePayload>
   ): void {
     const messageId = envelope.id;
 

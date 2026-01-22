@@ -11,11 +11,11 @@ import {
   getDefaultLeadName,
   resolveProjects,
   validateDaemons,
-} from './config.js';
+} from './bridge-config.js';
 
 // Mock fs module
 vi.mock('node:fs');
-vi.mock('../utils/project-namespace.js', () => ({
+vi.mock('./project-namespace.js', () => ({
   getProjectPaths: vi.fn((projectPath: string) => ({
     projectId: 'test-project-id',
     socketPath: `/tmp/agent-relay/test-project-id/relay.sock`,

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { Envelope, ErrorPayload, WelcomePayload, DeliverEnvelope, AckPayload } from '../protocol/types.js';
+import type { Envelope, ErrorPayload, WelcomePayload, DeliverEnvelope, AckPayload } from '@relay/protocol/types';
 import { RelayClient } from './client.js';
 
 describe('RelayClient', () => {

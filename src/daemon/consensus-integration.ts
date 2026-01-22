@@ -45,7 +45,7 @@ import {
   type ParsedProposalCommand,
 } from './consensus.js';
 import type { Router } from './router.js';
-import { PROTOCOL_VERSION, type SendEnvelope } from '../protocol/types.js';
+import { PROTOCOL_VERSION, type SendEnvelope } from '@relay/protocol/types';
 
 // =============================================================================
 // Types

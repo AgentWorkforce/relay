@@ -18,8 +18,8 @@ import {
   type SendEnvelope,
   type AckPayload,
   type ErrorPayload,
-} from '../protocol/types.js';
-import type { ChannelJoinPayload, ChannelLeavePayload, ChannelMessagePayload } from '../protocol/channels.js';
+} from '@relay/protocol/types';
+import type { ChannelJoinPayload, ChannelLeavePayload, ChannelMessagePayload } from '@relay/protocol/channels';
 import { createStorageAdapter, type StorageAdapter, type StorageConfig } from '../storage/adapter.js';
 import { SqliteStorageAdapter } from '../storage/sqlite-adapter.js';
 import { getProjectPaths } from '../utils/project-namespace.js';

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { Envelope, AckPayload, SendEnvelope } from '../protocol/types.js';
-import { PROTOCOL_VERSION } from '../protocol/types.js';
+import type { Envelope, AckPayload, SendEnvelope } from '@relay/protocol/types';
+import { PROTOCOL_VERSION } from '@relay/protocol/types';
 import { Daemon } from './server.js';
 import type { Connection } from './connection.js';
 

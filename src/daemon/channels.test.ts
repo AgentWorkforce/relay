@@ -13,12 +13,12 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Router } from './router.js';
 import type { Connection } from './connection.js';
 import type { StorageAdapter, StoredMessage } from '../storage/adapter.js';
-import type { Envelope, SendPayload, DeliverEnvelope } from '../protocol/types.js';
+import type { Envelope, SendPayload, DeliverEnvelope } from '@relay/protocol/types';
 import type {
   ChannelJoinPayload,
   ChannelLeavePayload,
   ChannelMessagePayload,
-} from '../protocol/channels.js';
+} from '@relay/protocol/channels';
 
 /**
  * Mock Connection class for testing.

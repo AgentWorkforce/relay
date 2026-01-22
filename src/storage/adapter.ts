@@ -1,4 +1,4 @@
-import type { PayloadKind, SendMeta } from '../protocol/types.js';
+import type { PayloadKind, SendMeta } from '@relay/protocol/types';
 
 export type MessageStatus = 'unread' | 'read' | 'acked' | 'failed';
 

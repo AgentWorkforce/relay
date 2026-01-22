@@ -16,7 +16,9 @@
   },
   "scripts": {
     "postinstall": "npm rebuild better-sqlite3 && node scripts/postinstall.js",
-    "build": "npm run clean && npm run build:sdk && tsc && npm run build:dashboard",
+    "build": "npm run clean && npm run build:protocol && npm run build:config && npm run build:sdk && tsc && npm run build:dashboard",
+    "build:protocol": "cd packages/protocol && npm run build",
+    "build:config": "cd packages/config && npm run build",
     "build:sdk": "cd packages/sdk && npm run build",
     "build:dashboard": "cd src/dashboard && npm run build",
     "postbuild": "chmod +x dist/cli/index.js && mkdir -p dist/dashboard && cp -r src/dashboard/out dist/dashboard/",
@@ -82,6 +84,8 @@
   "homepage": "https://github.com/AgentWorkforce/relay#readme",
   "dependencies": {
     "@agent-relay/sdk": "*",
+    "@relay/config": "0.1.0",
+    "@relay/protocol": "0.1.0",
     "@nangohq/node": "^0.69.20",
     "@types/jsonwebtoken": "^9.0.10",
     "agent-trajectories": "^0.2.3",

@@ -19,8 +19,8 @@ import { EventEmitter } from 'node:events';
 import { RelayClient } from './client.js';
 import type { ParsedCommand, ParsedSummary } from './parser.js';
 import { isPlaceholderTarget } from './parser.js';
-import type { SendPayload, SendMeta, SpeakOnTrigger, Envelope } from '../protocol/types.js';
-import type { ChannelMessagePayload } from '../protocol/channels.js';
+import type { SendPayload, SendMeta, SpeakOnTrigger, Envelope } from '@relay/protocol/types';
+import type { ChannelMessagePayload } from '@relay/protocol/channels';
 import {
   type QueuedMessage,
   type InjectionMetrics,

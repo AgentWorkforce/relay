@@ -20,8 +20,8 @@ import {
   type AckPayload,
   type EntityType,
   PROTOCOL_VERSION,
-} from '../protocol/types.js';
-import { encodeFrameLegacy as encodeFrame, FrameParser } from '../protocol/framing.js';
+} from '@relay/protocol/types';
+import { encodeFrameLegacy as encodeFrame, FrameParser } from '@relay/protocol/framing';
 import { DEFAULT_CONNECTION_CONFIG } from '../config/relay-config.js';
 
 export type ConnectionState = 'CONNECTING' | 'HANDSHAKING' | 'ACTIVE' | 'CLOSING' | 'CLOSED' | 'ERROR';

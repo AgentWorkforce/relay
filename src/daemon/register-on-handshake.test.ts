@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Router } from './router.js';
-import { PROTOCOL_VERSION, type Envelope, type SendPayload } from '../protocol/types.js';
+import { PROTOCOL_VERSION, type Envelope, type SendPayload } from '@relay/protocol/types';
 
 describe('Register-on-handshake behavior', () => {
   it('routes to a registered agent before that agent sends any SEND', () => {

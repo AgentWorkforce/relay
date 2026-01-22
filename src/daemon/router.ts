@@ -13,12 +13,12 @@ import {
   type SpeakOnTrigger,
   type EntityType,
   PROTOCOL_VERSION,
-} from '../protocol/types.js';
+} from '@relay/protocol/types';
 import type {
   ChannelJoinPayload,
   ChannelLeavePayload,
   ChannelMessagePayload,
-} from '../protocol/channels.js';
+} from '@relay/protocol/channels';
 import type { StorageAdapter } from '../storage/adapter.js';
 import type { AgentRegistry } from './agent-registry.js';
 import { routerLog } from '../utils/logger.js';

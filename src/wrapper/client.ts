@@ -36,15 +36,15 @@ import {
   type LogPayload,
   type EntityType,
   PROTOCOL_VERSION,
-} from '../protocol/types.js';
+} from '@relay/protocol/types';
 import type {
   ChannelMessagePayload,
   ChannelJoinEnvelope,
   ChannelLeaveEnvelope,
   ChannelMessageEnvelope,
   MessageAttachment,
-} from '../protocol/channels.js';
-import { encodeFrameLegacy, FrameParser } from '../protocol/framing.js';
+} from '@relay/protocol/channels';
+import { encodeFrameLegacy, FrameParser } from '@relay/protocol/framing';
 import { DEFAULT_SOCKET_PATH } from '../daemon/server.js';
 
 export type ClientState = 'DISCONNECTED' | 'CONNECTING' | 'HANDSHAKING' | 'READY' | 'BACKOFF';

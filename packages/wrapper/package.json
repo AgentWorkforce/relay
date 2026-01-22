@@ -1,0 +1,60 @@
+{
+  "name": "@agent-relay/wrapper",
+  "version": "0.1.0",
+  "description": "CLI agent wrappers for Agent Relay - tmux, pty integration",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js"
+    },
+    "./parser": {
+      "types": "./dist/parser.d.ts",
+      "import": "./dist/parser.js"
+    },
+    "./tmux": {
+      "types": "./dist/tmux-wrapper.d.ts",
+      "import": "./dist/tmux-wrapper.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src/",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@agent-relay/api-types": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^3.0.0"
+  },
+  "peerDependencies": {
+    "@agent-relay/sdk": "*"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "keywords": [
+    "agent-relay",
+    "wrapper",
+    "tmux",
+    "pty",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AgentWorkforce/relay.git",
+    "directory": "packages/wrapper"
+  },
+  "license": "MIT"
+}

@@ -12,8 +12,8 @@ import {
   type SendPayload,
   type DeliverEnvelope,
   PROTOCOL_VERSION,
-} from '../protocol/types.js';
-import { encodeFrameLegacy as encodeFrame, FrameParser } from '../protocol/framing.js';
+} from '@relay/protocol/types';
+import { encodeFrameLegacy as encodeFrame, FrameParser } from '@relay/protocol/framing';
 import type { ProjectConfig, LeadInfo } from './types.js';
 
 interface ProjectConnection {

@@ -33,7 +33,7 @@ describe('SDK Public API Contract', () => {
 
   describe('Protocol exports', () => {
     it('exports PROTOCOL_VERSION constant', async () => {
-      const mod = await import('../protocol/types.js');
+      const mod = await import('@relay/protocol/types');
       expect(mod.PROTOCOL_VERSION).toBe(1);
       expect(typeof mod.PROTOCOL_VERSION).toBe('number');
     });
@@ -41,29 +41,29 @@ describe('SDK Public API Contract', () => {
     it('exports all required types', async () => {
       // This test verifies the module loads without errors
       // TypeScript compilation will catch missing type exports
-      const mod = await import('../protocol/types.js');
+      const mod = await import('@relay/protocol/types');
       expect(mod).toBeDefined();
     });
   });
 
   describe('Framing exports', () => {
     it('exports encodeFrame function', async () => {
-      const mod = await import('../protocol/framing.js');
+      const mod = await import('@relay/protocol/framing');
       expect(typeof mod.encodeFrame).toBe('function');
     });
 
     it('exports encodeFrameLegacy function', async () => {
-      const mod = await import('../protocol/framing.js');
+      const mod = await import('@relay/protocol/framing');
       expect(typeof mod.encodeFrameLegacy).toBe('function');
     });
 
     it('exports FrameParser class', async () => {
-      const mod = await import('../protocol/framing.js');
+      const mod = await import('@relay/protocol/framing');
       expect(typeof mod.FrameParser).toBe('function');
     });
 
     it('exports MAX_FRAME_BYTES constant', async () => {
-      const mod = await import('../protocol/framing.js');
+      const mod = await import('@relay/protocol/framing');
       expect(mod.MAX_FRAME_BYTES).toBe(1024 * 1024); // 1 MiB
     });
   });
@@ -158,7 +158,7 @@ describe('SDK Public API Contract', () => {
 
   describe('Framing compatibility', () => {
     it('can encode and decode envelopes', async () => {
-      const { encodeFrameLegacy, FrameParser } = await import('../protocol/framing.js');
+      const { encodeFrameLegacy, FrameParser } = await import('@relay/protocol/framing');
 
       const envelope = {
         v: 1,
@@ -184,7 +184,7 @@ describe('SDK Public API Contract', () => {
     });
 
     it('handles streaming data correctly', async () => {
-      const { encodeFrameLegacy, FrameParser } = await import('../protocol/framing.js');
+      const { encodeFrameLegacy, FrameParser } = await import('@relay/protocol/framing');
 
       const envelope = {
         v: 1,

@@ -13,7 +13,7 @@ import {
   type ReleaseResultPayload,
   type MessageType,
   PROTOCOL_VERSION,
-} from '../protocol/types.js';
+} from '@relay/protocol/types';
 import { AgentSpawner, type CloudPersistenceHandler, type OnAgentDeathCallback } from '../bridge/spawner.js';
 import type { CloudPolicyFetcher } from '../policy/agent-policy.js';
 import type { Connection } from './connection.js';

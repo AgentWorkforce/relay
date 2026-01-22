@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Router } from './router.js';
 import type { Connection } from './connection.js';
 import type { StorageAdapter, StoredMessage } from '../storage/adapter.js';
-import type { Envelope, SendPayload, DeliverEnvelope, AckPayload } from '../protocol/types.js';
+import type { Envelope, SendPayload, DeliverEnvelope, AckPayload } from '@relay/protocol/types';
 
 /**
  * Mock Connection class for testing.

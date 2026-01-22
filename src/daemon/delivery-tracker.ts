@@ -1,4 +1,4 @@
-import type { DeliverEnvelope, AckPayload, Envelope } from '../protocol/types.js';
+import type { DeliverEnvelope, AckPayload, Envelope } from '@relay/protocol/types';
 import type { StorageAdapter } from '../storage/adapter.js';
 import { routerLog } from '../utils/logger.js';
 

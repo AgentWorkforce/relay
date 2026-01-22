@@ -31,7 +31,7 @@ vi.mock('node:net', () => ({
 }));
 
 // Mock framing utilities
-vi.mock('../protocol/framing.js', () => ({
+vi.mock('@relay/protocol/framing', () => ({
   FrameParser: class {
     push = vi.fn(() => framesToReturn);
     setLegacyMode = vi.fn();

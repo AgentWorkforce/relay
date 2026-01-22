@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Socket } from 'node:net';
 import { Connection } from './connection.js';
-import { encodeFrameLegacy, FrameParser } from '../protocol/framing.js';
-import { PROTOCOL_VERSION, type Envelope, type HelloPayload, type WelcomePayload } from '../protocol/types.js';
+import { encodeFrameLegacy, FrameParser } from '@relay/protocol/framing';
+import { PROTOCOL_VERSION, type Envelope, type HelloPayload, type WelcomePayload } from '@relay/protocol/types';
 
 class MockSocket {
   private handlers: Map<string, Array<(...args: any[]) => void>> = new Map();

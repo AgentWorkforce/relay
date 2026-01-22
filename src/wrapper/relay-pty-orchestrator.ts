@@ -29,7 +29,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 import { BaseWrapper, type BaseWrapperConfig } from './base-wrapper.js';
 import { parseSummaryWithDetails, parseSessionEndFromOutput } from './parser.js';
-import type { SendPayload, SendMeta } from '../protocol/types.js';
+import type { SendPayload, SendMeta } from '@relay/protocol/types';
 import {
   type QueuedMessage,
   stripAnsi,

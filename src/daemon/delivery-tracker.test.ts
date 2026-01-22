@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { DeliveryTracker, type DeliveryTrackerConnection } from './delivery-tracker.js';
-import type { DeliverEnvelope } from '../protocol/types.js';
+import type { DeliverEnvelope } from '@relay/protocol/types';
 
 function createDeliverEnvelope(id: string, from = 'agent1', to = 'agent2'): DeliverEnvelope {
   return {

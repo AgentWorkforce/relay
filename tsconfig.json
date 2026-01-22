@@ -14,7 +14,14 @@
     "resolveJsonModule": true,
     "declaration": true,
     "declarationMap": true,
-    "sourceMap": true
+    "sourceMap": true,
+    "baseUrl": ".",
+    "paths": {
+      "@relay/protocol": ["packages/protocol/src/index.ts"],
+      "@relay/protocol/*": ["packages/protocol/src/*"],
+      "@relay/config": ["packages/config/src/index.ts"],
+      "@relay/config/*": ["packages/config/src/*"]
+    }
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/dashboard/**/*", "src/landing/**/*"]

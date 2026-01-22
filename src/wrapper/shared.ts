@@ -5,7 +5,7 @@
  * wrapper implementations and reduce duplication.
  */
 
-import type { SyncMeta } from '../protocol/types.js';
+import type { SyncMeta } from '@relay/protocol/types';
 
 /**
  * Message queued for injection into an agent's terminal
