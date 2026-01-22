@@ -87,16 +87,19 @@ COPY --chown=testuser:testuser packages/protocol/package.json /app/node_modules/
 COPY --chown=testuser:testuser packages/protocol/src/ /app/node_modules/@agent-relay/protocol/src/
 COPY --chown=testuser:testuser packages/protocol/tsconfig.json /app/node_modules/@agent-relay/protocol/
 
+# Install TypeScript globally for building packages
+RUN npm install -g typescript
+
 # Build protocol first (config depends on it)
 # Protocol has no runtime dependencies, just needs TypeScript to compile
-RUN cd /app/node_modules/@agent-relay/protocol && npx tsc
+RUN cd /app/node_modules/@agent-relay/protocol && tsc
 
 # Build config package
 # Config needs zod (runtime dep) but @agent-relay/protocol is already in node_modules
 # Install only external dependencies, not internal @agent-relay/* packages
 RUN cd /app/node_modules/@agent-relay/config && \
     npm install --ignore-scripts zod zod-to-json-schema && \
-    npx tsc
+    tsc
 
 # Install test dependencies (from scripts/test-cli-auth directory)
 RUN cd /app/scripts/test-cli-auth && npm install
