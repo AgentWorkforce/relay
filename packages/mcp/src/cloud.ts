@@ -1,0 +1,354 @@
+/**
+ * Cloud Integration for Agent Relay MCP Server
+ *
+ * Provides cloud workspace detection, remote daemon connection,
+ * and workspace-aware socket discovery for cloud deployments.
+ */
+
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+
+// ============================================================================
+// Types
+// ============================================================================
+
+export interface CloudWorkspace {
+  workspaceId: string;
+  cloudApiUrl: string;
+  workspaceToken?: string;
+  ownerUserId?: string;
+}
+
+export interface DiscoveryResult {
+  socketPath: string;
+  project: string;
+  source: 'env' | 'cloud' | 'cwd' | 'scan';
+  isCloud: boolean;
+  workspace?: CloudWorkspace;
+}
+
+export interface CloudConnectionOptions {
+  /** Override socket path (for testing) */
+  socketPath?: string;
+  /** Override workspace detection */
+  workspace?: Partial<CloudWorkspace>;
+}
+
+// ============================================================================
+// Cloud Workspace Detection
+// ============================================================================
+
+/**
+ * Detect if running in a cloud workspace environment.
+ *
+ * Cloud workspaces set these environment variables:
+ * - WORKSPACE_ID: The unique workspace identifier
+ * - CLOUD_API_URL: The cloud API endpoint
+ * - WORKSPACE_TOKEN: Bearer token for API auth (optional)
+ * - WORKSPACE_OWNER_USER_ID: The workspace owner's user ID (optional)
+ */
+export function detectCloudWorkspace(): CloudWorkspace | null {
+  const workspaceId = process.env.WORKSPACE_ID;
+  const cloudApiUrl = process.env.CLOUD_API_URL;
+
+  if (!workspaceId || !cloudApiUrl) {
+    return null;
+  }
+
+  return {
+    workspaceId,
+    cloudApiUrl,
+    workspaceToken: process.env.WORKSPACE_TOKEN,
+    ownerUserId: process.env.WORKSPACE_OWNER_USER_ID,
+  };
+}
+
+/**
+ * Check if we're running in a cloud workspace.
+ */
+export function isCloudWorkspace(): boolean {
+  return detectCloudWorkspace() !== null;
+}
+
+// ============================================================================
+// Workspace-Aware Socket Discovery
+// ============================================================================
+
+/**
+ * Get the workspace-namespaced socket path.
+ *
+ * In cloud workspaces, sockets are stored at:
+ * /tmp/relay/{WORKSPACE_ID}/sockets/daemon.sock
+ *
+ * This provides multi-tenant isolation on shared infrastructure.
+ */
+export function getCloudSocketPath(workspaceId: string): string {
+  return `/tmp/relay/${workspaceId}/sockets/daemon.sock`;
+}
+
+/**
+ * Get the workspace-namespaced outbox path.
+ *
+ * In cloud workspaces, outbox directories are at:
+ * /tmp/relay/{WORKSPACE_ID}/outbox/{agentName}/
+ */
+export function getCloudOutboxPath(workspaceId: string, agentName: string): string {
+  return `/tmp/relay/${workspaceId}/outbox/${agentName}`;
+}
+
+/**
+ * Get platform-specific data directory.
+ */
+function getDataDir(): string {
+  const platform = process.platform;
+
+  if (platform === 'darwin') {
+    return join(homedir(), 'Library', 'Application Support', 'agent-relay');
+  } else if (platform === 'win32') {
+    return join(process.env.APPDATA || homedir(), 'agent-relay');
+  } else {
+    return join(
+      process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'),
+      'agent-relay'
+    );
+  }
+}
+
+/**
+ * Discover relay daemon socket with cloud-awareness.
+ *
+ * Priority order:
+ * 1. RELAY_SOCKET environment variable (explicit path)
+ * 2. Cloud workspace socket (if WORKSPACE_ID is set)
+ * 3. RELAY_PROJECT environment variable (project name → data dir)
+ * 4. Current working directory .relay/config.json
+ * 5. Scan data directory for active sockets
+ *
+ * @param options - Optional configuration overrides
+ * @returns Discovery result with socket path, project info, and cloud status
+ */
+export function discoverSocket(options: CloudConnectionOptions = {}): DiscoveryResult | null {
+  // 0. Use override if provided
+  if (options.socketPath && existsSync(options.socketPath)) {
+    const workspace = options.workspace
+      ? ({
+          workspaceId: options.workspace.workspaceId || 'override',
+          cloudApiUrl: options.workspace.cloudApiUrl || '',
+        } as CloudWorkspace)
+      : undefined;
+
+    return {
+      socketPath: options.socketPath,
+      project: workspace?.workspaceId || 'override',
+      source: 'env',
+      isCloud: !!workspace,
+      workspace,
+    };
+  }
+
+  // 1. Explicit socket path from environment
+  const socketEnv = process.env.RELAY_SOCKET;
+  if (socketEnv && existsSync(socketEnv)) {
+    const workspace = detectCloudWorkspace();
+    return {
+      socketPath: socketEnv,
+      project: process.env.RELAY_PROJECT || workspace?.workspaceId || 'unknown',
+      source: 'env',
+      isCloud: !!workspace,
+      workspace: workspace || undefined,
+    };
+  }
+
+  // 2. Cloud workspace socket (highest priority for cloud environments)
+  const workspace = detectCloudWorkspace();
+  if (workspace) {
+    const cloudSocket = getCloudSocketPath(workspace.workspaceId);
+    if (existsSync(cloudSocket)) {
+      return {
+        socketPath: cloudSocket,
+        project: workspace.workspaceId,
+        source: 'cloud',
+        isCloud: true,
+        workspace,
+      };
+    }
+  }
+
+  // 3. Project name → data dir lookup
+  const projectEnv = process.env.RELAY_PROJECT;
+  if (projectEnv) {
+    const dataDir = getDataDir();
+    const projectSocket = join(dataDir, 'projects', projectEnv, 'daemon.sock');
+    if (existsSync(projectSocket)) {
+      return {
+        socketPath: projectSocket,
+        project: projectEnv,
+        source: 'env',
+        isCloud: false,
+      };
+    }
+  }
+
+  // 4. Current working directory config
+  const cwdConfig = join(process.cwd(), '.relay', 'config.json');
+  if (existsSync(cwdConfig)) {
+    try {
+      const config = JSON.parse(readFileSync(cwdConfig, 'utf-8'));
+      if (config.socketPath && existsSync(config.socketPath)) {
+        return {
+          socketPath: config.socketPath,
+          project: config.project || 'local',
+          source: 'cwd',
+          isCloud: false,
+        };
+      }
+    } catch {
+      // Invalid config, continue to next method
+    }
+  }
+
+  // 5. Scan data directory for active sockets
+  const dataDir = getDataDir();
+  const projectsDir = join(dataDir, 'projects');
+
+  if (existsSync(projectsDir)) {
+    try {
+      const projects = readdirSync(projectsDir, { withFileTypes: true })
+        .filter((d) => d.isDirectory())
+        .map((d) => d.name);
+
+      for (const project of projects) {
+        const socketPath = join(projectsDir, project, 'daemon.sock');
+        if (existsSync(socketPath)) {
+          return {
+            socketPath,
+            project,
+            source: 'scan',
+            isCloud: false,
+          };
+        }
+      }
+    } catch {
+      // Directory read failed, return null
+    }
+  }
+
+  return null;
+}
+
+// ============================================================================
+// Cloud API Helpers
+// ============================================================================
+
+/**
+ * Make an authenticated request to the cloud API.
+ *
+ * @param workspace - Cloud workspace configuration
+ * @param path - API path (e.g., '/api/status')
+ * @param options - Fetch options
+ * @returns Response from the API
+ */
+export async function cloudApiRequest(
+  workspace: CloudWorkspace,
+  path: string,
+  options: RequestInit = {}
+): Promise<Response> {
+  const url = `${workspace.cloudApiUrl}${path}`;
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(options.headers as Record<string, string>),
+  };
+
+  if (workspace.workspaceToken) {
+    headers['Authorization'] = `Bearer ${workspace.workspaceToken}`;
+  }
+
+  return fetch(url, {
+    ...options,
+    headers,
+  });
+}
+
+/**
+ * Get the workspace status from the cloud API.
+ */
+export async function getWorkspaceStatus(
+  workspace: CloudWorkspace
+): Promise<{ status: string; agents?: string[] } | null> {
+  try {
+    const response = await cloudApiRequest(
+      workspace,
+      `/api/workspaces/${workspace.workspaceId}/status`
+    );
+
+    if (!response.ok) {
+      return null;
+    }
+
+    return (await response.json()) as { status: string; agents?: string[] };
+  } catch {
+    return null;
+  }
+}
+
+// ============================================================================
+// Cloud Connection Factory
+// ============================================================================
+
+export interface CloudConnectionInfo {
+  socketPath: string;
+  project: string;
+  isCloud: boolean;
+  workspace?: CloudWorkspace;
+  daemonUrl?: string;
+}
+
+/**
+ * Get connection info for the relay daemon.
+ *
+ * This function determines the best way to connect to the daemon:
+ * - In cloud environments: Uses workspace-namespaced socket
+ * - In local environments: Uses standard socket discovery
+ *
+ * @param options - Optional configuration overrides
+ * @returns Connection info or null if daemon not found
+ */
+export function getConnectionInfo(
+  options: CloudConnectionOptions = {}
+): CloudConnectionInfo | null {
+  const discovery = discoverSocket(options);
+
+  if (!discovery) {
+    return null;
+  }
+
+  const info: CloudConnectionInfo = {
+    socketPath: discovery.socketPath,
+    project: discovery.project,
+    isCloud: discovery.isCloud,
+    workspace: discovery.workspace,
+  };
+
+  // In cloud environments, we may also have a daemon URL for HTTP API access
+  if (discovery.workspace?.cloudApiUrl) {
+    info.daemonUrl = discovery.workspace.cloudApiUrl;
+  }
+
+  return info;
+}
+
+/**
+ * Environment variable summary for debugging.
+ */
+export function getCloudEnvironmentSummary(): Record<string, string | undefined> {
+  return {
+    WORKSPACE_ID: process.env.WORKSPACE_ID,
+    CLOUD_API_URL: process.env.CLOUD_API_URL,
+    WORKSPACE_TOKEN: process.env.WORKSPACE_TOKEN ? '[set]' : undefined,
+    WORKSPACE_OWNER_USER_ID: process.env.WORKSPACE_OWNER_USER_ID,
+    RELAY_SOCKET: process.env.RELAY_SOCKET,
+    RELAY_PROJECT: process.env.RELAY_PROJECT,
+  };
+}
