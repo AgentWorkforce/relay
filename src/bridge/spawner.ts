@@ -9,19 +9,19 @@ import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sleep } from './utils.js';
-import { getProjectPaths } from '../utils/project-namespace.js';
-import { resolveCommand } from '../utils/command-resolver.js';
-import { RelayPtyOrchestrator, type RelayPtyOrchestratorConfig } from '../wrapper/relay-pty-orchestrator.js';
-import type { SummaryEvent, SessionEndEvent } from '../wrapper/wrapper-types.js';
+import { getProjectPaths } from '@relay/config';
+import { resolveCommand } from '@relay/utils/command-resolver';
+import { RelayPtyOrchestrator, type RelayPtyOrchestratorConfig } from '@agent-relay/wrapper';
+import type { SummaryEvent, SessionEndEvent } from '@agent-relay/wrapper';
 import { selectShadowCli } from './shadow-cli.js';
 
 // Get the directory where this module is located (for binary path resolution)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-import { AgentPolicyService, type CloudPolicyFetcher } from '../policy/agent-policy.js';
-import { buildClaudeArgs, findAgentConfig } from '../utils/agent-config.js';
-import { composeForAgent, type AgentRole } from '../wrapper/prompt-composer.js';
-import { getUserDirectoryService } from '../daemon/user-directory.js';
+import { AgentPolicyService, type CloudPolicyFetcher } from '@relay/policy';
+import { buildClaudeArgs, findAgentConfig } from '@relay/config/agent-config';
+import { composeForAgent, type AgentRole } from '@agent-relay/wrapper';
+import { getUserDirectoryService } from '@relay/user-directory';
 import type {
   SpawnRequest,
   SpawnResult,

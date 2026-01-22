@@ -27,7 +27,10 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@agent-relay/api-types": "*"
+    "@agent-relay/api-types": "*",
+    "@relay/protocol": "0.1.0",
+    "@relay/config": "0.1.0",
+    "@relay/continuity": "0.1.0"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

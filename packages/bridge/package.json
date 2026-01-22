@@ -23,7 +23,11 @@
   },
   "dependencies": {
     "@relay/protocol": "0.1.0",
-    "@relay/config": "0.1.0"
+    "@relay/config": "0.1.0",
+    "@relay/utils": "0.1.0",
+    "@relay/policy": "0.1.0",
+    "@relay/user-directory": "0.1.0",
+    "@agent-relay/wrapper": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",

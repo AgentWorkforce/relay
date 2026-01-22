@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { commandExists } from '../utils/command-resolver.js';
+import { commandExists } from '@relay/utils/command-resolver';
 
 const execFileAsync = promisify(execFile);
 

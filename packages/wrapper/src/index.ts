@@ -105,3 +105,50 @@ export {
   type DetectedToolCall,
   type DetectedError,
 } from './trajectory-integration.js';
+
+// Wrapper event types
+export {
+  type InjectionFailedEvent,
+  type SummaryEvent,
+  type SessionEndEvent,
+  type AuthRevokedEvent,
+} from './wrapper-types.js';
+
+// Stuck detection
+export {
+  StuckDetector,
+  type StuckEvent,
+  type StuckReason,
+  type StuckDetectorConfig,
+} from './stuck-detector.js';
+
+// Prompt composition
+export {
+  composeForAgent,
+  getAvailableRoles,
+  parseRoleFromProfile,
+  clearPromptCache,
+  type AgentRole,
+  type AgentProfile,
+  type ComposedPrompt,
+} from './prompt-composer.js';
+
+// Relay client (internal)
+export {
+  RelayClient,
+  type ClientState,
+  type ClientConfig,
+  type SyncOptions,
+} from './client.js';
+
+// Base wrapper class
+export {
+  BaseWrapper,
+  type BaseWrapperConfig,
+} from './base-wrapper.js';
+
+// RelayPtyOrchestrator (relay-pty Rust binary)
+export {
+  RelayPtyOrchestrator,
+  type RelayPtyOrchestratorConfig,
+} from './relay-pty-orchestrator.js';
