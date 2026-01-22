@@ -4,8 +4,8 @@
  * Provides a clean abstraction for writing relay messages and attachments
  * to the file system with a structured directory layout.
  *
- * Directory structure:
- * ~/.agent-relay/
+ * Directory structure (project-local):
+ * {projectRoot}/.agent-relay/
  *   outbox/{agent-name}/              # Agent outbox messages
  *   attachments/{agent-name}/{ts}/    # Attachments organized by timestamp
  *   meta/                             # Configuration and state files
@@ -15,8 +15,8 @@
  *   outbox/{agent-name}/
  *   attachments/{agent-name}/{ts}/
  *
- * Legacy path (for backward compatibility):
- * /tmp/relay-outbox/{agent-name}/     # Symlinked to actual outbox
+ * Agents should use $AGENT_RELAY_OUTBOX environment variable which is
+ * automatically set by the orchestrator to the correct path.
  */
 
 import fs from 'node:fs';
@@ -480,18 +480,17 @@ export function getBaseRelayPaths(workspaceId?: string): RelayPaths {
  * Get the outbox path that should be used in agent instructions.
  * This is the path agents will write to in their bash commands.
  *
- * Uses the canonical ~/.agent-relay/outbox/ path - symlinks handle
- * routing to workspace paths in cloud mode transparently.
+ * Returns the $AGENT_RELAY_OUTBOX environment variable by default.
+ * This env var is automatically set by the orchestrator when spawning agents,
+ * and contains the correct project-local path.
  *
- * @param agentNameVar - Variable name for agent (default: '$AGENT_RELAY_NAME')
+ * @param _agentNameVar - Deprecated, kept for API compatibility
  * @returns Path template for agent instructions
  */
-export function getAgentOutboxTemplate(agentNameVar = '$AGENT_RELAY_NAME'): string {
-  // Use canonical path: ~/.agent-relay/outbox/{agentName}
-  // In workspace mode, this is symlinked to the actual workspace path
-  // Agents don't need to know about workspace IDs
-  const baseDir = getBaseDir();
-  return `${baseDir}/outbox/${agentNameVar}`;
+export function getAgentOutboxTemplate(_agentNameVar = '$AGENT_RELAY_NAME'): string {
+  // Agents should use $AGENT_RELAY_OUTBOX which is set by the orchestrator
+  // This handles both local (project-local .agent-relay/) and cloud (workspace) modes
+  return '$AGENT_RELAY_OUTBOX';
 }
 
 /**

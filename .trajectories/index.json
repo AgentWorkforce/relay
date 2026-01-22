@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-22T19:55:46.827Z",
+  "lastUpdated": "2026-01-22T19:56:08.600Z",
   "trajectories": {
     "traj_ddtj404on2bq": {
       "title": "@relay/api-types extraction",
@@ -123,9 +123,10 @@
     },
     "traj_27g6ighqgptb": {
       "title": "Integrate PR #265 channel auto-rejoin into refactored packages",
-      "status": "active",
+      "status": "completed",
       "startedAt": "2026-01-22T19:55:46.824Z",
-      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/active/traj_27g6ighqgptb.json"
+      "completedAt": "2026-01-22T19:56:08.573Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_27g6ighqgptb.json"
     }
   }
 }

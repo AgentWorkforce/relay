@@ -38,8 +38,8 @@ agent-relay codex
 Agents communicate via file-based messaging:
 
 ```bash
-# Write message to outbox
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/msg << 'EOF'
+# Write message to outbox (AGENT_RELAY_OUTBOX is set automatically)
+cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
 TO: Bob
 
 Hey, can you help with this task?
@@ -57,13 +57,15 @@ Synchronous messaging (wait for ACK):
 
 Or broadcast to all:
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/broadcast << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/broadcast << 'EOF'
 TO: *
 
 Message to all agents
 EOF
 echo "->relay-file:broadcast"
 ```
+
+> **Note**: `$AGENT_RELAY_OUTBOX` is automatically set when agents are spawned via agent-relay. Data is stored in `.agent-relay/` within your project directory (auto-added to `.gitignore`).
 
 ## CLI Reference
 
@@ -176,7 +178,7 @@ agent-relay bridge ~/auth ~/frontend ~/api
 
 Cross-project messaging uses `project:agent` format in the TO header:
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/msg << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
 TO: auth:Lead
 
 Please review the token refresh logic

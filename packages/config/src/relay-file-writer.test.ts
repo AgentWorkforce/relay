@@ -324,19 +324,18 @@ describe('Utility Functions', () => {
   });
 
   describe('getAgentOutboxTemplate', () => {
-    it('should return template with canonical path', () => {
+    it('should return $AGENT_RELAY_OUTBOX env var', () => {
       const template = getAgentOutboxTemplate();
 
-      // Should use canonical ~/.agent-relay path
-      expect(template).toContain('/outbox/$AGENT_RELAY_NAME');
-      expect(template).not.toContain('/tmp/');
+      // Should use the AGENT_RELAY_OUTBOX env var (set by orchestrator)
+      expect(template).toBe('$AGENT_RELAY_OUTBOX');
     });
 
-    it('should accept custom variable name', () => {
+    it('should return $AGENT_RELAY_OUTBOX regardless of arg (deprecated param)', () => {
+      // The agentNameVar parameter is deprecated - always returns env var
       const template = getAgentOutboxTemplate('${name}');
 
-      expect(template).toContain('/outbox/${name}');
-      expect(template).not.toContain('/tmp/');
+      expect(template).toBe('$AGENT_RELAY_OUTBOX');
     });
   });
 

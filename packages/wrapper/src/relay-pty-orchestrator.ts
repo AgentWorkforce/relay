@@ -577,6 +577,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
         ...process.env,
         ...this.config.env,
         AGENT_RELAY_NAME: this.config.name,
+        AGENT_RELAY_OUTBOX: this._canonicalOutboxPath, // Agents use this for outbox path
         TERM: 'xterm-256color',
       },
       stdio,
@@ -1382,11 +1383,12 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   /**
    * Start watching for protocol issues in the outbox directory.
    * Detects common mistakes like:
-   * - Empty AGENT_RELAY_NAME causing files at /tmp/relay-outbox//
-   * - Files created directly in /tmp/relay-outbox/ instead of agent subdirectory
+   * - Empty AGENT_RELAY_NAME causing files at outbox//
+   * - Files created directly in outbox/ instead of agent subdirectory
    */
   private startProtocolMonitor(): void {
-    const parentDir = '/tmp/relay-outbox';
+    // Get the outbox parent directory (one level up from agent's outbox)
+    const parentDir = dirname(this._canonicalOutboxPath);
 
     // Ensure parent directory exists
     try {
@@ -1402,7 +1404,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
         if (eventType === 'rename' && filename) {
           // Check for files directly in parent (not in agent subdirectory)
           // This happens when $AGENT_RELAY_NAME is empty
-          const fullPath = `${parentDir}/${filename}`;
+          const fullPath = join(parentDir, filename);
           try {
             // If it's a file (not directory) directly in the parent, that's an issue
             if (existsSync(fullPath) && !lstatSync(fullPath).isDirectory()) {
@@ -1420,7 +1422,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
 
       // Don't keep process alive just for protocol monitoring
       this.protocolWatcher.unref?.();
-      this.log(` Protocol monitor started`);
+      this.log(` Protocol monitor started on ${parentDir}`);
     } catch (err: any) {
       // Don't fail start() if protocol monitoring fails
       this.logError(` Failed to start protocol monitor: ${err.message}`);
@@ -1445,13 +1447,13 @@ export class RelayPtyOrchestrator extends BaseWrapper {
    * Scan for existing protocol issues (called once at startup).
    */
   private scanForProtocolIssues(): void {
-    const parentDir = '/tmp/relay-outbox';
+    const parentDir = dirname(this._canonicalOutboxPath);
     try {
       if (!existsSync(parentDir)) return;
 
       const entries = readdirSync(parentDir);
       for (const entry of entries) {
-        const fullPath = `${parentDir}/${entry}`;
+        const fullPath = join(parentDir, entry);
         try {
           // Check for files directly in parent (should only be directories)
           if (!lstatSync(fullPath).isDirectory()) {
@@ -1481,20 +1483,17 @@ export class RelayPtyOrchestrator extends BaseWrapper {
 
     this.log(` Protocol issue detected: ${issue} (${filename})`);
 
-    // Get the outbox path for agent instructions
-    const outboxPath = getAgentOutboxTemplate(this.config.name);
-
     const reminders: Record<string, string> = {
       empty_agent_name: `⚠️ **Protocol Issue Detected**
 
 Your \`$AGENT_RELAY_NAME\` environment variable appears to be empty or unset.
 Your agent name is: **${this.config.name}**
 
-Correct outbox path: \`${outboxPath}/\`
+Correct outbox path: \`$AGENT_RELAY_OUTBOX\`
 
 When writing relay files, use:
 \`\`\`bash
-cat > ${outboxPath}/msg << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
 TO: TargetAgent
 
 Your message here
@@ -1504,14 +1503,14 @@ Then output: \`->relay-file:msg\``,
 
       file_in_root: `⚠️ **Protocol Issue Detected**
 
-Found file "${filename}" directly in \`/tmp/relay-outbox/\` instead of in your agent's subdirectory.
+Found file "${filename}" directly in the outbox directory instead of in your agent's subdirectory.
 Your agent name is: **${this.config.name}**
 
-Correct outbox path: \`${outboxPath}/\`
+Correct outbox path: \`$AGENT_RELAY_OUTBOX\`
 
 Files should be created in your agent's directory:
 \`\`\`bash
-cat > ${outboxPath}/${filename} << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/${filename} << 'EOF'
 TO: TargetAgent
 
 Your message here
@@ -1591,16 +1590,13 @@ EOF
 
     const sessionDurationMinutes = Math.round((Date.now() - this.sessionStartTime) / 60000);
 
-    // Get the outbox path for agent instructions
-    const outboxPath = getAgentOutboxTemplate(this.config.name);
-
     const reminder = `📋 **Protocol Reminder** (Session: ${sessionDurationMinutes} minutes)
 
 You are **${this.config.name}** in a multi-agent relay system. Here's how to communicate:
 
 **Sending Messages:**
 \`\`\`bash
-cat > ${outboxPath}/msg << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
 TO: *
 
 Your message here
@@ -1612,7 +1608,7 @@ Use \`TO: *\` to broadcast to all agents, or \`TO: AgentName\` for a specific ag
 
 **Spawning Agents:**
 \`\`\`bash
-cat > ${outboxPath}/spawn << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/spawn << 'EOF'
 KIND: spawn
 NAME: WorkerName
 CLI: claude

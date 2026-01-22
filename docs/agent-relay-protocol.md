@@ -7,7 +7,7 @@ Advanced features for session continuity and trajectory tracking.
 Save your state for session recovery using file-based format (same as messaging):
 
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/continuity << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/continuity << 'EOF'
 KIND: continuity
 ACTION: save
 
@@ -32,7 +32,7 @@ Then: `->relay-file:continuity`
 Context auto-loads on startup. To manually request:
 
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/load << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/load << 'EOF'
 KIND: continuity
 ACTION: load
 EOF
@@ -44,7 +44,7 @@ Then: `->relay-file:load`
 Flag items needing future verification:
 
 ```bash
-cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/uncertain << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/uncertain << 'EOF'
 KIND: continuity
 ACTION: uncertain
 
