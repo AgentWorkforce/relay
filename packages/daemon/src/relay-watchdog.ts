@@ -412,16 +412,30 @@ export class RelayWatchdog extends EventEmitter {
     messageType: string
   ): Promise<void> {
     try {
-      // Resolve symlinks in path to get canonical path
-      // (for cloud workspaces where directories may be symlinked)
+      // SECURITY: Check if the file itself is a symlink BEFORE resolving
+      // This prevents symlink attacks where an attacker creates a symlink
+      // pointing to a file outside the agent's outbox
+      try {
+        const lstats = await fs.promises.lstat(filePath);
+        if (lstats.isSymbolicLink()) {
+          this.log(`Rejected symlink file (security): ${filePath}`);
+          return;
+        }
+      } catch {
+        // File doesn't exist - will be caught later
+      }
+
+      // Resolve symlinks in DIRECTORY path to get canonical path
+      // (for cloud workspaces where the outbox directory may be symlinked)
+      // Note: The file itself was already verified to NOT be a symlink above
       let canonicalPath: string;
       let originalPath: string | undefined;
       try {
         canonicalPath = await fs.promises.realpath(filePath);
-        // Only store original if it differs (was symlinked)
+        // Only store original if it differs (directory was symlinked)
         if (canonicalPath !== filePath) {
           originalPath = filePath;
-          this.log(`Resolved symlink: ${filePath} -> ${canonicalPath}`);
+          this.log(`Resolved directory symlink: ${filePath} -> ${canonicalPath}`);
         }
       } catch {
         // File doesn't exist or can't resolve - use original
