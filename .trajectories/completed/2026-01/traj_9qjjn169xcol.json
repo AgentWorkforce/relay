@@ -1,0 +1,73 @@
+{
+  "id": "traj_9qjjn169xcol",
+  "version": 1,
+  "task": {
+    "title": "Implement agent health monitoring with PID tracking and crash detection"
+  },
+  "status": "completed",
+  "startedAt": "2026-01-22T19:58:14.184Z",
+  "agents": [
+    {
+      "name": "khaliqgant",
+      "role": "lead",
+      "joinedAt": "2026-01-22T19:58:14.185Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_1fm874ork6dj",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-22T19:58:19.748Z",
+      "events": [
+        {
+          "ts": 1769111899749,
+          "type": "decision",
+          "content": "Used existing memory monitor from resiliency package for RSS/CPU tracking: Used existing memory monitor from resiliency package for RSS/CPU tracking",
+          "raw": {
+            "question": "Used existing memory monitor from resiliency package for RSS/CPU tracking",
+            "chosen": "Used existing memory monitor from resiliency package for RSS/CPU tracking",
+            "alternatives": [],
+            "reasoning": "Avoids duplication, already has trend analysis and alert thresholds"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1769111905413,
+          "type": "decision",
+          "content": "Implemented 'releasing' flag pattern to distinguish graceful stops from crashes: Implemented 'releasing' flag pattern to distinguish graceful stops from crashes",
+          "raw": {
+            "question": "Implemented 'releasing' flag pattern to distinguish graceful stops from crashes",
+            "chosen": "Implemented 'releasing' flag pattern to distinguish graceful stops from crashes",
+            "alternatives": [],
+            "reasoning": "Prevents false crash announcements when agents are intentionally stopped"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1769111910797,
+          "type": "decision",
+          "content": "Collect crashed agents then handle outside iteration to prevent race conditions: Collect crashed agents then handle outside iteration to prevent race conditions",
+          "raw": {
+            "question": "Collect crashed agents then handle outside iteration to prevent race conditions",
+            "chosen": "Collect crashed agents then handle outside iteration to prevent race conditions",
+            "alternatives": [],
+            "reasoning": "Modifying Map during iteration causes undefined behavior; collecting first ensures consistent state"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-22T19:58:37.443Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-01-22T19:58:37.443Z",
+  "retrospective": {
+    "summary": "Added comprehensive agent health monitoring to orchestrator: PID heartbeat checks (10s), memory/CPU tracking via resiliency package, crash detection with broadcast to other agents, graceful release handling, and resource alerts. Fixed race conditions, memory leaks, and added 14 unit tests.",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  }
+}
