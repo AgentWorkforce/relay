@@ -120,93 +120,58 @@ export function getGlobalPaths(): ProjectPaths {
 }
 
 /**
- * Add .agent-relay/ to gitignore.
- * - For cloud (WORKSPACE_ID set): use global gitignore (~/.config/git/ignore)
- * - For local: add to project's .gitignore
+ * Add .agent-relay/ to .git/info/exclude (local per-repo gitignore).
  *
- * Returns true if gitignore was modified (for logging purposes)
+ * This file is:
+ * - Per-repository (not shared across clones)
+ * - Not committed (local to each developer)
+ * - Standard git feature with no permission issues
+ * - No branch/merge complications
+ *
+ * Returns true if the exclude file was modified
  */
-function ensureGitignore(projectRoot: string): { modified: boolean; location: 'global' | 'local' | null } {
-  const isCloud = !!process.env.WORKSPACE_ID;
-
-  // For cloud, use global gitignore to avoid modifying the repo
-  if (isCloud) {
-    return ensureGlobalGitignore();
-  }
-
-  // For local, add to project .gitignore
-  const gitignorePath = path.join(projectRoot, '.gitignore');
+function ensureGitExclude(projectRoot: string): { modified: boolean } {
+  // Find the .git directory (could be in projectRoot or a parent for worktrees)
+  const gitDir = path.join(projectRoot, '.git');
+  const excludePath = path.join(gitDir, 'info', 'exclude');
 
   try {
+    // Check if this is a git repository
+    if (!fs.existsSync(gitDir)) {
+      return { modified: false };
+    }
+
+    // Ensure .git/info directory exists
+    const infoDir = path.join(gitDir, 'info');
+    if (!fs.existsSync(infoDir)) {
+      fs.mkdirSync(infoDir, { recursive: true });
+    }
+
     let content = '';
-    if (fs.existsSync(gitignorePath)) {
-      content = fs.readFileSync(gitignorePath, 'utf-8');
-      // Check if .agent-relay is already in gitignore
+    if (fs.existsSync(excludePath)) {
+      content = fs.readFileSync(excludePath, 'utf-8');
+      // Check if .agent-relay is already in exclude
       const lines = content.split('\n');
       const hasEntry = lines.some(line => {
         const trimmed = line.trim();
         return trimmed === '.agent-relay' || trimmed === '.agent-relay/' || trimmed === '/.agent-relay' || trimmed === '/.agent-relay/';
       });
       if (hasEntry) {
-        return { modified: false, location: null }; // Already present
+        return { modified: false }; // Already present
       }
     }
 
-    // Add .agent-relay/ to gitignore
+    // Add .agent-relay/ to exclude
     const newEntry = '.agent-relay/';
     const newContent = content.endsWith('\n') || content === ''
       ? `${content}${newEntry}\n`
       : `${content}\n${newEntry}\n`;
 
-    fs.writeFileSync(gitignorePath, newContent, 'utf-8');
-    return { modified: true, location: 'local' };
+    fs.writeFileSync(excludePath, newContent, 'utf-8');
+    return { modified: true };
   } catch {
-    // Silently ignore errors (e.g., no write permission)
-    return { modified: false, location: null };
-  }
-}
-
-/**
- * Add .agent-relay/ to global gitignore (~/.config/git/ignore)
- * This is used for cloud environments to avoid modifying the repo
- */
-function ensureGlobalGitignore(): { modified: boolean; location: 'global' | 'local' | null } {
-  // XDG standard: ~/.config/git/ignore
-  const xdgConfig = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
-  const globalGitignoreDir = path.join(xdgConfig, 'git');
-  const globalGitignorePath = path.join(globalGitignoreDir, 'ignore');
-
-  try {
-    // Ensure directory exists
-    if (!fs.existsSync(globalGitignoreDir)) {
-      fs.mkdirSync(globalGitignoreDir, { recursive: true });
-    }
-
-    let content = '';
-    if (fs.existsSync(globalGitignorePath)) {
-      content = fs.readFileSync(globalGitignorePath, 'utf-8');
-      // Check if .agent-relay is already in gitignore
-      const lines = content.split('\n');
-      const hasEntry = lines.some(line => {
-        const trimmed = line.trim();
-        return trimmed === '.agent-relay' || trimmed === '.agent-relay/' || trimmed === '/.agent-relay' || trimmed === '/.agent-relay/';
-      });
-      if (hasEntry) {
-        return { modified: false, location: null }; // Already present
-      }
-    }
-
-    // Add .agent-relay/ to global gitignore
-    const newEntry = '.agent-relay/';
-    const newContent = content.endsWith('\n') || content === ''
-      ? `${content}${newEntry}\n`
-      : `${content}\n${newEntry}\n`;
-
-    fs.writeFileSync(globalGitignorePath, newContent, 'utf-8');
-    return { modified: true, location: 'global' };
-  } catch {
-    // Silently ignore errors
-    return { modified: false, location: null };
+    // Silently ignore errors (not a git repo, no write permission, etc.)
+    return { modified: false };
   }
 }
 
@@ -222,14 +187,10 @@ export function ensureProjectDir(projectRoot?: string): ProjectPaths {
   if (isFirstCreation) {
     fs.mkdirSync(paths.dataDir, { recursive: true });
 
-    // Add to gitignore and notify user
-    const gitignoreResult = ensureGitignore(paths.projectRoot);
-    if (gitignoreResult.modified) {
-      if (gitignoreResult.location === 'global') {
-        console.log('[agent-relay] Added .agent-relay/ to global gitignore (~/.config/git/ignore)');
-      } else if (gitignoreResult.location === 'local') {
-        console.log('[agent-relay] Added .agent-relay/ to .gitignore');
-      }
+    // Add to .git/info/exclude (local per-repo gitignore, not committed)
+    const excludeResult = ensureGitExclude(paths.projectRoot);
+    if (excludeResult.modified) {
+      console.log('[agent-relay] Added .agent-relay/ to .git/info/exclude');
     }
   }
   if (!fs.existsSync(paths.teamDir)) {

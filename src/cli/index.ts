@@ -86,9 +86,10 @@ program
   .argument('<command...>', 'Command to wrap (e.g., claude)')
   .action(async (commandParts, options) => {
 
-    const { getProjectPaths } = await import('@agent-relay/config');
+    const { ensureProjectDir } = await import('@agent-relay/config');
     const { findAgentConfig, isClaudeCli, buildClaudeArgs } = await import('@agent-relay/config');
-    const paths = getProjectPaths();
+    // ensureProjectDir creates .agent-relay/ and adds to .gitignore on first run
+    const paths = ensureProjectDir();
 
     const [mainCommand, ...commandArgs] = commandParts;
     const agentName = options.name ?? generateAgentName();
