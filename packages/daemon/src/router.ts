@@ -554,6 +554,9 @@ export class Router {
     if (to === '*') {
       // Broadcast to all (except sender)
       this.broadcast(senderName, envelope, topic);
+    } else if (to === '@users') {
+      // Broadcast to all human users only (not agents)
+      this.broadcastToUsers(senderName, envelope);
     } else if (to) {
       // Direct message
       this.sendDirect(senderName, to, envelope);
@@ -785,6 +788,28 @@ export class Router {
             this.setProcessing(recipientName, deliver.id);
           }
         }
+      }
+    }
+  }
+
+  /**
+   * Broadcast a message to all human users (not agents).
+   * Used for system notifications that only humans should see.
+   */
+  private broadcastToUsers(
+    from: string,
+    envelope: SendEnvelope
+  ): void {
+    for (const [userName, target] of this.users) {
+      if (userName === from) continue; // Don't send to self
+
+      const deliver = this.createDeliverEnvelope(from, userName, envelope, target);
+      const sent = target.send(deliver);
+      this.persistDeliverEnvelope(deliver, true); // Mark as broadcast
+      if (sent) {
+        this.trackDelivery(target, deliver);
+        this.registry?.recordReceive(userName);
+        routerLog.debug(`Broadcast to user ${userName}`);
       }
     }
   }
