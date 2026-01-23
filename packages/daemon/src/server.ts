@@ -295,6 +295,12 @@ export class Daemon {
       fs.mkdirSync(socketDir, { recursive: true });
     }
 
+    // Ensure team directory exists for state files (agents.json, processing-state.json, etc.)
+    const teamDir = this.config.teamDir ?? socketDir;
+    if (teamDir !== socketDir && !fs.existsSync(teamDir)) {
+      fs.mkdirSync(teamDir, { recursive: true });
+    }
+
     // Set up inbox symlink for workspace namespacing
     // Daemon delivers to legacy path (/tmp/relay-inbox), symlink points to workspace path
     // This allows agents to use simple instructions while maintaining workspace isolation
