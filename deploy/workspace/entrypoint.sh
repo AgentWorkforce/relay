@@ -140,6 +140,36 @@ if [[ -n "${CLOUD_API_URL:-}" && -n "${WORKSPACE_ID:-}" && -n "${WORKSPACE_TOKEN
   git config --global credential.useHttpPath true
   export GIT_TERMINAL_PROMPT=0
 
+  # ============================================================================
+  # PRE-FETCH GitHub token at startup and export to environment
+  # This ensures GH_TOKEN is available for git operations and spawned agents
+  # even if cloud API becomes unreachable later. The credential helper's
+  # fallback chain will use this token (env > hosts.yml > gh CLI > cloud API).
+  # ============================================================================
+  if [[ -z "${GH_TOKEN:-}" ]]; then
+    log "Fetching GitHub token from cloud API..."
+    GH_TOKEN_RESPONSE=$(curl -sf --max-time 10 \
+      -H "Authorization: Bearer ${WORKSPACE_TOKEN}" \
+      "${CLOUD_API_URL}/api/git/token?workspaceId=${WORKSPACE_ID}" 2>/dev/null) || true
+
+    if [[ -n "${GH_TOKEN_RESPONSE}" ]]; then
+      # Extract userToken (preferred) or token from JSON response
+      FETCHED_TOKEN=$(echo "${GH_TOKEN_RESPONSE}" | jq -r '.userToken // .token // empty' 2>/dev/null)
+      if [[ -n "${FETCHED_TOKEN}" && "${FETCHED_TOKEN}" != "null" ]]; then
+        export GH_TOKEN="${FETCHED_TOKEN}"
+        export GITHUB_TOKEN="${FETCHED_TOKEN}"
+        log "GH_TOKEN set from cloud API (token available for git operations)"
+      else
+        log "WARN: Cloud API returned no token; git may require manual auth"
+      fi
+    else
+      log "WARN: Failed to fetch GitHub token from cloud API; git may require manual auth"
+      log "      Fallback: run 'gh auth login' or set GH_TOKEN manually"
+    fi
+  else
+    log "GH_TOKEN already set in environment"
+  fi
+
   # Configure git identity for commits
   # Use env vars if set, otherwise default to "Agent Relay" / "agent@agent-relay.com"
   DEFAULT_GIT_EMAIL="${AGENT_NAME:-agent}@agent-relay.com"

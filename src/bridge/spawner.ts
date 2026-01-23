@@ -347,11 +347,18 @@ export class AgentSpawner {
     const url = `${normalizedUrl}/api/git/token?workspaceId=${encodeURIComponent(workspaceId)}`;
 
     try {
+      // Use AbortController for timeout (5 seconds - don't block spawning)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+
       const response = await fetch(url, {
         headers: {
           Authorization: `Bearer ${workspaceToken}`,
         },
+        signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         console.warn(`[spawner] Failed to fetch GH token from cloud: ${response.status} ${response.statusText}`);
@@ -361,9 +368,13 @@ export class AgentSpawner {
       const data = await response.json() as { userToken?: string | null; token?: string | null };
       return data.userToken || data.token || null;
     } catch (err) {
-      console.warn('[spawner] Failed to fetch GH token from cloud', {
-        error: err instanceof Error ? err.message : String(err),
-      });
+      // Don't log timeout errors loudly - this is expected when cloud is unreachable
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('abort')) {
+        console.log('[spawner] Cloud API timeout (5s) - using local auth');
+      } else {
+        console.warn('[spawner] Failed to fetch GH token from cloud', { error: message });
+      }
       return null;
     }
   }
@@ -426,36 +437,38 @@ export class AgentSpawner {
   /**
    * Resolve GitHub token using multiple fallback sources.
    *
-   * Fallback order (spawner context - runs on host/workspace server):
-   * 1. Cloud API - workspace-scoped token from Nango (preferred for cloud workspaces)
-   * 2. Environment - GH_TOKEN or GITHUB_TOKEN from parent process
-   * 3. hosts.yml - gh CLI config file (~/.config/gh/hosts.yml)
-   * 4. gh CLI - execute `gh auth token` command
+   * Fallback order (same as git-credential-relay for consistency):
+   * 1. Environment - GH_TOKEN or GITHUB_TOKEN (fastest, set by entrypoint)
+   * 2. hosts.yml - gh CLI config file (~/.config/gh/hosts.yml)
+   * 3. gh CLI - execute `gh auth token` command
+   * 4. Cloud API - workspace-scoped token from Nango (requires network)
    *
-   * Note: git-credential-relay (runs inside container) has different order:
-   * env → cloud, because containers may not have cloud access configured.
+   * Environment is checked first because:
+   * - It's the fastest (no I/O or network)
+   * - The entrypoint pre-fetches and caches GH_TOKEN at startup
+   * - This avoids delays when cloud API is slow/unreachable
    */
   private async resolveGhToken(homeDir?: string): Promise<string | null> {
-    // 1. Try cloud API first (workspace-scoped, managed by Nango)
-    const cloudToken = await this.fetchGhTokenFromCloud();
-    if (cloudToken) {
-      return cloudToken;
-    }
-
-    // 2. Check environment variables
+    // 1. Check environment variables first (fastest - set by entrypoint at startup)
     const envToken = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
     if (envToken) {
       return envToken;
     }
 
-    // 3. Parse gh CLI hosts.yml config file
+    // 2. Parse gh CLI hosts.yml config file
     const hostsToken = this.resolveGhTokenFromHostsFile(homeDir);
     if (hostsToken) {
       return hostsToken;
     }
 
-    // 4. Execute gh CLI as last resort
-    return await this.resolveGhTokenFromGhCli();
+    // 3. Execute gh CLI if available
+    const cliToken = await this.resolveGhTokenFromGhCli();
+    if (cliToken) {
+      return cliToken;
+    }
+
+    // 4. Try cloud API as last resort (may be slow or unreachable)
+    return await this.fetchGhTokenFromCloud();
   }
 
   /**
