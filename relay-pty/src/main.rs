@@ -583,7 +583,7 @@ fn strip_ansi(text: &str) -> String {
                 Some('[') => {
                     // CSI sequence: ESC [ ... final_byte
                     chars.next(); // consume '['
-                    // Skip until we hit a letter (final byte of CSI is 0x40-0x7E)
+                                  // Skip until we hit a letter (final byte of CSI is 0x40-0x7E)
                     while let Some(&nc) = chars.peek() {
                         chars.next();
                         if nc.is_ascii_alphabetic() || nc == '@' || nc == '`' {
@@ -594,7 +594,7 @@ fn strip_ansi(text: &str) -> String {
                 Some(']') => {
                     // OSC sequence: ESC ] ... (ST or BEL)
                     chars.next(); // consume ']'
-                    // Skip until ST (ESC \) or BEL (\x07)
+                                  // Skip until ST (ESC \) or BEL (\x07)
                     while let Some(nc) = chars.next() {
                         if nc == '\x07' {
                             break;
