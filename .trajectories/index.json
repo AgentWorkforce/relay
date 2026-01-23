@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-23T08:10:07.274Z",
+  "lastUpdated": "2026-01-23T09:02:16.264Z",
   "trajectories": {
     "traj_ddtj404on2bq": {
       "title": "@relay/api-types extraction",
@@ -162,6 +162,34 @@
       "startedAt": "2026-01-23T08:09:53.549Z",
       "completedAt": "2026-01-23T08:10:07.263Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_dwkec991mj4y.json"
+    },
+    "traj_0szpij80wgqq": {
+      "title": "Harden agent relay protocol - gap analysis and proposal",
+      "status": "completed",
+      "startedAt": "2026-01-23T08:40:57.389Z",
+      "completedAt": "2026-01-23T08:41:11.905Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_0szpij80wgqq.json"
+    },
+    "traj_4xe8fgcwwcuh": {
+      "title": "Implement conditional MCP tool discoverability for long agent sessions",
+      "status": "completed",
+      "startedAt": "2026-01-23T08:41:16.666Z",
+      "completedAt": "2026-01-23T08:41:33.291Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_4xe8fgcwwcuh.json"
+    },
+    "traj_u414xwn4c7sy": {
+      "title": "Enhance MCP tools footer with decision guidance and daemon verification",
+      "status": "completed",
+      "startedAt": "2026-01-23T08:47:39.657Z",
+      "completedAt": "2026-01-23T08:47:50.985Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_u414xwn4c7sy.json"
+    },
+    "traj_869m2mzlhig8": {
+      "title": "Add comprehensive MCP socket detection tests",
+      "status": "completed",
+      "startedAt": "2026-01-23T09:02:00.513Z",
+      "completedAt": "2026-01-23T09:02:16.237Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_869m2mzlhig8.json"
     }
   }
 }
