@@ -38,18 +38,27 @@ jobs:
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Detect file changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            base:
+              - 'deploy/workspace/Dockerfile.base'
+              - 'relay-pty/**'
+
       - name: Check if base build needed
         id: check
         run: |
           if [ "${{ github.event.inputs.build_base }}" == "true" ]; then
             echo "should_build=true" >> $GITHUB_OUTPUT
             echo "Base build triggered manually"
-          elif [ "${{ contains(github.event.head_commit.modified, 'deploy/workspace/Dockerfile.base') }}" == "true" ]; then
+          elif [ "${{ steps.changes.outputs.base }}" == "true" ]; then
             echo "should_build=true" >> $GITHUB_OUTPUT
-            echo "Dockerfile.base changed"
-          elif [ "${{ contains(github.event.head_commit.modified, 'relay-pty/') }}" == "true" ]; then
-            echo "should_build=true" >> $GITHUB_OUTPUT
-            echo "relay-pty/ changed"
+            echo "Base image files changed"
           else
             echo "should_build=false" >> $GITHUB_OUTPUT
             echo "No base changes detected"
