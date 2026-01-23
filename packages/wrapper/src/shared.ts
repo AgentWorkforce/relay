@@ -89,7 +89,7 @@ export const INJECTION_CONSTANTS = {
  */
 export class AdaptiveThrottle {
   private consecutiveFailures = 0;
-  private currentDelay = INJECTION_CONSTANTS.QUEUE_PROCESS_DELAY_MS;
+  private currentDelay: number = INJECTION_CONSTANTS.QUEUE_PROCESS_DELAY_MS;
 
   /** Get current delay in milliseconds */
   getDelay(): number {

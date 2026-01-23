@@ -19,7 +19,7 @@
   "scripts": {
     "build": "npm run build:server && npm run build:ui",
     "build:server": "tsc",
-    "build:ui": "cd ui && npm ci && npm run build && mv out ../ui-dist",
+    "build:ui": "cd ui && npm ci && npm run build && rm -rf ../ui-dist && mv out ../ui-dist",
     "clean": "rm -rf dist ui-dist",
     "test": "vitest run",
     "test:watch": "vitest"
