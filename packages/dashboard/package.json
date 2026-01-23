@@ -36,6 +36,7 @@
     "@agent-relay/daemon": "2.0.0",
     "@agent-relay/user-directory": "2.0.0",
     "@agent-relay/wrapper": "2.0.0",
+    "array-flatten": "^1.1.1",
     "express": "^4.21.2",
     "ws": "^8.18.3"
   },
