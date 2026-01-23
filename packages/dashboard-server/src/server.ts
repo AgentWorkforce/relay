@@ -1196,6 +1196,23 @@ export async function startDashboard(
     }
   };
 
+  // Helper to check if an agent is on a remote machine (connected via cloud sync)
+  const isRemoteAgent = (agentName: string): boolean => {
+    const remoteAgentsPath = path.join(teamDir, 'remote-agents.json');
+    if (!fs.existsSync(remoteAgentsPath)) return false;
+
+    try {
+      const data = JSON.parse(fs.readFileSync(remoteAgentsPath, 'utf-8'));
+      // Check if file is stale (more than 60 seconds old)
+      if (data.updatedAt && Date.now() - data.updatedAt > 60 * 1000) {
+        return false;
+      }
+      return data.agents?.some((a: { name: string }) => a.name === agentName) ?? false;
+    } catch {
+      return false;
+    }
+  };
+
   // Helper to check if a user is a remote user (connected via cloud dashboard)
   const isRemoteUser = (username: string): boolean => {
     const remoteUsersPath = path.join(teamDir, 'remote-users.json');
@@ -1220,7 +1237,7 @@ export async function startDashboard(
   };
 
   const isRecipientOnline = (name: string): boolean => (
-    isAgentOnline(name) || isUserOnline(name)
+    isAgentOnline(name) || isRemoteAgent(name) || isUserOnline(name)
   );
 
   // Helper to get team members from teams.json, agents.json, and spawner's active workers
