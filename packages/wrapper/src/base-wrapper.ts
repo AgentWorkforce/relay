@@ -154,11 +154,10 @@ export abstract class BaseWrapper extends EventEmitter {
     // Initialize stuck detector for extended idle and loop detection
     this.stuckDetector = new StuckDetector();
     this.stuckDetector.on('stuck', (event: StuckEvent) => {
-      console.warn(`[${config.name}] Agent stuck: ${event.reason} - ${event.details}`);
+      // Events are emitted for programmatic use - no terminal logging to avoid noise
       this.emit('stuck', event);
     });
     this.stuckDetector.on('unstuck', () => {
-      console.log(`[${config.name}] Agent unstuck`);
       this.emit('unstuck');
     });
 
@@ -457,11 +456,6 @@ export abstract class BaseWrapper extends EventEmitter {
    * Parse spawn and release commands from output
    */
   protected parseSpawnReleaseCommands(content: string): void {
-    // Debug: check for spawn keyword
-    if (content.includes('->relay:spawn')) {
-      console.log(`[base-wrapper:${this.config.name}] Found spawn keyword in content`);
-    }
-
     // Single-line spawn: ->relay:spawn Name cli "task"
     const spawnPattern = new RegExp(
       `${this.relayPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}spawn\\s+(\\w+)\\s+(\\w+)\\s+"([^"]+)"`
@@ -469,7 +463,6 @@ export abstract class BaseWrapper extends EventEmitter {
     const spawnMatch = content.match(spawnPattern);
     if (spawnMatch) {
       const [, name, cli, task] = spawnMatch;
-      console.log(`[base-wrapper:${this.config.name}] Single-line spawn match: ${name} ${cli}`);
       const cmdHash = `spawn:${name}:${cli}:${task}`;
       if (!this.processedSpawnCommands.has(cmdHash)) {
         this.processedSpawnCommands.add(cmdHash);
@@ -484,7 +477,6 @@ export abstract class BaseWrapper extends EventEmitter {
     const fencedSpawnMatch = content.match(fencedSpawnPattern);
     if (fencedSpawnMatch) {
       const [, name, cli, task] = fencedSpawnMatch;
-      console.log(`[base-wrapper:${this.config.name}] Fenced spawn match: ${name} ${cli}`);
       const cmdHash = `spawn:${name}:${cli}:${task.trim()}`;
       if (!this.processedSpawnCommands.has(cmdHash)) {
         this.processedSpawnCommands.add(cmdHash);
@@ -581,9 +573,6 @@ export abstract class BaseWrapper extends EventEmitter {
       // If resuming, try to find previous ledger
       if (this.config.resumeAgentId) {
         ledger = await this.continuity.findLedgerByAgentId(this.config.resumeAgentId);
-        if (ledger) {
-          console.log(`[${this.config.name}] Resuming agent ID: ${ledger.agentId}`);
-        }
       }
 
       // Otherwise get or create
@@ -592,7 +581,6 @@ export abstract class BaseWrapper extends EventEmitter {
           this.config.name,
           this.cliType
         );
-        console.log(`[${this.config.name}] Agent ID: ${ledger.agentId}`);
       }
 
       this.agentId = ledger.agentId;
@@ -664,7 +652,6 @@ export abstract class BaseWrapper extends EventEmitter {
 
     if (Object.keys(updates).length > 0) {
       await this.continuity.saveLedger(this.config.name, updates);
-      console.log(`[${this.config.name}] Saved summary to continuity ledger`);
     }
   }
 

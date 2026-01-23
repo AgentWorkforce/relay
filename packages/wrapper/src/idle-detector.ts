@@ -365,15 +365,5 @@ export function createIdleDetector(
   config: IdleDetectorConfig = {},
   options: { quiet?: boolean } = {}
 ): UniversalIdleDetector {
-  const detector = new UniversalIdleDetector(config);
-
-  if (!options.quiet) {
-    if (process.platform === 'darwin') {
-      console.warn('[idle-detector] macOS: using output analysis only (less reliable)');
-    } else if (process.platform === 'win32') {
-      console.warn('[idle-detector] Windows: using output analysis only (less reliable)');
-    }
-  }
-
-  return detector;
+  return new UniversalIdleDetector(config);
 }

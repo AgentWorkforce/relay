@@ -547,7 +547,6 @@ export async function listTrajectorySteps(trajectoryId?: string): Promise<{
     const entry = index?.trajectories[trajectoryId];
     if (entry) {
       foundPath = entry.path;
-      console.log('[trajectory] Found by index key:', trajectoryId, '->', foundPath);
     }
 
     // Strategy 2: If not found by key, search index entries by file's internal ID
@@ -557,7 +556,6 @@ export async function listTrajectorySteps(trajectoryId?: string): Promise<{
         const trajectory = readTrajectoryFile(indexEntry.path);
         if (trajectory && trajectory.id === trajectoryId) {
           foundPath = indexEntry.path;
-          console.log('[trajectory] Found by file ID scan:', trajectoryId, '->', foundPath);
           break;
         }
       }
@@ -566,15 +564,10 @@ export async function listTrajectorySteps(trajectoryId?: string): Promise<{
     // Strategy 3: Fall back to active directory filename match
     if (!foundPath) {
       foundPath = findActiveTrajectoryPathById(trajectoryDirs, trajectoryId);
-      if (foundPath) {
-        console.log('[trajectory] Found by active dir fallback:', trajectoryId, '->', foundPath);
-      }
     }
 
     if (foundPath) {
       trajectoryPaths.add(foundPath);
-    } else {
-      console.log('[trajectory] Not found:', trajectoryId);
     }
   } else {
     // Collect ALL active trajectories (not just the first one)
