@@ -1,6 +1,10 @@
 {
   "version": 1,
+<<<<<<< HEAD
   "lastUpdated": "2026-01-23T09:02:16.264Z",
+=======
+  "lastUpdated": "2026-01-23T08:39:13.875Z",
+>>>>>>> 714bbb1 (fix: Inject GH_TOKEN at startup to prevent recurring auth failures)
   "trajectories": {
     "traj_ddtj404on2bq": {
       "title": "@relay/api-types extraction",
