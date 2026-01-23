@@ -81,6 +81,7 @@ export async function createRelay(config: RelayConfig = {}): Promise<Relay> {
   // Lazy-load daemon to keep SDK lightweight for client-only users
   let Daemon: new (config: Record<string, unknown>) => DaemonLike;
   try {
+    // @ts-ignore - daemon is an optional peer dependency, may not be installed
     const daemonModule = await import('@agent-relay/daemon');
     Daemon = daemonModule.Daemon;
   } catch {
