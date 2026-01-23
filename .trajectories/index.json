@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-23T05:31:07.868Z",
+  "lastUpdated": "2026-01-23T05:31:19.306Z",
   "trajectories": {
     "traj_ddtj404on2bq": {
       "title": "@relay/api-types extraction",
@@ -148,6 +148,13 @@
       "startedAt": "2026-01-23T05:31:05.835Z",
       "completedAt": "2026-01-23T05:31:07.828Z",
       "path": "/tmp/daemon-spawning-wt/.trajectories/completed/2026-01/traj_3legq854omdr.json"
+    },
+    "traj_ma592a51qccy": {
+      "title": "Wire up SpawnManager for SPAWN/RELEASE protocol",
+      "status": "completed",
+      "startedAt": "2026-01-23T05:31:17.935Z",
+      "completedAt": "2026-01-23T05:31:19.274Z",
+      "path": "/tmp/daemon-spawning-wt/.trajectories/completed/2026-01/traj_ma592a51qccy.json"
     }
   }
 }
