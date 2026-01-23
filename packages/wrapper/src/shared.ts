@@ -8,6 +8,47 @@
 import type { SyncMeta } from '@agent-relay/protocol/types';
 
 /**
+ * Message priority levels for queue ordering.
+ * Lower numbers = higher priority (processed first).
+ */
+export const MESSAGE_PRIORITY = {
+  /** System-critical messages (sync ACKs, errors) - skip idle wait */
+  URGENT: 0,
+  /** Time-sensitive messages (user requests) - reduced idle wait */
+  HIGH: 1,
+  /** Normal agent-to-agent messages */
+  NORMAL: 2,
+  /** Batch/background messages - can wait longer */
+  LOW: 3,
+} as const;
+
+export type MessagePriority = typeof MESSAGE_PRIORITY[keyof typeof MESSAGE_PRIORITY];
+
+/**
+ * Get priority from importance value or default to NORMAL.
+ * Maps importance number to priority level.
+ */
+export function getPriorityFromImportance(importance?: number): MessagePriority {
+  if (importance === undefined) return MESSAGE_PRIORITY.NORMAL;
+  if (importance >= 90) return MESSAGE_PRIORITY.URGENT;
+  if (importance >= 70) return MESSAGE_PRIORITY.HIGH;
+  if (importance >= 30) return MESSAGE_PRIORITY.NORMAL;
+  return MESSAGE_PRIORITY.LOW;
+}
+
+/**
+ * Sort messages by priority (lower number = higher priority).
+ * Stable sort - maintains order within same priority.
+ */
+export function sortByPriority(messages: QueuedMessage[]): QueuedMessage[] {
+  return [...messages].sort((a, b) => {
+    const priorityA = getPriorityFromImportance(a.importance);
+    const priorityB = getPriorityFromImportance(b.importance);
+    return priorityA - priorityB;
+  });
+}
+
+/**
  * Message queued for injection into an agent's terminal
  */
 export interface QueuedMessage {

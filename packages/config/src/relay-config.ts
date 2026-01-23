@@ -8,20 +8,29 @@ export const DEFAULT_CONNECTION_CONFIG = {
 } as const;
 
 export const DEFAULT_TMUX_WRAPPER_CONFIG = {
-  pollInterval: 200,
-  idleBeforeInjectMs: 1500,
-  injectRetryMs: 500,
+  pollInterval: 150,
+  idleBeforeInjectMs: 800,
+  injectRetryMs: 300,
   debug: false,
   debugLogIntervalMs: 0,
   mouseMode: true,
   activityIdleThresholdMs: 30_000,
-  outputStabilityTimeoutMs: 2000,
-  outputStabilityPollMs: 200,
+  outputStabilityTimeoutMs: 800,
+  outputStabilityPollMs: 150,
   streamLogs: true,
 } as const;
 
-export const DEFAULT_IDLE_BEFORE_INJECT_MS = 1500;
+export const DEFAULT_IDLE_BEFORE_INJECT_MS = 800;
 export const DEFAULT_IDLE_CONFIDENCE_THRESHOLD = 0.7;
+
+/** Low-latency mode constants for time-critical messaging */
+export const LOW_LATENCY_CONFIG = {
+  pollInterval: 100,
+  idleBeforeInjectMs: 300,
+  injectRetryMs: 200,
+  outputStabilityTimeoutMs: 300,
+  outputStabilityPollMs: 100,
+} as const;
 
 /** Default Unix socket path for daemon communication */
 export const DEFAULT_SOCKET_PATH = '/tmp/agent-relay.sock';

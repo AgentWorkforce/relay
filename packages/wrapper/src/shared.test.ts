@@ -219,3 +219,104 @@ describe('buildInjectionString', () => {
     });
   });
 });
+
+// Import priority functions for testing
+import {
+  MESSAGE_PRIORITY,
+  getPriorityFromImportance,
+  sortByPriority,
+} from './shared.js';
+
+describe('Message Priority System', () => {
+  describe('MESSAGE_PRIORITY constants', () => {
+    it('has correct priority ordering (lower = higher priority)', () => {
+      expect(MESSAGE_PRIORITY.URGENT).toBe(0);
+      expect(MESSAGE_PRIORITY.HIGH).toBe(1);
+      expect(MESSAGE_PRIORITY.NORMAL).toBe(2);
+      expect(MESSAGE_PRIORITY.LOW).toBe(3);
+    });
+  });
+
+  describe('getPriorityFromImportance', () => {
+    it('returns URGENT for importance >= 90', () => {
+      expect(getPriorityFromImportance(90)).toBe(MESSAGE_PRIORITY.URGENT);
+      expect(getPriorityFromImportance(100)).toBe(MESSAGE_PRIORITY.URGENT);
+    });
+
+    it('returns HIGH for importance >= 70', () => {
+      expect(getPriorityFromImportance(70)).toBe(MESSAGE_PRIORITY.HIGH);
+      expect(getPriorityFromImportance(89)).toBe(MESSAGE_PRIORITY.HIGH);
+    });
+
+    it('returns NORMAL for importance >= 30', () => {
+      expect(getPriorityFromImportance(30)).toBe(MESSAGE_PRIORITY.NORMAL);
+      expect(getPriorityFromImportance(69)).toBe(MESSAGE_PRIORITY.NORMAL);
+    });
+
+    it('returns LOW for importance < 30', () => {
+      expect(getPriorityFromImportance(29)).toBe(MESSAGE_PRIORITY.LOW);
+      expect(getPriorityFromImportance(0)).toBe(MESSAGE_PRIORITY.LOW);
+    });
+
+    it('returns NORMAL for undefined importance', () => {
+      expect(getPriorityFromImportance(undefined)).toBe(MESSAGE_PRIORITY.NORMAL);
+    });
+  });
+
+  describe('sortByPriority', () => {
+    const baseMsg = { from: 'Test', body: 'test', messageId: 'test' };
+
+    it('sorts messages by priority (urgent first)', () => {
+      const messages: QueuedMessage[] = [
+        { ...baseMsg, messageId: 'low', importance: 10 },
+        { ...baseMsg, messageId: 'urgent', importance: 95 },
+        { ...baseMsg, messageId: 'normal', importance: 50 },
+        { ...baseMsg, messageId: 'high', importance: 75 },
+      ];
+
+      const sorted = sortByPriority(messages);
+
+      expect(sorted[0].messageId).toBe('urgent');
+      expect(sorted[1].messageId).toBe('high');
+      expect(sorted[2].messageId).toBe('normal');
+      expect(sorted[3].messageId).toBe('low');
+    });
+
+    it('preserves order within same priority (stable sort)', () => {
+      const messages: QueuedMessage[] = [
+        { ...baseMsg, messageId: 'first', importance: 50 },
+        { ...baseMsg, messageId: 'second', importance: 50 },
+        { ...baseMsg, messageId: 'third', importance: 50 },
+      ];
+
+      const sorted = sortByPriority(messages);
+
+      expect(sorted[0].messageId).toBe('first');
+      expect(sorted[1].messageId).toBe('second');
+      expect(sorted[2].messageId).toBe('third');
+    });
+
+    it('handles empty array', () => {
+      expect(sortByPriority([])).toEqual([]);
+    });
+
+    it('handles single message', () => {
+      const messages: QueuedMessage[] = [{ ...baseMsg, messageId: 'only' }];
+      const sorted = sortByPriority(messages);
+      expect(sorted).toHaveLength(1);
+      expect(sorted[0].messageId).toBe('only');
+    });
+
+    it('does not mutate original array', () => {
+      const messages: QueuedMessage[] = [
+        { ...baseMsg, messageId: 'low', importance: 10 },
+        { ...baseMsg, messageId: 'high', importance: 90 },
+      ];
+
+      const sorted = sortByPriority(messages);
+
+      expect(messages[0].messageId).toBe('low'); // Original unchanged
+      expect(sorted[0].messageId).toBe('high'); // Sorted copy
+    });
+  });
+});

@@ -50,6 +50,8 @@ import {
   INJECTION_CONSTANTS,
   CLI_QUIRKS,
   AdaptiveThrottle,
+  sortByPriority,
+  getPriorityFromImportance,
 } from './shared.js';
 import { getTmuxPanePid } from './idle-detector.js';
 import { DEFAULT_TMUX_WRAPPER_CONFIG } from '@agent-relay/config/relay-config';
@@ -1575,18 +1577,32 @@ export class TmuxWrapper extends BaseWrapper {
   /**
    * Check if we should inject a message.
    * Uses UniversalIdleDetector (from BaseWrapper) for robust cross-CLI idle detection.
+   * Processes messages by priority (urgent first).
    */
   private checkForInjectionOpportunity(): void {
     if (this.messageQueue.length === 0) return;
     if (this.isInjecting) return;
     if (!this.running) return;
 
+    // Sort queue by priority before processing (urgent messages first)
+    if (this.messageQueue.length > 1) {
+      this.messageQueue = sortByPriority(this.messageQueue);
+    }
+
+    // Check the priority of the next message
+    const nextMsg = this.messageQueue[0];
+    const priority = getPriorityFromImportance(nextMsg?.importance);
+
     // Use universal idle detector for more reliable detection (inherited from BaseWrapper)
     const idleResult = this.checkIdleForInjection();
 
-    if (!idleResult.isIdle) {
-      // Not idle yet, retry later
-      const retryMs = this.config.injectRetryMs ?? 500;
+    // Urgent messages (priority 0) can proceed with lower idle confidence
+    const idleThreshold = priority === 0 ? 0.5 : 0.7;
+
+    if (!idleResult.isIdle && idleResult.confidence < idleThreshold) {
+      // Not idle yet, retry later (urgent messages retry faster)
+      const baseRetryMs = this.config.injectRetryMs ?? 300;
+      const retryMs = priority <= 1 ? Math.floor(baseRetryMs / 2) : baseRetryMs;
       setTimeout(() => this.checkForInjectionOpportunity(), retryMs);
       return;
     }
@@ -1622,15 +1638,19 @@ export class TmuxWrapper extends BaseWrapper {
       }
 
       // Ensure pane output is stable to avoid interleaving with active generation
+      // Pass message priority for adaptive timeout (urgent messages wait less)
+      const msgPriority = getPriorityFromImportance(msg.importance);
       const stablePane = await this.waitForStablePane(
-        this.config.outputStabilityTimeoutMs ?? 2000,
-        this.config.outputStabilityPollMs ?? 200
+        this.config.outputStabilityTimeoutMs ?? 800,
+        this.config.outputStabilityPollMs ?? 150,
+        2,
+        msgPriority
       );
       if (!stablePane) {
         this.logStderr('Output still active, re-queuing injection');
         this.messageQueue.unshift(msg);
         this.isInjecting = false;
-        setTimeout(() => this.checkForInjectionOpportunity(), this.config.injectRetryMs ?? 500);
+        setTimeout(() => this.checkForInjectionOpportunity(), this.config.injectRetryMs ?? 300);
         return;
       }
 
@@ -1943,15 +1963,56 @@ export class TmuxWrapper extends BaseWrapper {
 
   /**
    * Wait for pane output to stabilize before injecting to avoid interleaving with ongoing output.
+   * Uses adaptive timeout based on idle detector confidence for faster injection when safe.
+   *
+   * @param maxWaitMs - Maximum time to wait (default from config)
+   * @param pollIntervalMs - Polling interval (default from config)
+   * @param requiredStablePolls - Consecutive stable polls needed (default 2)
+   * @param priority - Message priority (lower = more urgent, can use shorter timeout)
    */
-  private async waitForStablePane(maxWaitMs = 2000, pollIntervalMs = 200, requiredStablePolls = 2): Promise<boolean> {
+  private async waitForStablePane(
+    maxWaitMs = 800,
+    pollIntervalMs = 150,
+    requiredStablePolls = 2,
+    priority?: number
+  ): Promise<boolean> {
     const start = Date.now();
+
+    // Adaptive timeout based on idle confidence and priority
+    // If idle detector shows high confidence (process state), we can be more aggressive
+    const idleResult = this.checkIdleForInjection();
+    const highConfidence = idleResult.confidence >= 0.9;
+
+    // Priority-based timeout adjustment (urgent messages get shorter timeout)
+    let effectiveMaxWait = maxWaitMs;
+    if (priority !== undefined && priority <= 1) {
+      // Urgent/high priority: reduce timeout by 50%
+      effectiveMaxWait = Math.min(maxWaitMs, highConfidence ? 200 : 400);
+    } else if (highConfidence) {
+      // High confidence from process state: reduce timeout by 60%
+      effectiveMaxWait = Math.floor(maxWaitMs * 0.4);
+    }
+
     let lastSig = await this.capturePaneSignature();
     if (!lastSig) return false;
 
     let stableCount = 0;
 
-    while (Date.now() - start < maxWaitMs) {
+    // Fast initial check - if already stable, exit quickly
+    await sleep(Math.min(pollIntervalMs, 50));
+    const initialSig = await this.capturePaneSignature();
+    if (initialSig && initialSig === lastSig) {
+      stableCount = 1;
+      // If high confidence and initial check stable, we're good
+      if (highConfidence && stableCount >= 1) {
+        this.logStderr(`waitForStablePane: fast exit (high confidence, ${Date.now() - start}ms)`);
+        return true;
+      }
+    } else if (initialSig) {
+      lastSig = initialSig;
+    }
+
+    while (Date.now() - start < effectiveMaxWait) {
       await sleep(pollIntervalMs);
       const sig = await this.capturePaneSignature();
       if (!sig) continue;
@@ -1959,6 +2020,7 @@ export class TmuxWrapper extends BaseWrapper {
       if (sig === lastSig) {
         stableCount++;
         if (stableCount >= requiredStablePolls) {
+          this.logStderr(`waitForStablePane: stable after ${Date.now() - start}ms`);
           return true;
         }
       } else {
@@ -1967,7 +2029,13 @@ export class TmuxWrapper extends BaseWrapper {
       }
     }
 
-    this.logStderr(`waitForStablePane: timed out after ${maxWaitMs}ms`);
+    // Even on timeout, if we had at least 1 stable poll and high confidence, proceed
+    if (stableCount >= 1 && highConfidence) {
+      this.logStderr(`waitForStablePane: proceeding with partial stability (high confidence)`);
+      return true;
+    }
+
+    this.logStderr(`waitForStablePane: timed out after ${Date.now() - start}ms`);
     return false;
   }
 

@@ -25,9 +25,13 @@ import {
   type QueuedMessage,
   type InjectionMetrics,
   type CliType,
+  type MessagePriority,
   getDefaultRelayPrefix,
   detectCliType,
   createInjectionMetrics,
+  sortByPriority,
+  getPriorityFromImportance,
+  MESSAGE_PRIORITY,
 } from './shared.js';
 import {
   DEFAULT_IDLE_BEFORE_INJECT_MS,
@@ -275,7 +279,7 @@ export abstract class BaseWrapper extends EventEmitter {
    */
   protected checkIdleForInjection(): { isIdle: boolean; confidence: number; signals: Array<{ source: string; confidence: number }> } {
     return this.idleDetector.checkIdle({
-      minSilenceMs: this.config.idleBeforeInjectMs ?? 1500,
+      minSilenceMs: this.config.idleBeforeInjectMs ?? DEFAULT_IDLE_BEFORE_INJECT_MS,
     });
   }
 
@@ -285,6 +289,56 @@ export abstract class BaseWrapper extends EventEmitter {
    */
   protected async waitForIdleState(timeoutMs = 30000, pollMs = 200): Promise<{ isIdle: boolean; confidence: number }> {
     return this.idleDetector.waitForIdle(timeoutMs, pollMs);
+  }
+
+  // =========================================================================
+  // Priority queue management
+  // =========================================================================
+
+  /**
+   * Sort the message queue by priority (urgent first).
+   * Call this before processing messages to ensure proper ordering.
+   */
+  protected sortQueueByPriority(): void {
+    if (this.messageQueue.length > 1) {
+      this.messageQueue = sortByPriority(this.messageQueue);
+    }
+  }
+
+  /**
+   * Get the next message from the queue (highest priority first).
+   * Does not remove the message - call dequeueMessage() to remove.
+   */
+  protected peekNextMessage(): QueuedMessage | undefined {
+    this.sortQueueByPriority();
+    return this.messageQueue[0];
+  }
+
+  /**
+   * Remove and return the next message from the queue.
+   * Messages are sorted by priority before dequeue.
+   */
+  protected dequeueMessage(): QueuedMessage | undefined {
+    this.sortQueueByPriority();
+    return this.messageQueue.shift();
+  }
+
+  /**
+   * Get the priority of the next message in queue.
+   * Returns MESSAGE_PRIORITY.NORMAL if queue is empty.
+   */
+  protected getNextMessagePriority(): MessagePriority {
+    const next = this.messageQueue[0];
+    return next ? getPriorityFromImportance(next.importance) : MESSAGE_PRIORITY.NORMAL;
+  }
+
+  /**
+   * Check if there are urgent messages that should bypass normal idle wait.
+   */
+  protected hasUrgentMessages(): boolean {
+    return this.messageQueue.some(
+      msg => getPriorityFromImportance(msg.importance) === MESSAGE_PRIORITY.URGENT
+    );
   }
 
   // =========================================================================
