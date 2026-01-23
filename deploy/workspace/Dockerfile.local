@@ -69,8 +69,8 @@ COPY tsconfig*.json ./
 COPY src ./src
 COPY packages ./packages
 
-# Build the TypeScript (skip dashboard build for workspace image)
-RUN npx tsc
+# Build all packages and root TypeScript (skip dashboard build for workspace image)
+RUN npm run build:workspace
 
 # Remove devDependencies after build
 RUN npm prune --omit=dev

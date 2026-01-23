@@ -50,8 +50,8 @@ COPY tsconfig*.json ./
 COPY src ./src
 COPY packages ./packages
 
-# Build the TypeScript (skip dashboard build for workspace image)
-RUN npx tsc
+# Build all packages and root TypeScript (skip dashboard build for workspace image)
+RUN npm run build:workspace
 
 # Remove devDependencies after build
 RUN npm prune --omit=dev
@@ -123,7 +123,8 @@ USER root
 # Environment
 ENV NODE_ENV=production
 # MCP socket discovery uses RELAY_PROJECT to find the daemon socket
-ENV RELAY_PROJECT=${WORKSPACE_ID:-default}
+# Default value set here; entrypoint overrides with WORKSPACE_ID if set at runtime
+ENV RELAY_PROJECT=default
 ENV PORT=3888
 ENV AGENT_RELAY_DATA_DIR=/data
 ENV AGENT_RELAY_DASHBOARD_PORT=3888
