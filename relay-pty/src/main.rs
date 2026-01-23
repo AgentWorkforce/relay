@@ -599,11 +599,9 @@ fn strip_ansi(text: &str) -> String {
                         if nc == '\x07' {
                             break;
                         }
-                        if nc == '\x1b' {
-                            if chars.peek() == Some(&'\\') {
-                                chars.next();
-                                break;
-                            }
+                        if nc == '\x1b' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
                         }
                     }
                 }
