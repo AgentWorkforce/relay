@@ -12,6 +12,7 @@ import { sleep } from './utils.js';
 import { getProjectPaths, getAgentOutboxTemplate } from '@agent-relay/config';
 import { resolveCommand } from '@agent-relay/utils/command-resolver';
 import { createTraceableError } from '@agent-relay/utils/error-tracking';
+import { createLogger } from '@agent-relay/utils/logger';
 import { RelayPtyOrchestrator, type RelayPtyOrchestratorConfig } from '@agent-relay/wrapper';
 import type { SummaryEvent, SessionEndEvent } from '@agent-relay/wrapper';
 import { selectShadowCli } from './shadow-cli.js';
@@ -31,6 +32,9 @@ import type {
   SpawnWithShadowResult,
   SpeakOnTrigger,
 } from './types.js';
+
+// Logger instance for spawner (uses daemon log system instead of console)
+const log = createLogger('spawner');
 
 /**
  * CLI command mapping for providers
@@ -243,9 +247,9 @@ function hasRelayPtyBinary(): boolean {
     relayPtyBinaryChecked = true;
     if (process.env.DEBUG_SPAWN === '1') {
       if (relayPtyBinaryPath) {
-        console.log(`[spawner] relay-pty binary found: ${relayPtyBinaryPath}`);
+        log.debug(`relay-pty binary found: ${relayPtyBinaryPath}`);
       } else {
-        console.log('[spawner] relay-pty binary not found, will use PtyWrapper fallback');
+        log.debug('relay-pty binary not found, will use PtyWrapper fallback');
       }
     }
   }
@@ -320,7 +324,7 @@ export class AgentSpawner {
         workspaceId: process.env.WORKSPACE_ID,
         strictMode: process.env.AGENT_POLICY_STRICT === '1',
       });
-      console.log('[spawner] Policy enforcement enabled');
+      log.info('Policy enforcement enabled');
     }
   }
 
@@ -366,14 +370,14 @@ export class AgentSpawner {
       });
 
       if (!response.ok) {
-        console.warn(`[spawner] Failed to fetch GH token from cloud: ${response.status} ${response.statusText}`);
+        log.warn(`Failed to fetch GH token from cloud: ${response.status} ${response.statusText}`);
         return null;
       }
 
       const data = await response.json() as { userToken?: string | null; token?: string | null };
       return data.userToken || data.token || null;
     } catch (err) {
-      console.warn('[spawner] Failed to fetch GH token from cloud', {
+      log.warn('Failed to fetch GH token from cloud', {
         error: err instanceof Error ? err.message : String(err),
       });
       return null;
@@ -475,7 +479,7 @@ export class AgentSpawner {
    * Called after the dashboard server starts and we know the actual port.
    */
   setDashboardPort(port: number): void {
-    console.log(`[spawner] Dashboard port set to ${port} - nested spawns now enabled`);
+    log.info(`Dashboard port set to ${port} - nested spawns now enabled`);
     this.dashboardPort = port;
   }
 
@@ -496,7 +500,7 @@ export class AgentSpawner {
    */
   setCloudPersistence(handler: CloudPersistenceHandler): void {
     this.cloudPersistence = handler;
-    console.log('[spawner] Cloud persistence handler set');
+    log.info('Cloud persistence handler set');
   }
 
   /**
@@ -510,7 +514,7 @@ export class AgentSpawner {
       try {
         await this.cloudPersistence!.onSummary(name, event);
       } catch (err) {
-        console.error(`[spawner] Cloud persistence summary error for ${name}:`, err);
+        log.error(`Cloud persistence summary error for ${name}`, { error: err instanceof Error ? err.message : String(err) });
       }
     };
 
@@ -518,7 +522,7 @@ export class AgentSpawner {
       try {
         await this.cloudPersistence!.onSessionEnd(name, event);
       } catch (err) {
-        console.error(`[spawner] Cloud persistence session-end error for ${name}:`, err);
+        log.error(`Cloud persistence session-end error for ${name}`, { error: err instanceof Error ? err.message : String(err) });
       }
     };
 
@@ -574,7 +578,7 @@ export class AgentSpawner {
     const maxAgents = parseInt(process.env.MAX_AGENTS || '10', 10);
     const currentAgentCount = this.activeWorkers.size;
     if (currentAgentCount >= maxAgents) {
-      console.warn(`[spawner] Agent limit reached: ${currentAgentCount}/${maxAgents}`);
+      log.warn(`Agent limit reached: ${currentAgentCount}/${maxAgents}`);
       return {
         success: false,
         name,
@@ -586,7 +590,7 @@ export class AgentSpawner {
     if (this.policyEnforcementEnabled && this.policyService && spawnerName) {
       const decision = await this.policyService.canSpawn(spawnerName, name, cli);
       if (!decision.allowed) {
-        console.warn(`[spawner] Policy blocked spawn: ${spawnerName} -> ${name}: ${decision.reason}`);
+        log.warn(`Policy blocked spawn: ${spawnerName} -> ${name}: ${decision.reason}`);
         return {
           success: false,
           name,
@@ -595,7 +599,7 @@ export class AgentSpawner {
         };
       }
       if (debug) {
-        console.log(`[spawner:debug] Policy allowed spawn: ${spawnerName} -> ${name} (source: ${decision.policySource})`);
+        log.debug(`Policy allowed spawn: ${spawnerName} -> ${name} (source: ${decision.policySource})`);
       }
     }
 
@@ -607,15 +611,15 @@ export class AgentSpawner {
       const args = cliParts.slice(1);
 
       if (commandName !== rawCommandName && debug) {
-        console.log(`[spawner:debug] Mapped CLI '${rawCommandName}' -> '${commandName}'`);
+        log.debug(`Mapped CLI '${rawCommandName}' -> '${commandName}'`);
       }
 
       // Resolve full path to avoid posix_spawnp failures
       const command = resolveCommand(commandName);
-      if (debug) console.log(`[spawner:debug] Resolved '${commandName}' -> '${command}'`);
+      if (debug) log.debug(`Resolved '${commandName}' -> '${command}'`);
       if (command === commandName && !commandName.startsWith('/')) {
         // Command wasn't resolved - it might not exist
-        console.warn(`[spawner] Warning: Could not resolve path for '${commandName}', spawn may fail`);
+        log.warn(`Could not resolve path for '${commandName}', spawn may fail`);
       }
 
       // Add --dangerously-skip-permissions for Claude agents
@@ -643,8 +647,8 @@ export class AgentSpawner {
         args.push(...configuredArgs);
 
         // Cost tracking: log which model is being used
-        console.log(`[spawner] Agent ${name}: model=${model}, cli=${cli}`);
-        if (debug) console.log(`[spawner:debug] Applied agent config for ${name}: ${args.join(' ')}`);
+        log.info(`Agent ${name}: model=${model}, cli=${cli}`);
+        if (debug) log.debug(`Applied agent config for ${name}: ${args.join(' ')}`);
       }
 
       // Add --dangerously-bypass-approvals-and-sandbox for Codex agents
@@ -676,10 +680,10 @@ export class AgentSpawner {
             );
             if (composed.content) {
               relayInstructions = `${composed.content}\n\n---\n\n${relayInstructions}`;
-              if (debug) console.log(`[spawner:debug] Composed role prompt for ${name} (role: ${role})`);
+              if (debug) log.debug(`Composed role prompt for ${name} (role: ${role})`);
             }
           } catch (err: any) {
-            console.warn(`[spawner] Failed to compose role prompt for ${name}: ${err.message}`);
+            log.warn(`Failed to compose role prompt for ${name}: ${err.message}`);
           }
         }
       }
@@ -697,7 +701,7 @@ export class AgentSpawner {
         args.push(initialPrompt);
       }
 
-      if (debug) console.log(`[spawner:debug] Spawning ${name} with: ${command} ${args.join(' ')}`);
+      if (debug) log.debug(`Spawning ${name} with: ${command} ${args.join(' ')}`);
 
       // Create PtyWrapper config
       // Use dashboardPort for nested spawns (API-based, works in non-TTY contexts)
@@ -708,7 +712,7 @@ export class AgentSpawner {
       const agentCwd = request.cwd || this.projectRoot;
 
       // Log whether nested spawning will be enabled for this agent
-      console.log(`[spawner] Spawning ${name}: dashboardPort=${this.dashboardPort || 'none'} (${this.dashboardPort ? 'nested spawns enabled' : 'nested spawns disabled'})`);
+      log.info(`Spawning ${name}: dashboardPort=${this.dashboardPort || 'none'} (${this.dashboardPort ? 'nested spawns enabled' : 'nested spawns disabled'})`);
 
       let userEnv: Record<string, string> | undefined;
       if (userId) {
@@ -716,7 +720,7 @@ export class AgentSpawner {
           const userDirService = getUserDirectoryService();
           userEnv = userDirService.getUserEnvironment(userId);
         } catch (err) {
-          console.warn('[spawner] Failed to resolve user environment, using default', {
+          log.warn('Failed to resolve user environment, using default', {
             userId,
             error: err instanceof Error ? err.message : String(err),
           });
@@ -734,7 +738,7 @@ export class AgentSpawner {
         userEnv = mergedUserEnv;
       }
 
-      if (debug) console.log(`[spawner:debug] Socket path for ${name}: ${this.socketPath ?? 'undefined'}`);
+      if (debug) log.debug(`Socket path for ${name}: ${this.socketPath ?? 'undefined'}`);
 
       // Require relay-pty binary
       if (!hasRelayPtyBinary()) {
@@ -743,7 +747,7 @@ export class AgentSpawner {
           cli,
           hint: 'Install with: npm run build:relay-pty',
         });
-        console.error(`[spawner] ${tracedError.logMessage}`);
+        log.error(tracedError.logMessage);
         return {
           success: false,
           name,
@@ -754,7 +758,7 @@ export class AgentSpawner {
 
       // Common exit handler for both wrapper types
       const onExitHandler = (code: number) => {
-        if (debug) console.log(`[spawner:debug] Worker ${name} exited with code ${code}`);
+        if (debug) log.debug(`Worker ${name} exited with code ${code}`);
 
         // Get the agentId and clean up listeners before removing from active workers
         const worker = this.activeWorkers.get(name);
@@ -767,7 +771,7 @@ export class AgentSpawner {
         try {
           this.saveWorkersMetadata();
         } catch (err) {
-          console.error(`[spawner] Failed to save metadata on exit:`, err);
+          log.error('Failed to save metadata on exit', { error: err instanceof Error ? err.message : String(err) });
         }
 
         // Notify if agent died unexpectedly (non-zero exit)
@@ -778,7 +782,7 @@ export class AgentSpawner {
             cli,
             agentId,
           });
-          console.error(`[spawner] ${crashError.logMessage}`);
+          log.error(crashError.logMessage);
           this.onAgentDeath({
             name,
             exitCode: code,
@@ -793,7 +797,7 @@ export class AgentSpawner {
 
       // Common spawn/release handlers
       const onSpawnHandler = this.dashboardPort ? undefined : async (workerName: string, workerCli: string, workerTask: string) => {
-        if (debug) console.log(`[spawner:debug] Nested spawn: ${workerName}`);
+        if (debug) log.debug(`Nested spawn: ${workerName}`);
         await this.spawn({
           name: workerName,
           cli: workerCli,
@@ -803,7 +807,7 @@ export class AgentSpawner {
       };
 
       const onReleaseHandler = this.dashboardPort ? undefined : async (workerName: string) => {
-        if (debug) console.log(`[spawner:debug] Release request: ${workerName}`);
+        if (debug) log.debug(`Release request: ${workerName}`);
         await this.release(workerName);
       };
 
@@ -815,7 +819,10 @@ export class AgentSpawner {
         socketPath: this.socketPath,
         cwd: agentCwd,
         dashboardPort: this.dashboardPort,
-        env: userEnv,
+        env: {
+          ...userEnv,
+          ...(spawnerName ? { AGENT_RELAY_SPAWNER: spawnerName } : {}),
+        },
         streamLogs: true,
         shadowOf: request.shadowOf,
         shadowSpeakOn: request.shadowSpeakOn,
@@ -826,7 +833,7 @@ export class AgentSpawner {
         headless: true, // Force headless mode for spawned agents to enable task injection via stdin
       };
       const pty = new RelayPtyOrchestrator(ptyConfig);
-      if (debug) console.log(`[spawner:debug] Using RelayPtyOrchestrator for ${name}`);
+      if (debug) log.debug(`Using RelayPtyOrchestrator for ${name}`);
 
       // Track listener references for proper cleanup
       const listeners: ListenerBindings = {};
@@ -851,12 +858,12 @@ export class AgentSpawner {
       // This allows messages sent to this agent to be queued until HELLO completes
       if (this.onMarkSpawning) {
         this.onMarkSpawning(name);
-        if (debug) console.log(`[spawner:debug] Marked ${name} as spawning`);
+        if (debug) log.debug(`Marked ${name} as spawning`);
       }
 
       await pty.start();
 
-      if (debug) console.log(`[spawner:debug] PTY started, pid: ${pty.pid}`);
+      if (debug) log.debug(`PTY started, pid: ${pty.pid}`);
 
       // Wait for the agent to register with the daemon
       const registered = await this.waitForAgentRegistration(name, 30_000, 500);
@@ -867,7 +874,7 @@ export class AgentSpawner {
           pid: pty.pid,
           timeoutMs: 30_000,
         });
-        console.error(`[spawner] ${tracedError.logMessage}`);
+        log.error(tracedError.logMessage);
         // Clear spawning flag since spawn failed
         if (this.onClearSpawning) {
           this.onClearSpawning(name);
@@ -896,12 +903,13 @@ export class AgentSpawner {
               const orchestrator = pty as RelayPtyOrchestrator;
               const ready = await orchestrator.waitUntilReadyForMessages(20000, 100);
               if (!ready) {
-                console.warn(`[spawner] Attempt ${attempt}/${maxRetries}: ${name} not ready for messages within timeout`);
+                // Log retry attempts at DEBUG level to avoid terminal noise
+                log.debug(`Attempt ${attempt}/${maxRetries}: ${name} not ready for messages within timeout`);
                 if (attempt < maxRetries) {
                   await sleep(retryDelayMs);
                   continue;
                 }
-                console.error(`[spawner] ${name} failed to become ready after ${maxRetries} attempts - task may be lost`);
+                log.error(`${name} failed to become ready after ${maxRetries} attempts - task may be lost`);
                 break;
               }
             } else if ('waitUntilCliReady' in pty) {
@@ -910,16 +918,18 @@ export class AgentSpawner {
             }
 
             // Inject task via socket (with verification and retries)
-            const success = await pty.injectTask(task, 'spawner');
+            const success = await pty.injectTask(task, spawnerName || 'spawner');
             if (success) {
               taskSent = true;
-              if (debug) console.log(`[spawner:debug] Task injected to ${name} (attempt ${attempt})`);
+              if (debug) log.debug(`Task injected to ${name} (attempt ${attempt})`);
               break;
             } else {
               throw new Error('Task injection returned false');
             }
           } catch (err: any) {
-            console.error(`[spawner] Attempt ${attempt}/${maxRetries}: Error injecting task for ${name}: ${err.message}`);
+            // Log retry attempts at DEBUG level to avoid terminal noise
+            // Only the final summary (if all attempts fail) is logged at ERROR level
+            log.debug(`Attempt ${attempt}/${maxRetries}: Error injecting task for ${name}: ${err.message}`);
             if (attempt < maxRetries) {
               await sleep(retryDelayMs);
             }
@@ -933,7 +943,7 @@ export class AgentSpawner {
             attempts: maxRetries,
             taskLength: task.length,
           });
-          console.error(`[spawner] CRITICAL: ${tracedError.logMessage}`);
+          log.error(`CRITICAL: ${tracedError.logMessage}`);
           // Note: We don't return an error here because the agent is running,
           // but we track the errorId so support can investigate if user reports it
         }
@@ -957,7 +967,7 @@ export class AgentSpawner {
 
       const teamInfo = team ? ` [team: ${team}]` : '';
       const shadowInfo = request.shadowOf ? ` [shadow of: ${request.shadowOf}]` : '';
-      console.log(`[spawner] Spawned ${name} (${cli})${teamInfo}${shadowInfo} [pid: ${pty.pid}]`);
+      log.info(`Spawned ${name} (${cli})${teamInfo}${shadowInfo} [pid: ${pty.pid}]`);
 
       return {
         success: true,
@@ -970,8 +980,8 @@ export class AgentSpawner {
         cli,
         task: task?.substring(0, 100),
       }, err instanceof Error ? err : undefined);
-      console.error(`[spawner] ${tracedError.logMessage}`);
-      if (debug) console.error(`[spawner:debug] Full error:`, err);
+      log.error(tracedError.logMessage);
+      if (debug) log.debug('Full error', { error: err?.stack || String(err) });
       // Clear spawning flag since spawn failed
       if (this.onClearSpawning) {
         this.onClearSpawning(name);
@@ -1031,14 +1041,14 @@ export class AgentSpawner {
         preferredShadowCli: shadow.command,
       });
     } catch (err: any) {
-      console.warn(`[spawner] Shadow CLI selection failed for ${shadow.name}: ${err.message}`);
+      log.warn(`Shadow CLI selection failed for ${shadow.name}: ${err.message}`);
     }
 
     if (debug) {
       const mode = shadowSelection?.mode ?? 'unknown';
       const cli = shadowSelection?.command ?? shadow.command ?? primary.command ?? 'claude';
-      console.log(
-        `[spawner] spawnWithShadow: primary=${primary.name}, shadow=${shadow.name}, mode=${mode}, cli=${cli}, speakOn=${speakOn.join(',')}`
+      log.debug(
+        `spawnWithShadow: primary=${primary.name}, shadow=${shadow.name}, mode=${mode}, cli=${cli}, speakOn=${speakOn.join(',')}`
       );
     }
 
@@ -1064,8 +1074,8 @@ export class AgentSpawner {
 
     // Subagent mode: no separate process needed
     if (shadowSelection?.mode === 'subagent') {
-      console.log(
-        `[spawner] Shadow ${shadow.name} will run as ${shadowSelection.cli} subagent inside ${primary.name} (no separate process)`
+      log.info(
+        `Shadow ${shadow.name} will run as ${shadowSelection.cli} subagent inside ${primary.name} (no separate process)`
       );
       return {
         success: true,
@@ -1079,7 +1089,7 @@ export class AgentSpawner {
 
     // No available shadow CLI - proceed without spawning a shadow process
     if (!shadowSelection) {
-      console.warn(`[spawner] No authenticated shadow CLI available; ${primary.name} will run without a shadow`);
+      log.warn(`No authenticated shadow CLI available; ${primary.name} will run without a shadow`);
       return {
         success: true,
         primary: primaryResult,
@@ -1098,7 +1108,7 @@ export class AgentSpawner {
     });
 
     if (!shadowResult.success) {
-      console.warn(`[spawner] Shadow agent ${shadow.name} failed to spawn, primary ${primary.name} continues without shadow`);
+      log.warn(`Shadow agent ${shadow.name} failed to spawn, primary ${primary.name} continues without shadow`);
       return {
         success: true, // Primary succeeded, overall operation is partial success
         primary: primaryResult,
@@ -1107,7 +1117,7 @@ export class AgentSpawner {
       };
     }
 
-    console.log(`[spawner] Spawned pair: ${primary.name} with shadow ${shadow.name} (speakOn: ${speakOn.join(',')})`);
+    log.info(`Spawned pair: ${primary.name} with shadow ${shadow.name} (speakOn: ${speakOn.join(',')})`);
 
     return {
       success: true,
@@ -1122,7 +1132,7 @@ export class AgentSpawner {
   async release(name: string): Promise<boolean> {
     const worker = this.activeWorkers.get(name);
     if (!worker) {
-      console.log(`[spawner] Worker ${name} not found`);
+      log.debug(`Worker ${name} not found`);
       return false;
     }
 
@@ -1140,11 +1150,11 @@ export class AgentSpawner {
 
       this.activeWorkers.delete(name);
       this.saveWorkersMetadata();
-      console.log(`[spawner] Released ${name}`);
+      log.info(`Released ${name}`);
 
       return true;
     } catch (err: any) {
-      console.error(`[spawner] Failed to release ${name}:`, err.message);
+      log.error(`Failed to release ${name}: ${err.message}`);
       // Still unbind and remove from tracking
       this.unbindListeners(worker.pty, worker.listeners);
       this.activeWorkers.delete(name);
@@ -1274,7 +1284,7 @@ export class AgentSpawner {
       const lowerName = name.toLowerCase();
       return agents.some((a) => typeof a === 'string' && a.toLowerCase() === lowerName);
     } catch (err: any) {
-      console.error('[spawner] Failed to read connected-agents.json:', err.message);
+      log.error('Failed to read connected-agents.json', { error: err.message });
       return false;
     }
   }
@@ -1295,7 +1305,7 @@ export class AgentSpawner {
       if (!agent?.lastSeen) return false;
       return Date.now() - new Date(agent.lastSeen).getTime() <= AgentSpawner.ONLINE_THRESHOLD_MS;
     } catch (err: any) {
-      console.error('[spawner] Failed to read agents.json:', err.message);
+      log.error('Failed to read agents.json', { error: err.message });
       return false;
     }
   }
@@ -1318,7 +1328,7 @@ export class AgentSpawner {
 
       fs.writeFileSync(this.workersPath, JSON.stringify({ workers }, null, 2));
     } catch (err: any) {
-      console.error('[spawner] Failed to save workers metadata:', err.message);
+      log.error('Failed to save workers metadata', { error: err.message });
     }
   }
 

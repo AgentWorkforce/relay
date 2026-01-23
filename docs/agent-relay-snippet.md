@@ -126,6 +126,27 @@ EOF
 ```
 Then: `->relay-file:release`
 
+## When You Are Spawned
+
+If you were spawned by another agent:
+
+1. **Check who spawned you**: `echo $AGENT_RELAY_SPAWNER`
+2. **Your first message** is your task from your spawner - reply to THEM, not "spawner"
+3. **Report status** to your spawner (your lead), not broadcast
+
+```bash
+# Check your spawner
+echo "I was spawned by: $AGENT_RELAY_SPAWNER"
+
+# Reply to your spawner
+cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
+TO: $AGENT_RELAY_SPAWNER
+
+ACK: Starting on the task.
+EOF
+```
+Then: `->relay-file:msg`
+
 ## Receiving Messages
 
 Messages appear as:
@@ -143,7 +164,7 @@ Reply to the channel shown, not the sender.
 
 - **ACK** when you receive a task: `ACK: Brief description`
 - **DONE** when complete: `DONE: What was accomplished`
-- Send status to your **lead**, not broadcast
+- Send status to your **lead** (the agent in `$AGENT_RELAY_SPAWNER`), not broadcast
 
 ## Headers Reference
 
