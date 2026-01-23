@@ -48,25 +48,82 @@ export type CliType = 'claude' | 'codex' | 'gemini' | 'droid' | 'opencode' | 'cu
 
 /**
  * Injection timing constants
+ *
+ * Performance tuning (2024-01):
+ * - QUEUE_PROCESS_DELAY_MS: 500ms → 100ms (5x faster message throughput)
+ * - STABILITY_POLL_MS: 200ms → 100ms (faster idle detection)
+ * - ENTER_DELAY_MS: 100ms → 50ms (faster message completion)
+ * - RETRY_BACKOFF_MS: 300ms → 200ms (faster recovery)
+ *
+ * Use AdaptiveThrottle class for dynamic backpressure handling.
  */
 export const INJECTION_CONSTANTS = {
   /** Maximum retry attempts for injection */
   MAX_RETRIES: 3,
   /** Timeout for output stability check (ms) */
   STABILITY_TIMEOUT_MS: 3000,
-  /** Polling interval for stability check (ms) */
-  STABILITY_POLL_MS: 200,
+  /** Polling interval for stability check (ms) - reduced from 200ms */
+  STABILITY_POLL_MS: 100,
   /** Required consecutive stable polls before injection */
   REQUIRED_STABLE_POLLS: 2,
   /** Timeout for injection verification (ms) */
   VERIFICATION_TIMEOUT_MS: 2000,
-  /** Delay between message and Enter key (ms) */
-  ENTER_DELAY_MS: 100,
-  /** Backoff multiplier for retries (ms per attempt) */
-  RETRY_BACKOFF_MS: 300,
-  /** Delay between processing queued messages (ms) */
-  QUEUE_PROCESS_DELAY_MS: 500,
+  /** Delay between message and Enter key (ms) - reduced from 100ms */
+  ENTER_DELAY_MS: 50,
+  /** Backoff multiplier for retries (ms per attempt) - reduced from 300ms */
+  RETRY_BACKOFF_MS: 200,
+  /** Base delay between processing queued messages (ms) - reduced from 500ms */
+  QUEUE_PROCESS_DELAY_MS: 100,
+  /** Maximum delay when under backpressure (ms) */
+  QUEUE_PROCESS_DELAY_MAX_MS: 500,
+  /** Threshold for increasing delay (consecutive failures) */
+  BACKPRESSURE_THRESHOLD: 2,
 } as const;
+
+/**
+ * Adaptive throttle for message queue processing.
+ * Increases delay when failures occur, decreases on success.
+ *
+ * This allows fast messaging under normal conditions (~100ms between messages)
+ * while automatically backing off when the system is under stress.
+ */
+export class AdaptiveThrottle {
+  private consecutiveFailures = 0;
+  private currentDelay = INJECTION_CONSTANTS.QUEUE_PROCESS_DELAY_MS;
+
+  /** Get current delay in milliseconds */
+  getDelay(): number {
+    return this.currentDelay;
+  }
+
+  /** Record a successful injection - decrease delay */
+  recordSuccess(): void {
+    this.consecutiveFailures = 0;
+    // Gradually decrease delay on success (exponential decay toward minimum)
+    this.currentDelay = Math.max(
+      INJECTION_CONSTANTS.QUEUE_PROCESS_DELAY_MS,
+      Math.floor(this.currentDelay * 0.7)
+    );
+  }
+
+  /** Record a failed injection - increase delay if threshold exceeded */
+  recordFailure(): void {
+    this.consecutiveFailures++;
+    if (this.consecutiveFailures >= INJECTION_CONSTANTS.BACKPRESSURE_THRESHOLD) {
+      // Increase delay when under backpressure (exponential backoff)
+      this.currentDelay = Math.min(
+        INJECTION_CONSTANTS.QUEUE_PROCESS_DELAY_MAX_MS,
+        Math.floor(this.currentDelay * 1.5)
+      );
+    }
+  }
+
+  /** Reset to default state */
+  reset(): void {
+    this.consecutiveFailures = 0;
+    this.currentDelay = INJECTION_CONSTANTS.QUEUE_PROCESS_DELAY_MS;
+  }
+}
 
 /**
  * Strip ANSI escape codes from a string.

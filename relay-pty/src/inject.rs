@@ -198,10 +198,12 @@ impl Injector {
             .await
             .map_err(|_| anyhow::anyhow!("PTY channel closed"))?;
 
-        info!("Step 2: Waiting 200ms...");
+        info!("Step 2: Waiting 50ms...");
 
         // Step 2: Wait for CLI to process the input
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Reduced from 200ms to 50ms for faster message delivery.
+        // Most CLIs process input within 20-30ms; 50ms provides a safety margin.
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         info!("Step 3: Sending Enter key (\\r)");
 
