@@ -167,6 +167,7 @@
   "engines": {
     "node": ">=18.0.0"
   },
+  "packageManager": "npm@10.5.1",
   "overrides": {
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
