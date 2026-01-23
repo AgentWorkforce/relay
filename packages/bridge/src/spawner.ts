@@ -13,6 +13,7 @@ import { getProjectPaths, getAgentOutboxTemplate } from '@agent-relay/config';
 import { resolveCommand } from '@agent-relay/utils/command-resolver';
 import { createTraceableError } from '@agent-relay/utils/error-tracking';
 import { createLogger } from '@agent-relay/utils/logger';
+import { mapModelToCli } from '@agent-relay/utils/model-mapping';
 import { RelayPtyOrchestrator, type RelayPtyOrchestratorConfig } from '@agent-relay/wrapper';
 import type { SummaryEvent, SessionEndEvent } from '@agent-relay/wrapper';
 import { selectShadowCli } from './shadow-cli.js';
@@ -682,9 +683,18 @@ export class AgentSpawner {
       // Apply agent config (model, --agent flag) from .claude/agents/ if available
       // This ensures spawned agents respect their profile settings
       if (isClaudeCli) {
-        // Get agent config for model tracking
+        // Get agent config for model tracking and CLI variant selection
         const agentConfig = findAgentConfig(name, this.projectRoot);
-        const model = agentConfig?.model || 'sonnet'; // Default to sonnet
+        const modelFromProfile = agentConfig?.model?.trim();
+
+        // Map model to CLI variant (e.g., 'opus' -> 'claude:opus')
+        // This allows agent profiles to specify model preferences
+        const cliVariant = modelFromProfile
+          ? mapModelToCli(modelFromProfile)
+          : mapModelToCli(); // defaults to claude:sonnet
+
+        // Extract effective model name for logging
+        const effectiveModel = modelFromProfile || 'sonnet';
 
         const configuredArgs = buildClaudeArgs(name, args, this.projectRoot);
         // Replace args with configured version (includes --model and --agent if found)
@@ -692,7 +702,7 @@ export class AgentSpawner {
         args.push(...configuredArgs);
 
         // Cost tracking: log which model is being used
-        log.info(`Agent ${name}: model=${model}, cli=${cli}`);
+        log.info(`Agent ${name}: model=${effectiveModel}, cli=${cli}, variant=${cliVariant}`);
         if (debug) log.debug(`Applied agent config for ${name}: ${args.join(' ')}`);
       }
 

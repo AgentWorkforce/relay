@@ -1450,16 +1450,16 @@ export class RelayPtyOrchestrator extends BaseWrapper {
 
         this.logError(` Injection failed for message ${msg.messageId.substring(0, 8)} after ${retryCount} retries`);
         this.config.onInjectionFailed?.(msg.messageId, 'Injection failed after max retries');
-        this.sendSyncAck(msg.messageId, msg.sync, false, { error: 'injection_failed_max_retries' });
+        this.sendSyncAck(msg.messageId, msg.sync, 'ERROR', { error: 'injection_failed_max_retries' });
       } else {
-        this.sendSyncAck(msg.messageId, msg.sync, true);
+        this.sendSyncAck(msg.messageId, msg.sync, 'OK');
       }
     } catch (err: any) {
       this.logError(` Injection error: ${err.message}`);
       // Track metrics for exceptions (not handled by handleInjectResult)
       this.injectionMetrics.failed++;
       this.injectionMetrics.total++;
-      this.sendSyncAck(msg.messageId, msg.sync, false, { error: err.message });
+      this.sendSyncAck(msg.messageId, msg.sync, 'ERROR', { error: err.message });
     } finally {
       this.isInjecting = false;
 
