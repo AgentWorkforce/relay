@@ -181,7 +181,7 @@ function printResults(
       if (action === 'install') {
         console.log('');
         console.log('The relay tools will be available when you start your editor.');
-        console.log('Make sure the relay daemon is running: agent-relay daemon start');
+        console.log('Make sure the relay daemon is running: agent-relay up');
       }
     } else {
       console.log(`Completed with ${failed.length} error(s).`);

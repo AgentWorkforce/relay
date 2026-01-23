@@ -567,7 +567,7 @@ testHelpersRouter.post('/setup-local-cloud', async (req: Request, res: Response)
         publicUrl: workspace.publicUrl,
       },
       instructions: [
-        '1. Start agent-relay daemon: npm run dev (or agent-relay daemon)',
+        '1. Start agent-relay daemon: npm run dev (or agent-relay up)',
         '2. Go to http://localhost:4567/app',
         '3. The app should auto-connect to the local workspace',
         '4. The WebSocket will connect to ws://localhost:3889/ws',

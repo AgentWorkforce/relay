@@ -13,7 +13,7 @@ export class RelayError extends Error {
 
 export class DaemonNotRunningError extends RelayError {
   constructor(message?: string) {
-    super(message || 'Relay daemon is not running. Start with: agent-relay daemon start');
+    super(message || 'Relay daemon is not running. Start with: agent-relay up');
     this.name = 'DaemonNotRunningError';
   }
 }
