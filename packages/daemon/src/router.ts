@@ -265,6 +265,11 @@ export class Router {
         // Handle existing agent connection with same name (disconnect old)
         const existing = this.agents.get(connection.agentName);
         if (existing && existing.id !== connection.id) {
+          routerLog.warn('Duplicate agent connection detected, closing old connection', {
+            agent: connection.agentName,
+            oldConnectionId: existing.id,
+            newConnectionId: connection.id,
+          });
           existing.close();
           this.connections.delete(existing.id);
         }

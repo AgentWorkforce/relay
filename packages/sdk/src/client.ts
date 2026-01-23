@@ -81,7 +81,7 @@ const DEFAULT_CLIENT_CONFIG: ClientConfig = {
   quiet: false,
   reconnect: true,
   maxReconnectAttempts: 10,
-  reconnectDelayMs: 100,
+  reconnectDelayMs: 1000, // Increased from 100ms to prevent reconnect storms
   reconnectMaxDelayMs: 30000,
 };
 
