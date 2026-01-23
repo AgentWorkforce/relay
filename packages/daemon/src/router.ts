@@ -529,22 +529,31 @@ export class Router {
    * Route a SEND message to its destination(s).
    */
   route(from: RoutableConnection, envelope: SendEnvelope): void {
-    const senderName = from.agentName;
+    // Check if this is a cross-machine message (injected from cloud)
+    const isCrossMachine = envelope.payload?.data?._crossMachine === true;
+
+    // Use envelope.from for cross-machine messages where the connection is the recipient,
+    // otherwise use the connection's agent name (normal local messages)
+    const senderName = isCrossMachine ? envelope.from : (envelope.from || from.agentName);
     if (!senderName) {
       routerLog.warn('Dropping message - sender has no name');
       return;
     }
 
-    // Check rate limit
-    if (!this.rateLimiter.tryAcquire(senderName)) {
-      routerLog.warn(`Rate limited: ${senderName}`);
-      return;
+    // Skip rate limiting, processing state, and send recording for cross-machine messages
+    // These only apply to local agents sending messages
+    if (!isCrossMachine) {
+      // Check rate limit
+      if (!this.rateLimiter.tryAcquire(senderName)) {
+        routerLog.warn(`Rate limited: ${senderName}`);
+        return;
+      }
+
+      // Agent is responding - clear their processing state
+      this.clearProcessing(senderName);
+
+      this.registry?.recordSend(senderName);
     }
-
-    // Agent is responding - clear their processing state
-    this.clearProcessing(senderName);
-
-    this.registry?.recordSend(senderName);
 
     const to = envelope.to;
     const topic = envelope.topic;
