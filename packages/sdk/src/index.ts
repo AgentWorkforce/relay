@@ -2,6 +2,28 @@
  * @agent-relay/sdk
  *
  * Lightweight SDK for agent-to-agent communication via Agent Relay.
+ *
+ * ## Quick Start (Standalone - No Setup Required)
+ *
+ * ```typescript
+ * import { createRelay } from '@agent-relay/sdk';
+ *
+ * const relay = await createRelay();
+ * const alice = await relay.client('Alice');
+ * const bob = await relay.client('Bob');
+ *
+ * bob.onMessage = (from, { body }) => console.log(`${from}: ${body}`);
+ * alice.sendMessage('Bob', 'Hello!');
+ * ```
+ *
+ * ## With External Daemon
+ *
+ * ```typescript
+ * import { RelayClient } from '@agent-relay/sdk';
+ *
+ * const client = new RelayClient({ agentName: 'MyAgent' });
+ * await client.connect();
+ * ```
  */
 
 // Main client
@@ -11,6 +33,14 @@ export {
   type ClientConfig,
   type SyncOptions,
 } from './client.js';
+
+// Standalone relay (in-process daemon for simple use cases)
+export {
+  createRelay,
+  createPair,
+  type Relay,
+  type RelayConfig,
+} from './standalone.js';
 
 // Protocol types (re-export for convenience)
 export {

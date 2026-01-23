@@ -10,6 +10,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./standalone": {
+      "types": "./dist/standalone.d.ts",
+      "import": "./dist/standalone.js"
+    },
     "./protocol": {
       "types": "./dist/protocol/index.d.ts",
       "import": "./dist/protocol/index.js"
@@ -52,6 +56,14 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "peerDependencies": {
+    "@agent-relay/daemon": ">=0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@agent-relay/daemon": {
+      "optional": true
+    }
   },
   "optionalDependencies": {
     "@msgpack/msgpack": "^3.0.0"

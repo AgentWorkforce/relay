@@ -27,7 +27,7 @@ export interface RelayClientOptions {
 export function createRelayClient(options: RelayClientOptions): RelayClient {
   const { agentName, project = 'default', timeout = 5000 } = options;
   const discovery = discoverSocket({ socketPath: options.socketPath });
-  const socketPath = discovery?.socketPath || options.socketPath || '/tmp/relay-daemon.sock';
+  const socketPath = discovery?.socketPath || options.socketPath || '/tmp/agent-relay.sock';
   // Use randomUUID for collision-resistant request IDs
   const generateId = () => `${agentName}-${randomUUID()}`;
 

@@ -29,6 +29,7 @@
     "@agent-relay/cloud": "0.1.0",
     "@agent-relay/daemon": "0.1.0",
     "@agent-relay/user-directory": "0.1.0",
+    "@agent-relay/sdk": "0.1.0",
     "@agent-relay/wrapper": "0.1.0",
     "express": "^4.21.2",
     "ws": "^8.18.3"

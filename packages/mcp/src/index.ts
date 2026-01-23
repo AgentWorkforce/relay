@@ -2,6 +2,20 @@
 export type { RelayClient } from './client.js';
 export { createRelayClient } from './client.js';
 
+// Simple programmatic API (no MCP protocol overhead)
+export {
+  createTools,
+  send,
+  inbox,
+  who,
+  type RelayTools,
+  type ToolsConfig,
+  type Message,
+  type Agent,
+  type Status,
+  type SpawnResult,
+} from './simple.js';
+
 // Server
 export { createMCPServer, runMCPServer, type MCPServerConfig } from './server.js';
 

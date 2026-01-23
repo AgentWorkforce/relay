@@ -9,7 +9,7 @@ import { exec } from 'child_process';
 import { fileURLToPath } from 'url';
 import { SqliteStorageAdapter } from '@agent-relay/storage/sqlite-adapter';
 import type { StorageAdapter, StoredMessage } from '@agent-relay/storage/adapter';
-import { RelayClient } from '@agent-relay/wrapper';
+import { RelayClient } from '@agent-relay/sdk';
 import { UserBridge } from './user-bridge.js';
 import { computeNeedsAttention } from './needs-attention.js';
 import { computeSystemMetrics, formatPrometheusMetrics } from './metrics.js';

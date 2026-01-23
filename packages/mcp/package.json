@@ -24,6 +24,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./simple": {
+      "types": "./dist/simple.d.ts",
+      "import": "./dist/simple.js"
+    },
     "./install": {
       "types": "./dist/install-cli.d.ts",
       "import": "./dist/install-cli.js"

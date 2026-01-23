@@ -160,6 +160,50 @@ The MCP server provides:
 
 In cloud environments (with `WORKSPACE_ID` set), MCP is pre-configured and uses workspace-specific sockets automatically.
 
+## Programmatic Usage
+
+Use relay tools directly in your code (no MCP protocol needed):
+
+```typescript
+import { createTools } from '@agent-relay/mcp';
+
+const tools = createTools('MyAgent');
+
+// Send messages
+await tools.send('OtherAgent', 'Hello!');
+await tools.send('#general', 'Channel message');
+await tools.send('*', 'Broadcast');
+
+// Check inbox
+const messages = await tools.inbox();
+for (const msg of messages) {
+  console.log(`${msg.from}: ${msg.content}`);
+}
+
+// List online agents
+const agents = await tools.who();
+
+// Spawn workers
+await tools.spawn({
+  name: 'Worker1',
+  cli: 'claude',
+  task: 'Run tests',
+});
+
+// Release workers
+await tools.release('Worker1');
+```
+
+### One-liners
+
+```typescript
+import { send, inbox, who } from '@agent-relay/mcp/simple';
+
+await send('MyAgent', 'Bob', 'Hello!');
+const messages = await inbox('MyAgent');
+const agents = await who();
+```
+
 ## Requirements
 
 - Node.js 18+
