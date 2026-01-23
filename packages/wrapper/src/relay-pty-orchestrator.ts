@@ -292,8 +292,9 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       }
 
       this.socketPath = localSocketPath;
-      // No legacy path needed for local mode
-      this._legacyOutboxPath = this._outboxPath;
+      // Legacy path for backwards compat (older agents might still use /tmp/relay-outbox)
+      // Even in local mode, we need this symlink for agents with stale instructions
+      this._legacyOutboxPath = `/tmp/relay-outbox/${config.name}`;
     }
     if (this.socketPath.length > MAX_SOCKET_PATH_LENGTH) {
       throw new Error(`Socket path exceeds ${MAX_SOCKET_PATH_LENGTH} chars: ${this.socketPath.length}`);

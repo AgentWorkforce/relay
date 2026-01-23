@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-23T22:32:30.077Z",
+  "lastUpdated": "2026-01-23T22:37:59.768Z",
   "trajectories": {
     "traj_zyvnr1v9bw7w": {
       "title": "Fix socketPath not passed to spawned agents",
@@ -8,6 +8,20 @@
       "startedAt": "2026-01-23T22:31:57.685Z",
       "completedAt": "2026-01-23T22:32:30.053Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_zyvnr1v9bw7w.json"
+    },
+    "traj_hqfzzchfb4lb": {
+      "title": "Fix legacy outbox symlink missing in local mode",
+      "status": "completed",
+      "startedAt": "2026-01-23T22:37:12.632Z",
+      "completedAt": "2026-01-23T22:37:30.808Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_hqfzzchfb4lb.json"
+    },
+    "traj_7pw4d7277g1g": {
+      "title": "Legacy outbox path hardcoded in AgentSwarm defaults",
+      "status": "completed",
+      "startedAt": "2026-01-23T22:37:49.391Z",
+      "completedAt": "2026-01-23T22:37:59.758Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_7pw4d7277g1g.json"
     }
   }
 }
