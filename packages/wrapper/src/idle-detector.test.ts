@@ -336,51 +336,8 @@ describe('UniversalIdleDetector', () => {
       expect(detector).toBeInstanceOf(UniversalIdleDetector);
     });
 
-    it('warns on non-Linux platforms', () => {
-      const originalPlatform = process.platform;
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-      try {
-        Object.defineProperty(process, 'platform', {
-          value: 'darwin',
-          configurable: true,
-        });
-
-        createIdleDetector({}, { quiet: false });
-
-        expect(warnSpy).toHaveBeenCalledWith(
-          expect.stringContaining('macOS')
-        );
-      } finally {
-        Object.defineProperty(process, 'platform', {
-          value: originalPlatform,
-          configurable: true,
-        });
-        warnSpy.mockRestore();
-      }
-    });
-
-    it('suppresses warning in quiet mode', () => {
-      const originalPlatform = process.platform;
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-      try {
-        Object.defineProperty(process, 'platform', {
-          value: 'darwin',
-          configurable: true,
-        });
-
-        createIdleDetector({}, { quiet: true });
-
-        expect(warnSpy).not.toHaveBeenCalled();
-      } finally {
-        Object.defineProperty(process, 'platform', {
-          value: originalPlatform,
-          configurable: true,
-        });
-        warnSpy.mockRestore();
-      }
-    });
+    // Note: Platform warnings were removed to reduce terminal noise.
+    // The createIdleDetector function no longer logs warnings.
   });
 
   describe('editor mode detection', () => {

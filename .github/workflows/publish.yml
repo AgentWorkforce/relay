@@ -44,6 +44,11 @@ on:
           - alpha
         default: "latest"
 
+# Prevent concurrent publishes
+concurrency:
+  group: publish-package
+  cancel-in-progress: false
+
 permissions:
   contents: write
   id-token: write

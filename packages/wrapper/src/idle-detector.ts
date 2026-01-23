@@ -359,7 +359,8 @@ export async function getTmuxPanePid(
 
 /**
  * Create an idle detector configured for the current platform.
- * Logs a warning on non-Linux platforms where process state inspection isn't available.
+ * On non-Linux platforms, process state inspection is unavailable but
+ * output silence analysis still works.
  */
 export function createIdleDetector(
   config: IdleDetectorConfig = {},

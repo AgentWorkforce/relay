@@ -75,14 +75,14 @@ describe('Install System', () => {
     it('detects editors by config directory existence', () => {
       vi.mocked(existsSync).mockImplementation((path) => {
         const p = String(path);
-        // Simulate Claude config dir existing
-        return p.includes('.claude') || p.includes('Claude');
+        // Simulate Cursor config dir existing (.cursor directory)
+        return p.includes('.cursor');
       });
 
       const detected = detectInstalledEditors();
 
-      // Should detect at least one claude variant
-      expect(detected.some((e) => e.includes('claude'))).toBe(true);
+      // Should detect cursor since .cursor dir exists
+      expect(detected).toContain('cursor');
     });
   });
 
