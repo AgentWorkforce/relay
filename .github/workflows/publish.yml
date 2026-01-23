@@ -187,8 +187,10 @@ jobs:
             }
           "
 
-      - name: Update package-lock.json and reinstall
-        run: npm install
+      - name: Clean reinstall after version bump
+        run: |
+          rm -rf node_modules packages/*/node_modules
+          npm install
 
       - name: Build all packages
         run: npm run build
