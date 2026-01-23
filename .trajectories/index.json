@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-22T08:19:34.279Z",
+  "lastUpdated": "2026-01-23T08:34:30.034Z",
   "trajectories": {
     "traj_ozd98si6a7ns": {
       "title": "Fix thinking indicator showing on all messages",
@@ -904,6 +904,12 @@
       "startedAt": "2026-01-22T08:19:18.842Z",
       "completedAt": "2026-01-22T08:19:33.967Z",
       "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_dwvjn9kpo59t.json"
+    },
+    "traj_6mdgpdotco9m": {
+      "title": "Fix recurring GitHub auth issue with comprehensive fallback chain",
+      "status": "active",
+      "startedAt": "2026-01-23T08:33:42.275Z",
+      "path": "/data/repos/relay/.trajectories/active/traj_6mdgpdotco9m.json"
     }
   }
 }
