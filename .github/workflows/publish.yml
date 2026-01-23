@@ -53,14 +53,11 @@ permissions:
   contents: write
   id-token: write
 
-# Packages in topological order (leaf dependencies first)
-# Tier 1: No internal dependencies
-# Tier 2: Depends on Tier 1
-# Tier 3: Depends on Tier 1-2
-# Tier 4: Main package
+env:
+  NPM_CONFIG_FUND: false
 
 jobs:
-  # Build Rust binaries for all platforms
+  # Build Rust binaries for all platforms (in parallel)
   build-binaries:
     name: Build relay-pty (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
@@ -87,6 +84,12 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: relay-pty
+          key: ${{ matrix.target }}
+
       - name: Build relay-pty
         working-directory: relay-pty
         run: cargo build --release --target ${{ matrix.target }}
@@ -101,58 +104,10 @@ jobs:
           path: bin/${{ matrix.binary_name }}
           retention-days: 1
 
-  validate:
-    name: Validate and Test
+  # Build all packages once, version them, and upload
+  build:
+    name: Build & Version
     runs-on: ubuntu-latest
-    env:
-      NPM_CONFIG_FUND: false
-    outputs:
-      version_strategy: ${{ steps.version.outputs.version_strategy }}
-      version_type: ${{ steps.version.outputs.version_type }}
-      custom_version: ${{ steps.version.outputs.custom_version }}
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
-          cache-dependency-path: package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build
-        run: npm run build
-
-      - name: Test
-        run: npm test
-
-      - name: Determine version strategy
-        id: version
-        run: |
-          CUSTOM_VERSION="${{ github.event.inputs.custom_version }}"
-          VERSION_TYPE="${{ github.event.inputs.version }}"
-
-          if [ -n "$CUSTOM_VERSION" ]; then
-            echo "version_strategy=custom" >> $GITHUB_OUTPUT
-            echo "custom_version=$CUSTOM_VERSION" >> $GITHUB_OUTPUT
-            echo "Version strategy: custom ($CUSTOM_VERSION)"
-          else
-            echo "version_strategy=bump" >> $GITHUB_OUTPUT
-            echo "version_type=$VERSION_TYPE" >> $GITHUB_OUTPUT
-            echo "Version strategy: bump ($VERSION_TYPE)"
-          fi
-
-  version:
-    name: Version All Packages
-    needs: validate
-    runs-on: ubuntu-latest
-    env:
-      NPM_CONFIG_FUND: false
     outputs:
       new_version: ${{ steps.bump.outputs.new_version }}
 
@@ -169,19 +124,21 @@ jobs:
           cache: "npm"
           cache-dependency-path: package-lock.json
 
+      - name: Install dependencies
+        run: npm ci
+
       - name: Version all packages
         id: bump
         run: |
-          VERSION_STRATEGY="${{ needs.validate.outputs.version_strategy }}"
+          CUSTOM_VERSION="${{ github.event.inputs.custom_version }}"
+          VERSION_TYPE="${{ github.event.inputs.version }}"
           CURRENT_VERSION=$(node -p "require('./package.json').version")
           echo "Current version: $CURRENT_VERSION"
 
-          if [ "$VERSION_STRATEGY" = "custom" ]; then
-            TARGET_VERSION="${{ needs.validate.outputs.custom_version }}"
-            echo "Setting version to custom value: $TARGET_VERSION"
-            npm version "$TARGET_VERSION" --no-git-tag-version --allow-same-version
+          if [ -n "$CUSTOM_VERSION" ]; then
+            echo "Setting version to custom value: $CUSTOM_VERSION"
+            npm version "$CUSTOM_VERSION" --no-git-tag-version --allow-same-version
           else
-            VERSION_TYPE="${{ needs.validate.outputs.version_type }}"
             echo "Bumping version: $VERSION_TYPE"
             npm version "$VERSION_TYPE" --no-git-tag-version --preid=beta
           fi
@@ -190,26 +147,19 @@ jobs:
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "New version: $NEW_VERSION"
 
-          # Sync all package versions to match main package
-          echo "Syncing all package versions to $NEW_VERSION"
+          # Sync all package versions
           for pkg in packages/*/package.json; do
-            echo "  Updating $pkg"
             cd $(dirname $pkg)
             npm version "$NEW_VERSION" --no-git-tag-version --allow-same-version
             cd - > /dev/null
           done
 
           # Update internal dependency versions
-          echo "Updating internal dependency versions to $NEW_VERSION"
-          find packages -name "package.json" -exec sed -i "s/\"@agent-relay\/[^\"]*\": \"[0-9]*\.[0-9]*\.[0-9]*\"/\0/g" {} \;
-
-          # Use node to update dependencies properly
           node -e "
             const fs = require('fs');
             const path = require('path');
             const version = '$NEW_VERSION';
 
-            // Update root package.json
             const rootPkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
             for (const dep of Object.keys(rootPkg.dependencies || {})) {
               if (dep.startsWith('@agent-relay/')) {
@@ -218,7 +168,6 @@ jobs:
             }
             fs.writeFileSync('package.json', JSON.stringify(rootPkg, null, 2) + '\n');
 
-            // Update all packages
             const packagesDir = 'packages';
             for (const dir of fs.readdirSync(packagesDir)) {
               const pkgPath = path.join(packagesDir, dir, 'package.json');
@@ -232,34 +181,41 @@ jobs:
                 fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
               }
             }
-            console.log('Updated all @agent-relay/* dependencies to', version);
           "
 
       - name: Update package-lock.json
         run: npm install --package-lock-only
 
-      - name: Upload versioned files
+      - name: Build all packages
+        run: npm run build
+
+      - name: Run tests
+        run: npm test
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: versioned-package
+          name: build-output
           path: |
             package.json
             package-lock.json
             packages/*/package.json
+            packages/*/dist/
+            dist/
           retention-days: 1
 
-  # Tier 1: Packages with no internal dependencies
-  publish-tier1:
-    name: Publish Tier 1 Packages
-    needs: [validate, version]
+  # Publish all packages in parallel (npm publish doesn't need deps published first)
+  publish-packages:
+    name: Publish ${{ matrix.package }}
+    needs: build
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'all'
-    env:
-      NPM_CONFIG_FUND: false
     strategy:
       fail-fast: false
+      max-parallel: 10
       matrix:
         package:
+          # All packages - published in parallel
           - protocol
           - storage
           - state
@@ -273,139 +229,29 @@ jobs:
           - user-directory
           - api-types
           - spawner
-          - mcp  # MCP server for AI editors (no internal deps)
+          - mcp
+          - config
+          - bridge
+          - wrapper
+          - sdk
+          - daemon
+          - cloud
+          - dashboard-server
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
-          cache-dependency-path: package-lock.json
 
-      - name: Download versioned files
+      - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
-          name: versioned-package
+          name: build-output
           path: .
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build package
-        run: cd packages/${{ matrix.package }} && npm run build
-
-      - name: Dry run check
-        if: github.event.inputs.dry_run == 'true'
-        working-directory: packages/${{ matrix.package }}
-        run: |
-          echo "Dry run - would publish @agent-relay/${{ matrix.package }}"
-          npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }}
-
-      - name: Publish to NPM
-        if: github.event.inputs.dry_run != 'true'
-        working-directory: packages/${{ matrix.package }}
-        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }}
-
-  # Tier 2: Packages depending on Tier 1
-  publish-tier2:
-    name: Publish Tier 2 Packages
-    needs: [validate, version, publish-tier1]
-    runs-on: ubuntu-latest
-    if: github.event.inputs.package == 'all'
-    env:
-      NPM_CONFIG_FUND: false
-    strategy:
-      fail-fast: false
-      matrix:
-        package:
-          - config  # depends on protocol
-          - bridge  # depends on protocol, config, utils, policy, user-directory
-          - wrapper # depends on protocol, config
-          - sdk     # depends on protocol
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
-          cache-dependency-path: package-lock.json
-
-      - name: Download versioned files
-        uses: actions/download-artifact@v4
-        with:
-          name: versioned-package
-          path: .
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build package
-        run: cd packages/${{ matrix.package }} && npm run build
-
-      - name: Dry run check
-        if: github.event.inputs.dry_run == 'true'
-        working-directory: packages/${{ matrix.package }}
-        run: |
-          echo "Dry run - would publish @agent-relay/${{ matrix.package }}"
-          npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }}
-
-      - name: Publish to NPM
-        if: github.event.inputs.dry_run != 'true'
-        working-directory: packages/${{ matrix.package }}
-        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }}
-
-  # Tier 3: Packages depending on Tier 1-2
-  publish-tier3:
-    name: Publish Tier 3 Packages
-    needs: [validate, version, publish-tier2]
-    runs-on: ubuntu-latest
-    if: github.event.inputs.package == 'all'
-    env:
-      NPM_CONFIG_FUND: false
-    strategy:
-      fail-fast: false
-      matrix:
-        package:
-          - daemon           # depends on protocol, config, storage, bridge, etc.
-          - cloud            # depends on config, resiliency, storage, protocol
-          - dashboard-server # depends on protocol, config, storage, bridge, utils
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
-          cache-dependency-path: package-lock.json
-
-      - name: Download versioned files
-        uses: actions/download-artifact@v4
-        with:
-          name: versioned-package
-          path: .
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build package
-        run: cd packages/${{ matrix.package }} && npm run build
 
       - name: Dry run check
         if: github.event.inputs.dry_run == 'true'
@@ -422,46 +268,29 @@ jobs:
   # Publish SDK only (when selected)
   publish-sdk-only:
     name: Publish SDK to NPM
-    needs: [validate, version]
+    needs: build
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'sdk'
-    env:
-      NPM_CONFIG_FUND: false
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
-          cache-dependency-path: package-lock.json
 
-      - name: Update npm to latest
-        run: npm install -g npm@latest
-
-      - name: Download versioned files
+      - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
-          name: versioned-package
+          name: build-output
           path: .
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build SDK
-        run: npm run build:sdk
-
-      - name: Dry run check (SDK)
+      - name: Dry run check
         if: github.event.inputs.dry_run == 'true'
         working-directory: packages/sdk
-        run: |
-          echo "Dry run - would publish SDK:"
-          npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }}
+        run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }}
 
       - name: Publish SDK to NPM
         if: github.event.inputs.dry_run != 'true'
@@ -470,36 +299,28 @@ jobs:
 
   # Publish main package
   publish-main:
-    name: Publish Main Package to NPM
-    needs: [validate, version, build-binaries, publish-tier3]
+    name: Publish Main Package
+    needs: [build, build-binaries, publish-packages]
     runs-on: ubuntu-latest
     if: |
       always() &&
       (github.event.inputs.package == 'all' || github.event.inputs.package == 'main') &&
-      (needs.publish-tier3.result == 'success' || needs.publish-tier3.result == 'skipped')
-    env:
-      NPM_CONFIG_FUND: false
+      needs.build.result == 'success' &&
+      (needs.publish-packages.result == 'success' || needs.publish-packages.result == 'skipped')
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
-          cache-dependency-path: package-lock.json
 
-      - name: Update npm to latest
-        run: npm install -g npm@latest
-
-      - name: Download versioned files
+      - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
-          name: versioned-package
+          name: build-output
           path: .
 
       - name: Download relay-pty binaries
@@ -512,42 +333,21 @@ jobs:
       - name: Make binaries executable
         run: chmod +x bin/relay-pty-*
 
-      - name: List binaries
-        run: ls -la bin/
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build
-        run: npm run build
-
-      - name: Preview package contents
-        run: npm pack --dry-run
-
       - name: Dry run check
         if: github.event.inputs.dry_run == 'true'
         run: |
-          echo "Dry run - would publish:"
-          echo "  Version: ${{ needs.version.outputs.new_version }}"
-          echo "  Tag: ${{ github.event.inputs.tag }}"
+          echo "Dry run - would publish agent-relay@${{ needs.build.outputs.new_version }}"
           npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }}
 
-      - name: Publish to NPM (Trusted Publishing)
+      - name: Publish to NPM
         if: github.event.inputs.dry_run != 'true'
         run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }}
 
-      - name: Report published
-        if: github.event.inputs.dry_run != 'true'
-        run: |
-          echo "Published agent-relay@${{ needs.version.outputs.new_version }}"
-          echo "NPM Tag: ${{ github.event.inputs.tag }}"
-
-  create-git-tag:
-    name: Create Git Tag and Release
-    needs: [validate, version, publish-main]
+  # Create git tag and release
+  create-release:
+    name: Create Release
+    needs: [build, publish-main]
     runs-on: ubuntu-latest
-    env:
-      NPM_CONFIG_FUND: false
     if: |
       always() &&
       github.event.inputs.dry_run != 'true' &&
@@ -560,74 +360,48 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Configure Git
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: .
+
+      - name: Commit and tag
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
 
-      - name: Download versioned files
-        uses: actions/download-artifact@v4
-        with:
-          name: versioned-package
-          path: .
-
-      - name: Commit version bump
-        run: |
-          NEW_VERSION="${{ needs.version.outputs.new_version }}"
-          TAG="${{ github.event.inputs.tag }}"
-          PACKAGE="${{ github.event.inputs.package }}"
+          NEW_VERSION="${{ needs.build.outputs.new_version }}"
 
           git add package.json package-lock.json packages/*/package.json
-
-          if git diff --staged --quiet; then
-            echo "No version changes to commit"
-          else
-            git commit -m "chore(release): v${NEW_VERSION}" \
-              -m "NPM Tag: ${TAG}" \
-              -m "Packages: ${PACKAGE}"
-
+          if ! git diff --staged --quiet; then
+            git commit -m "chore(release): v${NEW_VERSION}"
             git push origin HEAD:main
-            echo "Version changes committed and pushed"
           fi
 
-      - name: Create and push tag
-        run: |
-          NEW_VERSION="${{ needs.version.outputs.new_version }}"
-          RELEASE_TAG="v${NEW_VERSION}"
-
-          git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
-          git push origin "$RELEASE_TAG"
+          git tag -a "v${NEW_VERSION}" -m "Release v${NEW_VERSION}"
+          git push origin "v${NEW_VERSION}"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v${{ needs.version.outputs.new_version }}
-          name: v${{ needs.version.outputs.new_version }}
+          tag_name: v${{ needs.build.outputs.new_version }}
+          name: v${{ needs.build.outputs.new_version }}
           body: |
-            ## agent-relay v${{ needs.version.outputs.new_version }}
-
-            ### NPM Tag
-            `${{ github.event.inputs.tag }}`
-
-            ### Packages Published
-            All @agent-relay/* packages and the main agent-relay CLI.
+            ## agent-relay v${{ needs.build.outputs.new_version }}
 
             ### Installation
-
             ```bash
-            # Install CLI globally
-            npm install -g agent-relay@${{ needs.version.outputs.new_version }}
-
-            # Install SDK as dependency
-            npm install @agent-relay/sdk@${{ needs.version.outputs.new_version }}
+            npm install -g agent-relay@${{ needs.build.outputs.new_version }}
+            npm install @agent-relay/sdk@${{ needs.build.outputs.new_version }}
             ```
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   summary:
-    name: Publish Summary
-    needs: [validate, version, publish-tier1, publish-tier2, publish-tier3, publish-main]
+    name: Summary
+    needs: [build, publish-packages, publish-main]
     runs-on: ubuntu-latest
     if: always()
 
@@ -636,42 +410,10 @@ jobs:
         run: |
           echo "## NPM Publish Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Package Selection**: \`${{ github.event.inputs.package }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "**Version**: \`${{ needs.version.outputs.new_version }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "**Version Strategy**: \`${{ needs.validate.outputs.version_strategy }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Version**: \`${{ needs.build.outputs.new_version }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**NPM Tag**: \`${{ github.event.inputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**Dry Run**: \`${{ github.event.inputs.dry_run }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-
-          echo "### Package Status" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          if [ "${{ github.event.inputs.package }}" = "all" ]; then
-            echo "- Tier 1 (base packages + mcp): ${{ needs.publish-tier1.result }}" >> $GITHUB_STEP_SUMMARY
-            echo "- Tier 2 (config, bridge, wrapper, sdk): ${{ needs.publish-tier2.result }}" >> $GITHUB_STEP_SUMMARY
-            echo "- Tier 3 (daemon, cloud, dashboard-server): ${{ needs.publish-tier3.result }}" >> $GITHUB_STEP_SUMMARY
-          fi
-
-          if [ "${{ needs.publish-main.result }}" = "success" ]; then
-            echo "- ✅ **agent-relay**: Published" >> $GITHUB_STEP_SUMMARY
-          elif [ "${{ needs.publish-main.result }}" = "skipped" ]; then
-            echo "- ⏭️ **agent-relay**: Skipped" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "- ❌ **agent-relay**: ${{ needs.publish-main.result }}" >> $GITHUB_STEP_SUMMARY
-          fi
-
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
-            echo "This was a dry run - no packages were actually published" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "### Installation" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo '```bash' >> $GITHUB_STEP_SUMMARY
-            echo "# CLI" >> $GITHUB_STEP_SUMMARY
-            echo "npm install -g agent-relay@latest" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "# SDK" >> $GITHUB_STEP_SUMMARY
-            echo "npm install @agent-relay/sdk@latest" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-          fi
+          echo "### Results" >> $GITHUB_STEP_SUMMARY
+          echo "- Packages: ${{ needs.publish-packages.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Main: ${{ needs.publish-main.result }}" >> $GITHUB_STEP_SUMMARY
