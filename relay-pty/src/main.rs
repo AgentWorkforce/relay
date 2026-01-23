@@ -30,6 +30,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write as IoWrite};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::select;
 use tokio::signal::unix::{signal, SignalKind};
@@ -359,6 +360,17 @@ async fn main() -> Result<()> {
                         let response = b"\x1b[1;1R";
                         if let Err(e) = async_pty.send(response.to_vec()).await {
                             warn!("Failed to send cursor position response: {}", e);
+                        }
+                    }
+
+                    // Auto-approve MCP servers for Cursor CLI
+                    // Cursor shows approval prompt on first run - auto-send 'a' to approve all
+                    if text.contains("MCP Server Approval Required") || text.contains("[a] Approve all servers") {
+                        info!("Detected MCP approval prompt, auto-approving");
+                        // Small delay to ensure prompt is fully rendered
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        if let Err(e) = async_pty.send(b"a".to_vec()).await {
+                            warn!("Failed to send MCP approval: {}", e);
                         }
                     }
 
