@@ -255,6 +255,9 @@ jobs:
           name: build-output
           path: .
 
+      - name: Update npm for OIDC support
+        run: npm install -g npm@latest
+
       - name: Dry run check
         if: github.event.inputs.dry_run == 'true'
         working-directory: packages/${{ matrix.package }}
@@ -289,6 +292,9 @@ jobs:
         with:
           name: build-output
           path: .
+
+      - name: Update npm for OIDC support
+        run: npm install -g npm@latest
 
       - name: Dry run check
         if: github.event.inputs.dry_run == 'true'
@@ -336,6 +342,9 @@ jobs:
 
       - name: Make binaries executable
         run: chmod +x bin/relay-pty-*
+
+      - name: Update npm for OIDC support
+        run: npm install -g npm@latest
 
       - name: Dry run check
         if: github.event.inputs.dry_run == 'true'

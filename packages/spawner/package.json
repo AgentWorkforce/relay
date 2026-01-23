@@ -40,7 +40,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/AgentWorkforce/relay.git",
+    "url": "git+https://github.com/AgentWorkforce/relay.git",
     "directory": "packages/spawner"
   },
   "license": "MIT"
