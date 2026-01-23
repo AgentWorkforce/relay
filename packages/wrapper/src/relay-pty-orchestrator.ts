@@ -207,6 +207,8 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   // Queue monitor for stuck message detection
   private queueMonitorTimer?: NodeJS.Timeout;
   private readonly QUEUE_MONITOR_INTERVAL_MS = 30000; // Check every 30 seconds
+  private injectionStartTime = 0; // Track when isInjecting was set to true
+  private readonly MAX_INJECTION_STUCK_MS = 60000; // Force reset after 60 seconds
 
   // Protocol monitor for detecting agent mistakes (e.g., empty AGENT_RELAY_NAME)
   private protocolWatcher?: FSWatcher;
@@ -277,8 +279,19 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     } else {
       // Local mode: use ~/.agent-relay paths directly (no symlinks needed)
       this._outboxPath = this._canonicalOutboxPath;
-      // Socket at ~/.agent-relay/{projectId}/sockets/{agentName}.sock
-      this.socketPath = join(projectPaths.dataDir, 'sockets', `${config.name}.sock`);
+      // Socket at {projectRoot}/.agent-relay/sockets/{agentName}.sock
+      let localSocketPath = join(projectPaths.dataDir, 'sockets', `${config.name}.sock`);
+
+      // If socket path is too long, fall back to /tmp/relay-local/{projectId}/sockets/
+      if (localSocketPath.length > MAX_SOCKET_PATH_LENGTH) {
+        const tmpSocketPath = `/tmp/relay-local/${projectPaths.projectId}/sockets/${config.name}.sock`;
+        console.warn(
+          `[relay-pty-orchestrator:${config.name}] Socket path too long (${localSocketPath.length} chars); using /tmp fallback`
+        );
+        localSocketPath = tmpSocketPath;
+      }
+
+      this.socketPath = localSocketPath;
       // No legacy path needed for local mode
       this._legacyOutboxPath = this._outboxPath;
     }
@@ -383,7 +396,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
           if (existsSync(linkPath)) {
             try {
               const stats = lstatSync(linkPath);
-              if (stats.isSymbolicLink()) {
+              if (stats.isSymbolicLink() || stats.isFile()) {
                 unlinkSync(linkPath);
               } else if (stats.isDirectory()) {
                 rmSync(linkPath, { recursive: true, force: true });
@@ -1199,6 +1212,23 @@ export class RelayPtyOrchestrator extends BaseWrapper {
         return;
       }
 
+      // Skip verification if queue is backing up - trust Rust's delivery status
+      // relay-pty writes directly to PTY which is more reliable than tmux
+      const queueBackingUp = this.messageQueue.length >= 2;
+      if (queueBackingUp) {
+        this.log(` Queue backing up (${this.messageQueue.length} pending), skipping verification for ${pending.shortId}`);
+        clearTimeout(pending.timeout);
+        this.pendingInjections.delete(response.id);
+        if (pending.retryCount === 0) {
+          this.injectionMetrics.successFirstTry++;
+        } else {
+          this.injectionMetrics.successWithRetry++;
+        }
+        this.injectionMetrics.total++;
+        pending.resolve(true);
+        return;
+      }
+
       // Give a brief moment for output to be captured
       await sleep(100);
 
@@ -1428,6 +1458,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     }
 
     this.isInjecting = true;
+    this.injectionStartTime = Date.now();
 
     const msg = this.messageQueue.shift()!;
     const retryCount = (msg as any)._retryCount ?? 0;
@@ -1473,6 +1504,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       this.sendSyncAck(msg.messageId, msg.sync, 'ERROR', { error: err.message });
     } finally {
       this.isInjecting = false;
+      this.injectionStartTime = 0;
 
       // Process next message after adaptive delay (faster when healthy, slower under stress)
       if (this.messageQueue.length > 0 && !this.backpressureActive) {
@@ -1660,19 +1692,20 @@ Then output: \`->relay-file:msg\``,
 
       file_in_root: `⚠️ **Protocol Issue Detected**
 
-Found file "${filename}" directly in the outbox directory instead of in your agent's subdirectory.
+Found file "${filename}" directly in the outbox root instead of using the proper path.
 Your agent name is: **${this.config.name}**
 
-Correct outbox path: \`$AGENT_RELAY_OUTBOX\`
+The \`$AGENT_RELAY_OUTBOX\` path already points to your agent's directory.
+Write files directly inside it:
 
-Files should be created in your agent's directory:
 \`\`\`bash
-cat > $AGENT_RELAY_OUTBOX/${filename} << 'EOF'
+cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
 TO: TargetAgent
 
 Your message here
 EOF
-\`\`\``,
+\`\`\`
+Then output: \`->relay-file:msg\``,
     };
 
     const reminder = reminders[issue];
@@ -1805,9 +1838,24 @@ Then output: \`->relay-file:spawn\`
       return;
     }
 
-    // Skip if currently injecting (processing is in progress)
+    // Check if currently injecting
     if (this.isInjecting) {
-      return;
+      // Check if injection has been stuck for too long
+      const stuckDuration = Date.now() - this.injectionStartTime;
+      if (stuckDuration > this.MAX_INJECTION_STUCK_MS) {
+        this.logError(` ⚠️ Injection stuck for ${Math.round(stuckDuration / 1000)}s - force resetting`);
+        this.isInjecting = false;
+        this.injectionStartTime = 0;
+        // Clear any pending injections that might be stuck
+        for (const [id, pending] of this.pendingInjections) {
+          clearTimeout(pending.timeout);
+          this.logError(` Clearing stuck pending injection: ${id.substring(0, 8)}`);
+        }
+        this.pendingInjections.clear();
+        // Continue to process the queue below
+      } else {
+        return; // Still within normal injection time
+      }
     }
 
     // Skip if backpressure is active

@@ -24,14 +24,6 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "peerDependencies": {
-    "agent-relay": ">=1.6.0"
-  },
-  "peerDependenciesMeta": {
-    "agent-relay": {
-      "optional": false
-    }
-  },
   "dependencies": {
     "@agent-relay/protocol": "2.0.0",
     "@agent-relay/config": "2.0.0",

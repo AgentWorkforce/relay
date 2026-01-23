@@ -986,11 +986,31 @@ export async function startDashboard(
 
     // Check if userBridge has a client for this user (avoid duplicate connections)
     // This prevents the connection storm where two clients fight for the same name
+    // IMPORTANT: Return the client even if it's not READY yet to avoid creating duplicates
+    // The caller should handle the CONNECTING state appropriately
     if (userBridge) {
       const userBridgeClient = userBridge.getRelayClient(senderName);
-      if (userBridgeClient && userBridgeClient.state === 'READY') {
-        console.log(`[dashboard] Reusing userBridge client for ${senderName}`);
-        return userBridgeClient as unknown as RelayClient;
+      if (userBridgeClient) {
+        if (userBridgeClient.state === 'READY') {
+          console.log(`[dashboard] Reusing userBridge client for ${senderName}`);
+          return userBridgeClient as unknown as RelayClient;
+        }
+        // Client exists but not ready - wait for it instead of creating a duplicate
+        console.log(`[dashboard] userBridge client for ${senderName} exists but state=${userBridgeClient.state}, waiting...`);
+        // Wait up to 5 seconds for the client to become ready
+        for (let i = 0; i < 50; i++) {
+          await new Promise(r => setTimeout(r, 100));
+          if (userBridgeClient.state === 'READY') {
+            console.log(`[dashboard] userBridge client for ${senderName} now ready after ${(i + 1) * 100}ms`);
+            return userBridgeClient as unknown as RelayClient;
+          }
+          if (userBridgeClient.state === 'DISCONNECTED') {
+            console.log(`[dashboard] userBridge client for ${senderName} disconnected, will create new`);
+            break;
+          }
+        }
+        // Timed out or disconnected - fall through to create new client
+        console.log(`[dashboard] userBridge client for ${senderName} timed out waiting for ready state`);
       }
     }
 
@@ -4033,6 +4053,34 @@ export async function startDashboard(
         startedAt?: string;
       }> = [];
 
+      // Helper to get the actual agent process PID (child of relay-pty wrapper)
+      const getActualAgentPid = async (wrapperPid: number): Promise<number | null> => {
+        try {
+          const { execSync } = await import('child_process');
+          if (process.platform === 'darwin') {
+            // macOS: pgrep -P gets children of a parent process
+            const children = execSync(`pgrep -P ${wrapperPid}`, { encoding: 'utf8' }).trim();
+            const childPids = children.split('\n').filter(p => p).map(p => parseInt(p, 10));
+            // Return the first child (the actual claude/codex/gemini process)
+            return childPids[0] || null;
+          } else {
+            // Linux: Use /proc/<pid>/children or pgrep
+            const childrenPath = `/proc/${wrapperPid}/task/${wrapperPid}/children`;
+            if (fs.existsSync(childrenPath)) {
+              const children = fs.readFileSync(childrenPath, 'utf8').trim();
+              const childPids = children.split(/\s+/).filter(p => p).map(p => parseInt(p, 10));
+              return childPids[0] || null;
+            }
+            // Fallback to pgrep
+            const children = execSync(`pgrep -P ${wrapperPid}`, { encoding: 'utf8' }).trim();
+            const childPids = children.split('\n').filter(p => p).map(p => parseInt(p, 10));
+            return childPids[0] || null;
+          }
+        } catch {
+          return null;
+        }
+      };
+
       // Get metrics from spawner's active workers
       if (spawner) {
         const activeWorkers = spawner.getActiveWorkers();
@@ -4040,11 +4088,19 @@ export async function startDashboard(
           // Get memory and CPU usage
           let rssBytes = 0;
           let cpuPercent = 0;
+          let actualPid: number | undefined = worker.pid;
 
           if (worker.pid) {
             try {
+              // The worker.pid is relay-pty wrapper - get the actual agent process (child)
+              const childPid = await getActualAgentPid(worker.pid);
+              const targetPid = childPid || worker.pid;
+              if (childPid) {
+                actualPid = childPid;
+              }
+
               // Try /proc filesystem first (Linux)
-              const statusPath = `/proc/${worker.pid}/status`;
+              const statusPath = `/proc/${targetPid}/status`;
               if (fs.existsSync(statusPath)) {
                 const status = fs.readFileSync(statusPath, 'utf8');
                 // Parse VmRSS (Resident Set Size) from /proc/[pid]/status
@@ -4055,7 +4111,7 @@ export async function startDashboard(
               } else if (process.platform === 'darwin') {
                 // macOS: Use ps command to get RSS and CPU
                 const { execSync } = await import('child_process');
-                const psOutput = execSync(`ps -o rss=,pcpu= -p ${worker.pid}`, { encoding: 'utf8' }).trim();
+                const psOutput = execSync(`ps -o rss=,pcpu= -p ${targetPid}`, { encoding: 'utf8' }).trim();
                 if (psOutput) {
                   const [rssStr, cpuStr] = psOutput.split(/\s+/);
                   if (rssStr) rssBytes = parseInt(rssStr, 10) * 1024; // ps reports RSS in KB
@@ -4069,7 +4125,7 @@ export async function startDashboard(
 
           agents.push({
             name: worker.name,
-            pid: worker.pid,
+            pid: actualPid,
             status: worker.pid ? 'running' : 'unknown',
             rssBytes,
             cpuPercent,
@@ -4084,22 +4140,35 @@ export async function startDashboard(
       }
 
       // Also check agents.json for registered agents that may not be spawned
+      // Filter out internal clients and human users - only show real AI agents
+      const isInternalOrUser = (name: string, agent?: { cli?: string }) => {
+        // Internal system clients
+        if (name.startsWith('_') || name.startsWith('__')) return true;
+        if (name === 'Dashboard' || name === 'cli') return true;
+        // Agents without CLI info are likely SDK-connected humans/tools, not AI agents
+        // Real AI agents have cli field (claude, codex, gemini, etc.)
+        if (!agent?.cli) return true;
+        return false;
+      };
+
       const agentsPath = path.join(teamDir, 'agents.json');
       if (fs.existsSync(agentsPath)) {
         const data = JSON.parse(fs.readFileSync(agentsPath, 'utf-8'));
         const registeredAgents = data.agents || [];
         for (const agent of registeredAgents) {
-          if (!agents.find(a => a.name === agent.name)) {
-            // Check if recently active (within 30 seconds)
-            const lastSeen = agent.lastSeen ? new Date(agent.lastSeen).getTime() : 0;
-            const isActive = Date.now() - lastSeen < 30000;
-            if (isActive) {
-              agents.push({
-                name: agent.name,
-                status: 'active',
-                alertLevel: 'normal',
-              });
-            }
+          // Skip if already in list or is internal/user
+          if (agents.find(a => a.name === agent.name)) continue;
+          if (isInternalOrUser(agent.name, agent)) continue;
+
+          // Check if recently active (within 30 seconds)
+          const lastSeen = agent.lastSeen ? new Date(agent.lastSeen).getTime() : 0;
+          const isActive = Date.now() - lastSeen < 30000;
+          if (isActive) {
+            agents.push({
+              name: agent.name,
+              status: 'active',
+              alertLevel: 'normal',
+            });
           }
         }
       }

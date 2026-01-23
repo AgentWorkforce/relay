@@ -867,7 +867,9 @@ describe('RelayPtyOrchestrator', () => {
       await orchestrator.start();
 
       // Set isInjecting to true (agent is busy)
+      // Also set injectionStartTime to a recent time to avoid stuck injection recovery
       (orchestrator as any).isInjecting = true;
+      (orchestrator as any).injectionStartTime = Date.now();
 
       // Add a message to the queue directly
       (orchestrator as any).messageQueue.push({
@@ -896,6 +898,7 @@ describe('RelayPtyOrchestrator', () => {
 
       // Reset
       (orchestrator as any).isInjecting = false;
+      (orchestrator as any).injectionStartTime = 0;
       processQueueSpy.mockRestore();
     });
 
