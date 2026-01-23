@@ -273,7 +273,7 @@ async function waitForMachineStarted(
 async function waitForHealthy(
   url: string,
   appName?: string,
-  maxWaitMs = 90_000
+  maxWaitMs = 60_000 // Reduced from 90s - health check is best-effort anyway
 ): Promise<void> {
   const startTime = Date.now();
 
@@ -292,6 +292,10 @@ async function waitForHealthy(
   console.log(
     `[provisioner] Waiting for workspace to become healthy (trying: ${urlsToTry.join(', ')})...`
   );
+
+  // Exponential backoff: start at 1s, max 5s (reduces unnecessary polling)
+  let retryDelayMs = 1000;
+  const maxRetryDelayMs = 5000;
 
   while (Date.now() - startTime < maxWaitMs) {
     // Try each URL in order
@@ -327,7 +331,9 @@ async function waitForHealthy(
       }
     }
 
-    await wait(3000);
+    await wait(retryDelayMs);
+    // Exponential backoff with cap
+    retryDelayMs = Math.min(retryDelayMs * 1.5, maxRetryDelayMs);
   }
 
   // Don't throw - workspace is provisioned, health check is best-effort

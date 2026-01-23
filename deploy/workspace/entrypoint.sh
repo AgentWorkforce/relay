@@ -206,16 +206,19 @@ clone_or_update_repo() {
     git -C "${target}" pull --ff-only >/dev/null 2>&1 || true
   else
     log "Cloning ${repo}..."
-    git clone "${url}" "${target}" >/dev/null 2>&1 || {
-      log "WARN: Failed to clone ${repo}"
-    }
+    # Use shallow clone for faster initial setup (full history not needed for most agent work)
+    # SHALLOW_CLONE env var can be set to "false" to disable this optimization
+    if [[ "${SHALLOW_CLONE:-true}" == "true" ]]; then
+      git clone --depth=1 "${url}" "${target}" >/dev/null 2>&1 || {
+        log "WARN: Failed to clone ${repo}"
+      }
+    else
+      git clone "${url}" "${target}" >/dev/null 2>&1 || {
+        log "WARN: Failed to clone ${repo}"
+      }
+    fi
   fi
-
-  # Mark directory as safe to prevent "dubious ownership" errors
-  # This is needed when git runs as a different user (e.g., root via SSH)
-  if [[ -d "${target}/.git" ]]; then
-    git config --global --add safe.directory "${target}" 2>/dev/null || true
-  fi
+  # Note: safe.directory config is done after all clones complete (batched)
 }
 
 if [[ -n "${REPO_LIST}" ]]; then
@@ -225,8 +228,29 @@ if [[ -n "${REPO_LIST}" ]]; then
   fi
 
   IFS=',' read -ra repos <<< "${REPO_LIST}"
+
+  # Clone repositories in PARALLEL for faster startup
+  # Each clone runs in background, then we wait for all to complete
+  log "Cloning ${#repos[@]} repositories in parallel..."
   for repo in "${repos[@]}"; do
-    clone_or_update_repo "${repo}"
+    clone_or_update_repo "${repo}" &
+  done
+
+  # Wait for all background clone jobs to complete
+  wait
+  log "All repository clones complete"
+
+  # Batch configure safe.directory for all cloned repos (runs once, not per-repo)
+  # This prevents "dubious ownership" errors when git runs as different user
+  for repo in "${repos[@]}"; do
+    repo="${repo// /}"
+    if [[ -n "${repo}" ]]; then
+      repo_name="$(basename "${repo}")"
+      target="${WORKSPACE_DIR}/${repo_name}"
+      if [[ -d "${target}/.git" ]]; then
+        git config --global --add safe.directory "${target}" 2>/dev/null || true
+      fi
+    fi
   done
 fi
 

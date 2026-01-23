@@ -74,6 +74,8 @@ export interface SpawnResult {
   /** PID of the spawned process (for pty-based workers) */
   pid?: number;
   error?: string;
+  /** Unique error ID for support lookup (e.g., ERR-1706012345-a7f3) */
+  errorId?: string;
   /** Policy decision details if spawn was blocked by policy */
   policyDecision?: PolicyDecision;
 }

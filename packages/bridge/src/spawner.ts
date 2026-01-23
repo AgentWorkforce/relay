@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { sleep } from './utils.js';
 import { getProjectPaths, getAgentOutboxTemplate } from '@agent-relay/config';
 import { resolveCommand } from '@agent-relay/utils/command-resolver';
+import { createTraceableError } from '@agent-relay/utils/error-tracking';
 import { RelayPtyOrchestrator, type RelayPtyOrchestratorConfig } from '@agent-relay/wrapper';
 import type { SummaryEvent, SessionEndEvent } from '@agent-relay/wrapper';
 import { selectShadowCli } from './shadow-cli.js';
@@ -118,6 +119,8 @@ export type OnAgentDeathCallback = (info: {
   exitCode: number | null;
   agentId?: string;
   resumeInstructions?: string;
+  /** Traceable error ID for support lookup */
+  errorId?: string;
 }) => void;
 
 /**
@@ -724,12 +727,17 @@ export class AgentSpawner {
 
       // Require relay-pty binary
       if (!hasRelayPtyBinary()) {
-        const error = 'relay-pty binary not found. Install with: npm run build:relay-pty';
-        console.error(`[spawner] ${error}`);
+        const tracedError = createTraceableError('relay-pty binary not found', {
+          agentName: name,
+          cli,
+          hint: 'Install with: npm run build:relay-pty',
+        });
+        console.error(`[spawner] ${tracedError.logMessage}`);
         return {
           success: false,
           name,
-          error,
+          error: tracedError.userMessage,
+          errorId: tracedError.errorId,
         };
       }
 
@@ -753,10 +761,18 @@ export class AgentSpawner {
 
         // Notify if agent died unexpectedly (non-zero exit)
         if (code !== 0 && code !== null && this.onAgentDeath) {
+          const crashError = createTraceableError('Agent crashed unexpectedly', {
+            agentName: name,
+            exitCode: code,
+            cli,
+            agentId,
+          });
+          console.error(`[spawner] ${crashError.logMessage}`);
           this.onAgentDeath({
             name,
             exitCode: code,
             agentId,
+            errorId: crashError.errorId,
             resumeInstructions: agentId
               ? `To resume this agent's work, use: --resume ${agentId}`
               : undefined,
@@ -796,6 +812,7 @@ export class AgentSpawner {
         onSpawn: onSpawnHandler,
         onRelease: onReleaseHandler,
         onExit: onExitHandler,
+        headless: true, // Force headless mode for spawned agents to enable task injection via stdin
       };
       const pty = new RelayPtyOrchestrator(ptyConfig);
       if (debug) console.log(`[spawner:debug] Using RelayPtyOrchestrator for ${name}`);
@@ -833,8 +850,13 @@ export class AgentSpawner {
       // Wait for the agent to register with the daemon
       const registered = await this.waitForAgentRegistration(name, 30_000, 500);
       if (!registered) {
-        const error = `Worker ${name} failed to register within 30s`;
-        console.error(`[spawner] ${error}`);
+        const tracedError = createTraceableError('Agent registration timeout', {
+          agentName: name,
+          cli,
+          pid: pty.pid,
+          timeoutMs: 30_000,
+        });
+        console.error(`[spawner] ${tracedError.logMessage}`);
         // Clear spawning flag since spawn failed
         if (this.onClearSpawning) {
           this.onClearSpawning(name);
@@ -843,7 +865,8 @@ export class AgentSpawner {
         return {
           success: false,
           name,
-          error,
+          error: tracedError.userMessage,
+          errorId: tracedError.errorId,
         };
       }
 
@@ -889,7 +912,15 @@ export class AgentSpawner {
         }
 
         if (!taskSent) {
-          console.error(`[spawner] CRITICAL: Failed to deliver task to ${name} after ${maxRetries} attempts`);
+          const tracedError = createTraceableError('Task injection failed', {
+            agentName: name,
+            cli,
+            attempts: maxRetries,
+            taskLength: task.length,
+          });
+          console.error(`[spawner] CRITICAL: ${tracedError.logMessage}`);
+          // Note: We don't return an error here because the agent is running,
+          // but we track the errorId so support can investigate if user reports it
         }
       }
 
@@ -919,7 +950,12 @@ export class AgentSpawner {
         pid: pty.pid,
       };
     } catch (err: any) {
-      console.error(`[spawner] Failed to spawn ${name}:`, err.message);
+      const tracedError = createTraceableError('Agent spawn failed', {
+        agentName: name,
+        cli,
+        task: task?.substring(0, 100),
+      }, err instanceof Error ? err : undefined);
+      console.error(`[spawner] ${tracedError.logMessage}`);
       if (debug) console.error(`[spawner:debug] Full error:`, err);
       // Clear spawning flag since spawn failed
       if (this.onClearSpawning) {
@@ -928,7 +964,8 @@ export class AgentSpawner {
       return {
         success: false,
         name,
-        error: err.message,
+        error: tracedError.userMessage,
+        errorId: tracedError.errorId,
       };
     }
   }

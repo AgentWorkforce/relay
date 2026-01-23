@@ -12,27 +12,38 @@
     },
     "./logger": {
       "types": "./dist/logger.d.ts",
-      "import": "./dist/logger.js"
+      "import": "./dist/logger.js",
+      "default": "./dist/logger.js"
     },
     "./name-generator": {
       "types": "./dist/name-generator.d.ts",
-      "import": "./dist/name-generator.js"
+      "import": "./dist/name-generator.js",
+      "default": "./dist/name-generator.js"
     },
     "./command-resolver": {
       "types": "./dist/command-resolver.d.ts",
-      "import": "./dist/command-resolver.js"
+      "import": "./dist/command-resolver.js",
+      "default": "./dist/command-resolver.js"
     },
     "./update-checker": {
       "types": "./dist/update-checker.d.ts",
-      "import": "./dist/update-checker.js"
+      "import": "./dist/update-checker.js",
+      "default": "./dist/update-checker.js"
     },
     "./git-remote": {
       "types": "./dist/git-remote.d.ts",
-      "import": "./dist/git-remote.js"
+      "import": "./dist/git-remote.js",
+      "default": "./dist/git-remote.js"
     },
     "./precompiled-patterns": {
       "types": "./dist/precompiled-patterns.d.ts",
-      "import": "./dist/precompiled-patterns.js"
+      "import": "./dist/precompiled-patterns.js",
+      "default": "./dist/precompiled-patterns.js"
+    },
+    "./error-tracking": {
+      "types": "./dist/error-tracking.d.ts",
+      "import": "./dist/error-tracking.js",
+      "default": "./dist/error-tracking.js"
     }
   },
   "files": [
