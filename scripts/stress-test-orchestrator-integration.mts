@@ -26,6 +26,19 @@ import { spawn } from 'child_process';
 const require = createRequire(import.meta.url);
 const { WebSocket } = require('ws');
 
+// Suppress console output from Orchestrator loggers when running in JSON mode
+// This must happen BEFORE importing the Orchestrator module
+const JSON_OUTPUT_EARLY = process.argv.includes('--json');
+if (JSON_OUTPUT_EARLY) {
+  // Suppress utils logger (daemon, router, etc.) - must be set before module imports
+  process.env.AGENT_RELAY_LOG_LEVEL = 'ERROR';
+
+  // Configure the resiliency logger to not output to console
+  // IMPORTANT: Import directly from logger.js to avoid loading other modules that create loggers
+  const { configure } = await import('../packages/resiliency/dist/logger.js');
+  configure({ console: false, level: 'fatal' });
+}
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -1318,5 +1331,21 @@ async function main(): Promise<void> {
 
 main().catch((err) => {
   console.error('Fatal error:', err);
+  // Ensure we write a valid JSON error result to the output file
+  if (OUTPUT_FILE) {
+    const errorResult = {
+      passed: false,
+      failures: 1,
+      tests: {},
+      summary: {
+        total_tests: 0,
+        passed_tests: 0,
+        failed_tests: 1,
+        total_time_ms: 0,
+      },
+      error: err?.message || String(err),
+    };
+    fs.writeFileSync(OUTPUT_FILE, JSON.stringify(errorResult, null, 2));
+  }
   process.exit(1);
 });
