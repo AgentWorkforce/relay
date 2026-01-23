@@ -373,8 +373,11 @@ program
       pidFilePath,
       storagePath: dbPath,
       teamDir: paths.teamDir,
-      // TODO: Add daemon-based spawning support when SDK extraction is complete
-      // See: docs/SDK-MIGRATION-PLAN.md
+      // Enable protocol-based spawning via SPAWN/RELEASE messages
+      spawnManager: {
+        projectRoot: paths.projectRoot,
+        socketPath,
+      },
     });
 
     // Create spawner for auto-spawn (will be initialized after dashboard starts)
