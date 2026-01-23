@@ -16,7 +16,8 @@
 import { Command } from 'commander';
 import { config as dotenvConfig } from 'dotenv';
 import { Daemon } from '@agent-relay/daemon';
-import { RelayClient, RelayPtyOrchestrator, getTmuxPath } from '@agent-relay/wrapper';
+import { RelayClient } from '@agent-relay/sdk';
+import { RelayPtyOrchestrator, getTmuxPath } from '@agent-relay/wrapper';
 import { AgentSpawner, readWorkersMetadata, getWorkerLogsDir, selectShadowCli } from '@agent-relay/bridge';
 import type { SpawnRequest, SpawnResult } from '@agent-relay/bridge';
 import { generateAgentName, checkForUpdatesInBackground, checkForUpdates } from '@agent-relay/utils';
