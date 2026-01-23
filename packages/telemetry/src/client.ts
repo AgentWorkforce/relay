@@ -98,6 +98,7 @@ export function initTelemetry(options: { showNotice?: boolean } = {}): void {
     host: posthogConfig.host,
     flushAt: 10,
     flushInterval: 10000,
+    disableGeoip: false, // CLI runs on user's machine, so IP is correct for geo
   });
 
   commonProps = buildCommonProperties();
