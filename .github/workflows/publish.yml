@@ -269,12 +269,12 @@ jobs:
         working-directory: packages/${{ matrix.package }}
         run: |
           echo "Dry run - would publish @agent-relay/${{ matrix.package }}"
-          npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }}
+          npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
       - name: Publish to NPM
         if: github.event.inputs.dry_run != 'true'
         working-directory: packages/${{ matrix.package }}
-        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }}
+        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
   # Publish SDK only (when selected)
   publish-sdk-only:
@@ -305,12 +305,12 @@ jobs:
       - name: Dry run check
         if: github.event.inputs.dry_run == 'true'
         working-directory: packages/sdk
-        run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }}
+        run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
       - name: Publish SDK to NPM
         if: github.event.inputs.dry_run != 'true'
         working-directory: packages/sdk
-        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }}
+        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
   # Publish main package
   publish-main:
@@ -356,11 +356,11 @@ jobs:
         if: github.event.inputs.dry_run == 'true'
         run: |
           echo "Dry run - would publish agent-relay@${{ needs.build.outputs.new_version }}"
-          npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }}
+          npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
       - name: Publish to NPM
         if: github.event.inputs.dry_run != 'true'
-        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }}
+        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
   # Create git tag and release
   create-release:
