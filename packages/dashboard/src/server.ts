@@ -986,11 +986,31 @@ export async function startDashboard(
 
     // Check if userBridge has a client for this user (avoid duplicate connections)
     // This prevents the connection storm where two clients fight for the same name
+    // IMPORTANT: Return the client even if it's not READY yet to avoid creating duplicates
+    // The caller should handle the CONNECTING state appropriately
     if (userBridge) {
       const userBridgeClient = userBridge.getRelayClient(senderName);
-      if (userBridgeClient && userBridgeClient.state === 'READY') {
-        console.log(`[dashboard] Reusing userBridge client for ${senderName}`);
-        return userBridgeClient as unknown as RelayClient;
+      if (userBridgeClient) {
+        if (userBridgeClient.state === 'READY') {
+          console.log(`[dashboard] Reusing userBridge client for ${senderName}`);
+          return userBridgeClient as unknown as RelayClient;
+        }
+        // Client exists but not ready - wait for it instead of creating a duplicate
+        console.log(`[dashboard] userBridge client for ${senderName} exists but state=${userBridgeClient.state}, waiting...`);
+        // Wait up to 5 seconds for the client to become ready
+        for (let i = 0; i < 50; i++) {
+          await new Promise(r => setTimeout(r, 100));
+          if (userBridgeClient.state === 'READY') {
+            console.log(`[dashboard] userBridge client for ${senderName} now ready after ${(i + 1) * 100}ms`);
+            return userBridgeClient as unknown as RelayClient;
+          }
+          if (userBridgeClient.state === 'DISCONNECTED') {
+            console.log(`[dashboard] userBridge client for ${senderName} disconnected, will create new`);
+            break;
+          }
+        }
+        // Timed out or disconnected - fall through to create new client
+        console.log(`[dashboard] userBridge client for ${senderName} timed out waiting for ready state`);
       }
     }
 
