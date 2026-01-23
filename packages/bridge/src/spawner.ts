@@ -674,6 +674,15 @@ export class AgentSpawner {
     const { name, cli, task, team, spawnerName, userId } = request;
     const debug = process.env.DEBUG_SPAWN === '1';
 
+    // Validate agent name to prevent path traversal attacks
+    if (name.includes('..') || name.includes('/') || name.includes('\\')) {
+      return {
+        success: false,
+        name,
+        error: `Invalid agent name: "${name}" contains path traversal characters`,
+      };
+    }
+
     // Check if worker already exists in this spawner
     if (this.activeWorkers.has(name)) {
       return {

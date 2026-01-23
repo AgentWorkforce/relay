@@ -233,6 +233,11 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     super(config);
     this.config = config;
 
+    // Validate agent name to prevent path traversal attacks
+    if (config.name.includes('..') || config.name.includes('/') || config.name.includes('\\')) {
+      throw new Error(`Invalid agent name: "${config.name}" contains path traversal characters`);
+    }
+
     // Get project paths (used for logs and local mode)
     const projectPaths = getProjectPaths(config.cwd);
 

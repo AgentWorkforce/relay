@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-23T22:43:45.384Z",
+  "lastUpdated": "2026-01-23T22:53:03.104Z",
   "trajectories": {
     "traj_zyvnr1v9bw7w": {
       "title": "Fix socketPath not passed to spawned agents",
@@ -29,6 +29,19 @@
       "startedAt": "2026-01-23T22:43:28.638Z",
       "completedAt": "2026-01-23T22:43:45.373Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_ozanwai83oe7.json"
+    },
+    "traj_maes4hqdjyt1": {
+      "title": "Add path traversal validation for agent names",
+      "status": "completed",
+      "startedAt": "2026-01-23T22:48:17.748Z",
+      "completedAt": "2026-01-23T22:48:31.640Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_maes4hqdjyt1.json"
+    },
+    "traj_6ddibplo00du": {
+      "title": "Separation of concerns: relay protocol vs application semantics",
+      "status": "active",
+      "startedAt": "2026-01-23T22:53:03.102Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/active/traj_6ddibplo00du.json"
     }
   }
 }
