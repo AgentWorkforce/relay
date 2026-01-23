@@ -31,7 +31,7 @@ use std::io::{self, Read, Write as IoWrite};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tokio::select;
 use tokio::signal::unix::{signal, SignalKind};
@@ -307,7 +307,12 @@ async fn main() -> Result<()> {
     // Track MCP approval state to prevent duplicate approvals
     let mcp_approved = AtomicBool::new(false);
     // Buffer recent output to handle fragmented prompt detection
+    // Increased buffer size (2500 chars) to handle fragmented output across read boundaries
     let mut mcp_detection_buffer = String::new();
+    // Track when we first detected partial MCP prompt match for timeout-based approval
+    let mut mcp_partial_match_since: Option<Instant> = None;
+    // Timeout duration for partial match approval (5 seconds)
+    const MCP_APPROVAL_TIMEOUT: Duration = Duration::from_secs(5);
 
     loop {
         select! {
@@ -369,31 +374,86 @@ async fn main() -> Result<()> {
                         }
                     }
 
-                    // Auto-approve MCP servers for Cursor CLI
-                    // Cursor shows approval prompt on first run - auto-send 'a' to approve all
+                    // Auto-approve MCP servers for Claude/Cursor CLI
+                    // Shows approval prompt on first run - auto-send 'a' to approve all
                     // Uses buffer + flag to handle fragmented output and prevent duplicate approvals
+                    // Enhanced detection:
+                    //   - Larger buffer (2500 chars) for fragmented output across read boundaries
+                    //   - ANSI stripping for robust pattern matching
+                    //   - Timeout-based approval (5s) as fallback for edge cases
+                    //   - Partial match logging for debugging
                     if !mcp_approved.load(Ordering::SeqCst) {
                         // Accumulate recent output for fragment handling
                         mcp_detection_buffer.push_str(&text);
-                        // Keep buffer bounded (prompt is ~200 chars max)
-                        if mcp_detection_buffer.len() > 1000 {
-                            mcp_detection_buffer = mcp_detection_buffer[mcp_detection_buffer.len() - 500..].to_string();
+                        // Keep buffer bounded (increased from 1000 to handle fragmented prompts)
+                        if mcp_detection_buffer.len() > 2500 {
+                            mcp_detection_buffer = mcp_detection_buffer[mcp_detection_buffer.len() - 2000..].to_string();
                         }
 
-                        // Require BOTH patterns to reduce false positives
-                        // The prompt always shows both the header and the approve option
-                        if mcp_detection_buffer.contains("MCP Server Approval Required")
-                            && mcp_detection_buffer.contains("[a] Approve all servers")
-                        {
-                            info!("Detected MCP approval prompt, auto-approving");
+                        // Strip ANSI codes for robust pattern matching
+                        let clean_buffer = strip_ansi(&mcp_detection_buffer);
+
+                        // Check for partial matches (for debugging and timeout-based approval)
+                        let has_header = clean_buffer.contains("MCP Server Approval Required")
+                            || clean_buffer.contains("MCP server approval");
+                        let has_approve_option = clean_buffer.contains("[a] Approve all servers")
+                            || clean_buffer.contains("Approve all")
+                            || clean_buffer.contains("[a]");
+
+                        // Log partial matches for debugging
+                        if has_header && !has_approve_option {
+                            debug!("MCP detection: Found header but not approve option (buffer len: {})", mcp_detection_buffer.len());
+                        } else if !has_header && has_approve_option {
+                            debug!("MCP detection: Found approve option but not header (buffer len: {})", mcp_detection_buffer.len());
+                        }
+
+                        // Full match: both patterns detected
+                        let full_match = has_header && has_approve_option;
+
+                        // Timeout-based approval: if we have a partial match for 5+ seconds, approve anyway
+                        // This handles edge cases where prompt text changes or fragments are missed
+                        let timeout_approval = if has_header || has_approve_option {
+                            match mcp_partial_match_since {
+                                None => {
+                                    // First time seeing partial match, start timer
+                                    mcp_partial_match_since = Some(Instant::now());
+                                    debug!("MCP detection: Starting timeout timer for partial match");
+                                    false
+                                }
+                                Some(since) => {
+                                    let elapsed = since.elapsed();
+                                    if elapsed >= MCP_APPROVAL_TIMEOUT {
+                                        info!("MCP detection: Timeout reached ({:?}), approving based on partial match", elapsed);
+                                        true
+                                    } else {
+                                        debug!("MCP detection: Partial match timer at {:?}", elapsed);
+                                        false
+                                    }
+                                }
+                            }
+                        } else {
+                            // No partial match, reset timer
+                            if mcp_partial_match_since.is_some() {
+                                debug!("MCP detection: Resetting timeout timer (no partial match)");
+                                mcp_partial_match_since = None;
+                            }
+                            false
+                        };
+
+                        // Approve if full match or timeout reached
+                        if full_match || timeout_approval {
+                            if full_match {
+                                info!("Detected MCP approval prompt (full match), auto-approving");
+                            }
                             mcp_approved.store(true, Ordering::SeqCst);
                             // Small delay to ensure prompt is fully rendered
                             tokio::time::sleep(Duration::from_millis(100)).await;
                             if let Err(e) = async_pty.send(b"a".to_vec()).await {
                                 warn!("Failed to send MCP approval: {}", e);
                             }
-                            // Clear buffer after approval
+                            // Clear buffer and reset state after approval
                             mcp_detection_buffer.clear();
+                            mcp_partial_match_since = None;
                         }
                     }
 
@@ -508,4 +568,62 @@ fn get_terminal_size() -> Option<(u16, u16)> {
             None
         }
     }
+}
+
+/// Strip ANSI escape sequences from text for robust pattern matching
+/// Handles CSI sequences (ESC[...), OSC sequences (ESC]...), and other common escapes
+fn strip_ansi(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // ESC character - start of escape sequence
+            match chars.peek() {
+                Some('[') => {
+                    // CSI sequence: ESC [ ... final_byte
+                    chars.next(); // consume '['
+                    // Skip until we hit a letter (final byte of CSI is 0x40-0x7E)
+                    while let Some(&nc) = chars.peek() {
+                        chars.next();
+                        if nc.is_ascii_alphabetic() || nc == '@' || nc == '`' {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    // OSC sequence: ESC ] ... (ST or BEL)
+                    chars.next(); // consume ']'
+                    // Skip until ST (ESC \) or BEL (\x07)
+                    while let Some(nc) = chars.next() {
+                        if nc == '\x07' {
+                            break;
+                        }
+                        if nc == '\x1b' {
+                            if chars.peek() == Some(&'\\') {
+                                chars.next();
+                                break;
+                            }
+                        }
+                    }
+                }
+                Some('(') | Some(')') | Some('*') | Some('+') => {
+                    // Character set designation: ESC ( X, ESC ) X, etc.
+                    chars.next(); // consume the character
+                    chars.next(); // consume the set designator
+                }
+                Some(c) if *c >= '0' && *c <= '~' => {
+                    // Simple escape: ESC + single char
+                    chars.next();
+                }
+                _ => {
+                    // Unknown escape, skip just the ESC
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
 }
