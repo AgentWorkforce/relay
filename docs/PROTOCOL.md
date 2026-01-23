@@ -333,3 +333,64 @@ DISCONNECTED → CONNECTING → HANDSHAKING → READY
 - Max: 30s
 - Jitter: ±15%
 - Max attempts: 10
+
+---
+
+## Appendix A: Protocol Critique & Known Limitations
+
+### Issues & Gaps (v1.0)
+
+#### 1. Backpressure Unimplemented (MEDIUM PRIORITY)
+**Issue:** Backpressure signaling is documented but "reserved for future versions." Agents may not handle BUSY responses gracefully.
+- **Risk:** Silent message loss under load
+- **See:** [BEADS-BACKPRESSURE]
+
+#### 2. Resume Token Security (HIGH PRIORITY)
+**Issue:** Resume tokens lack defined lifetime, rotation policy, and replay attack prevention.
+- **Missing:** Token expiration, client identity binding, secure rotation
+- **See:** [BEADS-SESSION-SECURITY]
+
+#### 3. Error Code Enumeration Missing (MEDIUM PRIORITY)
+**Issue:** Only "STALE" error documented. Missing codes for auth, rate limits, invalid targets, validation errors.
+- **See:** [BEADS-ERROR-CODES]
+
+#### 4. Delivery Guarantee Ambiguity (HIGH PRIORITY)
+**Issue:** Protocol says "at-least-once" but ACK is optional (requires_ack flag). Unclear when ACK is mandatory vs optional.
+- **Risk:** Clients may assume guaranteed delivery when using at-least-once semantics but ACK is disabled
+- **See:** [BEADS-DELIVERY-SEMANTICS]
+
+#### 5. Topic Subscription Incomplete (LOW PRIORITY)
+**Issue:** SUBSCRIBE/UNSUBSCRIBE documented but missing details on wildcards, state management, ACL.
+- **See:** [BEADS-TOPIC-SUBSCRIPTIONS]
+
+#### 6. Broadcast Ordering Unclear (MEDIUM PRIORITY)
+**Issue:** Per-stream ordering guaranteed but `to: '*'` broadcast ordering not specified.
+- **See:** [BEADS-BROADCAST-ORDERING]
+
+#### 7. No Authentication/Authorization (HIGH PRIORITY)
+**Issue:** Local-only architecture but no specification preventing agents from spoofing `from` field.
+- **Risk:** Agents can impersonate other agents on the same system
+- **See:** [BEADS-AGENT-AUTHORIZATION]
+
+#### 8. PTY Pattern Detection Too Loose (LOW PRIORITY)
+**Issue:** `->relay:` at line start could accidentally match in code output, causing false positives.
+- **See:** [BEADS-PTY-ESCAPE-SEQUENCES]
+
+#### 9. Blocking Sync Semantics Undefined (MEDIUM PRIORITY)
+**Issue:** `payload_meta.sync.blocking` and `timeoutMs` mentioned but not formally defined.
+- **See:** [BEADS-SYNC-SEMANTICS]
+
+#### 10. Missing Flow Control Guidance (LOW PRIORITY)
+**Issue:** `max_inflight: 256` allowed but no guidance on tuning or when to back off.
+- **See:** [BEADS-FLOW-CONTROL]
+
+### Recommendations for v2.0
+
+1. Formalize backpressure with mandatory BUSY handling and max queue depths
+2. Add complete error code enumeration with usage examples
+3. Clarify exactly-once vs at-least-once per message type
+4. Define token lifetime and secure rotation
+5. Add ACL/authorization section for multi-agent systems
+6. Specify broadcast ordering guarantees
+7. Provide flow control tuning guidance
+
