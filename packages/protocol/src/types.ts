@@ -176,11 +176,21 @@ export interface AckPayload {
   cumulative_seq?: number;
   /** Selective acknowledgments */
   sack?: number[];
-  /** Correlation ID for sync sends */
+  /**
+   * Correlation ID for matching ACK to original blocking SEND.
+   * Set by daemon when forwarding ACK back to the sender.
+   */
   correlationId?: string;
-  /** Response flag */
-  response?: boolean;
-  /** Response data */
+  /**
+   * Response status for sync messaging.
+   * Common values: 'OK', 'ERROR', 'ACCEPTED', 'REJECTED'.
+   * Allows richer status codes than a simple boolean.
+   */
+  response?: string;
+  /**
+   * Optional structured response data.
+   * Can contain any additional information the responder wants to include.
+   */
   responseData?: unknown;
 }
 

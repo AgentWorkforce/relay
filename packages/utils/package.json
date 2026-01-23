@@ -44,6 +44,11 @@
       "types": "./dist/error-tracking.d.ts",
       "import": "./dist/error-tracking.js",
       "default": "./dist/error-tracking.js"
+    },
+    "./model-mapping": {
+      "types": "./dist/model-mapping.d.ts",
+      "import": "./dist/model-mapping.js",
+      "default": "./dist/model-mapping.js"
     }
   },
   "files": [
