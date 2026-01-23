@@ -241,10 +241,12 @@ function hasRelayPtyBinary(): boolean {
   if (!relayPtyBinaryChecked) {
     relayPtyBinaryPath = findRelayPtyBinary();
     relayPtyBinaryChecked = true;
-    if (relayPtyBinaryPath) {
-      console.log(`[spawner] relay-pty binary found: ${relayPtyBinaryPath}`);
-    } else {
-      console.log('[spawner] relay-pty binary not found, will use PtyWrapper fallback');
+    if (process.env.DEBUG_SPAWN === '1') {
+      if (relayPtyBinaryPath) {
+        console.log(`[spawner] relay-pty binary found: ${relayPtyBinaryPath}`);
+      } else {
+        console.log('[spawner] relay-pty binary not found, will use PtyWrapper fallback');
+      }
     }
   }
   return relayPtyBinaryPath !== null;
@@ -550,12 +552,21 @@ export class AgentSpawner {
     const { name, cli, task, team, spawnerName, userId } = request;
     const debug = process.env.DEBUG_SPAWN === '1';
 
-    // Check if worker already exists
+    // Check if worker already exists in this spawner
     if (this.activeWorkers.has(name)) {
       return {
         success: false,
         name,
-        error: `Worker ${name} already exists`,
+        error: `Agent "${name}" is already running. Use a different name or release the existing agent first.`,
+      };
+    }
+
+    // Check if agent is already connected to daemon (prevents duplicate connection storms)
+    if (this.isAgentConnected(name)) {
+      return {
+        success: false,
+        name,
+        error: `Agent "${name}" is already connected to the daemon. Use a different name or wait for the existing agent to disconnect.`,
       };
     }
 
@@ -595,13 +606,13 @@ export class AgentSpawner {
       const commandName = CLI_COMMAND_MAP[rawCommandName] || rawCommandName;
       const args = cliParts.slice(1);
 
-      if (commandName !== rawCommandName) {
-        console.log(`[spawner] Mapped CLI '${rawCommandName}' -> '${commandName}'`);
+      if (commandName !== rawCommandName && debug) {
+        console.log(`[spawner:debug] Mapped CLI '${rawCommandName}' -> '${commandName}'`);
       }
 
       // Resolve full path to avoid posix_spawnp failures
       const command = resolveCommand(commandName);
-      console.log(`[spawner] Resolved '${commandName}' -> '${command}'`);
+      if (debug) console.log(`[spawner:debug] Resolved '${commandName}' -> '${command}'`);
       if (command === commandName && !commandName.startsWith('/')) {
         // Command wasn't resolved - it might not exist
         console.warn(`[spawner] Warning: Could not resolve path for '${commandName}', spawn may fail`);
@@ -898,11 +909,15 @@ export class AgentSpawner {
               await (pty as RelayPtyOrchestrator).waitUntilCliReady(15000, 100);
             }
 
-            // Write task to stdin
-            await pty.write(task + '\n');
-            taskSent = true;
-            if (debug) console.log(`[spawner:debug] Task injected to ${name} via PTY (attempt ${attempt})`);
-            break;
+            // Inject task via socket (with verification and retries)
+            const success = await pty.injectTask(task, 'spawner');
+            if (success) {
+              taskSent = true;
+              if (debug) console.log(`[spawner:debug] Task injected to ${name} (attempt ${attempt})`);
+              break;
+            } else {
+              throw new Error('Task injection returned false');
+            }
           } catch (err: any) {
             console.error(`[spawner] Attempt ${attempt}/${maxRetries}: Error injecting task for ${name}: ${err.message}`);
             if (attempt < maxRetries) {
