@@ -33,6 +33,13 @@ const { WebSocket } = require('ws');
 const JSON_OUTPUT = process.argv.includes('--json');
 const VERBOSE = process.argv.includes('--verbose');
 
+// Get output file from --output=<file> argument
+function getOutputFile(): string | null {
+  const arg = process.argv.find((a) => a.startsWith('--output='));
+  return arg ? arg.split('=')[1] : null;
+}
+const OUTPUT_FILE = getOutputFile();
+
 const CONFIG = {
   // API stress
   httpRequestCount: 100,
@@ -1289,15 +1296,21 @@ async function main(): Promise<void> {
   }
 
   // Output results
-  if (JSON_OUTPUT) {
-    console.log(JSON.stringify(results, null, 2));
+  const jsonOutput = JSON.stringify(results, null, 2);
+
+  if (OUTPUT_FILE) {
+    // Write directly to file to avoid stdout pollution from Orchestrator logs
+    fs.writeFileSync(OUTPUT_FILE, jsonOutput);
+    log(`\nResults written to ${OUTPUT_FILE}`);
+  } else if (JSON_OUTPUT) {
+    console.log(jsonOutput);
   } else {
     log('\n=== Summary ===');
     log(`Overall: ${results.passed ? 'PASSED' : 'FAILED'}`);
     log(`Tests: ${results.summary.passed_tests}/${results.summary.total_tests} passed`);
     log(`Time: ${results.summary.total_time_ms}ms`);
     log('\nDetailed Results:');
-    console.log(JSON.stringify(results, null, 2));
+    console.log(jsonOutput);
   }
 
   process.exit(results.passed ? 0 : 1);

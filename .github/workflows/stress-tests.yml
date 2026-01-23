@@ -155,7 +155,7 @@ jobs:
       - name: Run orchestrator integration stress tests
         id: integration-stress
         run: |
-          npx tsx scripts/stress-test-orchestrator-integration.mts --json > integration-results.json || echo "exit_code=$?" >> $GITHUB_OUTPUT
+          npx tsx scripts/stress-test-orchestrator-integration.mts --json --output=integration-results.json || echo "exit_code=$?" >> $GITHUB_OUTPUT
           cat integration-results.json
         continue-on-error: true
 

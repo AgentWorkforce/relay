@@ -180,17 +180,14 @@ impl OutboxMonitor {
             match event.kind {
                 EventKind::Create(_) | EventKind::Modify(_) => {
                     // New or modified file - start tracking if not already
-                    if !tracked.contains_key(&filename) {
-                        debug!("Tracking new outbox file: {}", filename);
-                        tracked.insert(
-                            filename,
-                            TrackedFile {
-                                first_seen: Instant::now(),
-                                path: path.clone(),
-                                stale_emitted: false,
-                            },
-                        );
-                    }
+                    tracked.entry(filename).or_insert_with(|| {
+                        debug!("Tracking new outbox file: {}", path.display());
+                        TrackedFile {
+                            first_seen: Instant::now(),
+                            path: path.clone(),
+                            stale_emitted: false,
+                        }
+                    });
                 }
                 EventKind::Remove(_) => {
                     // File was deleted (processed) - stop tracking

@@ -89,8 +89,10 @@ COPY --chown=testuser:testuser packages/protocol/src/ /app/node_modules/@agent-r
 COPY --chown=testuser:testuser packages/protocol/tsconfig.json /app/node_modules/@agent-relay/protocol/
 
 # Build protocol first (config depends on it)
-# Protocol has no runtime dependencies, just needs TypeScript to compile
-RUN cd /app/node_modules/@agent-relay/protocol && tsc
+# Protocol needs @types/node for Buffer and process types
+RUN cd /app/node_modules/@agent-relay/protocol && \
+    npm install --ignore-scripts @types/node && \
+    tsc
 
 # Build config package
 # Config needs zod (runtime dep) but @agent-relay/protocol is already in node_modules
