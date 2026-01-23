@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/api-types",
-  "version": "0.1.0",
+  "version": "2.0.0",
   "description": "Shared API types and Zod schemas for Agent Relay",
   "type": "module",
   "main": "dist/index.js",
