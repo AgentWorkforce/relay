@@ -13,7 +13,7 @@ import { getProjectPaths, getAgentOutboxTemplate } from '@agent-relay/config';
 import { resolveCommand } from '@agent-relay/utils/command-resolver';
 import { createTraceableError } from '@agent-relay/utils/error-tracking';
 import { createLogger } from '@agent-relay/utils/logger';
-import { mapModelToCli, getBaseCli } from '@agent-relay/utils/model-mapping';
+import { mapModelToCli } from '@agent-relay/utils/model-mapping';
 import { RelayPtyOrchestrator, type RelayPtyOrchestratorConfig } from '@agent-relay/wrapper';
 import type { SummaryEvent, SessionEndEvent } from '@agent-relay/wrapper';
 import { selectShadowCli } from './shadow-cli.js';
