@@ -7,6 +7,9 @@
  * - VS Code (with MCP extension)
  * - Windsurf
  * - Zed
+ * - Gemini CLI
+ * - OpenCode
+ * - Droid (Factory)
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -119,6 +122,27 @@ function getConfigPaths(): Record<string, EditorConfig> {
       configPath: join(home, '.config', 'zed', 'settings.json'),
       configKey: 'context_servers',
       format: 'jsonc',
+    },
+    gemini: {
+      name: 'Gemini CLI',
+      configPath: join(home, '.gemini', 'settings.json'),
+      configKey: 'mcpServers',
+      format: 'json',
+      supportsLocal: true,
+    },
+    opencode: {
+      name: 'OpenCode',
+      configPath: join(home, '.config', 'opencode', 'opencode.json'),
+      configKey: 'mcp', // OpenCode uses "mcp" not "mcpServers"
+      format: 'json',
+      supportsLocal: true,
+    },
+    droid: {
+      name: 'Droid',
+      configPath: join(home, '.factory', 'mcp.json'),
+      configKey: 'mcpServers',
+      format: 'json',
+      supportsLocal: true,
     },
   };
 }
@@ -245,6 +269,12 @@ function getLocalConfigPath(
       return join(projectDir, '.vscode', 'mcp.json');
     case 'Windsurf':
       return join(projectDir, '.windsurf', 'mcp.json');
+    case 'Gemini CLI':
+      return join(projectDir, '.gemini', 'settings.json');
+    case 'OpenCode':
+      return join(projectDir, 'opencode.json');
+    case 'Droid':
+      return join(projectDir, '.factory', 'mcp.json');
     default:
       return null;
   }

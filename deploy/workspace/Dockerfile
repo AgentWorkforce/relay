@@ -62,19 +62,36 @@ RUN ln -sf /app/dist/src/cli/index.js /usr/local/bin/agent-relay && \
 RUN chown -R workspace:workspace /app
 
 # === MCP Server for Agent Relay ===
-# Pre-configure MCP so all CLI tools (Claude, Codex, Cursor) have relay tools available
+# Pre-configure MCP so all CLI tools have relay tools available
 
-# Configure Claude Code MCP settings
-RUN mkdir -p /home/workspace/.claude && \
-    echo '{"mcpServers":{"agent-relay":{"command":"node","args":["/app/dist/src/cli/index.js","mcp","serve"]}}}' \
-    > /home/workspace/.claude/settings.json && \
-    chown -R workspace:workspace /home/workspace/.claude
+# Configure Claude Code MCP settings (global config is ~/.claude.json)
+RUN echo '{"mcpServers":{"agent-relay":{"command":"node","args":["/app/dist/src/cli/index.js","mcp","serve"]}}}' \
+    > /home/workspace/.claude.json && \
+    chown workspace:workspace /home/workspace/.claude.json
 
 # Configure Cursor MCP settings
 RUN mkdir -p /home/workspace/.cursor && \
     echo '{"mcpServers":{"agent-relay":{"command":"node","args":["/app/dist/src/cli/index.js","mcp","serve"]}}}' \
     > /home/workspace/.cursor/mcp.json && \
     chown -R workspace:workspace /home/workspace/.cursor
+
+# Configure Gemini CLI MCP settings
+RUN mkdir -p /home/workspace/.gemini && \
+    echo '{"mcpServers":{"agent-relay":{"command":"node","args":["/app/dist/src/cli/index.js","mcp","serve"]}}}' \
+    > /home/workspace/.gemini/settings.json && \
+    chown -R workspace:workspace /home/workspace/.gemini
+
+# Configure OpenCode MCP settings (uses "mcp" key, not "mcpServers")
+RUN mkdir -p /home/workspace/.config/opencode && \
+    echo '{"mcp":{"agent-relay":{"command":"node","args":["/app/dist/src/cli/index.js","mcp","serve"]}}}' \
+    > /home/workspace/.config/opencode/opencode.json && \
+    chown -R workspace:workspace /home/workspace/.config/opencode
+
+# Configure Droid (Factory) MCP settings
+RUN mkdir -p /home/workspace/.factory && \
+    echo '{"mcpServers":{"agent-relay":{"command":"node","args":["/app/dist/src/cli/index.js","mcp","serve"]}}}' \
+    > /home/workspace/.factory/mcp.json && \
+    chown -R workspace:workspace /home/workspace/.factory
 
 # Run entrypoint as root so it can start sshd; entrypoint drops to workspace via gosu
 USER root
