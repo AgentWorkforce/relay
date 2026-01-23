@@ -187,8 +187,8 @@ jobs:
             }
           "
 
-      - name: Update package-lock.json
-        run: npm install --package-lock-only
+      - name: Update package-lock.json and reinstall
+        run: npm install
 
       - name: Build all packages
         run: npm run build
