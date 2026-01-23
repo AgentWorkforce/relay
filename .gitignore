@@ -46,7 +46,8 @@ coverage/
 
 .next
 
-src/dashboard/out
+# Next.js build output
+**/out/
 
 .env.local
 .env
