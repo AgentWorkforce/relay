@@ -32,6 +32,7 @@
     "@agent-relay/resiliency": "2.0.4",
     "@agent-relay/user-directory": "2.0.4",
     "@agent-relay/wrapper": "2.0.4",
+    "@agent-relay/telemetry": "2.0.0",
     "ws": "^8.18.3",
     "better-sqlite3": "^12.6.2",
     "pg": "^8.16.3",
