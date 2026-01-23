@@ -199,9 +199,9 @@ function getRelayInstructions(agentName: string): string {
  * 3. /usr/local/bin/relay-pty (global install)
  */
 function findRelayPtyBinary(): string | null {
-  // Get the project root (four levels up from packages/bridge/dist/)
+  // Get the project root (three levels up from packages/bridge/dist/)
   // packages/bridge/dist/ -> packages/bridge -> packages -> project root
-  const projectRoot = path.join(__dirname, '..', '..', '..', '..');
+  const projectRoot = path.join(__dirname, '..', '..', '..');
 
   const candidates = [
     // Primary: installed by postinstall from platform-specific binary

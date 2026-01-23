@@ -46,6 +46,14 @@ The daemon manages agent connections using a state machine pattern:
 - Use `DEFAULT_CONFIG` as base, merge with provided config
 - Config interface should document all options with JSDoc
 
+## Agent Spawning
+
+- Enable protocol-based spawning with `spawnManager: true` in config
+- `SPAWN` and `RELEASE` messages are delegated to `SpawnManager`
+- SpawnManager wraps `AgentSpawner` from `@agent-relay/bridge`
+- Sends `SPAWN_RESULT` and `RELEASE_RESULT` envelopes back to requestor
+- If SpawnManager not enabled, sends ERROR envelope for spawn requests
+
 ## Example Pattern
 
 ```typescript
@@ -57,6 +65,12 @@ private async processFrame(envelope: Envelope): Promise<void> {
       break;
     case 'SEND':
       this.handleSend(envelope as Envelope<SendPayload>);
+      break;
+    case 'SPAWN':
+      this.spawnManager?.handleSpawn(connection, envelope as Envelope<SpawnPayload>);
+      break;
+    case 'RELEASE':
+      this.spawnManager?.handleRelease(connection, envelope as Envelope<ReleasePayload>);
       break;
     // ... other cases
   }

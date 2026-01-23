@@ -1,7 +1,7 @@
 ---
 paths:
-  - "src/dashboard/**/*.tsx"
-  - "src/dashboard/**/*.ts"
+  - "packages/dashboard/ui/**/*.tsx"
+  - "packages/dashboard/ui/**/*.ts"
 ---
 
 # React Dashboard Conventions
@@ -84,7 +84,7 @@ export default function Page() {
 }
 ```
 
-- See `app/cloud/link/page.tsx` and `app/login/page.tsx` for examples
+- See `packages/dashboard/ui/app/cloud/link/page.tsx` and `packages/dashboard/ui/app/login/page.tsx` for examples
 
 ## Common Patterns
 
