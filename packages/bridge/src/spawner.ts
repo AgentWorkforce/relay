@@ -128,21 +128,51 @@ export type OnAgentDeathCallback = (info: {
 }) => void;
 
 /**
+ * Get MCP tools reference for spawned agents.
+ * Only included when MCP is configured for the project.
+ */
+function getMcpToolsReference(): string {
+  return [
+    '## MCP Tools Available',
+    '',
+    'You have access to MCP tools for agent communication (recommended over file protocol):',
+    '- `relay_send(to, message)` - Send message to agent/channel',
+    '- `relay_spawn(name, cli, task)` - Create worker agent',
+    '- `relay_inbox()` - Check your messages',
+    '- `relay_who()` - List online agents',
+    '- `relay_release(name)` - Stop a worker agent',
+    '- `relay_status()` - Check connection status',
+    '',
+  ].join('\n');
+}
+
+/**
  * Get relay protocol instructions for a spawned agent.
  * This provides the agent with the communication protocol it needs to work with the relay.
  *
  * Uses the legacy outbox path (/tmp/relay-outbox/) which is symlinked to workspace paths.
  * This keeps agent instructions simple while supporting workspace isolation.
+ *
+ * @param agentName - Name of the agent
+ * @param hasMcp - Whether MCP tools are available (based on .mcp.json existence)
  */
-function getRelayInstructions(agentName: string): string {
+function getRelayInstructions(agentName: string, hasMcp = false): string {
   // Get the outbox path template and replace variable with actual agent name
   const outboxBase = getAgentOutboxTemplate(agentName);
 
-  return [
+  const parts: string[] = [
     '# Agent Relay Protocol',
     '',
     `You are agent "${agentName}" connected to Agent Relay for multi-agent coordination.`,
     '',
+  ];
+
+  // Add MCP tools reference if available
+  if (hasMcp) {
+    parts.push(getMcpToolsReference());
+  }
+
+  parts.push(
     '## Sending Messages',
     '',
     'Write a file to your outbox, then output the trigger:',
@@ -193,7 +223,9 @@ function getRelayInstructions(agentName: string): string {
     '| `AgentName` | Direct message |',
     '| `*` | Broadcast to all |',
     '| `#channel` | Channel message |',
-  ].join('\n');
+  );
+
+  return parts.join('\n');
 }
 
 /**
@@ -663,8 +695,13 @@ export class AgentSpawner {
         args.push('--yolo');
       }
 
+      // Check if MCP tools are available (based on .mcp.json existence in project)
+      const mcpConfigPath = path.join(this.projectRoot, '.mcp.json');
+      const hasMcp = fs.existsSync(mcpConfigPath);
+      if (debug && hasMcp) log.debug(`MCP tools available for ${name} (found ${mcpConfigPath})`);
+
       // Inject relay protocol instructions via CLI-specific system prompt
-      let relayInstructions = getRelayInstructions(name);
+      let relayInstructions = getRelayInstructions(name, hasMcp);
 
       // Compose role-specific prompts if agent has a role defined in .claude/agents/
       const agentConfigForRole = isClaudeCli ? findAgentConfig(name, this.projectRoot) : null;
