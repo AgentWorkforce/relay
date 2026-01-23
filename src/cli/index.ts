@@ -55,11 +55,31 @@ const execAsync = promisify(exec);
 
 // Check for updates in background (non-blocking)
 // Only show notification for interactive commands, not when wrapping agents or running update
-const interactiveCommands = ['up', 'down', 'status', 'agents', 'who', 'version', '--version', '-V', '--help', '-h', 'create-agent', 'claude', 'codex'];
+const interactiveCommands = ['up', 'down', 'status', 'agents', 'who', 'version', '--version', '-V', '--help', '-h', 'create-agent', 'claude', 'codex', 'telemetry'];
 const shouldCheckUpdates = process.argv.length > 2 &&
   interactiveCommands.includes(process.argv[2]);
 if (shouldCheckUpdates) {
   checkForUpdatesInBackground(VERSION);
+}
+
+// Initialize telemetry for interactive commands (shows first-run notice)
+// The telemetry package is lazily loaded to avoid startup overhead for non-interactive commands
+const shouldInitTelemetry = process.argv.length > 2 &&
+  interactiveCommands.includes(process.argv[2]) &&
+  process.argv[2] !== 'telemetry'; // Don't show notice for telemetry command itself
+
+if (shouldInitTelemetry) {
+  // Dynamic import to avoid blocking startup
+  import('@agent-relay/telemetry').then(({ initTelemetry, track }) => {
+    initTelemetry({ showNotice: true });
+    // Track CLI command usage
+    const commandName = process.argv[2];
+    if (commandName && !commandName.startsWith('-')) {
+      track('cli_command_run', { command_name: commandName });
+    }
+  }).catch(() => {
+    // Silently fail - telemetry shouldn't break the CLI
+  });
 }
 
 const program = new Command();
@@ -3531,6 +3551,55 @@ program
   .option('--skip-daemon', 'Skip daemon startup')
   .option('--skip-mcp', 'Skip MCP installation')
   .action(runInit);
+
+// telemetry - Manage anonymous telemetry
+program
+  .command('telemetry')
+  .description('Manage anonymous telemetry (enable/disable/status)')
+  .argument('[action]', 'Action: enable, disable, or status (default: status)')
+  .action(async (action?: string) => {
+    const {
+      isTelemetryEnabled,
+      enableTelemetry,
+      disableTelemetry,
+      getStatus,
+      isDisabledByEnv,
+    } = await import('@agent-relay/telemetry');
+
+    if (action === 'enable') {
+      if (isDisabledByEnv()) {
+        console.log('Cannot enable: AGENT_RELAY_TELEMETRY_DISABLED is set');
+        console.log('Remove the environment variable to enable telemetry.');
+        return;
+      }
+      enableTelemetry();
+      console.log('Telemetry enabled');
+      console.log('Anonymous usage data will be collected to improve Agent Relay.');
+    } else if (action === 'disable') {
+      disableTelemetry();
+      console.log('Telemetry disabled');
+      console.log('No usage data will be collected.');
+    } else {
+      // Default: show status
+      const status = getStatus();
+      console.log('Telemetry Status');
+      console.log('================');
+      console.log(`Enabled: ${status.enabled ? 'Yes' : 'No'}`);
+      if (status.disabledByEnv) {
+        console.log('(Disabled via AGENT_RELAY_TELEMETRY_DISABLED environment variable)');
+      }
+      console.log(`Anonymous ID: ${status.anonymousId}`);
+      if (status.notifiedAt) {
+        console.log(`First run notice shown: ${new Date(status.notifiedAt).toLocaleString()}`);
+      }
+      console.log('');
+      console.log('Commands:');
+      console.log('  agent-relay telemetry enable   - Opt in to telemetry');
+      console.log('  agent-relay telemetry disable  - Opt out of telemetry');
+      console.log('');
+      console.log('Learn more: https://agent-relay.com/telemetry');
+    }
+  });
 
 // mcp - MCP server management
 program

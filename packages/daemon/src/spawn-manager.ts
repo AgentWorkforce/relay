@@ -17,6 +17,7 @@ import {
 import { AgentSpawner, type CloudPersistenceHandler, type OnAgentDeathCallback } from '@agent-relay/bridge';
 import type { CloudPolicyFetcher } from '@agent-relay/policy';
 import type { Connection } from './connection.js';
+import { track, type ActionSource } from '@agent-relay/telemetry';
 
 export interface SpawnManagerConfig {
   /** Project root directory */
@@ -29,6 +30,8 @@ export interface SpawnManagerConfig {
   policyFetcher?: CloudPolicyFetcher;
   /** Callback when an agent dies unexpectedly */
   onAgentDeath?: OnAgentDeathCallback;
+  /** Callback when an agent is spawned (for telemetry tracking) */
+  onAgentSpawn?: () => void;
 }
 
 /**
@@ -37,9 +40,13 @@ export interface SpawnManagerConfig {
  */
 export class SpawnManager {
   private spawner: AgentSpawner;
+  private spawnTimes: Map<string, number> = new Map();
+  private agentClis: Map<string, string> = new Map();
+  private onAgentSpawn?: () => void;
 
   constructor(config: SpawnManagerConfig) {
     this.spawner = new AgentSpawner(config.projectRoot);
+    this.onAgentSpawn = config.onAgentSpawn;
 
     if (config.cloudPersistence) {
       this.spawner.setCloudPersistence(config.cloudPersistence);
@@ -89,6 +96,25 @@ export class SpawnManager {
         policyDecision: result.policyDecision,
       });
 
+      // Track successful spawn
+      if (result.success) {
+        this.spawnTimes.set(payload.name, Date.now());
+        this.agentClis.set(payload.name, payload.cli);
+
+        // Determine spawn source
+        const spawnSource: ActionSource = spawnerName ? 'agent' : 'protocol';
+
+        track('agent_spawn', {
+          cli: payload.cli,
+          spawn_source: spawnSource,
+          has_task: !!payload.task,
+          is_shadow: !!payload.shadowOf,
+        });
+
+        // Notify daemon to increment spawn count
+        this.onAgentSpawn?.();
+      }
+
       console.log(`[spawn-manager] SPAWN ${result.success ? 'succeeded' : 'failed'}: ${payload.name}`, {
         pid: result.pid,
         error: result.error,
@@ -124,6 +150,29 @@ export class SpawnManager {
         name: payload.name,
         error: success ? undefined : `Worker ${payload.name} not found`,
       });
+
+      // Track successful release
+      if (success) {
+        const spawnTime = this.spawnTimes.get(payload.name);
+        const cli = this.agentClis.get(payload.name) || 'unknown';
+        const lifetimeSeconds = spawnTime
+          ? Math.floor((Date.now() - spawnTime) / 1000)
+          : 0;
+
+        // Determine release source
+        const releaseSource: ActionSource = requester ? 'agent' : 'protocol';
+
+        track('agent_release', {
+          cli,
+          release_reason: 'explicit',
+          lifetime_seconds: lifetimeSeconds,
+          release_source: releaseSource,
+        });
+
+        // Clean up tracking data
+        this.spawnTimes.delete(payload.name);
+        this.agentClis.delete(payload.name);
+      }
 
       console.log(`[spawn-manager] RELEASE ${success ? 'succeeded' : 'failed'}: ${payload.name}`);
     } catch (err: unknown) {

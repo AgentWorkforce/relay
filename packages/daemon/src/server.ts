@@ -36,6 +36,11 @@ import {
   type ConsensusIntegrationConfig,
 } from './consensus-integration.js';
 import type { ChannelMembershipStore } from './channel-membership-store.js';
+import {
+  initTelemetry,
+  track,
+  shutdown as shutdownTelemetry,
+} from '@agent-relay/telemetry';
 
 export interface DaemonConfig extends ConnectionConfig {
   socketPath: string;
@@ -89,6 +94,10 @@ export class Daemon {
   private cloudSyncDebounceTimer?: NodeJS.Timeout;
   private spawnManager?: SpawnManager;
 
+  /** Telemetry tracking */
+  private startTime?: number;
+  private agentSpawnCount = 0;
+
   /** Callback for log output from agents (used by dashboard for streaming) */
   onLogOutput?: (agentName: string, data: string, timestamp: number) => void;
 
@@ -119,6 +128,10 @@ export class Daemon {
         projectRoot,
         socketPath: this.config.socketPath,
         ...spawnConfig,
+        // Track spawn count for telemetry
+        onAgentSpawn: () => {
+          this.agentSpawnCount++;
+        },
       });
     }
     // Storage is initialized lazily in start() to support async createStorageAdapter
@@ -269,6 +282,11 @@ export class Daemon {
   async start(): Promise<void> {
     if (this.running) return;
 
+    // Initialize telemetry (don't show notice - CLI handles that)
+    initTelemetry({ showNotice: false });
+    this.startTime = Date.now();
+    this.agentSpawnCount = 0;
+
     // Initialize storage
     await this.initStorage();
 
@@ -379,6 +397,9 @@ export class Daemon {
         this.processingStateInterval = setInterval(() => {
           this.writeProcessingStateFile();
         }, Daemon.PROCESSING_STATE_INTERVAL_MS);
+
+        // Track daemon start
+        track('daemon_start', {});
 
         log.info('Listening', { socketPath: this.config.socketPath });
         resolve();
@@ -676,6 +697,18 @@ export class Daemon {
    */
   async stop(): Promise<void> {
     if (!this.running) return;
+
+    // Track daemon stop
+    const uptimeSeconds = this.startTime
+      ? Math.floor((Date.now() - this.startTime) / 1000)
+      : 0;
+    track('daemon_stop', {
+      uptime_seconds: uptimeSeconds,
+      agent_spawn_count: this.agentSpawnCount,
+    });
+
+    // Shutdown telemetry (flush pending events)
+    await shutdownTelemetry();
 
     // Stop cloud sync
     if (this.cloudSync) {
