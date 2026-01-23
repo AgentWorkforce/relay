@@ -1,0 +1,65 @@
+{
+  "id": "traj_9eqbfvrxl36g",
+  "version": 1,
+  "task": {
+    "title": "Add includeWorkflowConventions opt-in flag for ACK/DONE",
+    "source": {
+      "system": "plain",
+      "id": "separation-of-concerns"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-01-23T22:56:17.733Z",
+  "agents": [
+    {
+      "name": "khaliqgant",
+      "role": "lead",
+      "joinedAt": "2026-01-23T22:56:17.734Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_v7b910fizs3o",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-23T23:00:16.613Z",
+      "events": [
+        {
+          "ts": 1769209216614,
+          "type": "decision",
+          "content": "Default to transport-only, cloud opts in: Default to transport-only, cloud opts in",
+          "raw": {
+            "question": "Default to transport-only, cloud opts in",
+            "chosen": "Default to transport-only, cloud opts in",
+            "alternatives": [],
+            "reasoning": "Added includeWorkflowConventions flag (default: false) to SpawnRequest. Relay protocol now only includes transport mechanics by default. Cloud dashboard passes includeWorkflowConventions: true to maintain current behavior. SDK consumers get clean transport-only protocol."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1769209223908,
+          "type": "decision",
+          "content": "Updated 7 files across packages: Updated 7 files across packages",
+          "raw": {
+            "question": "Updated 7 files across packages",
+            "chosen": "Updated 7 files across packages",
+            "alternatives": [],
+            "reasoning": "Changes span: types.ts (SpawnRequest), spawner.ts (getRelayInstructions), spawn-manager.ts (pass-through), protocol/types.ts (SpawnPayload), dashboard/server.ts, dashboard-server/server.ts (opt-in), relay-pty-orchestrator.ts (reminder), mcp/prompts/protocol.ts (docs)"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-23T23:00:29.377Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "completedAt": "2026-01-23T23:00:29.377Z",
+  "retrospective": {
+    "summary": "Implemented separation of concerns: relay protocol is now transport-only by default. Added includeWorkflowConventions flag for applications that want ACK/DONE. Cloud opts in, SDK consumers get clean protocol.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
+}

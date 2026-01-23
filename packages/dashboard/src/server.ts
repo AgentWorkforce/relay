@@ -4766,6 +4766,7 @@ export async function startDashboard(
         shadowTriggers,
         shadowSpeakOn,
         userId: typeof userId === 'string' ? userId : undefined,
+        includeWorkflowConventions: true, // Cloud opts into ACK/DONE workflow conventions
       };
       const result = await spawner.spawn(request);
 
@@ -4897,6 +4898,7 @@ Start by greeting the project leads and asking for status updates.`;
         name: 'Architect',
         cli,
         task: architectPrompt,
+        includeWorkflowConventions: true, // Cloud opts into ACK/DONE workflow conventions
       });
 
       if (result.success) {

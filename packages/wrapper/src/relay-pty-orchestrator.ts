@@ -233,6 +233,11 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     super(config);
     this.config = config;
 
+    // Validate agent name to prevent path traversal attacks
+    if (config.name.includes('..') || config.name.includes('/') || config.name.includes('\\')) {
+      throw new Error(`Invalid agent name: "${config.name}" contains path traversal characters`);
+    }
+
     // Get project paths (used for logs and local mode)
     const projectPaths = getProjectPaths(config.cwd);
 
@@ -292,8 +297,9 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       }
 
       this.socketPath = localSocketPath;
-      // No legacy path needed for local mode
-      this._legacyOutboxPath = this._outboxPath;
+      // Legacy path for backwards compat (older agents might still use /tmp/relay-outbox)
+      // Even in local mode, we need this symlink for agents with stale instructions
+      this._legacyOutboxPath = `/tmp/relay-outbox/${config.name}`;
     }
     if (this.socketPath.length > MAX_SOCKET_PATH_LENGTH) {
       throw new Error(`Socket path exceeds ${MAX_SOCKET_PATH_LENGTH} chars: ${this.socketPath.length}`);
@@ -385,30 +391,30 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       }
       this.log(` Created outbox directory: ${this._outboxPath}`);
 
+      // Helper to create a symlink, cleaning up existing path first
+      const createSymlinkSafe = (linkPath: string, targetPath: string) => {
+        const linkParent = dirname(linkPath);
+        if (!existsSync(linkParent)) {
+          mkdirSync(linkParent, { recursive: true });
+        }
+        if (existsSync(linkPath)) {
+          try {
+            const stats = lstatSync(linkPath);
+            if (stats.isSymbolicLink() || stats.isFile()) {
+              unlinkSync(linkPath);
+            } else if (stats.isDirectory()) {
+              rmSync(linkPath, { recursive: true, force: true });
+            }
+          } catch {
+            // Ignore cleanup errors
+          }
+        }
+        symlinkSync(targetPath, linkPath);
+        this.log(` Created symlink: ${linkPath} -> ${targetPath}`);
+      };
+
       // In workspace mode, create symlinks so agents can use canonical path
       if (this._workspaceId) {
-        // Helper to create a symlink, cleaning up existing path first
-        const createSymlinkSafe = (linkPath: string, targetPath: string) => {
-          const linkParent = dirname(linkPath);
-          if (!existsSync(linkParent)) {
-            mkdirSync(linkParent, { recursive: true });
-          }
-          if (existsSync(linkPath)) {
-            try {
-              const stats = lstatSync(linkPath);
-              if (stats.isSymbolicLink() || stats.isFile()) {
-                unlinkSync(linkPath);
-              } else if (stats.isDirectory()) {
-                rmSync(linkPath, { recursive: true, force: true });
-              }
-            } catch {
-              // Ignore cleanup errors
-            }
-          }
-          symlinkSync(targetPath, linkPath);
-          this.log(` Created symlink: ${linkPath} -> ${targetPath}`);
-        };
-
         // Symlink canonical path (~/.agent-relay/outbox/{name}) -> workspace path
         // This is the PRIMARY symlink - agents write to canonical path, relay-pty watches workspace path
         if (this._canonicalOutboxPath !== this._outboxPath) {
@@ -419,6 +425,11 @@ export class RelayPtyOrchestrator extends BaseWrapper {
         if (this._legacyOutboxPath !== this._outboxPath && this._legacyOutboxPath !== this._canonicalOutboxPath) {
           createSymlinkSafe(this._legacyOutboxPath, this._outboxPath);
         }
+      }
+
+      // In local mode, also create legacy symlink for backwards compat with stale instructions
+      if (!this._workspaceId && this._legacyOutboxPath !== this._outboxPath) {
+        createSymlinkSafe(this._legacyOutboxPath, this._outboxPath);
       }
     } catch (err: any) {
       this.logError(` Failed to set up outbox: ${err.message}`);
@@ -1808,10 +1819,10 @@ EOF
 \`\`\`
 Then output: \`->relay-file:spawn\`
 
-**Protocol Tips:**
-- Always ACK when you receive a task: "ACK: Brief description"
-- Send DONE when complete: "DONE: What was accomplished"
-- Keep your lead informed of progress
+**Message Format:**
+- \`TO: AgentName\` for direct messages
+- \`TO: *\` to broadcast to all agents
+- \`TO: #channel\` for channel messages
 
 📖 See **AGENTS.md** in the project root for full protocol documentation.`;
 

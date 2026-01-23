@@ -45,7 +45,10 @@ export class SpawnManager {
   private onAgentSpawn?: () => void;
 
   constructor(config: SpawnManagerConfig) {
-    this.spawner = new AgentSpawner(config.projectRoot);
+    this.spawner = new AgentSpawner({
+      projectRoot: config.projectRoot,
+      socketPath: config.socketPath,
+    });
     this.onAgentSpawn = config.onAgentSpawn;
 
     if (config.cloudPersistence) {
@@ -85,6 +88,7 @@ export class SpawnManager {
         shadowOf: payload.shadowOf,
         shadowSpeakOn: payload.shadowSpeakOn,
         userId: payload.userId,
+        includeWorkflowConventions: payload.includeWorkflowConventions,
       });
 
       this.sendResult(connection, 'SPAWN_RESULT', envelope.id, {
