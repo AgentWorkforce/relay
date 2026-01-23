@@ -22,6 +22,15 @@ import { AgentSpawner, readWorkersMetadata, getWorkerLogsDir, selectShadowCli } 
 import type { SpawnRequest, SpawnResult } from '@agent-relay/bridge';
 import { generateAgentName, checkForUpdatesInBackground, checkForUpdates } from '@agent-relay/utils';
 import { getShadowForAgent } from '@agent-relay/config';
+import {
+  initTelemetry,
+  track,
+  isTelemetryEnabled,
+  enableTelemetry,
+  disableTelemetry,
+  getStatus,
+  isDisabledByEnv,
+} from '@agent-relay/telemetry';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -63,23 +72,17 @@ if (shouldCheckUpdates) {
 }
 
 // Initialize telemetry for interactive commands (shows first-run notice)
-// The telemetry package is lazily loaded to avoid startup overhead for non-interactive commands
 const shouldInitTelemetry = process.argv.length > 2 &&
   interactiveCommands.includes(process.argv[2]) &&
   process.argv[2] !== 'telemetry'; // Don't show notice for telemetry command itself
 
 if (shouldInitTelemetry) {
-  // Dynamic import to avoid blocking startup
-  import('@agent-relay/telemetry').then(({ initTelemetry, track }) => {
-    initTelemetry({ showNotice: true });
-    // Track CLI command usage
-    const commandName = process.argv[2];
-    if (commandName && !commandName.startsWith('-')) {
-      track('cli_command_run', { command_name: commandName });
-    }
-  }).catch(() => {
-    // Silently fail - telemetry shouldn't break the CLI
-  });
+  initTelemetry({ showNotice: true });
+  // Track CLI command usage
+  const commandName = process.argv[2];
+  if (commandName && !commandName.startsWith('-')) {
+    track('cli_command_run', { command_name: commandName });
+  }
 }
 
 const program = new Command();
@@ -3557,15 +3560,7 @@ program
   .command('telemetry')
   .description('Manage anonymous telemetry (enable/disable/status)')
   .argument('[action]', 'Action: enable, disable, or status (default: status)')
-  .action(async (action?: string) => {
-    const {
-      isTelemetryEnabled,
-      enableTelemetry,
-      disableTelemetry,
-      getStatus,
-      isDisabledByEnv,
-    } = await import('@agent-relay/telemetry');
-
+  .action((action?: string) => {
     if (action === 'enable') {
       if (isDisabledByEnv()) {
         console.log('Cannot enable: AGENT_RELAY_TELEMETRY_DISABLED is set');
