@@ -15,8 +15,8 @@ export default defineConfig({
     ],
     // Use jsdom environment for frontend tests
     environmentMatchGlobs: [
-      ['src/dashboard/frontend/**/*.test.ts', 'jsdom'],
-      ['src/dashboard/react-components/**/*.test.tsx', 'jsdom'],
+      ['packages/dashboard/ui/frontend/**/*.test.ts', 'jsdom'],
+      ['packages/dashboard/ui/react-components/**/*.test.tsx', 'jsdom'],
     ],
     coverage: {
       provider: 'v8',

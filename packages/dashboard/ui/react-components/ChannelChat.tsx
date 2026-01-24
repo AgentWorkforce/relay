@@ -3,13 +3,16 @@
  *
  * Chat view for a channel or DM conversation.
  * Displays messages and provides input for sending new messages.
+ * Uses shared MessageComposer for consistent attachment/paste support.
  */
 
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useCallback, useRef, useEffect } from 'react';
 import type { ChannelMessage } from './hooks/useChannels';
 import type { Agent } from '../types';
 import type { UserPresence } from './hooks/usePresence';
 import { MessageSenderName } from './MessageSenderName';
+import { MessageComposer } from './MessageComposer';
+import type { HumanUser } from './MentionAutocomplete';
 
 export interface ChannelChatProps {
   /** Current channel name */
@@ -18,8 +21,8 @@ export interface ChannelChatProps {
   messages: ChannelMessage[];
   /** Current user's username */
   currentUser: string;
-  /** Send a message */
-  onSendMessage: (body: string, thread?: string) => void;
+  /** Send a message (now supports attachments) */
+  onSendMessage: (body: string, thread?: string, attachmentIds?: string[]) => void;
   /** Online users for mentions */
   onlineUsers?: string[];
   /** Agents list for profile lookup */
@@ -30,6 +33,8 @@ export interface ChannelChatProps {
   onAgentClick?: (agent: Agent) => void;
   /** Callback when user name is clicked */
   onUserClick?: (user: UserPresence) => void;
+  /** Whether message sending is in progress */
+  isSending?: boolean;
 }
 
 export function ChannelChat({
@@ -42,10 +47,9 @@ export function ChannelChat({
   onlineUserPresence = [],
   onAgentClick,
   onUserClick,
+  isSending = false,
 }: ChannelChatProps) {
-  const [inputValue, setInputValue] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // Filter messages for this channel
   const channelMessages = messages.filter(m => {
@@ -65,26 +69,23 @@ export function ChannelChat({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [channelMessages.length]);
 
-  const handleSend = useCallback(() => {
-    const trimmed = inputValue.trim();
-    if (!trimmed) return;
-
-    onSendMessage(trimmed);
-    setInputValue('');
-    inputRef.current?.focus();
-  }, [inputValue, onSendMessage]);
-
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  }, [handleSend]);
+  // Handle message send with attachments
+  const handleSend = useCallback(async (content: string, attachmentIds?: string[]): Promise<boolean> => {
+    if (!content.trim() && (!attachmentIds || attachmentIds.length === 0)) return false;
+    onSendMessage(content, undefined, attachmentIds);
+    return true;
+  }, [onSendMessage]);
 
   const isDm = channel.startsWith('dm:');
   const channelDisplay = isDm
     ? channel.split(':').slice(1).filter(u => u !== currentUser).join(', ')
     : channel;
+
+  // Convert online user presence to HumanUser format for mentions
+  const humanUsers: HumanUser[] = onlineUserPresence.map(u => ({
+    username: u.username,
+    avatarUrl: u.avatarUrl,
+  }));
 
   return (
     <div style={{
@@ -163,65 +164,18 @@ export function ChannelChat({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input */}
+      {/* Input - Using shared MessageComposer for attachment support */}
       <div style={{
         padding: '16px 20px',
         borderTop: '1px solid var(--border-color, #313244)',
       }}>
-        <div style={{
-          display: 'flex',
-          gap: '12px',
-          alignItems: 'flex-end',
-        }}>
-          <textarea
-            ref={inputRef}
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={`Message ${channelDisplay}...`}
-            style={{
-              flex: 1,
-              padding: '12px 16px',
-              backgroundColor: 'var(--bg-secondary, #1e1e2e)',
-              border: '1px solid var(--border-color, #313244)',
-              borderRadius: '8px',
-              color: 'var(--text-primary, #cdd6f4)',
-              fontSize: '14px',
-              resize: 'none',
-              minHeight: '44px',
-              maxHeight: '120px',
-              outline: 'none',
-              fontFamily: 'inherit',
-            }}
-            rows={1}
-          />
-          <button
-            onClick={handleSend}
-            disabled={!inputValue.trim()}
-            style={{
-              padding: '12px 20px',
-              backgroundColor: inputValue.trim()
-                ? 'var(--accent-color, #89b4fa)'
-                : 'var(--bg-tertiary, #313244)',
-              border: 'none',
-              borderRadius: '8px',
-              color: inputValue.trim() ? '#11111b' : 'var(--text-muted, #6c7086)',
-              fontSize: '14px',
-              fontWeight: 500,
-              cursor: inputValue.trim() ? 'pointer' : 'default',
-              transition: 'all 0.15s ease',
-            }}
-          >
-            Send
-          </button>
-        </div>
-        <div style={{
-          fontSize: '12px',
-          color: 'var(--text-muted, #6c7086)',
-          marginTop: '8px',
-        }}>
-          Press Enter to send, Shift+Enter for new line
-        </div>
+        <MessageComposer
+          onSend={handleSend}
+          isSending={isSending}
+          placeholder={`Message ${channelDisplay}...`}
+          agents={agents}
+          humanUsers={humanUsers}
+        />
       </div>
     </div>
   );

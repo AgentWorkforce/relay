@@ -1306,9 +1306,9 @@ export async function createServer(): Promise<CloudServer> {
   app.use('/api', teamsRouter);
 
   // Serve static dashboard files (Next.js static export)
-  // Path: packages/cloud/dist/server.js -> ../../../src/dashboard/out
-  // In Docker: /app/packages/cloud/dist -> /app/src/dashboard/out
-  const dashboardPath = path.join(__dirname, '../../../src/dashboard/out');
+  // Path: packages/cloud/dist/server.js -> ../../dashboard/ui/out
+  // In Docker: /app/packages/cloud/dist -> /app/packages/dashboard/ui/out
+  const dashboardPath = path.join(__dirname, '../../dashboard/ui/out');
 
   // Serve static files (JS, CSS, images, etc.)
   app.use(express.static(dashboardPath));

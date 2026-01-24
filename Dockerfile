@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y \
 
 # Copy package files and scripts needed for postinstall
 COPY package*.json ./
-COPY src/dashboard/package*.json ./src/dashboard/
+COPY packages/dashboard/ui/package*.json ./packages/dashboard/ui/
 COPY scripts ./scripts/
 
 # Copy workspace package.json files (required for npm workspaces to install dependencies)
@@ -51,7 +51,7 @@ COPY . .
 RUN npm run build
 
 # Build dashboard
-RUN cd src/dashboard && npm ci && npm run build
+RUN cd packages/dashboard/ui && npm ci && npm run build
 
 # Production image
 FROM node:20-slim AS runner
@@ -66,7 +66,7 @@ RUN apt-get update && apt-get install -y \
 # Copy built artifacts
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/packages ./packages
-COPY --from=builder /app/src/dashboard/out ./src/dashboard/out
+COPY --from=builder /app/packages/dashboard/ui/out ./packages/dashboard/ui/out
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package*.json ./
 

@@ -904,17 +904,17 @@ export async function startDashboard(
   // Attachments are also stored on disk, so this is just for quick lookups
   const attachmentRegistry = new Map<string, Attachment>();
 
-  // Serve dashboard static files at root (built with `next build` in src/dashboard)
-  // Find repo root by traversing up from __dirname until we find dist/dashboard/out or src/dashboard/out
+  // Serve dashboard static files at root (built with `next build` in packages/dashboard/ui)
+  // Find repo root by traversing up from __dirname until we find dist/dashboard/out or packages/dashboard/ui/out
   // This handles both direct paths and npm workspace symlinks
   const findDashboardDir = (): string | null => {
     let current = __dirname;
     // Try up to 10 levels up
     for (let i = 0; i < 10; i++) {
       const distPath = path.join(current, 'dist', 'dashboard', 'out');
-      const srcPath = path.join(current, 'src', 'dashboard', 'out');
+      const pkgPath = path.join(current, 'packages', 'dashboard', 'ui', 'out');
       if (fs.existsSync(distPath)) return distPath;
-      if (fs.existsSync(srcPath)) return srcPath;
+      if (fs.existsSync(pkgPath)) return pkgPath;
       const parent = path.dirname(current);
       if (parent === current) break; // reached root
       current = parent;

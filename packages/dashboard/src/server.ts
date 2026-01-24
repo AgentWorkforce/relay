@@ -906,22 +906,22 @@ export async function startDashboard(
 
   // Serve dashboard static files at root (built with `next build`)
   // Search order:
-  // 1. ui-dist/ - @agent-relay/dashboard package (new structure)
-  // 2. dist/dashboard/out - monorepo build (legacy)
-  // 3. src/dashboard/out - development (legacy)
+  // 1. ui-dist/ - @agent-relay/dashboard package (published)
+  // 2. ui/out - development (packages/dashboard/ui/out)
+  // 3. dist/dashboard/out - monorepo build
   const findDashboardDir = (): string | null => {
     let current = __dirname;
     // Try up to 10 levels up
     for (let i = 0; i < 10; i++) {
-      // New package structure: ui-dist at package root
+      // Package structure: ui-dist at package root (for published package)
       const uiDistPath = path.join(current, 'ui-dist');
       if (fs.existsSync(uiDistPath)) return uiDistPath;
-      // Legacy: monorepo build output
+      // Development: ui/out at package root
+      const uiOutPath = path.join(current, 'ui', 'out');
+      if (fs.existsSync(uiOutPath)) return uiOutPath;
+      // Monorepo build output
       const distPath = path.join(current, 'dist', 'dashboard', 'out');
       if (fs.existsSync(distPath)) return distPath;
-      // Legacy: development path
-      const srcPath = path.join(current, 'src', 'dashboard', 'out');
-      if (fs.existsSync(srcPath)) return srcPath;
       const parent = path.dirname(current);
       if (parent === current) break; // reached root
       current = parent;
