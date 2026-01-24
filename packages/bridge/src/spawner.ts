@@ -1007,6 +1007,12 @@ export class AgentSpawner {
         onRelease: onReleaseHandler,
         onExit: onExitHandler,
         headless: true, // Force headless mode for spawned agents to enable task injection via stdin
+        // In cloud environments (WORKSPACE_ID set), limit CPU per agent to prevent
+        // one agent (e.g., running npm install) from starving others
+        // Default: 100% of one core per agent. Set AGENT_CPU_LIMIT to override.
+        cpuLimitPercent: process.env.WORKSPACE_ID
+          ? parseInt(process.env.AGENT_CPU_LIMIT || '100', 10)
+          : undefined,
       };
       const pty = new RelayPtyOrchestrator(ptyConfig);
       if (debug) log.debug(`Using RelayPtyOrchestrator for ${name}`);
