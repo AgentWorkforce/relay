@@ -46,6 +46,7 @@ export function LandingPage() {
       <main>
         <HeroSection />
         <LiveDemoSection />
+        <LiveCommunitySection />
         <FeaturesSection />
         <ProvidersSection />
         <PricingSection />
@@ -418,6 +419,151 @@ function LiveDemoSection() {
         <div className="demo-caption">
           <p>This is a simulation of agents completing a task. In production, agents run your actual code.</p>
         </div>
+      </div>
+    </section>
+  );
+}
+
+// Mock data for public community rooms
+// TODO: Replace with real API call when bd-viral-001 and bd-agent-public-001 are complete
+const MOCK_COMMUNITY_ROOMS = [
+  {
+    id: 'general',
+    name: 'General',
+    description: 'Welcome! Chat about AI agents, share projects, and get help.',
+    memberCount: 1247,
+    onlineCount: 23,
+    messageCount: 15420,
+    lastActivityAt: new Date(Date.now() - 2 * 60 * 1000), // 2 minutes ago
+    isActive: true,
+  },
+  {
+    id: 'showcase',
+    name: 'Showcase',
+    description: 'Share your agent workflows and get feedback from the community.',
+    memberCount: 892,
+    onlineCount: 15,
+    messageCount: 8234,
+    lastActivityAt: new Date(Date.now() - 5 * 60 * 1000), // 5 minutes ago
+    isActive: true,
+  },
+  {
+    id: 'help',
+    name: 'Help & Support',
+    description: 'Get help with Agent Relay, ask questions, and troubleshoot issues.',
+    memberCount: 2156,
+    onlineCount: 31,
+    messageCount: 18923,
+    lastActivityAt: new Date(Date.now() - 30 * 1000), // 30 seconds ago
+    isActive: true,
+  },
+  {
+    id: 'announcements',
+    name: 'Announcements',
+    description: 'Official updates, new features, and important news from the team.',
+    memberCount: 3456,
+    onlineCount: 45,
+    messageCount: 234,
+    lastActivityAt: new Date(Date.now() - 1 * 60 * 60 * 1000), // 1 hour ago
+    isActive: false,
+  },
+];
+
+function LiveCommunitySection() {
+  const [rooms, setRooms] = useState(MOCK_COMMUNITY_ROOMS);
+
+  // Simulate real-time updates for activity indicators
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setRooms((prevRooms) =>
+        prevRooms.map((room) => {
+          // Randomly update activity status and last activity time
+          const shouldUpdate = Math.random() > 0.7;
+          if (shouldUpdate && room.isActive) {
+            return {
+              ...room,
+              lastActivityAt: new Date(Date.now() - Math.random() * 5 * 60 * 1000),
+              onlineCount: room.onlineCount + (Math.random() > 0.5 ? 1 : -1),
+            };
+          }
+          return room;
+        })
+      );
+    }, 3000); // Update every 3 seconds
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const formatLastActivity = (date: Date): string => {
+    const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+    if (seconds < 60) return 'just now';
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+    return `${Math.floor(seconds / 86400)}d ago`;
+  };
+
+  return (
+    <section id="community" className="community-section">
+      <div className="section-header">
+        <span className="section-tag">Live Community</span>
+        <h2>Join the Conversation</h2>
+        <p>Connect with developers building with AI agents. Real-time rooms, real conversations.</p>
+      </div>
+
+      <div className="community-grid">
+        {rooms.map((room) => (
+          <div key={room.id} className="community-card">
+            <div className="community-card-header">
+              <div className="community-card-title">
+                <span className="community-icon">#</span>
+                <h3>{room.name}</h3>
+              </div>
+              {room.isActive && (
+                <div className="activity-indicator">
+                  <span className="activity-dot pulse" />
+                  <span className="activity-text">Live</span>
+                </div>
+              )}
+            </div>
+
+            <p className="community-description">{room.description}</p>
+
+            <div className="community-stats">
+              <div className="stat-item">
+                <span className="stat-icon">👥</span>
+                <span className="stat-value">{room.memberCount.toLocaleString()}</span>
+                <span className="stat-label">members</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-icon">🟢</span>
+                <span className="stat-value">{room.onlineCount}</span>
+                <span className="stat-label">online</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-icon">💬</span>
+                <span className="stat-value">{room.messageCount.toLocaleString()}</span>
+                <span className="stat-label">messages</span>
+              </div>
+            </div>
+
+            <div className="community-footer">
+              <span className="last-activity">
+                Last activity: {formatLastActivity(room.lastActivityAt)}
+              </span>
+              <a href={`/app?channel=${room.id}`} className="btn-ghost btn-small">
+                Join Room →
+              </a>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="community-cta">
+        <a href="/signup" className="btn-primary btn-large">
+          <span>Join Community</span>
+          <span className="btn-arrow">→</span>
+        </a>
+        <p className="community-cta-note">Free to join. Start chatting in seconds.</p>
       </div>
     </section>
   );
