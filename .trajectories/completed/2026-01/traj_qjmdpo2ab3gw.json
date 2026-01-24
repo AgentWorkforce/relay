@@ -1,0 +1,21 @@
+{
+  "id": "traj_qjmdpo2ab3gw",
+  "version": 1,
+  "task": {
+    "title": "Fix WebSocket reconnection and session recovery"
+  },
+  "status": "completed",
+  "startedAt": "2026-01-24T19:02:21.149Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/data/repos/relay",
+  "tags": [],
+  "completedAt": "2026-01-24T19:02:33.180Z",
+  "retrospective": {
+    "summary": "Previous WebSocket reconnection work completed",
+    "approach": "Standard approach",
+    "confidence": 0.7
+  }
+}

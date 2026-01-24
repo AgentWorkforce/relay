@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-24T08:53:25.073Z",
+  "lastUpdated": "2026-01-24T19:03:55.597Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -64,6 +64,27 @@
       "startedAt": "2026-01-23T22:56:17.733Z",
       "completedAt": "2026-01-23T23:00:29.377Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_9eqbfvrxl36g.json"
+    },
+    "traj_qjmdpo2ab3gw": {
+      "title": "Fix WebSocket reconnection and session recovery",
+      "status": "completed",
+      "startedAt": "2026-01-24T19:02:21.149Z",
+      "completedAt": "2026-01-24T19:02:33.180Z",
+      "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_qjmdpo2ab3gw.json"
+    },
+    "traj_sczrxiuey42q": {
+      "title": "Implement public community rooms with AI agents",
+      "status": "completed",
+      "startedAt": "2026-01-24T19:02:34.080Z",
+      "completedAt": "2026-01-24T19:02:39.643Z",
+      "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_sczrxiuey42q.json"
+    },
+    "traj_0qnvcc3ddgj3": {
+      "title": "Create landing page with live community embed",
+      "status": "completed",
+      "startedAt": "2026-01-24T19:02:40.637Z",
+      "completedAt": "2026-01-24T19:03:55.575Z",
+      "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_0qnvcc3ddgj3.json"
     }
   }
 }
