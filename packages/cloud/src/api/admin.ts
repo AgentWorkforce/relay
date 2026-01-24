@@ -8,6 +8,7 @@
 import { Router, Request, Response } from 'express';
 import { getConfig } from '../config.js';
 import { getProvisioner, WorkspaceProvisioner } from '../provisioner/index.js';
+import { getDb } from '../db/drizzle.js';
 
 export const adminRouter = Router();
 
@@ -104,6 +105,84 @@ adminRouter.post('/workspaces/update-image', async (req: Request, res: Response)
     console.error('[admin] Error updating workspace images:', error);
     res.status(500).json({
       error: 'Failed to update workspace images',
+      details: (error as Error).message,
+    });
+  }
+});
+
+/**
+ * POST /api/admin/workspaces/community/create
+ *
+ * Create or ensure the public community workspace exists.
+ * This is the viral growth mechanism - a public workspace any user can join.
+ *
+ * Response:
+ * - workspaceId: ID of the community workspace
+ * - created: Whether it was just created (true) or already existed (false)
+ * - status: Current workspace status
+ * - publicUrl: Public URL if available
+ */
+adminRouter.post('/workspaces/community/create', async (req: Request, res: Response) => {
+  const { userId, name = 'Community' } = req.body as {
+    userId?: string;
+    name?: string;
+  };
+
+  if (!userId) {
+    res.status(400).json({ error: 'userId is required to create community workspace' });
+    return;
+  }
+
+  try {
+    const db = getDb();
+    const provisioner = getProvisioner();
+
+    // Check if community workspace already exists
+    const allWorkspaces = await db.workspaces.findAll();
+    const communityWorkspace = allWorkspaces.find(
+      w => w.name.toLowerCase() === name.toLowerCase() && w.isPublic
+    );
+
+    if (communityWorkspace) {
+      return res.json({
+        workspaceId: communityWorkspace.id,
+        created: false,
+        status: communityWorkspace.status,
+        publicUrl: communityWorkspace.publicUrl,
+        message: 'Community workspace already exists',
+      });
+    }
+
+    // Create the community workspace
+    // Note: Requires at least one provider, but repositories can be empty
+    const result = await provisioner.provision({
+      userId,
+      name,
+      providers: ['claude'], // Default provider
+      repositories: [], // No repos needed for community workspace
+      supervisorEnabled: true,
+      maxAgents: 10,
+      isPublic: true,
+    });
+
+    if (result.status === 'error') {
+      return res.status(500).json({
+        error: 'Failed to create community workspace',
+        details: result.error,
+      });
+    }
+
+    res.json({
+      workspaceId: result.workspaceId,
+      created: true,
+      status: result.status,
+      publicUrl: result.publicUrl,
+      message: 'Community workspace created successfully',
+    });
+  } catch (error) {
+    console.error('[admin] Error creating community workspace:', error);
+    res.status(500).json({
+      error: 'Failed to create community workspace',
       details: (error as Error).message,
     });
   }

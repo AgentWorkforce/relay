@@ -438,8 +438,9 @@ export interface WorkspaceQueries {
   findByCustomDomain(domain: string): Promise<schema.Workspace | null>;
   findByRepoFullName(repoFullName: string): Promise<schema.Workspace | null>;
   findAll(): Promise<schema.Workspace[]>;
+  findPublic(): Promise<schema.Workspace[]>;
   create(data: schema.NewWorkspace): Promise<schema.Workspace>;
-  update(id: string, data: Partial<Pick<schema.Workspace, 'name' | 'config'>>): Promise<void>;
+  update(id: string, data: Partial<Pick<schema.Workspace, 'name' | 'config' | 'isPublic'>>): Promise<void>;
   updateStatus(
     id: string,
     status: string,
@@ -501,13 +502,23 @@ export const workspaceQueries: WorkspaceQueries = {
       .orderBy(desc(schema.workspaces.createdAt));
   },
 
+  async findPublic(): Promise<schema.Workspace[]> {
+    const db = getDb();
+    return db
+      .select()
+      .from(schema.workspaces)
+      .where(eq(schema.workspaces.isPublic, true))
+      .where(eq(schema.workspaces.status, 'running'))
+      .orderBy(desc(schema.workspaces.createdAt));
+  },
+
   async create(data: schema.NewWorkspace): Promise<schema.Workspace> {
     const db = getDb();
     const result = await db.insert(schema.workspaces).values(data).returning();
     return result[0];
   },
 
-  async update(id: string, data: Partial<Pick<schema.Workspace, 'name' | 'config'>>): Promise<void> {
+  async update(id: string, data: Partial<Pick<schema.Workspace, 'name' | 'config' | 'isPublic'>>): Promise<void> {
     const db = getDb();
     await db
       .update(schema.workspaces)

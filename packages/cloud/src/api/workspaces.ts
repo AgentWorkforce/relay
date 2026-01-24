@@ -19,7 +19,7 @@ import { nangoService } from '../services/nango.js';
 
 interface CachedAccess {
   hasAccess: boolean;
-  accessType: 'owner' | 'member' | 'contributor' | 'none';
+  accessType: 'owner' | 'member' | 'contributor' | 'public' | 'none';
   permission?: 'admin' | 'write' | 'read';
   cachedAt: number;
 }
@@ -310,12 +310,13 @@ async function initializeUserReposCache(nangoConnectionId: string): Promise<Cach
  * Check if user has access to a workspace via:
  * 1. Workspace ownership (userId matches)
  * 2. Explicit workspace_members record
- * 3. GitHub repo access (just-in-time check via Nango)
+ * 3. Public workspace (isPublic = true) - any logged-in user can access
+ * 4. GitHub repo access (just-in-time check via Nango)
  */
 export async function checkWorkspaceAccess(
   userId: string,
   workspaceId: string
-): Promise<{ hasAccess: boolean; accessType: 'owner' | 'member' | 'contributor' | 'none'; permission?: 'admin' | 'write' | 'read' }> {
+): Promise<{ hasAccess: boolean; accessType: 'owner' | 'member' | 'contributor' | 'public' | 'none'; permission?: 'admin' | 'write' | 'read' }> {
   // Check cache first
   const cached = getCachedAccess(userId, workspaceId);
   if (cached) {
@@ -341,7 +342,13 @@ export async function checkWorkspaceAccess(
     return { hasAccess: true, accessType: 'member', permission };
   }
 
-  // 3. Check GitHub repo access (just-in-time)
+  // 3. Check if workspace is public (any logged-in user can access)
+  if (workspace.isPublic && workspace.status === 'running') {
+    setCachedAccess(userId, workspaceId, { hasAccess: true, accessType: 'public', permission: 'read' });
+    return { hasAccess: true, accessType: 'public', permission: 'read' };
+  }
+
+  // 4. Check GitHub repo access (just-in-time)
   const user = await db.users.findById(userId);
   if (!user?.nangoConnectionId) {
     setCachedAccess(userId, workspaceId, { hasAccess: false, accessType: 'none' });
@@ -472,12 +479,36 @@ workspacesRouter.get('/', async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/workspaces/public
+ * List all public workspaces that any logged-in user can join
+ */
+workspacesRouter.get('/public', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const publicWorkspaces = await db.workspaces.findPublic();
+    
+    res.json({
+      workspaces: publicWorkspaces.map((w) => ({
+        id: w.id,
+        name: w.name,
+        status: w.status,
+        publicUrl: w.publicUrl,
+        createdAt: w.createdAt,
+        isPublic: w.isPublic,
+      })),
+    });
+  } catch (error) {
+    console.error('Error listing public workspaces:', error);
+    res.status(500).json({ error: 'Failed to list public workspaces' });
+  }
+});
+
+/**
  * POST /api/workspaces
  * Create (provision) a new workspace
  */
 workspacesRouter.post('/', checkWorkspaceLimit, async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { name, providers, repositories, supervisorEnabled, maxAgents } = req.body;
+  const { name, providers, repositories, supervisorEnabled, maxAgents, isPublic } = req.body;
 
   // Validation
   if (!name || typeof name !== 'string') {
@@ -541,6 +572,7 @@ workspacesRouter.post('/', checkWorkspaceLimit, async (req: Request, res: Respon
       repositories,
       supervisorEnabled,
       maxAgents,
+      isPublic: isPublic ?? false,
     });
 
     if (result.status === 'error') {
@@ -726,6 +758,7 @@ workspacesRouter.get('/primary', async (req: Request, res: Response) => {
  * List all workspaces the user can access:
  * - Owned workspaces
  * - Workspaces where user is a member
+ * - Public workspaces (any logged-in user can access)
  * - Workspaces with repos the user has GitHub access to
  * NOTE: This route MUST be before /:id to avoid being caught by parameterized route
  */
@@ -755,6 +788,16 @@ workspacesRouter.get('/accessible', async (req: Request, res: Response) => {
       if (ws) memberWorkspaces.push(ws);
     }
 
+    // 3. Get public workspaces (excluding owned/member ones to prevent duplicates)
+    const knownWorkspaceIds = new Set([
+      ...ownedWorkspaceIds,
+      ...memberWorkspaceIds,
+    ]);
+    const publicWorkspaces = await db.workspaces.findPublic();
+    const accessiblePublicWorkspaces = publicWorkspaces.filter(
+      (w) => !knownWorkspaceIds.has(w.id)
+    );
+
     // 3. Get workspaces via GitHub repo access (if user has Nango connection)
     // Uses background caching to handle users with many repos (>100)
     const contributorWorkspaces: Array<Workspace & { accessPermission: string }> = [];
@@ -779,12 +822,11 @@ workspacesRouter.get('/accessible', async (req: Request, res: Response) => {
           console.log(`[workspaces/accessible] Cache miss - initialized with ${userRepos.length} repos (background refresh may add more)`);
         }
 
-        // Get workspaces that aren't owned or membered
-        // Reuse ownedWorkspaceIds and add member workspace IDs
-        const knownWorkspaceIds = new Set([
-          ...ownedWorkspaceIds,
-          ...memberWorkspaceIds,
-        ]);
+        // Get workspaces that aren't owned, membered, or public
+        // Add public workspace IDs to known set
+        for (const publicWs of accessiblePublicWorkspaces) {
+          knownWorkspaceIds.add(publicWs.id);
+        }
 
         // Get all repo full names from user's accessible repos
         for (const repo of userRepos) {
@@ -845,13 +887,15 @@ workspacesRouter.get('/accessible', async (req: Request, res: Response) => {
           const membership = memberships.find((m) => m.workspaceId === w.id);
           return formatWorkspace(w, 'member', membership?.role);
         }),
+        ...accessiblePublicWorkspaces.map((w) => formatWorkspace(w, 'public', 'read')),
         ...contributorWorkspaces.map((w) => formatWorkspace(w, 'contributor', w.accessPermission)),
       ],
       summary: {
         owned: ownedWorkspaces.length,
         member: memberWorkspaces.length,
+        public: accessiblePublicWorkspaces.length,
         contributor: contributorWorkspaces.length,
-        total: ownedWorkspaces.length + memberWorkspaces.length + contributorWorkspaces.length,
+        total: ownedWorkspaces.length + memberWorkspaces.length + accessiblePublicWorkspaces.length + contributorWorkspaces.length,
       },
     });
   } catch (error) {
@@ -899,6 +943,77 @@ workspacesRouter.get('/:id', requireWorkspaceAccess, async (req: Request, res: R
   } catch (error) {
     console.error('Error getting workspace:', error);
     res.status(500).json({ error: 'Failed to get workspace' });
+  }
+});
+
+/**
+ * POST /api/workspaces/:id/join
+ * Join a public workspace (adds user as member)
+ */
+workspacesRouter.post('/:id/join', requireAuth, async (req: Request, res: Response) => {
+  const userId = req.session.userId!;
+  const workspaceId = req.params.id as string;
+
+  try {
+    const workspace = await db.workspaces.findById(workspaceId);
+    
+    if (!workspace) {
+      return res.status(404).json({ error: 'Workspace not found' });
+    }
+
+    // Check if workspace is public
+    if (!workspace.isPublic) {
+      return res.status(403).json({ error: 'Workspace is not public' });
+    }
+
+    // Check if user is already a member
+    const existingMember = await db.workspaceMembers.findMembership(workspaceId, userId);
+    if (existingMember) {
+      if (existingMember.acceptedAt) {
+        return res.status(200).json({ 
+          message: 'Already a member',
+          workspace: {
+            id: workspace.id,
+            name: workspace.name,
+            publicUrl: workspace.publicUrl,
+          },
+        });
+      } else {
+        // Accept pending invite
+        await db.workspaceMembers.acceptInvite(workspaceId, userId);
+        return res.status(200).json({ 
+          message: 'Joined workspace',
+          workspace: {
+            id: workspace.id,
+            name: workspace.name,
+            publicUrl: workspace.publicUrl,
+          },
+        });
+      }
+    }
+
+    // Add user as member
+    await db.workspaceMembers.addMember({
+      workspaceId,
+      userId,
+      role: 'member',
+      invitedBy: workspace.userId,
+    });
+
+    // Auto-accept since it's a public workspace
+    await db.workspaceMembers.acceptInvite(workspaceId, userId);
+
+    res.status(200).json({ 
+      message: 'Joined workspace',
+      workspace: {
+        id: workspace.id,
+        name: workspace.name,
+        publicUrl: workspace.publicUrl,
+      },
+    });
+  } catch (error) {
+    console.error('Error joining workspace:', error);
+    res.status(500).json({ error: 'Failed to join workspace' });
   }
 });
 
