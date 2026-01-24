@@ -7,6 +7,8 @@ Architectural comparisons with alternative multi-agent coordination systems.
 | File | System | Focus |
 |------|--------|-------|
 | [OVERVIEW.md](./OVERVIEW.md) | Multiple | General landscape of agent orchestration tools |
+| [CLAUDE_CODE_TEAMMATETOOL.md](./CLAUDE_CODE_TEAMMATETOOL.md) | Claude Code TeammateTool | **NEW** - Hidden multi-agent orchestration in Claude Code v2.1.19 |
+| [CLAUDE_CODE_AGENTROOMS.md](./CLAUDE_CODE_AGENTROOMS.md) | Claude Code Agentrooms | Third-party hub-and-spoke orchestration |
 | [GASTOWN.md](./GASTOWN.md) | Gastown | Deep dive into work-centric orchestration vs Relay's messaging approach |
 | [HAPPY_CODER.md](./HAPPY_CODER.md) | Happy Coder | Mobile-first remote control with E2E encryption |
 | [MCP_AGENT_MAIL.md](./MCP_AGENT_MAIL.md) | MCP Agent Mail | Analysis of MCP-based agent communication |
@@ -16,16 +18,17 @@ Architectural comparisons with alternative multi-agent coordination systems.
 
 **Agent Relay's Position**: Communication-first, universal compatibility, multi-agent orchestration
 
-| Feature | Agent Relay | Gastown | Happy Coder | MCP Agent Mail | Tmux-Orchestrator |
-|---------|-------------|---------|-------------|----------------|-------------------|
-| Core model | Real-time messaging | Work orchestration | Mobile remote control | MCP tools | Autonomous scheduling |
-| Agent compatibility | Any CLI (8+) | Claude Code only | Claude, Codex, Gemini | MCP-capable | Claude Code |
-| Agent scope | Multi-agent | Multi-agent | Single session | Multi-agent | Multi-agent |
-| State persistence | SQLite + cloud | Git-backed (Beads) | Session-based | Varies | Git commits |
-| Encryption | Planned | None | E2E (zero-knowledge) | None | None |
-| Mobile app | Planned | None | React Native + Expo | None | None |
-| Injection method | tmux/pty | tmux | Child process spawn | MCP protocol | tmux send-keys |
-| Learning curve | Low | High | Low | Medium | Low |
+| Feature | Agent Relay | TeammateTool | Gastown | Happy Coder | MCP Agent Mail | Tmux-Orchestrator |
+|---------|-------------|--------------|---------|-------------|----------------|-------------------|
+| Core model | Real-time messaging | Team operations | Work orchestration | Mobile remote control | MCP tools | Autonomous scheduling |
+| Agent compatibility | Any CLI (8+) | Claude Code only | Claude Code only | Claude, Codex, Gemini | MCP-capable | Claude Code |
+| Agent scope | Multi-agent | Multi-agent | Multi-agent | Single session | Multi-agent | Multi-agent |
+| State persistence | SQLite + cloud | File-based | Git-backed (Beads) | Session-based | Varies | Git commits |
+| Encryption | Planned | Unknown | None | E2E (zero-knowledge) | None | None |
+| Mobile app | Planned | None | None | React Native + Expo | None | None |
+| Injection method | tmux/pty | iTerm2/tmux/in-proc | tmux | Child process spawn | MCP protocol | tmux send-keys |
+| Learning curve | Low | Unknown | High | Low | Medium | Low |
+| Status | Production | Hidden/Feature-gated | Production | Production | Production | Production |
 
 ## Takeaways Applied
 
