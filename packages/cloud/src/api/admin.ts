@@ -8,7 +8,7 @@
 import { Router, Request, Response } from 'express';
 import { getConfig } from '../config.js';
 import { getProvisioner, WorkspaceProvisioner } from '../provisioner/index.js';
-import { getDb } from '../db/drizzle.js';
+import { db } from '../db/index.js';
 
 export const adminRouter = Router();
 
@@ -134,7 +134,6 @@ adminRouter.post('/workspaces/community/create', async (req: Request, res: Respo
   }
 
   try {
-    const db = getDb();
     const provisioner = getProvisioner();
 
     // Check if community workspace already exists

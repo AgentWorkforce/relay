@@ -507,8 +507,10 @@ export const workspaceQueries: WorkspaceQueries = {
     return db
       .select()
       .from(schema.workspaces)
-      .where(eq(schema.workspaces.isPublic, true))
-      .where(eq(schema.workspaces.status, 'running'))
+      .where(and(
+        eq(schema.workspaces.isPublic, true),
+        eq(schema.workspaces.status, 'running')
+      ))
       .orderBy(desc(schema.workspaces.createdAt));
   },
 
