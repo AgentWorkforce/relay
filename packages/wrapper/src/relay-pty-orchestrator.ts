@@ -310,9 +310,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
    * Error log - always outputs (errors are important)
    */
   private logError(message: string): void {
-    if (this.config.debug) {
-      console.error(`[relay-pty-orchestrator:${this.config.name}] ERROR: ${message}`);
-    }
+    console.error(`[relay-pty-orchestrator:${this.config.name}] ERROR: ${message}`);
   }
 
   /**
@@ -1401,11 +1399,6 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     });
   }
 
-  /** Maximum retries for failed injections before giving up */
-  private static readonly MAX_INJECTION_RETRIES = 5;
-  /** Backoff delay multiplier (ms) for retries: delay = BASE * 2^retryCount */
-  private static readonly INJECTION_RETRY_BASE_MS = 2000;
-
   /**
    * Process queued messages
    */
@@ -1430,9 +1423,8 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     this.isInjecting = true;
 
     const msg = this.messageQueue.shift()!;
-    const retryCount = (msg as any)._retryCount ?? 0;
     const bodyPreview = msg.body.substring(0, 50).replace(/\n/g, '\\n');
-    this.log(` Processing message from ${msg.from}: "${bodyPreview}..." (remaining=${this.messageQueue.length}, retry=${retryCount})`);
+    this.log(` Processing message from ${msg.from}: "${bodyPreview}..." (remaining=${this.messageQueue.length})`);
 
     try {
       const success = await this.injectMessage(msg);
@@ -1441,23 +1433,9 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       if (!success) {
         // Record failure for adaptive throttling
         this.throttle.recordFailure();
-
-        // Re-queue with backoff if under retry limit
-        if (retryCount < RelayPtyOrchestrator.MAX_INJECTION_RETRIES) {
-          const backoffMs = RelayPtyOrchestrator.INJECTION_RETRY_BASE_MS * Math.pow(2, retryCount);
-          this.log(` Re-queuing message ${msg.messageId.substring(0, 8)} for retry ${retryCount + 1} in ${backoffMs}ms`);
-          (msg as any)._retryCount = retryCount + 1;
-          // Add to front of queue for priority
-          this.messageQueue.unshift(msg);
-          // Wait before retrying
-          this.isInjecting = false;
-          setTimeout(() => this.processMessageQueue(), backoffMs);
-          return;
-        }
-
-        this.logError(` Injection failed for message ${msg.messageId.substring(0, 8)} after ${retryCount} retries`);
-        this.config.onInjectionFailed?.(msg.messageId, 'Injection failed after max retries');
-        this.sendSyncAck(msg.messageId, msg.sync, 'ERROR', { error: 'injection_failed_max_retries' });
+        this.logError(` Injection failed for message ${msg.messageId.substring(0, 8)}`);
+        this.config.onInjectionFailed?.(msg.messageId, 'Injection failed');
+        this.sendSyncAck(msg.messageId, msg.sync, 'ERROR', { error: 'injection_failed' });
       } else {
         // Record success for adaptive throttling
         this.throttle.recordSuccess();
