@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/bridge",
-  "version": "2.0.9",
+  "version": "2.0.10",
   "description": "Multi-project bridge client utilities for Relay",
   "type": "module",
   "main": "dist/index.js",
@@ -22,12 +22,12 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agent-relay/protocol": "2.0.9",
-    "@agent-relay/config": "2.0.9",
-    "@agent-relay/utils": "2.0.9",
-    "@agent-relay/policy": "2.0.9",
-    "@agent-relay/user-directory": "2.0.9",
-    "@agent-relay/wrapper": "2.0.9"
+    "@agent-relay/protocol": "2.0.10",
+    "@agent-relay/config": "2.0.10",
+    "@agent-relay/utils": "2.0.10",
+    "@agent-relay/policy": "2.0.10",
+    "@agent-relay/user-directory": "2.0.10",
+    "@agent-relay/wrapper": "2.0.10"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",
