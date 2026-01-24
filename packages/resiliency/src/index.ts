@@ -147,3 +147,11 @@ export {
   type PeerHealth,
   type GossipHealthConfig,
 } from './gossip-health.js';
+
+export {
+  CgroupManager,
+  getCgroupManager,
+  formatCpuTime,
+  type CpuLimitConfig,
+  type AgentCgroupInfo,
+} from './cgroup-manager.js';

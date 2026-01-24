@@ -46,6 +46,8 @@ import {
   type AgentMemoryMonitor,
   type MemoryAlert,
   formatBytes,
+  getCgroupManager,
+  type CgroupManager,
 } from '@agent-relay/resiliency';
 
 // ============================================================================
@@ -138,6 +140,8 @@ export interface RelayPtyOrchestratorConfig extends BaseWrapperConfig {
   debug?: boolean;
   /** Force headless mode (use pipes instead of inheriting TTY) */
   headless?: boolean;
+  /** CPU limit percentage per agent (1-100 per core, e.g., 50 = 50% of one core). Requires cgroups v2. */
+  cpuLimitPercent?: number;
 }
 
 /**
@@ -227,6 +231,10 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   private memoryMonitor: AgentMemoryMonitor;
   private memoryAlertHandler: ((alert: MemoryAlert) => void) | null = null;
 
+  // CPU limiting via cgroups (optional, Linux only)
+  private cgroupManager: CgroupManager;
+  private hasCgroupSetup = false;
+
   // Note: sessionEndProcessed and lastSummaryRawContent are inherited from BaseWrapper
 
   constructor(config: RelayPtyOrchestratorConfig) {
@@ -314,6 +322,9 @@ export class RelayPtyOrchestrator extends BaseWrapper {
 
     // Initialize memory monitor (shared singleton, 10s polling interval)
     this.memoryMonitor = getMemoryMonitor({ checkIntervalMs: 10_000 });
+
+    // Initialize cgroup manager for CPU limiting (shared singleton)
+    this.cgroupManager = getCgroupManager();
   }
 
   /**
@@ -489,6 +500,12 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     if (this.memoryAlertHandler) {
       this.memoryMonitor.off('alert', this.memoryAlertHandler);
       this.memoryAlertHandler = null;
+    }
+
+    // Clean up cgroup if we set one up
+    if (this.hasCgroupSetup) {
+      await this.cgroupManager.removeAgentCgroup(this.config.name);
+      this.hasCgroupSetup = false;
     }
 
     this.log(` Stopping...`);
@@ -673,6 +690,12 @@ export class RelayPtyOrchestrator extends BaseWrapper {
         this.memoryAlertHandler = null;
       }
 
+      // Clean up cgroup (fire and forget - process already exited)
+      if (this.hasCgroupSetup) {
+        this.cgroupManager.removeAgentCgroup(this.config.name).catch(() => {});
+        this.hasCgroupSetup = false;
+      }
+
       // Broadcast crash notification if not a graceful stop
       if (!this.isGracefulStop && this.client.state === 'READY') {
         const canBroadcast = typeof (this.client as any).broadcast === 'function';
@@ -734,6 +757,14 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       this.memoryMonitor.register(this.config.name, proc.pid);
       this.memoryMonitor.start(); // Idempotent - starts if not already running
 
+      // Set up CPU limiting via cgroups (if configured and available)
+      // This prevents one agent from starving others during npm install/build
+      if (this.config.cpuLimitPercent && this.config.cpuLimitPercent > 0) {
+        this.setupCgroupLimit(proc.pid, this.config.cpuLimitPercent).catch((err) => {
+          this.log(` Failed to set up cgroup CPU limit: ${err.message}`);
+        });
+      }
+
       // Set up alert handler to send resource alerts to dashboard only (not other agents)
       this.memoryAlertHandler = (alert: MemoryAlert) => {
         if (alert.agentName !== this.config.name) return;
@@ -755,6 +786,29 @@ export class RelayPtyOrchestrator extends BaseWrapper {
         });
       };
       this.memoryMonitor.on('alert', this.memoryAlertHandler);
+    }
+  }
+
+  /**
+   * Set up cgroup CPU limit for this agent
+   */
+  private async setupCgroupLimit(pid: number, cpuPercent: number): Promise<void> {
+    await this.cgroupManager.initialize();
+
+    if (!this.cgroupManager.isAvailable()) {
+      this.log(` cgroups not available, skipping CPU limit`);
+      return;
+    }
+
+    const created = await this.cgroupManager.createAgentCgroup(this.config.name, { cpuPercent });
+    if (!created) {
+      return;
+    }
+
+    const added = await this.cgroupManager.addProcess(this.config.name, pid);
+    if (added) {
+      this.hasCgroupSetup = true;
+      this.log(` CPU limit set to ${cpuPercent}% for agent ${this.config.name}`);
     }
   }
 
