@@ -78,9 +78,12 @@ Spawn a new worker agent.
 relay_spawn({
   name: "WorkerName",
   cli: "claude",       // or "codex", "gemini", etc.
-  task: "Task description for the agent"
+  task: "Task description for the agent",
+  includeWorkflowConventions?: false // Optional: include ACK/DONE conventions
 })
 ```
+
+**Note on `includeWorkflowConventions`**: By default (`false`), spawned agents receive only transport-level instructions (how to send/receive messages). Set to `true` to include ACK/DONE workflow conventions where workers acknowledge tasks and signal completion.
 
 ### relay_release
 Release a spawned worker agent.

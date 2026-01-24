@@ -582,7 +582,7 @@ fn strip_ansi(text: &str) -> String {
             match chars.peek() {
                 Some('[') => {
                     // CSI sequence: ESC [ ... final_byte
-                    chars.next(); // consume '['
+                    chars.next();
                     // Skip until we hit a letter (final byte of CSI is 0x40-0x7E)
                     while let Some(&nc) = chars.peek() {
                         chars.next();
@@ -593,17 +593,15 @@ fn strip_ansi(text: &str) -> String {
                 }
                 Some(']') => {
                     // OSC sequence: ESC ] ... (ST or BEL)
-                    chars.next(); // consume ']'
+                    chars.next();
                     // Skip until ST (ESC \) or BEL (\x07)
                     while let Some(nc) = chars.next() {
                         if nc == '\x07' {
                             break;
                         }
-                        if nc == '\x1b' {
-                            if chars.peek() == Some(&'\\') {
-                                chars.next();
-                                break;
-                            }
+                        if nc == '\x1b' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
                         }
                     }
                 }

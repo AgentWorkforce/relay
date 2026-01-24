@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/dashboard-server",
-  "version": "2.0.0",
+  "version": "2.0.6",
   "description": "Relay dashboard server - HTTP/WebSocket server for agent coordination",
   "type": "module",
   "main": "dist/index.js",
@@ -22,17 +22,18 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agent-relay/protocol": "2.0.0",
-    "@agent-relay/config": "2.0.0",
-    "@agent-relay/storage": "2.0.0",
-    "@agent-relay/bridge": "2.0.0",
-    "@agent-relay/utils": "2.0.0",
-    "@agent-relay/resiliency": "2.0.0",
-    "@agent-relay/trajectory": "2.0.0",
-    "@agent-relay/cloud": "2.0.0",
-    "@agent-relay/daemon": "2.0.0",
-    "@agent-relay/user-directory": "2.0.0",
-    "@agent-relay/sdk": "2.0.0",
+    "@agent-relay/protocol": "2.0.6",
+    "@agent-relay/config": "2.0.6",
+    "@agent-relay/storage": "2.0.6",
+    "@agent-relay/bridge": "2.0.6",
+    "@agent-relay/utils": "2.0.6",
+    "@agent-relay/resiliency": "2.0.6",
+    "@agent-relay/trajectory": "2.0.6",
+    "@agent-relay/cloud": "2.0.6",
+    "@agent-relay/daemon": "2.0.6",
+    "@agent-relay/user-directory": "2.0.6",
+    "@agent-relay/sdk": "2.0.6",
+    "array-flatten": "^1.1.1",
     "express": "^4.21.2",
     "ws": "^8.18.3"
   },
@@ -45,5 +46,10 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentWorkforce/relay.git",
+    "directory": "packages/dashboard-server"
   }
 }

@@ -8,6 +8,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { findProjectRoot } from '@agent-relay/config';
 
 // ============================================================================
 // Types
@@ -190,7 +191,39 @@ export function discoverSocket(options: CloudConnectionOptions = {}): DiscoveryR
     }
   }
 
-  // 4. Current working directory config
+  // 4. Project-local socket (created by daemon in project's .agent-relay directory)
+  // This is the primary path for local development
+  // First try cwd, then scan up to find project root
+  const projectRoot = findProjectRoot(process.cwd());
+  const searchDirs = [process.cwd()];
+  if (projectRoot && projectRoot !== process.cwd()) {
+    searchDirs.push(projectRoot);
+  }
+
+  for (const dir of searchDirs) {
+    const projectLocalSocket = join(dir, '.agent-relay', 'relay.sock');
+    if (existsSync(projectLocalSocket)) {
+      // Read project ID from marker file if available
+      let projectId = 'local';
+      const markerPath = join(dir, '.agent-relay', '.project');
+      if (existsSync(markerPath)) {
+        try {
+          const marker = JSON.parse(readFileSync(markerPath, 'utf-8'));
+          projectId = marker.projectId || 'local';
+        } catch {
+          // Ignore marker read errors
+        }
+      }
+      return {
+        socketPath: projectLocalSocket,
+        project: projectId,
+        source: 'cwd',
+        isCloud: false,
+      };
+    }
+  }
+
+  // 4b. Legacy .relay/config.json support
   const cwdConfig = join(process.cwd(), '.relay', 'config.json');
   if (existsSync(cwdConfig)) {
     try {

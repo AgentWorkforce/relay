@@ -423,6 +423,84 @@ Client                          Daemon
 
 ---
 
+## SpawnRequest API
+
+When spawning agents programmatically, use the `SpawnRequest` interface:
+
+```typescript
+interface SpawnRequest {
+  /** Worker agent name */
+  name: string;
+  /** CLI tool (e.g., 'claude', 'claude:opus', 'codex') */
+  cli: string;
+  /** Initial task to inject */
+  task: string;
+  /** Optional team name to organize agents under */
+  team?: string;
+  /** Working directory for the agent (defaults to detected workspace) */
+  cwd?: string;
+  /** Name of the agent requesting the spawn (for policy enforcement) */
+  spawnerName?: string;
+  /** Interactive mode - disables auto-accept of permission prompts */
+  interactive?: boolean;
+  /** User ID for per-user credential storage in shared workspaces */
+  userId?: string;
+  /** Include ACK/DONE workflow conventions in agent instructions (default: false) */
+  includeWorkflowConventions?: boolean;
+}
+```
+
+### Protocol Design: Transport vs Application Semantics
+
+The relay protocol is designed as a **transport layer** by default. This means:
+
+- **Default behavior (`includeWorkflowConventions: false`)**: Agents receive only transport-level instructions (how to send/receive messages, spawn workers, etc.). No application-level conventions like ACK/DONE are included.
+
+- **Opt-in conventions (`includeWorkflowConventions: true`)**: Includes ACK/DONE workflow conventions in agent instructions. Use this when you want agents to follow structured task acknowledgment patterns.
+
+### When to Use `includeWorkflowConventions`
+
+| Scenario | Recommended Setting | Reason |
+|----------|-------------------|--------|
+| SDK consumers building custom workflows | `false` (default) | Clean transport layer, define your own conventions |
+| Cloud/managed deployments | `true` | Structured task tracking with ACK/DONE |
+| Simple message passing | `false` (default) | No overhead from unused conventions |
+| Task-based agent teams | `true` | Workers signal task start/completion |
+
+### Example: Transport-Only (Default)
+
+```typescript
+const request: SpawnRequest = {
+  name: 'Worker1',
+  cli: 'claude',
+  task: 'Review the PR at #123',
+  // includeWorkflowConventions defaults to false
+};
+
+// Agent receives transport instructions only:
+// - How to send messages (->relay:Target <<<content>>>)
+// - How to spawn/release workers
+// - No ACK/DONE conventions
+```
+
+### Example: With Workflow Conventions
+
+```typescript
+const request: SpawnRequest = {
+  name: 'Worker1',
+  cli: 'claude',
+  task: 'Review the PR at #123',
+  includeWorkflowConventions: true, // Opt into ACK/DONE
+};
+
+// Agent receives transport + workflow instructions:
+// - Send "ACK: Brief description" when starting
+// - Send "DONE: Summary of work" when complete
+// - Report status to lead agent
+```
+
+---
+
 ## Next Steps
 
 1. **Create beads for SDK work**

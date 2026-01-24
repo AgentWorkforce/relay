@@ -53,12 +53,13 @@ export type RelayClientFactory = (options: {
 }) => Promise<IRelayClient>;
 
 /**
- * User session state
+ * User session state - supports multiple WebSocket connections (multi-tab)
  */
 interface UserSession {
   username: string;
   relayClient: IRelayClient;
-  webSocket: WebSocket;
+  /** Multiple WebSocket connections for multi-tab support */
+  webSockets: Set<WebSocket>;
   channels: Set<string>;
   avatarUrl?: string;
 }
@@ -126,9 +127,11 @@ export class UserBridge {
     webSocket: WebSocket,
     options?: { avatarUrl?: string; displayName?: string }
   ): Promise<void> {
-    // If user already registered, unregister first
+    // If user already registered, just update the WebSocket (multi-tab support)
     if (this.users.has(username)) {
-      this.unregisterUser(username);
+      console.log(`[user-bridge] User ${username} already registered, updating WebSocket`);
+      this.updateWebSocket(username, webSocket);
+      return;
     }
 
     // Create relay client for this user
@@ -156,17 +159,17 @@ export class UserBridge {
       this.handleIncomingChannelMessage(username, from, channel, body, envelope);
     };
 
-    // Create session
+    // Create session with WebSocket set for multi-tab support
     const session: UserSession = {
       username,
       relayClient,
-      webSocket,
+      webSockets: new Set([webSocket]),
       channels: new Set(),
       avatarUrl: options?.avatarUrl,
     };
 
     this.users.set(username, session);
-    console.log(`[user-bridge] User registered: ${username} (total: ${this.users.size})`);
+    console.log(`[user-bridge] User registered: ${username} (total users: ${this.users.size}, connections: 1)`);
 
     // Auto-join user to #general channel
     // Note: The daemon auto-joins on connect, but we need to track locally too
@@ -186,12 +189,29 @@ export class UserBridge {
       }
     }
 
-    // Set up WebSocket close handler
+    // Set up WebSocket close handler to remove this specific connection
     webSocket.on('close', () => {
-      this.unregisterUser(username);
+      this.removeWebSocket(username, webSocket);
     });
 
     console.log(`[user-bridge] User ${username} registered with relay daemon`);
+  }
+
+  /**
+   * Remove a specific WebSocket connection from a user's session.
+   * If this was the last connection, unregister the user entirely.
+   */
+  private removeWebSocket(username: string, webSocket: WebSocket): void {
+    const session = this.users.get(username);
+    if (!session) return;
+
+    session.webSockets.delete(webSocket);
+    console.log(`[user-bridge] WebSocket closed for ${username} (${session.webSockets.size} connections remaining)`);
+
+    // Only unregister if ALL connections are closed
+    if (session.webSockets.size === 0) {
+      this.unregisterUser(username);
+    }
   }
 
   /**
@@ -215,30 +235,25 @@ export class UserBridge {
   }
 
   /**
-   * Update the WebSocket for an existing user session.
-   * This is needed when a user reconnects or opens a new tab,
-   * so messages are forwarded to the active WebSocket.
+   * Add a new WebSocket connection for an existing user session.
+   * This is needed when a user opens a new tab.
    */
   updateWebSocket(username: string, newWebSocket: WebSocket): boolean {
     const session = this.users.get(username);
     if (!session) {
-      console.log(`[user-bridge] Cannot update WebSocket - user ${username} not registered`);
+      console.log(`[user-bridge] Cannot add WebSocket - user ${username} not registered`);
       return false;
     }
 
-    // Remove the close handler from old WebSocket to prevent auto-unregister
-    session.webSocket.removeAllListeners('close');
+    // Add the new WebSocket to the set
+    session.webSockets.add(newWebSocket);
 
-    // Update to new WebSocket
-    session.webSocket = newWebSocket;
-
-    // Set up close handler on new WebSocket
+    // Set up close handler to remove this specific connection
     newWebSocket.on('close', () => {
-      // Note: The server manages multi-tab connections and will call
-      // unregisterUser when all connections are closed
+      this.removeWebSocket(username, newWebSocket);
     });
 
-    console.log(`[user-bridge] Updated WebSocket for user ${username}`);
+    console.log(`[user-bridge] Added WebSocket for user ${username} (${session.webSockets.size} connections)`);
     return true;
   }
 
@@ -366,24 +381,27 @@ export class UserBridge {
     const session = this.users.get(username);
     if (!session) return;
 
-    const ws = session.webSocket;
-    if (ws.readyState !== 1) return; // Not OPEN
-
     // Look up sender's avatar if lookup function is available
     const senderInfo = this.lookupUserInfo?.(from);
     const fromAvatarUrl = senderInfo?.avatarUrl;
     // Determine entity type: user if they have info, agent otherwise
     const fromEntityType: 'user' | 'agent' = senderInfo ? 'user' : 'agent';
 
-    // Direct message (DELIVER)
-    ws.send(JSON.stringify({
+    const message = JSON.stringify({
       type: 'direct_message',
       from,
       fromAvatarUrl,
       fromEntityType,
       body: payloadObj?.body || body,
       timestamp: new Date().toISOString(),
-    }));
+    });
+
+    // Send to ALL open WebSocket connections (multi-tab support)
+    for (const ws of session.webSockets) {
+      if (ws.readyState === 1) { // OPEN
+        ws.send(message);
+      }
+    }
   }
 
   /**
@@ -399,9 +417,6 @@ export class UserBridge {
     const session = this.users.get(username);
     if (!session) return;
 
-    const ws = session.webSocket;
-    if (ws.readyState !== 1) return; // Not OPEN
-
     // Look up sender's avatar if lookup function is available
     const senderInfo = this.lookupUserInfo?.(from);
     const fromAvatarUrl = senderInfo?.avatarUrl;
@@ -410,7 +425,7 @@ export class UserBridge {
 
     // Channel message
     const env = envelope as { payload?: { thread?: string; mentions?: string[] } } | undefined;
-    ws.send(JSON.stringify({
+    const message = JSON.stringify({
       type: 'channel_message',
       channel,
       from,
@@ -420,7 +435,14 @@ export class UserBridge {
       thread: env?.payload?.thread,
       mentions: env?.payload?.mentions,
       timestamp: new Date().toISOString(),
-    }));
+    });
+
+    // Send to ALL open WebSocket connections (multi-tab support)
+    for (const ws of session.webSockets) {
+      if (ws.readyState === 1) { // OPEN
+        ws.send(message);
+      }
+    }
   }
 
   /**

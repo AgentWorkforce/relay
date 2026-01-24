@@ -15,6 +15,55 @@
       "startedAt": "2026-01-24T08:31:28.288Z",
       "completedAt": "2026-01-24T08:53:24.276Z",
       "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_i2h6krqx2iun.json"
+    },
+    "traj_zyvnr1v9bw7w": {
+      "title": "Fix socketPath not passed to spawned agents",
+      "status": "completed",
+      "startedAt": "2026-01-23T22:31:57.685Z",
+      "completedAt": "2026-01-23T22:32:30.053Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_zyvnr1v9bw7w.json"
+    },
+    "traj_hqfzzchfb4lb": {
+      "title": "Fix legacy outbox symlink missing in local mode",
+      "status": "completed",
+      "startedAt": "2026-01-23T22:37:12.632Z",
+      "completedAt": "2026-01-23T22:37:30.808Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_hqfzzchfb4lb.json"
+    },
+    "traj_7pw4d7277g1g": {
+      "title": "Legacy outbox path hardcoded in AgentSwarm defaults",
+      "status": "completed",
+      "startedAt": "2026-01-23T22:37:49.391Z",
+      "completedAt": "2026-01-23T22:37:59.758Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_7pw4d7277g1g.json"
+    },
+    "traj_ozanwai83oe7": {
+      "title": "Fix legacy symlink creation in local mode (Devin review)",
+      "status": "completed",
+      "startedAt": "2026-01-23T22:43:28.638Z",
+      "completedAt": "2026-01-23T22:43:45.373Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_ozanwai83oe7.json"
+    },
+    "traj_maes4hqdjyt1": {
+      "title": "Add path traversal validation for agent names",
+      "status": "completed",
+      "startedAt": "2026-01-23T22:48:17.748Z",
+      "completedAt": "2026-01-23T22:48:31.640Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_maes4hqdjyt1.json"
+    },
+    "traj_6ddibplo00du": {
+      "title": "Separation of concerns: relay protocol vs application semantics",
+      "status": "completed",
+      "startedAt": "2026-01-23T22:53:03.102Z",
+      "completedAt": "2026-01-23T22:53:15.827Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_6ddibplo00du.json"
+    },
+    "traj_9eqbfvrxl36g": {
+      "title": "Add includeWorkflowConventions opt-in flag for ACK/DONE",
+      "status": "completed",
+      "startedAt": "2026-01-23T22:56:17.733Z",
+      "completedAt": "2026-01-23T23:00:29.377Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_9eqbfvrxl36g.json"
     }
   }
 }

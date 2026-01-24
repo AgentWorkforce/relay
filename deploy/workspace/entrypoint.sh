@@ -6,6 +6,13 @@ log() {
   echo "[workspace] $*"
 }
 
+# Debug logging function
+debug() {
+  if [[ "${GH_CREDENTIAL_DEBUG:-}" == "1" ]]; then
+    echo "[workspace:debug] $*" >&2
+  fi
+}
+
 # Fix volume permissions and drop to workspace user if running as root
 if [[ "$(id -u)" == "0" ]]; then
   # Fix /data and /workspace permissions before dropping privileges
@@ -153,28 +160,71 @@ if [[ -n "${CLOUD_API_URL:-}" && -n "${WORKSPACE_ID:-}" && -n "${WORKSPACE_TOKEN
   # fallback chain will use this token (env > hosts.yml > gh CLI > cloud API).
   # ============================================================================
   if [[ -z "${GH_TOKEN:-}" ]]; then
-    log "Fetching GitHub token from cloud API..."
-    GH_TOKEN_RESPONSE=$(curl -sf --max-time 10 \
-      -H "Authorization: Bearer ${WORKSPACE_TOKEN}" \
-      "${CLOUD_API_URL}/api/git/token?workspaceId=${WORKSPACE_ID}" 2>/dev/null) || true
-
-    if [[ -n "${GH_TOKEN_RESPONSE}" ]]; then
-      # Extract userToken (preferred) or token from JSON response
-      FETCHED_TOKEN=$(echo "${GH_TOKEN_RESPONSE}" | jq -r '.userToken // .token // empty' 2>/dev/null)
-      if [[ -n "${FETCHED_TOKEN}" && "${FETCHED_TOKEN}" != "null" ]]; then
-        export GH_TOKEN="${FETCHED_TOKEN}"
-        export GITHUB_TOKEN="${FETCHED_TOKEN}"
-        # Persist token for SSH sessions (sourced by /etc/profile.d/workspace-env.sh)
-        echo "export GH_TOKEN=\"${FETCHED_TOKEN}\"" > "${HOME}/.gh_token"
-        echo "export GITHUB_TOKEN=\"${FETCHED_TOKEN}\"" >> "${HOME}/.gh_token"
-        chmod 600 "${HOME}/.gh_token"
-        log "GH_TOKEN set from cloud API (token available for git operations and SSH sessions)"
-      else
-        log "WARN: Cloud API returned no token; git may require manual auth"
-      fi
-    else
-      log "WARN: Failed to fetch GitHub token from cloud API; git may require manual auth"
-      log "      Fallback: run 'gh auth login' or set GH_TOKEN manually"
+    log "Fetching GitHub token from cloud API (with retry)..."
+    
+    GH_TOKEN_MAX_RETRIES=3
+    GH_TOKEN_RETRY_DELAY=2
+    GH_TOKEN_FETCHED=""
+    
+    for attempt in $(seq 1 $GH_TOKEN_MAX_RETRIES); do
+      log "Attempt $attempt/$GH_TOKEN_MAX_RETRIES to fetch token..."
+      
+      # Remove -f flag to capture error responses, use -w to get HTTP status
+      GH_TOKEN_HTTP_CODE=0
+      GH_TOKEN_RESPONSE=$(curl -s -w "\n%{http_code}" --max-time 10 \
+        -H "Authorization: Bearer ${WORKSPACE_TOKEN}" \
+        "${CLOUD_API_URL}/api/git/token?workspaceId=${WORKSPACE_ID}" 2>&1) || true
+      
+      # Split response and status code
+      GH_TOKEN_HTTP_CODE=$(echo "$GH_TOKEN_RESPONSE" | tail -1)
+      GH_TOKEN_RESPONSE=$(echo "$GH_TOKEN_RESPONSE" | head -n -1)
+      
+      debug "HTTP Status: $GH_TOKEN_HTTP_CODE"
+      debug "Response: ${GH_TOKEN_RESPONSE:0:200}"
+      
+      # Handle different failure modes
+      case "$GH_TOKEN_HTTP_CODE" in
+        200)
+          # Success - parse token
+          FETCHED_TOKEN=$(echo "$GH_TOKEN_RESPONSE" | jq -r '.userToken // .token // empty' 2>/dev/null)
+          if [[ -n "${FETCHED_TOKEN}" && "${FETCHED_TOKEN}" != "null" ]]; then
+            export GH_TOKEN="${FETCHED_TOKEN}"
+            export GITHUB_TOKEN="${FETCHED_TOKEN}"
+            echo "export GH_TOKEN=\"${FETCHED_TOKEN}\"" > "${HOME}/.gh_token"
+            echo "export GITHUB_TOKEN=\"${FETCHED_TOKEN}\"" >> "${HOME}/.gh_token"
+            chmod 600 "${HOME}/.gh_token"
+            log "✓ GH_TOKEN fetched successfully (attempt $attempt)"
+            GH_TOKEN_FETCHED="yes"
+            break
+          else
+            log "WARN: Response 200 but no token in JSON response"
+            GH_TOKEN_FETCHED="empty-response"
+          fi
+          ;;
+        401|403)
+          # Auth error - don't retry
+          log "ERROR: Authentication failed (HTTP $GH_TOKEN_HTTP_CODE)"
+          log "      Check WORKSPACE_TOKEN and CLOUD_API_URL credentials"
+          GH_TOKEN_FETCHED="auth-error"
+          break
+          ;;
+        000|28)
+          # Network timeout (000=curl error, 28=timeout)
+          log "WARN: Network timeout on attempt $attempt"
+          [[ $attempt -lt $GH_TOKEN_MAX_RETRIES ]] && sleep $((GH_TOKEN_RETRY_DELAY * (2 ** (attempt - 1))))
+          ;;
+        *)
+          # Other HTTP errors - could be transient, retry
+          log "WARN: HTTP $GH_TOKEN_HTTP_CODE on attempt $attempt"
+          [[ $attempt -lt $GH_TOKEN_MAX_RETRIES ]] && sleep $((GH_TOKEN_RETRY_DELAY * (2 ** (attempt - 1))))
+          ;;
+      esac
+    done
+    
+    # Final status
+    if [[ -z "$GH_TOKEN_FETCHED" ]]; then
+      log "WARN: Could not fetch GitHub token after $GH_TOKEN_MAX_RETRIES attempts"
+      log "      Git operations will use credential helper fallback chain"
     fi
   else
     log "GH_TOKEN already set in environment"
@@ -191,6 +241,14 @@ if [[ -n "${CLOUD_API_URL:-}" && -n "${WORKSPACE_ID:-}" && -n "${WORKSPACE_TOKEN
   # NOTE: Do NOT create hosts.yml with placeholder - it causes migration errors
   # when combined with GH_TOKEN. The gh-relay wrapper in /usr/local/bin/gh
   # handles token refresh automatically with caching.
+  # Install and configure gh-credential-relay credential helper
+  # This allows gh CLI to fetch fresh tokens from cloud API on-demand
+  if [[ -f "/app/deploy/workspace/gh-credential-relay" ]]; then
+    sudo install -m 755 /app/deploy/workspace/gh-credential-relay /usr/local/bin/gh-credential-relay
+    gh config set -h github.com credential-helper gh-credential-relay 2>/dev/null || true
+    log "Configured gh CLI to use cloud API credential helper"
+  fi
+
   mkdir -p "${HOME}/.config/gh"
   # Remove any stale hosts.yml that might cause migration errors
   rm -f "${HOME}/.config/gh/hosts.yml"
@@ -515,6 +573,10 @@ cd "${ACTUAL_WORKSPACE}"
 
 # Set RELAY_PROJECT from WORKSPACE_ID at runtime (MCP socket discovery uses this)
 export RELAY_PROJECT="${WORKSPACE_ID:-${RELAY_PROJECT:-default}}"
+
+# Ensure node can resolve modules from /app when running from workspace directory
+# Without this, @agent-relay/dashboard won't be found since it's in /app/node_modules
+export NODE_PATH="/app/node_modules"
 
 log "Starting agent-relay daemon on port ${PORT} from ${ACTUAL_WORKSPACE}"
 args=(/app/dist/src/cli/index.js up --dashboard --port "${PORT}")
