@@ -711,6 +711,17 @@ export async function startDashboard(
   // Track alive status for ping/pong keepalive on bridge connections
   const bridgeClientAlive = new WeakMap<WebSocket, boolean>();
 
+  // Session tracking for reconnection and missed messages
+  interface SessionState {
+    sessionId: string;
+    lastMessageId: string | null;
+    lastConnectedAt: Date;
+    messages: Array<{ id: string; data: unknown; timestamp: number }>;
+  }
+  const sessions = new Map<string, SessionState>();
+  const wsToSessionId = new WeakMap<WebSocket, string>();
+  const MAX_MISSED_MESSAGES = 100; // Keep last 100 messages per session
+
   // Ping interval for main dashboard WebSocket connections (30 seconds)
   // Aligns with heartbeat timeout (5s heartbeat * 6 multiplier = 30s)
   const MAIN_PING_INTERVAL_MS = 30000;
@@ -2021,6 +2032,10 @@ export async function startDashboard(
         return;
       }
 
+      // Generate a message ID for tracking
+      const messageId = `msg-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+      const timestamp = Date.now();
+
       wss.clients.forEach(client => {
         // Skip clients that are still being initialized by the connection handler
         if (initializingClients.has(client)) {
@@ -2029,8 +2044,50 @@ export async function startDashboard(
         if (client.readyState === WebSocket.OPEN) {
           try {
             client.send(payload);
+            
+            // Track message for session (for missed message recovery)
+            const sessionId = wsToSessionId.get(client);
+            if (sessionId) {
+              const sessionState = sessions.get(sessionId);
+              if (sessionState) {
+                // Add message to session history
+                sessionState.messages.push({
+                  id: messageId,
+                  data: JSON.parse(payload),
+                  timestamp,
+                });
+                
+                // Keep only last MAX_MISSED_MESSAGES messages
+                if (sessionState.messages.length > MAX_MISSED_MESSAGES) {
+                  sessionState.messages.shift();
+                }
+                
+                // Update last message ID
+                sessionState.lastMessageId = messageId;
+              }
+            }
           } catch (err) {
             console.error('[dashboard] Failed to send to client:', err);
+          }
+        } else {
+          // Client is disconnected - store message for session if exists
+          const sessionId = wsToSessionId.get(client);
+          if (sessionId) {
+            const sessionState = sessions.get(sessionId);
+            if (sessionState) {
+              sessionState.messages.push({
+                id: messageId,
+                data: JSON.parse(payload),
+                timestamp,
+              });
+              
+              // Keep only last MAX_MISSED_MESSAGES messages
+              if (sessionState.messages.length > MAX_MISSED_MESSAGES) {
+                sessionState.messages.shift();
+              }
+              
+              sessionState.lastMessageId = messageId;
+            }
           }
         }
       });
@@ -2140,6 +2197,76 @@ export async function startDashboard(
     // Mark as initializing to prevent broadcastData from sending before we do
     initializingClients.add(ws);
 
+    let sessionId: string | null = null;
+    let sessionInitialized = false;
+
+    // Handle incoming messages from client (e.g., session_init)
+    ws.on('message', async (data) => {
+      try {
+        const message = JSON.parse(data.toString());
+        
+        if (message.type === 'session_init' && message.sessionId) {
+          sessionId = message.sessionId;
+          const lastMessageId = message.lastMessageId || null;
+          wsToSessionId.set(ws, sessionId);
+
+          // Get or create session state
+          let sessionState = sessions.get(sessionId);
+          const isReconnection = !!sessionState;
+          
+          if (!sessionState) {
+            sessionState = {
+              sessionId,
+              lastMessageId: null,
+              lastConnectedAt: new Date(),
+              messages: [],
+            };
+            sessions.set(sessionId, sessionState);
+          } else {
+            // Update last connected time
+            sessionState.lastConnectedAt = new Date();
+          }
+
+          // Get current data
+          const initialData = await getAllData();
+          
+          // Send missed messages if this is a reconnection
+          if (isReconnection && lastMessageId && sessionState.messages.length > 0) {
+            // Find messages after the last known message ID
+            const lastMessageIndex = sessionState.messages.findIndex(m => m.id === lastMessageId);
+            const missedMessages = lastMessageIndex >= 0 
+              ? sessionState.messages.slice(lastMessageIndex + 1)
+              : sessionState.messages.slice(-10); // If ID not found, send last 10
+            
+            if (missedMessages.length > 0) {
+              ws.send(JSON.stringify({
+                type: 'missed_messages',
+                messages: missedMessages.map(m => m.data),
+                lastMessageId: sessionState.lastMessageId,
+              }));
+            }
+          }
+
+          // Send initial/restored data
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: isReconnection ? 'session_restored' : 'session_init',
+              data: initialData,
+              lastMessageId: sessionState.lastMessageId,
+            }));
+          }
+          
+          sessionInitialized = true;
+          // Now allow broadcastData to send to this client
+          initializingClients.delete(ws);
+        }
+      } catch (err) {
+        console.error('[dashboard] Failed to handle client message:', err);
+      }
+    });
+
+    // Send initial data immediately (before session_init message)
+    // If client sends session_init, it will override this
     try {
       const data = await getAllData();
       const payload = JSON.stringify(data);
@@ -2150,17 +2277,17 @@ export async function startDashboard(
         return;
       }
 
-      if (ws.readyState === WebSocket.OPEN) {
-        console.log('[dashboard] Sending initial data, size:', payload.length, 'first 200 chars:', payload.substring(0, 200));
+      // Wait a bit for session_init message, but not too long
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      if (!sessionInitialized && ws.readyState === WebSocket.OPEN) {
+        console.log('[dashboard] Sending initial data (no session), size:', payload.length);
         ws.send(payload);
-        console.log('[dashboard] Initial data sent successfully');
-      } else {
-        console.warn('[dashboard] WebSocket not open, state:', ws.readyState);
+        // Now allow broadcastData to send to this client
+        initializingClients.delete(ws);
       }
     } catch (err) {
       console.error('[dashboard] Failed to send initial data:', err);
-    } finally {
-      // Now allow broadcastData to send to this client
       initializingClients.delete(ws);
     }
 
@@ -2170,6 +2297,12 @@ export async function startDashboard(
 
     ws.on('close', (code, reason) => {
       console.log('[dashboard] WebSocket client disconnected, code:', code, 'reason:', reason?.toString() || 'none');
+      
+      // Clean up session mapping
+      if (sessionId) {
+        wsToSessionId.delete(ws);
+        // Keep session state for potential reconnection (will be cleaned up by TTL)
+      }
     });
   });
 

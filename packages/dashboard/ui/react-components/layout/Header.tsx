@@ -44,6 +44,8 @@ export interface HeaderProps {
   onMenuClick?: () => void;
   /** Show notification badge on mobile menu button */
   hasUnreadNotifications?: boolean;
+  /** Whether WebSocket is reconnecting */
+  isReconnecting?: boolean;
 }
 
 export function Header({
@@ -66,6 +68,7 @@ export function Header({
   hasActiveTrajectory,
   onMenuClick,
   hasUnreadNotifications,
+  isReconnecting,
 }: HeaderProps) {
   // In channels view, use selectedChannelName; otherwise use currentChannel
   const isChannelsView = viewMode === 'channels';
@@ -107,6 +110,14 @@ export function Header({
 
       {/* Workspace Status Indicator */}
       <WorkspaceStatusIndicator className="max-md:hidden mr-3" />
+
+      {/* Reconnect Indicator */}
+      {isReconnecting && (
+        <div className="max-md:hidden flex items-center gap-1.5 mr-3 px-2 py-1 bg-warning/20 border border-warning/30 rounded-md">
+          <div className="w-2 h-2 bg-warning rounded-full animate-pulse" />
+          <span className="text-xs text-warning font-medium">Reconnecting...</span>
+        </div>
+      )}
 
       {/* Divider after workspace status */}
       <div className="w-px h-6 bg-border-subtle mr-3 max-md:hidden" />
