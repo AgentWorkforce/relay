@@ -43,13 +43,50 @@ export interface SpawnModalProps {
 }
 
 /** Model options for Claude agents */
-const CLAUDE_MODEL_OPTIONS = [
-  { value: 'sonnet', label: 'Sonnet', description: 'Fast and capable (default)' },
-  { value: 'opus', label: 'Opus', description: 'Most capable, slower' },
-  { value: 'haiku', label: 'Haiku', description: 'Fastest, lightweight' },
-] as const;
+const CLAUDE_MODEL_OPTIONS: { value: string; label: string }[] = [
+  { value: 'sonnet', label: 'Sonnet' },
+  { value: 'opus', label: 'Opus' },
+  { value: 'haiku', label: 'Haiku' },
+];
 
-type ClaudeModel = typeof CLAUDE_MODEL_OPTIONS[number]['value'];
+type ClaudeModel = string;
+
+/** Model options for Cursor agents */
+const CURSOR_MODEL_OPTIONS: { value: string; label: string }[] = [
+  { value: 'opus-4.5-thinking', label: 'Claude 4.5 Opus (Thinking)' },
+  { value: 'opus-4.5', label: 'Claude 4.5 Opus' },
+  { value: 'sonnet-4.5', label: 'Claude 4.5 Sonnet' },
+  { value: 'sonnet-4.5-thinking', label: 'Claude 4.5 Sonnet (Thinking)' },
+  { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex' },
+  { value: 'gpt-5.2-codex-high', label: 'GPT-5.2 Codex High' },
+  { value: 'gpt-5.2-codex-low', label: 'GPT-5.2 Codex Low' },
+  { value: 'gpt-5.2-codex-xhigh', label: 'GPT-5.2 Codex Extra High' },
+  { value: 'gpt-5.2-codex-fast', label: 'GPT-5.2 Codex Fast' },
+  { value: 'gpt-5.2-codex-high-fast', label: 'GPT-5.2 Codex High Fast' },
+  { value: 'gpt-5.2-codex-low-fast', label: 'GPT-5.2 Codex Low Fast' },
+  { value: 'gpt-5.2-codex-xhigh-fast', label: 'GPT-5.2 Codex Extra High Fast' },
+  { value: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max' },
+  { value: 'gpt-5.1-codex-max-high', label: 'GPT-5.1 Codex Max High' },
+  { value: 'gpt-5.2', label: 'GPT-5.2' },
+  { value: 'gpt-5.2-high', label: 'GPT-5.2 High' },
+  { value: 'gpt-5.1-high', label: 'GPT-5.1 High' },
+  { value: 'gemini-3-pro', label: 'Gemini 3 Pro' },
+  { value: 'gemini-3-flash', label: 'Gemini 3 Flash' },
+  { value: 'composer-1', label: 'Composer 1' },
+  { value: 'grok', label: 'Grok' },
+];
+
+type CursorModel = string;
+
+/** Model options for Codex agents */
+const CODEX_MODEL_OPTIONS: { value: string; label: string }[] = [
+  { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex' },
+  { value: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max' },
+  { value: 'gpt-5.1-codex-mini', label: 'GPT-5.1 Codex Mini' },
+  { value: 'gpt-5.2', label: 'GPT-5.2' },
+];
+
+type CodexModel = string;
 
 const AGENT_TEMPLATES = [
   {
@@ -68,6 +105,7 @@ const AGENT_TEMPLATES = [
     description: 'OpenAI Codex agent',
     icon: '⚡',
     providerId: 'codex', // Backend uses 'openai', but we check for both
+    supportsModelSelection: true,
   },
   {
     id: 'gemini',
@@ -100,6 +138,7 @@ const AGENT_TEMPLATES = [
     description: 'Cursor AI agent',
     icon: '📝',
     providerId: 'cursor',
+    supportsModelSelection: true,
   },
   {
     id: 'custom',
@@ -125,6 +164,8 @@ export function SpawnModal({
   const [name, setName] = useState('');
   const [customCommand, setCustomCommand] = useState('');
   const [selectedModel, setSelectedModel] = useState<ClaudeModel>('sonnet');
+  const [selectedCursorModel, setSelectedCursorModel] = useState<CursorModel>('opus-4.5-thinking');
+  const [selectedCodexModel, setSelectedCodexModel] = useState<CodexModel>('gpt-5.2-codex');
   const [cwd, setCwd] = useState('');
   const [team, setTeam] = useState('');
   const [isShadow, setIsShadow] = useState(false);
@@ -134,17 +175,25 @@ export function SpawnModal({
   const [localError, setLocalError] = useState<string | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
 
-  // Build effective command, including model flag for Claude
+  // Build effective command, always including model flag for Claude, Cursor, and Codex
   const effectiveCommand = useMemo(() => {
     if (selectedTemplate.id === 'custom') {
       return customCommand;
     }
-    // For Claude, append model flag if not default (sonnet)
-    if (selectedTemplate.id === 'claude' && selectedModel !== 'sonnet') {
+    // For Claude, always append model flag
+    if (selectedTemplate.id === 'claude') {
       return `${selectedTemplate.command} --model ${selectedModel}`;
     }
+    // For Cursor, always append model flag
+    if (selectedTemplate.id === 'cursor') {
+      return `${selectedTemplate.command} --model ${selectedCursorModel}`;
+    }
+    // For Codex, always append model flag
+    if (selectedTemplate.id === 'codex') {
+      return `${selectedTemplate.command} --model ${selectedCodexModel}`;
+    }
     return selectedTemplate.command;
-  }, [selectedTemplate, customCommand, selectedModel]);
+  }, [selectedTemplate, customCommand, selectedModel, selectedCursorModel, selectedCodexModel]);
 
   const shadowMode = useMemo(() => deriveShadowMode(effectiveCommand), [effectiveCommand]);
 
@@ -234,6 +283,8 @@ export function SpawnModal({
       setName('');
       setCustomCommand('');
       setSelectedModel('sonnet');
+      setSelectedCursorModel('opus-4.5-thinking');
+      setSelectedCodexModel('gpt-5.2-codex');
       setCwd('');
       setTeam('');
       setIsShadow(false);
@@ -362,27 +413,66 @@ export function SpawnModal({
           {/* Model Selection (Claude only) */}
           {selectedTemplate.id === 'claude' && (
             <div className="mb-5">
-              <label className="block text-sm font-semibold text-text-primary mb-2">Model</label>
-              <div className="grid grid-cols-3 gap-2">
+              <label className="block text-sm font-semibold text-text-primary mb-2" htmlFor="claude-model">
+                Model
+              </label>
+              <select
+                id="claude-model"
+                className="w-full py-2.5 px-3.5 border border-border rounded-md text-sm font-sans outline-none bg-bg-primary text-text-primary transition-colors duration-150 focus:border-accent disabled:bg-bg-hover disabled:text-text-muted"
+                value={selectedModel}
+                onChange={(e) => setSelectedModel(e.target.value as ClaudeModel)}
+                disabled={isSpawning}
+              >
                 {CLAUDE_MODEL_OPTIONS.map((model) => (
-                  <button
-                    key={model.value}
-                    type="button"
-                    className={`
-                      flex flex-col items-center gap-0.5 py-2.5 px-2 border-2 rounded-lg cursor-pointer font-sans transition-all duration-150
-                      ${selectedModel === model.value
-                        ? 'bg-accent/10 border-accent'
-                        : 'bg-bg-hover border-transparent hover:bg-bg-active'
-                      }
-                    `}
-                    onClick={() => setSelectedModel(model.value)}
-                    disabled={isSpawning}
-                  >
-                    <span className="text-sm font-semibold text-text-primary">{model.label}</span>
-                    <span className="text-xs text-text-muted text-center">{model.description}</span>
-                  </button>
+                  <option key={model.value} value={model.value}>
+                    {model.label}
+                  </option>
                 ))}
-              </div>
+              </select>
+            </div>
+          )}
+
+          {/* Model Selection (Cursor only) */}
+          {selectedTemplate.id === 'cursor' && (
+            <div className="mb-5">
+              <label className="block text-sm font-semibold text-text-primary mb-2" htmlFor="cursor-model">
+                Model
+              </label>
+              <select
+                id="cursor-model"
+                className="w-full py-2.5 px-3.5 border border-border rounded-md text-sm font-sans outline-none bg-bg-primary text-text-primary transition-colors duration-150 focus:border-accent disabled:bg-bg-hover disabled:text-text-muted"
+                value={selectedCursorModel}
+                onChange={(e) => setSelectedCursorModel(e.target.value as CursorModel)}
+                disabled={isSpawning}
+              >
+                {CURSOR_MODEL_OPTIONS.map((model) => (
+                  <option key={model.value} value={model.value}>
+                    {model.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* Model Selection (Codex only) */}
+          {selectedTemplate.id === 'codex' && (
+            <div className="mb-5">
+              <label className="block text-sm font-semibold text-text-primary mb-2" htmlFor="codex-model">
+                Model
+              </label>
+              <select
+                id="codex-model"
+                className="w-full py-2.5 px-3.5 border border-border rounded-md text-sm font-sans outline-none bg-bg-primary text-text-primary transition-colors duration-150 focus:border-accent disabled:bg-bg-hover disabled:text-text-muted"
+                value={selectedCodexModel}
+                onChange={(e) => setSelectedCodexModel(e.target.value as CodexModel)}
+                disabled={isSpawning}
+              >
+                {CODEX_MODEL_OPTIONS.map((model) => (
+                  <option key={model.value} value={model.value}>
+                    {model.label}
+                  </option>
+                ))}
+              </select>
             </div>
           )}
 
