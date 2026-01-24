@@ -112,5 +112,7 @@ async fn test_end_to_end_inject_via_socket() {
     let response = send_request(&socket_path_str, json!({"type": "shutdown"})).await;
     assert_eq!(response["type"], "shutdown_ack");
 
-    let _ = timeout(Duration::from_secs(5), child.wait()).await.unwrap();
+    let _ = timeout(Duration::from_secs(10), child.wait())
+        .await
+        .unwrap();
 }

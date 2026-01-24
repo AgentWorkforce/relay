@@ -488,8 +488,17 @@ impl AsyncPty {
             sent_kill = true;
         }
 
+        // After SIGKILL, wait with timeout to avoid blocking forever
         if sent_kill {
-            let _ = waitpid(self.child_pid, None);
+            let kill_start = Instant::now();
+            while kill_start.elapsed() < Duration::from_secs(2) {
+                match waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG)) {
+                    Ok(WaitStatus::StillAlive) => {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    _ => break,
+                }
+            }
         }
 
         self.pty.take();

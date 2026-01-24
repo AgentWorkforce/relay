@@ -23,6 +23,7 @@ import {
 import { Daemon } from './server.js';
 import { AgentSpawner } from '@agent-relay/bridge';
 import { getProjectPaths } from '@agent-relay/config';
+import { getCloudSync, createCloudPersistenceHandler } from './cloud-sync.js';
 import type {
   Workspace,
   Agent,
@@ -547,6 +548,14 @@ export class Orchestrator extends EventEmitter {
         onMarkSpawning: (name) => workspace.daemon?.markSpawning(name),
         onClearSpawning: (name) => workspace.daemon?.clearSpawning(name),
       });
+
+      // Set up cloud persistence for session tracking (if cloud sync is enabled)
+      const cloudSync = getCloudSync();
+      if (cloudSync.isConnected()) {
+        const persistenceHandler = createCloudPersistenceHandler(cloudSync, workspace.cloudId);
+        workspace.spawner.setCloudPersistence(persistenceHandler);
+        logger.info('Cloud persistence enabled for workspace', { id: workspaceId });
+      }
 
       // Set up agent death notifications
       workspace.spawner.setOnAgentDeath((info) => {

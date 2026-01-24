@@ -39,6 +39,36 @@ export interface CloudSyncConfig {
   // Project context for workspace resolution
   /** Project directory for git remote detection (defaults to cwd) */
   projectDirectory?: string;
+
+  /** Enable agent metrics sync to cloud (default: true if connected) */
+  metricsSyncEnabled?: boolean;
+}
+
+/**
+ * Agent metrics data for cloud sync
+ */
+export interface AgentMetricsPayload {
+  name: string;
+  pid?: number;
+  status: string;
+  rssBytes?: number;
+  heapUsedBytes?: number;
+  heapTotalBytes?: number;
+  cpuPercent?: number;
+  trend?: string;
+  trendRatePerMinute?: number;
+  alertLevel?: string;
+  highWatermark?: number;
+  averageRss?: number;
+  uptimeMs?: number;
+  startedAt?: Date;
+}
+
+/**
+ * Provider interface for getting agent metrics
+ */
+export interface AgentMetricsProvider {
+  getAll(): AgentMetricsPayload[];
 }
 
 export interface RemoteAgent {
@@ -79,6 +109,9 @@ export class CloudSyncService extends EventEmitter {
 
   // Optimized sync queue
   private syncQueue: SyncQueue | null = null;
+
+  // Agent metrics provider (e.g., AgentMemoryMonitor)
+  private metricsProvider: AgentMetricsProvider | null = null;
 
   constructor(config: Partial<CloudSyncConfig> = {}) {
     super();
@@ -300,11 +333,12 @@ export class CloudSyncService extends EventEmitter {
         }
       }
 
-      // Fetch messages, sync agents, and sync local messages to cloud
+      // Fetch messages, sync agents, sync local messages, and push metrics to cloud
       await Promise.all([
         this.fetchMessages(),
         this.syncAgents(),
         this.syncMessagesToCloud(),
+        this.pushAgentMetrics(),
       ]);
     } catch (error) {
       // Provide more specific error messages for common issues
@@ -453,6 +487,200 @@ export class CloudSyncService extends EventEmitter {
   }
 
   /**
+   * Set the metrics provider for agent metrics sync
+   */
+  setMetricsProvider(provider: AgentMetricsProvider): void {
+    this.metricsProvider = provider;
+    log.info('Metrics provider configured for agent metrics sync');
+  }
+
+  /**
+   * Push agent metrics to cloud monitoring API.
+   * Called during heartbeat if a metrics provider is configured.
+   */
+  async pushAgentMetrics(): Promise<{ recorded: number } | null> {
+    if (!this.connected || this.config.metricsSyncEnabled === false) {
+      return null;
+    }
+
+    if (!this.metricsProvider) {
+      return null;
+    }
+
+    try {
+      const agents = this.metricsProvider.getAll();
+      if (agents.length === 0) {
+        return { recorded: 0 };
+      }
+
+      // Transform to API format
+      const payload = agents.map(agent => ({
+        name: agent.name,
+        pid: agent.pid,
+        status: agent.status,
+        rssBytes: agent.rssBytes,
+        heapUsedBytes: agent.heapUsedBytes,
+        heapTotalBytes: agent.heapTotalBytes,
+        cpuPercent: agent.cpuPercent,
+        trend: agent.trend,
+        trendRatePerMinute: agent.trendRatePerMinute,
+        alertLevel: agent.alertLevel,
+        highWatermark: agent.highWatermark,
+        averageRss: agent.averageRss,
+        uptimeMs: agent.uptimeMs,
+        startedAt: agent.startedAt?.toISOString(),
+      }));
+
+      const response = await fetch(`${this.config.cloudUrl}/api/monitoring/metrics`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.config.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ agents: payload }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Metrics push failed: ${response.status}`);
+      }
+
+      const result = await response.json() as { success: boolean; recorded: number };
+
+      if (result.recorded > 0) {
+        log.info(`Pushed ${result.recorded} agent metrics to cloud`);
+      }
+
+      return { recorded: result.recorded };
+    } catch (error) {
+      log.error('Failed to push agent metrics', { error: String(error) });
+      return null;
+    }
+  }
+
+  // ============================================================================
+  // Session Persistence API (for linked daemons)
+  // ============================================================================
+
+  /**
+   * Create a new agent session in cloud.
+   * Returns the session ID for tracking summaries and end markers.
+   */
+  async createSession(agentName: string, workspaceId?: string): Promise<string | null> {
+    if (!this.connected) {
+      return null;
+    }
+
+    try {
+      const response = await fetch(`${this.config.cloudUrl}/api/monitoring/session/create`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.config.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          agentName,
+          workspaceId,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Session create failed: ${response.status}`);
+      }
+
+      const result = await response.json() as { success: boolean; sessionId: string };
+      log.info(`Created session ${result.sessionId.substring(0, 8)} for ${agentName}`);
+      return result.sessionId;
+    } catch (error) {
+      log.error('Failed to create session', { agentName, error: String(error) });
+      return null;
+    }
+  }
+
+  /**
+   * Add a summary to an existing session.
+   */
+  async addSummary(
+    sessionId: string,
+    agentName: string,
+    summary: {
+      currentTask?: string;
+      completedTasks?: string[];
+      decisions?: string[];
+      context?: string;
+      files?: string[];
+    }
+  ): Promise<string | null> {
+    if (!this.connected) {
+      return null;
+    }
+
+    try {
+      const response = await fetch(`${this.config.cloudUrl}/api/monitoring/session/summary`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.config.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          sessionId,
+          agentName,
+          summary,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Summary add failed: ${response.status}`);
+      }
+
+      const result = await response.json() as { success: boolean; summaryId: string };
+      log.info(`Added summary for ${agentName}: ${summary.currentTask || 'no task'}`);
+      return result.summaryId;
+    } catch (error) {
+      log.error('Failed to add summary', { sessionId, agentName, error: String(error) });
+      return null;
+    }
+  }
+
+  /**
+   * End a session with an optional end marker.
+   */
+  async endSession(
+    sessionId: string,
+    endMarker?: {
+      summary?: string;
+      completedTasks?: string[];
+    }
+  ): Promise<boolean> {
+    if (!this.connected) {
+      return false;
+    }
+
+    try {
+      const response = await fetch(`${this.config.cloudUrl}/api/monitoring/session/end`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.config.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          sessionId,
+          endMarker,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Session end failed: ${response.status}`);
+      }
+
+      log.info(`Ended session ${sessionId.substring(0, 8)}: ${endMarker?.summary || 'no summary'}`);
+      return true;
+    } catch (error) {
+      log.error('Failed to end session', { sessionId, error: String(error) });
+      return false;
+    }
+  }
+
+  /**
    * Queue a single message for sync to cloud.
    * Use this for real-time sync as messages are created.
    * Falls back to batch sync if optimized queue is not enabled.
@@ -579,4 +807,96 @@ export function getCloudSync(config?: Partial<CloudSyncConfig>): CloudSyncServic
     _cloudSync = new CloudSyncService(config);
   }
   return _cloudSync;
+}
+
+// ============================================================================
+// Cloud Persistence Handler Factory
+// ============================================================================
+
+/**
+ * Summary event from wrapper
+ */
+export interface SummaryEvent {
+  agentName: string;
+  summary: {
+    currentTask?: string;
+    completedTasks?: string[];
+    decisions?: string[];
+    context?: string;
+    files?: string[];
+  };
+}
+
+/**
+ * Session end event from wrapper
+ */
+export interface SessionEndEvent {
+  agentName: string;
+  marker: {
+    summary?: string;
+    completedTasks?: string[];
+  };
+}
+
+/**
+ * Cloud persistence handler interface (matches @agent-relay/bridge)
+ */
+export interface CloudPersistenceHandler {
+  onSummary: (agentName: string, event: SummaryEvent) => Promise<void>;
+  onSessionEnd: (agentName: string, event: SessionEndEvent) => Promise<void>;
+  destroy?: () => void;
+}
+
+/**
+ * Create a cloud persistence handler that uses CloudSyncService.
+ * Tracks session IDs per agent and creates sessions lazily on first summary.
+ *
+ * @param cloudSync The CloudSyncService instance to use
+ * @param workspaceId Optional workspace ID for session scoping
+ * @returns CloudPersistenceHandler for use with AgentSpawner
+ */
+export function createCloudPersistenceHandler(
+  cloudSync: CloudSyncService,
+  workspaceId?: string
+): CloudPersistenceHandler {
+  // Track session IDs per agent name
+  const agentSessions = new Map<string, string>();
+
+  return {
+    async onSummary(agentName: string, event: SummaryEvent): Promise<void> {
+      // Get or create session for this agent
+      let sessionId = agentSessions.get(agentName);
+
+      if (!sessionId) {
+        // Create session on first summary
+        const newSessionId = await cloudSync.createSession(agentName, workspaceId);
+        if (newSessionId) {
+          sessionId = newSessionId;
+          agentSessions.set(agentName, sessionId);
+        } else {
+          log.warn(`Failed to create session for ${agentName}, skipping summary`);
+          return;
+        }
+      }
+
+      // Add summary to session
+      await cloudSync.addSummary(sessionId, agentName, event.summary);
+    },
+
+    async onSessionEnd(agentName: string, event: SessionEndEvent): Promise<void> {
+      const sessionId = agentSessions.get(agentName);
+
+      if (sessionId) {
+        // End the session
+        await cloudSync.endSession(sessionId, event.marker);
+        agentSessions.delete(agentName);
+      } else {
+        log.warn(`No session found for ${agentName} on session-end`);
+      }
+    },
+
+    destroy(): void {
+      agentSessions.clear();
+    },
+  };
 }

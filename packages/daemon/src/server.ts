@@ -28,7 +28,8 @@ import { SqliteStorageAdapter } from '@agent-relay/storage/sqlite-adapter';
 import { getProjectPaths } from '@agent-relay/config';
 import { AgentRegistry } from './agent-registry.js';
 import { daemonLog as log } from '@agent-relay/utils/logger';
-import { getCloudSync, type CloudSyncService, type RemoteAgent, type CrossMachineMessage } from './cloud-sync.js';
+import { getCloudSync, type CloudSyncService, type RemoteAgent, type CrossMachineMessage, type AgentMetricsProvider } from './cloud-sync.js';
+import { getMemoryMonitor } from '@agent-relay/resiliency';
 import { generateId } from '@agent-relay/wrapper';
 import {
   ConsensusIntegration,
@@ -491,6 +492,31 @@ export class Daemon {
       if (this.storage) {
         this.cloudSync.setStorage(this.storage);
       }
+
+      // Set metrics provider for agent metrics sync to cloud
+      // Uses the singleton memory monitor from @agent-relay/resiliency
+      const memoryMonitor = getMemoryMonitor();
+      const metricsProvider: AgentMetricsProvider = {
+        getAll: () => {
+          return memoryMonitor.getAll().map(m => ({
+            name: m.name,
+            pid: m.pid,
+            status: m.alertLevel === 'normal' ? 'running' : m.alertLevel,
+            rssBytes: m.current.rssBytes,
+            heapUsedBytes: m.current.heapUsedBytes,
+            heapTotalBytes: m.current.heapTotalBytes,
+            cpuPercent: m.current.cpuPercent,
+            trend: m.trend,
+            trendRatePerMinute: m.trendRatePerMinute,
+            alertLevel: m.alertLevel,
+            highWatermark: m.highWatermark,
+            averageRss: m.averageRss,
+            uptimeMs: m.uptimeMs,
+            startedAt: m.startedAt,
+          }));
+        },
+      };
+      this.cloudSync.setMetricsProvider(metricsProvider);
 
       log.info('Cloud sync enabled');
     } catch (err) {
