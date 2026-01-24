@@ -198,7 +198,7 @@ export interface AppProps {
 
 export function App({ wsUrl, orchestratorUrl }: AppProps) {
   // WebSocket connection for real-time data (per-project daemon)
-  const { data, isConnected, error: wsError } = useWebSocket({ url: wsUrl });
+  const { data, isConnected, isReconnecting, error: wsError } = useWebSocket({ url: wsUrl });
 
   // Orchestrator for multi-workspace management
   const {
@@ -2472,6 +2472,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
           onProjectChange={handleProjectSelect}
           onCommandPaletteOpen={handleCommandPaletteOpen}
           onSettingsClick={handleSettingsClick}
+          isReconnecting={isReconnecting}
           onHistoryClick={handleHistoryClick}
           onNewConversationClick={handleNewConversationClick}
           onCoordinatorClick={handleCoordinatorClick}
