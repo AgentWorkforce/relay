@@ -223,9 +223,12 @@ function getMcpToolsReference(): string {
  * This keeps agent instructions simple while supporting workspace isolation.
  *
  * @param agentName - Name of the agent
- * @param hasMcp - Whether MCP tools are available (based on .mcp.json existence)
+ * @param options - Configuration options
+ * @param options.hasMcp - Whether MCP tools are available (based on .mcp.json existence)
+ * @param options.includeWorkflowConventions - Include ACK/DONE workflow conventions (default: false)
  */
-function getRelayInstructions(agentName: string, hasMcp = false): string {
+function getRelayInstructions(agentName: string, options: { hasMcp?: boolean; includeWorkflowConventions?: boolean } = {}): string {
+  const { hasMcp = false, includeWorkflowConventions = false } = options;
   // Get the outbox path template and replace variable with actual agent name
   const outboxBase = getAgentOutboxTemplate(agentName);
 
@@ -255,28 +258,37 @@ function getRelayInstructions(agentName: string, hasMcp = false): string {
     '```',
     '',
     'Then output: `->relay-file:msg`',
-    '',
-    '## Communication Rules',
-    '',
-    '1. **ACK immediately** - When you receive a task:',
-    '```bash',
-    `cat > ${outboxBase}/ack << 'EOF'`,
-    'TO: Sender',
-    '',
-    'ACK: Brief description of task received',
-    'EOF',
-    '```',
-    'Then: `->relay-file:ack`',
-    '',
-    '2. **Report completion** - When done:',
-    '```bash',
-    `cat > ${outboxBase}/done << 'EOF'`,
-    'TO: Sender',
-    '',
-    'DONE: Brief summary of what was completed',
-    'EOF',
-    '```',
-    'Then: `->relay-file:done`',
+  );
+
+  // Only include ACK/DONE workflow conventions if explicitly requested
+  if (includeWorkflowConventions) {
+    parts.push(
+      '',
+      '## Communication Rules',
+      '',
+      '1. **ACK immediately** - When you receive a task:',
+      '```bash',
+      `cat > ${outboxBase}/ack << 'EOF'`,
+      'TO: Sender',
+      '',
+      'ACK: Brief description of task received',
+      'EOF',
+      '```',
+      'Then: `->relay-file:ack`',
+      '',
+      '2. **Report completion** - When done:',
+      '```bash',
+      `cat > ${outboxBase}/done << 'EOF'`,
+      'TO: Sender',
+      '',
+      'DONE: Brief summary of what was completed',
+      'EOF',
+      '```',
+      'Then: `->relay-file:done`',
+    );
+  }
+
+  parts.push(
     '',
     '## Message Format',
     '',
@@ -360,6 +372,8 @@ function hasRelayPtyBinary(): boolean {
 /** Options for AgentSpawner constructor */
 export interface AgentSpawnerOptions {
   projectRoot: string;
+  /** Explicit socket path for daemon connection (if not provided, derived from projectRoot) */
+  socketPath?: string;
   tmuxSession?: string;
   dashboardPort?: number;
   /**
@@ -405,7 +419,9 @@ export class AgentSpawner {
     // This ensures spawned agents have actual daemon connections for channel message delivery
     this.agentsPath = path.join(paths.teamDir, 'connected-agents.json');
     this.registryPath = path.join(paths.teamDir, 'agents.json');
-    this.socketPath = paths.socketPath;
+    // Use explicit socketPath if provided (ensures spawned agents connect to same daemon)
+    // Otherwise derive from project paths
+    this.socketPath = options.socketPath ?? paths.socketPath;
     this.logsDir = path.join(paths.teamDir, 'worker-logs');
     this.workersPath = path.join(paths.teamDir, 'workers.json');
     this.dashboardPort = options.dashboardPort;
@@ -667,8 +683,17 @@ export class AgentSpawner {
    * Spawn a new worker agent using relay-pty
    */
   async spawn(request: SpawnRequest): Promise<SpawnResult> {
-    const { name, cli, task, team, spawnerName, userId } = request;
+    const { name, cli, task, team, spawnerName, userId, includeWorkflowConventions } = request;
     const debug = process.env.DEBUG_SPAWN === '1';
+
+    // Validate agent name to prevent path traversal attacks
+    if (name.includes('..') || name.includes('/') || name.includes('\\')) {
+      return {
+        success: false,
+        name,
+        error: `Invalid agent name: "${name}" contains path traversal characters`,
+      };
+    }
 
     // Check if worker already exists in this spawner
     if (this.activeWorkers.has(name)) {
@@ -800,7 +825,9 @@ export class AgentSpawner {
       // 2. Relay daemon socket is accessible (daemon must be running)
       // Without both, MCP context would be shown but tools wouldn't work
       const mcpConfigPath = path.join(this.projectRoot, '.mcp.json');
-      const relaySocket = process.env.RELAY_SOCKET || '/tmp/agent-relay.sock';
+      // Use the actual socket path from config (project-local .agent-relay/relay.sock)
+      // or fall back to environment variable
+      const relaySocket = this.socketPath || process.env.RELAY_SOCKET || path.join(this.projectRoot, '.agent-relay', 'relay.sock');
       let hasMcp = false;
       if (fs.existsSync(mcpConfigPath)) {
         try {
@@ -813,7 +840,7 @@ export class AgentSpawner {
       if (debug && hasMcp) log.debug(`MCP tools available for ${name} (found ${mcpConfigPath} and socket ${relaySocket})`);
 
       // Inject relay protocol instructions via CLI-specific system prompt
-      let relayInstructions = getRelayInstructions(name, hasMcp);
+      let relayInstructions = getRelayInstructions(name, { hasMcp, includeWorkflowConventions });
 
       // Compose role-specific prompts if agent has a role defined in .claude/agents/
       const agentConfigForRole = isClaudeCli ? findAgentConfig(name, this.projectRoot) : null;

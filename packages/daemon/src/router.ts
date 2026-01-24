@@ -96,8 +96,8 @@ export class Router {
 
   /** Channel membership: channel -> Set of member names */
   private channels: Map<string, Set<string>> = new Map();
-  /** User entities (human users, not agents) */
-  private users: Map<string, RoutableConnection> = new Map();
+  /** User entities (human users, not agents) - supports multiple connections per user (multi-tab) */
+  private users: Map<string, Set<RoutableConnection>> = new Map();
   /** Reverse lookup: member name -> Set of channels they're in */
   private memberChannels: Map<string, Set<string>> = new Map();
 
@@ -253,14 +253,13 @@ export class Router {
       const isUser = connection.entityType === 'user';
 
       if (isUser) {
-        // Handle existing user connection with same name (disconnect old)
-        const existingUser = this.users.get(connection.agentName);
-        if (existingUser && existingUser.id !== connection.id) {
-          existingUser.close();
-          this.connections.delete(existingUser.id);
+        // Users can have multiple connections (e.g., multiple browser tabs)
+        // Track ALL connections per user so messages reach all tabs
+        if (!this.users.has(connection.agentName)) {
+          this.users.set(connection.agentName, new Set());
         }
-        this.users.set(connection.agentName, connection);
-        routerLog.info(`User registered: ${connection.agentName}`);
+        this.users.get(connection.agentName)!.add(connection);
+        routerLog.info(`User registered: ${connection.agentName} (${this.users.get(connection.agentName)!.size} connections)`);
       } else {
         // Handle existing agent connection with same name (disconnect old)
         const existing = this.agents.get(connection.agentName);
@@ -298,10 +297,16 @@ export class Router {
       let wasCurrentConnection = false;
 
       if (isUser) {
-        const currentUser = this.users.get(connection.agentName);
-        if (currentUser?.id === connection.id) {
-          this.users.delete(connection.agentName);
-          wasCurrentConnection = true;
+        const userConnections = this.users.get(connection.agentName);
+        if (userConnections) {
+          userConnections.delete(connection);
+          if (userConnections.size === 0) {
+            this.users.delete(connection.agentName);
+            wasCurrentConnection = true;
+            routerLog.info(`User fully unregistered: ${connection.agentName} (all connections closed)`);
+          } else {
+            routerLog.debug(`User connection closed: ${connection.agentName} (${userConnections.size} connections remaining)`);
+          }
         }
       } else {
         const current = this.agents.get(connection.agentName);
@@ -653,11 +658,13 @@ export class Router {
     to: string,
     envelope: SendEnvelope
   ): boolean {
-    const target = this.agents.get(to) ?? this.users.get(to);
-    const isUserTarget = target?.entityType === 'user';
+    // Check for agent first, then user connections
+    const agentTarget = this.agents.get(to);
+    const userConnections = this.users.get(to);
+    const hasTarget = agentTarget || (userConnections && userConnections.size > 0);
 
-    // If agent not found locally, check if it's on a remote machine
-    if (!target) {
+    // If target not found locally, check remote
+    if (!hasTarget) {
       const remoteAgent = this.crossMachineHandler?.isRemoteAgent(to);
       if (remoteAgent) {
         routerLog.info(`Routing to remote agent: ${to}`, { daemonName: remoteAgent.daemonName });
@@ -695,6 +702,33 @@ export class Router {
       return false;
     }
 
+    // For user targets, send to ALL connections (multi-tab support)
+    if (userConnections && userConnections.size > 0) {
+      let anySent = false;
+      for (const userConn of userConnections) {
+        const deliver = this.createDeliverEnvelope(from, to, envelope, userConn);
+        const sent = userConn.send(deliver);
+        if (sent) anySent = true;
+        routerLog.debug(`Delivered ${from} -> ${to} (user connection ${userConn.id})`, {
+          success: sent,
+          preview: envelope.payload.body?.substring(0, 40),
+        });
+        // Persist only once (for the first connection)
+        if (userConn === [...userConnections][0]) {
+          this.persistDeliverEnvelope(deliver);
+        }
+        if (sent) {
+          this.trackDelivery(userConn, deliver);
+        }
+      }
+      if (anySent) {
+        this.registry?.recordReceive(to);
+      }
+      return anySent;
+    }
+
+    // For agent targets, send to single connection
+    const target = agentTarget!;
     const deliver = this.createDeliverEnvelope(from, to, envelope, target);
     const sent = target.send(deliver);
     routerLog.debug(`Delivered ${from} -> ${to}`, { success: sent, preview: envelope.payload.body?.substring(0, 40) });
@@ -702,10 +736,7 @@ export class Router {
     if (sent) {
       this.trackDelivery(target, deliver);
       this.registry?.recordReceive(to);
-      // Only mark AI agents as processing; humans don't need processing indicators
-      if (!isUserTarget) {
-        this.setProcessing(to, deliver.id);
-      }
+      this.setProcessing(to, deliver.id);
     }
     return sent;
   }
@@ -787,19 +818,34 @@ export class Router {
     for (const recipientName of recipients) {
       if (recipientName === from) continue; // Don't send to self
 
-      // Check both agents and users maps (consistent with sendDirect)
-      const target = this.agents.get(recipientName) ?? this.users.get(recipientName);
-      if (target) {
-        const isUserTarget = target.entityType === 'user';
-        const deliver = this.createDeliverEnvelope(from, recipientName, envelope, target);
-        const sent = target.send(deliver);
+      // Check agents first
+      const agentTarget = this.agents.get(recipientName);
+      if (agentTarget) {
+        const deliver = this.createDeliverEnvelope(from, recipientName, envelope, agentTarget);
+        const sent = agentTarget.send(deliver);
         this.persistDeliverEnvelope(deliver, true); // Mark as broadcast
         if (sent) {
-          this.trackDelivery(target, deliver);
+          this.trackDelivery(agentTarget, deliver);
           this.registry?.recordReceive(recipientName);
-          // Only mark AI agents as processing; humans don't need processing indicators
-          if (!isUserTarget) {
-            this.setProcessing(recipientName, deliver.id);
+          this.setProcessing(recipientName, deliver.id);
+        }
+        continue;
+      }
+
+      // Check user connections (send to all connections for multi-tab)
+      const userConnections = this.users.get(recipientName);
+      if (userConnections && userConnections.size > 0) {
+        let persisted = false;
+        for (const userConn of userConnections) {
+          const deliver = this.createDeliverEnvelope(from, recipientName, envelope, userConn);
+          const sent = userConn.send(deliver);
+          if (!persisted) {
+            this.persistDeliverEnvelope(deliver, true); // Mark as broadcast, persist once
+            persisted = true;
+          }
+          if (sent) {
+            this.trackDelivery(userConn, deliver);
+            this.registry?.recordReceive(recipientName);
           }
         }
       }
@@ -814,16 +860,23 @@ export class Router {
     from: string,
     envelope: SendEnvelope
   ): void {
-    for (const [userName, target] of this.users) {
+    for (const [userName, userConnections] of this.users) {
       if (userName === from) continue; // Don't send to self
+      if (userConnections.size === 0) continue;
 
-      const deliver = this.createDeliverEnvelope(from, userName, envelope, target);
-      const sent = target.send(deliver);
-      this.persistDeliverEnvelope(deliver, true); // Mark as broadcast
-      if (sent) {
-        this.trackDelivery(target, deliver);
-        this.registry?.recordReceive(userName);
-        routerLog.debug(`Broadcast to user ${userName}`);
+      let persisted = false;
+      for (const userConn of userConnections) {
+        const deliver = this.createDeliverEnvelope(from, userName, envelope, userConn);
+        const sent = userConn.send(deliver);
+        if (!persisted) {
+          this.persistDeliverEnvelope(deliver, true); // Mark as broadcast, persist once
+          persisted = true;
+        }
+        if (sent) {
+          this.trackDelivery(userConn, deliver);
+          this.registry?.recordReceive(userName);
+          routerLog.debug(`Broadcast to user ${userName} (connection ${userConn.id})`);
+        }
       }
     }
   }
@@ -1358,8 +1411,10 @@ export class Router {
       if (this.namesMatch(memberName, senderName)) {
         continue;
       }
-      const memberConn = this.getConnectionByName(memberName);
-      if (memberConn) {
+
+      // Check for agent connection first
+      const agentConn = this.agents.get(memberName);
+      if (agentConn) {
         const deliverEnvelope: Envelope<ChannelMessagePayload> = {
           v: PROTOCOL_VERSION,
           type: 'CHANNEL_MESSAGE',
@@ -1368,18 +1423,48 @@ export class Router {
           from: senderName,
           payload: envelope.payload,
         };
-        const sent = memberConn.send(deliverEnvelope);
+        const sent = agentConn.send(deliverEnvelope);
         if (sent) {
           deliveredCount++;
-          routerLog.info(`Delivered to ${memberName} (${memberConn.entityType || 'agent'})`);
+          routerLog.info(`Delivered to ${memberName} (agent)`);
         } else {
           routerLog.warn(`Failed to send to ${memberName}`);
           undeliveredMembers.push(memberName);
         }
-      } else {
-        routerLog.warn(`Member ${memberName} is registered in channel but NOT connected to daemon - message not delivered`);
-        undeliveredMembers.push(memberName);
+        continue;
       }
+
+      // Check for user connections (send to ALL for multi-tab support)
+      const userConnections = this.users.get(memberName);
+      if (userConnections && userConnections.size > 0) {
+        let anyDelivered = false;
+        for (const userConn of userConnections) {
+          const deliverEnvelope: Envelope<ChannelMessagePayload> = {
+            v: PROTOCOL_VERSION,
+            type: 'CHANNEL_MESSAGE',
+            id: generateId(),
+            ts: Date.now(),
+            from: senderName,
+            payload: envelope.payload,
+          };
+          const sent = userConn.send(deliverEnvelope);
+          if (sent) {
+            anyDelivered = true;
+            routerLog.info(`Delivered to ${memberName} (user connection ${userConn.id})`);
+          }
+        }
+        if (anyDelivered) {
+          deliveredCount++;
+        } else {
+          routerLog.warn(`Failed to send to any connection for user ${memberName}`);
+          undeliveredMembers.push(memberName);
+        }
+        continue;
+      }
+
+      // Member not connected
+      routerLog.warn(`Member ${memberName} is registered in channel but NOT connected to daemon - message not delivered`);
+      undeliveredMembers.push(memberName);
     }
 
     // Persist channel message
@@ -1521,19 +1606,28 @@ export class Router {
   /**
    * Get a connection by name (checks both agents and users).
    * Uses case-insensitive lookup to handle mismatched casing.
+   * For users with multiple connections, returns the first connection.
    */
   private getConnectionByName(name: string): RoutableConnection | undefined {
-    // Try exact match first
-    const exact = this.agents.get(name) ?? this.users.get(name);
-    if (exact) return exact;
+    // Try exact match for agent first
+    const agentExact = this.agents.get(name);
+    if (agentExact) return agentExact;
+
+    // Try exact match for user (get first connection from set)
+    const userConnections = this.users.get(name);
+    if (userConnections && userConnections.size > 0) {
+      return [...userConnections][0];
+    }
 
     // Fall back to case-insensitive search
     const lowerName = name.toLowerCase();
     for (const [key, conn] of this.agents) {
       if (key.toLowerCase() === lowerName) return conn;
     }
-    for (const [key, conn] of this.users) {
-      if (key.toLowerCase() === lowerName) return conn;
+    for (const [key, conns] of this.users) {
+      if (key.toLowerCase() === lowerName && conns.size > 0) {
+        return [...conns][0];
+      }
     }
     return undefined;
   }

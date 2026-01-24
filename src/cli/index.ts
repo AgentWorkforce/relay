@@ -22,6 +22,15 @@ import { AgentSpawner, readWorkersMetadata, getWorkerLogsDir, selectShadowCli } 
 import type { SpawnRequest, SpawnResult } from '@agent-relay/bridge';
 import { generateAgentName, checkForUpdatesInBackground, checkForUpdates } from '@agent-relay/utils';
 import { getShadowForAgent } from '@agent-relay/config';
+import {
+  initTelemetry,
+  track,
+  isTelemetryEnabled,
+  enableTelemetry,
+  disableTelemetry,
+  getStatus,
+  isDisabledByEnv,
+} from '@agent-relay/telemetry';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -55,11 +64,25 @@ const execAsync = promisify(exec);
 
 // Check for updates in background (non-blocking)
 // Only show notification for interactive commands, not when wrapping agents or running update
-const interactiveCommands = ['up', 'down', 'status', 'agents', 'who', 'version', '--version', '-V', '--help', '-h', 'create-agent', 'claude', 'codex'];
+const interactiveCommands = ['up', 'down', 'status', 'agents', 'who', 'version', '--version', '-V', '--help', '-h', 'create-agent', 'claude', 'codex', 'telemetry'];
 const shouldCheckUpdates = process.argv.length > 2 &&
   interactiveCommands.includes(process.argv[2]);
 if (shouldCheckUpdates) {
   checkForUpdatesInBackground(VERSION);
+}
+
+// Initialize telemetry for interactive commands (shows first-run notice)
+const shouldInitTelemetry = process.argv.length > 2 &&
+  interactiveCommands.includes(process.argv[2]) &&
+  process.argv[2] !== 'telemetry'; // Don't show notice for telemetry command itself
+
+if (shouldInitTelemetry) {
+  initTelemetry({ showNotice: true });
+  // Track CLI command usage
+  const commandName = process.argv[2];
+  if (commandName && !commandName.startsWith('-')) {
+    track('cli_command_run', { command_name: commandName });
+  }
 }
 
 const program = new Command();
@@ -73,10 +96,11 @@ program
   .description('Agent-to-agent messaging')
   .version(VERSION, '-V, --version', 'Output the version number');
 
-// create-agent - Wrap agent with real-time messaging
+// create-agent - Wrap agent with real-time messaging (requires TTY)
+// For programmatic spawning from scripts, use 'agent-relay spawn' instead (no TTY required)
 program
   .command('create-agent')
-  .description('Wrap an agent with real-time messaging')
+  .description('Wrap an agent with real-time messaging (requires TTY, use "spawn" for scripts)')
   .option('-n, --name <name>', 'Agent name (auto-generated if not set)')
   .option('-d, --debug', 'Enable debug output')
   .option('--prefix <pattern>', 'Relay prefix pattern (default: ->relay:)')
@@ -372,8 +396,11 @@ program
       pidFilePath,
       storagePath: dbPath,
       teamDir: paths.teamDir,
-      // TODO: Add daemon-based spawning support when SDK extraction is complete
-      // See: docs/SDK-MIGRATION-PLAN.md
+      // Enable protocol-based spawning via SPAWN/RELEASE messages
+      spawnManager: {
+        projectRoot: paths.projectRoot,
+        socketPath,
+      },
     });
 
     // Create spawner for auto-spawn (will be initialized after dashboard starts)
@@ -1817,10 +1844,11 @@ program
     }
   });
 
-// spawn - Spawn an agent via API (works from any context, no tmux required)
+// spawn - Spawn an agent via API (works from any context, no TTY required)
+// Use this for programmatic spawning from scripts, detached processes, or containers
 program
-  .command('spawn', { hidden: true })
-  .description('Spawn an agent via dashboard API (no tmux required, works in containers)')
+  .command('spawn')
+  .description('Spawn an agent via dashboard API (recommended for programmatic use, no TTY required)')
   .argument('<name>', 'Agent name')
   .argument('<cli>', 'CLI to use (claude, codex, gemini, etc.)')
   .argument('[task]', 'Task description (can also be piped via stdin)')
@@ -3531,6 +3559,47 @@ program
   .option('--skip-daemon', 'Skip daemon startup')
   .option('--skip-mcp', 'Skip MCP installation')
   .action(runInit);
+
+// telemetry - Manage anonymous telemetry
+program
+  .command('telemetry')
+  .description('Manage anonymous telemetry (enable/disable/status)')
+  .argument('[action]', 'Action: enable, disable, or status (default: status)')
+  .action((action?: string) => {
+    if (action === 'enable') {
+      if (isDisabledByEnv()) {
+        console.log('Cannot enable: AGENT_RELAY_TELEMETRY_DISABLED is set');
+        console.log('Remove the environment variable to enable telemetry.');
+        return;
+      }
+      enableTelemetry();
+      console.log('Telemetry enabled');
+      console.log('Anonymous usage data will be collected to improve Agent Relay.');
+    } else if (action === 'disable') {
+      disableTelemetry();
+      console.log('Telemetry disabled');
+      console.log('No usage data will be collected.');
+    } else {
+      // Default: show status
+      const status = getStatus();
+      console.log('Telemetry Status');
+      console.log('================');
+      console.log(`Enabled: ${status.enabled ? 'Yes' : 'No'}`);
+      if (status.disabledByEnv) {
+        console.log('(Disabled via AGENT_RELAY_TELEMETRY_DISABLED environment variable)');
+      }
+      console.log(`Anonymous ID: ${status.anonymousId}`);
+      if (status.notifiedAt) {
+        console.log(`First run notice shown: ${new Date(status.notifiedAt).toLocaleString()}`);
+      }
+      console.log('');
+      console.log('Commands:');
+      console.log('  agent-relay telemetry enable   - Opt in to telemetry');
+      console.log('  agent-relay telemetry disable  - Opt out of telemetry');
+      console.log('');
+      console.log('Learn more: https://agent-relay.com/telemetry');
+    }
+  });
 
 // mcp - MCP server management
 program

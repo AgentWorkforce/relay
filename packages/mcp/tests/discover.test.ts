@@ -8,12 +8,16 @@ import {
   getCloudOutboxPath,
 } from '../src/cloud.js';
 
-// Mock the fs module
-vi.mock('node:fs', () => ({
-  existsSync: vi.fn(),
-  readdirSync: vi.fn(),
-  readFileSync: vi.fn(),
-}));
+// Mock the fs module with all required exports
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    existsSync: vi.fn(),
+    readdirSync: vi.fn(),
+    readFileSync: vi.fn(),
+  };
+});
 
 describe('Cloud Detection', () => {
   const originalEnv = process.env;

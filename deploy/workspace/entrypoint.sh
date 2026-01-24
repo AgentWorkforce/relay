@@ -516,6 +516,10 @@ cd "${ACTUAL_WORKSPACE}"
 # Set RELAY_PROJECT from WORKSPACE_ID at runtime (MCP socket discovery uses this)
 export RELAY_PROJECT="${WORKSPACE_ID:-${RELAY_PROJECT:-default}}"
 
+# Ensure node can resolve modules from /app when running from workspace directory
+# Without this, @agent-relay/dashboard won't be found since it's in /app/node_modules
+export NODE_PATH="/app/node_modules"
+
 log "Starting agent-relay daemon on port ${PORT} from ${ACTUAL_WORKSPACE}"
 args=(/app/dist/src/cli/index.js up --dashboard --port "${PORT}")
 

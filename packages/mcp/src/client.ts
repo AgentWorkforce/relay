@@ -24,19 +24,73 @@ export interface RelayClientOptions {
   timeout?: number;
 }
 
+// Protocol version
+const PROTOCOL_VERSION = 1;
+
+/**
+ * Encode a message envelope into a length-prefixed frame (legacy format).
+ * Format: 4-byte big-endian length + JSON payload
+ */
+function encodeFrame(envelope: Record<string, unknown>): Buffer {
+  const json = JSON.stringify(envelope);
+  const data = Buffer.from(json, 'utf-8');
+  const header = Buffer.alloc(4);
+  header.writeUInt32BE(data.length, 0);
+  return Buffer.concat([header, data]);
+}
+
+/**
+ * Frame parser for length-prefixed messages.
+ */
+class FrameParser {
+  private buffer = Buffer.alloc(0);
+
+  push(data: Buffer): Array<Record<string, unknown>> {
+    this.buffer = Buffer.concat([this.buffer, data]);
+    const frames: Array<Record<string, unknown>> = [];
+
+    while (this.buffer.length >= 4) {
+      const frameLength = this.buffer.readUInt32BE(0);
+      const totalLength = 4 + frameLength;
+
+      if (this.buffer.length < totalLength) break;
+
+      const payload = this.buffer.subarray(4, totalLength);
+      this.buffer = this.buffer.subarray(totalLength);
+
+      try {
+        frames.push(JSON.parse(payload.toString('utf-8')));
+      } catch {
+        // Skip malformed frames
+      }
+    }
+
+    return frames;
+  }
+}
+
 export function createRelayClient(options: RelayClientOptions): RelayClient {
   const { agentName, project = 'default', timeout = 5000 } = options;
   const discovery = discoverSocket({ socketPath: options.socketPath });
   const socketPath = discovery?.socketPath || options.socketPath || '/tmp/agent-relay.sock';
-  // Use randomUUID for collision-resistant request IDs
-  const generateId = () => `${agentName}-${randomUUID()}`;
+
+  // Generate unique IDs
+  let idCounter = 0;
+  const generateId = () => `mcp-${Date.now().toString(36)}-${(++idCounter).toString(36)}`;
 
   async function request<T>(type: string, payload: unknown): Promise<T> {
     return new Promise((resolve, reject) => {
       const id = generateId();
-      const req = { type, id, payload };
+      // Build a proper protocol envelope
+      const envelope = {
+        v: PROTOCOL_VERSION,
+        type,
+        id,
+        ts: Date.now(),
+        payload,
+      };
       let timedOut = false;
-      let buffer = '';
+      const parser = new FrameParser();
 
       const socket: Socket = createConnection(socketPath);
 
@@ -46,32 +100,28 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         reject(new Error(`Request timeout after ${timeout}ms`));
       }, timeout);
 
-      socket.on('connect', () => socket.write(JSON.stringify(req) + '\n'));
+      socket.on('connect', () => socket.write(encodeFrame(envelope)));
 
       socket.on('data', (data) => {
         // Ignore data if we've already timed out
         if (timedOut) return;
 
-        buffer += data.toString();
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const response = JSON.parse(line);
-            if (response.id === id) {
-              clearTimeout(timeoutId);
-              socket.end();
-              if (response.error) reject(new Error(response.error));
-              else resolve(response.payload as T);
-              return;
+        const frames = parser.push(data);
+        for (const response of frames) {
+          // Check if this is a response to our request
+          if (response.id === id || (response as { payload?: { replyTo?: string } }).payload?.replyTo === id) {
+            clearTimeout(timeoutId);
+            socket.end();
+            // Handle error responses
+            if (response.type === 'ERROR') {
+              const errorPayload = response.payload as { message?: string; code?: string };
+              reject(new Error(errorPayload?.message || errorPayload?.code || 'Unknown error'));
+            } else if ((response.payload as { error?: string })?.error) {
+              reject(new Error((response.payload as { error: string }).error));
+            } else {
+              resolve(response.payload as T);
             }
-          } catch (parseError) {
-            // Log parse errors in debug mode for easier troubleshooting
-            if (process.env.DEBUG || process.env.RELAY_DEBUG) {
-              console.error('[RelayClient] Failed to parse daemon response:', line, parseError);
-            }
+            return;
           }
         }
       });

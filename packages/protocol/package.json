@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/protocol",
-  "version": "2.0.0",
+  "version": "2.0.6",
   "description": "Wire protocol types and framing for Agent Relay",
   "type": "module",
   "main": "dist/index.js",
@@ -52,5 +52,10 @@
     "@types/node": "^22.19.3",
     "typescript": "^5.9.3",
     "vitest": "^3.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentWorkforce/relay.git",
+    "directory": "packages/protocol"
   }
 }

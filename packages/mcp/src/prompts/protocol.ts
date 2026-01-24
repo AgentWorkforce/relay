@@ -95,21 +95,13 @@ Channel messages include the channel:
 Relay message from Alice [msg-id-456] [#general]: Hello team!
 \`\`\`
 
-### ACK/DONE Protocol
-When assigned a task:
-1. Send ACK immediately: "ACK: Starting work on X"
+### Optional: ACK/DONE Convention
+Some applications use ACK/DONE conventions for task tracking. If your application uses this pattern:
+1. Send ACK when starting: "ACK: Starting work on X"
 2. Send progress updates as needed
 3. Send DONE when complete: "DONE: Completed X with result Y"
 
-Example:
-\`\`\`
-# When receiving a task
-relay_send(to="Lead", message="ACK: Starting test suite run")
-
-# ... do work ...
-
-relay_send(to="Lead", message="DONE: All 42 tests passed")
-\`\`\`
+Note: This is an application-level convention, not a protocol requirement. Check your application's documentation for expected message formats.
 
 ## Best Practices
 
@@ -120,9 +112,9 @@ relay_send(to="Lead", message="DONE: All 42 tests passed")
 - Use channels for team announcements
 
 ### For Worker Agents
-- ACK immediately when receiving tasks
+- Respond promptly when receiving tasks
 - Send progress updates for long tasks
-- Send DONE with results when complete
+- Report results when complete
 - Ask clarifying questions if needed
 
 ### Message Etiquette

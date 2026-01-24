@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/dashboard",
-  "version": "2.0.0",
+  "version": "2.0.6",
   "description": "Web dashboard for Agent Relay - optional package for visual agent coordination",
   "type": "module",
   "main": "dist/index.js",
@@ -24,31 +24,23 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "peerDependencies": {
-    "agent-relay": ">=1.6.0"
-  },
-  "peerDependenciesMeta": {
-    "agent-relay": {
-      "optional": false
-    }
-  },
   "dependencies": {
-    "@agent-relay/protocol": "2.0.0",
-    "@agent-relay/config": "2.0.0",
-    "@agent-relay/storage": "2.0.0",
-    "@agent-relay/bridge": "2.0.0",
-    "@agent-relay/utils": "2.0.0",
-    "@agent-relay/resiliency": "2.0.0",
-    "@agent-relay/trajectory": "2.0.0",
-    "@agent-relay/cloud": "2.0.0",
-    "@agent-relay/daemon": "2.0.0",
-    "@agent-relay/user-directory": "2.0.0",
-    "@agent-relay/wrapper": "2.0.0",
-    "express": "^4.21.2",
+    "@agent-relay/protocol": "2.0.6",
+    "@agent-relay/config": "2.0.6",
+    "@agent-relay/storage": "2.0.6",
+    "@agent-relay/bridge": "2.0.6",
+    "@agent-relay/utils": "2.0.6",
+    "@agent-relay/resiliency": "2.0.6",
+    "@agent-relay/trajectory": "2.0.6",
+    "@agent-relay/cloud": "2.0.6",
+    "@agent-relay/daemon": "2.0.6",
+    "@agent-relay/user-directory": "2.0.6",
+    "@agent-relay/wrapper": "2.0.6",
+    "express": "^5.2.1",
     "ws": "^8.18.3"
   },
   "devDependencies": {
-    "@types/express": "^5.0.1",
+    "@types/express": "^5.0.6",
     "@types/node": "^22.19.3",
     "@types/ws": "^8.18.1",
     "typescript": "^5.9.3",

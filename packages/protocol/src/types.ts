@@ -378,6 +378,8 @@ export interface SpawnPayload {
   shadowSpeakOn?: SpeakOnTrigger[];
   /** User ID for cloud persistence */
   userId?: string;
+  /** Include ACK/DONE workflow conventions in agent instructions (default: false) */
+  includeWorkflowConventions?: boolean;
 }
 
 export interface SpawnPolicyDecision {

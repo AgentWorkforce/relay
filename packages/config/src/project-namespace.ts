@@ -51,8 +51,17 @@ function hashPath(projectPath: string): string {
 
 /**
  * Get the project root by looking for common markers
+ *
+ * Priority:
+ * 1. AGENT_RELAY_PROJECT environment variable (for worktrees/subprojects)
+ * 2. Find project root by looking for markers (.git, package.json, etc.)
  */
 export function findProjectRoot(startDir: string = process.cwd()): string {
+  // Allow explicit override for worktrees and subprojects
+  if (process.env.AGENT_RELAY_PROJECT) {
+    return path.resolve(process.env.AGENT_RELAY_PROJECT);
+  }
+
   let current = path.resolve(startDir);
   const root = path.parse(current).root;
 

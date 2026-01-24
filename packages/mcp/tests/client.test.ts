@@ -7,6 +7,27 @@ vi.mock('node:net', () => ({
   createConnection: vi.fn(),
 }));
 
+/**
+ * Encode a response envelope into a length-prefixed frame (matches client protocol).
+ * Format: 4-byte big-endian length + JSON payload
+ */
+function encodeFrame(envelope: Record<string, unknown>): Buffer {
+  const json = JSON.stringify(envelope);
+  const data = Buffer.from(json, 'utf-8');
+  const header = Buffer.alloc(4);
+  header.writeUInt32BE(data.length, 0);
+  return Buffer.concat([header, data]);
+}
+
+/**
+ * Decode a length-prefixed frame buffer to extract the JSON envelope.
+ */
+function decodeFrame(buffer: Buffer): Record<string, unknown> {
+  const frameLength = buffer.readUInt32BE(0);
+  const payload = buffer.subarray(4, 4 + frameLength);
+  return JSON.parse(payload.toString('utf-8'));
+}
+
 describe('RelayClient', () => {
   let mockSocket: any;
   let client: any;
@@ -19,7 +40,7 @@ describe('RelayClient', () => {
       destroy: vi.fn(),
     };
     vi.mocked(createConnection).mockReturnValue(mockSocket);
-    
+
     // Setup socket event handlers
     mockSocket.on.mockImplementation((event: string, cb: any) => {
       if (event === 'connect') {
@@ -48,15 +69,15 @@ describe('RelayClient', () => {
       if (event === 'data') {
         // Wait a tick to allow write to happen
         setTimeout(() => {
-          // Get the ID from the request
+          // Get the ID from the request (decode frame first)
           const writeCall = mockSocket.write.mock.calls[0][0];
-          const req = JSON.parse(writeCall);
-          
+          const req = decodeFrame(writeCall);
+
           const response = {
             id: req.id,
             payload: null,
           };
-          cb(JSON.stringify(response) + '\n');
+          cb(encodeFrame(response));
         }, 10);
       }
       return mockSocket;
@@ -66,7 +87,7 @@ describe('RelayClient', () => {
 
     expect(createConnection).toHaveBeenCalledWith('/tmp/test.sock');
     const writeCall = mockSocket.write.mock.calls[0][0];
-    const req = JSON.parse(writeCall);
+    const req = decodeFrame(writeCall);
     expect(req.type).toBe('SEND');
     expect(req.payload).toEqual({
       from: 'test-agent',
@@ -85,13 +106,13 @@ describe('RelayClient', () => {
       if (event === 'data') {
         setTimeout(() => {
           const writeCall = mockSocket.write.mock.calls[0][0];
-          const req = JSON.parse(writeCall);
-          
+          const req = decodeFrame(writeCall);
+
           const response = {
             id: req.id,
             payload: mockInbox,
           };
-          cb(JSON.stringify(response) + '\n');
+          cb(encodeFrame(response));
         }, 10);
       }
       return mockSocket;
@@ -105,8 +126,8 @@ describe('RelayClient', () => {
       from: 'Alice',
       content: 'Hi',
     });
-    
-    const req = JSON.parse(mockSocket.write.mock.calls[0][0]);
+
+    const req = decodeFrame(mockSocket.write.mock.calls[0][0]);
     expect(req.type).toBe('INBOX');
   });
 
@@ -116,13 +137,13 @@ describe('RelayClient', () => {
       if (event === 'data') {
         setTimeout(() => {
           const writeCall = mockSocket.write.mock.calls[0][0];
-          const req = JSON.parse(writeCall);
-          
+          const req = decodeFrame(writeCall);
+
           const response = {
             id: req.id,
-            error: 'Failed to spawn',
+            payload: { error: 'Failed to spawn' },
           };
-          cb(JSON.stringify(response) + '\n');
+          cb(encodeFrame(response));
         }, 10);
       }
       return mockSocket;
