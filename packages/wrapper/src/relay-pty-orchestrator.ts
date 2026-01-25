@@ -32,6 +32,7 @@ const __dirname = dirname(__filename);
 import { BaseWrapper, type BaseWrapperConfig } from './base-wrapper.js';
 import { parseSummaryWithDetails, parseSessionEndFromOutput } from './parser.js';
 import type { SendPayload, SendMeta } from '@agent-relay/protocol/types';
+import { findRelayPtyBinary as findRelayPtyBinaryUtil } from '@agent-relay/utils/relay-pty-path';
 import {
   type QueuedMessage,
   stripAnsi,
@@ -575,6 +576,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
 
   /**
    * Find the relay-pty binary
+   * Uses shared utility from @agent-relay/utils
    */
   private findRelayPtyBinary(): string | null {
     // Check config path first
@@ -582,34 +584,8 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       return this.config.relayPtyPath;
     }
 
-    // Get the project root (three levels up from packages/wrapper/dist/)
-    // packages/wrapper/dist/ -> packages/wrapper -> packages -> project root
-    const projectRoot = join(__dirname, '..', '..', '..');
-
-    // Check common locations (ordered by priority)
-    const candidates = [
-      // Primary: installed by postinstall from platform-specific binary
-      join(projectRoot, 'bin', 'relay-pty'),
-      // Development: local Rust build
-      join(projectRoot, 'relay-pty', 'target', 'release', 'relay-pty'),
-      join(projectRoot, 'relay-pty', 'target', 'debug', 'relay-pty'),
-      // Local build in cwd (for development)
-      join(process.cwd(), 'relay-pty', 'target', 'release', 'relay-pty'),
-      join(process.cwd(), 'relay-pty', 'target', 'debug', 'relay-pty'),
-      // Installed globally
-      '/usr/local/bin/relay-pty',
-      // In node_modules (when installed as dependency)
-      join(process.cwd(), 'node_modules', 'agent-relay', 'bin', 'relay-pty'),
-      join(process.cwd(), 'node_modules', '.bin', 'relay-pty'),
-    ];
-
-    for (const candidate of candidates) {
-      if (existsSync(candidate)) {
-        return candidate;
-      }
-    }
-
-    return null;
+    // Use shared utility with current module's __dirname
+    return findRelayPtyBinaryUtil(__dirname);
   }
 
   /**
