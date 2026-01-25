@@ -140,6 +140,16 @@ impl MessageQueue {
     /// Wait for a message to be available and dequeue it
     pub async fn wait_and_dequeue(&self) -> QueuedMessage {
         loop {
+            // IMPORTANT: Create the notified future BEFORE checking the queue.
+            // This prevents a race condition where:
+            // 1. We check the queue and find it empty
+            // 2. A message arrives and notify_one() is called
+            // 3. We start waiting on notified() - but the notification was already lost!
+            //
+            // By creating the future first, any notification that happens after
+            // we start checking the queue will still wake us up.
+            let notified = self.notify.notified();
+
             // Check if there's a message
             {
                 let mut queue = self.queue.lock().await;
@@ -148,8 +158,8 @@ impl MessageQueue {
                 }
             }
 
-            // Wait for notification
-            self.notify.notified().await;
+            // Wait for notification - safe because we created the future before checking
+            notified.await;
         }
     }
 

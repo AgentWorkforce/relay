@@ -31,7 +31,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 import { BaseWrapper, type BaseWrapperConfig } from './base-wrapper.js';
 import { parseSummaryWithDetails, parseSessionEndFromOutput } from './parser.js';
-import type { SendPayload, SendMeta } from '@agent-relay/protocol/types';
+import type { SendPayload, SendMeta, Envelope } from '@agent-relay/protocol/types';
+import type { ChannelMessagePayload } from '@agent-relay/protocol/channels';
 import { findRelayPtyBinary as findRelayPtyBinaryUtil } from '@agent-relay/utils/relay-pty-path';
 import {
   type QueuedMessage,
@@ -1237,6 +1238,16 @@ export class RelayPtyOrchestrator extends BaseWrapper {
    */
   private attemptSocketConnection(timeout: number): Promise<void> {
     return new Promise((resolve, reject) => {
+      // Clean up any existing socket before creating new one
+      // This prevents orphaned sockets with stale event handlers
+      if (this.socket) {
+        // Remove all listeners to prevent the old socket's 'close' event
+        // from triggering another reconnect cycle
+        this.socket.removeAllListeners();
+        this.socket.destroy();
+        this.socket = undefined;
+      }
+
       const timer = setTimeout(() => {
         reject(new Error('Socket connection timeout'));
       }, timeout);
@@ -1251,6 +1262,12 @@ export class RelayPtyOrchestrator extends BaseWrapper {
         clearTimeout(timer);
         this.socketConnected = false;
         reject(err);
+      });
+
+      // Handle 'end' event - server closed its write side (half-close)
+      this.socket.on('end', () => {
+        this.socketConnected = false;
+        this.log(` Socket received end (server closed write side)`);
       });
 
       this.socket.on('close', () => {
@@ -1312,12 +1329,15 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     // Clear any existing timer
     if (this.socketReconnectTimer) {
       clearTimeout(this.socketReconnectTimer);
+      this.socketReconnectTimer = undefined;
     }
 
     if (this.socketReconnectAttempt >= maxAttempts) {
       this.logError(` Socket reconnect failed after ${maxAttempts} attempts`);
-      // Reset counter for future reconnects
+      // Reset counter for future reconnects (processMessageQueue can trigger new cycle)
       this.socketReconnectAttempt = 0;
+      // Note: socketReconnectTimer is already undefined, allowing processMessageQueue
+      // to trigger a new reconnection cycle when new messages arrive
       return;
     }
 
@@ -1327,6 +1347,9 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     this.log(` Scheduling socket reconnect in ${delay}ms (attempt ${this.socketReconnectAttempt}/${maxAttempts})`);
 
     this.socketReconnectTimer = setTimeout(async () => {
+      // Clear timer reference now that callback is executing
+      this.socketReconnectTimer = undefined;
+
       if (!this.running || this.isGracefulStop) {
         return;
       }
@@ -1787,8 +1810,27 @@ export class RelayPtyOrchestrator extends BaseWrapper {
    * Process queued messages
    */
   private async processMessageQueue(): Promise<void> {
-    if (!this.readyForMessages || this.backpressureActive || this.isInjecting) {
-      return;
+    // Debug: Log blocking conditions when queue has messages
+    if (this.messageQueue.length > 0) {
+      if (!this.readyForMessages) {
+        this.log(` Queue blocked: readyForMessages=false (queue=${this.messageQueue.length})`);
+        return;
+      }
+      if (this.backpressureActive) {
+        this.log(` Queue blocked: backpressure active (queue=${this.messageQueue.length})`);
+        return;
+      }
+      if (this.isInjecting) {
+        // Already injecting - the finally block will process next message
+        // But add a safety timeout in case injection gets stuck
+        const elapsed = this.injectionStartTime > 0 ? Date.now() - this.injectionStartTime : 0;
+        if (elapsed > 35000) {
+          this.logError(` Injection stuck for ${elapsed}ms, forcing reset`);
+          this.isInjecting = false;
+          this.injectionStartTime = 0;
+        }
+        return;
+      }
     }
 
     if (this.messageQueue.length === 0) {
@@ -1804,6 +1846,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
 
     if (!this.socketConnected) {
       // Reconnection in progress, wait for it
+      this.log(` Queue waiting: socket reconnecting (queue=${this.messageQueue.length})`);
       return;
     }
 
@@ -1871,6 +1914,24 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     this.log(` === MESSAGE RECEIVED: ${messageId.substring(0, 8)} from ${from} ===`);
     this.log(` Body preview: ${payload.body?.substring(0, 100) ?? '(no body)'}...`);
     super.handleIncomingMessage(from, payload, messageId, meta, originalTo);
+    this.log(` Queue length after add: ${this.messageQueue.length}`);
+    this.processMessageQueue();
+  }
+
+  /**
+   * Override handleIncomingChannelMessage to trigger queue processing.
+   * Without this override, channel messages would be queued but processMessageQueue()
+   * would never be called, causing messages to get stuck until the queue monitor runs.
+   */
+  protected override handleIncomingChannelMessage(
+    from: string,
+    channel: string,
+    body: string,
+    envelope: Envelope<ChannelMessagePayload>
+  ): void {
+    this.log(` === CHANNEL MESSAGE RECEIVED: ${envelope.id.substring(0, 8)} from ${from} on ${channel} ===`);
+    this.log(` Body preview: ${body?.substring(0, 100) ?? '(no body)'}...`);
+    super.handleIncomingChannelMessage(from, channel, body, envelope);
     this.log(` Queue length after add: ${this.messageQueue.length}`);
     this.processMessageQueue();
   }

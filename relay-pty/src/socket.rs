@@ -231,6 +231,13 @@ async fn handle_connection(
                         // Only forward responses for message IDs we're tracking
                         if let InjectResponse::InjectResult { ref id, ref status, .. } = response {
                             if pending_ids.contains(id) {
+                                // Skip "Queued" status via broadcast - it's already sent directly
+                                // in the request handler. Only forward Injecting/Delivered/Failed.
+                                if matches!(status, InjectStatus::Queued) {
+                                    debug!("Skipping duplicate Queued broadcast for {}", id);
+                                    continue;
+                                }
+
                                 debug!("Forwarding response for message {}: {:?}", id, status);
 
                                 let response_json = serde_json::to_string(&response)?;
@@ -249,7 +256,12 @@ async fn handle_connection(
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        warn!("Response receiver lagged by {} messages", n);
+                        warn!("Response receiver lagged by {} messages - some status updates may be lost", n);
+                        // When lagged, we've lost status updates. Messages in pending_ids may never
+                        // get their final status. Log the affected IDs for debugging.
+                        if !pending_ids.is_empty() {
+                            warn!("Pending IDs that may have lost updates: {:?}", pending_ids);
+                        }
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         debug!("Response channel closed");
