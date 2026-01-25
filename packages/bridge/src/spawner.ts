@@ -347,7 +347,7 @@ function findRelayPtyBinary(): string | null {
   // When running from node_modules/@agent-relay/dashboard/node_modules/@agent-relay/bridge/dist/
   // we need to look for agent-relay at node_modules/agent-relay
   let nodeModulesRoot: string | null = null;
-  const nodeModulesMatch = __dirname.match(/^(.+\/node_modules)\/@agent-relay\//);
+  const nodeModulesMatch = __dirname.match(/^(.+?\/node_modules)\/@agent-relay\//);
   if (nodeModulesMatch) {
     nodeModulesRoot = nodeModulesMatch[1];
   }
