@@ -31,6 +31,7 @@ import {
   getStatus,
   isDisabledByEnv,
 } from '@agent-relay/telemetry';
+import { installMcpConfig } from '@agent-relay/mcp';
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -178,6 +179,19 @@ program
 
     console.error(`Agent: ${agentName}`);
     console.error(`Project: ${paths.projectId}`);
+
+    // Auto-install MCP config if not present
+    const mcpConfigPath = path.join(paths.projectRoot, '.mcp.json');
+    if (!fs.existsSync(mcpConfigPath)) {
+      try {
+        const result = installMcpConfig(mcpConfigPath);
+        if (result.success) {
+          console.error(`MCP config: ${mcpConfigPath} (auto-created)`);
+        }
+      } catch {
+        // Best effort - don't fail the command
+      }
+    }
 
     // Auto-detect agent config and inject --model/--agent for Claude CLI
     let finalArgs = commandArgs;
