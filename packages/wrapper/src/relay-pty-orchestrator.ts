@@ -39,8 +39,6 @@ import {
   stripAnsi,
   sleep,
   buildInjectionString,
-  verifyInjection,
-  INJECTION_CONSTANTS,
   AdaptiveThrottle,
 } from './shared.js';
 import {
@@ -220,16 +218,6 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     shortId: string;     // First 8 chars of messageId for verification
     retryCount: number;  // Track retry attempts
     originalBody: string; // Original injection content for retries
-  }> = new Map();
-  // Pending SendEnter requests (for stuck input recovery)
-  private pendingSendEnter: Map<string, {
-    resolve: (verified: boolean) => void;
-    timeout: NodeJS.Timeout;
-    from: string;
-    shortId: string;
-    retryCount: number;
-    originalBody: string;
-    originalResolve: (success: boolean) => void; // Original injection promise resolver
   }> = new Map();
   private backpressureActive = false;
   private readyForMessages = false;
@@ -1428,10 +1416,8 @@ export class RelayPtyOrchestrator extends BaseWrapper {
           break;
 
         case 'send_enter_result':
-          // Handle SendEnter result (stuck input recovery)
-          this.handleSendEnterResult(response).catch((err: Error) => {
-            this.logError(` Error handling send_enter result: ${err.message}`);
-          });
+          // SendEnter is no longer used - trust Rust delivery confirmation
+          this.log(` Received send_enter_result (deprecated)`);
           break;
       }
     } catch (err: any) {
@@ -1456,163 +1442,26 @@ export class RelayPtyOrchestrator extends BaseWrapper {
 
     if (response.status === 'delivered') {
       // Rust says it sent the message + Enter key
-      // Now verify the message actually appeared in the terminal output
-      this.log(` Message ${pending.shortId} marked delivered by Rust, verifying in output...`);
+      // Trust Rust's delivery confirmation - relay-pty writes directly to PTY which is very reliable.
+      //
+      // IMPORTANT: We don't verify by looking for the message in output because:
+      // 1. TUI CLIs (Claude, Codex, Gemini) don't echo input like traditional terminals
+      // 2. The injected text appears as INPUT to the PTY, not OUTPUT
+      // 3. Output-based verification always fails for TUIs, causing unnecessary retries
+      //
+      // This is different from tmux-wrapper where we inject via tmux send-keys
+      // and can observe the echoed input in the pane output.
+      this.log(` Message ${pending.shortId} delivered by Rust ✓`);
 
-      // In interactive mode, we can't verify because stdout goes directly to terminal
-      // Trust Rust's "delivered" status in this case
-      if (this.isInteractive) {
-        this.log(` Interactive mode - trusting Rust delivery status`);
-        clearTimeout(pending.timeout);
-        this.pendingInjections.delete(response.id);
-        if (pending.retryCount === 0) {
-          this.injectionMetrics.successFirstTry++;
-        } else {
-          this.injectionMetrics.successWithRetry++;
-        }
-        this.injectionMetrics.total++;
-        pending.resolve(true);
-        this.log(` Message ${pending.shortId} delivered (interactive mode) ✓`);
-        return;
-      }
-
-      // Skip verification if queue is backing up - trust Rust's delivery status
-      // relay-pty writes directly to PTY which is more reliable than tmux
-      const queueBackingUp = this.messageQueue.length >= 2;
-      if (queueBackingUp) {
-        this.log(` Queue backing up (${this.messageQueue.length} pending), skipping verification for ${pending.shortId}`);
-        clearTimeout(pending.timeout);
-        this.pendingInjections.delete(response.id);
-        if (pending.retryCount === 0) {
-          this.injectionMetrics.successFirstTry++;
-        } else {
-          this.injectionMetrics.successWithRetry++;
-        }
-        this.injectionMetrics.total++;
-        pending.resolve(true);
-        return;
-      }
-
-      // Give a brief moment for output to be captured
-      await sleep(100);
-
-      // Verify the message pattern appears in captured output
-      const verified = await verifyInjection(
-        pending.shortId,
-        pending.from,
-        async () => this.getCleanOutput()
-      );
-
-      if (verified) {
-        clearTimeout(pending.timeout);
-        this.pendingInjections.delete(response.id);
-        // Update metrics based on retry count (0 = first try)
-        if (pending.retryCount === 0) {
-          this.injectionMetrics.successFirstTry++;
-        } else {
-          this.injectionMetrics.successWithRetry++;
-          this.log(` Message ${pending.shortId} succeeded on attempt ${pending.retryCount + 1}`);
-        }
-        this.injectionMetrics.total++;
-        pending.resolve(true);
-        this.log(` Message ${pending.shortId} verified in output ✓`);
+      clearTimeout(pending.timeout);
+      this.pendingInjections.delete(response.id);
+      if (pending.retryCount === 0) {
+        this.injectionMetrics.successFirstTry++;
       } else {
-        // Message was "delivered" but not found in output
-        // This is the bug case - Enter key may not have been processed
-        this.log(` Message ${pending.shortId} NOT found in output after delivery`);
-
-        // Check if we should retry
-        if (pending.retryCount < INJECTION_CONSTANTS.MAX_RETRIES - 1) {
-          clearTimeout(pending.timeout);
-          this.pendingInjections.delete(response.id);
-
-          // Wait before retry with backoff
-          await sleep(INJECTION_CONSTANTS.RETRY_BACKOFF_MS * (pending.retryCount + 1));
-
-          // IMPORTANT: Check again if message appeared (late verification / race condition fix)
-          // The previous injection may have succeeded but verification timed out
-          const lateVerified = await verifyInjection(
-            pending.shortId,
-            pending.from,
-            async () => this.getCleanOutput()
-          );
-          if (lateVerified) {
-            this.log(` Message ${pending.shortId} found on late verification, skipping retry`);
-            if (pending.retryCount === 0) {
-              this.injectionMetrics.successFirstTry++;
-            } else {
-              this.injectionMetrics.successWithRetry++;
-            }
-            this.injectionMetrics.total++;
-            pending.resolve(true);
-            return;
-          }
-
-          // On first retry attempt (retryCount === 0), try SendEnter first
-          // This handles the case where message content was written but Enter wasn't processed
-          if (pending.retryCount === 0) {
-            this.log(` Trying SendEnter first for ${pending.shortId} (stuck input recovery)`);
-
-            // Send just the Enter key
-            const sendEnterRequest: SendEnterRequest = {
-              type: 'send_enter',
-              id: response.id,
-            };
-
-            // Track this SendEnter request for verification
-            const sendEnterTimeout = setTimeout(() => {
-              this.logError(` SendEnter timeout for ${pending.shortId}`);
-              this.pendingSendEnter.delete(response.id);
-              // Fall back to full retry after SendEnter timeout
-              this.doFullRetry(response.id, pending);
-            }, 5000); // 5 second timeout for SendEnter
-
-            this.pendingSendEnter.set(response.id, {
-              resolve: (verified: boolean) => {
-                if (verified) {
-                  // SendEnter worked!
-                  this.injectionMetrics.successWithRetry++;
-                  this.injectionMetrics.total++;
-                  pending.resolve(true);
-                } else {
-                  // SendEnter didn't work, do full retry
-                  this.doFullRetry(response.id, pending);
-                }
-              },
-              timeout: sendEnterTimeout,
-              from: pending.from,
-              shortId: pending.shortId,
-              retryCount: pending.retryCount,
-              originalBody: pending.originalBody,
-              originalResolve: pending.resolve,
-            });
-
-            this.sendSocketRequest(sendEnterRequest).catch((err) => {
-              this.logError(` SendEnter request failed: ${err.message}`);
-              clearTimeout(sendEnterTimeout);
-              this.pendingSendEnter.delete(response.id);
-              // Fall back to full retry
-              this.doFullRetry(response.id, pending);
-            });
-          } else {
-            // On subsequent retries (retryCount > 0), do full retry directly
-            this.doFullRetry(response.id, pending);
-          }
-        } else {
-          // Max retries exceeded
-          this.logError(` Message ${pending.shortId} failed after ${INJECTION_CONSTANTS.MAX_RETRIES} attempts - NOT found in output`);
-          clearTimeout(pending.timeout);
-          this.pendingInjections.delete(response.id);
-          this.injectionMetrics.failed++;
-          this.injectionMetrics.total++;
-          pending.resolve(false);
-          this.emit('injection-failed', {
-            messageId: response.id,
-            from: pending.from,
-            error: 'Message delivered but not verified in output after max retries',
-          });
-        }
+        this.injectionMetrics.successWithRetry++;
       }
+      this.injectionMetrics.total++;
+      pending.resolve(true);
     } else if (response.status === 'failed') {
       clearTimeout(pending.timeout);
       this.pendingInjections.delete(response.id);
@@ -1627,102 +1476,6 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       });
     }
     // queued/injecting are intermediate states - wait for final status
-  }
-
-  /**
-   * Handle SendEnter result (stuck input recovery)
-   * Called when relay-pty responds to a SendEnter request
-   */
-  private async handleSendEnterResult(response: SendEnterResultResponse): Promise<void> {
-    this.log(` handleSendEnterResult: id=${response.id.substring(0, 8)} success=${response.success}`);
-
-    const pendingEnter = this.pendingSendEnter.get(response.id);
-    if (!pendingEnter) {
-      this.log(` No pending SendEnter found for ${response.id.substring(0, 8)}`);
-      return;
-    }
-
-    clearTimeout(pendingEnter.timeout);
-    this.pendingSendEnter.delete(response.id);
-
-    if (!response.success) {
-      this.log(` SendEnter failed for ${pendingEnter.shortId}, will try full retry`);
-      pendingEnter.resolve(false);
-      return;
-    }
-
-    // SendEnter succeeded - wait and verify
-    this.log(` SendEnter sent for ${pendingEnter.shortId}, waiting to verify...`);
-    await sleep(150); // Give time for Enter to be processed
-
-    // Verify the message appeared in output
-    const verified = await verifyInjection(
-      pendingEnter.shortId,
-      pendingEnter.from,
-      async () => this.getCleanOutput()
-    );
-
-    if (verified) {
-      this.log(` Message ${pendingEnter.shortId} verified after SendEnter ✓`);
-      pendingEnter.resolve(true);
-    } else {
-      this.log(` Message ${pendingEnter.shortId} still not verified after SendEnter, will try full retry`);
-      pendingEnter.resolve(false);
-    }
-  }
-
-  /**
-   * Do a full retry with message content (used when SendEnter fails or for subsequent retries)
-   */
-  private doFullRetry(
-    messageId: string,
-    pending: {
-      resolve: (success: boolean) => void;
-      reject: (error: Error) => void;
-      from: string;
-      shortId: string;
-      retryCount: number;
-      originalBody: string;
-    }
-  ): void {
-    this.log(` Doing full retry for ${pending.shortId} (attempt ${pending.retryCount + 2}/${INJECTION_CONSTANTS.MAX_RETRIES})`);
-
-    // Re-inject by sending another socket request
-    // Prepend [RETRY] to help agent notice this is a retry
-    const retryBody = pending.originalBody.startsWith('[RETRY]')
-      ? pending.originalBody
-      : `[RETRY] ${pending.originalBody}`;
-    const retryRequest: InjectRequest = {
-      type: 'inject',
-      id: messageId,
-      from: pending.from,
-      body: retryBody,
-      priority: 1, // Higher priority for retries
-    };
-
-    // Create new pending entry with incremented retry count
-    const newTimeout = setTimeout(() => {
-      this.logError(` Retry timeout for ${pending.shortId}`);
-      this.pendingInjections.delete(messageId);
-      pending.resolve(false);
-    }, 30000);
-
-    this.pendingInjections.set(messageId, {
-      resolve: pending.resolve,
-      reject: pending.reject,
-      timeout: newTimeout,
-      from: pending.from,
-      shortId: pending.shortId,
-      retryCount: pending.retryCount + 1,
-      originalBody: retryBody,
-    });
-
-    this.sendSocketRequest(retryRequest).catch((err) => {
-      this.logError(` Full retry request failed: ${err.message}`);
-      clearTimeout(newTimeout);
-      this.pendingInjections.delete(messageId);
-      pending.resolve(false);
-    });
   }
 
   /**
