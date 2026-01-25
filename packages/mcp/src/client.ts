@@ -7,6 +7,31 @@ import { randomUUID } from 'node:crypto';
 import { discoverSocket } from './cloud.js';
 import { DaemonNotRunningError } from './errors.js';
 
+export interface HealthResponse {
+  healthScore: number;
+  summary: string;
+  issues: Array<{ severity: string; message: string }>;
+  recommendations: string[];
+  crashes: Array<{ id: string; agentName: string; crashedAt: string; likelyCause: string; summary?: string }>;
+  alerts: Array<{ id: string; agentName: string; alertType: string; message: string; createdAt: string }>;
+  stats: { totalCrashes24h: number; totalAlerts24h: number; agentCount: number };
+}
+
+export interface MetricsResponse {
+  agents: Array<{
+    name: string;
+    pid?: number;
+    status: string;
+    rssBytes?: number;
+    cpuPercent?: number;
+    trend?: string;
+    alertLevel?: string;
+    highWatermark?: number;
+    uptimeMs?: number;
+  }>;
+  system: { totalMemory: number; freeMemory: number; heapUsed: number };
+}
+
 export interface RelayClient {
   send(to: string, message: string, options?: { thread?: string }): Promise<void>;
   sendAndWait(to: string, message: string, options?: { thread?: string; timeoutMs?: number }): Promise<{ from: string; content: string; thread?: string }>;
@@ -14,7 +39,9 @@ export interface RelayClient {
   release(name: string, reason?: string): Promise<{ success: boolean; error?: string }>;
   getStatus(): Promise<{ connected: boolean; agentName: string; project: string; socketPath: string; daemonVersion?: string; uptime?: string }>;
   getInbox(options?: { limit?: number; unread_only?: boolean; from?: string; channel?: string }): Promise<Array<{ id: string; from: string; content: string; channel?: string; thread?: string }>>;
-  listAgents(options?: { include_idle?: boolean; project?: string }): Promise<Array<{ name: string; cli: string; idle?: boolean; parent?: string }>>;
+  listAgents(options?: { include_idle?: boolean; project?: string }): Promise<Array<{ name: string; cli?: string; idle?: boolean; parent?: string }>>;
+  getHealth(options?: { include_crashes?: boolean; include_alerts?: boolean }): Promise<HealthResponse>;
+  getMetrics(options?: { agent?: string }): Promise<MetricsResponse>;
 }
 
 export interface RelayClientOptions {
@@ -162,11 +189,19 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
       } catch { return { connected: false, agentName, project, socketPath }; }
     },
     async getInbox(opts = {}) {
-      const msgs = await request<Array<{ id: string; from: string; body: string; channel?: string; thread?: string }>>('INBOX', { agent: agentName, limit: opts.limit, unreadOnly: opts.unread_only, from: opts.from, channel: opts.channel });
+      const response = await request<{ messages: Array<{ id: string; from: string; body: string; channel?: string; thread?: string; timestamp: number }> }>('INBOX', { agent: agentName, limit: opts.limit, unreadOnly: opts.unread_only, from: opts.from, channel: opts.channel });
+      const msgs = response.messages || [];
       return msgs.map(m => ({ id: m.id, from: m.from, content: m.body, channel: m.channel, thread: m.thread }));
     },
     async listAgents(opts = {}) {
-      return request<Array<{ name: string; cli: string; idle?: boolean; parent?: string }>>('LIST_AGENTS', { includeIdle: opts.include_idle, project: opts.project });
+      const response = await request<{ agents: Array<{ name: string; cli?: string; idle?: boolean; parent?: string }> }>('LIST_AGENTS', { includeIdle: opts.include_idle, project: opts.project });
+      return response.agents || [];
+    },
+    async getHealth(opts = {}) {
+      return request<HealthResponse>('HEALTH', { includeCrashes: opts.include_crashes, includeAlerts: opts.include_alerts });
+    },
+    async getMetrics(opts = {}) {
+      return request<MetricsResponse>('METRICS', { agent: opts.agent });
     },
   };
 }

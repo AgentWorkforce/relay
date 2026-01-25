@@ -20,6 +20,15 @@ import {
   type ErrorPayload,
   type SpawnPayload,
   type ReleasePayload,
+  type StatusResponsePayload,
+  type InboxPayload,
+  type InboxResponsePayload,
+  type ListAgentsPayload,
+  type ListAgentsResponsePayload,
+  type HealthPayload,
+  type HealthResponsePayload,
+  type MetricsPayload,
+  type MetricsResponsePayload,
 } from '@agent-relay/protocol/types';
 import type { ChannelJoinPayload, ChannelLeavePayload, ChannelMessagePayload } from '@agent-relay/protocol/channels';
 import { SpawnManager, type SpawnManagerConfig } from './spawn-manager.js';
@@ -1094,6 +1103,226 @@ export class Daemon {
         const releaseEnvelope = envelope as Envelope<ReleasePayload>;
         log.info(`RELEASE request: from=${connection.agentName} agent=${releaseEnvelope.payload.name}`);
         this.spawnManager.handleRelease(connection, releaseEnvelope);
+        break;
+      }
+
+      // Query handlers (MCP/client requests)
+      case 'STATUS': {
+        const uptimeMs = this.startTime ? Date.now() - this.startTime : 0;
+        const response: Envelope<StatusResponsePayload> = {
+          v: PROTOCOL_VERSION,
+          type: 'STATUS_RESPONSE',
+          id: envelope.id,
+          ts: Date.now(),
+          payload: {
+            version: '2.0.13',
+            uptime: uptimeMs,
+            cloudConnected: this.cloudSync?.isConnected() ?? false,
+            agentCount: this.router.connectionCount,
+          },
+        };
+        connection.send(response);
+        break;
+      }
+
+      case 'INBOX': {
+        const inboxPayload = envelope.payload as InboxPayload;
+        const agentName = inboxPayload.agent || connection.agentName;
+
+        // Get messages from storage
+        const getInboxMessages = async () => {
+          if (!this.storage?.getMessages) {
+            return [];
+          }
+          try {
+            const messages = await this.storage.getMessages({
+              to: agentName,
+              from: inboxPayload.from,
+              limit: inboxPayload.limit || 50,
+              unreadOnly: inboxPayload.unreadOnly,
+            });
+            return messages.map(m => ({
+              id: m.id,
+              from: m.from,
+              body: m.body,
+              channel: (m.data as { channel?: string })?.channel,
+              thread: m.thread,
+              timestamp: m.ts,
+            }));
+          } catch {
+            return [];
+          }
+        };
+
+        getInboxMessages().then(messages => {
+          const response: Envelope<InboxResponsePayload> = {
+            v: PROTOCOL_VERSION,
+            type: 'INBOX_RESPONSE',
+            id: envelope.id,
+            ts: Date.now(),
+            payload: { messages },
+          };
+          connection.send(response);
+        }).catch(err => {
+          this.sendErrorEnvelope(connection, `Failed to get inbox: ${err.message}`);
+        });
+        break;
+      }
+
+      case 'LIST_AGENTS': {
+        const listPayload = envelope.payload as ListAgentsPayload;
+
+        // Get connected agents from router
+        const connectedAgents = this.router.getAgents();
+
+        // Get all agents from registry for metadata lookup
+        const registryAgents = this.registry?.getAgents() ?? [];
+        const registryMap = new Map(registryAgents.map(a => [a.name, a]));
+
+        // Build agent list from connected agents
+        const agents = connectedAgents
+          .filter(name => !this.isInternalAgent(name))
+          .map(name => {
+            const registryAgent = registryMap.get(name);
+            return {
+              name,
+              cli: registryAgent?.cli,
+              idle: false, // Connected agents are not idle
+              parent: registryAgent?.task?.includes('spawned by') ? 'parent' : undefined,
+            };
+          });
+
+        // Optionally include idle agents from registry
+        if (listPayload.includeIdle && this.registry) {
+          for (const agent of registryAgents) {
+            if (!connectedAgents.includes(agent.name) && !this.isInternalAgent(agent.name)) {
+              agents.push({
+                name: agent.name,
+                cli: agent.cli,
+                idle: true,
+                parent: undefined,
+              });
+            }
+          }
+        }
+
+        const response: Envelope<ListAgentsResponsePayload> = {
+          v: PROTOCOL_VERSION,
+          type: 'LIST_AGENTS_RESPONSE',
+          id: envelope.id,
+          ts: Date.now(),
+          payload: { agents },
+        };
+        connection.send(response);
+        break;
+      }
+
+      case 'HEALTH': {
+        const healthPayload = envelope.payload as HealthPayload;
+
+        // Compute health based on available data
+        const connectedAgents = this.router.getAgents();
+        const registryAgents = this.registry?.getAgents() ?? [];
+        const agentCount = connectedAgents.filter(n => !this.isInternalAgent(n)).length;
+
+        // Basic health computation
+        const issues: Array<{ severity: string; message: string }> = [];
+        const recommendations: string[] = [];
+        let healthScore = 100;
+
+        // Check for memory issues via memory monitor
+        const memoryMonitor = getMemoryMonitor();
+        const memoryMetrics = memoryMonitor.getAll();
+        const criticalAgents = memoryMetrics.filter(m => m.alertLevel === 'critical');
+        const warningAgents = memoryMetrics.filter(m => m.alertLevel === 'warning');
+
+        if (criticalAgents.length > 0) {
+          healthScore -= 30;
+          for (const agent of criticalAgents) {
+            issues.push({ severity: 'critical', message: `${agent.name} has critical memory usage` });
+          }
+          recommendations.push('Consider releasing some agents to free memory');
+        }
+
+        if (warningAgents.length > 0) {
+          healthScore -= 10;
+          for (const agent of warningAgents) {
+            issues.push({ severity: 'warning', message: `${agent.name} has high memory usage` });
+          }
+        }
+
+        // Check cloud sync status
+        if (!this.cloudSync?.isConnected()) {
+          issues.push({ severity: 'info', message: 'Cloud sync not connected' });
+        }
+
+        const summary = healthScore >= 80 ? 'System is healthy' :
+                        healthScore >= 50 ? 'System has some issues' :
+                        'System needs attention';
+
+        const healthResponse: Envelope<HealthResponsePayload> = {
+          v: PROTOCOL_VERSION,
+          type: 'HEALTH_RESPONSE',
+          id: envelope.id,
+          ts: Date.now(),
+          payload: {
+            healthScore: Math.max(0, healthScore),
+            summary,
+            issues,
+            recommendations,
+            crashes: [], // Would need crash tracking implementation
+            alerts: [], // Would need alert tracking implementation
+            stats: {
+              totalCrashes24h: 0,
+              totalAlerts24h: 0,
+              agentCount,
+            },
+          },
+        };
+        connection.send(healthResponse);
+        break;
+      }
+
+      case 'METRICS': {
+        const metricsPayload = envelope.payload as MetricsPayload;
+
+        // Get metrics from memory monitor
+        const memoryMonitor = getMemoryMonitor();
+        let metrics = memoryMonitor.getAll();
+
+        // Filter to specific agent if requested
+        if (metricsPayload.agent) {
+          metrics = metrics.filter(m => m.name === metricsPayload.agent);
+        }
+
+        // Convert to response format
+        const agents = metrics.map(m => ({
+          name: m.name,
+          pid: m.pid,
+          status: m.alertLevel === 'normal' ? 'running' : m.alertLevel,
+          rssBytes: m.current.rssBytes,
+          cpuPercent: m.current.cpuPercent,
+          trend: m.trend,
+          alertLevel: m.alertLevel,
+          highWatermark: m.highWatermark,
+          uptimeMs: m.uptimeMs,
+        }));
+
+        // System metrics
+        const system = {
+          totalMemory: os.totalmem(),
+          freeMemory: os.freemem(),
+          heapUsed: process.memoryUsage().heapUsed,
+        };
+
+        const metricsResponse: Envelope<MetricsResponsePayload> = {
+          v: PROTOCOL_VERSION,
+          type: 'METRICS_RESPONSE',
+          id: envelope.id,
+          ts: Date.now(),
+          payload: { agents, system },
+        };
+        connection.send(metricsResponse);
         break;
       }
     }
