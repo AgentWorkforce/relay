@@ -249,6 +249,12 @@ async fn handle_connection(
                                 if matches!(status, InjectStatus::Delivered | InjectStatus::Failed) {
                                     debug!("Message {} reached final state: {:?}", id, status);
                                     pending_ids.remove(id);
+
+                                    // Clear from seen_ids immediately on delivery to free memory
+                                    // This is critical for long-running sessions with 200+ agents
+                                    if matches!(status, InjectStatus::Delivered) {
+                                        queue.mark_delivered(id).await;
+                                    }
                                     // Keep connection open for subsequent messages
                                     // Node.js orchestrator maintains a persistent socket
                                 }
