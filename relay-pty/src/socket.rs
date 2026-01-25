@@ -505,8 +505,14 @@ mod tests {
 
         let queue = Arc::new(MessageQueue::new(1, response_tx));
 
-        let response =
-            handle_request(InjectRequest::Status, &queue, &status_tx, &shutdown_tx, &pty_tx).await;
+        let response = handle_request(
+            InjectRequest::Status,
+            &queue,
+            &status_tx,
+            &shutdown_tx,
+            &pty_tx,
+        )
+        .await;
 
         match response {
             InjectResponse::Error { message } => {
@@ -525,8 +531,14 @@ mod tests {
 
         let queue = Arc::new(MessageQueue::new(1, response_tx));
 
-        let response =
-            handle_request(InjectRequest::Shutdown, &queue, &status_tx, &shutdown_tx, &pty_tx).await;
+        let response = handle_request(
+            InjectRequest::Shutdown,
+            &queue,
+            &status_tx,
+            &shutdown_tx,
+            &pty_tx,
+        )
+        .await;
         assert!(matches!(response, InjectResponse::ShutdownAck));
 
         let received =

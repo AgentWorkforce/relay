@@ -221,7 +221,11 @@ async fn main() -> Result<()> {
     let queue = Arc::new(MessageQueue::new(config.queue_max, response_tx));
 
     // Create injector (clone inject_tx since we also need it for SocketServer)
-    let injector = Arc::new(Injector::new(inject_tx.clone(), Arc::clone(&queue), config.clone()));
+    let injector = Arc::new(Injector::new(
+        inject_tx.clone(),
+        Arc::clone(&queue),
+        config.clone(),
+    ));
 
     // Create output parser
     let mut parser = if let Some(ref outbox) = outbox_path {
