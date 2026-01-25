@@ -318,6 +318,7 @@ function getRelayInstructions(agentName: string, options: { hasMcp?: boolean; in
  * 2. relay-pty/target/release/relay-pty (local Rust build)
  * 3. /usr/local/bin/relay-pty (global install)
  * 4. In node_modules when installed as dependency
+ * 5. Global npm installs (nvm) - both scoped and root packages
  */
 function findRelayPtyBinary(): string | null {
   // Determine the agent-relay package root
@@ -342,6 +343,15 @@ function findRelayPtyBinary(): string | null {
     packageRoot = path.join(__dirname, '..', '..', '..');
   }
 
+  // Find the node_modules root for global installs
+  // When running from node_modules/@agent-relay/dashboard/node_modules/@agent-relay/bridge/dist/
+  // we need to look for agent-relay at node_modules/agent-relay
+  let nodeModulesRoot: string | null = null;
+  const nodeModulesMatch = __dirname.match(/^(.+?\/node_modules)\/@agent-relay\//);
+  if (nodeModulesMatch) {
+    nodeModulesRoot = nodeModulesMatch[1];
+  }
+
   const candidates = [
     // Primary: installed by postinstall from platform-specific binary
     path.join(packageRoot, 'bin', 'relay-pty'),
@@ -354,9 +364,23 @@ function findRelayPtyBinary(): string | null {
     '/usr/local/bin/relay-pty',
     // In node_modules (when installed as local dependency)
     path.join(process.cwd(), 'node_modules', 'agent-relay', 'bin', 'relay-pty'),
-    // Global npm install (nvm)
+    // Global npm install (nvm) - root package
     path.join(process.env.HOME || '', '.nvm', 'versions', 'node', process.version, 'lib', 'node_modules', 'agent-relay', 'bin', 'relay-pty'),
   ];
+
+  // Add candidate for root agent-relay package when running from scoped @agent-relay/* packages
+  if (nodeModulesRoot) {
+    candidates.push(path.join(nodeModulesRoot, 'agent-relay', 'bin', 'relay-pty'));
+  }
+
+  // Try common global npm paths
+  if (process.env.HOME) {
+    // Homebrew npm (macOS)
+    candidates.push(path.join('/usr/local/lib/node_modules', 'agent-relay', 'bin', 'relay-pty'));
+    candidates.push(path.join('/opt/homebrew/lib/node_modules', 'agent-relay', 'bin', 'relay-pty'));
+    // pnpm global
+    candidates.push(path.join(process.env.HOME, '.local', 'share', 'pnpm', 'global', 'node_modules', 'agent-relay', 'bin', 'relay-pty'));
+  }
 
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) {
