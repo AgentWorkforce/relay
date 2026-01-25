@@ -10,7 +10,7 @@ import { createClient } from 'redis';
 import { requireAuth } from './auth.js';
 import { getConfig } from '../config.js';
 import { db } from '../db/index.js';
-import { setProviderApiKeyEnv } from './provider-env.js';
+import { setProviderApiKeyEnv, clearProviderCredentials } from './provider-env.js';
 
 export const providersRouter = Router();
 
@@ -510,6 +510,7 @@ providersRouter.get('/:provider/status/:flowId', (req: Request, res: Response) =
 /**
  * DELETE /api/providers/:provider
  * Disconnect a provider from a specific workspace
+ * Also clears credential files from the workspace filesystem
  *
  * Query: ?workspaceId=xxx
  */
@@ -532,12 +533,23 @@ providersRouter.delete('/:provider', async (req: Request, res: Response) => {
 
   const workspaceId = workspaceIdParam;
   const provider = providerParam;
+  // Sanitize for logging (prevent log injection)
+  const safeProvider = String(provider).replace(/[\r\n]/g, '').substring(0, 20);
 
   try {
+    // Delete from database
     await db.credentials.deleteForWorkspace(userId, workspaceId, provider);
+
+    // Clear credentials from workspace filesystem
+    const clearResult = await clearProviderCredentials(userId, provider, workspaceId);
+    if (!clearResult.cleared) {
+      console.warn('[providers] Failed to clear workspace credentials', { provider: safeProvider, error: clearResult.error });
+      // Don't fail the request, just warn - database entry was already deleted
+    }
+
     res.json({ success: true });
   } catch (error) {
-    console.error(`Error disconnecting ${provider}:`, error);
+    console.error('[providers] Error disconnecting', { provider: safeProvider, error: error instanceof Error ? error.message : String(error) });
     res.status(500).json({ error: 'Failed to disconnect provider' });
   }
 });

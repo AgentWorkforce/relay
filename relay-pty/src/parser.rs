@@ -13,6 +13,21 @@ use serde::Deserialize;
 use std::sync::OnceLock;
 use tracing::{debug, info, warn};
 
+/// Find the nearest character boundary at or before the given byte index.
+/// This is needed because Rust strings are UTF-8 and slicing at arbitrary
+/// byte positions can panic if the position is in the middle of a multi-byte character.
+fn floor_char_boundary(s: &str, index: usize) -> usize {
+    if index >= s.len() {
+        return s.len();
+    }
+    // Walk backwards from index to find a valid char boundary
+    let mut i = index;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
 /// Regex patterns (compiled once)
 static RELAY_PATTERN: OnceLock<Regex> = OnceLock::new();
 static FENCED_PATTERN: OnceLock<Regex> = OnceLock::new();
@@ -698,8 +713,8 @@ impl OutputParser {
     /// Truncate buffer to prevent unbounded growth
     pub fn truncate_buffer(&mut self, max_size: usize) {
         if self.buffer.len() > max_size {
-            // Keep the last max_size characters
-            let start = self.buffer.len() - max_size;
+            // Keep the last max_size characters (use floor_char_boundary for UTF-8 safety)
+            let start = floor_char_boundary(&self.buffer, self.buffer.len() - max_size);
             self.buffer = self.buffer[start..].to_string();
             self.last_parsed_pos = 0;
         }

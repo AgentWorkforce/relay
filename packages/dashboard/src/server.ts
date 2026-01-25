@@ -3939,6 +3939,43 @@ export async function startDashboard(
     }
   });
 
+  /**
+   * DELETE /api/credentials/apikey - Delete API key credential from user's home directory
+   * Used by cloud API to clear provider credentials when disconnecting
+   */
+  app.delete('/api/credentials/apikey', express.json(), async (req, res) => {
+    const { userId, provider } = req.body;
+
+    if (!userId || typeof userId !== 'string') {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+    if (!provider || typeof provider !== 'string') {
+      return res.status(400).json({ error: 'provider is required' });
+    }
+
+    // Sanitize for logging (prevent log injection)
+    const safeProvider = String(provider).replace(/[\r\n]/g, '').substring(0, 20);
+    const safeUserId = String(userId).replace(/[\r\n]/g, '').substring(0, 50);
+
+    try {
+      // Dynamically import to avoid loading user-directory in all cases
+      const { getUserDirectoryService } = await import('@agent-relay/user-directory');
+      const userDirService = getUserDirectoryService();
+      const deletedPaths = userDirService.deleteProviderCredentials(userId, provider);
+
+      console.log('[credentials] Deleted credentials', { provider: safeProvider, userId: safeUserId, count: deletedPaths.length });
+
+      res.json({
+        success: true,
+        message: 'credentials deleted',
+        deletedPaths,
+      });
+    } catch (err) {
+      console.error('[credentials] Failed to delete credentials', { provider: safeProvider, userId: safeUserId, error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: 'Failed to delete credential files' });
+    }
+  });
+
   // ===== Metrics API =====
 
   /**

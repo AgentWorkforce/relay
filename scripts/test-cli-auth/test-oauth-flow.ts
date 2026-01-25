@@ -16,8 +16,7 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import path, { join, dirname } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import {
@@ -26,6 +25,7 @@ import {
   matchesSuccessPattern,
   findMatchingPrompt,
 } from '../../packages/cloud/src/api/onboarding.js';
+import { findRelayPtyBinary as findRelayPtyBinaryUtil } from '../../packages/utils/src/relay-pty-path.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -42,28 +42,10 @@ interface TestResult {
 
 /**
  * Find the relay-pty binary path.
+ * Uses shared utility.
  */
 function findRelayPtyBinary(): string | null {
-  // Get the package root (three levels up from scripts/test-cli-auth/)
-  const packageRoot = join(__dirname, '..', '..');
-
-  const candidates = [
-    // Primary: installed by postinstall from platform-specific binary
-    join(packageRoot, 'bin', 'relay-pty'),
-    // Development: local Rust build
-    join(packageRoot, 'relay-pty', 'target', 'release', 'relay-pty'),
-    join(packageRoot, 'relay-pty', 'target', 'debug', 'relay-pty'),
-    // Installed globally
-    '/usr/local/bin/relay-pty',
-  ];
-
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) {
-      return candidate;
-    }
-  }
-
-  return null;
+  return findRelayPtyBinaryUtil(__dirname);
 }
 
 /**
