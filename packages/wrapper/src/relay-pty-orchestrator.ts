@@ -408,15 +408,31 @@ export class RelayPtyOrchestrator extends BaseWrapper {
         }
         
         // Remove existing path if it exists (file, symlink, or directory)
-        if (existsSync(linkPath)) {
+        // Use lstatSync instead of existsSync to detect broken symlinks
+        // (existsSync returns false for broken symlinks, but the symlink itself still exists)
+        let pathExists = false;
+        try {
+          lstatSync(linkPath);
+          pathExists = true;
+        } catch {
+          // Path doesn't exist at all - proceed to create symlink
+        }
+        
+        if (pathExists) {
           try {
             const stats = lstatSync(linkPath);
             if (stats.isSymbolicLink()) {
-              const currentTarget = readlinkSync(linkPath);
-              if (currentTarget === targetPath) {
-                // Symlink already points to correct target, no need to recreate
-                this.log(` Symlink already exists and is correct: ${linkPath} -> ${targetPath}`);
-                return;
+              // Handle both valid and broken symlinks
+              try {
+                const currentTarget = readlinkSync(linkPath);
+                if (currentTarget === targetPath) {
+                  // Symlink already points to correct target, no need to recreate
+                  this.log(` Symlink already exists and is correct: ${linkPath} -> ${targetPath}`);
+                  return;
+                }
+              } catch {
+                // Broken symlink (target doesn't exist) - remove it
+                this.log(` Removing broken symlink: ${linkPath}`);
               }
               unlinkSync(linkPath);
             } else if (stats.isFile()) {
@@ -424,9 +440,15 @@ export class RelayPtyOrchestrator extends BaseWrapper {
             } else if (stats.isDirectory()) {
               // Force remove directory - this is critical for fixing existing directories
               rmSync(linkPath, { recursive: true, force: true });
-              // Verify removal succeeded
-              if (existsSync(linkPath)) {
+              // Verify removal succeeded using lstatSync to catch broken symlinks
+              try {
+                lstatSync(linkPath);
                 throw new Error(`Failed to remove existing directory: ${linkPath}`);
+              } catch (err: any) {
+                if (err.code !== 'ENOENT') {
+                  throw err; // Re-throw if it's not a "doesn't exist" error
+                }
+                // Path successfully removed
               }
             }
           } catch (err: any) {
