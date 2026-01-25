@@ -136,7 +136,7 @@ export type OnAgentDeathCallback = (info: {
  *
  * For Claude Code: Creates/updates .claude/settings.local.json with:
  * - enableAllProjectMcpServers: true (auto-approve project MCP servers)
- * - permissions.allow: ["mcp__agent-relay"] (pre-approve agent-relay MCP tools)
+ * - permissions.allow: ["mcp__agent-relay__*"] (pre-approve all agent-relay MCP tools)
  *
  * For Cursor: Creates/updates .cursor/settings.json with MCP permissions
  * For Gemini: Creates/updates .gemini/settings.json with MCP permissions
@@ -160,11 +160,10 @@ function ensureMcpPermissions(projectRoot: string, cliType: string, debug = fals
   const home = process.env.HOME || '';
   const configMap: Record<string, McpPermissionConfig> = {
     claude: {
-      settingsDir: path.join(projectRoot, '.claude'),
+      // Use global settings for Claude - user scope doesn't require enableAllProjectMcpServers
+      settingsDir: path.join(home, '.claude'),
       settingsFile: 'settings.local.json',
       permissionKey: 'permissions.allow',
-      enableAllKey: 'enableAllProjectMcpServers',
-      globalSettingsDir: path.join(home, '.claude'), // Global settings to enable project MCP
     },
     cursor: {
       settingsDir: path.join(projectRoot, '.cursor'),
@@ -196,34 +195,6 @@ function ensureMcpPermissions(projectRoot: string, cliType: string, debug = fals
     // CLI doesn't use config-based MCP permissions (uses CLI flags instead)
     if (debug) log.debug(`CLI ${cliType} uses flag-based permissions, skipping config setup`);
     return;
-  }
-
-  // For Claude, also ensure global settings have enableAllProjectMcpServers
-  // This is required for Claude Code to load project-local .mcp.json files
-  if (config.globalSettingsDir && config.enableAllKey) {
-    try {
-      const globalSettingsPath = path.join(config.globalSettingsDir, 'settings.local.json');
-      if (!fs.existsSync(config.globalSettingsDir)) {
-        fs.mkdirSync(config.globalSettingsDir, { recursive: true });
-      }
-      let globalSettings: Record<string, unknown> = {};
-      if (fs.existsSync(globalSettingsPath)) {
-        try {
-          globalSettings = JSON.parse(fs.readFileSync(globalSettingsPath, 'utf-8'));
-        } catch {
-          globalSettings = {};
-        }
-      }
-      if (globalSettings[config.enableAllKey] !== true) {
-        globalSettings[config.enableAllKey] = true;
-        fs.writeFileSync(globalSettingsPath, JSON.stringify(globalSettings, null, 2) + '\n');
-        if (debug) log.debug(`Set global ${config.enableAllKey}: true at ${globalSettingsPath}`);
-      }
-    } catch (err) {
-      log.warn('Failed to set global MCP settings', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
   }
 
   const settingsPath = path.join(config.settingsDir, config.settingsFile);
@@ -275,7 +246,8 @@ function ensureMcpPermissions(projectRoot: string, cliType: string, debug = fals
       const allowList = current[finalKey] as string[];
 
       // Add agent-relay MCP permission if not already present
-      const agentRelayPermission = 'mcp__agent-relay';
+      // Format: mcp__<serverName>__* approves all tools from that server
+      const agentRelayPermission = 'mcp__agent-relay__*';
       if (!allowList.includes(agentRelayPermission)) {
         allowList.push(agentRelayPermission);
         if (debug) log.debug(`Added MCP permission: ${agentRelayPermission}`);
@@ -887,14 +859,24 @@ export class AgentSpawner {
         args.push('--yolo');
       }
 
-      // Auto-install MCP config if not present
+      // Auto-install MCP config to user scope if not present
+      // User scope (~/.claude.json) doesn't require enableAllProjectMcpServers setting
       // This ensures spawned agents have MCP tools available without manual setup
-      const mcpConfigPath = path.join(this.projectRoot, '.mcp.json');
-      if (!fs.existsSync(mcpConfigPath)) {
+      const home = process.env.HOME || '';
+      const userMcpConfigPath = path.join(home, '.claude.json');
+      const projectMcpConfigPath = path.join(this.projectRoot, '.mcp.json');
+
+      // Check if MCP is configured (either user or project scope)
+      const hasMcpConfig = fs.existsSync(userMcpConfigPath) || fs.existsSync(projectMcpConfigPath);
+
+      if (!hasMcpConfig) {
         try {
-          const result = installMcpConfig(mcpConfigPath);
+          // Install to user scope - doesn't require enableAllProjectMcpServers
+          const result = installMcpConfig(userMcpConfigPath, {
+            configKey: 'mcpServers', // Claude uses mcpServers in ~/.claude.json
+          });
           if (result.success) {
-            if (debug) log.debug(`Auto-installed MCP config at ${mcpConfigPath}`);
+            if (debug) log.debug(`Auto-installed MCP config at ${userMcpConfigPath}`);
           } else {
             log.warn(`Failed to auto-install MCP config: ${result.error}`);
           }
@@ -907,14 +889,16 @@ export class AgentSpawner {
 
       // Check if MCP tools are available
       // Must verify BOTH conditions (matching inbox hook behavior from commit 18bab59):
-      // 1. .mcp.json config exists in project
+      // 1. MCP config exists (user or project scope)
       // 2. Relay daemon socket is accessible (daemon must be running)
       // Without both, MCP context would be shown but tools wouldn't work
       // Use the actual socket path from config (project-local .agent-relay/relay.sock)
       // or fall back to environment variable
       const relaySocket = this.socketPath || process.env.RELAY_SOCKET || path.join(this.projectRoot, '.agent-relay', 'relay.sock');
       let hasMcp = false;
-      if (fs.existsSync(mcpConfigPath)) {
+      // Check either user-scope or project-scope MCP config
+      const mcpConfigExists = fs.existsSync(userMcpConfigPath) || fs.existsSync(projectMcpConfigPath);
+      if (mcpConfigExists) {
         try {
           hasMcp = fs.statSync(relaySocket).isSocket();
         } catch {
@@ -922,7 +906,7 @@ export class AgentSpawner {
           hasMcp = false;
         }
       }
-      if (debug && hasMcp) log.debug(`MCP tools available for ${name} (found ${mcpConfigPath} and socket ${relaySocket})`);
+      if (debug && hasMcp) log.debug(`MCP tools available for ${name} (MCP config found, socket ${relaySocket})`);
 
       // Inject relay protocol instructions via CLI-specific system prompt
       let relayInstructions = getRelayInstructions(name, { hasMcp, includeWorkflowConventions });

@@ -180,13 +180,20 @@ program
     console.error(`Agent: ${agentName}`);
     console.error(`Project: ${paths.projectId}`);
 
-    // Auto-install MCP config if not present
-    const mcpConfigPath = path.join(paths.projectRoot, '.mcp.json');
-    if (!fs.existsSync(mcpConfigPath)) {
+    // Auto-install MCP config to user scope if not present
+    // User scope (~/.claude.json) doesn't require enableAllProjectMcpServers setting
+    const home = process.env.HOME || '';
+    const userMcpConfigPath = path.join(home, '.claude.json');
+    const projectMcpConfigPath = path.join(paths.projectRoot, '.mcp.json');
+    const hasMcpConfig = fs.existsSync(userMcpConfigPath) || fs.existsSync(projectMcpConfigPath);
+
+    if (!hasMcpConfig) {
       try {
-        const result = installMcpConfig(mcpConfigPath);
+        const result = installMcpConfig(userMcpConfigPath, {
+          configKey: 'mcpServers',
+        });
         if (result.success) {
-          console.error(`MCP config: ${mcpConfigPath} (auto-created)`);
+          console.error(`MCP config: ${userMcpConfigPath} (auto-created)`);
         }
       } catch {
         // Best effort - don't fail the command
