@@ -15,6 +15,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir, platform } from 'node:os';
+import * as TOML from 'smol-toml';
 
 export interface EditorConfig {
   /** Display name for the editor */
@@ -24,7 +25,7 @@ export interface EditorConfig {
   /** Key in config object for MCP servers */
   configKey: string;
   /** Config file format */
-  format: 'json' | 'jsonc';
+  format: 'json' | 'jsonc' | 'toml';
   /** Whether this editor supports project-local MCP configs */
   supportsLocal?: boolean;
 }
@@ -144,6 +145,13 @@ function getConfigPaths(): Record<string, EditorConfig> {
       format: 'json',
       supportsLocal: true,
     },
+    codex: {
+      name: 'Codex',
+      configPath: join(home, '.codex', 'config.toml'),
+      configKey: 'mcp_servers', // TOML uses [mcp_servers.agent-relay] tables
+      format: 'toml',
+      supportsLocal: false, // Codex doesn't support project-local MCP yet (see openai/codex#2628)
+    },
   };
 }
 
@@ -205,28 +213,33 @@ function stripJsonComments(content: string): string {
 }
 
 /**
- * Read and parse config file, handling both JSON and JSONC
+ * Read and parse config file, handling JSON, JSONC, and TOML
  */
 function readConfigFile(
   configPath: string,
-  format: 'json' | 'jsonc'
+  format: 'json' | 'jsonc' | 'toml'
 ): Record<string, unknown> {
   if (!existsSync(configPath)) {
     return {};
   }
 
   const content = readFileSync(configPath, 'utf-8');
-  const jsonContent = format === 'jsonc' ? stripJsonComments(content) : content;
 
   try {
     // Handle empty or whitespace-only files
-    const trimmed = jsonContent.trim();
+    const trimmed = content.trim();
     if (!trimmed) {
       return {};
     }
-    return JSON.parse(trimmed) as Record<string, unknown>;
+
+    if (format === 'toml') {
+      return TOML.parse(trimmed) as Record<string, unknown>;
+    }
+
+    const jsonContent = format === 'jsonc' ? stripJsonComments(content) : content;
+    return JSON.parse(jsonContent.trim()) as Record<string, unknown>;
   } catch {
-    // Invalid JSON, start fresh
+    // Invalid config, start fresh
     return {};
   }
 }
@@ -236,7 +249,8 @@ function readConfigFile(
  */
 function writeConfigFile(
   configPath: string,
-  config: Record<string, unknown>
+  config: Record<string, unknown>,
+  format: 'json' | 'jsonc' | 'toml' = 'json'
 ): void {
   const configDir = dirname(configPath);
 
@@ -245,7 +259,11 @@ function writeConfigFile(
     mkdirSync(configDir, { recursive: true });
   }
 
-  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+  if (format === 'toml') {
+    writeFileSync(configPath, TOML.stringify(config) + '\n');
+  } else {
+    writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+  }
 }
 
 /**
@@ -343,7 +361,7 @@ export function installForEditor(
     mcpServers['agent-relay'] = serverConfig;
 
     // Write updated config
-    writeConfigFile(configPath, config);
+    writeConfigFile(configPath, config, editor.format);
 
     return {
       editor: editor.name,
@@ -407,7 +425,7 @@ export function uninstallFromEditor(
       | undefined;
     if (mcpServers && 'agent-relay' in mcpServers) {
       delete mcpServers['agent-relay'];
-      writeConfigFile(configPath, config);
+      writeConfigFile(configPath, config, editor.format);
     }
 
     return {
