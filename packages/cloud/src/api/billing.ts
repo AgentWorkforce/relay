@@ -200,7 +200,7 @@ billingRouter.get('/subscription', requireAuth, async (req, res) => {
     }
 
     // Admin users have special status - show their current plan without Stripe
-    if (isAdminUser(user.githubUsername)) {
+    if (user.githubUsername && isAdminUser(user.githubUsername)) {
       return res.json({
         tier: user.plan || 'enterprise',
         subscription: null,
@@ -223,7 +223,7 @@ billingRouter.get('/subscription', requireAuth, async (req, res) => {
 
     // Get or create Stripe customer
     const customerId = user.stripeCustomerId ||
-      await billing.getOrCreateCustomer(user.id, user.email || '', user.githubUsername);
+      await billing.getOrCreateCustomer(user.id, user.email || '', user.githubUsername ?? undefined);
 
     // Save customer ID to database if newly created
     if (!user.stripeCustomerId) {
@@ -291,7 +291,7 @@ billingRouter.post('/checkout', requireAuth, async (req, res) => {
     }
 
     // Admin users get free upgrades - skip Stripe entirely
-    if (isAdminUser(user.githubUsername)) {
+    if (user.githubUsername && isAdminUser(user.githubUsername)) {
       // Update user plan directly
       await db.users.update(userId, { plan: tier });
       console.log(`[billing] Admin user ${user.githubUsername} upgraded to ${tier} (free)`);
@@ -319,7 +319,7 @@ billingRouter.post('/checkout', requireAuth, async (req, res) => {
 
     // Get or create customer
     const customerId = user.stripeCustomerId ||
-      await billing.getOrCreateCustomer(user.id, user.email || '', user.githubUsername);
+      await billing.getOrCreateCustomer(user.id, user.email || '', user.githubUsername ?? undefined);
 
     // Save customer ID to database
     if (!user.stripeCustomerId) {
