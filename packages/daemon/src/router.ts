@@ -328,8 +328,11 @@ export class Router {
         // Remove from all channels and notify remaining members
         this.removeFromAllChannels(connection.agentName);
 
-        // Clean up shadow relationships
+        // Clean up shadow relationships:
+        // 1. If this agent is a shadow, unbind it from its primary
         this.unbindShadow(connection.agentName);
+        // 2. If this agent is a primary, unbind all its shadows (prevents memory leak)
+        this.unbindShadowsOfPrimary(connection.agentName);
 
         // Clear processing state
         this.clearProcessing(connection.agentName);
@@ -387,6 +390,7 @@ export class Router {
   /**
    * Bind a shadow agent to a primary agent.
    * The shadow will receive copies of messages to/from the primary.
+   * @returns true if binding succeeded, false if rejected (e.g., self-shadowing)
    */
   bindShadow(
     shadowAgent: string,
@@ -396,7 +400,13 @@ export class Router {
       receiveIncoming?: boolean;
       receiveOutgoing?: boolean;
     } = {}
-  ): void {
+  ): boolean {
+    // Prevent self-shadowing
+    if (shadowAgent === primaryAgent) {
+      routerLog.warn(`Rejected self-shadowing attempt: ${shadowAgent}`);
+      return false;
+    }
+
     // Clean up any existing shadow binding for this shadow
     this.unbindShadow(shadowAgent);
 
@@ -420,6 +430,7 @@ export class Router {
     this.primaryByShadow.set(shadowAgent, primaryAgent);
 
     routerLog.info(`Shadow bound: ${shadowAgent} -> ${primaryAgent}`, { speakOn: relationship.speakOn });
+    return true;
   }
 
   /**
@@ -444,6 +455,23 @@ export class Router {
     this.primaryByShadow.delete(shadowAgent);
 
     routerLog.info(`Shadow unbound: ${shadowAgent} from ${primaryAgent}`);
+  }
+
+  /**
+   * Unbind all shadows from a primary agent (called when primary disconnects).
+   */
+  unbindShadowsOfPrimary(primaryAgent: string): void {
+    const shadows = this.shadowsByPrimary.get(primaryAgent);
+    if (!shadows || shadows.length === 0) return;
+
+    // Remove reverse lookups for all shadows
+    for (const shadow of shadows) {
+      this.primaryByShadow.delete(shadow.shadowAgent);
+      routerLog.info(`Shadow unbound (primary disconnected): ${shadow.shadowAgent} from ${primaryAgent}`);
+    }
+
+    // Remove primary's shadow list
+    this.shadowsByPrimary.delete(primaryAgent);
   }
 
   /**
@@ -519,21 +547,6 @@ export class Router {
     }
   }
 
-  /**
-   * Check if a shadow should speak based on a specific trigger.
-   */
-  shouldShadowSpeak(shadowAgent: string, trigger: SpeakOnTrigger): boolean {
-    const primaryAgent = this.primaryByShadow.get(shadowAgent);
-    if (!primaryAgent) return true; // Not a shadow, can always speak
-
-    const shadows = this.shadowsByPrimary.get(primaryAgent);
-    if (!shadows) return true;
-
-    const relationship = shadows.find(s => s.shadowAgent === shadowAgent);
-    if (!relationship) return true;
-
-    return relationship.speakOn.includes(trigger) || relationship.speakOn.includes('ALL_MESSAGES');
-  }
 
   /**
    * Route a SEND message to its destination(s).
