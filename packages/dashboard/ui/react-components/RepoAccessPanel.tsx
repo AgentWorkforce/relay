@@ -125,7 +125,7 @@ export function RepoAccessPanel({
   }, [fetchRepos]);
 
   // Enable access to a repo (handles OAuth, workspace choice, cloning)
-  const handleEnableAccess = useCallback(async (repoFullName: string, targetWorkspaceId?: string) => {
+  const handleEnableAccess = useCallback(async (repoFullName: string, targetWorkspaceId?: string, createNew?: boolean) => {
     setCreatingWorkspace(repoFullName);
     setError(null);
     setOauthRepo(null);
@@ -144,6 +144,7 @@ export function RepoAccessPanel({
         body: JSON.stringify({ 
           repositoryFullName: repoFullName,
           workspaceId: targetWorkspaceId,
+          createNew,
         }),
       });
 
@@ -282,7 +283,8 @@ export function RepoAccessPanel({
   const handleCreateNewWorkspace = useCallback(async () => {
     if (!workspaceChoice) return;
     
-    await handleEnableAccess(workspaceChoice.repoFullName);
+    // Pass createNew=true to skip workspace choice and force new workspace creation
+    await handleEnableAccess(workspaceChoice.repoFullName, undefined, true);
     setWorkspaceChoice(null);
   }, [workspaceChoice, handleEnableAccess]);
 

@@ -6,12 +6,71 @@
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import { requireAuth } from './auth.js';
 import { db, Workspace } from '../db/index.js';
 import { getProvisioner, getProvisioningStage } from '../provisioner/index.js';
 import { checkWorkspaceLimit } from './middleware/planLimits.js';
 import { getConfig } from '../config.js';
 import { nangoService, NANGO_INTEGRATIONS } from '../services/nango.js';
+
+/**
+ * Generate workspace token for API calls to workspace containers
+ */
+function generateWorkspaceToken(workspaceId: string): string {
+  const config = getConfig();
+  return crypto
+    .createHmac('sha256', config.sessionSecret)
+    .update(`workspace:${workspaceId}`)
+    .digest('hex');
+}
+
+/**
+ * Call workspace API endpoint
+ */
+async function callWorkspaceApi(
+  publicUrl: string,
+  workspaceId: string,
+  method: string,
+  endpoint: string,
+  body?: unknown
+): Promise<{ ok: boolean; status: number; data?: unknown; error?: string }> {
+  const token = generateWorkspaceToken(workspaceId);
+  const url = `${publicUrl.replace(/\/$/, '')}${endpoint}`;
+
+  try {
+    const response = await fetch(url, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+
+    const data = await response.json().catch((parseError) => {
+      console.error('Failed to parse JSON from workspace response', {
+        url,
+        status: response.status,
+        error: parseError instanceof Error ? parseError.message : parseError,
+      });
+      return null;
+    }) as { error?: string } | null;
+
+    return {
+      ok: response.ok,
+      status: response.status,
+      data,
+      error: response.ok ? undefined : (data?.error || `HTTP ${response.status}`),
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      status: 0,
+      error: err instanceof Error ? err.message : 'Network error',
+    };
+  }
+}
 
 // ============================================================================
 // Workspace Access Cache
@@ -2032,7 +2091,7 @@ workspacesRouter.delete('/:id/agents/:agentName', async (req: Request, res: Resp
  */
 workspacesRouter.post('/enable-repo', checkWorkspaceLimit, async (req: Request, res: Response) => {
   const userId = req.session.userId!;
-  const { repositoryFullName, workspaceId } = req.body;
+  const { repositoryFullName, workspaceId, createNew } = req.body;
 
   if (!repositoryFullName || typeof repositoryFullName !== 'string') {
     return res.status(400).json({ error: 'Repository full name is required (owner/repo)' });
@@ -2140,8 +2199,8 @@ workspacesRouter.post('/enable-repo', checkWorkspaceLimit, async (req: Request, 
       }
 
       targetWorkspaceId = workspaceId;
-    } else if (orgWorkspaces.length > 0) {
-      // Suggest adding to existing org workspace
+    } else if (!createNew && orgWorkspaces.length > 0) {
+      // Suggest adding to existing org workspace (unless user explicitly wants new)
       return res.json({
         requiresWorkspaceChoice: true,
         repositoryFullName,
