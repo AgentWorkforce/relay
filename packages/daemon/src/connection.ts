@@ -291,7 +291,11 @@ export class Connection {
   }
 
   private handleSend(envelope: Envelope<SendPayload>): void {
-    if (this._state !== 'ACTIVE') {
+    // Allow MCP-style messages (with envelope.from set) even when not in ACTIVE state.
+    // MCP tools use short-lived connections without HELLO handshake.
+    // The router will use envelope.from as the sender name for these messages.
+    const hasMcpSender = !!envelope.from && !!envelope.to;
+    if (this._state !== 'ACTIVE' && !hasMcpSender) {
       this.sendError('BAD_REQUEST', 'Not in ACTIVE state', false);
       return;
     }

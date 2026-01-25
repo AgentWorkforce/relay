@@ -74,6 +74,7 @@ export {
 // Cloud/Discovery
 export {
   discoverSocket,
+  discoverAgentName,
   detectCloudWorkspace,
   isCloudWorkspace,
   getCloudSocketPath,

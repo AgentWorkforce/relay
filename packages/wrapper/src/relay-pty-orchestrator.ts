@@ -20,7 +20,7 @@ import { spawn, ChildProcess } from 'node:child_process';
 import { createConnection, Socket } from 'node:net';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
-import { existsSync, unlinkSync, mkdirSync, symlinkSync, lstatSync, rmSync, watch, readdirSync, readlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, unlinkSync, mkdirSync, symlinkSync, lstatSync, rmSync, watch, readdirSync, readlinkSync, writeFileSync, appendFileSync } from 'node:fs';
 import type { FSWatcher } from 'node:fs';
 import { getProjectPaths } from '@agent-relay/config/project-namespace';
 import { getAgentOutboxTemplate } from '@agent-relay/config/relay-file-writer';
@@ -364,18 +364,38 @@ export class RelayPtyOrchestrator extends BaseWrapper {
 
   /**
    * Debug log - only outputs when debug is enabled
+   * Writes to log file to avoid polluting TUI output
    */
   private log(message: string): void {
     if (this.config.debug) {
-      console.log(`[relay-pty-orchestrator:${this.config.name}] ${message}`);
+      const logLine = `${new Date().toISOString()} [relay-pty-orchestrator:${this.config.name}] ${message}\n`;
+      try {
+        const logDir = dirname(this._logPath);
+        if (!existsSync(logDir)) {
+          mkdirSync(logDir, { recursive: true });
+        }
+        appendFileSync(this._logPath, logLine);
+      } catch {
+        // Fallback to stderr if file write fails (only during init before _logPath is set)
+      }
     }
   }
 
   /**
    * Error log - always outputs (errors are important)
+   * Writes to log file to avoid polluting TUI output
    */
   private logError(message: string): void {
-    console.error(`[relay-pty-orchestrator:${this.config.name}] ERROR: ${message}`);
+    const logLine = `${new Date().toISOString()} [relay-pty-orchestrator:${this.config.name}] ERROR: ${message}\n`;
+    try {
+      const logDir = dirname(this._logPath);
+      if (!existsSync(logDir)) {
+        mkdirSync(logDir, { recursive: true });
+      }
+      appendFileSync(this._logPath, logLine);
+    } catch {
+      // Fallback to stderr if file write fails (only during init before _logPath is set)
+    }
   }
 
   /**

@@ -7,6 +7,87 @@ import { randomUUID } from 'node:crypto';
 import { discoverSocket } from './cloud.js';
 import { DaemonNotRunningError } from './errors.js';
 
+// ============================================================================
+// Protocol Types - These MUST match @agent-relay/protocol types
+// Keeping them local avoids circular dependencies but requires sync
+// ============================================================================
+
+/**
+ * SendPayload for SEND messages.
+ * IMPORTANT: `from` and `to` go at envelope level, NOT in payload!
+ */
+interface SendPayload {
+  kind: 'message' | 'action' | 'state' | 'thinking';
+  body: string;
+  data?: Record<string, unknown>;
+  thread?: string;
+}
+
+/**
+ * Envelope routing properties - go at top level, NOT in payload.
+ */
+interface EnvelopeRouting {
+  from?: string;
+  to?: string;
+}
+
+/**
+ * SpawnPayload for SPAWN messages.
+ */
+interface SpawnPayload {
+  name: string;
+  cli: string;
+  task: string;
+  team?: string;
+  cwd?: string;
+  model?: string;
+  socketPath?: string;
+  spawnerName?: string;  // Parent agent name
+  interactive?: boolean;
+}
+
+/**
+ * ReleasePayload for RELEASE messages.
+ */
+interface ReleasePayload {
+  name: string;
+  reason?: string;
+}
+
+/**
+ * InboxPayload for INBOX queries.
+ */
+interface InboxPayload {
+  agent: string;
+  limit?: number;
+  unreadOnly?: boolean;
+  from?: string;
+  channel?: string;
+}
+
+/**
+ * ListAgentsPayload for LIST_AGENTS queries.
+ */
+interface ListAgentsPayload {
+  includeIdle?: boolean;
+  project?: string;
+}
+
+/**
+ * HealthPayload for HEALTH queries.
+ */
+interface HealthPayload {
+  includeCrashes?: boolean;
+  includeAlerts?: boolean;
+}
+
+/**
+ * MetricsPayload for METRICS queries.
+ */
+interface MetricsPayload {
+  agent?: string;
+}
+
 export interface HealthResponse {
   healthScore: number;
   summary: string;
@@ -108,20 +189,29 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   // Timeouts for different operations
   const RELEASE_TIMEOUT = 10000; // 10 seconds for release operations
 
+  /** Union of all payload types for type safety */
+  type AnyPayload = SendPayload | SpawnPayload | ReleasePayload | InboxPayload | ListAgentsPayload | HealthPayload | MetricsPayload | Record<string, unknown>;
+
   /**
    * Fire-and-forget: Send a message without waiting for any response.
    * Used for SEND and SPAWN where we don't expect daemon to reply.
+   * @param type Message type
+   * @param payload Message payload (for SEND: must be SendPayload with kind, body, etc.)
+   * @param envelopeProps Envelope-level routing (from, to) - NOT in payload!
    */
-  function fireAndForget(type: string, payload: unknown): Promise<void> {
+  function fireAndForget(type: string, payload: AnyPayload, envelopeProps?: EnvelopeRouting): Promise<void> {
     return new Promise((resolve, reject) => {
       const id = generateId();
-      const envelope = {
+      const envelope: Record<string, unknown> = {
         v: PROTOCOL_VERSION,
         type,
         id,
         ts: Date.now(),
         payload,
       };
+      // Add from/to at envelope level (required for SEND messages)
+      if (envelopeProps?.from) envelope.from = envelopeProps.from;
+      if (envelopeProps?.to) envelope.to = envelopeProps.to;
 
       const socket: Socket = createConnection(socketPath);
 
@@ -145,8 +235,13 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   /**
    * Request-response: Send a message and wait for daemon to respond.
    * Used for queries (STATUS, INBOX, etc.) and blocking sends (waits for ACK).
+   * @param type Message type
+   * @param payload Message payload (for SEND: must be SendPayload with kind, body, etc.)
+   * @param customTimeout Optional timeout override
+   * @param payloadMeta Optional sync metadata for blocking sends
+   * @param envelopeProps Envelope-level routing (from, to) - NOT in payload!
    */
-  async function request<T>(type: string, payload: unknown, customTimeout?: number, payloadMeta?: { sync?: { blocking?: boolean; correlationId?: string; timeoutMs?: number } }): Promise<T> {
+  async function request<T>(type: string, payload: AnyPayload, customTimeout?: number, payloadMeta?: { sync?: { blocking?: boolean; correlationId?: string; timeoutMs?: number } }, envelopeProps?: EnvelopeRouting): Promise<T> {
     return new Promise((resolve, reject) => {
       const id = generateId();
       const correlationId = payloadMeta?.sync?.correlationId;
@@ -158,6 +253,9 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         ts: Date.now(),
         payload,
       };
+      // Add from/to at envelope level (required for SEND messages)
+      if (envelopeProps?.from) envelope.from = envelopeProps.from;
+      if (envelopeProps?.to) envelope.to = envelopeProps.to;
       if (payloadMeta) {
         envelope.payload_meta = payloadMeta;
       }
@@ -219,15 +317,16 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   return {
     async send(to, message, opts = {}) {
       // Fire-and-forget: daemon doesn't respond to non-blocking SEND
-      await fireAndForget('SEND', { from: agentName, to, body: message, thread: opts.thread });
+      // from/to must be at envelope level, kind/body/thread in payload
+      await fireAndForget('SEND', { kind: 'message', body: message, thread: opts.thread }, { from: agentName, to });
     },
     async sendAndWait(to, message, opts = {}) {
       // Use proper SEND with sync.blocking - daemon handles the wait and returns ACK
+      // from/to must be at envelope level, kind/body/thread in payload
       const waitTimeout = opts.timeoutMs || 30000;
       const correlationId = randomUUID();
       const r = await request<{ correlationId?: string; response?: string; from?: string }>('SEND', {
-        from: agentName,
-        to,
+        kind: 'message',
         body: message,
         thread: opts.thread,
       }, waitTimeout + 5000, {
@@ -236,21 +335,34 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
           correlationId,
           timeoutMs: waitTimeout,
         },
-      });
+      }, { from: agentName, to });
       return { from: r.from ?? to, content: r.response ?? '', thread: opts.thread };
     },
     async spawn(opts) {
       // Fire-and-forget: daemon handles spawning, agent will message when ready
       try {
-        await fireAndForget('SPAWN', { ...opts, spawnerName: agentName });
+        const payload: SpawnPayload = {
+          name: opts.name,
+          cli: opts.cli,
+          task: opts.task,
+          model: opts.model,
+          cwd: opts.cwd,
+          spawnerName: agentName,  // Parent agent making the spawn request
+        };
+        await fireAndForget('SPAWN', payload);
         return { success: true };
       } catch (e) {
         return { success: false, error: e instanceof Error ? e.message : String(e) };
       }
     },
     async release(name, reason) {
-      try { await request('RELEASE', { name, reason }, RELEASE_TIMEOUT); return { success: true }; }
-      catch (e) { return { success: false, error: e instanceof Error ? e.message : String(e) }; }
+      try {
+        const payload: ReleasePayload = { name, reason };
+        await request('RELEASE', payload, RELEASE_TIMEOUT);
+        return { success: true };
+      } catch (e) {
+        return { success: false, error: e instanceof Error ? e.message : String(e) };
+      }
     },
     async getStatus() {
       try {
@@ -259,19 +371,35 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
       } catch { return { connected: false, agentName, project, socketPath }; }
     },
     async getInbox(opts = {}) {
-      const response = await request<{ messages: Array<{ id: string; from: string; body: string; channel?: string; thread?: string; timestamp: number }> }>('INBOX', { agent: agentName, limit: opts.limit, unreadOnly: opts.unread_only, from: opts.from, channel: opts.channel });
+      const payload: InboxPayload = {
+        agent: agentName,
+        limit: opts.limit,
+        unreadOnly: opts.unread_only,
+        from: opts.from,
+        channel: opts.channel,
+      };
+      const response = await request<{ messages: Array<{ id: string; from: string; body: string; channel?: string; thread?: string; timestamp: number }> }>('INBOX', payload);
       const msgs = response.messages || [];
       return msgs.map(m => ({ id: m.id, from: m.from, content: m.body, channel: m.channel, thread: m.thread }));
     },
     async listAgents(opts = {}) {
-      const response = await request<{ agents: Array<{ name: string; cli?: string; idle?: boolean; parent?: string }> }>('LIST_AGENTS', { includeIdle: opts.include_idle, project: opts.project });
+      const payload: ListAgentsPayload = {
+        includeIdle: opts.include_idle,
+        project: opts.project,
+      };
+      const response = await request<{ agents: Array<{ name: string; cli?: string; idle?: boolean; parent?: string }> }>('LIST_AGENTS', payload);
       return response.agents || [];
     },
     async getHealth(opts = {}) {
-      return request<HealthResponse>('HEALTH', { includeCrashes: opts.include_crashes, includeAlerts: opts.include_alerts });
+      const payload: HealthPayload = {
+        includeCrashes: opts.include_crashes,
+        includeAlerts: opts.include_alerts,
+      };
+      return request<HealthResponse>('HEALTH', payload);
     },
     async getMetrics(opts = {}) {
-      return request<MetricsResponse>('METRICS', { agent: opts.agent });
+      const payload: MetricsPayload = { agent: opts.agent };
+      return request<MetricsResponse>('METRICS', payload);
     },
   };
 }

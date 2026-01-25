@@ -103,6 +103,7 @@ export class Daemon {
   private consensus?: ConsensusIntegration;
   private cloudSyncDebounceTimer?: NodeJS.Timeout;
   private spawnManager?: SpawnManager;
+  private shuttingDown = false;
 
   /** Telemetry tracking */
   private startTime?: number;
@@ -178,6 +179,9 @@ export class Daemon {
    * This file contains agents currently processing/thinking after receiving a message.
    */
   private writeProcessingStateFile(): void {
+    // Skip writes during shutdown to avoid race conditions with directory cleanup
+    if (this.shuttingDown) return;
+
     try {
       const processingAgents = this.router.getProcessingAgents();
       const targetDir = this.config.teamDir ?? path.dirname(this.config.socketPath);
@@ -191,7 +195,10 @@ export class Daemon {
       fs.writeFileSync(tempPath, data, 'utf-8');
       fs.renameSync(tempPath, targetPath);
     } catch (err) {
-      log.error('Failed to write processing-state.json', { error: String(err) });
+      // Suppress ENOENT errors during shutdown race conditions
+      if (!this.shuttingDown) {
+        log.error('Failed to write processing-state.json', { error: String(err) });
+      }
     }
   }
 
@@ -754,6 +761,9 @@ export class Daemon {
    */
   async stop(): Promise<void> {
     if (!this.running) return;
+
+    // Mark as shutting down to prevent race conditions with state file writes
+    this.shuttingDown = true;
 
     // Track daemon stop
     const uptimeSeconds = this.startTime

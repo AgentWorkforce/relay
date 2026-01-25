@@ -107,11 +107,11 @@ switch (command) {
     // Dynamic import to avoid loading server code when not needed
     (async () => {
       try {
-        const { createRelayClient, runMCPServer, discoverSocket } = await import('./index.js');
+        const { createRelayClient, runMCPServer, discoverSocket, discoverAgentName } = await import('./index.js');
 
-        // Discover socket or use default agent name
+        // Discover socket and agent identity
         const discovery = discoverSocket();
-        const agentName = process.env.RELAY_AGENT_NAME || `mcp-${process.pid}`;
+        const agentName = discoverAgentName(discovery) || `mcp-${process.pid}`;
 
         // Create client and run server
         const client = createRelayClient({

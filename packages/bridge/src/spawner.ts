@@ -995,6 +995,8 @@ export class AgentSpawner {
           // Pass socket path for MCP server discovery
           // This allows the MCP server (started by Claude Code) to connect to the daemon
           ...(relaySocket ? { RELAY_SOCKET: relaySocket } : {}),
+          // Pass agent name so MCP server knows its identity
+          RELAY_AGENT_NAME: name,
         },
         streamLogs: true,
         shadowOf: request.shadowOf,

@@ -439,6 +439,13 @@ program
     const dbPath = paths.dbPath;
     const pidFilePath = pidFilePathForSocket(socketPath);
 
+    // Set up log file to avoid console output polluting TUI terminals
+    // Only set if not already configured via environment
+    if (!process.env.AGENT_RELAY_LOG_FILE) {
+      const logFile = path.join(paths.dataDir, 'daemon.log');
+      process.env.AGENT_RELAY_LOG_FILE = logFile;
+    }
+
     console.log(`Project: ${paths.projectRoot}`);
     console.log(`Socket:  ${socketPath}`);
 
