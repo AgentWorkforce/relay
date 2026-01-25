@@ -2,7 +2,9 @@
 
 A comprehensive analysis of Anthropic's hidden multi-agent orchestration system discovered in Claude Code v2.1.19 and its implications for Agent Relay.
 
-**Source**: [GitHub Gist - Multi-Agent Orchestration Plan](https://gist.github.com/kieranklaassen/d2b35569be2c7f1412c64861a219d51f)
+**Sources**:
+- [GitHub Gist - Multi-Agent Orchestration Plan](https://gist.github.com/kieranklaassen/d2b35569be2c7f1412c64861a219d51f)
+- [Hacker News Discussion](https://news.ycombinator.com/item?id=46743908)
 
 ---
 
@@ -246,9 +248,63 @@ The gist identifies two feature flags controlling access:
 
 ---
 
-## 6. Use Case Comparison
+## 6. Community Insights (Hacker News Discussion)
 
-### Gist's Speculative Use Cases vs Agent Relay Capabilities
+The [HN thread](https://news.ycombinator.com/item?id=46743908) provides valuable real-world context from developers experimenting with multi-agent patterns.
+
+### Implementation Details Revealed
+
+**Delegation-Focused Context:**
+> "Swarm mode includes a delegation-focused context separate from the standard conversation, with system-reminder breadcrumbs preventing drift." — AffableSpatula
+
+This suggests TeammateTool uses isolated contexts per agent rather than shared state—similar to Agent Relay's per-agent sessions.
+
+**Practical Multi-Agent Systems:**
+User mafriese described a **9-agent system** for Java-to-C# migration:
+- Manager, Product Owner, Scrum Master
+- Architect, Developers (multiple)
+- CAB (Change Advisory Board)
+
+Key insight: "Context management is the primary advantage—each agent focuses narrowly with reduced context loads, improving reasoning quality."
+
+### Success Stories
+
+| User | Pattern | Result |
+|------|---------|--------|
+| esperent | 26 parallel subagents for test generation | "Several months" → 20 minutes |
+| mafriese | 9-agent migration pipeline | Complex migrations with approval gates |
+
+### Critical Concerns Raised
+
+**Quality vs. Autonomy Trade-off:**
+> "Increased agent autonomy pushes toward generating *more* code rather than *better* code." — daxfohl
+
+**Review Bottleneck:**
+Multiple users highlighted that AI-generated code volume creates review bottlenecks. One noted Claude attempted to "reinvent Istanbul in a bash script" rather than installing the tool.
+
+**Maintenance Risk:**
+> "Teams producing enormous amounts of code that nobody understands are well out over their skis." — zmmmmm
+
+### Skepticism Worth Noting
+
+| Concern | Implication for Agent Relay |
+|---------|----------------------------|
+| "Naming masking simpler phenomena" | Focus on outcomes, not organizational theater |
+| "Review took days after 20-minute generation" | Shadow agents for real-time review may help |
+| "Cringiest thing" comparisons to NFT hype | Emphasize practical use cases, not buzzwords |
+
+### Lessons for Agent Relay
+
+1. **Token efficiency matters** - Fresh contexts per agent beat bloated monolithic histories
+2. **Review integration is critical** - Speed of generation without review creates tech debt
+3. **Shadow agents address a real gap** - Real-time monitoring > post-hoc review
+4. **Task isolation prevents conflicts** - Worktrees and file boundaries reduce merge issues
+
+---
+
+## 7. Use Case Comparison
+
+### Speculative Use Cases vs Agent Relay Capabilities
 
 | Use Case | TeammateTool Approach | Agent Relay Today |
 |----------|----------------------|-------------------|
@@ -263,7 +319,7 @@ The gist identifies two feature flags controlling access:
 
 ---
 
-## 7. Interoperability Strategy
+## 8. Interoperability Strategy
 
 ### Immediate Opportunities
 
@@ -433,7 +489,7 @@ class NativeTeammateBridge {
 
 ---
 
-## 8. Preparation Roadmap
+## 9. Preparation Roadmap
 
 ### Phase 1: Monitor & Document (Now)
 
@@ -476,7 +532,7 @@ Agent Relay's advantages to maintain and extend:
 
 ---
 
-## 9. Risk Assessment
+## 10. Risk Assessment
 
 ### Competitive Risks
 
@@ -496,7 +552,7 @@ Agent Relay's advantages to maintain and extend:
 
 ---
 
-## 10. Conclusion
+## 11. Conclusion
 
 ### Key Takeaways
 
