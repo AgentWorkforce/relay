@@ -107,15 +107,24 @@ switch (command) {
     // Dynamic import to avoid loading server code when not needed
     (async () => {
       try {
-        const { createRelayClient, runMCPServer, discoverSocket } = await import('./index.js');
+        const { runMCPServer, discoverSocket, discoverAgentName } = await import('./index.js');
+        const { createHybridClient, discoverProjectRoot } = await import('./hybrid-client.js');
 
-        // Discover socket or use default agent name
+        // Discover socket and agent identity
         const discovery = discoverSocket();
-        const agentName = process.env.RELAY_AGENT_NAME || `mcp-${process.pid}`;
+        const agentName = discoverAgentName(discovery) || `mcp-${process.pid}`;
 
-        // Create client and run server
-        const client = createRelayClient({
+        // Discover project root for file-based transport
+        const projectRoot = discoverProjectRoot();
+        if (!projectRoot) {
+          console.error('Could not find project root (.agent-relay directory)');
+          process.exit(1);
+        }
+
+        // Create hybrid client (file-based writes, socket queries)
+        const client = createHybridClient({
           agentName,
+          projectRoot,
           socketPath: discovery?.socketPath,
           project: discovery?.project,
         });

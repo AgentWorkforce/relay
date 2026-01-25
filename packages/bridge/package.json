@@ -27,7 +27,8 @@
     "@agent-relay/utils": "2.0.13",
     "@agent-relay/policy": "2.0.13",
     "@agent-relay/user-directory": "2.0.13",
-    "@agent-relay/wrapper": "2.0.13"
+    "@agent-relay/wrapper": "2.0.13",
+    "@agent-relay/mcp": "2.0.13"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",

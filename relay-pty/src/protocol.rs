@@ -21,6 +21,11 @@ pub enum InjectRequest {
         #[serde(default)]
         priority: i32,
     },
+    /// Send just Enter key (for stuck input recovery)
+    SendEnter {
+        /// Message ID this is for (for tracking)
+        id: String,
+    },
     /// Query current status
     Status,
     /// Graceful shutdown request
@@ -42,6 +47,15 @@ pub enum InjectResponse {
         /// Optional error message
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+    },
+    /// SendEnter result (for stuck input recovery)
+    SendEnterResult {
+        /// Message ID this response is for
+        id: String,
+        /// Whether Enter was sent successfully
+        success: bool,
+        /// Unix timestamp in milliseconds
+        timestamp: u64,
     },
     /// Status response
     Status {

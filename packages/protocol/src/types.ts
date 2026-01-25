@@ -40,7 +40,18 @@ export type MessageType =
   | 'SPAWN'
   | 'SPAWN_RESULT'
   | 'RELEASE'
-  | 'RELEASE_RESULT';
+  | 'RELEASE_RESULT'
+  // Query types (MCP/client requests)
+  | 'STATUS'
+  | 'STATUS_RESPONSE'
+  | 'INBOX'
+  | 'INBOX_RESPONSE'
+  | 'LIST_AGENTS'
+  | 'LIST_AGENTS_RESPONSE'
+  | 'HEALTH'
+  | 'HEALTH_RESPONSE'
+  | 'METRICS'
+  | 'METRICS_RESPONSE';
 
 export type PayloadKind = 'message' | 'action' | 'state' | 'thinking';
 
@@ -224,7 +235,7 @@ export interface PongPayload {
   nonce: string;
 }
 
-export type ErrorCode = 'BAD_REQUEST' | 'UNAUTHORIZED' | 'NOT_FOUND' | 'INTERNAL' | 'RESUME_TOO_OLD';
+export type ErrorCode = 'BAD_REQUEST' | 'UNAUTHORIZED' | 'NOT_FOUND' | 'INTERNAL' | 'RESUME_TOO_OLD' | 'DUPLICATE_CONNECTION';
 
 export interface ErrorPayload {
   /** Error code */
@@ -366,6 +377,8 @@ export interface SpawnPayload {
   team?: string;
   /** Working directory */
   cwd?: string;
+  /** Model override (alternative to cli:model format) */
+  model?: string;
   /** Socket path for the spawned agent */
   socketPath?: string;
   /** Parent agent name */
@@ -406,6 +419,8 @@ export interface SpawnResultPayload {
 export interface ReleasePayload {
   /** Agent name to release */
   name: string;
+  /** Reason for releasing the agent */
+  reason?: string;
 }
 
 export interface ReleaseResultPayload {
@@ -444,3 +459,163 @@ export type ReleaseResultEnvelope = Envelope<ReleaseResultPayload>;
 export type ChannelJoinEnvelope = Envelope<ChannelJoinPayload>;
 export type ChannelLeaveEnvelope = Envelope<ChannelLeavePayload>;
 export type ChannelMessageEnvelope = Envelope<ChannelMessagePayload>;
+
+// =============================================================================
+// Query Types (MCP/Client Requests)
+// =============================================================================
+
+/**
+ * Payload for STATUS request.
+ */
+export interface StatusPayload {
+  // Empty payload - just requests daemon status
+}
+
+/**
+ * Payload for STATUS_RESPONSE.
+ */
+export interface StatusResponsePayload {
+  /** Daemon version */
+  version?: string;
+  /** Uptime in milliseconds */
+  uptime?: number;
+  /** Whether cloud sync is connected */
+  cloudConnected?: boolean;
+  /** Number of connected agents */
+  agentCount?: number;
+}
+
+/**
+ * Payload for INBOX request.
+ */
+export interface InboxPayload {
+  /** Agent name to get inbox for */
+  agent: string;
+  /** Maximum number of messages to return */
+  limit?: number;
+  /** Only return unread messages */
+  unreadOnly?: boolean;
+  /** Filter by sender */
+  from?: string;
+  /** Filter by channel */
+  channel?: string;
+}
+
+/**
+ * Payload for INBOX_RESPONSE.
+ */
+export interface InboxResponsePayload {
+  /** Messages in the inbox */
+  messages: Array<{
+    id: string;
+    from: string;
+    body: string;
+    channel?: string;
+    thread?: string;
+    timestamp: number;
+  }>;
+}
+
+/**
+ * Payload for LIST_AGENTS request.
+ */
+export interface ListAgentsPayload {
+  /** Include idle agents */
+  includeIdle?: boolean;
+  /** Filter by project */
+  project?: string;
+}
+
+/**
+ * Payload for LIST_AGENTS_RESPONSE.
+ */
+export interface ListAgentsResponsePayload {
+  /** List of agents */
+  agents: Array<{
+    name: string;
+    cli?: string;
+    idle?: boolean;
+    parent?: string;
+  }>;
+}
+
+export type StatusEnvelope = Envelope<StatusPayload>;
+export type StatusResponseEnvelope = Envelope<StatusResponsePayload>;
+export type InboxEnvelope = Envelope<InboxPayload>;
+export type InboxResponseEnvelope = Envelope<InboxResponsePayload>;
+export type ListAgentsEnvelope = Envelope<ListAgentsPayload>;
+export type ListAgentsResponseEnvelope = Envelope<ListAgentsResponsePayload>;
+
+/**
+ * Payload for HEALTH request.
+ */
+export interface HealthPayload {
+  /** Include crash history */
+  includeCrashes?: boolean;
+  /** Include alerts */
+  includeAlerts?: boolean;
+}
+
+/**
+ * Payload for HEALTH_RESPONSE.
+ */
+export interface HealthResponsePayload {
+  healthScore: number;
+  summary: string;
+  issues: Array<{ severity: string; message: string }>;
+  recommendations: string[];
+  crashes: Array<{
+    id: string;
+    agentName: string;
+    crashedAt: string;
+    likelyCause: string;
+    summary?: string;
+  }>;
+  alerts: Array<{
+    id: string;
+    agentName: string;
+    alertType: string;
+    message: string;
+    createdAt: string;
+  }>;
+  stats: {
+    totalCrashes24h: number;
+    totalAlerts24h: number;
+    agentCount: number;
+  };
+}
+
+/**
+ * Payload for METRICS request.
+ */
+export interface MetricsPayload {
+  /** Filter to specific agent */
+  agent?: string;
+}
+
+/**
+ * Payload for METRICS_RESPONSE.
+ */
+export interface MetricsResponsePayload {
+  agents: Array<{
+    name: string;
+    pid?: number;
+    status: string;
+    rssBytes?: number;
+    cpuPercent?: number;
+    trend?: string;
+    alertLevel?: string;
+    highWatermark?: number;
+    uptimeMs?: number;
+  }>;
+  system: {
+    totalMemory: number;
+    freeMemory: number;
+    heapUsed: number;
+  };
+}
+
+export type HealthEnvelope = Envelope<HealthPayload>;
+export type HealthResponseEnvelope = Envelope<HealthResponsePayload>;
+export type MetricsEnvelope = Envelope<MetricsPayload>;
+export type MetricsResponseEnvelope = Envelope<MetricsResponsePayload>;

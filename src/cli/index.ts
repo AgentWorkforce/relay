@@ -18,7 +18,7 @@ import { config as dotenvConfig } from 'dotenv';
 import { Daemon } from '@agent-relay/daemon';
 import { RelayClient } from '@agent-relay/sdk';
 import { RelayPtyOrchestrator, getTmuxPath } from '@agent-relay/wrapper';
-import { AgentSpawner, readWorkersMetadata, getWorkerLogsDir, selectShadowCli } from '@agent-relay/bridge';
+import { AgentSpawner, readWorkersMetadata, getWorkerLogsDir, selectShadowCli, ensureMcpPermissions } from '@agent-relay/bridge';
 import type { SpawnRequest, SpawnResult } from '@agent-relay/bridge';
 import { generateAgentName, checkForUpdatesInBackground, checkForUpdates } from '@agent-relay/utils';
 import { getShadowForAgent } from '@agent-relay/config';
@@ -31,11 +31,69 @@ import {
   getStatus,
   isDisabledByEnv,
 } from '@agent-relay/telemetry';
+import { installMcpConfig } from '@agent-relay/mcp';
 import fs from 'node:fs';
 import path from 'node:path';
+import readline from 'node:readline';
 import { promisify } from 'node:util';
-import { exec } from 'node:child_process';
+import { exec, spawn as spawnProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+
+/**
+ * Prompt user to choose how to handle missing dashboard package
+ * Returns: 'install' | 'skip'
+ */
+async function promptDashboardInstall(): Promise<'install' | 'skip'> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  console.log(`
+Dashboard package not installed.
+
+How would you like to proceed?
+  1. Install now (npm install -g @agent-relay/dashboard)
+  2. Continue without dashboard
+`);
+
+  return new Promise((resolve) => {
+    rl.question('Choose [1/2]: ', (answer) => {
+      rl.close();
+      const choice = answer.trim();
+      if (choice === '1') {
+        resolve('install');
+      } else {
+        resolve('skip');
+      }
+    });
+  });
+}
+
+/**
+ * Install dashboard package globally
+ */
+async function installDashboardGlobally(): Promise<boolean> {
+  console.log('\nInstalling @agent-relay/dashboard globally...\n');
+  return new Promise((resolve) => {
+    const proc = spawnProcess('npm', ['install', '-g', '@agent-relay/dashboard'], {
+      stdio: 'inherit',
+    });
+    proc.on('close', (code) => {
+      if (code === 0) {
+        console.log('\n✓ Dashboard installed successfully.\n');
+        resolve(true);
+      } else {
+        console.error('\n✗ Installation failed. Try running manually:\n  npm install -g @agent-relay/dashboard\n');
+        resolve(false);
+      }
+    });
+    proc.on('error', () => {
+      console.error('\n✗ Installation failed. Try running manually:\n  npm install -g @agent-relay/dashboard\n');
+      resolve(false);
+    });
+  });
+}
 
 dotenvConfig();
 
@@ -121,6 +179,33 @@ program
 
     console.error(`Agent: ${agentName}`);
     console.error(`Project: ${paths.projectId}`);
+
+    // Auto-install MCP config if not present (project-local)
+    // Uses .mcp.json in the project root - doesn't modify global settings
+    const projectMcpConfigPath = path.join(paths.projectRoot, '.mcp.json');
+    const socketPath = path.join(paths.projectRoot, '.agent-relay', 'relay.sock');
+
+    if (!fs.existsSync(projectMcpConfigPath)) {
+      try {
+        const result = installMcpConfig(projectMcpConfigPath, {
+          configKey: 'mcpServers',
+          // Set RELAY_SOCKET so MCP server finds daemon regardless of CWD
+          env: { RELAY_SOCKET: socketPath },
+        });
+        if (result.success) {
+          console.error(`MCP config: ${projectMcpConfigPath} (auto-created)`);
+        }
+      } catch {
+        // Best effort - don't fail the command
+      }
+    }
+
+    // Ensure MCP tools are auto-approved (creates ~/.claude/settings.local.json for Claude)
+    try {
+      ensureMcpPermissions(paths.projectRoot, mainCommand, options.debug);
+    } catch {
+      // Best effort - don't fail the command
+    }
 
     // Auto-detect agent config and inject --model/--agent for Claude CLI
     let finalArgs = commandArgs;
@@ -382,6 +467,13 @@ program
     const dbPath = paths.dbPath;
     const pidFilePath = pidFilePathForSocket(socketPath);
 
+    // Set up log file to avoid console output polluting TUI terminals
+    // Only set if not already configured via environment
+    if (!process.env.AGENT_RELAY_LOG_FILE) {
+      const logFile = path.join(paths.dataDir, 'daemon.log');
+      process.env.AGENT_RELAY_LOG_FILE = logFile;
+    }
+
     console.log(`Project: ${paths.projectRoot}`);
     console.log(`Socket:  ${socketPath}`);
 
@@ -487,25 +579,43 @@ program
         } catch (err: unknown) {
           const error = err as NodeJS.ErrnoException;
           if (error.code === 'ERR_MODULE_NOT_FOUND' || error.code === 'MODULE_NOT_FOUND') {
-            console.error(`
-Dashboard package not installed.
+            // Interactive prompt for dashboard installation
+            const choice = await promptDashboardInstall();
 
-The dashboard has moved to a separate optional package.
-To use the web dashboard, install it:
+            if (choice === 'install') {
+              const installed = await installDashboardGlobally();
+              if (installed) {
+                // Retry import after installation
+                try {
+                  const { startDashboard } = await import('@agent-relay/dashboard');
+                  dashboardPort = await startDashboard({
+                    port,
+                    dataDir: paths.dataDir,
+                    teamDir: paths.teamDir,
+                    dbPath,
+                    enableSpawner: true,
+                    projectRoot: paths.projectRoot,
+                    onMarkSpawning: (name) => daemon.markSpawning(name),
+                    onClearSpawning: (name) => daemon.clearSpawning(name),
+                  });
+                  console.log(`Dashboard: http://localhost:${dashboardPort}`);
 
-  npm install -g @agent-relay/dashboard
-
-Then try again:
-
-  agent-relay up --dashboard
-
-Or run without dashboard:
-
-  agent-relay up
-`);
-            process.exit(1);
+                  daemon.onLogOutput = (agentName, data, _timestamp) => {
+                    const broadcast = (global as any).__broadcastLogOutput;
+                    if (broadcast) {
+                      broadcast(agentName, data);
+                    }
+                  };
+                } catch {
+                  console.error('Dashboard still not found after installation. Continuing without dashboard.');
+                }
+              }
+            } else {
+              console.log('\nContinuing without dashboard...\n');
+            }
+          } else {
+            throw err;
           }
-          throw err;
         }
       }
 
@@ -2151,7 +2261,10 @@ cloudCommand
     try {
       const openCommand = process.platform === 'darwin' ? 'open' :
                           process.platform === 'win32' ? 'start' : 'xdg-open';
-      await execAsync(`${openCommand} "${authUrl}"`);
+      // Use single quotes to prevent shell interpretation of & and other special chars
+      // Escape any single quotes in the URL itself
+      const escapedUrl = authUrl.replace(/'/g, "'\\''");
+      await execAsync(`${openCommand} '${escapedUrl}'`);
       console.log('(Browser opened automatically)');
     } catch {
       console.log('(Copy the URL above and paste it in your browser)');

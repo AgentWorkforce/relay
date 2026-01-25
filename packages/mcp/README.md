@@ -15,7 +15,7 @@ agent-relay init
 ```
 
 The wizard will:
-1. Configure MCP for your AI editors (Claude Code, Cursor)
+1. Configure MCP for your AI editors (Claude Code, Cursor, Codex, and more)
 2. Offer to start the daemon
 3. Show you how to use the relay tools
 
@@ -30,8 +30,24 @@ npx @agent-relay/mcp install
 # Or configure specific editors
 npx @agent-relay/mcp install --editor claude    # Claude Code
 npx @agent-relay/mcp install --editor cursor    # Cursor
+npx @agent-relay/mcp install --editor codex     # Codex (OpenAI)
 npx @agent-relay/mcp install --editor vscode    # VS Code
 npx @agent-relay/mcp install --editor windsurf  # Windsurf
+npx @agent-relay/mcp install --editor gemini    # Gemini CLI
+npx @agent-relay/mcp install --editor opencode  # OpenCode
+npx @agent-relay/mcp install --editor droid     # Droid (Factory)
+```
+
+### Global vs Project-Local Installation
+
+By default, MCP is installed to your project directory (project-local). Use `--global` to install to your home directory:
+
+```bash
+# Project-local (default) - writes to ./codex.toml, ./.cursor/mcp.json, etc.
+npx @agent-relay/mcp install --editor codex
+
+# Global - writes to ~/.codex/config.toml, ~/.cursor/mcp.json, etc.
+npx @agent-relay/mcp install --editor codex --global
 ```
 
 ### Start the Daemon
@@ -111,8 +127,13 @@ agent-relay up
 
 1. Restart your editor after installing MCP
 2. Check the MCP configuration was created:
-   - Claude Code: `~/.claude/settings.json`
-   - Cursor: `~/.cursor/mcp.json`
+   - Claude Code: `~/.claude/settings.json` (global) or `.mcp.json` (project)
+   - Cursor: `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project)
+   - Codex: `~/.codex/config.toml` (global) or `codex.toml` (project)
+   - VS Code: `~/.vscode/mcp.json` (global) or `.vscode/mcp.json` (project)
+   - Gemini CLI: `~/.gemini/settings.json`
+   - OpenCode: `~/.config/opencode/opencode.json`
+   - Droid: `~/.factory/mcp.json`
 
 ### Check installation status
 

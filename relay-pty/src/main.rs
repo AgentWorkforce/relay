@@ -77,7 +77,8 @@ struct Args {
     idle_timeout: u64,
 
     /// Maximum messages in queue before backpressure
-    #[arg(long, default_value = "50")]
+    /// Increased from 50 to 200 to handle slow MCP responses during long Claude thinking periods
+    #[arg(long, default_value = "200")]
     queue_max: usize,
 
     /// Output parsed relay commands as JSON to stderr
@@ -117,6 +118,24 @@ struct Args {
     /// Set to 0 to disable stale file detection.
     #[arg(long, default_value = "60")]
     stale_outbox_timeout: u64,
+
+    /// TTL in seconds for seen message IDs before they can be reused (default: 300 = 5 minutes)
+    /// Lower values free memory faster but may allow duplicate messages if retried quickly.
+    /// For long sessions with 200+ agents, consider 120-180 seconds.
+    #[arg(long, default_value = "300")]
+    seen_ttl: u64,
+
+    /// Interval in seconds for cleaning up expired seen IDs (default: 60)
+    /// More frequent cleanup reduces memory but adds slight overhead.
+    /// For high-volume sessions, consider 30 seconds.
+    #[arg(long, default_value = "60")]
+    cleanup_interval: u64,
+
+    /// Timeout in seconds before auto-sending Enter when agent is stuck at INSERT prompt (default: 10)
+    /// Claude Code sometimes waits at "-- INSERT --" prompt for user to press Enter.
+    /// Set to 0 to disable auto-Enter detection.
+    #[arg(long, default_value = "10")]
+    auto_enter_timeout: u64,
 
     /// Command to run (after --)
     #[arg(last = true, required = true)]
@@ -217,11 +236,20 @@ async fn main() -> Result<()> {
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
     let (inject_tx, mut inject_rx) = mpsc::channel::<Vec<u8>>(64);
 
-    // Create message queue with broadcast sender
-    let queue = Arc::new(MessageQueue::new(config.queue_max, response_tx));
+    // Create message queue with broadcast sender and configurable TTL
+    let queue = Arc::new(MessageQueue::with_ttl(
+        config.queue_max,
+        response_tx,
+        args.seen_ttl,
+        args.cleanup_interval,
+    ));
 
-    // Create injector
-    let injector = Arc::new(Injector::new(inject_tx, Arc::clone(&queue), config.clone()));
+    // Create injector (clone inject_tx since we also need it for SocketServer)
+    let injector = Arc::new(Injector::new(
+        inject_tx.clone(),
+        Arc::clone(&queue),
+        config.clone(),
+    ));
 
     // Create output parser
     let mut parser = if let Some(ref outbox) = outbox_path {
@@ -276,6 +304,7 @@ async fn main() -> Result<()> {
         Arc::clone(&queue),
         status_tx,
         shutdown_tx,
+        inject_tx.clone(), // For SendEnter requests
     );
 
     let socket_handle = tokio::spawn(async move {
@@ -328,6 +357,15 @@ async fn main() -> Result<()> {
     let mut mcp_partial_match_since: Option<Instant> = None;
     // Timeout duration for partial match approval (5 seconds)
     const MCP_APPROVAL_TIMEOUT: Duration = Duration::from_secs(5);
+
+    // Auto-Enter detection for stuck agents
+    // After injecting a message, if agent becomes idle for too long, send Enter
+    // This handles cases where the CLI is waiting for user confirmation
+    let auto_enter_timeout_ms = args.auto_enter_timeout * 1000; // Convert to ms
+    let auto_enter_enabled = args.auto_enter_timeout > 0;
+    let mut last_auto_enter_time: Option<Instant> = None;
+    // Cooldown between auto-Enter sends to avoid spamming
+    const AUTO_ENTER_COOLDOWN: Duration = Duration::from_secs(5);
 
     loop {
         select! {
@@ -471,6 +509,39 @@ async fn main() -> Result<()> {
                             // Clear buffer and reset state after approval
                             mcp_detection_buffer.clear();
                             mcp_partial_match_since = None;
+                        }
+                    }
+
+                    // Auto-Enter detection for stuck agents (CLI-agnostic)
+                    // If we recently injected a message and agent has been idle too long,
+                    // send Enter in case CLI is waiting for confirmation
+                    if auto_enter_enabled {
+                        let silence = injector.silence_ms();
+                        let is_idle = injector.check_idle();
+                        // Check if we had an injection in the last 60 seconds
+                        let had_recent_injection = injector.had_recent_injection(60_000);
+
+                        // Check cooldown (don't spam Enter)
+                        let cooldown_ok = match last_auto_enter_time {
+                            None => true,
+                            Some(last) => last.elapsed() >= AUTO_ENTER_COOLDOWN,
+                        };
+
+                        // Send Enter if:
+                        // 1. Agent is idle
+                        // 2. Silence exceeds timeout
+                        // 3. We had a recent injection (so we expect a response)
+                        // 4. Cooldown period has passed
+                        if is_idle && silence > auto_enter_timeout_ms && had_recent_injection && cooldown_ok {
+                            info!(
+                                "Agent idle for {}ms after injection - auto-sending Enter",
+                                silence
+                            );
+                            if let Err(e) = async_pty.send(vec![0x0d]).await {
+                                warn!("Failed to send auto-Enter: {}", e);
+                            } else {
+                                last_auto_enter_time = Some(Instant::now());
+                            }
                         }
                     }
 

@@ -20,7 +20,7 @@ import { spawn, ChildProcess } from 'node:child_process';
 import { createConnection, Socket } from 'node:net';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
-import { existsSync, unlinkSync, mkdirSync, symlinkSync, lstatSync, rmSync, watch, readdirSync, readlinkSync } from 'node:fs';
+import { existsSync, unlinkSync, mkdirSync, symlinkSync, lstatSync, rmSync, watch, readdirSync, readlinkSync, writeFileSync, appendFileSync } from 'node:fs';
 import type { FSWatcher } from 'node:fs';
 import { getProjectPaths } from '@agent-relay/config/project-namespace';
 import { getAgentOutboxTemplate } from '@agent-relay/config/relay-file-writer';
@@ -31,7 +31,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 import { BaseWrapper, type BaseWrapperConfig } from './base-wrapper.js';
 import { parseSummaryWithDetails, parseSessionEndFromOutput } from './parser.js';
-import type { SendPayload, SendMeta } from '@agent-relay/protocol/types';
+import type { SendPayload, SendMeta, Envelope } from '@agent-relay/protocol/types';
+import type { ChannelMessagePayload } from '@agent-relay/protocol/channels';
 import { findRelayPtyBinary as findRelayPtyBinaryUtil } from '@agent-relay/utils/relay-pty-path';
 import {
   type QueuedMessage,
@@ -80,7 +81,17 @@ interface ShutdownRequest {
   type: 'shutdown';
 }
 
-type RelayPtyRequest = InjectRequest | StatusRequest | ShutdownRequest;
+/**
+ * Send just Enter key (for stuck input recovery)
+ * Used when message was written to PTY but Enter wasn't processed
+ */
+interface SendEnterRequest {
+  type: 'send_enter';
+  /** Message ID this is for (for tracking) */
+  id: string;
+}
+
+type RelayPtyRequest = InjectRequest | StatusRequest | ShutdownRequest | SendEnterRequest;
 
 /**
  * Response types received from relay-pty socket
@@ -116,12 +127,26 @@ interface ShutdownAckResponse {
   type: 'shutdown_ack';
 }
 
+/**
+ * Response for SendEnter request (stuck input recovery)
+ */
+interface SendEnterResultResponse {
+  type: 'send_enter_result';
+  /** Message ID this is for */
+  id: string;
+  /** Whether Enter was sent successfully */
+  success: boolean;
+  /** Unix timestamp in milliseconds */
+  timestamp: number;
+}
+
 type RelayPtyResponse =
   | InjectResultResponse
   | StatusResponse
   | BackpressureResponse
   | ErrorResponse
-  | ShutdownAckResponse;
+  | ShutdownAckResponse
+  | SendEnterResultResponse;
 
 /**
  * Configuration for RelayPtyOrchestrator
@@ -195,6 +220,16 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     shortId: string;     // First 8 chars of messageId for verification
     retryCount: number;  // Track retry attempts
     originalBody: string; // Original injection content for retries
+  }> = new Map();
+  // Pending SendEnter requests (for stuck input recovery)
+  private pendingSendEnter: Map<string, {
+    resolve: (verified: boolean) => void;
+    timeout: NodeJS.Timeout;
+    from: string;
+    shortId: string;
+    retryCount: number;
+    originalBody: string;
+    originalResolve: (success: boolean) => void; // Original injection promise resolver
   }> = new Map();
   private backpressureActive = false;
   private readyForMessages = false;
@@ -330,18 +365,38 @@ export class RelayPtyOrchestrator extends BaseWrapper {
 
   /**
    * Debug log - only outputs when debug is enabled
+   * Writes to log file to avoid polluting TUI output
    */
   private log(message: string): void {
     if (this.config.debug) {
-      console.log(`[relay-pty-orchestrator:${this.config.name}] ${message}`);
+      const logLine = `${new Date().toISOString()} [relay-pty-orchestrator:${this.config.name}] ${message}\n`;
+      try {
+        const logDir = dirname(this._logPath);
+        if (!existsSync(logDir)) {
+          mkdirSync(logDir, { recursive: true });
+        }
+        appendFileSync(this._logPath, logLine);
+      } catch {
+        // Fallback to stderr if file write fails (only during init before _logPath is set)
+      }
     }
   }
 
   /**
    * Error log - always outputs (errors are important)
+   * Writes to log file to avoid polluting TUI output
    */
   private logError(message: string): void {
-    console.error(`[relay-pty-orchestrator:${this.config.name}] ERROR: ${message}`);
+    const logLine = `${new Date().toISOString()} [relay-pty-orchestrator:${this.config.name}] ERROR: ${message}\n`;
+    try {
+      const logDir = dirname(this._logPath);
+      if (!existsSync(logDir)) {
+        mkdirSync(logDir, { recursive: true });
+      }
+      appendFileSync(this._logPath, logLine);
+    } catch {
+      // Fallback to stderr if file write fails (only during init before _logPath is set)
+    }
   }
 
   /**
@@ -503,6 +558,26 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       this.logError(` Failed to set up outbox: ${err.message}`);
     }
 
+    // Write MCP identity file so MCP servers can discover their agent name
+    // This is needed because Claude Code may not pass through env vars to MCP server processes
+    try {
+      const projectPaths = getProjectPaths(this.config.cwd);
+      const identityDir = join(projectPaths.dataDir);
+      if (!existsSync(identityDir)) {
+        mkdirSync(identityDir, { recursive: true });
+      }
+      // Write a per-process identity file (using PPID so MCP server finds parent's identity)
+      const identityPath = join(identityDir, `mcp-identity-${process.pid}`);
+      writeFileSync(identityPath, this.config.name, 'utf-8');
+      this.log(` Wrote MCP identity file: ${identityPath}`);
+
+      // Also write a simple identity file (for single-agent scenarios)
+      const simpleIdentityPath = join(identityDir, 'mcp-identity');
+      writeFileSync(simpleIdentityPath, this.config.name, 'utf-8');
+    } catch (err: any) {
+      this.logError(` Failed to write MCP identity file: ${err.message}`);
+    }
+
     // Find relay-pty binary
     const binaryPath = this.findRelayPtyBinary();
     if (!binaryPath) {
@@ -551,6 +626,12 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     this.stopQueueMonitor();
     this.stopProtocolMonitor();
     this.stopPeriodicReminder();
+
+    // Clear socket reconnect timer
+    if (this.socketReconnectTimer) {
+      clearTimeout(this.socketReconnectTimer);
+      this.socketReconnectTimer = undefined;
+    }
 
     // Unregister from memory monitor
     this.memoryMonitor.unregister(this.config.name);
@@ -683,6 +764,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
         ...process.env,
         ...this.config.env,
         AGENT_RELAY_NAME: this.config.name,
+        RELAY_AGENT_NAME: this.config.name, // MCP server uses this env var
         AGENT_RELAY_OUTBOX: this._canonicalOutboxPath, // Agents use this for outbox path
         TERM: 'xterm-256color',
       },
@@ -1156,6 +1238,16 @@ export class RelayPtyOrchestrator extends BaseWrapper {
    */
   private attemptSocketConnection(timeout: number): Promise<void> {
     return new Promise((resolve, reject) => {
+      // Clean up any existing socket before creating new one
+      // This prevents orphaned sockets with stale event handlers
+      if (this.socket) {
+        // Remove all listeners to prevent the old socket's 'close' event
+        // from triggering another reconnect cycle
+        this.socket.removeAllListeners();
+        this.socket.destroy();
+        this.socket = undefined;
+      }
+
       const timer = setTimeout(() => {
         reject(new Error('Socket connection timeout'));
       }, timeout);
@@ -1172,9 +1264,19 @@ export class RelayPtyOrchestrator extends BaseWrapper {
         reject(err);
       });
 
+      // Handle 'end' event - server closed its write side (half-close)
+      this.socket.on('end', () => {
+        this.socketConnected = false;
+        this.log(` Socket received end (server closed write side)`);
+      });
+
       this.socket.on('close', () => {
         this.socketConnected = false;
         this.log(` Socket closed`);
+        // Auto-reconnect if not intentionally stopped
+        if (this.running && !this.isGracefulStop) {
+          this.scheduleSocketReconnect();
+        }
       });
 
       // Handle incoming data (responses)
@@ -1211,6 +1313,64 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       pending.reject(new Error('Socket disconnected'));
     }
     this.pendingInjections.clear();
+  }
+
+  /** Timer for socket reconnection */
+  private socketReconnectTimer?: NodeJS.Timeout;
+  /** Current reconnection attempt count */
+  private socketReconnectAttempt = 0;
+
+  /**
+   * Schedule a socket reconnection attempt with exponential backoff
+   */
+  private scheduleSocketReconnect(): void {
+    const maxAttempts = this.config.socketReconnectAttempts ?? 3;
+
+    // Clear any existing timer
+    if (this.socketReconnectTimer) {
+      clearTimeout(this.socketReconnectTimer);
+      this.socketReconnectTimer = undefined;
+    }
+
+    if (this.socketReconnectAttempt >= maxAttempts) {
+      this.logError(` Socket reconnect failed after ${maxAttempts} attempts`);
+      // Reset counter for future reconnects (processMessageQueue can trigger new cycle)
+      this.socketReconnectAttempt = 0;
+      // Note: socketReconnectTimer is already undefined, allowing processMessageQueue
+      // to trigger a new reconnection cycle when new messages arrive
+      return;
+    }
+
+    this.socketReconnectAttempt++;
+    const delay = Math.min(1000 * Math.pow(2, this.socketReconnectAttempt - 1), 10000); // Max 10s
+
+    this.log(` Scheduling socket reconnect in ${delay}ms (attempt ${this.socketReconnectAttempt}/${maxAttempts})`);
+
+    this.socketReconnectTimer = setTimeout(async () => {
+      // Clear timer reference now that callback is executing
+      this.socketReconnectTimer = undefined;
+
+      if (!this.running || this.isGracefulStop) {
+        return;
+      }
+
+      try {
+        const timeout = this.config.socketConnectTimeoutMs ?? 5000;
+        await this.attemptSocketConnection(timeout);
+        this.log(` Socket reconnected successfully`);
+        this.socketReconnectAttempt = 0; // Reset on success
+
+        // Process any queued messages that were waiting
+        if (this.messageQueue.length > 0 && !this.isInjecting) {
+          this.log(` Processing ${this.messageQueue.length} queued messages after reconnect`);
+          this.processMessageQueue();
+        }
+      } catch (err: any) {
+        this.logError(` Socket reconnect attempt ${this.socketReconnectAttempt} failed: ${err.message}`);
+        // Schedule another attempt
+        this.scheduleSocketReconnect();
+      }
+    }, delay);
   }
 
   /**
@@ -1265,6 +1425,13 @@ export class RelayPtyOrchestrator extends BaseWrapper {
 
         case 'shutdown_ack':
           this.log(` Shutdown acknowledged`);
+          break;
+
+        case 'send_enter_result':
+          // Handle SendEnter result (stuck input recovery)
+          this.handleSendEnterResult(response).catch((err: Error) => {
+            this.logError(` Error handling send_enter result: ${err.message}`);
+          });
           break;
       }
     } catch (err: any) {
@@ -1356,7 +1523,6 @@ export class RelayPtyOrchestrator extends BaseWrapper {
 
         // Check if we should retry
         if (pending.retryCount < INJECTION_CONSTANTS.MAX_RETRIES - 1) {
-          this.log(` Retrying injection (attempt ${pending.retryCount + 2}/${INJECTION_CONSTANTS.MAX_RETRIES})`);
           clearTimeout(pending.timeout);
           this.pendingInjections.delete(response.id);
 
@@ -1382,40 +1548,56 @@ export class RelayPtyOrchestrator extends BaseWrapper {
             return;
           }
 
-          // Re-inject by sending another socket request
-          // The original promise will be resolved when this retry completes
-          // Prepend [RETRY] to help agent notice this is a retry
-          const retryBody = pending.originalBody.startsWith('[RETRY]')
-            ? pending.originalBody
-            : `[RETRY] ${pending.originalBody}`;
-          const retryRequest: InjectRequest = {
-            type: 'inject',
-            id: response.id,
-            from: pending.from,
-            body: retryBody,
-            priority: 1, // Higher priority for retries
-          };
+          // On first retry attempt (retryCount === 0), try SendEnter first
+          // This handles the case where message content was written but Enter wasn't processed
+          if (pending.retryCount === 0) {
+            this.log(` Trying SendEnter first for ${pending.shortId} (stuck input recovery)`);
 
-          // Create new pending entry with incremented retry count
-          const newTimeout = setTimeout(() => {
-            this.logError(` Retry timeout for ${pending.shortId}`);
-            this.pendingInjections.delete(response.id);
-            pending.resolve(false);
-          }, 30000);
+            // Send just the Enter key
+            const sendEnterRequest: SendEnterRequest = {
+              type: 'send_enter',
+              id: response.id,
+            };
 
-          this.pendingInjections.set(response.id, {
-            ...pending,
-            timeout: newTimeout,
-            retryCount: pending.retryCount + 1,
-            originalBody: retryBody, // Use retry body for subsequent retries
-          });
+            // Track this SendEnter request for verification
+            const sendEnterTimeout = setTimeout(() => {
+              this.logError(` SendEnter timeout for ${pending.shortId}`);
+              this.pendingSendEnter.delete(response.id);
+              // Fall back to full retry after SendEnter timeout
+              this.doFullRetry(response.id, pending);
+            }, 5000); // 5 second timeout for SendEnter
 
-          this.sendSocketRequest(retryRequest).catch((err) => {
-            this.logError(` Retry request failed: ${err.message}`);
-            clearTimeout(newTimeout);
-            this.pendingInjections.delete(response.id);
-            pending.resolve(false);
-          });
+            this.pendingSendEnter.set(response.id, {
+              resolve: (verified: boolean) => {
+                if (verified) {
+                  // SendEnter worked!
+                  this.injectionMetrics.successWithRetry++;
+                  this.injectionMetrics.total++;
+                  pending.resolve(true);
+                } else {
+                  // SendEnter didn't work, do full retry
+                  this.doFullRetry(response.id, pending);
+                }
+              },
+              timeout: sendEnterTimeout,
+              from: pending.from,
+              shortId: pending.shortId,
+              retryCount: pending.retryCount,
+              originalBody: pending.originalBody,
+              originalResolve: pending.resolve,
+            });
+
+            this.sendSocketRequest(sendEnterRequest).catch((err) => {
+              this.logError(` SendEnter request failed: ${err.message}`);
+              clearTimeout(sendEnterTimeout);
+              this.pendingSendEnter.delete(response.id);
+              // Fall back to full retry
+              this.doFullRetry(response.id, pending);
+            });
+          } else {
+            // On subsequent retries (retryCount > 0), do full retry directly
+            this.doFullRetry(response.id, pending);
+          }
         } else {
           // Max retries exceeded
           this.logError(` Message ${pending.shortId} failed after ${INJECTION_CONSTANTS.MAX_RETRIES} attempts - NOT found in output`);
@@ -1445,6 +1627,102 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       });
     }
     // queued/injecting are intermediate states - wait for final status
+  }
+
+  /**
+   * Handle SendEnter result (stuck input recovery)
+   * Called when relay-pty responds to a SendEnter request
+   */
+  private async handleSendEnterResult(response: SendEnterResultResponse): Promise<void> {
+    this.log(` handleSendEnterResult: id=${response.id.substring(0, 8)} success=${response.success}`);
+
+    const pendingEnter = this.pendingSendEnter.get(response.id);
+    if (!pendingEnter) {
+      this.log(` No pending SendEnter found for ${response.id.substring(0, 8)}`);
+      return;
+    }
+
+    clearTimeout(pendingEnter.timeout);
+    this.pendingSendEnter.delete(response.id);
+
+    if (!response.success) {
+      this.log(` SendEnter failed for ${pendingEnter.shortId}, will try full retry`);
+      pendingEnter.resolve(false);
+      return;
+    }
+
+    // SendEnter succeeded - wait and verify
+    this.log(` SendEnter sent for ${pendingEnter.shortId}, waiting to verify...`);
+    await sleep(150); // Give time for Enter to be processed
+
+    // Verify the message appeared in output
+    const verified = await verifyInjection(
+      pendingEnter.shortId,
+      pendingEnter.from,
+      async () => this.getCleanOutput()
+    );
+
+    if (verified) {
+      this.log(` Message ${pendingEnter.shortId} verified after SendEnter ✓`);
+      pendingEnter.resolve(true);
+    } else {
+      this.log(` Message ${pendingEnter.shortId} still not verified after SendEnter, will try full retry`);
+      pendingEnter.resolve(false);
+    }
+  }
+
+  /**
+   * Do a full retry with message content (used when SendEnter fails or for subsequent retries)
+   */
+  private doFullRetry(
+    messageId: string,
+    pending: {
+      resolve: (success: boolean) => void;
+      reject: (error: Error) => void;
+      from: string;
+      shortId: string;
+      retryCount: number;
+      originalBody: string;
+    }
+  ): void {
+    this.log(` Doing full retry for ${pending.shortId} (attempt ${pending.retryCount + 2}/${INJECTION_CONSTANTS.MAX_RETRIES})`);
+
+    // Re-inject by sending another socket request
+    // Prepend [RETRY] to help agent notice this is a retry
+    const retryBody = pending.originalBody.startsWith('[RETRY]')
+      ? pending.originalBody
+      : `[RETRY] ${pending.originalBody}`;
+    const retryRequest: InjectRequest = {
+      type: 'inject',
+      id: messageId,
+      from: pending.from,
+      body: retryBody,
+      priority: 1, // Higher priority for retries
+    };
+
+    // Create new pending entry with incremented retry count
+    const newTimeout = setTimeout(() => {
+      this.logError(` Retry timeout for ${pending.shortId}`);
+      this.pendingInjections.delete(messageId);
+      pending.resolve(false);
+    }, 30000);
+
+    this.pendingInjections.set(messageId, {
+      resolve: pending.resolve,
+      reject: pending.reject,
+      timeout: newTimeout,
+      from: pending.from,
+      shortId: pending.shortId,
+      retryCount: pending.retryCount + 1,
+      originalBody: retryBody,
+    });
+
+    this.sendSocketRequest(retryRequest).catch((err) => {
+      this.logError(` Full retry request failed: ${err.message}`);
+      clearTimeout(newTimeout);
+      this.pendingInjections.delete(messageId);
+      pending.resolve(false);
+    });
   }
 
   /**
@@ -1532,11 +1810,43 @@ export class RelayPtyOrchestrator extends BaseWrapper {
    * Process queued messages
    */
   private async processMessageQueue(): Promise<void> {
-    if (!this.readyForMessages || this.backpressureActive || this.isInjecting) {
-      return;
+    // Debug: Log blocking conditions when queue has messages
+    if (this.messageQueue.length > 0) {
+      if (!this.readyForMessages) {
+        this.log(` Queue blocked: readyForMessages=false (queue=${this.messageQueue.length})`);
+        return;
+      }
+      if (this.backpressureActive) {
+        this.log(` Queue blocked: backpressure active (queue=${this.messageQueue.length})`);
+        return;
+      }
+      if (this.isInjecting) {
+        // Already injecting - the finally block will process next message
+        // But add a safety timeout in case injection gets stuck
+        const elapsed = this.injectionStartTime > 0 ? Date.now() - this.injectionStartTime : 0;
+        if (elapsed > 35000) {
+          this.logError(` Injection stuck for ${elapsed}ms, forcing reset`);
+          this.isInjecting = false;
+          this.injectionStartTime = 0;
+        }
+        return;
+      }
     }
 
     if (this.messageQueue.length === 0) {
+      return;
+    }
+
+    // Proactively reconnect socket if disconnected and we have messages to send
+    if (!this.socketConnected && !this.socketReconnectTimer) {
+      this.log(` Socket disconnected, triggering reconnect before processing queue`);
+      this.scheduleSocketReconnect();
+      return; // Wait for reconnection to complete
+    }
+
+    if (!this.socketConnected) {
+      // Reconnection in progress, wait for it
+      this.log(` Queue waiting: socket reconnecting (queue=${this.messageQueue.length})`);
       return;
     }
 
@@ -1604,6 +1914,24 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     this.log(` === MESSAGE RECEIVED: ${messageId.substring(0, 8)} from ${from} ===`);
     this.log(` Body preview: ${payload.body?.substring(0, 100) ?? '(no body)'}...`);
     super.handleIncomingMessage(from, payload, messageId, meta, originalTo);
+    this.log(` Queue length after add: ${this.messageQueue.length}`);
+    this.processMessageQueue();
+  }
+
+  /**
+   * Override handleIncomingChannelMessage to trigger queue processing.
+   * Without this override, channel messages would be queued but processMessageQueue()
+   * would never be called, causing messages to get stuck until the queue monitor runs.
+   */
+  protected override handleIncomingChannelMessage(
+    from: string,
+    channel: string,
+    body: string,
+    envelope: Envelope<ChannelMessagePayload>
+  ): void {
+    this.log(` === CHANNEL MESSAGE RECEIVED: ${envelope.id.substring(0, 8)} from ${from} on ${channel} ===`);
+    this.log(` Body preview: ${body?.substring(0, 100) ?? '(no body)'}...`);
+    super.handleIncomingChannelMessage(from, channel, body, envelope);
     this.log(` Queue length after add: ${this.messageQueue.length}`);
     this.processMessageQueue();
   }
@@ -2288,6 +2616,10 @@ Then output: \`->relay-file:spawn\`
    */
   async kill(): Promise<void> {
     this.isGracefulStop = true; // Mark as intentional to prevent crash broadcast
+    if (this.socketReconnectTimer) {
+      clearTimeout(this.socketReconnectTimer);
+      this.socketReconnectTimer = undefined;
+    }
     if (this.relayPtyProcess && !this.relayPtyProcess.killed) {
       this.relayPtyProcess.kill('SIGKILL');
     }

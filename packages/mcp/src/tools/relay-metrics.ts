@@ -1,10 +1,9 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import type { RelayClient } from '../client.js';
+import type { RelayClient, MetricsResponse } from '../client.js';
 
 export const relayMetricsSchema = z.object({
   agent: z.string().optional().describe('Filter metrics to a specific agent'),
-  port: z.number().optional().default(3888).describe('Dashboard port (default: 3888)'),
 });
 
 export type RelayMetricsInput = z.infer<typeof relayMetricsSchema>;
@@ -33,38 +32,10 @@ Example: Get metrics for specific agent
         type: 'string',
         description: 'Filter metrics to a specific agent',
       },
-      port: {
-        type: 'number',
-        description: 'Dashboard port (default: 3888)',
-        default: 3888,
-      },
     },
     required: [],
   },
 };
-
-interface AgentMetrics {
-  name: string;
-  pid?: number;
-  status: string;
-  rssBytes?: number;
-  cpuPercent?: number;
-  trend?: string;
-  alertLevel?: string;
-  highWatermark?: number;
-  uptimeMs?: number;
-}
-
-interface SystemMetrics {
-  totalMemory: number;
-  freeMemory: number;
-  heapUsed: number;
-}
-
-interface MetricsResponse {
-  agents: AgentMetrics[];
-  system: SystemMetrics;
-}
 
 /**
  * Format bytes to human readable string.
@@ -90,18 +61,11 @@ function formatUptime(ms: number): string {
  * Get memory and resource metrics for agents.
  */
 export async function handleRelayMetrics(
-  _client: RelayClient,
+  client: RelayClient,
   input: RelayMetricsInput
 ): Promise<string> {
-  const port = input.port || 3888;
-
   try {
-    const response = await fetch(`http://localhost:${port}/api/metrics/agents`);
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const data = await response.json() as MetricsResponse;
+    const data: MetricsResponse = await client.getMetrics({ agent: input.agent });
     let agents = data.agents;
 
     // Filter to specific agent if requested
@@ -168,8 +132,8 @@ export async function handleRelayMetrics(
     return lines.join('\n');
   } catch (err: unknown) {
     const error = err as Error & { code?: string };
-    if (error.code === 'ECONNREFUSED') {
-      return `Cannot connect to dashboard at port ${port}. Is the daemon running?\n\nRun 'agent-relay up' to start the daemon.`;
+    if (error.code === 'ECONNREFUSED' || error.code === 'ENOENT') {
+      return `Cannot connect to daemon. Is the daemon running?\n\nRun 'agent-relay up' to start the daemon.`;
     }
     return `Failed to fetch metrics: ${error.message || String(err)}`;
   }

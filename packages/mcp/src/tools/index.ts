@@ -55,3 +55,10 @@ export {
   handleRelayHealth,
   type RelayHealthInput,
 } from './relay-health.js';
+
+export {
+  relayContinuityTool,
+  relayContinuitySchema,
+  handleRelayContinuity,
+  type RelayContinuityInput,
+} from './relay-continuity.js';

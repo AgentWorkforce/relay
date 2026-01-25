@@ -190,6 +190,12 @@ export type InjectRequest =
     }
   | {
       type: 'shutdown';
+    }
+  | {
+      /** Send just Enter key (for stuck input recovery) */
+      type: 'send_enter';
+      /** Message ID this is for (for tracking) */
+      id: string;
     };
 
 /**
@@ -232,6 +238,16 @@ export type InjectResponse =
       type: 'error';
       /** Error message */
       message: string;
+    }
+  | {
+      /** SendEnter result (for stuck input recovery) */
+      type: 'send_enter_result';
+      /** Message ID this is for */
+      id: string;
+      /** Whether Enter was sent successfully */
+      success: boolean;
+      /** Unix timestamp in milliseconds */
+      timestamp: number;
     };
 
 // =============================================================================

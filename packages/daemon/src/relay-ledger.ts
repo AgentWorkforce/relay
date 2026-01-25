@@ -120,6 +120,7 @@ export class RelayLedger {
   private stmtMarkArchived!: Database.Statement;
   private stmtGetPending!: Database.Statement;
   private stmtGetByPath!: Database.Statement;
+  private stmtIsActivePath!: Database.Statement;
   private stmtGetById!: Database.Statement;
   private stmtResetProcessing!: Database.Statement;
   private stmtCleanupArchived!: Database.Statement;
@@ -240,6 +241,11 @@ export class RelayLedger {
       SELECT * FROM relay_files WHERE source_path = ?
     `);
 
+    // Only check for pending/processing files (not archived/delivered/failed)
+    this.stmtIsActivePath = this.db.prepare(`
+      SELECT 1 FROM relay_files WHERE source_path = ? AND status IN ('pending', 'processing')
+    `);
+
     this.stmtGetById = this.db.prepare(`
       SELECT * FROM relay_files WHERE file_id = ?
     `);
@@ -314,10 +320,11 @@ export class RelayLedger {
   }
 
   /**
-   * Check if a file is already registered
+   * Check if a file is actively being processed (pending or processing).
+   * Returns false for archived/delivered/failed files so new files at the same path can be registered.
    */
   isFileRegistered(sourcePath: string): boolean {
-    const row = this.stmtGetByPath.get(sourcePath);
+    const row = this.stmtIsActivePath.get(sourcePath);
     return row !== undefined;
   }
 

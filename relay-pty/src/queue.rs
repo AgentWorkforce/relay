@@ -8,10 +8,17 @@
 
 use crate::protocol::{InjectResponse, InjectStatus, QueuedMessage};
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashSet};
-use std::time::Instant;
+use std::collections::{BinaryHeap, HashMap};
+use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, Mutex, Notify};
 use tracing::{debug, info, warn};
+
+/// Default time-to-live for seen message IDs (5 minutes)
+/// After this duration, IDs are eligible for cleanup to prevent unbounded growth
+const DEFAULT_SEEN_ID_TTL_SECS: u64 = 300;
+
+/// Default cleanup interval (60 seconds)
+const DEFAULT_CLEANUP_INTERVAL_SECS: u64 = 60;
 
 /// Wrapper for priority queue ordering (reversed for min-heap behavior)
 #[derive(Debug)]
@@ -46,25 +53,56 @@ impl Ord for PriorityMessage {
 pub struct MessageQueue {
     /// Priority queue of messages
     queue: Mutex<BinaryHeap<PriorityMessage>>,
-    /// Set of message IDs for deduplication
-    seen_ids: Mutex<HashSet<String>>,
+    /// Map of message IDs to their insertion time for deduplication with TTL
+    seen_ids: Mutex<HashMap<String, Instant>>,
     /// Maximum queue size before backpressure
     max_size: usize,
     /// Notifier for new messages
     notify: Notify,
     /// Broadcast channel for sending responses (multiple receivers can subscribe)
     response_tx: broadcast::Sender<InjectResponse>,
+    /// Last time we cleaned up expired seen_ids
+    last_cleanup: Mutex<Instant>,
+    /// TTL for seen message IDs (configurable for long-running sessions)
+    seen_id_ttl: Duration,
+    /// Interval between cleanup runs
+    cleanup_interval: Duration,
 }
 
 impl MessageQueue {
-    /// Create a new message queue
+    /// Create a new message queue with default TTL settings
     pub fn new(max_size: usize, response_tx: broadcast::Sender<InjectResponse>) -> Self {
+        Self::with_ttl(
+            max_size,
+            response_tx,
+            DEFAULT_SEEN_ID_TTL_SECS,
+            DEFAULT_CLEANUP_INTERVAL_SECS,
+        )
+    }
+
+    /// Create a new message queue with configurable TTL settings
+    /// For long-running sessions with 200+ agents, consider:
+    /// - seen_ttl_secs: 120-180 (2-3 minutes)
+    /// - cleanup_interval_secs: 30 (more frequent cleanup)
+    pub fn with_ttl(
+        max_size: usize,
+        response_tx: broadcast::Sender<InjectResponse>,
+        seen_ttl_secs: u64,
+        cleanup_interval_secs: u64,
+    ) -> Self {
+        info!(
+            "MessageQueue created: max_size={}, seen_ttl={}s, cleanup_interval={}s",
+            max_size, seen_ttl_secs, cleanup_interval_secs
+        );
         Self {
             queue: Mutex::new(BinaryHeap::new()),
-            seen_ids: Mutex::new(HashSet::new()),
+            seen_ids: Mutex::new(HashMap::new()),
             max_size,
             notify: Notify::new(),
             response_tx,
+            last_cleanup: Mutex::new(Instant::now()),
+            seen_id_ttl: Duration::from_secs(seen_ttl_secs),
+            cleanup_interval: Duration::from_secs(cleanup_interval_secs),
         }
     }
 
@@ -77,14 +115,24 @@ impl MessageQueue {
     ///
     /// Returns `true` if added, `false` if duplicate or backpressure
     pub async fn enqueue(&self, msg: QueuedMessage) -> bool {
+        // Periodically clean up expired seen_ids based on configured interval
+        {
+            let mut last_cleanup = self.last_cleanup.lock().await;
+            if last_cleanup.elapsed() > self.cleanup_interval {
+                *last_cleanup = Instant::now();
+                drop(last_cleanup); // Release lock before cleanup
+                self.cleanup_expired_ids().await;
+            }
+        }
+
         // Check for duplicate
         {
             let mut seen = self.seen_ids.lock().await;
-            if seen.contains(&msg.id) {
+            if seen.contains_key(&msg.id) {
                 debug!("Duplicate message ID: {}", msg.id);
                 return false;
             }
-            seen.insert(msg.id.clone());
+            seen.insert(msg.id.clone(), Instant::now());
         }
 
         let mut queue = self.queue.lock().await;
@@ -140,6 +188,16 @@ impl MessageQueue {
     /// Wait for a message to be available and dequeue it
     pub async fn wait_and_dequeue(&self) -> QueuedMessage {
         loop {
+            // IMPORTANT: Create the notified future BEFORE checking the queue.
+            // This prevents a race condition where:
+            // 1. We check the queue and find it empty
+            // 2. A message arrives and notify_one() is called
+            // 3. We start waiting on notified() - but the notification was already lost!
+            //
+            // By creating the future first, any notification that happens after
+            // we start checking the queue will still wake us up.
+            let notified = self.notify.notified();
+
             // Check if there's a message
             {
                 let mut queue = self.queue.lock().await;
@@ -148,8 +206,8 @@ impl MessageQueue {
                 }
             }
 
-            // Wait for notification
-            self.notify.notified().await;
+            // Wait for notification - safe because we created the future before checking
+            notified.await;
         }
     }
 
@@ -211,6 +269,39 @@ impl MessageQueue {
         let before = seen.len();
         seen.clear();
         info!("Cleared {} seen message IDs", before);
+    }
+
+    /// Remove expired IDs from the seen set based on TTL
+    /// This prevents unbounded growth of seen_ids over long sessions
+    async fn cleanup_expired_ids(&self) {
+        let mut seen = self.seen_ids.lock().await;
+        let before = seen.len();
+        let now = Instant::now();
+        let ttl = self.seen_id_ttl;
+
+        seen.retain(|_id, timestamp| now.duration_since(*timestamp) < ttl);
+
+        let removed = before - seen.len();
+        if removed > 0 {
+            info!(
+                "Cleaned up {} expired seen IDs ({} remaining, ttl={}s)",
+                removed,
+                seen.len(),
+                ttl.as_secs()
+            );
+        }
+    }
+
+    /// Mark a message as delivered, removing it from the seen set
+    /// This allows the ID to be reused if needed (e.g., for retries from a new sender)
+    pub async fn mark_delivered(&self, id: &str) {
+        let mut seen = self.seen_ids.lock().await;
+        if seen.remove(id).is_some() {
+            debug!(
+                "Removed delivered message {} from seen set",
+                &id[..id.len().min(8)]
+            );
+        }
     }
 
     /// Get queue statistics
