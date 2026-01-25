@@ -39,6 +39,21 @@ use tokio::sync::{broadcast, mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 
+/// Find the nearest character boundary at or before the given byte index.
+/// This is needed because Rust strings are UTF-8 and slicing at arbitrary
+/// byte positions can panic if the position is in the middle of a multi-byte character.
+fn floor_char_boundary(s: &str, index: usize) -> usize {
+    if index >= s.len() {
+        return s.len();
+    }
+    // Walk backwards from index to find a valid char boundary
+    let mut i = index;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
 /// PTY wrapper for reliable agent message injection
 #[derive(Parser, Debug)]
 #[command(name = "relay-pty")]
@@ -387,7 +402,9 @@ async fn main() -> Result<()> {
                         mcp_detection_buffer.push_str(&text);
                         // Keep buffer bounded (increased from 1000 to handle fragmented prompts)
                         if mcp_detection_buffer.len() > 2500 {
-                            mcp_detection_buffer = mcp_detection_buffer[mcp_detection_buffer.len() - 2000..].to_string();
+                            // Use floor_char_boundary to avoid panicking on multi-byte UTF-8 chars
+                            let start = floor_char_boundary(&mcp_detection_buffer, mcp_detection_buffer.len() - 2000);
+                            mcp_detection_buffer = mcp_detection_buffer[start..].to_string();
                         }
 
                         // Strip ANSI codes for robust pattern matching
