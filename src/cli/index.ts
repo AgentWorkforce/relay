@@ -2226,7 +2226,10 @@ cloudCommand
     try {
       const openCommand = process.platform === 'darwin' ? 'open' :
                           process.platform === 'win32' ? 'start' : 'xdg-open';
-      await execAsync(`${openCommand} "${authUrl}"`);
+      // Use single quotes to prevent shell interpretation of & and other special chars
+      // Escape any single quotes in the URL itself
+      const escapedUrl = authUrl.replace(/'/g, "'\\''");
+      await execAsync(`${openCommand} '${escapedUrl}'`);
       console.log('(Browser opened automatically)');
     } catch {
       console.log('(Copy the URL above and paste it in your browser)');

@@ -2227,9 +2227,9 @@ export async function startDashboard(
       }
     };
 
-    // Helper to subscribe to an agent
-    const subscribeToAgent = (agentName: string) => {
-      const isSpawned = spawner?.hasWorker(agentName) ?? false;
+    // Helper to subscribe to an agent (async to handle spawn timing)
+    const subscribeToAgent = async (agentName: string) => {
+      let isSpawned = spawner?.hasWorker(agentName) ?? false;
       const isDaemon = isDaemonConnected(agentName);
 
       // Check if agent exists (either spawned or daemon-connected)
@@ -2242,6 +2242,28 @@ export async function startDashboard(
         // Close with custom code 4404 to signal "agent not found" - client should not reconnect
         ws.close(4404, 'Agent not found');
         return false;
+      }
+
+      // If agent is daemon-connected but not yet in spawner's activeWorkers,
+      // poll briefly to handle race condition between spawn API returning and
+      // WebSocket connection. This is common for setup agents (__setup__*).
+      if (!isSpawned && isDaemon && spawner) {
+        const maxWaitMs = 3000; // Wait up to 3 seconds
+        const pollIntervalMs = 100;
+        const startTime = Date.now();
+
+        while (Date.now() - startTime < maxWaitMs) {
+          await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+          isSpawned = spawner.hasWorker(agentName);
+          if (isSpawned) {
+            console.log(`[dashboard] Agent ${agentName} appeared in spawner after ${Date.now() - startTime}ms`);
+            break;
+          }
+          // Check if WebSocket was closed during wait
+          if (ws.readyState !== WebSocket.OPEN) {
+            return false;
+          }
+        }
       }
 
       // Add to subscriptions
@@ -2283,7 +2305,9 @@ export async function startDashboard(
     const pathMatch = pathname.match(/^\/ws\/logs\/(.+)$/);
     if (pathMatch) {
       const agentName = decodeURIComponent(pathMatch[1]);
-      subscribeToAgent(agentName);
+      subscribeToAgent(agentName).catch((err) => {
+        console.error(`[dashboard] Error subscribing to ${agentName}:`, err);
+      });
     }
 
     ws.on('message', (data) => {
@@ -2292,7 +2316,9 @@ export async function startDashboard(
 
         // Subscribe to agent logs
         if (msg.subscribe && typeof msg.subscribe === 'string') {
-          subscribeToAgent(msg.subscribe);
+          subscribeToAgent(msg.subscribe).catch((err) => {
+            console.error(`[dashboard] Error subscribing to ${msg.subscribe}:`, err);
+          });
         }
 
         // Unsubscribe from agent logs
