@@ -302,29 +302,6 @@ export function WorkspaceSettingsPanel({
     }
   }, [workspace, workspaceId]);
 
-  // Add repository to workspace
-  const handleAddRepo = useCallback(async (repoId: string) => {
-    if (!workspace) return;
-
-    const result = await cloudApi.addReposToWorkspace(workspace.id, [repoId]);
-    if (result.success) {
-      // Refresh workspace to get updated repo list
-      const wsResult = await cloudApi.getWorkspaceDetails(workspaceId);
-      if (wsResult.success) {
-        setWorkspace(wsResult.data);
-        
-        // Find the repo we just added and trigger sync/clone
-        const addedRepo = wsResult.data.repositories.find((r: { id: string }) => r.id === repoId);
-        if (addedRepo && workspace.status === 'running') {
-          // Auto-sync the repo after adding
-          await handleSyncRepo(repoId);
-        }
-      }
-    } else {
-      setError(result.error);
-    }
-  }, [workspace, workspaceId, handleSyncRepo]);
-
   // Sync repository to workspace (clone/pull)
   const handleSyncRepo = useCallback(async (repoId: string) => {
     if (!workspace) return;
@@ -345,6 +322,29 @@ export function WorkspaceSettingsPanel({
 
     setSyncingRepoId(null);
   }, [workspace, workspaceId]);
+
+  // Add repository to workspace
+  const handleAddRepo = useCallback(async (repoId: string) => {
+    if (!workspace) return;
+
+    const result = await cloudApi.addReposToWorkspace(workspace.id, [repoId]);
+    if (result.success) {
+      // Refresh workspace to get updated repo list
+      const wsResult = await cloudApi.getWorkspaceDetails(workspaceId);
+      if (wsResult.success) {
+        setWorkspace(wsResult.data);
+
+        // Find the repo we just added and trigger sync/clone
+        const addedRepo = wsResult.data.repositories.find((r: { id: string }) => r.id === repoId);
+        if (addedRepo && workspace.status === 'running') {
+          // Auto-sync the repo after adding
+          await handleSyncRepo(repoId);
+        }
+      }
+    } else {
+      setError(result.error);
+    }
+  }, [workspace, workspaceId, handleSyncRepo]);
 
   // Set custom domain
   const handleSetDomain = useCallback(async () => {
