@@ -424,11 +424,16 @@ export function discoverAgentName(discovery?: DiscoveryResult | null): string | 
   }
 
   for (const dir of searchDirs) {
-    // Check for identity file written by the wrapper
-    const identityPath = join(dir, '.agent-relay', 'mcp-identity');
-    if (existsSync(identityPath)) {
+    const relayDir = join(dir, '.agent-relay');
+    if (!existsSync(relayDir)) continue;
+
+    // First check for per-process identity files
+    // The orchestrator writes mcp-identity-{orchestrator.pid}
+    // Try to find one by checking process.ppid and its ancestors
+    const pidIdentityPath = join(relayDir, `mcp-identity-${process.ppid}`);
+    if (existsSync(pidIdentityPath)) {
       try {
-        const content = readFileSync(identityPath, 'utf-8').trim();
+        const content = readFileSync(pidIdentityPath, 'utf-8').trim();
         if (content) {
           return content;
         }
@@ -437,11 +442,51 @@ export function discoverAgentName(discovery?: DiscoveryResult | null): string | 
       }
     }
 
-    // Also check for per-process identity file (for concurrent agents)
-    const pidIdentityPath = join(dir, '.agent-relay', `mcp-identity-${process.ppid}`);
-    if (existsSync(pidIdentityPath)) {
+    // Scan all mcp-identity-* files and return the most recently modified one
+    // This handles the case where MCP server's ppid doesn't match the orchestrator
+    try {
+      const files = readdirSync(relayDir, { withFileTypes: true })
+        .filter((d) => d.isFile() && d.name.startsWith('mcp-identity-'))
+        .map((d) => ({
+          path: join(relayDir, d.name),
+          name: d.name,
+        }));
+
+      if (files.length > 0) {
+        // Sort by mtime (most recent first) to get the latest identity
+        const sorted = files
+          .map((f) => {
+            try {
+              const stat = require('node:fs').statSync(f.path);
+              return { ...f, mtime: stat.mtimeMs };
+            } catch {
+              return { ...f, mtime: 0 };
+            }
+          })
+          .sort((a, b) => b.mtime - a.mtime);
+
+        // Return the most recently modified identity file
+        const latest = sorted[0];
+        if (latest) {
+          try {
+            const content = readFileSync(latest.path, 'utf-8').trim();
+            if (content) {
+              return content;
+            }
+          } catch {
+            // Ignore
+          }
+        }
+      }
+    } catch {
+      // Ignore scan errors
+    }
+
+    // Fallback to simple identity file (for single-agent scenarios)
+    const identityPath = join(relayDir, 'mcp-identity');
+    if (existsSync(identityPath)) {
       try {
-        const content = readFileSync(pidIdentityPath, 'utf-8').trim();
+        const content = readFileSync(identityPath, 'utf-8').trim();
         if (content) {
           return content;
         }

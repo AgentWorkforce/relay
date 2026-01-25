@@ -626,6 +626,12 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     this.stopProtocolMonitor();
     this.stopPeriodicReminder();
 
+    // Clear socket reconnect timer
+    if (this.socketReconnectTimer) {
+      clearTimeout(this.socketReconnectTimer);
+      this.socketReconnectTimer = undefined;
+    }
+
     // Unregister from memory monitor
     this.memoryMonitor.unregister(this.config.name);
     if (this.memoryAlertHandler) {
@@ -757,6 +763,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
         ...process.env,
         ...this.config.env,
         AGENT_RELAY_NAME: this.config.name,
+        RELAY_AGENT_NAME: this.config.name, // MCP server uses this env var
         AGENT_RELAY_OUTBOX: this._canonicalOutboxPath, // Agents use this for outbox path
         TERM: 'xterm-256color',
       },
@@ -1249,6 +1256,10 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       this.socket.on('close', () => {
         this.socketConnected = false;
         this.log(` Socket closed`);
+        // Auto-reconnect if not intentionally stopped
+        if (this.running && !this.isGracefulStop) {
+          this.scheduleSocketReconnect();
+        }
       });
 
       // Handle incoming data (responses)
@@ -1285,6 +1296,58 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       pending.reject(new Error('Socket disconnected'));
     }
     this.pendingInjections.clear();
+  }
+
+  /** Timer for socket reconnection */
+  private socketReconnectTimer?: NodeJS.Timeout;
+  /** Current reconnection attempt count */
+  private socketReconnectAttempt = 0;
+
+  /**
+   * Schedule a socket reconnection attempt with exponential backoff
+   */
+  private scheduleSocketReconnect(): void {
+    const maxAttempts = this.config.socketReconnectAttempts ?? 3;
+
+    // Clear any existing timer
+    if (this.socketReconnectTimer) {
+      clearTimeout(this.socketReconnectTimer);
+    }
+
+    if (this.socketReconnectAttempt >= maxAttempts) {
+      this.logError(` Socket reconnect failed after ${maxAttempts} attempts`);
+      // Reset counter for future reconnects
+      this.socketReconnectAttempt = 0;
+      return;
+    }
+
+    this.socketReconnectAttempt++;
+    const delay = Math.min(1000 * Math.pow(2, this.socketReconnectAttempt - 1), 10000); // Max 10s
+
+    this.log(` Scheduling socket reconnect in ${delay}ms (attempt ${this.socketReconnectAttempt}/${maxAttempts})`);
+
+    this.socketReconnectTimer = setTimeout(async () => {
+      if (!this.running || this.isGracefulStop) {
+        return;
+      }
+
+      try {
+        const timeout = this.config.socketConnectTimeoutMs ?? 5000;
+        await this.attemptSocketConnection(timeout);
+        this.log(` Socket reconnected successfully`);
+        this.socketReconnectAttempt = 0; // Reset on success
+
+        // Process any queued messages that were waiting
+        if (this.messageQueue.length > 0 && !this.isInjecting) {
+          this.log(` Processing ${this.messageQueue.length} queued messages after reconnect`);
+          this.processMessageQueue();
+        }
+      } catch (err: any) {
+        this.logError(` Socket reconnect attempt ${this.socketReconnectAttempt} failed: ${err.message}`);
+        // Schedule another attempt
+        this.scheduleSocketReconnect();
+      }
+    }, delay);
   }
 
   /**
@@ -1729,6 +1792,18 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     }
 
     if (this.messageQueue.length === 0) {
+      return;
+    }
+
+    // Proactively reconnect socket if disconnected and we have messages to send
+    if (!this.socketConnected && !this.socketReconnectTimer) {
+      this.log(` Socket disconnected, triggering reconnect before processing queue`);
+      this.scheduleSocketReconnect();
+      return; // Wait for reconnection to complete
+    }
+
+    if (!this.socketConnected) {
+      // Reconnection in progress, wait for it
       return;
     }
 
@@ -2480,6 +2555,10 @@ Then output: \`->relay-file:spawn\`
    */
   async kill(): Promise<void> {
     this.isGracefulStop = true; // Mark as intentional to prevent crash broadcast
+    if (this.socketReconnectTimer) {
+      clearTimeout(this.socketReconnectTimer);
+      this.socketReconnectTimer = undefined;
+    }
     if (this.relayPtyProcess && !this.relayPtyProcess.killed) {
       this.relayPtyProcess.kill('SIGKILL');
     }
