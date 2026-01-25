@@ -61,43 +61,24 @@ describe('RelayClient', () => {
   });
 
   it('sends a message', async () => {
-    // Mock successful response from daemon
-    mockSocket.on.mockImplementation((event: string, cb: any) => {
-      if (event === 'connect') {
-        cb();
-      }
-      if (event === 'data') {
-        // Wait a tick to allow write to happen
-        setTimeout(() => {
-          // Get the ID from the request (decode frame first)
-          const writeCall = mockSocket.write.mock.calls[0][0];
-          const req = decodeFrame(writeCall);
-
-          const response = {
-            id: req.id,
-            payload: null,
-          };
-          cb(encodeFrame(response));
-        }, 10);
-      }
-      return mockSocket;
-    });
-
+    // send() uses fireAndForget - no response expected, just connect and write
     await client.send('Alice', 'Hello');
 
     expect(createConnection).toHaveBeenCalledWith('/tmp/test.sock');
     const writeCall = mockSocket.write.mock.calls[0][0];
     const req = decodeFrame(writeCall);
     expect(req.type).toBe('SEND');
+    // from/to are at envelope level, kind/body in payload
+    expect(req.from).toBe('test-agent');
+    expect(req.to).toBe('Alice');
     expect(req.payload).toEqual({
-      from: 'test-agent',
-      to: 'Alice',
+      kind: 'message',
       body: 'Hello',
     });
   });
 
   it('gets inbox', async () => {
-    const mockInbox = [
+    const mockMessages = [
       { id: '1', from: 'Alice', body: 'Hi' }
     ];
 
@@ -108,9 +89,10 @@ describe('RelayClient', () => {
           const writeCall = mockSocket.write.mock.calls[0][0];
           const req = decodeFrame(writeCall);
 
+          // Response payload has 'messages' array (as expected by client)
           const response = {
             id: req.id,
-            payload: mockInbox,
+            payload: { messages: mockMessages },
           };
           cb(encodeFrame(response));
         }, 10);
@@ -132,18 +114,14 @@ describe('RelayClient', () => {
   });
 
   it('handles spawn errors', async () => {
+    // spawn() uses fireAndForget, so errors come from connection failures
     mockSocket.on.mockImplementation((event: string, cb: any) => {
-      if (event === 'connect') cb();
-      if (event === 'data') {
+      if (event === 'error') {
+        // Simulate connection refused error
         setTimeout(() => {
-          const writeCall = mockSocket.write.mock.calls[0][0];
-          const req = decodeFrame(writeCall);
-
-          const response = {
-            id: req.id,
-            payload: { error: 'Failed to spawn' },
-          };
-          cb(encodeFrame(response));
+          const err = new Error('Connection refused') as NodeJS.ErrnoException;
+          err.code = 'ECONNREFUSED';
+          cb(err);
         }, 10);
       }
       return mockSocket;
@@ -156,6 +134,6 @@ describe('RelayClient', () => {
     });
 
     expect(result.success).toBe(false);
-    expect(result.error).toBe('Failed to spawn');
+    expect(result.error).toContain('Cannot connect to daemon');
   });
 });
