@@ -441,11 +441,15 @@ export class Daemon {
         }, Daemon.PROCESSING_STATE_INTERVAL_MS);
 
         // Start RelayWatchdog for MCP file-based messages (ledger-based for durability)
-        // Use parent of teamDir since teamDir is .agent-relay/team/ but outbox is at .agent-relay/outbox/
-        const relayRoot = path.dirname(teamDir);
-        this.initRelayWatchdog(relayRoot).catch(err => {
-          log.error('Failed to start RelayWatchdog', { error: String(err) });
-        });
+        // Feature gated: set RELAY_MCP_AUTO_INSTALL=1 to enable file-based MCP messaging
+        const mcpAutoInstallEnabled = process.env.RELAY_MCP_AUTO_INSTALL === '1';
+        if (mcpAutoInstallEnabled) {
+          // Use parent of teamDir since teamDir is .agent-relay/team/ but outbox is at .agent-relay/outbox/
+          const relayRoot = path.dirname(teamDir);
+          this.initRelayWatchdog(relayRoot).catch(err => {
+            log.error('Failed to start RelayWatchdog', { error: String(err) });
+          });
+        }
 
         // Track daemon start
         track('daemon_start', {});
