@@ -242,7 +242,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     async spawn(opts) {
       // Fire-and-forget: daemon handles spawning, agent will message when ready
       try {
-        await fireAndForget('SPAWN', { ...opts, parent: agentName });
+        await fireAndForget('SPAWN', { ...opts, spawnerName: agentName });
         return { success: true };
       } catch (e) {
         return { success: false, error: e instanceof Error ? e.message : String(e) };
