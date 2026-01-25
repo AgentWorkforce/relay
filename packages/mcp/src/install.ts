@@ -150,7 +150,7 @@ function getConfigPaths(): Record<string, EditorConfig> {
       configPath: join(home, '.codex', 'config.toml'),
       configKey: 'mcp_servers', // TOML uses [mcp_servers.agent-relay] tables
       format: 'toml',
-      supportsLocal: false, // Codex doesn't support project-local MCP yet (see openai/codex#2628)
+      supportsLocal: true,
     },
   };
 }
@@ -293,6 +293,8 @@ function getLocalConfigPath(
       return join(projectDir, 'opencode.json');
     case 'Droid':
       return join(projectDir, '.factory', 'mcp.json');
+    case 'Codex':
+      return join(projectDir, 'codex.toml');
     default:
       return null;
   }
