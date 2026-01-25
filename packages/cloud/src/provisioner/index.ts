@@ -349,6 +349,8 @@ export interface ProvisionConfig {
   repositories: string[];
   supervisorEnabled?: boolean;
   maxAgents?: number;
+  /** Whether this workspace is publicly accessible to all logged-in users */
+  isPublic?: boolean;
   /** Direct GitHub token for testing (bypasses Nango lookup) */
   githubToken?: string;
 }
@@ -1951,6 +1953,7 @@ export class WorkspaceProvisioner {
       userId: config.userId,
       name: config.name,
       computeProvider: getConfig().compute.provider,
+      isPublic: config.isPublic ?? false,
       config: {
         providers: config.providers,
         repositories: config.repositories,

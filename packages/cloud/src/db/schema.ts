@@ -185,11 +185,14 @@ export const workspaces = pgTable('workspaces', {
   customDomainStatus: varchar('custom_domain_status', { length: 50 }),
   config: jsonb('config').$type<WorkspaceConfig>().notNull().default({}),
   errorMessage: text('error_message'),
+  /** Whether this workspace is publicly accessible to all logged-in users */
+  isPublic: boolean('is_public').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
   userIdIdx: index('idx_workspaces_user_id').on(table.userId),
   customDomainIdx: index('idx_workspaces_custom_domain').on(table.customDomain),
+  isPublicIdx: index('idx_workspaces_is_public').on(table.isPublic),
 }));
 
 export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
