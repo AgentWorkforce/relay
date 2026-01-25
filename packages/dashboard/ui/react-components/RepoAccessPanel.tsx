@@ -72,6 +72,17 @@ export function RepoAccessPanel({
   const [creatingWorkspace, setCreatingWorkspace] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'with-workspace' | 'without-workspace'>('all');
+  
+  // OAuth flow state
+  const [oauthRepo, setOauthRepo] = useState<string | null>(null);
+  const [oauthSessionToken, setOauthSessionToken] = useState<string | null>(null);
+  const [oauthConnectionId, setOauthConnectionId] = useState<string | null>(null);
+  
+  // Workspace choice modal state
+  const [workspaceChoice, setWorkspaceChoice] = useState<{
+    repoFullName: string;
+    workspaces: Array<{ id: string; name: string; repoCount: number }>;
+  } | null>(null);
 
   // Create a map of repo full names to workspace IDs for quick lookup
   const repoToWorkspace = new Map<string, Workspace>();
@@ -113,10 +124,12 @@ export function RepoAccessPanel({
     fetchRepos();
   }, [fetchRepos]);
 
-  // Create workspace for a repo
-  const handleCreateWorkspace = useCallback(async (repoFullName: string) => {
+  // Enable access to a repo (handles OAuth, workspace choice, cloning)
+  const handleEnableAccess = useCallback(async (repoFullName: string, targetWorkspaceId?: string) => {
     setCreatingWorkspace(repoFullName);
     setError(null);
+    setOauthRepo(null);
+    setWorkspaceChoice(null);
 
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -124,27 +137,154 @@ export function RepoAccessPanel({
         headers['X-CSRF-Token'] = csrfToken;
       }
 
-      const response = await fetch('/api/workspaces/quick', {
+      const response = await fetch('/api/workspaces/enable-repo', {
         method: 'POST',
         credentials: 'include',
         headers,
-        body: JSON.stringify({ repositoryFullName: repoFullName }),
+        body: JSON.stringify({ 
+          repositoryFullName: repoFullName,
+          workspaceId: targetWorkspaceId,
+        }),
       });
 
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to create workspace');
+        throw new Error(data.error || 'Failed to enable repository access');
       }
 
-      onWorkspaceCreated?.(data.workspaceId, repoFullName);
+      // Handle OAuth requirement
+      if (data.requiresOAuth) {
+        if (data.oauthType === 'github-app') {
+          setOauthRepo(repoFullName);
+          setOauthSessionToken(data.sessionToken);
+          // Open Nango connect UI
+          const nangoUrl = `https://app.nango.dev/connect/${data.sessionToken}`;
+          window.open(nangoUrl, 'nango-oauth', 'width=600,height=700');
+          
+          // Start polling for completion
+          pollOAuthStatus(repoFullName, data.sessionToken);
+        } else {
+          throw new Error('GitHub not connected. Please connect your GitHub account first.');
+        }
+        return;
+      }
+
+      // Handle workspace choice requirement
+      if (data.requiresWorkspaceChoice) {
+        setWorkspaceChoice({
+          repoFullName: data.repositoryFullName,
+          workspaces: data.suggestedWorkspaces,
+        });
+        setCreatingWorkspace(null);
+        return;
+      }
+
+      // Success - repo enabled
+      if (data.success) {
+        onWorkspaceCreated?.(data.workspaceId, repoFullName);
+        
+        // Refresh repos list to show updated status
+        setTimeout(() => {
+          fetchRepos();
+        }, 1000);
+      }
     } catch (err) {
-      console.error('Error creating workspace:', err);
-      setError(err instanceof Error ? err.message : 'Failed to create workspace');
+      console.error('Error enabling repo access:', err);
+      setError(err instanceof Error ? err.message : 'Failed to enable repository access');
     } finally {
-      setCreatingWorkspace(null);
+      if (!oauthRepo && !workspaceChoice) {
+        setCreatingWorkspace(null);
+      }
     }
-  }, [csrfToken, onWorkspaceCreated]);
+  }, [csrfToken, onWorkspaceCreated, fetchRepos]);
+
+  // Poll for OAuth completion
+  const pollOAuthStatus = useCallback(async (repoFullName: string, sessionToken: string) => {
+    const maxAttempts = 60; // 5 minutes max
+    let attempts = 0;
+
+    const poll = async () => {
+      if (attempts >= maxAttempts) {
+        setError('OAuth timeout - please try again');
+        setOauthRepo(null);
+        setOauthSessionToken(null);
+        setCreatingWorkspace(null);
+        return;
+      }
+
+      attempts++;
+
+      try {
+        // Get connection ID from Nango session first
+        // We need to check the repo-status endpoint which uses connectionId
+        // For now, poll the enable-repo endpoint again to check status
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (csrfToken) {
+          headers['X-CSRF-Token'] = csrfToken;
+        }
+
+        const response = await fetch('/api/workspaces/enable-repo', {
+          method: 'POST',
+          credentials: 'include',
+          headers,
+          body: JSON.stringify({ repositoryFullName: repoFullName }),
+        });
+
+        const data = await response.json();
+
+        if (data.requiresOAuth && data.oauthType === 'github-app') {
+          // Still needs OAuth - keep polling
+          setTimeout(poll, 5000);
+        } else if (data.requiresWorkspaceChoice) {
+          // OAuth complete, now needs workspace choice
+          setOauthRepo(null);
+          setOauthSessionToken(null);
+          setWorkspaceChoice({
+            repoFullName: data.repositoryFullName,
+            workspaces: data.suggestedWorkspaces,
+          });
+          setCreatingWorkspace(null);
+        } else if (data.success) {
+          // Success!
+          setOauthRepo(null);
+          setOauthSessionToken(null);
+          setCreatingWorkspace(null);
+          onWorkspaceCreated?.(data.workspaceId, repoFullName);
+          setTimeout(() => {
+            fetchRepos();
+          }, 1000);
+        } else {
+          // Error
+          setError(data.error || 'Failed to enable repository access');
+          setOauthRepo(null);
+          setOauthSessionToken(null);
+          setCreatingWorkspace(null);
+        }
+      } catch (err) {
+        console.error('Error polling OAuth status:', err);
+        setTimeout(poll, 5000);
+      }
+    };
+
+    poll();
+  }, [csrfToken, handleEnableAccess, onWorkspaceCreated, fetchRepos]);
+
+  // Handle workspace choice
+  const handleChooseWorkspace = useCallback(async (workspaceId: string) => {
+    if (!workspaceChoice) return;
+    
+    await handleEnableAccess(workspaceChoice.repoFullName, workspaceId);
+    setWorkspaceChoice(null);
+  }, [workspaceChoice, handleEnableAccess]);
+
+  // Create new workspace (from choice modal)
+  const handleCreateNewWorkspace = useCallback(async () => {
+    if (!workspaceChoice) return;
+    
+    await handleEnableAccess(workspaceChoice.repoFullName);
+    setWorkspaceChoice(null);
+  }, [workspaceChoice, handleEnableAccess]);
 
   // Filter repos based on search and filter type
   const filteredRepos = repos.filter(repo => {
@@ -332,17 +472,17 @@ export function RepoAccessPanel({
                       </button>
                     ) : (
                       <button
-                        onClick={() => handleCreateWorkspace(repo.fullName)}
-                        disabled={isCreating}
+                        onClick={() => handleEnableAccess(repo.fullName)}
+                        disabled={isCreating || oauthRepo === repo.fullName}
                         className="px-4 py-2 text-sm bg-gradient-to-r from-accent-cyan to-[#00b8d9] text-bg-deep font-medium rounded-lg hover:shadow-glow-cyan transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        {isCreating ? (
+                        {isCreating || oauthRepo === repo.fullName ? (
                           <span className="flex items-center gap-2">
                             <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
                               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                             </svg>
-                            Creating...
+                            {oauthRepo === repo.fullName ? 'Authorizing...' : 'Starting...'}
                           </span>
                         ) : (
                           'Enable Access'
@@ -369,6 +509,75 @@ export function RepoAccessPanel({
           </button>
         </p>
       </div>
+
+      {/* Workspace Choice Modal */}
+      {workspaceChoice && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[9999] backdrop-blur-sm">
+          <div className="bg-[#1a1a2e] border border-[#3a3a4e] rounded-xl p-6 min-w-[500px] max-w-[90vw] shadow-[0_20px_60px_rgba(0,0,0,0.5)]">
+            <h3 className="text-lg font-semibold text-[#e8e8e8] mb-2">
+              Add to Existing Workspace?
+            </h3>
+            <p className="text-sm text-[#999] mb-4">
+              Found {workspaceChoice.workspaces.length} workspace(s) with repositories from the same organization. 
+              Add <code className="px-1.5 py-0.5 bg-[#2a2a3e] rounded text-xs">{workspaceChoice.repoFullName}</code> to an existing workspace?
+            </p>
+            
+            <div className="space-y-2 mb-4 max-h-[300px] overflow-y-auto">
+              {workspaceChoice.workspaces.map((ws) => (
+                <button
+                  key={ws.id}
+                  onClick={() => handleChooseWorkspace(ws.id)}
+                  className="w-full p-3 bg-[#2a2a3e] border border-[#3a3a4e] rounded-lg hover:border-accent-cyan/50 transition-colors text-left"
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-[#e8e8e8]">{ws.name}</p>
+                      <p className="text-xs text-[#999]">{ws.repoCount} repository{ws.repoCount !== 1 ? 'ies' : 'y'}</p>
+                    </div>
+                    <span className="text-accent-cyan text-sm">Add →</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => {
+                  setWorkspaceChoice(null);
+                  setCreatingWorkspace(null);
+                }}
+                className="px-4 py-2 rounded-md text-sm font-medium cursor-pointer transition-all bg-transparent border border-[#3a3a4e] text-[#e8e8e8] hover:bg-white/5"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreateNewWorkspace}
+                className="px-4 py-2 rounded-md text-sm font-medium cursor-pointer transition-all bg-[#00c896] border-none text-[#1a1a2e] hover:bg-[#00a87d]"
+              >
+                Create New Workspace
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* OAuth Status Banner */}
+      {oauthRepo && (
+        <div className="fixed bottom-4 right-4 bg-accent-cyan/10 border border-accent-cyan/30 rounded-lg p-4 max-w-md z-[10000]">
+          <div className="flex items-center gap-3">
+            <svg className="w-5 h-5 text-accent-cyan animate-spin" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+            <div>
+              <p className="text-sm font-medium text-accent-cyan">Authorizing GitHub App</p>
+              <p className="text-xs text-text-muted mt-0.5">
+                Complete the authorization in the popup window
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

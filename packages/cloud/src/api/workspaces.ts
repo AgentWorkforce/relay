@@ -11,7 +11,7 @@ import { db, Workspace } from '../db/index.js';
 import { getProvisioner, getProvisioningStage } from '../provisioner/index.js';
 import { checkWorkspaceLimit } from './middleware/planLimits.js';
 import { getConfig } from '../config.js';
-import { nangoService } from '../services/nango.js';
+import { nangoService, NANGO_INTEGRATIONS } from '../services/nango.js';
 
 // ============================================================================
 // Workspace Access Cache
@@ -2016,6 +2016,250 @@ workspacesRouter.delete('/:id/agents/:agentName', async (req: Request, res: Resp
   } catch (error) {
     console.error('[workspaces] Stop agent error:', error);
     res.status(500).json({ error: 'Failed to stop agent' });
+  }
+});
+
+/**
+ * POST /api/workspaces/enable-repo
+ * Enable access to a repository: check GitHub App, add to workspace, clone repo
+ * 
+ * Flow:
+ * 1. Check if repo has GitHub App installation
+ * 2. If not, return OAuth session info
+ * 3. Check for existing workspaces in same organization
+ * 4. Add repo to existing workspace or create new one
+ * 5. Clone repo in workspace
+ */
+workspacesRouter.post('/enable-repo', checkWorkspaceLimit, async (req: Request, res: Response) => {
+  const userId = req.session.userId!;
+  const { repositoryFullName, workspaceId } = req.body;
+
+  if (!repositoryFullName || typeof repositoryFullName !== 'string') {
+    return res.status(400).json({ error: 'Repository full name is required (owner/repo)' });
+  }
+
+  try {
+    const user = await db.users.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Extract organization from repo name (e.g., "owner/repo" -> "owner")
+    const [orgName] = repositoryFullName.split('/');
+    if (!orgName) {
+      return res.status(400).json({ error: 'Invalid repository format' });
+    }
+
+    // Step 1: Check if repo exists in DB with GitHub App installation
+    const existingRepos = await db.repositories.findByGithubFullName(repositoryFullName);
+    let userRepo = existingRepos.find(r => r.userId === userId);
+    
+    // Also check user's repos (may have been synced via webhook)
+    if (!userRepo) {
+      const userRepos = await db.repositories.findByUserId(userId);
+      userRepo = userRepos.find(r => r.githubFullName.toLowerCase() === repositoryFullName.toLowerCase());
+    }
+    
+    // Check if repo has GitHub App installation
+    // Note: Even if user has GitHub App installed for other repos, we still need
+    // to check if THIS specific repo is in the installation. The webhook will
+    // sync repos when they're added to an installation, but we can't assume
+    // a repo is accessible just because the user has an installation.
+    const hasInstallation = userRepo?.installationId && userRepo?.nangoConnectionId;
+    
+    if (!hasInstallation) {
+      // Need GitHub App OAuth - return session info
+      if (!user.nangoConnectionId) {
+        return res.status(400).json({
+          error: 'GitHub not connected',
+          requiresOAuth: true,
+          oauthType: 'github-user',
+        });
+      }
+
+      // Create GitHub App OAuth session
+      const session = await nangoService.createConnectSession(
+        [NANGO_INTEGRATIONS.GITHUB_APP],
+        { id: user.id, email: user.email || undefined }
+      );
+
+      return res.json({
+        requiresOAuth: true,
+        oauthType: 'github-app',
+        sessionToken: session.token,
+        message: 'GitHub App installation required for repository access',
+      });
+    }
+
+    // Step 2: Check for existing workspaces in same organization
+    // Include both owned workspaces and member workspaces
+    const ownedWorkspaces = await db.workspaces.findByUserId(userId);
+    const memberships = await db.workspaceMembers.findByUserId(userId);
+    const memberWorkspaceIds = memberships
+      .map(m => m.workspaceId)
+      .filter(wsId => !ownedWorkspaces.some(ws => ws.id === wsId));
+    
+    const memberWorkspaces = await Promise.all(
+      memberWorkspaceIds.map(wsId => db.workspaces.findById(wsId))
+    ).then(workspaces => workspaces.filter((ws): ws is Workspace => ws !== null));
+    
+    const allUserWorkspaces = [...ownedWorkspaces, ...memberWorkspaces];
+    const orgWorkspaces: Array<{ id: string; name: string; repoCount: number }> = [];
+
+    for (const ws of allUserWorkspaces) {
+      const wsRepos = await db.repositories.findByWorkspaceId(ws.id);
+      // Check if any repo in this workspace is from the same org
+      const hasOrgRepo = wsRepos.some(r => {
+        const [repoOrg] = r.githubFullName.split('/');
+        return repoOrg.toLowerCase() === orgName.toLowerCase();
+      });
+
+      if (hasOrgRepo) {
+        orgWorkspaces.push({
+          id: ws.id,
+          name: ws.name,
+          repoCount: wsRepos.length,
+        });
+      }
+    }
+
+    // Step 3: Add to existing workspace or create new one
+    let targetWorkspaceId: string;
+    let isNewWorkspace = false;
+
+    if (workspaceId) {
+      // Explicit workspace ID provided (user chose to add to existing)
+      const targetWorkspace = await db.workspaces.findById(workspaceId);
+      if (!targetWorkspace) {
+        return res.status(404).json({ error: 'Workspace not found' });
+      }
+      
+      const accessResult = await checkWorkspaceAccess(userId, workspaceId);
+      if (!accessResult.hasAccess) {
+        return res.status(403).json({ error: 'No access to this workspace' });
+      }
+
+      targetWorkspaceId = workspaceId;
+    } else if (orgWorkspaces.length > 0) {
+      // Suggest adding to existing org workspace
+      return res.json({
+        requiresWorkspaceChoice: true,
+        repositoryFullName,
+        suggestedWorkspaces: orgWorkspaces,
+        message: `Found ${orgWorkspaces.length} workspace(s) with repositories from ${orgName}`,
+      });
+    } else {
+      // Create new workspace
+      const credentials = await db.credentials.findByUserId(userId);
+      const providers = credentials
+        .filter((c) => c.provider !== 'github')
+        .map((c) => c.provider);
+
+      const provisioner = getProvisioner();
+      const workspaceName = `Workspace for ${orgName}`;
+
+      const result = await provisioner.provision({
+        userId,
+        name: workspaceName,
+        providers: providers.length > 0 ? providers : [],
+        repositories: [repositoryFullName],
+        supervisorEnabled: true,
+        maxAgents: 10,
+      });
+
+      if (result.status === 'error') {
+        return res.status(500).json({
+          error: 'Failed to provision workspace',
+          details: result.error,
+        });
+      }
+
+      targetWorkspaceId = result.workspaceId;
+      isNewWorkspace = true;
+    }
+
+    // Step 4: Ensure repo record exists and is linked to workspace
+    let repoRecord = userRepo;
+    if (!repoRecord) {
+      // Try to find any repo record for this full name (may have installation from another user)
+      const anyRepo = existingRepos.find(r => r.installationId && r.nangoConnectionId);
+      
+      // Create repo record for this user
+      // If anyRepo exists, use its installation info (repo already in installation)
+      // Otherwise, installationId/nangoConnectionId will be set by webhook when repo is added
+      repoRecord = await db.repositories.upsert({
+        userId,
+        githubFullName: repositoryFullName,
+        githubId: anyRepo?.githubId || 0, // Will be updated when synced
+        defaultBranch: anyRepo?.defaultBranch || 'main',
+        isPrivate: anyRepo?.isPrivate ?? true,
+        installationId: anyRepo?.installationId || null,
+        nangoConnectionId: anyRepo?.nangoConnectionId || null,
+        workspaceId: targetWorkspaceId,
+        syncStatus: 'pending',
+      });
+    } else if (!repoRecord.workspaceId || repoRecord.workspaceId !== targetWorkspaceId) {
+      // Link repo to workspace
+      await db.repositories.assignToWorkspace(repoRecord.id, targetWorkspaceId);
+      
+      // Update workspace config
+      const workspace = await db.workspaces.findById(targetWorkspaceId);
+      if (workspace) {
+        const existingRepos = workspace.config.repositories ?? [];
+        if (!existingRepos.includes(repositoryFullName)) {
+          await db.workspaces.updateConfig(targetWorkspaceId, {
+            ...workspace.config,
+            repositories: [...existingRepos, repositoryFullName],
+          });
+        }
+      }
+    }
+
+    // Step 5: Clone repo in workspace (if workspace is running)
+    const workspace = await db.workspaces.findById(targetWorkspaceId);
+    if (!workspace) {
+      return res.status(404).json({ error: 'Workspace not found' });
+    }
+
+    let cloneResult: { success: boolean; error?: string } | null = null;
+    if (workspace.status === 'running' && workspace.publicUrl) {
+      // Update sync status
+      await db.repositories.updateSyncStatus(repoRecord.id, 'syncing');
+
+      // Call workspace's repo sync API
+      const syncResult = await callWorkspaceApi(
+        workspace.publicUrl,
+        workspace.id,
+        'POST',
+        '/repos/sync',
+        { repo: repositoryFullName }
+      );
+
+      if (syncResult.ok) {
+        await db.repositories.updateSyncStatus(repoRecord.id, 'synced', new Date());
+        cloneResult = { success: true };
+      } else {
+        await db.repositories.updateSyncStatus(repoRecord.id, 'error');
+        cloneResult = { success: false, error: syncResult.error };
+      }
+    } else {
+      // Workspace not running - repo will be cloned when workspace starts
+      cloneResult = { success: true }; // Will be cloned on startup
+    }
+
+    res.json({
+      success: true,
+      workspaceId: targetWorkspaceId,
+      isNewWorkspace,
+      repositoryId: repoRecord.id,
+      cloneResult,
+      message: isNewWorkspace
+        ? 'Workspace created and repository will be cloned when workspace starts'
+        : 'Repository added to workspace',
+    });
+  } catch (error) {
+    console.error('Error enabling repo:', error);
+    res.status(500).json({ error: 'Failed to enable repository access' });
   }
 });
 

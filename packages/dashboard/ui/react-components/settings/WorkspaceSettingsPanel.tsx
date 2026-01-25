@@ -308,14 +308,22 @@ export function WorkspaceSettingsPanel({
 
     const result = await cloudApi.addReposToWorkspace(workspace.id, [repoId]);
     if (result.success) {
+      // Refresh workspace to get updated repo list
       const wsResult = await cloudApi.getWorkspaceDetails(workspaceId);
       if (wsResult.success) {
         setWorkspace(wsResult.data);
+        
+        // Find the repo we just added and trigger sync/clone
+        const addedRepo = wsResult.data.repositories.find((r: { id: string }) => r.id === repoId);
+        if (addedRepo && workspace.status === 'running') {
+          // Auto-sync the repo after adding
+          await handleSyncRepo(repoId);
+        }
       }
     } else {
       setError(result.error);
     }
-  }, [workspace, workspaceId]);
+  }, [workspace, workspaceId, handleSyncRepo]);
 
   // Sync repository to workspace (clone/pull)
   const handleSyncRepo = useCallback(async (repoId: string) => {
