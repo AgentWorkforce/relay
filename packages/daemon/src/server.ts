@@ -51,7 +51,8 @@ import {
   track,
   shutdown as shutdownTelemetry,
 } from '@agent-relay/telemetry';
-import { OutboxWatcher, type OutboxMessage, type OutboxSpawn, type OutboxRelease } from './outbox-watcher.js';
+import { RelayWatchdog, type ProcessedFile } from './relay-watchdog.js';
+import type { RelayPaths } from '@agent-relay/config/relay-file-writer';
 
 export interface DaemonConfig extends ConnectionConfig {
   socketPath: string;
@@ -105,7 +106,7 @@ export class Daemon {
   private cloudSyncDebounceTimer?: NodeJS.Timeout;
   private spawnManager?: SpawnManager;
   private shuttingDown = false;
-  private outboxWatcher?: OutboxWatcher;
+  private relayWatchdog?: RelayWatchdog;
 
   /** Telemetry tracking */
   private startTime?: number;
@@ -439,8 +440,12 @@ export class Daemon {
           this.writeProcessingStateFile();
         }, Daemon.PROCESSING_STATE_INTERVAL_MS);
 
-        // Start outbox watcher for MCP file-based messages
-        this.initOutboxWatcher(teamDir);
+        // Start RelayWatchdog for MCP file-based messages (ledger-based for durability)
+        // Use parent of teamDir since teamDir is .agent-relay/team/ but outbox is at .agent-relay/outbox/
+        const relayRoot = path.dirname(teamDir);
+        this.initRelayWatchdog(relayRoot).catch(err => {
+          log.error('Failed to start RelayWatchdog', { error: String(err) });
+        });
 
         // Track daemon start
         track('daemon_start', {});
@@ -452,83 +457,109 @@ export class Daemon {
   }
 
   /**
-   * Initialize the outbox watcher for MCP and file-based agents.
-   * This watches .agent-relay/outbox directories and processes files directly.
+   * Initialize RelayWatchdog for MCP and file-based agents.
+   * Uses the ledger-based watchdog for durable file processing.
    */
-  private initOutboxWatcher(relayDir: string): void {
-    this.outboxWatcher = new OutboxWatcher({ relayDir });
+  private async initRelayWatchdog(relayDir: string): Promise<void> {
+    // Create project-local relay paths
+    const relayPaths: RelayPaths = {
+      rootDir: relayDir,
+      outboxDir: path.join(relayDir, 'outbox'),
+      attachmentsDir: path.join(relayDir, 'attachments'),
+      metaDir: path.join(relayDir, 'meta'),
+      legacyOutboxDir: path.join(relayDir, 'outbox'), // Same as outboxDir for project-local
+    };
 
-    // Handle messages from file-based agents (MCP, etc.)
-    this.outboxWatcher.on('message', (msg: OutboxMessage) => {
-      log.debug('Outbox message received', { from: msg.from, to: msg.to });
-      // Create a SendEnvelope and route it
-      const envelope: SendEnvelope = {
-        v: PROTOCOL_VERSION,
-        type: 'SEND',
-        id: generateId(),
-        ts: Date.now(),
-        from: msg.from,
-        to: msg.to,
-        payload: {
-          kind: 'message',
-          body: msg.body,
-          thread: msg.thread,
-        },
-      };
-      // Create a virtual connection for routing (from is in envelope)
-      const virtualConnection = { agentName: msg.from } as any;
-      this.router.route(virtualConnection, envelope);
+    this.relayWatchdog = new RelayWatchdog({
+      relayPaths,
+      ledgerPath: path.join(relayDir, 'meta', 'file-ledger.sqlite'),
     });
 
-    // Handle spawn requests from file-based agents
-    this.outboxWatcher.on('spawn', (spawn: OutboxSpawn) => {
-      log.debug('Outbox spawn received', { from: spawn.from, name: spawn.name, cli: spawn.cli });
-      if (this.spawnManager) {
-        // Create envelope and virtual connection for handleSpawn
-        const envelope: Envelope<SpawnPayload> = {
+    // Handle delivered files from file-based agents (MCP, etc.)
+    this.relayWatchdog.on('file:delivered', (file: ProcessedFile) => {
+      const { agentName, messageType, headers, body } = file;
+      log.debug('File delivered', { agentName, messageType, headers });
+
+      // Determine message type from headers or filename
+      const kind = headers['KIND']?.toLowerCase() || messageType;
+
+      if (kind === 'spawn') {
+        // Handle spawn request
+        if (this.spawnManager) {
+          const envelope: Envelope<SpawnPayload> = {
+            v: PROTOCOL_VERSION,
+            type: 'SPAWN',
+            id: generateId(),
+            ts: Date.now(),
+            payload: {
+              name: headers['NAME'] || '',
+              cli: headers['CLI'] || 'claude',
+              task: body,
+              cwd: headers['CWD'],
+              model: headers['MODEL'],
+              spawnerName: agentName,
+            },
+          };
+          const virtualConnection = { agentName, send: () => true } as any;
+          this.spawnManager.handleSpawn(virtualConnection, envelope);
+        } else {
+          log.warn('Spawn request ignored - SpawnManager not enabled');
+        }
+      } else if (kind === 'release') {
+        // Handle release request
+        if (this.spawnManager) {
+          const envelope: Envelope<ReleasePayload> = {
+            v: PROTOCOL_VERSION,
+            type: 'RELEASE',
+            id: generateId(),
+            ts: Date.now(),
+            payload: {
+              name: headers['NAME'] || '',
+              reason: body || undefined,
+            },
+          };
+          const virtualConnection = { agentName, send: () => true } as any;
+          this.spawnManager.handleRelease(virtualConnection, envelope);
+        } else {
+          log.warn('Release request ignored - SpawnManager not enabled');
+        }
+      } else {
+        // Default: treat as message
+        const to = headers['TO'];
+        if (!to) {
+          log.warn('Message missing TO header', { agentName, headers });
+          return;
+        }
+
+        const envelope: SendEnvelope = {
           v: PROTOCOL_VERSION,
-          type: 'SPAWN',
+          type: 'SEND',
           id: generateId(),
           ts: Date.now(),
+          from: agentName,
+          to,
           payload: {
-            name: spawn.name,
-            cli: spawn.cli,
-            task: spawn.task,
-            cwd: spawn.cwd,
-            model: spawn.model,
-            spawnerName: spawn.from,
+            kind: 'message',
+            body,
+            thread: headers['THREAD'],
           },
         };
-        const virtualConnection = { agentName: spawn.from, send: () => true } as any;
-        this.spawnManager.handleSpawn(virtualConnection, envelope);
-      } else {
-        log.warn('Spawn request ignored - SpawnManager not enabled');
+        const virtualConnection = { agentName } as any;
+        this.router.route(virtualConnection, envelope);
       }
     });
 
-    // Handle release requests from file-based agents
-    this.outboxWatcher.on('release', (release: OutboxRelease) => {
-      log.debug('Outbox release received', { from: release.from, name: release.name });
-      if (this.spawnManager) {
-        const envelope: Envelope<ReleasePayload> = {
-          v: PROTOCOL_VERSION,
-          type: 'RELEASE',
-          id: generateId(),
-          ts: Date.now(),
-          payload: {
-            name: release.name,
-            reason: release.reason,
-          },
-        };
-        const virtualConnection = { agentName: release.from, send: () => true } as any;
-        this.spawnManager.handleRelease(virtualConnection, envelope);
-      } else {
-        log.warn('Release request ignored - SpawnManager not enabled');
-      }
+    // Log errors
+    this.relayWatchdog.on('error', (error: Error) => {
+      log.error('RelayWatchdog error', { error: error.message });
     });
 
-    this.outboxWatcher.start();
-    log.info('Outbox watcher started', { relayDir });
+    this.relayWatchdog.on('file:failed', (record, error) => {
+      log.error('File processing failed', { fileId: record.fileId, error: error.message });
+    });
+
+    await this.relayWatchdog.start();
+    log.info('RelayWatchdog started', { relayDir });
   }
 
   /**
@@ -880,10 +911,10 @@ export class Daemon {
       this.processingStateInterval = undefined;
     }
 
-    // Stop outbox watcher
-    if (this.outboxWatcher) {
-      this.outboxWatcher.stop();
-      this.outboxWatcher = undefined;
+    // Stop RelayWatchdog
+    if (this.relayWatchdog) {
+      await this.relayWatchdog.stop();
+      this.relayWatchdog = undefined;
     }
 
     // Close all active connections

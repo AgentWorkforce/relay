@@ -50,6 +50,3 @@ export * from './relay-watchdog.js';
 
 // Spawn manager (protocol-based agent spawning)
 export { SpawnManager, type SpawnManagerConfig } from './spawn-manager.js';
-
-// Outbox watcher (file-based message handling for MCP)
-export { OutboxWatcher, createOutboxWatcher, type OutboxWatcherConfig, type OutboxMessage, type OutboxSpawn, type OutboxRelease } from './outbox-watcher.js';
