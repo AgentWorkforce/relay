@@ -73,6 +73,8 @@ export function findRelayPtyBinary(callerDirname: string): string | null {
     path.join(packageRoot, 'relay-pty', 'target', 'debug', 'relay-pty'),
     // Local build in cwd (for development)
     path.join(process.cwd(), 'relay-pty', 'target', 'release', 'relay-pty'),
+    // Docker container (CI tests)
+    '/app/bin/relay-pty',
     // Installed globally
     '/usr/local/bin/relay-pty',
     // In node_modules (when installed as local dependency)
