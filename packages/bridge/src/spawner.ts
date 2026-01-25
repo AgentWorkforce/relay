@@ -930,7 +930,28 @@ export class AgentSpawner {
       // Note: Spawned agents CAN spawn sub-workers intentionally - the parser is strict enough
       // to avoid accidental spawns from documentation text (requires line start, PascalCase, known CLI)
       // Use request.cwd if specified, otherwise use projectRoot
-      const agentCwd = request.cwd || this.projectRoot;
+      // Validate cwd to prevent path traversal attacks
+      let agentCwd: string;
+      if (request.cwd && typeof request.cwd === 'string') {
+        // Resolve cwd relative to project root and ensure it stays within that root
+        const resolvedCwd = path.resolve(this.projectRoot, request.cwd);
+        const normalizedProjectRoot = path.resolve(this.projectRoot);
+        const projectRootWithSep = normalizedProjectRoot.endsWith(path.sep)
+          ? normalizedProjectRoot
+          : normalizedProjectRoot + path.sep;
+        
+        // Ensure the resolved cwd is within the project root to prevent traversal
+        if (resolvedCwd !== normalizedProjectRoot && !resolvedCwd.startsWith(projectRootWithSep)) {
+          return {
+            success: false,
+            name,
+            error: `Invalid cwd: "${request.cwd}" must be within the project root`,
+          };
+        }
+        agentCwd = resolvedCwd;
+      } else {
+        agentCwd = this.projectRoot;
+      }
 
       // Log whether nested spawning will be enabled for this agent
       log.info(`Spawning ${name}: dashboardPort=${this.dashboardPort || 'none'} (${this.dashboardPort ? 'nested spawns enabled' : 'nested spawns disabled'})`);
