@@ -297,7 +297,10 @@ impl MessageQueue {
     pub async fn mark_delivered(&self, id: &str) {
         let mut seen = self.seen_ids.lock().await;
         if seen.remove(id).is_some() {
-            debug!("Removed delivered message {} from seen set", &id[..id.len().min(8)]);
+            debug!(
+                "Removed delivered message {} from seen set",
+                &id[..id.len().min(8)]
+            );
         }
     }
 

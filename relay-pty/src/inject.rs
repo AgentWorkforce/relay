@@ -139,7 +139,8 @@ impl Injector {
                 Ok(true) => {
                     info!("Message {} delivered successfully", msg.id);
                     // Track injection time for auto-Enter detection
-                    self.last_injection_ms.store(current_timestamp_ms(), Ordering::SeqCst);
+                    self.last_injection_ms
+                        .store(current_timestamp_ms(), Ordering::SeqCst);
                     self.queue
                         .report_result(msg.id.clone(), InjectStatus::Delivered, None);
                 }
