@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/continuity",
-  "version": "2.0.13",
+  "version": "2.0.14",
   "description": "Session continuity manager for Relay (ledgers, handoffs, resume)",
   "type": "module",
   "main": "dist/index.js",
