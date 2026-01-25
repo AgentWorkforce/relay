@@ -252,53 +252,111 @@ The gist identifies two feature flags controlling access:
 
 The [HN thread](https://news.ycombinator.com/item?id=46743908) provides valuable real-world context from developers experimenting with multi-agent patterns.
 
-### Implementation Details Revealed
+### How to Access the Hidden Feature
 
-**Delegation-Focused Context:**
-> "Swarm mode includes a delegation-focused context separate from the standard conversation, with system-reminder breadcrumbs preventing drift." — AffableSpatula
+**AffableSpatula** (original poster) revealed the access method:
+> "Feature is shipped in latest builds of Claude Code, but it's turned off by feature flag check that phones home to backend."
 
-This suggests TeammateTool uses isolated contexts per agent rather than shared state—similar to Agent Relay's per-agent sessions.
+**mohsen1** found the specific mechanism: a function checking `tengu_brass_pebble` flag, server-side controlled by account tier. Users can patch the minified `cli.js` to bypass—though this risks account restrictions per ToS.
 
-**Practical Multi-Agent Systems:**
-User mafriese described a **9-agent system** for Java-to-C# migration:
-- Manager, Product Owner, Scrum Master
-- Architect, Developers (multiple)
-- CAB (Change Advisory Board)
+**Implication for Agent Relay:** When officially enabled, this will likely be gated by Claude Pro/Team subscription, creating opportunity for Agent Relay as the free/open alternative.
 
-Key insight: "Context management is the primary advantage—each agent focuses narrowly with reduced context loads, improving reasoning quality."
+### Detailed Implementation Patterns
 
-### Success Stories
+#### mafriese's 9-Agent Migration Pipeline
 
-| User | Pattern | Result |
-|------|---------|--------|
-| esperent | 26 parallel subagents for test generation | "Several months" → 20 minutes |
-| mafriese | 9-agent migration pipeline | Complex migrations with approval gates |
+Full architecture for Java-to-C# migrations:
 
-### Critical Concerns Raised
+| Agent | Model | Role |
+|-------|-------|------|
+| Manager | Opus 4.5 | Orchestration, task assignment |
+| Product Owner | Sonnet 4.5 | Requirements, acceptance criteria |
+| Scrum Master | Haiku 4.5 | Sprint tracking, blockers |
+| Architect | Sonnet 4.5 | Design decisions, patterns |
+| Developers (3) | Haiku 4.5 | Implementation |
+| Security Reviewer | Sonnet 4.5 | Code audit |
+| Documentation | Haiku 4.5 | API docs, comments |
 
-**Quality vs. Autonomy Trade-off:**
-> "Increased agent autonomy pushes toward generating *more* code rather than *better* code." — daxfohl
+**Technical setup:**
+- 7-stage Kanban with isolated Git Worktrees
+- Agents communicate via @mentions in Claude Code
+- Folder-based state management across agents
+- Cost: ~10x single-agent approach, but "best quality of code"
 
-**Review Bottleneck:**
-Multiple users highlighted that AI-generated code volume creates review bottlenecks. One noted Claude attempted to "reinvent Istanbul in a bash script" rather than installing the tool.
+#### neom's 3-Day Autonomous Build
 
-**Maintenance Risk:**
-> "Teams producing enormous amounts of code that nobody understands are well out over their skis." — zmmmmm
+> "Full swarms of worker readers...huge reports and todo lists automatically compiled into schemas."
 
-### Skepticism Worth Noting
+Setup: Desktop Claude Code + SFTP to droplet, enabling "hours building, fixing, checking own work" autonomously.
 
-| Concern | Implication for Agent Relay |
-|---------|----------------------------|
-| "Naming masking simpler phenomena" | Focus on outcomes, not organizational theater |
-| "Review took days after 20-minute generation" | Shadow agents for real-time review may help |
-| "Cringiest thing" comparisons to NFT hype | Emphasize practical use cases, not buzzwords |
+### Quantified Results
+
+| User | Setup | Before | After | Notes |
+|------|-------|--------|-------|-------|
+| esperent | 26 parallel subagents | "Several months" | 20 minutes | Test generation |
+| mafriese | 9-agent pipeline | Manual migration | Automated with gates | 10x cost but higher quality |
+| neom | Swarm + SFTP | Days of work | 3 days autonomous | Minimal supervision |
+
+### Technical Insights
+
+**Context efficiency (rlayton2):**
+> "Context can be massively reduced when agents focus single tasks. Security testing agent just needs to review code against rules without full implementation history."
+
+**Task isolation warning (purplepatrick):**
+> "Subagents excel at task isolation rather than preserving session context. Creating subagent for task requiring project context results in worse outcomes."
+
+**Token economics debate:**
+
+| View | Proponent | Argument |
+|------|-----------|----------|
+| Pro-delegation | AffableSpatula | "Subagents with fresh context leads to better reasoning, more effective problem solving, less tokens burned" |
+| Anti-delegation | storystarling | "Orchestration overhead usually costs more...burn tokens summarizing state...coordination tax is real" (from LangGraph testing) |
+
+### Critical Concerns (Detailed)
+
+#### Quality vs. Quantity (daxfohl)
+> "Current models...exacerbating the problem; coding agents solution almost always 'more code', not less. Without human comprehension of output, huge operational problems and 10x-100x more code than necessary."
+
+#### Hidden Bugs (vunderba)
+Real debugging failure example:
+> "Sonnet 4.5 wrote misleading comment with logical error in state machine code that would have gone undetected without explicit review."
+
+#### Liability (zmmmmm)
+> "Responsible for code means humans cannot produce faster than review capacity allows. Producing more code...only value in producing better...code that can be reasoned about by humans."
+
+#### Psychological Risk (krackers)
+> "Vibe coding acts like slot machines...time-dilation people feel when gambling, with nerd-sniping strategy of optimizing subagent configurations."
+
+### Alternative Approaches Mentioned
+
+| Tool/Approach | Author | Description |
+|---------------|--------|-------------|
+| workforest.space | joshribakoff | "Just tell Claude to do work in parallel with background sub agents" using file handoffs |
+| claude-config | stingraycharles | "30-60 min to write plan, but much less likely to make silly choices" |
+| circuit | mogili1 | Drag-and-drop UI for sequencing agent steps with different workflows |
+| Plan mode + .jsonl | TeMPOraL | Plans now include disk-based instruction files for detail preservation |
+
+### Skepticism and Criticism
+
+**On organizational theater (alphazard):**
+> "Roles don't even work in human organizations today. Reality is these roles don't matter; what matters is adversarial techniques, parallelism, using weakest model for cost."
+
+**On hype (heliumtera):**
+> "Cringiest thing I have ever seen. Corporate has to die."
+
+**On FOMO (xyzsparetimexyz):**
+> "If everything vibecoded, either million code-unfucking jobs or no jobs. FOMO attitudes make people hate AI crowd."
 
 ### Lessons for Agent Relay
 
-1. **Token efficiency matters** - Fresh contexts per agent beat bloated monolithic histories
-2. **Review integration is critical** - Speed of generation without review creates tech debt
-3. **Shadow agents address a real gap** - Real-time monitoring > post-hoc review
-4. **Task isolation prevents conflicts** - Worktrees and file boundaries reduce merge issues
+1. **Token efficiency vs. orchestration overhead** - The debate is real; measure actual costs
+2. **Task isolation is key** - Subagents work best for self-contained tasks, not context-heavy work
+3. **Review integration is critical** - Speed without review = hidden bugs (shadow agents address this)
+4. **Git worktrees prevent conflicts** - Isolation at filesystem level, not just context level
+5. **Cost transparency matters** - mafriese's "10x cost" honesty builds trust
+6. **Avoid organizational theater** - Focus on parallelism and adversarial review, not role names
+7. **Plan quality > plan speed** - stingraycharles's 30-60 min plans reduce errors
+8. **Psychological design** - Beware of gamification; show real progress, not dopamine loops
 
 ---
 
