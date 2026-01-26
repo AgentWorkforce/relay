@@ -1,5 +1,16 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { Envelope, ErrorPayload, WelcomePayload, DeliverEnvelope, AckPayload } from './protocol/types.js';
+import type {
+  Envelope,
+  ErrorPayload,
+  WelcomePayload,
+  DeliverEnvelope,
+  AckPayload,
+  StatusResponsePayload,
+  ListAgentsResponsePayload,
+  HealthResponsePayload,
+  MetricsResponsePayload,
+  InboxResponsePayload,
+} from './protocol/types.js';
 import { RelayClient } from './client.js';
 
 describe('RelayClient', () => {
@@ -273,6 +284,285 @@ describe('RelayClient', () => {
       client.disconnect();
 
       expect(client.state).toBe('DISCONNECTED');
+    });
+  });
+
+  describe('query operations', () => {
+    it('should reject getStatus when not ready', async () => {
+      const client = new RelayClient({ reconnect: false });
+      await expect(client.getStatus()).rejects.toThrow('Client not ready');
+    });
+
+    it('should reject listAgents when not ready', async () => {
+      const client = new RelayClient({ reconnect: false });
+      await expect(client.listAgents()).rejects.toThrow('Client not ready');
+    });
+
+    it('should reject getHealth when not ready', async () => {
+      const client = new RelayClient({ reconnect: false });
+      await expect(client.getHealth()).rejects.toThrow('Client not ready');
+    });
+
+    it('should reject getMetrics when not ready', async () => {
+      const client = new RelayClient({ reconnect: false });
+      await expect(client.getMetrics()).rejects.toThrow('Client not ready');
+    });
+
+    it('should reject getInbox when not ready', async () => {
+      const client = new RelayClient({ reconnect: false });
+      await expect(client.getInbox()).rejects.toThrow('Client not ready');
+    });
+
+    it('resolves getStatus when STATUS_RESPONSE arrives', async () => {
+      const client = new RelayClient({ reconnect: false, quiet: true });
+      (client as any)._state = 'READY';
+      const sendMock = vi.fn().mockReturnValue(true);
+      (client as any).send = sendMock;
+
+      const promise = client.getStatus();
+      const sentEnvelope = sendMock.mock.calls[0][0];
+
+      const responseEnvelope: Envelope<StatusResponsePayload> = {
+        v: 1,
+        type: 'STATUS_RESPONSE',
+        id: sentEnvelope.id,
+        ts: Date.now(),
+        payload: {
+          version: '2.0.0',
+          uptime: 12345,
+          agentCount: 5,
+        },
+      };
+
+      (client as any).processFrame(responseEnvelope);
+
+      const result = await promise;
+      expect(result.version).toBe('2.0.0');
+      expect(result.uptime).toBe(12345);
+      expect(result.agentCount).toBe(5);
+    });
+
+    it('resolves listAgents when LIST_AGENTS_RESPONSE arrives', async () => {
+      const client = new RelayClient({ reconnect: false, quiet: true });
+      (client as any)._state = 'READY';
+      const sendMock = vi.fn().mockReturnValue(true);
+      (client as any).send = sendMock;
+
+      const promise = client.listAgents({ includeIdle: false });
+      const sentEnvelope = sendMock.mock.calls[0][0];
+
+      const responseEnvelope: Envelope<ListAgentsResponsePayload> = {
+        v: 1,
+        type: 'LIST_AGENTS_RESPONSE',
+        id: sentEnvelope.id,
+        ts: Date.now(),
+        payload: {
+          agents: [
+            { name: 'Alice', cli: 'claude', idle: false },
+            { name: 'Bob', cli: 'codex', idle: true },
+          ],
+        },
+      };
+
+      (client as any).processFrame(responseEnvelope);
+
+      const result = await promise;
+      expect(result).toHaveLength(2);
+      expect(result[0].name).toBe('Alice');
+      expect(result[1].name).toBe('Bob');
+    });
+
+    it('resolves getHealth when HEALTH_RESPONSE arrives', async () => {
+      const client = new RelayClient({ reconnect: false, quiet: true });
+      (client as any)._state = 'READY';
+      const sendMock = vi.fn().mockReturnValue(true);
+      (client as any).send = sendMock;
+
+      const promise = client.getHealth();
+      const sentEnvelope = sendMock.mock.calls[0][0];
+
+      const responseEnvelope: Envelope<HealthResponsePayload> = {
+        v: 1,
+        type: 'HEALTH_RESPONSE',
+        id: sentEnvelope.id,
+        ts: Date.now(),
+        payload: {
+          healthScore: 95,
+          summary: 'System healthy',
+          issues: [],
+          recommendations: [],
+          crashes: [],
+          alerts: [],
+          stats: { totalCrashes24h: 0, totalAlerts24h: 0, agentCount: 3 },
+        },
+      };
+
+      (client as any).processFrame(responseEnvelope);
+
+      const result = await promise;
+      expect(result.healthScore).toBe(95);
+      expect(result.summary).toBe('System healthy');
+    });
+
+    it('resolves getMetrics when METRICS_RESPONSE arrives', async () => {
+      const client = new RelayClient({ reconnect: false, quiet: true });
+      (client as any)._state = 'READY';
+      const sendMock = vi.fn().mockReturnValue(true);
+      (client as any).send = sendMock;
+
+      const promise = client.getMetrics();
+      const sentEnvelope = sendMock.mock.calls[0][0];
+
+      const responseEnvelope: Envelope<MetricsResponsePayload> = {
+        v: 1,
+        type: 'METRICS_RESPONSE',
+        id: sentEnvelope.id,
+        ts: Date.now(),
+        payload: {
+          agents: [
+            { name: 'Alice', status: 'active', rssBytes: 100000, cpuPercent: 5.2 },
+          ],
+          system: { totalMemory: 16000000, freeMemory: 8000000, heapUsed: 50000 },
+        },
+      };
+
+      (client as any).processFrame(responseEnvelope);
+
+      const result = await promise;
+      expect(result.agents).toHaveLength(1);
+      expect(result.agents[0].name).toBe('Alice');
+      expect(result.system.heapUsed).toBe(50000);
+    });
+
+    it('resolves getInbox when INBOX_RESPONSE arrives', async () => {
+      const client = new RelayClient({ reconnect: false, quiet: true, agentName: 'TestAgent' });
+      (client as any)._state = 'READY';
+      const sendMock = vi.fn().mockReturnValue(true);
+      (client as any).send = sendMock;
+
+      const promise = client.getInbox({ limit: 10 });
+      const sentEnvelope = sendMock.mock.calls[0][0];
+
+      const responseEnvelope: Envelope<InboxResponsePayload> = {
+        v: 1,
+        type: 'INBOX_RESPONSE',
+        id: sentEnvelope.id,
+        ts: Date.now(),
+        payload: {
+          messages: [
+            { id: 'msg-1', from: 'Alice', body: 'Hello!', timestamp: Date.now() },
+          ],
+        },
+      };
+
+      (client as any).processFrame(responseEnvelope);
+
+      const result = await promise;
+      expect(result).toHaveLength(1);
+      expect(result[0].from).toBe('Alice');
+      expect(result[0].body).toBe('Hello!');
+    });
+
+    it('query times out if no response arrives', async () => {
+      vi.useFakeTimers();
+      try {
+        const client = new RelayClient({ reconnect: false, quiet: true });
+        (client as any)._state = 'READY';
+        const sendMock = vi.fn().mockReturnValue(true);
+        (client as any).send = sendMock;
+
+        const promise = client.getStatus();
+        const rejection = expect(promise).rejects.toThrow('Query timeout');
+        await vi.advanceTimersByTimeAsync(6000);
+
+        await rejection;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe('consensus operations', () => {
+    it('should return false for createProposal when not connected', () => {
+      const client = new RelayClient({ reconnect: false });
+      const result = client.createProposal({
+        title: 'Test',
+        description: 'Test proposal',
+        participants: ['Alice', 'Bob'],
+      });
+      expect(result).toBe(false);
+    });
+
+    it('should return false for vote when not connected', () => {
+      const client = new RelayClient({ reconnect: false });
+      const result = client.vote({
+        proposalId: 'prop_123',
+        value: 'approve',
+      });
+      expect(result).toBe(false);
+    });
+
+    it('should send PROPOSE command to _consensus', () => {
+      const client = new RelayClient({ reconnect: false, quiet: true });
+      (client as any)._state = 'READY';
+      const sendMock = vi.fn().mockReturnValue(true);
+      (client as any).send = sendMock;
+
+      const result = client.createProposal({
+        title: 'Approve design',
+        description: 'Should we proceed?',
+        participants: ['Alice', 'Bob', 'Charlie'],
+        consensusType: 'supermajority',
+        threshold: 0.75,
+      });
+
+      expect(result).toBe(true);
+      expect(sendMock).toHaveBeenCalled();
+
+      const envelope = sendMock.mock.calls[0][0];
+      expect(envelope.type).toBe('SEND');
+      expect(envelope.to).toBe('_consensus');
+      expect(envelope.payload.body).toContain('PROPOSE: Approve design');
+      expect(envelope.payload.body).toContain('TYPE: supermajority');
+      expect(envelope.payload.body).toContain('PARTICIPANTS: Alice, Bob, Charlie');
+      expect(envelope.payload.body).toContain('DESCRIPTION: Should we proceed?');
+      expect(envelope.payload.body).toContain('THRESHOLD: 0.75');
+    });
+
+    it('should send VOTE command to _consensus', () => {
+      const client = new RelayClient({ reconnect: false, quiet: true });
+      (client as any)._state = 'READY';
+      const sendMock = vi.fn().mockReturnValue(true);
+      (client as any).send = sendMock;
+
+      const result = client.vote({
+        proposalId: 'prop_123_abc',
+        value: 'approve',
+        reason: 'LGTM',
+      });
+
+      expect(result).toBe(true);
+      expect(sendMock).toHaveBeenCalled();
+
+      const envelope = sendMock.mock.calls[0][0];
+      expect(envelope.type).toBe('SEND');
+      expect(envelope.to).toBe('_consensus');
+      expect(envelope.payload.body).toBe('VOTE prop_123_abc approve LGTM');
+    });
+
+    it('should send VOTE without reason', () => {
+      const client = new RelayClient({ reconnect: false, quiet: true });
+      (client as any)._state = 'READY';
+      const sendMock = vi.fn().mockReturnValue(true);
+      (client as any).send = sendMock;
+
+      client.vote({
+        proposalId: 'prop_456',
+        value: 'reject',
+      });
+
+      const envelope = sendMock.mock.calls[0][0];
+      expect(envelope.payload.body).toBe('VOTE prop_456 reject');
     });
   });
 });

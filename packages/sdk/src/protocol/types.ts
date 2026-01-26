@@ -40,7 +40,18 @@ export type MessageType =
   | 'SPAWN'
   | 'SPAWN_RESULT'
   | 'RELEASE'
-  | 'RELEASE_RESULT';
+  | 'RELEASE_RESULT'
+  // Query types
+  | 'STATUS'
+  | 'STATUS_RESPONSE'
+  | 'INBOX'
+  | 'INBOX_RESPONSE'
+  | 'LIST_AGENTS'
+  | 'LIST_AGENTS_RESPONSE'
+  | 'HEALTH'
+  | 'HEALTH_RESPONSE'
+  | 'METRICS'
+  | 'METRICS_RESPONSE';
 
 export type PayloadKind = 'message' | 'action' | 'state' | 'thinking';
 
@@ -418,6 +429,217 @@ export interface ReleaseResultPayload {
 }
 
 // =============================================================================
+// Consensus Types
+// =============================================================================
+
+export type ConsensusType =
+  | 'majority'      // >50% agree
+  | 'supermajority' // >=threshold agree (default 2/3)
+  | 'unanimous'     // 100% agree
+  | 'weighted'      // Weighted by role
+  | 'quorum';       // Minimum participation + majority
+
+export type VoteValue = 'approve' | 'reject' | 'abstain';
+
+export type ProposalStatus =
+  | 'pending'
+  | 'approved'
+  | 'rejected'
+  | 'expired'
+  | 'cancelled';
+
+/**
+ * Options for creating a consensus proposal.
+ */
+export interface CreateProposalOptions {
+  /** Proposal title */
+  title: string;
+  /** Detailed description */
+  description: string;
+  /** Agents allowed to vote */
+  participants: string[];
+  /** Consensus type (default: majority) */
+  consensusType?: ConsensusType;
+  /** Timeout in milliseconds (default: 5 minutes) */
+  timeoutMs?: number;
+  /** Minimum votes required (for quorum type) */
+  quorum?: number;
+  /** Threshold for supermajority (0-1, default 0.67) */
+  threshold?: number;
+}
+
+/**
+ * Options for voting on a proposal.
+ */
+export interface VoteOptions {
+  /** Proposal ID to vote on */
+  proposalId: string;
+  /** Vote value */
+  value: VoteValue;
+  /** Optional reason for the vote */
+  reason?: string;
+}
+
+// =============================================================================
+// Query/Response Types
+// =============================================================================
+
+/**
+ * Payload for STATUS request.
+ */
+export interface StatusPayload {
+  // Empty - no parameters needed
+}
+
+/**
+ * Response payload for STATUS request.
+ */
+export interface StatusResponsePayload {
+  version?: string;
+  uptime?: number;
+  agentCount?: number;
+  messageCount?: number;
+}
+
+/**
+ * Payload for INBOX request.
+ */
+export interface InboxPayload {
+  agent: string;
+  limit?: number;
+  unreadOnly?: boolean;
+  from?: string;
+  channel?: string;
+}
+
+/**
+ * A stored message in the inbox.
+ */
+export interface InboxMessage {
+  id: string;
+  from: string;
+  body: string;
+  channel?: string;
+  thread?: string;
+  timestamp: number;
+}
+
+/**
+ * Response payload for INBOX request.
+ */
+export interface InboxResponsePayload {
+  messages: InboxMessage[];
+}
+
+/**
+ * Payload for LIST_AGENTS request.
+ */
+export interface ListAgentsPayload {
+  includeIdle?: boolean;
+  project?: string;
+}
+
+/**
+ * Agent info returned by LIST_AGENTS.
+ */
+export interface AgentInfo {
+  name: string;
+  cli?: string;
+  idle?: boolean;
+  parent?: string;
+  task?: string;
+  connectedAt?: number;
+}
+
+/**
+ * Response payload for LIST_AGENTS request.
+ */
+export interface ListAgentsResponsePayload {
+  agents: AgentInfo[];
+}
+
+/**
+ * Payload for HEALTH request.
+ */
+export interface HealthPayload {
+  includeCrashes?: boolean;
+  includeAlerts?: boolean;
+}
+
+/**
+ * A crash record.
+ */
+export interface CrashRecord {
+  id: string;
+  agentName: string;
+  crashedAt: string;
+  likelyCause: string;
+  summary?: string;
+}
+
+/**
+ * An alert record.
+ */
+export interface AlertRecord {
+  id: string;
+  agentName: string;
+  alertType: string;
+  message: string;
+  createdAt: string;
+}
+
+/**
+ * Response payload for HEALTH request.
+ */
+export interface HealthResponsePayload {
+  healthScore: number;
+  summary: string;
+  issues: Array<{ severity: string; message: string }>;
+  recommendations: string[];
+  crashes: CrashRecord[];
+  alerts: AlertRecord[];
+  stats: {
+    totalCrashes24h: number;
+    totalAlerts24h: number;
+    agentCount: number;
+  };
+}
+
+/**
+ * Payload for METRICS request.
+ */
+export interface MetricsPayload {
+  agent?: string;
+}
+
+/**
+ * Metrics for a single agent.
+ */
+export interface AgentMetrics {
+  name: string;
+  pid?: number;
+  status: string;
+  rssBytes?: number;
+  cpuPercent?: number;
+  trend?: string;
+  alertLevel?: string;
+  highWatermark?: number;
+  uptimeMs?: number;
+}
+
+/**
+ * Response payload for METRICS request.
+ */
+export interface MetricsResponsePayload {
+  agents: AgentMetrics[];
+  system: {
+    totalMemory: number;
+    freeMemory: number;
+    heapUsed: number;
+  };
+}
+
+// =============================================================================
 // Typed Envelope Helpers
 // =============================================================================
 
@@ -442,3 +664,13 @@ export type ReleaseResultEnvelope = Envelope<ReleaseResultPayload>;
 export type ChannelJoinEnvelope = Envelope<ChannelJoinPayload>;
 export type ChannelLeaveEnvelope = Envelope<ChannelLeavePayload>;
 export type ChannelMessageEnvelope = Envelope<ChannelMessagePayload>;
+export type StatusEnvelope = Envelope<StatusPayload>;
+export type StatusResponseEnvelope = Envelope<StatusResponsePayload>;
+export type InboxEnvelope = Envelope<InboxPayload>;
+export type InboxResponseEnvelope = Envelope<InboxResponsePayload>;
+export type ListAgentsEnvelope = Envelope<ListAgentsPayload>;
+export type ListAgentsResponseEnvelope = Envelope<ListAgentsResponsePayload>;
+export type HealthEnvelope = Envelope<HealthPayload>;
+export type HealthResponseEnvelope = Envelope<HealthResponsePayload>;
+export type MetricsEnvelope = Envelope<MetricsPayload>;
+export type MetricsResponseEnvelope = Envelope<MetricsResponsePayload>;

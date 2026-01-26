@@ -67,6 +67,22 @@ export {
   type ChannelMessagePayload,
   type ChannelJoinPayload,
   type ChannelLeavePayload,
+  type MessageAttachment,
+  // Query/response types
+  type StatusResponsePayload,
+  type InboxMessage,
+  type AgentInfo,
+  type HealthResponsePayload,
+  type CrashRecord,
+  type AlertRecord,
+  type MetricsResponsePayload,
+  type AgentMetrics,
+  // Consensus types
+  type ConsensusType,
+  type VoteValue,
+  type ProposalStatus,
+  type CreateProposalOptions,
+  type VoteOptions,
 } from './protocol/index.js';
 
 // Framing utilities
@@ -76,3 +92,11 @@ export {
   FrameParser,
   MAX_FRAME_BYTES,
 } from './protocol/index.js';
+
+// Log utilities (file-based, doesn't require connection)
+export {
+  getLogs,
+  listLoggedAgents,
+  type GetLogsOptions,
+  type LogsResult,
+} from './logs.js';

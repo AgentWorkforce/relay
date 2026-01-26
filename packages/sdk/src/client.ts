@@ -26,6 +26,27 @@ import {
   type ChannelLeaveEnvelope,
   type ChannelMessageEnvelope,
   type MessageAttachment,
+  type SpawnPayload,
+  type SpawnResultPayload,
+  type ReleasePayload,
+  type ReleaseResultPayload,
+  type SpawnEnvelope,
+  type ReleaseEnvelope,
+  type StatusResponsePayload,
+  type InboxPayload,
+  type InboxMessage,
+  type InboxResponsePayload,
+  type ListAgentsPayload,
+  type AgentInfo,
+  type ListAgentsResponsePayload,
+  type HealthPayload,
+  type HealthResponsePayload,
+  type MetricsPayload,
+  type MetricsResponsePayload,
+  type ConsensusType,
+  type VoteValue,
+  type CreateProposalOptions,
+  type VoteOptions,
   PROTOCOL_VERSION,
 } from './protocol/types.js';
 import { encodeFrameLegacy, FrameParser } from './protocol/framing.js';
@@ -149,6 +170,24 @@ export class RelayClient {
 
   private pendingSyncAcks: Map<string, {
     resolve: (ack: AckPayload) => void;
+    reject: (err: Error) => void;
+    timeoutHandle: NodeJS.Timeout;
+  }> = new Map();
+
+  private pendingSpawns: Map<string, {
+    resolve: (result: SpawnResultPayload) => void;
+    reject: (err: Error) => void;
+    timeoutHandle: NodeJS.Timeout;
+  }> = new Map();
+
+  private pendingReleases: Map<string, {
+    resolve: (result: ReleaseResultPayload) => void;
+    reject: (err: Error) => void;
+    timeoutHandle: NodeJS.Timeout;
+  }> = new Map();
+
+  private pendingQueries: Map<string, {
+    resolve: (payload: unknown) => void;
     reject: (err: Error) => void;
     timeoutHandle: NodeJS.Timeout;
   }> = new Map();
@@ -480,6 +519,116 @@ export class RelayClient {
   }
 
   // =============================================================================
+  // Spawn/Release Operations
+  // =============================================================================
+
+  /**
+   * Spawn a new agent via the relay daemon.
+   * @param options - Spawn options
+   * @param options.name - Name for the new agent
+   * @param options.cli - CLI to use (claude, codex, gemini, etc.)
+   * @param options.task - Task description
+   * @param options.cwd - Working directory
+   * @param options.team - Team name
+   * @param options.interactive - Interactive mode
+   * @param options.shadowOf - Spawn as shadow of this agent
+   * @param options.shadowSpeakOn - Shadow speak-on triggers
+   * @param timeoutMs - Timeout for spawn operation (default: 30000ms)
+   */
+  async spawn(
+    options: {
+      name: string;
+      cli: string;
+      task?: string;
+      cwd?: string;
+      team?: string;
+      interactive?: boolean;
+      shadowOf?: string;
+      shadowSpeakOn?: SpeakOnTrigger[];
+    },
+    timeoutMs = 30000
+  ): Promise<SpawnResultPayload> {
+    if (this._state !== 'READY') {
+      throw new Error('Client not ready');
+    }
+
+    const envelopeId = generateId();
+
+    return new Promise<SpawnResultPayload>((resolve, reject) => {
+      const timeoutHandle = setTimeout(() => {
+        this.pendingSpawns.delete(envelopeId);
+        reject(new Error(`Spawn timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      this.pendingSpawns.set(envelopeId, { resolve, reject, timeoutHandle });
+
+      const envelope: SpawnEnvelope = {
+        v: PROTOCOL_VERSION,
+        type: 'SPAWN',
+        id: envelopeId,
+        ts: Date.now(),
+        payload: {
+          name: options.name,
+          cli: options.cli,
+          task: options.task || '',
+          cwd: options.cwd,
+          team: options.team,
+          interactive: options.interactive,
+          shadowOf: options.shadowOf,
+          shadowSpeakOn: options.shadowSpeakOn,
+          spawnerName: this.config.agentName,
+        },
+      };
+
+      const sent = this.send(envelope);
+      if (!sent) {
+        clearTimeout(timeoutHandle);
+        this.pendingSpawns.delete(envelopeId);
+        reject(new Error('Failed to send spawn message'));
+      }
+    });
+  }
+
+  /**
+   * Release (terminate) an agent via the relay daemon.
+   * @param name - Agent name to release
+   * @param timeoutMs - Timeout for release operation (default: 10000ms)
+   */
+  async release(name: string, timeoutMs = 10000): Promise<ReleaseResultPayload> {
+    if (this._state !== 'READY') {
+      throw new Error('Client not ready');
+    }
+
+    const envelopeId = generateId();
+
+    return new Promise<ReleaseResultPayload>((resolve, reject) => {
+      const timeoutHandle = setTimeout(() => {
+        this.pendingReleases.delete(envelopeId);
+        reject(new Error(`Release timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      this.pendingReleases.set(envelopeId, { resolve, reject, timeoutHandle });
+
+      const envelope: ReleaseEnvelope = {
+        v: PROTOCOL_VERSION,
+        type: 'RELEASE',
+        id: envelopeId,
+        ts: Date.now(),
+        payload: {
+          name,
+        },
+      };
+
+      const sent = this.send(envelope);
+      if (!sent) {
+        clearTimeout(timeoutHandle);
+        this.pendingReleases.delete(envelopeId);
+        reject(new Error('Failed to send release message'));
+      }
+    });
+  }
+
+  // =============================================================================
   // Channel Operations
   // =============================================================================
 
@@ -615,6 +764,222 @@ export class RelayClient {
     return this.send(envelope);
   }
 
+  // =============================================================================
+  // Consensus Operations
+  // =============================================================================
+
+  /**
+   * Create a consensus proposal.
+   *
+   * The proposal will be broadcast to all participants. They can vote using
+   * the `vote()` method. Results are delivered via `onMessage` callback.
+   *
+   * @example
+   * ```typescript
+   * client.createProposal({
+   *   title: 'Approve API design',
+   *   description: 'Should we proceed with the REST API design?',
+   *   participants: ['Developer', 'Reviewer', 'Lead'],
+   *   consensusType: 'majority',
+   * });
+   * ```
+   *
+   * @param options - Proposal options
+   * @returns true if the message was sent
+   */
+  createProposal(options: CreateProposalOptions): boolean {
+    if (this._state !== 'READY') {
+      return false;
+    }
+
+    // Build the PROPOSE command message
+    const lines: string[] = [
+      `PROPOSE: ${options.title}`,
+      `TYPE: ${options.consensusType ?? 'majority'}`,
+      `PARTICIPANTS: ${options.participants.join(', ')}`,
+      `DESCRIPTION: ${options.description}`,
+    ];
+
+    if (options.timeoutMs !== undefined) {
+      lines.push(`TIMEOUT: ${options.timeoutMs}`);
+    }
+    if (options.quorum !== undefined) {
+      lines.push(`QUORUM: ${options.quorum}`);
+    }
+    if (options.threshold !== undefined) {
+      lines.push(`THRESHOLD: ${options.threshold}`);
+    }
+
+    const body = lines.join('\n');
+
+    // Send to the special _consensus recipient
+    return this.sendMessage('_consensus', body, 'action');
+  }
+
+  /**
+   * Vote on a consensus proposal.
+   *
+   * @example
+   * ```typescript
+   * // Approve with a reason
+   * client.vote({
+   *   proposalId: 'prop_123',
+   *   value: 'approve',
+   *   reason: 'Looks good to me',
+   * });
+   *
+   * // Reject without reason
+   * client.vote({ proposalId: 'prop_123', value: 'reject' });
+   * ```
+   *
+   * @param options - Vote options
+   * @returns true if the message was sent
+   */
+  vote(options: VoteOptions): boolean {
+    if (this._state !== 'READY') {
+      return false;
+    }
+
+    // Build the VOTE command
+    let body = `VOTE ${options.proposalId} ${options.value}`;
+    if (options.reason) {
+      body += ` ${options.reason}`;
+    }
+
+    // Send to the special _consensus recipient
+    return this.sendMessage('_consensus', body, 'action');
+  }
+
+  // =============================================================================
+  // Query Operations
+  // =============================================================================
+
+  /**
+   * Send a query to the daemon and wait for a response.
+   * @internal
+   */
+  private async query<T>(type: string, payload: unknown, timeoutMs = 5000): Promise<T> {
+    if (this._state !== 'READY') {
+      throw new Error('Client not ready');
+    }
+
+    const envelopeId = generateId();
+
+    return new Promise<T>((resolve, reject) => {
+      const timeoutHandle = setTimeout(() => {
+        this.pendingQueries.delete(envelopeId);
+        reject(new Error(`Query timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      this.pendingQueries.set(envelopeId, {
+        resolve: resolve as (p: unknown) => void,
+        reject,
+        timeoutHandle,
+      });
+
+      const envelope: Envelope = {
+        v: PROTOCOL_VERSION,
+        type: type as Envelope['type'],
+        id: envelopeId,
+        ts: Date.now(),
+        payload,
+      };
+
+      const sent = this.send(envelope);
+      if (!sent) {
+        clearTimeout(timeoutHandle);
+        this.pendingQueries.delete(envelopeId);
+        reject(new Error(`Failed to send ${type} query`));
+      }
+    });
+  }
+
+  /**
+   * Get daemon status information.
+   * @returns Daemon status including version, uptime, and counts
+   */
+  async getStatus(): Promise<StatusResponsePayload> {
+    return this.query<StatusResponsePayload>('STATUS', {});
+  }
+
+  /**
+   * Get messages from the inbox.
+   * @param options - Filter options
+   * @param options.limit - Maximum number of messages to return
+   * @param options.unreadOnly - Only return unread messages
+   * @param options.from - Filter by sender
+   * @param options.channel - Filter by channel
+   * @returns Array of inbox messages
+   */
+  async getInbox(options: {
+    limit?: number;
+    unreadOnly?: boolean;
+    from?: string;
+    channel?: string;
+  } = {}): Promise<InboxMessage[]> {
+    const payload: InboxPayload = {
+      agent: this.config.agentName,
+      limit: options.limit,
+      unreadOnly: options.unreadOnly,
+      from: options.from,
+      channel: options.channel,
+    };
+    const response = await this.query<InboxResponsePayload>('INBOX', payload);
+    return response.messages || [];
+  }
+
+  /**
+   * List online agents.
+   * @param options - Filter options
+   * @param options.includeIdle - Include idle agents (default: true)
+   * @param options.project - Filter by project
+   * @returns Array of agent info
+   */
+  async listAgents(options: {
+    includeIdle?: boolean;
+    project?: string;
+  } = {}): Promise<AgentInfo[]> {
+    const payload: ListAgentsPayload = {
+      includeIdle: options.includeIdle ?? true,
+      project: options.project,
+    };
+    const response = await this.query<ListAgentsResponsePayload>('LIST_AGENTS', payload);
+    return response.agents || [];
+  }
+
+  /**
+   * Get system health information.
+   * @param options - Include options
+   * @param options.includeCrashes - Include crash history (default: true)
+   * @param options.includeAlerts - Include alerts (default: true)
+   * @returns Health information including score, issues, and recommendations
+   */
+  async getHealth(options: {
+    includeCrashes?: boolean;
+    includeAlerts?: boolean;
+  } = {}): Promise<HealthResponsePayload> {
+    const payload: HealthPayload = {
+      includeCrashes: options.includeCrashes ?? true,
+      includeAlerts: options.includeAlerts ?? true,
+    };
+    return this.query<HealthResponsePayload>('HEALTH', payload);
+  }
+
+  /**
+   * Get resource metrics for agents.
+   * @param options - Filter options
+   * @param options.agent - Filter to a specific agent
+   * @returns Metrics including memory, CPU, and system info
+   */
+  async getMetrics(options: {
+    agent?: string;
+  } = {}): Promise<MetricsResponsePayload> {
+    const payload: MetricsPayload = {
+      agent: options.agent,
+    };
+    return this.query<MetricsResponsePayload>('METRICS', payload);
+  }
+
   // Private methods
 
   private setState(state: ClientState): void {
@@ -716,6 +1081,14 @@ export class RelayClient {
         this.handleAck(envelope as Envelope<AckPayload>);
         break;
 
+      case 'SPAWN_RESULT':
+        this.handleSpawnResult(envelope as Envelope<SpawnResultPayload>);
+        break;
+
+      case 'RELEASE_RESULT':
+        this.handleReleaseResult(envelope as Envelope<ReleaseResultPayload>);
+        break;
+
       case 'ERROR':
         this.handleErrorFrame(envelope as Envelope<ErrorPayload>);
         break;
@@ -724,6 +1097,14 @@ export class RelayClient {
         if (!this.config.quiet) {
           console.warn('[sdk] Server busy, backing off');
         }
+        break;
+
+      case 'STATUS_RESPONSE':
+      case 'INBOX_RESPONSE':
+      case 'LIST_AGENTS_RESPONSE':
+      case 'HEALTH_RESPONSE':
+      case 'METRICS_RESPONSE':
+        this.handleQueryResponse(envelope);
         break;
     }
   }
@@ -812,6 +1193,40 @@ export class RelayClient {
     pending.resolve(envelope.payload);
   }
 
+  private handleSpawnResult(envelope: Envelope<SpawnResultPayload>): void {
+    const replyTo = envelope.payload.replyTo;
+    if (!replyTo) return;
+
+    const pending = this.pendingSpawns.get(replyTo);
+    if (!pending) return;
+
+    clearTimeout(pending.timeoutHandle);
+    this.pendingSpawns.delete(replyTo);
+    pending.resolve(envelope.payload);
+  }
+
+  private handleReleaseResult(envelope: Envelope<ReleaseResultPayload>): void {
+    const replyTo = envelope.payload.replyTo;
+    if (!replyTo) return;
+
+    const pending = this.pendingReleases.get(replyTo);
+    if (!pending) return;
+
+    clearTimeout(pending.timeoutHandle);
+    this.pendingReleases.delete(replyTo);
+    pending.resolve(envelope.payload);
+  }
+
+  private handleQueryResponse(envelope: Envelope): void {
+    // Query responses use the envelope id to match requests
+    const pending = this.pendingQueries.get(envelope.id);
+    if (!pending) return;
+
+    clearTimeout(pending.timeoutHandle);
+    this.pendingQueries.delete(envelope.id);
+    pending.resolve(envelope.payload);
+  }
+
   private handlePing(envelope: Envelope): void {
     this.send({
       v: PROTOCOL_VERSION,
@@ -845,6 +1260,9 @@ export class RelayClient {
     this.parser.reset();
     this.socket = undefined;
     this.rejectPendingSyncAcks(new Error('Disconnected while awaiting ACK'));
+    this.rejectPendingSpawns(new Error('Disconnected while awaiting spawn result'));
+    this.rejectPendingReleases(new Error('Disconnected while awaiting release result'));
+    this.rejectPendingQueries(new Error('Disconnected while awaiting query response'));
 
     if (this._destroyed) {
       this.setState('DISCONNECTED');
@@ -877,6 +1295,30 @@ export class RelayClient {
       clearTimeout(pending.timeoutHandle);
       pending.reject(error);
       this.pendingSyncAcks.delete(correlationId);
+    }
+  }
+
+  private rejectPendingSpawns(error: Error): void {
+    for (const [id, pending] of this.pendingSpawns.entries()) {
+      clearTimeout(pending.timeoutHandle);
+      pending.reject(error);
+      this.pendingSpawns.delete(id);
+    }
+  }
+
+  private rejectPendingReleases(error: Error): void {
+    for (const [id, pending] of this.pendingReleases.entries()) {
+      clearTimeout(pending.timeoutHandle);
+      pending.reject(error);
+      this.pendingReleases.delete(id);
+    }
+  }
+
+  private rejectPendingQueries(error: Error): void {
+    for (const [id, pending] of this.pendingQueries.entries()) {
+      clearTimeout(pending.timeoutHandle);
+      pending.reject(error);
+      this.pendingQueries.delete(id);
     }
   }
 
