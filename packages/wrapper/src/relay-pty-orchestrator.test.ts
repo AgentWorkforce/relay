@@ -131,6 +131,10 @@ describe('RelayPtyOrchestrator', () => {
       setTimeout(() => callback(), 10);
       return mockSocket;
     });
+
+    // Mock waitUntilCliReady to resolve immediately in tests
+    // This avoids waiting for CLI readiness checks which require complex simulation
+    vi.spyOn(RelayPtyOrchestrator.prototype, 'waitUntilCliReady').mockResolvedValue(true);
   });
 
   afterEach(async () => {
