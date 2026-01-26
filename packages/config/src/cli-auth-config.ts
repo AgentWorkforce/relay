@@ -128,6 +128,16 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
         description: 'Ready to code permission prompt',
       },
       {
+        // Bypass Permissions mode prompt - for cloud workspaces running in sandboxed containers
+        // Shows "1. No, exit" (default selected) and "2. Yes, I accept"
+        // We need to select option 2 (down arrow) then confirm (enter)
+        // This is safe because cloud workspaces are sandboxed containers
+        pattern: /bypass\s*permissions\s*mode|will\s*not\s*ask\s*for\s*your\s*approval|sandboxed\s*container/i,
+        response: '\x1b[B\r', // Down arrow to select "Yes, I accept", then Enter
+        delay: 500, // Longer delay to ensure menu is fully rendered
+        description: 'Bypass permissions mode prompt',
+      },
+      {
         // Fallback: Any "press enter" or "enter to confirm/continue" prompt
         // Keep this LAST so more specific handlers match first
         // NOTE: Error messages like "Press Enter to retry" are handled by checking

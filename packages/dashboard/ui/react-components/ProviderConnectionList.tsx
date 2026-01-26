@@ -21,6 +21,8 @@ export interface ProviderInfo {
   requiresUrlCopy?: boolean;
   /** For OAuth providers, whether they support device flow */
   supportsDeviceFlow?: boolean;
+  /** Provider is not yet fully tested/available */
+  comingSoon?: boolean;
 }
 
 // Provider auth configuration
@@ -288,16 +290,20 @@ export function ProviderConnectionList({
           return (
             <button
               key={provider.id}
-              onClick={() => !connected && handleConnectProvider(provider)}
-              disabled={connected}
+              onClick={() => !connected && !provider.comingSoon && handleConnectProvider(provider)}
+              disabled={connected || provider.comingSoon}
               className={`w-full flex items-center gap-3 p-4 bg-bg-tertiary rounded-xl border transition-colors text-left ${
-                connected
-                  ? 'border-green-500/50 cursor-default'
-                  : 'border-border-subtle hover:border-accent-cyan/50'
+                provider.comingSoon
+                  ? 'border-border-subtle opacity-60 cursor-not-allowed'
+                  : connected
+                    ? 'border-green-500/50 cursor-default'
+                    : 'border-border-subtle hover:border-accent-cyan/50'
               }`}
             >
               <div
-                className="w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold flex-shrink-0 relative"
+                className={`w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold flex-shrink-0 relative ${
+                  provider.comingSoon ? 'grayscale' : ''
+                }`}
                 style={{ backgroundColor: provider.color }}
               >
                 {provider.displayName[0]}
@@ -310,10 +316,19 @@ export function ProviderConnectionList({
                 )}
               </div>
               <div className="flex-1">
-                <p className="text-white font-medium">{provider.displayName}</p>
+                <p className="text-white font-medium flex items-center gap-2">
+                  {provider.displayName}
+                  {provider.comingSoon && (
+                    <span className="px-2 py-0.5 bg-amber-400/20 text-amber-400 text-xs font-medium rounded-full">
+                      Coming Soon
+                    </span>
+                  )}
+                </p>
                 <p className="text-text-muted text-sm">{provider.description || provider.name}</p>
               </div>
-              {connected ? (
+              {provider.comingSoon ? (
+                <span className="text-text-muted text-sm">Not available yet</span>
+              ) : connected ? (
                 <span className="text-green-400 text-sm font-medium">Connected</span>
               ) : (
                 <svg className="w-5 h-5 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">

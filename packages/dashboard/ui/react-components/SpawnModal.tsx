@@ -122,6 +122,7 @@ const AGENT_TEMPLATES = [
     description: 'OpenCode AI agent',
     icon: '🔷',
     providerId: 'opencode',
+    comingSoon: true, // Not yet fully tested
   },
   {
     id: 'droid',
@@ -130,6 +131,7 @@ const AGENT_TEMPLATES = [
     description: 'Factory Droid agent',
     icon: '🤖',
     providerId: 'droid',
+    comingSoon: true, // Not yet fully tested
   },
   {
     id: 'cursor',
@@ -393,16 +395,24 @@ export function SpawnModal({
                 <button
                   key={template.id}
                   type="button"
+                  disabled={template.comingSoon}
                   className={`
-                    flex flex-col items-center gap-1 py-3 px-2 border-2 rounded-lg cursor-pointer font-sans transition-all duration-150
-                    ${selectedTemplate.id === template.id
-                      ? 'bg-accent/10 border-accent'
-                      : 'bg-bg-hover border-transparent hover:bg-bg-active'
+                    flex flex-col items-center gap-1 py-3 px-2 border-2 rounded-lg font-sans transition-all duration-150 relative
+                    ${template.comingSoon
+                      ? 'opacity-50 cursor-not-allowed bg-bg-hover border-transparent'
+                      : selectedTemplate.id === template.id
+                        ? 'bg-accent/10 border-accent cursor-pointer'
+                        : 'bg-bg-hover border-transparent hover:bg-bg-active cursor-pointer'
                     }
                   `}
-                  onClick={() => setSelectedTemplate(template)}
+                  onClick={() => !template.comingSoon && setSelectedTemplate(template)}
                 >
-                  <span className="text-2xl">{template.icon}</span>
+                  {template.comingSoon && (
+                    <span className="absolute top-1 right-1 px-1.5 py-0.5 bg-amber-400/20 text-amber-400 text-[10px] font-medium rounded">
+                      Soon
+                    </span>
+                  )}
+                  <span className={`text-2xl ${template.comingSoon ? 'grayscale' : ''}`}>{template.icon}</span>
                   <span className="text-sm font-semibold text-text-primary">{template.name}</span>
                   <span className="text-xs text-text-muted text-center">{template.description}</span>
                 </button>

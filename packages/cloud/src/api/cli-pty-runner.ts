@@ -181,9 +181,11 @@ export async function runCLIAuthViaPTY(
           }, delay);
         }
 
-        // Look for auth URL
-        const cleanText = stripAnsiCodes(text);
-        const match = cleanText.match(config.urlPattern);
+        // Look for auth URL in accumulated output
+        // Join lines that look like URL continuations (handles wrapped URLs)
+        const cleanAccumulated = stripAnsiCodes(result.output)
+          .replace(/\n(?=[a-zA-Z0-9\-_.~:/?#\[\]@!$&'()*+,;=%])/g, '');
+        const match = cleanAccumulated.match(config.urlPattern);
         if (match && match[1] && !result.authUrl) {
           result.authUrl = match[1];
           if (result.authUrl) {
@@ -204,9 +206,10 @@ export async function runCLIAuthViaPTY(
         result.output += text;
         options.onOutput?.(text);
 
-        // Check stderr for auth URLs too
-        const cleanText = stripAnsiCodes(text);
-        const match = cleanText.match(config.urlPattern);
+        // Check stderr for auth URLs too (using accumulated output)
+        const cleanAccumulated = stripAnsiCodes(result.output)
+          .replace(/\n(?=[a-zA-Z0-9\-_.~:/?#\[\]@!$&'()*+,;=%])/g, '');
+        const match = cleanAccumulated.match(config.urlPattern);
         if (match && match[1] && !result.authUrl) {
           result.authUrl = match[1];
           if (result.authUrl) {

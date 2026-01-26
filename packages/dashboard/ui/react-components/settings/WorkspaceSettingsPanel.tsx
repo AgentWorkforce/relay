@@ -67,6 +67,7 @@ interface AIProvider {
   supportsDeviceFlow?: boolean; // Provider supports device flow (easier for headless environments)
   preferApiKey?: boolean; // Show API key input by default (simpler for mobile/containers)
   isConnected?: boolean;
+  comingSoon?: boolean; // Provider is not yet fully tested/available
 }
 
 const AI_PROVIDERS: AIProvider[] = [
@@ -111,6 +112,7 @@ const AI_PROVIDERS: AIProvider[] = [
     color: '#00D4AA',
     cliCommand: 'opencode',
     supportsOAuth: true,
+    comingSoon: true, // Not yet fully tested
   },
   {
     id: 'droid',
@@ -120,6 +122,7 @@ const AI_PROVIDERS: AIProvider[] = [
     color: '#6366F1',
     cliCommand: 'droid',
     supportsOAuth: true,
+    comingSoon: true, // Not yet fully tested
   },
   {
     id: 'cursor',
@@ -614,28 +617,41 @@ export function WorkspaceSettingsPanel({
               {AI_PROVIDERS.map((provider) => (
                 <div
                   key={provider.id}
-                  className="p-5 bg-bg-tertiary rounded-xl border border-border-subtle hover:border-border-medium transition-all duration-200"
+                  className={`p-5 bg-bg-tertiary rounded-xl border border-border-subtle transition-all duration-200 ${
+                    provider.comingSoon ? 'opacity-60' : 'hover:border-border-medium'
+                  }`}
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-4">
                       <div
-                        className="w-12 h-12 rounded-xl flex items-center justify-center text-white font-bold text-lg shadow-lg"
+                        className={`w-12 h-12 rounded-xl flex items-center justify-center text-white font-bold text-lg shadow-lg ${
+                          provider.comingSoon ? 'grayscale' : ''
+                        }`}
                         style={{
                           backgroundColor: provider.color,
-                          boxShadow: `0 4px 20px ${provider.color}40`,
+                          boxShadow: provider.comingSoon ? 'none' : `0 4px 20px ${provider.color}40`,
                         }}
                       >
                         {provider.displayName[0]}
                       </div>
                       <div>
-                        <h4 className="text-base font-semibold text-text-primary">
+                        <h4 className="text-base font-semibold text-text-primary flex items-center gap-2">
                           {provider.displayName}
+                          {provider.comingSoon && (
+                            <span className="px-2 py-0.5 bg-amber-400/20 text-amber-400 text-xs font-medium rounded-full">
+                              Coming Soon
+                            </span>
+                          )}
                         </h4>
                         <p className="text-sm text-text-muted">{provider.description}</p>
                       </div>
                     </div>
 
-                    {providerStatus[provider.id] ? (
+                    {provider.comingSoon ? (
+                      <div className="px-4 py-2 bg-bg-card rounded-full border border-border-subtle">
+                        <span className="text-sm text-text-muted">Not available yet</span>
+                      </div>
+                    ) : providerStatus[provider.id] ? (
                       <div className="flex items-center gap-3">
                         <div className="flex items-center gap-2 px-4 py-2 bg-success/15 rounded-full border border-success/30">
                           <div className="w-2 h-2 rounded-full bg-success animate-pulse" />
@@ -653,7 +669,7 @@ export function WorkspaceSettingsPanel({
                     ) : null}
                   </div>
 
-                  {!providerStatus[provider.id] && (
+                  {!providerStatus[provider.id] && !provider.comingSoon && (
                     <div className="mt-5 pt-5 border-t border-border-subtle">
                       {connectingProvider === provider.id && !showApiKeyFallback[provider.id] ? (
                         useTerminalSetup[provider.id] ? (

@@ -295,7 +295,11 @@ export async function startCLIAuth(
       }
 
       // Extract auth URL (only if not in error state and don't have URL yet)
-      const match = cleanText.match(config.urlPattern);
+      // Use accumulated output to handle URLs that wrap across multiple lines
+      // Join lines that look like URL continuations (no space/newline within URLs)
+      const cleanAccumulated = stripAnsiCodes(session.output)
+        .replace(/\n(?=[a-zA-Z0-9\-_.~:/?#\[\]@!$&'()*+,;=%])/g, '');
+      const match = cleanAccumulated.match(config.urlPattern);
       if (match && match[1] && !session.authUrl && session.status !== 'error') {
         session.authUrl = match[1];
         session.status = 'waiting_auth';

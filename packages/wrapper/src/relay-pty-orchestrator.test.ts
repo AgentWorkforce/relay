@@ -135,6 +135,10 @@ describe('RelayPtyOrchestrator', () => {
     // Mock waitUntilCliReady to resolve immediately in tests
     // This avoids waiting for CLI readiness checks which require complex simulation
     vi.spyOn(RelayPtyOrchestrator.prototype, 'waitUntilCliReady').mockResolvedValue(true);
+
+    // Mock isProcessAlive to return true - the real implementation uses process.kill(pid, 0)
+    // which fails for mock PIDs that don't correspond to real processes
+    vi.spyOn(RelayPtyOrchestrator.prototype as any, 'isProcessAlive').mockReturnValue(true);
   });
 
   afterEach(async () => {

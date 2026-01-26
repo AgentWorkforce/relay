@@ -142,20 +142,34 @@ export class UniversalIdleDetector {
   /**
    * Check if the agent is in an editor mode (vim INSERT, REPLACE, etc.).
    * When in editor mode, message injection should be delayed.
+   *
+   * Note: Claude CLI shows "-- INSERT --" in its status bar (for vim keybindings mode)
+   * but this is NOT the same as being in vim. We exclude Claude CLI's status bar
+   * by checking for the "⏵" symbol that follows its mode indicator.
    */
   isInEditorMode(): boolean {
     // Check the last portion of output for editor mode indicators
     const lastOutput = this.outputBuffer.slice(-500);
 
-    // Vim/Neovim mode indicators
+    // Claude CLI status bar pattern - this is NOT vim editor mode
+    // Example: "-- INSERT -- ⏵⏵ bypass permissions on (shift+tab to cycle)"
+    // Also match: "-- NORMAL --", "-- VISUAL --" followed by Claude's UI elements
+    const claudeCliStatusBar = /-- (?:INSERT|NORMAL|VISUAL|REPLACE) --\s*[⏵⏴►▶]/;
+    if (claudeCliStatusBar.test(lastOutput)) {
+      return false;
+    }
+
+    // Vim/Neovim mode indicators (standalone, not part of Claude CLI status)
+    // These patterns require the mode indicator to be at the end of a line
+    // or followed only by whitespace, which matches vim's actual display
     const editorModePatterns = [
-      /-- INSERT --/i,
-      /-- REPLACE --/i,
-      /-- VISUAL --/i,
-      /-- VISUAL LINE --/i,
-      /-- VISUAL BLOCK --/i,
-      /-- SELECT --/i,
-      /-- TERMINAL --/i,
+      /-- INSERT --\s*$/m,
+      /-- REPLACE --\s*$/m,
+      /-- VISUAL --\s*$/m,
+      /-- VISUAL LINE --\s*$/m,
+      /-- VISUAL BLOCK --\s*$/m,
+      /-- SELECT --\s*$/m,
+      /-- TERMINAL --\s*$/m,
       // Emacs indicators
       /\*\*\* Emacs/,
       /M-x/,

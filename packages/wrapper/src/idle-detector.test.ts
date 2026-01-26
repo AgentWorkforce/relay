@@ -386,5 +386,33 @@ describe('UniversalIdleDetector', () => {
       const result = detector.checkIdle();
       expect(result.inEditorMode).toBe(false);
     });
+
+    it('returns false for Claude CLI status bar (not actual vim)', () => {
+      // Claude CLI shows "-- INSERT --" followed by permission indicators
+      // This is NOT vim editor mode - it's Claude's vim keybindings mode
+      detector.onOutput('> Try "how do I log an error?"\n-- INSERT -- ⏵⏵ bypass permissions on (shift+tab to cycle)');
+      expect(detector.isInEditorMode()).toBe(false);
+    });
+
+    it('returns false for Claude CLI NORMAL mode status bar', () => {
+      detector.onOutput('> Try "how do I log an error?"\n-- NORMAL -- ⏵⏵ bypass permissions on');
+      expect(detector.isInEditorMode()).toBe(false);
+    });
+
+    it('returns false for Claude CLI with ▶ symbol', () => {
+      detector.onOutput('Some prompt\n-- INSERT -- ▶ strict mode');
+      expect(detector.isInEditorMode()).toBe(false);
+    });
+
+    it('still detects actual vim INSERT mode at end of line', () => {
+      // Vim shows "-- INSERT --" alone at the end of the line
+      detector.onOutput('~\n~\n-- INSERT --\n');
+      expect(detector.isInEditorMode()).toBe(true);
+    });
+
+    it('still detects vim INSERT mode with trailing whitespace', () => {
+      detector.onOutput('~\n-- INSERT --   ');
+      expect(detector.isInEditorMode()).toBe(true);
+    });
   });
 });
