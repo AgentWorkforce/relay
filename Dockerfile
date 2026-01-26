@@ -24,6 +24,7 @@ COPY packages/storage/package*.json ./packages/storage/
 COPY packages/state/package*.json ./packages/state/
 COPY packages/policy/package*.json ./packages/policy/
 COPY packages/trajectory/package*.json ./packages/trajectory/
+COPY packages/telemetry/package*.json ./packages/telemetry/
 COPY packages/hooks/package*.json ./packages/hooks/
 COPY packages/memory/package*.json ./packages/memory/
 COPY packages/utils/package*.json ./packages/utils/
