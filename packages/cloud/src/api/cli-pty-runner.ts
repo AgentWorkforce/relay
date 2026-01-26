@@ -29,6 +29,7 @@ import {
   type CLIAuthConfig,
   type PromptHandler,
 } from '@agent-relay/config/cli-auth-config';
+import { findRelayPtyBinary as findRelayPtyBinaryUtil } from '@agent-relay/utils/relay-pty-path';
 
 // Re-export everything from shared config for backward compatibility
 export {
@@ -80,34 +81,10 @@ export interface PTYAuthOptions {
 
 /**
  * Find the relay-pty binary path.
- * Returns null if not found.
+ * Uses shared utility from @agent-relay/utils.
  */
 function findRelayPtyBinary(): string | null {
-  // Get the project root (five levels up from packages/cloud/dist/api/)
-  // packages/cloud/dist/api/ -> packages/cloud/dist -> packages/cloud -> packages -> project root
-  const projectRoot = join(__dirname, '..', '..', '..', '..', '..');
-
-  const candidates = [
-    // Primary: installed by postinstall from platform-specific binary
-    join(projectRoot, 'bin', 'relay-pty'),
-    // Development: local Rust build
-    join(projectRoot, 'relay-pty', 'target', 'release', 'relay-pty'),
-    join(projectRoot, 'relay-pty', 'target', 'debug', 'relay-pty'),
-    // Local build in cwd (for development)
-    join(process.cwd(), 'relay-pty', 'target', 'release', 'relay-pty'),
-    // Installed globally
-    '/usr/local/bin/relay-pty',
-    // In node_modules (when installed as dependency)
-    join(process.cwd(), 'node_modules', 'agent-relay', 'bin', 'relay-pty'),
-  ];
-
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) {
-      return candidate;
-    }
-  }
-
-  return null;
+  return findRelayPtyBinaryUtil(__dirname);
 }
 
 /**

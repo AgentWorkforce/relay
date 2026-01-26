@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-24T08:53:25.073Z",
+  "lastUpdated": "2026-01-25T11:30:45.234Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -64,6 +64,20 @@
       "startedAt": "2026-01-23T22:56:17.733Z",
       "completedAt": "2026-01-23T23:00:29.377Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_9eqbfvrxl36g.json"
+    },
+    "traj_id0xcg5k8b4g": {
+      "title": "Fix relay-pty binary not found on global npm install",
+      "status": "completed",
+      "startedAt": "2026-01-25T11:28:03.677Z",
+      "completedAt": "2026-01-25T11:28:20.769Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_id0xcg5k8b4g.json"
+    },
+    "traj_ml5tikuiwxpb": {
+      "title": "Consolidate all relay-pty binary lookups",
+      "status": "completed",
+      "startedAt": "2026-01-25T11:30:44.733Z",
+      "completedAt": "2026-01-25T11:30:45.203Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_ml5tikuiwxpb.json"
     }
   }
 }

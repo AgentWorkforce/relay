@@ -2,6 +2,9 @@
 export type { RelayClient } from './client.js';
 export { createRelayClient } from './client.js';
 
+// Hybrid client (file-based writes, socket queries)
+export { createHybridClient, discoverProjectRoot } from './hybrid-client.js';
+
 // Simple programmatic API (no MCP protocol overhead)
 export {
   createTools,
@@ -45,6 +48,22 @@ export {
   relayStatusSchema,
   handleRelayStatus,
   type RelayStatusInput,
+  relayLogsTool,
+  relayLogsSchema,
+  handleRelayLogs,
+  type RelayLogsInput,
+  relayMetricsTool,
+  relayMetricsSchema,
+  handleRelayMetrics,
+  type RelayMetricsInput,
+  relayHealthTool,
+  relayHealthSchema,
+  handleRelayHealth,
+  type RelayHealthInput,
+  relayContinuityTool,
+  relayContinuitySchema,
+  handleRelayContinuity,
+  type RelayContinuityInput,
 } from './tools/index.js';
 
 // Prompts
@@ -74,6 +93,7 @@ export {
 // Cloud/Discovery
 export {
   discoverSocket,
+  discoverAgentName,
   detectCloudWorkspace,
   isCloudWorkspace,
   getCloudSocketPath,
@@ -82,3 +102,21 @@ export {
   type CloudWorkspace,
   type CloudConnectionInfo,
 } from './cloud.js';
+
+// Installation
+export {
+  installMcpConfig,
+  installForEditor,
+  install,
+  uninstall,
+  uninstallFromEditor,
+  isInstalledFor,
+  detectInstalledEditors,
+  getEditorConfig,
+  listSupportedEditors,
+  getDefaultServerConfig,
+  type InstallOptions,
+  type InstallResult,
+  type EditorConfig,
+  type McpServerConfig,
+} from './install.js';

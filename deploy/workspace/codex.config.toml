@@ -6,6 +6,11 @@
 # Updates are managed via Dockerfile (pinned versions)
 check_for_update_on_startup = false
 
+# MCP Server for agent-to-agent communication
+[mcp_servers.agent-relay]
+command = "node"
+args = ["/app/dist/src/cli/index.js", "mcp", "serve"]
+
 # Additional configuration options can be added here as needed
 # Examples (uncomment and adjust as needed):
 # [model]

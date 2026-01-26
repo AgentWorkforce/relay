@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { exec } from 'node:child_process';
+import { getProjectPaths } from '@agent-relay/config';
 
 const execAsync = promisify(exec);
 
@@ -47,10 +48,11 @@ Example: Get last 100 lines from Worker1
 
 /**
  * Get the worker logs directory path.
- * Mirrors the logic from @agent-relay/bridge.
+ * Uses getProjectPaths from @agent-relay/config to match the bridge package.
  */
 function getWorkerLogsDir(projectRoot: string): string {
-  return path.join(projectRoot, '.relay', 'logs');
+  const paths = getProjectPaths(projectRoot);
+  return path.join(paths.teamDir, 'worker-logs');
 }
 
 /**

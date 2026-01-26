@@ -15,6 +15,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir, platform } from 'node:os';
+import { execSync } from 'node:child_process';
+import * as TOML from 'smol-toml';
 
 export interface EditorConfig {
   /** Display name for the editor */
@@ -24,7 +26,7 @@ export interface EditorConfig {
   /** Key in config object for MCP servers */
   configKey: string;
   /** Config file format */
-  format: 'json' | 'jsonc';
+  format: 'json' | 'jsonc' | 'toml';
   /** Whether this editor supports project-local MCP configs */
   supportsLocal?: boolean;
 }
@@ -42,6 +44,14 @@ export interface InstallOptions {
   command?: string;
   /** Custom server args */
   args?: string[];
+  /** Custom config path - overrides auto-detected path */
+  configPath?: string;
+  /** Config format when using custom configPath (default: json) */
+  configFormat?: 'json' | 'jsonc' | 'toml';
+  /** Config key for MCP servers when using custom configPath (default: mcpServers) */
+  configKey?: string;
+  /** Environment variables to set when launching the MCP server */
+  env?: Record<string, string>;
 }
 
 export interface InstallResult {
@@ -91,7 +101,7 @@ function getConfigPaths(): Record<string, EditorConfig> {
     },
     'claude-code': {
       name: 'Claude Code',
-      configPath: join(home, '.claude.json'),
+      configPath: join(home, '.claude', 'settings.json'),
       configKey: 'mcpServers',
       format: 'json',
       supportsLocal: true,
@@ -144,6 +154,13 @@ function getConfigPaths(): Record<string, EditorConfig> {
       format: 'json',
       supportsLocal: true,
     },
+    codex: {
+      name: 'Codex',
+      configPath: join(home, '.codex', 'config.toml'),
+      configKey: 'mcp_servers', // TOML uses [mcp_servers.agent-relay] tables
+      format: 'toml',
+      supportsLocal: true,
+    },
   };
 }
 
@@ -151,6 +168,90 @@ function getConfigPaths(): Record<string, EditorConfig> {
  * Default MCP server configuration
  */
 export function getDefaultServerConfig(): McpServerConfig {
+  return {
+    command: 'npx',
+    args: ['@agent-relay/mcp', 'serve'],
+  };
+}
+
+/**
+ * Check if node is installed via nvm (Node Version Manager).
+ * GUI apps (Claude, Cursor, VS Code) can't use nvm's shell function,
+ * so we need to use absolute paths for nvm installations.
+ */
+function isUsingNvm(): boolean {
+  try {
+    const nodePath = execSync('which node', { encoding: 'utf-8' }).trim();
+    return nodePath.includes('.nvm');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Get absolute path to node binary
+ */
+function getNodePath(): string | null {
+  try {
+    return execSync('which node', { encoding: 'utf-8' }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get path to globally installed @agent-relay/mcp bin.js
+ * Returns null if not installed globally.
+ */
+function getGlobalMcpBinPath(): string | null {
+  try {
+    // Get npm global prefix
+    const npmPrefix = execSync('npm prefix -g', { encoding: 'utf-8' }).trim();
+    const binPath = join(npmPrefix, 'lib', 'node_modules', '@agent-relay', 'mcp', 'dist', 'bin.js');
+    if (existsSync(binPath)) {
+      return binPath;
+    }
+  } catch {
+    // npm not available or failed
+  }
+  return null;
+}
+
+/**
+ * Build MCP server configuration with proper paths.
+ *
+ * For nvm users: Uses absolute paths (recommended by MCP community)
+ * For others: Uses npx (works when node is in standard PATH)
+ *
+ * See: https://github.com/modelcontextprotocol/servers/issues/64
+ */
+function buildServerConfig(): McpServerConfig {
+  // If using nvm, we need absolute paths because GUI apps can't access nvm's shell function
+  if (isUsingNvm()) {
+    const nodePath = getNodePath();
+    const mcpBinPath = getGlobalMcpBinPath();
+
+    if (nodePath && mcpBinPath) {
+      // Best option: globally installed package with absolute paths
+      return {
+        command: nodePath,
+        args: [mcpBinPath, 'serve'],
+      };
+    }
+
+    // Package not installed globally - still try with absolute node path + npx
+    if (nodePath) {
+      const npxPath = join(dirname(nodePath), 'npx');
+      if (existsSync(npxPath)) {
+        return {
+          command: npxPath,
+          args: ['@agent-relay/mcp', 'serve'],
+        };
+      }
+    }
+  }
+
+  // Standard case: npx should work
   return {
     command: 'npx',
     args: ['@agent-relay/mcp', 'serve'],
@@ -205,28 +306,33 @@ function stripJsonComments(content: string): string {
 }
 
 /**
- * Read and parse config file, handling both JSON and JSONC
+ * Read and parse config file, handling JSON, JSONC, and TOML
  */
 function readConfigFile(
   configPath: string,
-  format: 'json' | 'jsonc'
+  format: 'json' | 'jsonc' | 'toml'
 ): Record<string, unknown> {
   if (!existsSync(configPath)) {
     return {};
   }
 
   const content = readFileSync(configPath, 'utf-8');
-  const jsonContent = format === 'jsonc' ? stripJsonComments(content) : content;
 
   try {
     // Handle empty or whitespace-only files
-    const trimmed = jsonContent.trim();
+    const trimmed = content.trim();
     if (!trimmed) {
       return {};
     }
-    return JSON.parse(trimmed) as Record<string, unknown>;
+
+    if (format === 'toml') {
+      return TOML.parse(trimmed) as Record<string, unknown>;
+    }
+
+    const jsonContent = format === 'jsonc' ? stripJsonComments(content) : content;
+    return JSON.parse(jsonContent.trim()) as Record<string, unknown>;
   } catch {
-    // Invalid JSON, start fresh
+    // Invalid config, start fresh
     return {};
   }
 }
@@ -236,7 +342,8 @@ function readConfigFile(
  */
 function writeConfigFile(
   configPath: string,
-  config: Record<string, unknown>
+  config: Record<string, unknown>,
+  format: 'json' | 'jsonc' | 'toml' = 'json'
 ): void {
   const configDir = dirname(configPath);
 
@@ -245,7 +352,11 @@ function writeConfigFile(
     mkdirSync(configDir, { recursive: true });
   }
 
-  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+  if (format === 'toml') {
+    writeFileSync(configPath, TOML.stringify(config) + '\n');
+  } else {
+    writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+  }
 }
 
 /**
@@ -275,6 +386,8 @@ function getLocalConfigPath(
       return join(projectDir, 'opencode.json');
     case 'Droid':
       return join(projectDir, '.factory', 'mcp.json');
+    case 'Codex':
+      return join(projectDir, 'codex.toml');
     default:
       return null;
   }
@@ -289,7 +402,8 @@ export function installForEditor(
 ): InstallResult {
   const editor = getEditorConfig(editorKey);
 
-  if (!editor) {
+  // Allow custom configPath even without known editor
+  if (!editor && !options.configPath) {
     return {
       editor: editorKey,
       configPath: '',
@@ -299,28 +413,67 @@ export function installForEditor(
     };
   }
 
-  // Determine config path (global vs local)
-  let configPath = editor.configPath;
-  if (!options.global && options.projectDir && editor.supportsLocal) {
-    const localPath = getLocalConfigPath(editor, options.projectDir);
-    if (localPath) {
-      configPath = localPath;
+  // Determine config path, format, and key
+  // Custom configPath overrides everything (for programmatic installation)
+  let configPath: string;
+  let configFormat: 'json' | 'jsonc' | 'toml';
+  let configKey: string;
+
+  if (options.configPath) {
+    // Use custom path - for programmatic/auto installation
+    configPath = options.configPath;
+    configFormat = options.configFormat || 'json';
+    configKey = options.configKey || 'mcpServers';
+  } else if (editor) {
+    // Use editor's config
+    configPath = editor.configPath;
+    configFormat = editor.format;
+    configKey = editor.configKey;
+
+    // Check for local path override
+    if (!options.global && options.projectDir && editor.supportsLocal) {
+      const localPath = getLocalConfigPath(editor, options.projectDir);
+      if (localPath) {
+        configPath = localPath;
+      }
     }
+  } else {
+    // Should not reach here due to early return above
+    return {
+      editor: editorKey,
+      configPath: '',
+      success: false,
+      error: `Unknown editor: ${editorKey}`,
+      created: false,
+    };
   }
 
-  // Build server config
+  // Build server config - handles nvm users with absolute paths
+  const defaultConfig = buildServerConfig();
   const serverConfig: McpServerConfig = {
-    command: options.command || 'npx',
-    args: options.args || ['@agent-relay/mcp', 'serve'],
+    command: options.command || defaultConfig.command,
+    args: options.args || defaultConfig.args,
   };
 
-  // Note: We don't set RELAY_PROJECT for local installs because the MCP server
-  // will auto-discover the socket from the current working directory.
-  // This makes the config portable across machines.
+  // Set environment variables if provided (e.g., RELAY_SOCKET for project-local installs)
+  if (options.env) {
+    serverConfig.env = { ...options.env };
+  }
+
+  // For project-local installs with projectDir, also set RELAY_SOCKET if not already set
+  const isProjectLocal = !options.global && options.projectDir;
+  if (isProjectLocal && !serverConfig.env?.RELAY_SOCKET) {
+    const socketPath = join(options.projectDir!, '.agent-relay', 'relay.sock');
+    serverConfig.env = {
+      ...serverConfig.env,
+      RELAY_SOCKET: socketPath,
+    };
+  }
 
   if (options.dryRun) {
+    const editorName = editor?.name || editorKey || 'custom';
     return {
-      editor: editor.name,
+      editor: editorName,
       configPath,
       success: true,
       created: !existsSync(configPath),
@@ -329,31 +482,81 @@ export function installForEditor(
 
   try {
     // Read existing config
-    const config = readConfigFile(configPath, editor.format);
+    const config = readConfigFile(configPath, configFormat);
     const created = !existsSync(configPath);
 
     // Initialize mcpServers if not present
-    const configKeyValue = config[editor.configKey];
+    const configKeyValue = config[configKey];
     if (!configKeyValue || typeof configKeyValue !== 'object') {
-      (config as Record<string, unknown>)[editor.configKey] = {};
+      (config as Record<string, unknown>)[configKey] = {};
     }
 
     // Add agent-relay server config
-    const mcpServers = config[editor.configKey] as Record<string, unknown>;
-    mcpServers['agent-relay'] = serverConfig;
+    const mcpServers = config[configKey] as Record<string, unknown>;
+
+    // OpenCode uses a different format: { type: "local", command: [...], environment: {...} }
+    if (editor?.name === 'OpenCode') {
+      const openCodeConfig: Record<string, unknown> = {
+        type: 'local',
+        command: [serverConfig.command, ...serverConfig.args],
+      };
+      if (serverConfig.env) {
+        openCodeConfig.environment = serverConfig.env;
+      }
+      mcpServers['agent-relay'] = openCodeConfig;
+    } else {
+      mcpServers['agent-relay'] = serverConfig;
+    }
+
+    // For Claude Code, also add permissions to auto-approve agent-relay tools
+    // Permissions go in settings.json, not .mcp.json
+    if (editor?.name === 'Claude Code') {
+      // Determine settings path based on where MCP config is being written
+      const projectDir = configPath.endsWith('.mcp.json')
+        ? dirname(configPath) // project-local: same dir as .mcp.json
+        : dirname(configPath); // global: ~/.claude/
+
+      const settingsPath = configPath.endsWith('.mcp.json')
+        ? join(projectDir, '.claude', 'settings.json') // project-local
+        : configPath; // global uses same file (settings.json)
+
+      // Read existing settings
+      const settings = configPath.endsWith('.mcp.json')
+        ? readConfigFile(settingsPath, 'json') // separate file for project-local
+        : config; // same config object for global
+
+      const permissions = (settings.permissions as Record<string, unknown>) || {};
+      const allowList = (permissions.allow as string[]) || [];
+
+      // Add agent-relay permission if not already present
+      if (!allowList.includes('mcp__agent-relay__*')) {
+        allowList.push('mcp__agent-relay__*');
+      }
+
+      permissions.allow = allowList;
+      settings.permissions = permissions;
+
+      // Write settings (separate file for project-local)
+      if (configPath.endsWith('.mcp.json')) {
+        writeConfigFile(settingsPath, settings, 'json');
+      }
+      // For global, permissions are added to same config object
+    }
 
     // Write updated config
-    writeConfigFile(configPath, config);
+    writeConfigFile(configPath, config, configFormat);
 
+    const editorName = editor?.name || editorKey || 'custom';
     return {
-      editor: editor.name,
+      editor: editorName,
       configPath,
       success: true,
       created,
     };
   } catch (err) {
+    const editorName = editor?.name || editorKey || 'custom';
     return {
-      editor: editor.name,
+      editor: editorName,
       configPath,
       success: false,
       error: err instanceof Error ? err.message : String(err),
@@ -407,7 +610,7 @@ export function uninstallFromEditor(
       | undefined;
     if (mcpServers && 'agent-relay' in mcpServers) {
       delete mcpServers['agent-relay'];
-      writeConfigFile(configPath, config);
+      writeConfigFile(configPath, config, editor.format);
     }
 
     return {
@@ -490,6 +693,33 @@ export function install(options: InstallOptions = {}): InstallResult[] {
   }
 
   return results;
+}
+
+/**
+ * Install MCP server configuration to a specific config file path.
+ * This is a simpler API for programmatic/automated installation.
+ *
+ * @param configPath - Absolute path to config file
+ * @param options - Optional settings for format, key, etc.
+ */
+export function installMcpConfig(
+  configPath: string,
+  options: {
+    format?: 'json' | 'jsonc' | 'toml';
+    configKey?: string;
+    command?: string;
+    args?: string[];
+    env?: Record<string, string>;
+  } = {}
+): InstallResult {
+  return installForEditor('custom', {
+    configPath,
+    configFormat: options.format || 'json',
+    configKey: options.configKey || 'mcpServers',
+    command: options.command,
+    args: options.args,
+    env: options.env,
+  });
 }
 
 /**

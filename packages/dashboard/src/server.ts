@@ -2254,9 +2254,9 @@ export async function startDashboard(
       }
     };
 
-    // Helper to subscribe to an agent
-    const subscribeToAgent = (agentName: string) => {
-      const isSpawned = spawner?.hasWorker(agentName) ?? false;
+    // Helper to subscribe to an agent (async to handle spawn timing)
+    const subscribeToAgent = async (agentName: string) => {
+      let isSpawned = spawner?.hasWorker(agentName) ?? false;
       const isDaemon = isDaemonConnected(agentName);
 
       // Check if agent exists (either spawned or daemon-connected)
@@ -2269,6 +2269,28 @@ export async function startDashboard(
         // Close with custom code 4404 to signal "agent not found" - client should not reconnect
         ws.close(4404, 'Agent not found');
         return false;
+      }
+
+      // If agent is daemon-connected but not yet in spawner's activeWorkers,
+      // poll briefly to handle race condition between spawn API returning and
+      // WebSocket connection. This is common for setup agents (__setup__*).
+      if (!isSpawned && isDaemon && spawner) {
+        const maxWaitMs = 3000; // Wait up to 3 seconds
+        const pollIntervalMs = 100;
+        const startTime = Date.now();
+
+        while (Date.now() - startTime < maxWaitMs) {
+          await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+          isSpawned = spawner.hasWorker(agentName);
+          if (isSpawned) {
+            console.log(`[dashboard] Agent ${agentName} appeared in spawner after ${Date.now() - startTime}ms`);
+            break;
+          }
+          // Check if WebSocket was closed during wait
+          if (ws.readyState !== WebSocket.OPEN) {
+            return false;
+          }
+        }
       }
 
       // Add to subscriptions
@@ -2310,7 +2332,9 @@ export async function startDashboard(
     const pathMatch = pathname.match(/^\/ws\/logs\/(.+)$/);
     if (pathMatch) {
       const agentName = decodeURIComponent(pathMatch[1]);
-      subscribeToAgent(agentName);
+      subscribeToAgent(agentName).catch((err) => {
+        console.error(`[dashboard] Error subscribing to ${agentName}:`, err);
+      });
     }
 
     ws.on('message', (data) => {
@@ -2319,7 +2343,9 @@ export async function startDashboard(
 
         // Subscribe to agent logs
         if (msg.subscribe && typeof msg.subscribe === 'string') {
-          subscribeToAgent(msg.subscribe);
+          subscribeToAgent(msg.subscribe).catch((err) => {
+            console.error(`[dashboard] Error subscribing to ${msg.subscribe}:`, err);
+          });
         }
 
         // Unsubscribe from agent logs
@@ -3936,6 +3962,43 @@ export async function startDashboard(
     } catch (err) {
       console.error(`[credentials] Failed to write ${provider} API key for user ${userId}:`, err);
       res.status(500).json({ error: 'Failed to write credential file' });
+    }
+  });
+
+  /**
+   * DELETE /api/credentials/apikey - Delete API key credential from user's home directory
+   * Used by cloud API to clear provider credentials when disconnecting
+   */
+  app.delete('/api/credentials/apikey', express.json(), async (req, res) => {
+    const { userId, provider } = req.body;
+
+    if (!userId || typeof userId !== 'string') {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+    if (!provider || typeof provider !== 'string') {
+      return res.status(400).json({ error: 'provider is required' });
+    }
+
+    // Sanitize for logging (prevent log injection)
+    const safeProvider = String(provider).replace(/[\r\n]/g, '').substring(0, 20);
+    const safeUserId = String(userId).replace(/[\r\n]/g, '').substring(0, 50);
+
+    try {
+      // Dynamically import to avoid loading user-directory in all cases
+      const { getUserDirectoryService } = await import('@agent-relay/user-directory');
+      const userDirService = getUserDirectoryService();
+      const deletedPaths = userDirService.deleteProviderCredentials(userId, provider);
+
+      console.log('[credentials] Deleted credentials', { provider: safeProvider, userId: safeUserId, count: deletedPaths.length });
+
+      res.json({
+        success: true,
+        message: 'credentials deleted',
+        deletedPaths,
+      });
+    } catch (err) {
+      console.error('[credentials] Failed to delete credentials', { provider: safeProvider, userId: safeUserId, error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: 'Failed to delete credential files' });
     }
   });
 

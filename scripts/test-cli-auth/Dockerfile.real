@@ -64,6 +64,9 @@ RUN curl -fsSL https://claude.ai/install.sh | bash || echo "Claude install faile
 # Droid - uses official install script
 RUN curl -fsSL https://app.factory.ai/cli | sh || echo "Droid install failed"
 
+# Cursor - uses official install script (installs as 'agent' binary)
+RUN curl -fsSL https://cursor.com/install | bash || echo "Cursor install failed"
+
 # Add user's local bin and relay-pty to PATH
 ENV PATH="/app/bin:/home/testuser/.local/bin:$PATH"
 
@@ -88,9 +91,19 @@ COPY --chown=testuser:testuser packages/protocol/package.json /app/node_modules/
 COPY --chown=testuser:testuser packages/protocol/src/ /app/node_modules/@agent-relay/protocol/src/
 COPY --chown=testuser:testuser packages/protocol/tsconfig.json /app/node_modules/@agent-relay/protocol/
 
+# Also need @agent-relay/utils for relay-pty-path
+COPY --chown=testuser:testuser packages/utils/package.json /app/node_modules/@agent-relay/utils/
+COPY --chown=testuser:testuser packages/utils/src/ /app/node_modules/@agent-relay/utils/src/
+COPY --chown=testuser:testuser packages/utils/tsconfig.json /app/node_modules/@agent-relay/utils/
+
 # Build protocol first (config depends on it)
 # Protocol needs @types/node for Buffer and process types
 RUN cd /app/node_modules/@agent-relay/protocol && \
+    npm install --ignore-scripts @types/node && \
+    tsc
+
+# Build utils package (no runtime deps needed for relay-pty-path)
+RUN cd /app/node_modules/@agent-relay/utils && \
     npm install --ignore-scripts @types/node && \
     tsc
 

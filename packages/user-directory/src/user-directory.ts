@@ -69,6 +69,16 @@ const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
 const ALL_PROVIDERS = Object.keys(PROVIDER_CONFIGS);
 
 /**
+ * Valid provider names for credential operations.
+ * Includes aliases like 'anthropic' for 'claude' and 'google' for 'gemini'.
+ */
+const VALID_PROVIDERS = new Set([
+  ...ALL_PROVIDERS,
+  'anthropic', // alias for claude
+  'google',    // alias for gemini
+]);
+
+/**
  * Service for managing per-user directories on workspace volumes.
  * Enables multi-user credential storage without conflicts.
  */
@@ -248,6 +258,61 @@ export class UserDirectoryService {
   }
 
   /**
+   * Delete the credential file for a provider.
+   * Removes all known credential paths for the provider.
+   *
+   * @param userId - User ID
+   * @param provider - Provider name (claude, codex, gemini, etc.)
+   * @returns Array of deleted file paths
+   * @throws Error if provider is invalid
+   */
+  deleteProviderCredentials(userId: string, provider: string): string[] {
+    this.validateUserId(userId);
+    this.validateProvider(provider);
+    // Normalize provider to lowercase after validation
+    const normalizedProvider = provider.toLowerCase().trim();
+    const userHome = this.getUserHome(userId);
+    const deleted: string[] = [];
+
+    // Get all potential credential paths for this provider
+    const pathsToDelete: string[] = [];
+
+    // Add standard credential path
+    const config = PROVIDER_CONFIGS[normalizedProvider];
+    if (config) {
+      const providerDir = path.join(userHome, config.dir);
+      pathsToDelete.push(path.join(providerDir, config.credentialsFile));
+    }
+
+    // Handle Gemini/Google special case (.gemini/.env)
+    if (normalizedProvider === 'gemini' || normalizedProvider === 'google') {
+      pathsToDelete.push(path.join(userHome, '.gemini', '.env'));
+    }
+
+    // Handle anthropic special case (both .credentials.json and credentials.json)
+    if (normalizedProvider === 'anthropic' || normalizedProvider === 'claude') {
+      const claudeDir = path.join(userHome, '.claude');
+      pathsToDelete.push(path.join(claudeDir, '.credentials.json'));
+      pathsToDelete.push(path.join(claudeDir, 'credentials.json'));
+    }
+
+    // Delete each file if it exists
+    for (const credPath of pathsToDelete) {
+      try {
+        if (fs.existsSync(credPath)) {
+          fs.unlinkSync(credPath);
+          deleted.push(credPath);
+          logger.info(`Deleted ${normalizedProvider} credential file for user ${userId}: ${credPath}`);
+        }
+      } catch (err) {
+        logger.warn('Failed to delete credential file', { path: credPath, error: String(err) });
+      }
+    }
+
+    return deleted;
+  }
+
+  /**
    * Validate a user ID to prevent path traversal and other issues.
    *
    * @param userId - User ID to validate
@@ -267,6 +332,23 @@ export class UserDirectoryService {
     const resolved = path.resolve(this.usersDir, userId);
     if (!resolved.startsWith(this.usersDir)) {
       throw new Error('User ID would escape users directory');
+    }
+  }
+
+  /**
+   * Validate a provider name to prevent injection attacks.
+   *
+   * @param provider - Provider name to validate
+   * @throws Error if provider is invalid
+   */
+  private validateProvider(provider: string): void {
+    if (!provider || typeof provider !== 'string') {
+      throw new Error('Provider name is required');
+    }
+
+    const normalizedProvider = provider.toLowerCase().trim();
+    if (!VALID_PROVIDERS.has(normalizedProvider)) {
+      throw new Error(`Invalid provider: ${normalizedProvider.substring(0, 20)}`);
     }
   }
 

@@ -9,6 +9,7 @@ import {
   type SendEnvelope,
   type DeliverEnvelope,
   type AckPayload,
+  type ErrorPayload,
   type ShadowConfig,
   type SpeakOnTrigger,
   type EntityType,
@@ -269,6 +270,19 @@ export class Router {
             oldConnectionId: existing.id,
             newConnectionId: connection.id,
           });
+          // Send fatal error before closing to prevent reconnection loop
+          const errorEnvelope: Envelope<ErrorPayload> = {
+            v: PROTOCOL_VERSION,
+            type: 'ERROR',
+            id: generateId(),
+            ts: Date.now(),
+            payload: {
+              code: 'DUPLICATE_CONNECTION',
+              message: `Another agent with name "${connection.agentName}" connected. This connection will be closed.`,
+              fatal: true,
+            },
+          };
+          existing.send(errorEnvelope);
           existing.close();
           this.connections.delete(existing.id);
         }

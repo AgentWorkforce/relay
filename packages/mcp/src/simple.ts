@@ -27,7 +27,7 @@ export interface Message {
 
 export interface Agent {
   name: string;
-  cli: string;
+  cli?: string;
   idle?: boolean;
   parent?: string;
 }

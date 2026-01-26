@@ -1,9 +1,8 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import type { RelayClient } from '../client.js';
+import type { RelayClient, HealthResponse } from '../client.js';
 
 export const relayHealthSchema = z.object({
-  port: z.number().optional().default(3888).describe('Dashboard port (default: 3888)'),
   include_crashes: z.boolean().optional().default(true).describe('Include recent crash history'),
   include_alerts: z.boolean().optional().default(true).describe('Include unacknowledged alerts'),
 });
@@ -30,11 +29,6 @@ Example: Health check without crash history
   inputSchema: {
     type: 'object',
     properties: {
-      port: {
-        type: 'number',
-        description: 'Dashboard port (default: 3888)',
-        default: 3888,
-      },
       include_crashes: {
         type: 'boolean',
         description: 'Include recent crash history',
@@ -50,57 +44,18 @@ Example: Health check without crash history
   },
 };
 
-interface CrashInfo {
-  id: string;
-  agentName: string;
-  crashedAt: string;
-  likelyCause: string;
-  summary: string;
-}
-
-interface AlertInfo {
-  id: string;
-  agentName: string;
-  alertType: string;
-  message: string;
-  createdAt: string;
-}
-
-interface HealthIssue {
-  severity: string;
-  message: string;
-}
-
-interface HealthResponse {
-  healthScore: number;
-  summary: string;
-  issues: HealthIssue[];
-  recommendations: string[];
-  crashes: CrashInfo[];
-  alerts: AlertInfo[];
-  stats: {
-    totalCrashes24h: number;
-    totalAlerts24h: number;
-    agentCount: number;
-  };
-}
-
 /**
  * Get system health, crash insights, and recommendations.
  */
 export async function handleRelayHealth(
-  _client: RelayClient,
+  client: RelayClient,
   input: RelayHealthInput
 ): Promise<string> {
-  const port = input.port || 3888;
-
   try {
-    const response = await fetch(`http://localhost:${port}/api/metrics/health`);
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const data = await response.json() as HealthResponse;
+    const data: HealthResponse = await client.getHealth({
+      include_crashes: input.include_crashes,
+      include_alerts: input.include_alerts,
+    });
 
     const lines: string[] = [];
 
@@ -185,8 +140,8 @@ export async function handleRelayHealth(
     return lines.join('\n');
   } catch (err: unknown) {
     const error = err as Error & { code?: string };
-    if (error.code === 'ECONNREFUSED') {
-      return `Cannot connect to dashboard at port ${port}. Is the daemon running?\n\nRun 'agent-relay up' to start the daemon.`;
+    if (error.code === 'ECONNREFUSED' || error.code === 'ENOENT') {
+      return `Cannot connect to daemon. Is the daemon running?\n\nRun 'agent-relay up' to start the daemon.`;
     }
     return `Failed to fetch health data: ${error.message || String(err)}`;
   }

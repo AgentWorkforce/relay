@@ -88,10 +88,12 @@ RUN chown -R workspace:workspace /app
 # === MCP Server for Agent Relay ===
 # Pre-configure MCP so all CLI tools have relay tools available
 
-# Configure Claude Code MCP settings (global config is ~/.claude.json)
-RUN echo '{"mcpServers":{"agent-relay":{"command":"node","args":["/app/dist/src/cli/index.js","mcp","serve"]}}}' \
-    > /home/workspace/.claude.json && \
-    chown workspace:workspace /home/workspace/.claude.json
+# Configure Claude Code MCP settings (global config is ~/.claude/settings.json)
+# Include permissions to auto-approve agent-relay tools
+RUN mkdir -p /home/workspace/.claude && \
+    echo '{"mcpServers":{"agent-relay":{"command":"node","args":["/app/dist/src/cli/index.js","mcp","serve"]}},"permissions":{"allow":["mcp__agent-relay__*"]}}' \
+    > /home/workspace/.claude/settings.json && \
+    chown -R workspace:workspace /home/workspace/.claude
 
 # Configure Cursor MCP settings
 RUN mkdir -p /home/workspace/.cursor && \
@@ -116,6 +118,12 @@ RUN mkdir -p /home/workspace/.factory && \
     echo '{"mcpServers":{"agent-relay":{"command":"node","args":["/app/dist/src/cli/index.js","mcp","serve"]}}}' \
     > /home/workspace/.factory/mcp.json && \
     chown -R workspace:workspace /home/workspace/.factory
+
+# Configure Codex MCP settings (uses TOML format)
+RUN mkdir -p /home/workspace/.codex && \
+    printf '[mcp_servers.agent-relay]\ncommand = "node"\nargs = ["/app/dist/src/cli/index.js", "mcp", "serve"]\n' \
+    > /home/workspace/.codex/config.toml && \
+    chown -R workspace:workspace /home/workspace/.codex
 
 # Run entrypoint as root so it can start sshd; entrypoint drops to workspace via gosu
 USER root

@@ -158,6 +158,9 @@ export function WorkspaceSettingsPanel({
     google: true,    // Default to terminal for Gemini - allows choosing OAuth or API key
   });
 
+  // Provider disconnection state
+  const [disconnectingProvider, setDisconnectingProvider] = useState<string | null>(null);
+
   // Repo sync state
   const [syncingRepoId, setSyncingRepoId] = useState<string | null>(null);
 
@@ -230,6 +233,34 @@ export function WorkspaceSettingsPanel({
     setConnectingProvider(provider.id);
     // ProviderAuthFlow will handle the rest when it mounts
   };
+
+  // Disconnect a provider
+  const handleDisconnectProvider = useCallback(async (provider: AIProvider) => {
+    const confirmed = window.confirm(
+      `Are you sure you want to disconnect ${provider.displayName}? This will remove the authentication and delete credential files from the workspace.`
+    );
+    if (!confirmed) return;
+
+    setDisconnectingProvider(provider.id);
+    setProviderError(null);
+
+    try {
+      const result = await cloudApi.disconnectProvider(provider.id, workspaceId);
+      if (result.success) {
+        setProviderStatus(prev => {
+          const updated = { ...prev };
+          delete updated[provider.id];
+          return updated;
+        });
+      } else {
+        setProviderError(result.error);
+      }
+    } catch (err) {
+      setProviderError(err instanceof Error ? err.message : 'Failed to disconnect provider');
+    } finally {
+      setDisconnectingProvider(null);
+    }
+  }, [workspaceId]);
 
   const submitApiKey = async (provider: AIProvider) => {
     if (!apiKeyInput.trim()) {
@@ -605,9 +636,19 @@ export function WorkspaceSettingsPanel({
                     </div>
 
                     {providerStatus[provider.id] ? (
-                      <div className="flex items-center gap-2 px-4 py-2 bg-success/15 rounded-full border border-success/30">
-                        <div className="w-2 h-2 rounded-full bg-success animate-pulse" />
-                        <span className="text-sm font-medium text-success">Connected</span>
+                      <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-2 px-4 py-2 bg-success/15 rounded-full border border-success/30">
+                          <div className="w-2 h-2 rounded-full bg-success animate-pulse" />
+                          <span className="text-sm font-medium text-success">Connected</span>
+                        </div>
+                        <button
+                          onClick={() => handleDisconnectProvider(provider)}
+                          disabled={disconnectingProvider === provider.id}
+                          className="px-3 py-2 text-xs font-medium text-error/80 hover:text-error hover:bg-error/10 rounded-lg border border-transparent hover:border-error/30 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                          title={`Disconnect ${provider.displayName}`}
+                        >
+                          {disconnectingProvider === provider.id ? 'Disconnecting...' : 'Disconnect'}
+                        </button>
                       </div>
                     ) : null}
                   </div>

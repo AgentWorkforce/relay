@@ -5,7 +5,7 @@
  * and workspace-aware socket discovery for cloud deployments.
  */
 
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { findProjectRoot } from '@agent-relay/config';
@@ -389,5 +389,135 @@ export function getCloudEnvironmentSummary(): Record<string, string | undefined>
     WORKSPACE_OWNER_USER_ID: process.env.WORKSPACE_OWNER_USER_ID,
     RELAY_SOCKET: process.env.RELAY_SOCKET,
     RELAY_PROJECT: process.env.RELAY_PROJECT,
+    RELAY_AGENT_NAME: process.env.RELAY_AGENT_NAME,
   };
+}
+
+// ============================================================================
+// Agent Identity Discovery
+// ============================================================================
+
+/**
+ * Discover the agent name for the MCP server.
+ *
+ * Priority order:
+ * 1. RELAY_AGENT_NAME environment variable (explicit)
+ * 2. Identity file in .agent-relay directory (written by wrapper)
+ * 3. Scan outbox directories to find agent's outbox
+ *
+ * @param discovery - Optional discovery result with socket path info
+ * @returns Agent name or null if not found
+ */
+export function discoverAgentName(discovery?: DiscoveryResult | null): string | null {
+  // 1. Explicit environment variable
+  const envName = process.env.RELAY_AGENT_NAME;
+  if (envName) {
+    return envName;
+  }
+
+  // 2. Identity file in .agent-relay directory
+  // The wrapper creates this file with the agent name
+  const projectRoot = findProjectRoot(process.cwd());
+  const searchDirs = [process.cwd()];
+  if (projectRoot && projectRoot !== process.cwd()) {
+    searchDirs.push(projectRoot);
+  }
+
+  for (const dir of searchDirs) {
+    const relayDir = join(dir, '.agent-relay');
+    if (!existsSync(relayDir)) continue;
+
+    // First check for per-process identity files
+    // The orchestrator writes mcp-identity-{orchestrator.pid}
+    // Try to find one by checking process.ppid and its ancestors
+    const pidIdentityPath = join(relayDir, `mcp-identity-${process.ppid}`);
+    if (existsSync(pidIdentityPath)) {
+      try {
+        const content = readFileSync(pidIdentityPath, 'utf-8').trim();
+        if (content) {
+          return content;
+        }
+      } catch {
+        // Ignore read errors
+      }
+    }
+
+    // Scan all mcp-identity-* files and return the most recently modified one
+    // This handles the case where MCP server's ppid doesn't match the orchestrator
+    try {
+      const files = readdirSync(relayDir, { withFileTypes: true })
+        .filter((d) => d.isFile() && d.name.startsWith('mcp-identity-'))
+        .map((d) => ({
+          path: join(relayDir, d.name),
+          name: d.name,
+        }));
+
+      if (files.length > 0) {
+        // Sort by mtime (most recent first) to get the latest identity
+        const sorted = files
+          .map((f) => {
+            try {
+              const stat = statSync(f.path);
+              return { ...f, mtime: stat.mtimeMs };
+            } catch {
+              return { ...f, mtime: 0 };
+            }
+          })
+          .sort((a, b) => b.mtime - a.mtime);
+
+        // Return the most recently modified identity file
+        const latest = sorted[0];
+        if (latest) {
+          try {
+            const content = readFileSync(latest.path, 'utf-8').trim();
+            if (content) {
+              return content;
+            }
+          } catch {
+            // Ignore
+          }
+        }
+      }
+    } catch {
+      // Ignore scan errors
+    }
+
+    // Fallback to simple identity file (for single-agent scenarios)
+    const identityPath = join(relayDir, 'mcp-identity');
+    if (existsSync(identityPath)) {
+      try {
+        const content = readFileSync(identityPath, 'utf-8').trim();
+        if (content) {
+          return content;
+        }
+      } catch {
+        // Ignore read errors
+      }
+    }
+  }
+
+  // 3. Check outbox directories for a match
+  // If only one agent's outbox exists, assume we're that agent
+  for (const dir of searchDirs) {
+    const outboxDir = join(dir, '.agent-relay', 'outbox');
+    if (existsSync(outboxDir)) {
+      try {
+        const agents = readdirSync(outboxDir, { withFileTypes: true })
+          .filter((d) => d.isDirectory())
+          .map((d) => d.name);
+
+        // If there's exactly one outbox, use that agent name
+        if (agents.length === 1) {
+          return agents[0];
+        }
+
+        // If there are multiple, we can't determine which one we are
+        // The wrapper should have created an identity file
+      } catch {
+        // Ignore read errors
+      }
+    }
+  }
+
+  return null;
 }

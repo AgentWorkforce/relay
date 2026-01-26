@@ -390,11 +390,18 @@ fi
 log "Configuring Claude Code for cloud workspace..."
 mkdir -p "${HOME}/.claude"
 
-# Create settings.json to auto-accept permissions (required for cloud workspaces)
+# Create settings.json with MCP server config and auto-accept permissions
 # This tells Claude Code to skip the "Ready to code here?" permission prompt
 # Reference: Claude Code uses this for headless/automated environments
+# IMPORTANT: Must include mcpServers config (Dockerfile version gets overwritten here)
 cat > "${HOME}/.claude/settings.json" <<'SETTINGSEOF'
 {
+  "mcpServers": {
+    "agent-relay": {
+      "command": "node",
+      "args": ["/app/dist/src/cli/index.js", "mcp", "serve"]
+    }
+  },
   "permissions": {
     "allow": [
       "Read",
@@ -407,7 +414,8 @@ cat > "${HOME}/.claude/settings.json" <<'SETTINGSEOF'
       "WebFetch",
       "WebSearch",
       "NotebookEdit",
-      "TodoWrite"
+      "TodoWrite",
+      "mcp__agent-relay__*"
     ],
     "deny": []
   },

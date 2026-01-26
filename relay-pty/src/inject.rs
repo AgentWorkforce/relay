@@ -28,6 +28,8 @@ pub struct Injector {
     is_idle: AtomicBool,
     /// Timestamp of last output (ms since epoch)
     last_output_ms: AtomicU64,
+    /// Timestamp of last injection (ms since epoch)
+    last_injection_ms: AtomicU64,
     /// Recent output buffer for verification
     recent_output: Mutex<String>,
 }
@@ -45,6 +47,7 @@ impl Injector {
             config,
             is_idle: AtomicBool::new(false),
             last_output_ms: AtomicU64::new(current_timestamp_ms()),
+            last_injection_ms: AtomicU64::new(0), // No injection yet
             recent_output: Mutex::new(String::new()),
         }
     }
@@ -102,6 +105,22 @@ impl Injector {
         now.saturating_sub(last_output)
     }
 
+    /// Get milliseconds since last injection (0 if never injected)
+    pub fn ms_since_injection(&self) -> u64 {
+        let last_injection = self.last_injection_ms.load(Ordering::SeqCst);
+        if last_injection == 0 {
+            return 0; // Never injected
+        }
+        let now = current_timestamp_ms();
+        now.saturating_sub(last_injection)
+    }
+
+    /// Check if there was a recent injection (within given ms)
+    pub fn had_recent_injection(&self, within_ms: u64) -> bool {
+        let since = self.ms_since_injection();
+        since > 0 && since <= within_ms
+    }
+
     /// Run the injection loop
     pub async fn run(&self) -> Result<()> {
         info!("Injection loop started");
@@ -119,6 +138,9 @@ impl Injector {
             match self.inject_message(&msg).await {
                 Ok(true) => {
                     info!("Message {} delivered successfully", msg.id);
+                    // Track injection time for auto-Enter detection
+                    self.last_injection_ms
+                        .store(current_timestamp_ms(), Ordering::SeqCst);
                     self.queue
                         .report_result(msg.id.clone(), InjectStatus::Delivered, None);
                 }

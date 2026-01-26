@@ -831,6 +831,14 @@ export class RelayClient {
       this.resumeToken = undefined;
       this.sessionId = undefined;
     }
+
+    // Fatal errors (like DUPLICATE_CONNECTION) should prevent reconnection
+    if (envelope.payload.fatal) {
+      if (!this.config.quiet) {
+        console.error('[sdk] Fatal error received, will not reconnect:', envelope.payload.message);
+      }
+      this._destroyed = true;
+    }
   }
 
   private handleDisconnect(): void {

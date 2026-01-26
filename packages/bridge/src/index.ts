@@ -18,6 +18,7 @@ export {
   AgentSpawner,
   readWorkersMetadata,
   getWorkerLogsDir,
+  ensureMcpPermissions,
   type AgentSpawnerOptions,
   type CloudPersistenceHandler,
   type OnAgentDeathCallback,

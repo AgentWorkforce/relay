@@ -14,6 +14,7 @@ import { resolveCommand } from '@agent-relay/utils/command-resolver';
 import { createTraceableError } from '@agent-relay/utils/error-tracking';
 import { createLogger } from '@agent-relay/utils/logger';
 import { mapModelToCli } from '@agent-relay/utils/model-mapping';
+import { findRelayPtyBinary as findRelayPtyBinaryUtil } from '@agent-relay/utils/relay-pty-path';
 import { RelayPtyOrchestrator, type RelayPtyOrchestratorConfig } from '@agent-relay/wrapper';
 import type { SummaryEvent, SessionEndEvent } from '@agent-relay/wrapper';
 import { selectShadowCli } from './shadow-cli.js';
@@ -25,6 +26,7 @@ import { AgentPolicyService, type CloudPolicyFetcher } from '@agent-relay/policy
 import { buildClaudeArgs, findAgentConfig } from '@agent-relay/config/agent-config';
 import { composeForAgent, type AgentRole } from '@agent-relay/wrapper';
 import { getUserDirectoryService } from '@agent-relay/user-directory';
+import { installMcpConfig } from '@agent-relay/mcp';
 import type {
   SpawnRequest,
   SpawnResult,
@@ -129,24 +131,80 @@ export type OnAgentDeathCallback = (info: {
 }) => void;
 
 /**
- * Ensure MCP permissions are pre-configured for Claude Code.
+ * Ensure MCP permissions are pre-configured for the given CLI type.
  * This prevents MCP approval prompts from blocking agent initialization.
  *
- * Creates/updates .claude/settings.local.json with:
+ * For Claude Code: Creates/updates .claude/settings.local.json with:
  * - enableAllProjectMcpServers: true (auto-approve project MCP servers)
- * - permissions.allow: ["mcp__agent-relay"] (pre-approve agent-relay MCP tools)
+ * - permissions.allow: ["mcp__agent-relay__*"] (pre-approve all agent-relay MCP tools)
+ *
+ * For Cursor: Creates/updates .cursor/settings.json with MCP permissions
+ * For Gemini: Creates/updates .gemini/settings.json with MCP permissions
+ * For Windsurf: Creates/updates .windsurf/settings.json with MCP permissions
+ * Other CLIs: May use CLI flags instead of config-based permissions
  *
  * @param projectRoot - The project root directory
+ * @param cliType - The CLI type (claude, codex, gemini, cursor, etc.)
  * @param debug - Whether to log debug information
  */
-function ensureMcpPermissions(projectRoot: string, debug = false): void {
-  const settingsDir = path.join(projectRoot, '.claude');
-  const settingsPath = path.join(settingsDir, 'settings.local.json');
+export function ensureMcpPermissions(projectRoot: string, cliType: string, debug = false): void {
+  // Determine settings path based on CLI type
+  interface McpPermissionConfig {
+    settingsDir: string;
+    settingsFile: string;
+    permissionKey?: string; // If different from 'permissions.allow'
+    enableAllKey?: string; // If supports enableAllProjectMcpServers
+    globalSettingsDir?: string; // For global settings that enable project MCP
+  }
+
+  const home = process.env.HOME || '';
+  const configMap: Record<string, McpPermissionConfig> = {
+    claude: {
+      // Use global settings for Claude
+      // enableAllProjectMcpServers enables project-local .mcp.json files
+      settingsDir: path.join(home, '.claude'),
+      settingsFile: 'settings.local.json',
+      permissionKey: 'permissions.allow',
+      enableAllKey: 'enableAllProjectMcpServers',
+    },
+    cursor: {
+      settingsDir: path.join(projectRoot, '.cursor'),
+      settingsFile: 'settings.json',
+      permissionKey: 'permissions.allow',
+    },
+    gemini: {
+      settingsDir: path.join(projectRoot, '.gemini'),
+      settingsFile: 'settings.json',
+      permissionKey: 'permissions.allow',
+    },
+    windsurf: {
+      settingsDir: path.join(projectRoot, '.windsurf'),
+      settingsFile: 'settings.json',
+      permissionKey: 'permissions.allow',
+    },
+    // Codex uses TOML config and --dangerously-bypass-approvals-and-sandbox flag
+    // OpenCode and Droid may not need config-based permissions
+  };
+
+  // Normalize CLI type
+  const normalizedCli = cliType.toLowerCase().replace(/^(claude|codex|gemini|cursor|agent|windsurf).*/, '$1');
+
+  // Map 'agent' (Cursor CLI) to 'cursor'
+  const effectiveCli = normalizedCli === 'agent' ? 'cursor' : normalizedCli;
+
+  const config = configMap[effectiveCli];
+  if (!config) {
+    // CLI doesn't use config-based MCP permissions (uses CLI flags instead)
+    if (debug) log.debug(`CLI ${cliType} uses flag-based permissions, skipping config setup`);
+    return;
+  }
+
+  const settingsPath = path.join(config.settingsDir, config.settingsFile);
 
   try {
-    // Ensure .claude directory exists
-    if (!fs.existsSync(settingsDir)) {
-      fs.mkdirSync(settingsDir, { recursive: true });
+    // Ensure settings directory exists
+    if (!fs.existsSync(config.settingsDir)) {
+      fs.mkdirSync(config.settingsDir, { recursive: true });
     }
 
     // Read existing settings or start fresh
@@ -161,28 +219,41 @@ function ensureMcpPermissions(projectRoot: string, debug = false): void {
       }
     }
 
-    // Set enableAllProjectMcpServers to auto-approve MCP servers in .mcp.json
-    if (settings.enableAllProjectMcpServers !== true) {
-      settings.enableAllProjectMcpServers = true;
-      if (debug) log.debug('Setting enableAllProjectMcpServers: true');
+    // Set enableAllProjectMcpServers if supported (Claude-specific)
+    if (config.enableAllKey && settings[config.enableAllKey] !== true) {
+      settings[config.enableAllKey] = true;
+      if (debug) log.debug(`Setting ${config.enableAllKey}: true`);
     }
 
     // Ensure permissions.allow includes agent-relay MCP
-    // Format: "mcp__serverName" approves all tools from that server
-    if (!settings.permissions || typeof settings.permissions !== 'object') {
-      settings.permissions = {};
-    }
-    const permissions = settings.permissions as Record<string, unknown>;
-    if (!Array.isArray(permissions.allow)) {
-      permissions.allow = [];
-    }
-    const allowList = permissions.allow as string[];
+    if (config.permissionKey) {
+      // Parse nested key (e.g., 'permissions.allow')
+      const keyParts = config.permissionKey.split('.');
+      let current: Record<string, unknown> = settings;
 
-    // Add agent-relay MCP permission if not already present
-    const agentRelayPermission = 'mcp__agent-relay';
-    if (!allowList.includes(agentRelayPermission)) {
-      allowList.push(agentRelayPermission);
-      if (debug) log.debug(`Added MCP permission: ${agentRelayPermission}`);
+      // Navigate/create nested structure
+      for (let i = 0; i < keyParts.length - 1; i++) {
+        const key = keyParts[i];
+        if (!current[key] || typeof current[key] !== 'object') {
+          current[key] = {};
+        }
+        current = current[key] as Record<string, unknown>;
+      }
+
+      // Ensure allow list exists
+      const finalKey = keyParts[keyParts.length - 1];
+      if (!Array.isArray(current[finalKey])) {
+        current[finalKey] = [];
+      }
+      const allowList = current[finalKey] as string[];
+
+      // Add agent-relay MCP permission if not already present
+      // Format: mcp__<serverName>__* approves all tools from that server
+      const agentRelayPermission = 'mcp__agent-relay__*';
+      if (!allowList.includes(agentRelayPermission)) {
+        allowList.push(agentRelayPermission);
+        if (debug) log.debug(`Added MCP permission: ${agentRelayPermission}`);
+      }
     }
 
     // Write updated settings
@@ -191,6 +262,7 @@ function ensureMcpPermissions(projectRoot: string, debug = false): void {
   } catch (err) {
     // Log but don't fail - this is a best-effort optimization
     log.warn('Failed to pre-configure MCP permissions', {
+      cli: cliType,
       error: err instanceof Error ? err.message : String(err),
     });
   }
@@ -312,59 +384,10 @@ function getRelayInstructions(agentName: string, options: { hasMcp?: boolean; in
 /**
  * Check if the relay-pty binary is available.
  * Returns the path to the binary if found, null otherwise.
- *
- * Search order:
- * 1. bin/relay-pty in package root (installed by postinstall)
- * 2. relay-pty/target/release/relay-pty (local Rust build)
- * 3. /usr/local/bin/relay-pty (global install)
- * 4. In node_modules when installed as dependency
+ * Uses shared utility from @agent-relay/utils.
  */
 function findRelayPtyBinary(): string | null {
-  // Determine the agent-relay package root
-  // This code runs from either:
-  // - packages/bridge/dist/ (development/workspace)
-  // - node_modules/@agent-relay/bridge/dist/ (npm install)
-  //
-  // We need to find the agent-relay package root where bin/relay-pty lives
-  let packageRoot: string;
-
-  // Check if we're inside node_modules/@agent-relay/bridge/
-  if (__dirname.includes('node_modules/@agent-relay/bridge')) {
-    // Go from node_modules/@agent-relay/bridge/dist/ to agent-relay/
-    // dist/ -> bridge/ -> @agent-relay/ -> node_modules/ -> agent-relay/
-    packageRoot = path.join(__dirname, '..', '..', '..', '..');
-  } else if (__dirname.includes('node_modules/agent-relay')) {
-    // Direct dependency: node_modules/agent-relay/packages/bridge/dist/
-    // dist/ -> bridge/ -> packages/ -> agent-relay/
-    packageRoot = path.join(__dirname, '..', '..', '..');
-  } else {
-    // Development: packages/bridge/dist/ -> packages/ -> project root
-    packageRoot = path.join(__dirname, '..', '..', '..');
-  }
-
-  const candidates = [
-    // Primary: installed by postinstall from platform-specific binary
-    path.join(packageRoot, 'bin', 'relay-pty'),
-    // Development: local Rust build
-    path.join(packageRoot, 'relay-pty', 'target', 'release', 'relay-pty'),
-    path.join(packageRoot, 'relay-pty', 'target', 'debug', 'relay-pty'),
-    // Local build in cwd (for development)
-    path.join(process.cwd(), 'relay-pty', 'target', 'release', 'relay-pty'),
-    // Installed globally
-    '/usr/local/bin/relay-pty',
-    // In node_modules (when installed as local dependency)
-    path.join(process.cwd(), 'node_modules', 'agent-relay', 'bin', 'relay-pty'),
-    // Global npm install (nvm)
-    path.join(process.env.HOME || '', '.nvm', 'versions', 'node', process.version, 'lib', 'node_modules', 'agent-relay', 'bin', 'relay-pty'),
-  ];
-
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
-      return candidate;
-    }
-  }
-
-  return null;
+  return findRelayPtyBinaryUtil(__dirname);
 }
 
 /** Cached result of relay-pty binary check */
@@ -782,15 +805,13 @@ export class AgentSpawner {
         log.warn(`Could not resolve path for '${commandName}', spawn may fail`);
       }
 
+      // Pre-configure MCP permissions for all supported CLIs
+      // This creates/updates CLI-specific settings files with agent-relay permissions
+      ensureMcpPermissions(this.projectRoot, commandName, debug);
+
       // Add --dangerously-skip-permissions for Claude agents
       const isClaudeCli = commandName.startsWith('claude');
       if (isClaudeCli) {
-        // Pre-configure MCP permissions to avoid approval prompts blocking initialization
-        // This creates/updates .claude/settings.local.json with:
-        // - enableAllProjectMcpServers: true
-        // - permissions.allow: ["mcp__agent-relay"]
-        ensureMcpPermissions(this.projectRoot, debug);
-
         if (!args.includes('--dangerously-skip-permissions')) {
           args.push('--dangerously-skip-permissions');
         }
@@ -816,7 +837,7 @@ export class AgentSpawner {
           : mapModelToCli(); // defaults to claude:sonnet
 
         // Extract effective model name for logging
-        const effectiveModel = modelFromProfile || 'sonnet';
+        const effectiveModel = modelFromProfile || 'opus';
 
         const configuredArgs = buildClaudeArgs(name, args, this.projectRoot);
         // Replace args with configured version (includes --model and --agent if found)
@@ -840,17 +861,45 @@ export class AgentSpawner {
         args.push('--yolo');
       }
 
+      // Auto-install MCP config if not present (project-local)
+      // Uses .mcp.json in the project root - doesn't modify global settings
+      // Feature gated: set RELAY_MCP_AUTO_INSTALL=1 to enable
+      const projectMcpConfigPath = path.join(this.projectRoot, '.mcp.json');
+      const mcpSocketPath = path.join(this.projectRoot, '.agent-relay', 'relay.sock');
+      const hasMcpConfig = fs.existsSync(projectMcpConfigPath);
+      const mcpAutoInstallEnabled = process.env.RELAY_MCP_AUTO_INSTALL === '1';
+
+      if (!hasMcpConfig && mcpAutoInstallEnabled) {
+        try {
+          const result = installMcpConfig(projectMcpConfigPath, {
+            configKey: 'mcpServers',
+            // Set RELAY_SOCKET so MCP server finds daemon regardless of CWD
+            env: { RELAY_SOCKET: mcpSocketPath },
+          });
+          if (result.success) {
+            if (debug) log.debug(`Auto-installed MCP config at ${projectMcpConfigPath}`);
+          } else {
+            log.warn(`Failed to auto-install MCP config: ${result.error}`);
+          }
+        } catch (err) {
+          log.warn('Failed to auto-install MCP config', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
       // Check if MCP tools are available
       // Must verify BOTH conditions (matching inbox hook behavior from commit 18bab59):
-      // 1. .mcp.json config exists in project
+      // 1. MCP config exists (user or project scope)
       // 2. Relay daemon socket is accessible (daemon must be running)
       // Without both, MCP context would be shown but tools wouldn't work
-      const mcpConfigPath = path.join(this.projectRoot, '.mcp.json');
       // Use the actual socket path from config (project-local .agent-relay/relay.sock)
       // or fall back to environment variable
       const relaySocket = this.socketPath || process.env.RELAY_SOCKET || path.join(this.projectRoot, '.agent-relay', 'relay.sock');
       let hasMcp = false;
-      if (fs.existsSync(mcpConfigPath)) {
+      // Check either user-scope or project-scope MCP config
+      // hasMcpConfig was already computed above
+      if (hasMcpConfig) {
         try {
           hasMcp = fs.statSync(relaySocket).isSocket();
         } catch {
@@ -858,7 +907,7 @@ export class AgentSpawner {
           hasMcp = false;
         }
       }
-      if (debug && hasMcp) log.debug(`MCP tools available for ${name} (found ${mcpConfigPath} and socket ${relaySocket})`);
+      if (debug && hasMcp) log.debug(`MCP tools available for ${name} (MCP config found, socket ${relaySocket})`);
 
       // Inject relay protocol instructions via CLI-specific system prompt
       let relayInstructions = getRelayInstructions(name, { hasMcp, includeWorkflowConventions });
@@ -906,7 +955,28 @@ export class AgentSpawner {
       // Note: Spawned agents CAN spawn sub-workers intentionally - the parser is strict enough
       // to avoid accidental spawns from documentation text (requires line start, PascalCase, known CLI)
       // Use request.cwd if specified, otherwise use projectRoot
-      const agentCwd = request.cwd || this.projectRoot;
+      // Validate cwd to prevent path traversal attacks
+      let agentCwd: string;
+      if (request.cwd && typeof request.cwd === 'string') {
+        // Resolve cwd relative to project root and ensure it stays within that root
+        const resolvedCwd = path.resolve(this.projectRoot, request.cwd);
+        const normalizedProjectRoot = path.resolve(this.projectRoot);
+        const projectRootWithSep = normalizedProjectRoot.endsWith(path.sep)
+          ? normalizedProjectRoot
+          : normalizedProjectRoot + path.sep;
+        
+        // Ensure the resolved cwd is within the project root to prevent traversal
+        if (resolvedCwd !== normalizedProjectRoot && !resolvedCwd.startsWith(projectRootWithSep)) {
+          return {
+            success: false,
+            name,
+            error: `Invalid cwd: "${request.cwd}" must be within the project root`,
+          };
+        }
+        agentCwd = resolvedCwd;
+      } else {
+        agentCwd = this.projectRoot;
+      }
 
       // Log whether nested spawning will be enabled for this agent
       log.info(`Spawning ${name}: dashboardPort=${this.dashboardPort || 'none'} (${this.dashboardPort ? 'nested spawns enabled' : 'nested spawns disabled'})`);
@@ -1022,6 +1092,8 @@ export class AgentSpawner {
           // Pass socket path for MCP server discovery
           // This allows the MCP server (started by Claude Code) to connect to the daemon
           ...(relaySocket ? { RELAY_SOCKET: relaySocket } : {}),
+          // Pass agent name so MCP server knows its identity
+          RELAY_AGENT_NAME: name,
         },
         streamLogs: true,
         shadowOf: request.shadowOf,

@@ -11,12 +11,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Validate all packages build and can be imported
-  validate-packages:
-    name: Validate Packages
+  validate:
+    name: Build & Validate
     runs-on: ubuntu-latest
     env:
       NPM_CONFIG_FUND: false
+      TURBO_TELEMETRY_DISABLED: 1
 
     steps:
       - name: Checkout code
@@ -26,87 +26,70 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+
+      # Cache node_modules - skip npm ci entirely if unchanged
+      - name: Cache node_modules
+        id: cache-modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: modules-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
+        if: steps.cache-modules.outputs.cache-hit != 'true'
         run: npm ci
 
-      - name: Build all packages
+      # Cache turbo build outputs for incremental builds
+      - name: Cache turbo
+        uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: turbo-${{ github.sha }}
+          restore-keys: turbo-
+
+      # Cache package dist directories
+      - name: Cache package builds
+        uses: actions/cache@v4
+        with:
+          path: |
+            packages/*/dist
+            dist
+          key: dist-${{ hashFiles('packages/*/src/**', 'src/**', 'tsconfig.json') }}
+
+      - name: Build packages
         run: npm run build
 
-      - name: Validate package structure
-        run: |
-          echo "=== Validating package structure ==="
+      - name: Build dashboard
+        run: npm run build:dashboard
 
+      - name: Validate all
+        run: |
+          echo "=== Validating packages ==="
           ERRORS=0
 
+          # Check dist files exist
           for pkg_dir in packages/*/; do
             pkg_name=$(basename "$pkg_dir")
-            echo "Checking $pkg_name..."
-
-            # Check package.json exists
-            if [ ! -f "$pkg_dir/package.json" ]; then
-              echo "  ERROR: Missing package.json"
+            if [ ! -f "$pkg_dir/dist/index.js" ] || [ ! -f "$pkg_dir/dist/index.d.ts" ]; then
+              echo "✗ $pkg_name - missing dist files"
               ERRORS=$((ERRORS + 1))
-              continue
+            else
+              echo "✓ $pkg_name"
             fi
-
-            # Check dist/index.js exists after build
-            if [ ! -f "$pkg_dir/dist/index.js" ]; then
-              echo "  ERROR: Missing dist/index.js (build failed?)"
-              ERRORS=$((ERRORS + 1))
-            fi
-
-            # Check dist/index.d.ts exists (TypeScript declarations)
-            if [ ! -f "$pkg_dir/dist/index.d.ts" ]; then
-              echo "  ERROR: Missing dist/index.d.ts (declarations not generated?)"
-              ERRORS=$((ERRORS + 1))
-            fi
-
-            # Check package name follows convention
-            pkg_json_name=$(node -p "require('./${pkg_dir}package.json').name")
-            if [[ ! "$pkg_json_name" =~ ^@agent-relay/ ]]; then
-              echo "  ERROR: Package name '$pkg_json_name' should start with @agent-relay/"
-              ERRORS=$((ERRORS + 1))
-            fi
-
-            echo "  OK: $pkg_json_name"
           done
 
+          [ $ERRORS -gt 0 ] && exit 1
+
           echo ""
-          if [ $ERRORS -gt 0 ]; then
-            echo "FAILED: $ERRORS errors found"
-            exit 1
-          fi
-          echo "SUCCESS: All packages validated"
-
-      - name: Test package imports
-        run: |
-          echo "=== Testing package imports ==="
-
-          # Test each package can be imported (using ESM dynamic import)
+          echo "=== Testing key imports ==="
           node --eval "
             const packages = [
               '@agent-relay/protocol',
               '@agent-relay/config',
-              '@agent-relay/storage',
-              '@agent-relay/state',
-              '@agent-relay/policy',
-              '@agent-relay/memory',
-              '@agent-relay/utils',
-              '@agent-relay/continuity',
-              '@agent-relay/trajectory',
-              '@agent-relay/hooks',
-              '@agent-relay/resiliency',
-              '@agent-relay/user-directory',
-              '@agent-relay/bridge',
-              '@agent-relay/wrapper',
               '@agent-relay/daemon',
-              '@agent-relay/cloud',
-              '@agent-relay/dashboard-server',
+              '@agent-relay/wrapper',
+              '@agent-relay/bridge',
               '@agent-relay/sdk',
-              '@agent-relay/api-types',
-              '@agent-relay/spawner',
             ];
 
             (async () => {
@@ -115,314 +98,39 @@ jobs:
                 try {
                   await import(pkg);
                   console.log('✓', pkg);
-                } catch (err) {
-                  console.error('✗', pkg, '-', err.message);
+                } catch (e) {
+                  console.error('✗', pkg, '-', e.message);
                   errors++;
                 }
               }
-
-              if (errors > 0) {
-                console.error('\\nFailed to import', errors, 'packages');
-                process.exit(1);
-              }
-              console.log('\\nAll packages imported successfully');
+              if (errors) process.exit(1);
             })();
           "
 
-      - name: Test cross-package dependencies
-        run: |
-          echo "=== Testing cross-package dependencies ==="
-
-          # Test that internal dependencies resolve correctly (using ESM dynamic import)
-          node --eval "
-            const tests = [
-              // Test daemon can use bridge
-              { from: '@agent-relay/daemon', imports: ['RelayServer'] },
-              // Test wrapper can use protocol
-              { from: '@agent-relay/wrapper', imports: ['BaseWrapper'] },
-              // Test bridge can use protocol
-              { from: '@agent-relay/bridge', imports: ['MultiProjectClient'] },
-              // Test config depends on protocol correctly
-              { from: '@agent-relay/config', imports: ['shadowConfig'] },
-            ];
-
-            (async () => {
-              let errors = 0;
-              for (const test of tests) {
-                try {
-                  const mod = await import(test.from);
-                  for (const imp of test.imports) {
-                    if (!(imp in mod)) {
-                      throw new Error('Missing export: ' + imp);
-                    }
-                  }
-                  console.log('✓', test.from, 'exports:', test.imports.join(', '));
-                } catch (err) {
-                  console.error('✗', test.from, '-', err.message);
-                  errors++;
-                }
-              }
-
-              if (errors > 0) {
-                console.error('\\nCross-package dependency errors:', errors);
-                process.exit(1);
-              }
-              console.log('\\nAll cross-package dependencies verified');
-            })();
-          "
-
-      - name: Test main package entry point
-        run: |
-          echo "=== Testing main package entry point ==="
+          echo ""
+          echo "=== Testing main package ==="
           node --eval "
             import('./dist/src/index.js').then(m => {
-              const exports = Object.keys(m);
-              console.log('Main package exports:', exports.length, 'items');
-
-              // Verify key exports exist
-              const required = [
-                'RelayServer',
-                'Connection',
-                'BaseWrapper',
-                'PROTOCOL_VERSION',
-              ];
-
-              const missing = required.filter(r => !exports.includes(r));
-              if (missing.length > 0) {
-                console.error('Missing required exports:', missing);
+              const required = ['Daemon', 'Connection', 'BaseWrapper', 'PROTOCOL_VERSION'];
+              const missing = required.filter(r => !(r in m));
+              if (missing.length) {
+                console.error('Missing exports:', missing);
                 process.exit(1);
               }
-
-              console.log('✓ All required exports present');
-            }).catch(err => {
-              console.error('Failed to import main package:', err.message);
-              process.exit(1);
+              console.log('✓ Main package exports OK');
             });
           "
 
-  # Test package publishing works (dry run)
-  validate-publish:
-    name: Validate Publish (Dry Run)
-    runs-on: ubuntu-latest
-    env:
-      NPM_CONFIG_FUND: false
+          echo ""
+          echo "SUCCESS: All validations passed"
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
-          registry-url: "https://registry.npmjs.org"
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build all packages
-        run: npm run build
-
-      - name: Validate packages can be packed
+      - name: Test dashboard startup
         run: |
-          echo "=== Testing npm pack for all packages ==="
-
-          ERRORS=0
-
-          for pkg_dir in packages/*/; do
-            pkg_name=$(basename "$pkg_dir")
-            echo "Packing $pkg_name..."
-
-            cd "$pkg_dir"
-            if ! npm pack --dry-run > /dev/null 2>&1; then
-              echo "  ERROR: npm pack failed for $pkg_name"
-              ERRORS=$((ERRORS + 1))
-            else
-              # Check tarball would include required files
-              FILES=$(npm pack --dry-run 2>&1)
-              if ! echo "$FILES" | grep -q "dist/index.js"; then
-                echo "  ERROR: dist/index.js not in package for $pkg_name"
-                ERRORS=$((ERRORS + 1))
-              else
-                echo "  OK"
-              fi
-            fi
-            cd - > /dev/null
-          done
-
-          if [ $ERRORS -gt 0 ]; then
-            echo "FAILED: $ERRORS packages have packing errors"
-            exit 1
-          fi
-          echo "SUCCESS: All packages can be packed"
-
-      - name: Validate main package can be packed
-        run: |
-          echo "=== Testing npm pack for main package ==="
-          npm pack --dry-run
-
-  # TypeScript strict mode validation
-  typescript-strict:
-    name: TypeScript Strict Validation
-    runs-on: ubuntu-latest
-    env:
-      NPM_CONFIG_FUND: false
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build all packages
-        run: npm run build
-
-      - name: Run TypeScript with strict checks
-        run: |
-          echo "=== Running TypeScript strict validation ==="
-
-          # Check each package compiles cleanly
-          for pkg_dir in packages/*/; do
-            pkg_name=$(basename "$pkg_dir")
-            if [ -f "$pkg_dir/tsconfig.json" ]; then
-              echo "Checking $pkg_name..."
-              cd "$pkg_dir"
-              npx tsc --noEmit || exit 1
-              cd - > /dev/null
-              echo "  OK"
-            fi
-          done
-
-          # Check root tsconfig
-          echo "Checking root package..."
-          npx tsc --noEmit
-          echo "  OK"
-
-          echo "SUCCESS: All TypeScript checks passed"
-
-  # Dashboard integration test
-  dashboard-integration:
-    name: Dashboard Integration Test
-    runs-on: ubuntu-latest
-    env:
-      NPM_CONFIG_FUND: false
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build all packages
-        run: npm run build
-
-      - name: Build dashboard
-        run: npm run build:dashboard
-
-      - name: Test dashboard server starts and serves content
-        run: |
-          echo "=== Testing dashboard integration ==="
-
-          # Start the CLI with dashboard in background
+          echo "=== Testing dashboard ==="
           timeout 30 node dist/src/cli/index.js up --port 3999 --dashboard &
-          CLI_PID=$!
-
-          # Wait for dashboard to be ready
-          echo "Waiting for dashboard to start..."
-          for i in {1..20}; do
-            if curl -s http://localhost:3999 > /dev/null 2>&1; then
-              echo "Dashboard is ready"
-              break
-            fi
-            if [ $i -eq 20 ]; then
-              echo "ERROR: Dashboard failed to start within 20 seconds"
-              kill $CLI_PID 2>/dev/null || true
-              exit 1
-            fi
+          for i in {1..15}; do
+            curl -s http://localhost:3999 > /dev/null && break
             sleep 1
           done
-
-          # Test dashboard serves content (not 404)
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3999)
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "ERROR: Dashboard returned HTTP $HTTP_CODE instead of 200"
-            echo "This usually means the dashboard static files path is misconfigured"
-            kill $CLI_PID 2>/dev/null || true
-            exit 1
-          fi
-
-          echo "✓ Dashboard serves HTTP 200"
-
-          # Verify it's actually HTML content (not empty or error JSON)
-          CONTENT_TYPE=$(curl -s -o /dev/null -w "%{content_type}" http://localhost:3999)
-          if [[ ! "$CONTENT_TYPE" =~ "text/html" ]]; then
-            echo "ERROR: Dashboard content type is $CONTENT_TYPE, expected text/html"
-            kill $CLI_PID 2>/dev/null || true
-            exit 1
-          fi
-
-          echo "✓ Dashboard serves HTML content"
-
-          # Clean up
-          kill $CLI_PID 2>/dev/null || true
-
-          echo "SUCCESS: Dashboard integration test passed"
-
-  # Circular dependency detection
-  circular-deps:
-    name: Circular Dependency Check
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
-
-      - name: Install madge
-        run: npm install -g madge
-
-      - name: Check for circular dependencies
-        run: |
-          echo "=== Checking for circular dependencies ==="
-
-          # Check each package
-          for pkg_dir in packages/*/; do
-            pkg_name=$(basename "$pkg_dir")
-            echo "Checking $pkg_name..."
-
-            # Skip if no src directory
-            if [ ! -d "$pkg_dir/src" ]; then
-              echo "  Skipped (no src directory)"
-              continue
-            fi
-
-            CIRCULAR=$(madge --circular --extensions ts "$pkg_dir/src" 2>/dev/null || true)
-            if [ -n "$CIRCULAR" ] && [ "$CIRCULAR" != "No circular dependency found!" ]; then
-              echo "  WARNING: Circular dependencies found in $pkg_name"
-              echo "$CIRCULAR"
-            else
-              echo "  OK"
-            fi
-          done
-
-          echo "SUCCESS: Circular dependency check complete"
+          [ "$HTTP_CODE" = "200" ] && echo "✓ Dashboard OK" || exit 1

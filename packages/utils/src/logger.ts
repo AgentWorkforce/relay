@@ -73,9 +73,11 @@ function log(level: LogLevel, component: string, msg: string, extra?: Record<str
   // Write to file if configured
   if (LOG_FILE) {
     fs.appendFileSync(LOG_FILE, formatted + '\n');
+    // When logging to file, skip console output to avoid polluting TUI terminals
+    return;
   }
 
-  // Write to console (stderr for WARN/ERROR)
+  // Only write to console if no log file is configured (fallback mode)
   if (level === 'ERROR' || level === 'WARN') {
     console.error(formatted);
   } else {
