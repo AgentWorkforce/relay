@@ -468,6 +468,20 @@ describe('BaseWrapper', () => {
       expect(wrapper.testClient.sentMessages).toHaveLength(0);
     });
 
+    it('does not add hash when client not ready (allows retry)', () => {
+      // First attempt - client not ready
+      wrapper.testClient.state = 'CONNECTING';
+      wrapper.testSendRelayCommand({ to: 'ReceiverAgent', body: 'Hello' });
+      expect(wrapper.testClient.sentMessages).toHaveLength(0);
+      expect(wrapper.testSentMessageHashes.size).toBe(0);
+
+      // Client becomes ready - retry should work
+      wrapper.testClient.state = 'READY';
+      wrapper.testSendRelayCommand({ to: 'ReceiverAgent', body: 'Hello' });
+      expect(wrapper.testClient.sentMessages).toHaveLength(1);
+      expect(wrapper.testSentMessageHashes.size).toBe(1);
+    });
+
     it('uses sendChannelMessage for channel targets (starting with #)', () => {
       wrapper.testSendRelayCommand({
         to: '#general',

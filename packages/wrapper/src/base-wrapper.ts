@@ -456,18 +456,20 @@ export abstract class BaseWrapper extends EventEmitter {
       console.error(`[base-wrapper] Skipped duplicate message to ${cmd.to}`);
       return;
     }
+
+    // Only send if client ready - check BEFORE adding hash to avoid blocking retries
+    if (this.client.state !== 'READY') {
+      console.error(`[base-wrapper] Client not ready (state=${this.client.state}), dropping message to ${cmd.to}`);
+      return;
+    }
+
+    // Add hash only after confirming we will attempt the send
     this.sentMessageHashes.add(hash);
 
     // Limit hash set size
     if (this.sentMessageHashes.size > 500) {
       const oldest = this.sentMessageHashes.values().next().value;
       if (oldest) this.sentMessageHashes.delete(oldest);
-    }
-
-    // Only send if client ready
-    if (this.client.state !== 'READY') {
-      console.error(`[base-wrapper] Client not ready (state=${this.client.state}), dropping message to ${cmd.to}`);
-      return;
     }
 
     console.error(`[base-wrapper] sendRelayCommand: to=${cmd.to}, body=${cmd.body.substring(0, 50)}...`);

@@ -368,6 +368,10 @@ async fn main() -> Result<()> {
     const AUTO_ENTER_COOLDOWN: Duration = Duration::from_secs(5);
     // Maximum auto-Enter attempts per injection to prevent infinite loops
     const MAX_AUTO_ENTER_RETRIES: u32 = 5;
+    // Timer interval for periodic auto-Enter checks
+    const AUTO_ENTER_CHECK_INTERVAL_MS: u64 = 2000;
+    // Detection window for new injections - must be > check interval to avoid missing injections
+    const NEW_INJECTION_WINDOW_MS: u64 = 2500;
     // Track auto-Enter retry count for current injection
     let mut auto_enter_retry_count: u32 = 0;
     // Track the last injection time we've seen to reset retry count on new injections
@@ -378,7 +382,8 @@ async fn main() -> Result<()> {
 
     // Periodic timer for auto-Enter checks (runs independently of output events)
     // This is critical: the auto-Enter logic MUST run even when there's no output
-    let mut auto_enter_interval = tokio::time::interval(std::time::Duration::from_secs(2));
+    let mut auto_enter_interval =
+        tokio::time::interval(std::time::Duration::from_millis(AUTO_ENTER_CHECK_INTERVAL_MS));
 
     loop {
         select! {
@@ -624,10 +629,11 @@ async fn main() -> Result<()> {
                 let had_recent_injection = injector.had_recent_injection(60_000);
 
                 // Get the injection timestamp to detect new injections
+                // Detection window must be wider than timer interval to avoid missing injections
                 let current_injection_ms = injector.ms_since_injection();
-                if current_injection_ms > 0 && current_injection_ms < 1000 {
-                    // New injection detected (within last second) - reset retry count
-                    if last_tracked_injection_ms == 0 || injector.ms_since_injection() < last_tracked_injection_ms {
+                if current_injection_ms > 0 && current_injection_ms < NEW_INJECTION_WINDOW_MS {
+                    // New injection detected - reset retry count
+                    if last_tracked_injection_ms == 0 || current_injection_ms < last_tracked_injection_ms {
                         debug!("New injection detected, resetting auto-Enter retry count");
                         auto_enter_retry_count = 0;
                     }
