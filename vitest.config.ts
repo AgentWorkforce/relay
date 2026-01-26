@@ -13,11 +13,6 @@ export default defineConfig({
       'packages/**/src/**/*.test.ts',
       'packages/**/tests/**/*.test.ts',
     ],
-    // Use jsdom environment for frontend tests
-    environmentMatchGlobs: [
-      ['packages/dashboard/ui/frontend/**/*.test.ts', 'jsdom'],
-      ['packages/dashboard/ui/react-components/**/*.test.tsx', 'jsdom'],
-    ],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov', 'html'],

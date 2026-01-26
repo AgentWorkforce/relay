@@ -1,11 +1,8 @@
 # Dependencies - must be rebuilt inside container for correct platform
 node_modules
-packages/dashboard/ui/node_modules
 
 # Build outputs
 dist
-packages/dashboard/ui/out
-packages/dashboard/ui/.next
 
 # Development files
 .git

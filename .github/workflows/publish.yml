@@ -207,7 +207,6 @@ jobs:
             package-lock.json
             packages/*/package.json
             packages/*/dist/
-            packages/dashboard/ui-dist/
             dist/
           retention-days: 1
 
@@ -243,8 +242,6 @@ jobs:
           - sdk
           - daemon
           - cloud
-          - dashboard
-          - dashboard-server
           - telemetry
 
     steps:
