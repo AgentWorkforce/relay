@@ -609,12 +609,16 @@ export async function startDashboard(
   // Use detectWorkspacePath to find the actual repo directory in cloud workspaces
   const workspacePath = detectWorkspacePath(projectRoot || dataDir);
   console.log(`[dashboard] Workspace path: ${workspacePath}`);
+  console.log(`[dashboard] Team dir: ${teamDir}`);
 
   // Pass dashboard port to spawner so spawned agents can call spawn/release APIs for nested spawning
   // Also pass spawn tracking callbacks so messages can be queued before HELLO completes
+  // IMPORTANT: Pass teamDir explicitly to ensure spawner checks same files as daemon
+  // This prevents path mismatch when detectWorkspacePath returns different path than daemon uses
   const spawner: AgentSpawner | undefined = enableSpawner
     ? new AgentSpawner({
         projectRoot: workspacePath,
+        teamDir, // Use same teamDir as daemon to avoid registration detection failures
         tmuxSession,
         dashboardPort: port,
         onMarkSpawning,

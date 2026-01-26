@@ -418,6 +418,8 @@ export interface AgentSpawnerOptions {
   projectRoot: string;
   /** Explicit socket path for daemon connection (if not provided, derived from projectRoot) */
   socketPath?: string;
+  /** Explicit team directory for agent registration files (if not provided, derived from projectRoot) */
+  teamDir?: string;
   tmuxSession?: string;
   dashboardPort?: number;
   /**
@@ -459,15 +461,18 @@ export class AgentSpawner {
 
     const paths = getProjectPaths(options.projectRoot);
     this.projectRoot = paths.projectRoot;
+    // Use explicit teamDir if provided (ensures spawner checks same files as daemon)
+    // This is critical in cloud workspaces where detectWorkspacePath may return different paths
+    const effectiveTeamDir = options.teamDir ?? paths.teamDir;
     // Use connected-agents.json (live socket connections) instead of agents.json (historical registry)
     // This ensures spawned agents have actual daemon connections for channel message delivery
-    this.agentsPath = path.join(paths.teamDir, 'connected-agents.json');
-    this.registryPath = path.join(paths.teamDir, 'agents.json');
+    this.agentsPath = path.join(effectiveTeamDir, 'connected-agents.json');
+    this.registryPath = path.join(effectiveTeamDir, 'agents.json');
     // Use explicit socketPath if provided (ensures spawned agents connect to same daemon)
     // Otherwise derive from project paths
     this.socketPath = options.socketPath ?? paths.socketPath;
-    this.logsDir = path.join(paths.teamDir, 'worker-logs');
-    this.workersPath = path.join(paths.teamDir, 'workers.json');
+    this.logsDir = path.join(effectiveTeamDir, 'worker-logs');
+    this.workersPath = path.join(effectiveTeamDir, 'workers.json');
     this.dashboardPort = options.dashboardPort;
 
     // Store spawn tracking callbacks
@@ -727,7 +732,7 @@ export class AgentSpawner {
    * Spawn a new worker agent using relay-pty
    */
   async spawn(request: SpawnRequest): Promise<SpawnResult> {
-    const { name, cli, task, team, spawnerName, userId, includeWorkflowConventions } = request;
+    const { name, cli, task, team, spawnerName, userId, includeWorkflowConventions, interactive } = request;
     const debug = process.env.DEBUG_SPAWN === '1';
 
     // Validate agent name to prevent path traversal attacks
@@ -809,18 +814,24 @@ export class AgentSpawner {
       // This creates/updates CLI-specific settings files with agent-relay permissions
       ensureMcpPermissions(this.projectRoot, commandName, debug);
 
-      // Add --dangerously-skip-permissions for Claude agents
+      // Add auto-accept flags for non-interactive agents (normal spawns, not setup terminals)
+      // When interactive=true (setup flows), we SKIP these flags so users can respond to prompts
       const isClaudeCli = commandName.startsWith('claude');
-      if (isClaudeCli) {
-        if (!args.includes('--dangerously-skip-permissions')) {
+      const isCursorCli = commandName === 'agent' || rawCommandName === 'cursor';
+
+      if (!interactive) {
+        // Add --dangerously-skip-permissions for Claude agents
+        if (isClaudeCli && !args.includes('--dangerously-skip-permissions')) {
           args.push('--dangerously-skip-permissions');
         }
-      }
 
-      // Add --force for Cursor agents (CLI is 'agent', may be passed as 'cursor')
-      const isCursorCli = commandName === 'agent' || rawCommandName === 'cursor';
-      if (isCursorCli && !args.includes('--force')) {
-        args.push('--force');
+        // Add --force for Cursor agents (auto-approve tool usage in non-interactive mode)
+        if (isCursorCli && !args.includes('--force')) {
+          args.push('--force');
+        }
+      } else {
+        // Interactive mode: log that we're skipping auto-accept flags
+        if (debug) log.debug(`Interactive mode: skipping auto-accept flags for ${name}`);
       }
 
       // Apply agent config (model, --agent flag) from .claude/agents/ if available
@@ -849,16 +860,20 @@ export class AgentSpawner {
         if (debug) log.debug(`Applied agent config for ${name}: ${args.join(' ')}`);
       }
 
-      // Add --dangerously-bypass-approvals-and-sandbox for Codex agents
+      // Add auto-accept flags for Codex and Gemini (only in non-interactive mode)
       const isCodexCli = commandName.startsWith('codex');
-      if (isCodexCli && !args.includes('--dangerously-bypass-approvals-and-sandbox')) {
-        args.push('--dangerously-bypass-approvals-and-sandbox');
-      }
-
-      // Add --yolo for Gemini agents (auto-accept all prompts)
       const isGeminiCli = commandName === 'gemini';
-      if (isGeminiCli && !args.includes('--yolo')) {
-        args.push('--yolo');
+
+      if (!interactive) {
+        // Add --dangerously-bypass-approvals-and-sandbox for Codex agents
+        if (isCodexCli && !args.includes('--dangerously-bypass-approvals-and-sandbox')) {
+          args.push('--dangerously-bypass-approvals-and-sandbox');
+        }
+
+        // Add --yolo for Gemini agents (auto-accept all prompts)
+        if (isGeminiCli && !args.includes('--yolo')) {
+          args.push('--yolo');
+        }
       }
 
       // Auto-install MCP config if not present (project-local)
