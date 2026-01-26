@@ -18,8 +18,10 @@ case $CLI in
         CRED_FILE="$HOME/.config/gcloud/application_default_credentials.json"
         ALT_FILE="$HOME/.gemini/credentials.json"
         ;;
-    cursor)
+    cursor|agent)
+        # Cursor CLI installs as 'agent', credentials in ~/.cursor/
         CRED_FILE="$HOME/.cursor/auth.json"
+        CLI="cursor"  # Normalize name
         ;;
     opencode)
         CRED_FILE="$HOME/.local/share/opencode/auth.json"
@@ -27,9 +29,13 @@ case $CLI in
     droid)
         CRED_FILE="$HOME/.droid/auth.json"
         ;;
+    copilot)
+        # GitHub Copilot uses gh CLI auth - stored in YAML format
+        CRED_FILE="$HOME/.config/gh/hosts.yml"
+        ;;
     *)
         echo "Unknown CLI: $CLI"
-        echo "Supported: claude, codex, gemini, cursor, opencode, droid"
+        echo "Supported: claude, codex, gemini, cursor, opencode, droid, copilot"
         exit 1
         ;;
 esac

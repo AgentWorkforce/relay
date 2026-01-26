@@ -282,6 +282,15 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
     waitTimeout: 30000,
     prompts: [
       {
+        // Initial login prompt - "Press any key to log in..."
+        // This is the FIRST prompt shown by Cursor Agent and blocks all progress
+        // Must send a keystroke to proceed to the auth URL
+        pattern: /press any key to log in/i,
+        response: '\r', // Send Enter to proceed
+        delay: 500,
+        description: 'Initial login prompt',
+      },
+      {
         // Workspace Trust screen - must press 'a' to trust
         // "Do you want to mark this workspace as trusted?"
         // "[a] Trust this workspace"
@@ -320,6 +329,62 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
         message: 'Authentication failed',
         recoverable: true,
         hint: 'Please try logging in again.',
+      },
+      {
+        pattern: /network\s*error|ENOTFOUND|ECONNREFUSED|timeout/i,
+        message: 'Network error during authentication',
+        recoverable: true,
+        hint: 'Please check your internet connection and try again.',
+      },
+    ],
+  },
+  copilot: {
+    command: 'copilot',
+    args: ['auth', 'login'], // copilot auth login - triggers GitHub OAuth flow
+    deviceFlowArgs: ['auth', 'login', '--device'], // Device flow for headless environments
+    supportsDeviceFlow: true,
+    urlPattern: /(https:\/\/[^\s]+)/,
+    // Copilot uses gh CLI's auth - credentials stored via GitHub CLI config
+    credentialPath: '~/.config/gh/hosts.yml',
+    displayName: 'GitHub Copilot',
+    waitTimeout: 30000,
+    prompts: [
+      {
+        // Browser or device code selection
+        pattern: /login\s*with\s*a\s*code|one-time\s*code|device\s*code|browser|authenticate/i,
+        response: '\r', // Select first option (browser-based auth)
+        delay: 200,
+        description: 'Auth method selection',
+      },
+      {
+        // Press Enter to open browser
+        pattern: /press\s*enter\s*to\s*open|open.*browser|opening\s*browser/i,
+        response: '\r',
+        delay: 200,
+        description: 'Open browser prompt',
+      },
+      {
+        // Login success - press enter to continue
+        pattern: /login\s*successful|logged\s*in.*press\s*enter|press\s*enter\s*to\s*continue|authentication\s*complete/i,
+        response: '\r',
+        delay: 200,
+        description: 'Login success prompt',
+      },
+      {
+        // Generic enter prompt (fallback)
+        pattern: /press\s*enter|enter\s*to\s*(confirm|continue|proceed)/i,
+        response: '\r',
+        delay: 300,
+        description: 'Generic enter prompt',
+      },
+    ],
+    successPatterns: [/success/i, /authenticated/i, /logged\s*in/i, /you.*(?:are|now).*logged/i, /authentication\s*complete/i],
+    errorPatterns: [
+      {
+        pattern: /oauth\s*error|auth.*failed|authentication\s*error/i,
+        message: 'GitHub authentication failed',
+        recoverable: true,
+        hint: 'Please try logging in again. Make sure you have GitHub Copilot access.',
       },
       {
         pattern: /network\s*error|ENOTFOUND|ECONNREFUSED|timeout/i,

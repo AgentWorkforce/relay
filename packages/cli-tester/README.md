@@ -21,6 +21,9 @@ npm run cli-tester:start
 
 # Start with clean credentials (removes any cached auth)
 npm run cli-tester:start:clean
+
+# Start with daemon for full integration testing
+npm run cli-tester:start:daemon
 ```
 
 ## Inside the Container
@@ -64,6 +67,51 @@ In a second terminal (while CLI is running):
 ./scripts/clear-auth.sh all  # Clear all CLIs
 ```
 
+## Advanced: Testing Spawn Flow
+
+The simple `test-cli.sh` tests the CLI in isolation. For debugging issues where the CLI works in isolation but fails when spawned via the application (e.g., registration timeout), use these advanced tests:
+
+### Test Spawn Behavior
+
+Simulates what `AgentSpawner.spawn()` does, including CLI-specific flags:
+
+```bash
+# Test with same flags as spawner (--force for cursor, --dangerously-skip-permissions for claude)
+./scripts/test-spawn.sh cursor
+
+# Test in interactive mode (without auto-accept flags)
+./scripts/test-spawn.sh cursor --interactive
+
+# With verbose debug output
+DEBUG_SPAWN=1 ./scripts/test-spawn.sh cursor
+```
+
+### Test Registration Flow
+
+Monitors the registration files that the spawner polls. This is the step that times out:
+
+```bash
+# Watch registration with 60 second timeout
+./scripts/test-registration.sh cursor 60
+
+# With debug output
+DEBUG_SPAWN=1 ./scripts/test-registration.sh cursor
+```
+
+### Full Daemon Integration Test
+
+Starts a real daemon and tests the complete flow:
+
+```bash
+# Full end-to-end test with daemon
+./scripts/test-with-daemon.sh cursor
+
+# With debug output
+DEBUG=1 ./scripts/test-with-daemon.sh cursor
+```
+
+**Note:** Requires the daemon to be built: `cd packages/daemon && npm run build`
+
 ## Debugging a Broken CLI
 
 When a CLI isn't working, use this workflow:
@@ -88,16 +136,96 @@ ls -la ~/.cursor/
 ./scripts/test-cli.sh claude
 ```
 
+## Debugging Registration Timeout
+
+If a CLI works in isolation but times out when spawned ("Agent registration timeout"), the issue is in the daemon registration flow.
+
+### Quick Test (Run This First)
+
+```bash
+# Test the EXACT setup flow - this is what TerminalProviderSetup.tsx does
+DEBUG=1 ./scripts/test-full-spawn.sh cursor true
+```
+
+This simulates:
+- `interactive: true` (no --force flag, like setup terminal)
+- 30 second registration timeout
+- Verbose logging of what's happening
+
+### Understanding the Flow
+
+**Normal spawn (non-interactive):**
+```bash
+./scripts/test-full-spawn.sh cursor       # Has --force flag
+```
+
+**Setup terminal (interactive):**
+```bash
+./scripts/test-full-spawn.sh cursor true  # NO --force flag
+```
+
+The key difference is `interactive: true` **skips auto-accept flags**. Setup terminals expect the user to respond to prompts in the browser terminal.
+
+### What the Tests Show
+
+1. **test-full-spawn.sh** - Simulates spawner's 30s registration timeout
+   - Shows poll count (like spawner logs)
+   - Shows socket status
+   - Captures CLI output to log file
+   - Tells you exactly where things fail
+
+2. **test-setup-flow.sh** - Identical to what TerminalProviderSetup.tsx does
+   - Uses `__setup__cursor-xxx` naming
+   - No CLI flags (interactive mode)
+
+### Debugging Steps
+
+```bash
+# 1. Test in isolation (verify CLI starts)
+./scripts/test-cli.sh cursor
+
+# 2. Test NON-INTERACTIVE spawn (with --force)
+DEBUG=1 ./scripts/test-full-spawn.sh cursor
+
+# 3. Test INTERACTIVE spawn (setup terminal flow)
+DEBUG=1 ./scripts/test-full-spawn.sh cursor true
+
+# 4. Watch the log file in another terminal
+tail -f /tmp/relay-spawn-*.log
+```
+
+### Common Causes
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| CLI exits immediately | Not installed or crash | Check `which agent` |
+| Socket never created | CLI stuck on early prompt | Check log for prompts |
+| 30s timeout | CLI waiting for user input | Respond to prompts (trust, etc.) |
+| 30s timeout | No daemon to register with | Run with daemon profile |
+
+### The Registration Flow
+
+The spawner waits for TWO conditions:
+1. Agent in `connected-agents.json` (daemon updates this when CLI connects)
+2. Agent in `agents.json` (relay-pty hook updates this)
+
+Without a running daemon, both files are empty → timeout.
+
 ## Available CLIs
 
 The container includes these pre-installed CLIs:
 
-- `claude` - Anthropic's Claude CLI
-- `codex` - OpenAI's Codex CLI
-- `gemini` - Google's Gemini CLI
-- `cursor` - Cursor CLI
-- `opencode` - OpenCode CLI
-- `droid` - Droid CLI
+| CLI | Command | Auth Command | Credential Path |
+|-----|---------|--------------|-----------------|
+| Claude | `claude` | (auto) | `~/.claude/.credentials.json` |
+| Codex | `codex` | `login` | `~/.codex/auth.json` |
+| Gemini | `gemini` | (auto) | `~/.gemini/credentials.json` |
+| Cursor | `agent` | (auto) | `~/.cursor/auth.json` |
+| OpenCode | `opencode` | `auth login` | `~/.local/share/opencode/auth.json` |
+| Droid | `droid` | `--login` | `~/.droid/auth.json` |
+| Copilot | `copilot` | `auth login` | `~/.config/gh/hosts.yml` |
+
+**Note:** Cursor CLI installs as `agent`, not `cursor`. The test scripts handle this mapping automatically.
 
 ## How It Works
 

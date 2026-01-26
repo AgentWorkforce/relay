@@ -16,6 +16,7 @@ if [ -z "$CLI" ]; then
     echo "  cursor   - Clear Cursor credentials"
     echo "  opencode - Clear OpenCode credentials"
     echo "  droid    - Clear Droid credentials"
+    echo "  copilot  - Clear GitHub Copilot credentials"
     echo "  all      - Clear all credentials"
     exit 1
 fi
@@ -43,7 +44,8 @@ clear_cli() {
                 rm -f "$HOME/.config/gcloud/application_default_credentials.json"
             fi
             ;;
-        cursor)
+        cursor|agent)
+            # Cursor CLI installs as 'agent', credentials in ~/.cursor/
             dir="$HOME/.cursor"
             files=("auth.json" "settings.json")
             ;;
@@ -54,6 +56,11 @@ clear_cli() {
         droid)
             dir="$HOME/.droid"
             files=("auth.json")
+            ;;
+        copilot)
+            # GitHub Copilot uses gh CLI auth - stored in ~/.config/gh/
+            dir="$HOME/.config/gh"
+            files=("hosts.yml" "config.yml")
             ;;
         *)
             echo "Unknown CLI: $cli"
@@ -82,7 +89,7 @@ echo "========================================"
 echo ""
 
 if [ "$CLI" = "all" ]; then
-    for c in claude codex gemini cursor opencode droid; do
+    for c in claude codex gemini cursor opencode droid copilot; do
         clear_cli "$c"
         echo ""
     done

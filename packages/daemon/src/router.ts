@@ -582,7 +582,7 @@ export class Router {
     const to = envelope.to;
     const topic = envelope.topic;
 
-    routerLog.debug(`Route ${senderName} -> ${to}`, { preview: envelope.payload.body?.substring(0, 50) });
+    routerLog.debug(`Route ${senderName} -> ${to}`, { preview: typeof envelope.payload.body === 'string' ? envelope.payload.body.substring(0, 50) : JSON.stringify(envelope.payload.body)?.substring(0, 50) });
 
     if (to === '*') {
       // Broadcast to all (except sender)
@@ -725,7 +725,7 @@ export class Router {
         if (sent) anySent = true;
         routerLog.debug(`Delivered ${from} -> ${to} (user connection ${userConn.id})`, {
           success: sent,
-          preview: envelope.payload.body?.substring(0, 40),
+          preview: typeof envelope.payload.body === 'string' ? envelope.payload.body.substring(0, 40) : JSON.stringify(envelope.payload.body)?.substring(0, 40),
         });
         // Persist only once (for the first connection)
         if (userConn === [...userConnections][0]) {
@@ -745,7 +745,7 @@ export class Router {
     const target = agentTarget!;
     const deliver = this.createDeliverEnvelope(from, to, envelope, target);
     const sent = target.send(deliver);
-    routerLog.debug(`Delivered ${from} -> ${to}`, { success: sent, preview: envelope.payload.body?.substring(0, 40) });
+    routerLog.debug(`Delivered ${from} -> ${to}`, { success: sent, preview: typeof envelope.payload.body === 'string' ? envelope.payload.body.substring(0, 40) : JSON.stringify(envelope.payload.body)?.substring(0, 40) });
     this.persistDeliverEnvelope(deliver);
     if (sent) {
       this.trackDelivery(target, deliver);
@@ -967,7 +967,7 @@ export class Router {
     routerLog.info(`Persisting offline message for "${to}"`, {
       from,
       messageId: envelope.id,
-      bodyPreview: envelope.payload.body?.substring(0, 50),
+      bodyPreview: typeof envelope.payload.body === 'string' ? envelope.payload.body.substring(0, 50) : JSON.stringify(envelope.payload.body)?.substring(0, 50),
     });
 
     this.storage.saveMessage({

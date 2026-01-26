@@ -61,5 +61,5 @@
     "web-ui",
     "agent-coordination"
   ],
-  "license": "MIT"
+  "license": "Apache-2.0"
 }

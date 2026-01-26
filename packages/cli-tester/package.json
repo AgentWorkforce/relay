@@ -9,8 +9,10 @@
     "build": "tsc",
     "start": "./scripts/start.sh",
     "start:clean": "./scripts/start.sh --clean",
+    "start:daemon": "./scripts/start.sh --daemon",
     "docker:build": "docker compose -f docker/docker-compose.yml build",
     "docker:up": "docker compose -f docker/docker-compose.yml up",
+    "docker:up:daemon": "docker compose -f docker/docker-compose.yml --profile daemon up",
     "docker:down": "docker compose -f docker/docker-compose.yml down",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -22,7 +24,7 @@
     "relay-pty"
   ],
   "author": "Agent Workforce",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "devDependencies": {
     "typescript": "^5.3.3",
     "vitest": "^1.2.0"

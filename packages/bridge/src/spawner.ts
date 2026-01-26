@@ -468,6 +468,9 @@ export class AgentSpawner {
     // This ensures spawned agents have actual daemon connections for channel message delivery
     this.agentsPath = path.join(effectiveTeamDir, 'connected-agents.json');
     this.registryPath = path.join(effectiveTeamDir, 'agents.json');
+
+    // Debug: log path configuration
+    log.info(`AgentSpawner paths: projectRoot=${this.projectRoot} teamDir=${effectiveTeamDir} (explicit=${!!options.teamDir}) agentsPath=${this.agentsPath}`);
     // Use explicit socketPath if provided (ensures spawned agents connect to same daemon)
     // Otherwise derive from project paths
     this.socketPath = options.socketPath ?? paths.socketPath;
@@ -1158,6 +1161,22 @@ export class AgentSpawner {
 
       if (debug) log.debug(`PTY started, pid: ${pty.pid}`);
 
+      // Cursor CLI shows "Press any key to log in..." prompt that blocks all progress
+      // Send a keystroke after startup to bypass this initial prompt
+      // Only do this for interactive/setup flows where auth is needed
+      // For normal spawns (already authenticated), this prompt won't appear
+      if (isCursorCli && interactive) {
+        // Wait a moment for CLI to initialize and show the prompt
+        await sleep(1500);
+        if (debug) log.debug(`Sending initial keystroke for Cursor setup to bypass "Press any key" prompt`);
+        try {
+          // Send Enter key to proceed past the initial prompt
+          await pty.write('\r');
+        } catch (err) {
+          log.warn(`Failed to send initial keystroke for Cursor: ${err}`);
+        }
+      }
+
       // Wait for the agent to register with the daemon
       const registered = await this.waitForAgentRegistration(name, 30_000, 500);
       if (!registered) {
@@ -1543,15 +1562,27 @@ export class AgentSpawner {
     pollIntervalMs = 500
   ): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
+    let pollCount = 0;
 
     while (Date.now() < deadline) {
-      if (this.isAgentRegistered(name)) {
+      pollCount++;
+      const connected = this.isAgentConnected(name);
+      const recentlySeen = this.isAgentRecentlySeen(name);
+
+      // Log first few polls and every 10th poll after that
+      if (pollCount <= 3 || pollCount % 10 === 0) {
+        log.info(`Registration poll #${pollCount} for ${name}: connected=${connected} recentlySeen=${recentlySeen} agentsPath=${this.agentsPath}`);
+      }
+
+      if (connected && recentlySeen) {
+        log.info(`Agent ${name} registered after ${pollCount} polls`);
         return true;
       }
 
       await sleep(pollIntervalMs);
     }
 
+    log.info(`Registration timeout for ${name} after ${pollCount} polls`);
     return false;
   }
 
@@ -1560,8 +1591,15 @@ export class AgentSpawner {
   }
 
   private isAgentConnected(name: string): boolean {
-    if (!this.agentsPath) return false;
-    if (!fs.existsSync(this.agentsPath)) return false;
+    const debug = process.env.DEBUG_SPAWN === '1';
+    if (!this.agentsPath) {
+      if (debug) log.debug(`isAgentConnected(${name}): no agentsPath`);
+      return false;
+    }
+    if (!fs.existsSync(this.agentsPath)) {
+      if (debug) log.debug(`isAgentConnected(${name}): file not found: ${this.agentsPath}`);
+      return false;
+    }
 
     try {
       const raw = JSON.parse(fs.readFileSync(this.agentsPath, 'utf-8'));
@@ -1571,13 +1609,17 @@ export class AgentSpawner {
       const updatedAt = typeof raw?.updatedAt === 'number' ? raw.updatedAt : 0;
       const isFresh = Date.now() - updatedAt <= AgentSpawner.ONLINE_THRESHOLD_MS;
 
+      if (debug) {
+        log.debug(`isAgentConnected(${name}): path=${this.agentsPath} agents=${agents.join(',')} updatedAt=${updatedAt} isFresh=${isFresh}`);
+      }
+
       if (!isFresh) return false;
 
       // Case-insensitive check to match router behavior
       const lowerName = name.toLowerCase();
       return agents.some((a) => typeof a === 'string' && a.toLowerCase() === lowerName);
     } catch (err: any) {
-      log.error('Failed to read connected-agents.json', { error: err.message });
+      log.error('Failed to read connected-agents.json', { error: err.message, path: this.agentsPath });
       return false;
     }
   }

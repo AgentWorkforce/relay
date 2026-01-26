@@ -10,6 +10,12 @@ set -e
 CLI=${1:-claude}
 shift 2>/dev/null || true  # Shift to get extra args, ignore if no more args
 
+# Map CLI name to actual command (cursor installs as 'agent')
+CLI_CMD="$CLI"
+if [ "$CLI" = "cursor" ]; then
+    CLI_CMD="agent"
+fi
+
 NAME="test-${CLI}"
 SOCKET="/tmp/relay-pty-${NAME}.sock"
 
@@ -47,4 +53,4 @@ fi
 
 # Run relay-pty with the CLI
 # Pass through any extra arguments to the CLI
-exec relay-pty "${RELAY_ARGS[@]}" -- "$CLI" "$@"
+exec relay-pty "${RELAY_ARGS[@]}" -- "$CLI_CMD" "$@"
