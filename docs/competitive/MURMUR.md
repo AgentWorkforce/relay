@@ -440,6 +440,416 @@ PING ← PONG (heartbeat every 5s)
 
 ---
 
+
+### 11. Agent Lifecycle & Connection Management
+
+One of the most significant architectural differences between Murmur and Agent Relay is **how agents are expected to maintain connections and send messages**.
+
+#### Murmur: Agent-Managed Lifecycle
+
+Murmur places **responsibility on the agent developer** to maintain connections and manage message flow. There are two approaches:
+
+**Approach 1: CLI with Background Process**
+
+The agent must manually run a separate background process that maintains the SSE connection:
+
+```bash
+# Agent must keep this running 24/7
+nohup murmur sync --realtime --timeout 86400000 \
+  --webhook "http://localhost:18789/hooks/wake?token=secret" \
+  --webhook-body '{"text":"Murmur from {{senderName}}","mode":"now"}' \
+  >> ~/logs/murmur-realtime.log 2>&1 &
+```
+
+**How it works:**
+
+1. **Background process maintains SSE connection**
+   - Opens persistent connection to `/v1/messages/stream`
+   - Auto-reconnects with exponential backoff (1s → 30s)
+   - Parses SSE events line-by-line
+
+2. **On message notification, triggers webhook**
+   ```
+   SSE event: {"event":"message:new","data":{"messageId":"abc123"}}
+     ↓
+   POST http://localhost:18789/hooks/wake (wakes agent)
+     ↓
+   Agent runs: murmur sync (fetches from local DB)
+     ↓
+   Agent processes message
+   ```
+
+3. **Agent sends messages via CLI**
+   ```bash
+   murmur send --to <contact-id> --message "Hello!"
+   ```
+
+**Code: SSE Connection Management** (`packages/murmur-cli/src/engine/api.ts:236`)
+
+```typescript
+async streamMessages(onEvent, options) {
+  while (true) {  // Infinite retry loop
+    const response = await fetch(`${this.baseUrl}/v1/messages/stream`, {
+      method: 'GET',
+      headers: {
+        'Accept': 'text/event-stream',
+        'Authorization': `Bearer ${this.accessToken}`
+      },
+      signal: options?.signal
+    });
+    
+    // Parse SSE stream line-by-line
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      
+      buffer += decoder.decode(value, { stream: true });
+      // ... parse event: and data: lines
+      // ... dispatch to onEvent callback
+    }
+    
+    // Connection closed, loop retries
+  }
+}
+```
+
+**Code: Auto-Reconnect with Backoff** (`packages/murmur-cli/src/cli.ts:917`)
+
+```typescript
+let backoffMs = 1000;
+const maxBackoffMs = 30000;
+
+while (!controller.signal.aborted) {
+  try {
+    await getEngine().streamMessages(async event => {
+      if (event.event === 'message:new') {
+        await triggerSync(); // Fetch full message
+      }
+    });
+    
+    backoffMs = 1000; // Reset on success
+  } catch (error) {
+    logger.warn(`Realtime sync disconnected: ${error.message}`);
+    await waitWithAbort(backoffMs, controller.signal);
+    backoffMs = Math.min(backoffMs * 2, maxBackoffMs);
+  }
+}
+```
+
+**Agent Workflow:**
+```
+1. Agent starts → runs 'murmur sync --realtime' in background
+2. Background process maintains SSE connection 24/7
+3. When message arrives:
+   - SSE notification received
+   - Fetch full message from API
+   - Decrypt and store in local SQLite (~/.murmur/murmur.db)
+   - Trigger webhook to wake agent
+4. Agent wakes up, runs: murmur sync
+5. Agent reads from local DB
+6. Agent sends reply: murmur send --to <id> --message "Reply"
+```
+
+**Developer Responsibilities:**
+- ✅ Start and maintain background process
+- ✅ Handle webhook to wake agent
+- ✅ Poll local database or run `murmur sync`
+- ✅ Explicitly call CLI commands to send messages
+- ✅ Manage process lifecycle (restart on crash, etc.)
+
+---
+
+**Approach 2: MCP Integration**
+
+When using MCP (Model Context Protocol), the agent uses tools instead of CLI commands:
+
+```typescript
+// MCP server runs as persistent stdio process
+murmur mcp
+
+// AI agent calls MCP tools
+const { newMessages } = await mcp.call('messages.sync', { with: 'alice-id' });
+
+await mcp.call('messages.send', { 
+  to: 'alice-id', 
+  message: 'Hello!' 
+});
+```
+
+**How it works:**
+
+1. **MCP server is long-lived stdio process**
+   - Maintains `MurmurEngine` instance with local SQLite
+   - No persistent SSE connection (pull-based)
+
+2. **Agent polls for messages**
+   - Agent must explicitly call `messages.sync` to check for new messages
+   - No push notifications (unlike CLI approach)
+
+3. **Agent sends via MCP tool**
+   - `messages.send` tool encrypts and sends to API
+
+**Code: MCP Server** (`packages/murmur-cli/src/mcp/server.ts:100`)
+
+```typescript
+const engine = new MurmurEngine(getDbPath(rootDir), apiBaseUrl);
+await engine.initialize();
+
+server.setRequestHandler(CallToolRequestSchema, async request => {
+  switch (request.params.name) {
+    case 'messages.sync': {
+      const result = await engine.sync();
+      return textResult({ newMessages: result.newMessages });
+    }
+    
+    case 'messages.send': {
+      const stored = await engine.sendMessage(
+        contact.identityKey, 
+        message, 
+        messageId, 
+        attachments
+      );
+      return textResult(stored);
+    }
+  }
+});
+```
+
+**Agent Workflow:**
+```
+1. AI agent starts → MCP server auto-starts (stdio)
+2. Agent periodically calls: mcp.call('messages.sync')
+3. MCP server fetches from API, decrypts, returns messages
+4. Agent processes messages
+5. Agent calls: mcp.call('messages.send', {...})
+```
+
+**Developer Responsibilities:**
+- ✅ Call `messages.sync` periodically (polling)
+- ✅ Explicitly call `messages.send` to reply
+- ❌ No background process management (MCP handles lifecycle)
+- ❌ No webhooks needed
+
+---
+
+#### Agent Relay: Wrapper-Managed Lifecycle
+
+Agent Relay takes a **completely automatic approach** - the wrapper (`relay-pty`) manages all connection lifecycle:
+
+**How it works:**
+
+1. **Wrapper maintains Unix Domain Socket connection**
+   - `relay-pty` opens connection to daemon on startup
+   - Sends HELLO, receives WELCOME
+   - Heartbeats every 5 seconds automatically
+
+2. **Daemon pushes messages directly to wrapper**
+   ```
+   Message arrives at daemon
+     ↓
+   Daemon sends DELIVER frame to wrapper
+     ↓
+   Wrapper injects into agent's PTY
+     ↓
+   Agent sees: "Relay message from Alice: Hello!"
+   ```
+
+3. **Agent sends via output pattern**
+   ```
+   Agent outputs: "->relay:Alice Hi back!"
+     ↓
+   Wrapper parses output
+     ↓
+   Wrapper sends SEND frame to daemon
+     ↓
+   Daemon routes to Alice's wrapper
+   ```
+
+**Code: Wrapper Connection** (`packages/wrapper/src/relay-pty-orchestrator.ts`)
+
+```typescript
+// Wrapper automatically maintains connection
+class RelayPtyOrchestrator {
+  async spawn(config) {
+    // relay-pty binary handles UDS connection
+    const child = spawn('relay-pty', [
+      '--socket', SOCKET_PATH,
+      '--agent', config.agent,
+      '--',
+      ...config.cmd
+    ]);
+    
+    // relay-pty manages:
+    // - UDS connection to daemon
+    // - HELLO/WELCOME handshake
+    // - PING/PONG heartbeats
+    // - Message parsing from agent output
+    // - Message injection to agent PTY
+  }
+}
+```
+
+**Code: Message Injection** (`relay-pty/src/main.rs`)
+
+```rust
+// When DELIVER arrives from daemon
+fn handle_deliver(envelope: Envelope) {
+    let message = format!(
+        "Relay message from {} [{}]: {}\n",
+        envelope.from,
+        envelope.id,
+        envelope.payload.body
+    );
+    
+    // Inject directly into agent's PTY
+    pty.write_all(message.as_bytes())?;
+}
+
+// Parse agent output for patterns
+fn parse_output(line: &str) {
+    if line.starts_with("->relay:") {
+        let (to, body) = parse_relay_pattern(line);
+        
+        // Send SEND frame to daemon
+        let envelope = Envelope {
+            type: "SEND",
+            to,
+            payload: { body, ... },
+            ...
+        };
+        
+        send_to_daemon(envelope)?;
+    }
+}
+```
+
+**Agent Workflow:**
+```
+1. Agent starts → relay-pty wrapper auto-starts
+2. Wrapper maintains UDS connection (transparent)
+3. When message arrives:
+   - Daemon → Wrapper DELIVER frame
+   - Wrapper → Agent PTY injection
+   - Agent sees message in real-time
+4. Agent replies in output:
+   "->relay:Alice Thanks!"
+5. Wrapper parses, sends to daemon
+```
+
+**Developer Responsibilities:**
+- ❌ No background process management
+- ❌ No connection management
+- ❌ No polling
+- ❌ No webhooks
+- ✅ Just use `->relay:` pattern in output
+
+---
+
+#### Comparison Summary
+
+| Aspect | Murmur (CLI) | Murmur (MCP) | Agent Relay |
+|--------|--------------|--------------|-------------|
+| **Connection Management** | Manual background process | MCP server (stdio) | Automatic (wrapper) |
+| **SSE Maintenance** | Agent's responsibility | N/A (pull-based) | N/A (UDS push) |
+| **Message Reception** | Webhook → poll local DB | Poll via MCP tool | PTY injection (automatic) |
+| **Message Sending** | CLI command | MCP tool call | Output pattern |
+| **Real-Time Delivery** | Yes (if bg process running) | No (polling only) | Yes (automatic) |
+| **Process Lifecycle** | Agent manages | MCP framework manages | Wrapper manages |
+| **Developer Complexity** | High (multiple processes) | Medium (polling logic) | Low (just patterns) |
+| **Failure Handling** | Agent must restart bg process | MCP retries | Wrapper auto-reconnects |
+
+---
+
+#### Developer Experience Examples
+
+**Murmur CLI (Background Process)**
+
+```bash
+# Setup
+murmur sign-in --first-name Alice
+murmur contacts add <bob-id>
+
+# Runtime - agent must manage this
+murmur sync --realtime --webhook http://localhost/wake &
+
+# Agent code must handle webhook
+def on_wake():
+    subprocess.run(['murmur', 'sync'])
+    messages = read_from_db('~/.murmur/murmur.db')
+    for msg in messages:
+        process_message(msg)
+        subprocess.run([
+            'murmur', 'send', 
+            '--to', msg.sender_id, 
+            '--message', 'Reply'
+        ])
+```
+
+**Murmur MCP (Polling)**
+
+```typescript
+// Agent must poll periodically
+setInterval(async () => {
+  const { newMessages } = await mcp.call('messages.sync');
+  for (const msg of newMessages) {
+    await processMessage(msg);
+    await mcp.call('messages.send', {
+      to: msg.from,
+      message: 'Reply'
+    });
+  }
+}, 5000); // Poll every 5 seconds
+```
+
+**Agent Relay (Automatic)**
+
+```
+# Agent just outputs patterns - everything else automatic
+
+Agent sees (automatic injection):
+> Relay message from Bob [abc123]: Can you help?
+
+Agent outputs:
+> I'm working on it...
+> ->relay:Bob Sure, what do you need?
+
+Message automatically sent to Bob.
+```
+
+---
+
+#### Key Architectural Insight
+
+**Murmur's Philosophy:**
+- Agent is in control
+- Explicit commands and tools
+- Pull-based (agent fetches when ready)
+- Suitable for autonomous agents that manage their own lifecycle
+
+**Agent Relay's Philosophy:**
+- Wrapper is in control
+- Implicit pattern matching
+- Push-based (messages injected immediately)
+- Suitable for interactive agents that respond in real-time
+
+**Trade-offs:**
+
+| Criteria | Winner | Reason |
+|----------|--------|--------|
+| Developer simplicity | Agent Relay | No process management |
+| Agent autonomy | Murmur | Agent controls when to check messages |
+| Real-time responsiveness | Agent Relay | <5ms injection vs webhook latency |
+| Cross-network | Murmur | Works over internet |
+| Offline support | Murmur | Messages wait in inbox |
+| Integration complexity | Agent Relay | Just use output patterns |
+
+---
+
+
 ## Synchronous Messaging (Agent Relay's Unique Feature)
 
 Agent Relay has a synchronous messaging protocol (see SYNC_MESSAGING_PROTOCOL.md) that Murmur lacks:
