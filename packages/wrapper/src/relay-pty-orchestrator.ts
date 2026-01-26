@@ -251,6 +251,9 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   // Track if agent is being gracefully stopped (vs crashed)
   private isGracefulStop = false;
 
+  // Track early process exit for better error messages
+  private earlyExitInfo?: { code: number | null; signal: NodeJS.Signals | null; stderr: string };
+
   // Memory/CPU monitoring
   private memoryMonitor: AgentMemoryMonitor;
   private memoryAlertHandler: ((alert: MemoryAlert) => void) | null = null;
@@ -754,6 +757,9 @@ export class RelayPtyOrchestrator extends BaseWrapper {
 
     this.log(` Spawning: ${binaryPath} ${args.join(' ')}`);
 
+    // Reset early exit info from any previous spawn attempt
+    this.earlyExitInfo = undefined;
+
     // For interactive mode, let Rust directly inherit stdin/stdout from the terminal
     // This is more robust than manual forwarding through pipes
     // We still pipe stderr to capture JSON parsed commands
@@ -783,10 +789,15 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       });
     }
 
+    // Capture stderr for early exit diagnosis
+    let stderrBuffer = '';
+
     // Handle stderr (relay-pty logs and JSON output) - always needed
+    // Also captures to buffer for error diagnostics if process dies early
     if (proc.stderr) {
       proc.stderr.on('data', (data: Buffer) => {
         const text = data.toString();
+        stderrBuffer += text;
         this.handleStderr(text);
       });
     }
@@ -795,6 +806,12 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     proc.on('exit', (code, signal) => {
       const exitCode = code ?? (signal === 'SIGKILL' ? 137 : 1);
       this.log(` Process exited: code=${exitCode} signal=${signal}`);
+
+      // Capture early exit info for better error messages if socket not yet connected
+      if (!this.socketConnected) {
+        this.earlyExitInfo = { code, signal, stderr: stderrBuffer };
+      }
+
       this.running = false;
 
       // Get crash context before unregistering from memory monitor
@@ -1214,6 +1231,22 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   // =========================================================================
 
   /**
+   * Check if the relay-pty process is still alive
+   */
+  private isProcessAlive(): boolean {
+    if (!this.relayPtyProcess || this.relayPtyProcess.exitCode !== null) {
+      return false;
+    }
+    try {
+      // Signal 0 checks if process exists without killing it
+      process.kill(this.relayPtyProcess.pid!, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Connect to the relay-pty socket
    */
   private async connectToSocket(): Promise<void> {
@@ -1221,6 +1254,21 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     const maxAttempts = this.config.socketReconnectAttempts ?? 3;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      // Check if relay-pty process died before attempting connection
+      if (!this.isProcessAlive()) {
+        const exitInfo = this.earlyExitInfo;
+        if (exitInfo) {
+          const exitReason = exitInfo.signal
+            ? `signal ${exitInfo.signal}`
+            : `code ${exitInfo.code ?? 'unknown'}`;
+          const stderrHint = exitInfo.stderr
+            ? `\n  stderr: ${exitInfo.stderr.trim().slice(0, 500)}`
+            : '';
+          throw new Error(`relay-pty process died early (${exitReason}).${stderrHint}`);
+        }
+        throw new Error('relay-pty process died before socket could be created');
+      }
+
       try {
         await this.attemptSocketConnection(timeout);
         this.log(` Socket connected`);
@@ -1231,6 +1279,18 @@ export class RelayPtyOrchestrator extends BaseWrapper {
           await sleep(1000 * attempt); // Exponential backoff
         }
       }
+    }
+
+    // Final check for process death after all attempts
+    if (!this.isProcessAlive() && this.earlyExitInfo) {
+      const exitInfo = this.earlyExitInfo;
+      const exitReason = exitInfo.signal
+        ? `signal ${exitInfo.signal}`
+        : `code ${exitInfo.code ?? 'unknown'}`;
+      const stderrHint = exitInfo.stderr
+        ? `\n  stderr: ${exitInfo.stderr.trim().slice(0, 500)}`
+        : '';
+      throw new Error(`relay-pty process died during socket connection (${exitReason}).${stderrHint}`);
     }
 
     throw new Error(`Failed to connect to socket after ${maxAttempts} attempts`);

@@ -74,6 +74,36 @@ function getRelayPtyBinaryName() {
 }
 
 /**
+ * Re-sign a binary with ad-hoc signature on macOS.
+ * This is required because macOS code signature validation can fail
+ * when binaries are copied/downloaded, causing SIGKILL on execution.
+ *
+ * The codesign tool is always available on macOS (part of the system).
+ * This is a common solution for npm packages distributing native binaries.
+ * Similar approach is used by esbuild, swc, and other Rust/Go tools.
+ *
+ * @param {string} binaryPath - Path to the binary to sign
+ * @returns {boolean} - Whether signing succeeded
+ */
+function resignBinaryForMacOS(binaryPath) {
+  if (os.platform() !== 'darwin') {
+    return true; // Only needed on macOS
+  }
+
+  try {
+    // codesign is always available on macOS as a system utility
+    execSync(`codesign --force --sign - "${binaryPath}"`, { stdio: 'pipe' });
+    return true;
+  } catch (err) {
+    // This shouldn't happen on a normal macOS system, but handle gracefully
+    warn(`Failed to re-sign binary: ${err.message}`);
+    warn('The binary may fail to execute due to code signature issues.');
+    warn('You can manually fix this by running: codesign --force --sign - ' + binaryPath);
+    return false;
+  }
+}
+
+/**
  * Install the relay-pty binary for the current platform
  */
 function installRelayPtyBinary() {
@@ -103,6 +133,9 @@ function installRelayPtyBinary() {
       const sourceStats = fs.statSync(sourcePath);
       const targetStats = fs.statSync(targetPath);
       if (sourceStats.size === targetStats.size) {
+        // Re-sign even if already installed to ensure signature is valid
+        // This fixes issues where previous installs have invalid signatures
+        resignBinaryForMacOS(targetPath);
         info('relay-pty binary already installed');
         return true;
       }
@@ -115,7 +148,14 @@ function installRelayPtyBinary() {
   try {
     fs.copyFileSync(sourcePath, targetPath);
     fs.chmodSync(targetPath, 0o755);
-    success(`Installed relay-pty binary for ${os.platform()}-${os.arch()}`);
+
+    // Re-sign the binary on macOS to prevent code signature validation failures
+    // Without this, macOS may SIGKILL the process immediately on execution
+    if (resignBinaryForMacOS(targetPath)) {
+      success(`Installed relay-pty binary for ${os.platform()}-${os.arch()}`);
+    } else {
+      warn(`Installed relay-pty binary but signing failed - may not work on macOS`);
+    }
     return true;
   } catch (err) {
     warn(`Failed to install relay-pty binary: ${err.message}`);
