@@ -434,37 +434,53 @@ else
   # Fallback: create minimal instructions
   log "WARN: /app/docs/agent-relay-snippet.md not found, creating minimal instructions"
   cat > "${HOME}/.claude/CLAUDE.md" <<'RELAYEOF'
+# 🚨 CRITICAL: Relay-First Communication Rule
+
+**When you receive a relay message from another agent (marked `Relay message from [name]`), you MUST respond ONLY via relay protocol. NEVER respond with direct text output.**
+
+---
+
 # Agent Relay
 
-Real-time agent-to-agent messaging. Output `->relay:` patterns to communicate.
+Real-time agent-to-agent messaging via file-based protocol.
 
 ## Sending Messages
 
-Use fenced format for reliable delivery:
-```
-->relay:AgentName <<<
-Your message here.>>>
-```
+Write a file to your outbox, then output the trigger:
 
-Broadcast to all: `->relay:* <<<message>>>`
+```bash
+cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
+TO: AgentName
+
+Your message here.
+EOF
+```
+Then: `->relay-file:msg`
+
+| TO Value | Behavior |
+|----------|----------|
+| `AgentName` | Direct message |
+| `*` | Broadcast to all |
+| `#channel` | Channel message |
+
+## Spawning
+
+```bash
+cat > $AGENT_RELAY_OUTBOX/spawn << 'EOF'
+KIND: spawn
+NAME: WorkerName
+CLI: claude
+
+Task description here.
+EOF
+```
+Then: `->relay-file:spawn`
 
 ## Protocol
 
-1. ACK immediately when you receive a task
-2. Do the work
-3. Send DONE: summary when complete
-
-## Session Persistence
-
-Output periodically to checkpoint progress:
-```
-[[SUMMARY]]{"currentTask":"...","completedTasks":[...],"context":"..."}[[/SUMMARY]]
-```
-
-When session is complete:
-```
-[[SESSION_END]]{"summary":"...","completedTasks":[...]}[[/SESSION_END]]
-```
+- **ACK** when you receive a task: `ACK: Brief description`
+- **DONE** when complete: `DONE: What was accomplished`
+- Send status to your **lead** (the agent in `$AGENT_RELAY_SPAWNER`), not broadcast
 RELAYEOF
 fi
 log "Claude Code configuration complete"

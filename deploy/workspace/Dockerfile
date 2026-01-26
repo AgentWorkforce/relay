@@ -69,7 +69,7 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package*.json ./
 
 # Copy relay snippets for agent spawning (only what's needed)
-COPY docs/agent-relay-snippet.md docs/agent-relay-protocol.md docs/agent-policy-snippet.md ./docs/
+COPY relay-snippets/agent-relay-snippet.md relay-snippets/agent-relay-protocol.md relay-snippets/agent-policy-snippet.md ./docs/
 
 # Copy workspace configuration files
 COPY deploy/workspace/entrypoint.sh /entrypoint.sh

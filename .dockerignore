@@ -29,9 +29,7 @@ docker-compose*
 *.md
 !README.md
 docs
-!docs/agent-relay-snippet.md
-!docs/agent-relay-protocol.md
-!docs/agent-policy-snippet.md
+!relay-snippets
 
 # Misc
 .beads
