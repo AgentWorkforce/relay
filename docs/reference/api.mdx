@@ -1,0 +1,724 @@
+---
+title: API Reference
+description: Programmatic API for embedding agent-relay in your applications
+---
+
+# API Reference
+
+Agent Relay provides a TypeScript/JavaScript API for embedding real-time agent messaging in your applications.
+
+## Installation
+
+```bash
+npm install agent-relay
+```
+
+## Quick Start
+
+```typescript
+import { Daemon, RelayClient, getProjectPaths } from 'agent-relay';
+
+// Start a daemon
+const paths = getProjectPaths();
+const daemon = new Daemon({ socketPath: paths.socketPath });
+await daemon.start();
+
+// Connect as a client
+const client = new RelayClient({
+  agentName: 'MyAgent',
+  socketPath: paths.socketPath,
+});
+
+client.onMessage = (from, payload, messageId) => {
+  console.log(`Message from ${from}: ${payload.body}`);
+};
+
+await client.connect();
+client.sendMessage('OtherAgent', 'Hello!');
+```
+
+---
+
+## Core Classes
+
+### Daemon
+
+The daemon manages agent connections and routes messages.
+
+```typescript
+import { Daemon, type DaemonConfig } from 'agent-relay';
+
+const daemon = new Daemon(config);
+```
+
+#### Constructor
+
+```typescript
+new Daemon(config?: Partial<DaemonConfig>)
+```
+
+**DaemonConfig:**
+
+| Property | Type | Description | Default |
+|----------|------|-------------|---------|
+| `socketPath` | `string` | Unix socket path | `/tmp/agent-relay.sock` |
+| `pidFilePath` | `string` | PID file path | `${socketPath}.pid` |
+| `storagePath` | `string` | Database path | Auto |
+| `storageAdapter` | `StorageAdapter` | Custom storage | SQLite |
+| `teamDir` | `string` | Team data directory | Socket directory |
+| `cloudSync` | `boolean` | Enable cloud sync | `false` |
+| `cloudUrl` | `string` | Cloud API URL | `https://agent-relay.com` |
+| `heartbeatMs` | `number` | Heartbeat interval | `5000` |
+| `maxFrameBytes` | `number` | Max frame size | `1048576` |
+
+#### Methods
+
+```typescript
+// Start the daemon
+await daemon.start(): Promise<void>
+
+// Stop the daemon
+await daemon.stop(): Promise<void>
+
+// Mark agent as spawning (queues messages)
+daemon.markSpawning(agentName: string): void
+
+// Clear spawning state
+daemon.clearSpawning(agentName: string): void
+```
+
+#### Events
+
+```typescript
+// Log output callback
+daemon.onLogOutput = (agentName: string, data: string, timestamp: number) => {
+  console.log(`[${agentName}] ${data}`);
+};
+```
+
+#### Example
+
+```typescript
+import { Daemon } from 'agent-relay';
+import { getProjectPaths, ensureProjectDir } from 'agent-relay';
+
+async function startDaemon() {
+  const paths = ensureProjectDir();
+
+  const daemon = new Daemon({
+    socketPath: paths.socketPath,
+    storagePath: paths.dbPath,
+  });
+
+  // Handle log output
+  daemon.onLogOutput = (agent, data) => {
+    process.stdout.write(`[${agent}] ${data}`);
+  };
+
+  await daemon.start();
+  console.log(`Daemon running on ${paths.socketPath}`);
+
+  // Graceful shutdown
+  process.on('SIGINT', async () => {
+    await daemon.stop();
+    process.exit(0);
+  });
+}
+```
+
+---
+
+### RelayClient
+
+The client connects to the daemon and handles messaging.
+
+```typescript
+import { RelayClient, type ClientConfig } from 'agent-relay';
+
+const client = new RelayClient(config);
+```
+
+#### Constructor
+
+```typescript
+new RelayClient(config?: Partial<ClientConfig>)
+```
+
+**ClientConfig:**
+
+| Property | Type | Description | Default |
+|----------|------|-------------|---------|
+| `socketPath` | `string` | Unix socket path | `/tmp/agent-relay.sock` |
+| `agentName` | `string` | Agent identifier | `'agent'` |
+| `entityType` | `'agent' \| 'user'` | Entity type | `'agent'` |
+| `cli` | `string` | CLI identifier | None |
+| `task` | `string` | Task description | None |
+| `quiet` | `boolean` | Suppress logging | `false` |
+| `reconnect` | `boolean` | Auto-reconnect | `true` |
+| `maxReconnectAttempts` | `number` | Max retry attempts | `10` |
+| `reconnectDelayMs` | `number` | Initial retry delay | `100` |
+| `reconnectMaxDelayMs` | `number` | Max retry delay | `30000` |
+
+#### Properties
+
+```typescript
+// Current connection state
+client.state: ClientState
+// 'DISCONNECTED' | 'CONNECTING' | 'HANDSHAKING' | 'READY' | 'BACKOFF'
+
+// Agent name
+client.agentName: string
+
+// Session ID (after connection)
+client.currentSessionId: string | undefined
+```
+
+#### Connection Methods
+
+```typescript
+// Connect to daemon
+await client.connect(): Promise<void>
+
+// Disconnect gracefully
+client.disconnect(): void
+
+// Permanently destroy client
+client.destroy(): void
+```
+
+#### Messaging Methods
+
+```typescript
+// Send message to agent
+client.sendMessage(
+  to: string,
+  body: string,
+  kind?: PayloadKind,
+  data?: Record<string, unknown>,
+  thread?: string,
+  meta?: SendMeta
+): boolean
+
+// Broadcast to all agents
+client.broadcast(
+  body: string,
+  kind?: PayloadKind,
+  data?: Record<string, unknown>
+): boolean
+
+// Send and wait for ACK
+await client.sendAndWait(
+  to: string,
+  body: string,
+  options?: SyncOptions
+): Promise<AckPayload>
+
+// Send ACK for received message
+client.sendAck(payload: AckPayload): boolean
+```
+
+**PayloadKind:**
+
+| Value | Description |
+|-------|-------------|
+| `'message'` | Standard message |
+| `'action'` | Action request |
+| `'state'` | State update |
+| `'thinking'` | Thinking/processing indicator |
+
+#### Channel Methods
+
+```typescript
+// Join a channel
+client.joinChannel(channel: string, displayName?: string): boolean
+
+// Leave a channel
+client.leaveChannel(channel: string, reason?: string): boolean
+
+// Send message to channel
+client.sendChannelMessage(
+  channel: string,
+  body: string,
+  options?: {
+    thread?: string;
+    mentions?: string[];
+    attachments?: MessageAttachment[];
+    data?: Record<string, unknown>;
+  }
+): boolean
+```
+
+#### Shadow Agent Methods
+
+```typescript
+// Bind as shadow to primary agent
+client.bindAsShadow(
+  primaryAgent: string,
+  options?: {
+    speakOn?: SpeakOnTrigger[];
+    receiveIncoming?: boolean;
+    receiveOutgoing?: boolean;
+  }
+): boolean
+
+// Unbind from primary agent
+client.unbindAsShadow(primaryAgent: string): boolean
+```
+
+#### Topic Methods
+
+```typescript
+// Subscribe to topic
+client.subscribe(topic: string): boolean
+
+// Unsubscribe from topic
+client.unsubscribe(topic: string): boolean
+```
+
+#### Log Streaming
+
+```typescript
+// Send log data to daemon (for dashboard streaming)
+client.sendLog(data: string): boolean
+```
+
+#### Event Handlers
+
+```typescript
+// Message received
+client.onMessage = (
+  from: string,
+  payload: SendPayload,
+  messageId: string,
+  meta?: SendMeta,
+  originalTo?: string  // '*' for broadcasts
+) => void
+
+// Channel message received
+client.onChannelMessage = (
+  from: string,
+  channel: string,
+  body: string,
+  envelope: Envelope<ChannelMessagePayload>
+) => void
+
+// State changed
+client.onStateChange = (state: ClientState) => void
+
+// Error occurred
+client.onError = (error: Error) => void
+```
+
+#### Example
+
+```typescript
+import { RelayClient } from 'agent-relay';
+import { getProjectPaths } from 'agent-relay';
+
+async function connectAsClient() {
+  const paths = getProjectPaths();
+
+  const client = new RelayClient({
+    agentName: 'MyAgent',
+    socketPath: paths.socketPath,
+    cli: 'custom',
+  });
+
+  // Handle incoming messages
+  client.onMessage = (from, payload, messageId, meta, originalTo) => {
+    console.log(`From ${from}: ${payload.body}`);
+
+    // Check if broadcast
+    if (originalTo === '*') {
+      console.log('(This was a broadcast)');
+    }
+  };
+
+  // Handle state changes
+  client.onStateChange = (state) => {
+    console.log(`Connection state: ${state}`);
+  };
+
+  await client.connect();
+
+  // Send a message
+  client.sendMessage('OtherAgent', 'Hello!');
+
+  // Send with metadata
+  client.sendMessage('OtherAgent', 'Important!', 'message', undefined, undefined, {
+    importance: 100,
+    requires_ack: true,
+  });
+
+  // Broadcast
+  client.broadcast('Hello everyone!');
+
+  // Join channel
+  client.joinChannel('#general');
+  client.sendChannelMessage('#general', 'Hi from MyAgent!');
+}
+```
+
+---
+
+## Utility Functions
+
+### Project Paths
+
+```typescript
+import { getProjectPaths, ensureProjectDir } from 'agent-relay';
+
+// Get paths for current directory
+const paths = getProjectPaths();
+
+// Get paths for specific project
+const customPaths = getProjectPaths('/path/to/project');
+
+// Ensure directories exist
+const paths = ensureProjectDir();
+```
+
+**ProjectPaths:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `dataDir` | `string` | Root data directory |
+| `teamDir` | `string` | Team metadata directory |
+| `dbPath` | `string` | SQLite database path |
+| `socketPath` | `string` | Unix socket path |
+| `projectRoot` | `string` | Project root directory |
+| `projectId` | `string` | Short hash identifier |
+
+---
+
+## Storage Adapters
+
+### StorageAdapter Interface
+
+```typescript
+interface StorageAdapter {
+  init(): Promise<void>;
+  saveMessage(message: StoredMessage): Promise<void>;
+  getMessages(query?: MessageQuery): Promise<StoredMessage[]>;
+  getMessageById?(id: string): Promise<StoredMessage | null>;
+  updateMessageStatus?(id: string, status: MessageStatus): Promise<void>;
+  close?(): Promise<void>;
+
+  // Session management
+  startSession?(session: Omit<StoredSession, 'messageCount'>): Promise<void>;
+  endSession?(sessionId: string, options?: SessionEndOptions): Promise<void>;
+  getSessions?(query?: SessionQuery): Promise<StoredSession[]>;
+
+  // Agent summaries
+  saveAgentSummary?(summary: Omit<AgentSummary, 'lastUpdated'>): Promise<void>;
+  getAgentSummary?(agentName: string): Promise<AgentSummary | null>;
+}
+```
+
+### Creating Storage Adapters
+
+```typescript
+import { createStorageAdapter, type StorageConfig } from 'agent-relay';
+
+// Default SQLite
+const adapter = await createStorageAdapter('/path/to/db.sqlite');
+
+// With configuration
+const adapter = await createStorageAdapter('/path/to/db.sqlite', {
+  type: 'sqlite-batched',
+  batch: {
+    maxBatchSize: 100,
+    maxBatchDelayMs: 50,
+  },
+});
+
+// In-memory
+const adapter = await createStorageAdapter('', { type: 'memory' });
+```
+
+### Built-in Adapters
+
+```typescript
+import {
+  MemoryStorageAdapter,
+  SqliteStorageAdapter,
+  BatchedSqliteAdapter,
+} from 'agent-relay';
+
+// In-memory (testing)
+const memory = new MemoryStorageAdapter();
+await memory.init();
+
+// SQLite
+const sqlite = new SqliteStorageAdapter({ dbPath: '/path/to/db.sqlite' });
+await sqlite.init();
+```
+
+---
+
+## Protocol Types
+
+### Envelope
+
+```typescript
+import type { Envelope, MessageType, PayloadKind } from 'agent-relay';
+
+interface Envelope<T = unknown> {
+  v: number;          // Protocol version
+  type: MessageType;  // Message type
+  id: string;         // Unique ID
+  ts: number;         // Timestamp (ms)
+  from?: string;      // Sender
+  to?: string | '*';  // Recipient
+  topic?: string;     // Topic
+  payload: T;         // Payload
+}
+```
+
+### Framing
+
+```typescript
+import { encodeFrame, encodeFrameLegacy, FrameParser } from 'agent-relay';
+
+// Encode with modern format
+const frame = encodeFrame(envelope, 'json');
+
+// Encode with legacy format (backwards compatible)
+const legacyFrame = encodeFrameLegacy(envelope);
+
+// Parse incoming frames
+const parser = new FrameParser();
+parser.setLegacyMode(true);  // For backwards compatibility
+
+const envelopes = parser.push(data);
+for (const envelope of envelopes) {
+  handleEnvelope(envelope);
+}
+```
+
+### MessagePack Support
+
+```typescript
+import { initMessagePack, hasMessagePack, encodeFrame } from 'agent-relay';
+
+// Initialize (requires @msgpack/msgpack)
+const supported = await initMessagePack();
+
+if (hasMessagePack()) {
+  const frame = encodeFrame(envelope, 'msgpack');
+}
+```
+
+---
+
+## Memory System
+
+### Memory Adapters
+
+```typescript
+import {
+  createMemoryAdapter,
+  createMemoryService,
+  type MemoryConfig,
+} from 'agent-relay';
+
+// In-memory adapter
+const adapter = await createMemoryAdapter({ type: 'memory' });
+
+// With Supermemory backend
+const adapter = await createMemoryAdapter({
+  type: 'supermemory',
+  apiKey: process.env.SUPERMEMORY_API_KEY,
+});
+
+// Memory service
+const service = createMemoryService(adapter);
+await service.add('Key insight about the project', {
+  tags: ['architecture', 'decision'],
+});
+
+const results = await service.search('architecture decisions');
+```
+
+---
+
+## Dead Letter Queue
+
+```typescript
+import {
+  createDLQAdapter,
+  type DLQConfig,
+  type DeadLetter,
+} from 'agent-relay';
+
+// Create DLQ adapter
+const dlq = createDLQAdapter({ type: 'sqlite', path: '/path/to/dlq.sqlite' });
+await dlq.init();
+
+// Store dead letter
+await dlq.store({
+  envelope: failedEnvelope,
+  error: 'Recipient not found',
+  retryCount: 0,
+});
+
+// Get pending letters
+const pending = await dlq.getPending({ limit: 10 });
+
+// Retry or mark failed
+await dlq.markRetried(id);
+await dlq.markFailed(id, 'Max retries exceeded');
+```
+
+---
+
+## TypeScript Types
+
+### Common Types
+
+```typescript
+import type {
+  // Core
+  Envelope,
+  MessageType,
+  PayloadKind,
+  EntityType,
+
+  // Payloads
+  HelloPayload,
+  WelcomePayload,
+  SendPayload,
+  SendMeta,
+  AckPayload,
+  NackPayload,
+  ErrorPayload,
+
+  // Channels
+  ChannelJoinPayload,
+  ChannelLeavePayload,
+  ChannelMessagePayload,
+  ChannelMember,
+
+  // Shadow
+  ShadowBindPayload,
+  ShadowConfig,
+  SpeakOnTrigger,
+
+  // Storage
+  StoredMessage,
+  StoredSession,
+  MessageQuery,
+  SessionQuery,
+  MessageStatus,
+
+  // Config
+  ClientConfig,
+  DaemonConfig,
+  StorageConfig,
+} from 'agent-relay';
+```
+
+---
+
+## Error Handling
+
+```typescript
+import { RelayClient } from 'agent-relay';
+
+const client = new RelayClient({ agentName: 'MyAgent' });
+
+client.onError = (error) => {
+  console.error('Client error:', error.message);
+};
+
+try {
+  await client.connect();
+} catch (err) {
+  if (err.message === 'Connection timeout') {
+    console.log('Daemon not running');
+  }
+}
+
+// Check state before operations
+if (client.state === 'READY') {
+  client.sendMessage('Agent', 'Hello');
+} else {
+  console.log('Not connected');
+}
+```
+
+---
+
+## Complete Example
+
+```typescript
+import { Daemon, RelayClient, getProjectPaths, ensureProjectDir } from 'agent-relay';
+
+async function main() {
+  // Ensure project directories exist
+  const paths = ensureProjectDir();
+
+  // Start daemon
+  const daemon = new Daemon({
+    socketPath: paths.socketPath,
+    storagePath: paths.dbPath,
+  });
+
+  await daemon.start();
+  console.log('Daemon started');
+
+  // Create two clients
+  const alice = new RelayClient({
+    agentName: 'Alice',
+    socketPath: paths.socketPath,
+  });
+
+  const bob = new RelayClient({
+    agentName: 'Bob',
+    socketPath: paths.socketPath,
+  });
+
+  // Set up message handlers
+  alice.onMessage = (from, payload) => {
+    console.log(`Alice received from ${from}: ${payload.body}`);
+  };
+
+  bob.onMessage = (from, payload) => {
+    console.log(`Bob received from ${from}: ${payload.body}`);
+  };
+
+  // Connect both
+  await Promise.all([alice.connect(), bob.connect()]);
+  console.log('Both agents connected');
+
+  // Exchange messages
+  alice.sendMessage('Bob', 'Hello Bob!');
+  bob.sendMessage('Alice', 'Hi Alice!');
+
+  // Broadcast
+  alice.broadcast('Hello everyone!');
+
+  // Channels
+  alice.joinChannel('#general');
+  bob.joinChannel('#general');
+  alice.sendChannelMessage('#general', 'Welcome to the channel!');
+
+  // Cleanup
+  process.on('SIGINT', async () => {
+    alice.disconnect();
+    bob.disconnect();
+    await daemon.stop();
+    process.exit(0);
+  });
+}
+
+main().catch(console.error);
+```
+
+---
+
+## See Also
+
+- [CLI Reference](/reference/cli) - Command-line interface
+- [Protocol Reference](/reference/protocol) - Wire protocol
+- [Configuration](/reference/configuration) - Configuration options

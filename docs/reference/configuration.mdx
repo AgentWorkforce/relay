@@ -1,0 +1,451 @@
+---
+title: Configuration Reference
+description: Complete reference for agent-relay configuration options
+---
+
+# Configuration Reference
+
+Agent Relay can be configured through CLI flags, environment variables, and configuration files. This document covers all available options.
+
+## Configuration Priority
+
+Configuration is resolved in the following order (highest priority first):
+
+1. CLI flags
+2. Environment variables
+3. Project configuration files
+4. Default values
+
+---
+
+## Environment Variables
+
+### Core Settings
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `AGENT_RELAY_DASHBOARD_PORT` | Default dashboard port | `3888` |
+| `AGENT_RELAY_DATA_DIR` | Root data directory | `~/.local/share/agent-relay` |
+
+### Storage Configuration
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `AGENT_RELAY_STORAGE_TYPE` | Storage backend type | `sqlite` |
+| `AGENT_RELAY_STORAGE_PATH` | Database file path | Auto-generated |
+| `AGENT_RELAY_STORAGE_URL` | Database connection URL | None |
+| `AGENT_RELAY_SQLITE_DRIVER` | SQLite driver: `node` or `better-sqlite3` | `better-sqlite3` |
+
+### Cloud Configuration
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `AGENT_RELAY_CLOUD_URL` | Cloud API URL | `https://agent-relay.com` |
+
+### Example Configuration
+
+```bash
+# Set in shell profile (~/.bashrc, ~/.zshrc)
+export AGENT_RELAY_DASHBOARD_PORT=4000
+export AGENT_RELAY_DATA_DIR="$HOME/.agent-relay"
+export AGENT_RELAY_STORAGE_TYPE=sqlite
+```
+
+---
+
+## Storage Types
+
+Agent Relay supports multiple storage backends:
+
+| Type | Description | Use Case |
+|------|-------------|----------|
+| `sqlite` | SQLite file-based storage | Default, production |
+| `sqlite-batched` | SQLite with write batching | High-throughput |
+| `memory` / `none` | In-memory storage | Testing, no persistence |
+| `postgres` | PostgreSQL (future) | Distributed setups |
+
+### SQLite Configuration
+
+```bash
+# Default SQLite
+export AGENT_RELAY_STORAGE_TYPE=sqlite
+export AGENT_RELAY_STORAGE_PATH=/path/to/database.sqlite
+
+# Batched SQLite for high throughput
+export AGENT_RELAY_STORAGE_TYPE=sqlite-batched
+```
+
+### In-Memory Storage
+
+```bash
+# No persistence (useful for testing)
+export AGENT_RELAY_STORAGE_TYPE=memory
+```
+
+---
+
+## Project Configuration Files
+
+### teams.json
+
+Defines agents to auto-spawn when the daemon starts.
+
+**Location:** Project root directory
+
+**Schema:**
+
+```json
+{
+  "team": "string",
+  "autoSpawn": true,
+  "agents": [
+    {
+      "name": "string",
+      "cli": "string",
+      "task": "string"
+    }
+  ]
+}
+```
+
+**Example:**
+
+```json
+{
+  "team": "backend",
+  "autoSpawn": true,
+  "agents": [
+    {
+      "name": "Architect",
+      "cli": "claude",
+      "task": "High-level architecture and code review"
+    },
+    {
+      "name": "Developer",
+      "cli": "codex",
+      "task": "Implementation and testing"
+    }
+  ]
+}
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `team` | string | Team name for grouping |
+| `autoSpawn` | boolean | Auto-spawn on `agent-relay up` |
+| `agents` | array | Agent definitions |
+| `agents[].name` | string | Agent name |
+| `agents[].cli` | string | CLI tool: `claude`, `codex`, `gemini`, etc. |
+| `agents[].task` | string | Initial task description |
+
+---
+
+### .agent-relay.json
+
+Project-level configuration for agent-relay behavior.
+
+**Location:** Project root directory
+
+**Schema:**
+
+```json
+{
+  "shadows": {
+    "<agentName>": {
+      "shadowName": "string",
+      "roleName": "string",
+      "speakOn": ["string"],
+      "cli": "string",
+      "prompt": "string"
+    }
+  }
+}
+```
+
+**Example:**
+
+```json
+{
+  "shadows": {
+    "Lead": {
+      "shadowName": "Reviewer",
+      "roleName": "reviewer",
+      "speakOn": ["CODE_WRITTEN", "REVIEW_REQUEST"],
+      "cli": "claude",
+      "prompt": "You review code for security and best practices."
+    }
+  }
+}
+```
+
+**Shadow Configuration Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `shadowName` | string | Name for the shadow agent |
+| `roleName` | string | Role preset or custom name |
+| `speakOn` | string[] | Trigger events for speaking |
+| `cli` | string | CLI tool for shadow (optional) |
+| `prompt` | string | Custom system prompt (optional) |
+
+**Shadow Speak Triggers:**
+
+| Trigger | Description |
+|---------|-------------|
+| `SESSION_END` | When primary's session ends |
+| `CODE_WRITTEN` | When code changes are detected |
+| `REVIEW_REQUEST` | When review is explicitly requested |
+| `EXPLICIT_ASK` | Only when directly asked |
+| `ALL_MESSAGES` | On every message (fully active) |
+
+---
+
+### Agent Configuration Files
+
+Agent-specific configuration for automatic CLI arguments.
+
+**Location:** `.agent-relay/agents/<name>.json` in project root
+
+**Schema:**
+
+```json
+{
+  "model": "string",
+  "args": ["string"]
+}
+```
+
+**Example:**
+
+```json
+{
+  "model": "claude-3-opus-20240229",
+  "args": ["--max-turns", "50"]
+}
+```
+
+When the specified agent is created with `create-agent`, these settings are automatically applied to the CLI.
+
+---
+
+### Bridge Configuration
+
+Multi-project bridge configuration.
+
+**Location:** `~/.agent-relay/bridge.json`
+
+**Schema:**
+
+```json
+{
+  "projects": [
+    {
+      "path": "string",
+      "cli": "string",
+      "leadName": "string"
+    }
+  ]
+}
+```
+
+**Example:**
+
+```json
+{
+  "projects": [
+    {
+      "path": "/Users/me/api",
+      "cli": "claude",
+      "leadName": "APILead"
+    },
+    {
+      "path": "/Users/me/frontend",
+      "cli": "codex",
+      "leadName": "FrontendLead"
+    }
+  ]
+}
+```
+
+---
+
+## Daemon Configuration
+
+The daemon accepts configuration via the `DaemonConfig` interface:
+
+```typescript
+interface DaemonConfig {
+  socketPath: string;         // Unix socket path
+  pidFilePath: string;        // PID file path
+  storagePath?: string;       // Database path
+  storageAdapter?: StorageAdapter;  // Custom adapter
+  storageConfig?: StorageConfig;    // Storage options
+  teamDir?: string;           // Team data directory
+  cloudSync?: boolean;        // Enable cloud sync
+  cloudUrl?: string;          // Cloud API URL
+  consensus?: boolean | ConsensusConfig;  // Consensus mechanism
+
+  // Connection settings (from ConnectionConfig)
+  heartbeatMs?: number;       // Heartbeat interval
+  heartbeatTimeoutMultiplier?: number;  // Timeout = interval * multiplier
+  maxFrameBytes?: number;     // Max frame size
+}
+```
+
+**Default Values:**
+
+| Setting | Default |
+|---------|---------|
+| `socketPath` | `/tmp/agent-relay.sock` |
+| `heartbeatMs` | `5000` |
+| `heartbeatTimeoutMultiplier` | `6` |
+| `maxFrameBytes` | `1048576` (1 MiB) |
+
+---
+
+## Client Configuration
+
+The relay client accepts configuration via the `ClientConfig` interface:
+
+```typescript
+interface ClientConfig {
+  socketPath: string;           // Unix socket path
+  agentName: string;            // Agent identifier
+  entityType?: 'agent' | 'user';  // Entity type
+  cli?: string;                 // CLI identifier
+  program?: string;             // Program identifier
+  model?: string;               // Model identifier
+  task?: string;                // Task description
+  workingDirectory?: string;    // Working directory
+  displayName?: string;         // Display name (users)
+  avatarUrl?: string;           // Avatar URL (users)
+  quiet?: boolean;              // Suppress logging
+  reconnect: boolean;           // Auto-reconnect
+  maxReconnectAttempts: number; // Max reconnection attempts
+  reconnectDelayMs: number;     // Initial reconnect delay
+  reconnectMaxDelayMs: number;  // Max reconnect delay
+}
+```
+
+**Default Values:**
+
+| Setting | Default |
+|---------|---------|
+| `socketPath` | `/tmp/agent-relay.sock` |
+| `reconnect` | `true` |
+| `maxReconnectAttempts` | `10` |
+| `reconnectDelayMs` | `100` |
+| `reconnectMaxDelayMs` | `30000` |
+
+---
+
+## Wrapper Configuration
+
+Configuration for wrapping CLI agents:
+
+```typescript
+interface WrapperConfig {
+  name: string;              // Agent name
+  command: string;           // CLI command
+  args?: string[];           // Command arguments
+  socketPath?: string;       // Daemon socket
+  cwd?: string;              // Working directory
+  pollInterval?: number;     // Output polling interval
+  idleBeforeInjectMs?: number;  // Wait before injection
+  debug?: boolean;           // Debug logging
+  mouseMode?: boolean;       // Enable tmux mouse mode
+  streamLogs?: boolean;      // Stream logs to daemon
+  relayPrefix?: string;      // Custom relay prefix
+  skipInstructions?: boolean;  // Skip initial instructions
+}
+```
+
+**Default Values:**
+
+| Setting | Default |
+|---------|---------|
+| `pollInterval` | `200` |
+| `idleBeforeInjectMs` | `1500` |
+| `mouseMode` | `true` |
+| `streamLogs` | `true` |
+| `relayPrefix` | `->relay:` |
+
+---
+
+## Dashboard Configuration
+
+Dashboard-specific configuration options:
+
+| CLI Option | Environment Variable | Default |
+|------------|---------------------|---------|
+| `--port` | `AGENT_RELAY_DASHBOARD_PORT` | `3888` |
+| `--no-dashboard` | - | Dashboard enabled |
+
+The dashboard automatically:
+- Detects available ports if default is in use
+- Tries ports 3888, 3889, 3890, 3891 in sequence
+- Exposes health endpoint at `/api/health`
+
+---
+
+## Project Paths
+
+Agent Relay organizes data by project using hashed paths:
+
+```typescript
+interface ProjectPaths {
+  dataDir: string;       // Root for project data
+  teamDir: string;       // Team/agent metadata
+  dbPath: string;        // SQLite database
+  socketPath: string;    // Unix socket
+  projectRoot: string;   // Original project path
+  projectId: string;     // Short hash identifier
+}
+```
+
+**Path Resolution:**
+
+1. Project root is determined by git repository or current directory
+2. A short hash is generated from the project path
+3. Data is stored in `$AGENT_RELAY_DATA_DIR/<hash>/`
+
+**Example:**
+
+```
+Project: /Users/me/myproject
+Hash: abc123
+
+Data directory: ~/.local/share/agent-relay/abc123/
+Socket: /tmp/relay/abc123/agent-relay.sock
+Database: ~/.local/share/agent-relay/abc123/agent-relay.sqlite
+```
+
+---
+
+## Cloud Configuration
+
+Cloud sync configuration is stored locally after linking:
+
+**Location:** `$AGENT_RELAY_DATA_DIR/cloud-config.json`
+
+```json
+{
+  "apiKey": "ar_live_...",
+  "cloudUrl": "https://agent-relay.com",
+  "machineId": "hostname-a1b2c3d4",
+  "machineName": "my-laptop",
+  "linkedAt": "2024-01-15T10:30:00.000Z"
+}
+```
+
+This file is created by `agent-relay cloud link` and has restricted permissions (0600).
+
+---
+
+## See Also
+
+- [CLI Reference](/reference/cli) - Command-line interface
+- [Protocol Reference](/reference/protocol) - Wire protocol
+- [API Reference](/reference/api) - Programmatic API

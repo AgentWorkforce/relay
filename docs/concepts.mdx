@@ -1,0 +1,362 @@
+---
+title: "Core Concepts"
+description: "Understanding agents, messages, and the relay protocol"
+---
+
+This page explains the fundamental concepts behind Agent Relay. Understanding these will help you build effective multi-agent workflows.
+
+## Agents
+
+An agent is any AI CLI tool (Claude, Codex, Gemini, etc.) wrapped by Agent Relay for messaging capabilities. Each agent has a unique name within the relay network.
+
+### Agent Types
+
+<CardGroup cols={3}>
+  <Card title="Coordinator" icon="crown">
+    Orchestrates work across other agents. Breaks down tasks, delegates work, and tracks progress.
+  </Card>
+  <Card title="Worker" icon="hammer">
+    Focuses on specific tasks assigned by the coordinator. Can be spawned dynamically and released when done.
+  </Card>
+  <Card title="Shadow" icon="eye">
+    Observes agent activity without participating. Useful for monitoring, logging, or human oversight.
+  </Card>
+</CardGroup>
+
+### Agent Lifecycle
+
+```
++-------------+     +--------------+     +------------+
+|   Created   | --> |   Active     | --> |  Released  |
+| (Spawned)   |     | (Connected)  |     | (Stopped)  |
++-------------+     +--------------+     +------------+
+      |                    |
+      |                    v
+      |             +--------------+
+      +-----------> | Disconnected |
+                    | (Reconnects) |
+                    +--------------+
+```
+
+When an agent starts, it connects to the daemon and registers with its name. The daemon maintains this connection until the agent disconnects or is explicitly released.
+
+### Agent Names
+
+Agent names are case-insensitive identifiers used for routing messages:
+
+```bash
+# These all refer to the same agent
+agent-relay create-agent -n Alice claude
+->relay:alice Hello!
+->relay:ALICE Hello!
+```
+
+Names can also match role definitions if you create agent configuration files:
+
+```
+.claude/agents/
+  lead.md          # Matches "Lead" agent
+  implementer.md   # Matches "Implementer" agent
+  reviewer.md      # Matches "Reviewer" agent
+```
+
+## Messages
+
+Messages are the core unit of communication between agents. Every message contains:
+
+- **Sender** - The agent that sent the message
+- **Recipient** - The target agent, broadcast (`*`), or channel (`#name`)
+- **Body** - The message content
+- **Metadata** - Timestamp, thread context, message ID
+
+### Message Types
+
+<Tabs>
+  <Tab title="Direct Messages">
+    Sent to a specific agent by name:
+
+    ```
+    ->relay:Bob Can you review my changes?
+    ```
+
+    Only Bob receives this message.
+  </Tab>
+
+  <Tab title="Broadcasts">
+    Sent to all connected agents except the sender:
+
+    ```
+    ->relay:* I've completed the auth module
+    ```
+
+    Every agent in the network receives this message.
+  </Tab>
+
+  <Tab title="Channel Messages">
+    Sent to agents subscribed to a specific channel:
+
+    ```
+    ->relay:#frontend New component ready for review
+    ```
+
+    Only agents subscribed to `#frontend` receive this message.
+  </Tab>
+</Tabs>
+
+### Message Flow
+
+When an agent outputs a relay command, here is what happens:
+
+```
+1. Agent outputs: ->relay:Bob Hello!
+           |
+           v
+2. Wrapper detects pattern, extracts message
+           |
+           v
+3. Wrapper sends SEND envelope to daemon
+           |
+           v
+4. Daemon looks up "Bob" in registry
+           |
+           v
+5. Daemon sends DELIVER envelope to Bob's wrapper
+           |
+           v
+6. Bob's wrapper waits for idle state
+           |
+           v
+7. Message injected into Bob's terminal:
+   "Relay message from Alice [abc123]: Hello!"
+```
+
+### Message Injection
+
+Messages are injected into the recipient's terminal when the agent is idle (no output for 1.5 seconds). This prevents interrupting the agent mid-thought.
+
+If an agent is busy, messages queue up and deliver when the agent becomes idle.
+
+### Truncated Messages
+
+Long messages are truncated in the terminal display. Use the message ID to read the full content:
+
+```bash
+agent-relay read abc123
+```
+
+## The Daemon
+
+The daemon is the central message broker that routes all communication between agents.
+
+### Responsibilities
+
+- **Agent Registry** - Tracks connected agents and their connections
+- **Message Routing** - Delivers messages to the correct recipients
+- **Storage** - Persists message history to SQLite
+- **Dashboard API** - Provides real-time data to the web dashboard
+
+### Architecture
+
+```
+                    +------------------+
+                    |     Daemon       |
+                    +--------+---------+
+                             |
+         +-------------------+-------------------+
+         |                   |                   |
++--------v--------+ +--------v--------+ +--------v--------+
+|     Router      | |     Storage     | |   Dashboard     |
+| (Message        | | (SQLite         | | (WebSocket +    |
+|  routing)       | |  persistence)   | |  REST API)      |
++-----------------+ +-----------------+ +-----------------+
+```
+
+### Connection Management
+
+The daemon maintains persistent connections with each agent via Unix domain sockets. Key features:
+
+- **Heartbeat** - PING/PONG every 5 seconds to detect dead connections
+- **Reconnection** - Automatic reconnect with exponential backoff (100ms to 30s)
+- **State Machine** - Connections follow strict states: CONNECTING -> HANDSHAKING -> ACTIVE -> CLOSED
+
+### Starting the Daemon
+
+```bash
+# Start daemon with dashboard
+agent-relay up
+
+# Check status
+agent-relay status
+
+# Stop daemon
+agent-relay down
+```
+
+The daemon creates these files in `/tmp/agent-relay/`:
+
+| File | Purpose |
+|------|---------|
+| `relay.sock` | Unix domain socket for agent connections |
+| `relay.sock.pid` | Process ID file |
+| `messages.sqlite` | Message history database |
+| `agents.json` | Current agent registry |
+
+## Projects and Namespaces
+
+Agent Relay automatically isolates data per project based on your project root directory.
+
+### Project Detection
+
+Projects are identified by looking for markers in the directory tree:
+
+- `.git`
+- `package.json`
+- `Cargo.toml`
+- `go.mod`
+- `pyproject.toml`
+- `.agent-relay`
+
+Each project gets its own:
+
+- Unix socket
+- SQLite database
+- Message history
+- Agent registry
+
+### Project ID
+
+A project ID is generated from a hash of the project root path:
+
+```
+/home/user/my-project -> abc123def456
+```
+
+This ensures complete isolation between projects even when running multiple relay networks.
+
+## Bridging
+
+Bridging connects multiple project daemons together, enabling cross-project communication.
+
+```
++------------------+          +------------------+
+|   Project A      |          |   Project B      |
+|                  |          |                  |
+|  +------------+  |          |  +------------+  |
+|  | Alice      |  |          |  | Dave       |  |
+|  +------------+  |          |  +------------+  |
+|  | Bob        |  |  Bridge  |  | Eve        |  |
+|  +------------+  | <------> |  +------------+  |
+|  | Daemon A   |  |          |  | Daemon B   |  |
++------------------+          +------------------+
+```
+
+### Cross-Project Messaging
+
+When bridged, agents can message across projects using the `project:agent` format:
+
+```
+->relay:project-b:Dave Please update your API endpoints
+```
+
+Special targets for bridged networks:
+
+| Target | Description |
+|--------|-------------|
+| `project:agent` | Specific agent in specific project |
+| `project:*` | Broadcast to all agents in a project |
+| `*:*` | Broadcast to all agents in all bridged projects |
+
+## Session Continuity
+
+Session continuity allows agents to save and restore their context across sessions.
+
+### Saving Context
+
+Agents can save their current state:
+
+```
+KIND: continuity
+ACTION: save
+
+Current task: Implementing user authentication
+Completed: User model, JWT utils
+In progress: Login endpoint
+Key decisions: Using refresh tokens
+Files: src/auth/*.ts
+```
+
+### Loading Context
+
+Context is automatically loaded on startup, or can be requested manually:
+
+```
+KIND: continuity
+ACTION: load
+```
+
+### Use Cases
+
+- **Long-running tasks** - Save progress before ending a session
+- **Context switching** - Save state when moving to a different task
+- **Recovery** - Restore after crashes or interruptions
+
+## Protocol
+
+Agent Relay uses a custom protocol over Unix domain sockets.
+
+### Wire Format
+
+Messages use length-prefixed framing:
+
+```
++----------------+--------------------------------+
+| Length (4B)    | JSON Payload (UTF-8)           |
+| Big-endian     | (up to 1 MiB)                  |
++----------------+--------------------------------+
+```
+
+### Envelope Structure
+
+Every message follows this structure:
+
+```typescript
+interface Envelope {
+  v: number;           // Protocol version (1)
+  type: MessageType;   // HELLO, SEND, DELIVER, etc.
+  id: string;          // Unique message ID
+  ts: number;          // Timestamp (milliseconds)
+  from?: string;       // Sender name
+  to?: string;         // Recipient or "*" for broadcast
+  topic?: string;      // Optional channel
+  payload: object;     // Type-specific content
+}
+```
+
+### Message Types
+
+| Type | Direction | Purpose |
+|------|-----------|---------|
+| `HELLO` | Client -> Daemon | Initiate handshake |
+| `WELCOME` | Daemon -> Client | Confirm connection |
+| `SEND` | Client -> Daemon | Send a message |
+| `DELIVER` | Daemon -> Client | Deliver a message |
+| `ACK` | Both | Acknowledge receipt |
+| `PING/PONG` | Both | Heartbeat |
+| `BYE` | Both | Graceful disconnect |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Messaging" icon="messages" href="/features/messaging">
+    Learn advanced messaging patterns including threads and synchronous messaging.
+  </Card>
+  <Card title="Agent Spawning" icon="users" href="/features/spawning">
+    Dynamically create and manage worker agents from a coordinator.
+  </Card>
+  <Card title="Dashboard" icon="chart-line" href="/features/dashboard">
+    Monitor your agent network in real-time.
+  </Card>
+  <Card title="CLI Reference" icon="terminal" href="/reference/cli">
+    Complete command reference for the Agent Relay CLI.
+  </Card>
+</CardGroup>

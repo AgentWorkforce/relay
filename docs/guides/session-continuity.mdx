@@ -1,0 +1,416 @@
+---
+title: Session Continuity
+description: Maintain context across sessions with the continuity protocol
+---
+
+# Session Continuity
+
+Agent Relay's continuity system helps agents maintain context across sessions, enabling seamless handoffs and work resumption.
+
+## Overview
+
+The continuity system consists of two components:
+
+| Component | Purpose | Persistence |
+|-----------|---------|-------------|
+| **Ledger** | Current session state (task, progress, decisions) | Ephemeral (overwritten each session) |
+| **Handoff** | Cross-session transfer document | Permanent (searchable history) |
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    CONTINUITY SYSTEM                                 │
+│                                                                      │
+│   Session 1              Session 2              Session 3            │
+│  ┌─────────┐            ┌─────────┐            ┌─────────┐          │
+│  │ Agent   │            │ Agent   │            │ Agent   │          │
+│  │ working │──Handoff──►│ resumes │──Handoff──►│ resumes │          │
+│  └────┬────┘            └────┬────┘            └────┬────┘          │
+│       │                      │                      │                │
+│       ▼                      ▼                      ▼                │
+│  ┌─────────┐            ┌─────────┐            ┌─────────┐          │
+│  │ Ledger  │            │ Ledger  │            │ Ledger  │          │
+│  │ (live)  │            │ (live)  │            │ (live)  │          │
+│  └─────────┘            └─────────┘            └─────────┘          │
+│       │                      │                      │                │
+│       └──────────────────────┴──────────────────────┘                │
+│                              │                                       │
+│                              ▼                                       │
+│                    ┌─────────────────┐                              │
+│                    │    Handoffs     │                              │
+│                    │   (permanent)   │                              │
+│                    └─────────────────┘                              │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+## Saving State
+
+<Steps>
+  <Step title="Write continuity file">
+    Save your current state when:
+    - Before long-running operations (builds, tests)
+    - When switching task areas
+    - Every 15-20 minutes of active work
+    - Before ending a session
+
+    ```bash
+    cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/continuity << 'EOF'
+    KIND: continuity
+    ACTION: save
+
+    Current task: Implementing user authentication
+    Completed:
+    - User model created
+    - JWT utility functions
+    - Password hashing with bcrypt
+
+    In progress:
+    - Login endpoint (70% complete)
+
+    Key decisions:
+    - Using refresh tokens for session management
+    - Bcrypt with cost factor 12
+    - JWT expires in 15 minutes
+
+    Files:
+    - src/auth/user.ts
+    - src/auth/jwt.ts
+    - src/api/routes/login.ts (in progress)
+    EOF
+    ```
+
+    Then output: `->relay-file:continuity`
+  </Step>
+
+  <Step title="Verify save">
+    The system acknowledges successful saves. You can check status:
+
+    ```bash
+    agent-relay continuity status
+    ```
+  </Step>
+</Steps>
+
+## Loading Previous Context
+
+### Automatic loading
+
+Context loads automatically when an agent starts. The agent sees:
+
+```markdown
+## Previous Session Context
+
+**Current Task:** Implementing user authentication
+
+**Completed:**
+- User model created
+- JWT utility functions
+- Password hashing with bcrypt
+
+**In Progress:**
+- Login endpoint (70% complete)
+
+**Key Decisions:**
+- Using refresh tokens for session management
+- Bcrypt with cost factor 12
+- JWT expires in 15 minutes
+
+**Files:**
+- src/auth/user.ts
+- src/auth/jwt.ts
+- src/api/routes/login.ts (in progress)
+```
+
+### Manual loading
+
+Request context manually during a session:
+
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/load << 'EOF'
+KIND: continuity
+ACTION: load
+EOF
+```
+
+Then: `->relay-file:load`
+
+## Creating Handoffs
+
+Handoffs are permanent records created when work transitions between sessions or agents.
+
+### When to create handoffs
+
+- Completing a major task or milestone
+- Handing off to another agent
+- Before a planned break
+- When context limits are approaching
+
+### Handoff structure
+
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/handoff << 'EOF'
+KIND: continuity
+ACTION: handoff
+
+Summary: User authentication system implemented
+
+Completed work:
+- User model with email/password
+- JWT authentication with refresh tokens
+- Login, logout, and register endpoints
+- Password reset flow with email verification
+- Rate limiting on auth endpoints
+
+Next steps:
+- Add OAuth providers (Google, GitHub)
+- Implement session management dashboard
+- Add 2FA support
+
+Key decisions:
+- Refresh tokens stored in httpOnly cookies (security)
+- 15-minute JWT expiry with 7-day refresh (balance)
+- Bcrypt cost factor 12 (security vs performance)
+
+Files to know:
+- src/auth/ - Core authentication logic
+- src/api/routes/auth.ts - Endpoints
+- src/middleware/auth.ts - JWT verification
+- tests/auth/ - Test suite
+
+Learnings:
+- JWT refresh race condition when multiple tabs open
+- Bcrypt is CPU-intensive, consider worker threads for high load
+EOF
+```
+
+Then: `->relay-file:handoff`
+
+### Handoff triggers
+
+Handoffs are created automatically on:
+
+| Trigger | When |
+|---------|------|
+| `trajectory_complete` | When `trail complete` is called |
+| `context_limit` | When context is approaching token limit |
+| `session_end` | Normal session termination |
+| `crash` | Unexpected agent termination |
+| `manual` | Explicit handoff request |
+
+## Resume Tokens
+
+When an agent crashes or is interrupted, it receives a resume token for recovery.
+
+### Using resume tokens
+
+```bash
+# Start agent with resume token
+agent-relay -n MyAgent claude --resume <agent-id>
+```
+
+The agent receives its previous context and can continue work.
+
+### Finding resume tokens
+
+```bash
+# List recent sessions with resume capability
+agent-relay continuity list
+
+# Output:
+# AGENT         LAST ACTIVE    RESUME TOKEN
+# Lead          2 hours ago    sess_abc123
+# Backend       1 day ago      sess_def456
+```
+
+## Marking Uncertainties
+
+Flag items that need future verification:
+
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/uncertain << 'EOF'
+KIND: continuity
+ACTION: uncertain
+
+API rate limit handling might not cover all edge cases.
+Need to verify behavior under sustained load.
+EOF
+```
+
+Then: `->relay-file:uncertain`
+
+Uncertain items are:
+- Prefixed with `UNCONFIRMED:` in context
+- Highlighted for future agents
+- Available for searching
+
+## Searching Past Work
+
+Find relevant context from past sessions:
+
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/search << 'EOF'
+KIND: continuity
+ACTION: search
+
+Query: WebSocket authentication
+EOF
+```
+
+Then: `->relay-file:search`
+
+Response:
+
+```markdown
+## Search Results: "WebSocket authentication"
+
+### Handoff: Real-time notifications (2 days ago)
+Agent: FeatureWorker
+Summary: WebSocket server with JWT authentication
+
+Key decisions:
+- Token passed via query param on connect
+- Validate on connection, reject if invalid
+- No re-auth during connection (close + reconnect)
+
+Files: src/ws/auth.ts, src/ws/server.ts
+
+### Handoff: API security review (1 week ago)
+Agent: Security
+Summary: Authentication mechanisms audit
+
+Relevant: WebSocket auth should validate same as REST
+```
+
+## Best Practices
+
+### What to include in continuity saves
+
+<CardGroup cols={2}>
+
+<Card title="Current State" icon="location-dot">
+- Active task description
+- Completion percentage
+- Blockers or waiting items
+</Card>
+
+<Card title="Decisions Made" icon="gavel">
+- Technical choices with reasoning
+- Tradeoffs considered
+- Alternatives rejected
+</Card>
+
+<Card title="File Context" icon="file-code">
+- Files currently being modified
+- Key files for the task
+- Test files to run
+</Card>
+
+<Card title="Next Steps" icon="forward">
+- Immediate next action
+- Remaining work items
+- Dependencies on others
+</Card>
+
+</CardGroup>
+
+### Save frequency guidelines
+
+| Activity | Save Frequency |
+|----------|----------------|
+| Active coding | Every 15-20 minutes |
+| Before builds/tests | Always |
+| Task switching | Always |
+| End of work session | Always |
+| After major decision | Immediately |
+
+### Handoff quality checklist
+
+A good handoff should enable another agent (or yourself later) to:
+
+- [ ] Understand what was accomplished
+- [ ] Know where to find relevant code
+- [ ] Understand key decisions and why
+- [ ] Know what to do next
+- [ ] Avoid repeating mistakes or research
+
+## Integration with Trail
+
+Continuity works with the trajectory system (trail) for richer history:
+
+<Steps>
+  <Step title="Start with trail">
+    ```bash
+    trail start "Implement user authentication"
+    ```
+  </Step>
+
+  <Step title="Record decisions during work">
+    ```bash
+    trail decision "Using JWT with refresh tokens" \
+      --reasoning "Stateless auth, better scaling"
+    ```
+  </Step>
+
+  <Step title="Complete with summary">
+    ```bash
+    trail complete \
+      --summary "Auth system implemented with JWT" \
+      --confidence 0.85
+    ```
+
+    This automatically creates a handoff with trajectory context.
+  </Step>
+</Steps>
+
+## CLI Commands
+
+```bash
+# Check continuity status for current agent
+agent-relay continuity status
+
+# List all agents with continuity data
+agent-relay continuity list
+
+# View ledger for specific agent
+agent-relay continuity show <agent-name>
+
+# Search handoffs
+agent-relay continuity search "authentication"
+
+# Clean up old handoffs (keeps last 30 days)
+agent-relay continuity cleanup --days 30
+```
+
+## Troubleshooting
+
+### Context not loading on startup
+
+```bash
+# Check if continuity data exists
+agent-relay continuity show <agent-name>
+
+# Manually trigger load
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/load << 'EOF'
+KIND: continuity
+ACTION: load
+EOF
+```
+
+### Handoff not created on crash
+
+Check the crash logs:
+
+```bash
+agent-relay agents:logs <agent-name> --since crash
+```
+
+Auto-save might have failed if:
+- Agent exited too quickly
+- Disk was full
+- Permissions issue on continuity directory
+
+### Large context causing issues
+
+If context is too large:
+- Use more frequent handoffs to summarize
+- Focus ledger on current task only
+- Search for specific context instead of loading all

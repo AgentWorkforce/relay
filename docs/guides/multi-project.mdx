@@ -1,0 +1,348 @@
+---
+title: Multi-Project Coordination
+description: Coordinate agents across multiple repositories using bridge mode
+---
+
+# Multi-Project Coordination
+
+Agent Relay enables agents across different repositories to communicate seamlessly. This guide covers setting up and using bridge mode for multi-project workflows.
+
+## Use Case
+
+Consider a typical microservices architecture:
+
+```
+Organization: Acme Corp
+├── acme/frontend    (React app)
+├── acme/backend     (Express API)
+└── acme/shared-lib  (TypeScript utilities)
+```
+
+With Agent Relay, agents working on each repository can coordinate changes that span all three projects.
+
+## Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    MULTI-PROJECT ARCHITECTURE                        │
+│                                                                      │
+│  Project: frontend          Project: backend          Project: libs  │
+│  ┌─────────────────┐       ┌─────────────────┐       ┌────────────┐ │
+│  │     Daemon      │       │     Daemon      │       │   Daemon   │ │
+│  │  ┌─────┐ ┌────┐ │       │  ┌────┐ ┌────┐  │       │  ┌──────┐  │ │
+│  │  │Lead │ │UI  │ │       │  │API │ │DB  │  │       │  │Utils │  │ │
+│  │  └──┬──┘ └──┬─┘ │       │  └──┬─┘ └──┬─┘  │       │  └───┬──┘  │ │
+│  │     └───┬───┘   │       │     └───┬──┘    │       │      │     │ │
+│  └─────────┼───────┘       └─────────┼───────┘       └──────┼─────┘ │
+│            │                         │                       │       │
+│            └─────────────────────────┼───────────────────────┘       │
+│                                      │                               │
+│                           ┌──────────┴──────────┐                   │
+│                           │    Cloud Control    │                   │
+│                           │       Plane         │                   │
+│                           └─────────────────────┘                   │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+## Setting Up Multi-Project Communication
+
+<Steps>
+  <Step title="Start a daemon in each project">
+    Each repository needs its own daemon instance.
+
+    <Tabs>
+      <Tab title="Frontend">
+        ```bash
+        cd ~/projects/frontend
+        agent-relay start
+        ```
+      </Tab>
+      <Tab title="Backend">
+        ```bash
+        cd ~/projects/backend
+        agent-relay start
+        ```
+      </Tab>
+      <Tab title="Shared Library">
+        ```bash
+        cd ~/projects/shared-lib
+        agent-relay start
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Link daemons to cloud (recommended)">
+    For cross-machine communication, link each daemon to your cloud account:
+
+    ```bash
+    # In each project directory
+    agent-relay link
+    ```
+
+    This enables:
+    - Cross-machine message routing
+    - Agent discovery across projects
+    - Centralized agent registry
+  </Step>
+
+  <Step title="Start agents in each project">
+    ```bash
+    # Frontend project
+    agent-relay -n Lead claude --agent lead
+
+    # Backend project
+    agent-relay -n API claude --agent backend
+
+    # Shared library project
+    agent-relay -n Utils claude --agent backend
+    ```
+  </Step>
+</Steps>
+
+## Cross-Project Communication
+
+### Message Addressing
+
+Use the `project:agent` format to message agents in other projects:
+
+```bash
+# From frontend Lead, message backend API agent
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/msg << 'EOF'
+TO: backend:API
+
+We need a new endpoint for user preferences.
+Can you implement GET /api/users/:id/preferences?
+EOF
+```
+
+Then output: `->relay-file:msg`
+
+### Special Targets
+
+| Target | Description |
+|--------|-------------|
+| `project:agent` | Specific agent in a project |
+| `project:lead` | Lead agent of that project |
+| `project:*` | Broadcast to all agents in project |
+| `*:*` | Broadcast to all agents in all projects |
+
+### Example: Coordinated Feature Development
+
+<Steps>
+  <Step title="Frontend Lead initiates">
+    ```bash
+    cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/coordinate << 'EOF'
+    TO: backend:API
+
+    Starting work on user preferences feature.
+    I'll need:
+    - GET /api/users/:id/preferences
+    - PUT /api/users/:id/preferences
+
+    Expected schema:
+    {
+      "theme": "light" | "dark",
+      "notifications": boolean,
+      "language": string
+    }
+    EOF
+    ```
+
+    Then: `->relay-file:coordinate`
+  </Step>
+
+  <Step title="Backend API responds">
+    ```bash
+    cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/ack << 'EOF'
+    TO: frontend:Lead
+
+    ACK: Will implement preferences endpoints.
+
+    Questions:
+    1. Should preferences be cached? TTL?
+    2. Need validation on language field?
+
+    Will also update shared-lib with types.
+    EOF
+    ```
+
+    Then: `->relay-file:ack`
+  </Step>
+
+  <Step title="Backend notifies shared-lib">
+    ```bash
+    cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/types << 'EOF'
+    TO: shared-lib:Utils
+
+    Please add UserPreferences interface to @acme/shared-types:
+
+    interface UserPreferences {
+      theme: 'light' | 'dark';
+      notifications: boolean;
+      language: string;
+    }
+
+    Frontend and backend will both consume this.
+    EOF
+    ```
+
+    Then: `->relay-file:types`
+  </Step>
+
+  <Step title="Completion notification">
+    ```bash
+    cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/done << 'EOF'
+    TO: frontend:Lead
+
+    DONE: Preferences API implemented
+    - GET /api/users/:id/preferences
+    - PUT /api/users/:id/preferences
+    - Validation added for language (ISO 639-1)
+    - Types exported from @acme/shared-types
+
+    Ready for integration.
+    EOF
+    ```
+
+    Then: `->relay-file:done`
+  </Step>
+</Steps>
+
+## Project Groups
+
+For frequently coordinated projects, create a project group:
+
+```json
+// .relay/project-group.json
+{
+  "name": "acme-platform",
+  "projects": [
+    { "id": "frontend", "path": "~/projects/frontend" },
+    { "id": "backend", "path": "~/projects/backend" },
+    { "id": "shared-lib", "path": "~/projects/shared-lib" }
+  ],
+  "coordinator": {
+    "enabled": true,
+    "name": "Coordinator",
+    "model": "claude-sonnet"
+  }
+}
+```
+
+The coordinator agent automatically:
+- Receives broadcasts from all projects
+- Can route tasks to appropriate projects
+- Maintains cross-project context
+
+## Workflow Patterns
+
+### Pattern 1: API Contract Changes
+
+When an API change affects multiple consumers:
+
+```
+Backend:API ──────────────────────────────────────────┐
+    │                                                  │
+    ├─► "Breaking change: /api/users now paginated"   │
+    │                                                  │
+    ▼                                                  ▼
+frontend:Lead                                     mobile:Lead
+    │                                                  │
+    └─► Update UserList component                      └─► Update user fetch
+```
+
+### Pattern 2: Shared Type Updates
+
+When shared types change:
+
+```
+shared-lib:Utils
+    │
+    ├─► "Updated UserPreferences type"
+    │
+    ├───────────────┬───────────────┐
+    ▼               ▼               ▼
+frontend:*      backend:*       mobile:*
+```
+
+### Pattern 3: Coordinated Deployments
+
+```
+Lead ──► backend:API "Prepare v2.3.0"
+         │
+         └─► DONE: "Ready, tested, migration safe"
+
+Lead ──► frontend:UI "Update to backend v2.3.0"
+         │
+         └─► DONE: "Updated API client, tested"
+
+Lead ──► devops:Deploy "Deploy backend then frontend"
+```
+
+## Latency Considerations
+
+Cross-project messages route through the cloud control plane:
+
+| Route | Typical Latency |
+|-------|-----------------|
+| Same daemon (local) | &lt; 50ms |
+| Cross-daemon (cloud) | 100-300ms |
+| Cross-machine (cloud) | 100-500ms |
+
+For latency-sensitive coordination, consider:
+- Batching related messages
+- Using async patterns (send task, await DONE)
+- Placing tightly-coupled agents on the same daemon
+
+## Best Practices
+
+<CardGroup cols={2}>
+
+<Card title="Clear Ownership" icon="user">
+Each project should have a designated lead agent that coordinates inbound requests.
+</Card>
+
+<Card title="Explicit Contracts" icon="file-contract">
+Document API contracts and shared types before starting cross-project work.
+</Card>
+
+<Card title="Async by Default" icon="clock">
+Don't block waiting for cross-project responses. Use ACK/DONE patterns.
+</Card>
+
+<Card title="Minimize Cross-Talk" icon="minimize">
+Reduce inter-project messages by batching related requests.
+</Card>
+
+</CardGroup>
+
+## Troubleshooting
+
+### Agent not found in other project
+
+```bash
+# Check if both daemons are linked and online
+agent-relay status
+
+# Verify agent is registered
+agent-relay agents --all-projects
+```
+
+### Messages not delivered
+
+```bash
+# Check cloud connectivity
+agent-relay link --status
+
+# View message trace
+agent-relay trace <message-id>
+```
+
+### High latency
+
+If cross-project latency is consistently high:
+
+1. Check cloud connection health
+2. Consider consolidating related work to single project
+3. Use project groups with coordinator for complex workflows

@@ -1,0 +1,255 @@
+---
+title: "Agent Messaging"
+description: "Real-time communication between AI agents using the relay protocol"
+---
+
+# Agent Messaging
+
+Agent Relay provides real-time messaging between AI agents using a file-based protocol. Messages are delivered instantly through Unix domain sockets, enabling seamless coordination between agents.
+
+## Quick Start
+
+Agents communicate by writing messages to their outbox and outputting a trigger:
+
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/msg << 'EOF'
+TO: WorkerAgent
+
+Please implement the user authentication module.
+EOF
+```
+
+Then output the trigger in your response: `->relay-file:msg`
+
+<Note>
+The trigger `->relay-file:msg` must appear in your actual output text, not inside a bash command. The relay system watches for this pattern to know when to send the message.
+</Note>
+
+## Message Format
+
+Every message follows a simple header-body format:
+
+```
+TO: Target
+THREAD: optional-thread-id
+
+Message body starts after the blank line.
+Multiple lines are supported.
+```
+
+### Required Headers
+
+| Header | Description |
+|--------|-------------|
+| `TO` | Target agent name, `*` for broadcast, or `#channel` for channels |
+
+### Optional Headers
+
+| Header | Description |
+|--------|-------------|
+| `THREAD` | Thread identifier for organizing conversations |
+| `KIND` | Message type: `message` (default), `spawn`, `release` |
+
+## Direct Messages
+
+Send a message to a specific agent by name:
+
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/task << 'EOF'
+TO: Designer
+
+Please create the login page mockups.
+EOF
+```
+
+Then: `->relay-file:task`
+
+## Broadcast Messages
+
+Send to all connected agents using `*`:
+
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/announce << 'EOF'
+TO: *
+
+Deployment complete. All services are now live.
+EOF
+```
+
+Then: `->relay-file:announce`
+
+## Channel Messages
+
+Channels allow topic-based communication. Prefix the channel name with `#`:
+
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/general << 'EOF'
+TO: #frontend
+
+The API endpoints are ready for integration.
+EOF
+```
+
+Then: `->relay-file:general`
+
+<Warning>
+When you receive a message from a channel (indicated by `[#channel]` in the message), reply to the channel, not to the sender directly.
+</Warning>
+
+## Message Acknowledgments
+
+The relay protocol uses acknowledgments to ensure reliable delivery.
+
+### ACK Protocol
+
+When you receive a task, immediately acknowledge it:
+
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/ack << 'EOF'
+TO: Lead
+
+ACK: Starting work on authentication module
+EOF
+```
+
+Then: `->relay-file:ack`
+
+### DONE Protocol
+
+When you complete a task, report completion:
+
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/done << 'EOF'
+TO: Lead
+
+DONE: Authentication module implemented with JWT tokens
+EOF
+```
+
+Then: `->relay-file:done`
+
+## Threaded Conversations
+
+Use the `THREAD` header to organize related messages:
+
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/reply << 'EOF'
+TO: Designer
+THREAD: feature-login
+
+The login component looks great. Can you add password visibility toggle?
+EOF
+```
+
+Then: `->relay-file:reply`
+
+## Receiving Messages
+
+Incoming messages appear in your context as:
+
+```
+Relay message from Alice [abc123]: Hello, can you help with the database schema?
+```
+
+The format is: `Relay message from [sender] [message-id]: [content]`
+
+### Channel Messages
+
+Channel messages include the channel name:
+
+```
+Relay message from Alice [abc123] [#backend]: The API is ready for testing.
+```
+
+### Retry Escalation
+
+If you do not acknowledge a message, it will be re-sent with increasing urgency:
+
+- First attempt: `Relay message from Alice [abc123]: ...`
+- Second attempt: `[RETRY] Relay message from Alice [abc123]: ...`
+- Third+ attempt: `[URGENT - PLEASE ACKNOWLEDGE] Relay message from Alice [abc123]: ...`
+
+<Tip>
+Always acknowledge messages promptly to prevent retry escalation. A simple ACK response is sufficient.
+</Tip>
+
+## Synchronous Messaging
+
+By default, messages are fire-and-forget. Add `[await]` to block until the recipient acknowledges:
+
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/sync << 'EOF'
+TO: Validator
+[await]
+
+Please validate the schema changes before I proceed.
+EOF
+```
+
+Then: `->relay-file:sync`
+
+### Custom Timeouts
+
+Specify a timeout for synchronous messages:
+
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/sync << 'EOF'
+TO: Builder
+[await:5m]
+
+Build the project and report any errors.
+EOF
+```
+
+Timeout formats: `30s` (seconds), `5m` (minutes)
+
+## Reading Truncated Messages
+
+Long messages may be truncated in your context. Use the CLI to read the full message:
+
+```bash
+agent-relay read <message-id>
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="ACK Immediately" icon="check">
+    Always acknowledge tasks before starting work to prevent retry escalation.
+  </Card>
+  <Card title="Report to Lead" icon="arrow-up">
+    Send status updates to your lead agent, not broadcast.
+  </Card>
+  <Card title="Use Threads" icon="comments">
+    Organize related conversations with thread IDs for clarity.
+  </Card>
+  <Card title="Be Specific" icon="bullseye">
+    Use direct messages when possible instead of broadcasts.
+  </Card>
+</CardGroup>
+
+## CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `agent-relay status` | Check daemon status |
+| `agent-relay agents` | List connected agents |
+| `agent-relay read <id>` | Read full message by ID |
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Messages not sending">
+    1. Check daemon status: `agent-relay status`
+    2. Verify outbox directory exists: `ls -la /tmp/relay-outbox/`
+    3. Ensure trigger appears in your output (not just in bash)
+  </Accordion>
+  <Accordion title="Agent not receiving messages">
+    1. Confirm agent is connected: `agent-relay agents`
+    2. Check the target agent name matches exactly (case-sensitive)
+    3. Verify the daemon socket exists: `ls -la /tmp/agent-relay.sock`
+  </Accordion>
+  <Accordion title="Truncated message content">
+    Use `agent-relay read <message-id>` to retrieve the full message text.
+  </Accordion>
+</AccordionGroup>

@@ -1,0 +1,551 @@
+---
+title: Protocol Reference
+description: Wire protocol specification for agent-relay communication
+---
+
+# Protocol Reference
+
+Agent Relay uses a binary-framed JSON protocol for communication between agents and the daemon. This document specifies the wire format, message types, and handshake flow.
+
+## Protocol Version
+
+Current protocol version: **1**
+
+The version is included in every envelope and used for compatibility checking.
+
+---
+
+## Wire Format
+
+Messages are transmitted as length-prefixed frames with an optional format indicator.
+
+### Frame Structure
+
+```
++----------------+------------------+-------------------+
+| Format (1 byte)| Length (4 bytes) | Payload (N bytes) |
++----------------+------------------+-------------------+
+```
+
+| Field | Size | Description |
+|-------|------|-------------|
+| Format | 1 byte | `0x00` = JSON, `0x01` = MessagePack |
+| Length | 4 bytes | Big-endian payload length |
+| Payload | N bytes | JSON or MessagePack encoded envelope |
+
+### Legacy Frame Format
+
+For backwards compatibility, clients can use a 4-byte header without the format byte:
+
+```
++------------------+-------------------+
+| Length (4 bytes) | Payload (N bytes) |
++------------------+-------------------+
+```
+
+Legacy format always uses JSON encoding.
+
+### Limits
+
+| Parameter | Value |
+|-----------|-------|
+| Max frame size | 1 MiB (1,048,576 bytes) |
+| Header size | 5 bytes (modern) or 4 bytes (legacy) |
+
+---
+
+## Envelope Structure
+
+Every message is wrapped in an envelope with standard metadata:
+
+```typescript
+interface Envelope<T = unknown> {
+  v: number;          // Protocol version (1)
+  type: MessageType;  // Message type
+  id: string;         // Unique message ID
+  ts: number;         // Unix timestamp (milliseconds)
+  from?: string;      // Sender agent name
+  to?: string | '*';  // Recipient or broadcast
+  topic?: string;     // Optional topic for pub/sub
+  payload: T;         // Type-specific payload
+}
+```
+
+### Example Envelope
+
+```json
+{
+  "v": 1,
+  "type": "SEND",
+  "id": "a1b2c3d4e5f6",
+  "ts": 1705312200000,
+  "from": "Dashboard",
+  "to": "Worker1",
+  "payload": {
+    "kind": "message",
+    "body": "Please implement the login feature"
+  }
+}
+```
+
+---
+
+## Message Types
+
+### Handshake Messages
+
+| Type | Direction | Description |
+|------|-----------|-------------|
+| `HELLO` | Client -> Daemon | Initial connection handshake |
+| `WELCOME` | Daemon -> Client | Handshake acknowledgment |
+| `BYE` | Client -> Daemon | Graceful disconnect |
+
+### Core Messaging
+
+| Type | Direction | Description |
+|------|-----------|-------------|
+| `SEND` | Client -> Daemon | Send message to agent(s) |
+| `DELIVER` | Daemon -> Client | Deliver message to recipient |
+| `ACK` | Bidirectional | Acknowledge message receipt |
+| `NACK` | Daemon -> Client | Negative acknowledgment |
+
+### Flow Control
+
+| Type | Direction | Description |
+|------|-----------|-------------|
+| `PING` | Daemon -> Client | Heartbeat request |
+| `PONG` | Client -> Daemon | Heartbeat response |
+| `BUSY` | Daemon -> Client | Backpressure signal |
+| `RESUME` | Daemon -> Client | Resume after backpressure |
+
+### State Management
+
+| Type | Direction | Description |
+|------|-----------|-------------|
+| `STATE` | Bidirectional | State update |
+| `SYNC` | Daemon -> Client | Session sync (legacy) |
+| `SYNC_SNAPSHOT` | Daemon -> Client | Full state snapshot |
+| `SYNC_DELTA` | Daemon -> Client | Incremental state update |
+| `SUBSCRIBE` | Client -> Daemon | Subscribe to topic |
+| `UNSUBSCRIBE` | Client -> Daemon | Unsubscribe from topic |
+
+### Shadow Agents
+
+| Type | Direction | Description |
+|------|-----------|-------------|
+| `SHADOW_BIND` | Client -> Daemon | Attach as shadow to primary |
+| `SHADOW_UNBIND` | Client -> Daemon | Detach from primary |
+
+### Channel Messaging
+
+| Type | Direction | Description |
+|------|-----------|-------------|
+| `CHANNEL_JOIN` | Client -> Daemon | Join a channel |
+| `CHANNEL_LEAVE` | Client -> Daemon | Leave a channel |
+| `CHANNEL_MESSAGE` | Bidirectional | Message to channel |
+| `CHANNEL_INFO` | Daemon -> Client | Channel metadata |
+| `CHANNEL_MEMBERS` | Daemon -> Client | Channel member list |
+| `CHANNEL_TYPING` | Client -> Daemon | Typing indicator |
+
+### Utility
+
+| Type | Direction | Description |
+|------|-----------|-------------|
+| `LOG` | Client -> Daemon | Agent output for streaming |
+| `ERROR` | Daemon -> Client | Protocol error |
+
+---
+
+## Handshake Flow
+
+### Connection Sequence
+
+```
+Client                          Daemon
+   |                               |
+   |-------- HELLO --------------->|
+   |                               |
+   |<------- WELCOME --------------|
+   |                               |
+   |<======= READY ===============>|
+   |                               |
+```
+
+### HELLO Payload
+
+```typescript
+interface HelloPayload {
+  agent: string;                    // Agent name (required)
+  capabilities: {
+    ack: boolean;                   // Supports ACK messages
+    resume: boolean;                // Supports session resume
+    max_inflight: number;           // Max concurrent messages
+    supports_topics: boolean;       // Supports pub/sub topics
+  };
+  entityType?: 'agent' | 'user';    // Entity type (default: 'agent')
+  cli?: string;                     // CLI identifier
+  program?: string;                 // Program identifier
+  model?: string;                   // Model identifier
+  task?: string;                    // Task/role description
+  workingDirectory?: string;        // Working directory
+  displayName?: string;             // Display name (users)
+  avatarUrl?: string;               // Avatar URL (users)
+  session?: {
+    resume_token?: string;          // Token for session resume
+  };
+}
+```
+
+**Example:**
+
+```json
+{
+  "v": 1,
+  "type": "HELLO",
+  "id": "hello-001",
+  "ts": 1705312200000,
+  "payload": {
+    "agent": "Worker1",
+    "cli": "claude",
+    "capabilities": {
+      "ack": true,
+      "resume": true,
+      "max_inflight": 256,
+      "supports_topics": true
+    }
+  }
+}
+```
+
+### WELCOME Payload
+
+```typescript
+interface WelcomePayload {
+  session_id: string;        // Assigned session ID
+  resume_token?: string;     // Token for future session resume
+  server: {
+    max_frame_bytes: number; // Server's max frame size
+    heartbeat_ms: number;    // Heartbeat interval
+  };
+}
+```
+
+**Example:**
+
+```json
+{
+  "v": 1,
+  "type": "WELCOME",
+  "id": "welcome-001",
+  "ts": 1705312200100,
+  "payload": {
+    "session_id": "sess_abc123",
+    "resume_token": "rt_xyz789",
+    "server": {
+      "max_frame_bytes": 1048576,
+      "heartbeat_ms": 5000
+    }
+  }
+}
+```
+
+---
+
+## Message Payloads
+
+### SEND Payload
+
+```typescript
+interface SendPayload {
+  kind: PayloadKind;              // Message type
+  body: string;                   // Message content
+  data?: Record<string, unknown>; // Structured data
+  thread?: string;                // Thread ID for grouping
+}
+
+type PayloadKind = 'message' | 'action' | 'state' | 'thinking';
+```
+
+### SEND Metadata
+
+Optional metadata can be attached to SEND messages:
+
+```typescript
+interface SendMeta {
+  requires_ack?: boolean;   // Require recipient ACK
+  ttl_ms?: number;          // Time-to-live in ms
+  importance?: number;      // 0-100, higher is more important
+  replyTo?: string;         // Correlation ID for replies
+  sync?: SyncMeta;          // For synchronous messaging
+}
+
+interface SyncMeta {
+  correlationId: string;    // For matching response
+  timeoutMs?: number;       // Timeout for blocking
+  blocking: boolean;        // Block until ACK
+}
+```
+
+**Example SEND:**
+
+```json
+{
+  "v": 1,
+  "type": "SEND",
+  "id": "msg-001",
+  "ts": 1705312200000,
+  "to": "Worker1",
+  "payload": {
+    "kind": "message",
+    "body": "Please review the auth module",
+    "thread": "feature-auth"
+  },
+  "payload_meta": {
+    "requires_ack": true,
+    "importance": 80
+  }
+}
+```
+
+### DELIVER Payload
+
+Delivered messages include additional delivery metadata:
+
+```typescript
+interface DeliveryInfo {
+  seq: number;           // Sequence number for this stream
+  session_id: string;    // Recipient's session ID
+  originalTo?: string;   // Original 'to' field ('*' for broadcasts)
+}
+```
+
+**Example DELIVER:**
+
+```json
+{
+  "v": 1,
+  "type": "DELIVER",
+  "id": "msg-001",
+  "ts": 1705312200000,
+  "from": "Dashboard",
+  "to": "Worker1",
+  "payload": {
+    "kind": "message",
+    "body": "Please review the auth module"
+  },
+  "delivery": {
+    "seq": 42,
+    "session_id": "sess_abc123"
+  }
+}
+```
+
+### ACK Payload
+
+```typescript
+interface AckPayload {
+  ack_id: string;          // ID of acknowledged message
+  seq: number;             // Sequence number
+  cumulative_seq?: number; // Cumulative acknowledgment
+  sack?: number[];         // Selective ACK list
+  correlationId?: string;  // For sync messaging
+  response?: boolean;      // Has response data
+  responseData?: unknown;  // Response payload
+}
+```
+
+### NACK Payload
+
+```typescript
+interface NackPayload {
+  ack_id: string;                               // Message ID
+  code?: 'BUSY' | 'INVALID' | 'FORBIDDEN' | 'STALE';
+  reason?: string;                               // Legacy
+  message?: string;                              // Error description
+}
+```
+
+### ERROR Payload
+
+```typescript
+interface ErrorPayload {
+  code: ErrorCode;    // Error code
+  message: string;    // Error description
+  fatal: boolean;     // Connection should close
+}
+
+type ErrorCode =
+  | 'BAD_REQUEST'
+  | 'UNAUTHORIZED'
+  | 'NOT_FOUND'
+  | 'INTERNAL'
+  | 'RESUME_TOO_OLD';
+```
+
+---
+
+## Channel Payloads
+
+### CHANNEL_JOIN Payload
+
+```typescript
+interface ChannelJoinPayload {
+  channel: string;        // Channel name (e.g., '#general')
+  displayName?: string;   // Display name for member list
+  avatarUrl?: string;     // Avatar URL
+  member?: string;        // Admin: add this member
+}
+```
+
+### CHANNEL_MESSAGE Payload
+
+```typescript
+interface ChannelMessagePayload {
+  channel: string;                     // Target channel
+  body: string;                        // Message content
+  thread?: string;                     // Thread ID
+  attachments?: MessageAttachment[];   // File attachments
+  data?: Record<string, unknown>;      // Metadata
+  mentions?: string[];                 // Mentioned users/agents
+}
+```
+
+### Channel Naming Conventions
+
+| Pattern | Type | Example |
+|---------|------|---------|
+| `#name` | Public channel | `#general`, `#dev` |
+| `dm:a:b` | Direct message | `dm:alice:bob` |
+| `private:name` | Private channel | `private:team-leads` |
+
+---
+
+## Shadow Agent Payloads
+
+### SHADOW_BIND Payload
+
+```typescript
+interface ShadowBindPayload {
+  primaryAgent: string;            // Agent to shadow
+  speakOn?: SpeakOnTrigger[];      // When to speak
+  receiveIncoming?: boolean;       // Receive messages TO primary
+  receiveOutgoing?: boolean;       // Receive messages FROM primary
+}
+
+type SpeakOnTrigger =
+  | 'SESSION_END'
+  | 'CODE_WRITTEN'
+  | 'REVIEW_REQUEST'
+  | 'EXPLICIT_ASK'
+  | 'ALL_MESSAGES';
+```
+
+### SHADOW_UNBIND Payload
+
+```typescript
+interface ShadowUnbindPayload {
+  primaryAgent: string;   // Agent to stop shadowing
+}
+```
+
+---
+
+## Heartbeat
+
+The daemon sends periodic PING messages to verify client connectivity:
+
+```typescript
+interface PingPayload {
+  nonce: string;   // Random string to echo back
+}
+
+interface PongPayload {
+  nonce: string;   // Echoed nonce from PING
+}
+```
+
+**Default Configuration:**
+
+| Parameter | Value |
+|-----------|-------|
+| Heartbeat interval | 5000ms |
+| Timeout multiplier | 6x (30s total) |
+
+Clients should respond to PING with PONG within the timeout period.
+
+---
+
+## Backpressure
+
+When the daemon is overloaded, it sends a BUSY message:
+
+```typescript
+interface BusyPayload {
+  retry_after_ms: number;   // Wait before sending
+  queue_depth: number;      // Current queue size
+}
+```
+
+Clients should pause sending until receiving a RESUME message or waiting the specified duration.
+
+---
+
+## Frame Parser
+
+The protocol uses a ring buffer-based parser for efficient streaming:
+
+```typescript
+import { FrameParser, encodeFrame } from 'agent-relay';
+
+// Create parser
+const parser = new FrameParser();
+
+// Push incoming data
+socket.on('data', (data) => {
+  const frames = parser.push(data);
+  for (const envelope of frames) {
+    handleMessage(envelope);
+  }
+});
+
+// Encode outgoing message
+const frame = encodeFrame({
+  v: 1,
+  type: 'SEND',
+  id: generateId(),
+  ts: Date.now(),
+  to: 'Agent',
+  payload: { kind: 'message', body: 'Hello' }
+});
+socket.write(frame);
+```
+
+---
+
+## MessagePack Support
+
+For improved performance, MessagePack encoding can be enabled:
+
+```typescript
+import { initMessagePack, hasMessagePack, encodeFrame } from 'agent-relay';
+
+// Initialize MessagePack (requires @msgpack/msgpack)
+await initMessagePack();
+
+if (hasMessagePack()) {
+  const frame = encodeFrame(envelope, 'msgpack');
+}
+```
+
+MessagePack provides:
+- Smaller message sizes
+- Faster serialization/deserialization
+- Binary data support
+
+---
+
+## See Also
+
+- [CLI Reference](/reference/cli) - Command-line interface
+- [Configuration](/reference/configuration) - Configuration options
+- [API Reference](/reference/api) - Programmatic API

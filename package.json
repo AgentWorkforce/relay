@@ -84,7 +84,8 @@
     "cloud:setup": "./scripts/cloud-setup.sh",
     "cloud:api": "WORKSPACE_IMAGE=relay-workspace:local WORKSPACE_DEV_MOUNT=true node -r dotenv/config packages/cloud/dist/index.js",
     "precloud": "./scripts/cloud-setup.sh --skip-data",
-    "cloud": "concurrently -n api,daemon,dashboard -c cyan,blue,magenta \"npm run cloud:api\" \"npm run dev:daemon\" \"npm run dev:next\""
+    "cloud": "concurrently -n api,daemon,dashboard -c cyan,blue,magenta \"npm run cloud:api\" \"npm run dev:daemon\" \"npm run dev:next\"",
+    "docs:dev": "cd docs && npm run dev"
   },
   "keywords": [
     "agent",

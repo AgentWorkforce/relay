@@ -1,0 +1,222 @@
+---
+title: "Quickstart"
+description: "Get up and running with Agent Relay in 5 minutes"
+---
+
+This guide will have you running your first multi-agent network in under 5 minutes.
+
+## Prerequisites
+
+Before you begin, ensure you have:
+
+- **Node.js** 18 or higher
+- **tmux** installed on your system
+- At least one AI CLI installed (Claude, Codex, or Gemini)
+
+## Installation
+
+Install Agent Relay globally via npm:
+
+```bash
+npm install -g agent-relay
+```
+
+Verify the installation:
+
+```bash
+agent-relay --version
+```
+
+## Step-by-Step Setup
+
+<Steps>
+  <Step title="Start the Daemon">
+    The daemon is the central message broker. Start it first:
+
+    ```bash
+    agent-relay up
+    ```
+
+    You should see:
+    ```
+    Daemon started on /tmp/agent-relay.sock
+    Dashboard available at http://localhost:3888
+    ```
+
+    <Tip>
+      The daemon runs in the background. You can check its status anytime with `agent-relay status`.
+    </Tip>
+  </Step>
+
+  <Step title="Create Your First Agent">
+    Open a new terminal and create an agent named "Alice":
+
+    ```bash
+    agent-relay create-agent -n Alice claude
+    ```
+
+    This wraps the Claude CLI in a tmux session with relay messaging enabled. The agent is now connected to the relay network.
+
+    <Note>
+      Replace `claude` with `codex` or `gemini` if you prefer a different AI provider.
+    </Note>
+  </Step>
+
+  <Step title="Create a Second Agent">
+    Open another terminal and create a second agent named "Bob":
+
+    ```bash
+    agent-relay create-agent -n Bob claude
+    ```
+
+    You now have two agents connected to the same relay network.
+  </Step>
+
+  <Step title="Send Your First Message">
+    In Alice's terminal, ask the agent to send a message to Bob:
+
+    ```
+    Send a message to Bob saying hello
+    ```
+
+    Alice will output something like:
+    ```
+    ->relay:Bob Hello! Nice to meet you.
+    ```
+
+    The relay system automatically detects this pattern, extracts the message, and delivers it to Bob.
+  </Step>
+
+  <Step title="View the Dashboard">
+    Open your browser to [http://localhost:3888](http://localhost:3888) to see the real-time dashboard.
+
+    The dashboard shows:
+    - Connected agents (Alice and Bob)
+    - Message flow between agents
+    - System health and metrics
+  </Step>
+</Steps>
+
+## Message Formats
+
+Agents communicate by outputting special patterns that the relay system detects:
+
+<CodeGroup>
+  ```bash Direct Message
+  ->relay:Bob Can you review my code changes?
+  ```
+
+  ```bash Broadcast to All
+  ->relay:* I've finished the auth module
+  ```
+
+  ```bash With Thread Context
+  ->relay:Alice [thread:code-review] LGTM, merging now
+  ```
+</CodeGroup>
+
+## Receiving Messages
+
+When Bob receives a message from Alice, it appears in their terminal as:
+
+```
+Relay message from Alice [abc12345]: Hello! Nice to meet you.
+```
+
+The message ID (`abc12345`) can be used to read the full content if the message was truncated:
+
+```bash
+agent-relay read abc12345
+```
+
+## Common Commands
+
+| Command | Description |
+|---------|-------------|
+| `agent-relay up` | Start the daemon and dashboard |
+| `agent-relay down` | Stop the daemon |
+| `agent-relay status` | Check daemon and agent status |
+| `agent-relay create-agent -n Name <cli>` | Create a new agent |
+| `agent-relay agents` | List connected agents |
+| `agent-relay read <id>` | Read full message content |
+
+## Quick Test Script
+
+Want to see it all work together? Run this quick test:
+
+```bash
+# Terminal 1: Start the daemon
+agent-relay up
+
+# Terminal 2: Start Alice
+agent-relay create-agent -n Alice claude
+
+# Terminal 3: Start Bob
+agent-relay create-agent -n Bob claude
+
+# In Alice's terminal, type:
+# "Send a greeting to Bob"
+
+# Watch the message appear in Bob's terminal!
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Daemon not running">
+    If you see "Daemon not running" errors:
+
+    ```bash
+    # Check status
+    agent-relay status
+
+    # Start the daemon
+    agent-relay up
+    ```
+  </Accordion>
+
+  <Accordion title="tmux not found">
+    Install tmux for your platform:
+
+    ```bash
+    # macOS
+    brew install tmux
+
+    # Linux
+    sudo apt-get install tmux
+    ```
+  </Accordion>
+
+  <Accordion title="Messages not delivering">
+    1. Verify both agents are connected: `agent-relay agents`
+    2. Check agent names match exactly (case-insensitive)
+    3. Ensure the message format is correct: `->relay:Name message`
+  </Accordion>
+
+  <Accordion title="Permission denied on socket">
+    Remove stale socket file and restart:
+
+    ```bash
+    rm /tmp/agent-relay.sock
+    agent-relay down
+    agent-relay up
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Core Concepts" icon="book" href="/concepts">
+    Learn about agents, messages, channels, and the relay protocol in depth.
+  </Card>
+  <Card title="Messaging" icon="messages" href="/features/messaging">
+    Explore advanced messaging patterns including broadcasts, threads, and channels.
+  </Card>
+  <Card title="Agent Spawning" icon="users" href="/features/spawning">
+    Learn how to dynamically create and release worker agents.
+  </Card>
+  <Card title="Multi-Project Setup" icon="bridge" href="/guides/multi-project">
+    Connect agents across multiple codebases with bridging.
+  </Card>
+</CardGroup>

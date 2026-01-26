@@ -1,0 +1,315 @@
+---
+title: "Shadow Agents"
+description: "Monitor and audit primary agents with shadow agents that receive message copies"
+---
+
+# Shadow Agents
+
+Shadow agents monitor primary agents by receiving copies of their messages. Use shadows for code review, security auditing, or quality assurance without interrupting the primary agent's workflow.
+
+## What Are Shadows?
+
+A shadow agent is paired with a primary agent and receives copies of the primary's messages. Shadows can be configured to:
+
+- **Observe silently** - Monitor without speaking
+- **Review code** - Comment on code changes
+- **Audit sessions** - Generate end-of-session reports
+- **Participate actively** - Engage in all conversations
+
+<Frame>
+```
+                +------------------+
+                |  Primary Agent   |
+                |   (Lead)         |
+                +--------+---------+
+                         |
+                    Messages
+                         |
+         +---------------+---------------+
+         |                               |
+         v                               v
++--------+--------+             +--------+--------+
+|  Relay Daemon   |   copy -->  |  Shadow Agent   |
+|  (routes)       |             |  (Auditor)      |
++-----------------+             +-----------------+
+```
+</Frame>
+
+## Shadow Roles
+
+Shadows use predefined roles that determine when they speak:
+
+| Role | Triggers | Use Case |
+|------|----------|----------|
+| `reviewer` | `CODE_WRITTEN`, `REVIEW_REQUEST`, `EXPLICIT_ASK` | Code review |
+| `auditor` | `SESSION_END`, `EXPLICIT_ASK` | Session audits |
+| `active` | `ALL_MESSAGES` | Full participation |
+
+### Trigger Types
+
+| Trigger | Description |
+|---------|-------------|
+| `SESSION_END` | When the primary's session ends |
+| `CODE_WRITTEN` | When the primary writes or modifies code |
+| `REVIEW_REQUEST` | When a review is explicitly requested |
+| `EXPLICIT_ASK` | When directly addressed by name |
+| `ALL_MESSAGES` | Every message the primary receives |
+
+## CLI Configuration
+
+Spawn a primary agent with a shadow using CLI flags:
+
+```bash
+agent-relay create-agent claude \
+  --name Lead \
+  --shadow Auditor \
+  --shadow-role reviewer
+```
+
+### Options
+
+| Flag | Description |
+|------|-------------|
+| `--shadow <name>` | Name for the shadow agent |
+| `--shadow-role <role>` | Role preset or comma-separated triggers |
+
+### Custom Triggers
+
+Specify individual triggers instead of a role:
+
+```bash
+agent-relay create-agent claude \
+  --name Lead \
+  --shadow SecurityAuditor \
+  --shadow-role "CODE_WRITTEN,SESSION_END"
+```
+
+## Configuration File
+
+For permanent shadow configurations, use `.agent-relay.json`:
+
+**`.agent-relay.json`**
+```json
+{
+  "shadows": {
+    "pairs": {
+      "Lead": {
+        "shadow": "Auditor",
+        "shadowRole": "reviewer"
+      },
+      "Developer": {
+        "shadow": "SecurityReviewer",
+        "shadowRole": "auditor",
+        "cli": "claude"
+      }
+    },
+    "roles": {
+      "security": {
+        "prompt": "You are a security-focused reviewer. Flag any potential vulnerabilities.",
+        "speakOn": ["CODE_WRITTEN", "REVIEW_REQUEST"]
+      }
+    }
+  }
+}
+```
+
+### Configuration Structure
+
+```json
+{
+  "shadows": {
+    "pairs": {
+      "<PrimaryName>": {
+        "shadow": "<ShadowName>",
+        "shadowRole": "<role-name-or-preset>",
+        "speakOn": ["<override-triggers>"],
+        "cli": "<cli-tool>"
+      }
+    },
+    "roles": {
+      "<custom-role>": {
+        "prompt": "<system-prompt>",
+        "speakOn": ["<triggers>"]
+      }
+    }
+  }
+}
+```
+
+### Configuration Locations
+
+The config file can be placed in:
+
+1. `./.agent-relay/config.json` (recommended)
+2. `./.agent-relay.json` (project root)
+
+## Custom Roles
+
+Define custom roles with specific prompts and triggers:
+
+```json
+{
+  "shadows": {
+    "pairs": {
+      "Lead": {
+        "shadow": "QAReviewer",
+        "shadowRole": "qa"
+      }
+    },
+    "roles": {
+      "qa": {
+        "prompt": "You review code for test coverage and edge cases. Suggest tests for any untested paths.",
+        "speakOn": ["CODE_WRITTEN", "EXPLICIT_ASK"]
+      }
+    }
+  }
+}
+```
+
+## Shadow Modes
+
+Shadows can run in two modes depending on the primary's CLI:
+
+### Process Mode (Default)
+
+Shadow runs as a separate process alongside the primary:
+
+```
+Primary (claude) --> Shadow (claude)
+   |                    |
+   v                    v
+ [pty]               [pty]
+```
+
+- Full PTY capabilities
+- Independent resource usage
+- Visible in `agent-relay agents`
+
+### Subagent Mode
+
+For Claude and compatible CLIs, shadows can run as subagents inside the primary:
+
+```
+Primary (claude)
+   |
+   +-- Shadow (subagent)
+```
+
+Benefits:
+- Shared context with primary
+- Lower resource overhead
+- Automatic lifecycle management
+
+The spawner automatically selects subagent mode when available.
+
+## Spawning Shadows Programmatically
+
+Use the spawner API to create primary-shadow pairs:
+
+### Via Dashboard API
+
+```bash
+curl -X POST http://localhost:3888/api/spawn-with-shadow \
+  -H "Content-Type: application/json" \
+  -d '{
+    "primary": {
+      "name": "Lead",
+      "command": "claude",
+      "task": "Implement user authentication"
+    },
+    "shadow": {
+      "name": "Auditor",
+      "role": "reviewer"
+    }
+  }'
+```
+
+### Via Relay Protocol
+
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
+KIND: spawn
+NAME: Lead
+CLI: claude
+SHADOW: Auditor
+SHADOW_ROLE: reviewer
+
+Implement the user authentication system.
+EOF
+```
+
+Then: `->relay-file:spawn`
+
+## Shadow Communication
+
+Shadows receive messages but should generally stay passive:
+
+### When Shadows Speak
+
+Shadows only speak when their triggers activate:
+
+1. **Reviewer triggers**: Code changes detected
+2. **Auditor triggers**: Session ends
+3. **Explicit asks**: Someone mentions the shadow by name
+
+### Shadow Output Format
+
+When a shadow speaks, messages are prefixed with their role:
+
+```
+[Shadow:Auditor] Code review: Consider adding input validation on line 42.
+```
+
+## Use Cases
+
+<CardGroup cols={2}>
+  <Card title="Code Review" icon="magnifying-glass-code">
+    Shadow reviewers catch issues in real-time as code is written.
+  </Card>
+  <Card title="Security Audit" icon="shield-halved">
+    Security shadows flag vulnerabilities before they reach production.
+  </Card>
+  <Card title="Session Logging" icon="clipboard-list">
+    Auditor shadows create end-of-session summaries for compliance.
+  </Card>
+  <Card title="Learning" icon="graduation-cap">
+    Junior agents shadow seniors to learn patterns and practices.
+  </Card>
+</CardGroup>
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Choose Appropriate Triggers" icon="sliders">
+    Use minimal triggers to avoid noise. Reviewers do not need `ALL_MESSAGES`.
+  </Card>
+  <Card title="Write Clear Prompts" icon="pen">
+    Shadow prompts should explain the role and when to speak.
+  </Card>
+  <Card title="Use Subagent Mode" icon="layer-group">
+    Let the spawner select subagent mode for lower overhead.
+  </Card>
+  <Card title="Review Shadow Output" icon="eye">
+    Shadow feedback is valuable but may need human review.
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Shadow not receiving messages">
+    1. Verify the shadow is registered: `agent-relay agents`
+    2. Check the pairing in `.agent-relay.json`
+    3. Ensure the primary's name matches exactly
+  </Accordion>
+  <Accordion title="Shadow speaking too often">
+    1. Review the `speakOn` triggers in config
+    2. Use more restrictive triggers like `EXPLICIT_ASK`
+    3. Add context to the shadow prompt about when to stay quiet
+  </Accordion>
+  <Accordion title="Shadow not starting">
+    1. Check if the CLI is authenticated
+    2. Verify config syntax in `.agent-relay.json`
+    3. Look for errors in daemon logs
+  </Accordion>
+</AccordionGroup>

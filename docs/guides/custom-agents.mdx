@@ -1,0 +1,485 @@
+---
+title: Custom Agent Roles
+description: Create custom agent definitions with specialized skills and behaviors
+---
+
+# Custom Agent Roles
+
+Agent Relay supports custom agent definitions that give agents specialized skills, behaviors, and personalities. Define agents in `.claude/agents/` to create reusable roles.
+
+## Agent Definition Files
+
+### Location
+
+Agent definitions live in your project:
+
+```
+project/
+├── .claude/
+│   └── agents/
+│       ├── reviewer.md
+│       ├── architect.md
+│       ├── tester.md
+│       └── roles/
+│           ├── planner-strategy.md
+│           └── worker-focus.md
+└── src/
+```
+
+### Basic Structure
+
+```markdown
+---
+name: reviewer
+description: Code review for quality, security, and best practices
+tools: Read, Grep, Glob, Bash
+skills: using-agent-relay
+---
+
+# Code Reviewer
+
+You are a code review specialist. Your purpose is to...
+
+## Core Principles
+
+### 1. Prioritize Blocking Issues
+- Security vulnerabilities first
+- Correctness bugs second
+...
+
+## Review Checklist
+
+### Security (Critical)
+- [ ] No hardcoded secrets
+- [ ] Input validation
+...
+```
+
+## Frontmatter Options
+
+The YAML frontmatter at the top of the file configures the agent:
+
+```yaml
+---
+name: reviewer              # Agent identifier (required)
+description: Code review... # Short description for selection
+model: sonnet               # Model to use (haiku, sonnet, opus)
+tools: Read, Grep, Glob     # Allowed tools
+skills: using-agent-relay   # Skills to load
+role: reviewer              # Role type (affects prompt composition)
+---
+```
+
+### Available Options
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `name` | Yes | Unique identifier for the agent |
+| `description` | No | Human-readable description |
+| `model` | No | Model selection (haiku, sonnet, opus). Default: sonnet |
+| `tools` | No | Comma-separated list of allowed tools |
+| `skills` | No | Skills to inject into agent context |
+| `role` | No | Role type for prompt composition |
+
+### Model Selection
+
+| Model | Best For | Cost |
+|-------|----------|------|
+| `haiku` | Simple tasks, quick decisions, coordination | Low |
+| `sonnet` | General coding, review, debugging | Medium |
+| `opus` | Complex architecture, difficult debugging | High |
+
+## Creating Custom Agents
+
+<Steps>
+  <Step title="Create the agent file">
+    ```bash
+    mkdir -p .claude/agents
+    touch .claude/agents/security-auditor.md
+    ```
+  </Step>
+
+  <Step title="Define frontmatter">
+    ```yaml
+    ---
+    name: security-auditor
+    description: Security-focused code review and vulnerability assessment
+    model: sonnet
+    tools: Read, Grep, Glob, Bash
+    skills: using-agent-relay
+    ---
+    ```
+  </Step>
+
+  <Step title="Write the agent prompt">
+    ```markdown
+    # Security Auditor
+
+    You are a security specialist focused on identifying vulnerabilities
+    and ensuring secure coding practices.
+
+    ## Core Principles
+
+    ### 1. Defense in Depth
+    - Assume all input is malicious
+    - Validate at every layer
+    - Fail securely
+
+    ### 2. OWASP Top 10 Awareness
+    - Injection attacks
+    - Broken authentication
+    - Sensitive data exposure
+    - XML External Entities (XXE)
+    ...
+
+    ## Review Checklist
+
+    ### Critical (Block Immediately)
+    - [ ] No hardcoded secrets, API keys, or credentials
+    - [ ] No SQL injection vulnerabilities
+    - [ ] No command injection
+    - [ ] Proper authentication on all endpoints
+
+    ### High Priority
+    - [ ] Input validation on all user data
+    - [ ] Output encoding to prevent XSS
+    - [ ] Secure session management
+    - [ ] Proper error handling (no stack traces)
+
+    ## Output Format
+
+    When reviewing code, provide:
+
+    1. **Severity**: CRITICAL, HIGH, MEDIUM, LOW
+    2. **Location**: File and line number
+    3. **Issue**: What's wrong
+    4. **Impact**: What could happen
+    5. **Fix**: How to remediate
+    ```
+  </Step>
+
+  <Step title="Use the agent">
+    ```bash
+    agent-relay -n Security claude --agent security-auditor
+    ```
+  </Step>
+</Steps>
+
+## Example Agent Definitions
+
+### Lead/Coordinator
+
+```markdown
+---
+name: lead
+model: haiku
+description: Coordinates multi-agent teams. Delegates tasks, tracks progress.
+tools: Read, Grep, Glob, Bash, Task, AskUserQuestion
+skills: using-agent-relay
+---
+
+# Lead Agent
+
+You are a coordinator, NOT an implementer. Your job is to delegate
+tasks to specialists and keep work moving.
+
+## Core Principles
+
+### 1. Delegate, Don't Do
+- Quick investigation only (2-3 minutes max)
+- Never write significant code yourself
+- Trust your specialists
+
+### 2. Decide Fast
+- Make decisions in under 30 seconds
+- Ask ONE clarifying question, then decide
+- "Good enough" beats perfect
+
+## When to Spawn Workers
+
+| Situation | Action |
+|-----------|--------|
+| Deep implementation work | Spawn specialist |
+| Code review needed | Spawn reviewer |
+| Tests required | Spawn tester |
+| Quick question | Handle yourself |
+
+## Communication
+
+Always ACK incoming messages immediately:
+
+\`\`\`bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/ack << 'EOF'
+TO: Sender
+
+ACK: [Brief description of task received]
+EOF
+\`\`\`
+
+Report progress regularly. Release workers when done.
+```
+
+### Tester
+
+```markdown
+---
+name: tester
+description: Test writing specialist for unit, integration, and e2e tests
+tools: Read, Write, Edit, Grep, Glob, Bash
+skills: using-agent-relay
+---
+
+# Tester Agent
+
+You write comprehensive, maintainable test suites.
+
+## Test Pyramid
+
+- **Unit tests**: Fast, isolated, many (base)
+- **Integration tests**: Component interactions (middle)
+- **E2E tests**: Critical user journeys (top)
+
+## Coverage Guidelines
+
+| Priority | What to Test |
+|----------|--------------|
+| Critical | Business logic, calculations |
+| High | API endpoints, auth |
+| Medium | UI components, forms |
+| Low | Simple getters/setters |
+
+## Test Naming
+
+Use descriptive names:
+
+\`\`\`typescript
+// Good
+it('should return empty array when no items match filter')
+it('throws ValidationError when email format is invalid')
+
+// Bad
+it('test1')
+it('works')
+\`\`\`
+
+## Output Format
+
+\`\`\`
+**Test Plan:**
+- [List of scenarios to cover]
+
+**Files Created:**
+- path/to/test.ts - [description]
+
+**Coverage:**
+- Functions: X/Y covered
+- Edge cases: [list]
+\`\`\`
+```
+
+### Architect
+
+```markdown
+---
+name: architect
+description: System design and architecture decisions
+model: opus
+tools: Read, Grep, Glob, Write, Edit
+skills: using-agent-relay
+---
+
+# Architect
+
+You design systems and make technical decisions.
+
+## Core Principles
+
+### 1. Understand Before Designing
+Know the requirements (functional and non-functional)
+
+### 2. Tradeoffs Are Explicit
+Every decision has costs and benefits. Document both.
+
+### 3. Design for Change
+- Identify what's likely to change
+- Isolate volatility behind interfaces
+
+## Decision Process
+
+1. **Context**: What problem? What constraints?
+2. **Options**: What approaches possible?
+3. **Analysis**: What are the tradeoffs?
+4. **Decision**: Which best fits?
+
+## Output: Architecture Decision Record
+
+\`\`\`markdown
+# ADR-001: [Title]
+
+## Status
+[Proposed | Accepted | Deprecated]
+
+## Context
+[What motivates this decision?]
+
+## Decision
+[What are we doing?]
+
+## Consequences
+[What becomes easier/harder?]
+
+## Alternatives Considered
+[What else was evaluated?]
+\`\`\`
+```
+
+## Role-Based Loading
+
+Agents can reference role templates for consistent behavior patterns.
+
+### Role Files
+
+Create reusable role definitions:
+
+```markdown
+<!-- .claude/agents/roles/worker-focus.md -->
+
+## Worker Focus Principles
+
+As a worker agent, you:
+
+1. **Execute, don't decide architecture**
+   - Implement the assigned task
+   - Ask for clarification if unclear
+   - Don't redesign the system
+
+2. **Report progress regularly**
+   - ACK when you start
+   - Status updates every 15 minutes
+   - DONE when complete
+
+3. **Stay in your lane**
+   - Focus on the assigned task
+   - Flag scope creep to lead
+   - Don't spawn sub-workers without approval
+```
+
+### Using Roles
+
+Reference roles in agent definitions:
+
+```yaml
+---
+name: backend-worker
+description: Backend implementation specialist
+role: worker
+skills: using-agent-relay
+---
+```
+
+The `role: worker` triggers loading of `roles/worker-focus.md` content.
+
+## Spawning Custom Agents
+
+### From CLI
+
+```bash
+agent-relay -n MyReviewer claude --agent reviewer
+```
+
+### From Another Agent
+
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
+KIND: spawn
+NAME: Reviewer
+CLI: claude --agent reviewer
+
+Please review the changes in src/auth/:
+- Focus on security implications
+- Check error handling
+- Verify test coverage
+EOF
+```
+
+Then: `->relay-file:spawn`
+
+## Best Practices
+
+### Agent Design
+
+<CardGroup cols={2}>
+
+<Card title="Single Responsibility" icon="bullseye">
+Each agent should have one clear purpose. Don't create "do everything" agents.
+</Card>
+
+<Card title="Clear Boundaries" icon="border-all">
+Define what the agent should and shouldn't do. Include explicit "don'ts".
+</Card>
+
+<Card title="Actionable Output" icon="list-check">
+Specify the expected output format so results are consistent and usable.
+</Card>
+
+<Card title="Communication Protocol" icon="comments">
+Include how the agent should communicate (ACK, DONE, relay usage).
+</Card>
+
+</CardGroup>
+
+### Model Selection Guidelines
+
+| Use Haiku | Use Sonnet | Use Opus |
+|-----------|------------|----------|
+| Coordination tasks | General coding | Complex architecture |
+| Simple decisions | Code review | Difficult debugging |
+| Message routing | Test writing | Security audits |
+| Status tracking | Documentation | Novel problems |
+
+### Organizing Agents
+
+```
+.claude/agents/
+├── # Core roles
+├── lead.md
+├── reviewer.md
+├── tester.md
+├── architect.md
+│
+├── # Domain specialists
+├── frontend.md
+├── backend.md
+├── database.md
+├── devops.md
+│
+├── # Shadow agents
+├── shadow-reviewer.md
+├── shadow-auditor.md
+│
+└── roles/
+    ├── planner-strategy.md
+    ├── worker-focus.md
+    └── reviewer-criteria.md
+```
+
+## Sharing Agent Definitions
+
+### Project-specific
+
+Commit `.claude/agents/` to your repository. All team members get the same agent definitions.
+
+### Organization-wide
+
+For consistent agents across projects:
+
+1. Create a shared repository with agent definitions
+2. Use git submodules or copy scripts to sync
+3. Or use Agent Relay Cloud for centralized management
+
+### Community
+
+Share useful agent definitions:
+- Document the use case clearly
+- Include example usage
+- Test across different scenarios

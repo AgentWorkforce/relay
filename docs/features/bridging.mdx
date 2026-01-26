@@ -1,0 +1,279 @@
+---
+title: "Multi-Project Bridging"
+description: "Connect agents across multiple projects for cross-project orchestration"
+---
+
+# Multi-Project Bridging
+
+Bridge mode connects multiple agent-relay daemons, enabling agents in different projects to communicate with each other. This is ideal for monorepo architectures, microservices, or distributed teams.
+
+## Why Bridge Projects?
+
+<CardGroup cols={2}>
+  <Card title="Microservices" icon="cubes">
+    Coordinate agents working on different services in your architecture.
+  </Card>
+  <Card title="Monorepos" icon="folder-tree">
+    Connect frontend, backend, and shared library agents across packages.
+  </Card>
+  <Card title="Team Coordination" icon="users">
+    Let specialized teams work on their projects while staying connected.
+  </Card>
+  <Card title="Cross-Project Tasks" icon="arrows-split-up-and-left">
+    Enable tasks that span multiple codebases, like API changes.
+  </Card>
+</CardGroup>
+
+## Quick Start
+
+<Steps>
+  <Step title="Start daemons in each project">
+    Each project needs its own daemon running:
+
+    ```bash
+    # Terminal 1: Frontend project
+    cd ~/projects/frontend
+    agent-relay up
+
+    # Terminal 2: Backend project
+    cd ~/projects/backend
+    agent-relay up
+    ```
+  </Step>
+  <Step title="Start the bridge">
+    Connect the projects with the bridge command:
+
+    ```bash
+    agent-relay bridge ~/projects/frontend ~/projects/backend
+    ```
+  </Step>
+  <Step title="Send cross-project messages">
+    Agents can now message across projects using the project prefix:
+
+    ```bash
+    cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/cross << 'EOF'
+    TO: backend:ApiDeveloper
+
+    The frontend needs a new endpoint for user preferences.
+    EOF
+    ```
+
+    Then: `->relay-file:cross`
+  </Step>
+</Steps>
+
+## Bridge Command
+
+The basic bridge command accepts project paths as arguments:
+
+```bash
+agent-relay bridge <project1> <project2> [project3...]
+```
+
+### Example
+
+```bash
+agent-relay bridge ~/frontend ~/backend ~/shared-libs
+```
+
+Output:
+```
+Bridge Mode - Multi-Project Orchestration
+----------------------------------------
+Bridging 3 projects:
+  - frontend (/Users/dev/frontend)
+    Lead: Dashboard, CLI: claude
+  - backend (/Users/dev/backend)
+    Lead: Dashboard, CLI: claude
+  - shared-libs (/Users/dev/shared-libs)
+    Lead: Dashboard, CLI: claude
+
+Connected to all projects.
+
+Cross-project messaging:
+  ->relay:frontend:AgentName message
+  ->relay:backend:lead message
+```
+
+## Cross-Project Messaging Format
+
+When bridged, agents use a project-prefixed address format:
+
+```
+TO: project-id:AgentName
+```
+
+### Examples
+
+| Target | Description |
+|--------|-------------|
+| `frontend:Designer` | Message the Designer agent in the frontend project |
+| `backend:lead` | Message the lead agent in the backend project |
+| `frontend:*` | Broadcast to all agents in the frontend project |
+| `*:*` | Broadcast to all agents in all projects |
+
+### Sending Cross-Project Messages
+
+```bash
+cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/msg << 'EOF'
+TO: backend:ApiDeveloper
+
+Please add a new endpoint: GET /api/users/preferences
+Should return { theme, language, notifications } for the authenticated user.
+EOF
+```
+
+Then: `->relay-file:msg`
+
+## Bridge Configuration
+
+For persistent setups, create a bridge configuration file:
+
+**~/.agent-relay/bridge.json**
+```json
+{
+  "projects": [
+    {
+      "id": "frontend",
+      "path": "/Users/dev/frontend",
+      "leadName": "Dashboard",
+      "cli": "claude"
+    },
+    {
+      "id": "backend",
+      "path": "/Users/dev/backend",
+      "leadName": "Dashboard",
+      "cli": "claude"
+    }
+  ]
+}
+```
+
+Then start without arguments:
+
+```bash
+agent-relay bridge
+```
+
+### Configuration Options
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `id` | Project identifier (used in messaging) | Directory name |
+| `path` | Absolute path to the project | Required |
+| `leadName` | Name of the lead agent | `Dashboard` |
+| `cli` | Default CLI tool for the project | `claude` |
+
+## CLI Override
+
+Override the CLI tool for all projects:
+
+```bash
+agent-relay bridge ~/frontend ~/backend --cli codex
+```
+
+## Architect Mode
+
+Spawn an architect agent to coordinate all bridged projects:
+
+```bash
+agent-relay bridge ~/frontend ~/backend --architect
+```
+
+The architect agent:
+
+- Receives all cross-project messages
+- Can delegate tasks to project leads
+- Coordinates work across boundaries
+- Uses Claude by default (specify CLI with `--architect codex`)
+
+## Bridge Dashboard
+
+Each project's dashboard shows bridge status when connected:
+
+- **Bridge Status** - Connected/Disconnected indicator
+- **Bridged Projects** - List of connected projects
+- **Project Leads** - Status of lead agents in each project
+- **Message Flow** - Cross-project messages
+
+The bridge state is written to each project's data directory:
+
+```
+.relay/bridge-state.json
+```
+
+## Reconnection Handling
+
+The bridge automatically reconnects on disconnection:
+
+- Exponential backoff: 1s, 2s, 4s, 8s... up to 30s
+- Reconnection attempts continue until success or shutdown
+- State is preserved during brief disconnections
+
+Bridge logs show reconnection status:
+
+```
+[bridge] Reconnecting to frontend in 2000ms (attempt 1)
+[bridge] Reconnected to frontend
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Use Descriptive IDs" icon="tag">
+    Choose project IDs that clearly identify the purpose (e.g., `frontend`, `api`, `auth-service`).
+  </Card>
+  <Card title="Designate Leads" icon="crown">
+    Each project should have a lead agent for receiving delegated tasks.
+  </Card>
+  <Card title="Keep Messages Focused" icon="bullseye">
+    Cross-project messages should be task-oriented, not conversational.
+  </Card>
+  <Card title="Monitor the Bridge" icon="eye">
+    Watch bridge logs for connectivity issues between projects.
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Bridge fails to connect">
+    1. Verify daemons are running in each project: `agent-relay status`
+    2. Check socket files exist: `ls /tmp/agent-relay-*.sock`
+    3. Ensure no firewall blocking local sockets
+  </Accordion>
+  <Accordion title="Messages not delivered cross-project">
+    1. Confirm bridge is connected to both projects
+    2. Verify the target project ID is correct
+    3. Check the target agent is registered in that project
+  </Accordion>
+  <Accordion title="Bridge keeps disconnecting">
+    1. Check project daemon logs for errors
+    2. Verify no resource constraints on the system
+    3. Use `--watch` mode for automatic recovery: `agent-relay up --watch`
+  </Accordion>
+</AccordionGroup>
+
+## Architecture
+
+```
+                    +-----------------+
+                    |  Bridge Client  |
+                    |  (Orchestrator) |
+                    +--------+--------+
+                             |
+            +----------------+----------------+
+            |                |                |
+    +-------v------+  +------v-------+  +----v---------+
+    |  Frontend    |  |  Backend     |  |  Shared      |
+    |  Daemon      |  |  Daemon      |  |  Libs Daemon |
+    |  (socket)    |  |  (socket)    |  |  (socket)    |
+    +-------+------+  +------+-------+  +------+-------+
+            |                |                 |
+    +-------v------+  +------v-------+  +------v-------+
+    |  Frontend    |  |  Backend     |  |  Libs        |
+    |  Agents      |  |  Agents      |  |  Agents      |
+    +--------------+  +--------------+  +--------------+
+```
+
+The bridge client connects to each project's daemon via Unix sockets and routes messages between them based on the project prefix in the address.

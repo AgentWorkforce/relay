@@ -1,0 +1,74 @@
+{
+  "$schema": "https://mintlify.com/schema.json",
+  "name": "Agent Relay",
+  "logo": {
+    "light": "/logo/light.svg",
+    "dark": "/logo/dark.png"
+  },
+  "favicon": "/favicon.png",
+  "colors": {
+    "primary": "#0891B2",
+    "light": "#0E7490",
+    "dark": "#06B6D4",
+    "anchors": {
+      "from": "#0891B2",
+      "to": "#059669"
+    }
+  },
+  "topbarLinks": [],
+  "anchors": [
+    {
+      "name": "GitHub",
+      "icon": "github",
+      "url": "https://github.com/agentworkforce/relay"
+    },
+    {
+      "name": "Hosted Cloud",
+      "icon": "cloud",
+      "url": "https://agent-relay.com"
+    }
+  ],
+  "navigation": [
+    {
+      "group": "Get Started",
+      "pages": [
+        "introduction",
+        "quickstart",
+        "concepts"
+      ]
+    },
+    {
+      "group": "Core Features",
+      "pages": [
+        "features/messaging",
+        "features/dashboard",
+        "features/bridging",
+        "features/spawning",
+        "features/shadows",
+        "features/cloud"
+      ]
+    },
+    {
+      "group": "How-to Guides",
+      "pages": [
+        "guides/multi-project",
+        "guides/worker-orchestration",
+        "guides/session-continuity",
+        "guides/custom-agents"
+      ]
+    },
+    {
+      "group": "Reference",
+      "pages": [
+        "reference/cli",
+        "reference/protocol",
+        "reference/configuration",
+        "reference/api"
+      ]
+    }
+  ],
+  "footerSocials": {
+    "github": "https://github.com/agentworkforce/relay",
+    "twitter": "https://twitter.com/agent_relay"
+  }
+}
