@@ -125,6 +125,12 @@ RUN mkdir -p /home/workspace/.codex && \
     > /home/workspace/.codex/config.toml && \
     chown -R workspace:workspace /home/workspace/.codex
 
+# Configure GitHub Copilot MCP settings
+RUN mkdir -p /home/workspace/.config/github-copilot && \
+    echo '{"mcpServers":{"agent-relay":{"command":"node","args":["/app/dist/src/cli/index.js","mcp","serve"]}}}' \
+    > /home/workspace/.config/github-copilot/mcp.json && \
+    chown -R workspace:workspace /home/workspace/.config/github-copilot
+
 # Run entrypoint as root so it can start sshd; entrypoint drops to workspace via gosu
 USER root
 
