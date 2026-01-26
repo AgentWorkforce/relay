@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/cloud",
-  "version": "2.0.16",
+  "version": "2.0.17",
   "description": "Cloud API server and services for Agent Relay",
   "type": "module",
   "main": "dist/index.js",
@@ -38,11 +38,11 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agent-relay/wrapper": "2.0.16",
-    "@agent-relay/config": "2.0.16",
-    "@agent-relay/resiliency": "2.0.16",
-    "@agent-relay/storage": "2.0.16",
-    "@agent-relay/protocol": "2.0.16"
+    "@agent-relay/wrapper": "2.0.17",
+    "@agent-relay/config": "2.0.17",
+    "@agent-relay/resiliency": "2.0.17",
+    "@agent-relay/storage": "2.0.17",
+    "@agent-relay/protocol": "2.0.17"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",
