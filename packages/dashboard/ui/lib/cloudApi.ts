@@ -42,6 +42,7 @@ export interface CloudUser {
   }>;
   pendingInvites: number;
   onboardingCompleted: boolean;
+  displayName?: string;
 }
 
 export type SessionExpiredCallback = (error: SessionError) => void;

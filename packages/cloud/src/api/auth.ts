@@ -73,6 +73,7 @@ authRouter.get('/me', async (req: Request, res: Response) => {
     res.json({
       id: user.id,
       githubUsername: user.githubUsername,
+      displayName: user.displayName || user.githubUsername || user.email?.split('@')[0] || null,
       email: user.email,
       avatarUrl: user.avatarUrl,
       plan: user.plan,
@@ -139,6 +140,7 @@ authRouter.get('/session', async (req: Request, res: Response) => {
       user: {
         id: user.id,
         githubUsername: user.githubUsername,
+        displayName: user.displayName || user.githubUsername || user.email?.split('@')[0] || null,
         email: user.email,
         avatarUrl: user.avatarUrl,
         plan: user.plan,

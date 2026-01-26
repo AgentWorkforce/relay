@@ -767,20 +767,40 @@ export async function startDashboard(
   // Validation helpers for presence
   const isValidUsername = (username: unknown): username is string => {
     if (typeof username !== 'string') return false;
-    // Username should be 1-39 chars, alphanumeric with hyphens (GitHub username rules)
-    return /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$/.test(username);
+    // Username can be:
+    // - GitHub-style: alphanumeric with hyphens (e.g., "khaliqgant")
+    // - Display name style: allows spaces for email users (e.g., "Khaliq Gant")
+    // Max 50 chars, must start/end with alphanumeric, no consecutive spaces
+    if (username.length === 0 || username.length > 50) return false;
+    // Must start and end with alphanumeric
+    if (!/^[a-zA-Z0-9]/.test(username) || !/[a-zA-Z0-9]$/.test(username)) return false;
+    // Only allow alphanumeric, spaces, hyphens, underscores, and periods
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9 _.-]*[a-zA-Z0-9]$/.test(username) && username.length > 1) return false;
+    // Single character usernames must be alphanumeric
+    if (username.length === 1 && !/^[a-zA-Z0-9]$/.test(username)) return false;
+    // No consecutive spaces
+    if (/  /.test(username)) return false;
+    return true;
   };
 
   const isValidAvatarUrl = (url: unknown): url is string | undefined => {
     if (url === undefined || url === null) return true;
     if (typeof url !== 'string') return false;
-    // Must be a valid HTTPS URL from GitHub or similar known providers
+    // Must be a valid HTTPS URL from known avatar providers
     try {
       const parsed = new URL(url);
-      return parsed.protocol === 'https:' &&
-        (parsed.hostname === 'avatars.githubusercontent.com' ||
-         parsed.hostname === 'github.com' ||
-         parsed.hostname.endsWith('.githubusercontent.com'));
+      if (parsed.protocol !== 'https:') return false;
+      // Allow GitHub avatars
+      if (parsed.hostname === 'avatars.githubusercontent.com' ||
+          parsed.hostname === 'github.com' ||
+          parsed.hostname.endsWith('.githubusercontent.com')) return true;
+      // Allow Gravatar for email-based avatars
+      if (parsed.hostname === 'www.gravatar.com' ||
+          parsed.hostname === 'gravatar.com' ||
+          parsed.hostname === 'secure.gravatar.com') return true;
+      // Allow UI Avatars (placeholder service)
+      if (parsed.hostname === 'ui-avatars.com') return true;
+      return false;
     } catch {
       return false;
     }

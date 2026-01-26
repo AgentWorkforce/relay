@@ -26,9 +26,17 @@ import { relations } from 'drizzle-orm';
 
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
-  githubId: varchar('github_id', { length: 255 }).unique().notNull(),
-  githubUsername: varchar('github_username', { length: 255 }).notNull(),
-  email: varchar('email', { length: 255 }),
+  // GitHub OAuth fields (nullable for email-only users)
+  githubId: varchar('github_id', { length: 255 }).unique(),
+  githubUsername: varchar('github_username', { length: 255 }),
+  // Email authentication fields
+  email: varchar('email', { length: 255 }).unique(),
+  passwordHash: varchar('password_hash', { length: 255 }), // For email login
+  emailVerified: boolean('email_verified').notNull().default(false),
+  emailVerificationToken: varchar('email_verification_token', { length: 255 }),
+  emailVerificationExpires: timestamp('email_verification_expires'),
+  // Profile
+  displayName: varchar('display_name', { length: 255 }), // User-provided name for email users
   avatarUrl: varchar('avatar_url', { length: 512 }),
   plan: varchar('plan', { length: 50 }).notNull().default('free'),
   // Stripe billing
@@ -43,6 +51,7 @@ export const users = pgTable('users', {
 }, (table) => ({
   nangoConnectionIdx: index('idx_users_nango_connection').on(table.nangoConnectionId),
   incomingConnectionIdx: index('idx_users_incoming_connection').on(table.incomingConnectionId),
+  emailIdx: index('idx_users_email').on(table.email),
 }));
 
 export const usersRelations = relations(users, ({ many }) => ({
@@ -52,6 +61,36 @@ export const usersRelations = relations(users, ({ many }) => ({
   repositories: many(repositories),
   linkedDaemons: many(linkedDaemons),
   installedGitHubApps: many(githubInstallations),
+  emails: many(userEmails),
+}));
+
+// ============================================================================
+// User Emails (GitHub-linked email addresses for account reconciliation)
+// ============================================================================
+
+export const userEmails = pgTable('user_emails', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  email: varchar('email', { length: 255 }).notNull(),
+  /** Whether this email is verified on GitHub */
+  verified: boolean('verified').notNull().default(false),
+  /** Whether this is the primary email on GitHub */
+  primary: boolean('primary').notNull().default(false),
+  /** Source of this email: 'github', 'manual', etc. */
+  source: varchar('source', { length: 50 }).notNull().default('github'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  userEmailIdx: unique('user_emails_user_email_unique').on(table.userId, table.email),
+  emailIdx: index('idx_user_emails_email').on(table.email),
+  userIdIdx: index('idx_user_emails_user_id').on(table.userId),
+}));
+
+export const userEmailsRelations = relations(userEmails, ({ one }) => ({
+  user: one(users, {
+    fields: [userEmails.userId],
+    references: [users.id],
+  }),
 }));
 
 // ============================================================================
@@ -513,6 +552,8 @@ export const agentSummaries = pgTable('agent_summaries', {
 
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
+export type UserEmail = typeof userEmails.$inferSelect;
+export type NewUserEmail = typeof userEmails.$inferInsert;
 export type GitHubInstallation = typeof githubInstallations.$inferSelect;
 export type NewGitHubInstallation = typeof githubInstallations.$inferInsert;
 export type Credential = typeof credentials.$inferSelect;

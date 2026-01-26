@@ -182,10 +182,12 @@ program
 
     // Auto-install MCP config if not present (project-local)
     // Uses .mcp.json in the project root - doesn't modify global settings
+    // Feature gated: set RELAY_MCP_AUTO_INSTALL=1 to enable
+    const mcpAutoInstallEnabled = process.env.RELAY_MCP_AUTO_INSTALL === '1';
     const projectMcpConfigPath = path.join(paths.projectRoot, '.mcp.json');
     const socketPath = path.join(paths.projectRoot, '.agent-relay', 'relay.sock');
 
-    if (!fs.existsSync(projectMcpConfigPath)) {
+    if (!fs.existsSync(projectMcpConfigPath) && mcpAutoInstallEnabled) {
       try {
         const result = installMcpConfig(projectMcpConfigPath, {
           configKey: 'mcpServers',

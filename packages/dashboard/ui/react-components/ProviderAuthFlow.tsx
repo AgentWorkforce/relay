@@ -65,6 +65,7 @@ export function ProviderAuthFlow({
   const popupOpenedRef = useRef(false);
   const pollingRef = useRef(false);
   const cliPollingRef = useRef(false);
+  const completingRef = useRef(false); // Prevent double-calling handleComplete
 
   const backendProviderId = PROVIDER_ID_MAP[provider.id] || provider.id;
 
@@ -320,6 +321,14 @@ export function ProviderAuthFlow({
     const targetSessionId = sid || sessionId;
     if (!targetSessionId) return;
 
+    // Prevent double-calling (both CLI polling and status polling may detect success)
+    if (completingRef.current) return;
+    completingRef.current = true;
+
+    // Stop both polling loops
+    pollingRef.current = false;
+    cliPollingRef.current = false;
+
     setStatus('submitting');
     setErrorMessage(null);
 
@@ -343,6 +352,7 @@ export function ProviderAuthFlow({
       // Brief delay to show success message before parent unmounts component
       setTimeout(() => onSuccess(), 1500);
     } catch (err) {
+      completingRef.current = false; // Allow retry on error
       const msg = err instanceof Error ? err.message : 'Failed to complete authentication';
       setErrorMessage(msg);
       setStatus('error');

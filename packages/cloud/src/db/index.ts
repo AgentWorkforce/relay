@@ -12,6 +12,8 @@
 export type {
   User,
   NewUser,
+  UserEmail,
+  NewUserEmail,
   GitHubInstallation,
   NewGitHubInstallation,
   Credential,
@@ -59,6 +61,7 @@ export type {
 // Re-export schema tables for direct access if needed
 export {
   users as usersTable,
+  userEmails as userEmailsTable,
   githubInstallations as githubInstallationsTable,
   credentials as credentialsTable,
   workspaces as workspacesTable,
@@ -83,6 +86,7 @@ import {
   runMigrations,
   getRawPool,
   userQueries,
+  userEmailQueries,
   githubInstallationQueries,
   credentialQueries,
   workspaceQueries,
@@ -116,6 +120,8 @@ export type WorkspaceMemberRole = 'owner' | 'admin' | 'member' | 'viewer';
 export const db = {
   // User operations
   users: userQueries,
+  // User email operations (for GitHub-linked emails and account reconciliation)
+  userEmails: userEmailQueries,
   // GitHub App installation operations
   githubInstallations: githubInstallationQueries,
   // Credential operations
@@ -157,6 +163,7 @@ export const db = {
 // Export query objects for direct import
 export {
   userQueries,
+  userEmailQueries,
   githubInstallationQueries,
   credentialQueries,
   workspaceQueries,

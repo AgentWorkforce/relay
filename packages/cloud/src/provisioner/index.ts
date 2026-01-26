@@ -1843,10 +1843,14 @@ class DockerProvisioner implements ComputeProvisioner {
 
       // Wait for container to be healthy before returning
       // When running in Docker, use the internal container name for health check
+      // Use 120s timeout to allow for:
+      // - GitHub token fetch with retries (up to 36s worst case)
+      // - Repository cloning (can take minutes for large repos)
+      // - Daemon startup
       const healthCheckUrl = runningInDocker
         ? `http://${containerName}:${WORKSPACE_PORT}`
         : publicUrl;
-      await this.waitForHealthy(healthCheckUrl);
+      await this.waitForHealthy(healthCheckUrl, 120_000);
 
       return {
         computeId: containerName,

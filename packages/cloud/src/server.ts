@@ -44,6 +44,7 @@ import { testHelpersRouter } from './api/test-helpers.js';
 import { webhooksRouter } from './api/webhooks.js';
 import { githubAppRouter } from './api/github-app.js';
 import { nangoAuthRouter } from './api/nango-auth.js';
+import { emailAuthRouter } from './api/email-auth.js';
 import { gitRouter } from './api/git.js';
 import { sessionsRouter } from './api/sessions.js';
 import { codexAuthHelperRouter } from './api/codex-auth-helper.js';
@@ -341,6 +342,7 @@ export async function createServer(): Promise<CloudServer> {
 
   // --- Routes with alternative auth (must be before teamsRouter) ---
   app.use('/api/auth', authRouter);                    // Login endpoints (public)
+  app.use('/api/auth/email', emailAuthRouter);         // Email/password authentication
   app.use('/api/auth/nango', nangoAuthRouter);         // Nango webhook (signature verification)
   app.use('/api/auth/codex-helper', codexAuthHelperRouter);
   app.use('/api/git', gitRouter);                      // Workspace token auth
@@ -1375,24 +1377,49 @@ export async function createServer(): Promise<CloudServer> {
   interface UserPresenceState {
     info: UserPresenceInfo;
     connections: Set<WebSocket>;
+    workspaceIds: Set<string>; // Track which workspaces this user is connected to
   }
   const onlineUsers = new Map<string, UserPresenceState>();
+  // Track workspace per WebSocket connection for filtering
+  const connectionWorkspace = new Map<WebSocket, string>();
 
   // Validation helpers
   const isValidUsername = (username: unknown): username is string => {
     if (typeof username !== 'string') return false;
-    return /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$/.test(username);
+    // Username can be:
+    // - GitHub-style: alphanumeric with hyphens (e.g., "khaliqgant")
+    // - Display name style: allows spaces for email users (e.g., "Khaliq Gant")
+    // Max 50 chars, must start/end with alphanumeric, no consecutive spaces
+    if (username.length === 0 || username.length > 50) return false;
+    // Must start and end with alphanumeric
+    if (!/^[a-zA-Z0-9]/.test(username) || !/[a-zA-Z0-9]$/.test(username)) return false;
+    // Only allow alphanumeric, spaces, hyphens, underscores, and periods
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9 _.-]*[a-zA-Z0-9]$/.test(username) && username.length > 1) return false;
+    // Single character usernames must be alphanumeric
+    if (username.length === 1 && !/^[a-zA-Z0-9]$/.test(username)) return false;
+    // No consecutive spaces
+    if (/  /.test(username)) return false;
+    return true;
   };
 
   const isValidAvatarUrl = (url: unknown): url is string | undefined => {
     if (url === undefined || url === null) return true;
     if (typeof url !== 'string') return false;
+    // Must be a valid HTTPS URL from known avatar providers
     try {
       const parsed = new URL(url);
-      return parsed.protocol === 'https:' &&
-        (parsed.hostname === 'avatars.githubusercontent.com' ||
-         parsed.hostname === 'github.com' ||
-         parsed.hostname.endsWith('.githubusercontent.com'));
+      if (parsed.protocol !== 'https:') return false;
+      // Allow GitHub avatars
+      if (parsed.hostname === 'avatars.githubusercontent.com' ||
+          parsed.hostname === 'github.com' ||
+          parsed.hostname.endsWith('.githubusercontent.com')) return true;
+      // Allow Gravatar for email-based avatars
+      if (parsed.hostname === 'www.gravatar.com' ||
+          parsed.hostname === 'gravatar.com' ||
+          parsed.hostname === 'secure.gravatar.com') return true;
+      // Allow UI Avatars (placeholder service)
+      if (parsed.hostname === 'ui-avatars.com') return true;
+      return false;
     } catch {
       return false;
     }
@@ -1673,9 +1700,16 @@ export async function createServer(): Promise<CloudServer> {
     });
   };
 
-  // Get online users list
-  const getOnlineUsersList = (): UserPresenceInfo[] => {
-    return Array.from(onlineUsers.values()).map((state) => state.info);
+  // Get online users list, optionally filtered by workspace
+  const getOnlineUsersList = (workspaceId?: string): UserPresenceInfo[] => {
+    if (!workspaceId) {
+      // No workspace filter - return all (for backwards compat)
+      return Array.from(onlineUsers.values()).map((state) => state.info);
+    }
+    // Filter to only users in this workspace
+    return Array.from(onlineUsers.values())
+      .filter((state) => state.workspaceIds.has(workspaceId))
+      .map((state) => state.info);
   };
 
   // Heartbeat interval to detect dead connections (30 seconds)
@@ -1901,35 +1935,51 @@ export async function createServer(): Promise<CloudServer> {
               onlineUsers.set(username, {
                 info: { username, avatarUrl, connectedAt: now, lastSeen: now },
                 connections: new Set([ws]),
+                workspaceIds: new Set(), // Workspace set when subscribe_channels is called
               });
 
               // Register with shared presence registry for cross-module access
               registerUserPresence({ username, avatarUrl, connectedAt: now, lastSeen: now });
 
               console.log(`[cloud] User ${username} came online`);
-              broadcastPresence({
-                type: 'presence_join',
-                user: { username, avatarUrl, connectedAt: now, lastSeen: now },
-              }, ws);
+              // Don't broadcast globally - wait until we know which workspace they're in
             }
 
+            // Send empty presence list initially - real list sent when workspace is known
             ws.send(JSON.stringify({
               type: 'presence_list',
-              users: getOnlineUsersList(),
+              users: [],
             }));
 
           } else if (msg.action === 'leave') {
             if (!clientUsername || msg.username !== clientUsername) return;
 
             const userState = onlineUsers.get(clientUsername);
+            const leavingWorkspace = connectionWorkspace.get(ws);
+            connectionWorkspace.delete(ws);
+
             if (userState) {
               userState.connections.delete(ws);
+              // Remove workspace from user's set if no more connections to it
+              if (leavingWorkspace) {
+                const stillHasWorkspaceConnection = Array.from(userState.connections).some(
+                  (conn) => connectionWorkspace.get(conn) === leavingWorkspace
+                );
+                if (!stillHasWorkspaceConnection) {
+                  userState.workspaceIds.delete(leavingWorkspace);
+                  // Broadcast leave to users in that workspace
+                  wssPresence.clients.forEach((client) => {
+                    if (client.readyState === WebSocket.OPEN && connectionWorkspace.get(client) === leavingWorkspace) {
+                      client.send(JSON.stringify({ type: 'presence_leave', username: clientUsername }));
+                    }
+                  });
+                }
+              }
               if (userState.connections.size === 0) {
                 onlineUsers.delete(clientUsername);
                 // Unregister from shared presence registry
                 unregisterUserPresence(clientUsername);
                 console.log(`[cloud] User ${clientUsername} went offline`);
-                broadcastPresence({ type: 'presence_leave', username: clientUsername });
               }
             }
           }
@@ -1943,12 +1993,20 @@ export async function createServer(): Promise<CloudServer> {
             updateUserLastSeen(clientUsername);
           }
 
-          broadcastPresence({
-            type: 'typing',
-            username: clientUsername,
-            avatarUrl: userState?.info.avatarUrl,
-            isTyping: msg.isTyping,
-          }, ws);
+          // Only broadcast typing to users in the same workspace
+          const typingWorkspace = connectionWorkspace.get(ws);
+          if (typingWorkspace) {
+            wssPresence.clients.forEach((client) => {
+              if (client !== ws && client.readyState === WebSocket.OPEN && connectionWorkspace.get(client) === typingWorkspace) {
+                client.send(JSON.stringify({
+                  type: 'typing',
+                  username: clientUsername,
+                  avatarUrl: userState?.info.avatarUrl,
+                  isTyping: msg.isTyping,
+                }));
+              }
+            });
+          }
         } else if (msg.type === 'subscribe_channels') {
           // Subscribe to channel messages for a specific workspace
           if (!clientUsername) {
@@ -1959,8 +2017,43 @@ export async function createServer(): Promise<CloudServer> {
             console.warn(`[cloud] subscribe_channels missing workspaceId`);
             return;
           }
-          console.log(`[cloud] User ${clientUsername} subscribing to channels in workspace ${msg.workspaceId}`);
-          setupDaemonChannelProxy(ws, msg.workspaceId, clientUsername).catch((err) => {
+          const workspaceId = msg.workspaceId;
+          console.log(`[cloud] User ${clientUsername} subscribing to channels in workspace ${workspaceId}`);
+
+          // Track which workspace this connection is in
+          connectionWorkspace.set(ws, workspaceId);
+
+          // Add workspace to user's workspace set
+          const userState = onlineUsers.get(clientUsername);
+          if (userState) {
+            const isNewToWorkspace = !userState.workspaceIds.has(workspaceId);
+            userState.workspaceIds.add(workspaceId);
+
+            // If user is new to this workspace, broadcast presence_join to others in workspace
+            if (isNewToWorkspace) {
+              const { info } = userState;
+              // Broadcast to all users in this workspace
+              wssPresence.clients.forEach((client) => {
+                if (client !== ws && client.readyState === WebSocket.OPEN) {
+                  const clientWsId = connectionWorkspace.get(client);
+                  if (clientWsId === workspaceId) {
+                    client.send(JSON.stringify({
+                      type: 'presence_join',
+                      user: info,
+                    }));
+                  }
+                }
+              });
+            }
+
+            // Send updated presence list filtered by this workspace
+            ws.send(JSON.stringify({
+              type: 'presence_list',
+              users: getOnlineUsersList(workspaceId),
+            }));
+          }
+
+          setupDaemonChannelProxy(ws, workspaceId, clientUsername).catch((err) => {
             console.error(`[cloud] Failed to setup channel subscription:`, err);
           });
         } else if (msg.type === 'channel_message') {
@@ -1986,16 +2079,33 @@ export async function createServer(): Promise<CloudServer> {
       // Clean up daemon proxies
       cleanupDaemonProxies(ws);
 
+      const closingWorkspace = connectionWorkspace.get(ws);
+      connectionWorkspace.delete(ws);
+
       if (clientUsername) {
         const userState = onlineUsers.get(clientUsername);
         if (userState) {
           userState.connections.delete(ws);
+          // Remove workspace from user's set if no more connections to it
+          if (closingWorkspace) {
+            const stillHasWorkspaceConnection = Array.from(userState.connections).some(
+              (conn) => connectionWorkspace.get(conn) === closingWorkspace
+            );
+            if (!stillHasWorkspaceConnection) {
+              userState.workspaceIds.delete(closingWorkspace);
+              // Broadcast leave to users in that workspace
+              wssPresence.clients.forEach((client) => {
+                if (client.readyState === WebSocket.OPEN && connectionWorkspace.get(client) === closingWorkspace) {
+                  client.send(JSON.stringify({ type: 'presence_leave', username: clientUsername }));
+                }
+              });
+            }
+          }
           if (userState.connections.size === 0) {
             onlineUsers.delete(clientUsername);
             // Unregister from shared presence registry
             unregisterUserPresence(clientUsername);
             console.log(`[cloud] User ${clientUsername} disconnected`);
-            broadcastPresence({ type: 'presence_leave', username: clientUsername });
           }
         }
       }
@@ -2161,7 +2271,10 @@ export async function createServer(): Promise<CloudServer> {
       if (server) {
         await new Promise<void>((resolve) => server!.close(() => resolve()));
       }
-      await redisClient.quit();
+      // Only quit Redis if client is still open
+      if (redisClient.isOpen) {
+        await redisClient.quit();
+      }
     },
   };
 }

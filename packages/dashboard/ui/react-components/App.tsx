@@ -221,7 +221,7 @@ export function App({ wsUrl, orchestratorUrl }: AppProps) {
   // Derive current user from cloud session (falls back to undefined in non-cloud mode)
   const currentUser: CurrentUser | undefined = cloudSession?.user
     ? {
-        displayName: cloudSession.user.githubUsername,
+        displayName: cloudSession.user.githubUsername || cloudSession.user.displayName || '',
         avatarUrl: cloudSession.user.avatarUrl,
       }
     : undefined;

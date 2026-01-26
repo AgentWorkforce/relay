@@ -589,17 +589,32 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     await this.connectToSocket();
 
     this.running = true;
-    this.readyForMessages = true;
+    // DON'T set readyForMessages yet - wait for CLI to be ready first
+    // This prevents messages from being injected during CLI startup
     this.startStuckDetection();
     this.startQueueMonitor();
     this.startProtocolMonitor();
     this.startPeriodicReminder();
 
-    this.log(` Ready for messages`);
     this.log(` Socket connected: ${this.socketConnected}`);
     this.log(` Relay client state: ${this.client.state}`);
 
-    // Process any queued messages
+    // Wait for CLI to be fully ready (output received + idle state)
+    // This ensures we don't inject messages while the CLI is still starting up
+    // Messages arriving via daemon during this time will be queued but not processed
+    this.log(` Waiting for CLI to be ready before accepting messages...`);
+    const cliReady = await this.waitUntilCliReady(30000, 100);
+    if (cliReady) {
+      this.log(` CLI is ready, enabling message processing`);
+    } else {
+      this.log(` CLI readiness timeout, enabling message processing anyway`);
+    }
+
+    // Now enable message processing
+    this.readyForMessages = true;
+    this.log(` Ready for messages`);
+
+    // Process any queued messages that arrived during startup
     this.processMessageQueue();
   }
 

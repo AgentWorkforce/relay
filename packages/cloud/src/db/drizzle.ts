@@ -16,6 +16,8 @@ import { DEFAULT_POOL_CONFIG } from './bulk-ingest.js';
 export type {
   User,
   NewUser,
+  UserEmail,
+  NewUserEmail,
   GitHubInstallation,
   NewGitHubInstallation,
   Credential,
@@ -110,6 +112,12 @@ export interface UserQueries {
   clearIncomingConnectionId(userId: string): Promise<void>;
   setPendingInstallationRequest(userId: string): Promise<void>;
   clearPendingInstallationRequest(userId: string): Promise<void>;
+  // Email authentication methods
+  createEmailUser(data: { email: string; passwordHash: string; displayName?: string }): Promise<schema.User>;
+  verifyEmail(userId: string): Promise<void>;
+  setEmailVerificationToken(userId: string, token: string, expires: Date): Promise<void>;
+  findByEmailVerificationToken(token: string): Promise<schema.User | null>;
+  updatePassword(userId: string, passwordHash: string): Promise<void>;
 }
 
 export const userQueries: UserQueries = {
@@ -214,6 +222,187 @@ export const userQueries: UserQueries = {
       .update(schema.users)
       .set({ pendingInstallationRequest: null, updatedAt: new Date() })
       .where(eq(schema.users.id, userId));
+  },
+
+  async createEmailUser(data: { email: string; passwordHash: string; displayName?: string }): Promise<schema.User> {
+    const db = getDb();
+    const result = await db
+      .insert(schema.users)
+      .values({
+        email: data.email,
+        passwordHash: data.passwordHash,
+        displayName: data.displayName || null,
+        emailVerified: false,
+      })
+      .returning();
+    return result[0];
+  },
+
+  async verifyEmail(userId: string): Promise<void> {
+    const db = getDb();
+    await db
+      .update(schema.users)
+      .set({
+        emailVerified: true,
+        emailVerificationToken: null,
+        emailVerificationExpires: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.users.id, userId));
+  },
+
+  async setEmailVerificationToken(userId: string, token: string, expires: Date): Promise<void> {
+    const db = getDb();
+    await db
+      .update(schema.users)
+      .set({
+        emailVerificationToken: token,
+        emailVerificationExpires: expires,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.users.id, userId));
+  },
+
+  async findByEmailVerificationToken(token: string): Promise<schema.User | null> {
+    const db = getDb();
+    const result = await db
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.emailVerificationToken, token));
+    return result[0] ?? null;
+  },
+
+  async updatePassword(userId: string, passwordHash: string): Promise<void> {
+    const db = getDb();
+    await db
+      .update(schema.users)
+      .set({ passwordHash, updatedAt: new Date() })
+      .where(eq(schema.users.id, userId));
+  },
+};
+
+// ============================================================================
+// User Email Queries (GitHub-linked emails for account reconciliation)
+// ============================================================================
+
+export interface UserEmailQueries {
+  /** Find all emails for a user */
+  findByUserId(userId: string): Promise<schema.UserEmail[]>;
+  /** Find a user by any of their linked emails (for login reconciliation) */
+  findUserByEmail(email: string): Promise<schema.User | null>;
+  /** Add or update an email for a user */
+  upsert(data: { userId: string; email: string; verified: boolean; primary: boolean; source?: string }): Promise<schema.UserEmail>;
+  /** Sync all emails from GitHub for a user (replaces GitHub-sourced emails) */
+  syncFromGitHub(userId: string, emails: Array<{ email: string; verified: boolean; primary: boolean }>): Promise<void>;
+  /** Delete a specific email for a user */
+  delete(userId: string, email: string): Promise<void>;
+  /** Check if an email is already linked to another user */
+  isEmailLinkedToOtherUser(email: string, excludeUserId: string): Promise<boolean>;
+}
+
+export const userEmailQueries: UserEmailQueries = {
+  async findByUserId(userId: string): Promise<schema.UserEmail[]> {
+    const db = getDb();
+    return db
+      .select()
+      .from(schema.userEmails)
+      .where(eq(schema.userEmails.userId, userId));
+  },
+
+  async findUserByEmail(email: string): Promise<schema.User | null> {
+    const db = getDb();
+    // First check user_emails table for linked emails
+    const linkedEmail = await db
+      .select({ userId: schema.userEmails.userId })
+      .from(schema.userEmails)
+      .where(eq(schema.userEmails.email, email.toLowerCase()))
+      .limit(1);
+
+    if (linkedEmail[0]) {
+      const user = await db
+        .select()
+        .from(schema.users)
+        .where(eq(schema.users.id, linkedEmail[0].userId));
+      return user[0] ?? null;
+    }
+
+    // Fall back to checking users.email directly
+    const user = await db
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.email, email.toLowerCase()));
+    return user[0] ?? null;
+  },
+
+  async upsert(data: { userId: string; email: string; verified: boolean; primary: boolean; source?: string }): Promise<schema.UserEmail> {
+    const db = getDb();
+    const result = await db
+      .insert(schema.userEmails)
+      .values({
+        userId: data.userId,
+        email: data.email.toLowerCase(),
+        verified: data.verified,
+        primary: data.primary,
+        source: data.source ?? 'github',
+      })
+      .onConflictDoUpdate({
+        target: [schema.userEmails.userId, schema.userEmails.email],
+        set: {
+          verified: data.verified,
+          primary: data.primary,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return result[0];
+  },
+
+  async syncFromGitHub(userId: string, emails: Array<{ email: string; verified: boolean; primary: boolean }>): Promise<void> {
+    const db = getDb();
+
+    // Delete existing GitHub-sourced emails for this user
+    await db
+      .delete(schema.userEmails)
+      .where(and(
+        eq(schema.userEmails.userId, userId),
+        eq(schema.userEmails.source, 'github')
+      ));
+
+    // Insert all new emails
+    if (emails.length > 0) {
+      await db.insert(schema.userEmails).values(
+        emails.map(e => ({
+          userId,
+          email: e.email.toLowerCase(),
+          verified: e.verified,
+          primary: e.primary,
+          source: 'github' as const,
+        }))
+      );
+    }
+  },
+
+  async delete(userId: string, email: string): Promise<void> {
+    const db = getDb();
+    await db
+      .delete(schema.userEmails)
+      .where(and(
+        eq(schema.userEmails.userId, userId),
+        eq(schema.userEmails.email, email.toLowerCase())
+      ));
+  },
+
+  async isEmailLinkedToOtherUser(email: string, excludeUserId: string): Promise<boolean> {
+    const db = getDb();
+    const result = await db
+      .select({ userId: schema.userEmails.userId })
+      .from(schema.userEmails)
+      .where(and(
+        eq(schema.userEmails.email, email.toLowerCase()),
+        sql`${schema.userEmails.userId} != ${excludeUserId}`
+      ))
+      .limit(1);
+    return result.length > 0;
   },
 };
 
