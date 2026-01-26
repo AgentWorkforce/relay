@@ -85,7 +85,7 @@ export interface InjectionMetrics {
 /**
  * CLI types for special handling
  */
-export type CliType = 'claude' | 'codex' | 'gemini' | 'droid' | 'opencode' | 'cursor' | 'spawned' | 'other';
+export type CliType = 'claude' | 'codex' | 'gemini' | 'droid' | 'opencode' | 'cursor' | 'copilot' | 'spawned' | 'other';
 
 /**
  * Injection timing constants
@@ -293,6 +293,7 @@ export function detectCliType(command: string): CliType {
   if (cmdLower.includes('droid')) return 'droid';
   if (cmdLower.includes('opencode')) return 'opencode';
   if (cmdLower.includes('cursor')) return 'cursor';
+  if (cmdLower.includes('copilot')) return 'copilot';
   return 'other';
 }
 
@@ -312,7 +313,7 @@ export const CLI_QUIRKS = {
    * Others may interpret the escape sequences literally.
    */
   supportsBracketedPaste: (cli: CliType): boolean => {
-    return cli === 'claude' || cli === 'codex' || cli === 'gemini' || cli === 'opencode' || cli === 'cursor';
+    return cli === 'claude' || cli === 'codex' || cli === 'gemini' || cli === 'opencode' || cli === 'cursor' || cli === 'copilot';
   },
 
   /**
@@ -335,6 +336,7 @@ export const CLI_QUIRKS = {
       droid: /^[>›»]\s*$/,
       opencode: /^[>›»]\s*$/,
       cursor: /^[>›»]\s*$/,
+      copilot: /^[>›»]\s*$/,
       spawned: /^[>›»]\s*$/,
       other: /^[>$%#➜›»]\s*$/,
     };
