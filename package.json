@@ -47,7 +47,7 @@
     "build:dashboard": "cd packages/dashboard/ui && npm ci && npm run build",
     "postbuild": "chmod +x dist/src/cli/index.js && mkdir -p dist/dashboard && cp -r packages/dashboard/ui/out dist/dashboard/ && mkdir -p packages/dashboard/ui-dist && cp -r packages/dashboard/ui/out/* packages/dashboard/ui-dist/",
     "dev:watch": "tsc -w",
-    "predev": "npm run clean && tsc && chmod +x dist/src/cli/index.js",
+    "predev": "npm run clean && npm run build:packages && tsc && chmod +x dist/src/cli/index.js",
     "dev": "concurrently -n daemon,next -c blue,magenta \"npm run dev:daemon\" \"npm run dev:next\"",
     "dev:daemon": "node dist/src/cli/index.js up --dashboard --port 3889",
     "dev:next": "cd packages/dashboard/ui && npm run dev",
