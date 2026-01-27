@@ -68,21 +68,51 @@ impl SocketServer {
 
     /// Start the socket server
     pub async fn run(self) -> Result<()> {
-        // Remove existing socket if present
         let path = Path::new(&self.socket_path);
-        if path.exists() {
-            std::fs::remove_file(path).context("Failed to remove existing socket")?;
-        }
 
-        // Create parent directory if needed
+        // Create parent directory if needed (do this first)
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .context(format!("Failed to create socket directory {:?}", parent))?;
         }
 
-        // Bind the socket
-        let listener = UnixListener::bind(&self.socket_path)
-            .context(format!("Failed to bind socket at {}", self.socket_path))?;
+        // Atomically remove existing socket - handles TOCTOU race condition
+        // Using remove_file directly instead of exists() check avoids race where
+        // another process removes the socket between our check and remove
+        match std::fs::remove_file(path) {
+            Ok(_) => debug!("Removed existing socket at {}", self.socket_path),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Socket doesn't exist - this is fine
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to remove existing socket (will try bind anyway): {}",
+                    e
+                );
+            }
+        }
+
+        // Bind the socket with retry on EADDRINUSE
+        // This handles inherited file descriptor races when spawned from daemon
+        let listener = match UnixListener::bind(&self.socket_path) {
+            Ok(l) => l,
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                // Another process may have the socket - try removing again and retry
+                warn!(
+                    "Socket address in use, attempting cleanup and retry: {}",
+                    self.socket_path
+                );
+                let _ = std::fs::remove_file(path);
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                UnixListener::bind(&self.socket_path).context(format!(
+                    "Failed to bind socket at {} (after retry)",
+                    self.socket_path
+                ))?
+            }
+            Err(e) => {
+                return Err(e).context(format!("Failed to bind socket at {}", self.socket_path));
+            }
+        };
 
         // Set socket permissions (0600 - owner only)
         #[cfg(unix)]

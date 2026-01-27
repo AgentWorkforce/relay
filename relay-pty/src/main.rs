@@ -366,6 +366,25 @@ async fn main() -> Result<()> {
     let mut last_auto_enter_time: Option<Instant> = None;
     // Cooldown between auto-Enter sends to avoid spamming
     const AUTO_ENTER_COOLDOWN: Duration = Duration::from_secs(5);
+    // Maximum auto-Enter attempts per injection to prevent infinite loops
+    const MAX_AUTO_ENTER_RETRIES: u32 = 5;
+    // Timer interval for periodic auto-Enter checks
+    const AUTO_ENTER_CHECK_INTERVAL_MS: u64 = 2000;
+    // Detection window for new injections - must be > check interval to avoid missing injections
+    const NEW_INJECTION_WINDOW_MS: u64 = 2500;
+    // Track auto-Enter retry count for current injection
+    let mut auto_enter_retry_count: u32 = 0;
+    // Track the last injection time we've seen to reset retry count on new injections
+    let mut last_tracked_injection_ms: u64 = 0;
+
+    // Buffer for editor mode detection (accumulates recent output)
+    let mut editor_mode_buffer = String::new();
+
+    // Periodic timer for auto-Enter checks (runs independently of output events)
+    // This is critical: the auto-Enter logic MUST run even when there's no output
+    let mut auto_enter_interval = tokio::time::interval(std::time::Duration::from_millis(
+        AUTO_ENTER_CHECK_INTERVAL_MS,
+    ));
 
     loop {
         select! {
@@ -512,36 +531,27 @@ async fn main() -> Result<()> {
                         }
                     }
 
-                    // Auto-Enter detection for stuck agents (CLI-agnostic)
-                    // If we recently injected a message and agent has been idle too long,
-                    // send Enter in case CLI is waiting for confirmation
-                    if auto_enter_enabled {
-                        let silence = injector.silence_ms();
-                        let is_idle = injector.check_idle();
-                        // Check if we had an injection in the last 60 seconds
-                        let had_recent_injection = injector.had_recent_injection(60_000);
+                    // Update editor mode detection buffer
+                    // Keep last 2000 chars for pattern matching
+                    editor_mode_buffer.push_str(&text);
+                    if editor_mode_buffer.len() > 2000 {
+                        let start = floor_char_boundary(&editor_mode_buffer, editor_mode_buffer.len() - 1500);
+                        editor_mode_buffer = editor_mode_buffer[start..].to_string();
+                    }
 
-                        // Check cooldown (don't spam Enter)
-                        let cooldown_ok = match last_auto_enter_time {
-                            None => true,
-                            Some(last) => last.elapsed() >= AUTO_ENTER_COOLDOWN,
-                        };
-
-                        // Send Enter if:
-                        // 1. Agent is idle
-                        // 2. Silence exceeds timeout
-                        // 3. We had a recent injection (so we expect a response)
-                        // 4. Cooldown period has passed
-                        if is_idle && silence > auto_enter_timeout_ms && had_recent_injection && cooldown_ok {
-                            info!(
-                                "Agent idle for {}ms after injection - auto-sending Enter",
-                                silence
-                            );
-                            if let Err(e) = async_pty.send(vec![0x0d]).await {
-                                warn!("Failed to send auto-Enter: {}", e);
-                            } else {
-                                last_auto_enter_time = Some(Instant::now());
-                            }
+                    // If agent is producing meaningful output, reset auto-Enter retry count
+                    // This means the agent is working and not stuck
+                    // Skip reset for relay message echoes (those don't indicate the agent is working)
+                    let clean_text = strip_ansi(&text);
+                    let is_relay_echo = clean_text.lines().all(|line| {
+                        let trimmed = line.trim();
+                        trimmed.is_empty() || trimmed.starts_with("Relay message from ")
+                    });
+                    if !is_relay_echo && clean_text.len() > 10 {
+                        // Meaningful output - agent is working, reset retry count
+                        if auto_enter_retry_count > 0 {
+                            debug!("Agent produced output, resetting auto-Enter retry count from {}", auto_enter_retry_count);
+                            auto_enter_retry_count = 0;
                         }
                     }
 
@@ -606,6 +616,90 @@ async fn main() -> Result<()> {
                 }
             }
 
+            // Periodic auto-Enter check for stuck agents
+            // This runs independently of output events - critical for recovery when
+            // agent produces no output after receiving pasted text
+            _ = auto_enter_interval.tick() => {
+                if !auto_enter_enabled {
+                    continue;
+                }
+
+                let silence = injector.silence_ms();
+                let is_idle = injector.check_idle();
+                // Check if we had an injection in the last 60 seconds
+                let had_recent_injection = injector.had_recent_injection(60_000);
+
+                // Get the injection timestamp to detect new injections
+                // Detection window must be wider than timer interval to avoid missing injections
+                let current_injection_ms = injector.ms_since_injection();
+                if current_injection_ms > 0 && current_injection_ms < NEW_INJECTION_WINDOW_MS {
+                    // New injection detected - reset retry count
+                    if last_tracked_injection_ms == 0 || current_injection_ms < last_tracked_injection_ms {
+                        debug!("New injection detected, resetting auto-Enter retry count");
+                        auto_enter_retry_count = 0;
+                    }
+                }
+                last_tracked_injection_ms = current_injection_ms;
+
+                // Check if we've exceeded max retries
+                if auto_enter_retry_count >= MAX_AUTO_ENTER_RETRIES {
+                    // Only log once when we hit the limit
+                    if auto_enter_retry_count == MAX_AUTO_ENTER_RETRIES {
+                        warn!(
+                            "Auto-Enter max retries ({}) reached - agent may need manual intervention",
+                            MAX_AUTO_ENTER_RETRIES
+                        );
+                        auto_enter_retry_count += 1; // Increment to prevent repeated warnings
+                    }
+                    continue;
+                }
+
+                // Check cooldown (don't spam Enter)
+                let cooldown_ok = match last_auto_enter_time {
+                    None => true,
+                    Some(last) => last.elapsed() >= AUTO_ENTER_COOLDOWN,
+                };
+
+                // Check if agent is in editor mode
+                let in_editor = is_in_editor_mode(&editor_mode_buffer);
+                if in_editor {
+                    debug!("Agent appears to be in editor mode, skipping auto-Enter");
+                    continue;
+                }
+
+                // Calculate required silence based on retry count (exponential backoff)
+                // First attempt: auto_enter_timeout_ms (default 10s)
+                // Second: 15s, Third: 25s, Fourth: 40s, Fifth: 60s
+                let backoff_multiplier = match auto_enter_retry_count {
+                    0 => 1.0,
+                    1 => 1.5,
+                    2 => 2.5,
+                    3 => 4.0,
+                    _ => 6.0,
+                };
+                let required_silence_ms = (auto_enter_timeout_ms as f64 * backoff_multiplier) as u64;
+
+                // Send Enter if:
+                // 1. Agent is idle
+                // 2. Silence exceeds timeout (with backoff)
+                // 3. We had a recent injection (so we expect a response)
+                // 4. Cooldown period has passed
+                // 5. Not in editor mode
+                // 6. Haven't exceeded max retries
+                if is_idle && silence > required_silence_ms && had_recent_injection && cooldown_ok {
+                    info!(
+                        "Auto-Enter (periodic): Agent idle for {}ms (required: {}ms) after injection - attempt {}/{}",
+                        silence, required_silence_ms, auto_enter_retry_count + 1, MAX_AUTO_ENTER_RETRIES
+                    );
+                    if let Err(e) = async_pty.send(vec![0x0d]).await {
+                        warn!("Failed to send auto-Enter: {}", e);
+                    } else {
+                        last_auto_enter_time = Some(Instant::now());
+                        auto_enter_retry_count += 1;
+                    }
+                }
+            }
+
             // Note: Response notifications are handled by the socket server
             // which subscribes to the queue's broadcast channel directly
         }
@@ -656,6 +750,91 @@ fn get_terminal_size() -> Option<(u16, u16)> {
             None
         }
     }
+}
+
+/// Detect if the agent is in an editor mode (vim INSERT, nano, etc.)
+/// When in editor mode, auto-Enter should be suppressed to avoid corrupting the editor state.
+///
+/// Checks recent output for patterns like:
+/// - Vim/Neovim: "-- INSERT --", "-- VISUAL --", "-- REPLACE --" (at end of line)
+/// - Nano: "GNU nano", "^G Get Help"
+/// - Less/More: pager prompts
+/// - Git interactive rebase
+fn is_in_editor_mode(recent_output: &str) -> bool {
+    // Strip ANSI first for clean matching
+    let clean = strip_ansi(recent_output);
+
+    // Check the last 500 chars for editor indicators
+    // Use floor_char_boundary to avoid panicking on multi-byte UTF-8 chars
+    let last_output = if clean.len() > 500 {
+        let start = floor_char_boundary(&clean, clean.len() - 500);
+        &clean[start..]
+    } else {
+        &clean
+    };
+
+    // Claude CLI status bar pattern - this is NOT vim editor mode
+    // Example: "-- INSERT -- ⏵⏵ bypass permissions"
+    // We check for the presence of Claude's UI elements after mode indicator
+    let claude_ui_chars = ['⏵', '⏴', '►', '▶'];
+    let has_claude_ui = last_output.chars().any(|c| claude_ui_chars.contains(&c));
+
+    // If we see Claude UI elements near a mode indicator, it's not real vim
+    if has_claude_ui && last_output.contains("-- INSERT --") {
+        return false;
+    }
+    if has_claude_ui && last_output.contains("-- NORMAL --") {
+        return false;
+    }
+    if has_claude_ui && last_output.contains("-- VISUAL --") {
+        return false;
+    }
+
+    // Vim/Neovim mode indicators (standalone, at end of line)
+    let vim_patterns = [
+        "-- INSERT --",
+        "-- REPLACE --",
+        "-- VISUAL --",
+        "-- VISUAL LINE --",
+        "-- VISUAL BLOCK --",
+        "-- SELECT --",
+        "-- TERMINAL --",
+    ];
+
+    for pattern in vim_patterns {
+        // Check if pattern is at end of a line (real vim) vs mid-line (Claude UI)
+        if let Some(pos) = last_output.rfind(pattern) {
+            let after_pattern = &last_output[pos + pattern.len()..];
+            // Real vim: pattern followed by only whitespace/newline
+            // Claude UI: pattern followed by other UI elements
+            let trimmed = after_pattern.trim_start();
+            if trimmed.is_empty() || trimmed.starts_with('\n') {
+                return true;
+            }
+        }
+    }
+
+    // Nano indicators
+    if last_output.contains("GNU nano") || last_output.contains("^G Get Help") {
+        return true;
+    }
+
+    // Emacs indicators
+    if last_output.contains("*** Emacs") || last_output.contains("M-x ") {
+        return true;
+    }
+
+    // Git interactive rebase
+    if last_output.contains("pick ") && last_output.contains("# Rebase") {
+        return true;
+    }
+
+    // Less/More pager (be careful - ":" alone is too broad)
+    if last_output.contains("(END)") || last_output.contains("--More--") {
+        return true;
+    }
+
+    false
 }
 
 /// Strip ANSI escape sequences from text for robust pattern matching
@@ -712,4 +891,88 @@ fn strip_ansi(text: &str) -> String {
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_in_editor_mode_vim_insert() {
+        // Real vim INSERT mode at end of line
+        let output = "Some text\n-- INSERT --\n";
+        assert!(is_in_editor_mode(output));
+
+        // INSERT at end (no trailing newline)
+        let output2 = "Some text\n-- INSERT --";
+        assert!(is_in_editor_mode(output2));
+    }
+
+    #[test]
+    fn test_is_in_editor_mode_claude_cli_not_vim() {
+        // Claude CLI status bar with mode indicator - NOT vim
+        let output = "-- INSERT -- ⏵⏵ bypass permissions on (shift+tab to cycle)";
+        assert!(!is_in_editor_mode(output));
+
+        // Claude CLI NORMAL mode
+        let output2 = "-- NORMAL -- ► some Claude UI text";
+        assert!(!is_in_editor_mode(output2));
+    }
+
+    #[test]
+    fn test_is_in_editor_mode_nano() {
+        let output = "  GNU nano 5.8\nFile: test.txt\n^G Get Help  ^O Write Out";
+        assert!(is_in_editor_mode(output));
+    }
+
+    #[test]
+    fn test_is_in_editor_mode_less_pager() {
+        let output = "some content\n(END)";
+        assert!(is_in_editor_mode(output));
+
+        let output2 = "some content\n--More--";
+        assert!(is_in_editor_mode(output2));
+    }
+
+    #[test]
+    fn test_is_in_editor_mode_git_rebase() {
+        let output = "pick abc1234 Initial commit\n# Rebase abc1234..def5678 onto abc1234";
+        assert!(is_in_editor_mode(output));
+    }
+
+    #[test]
+    fn test_is_in_editor_mode_normal_output() {
+        // Regular agent output - not in editor mode
+        let output = "I'll help you with that task. Let me search for the file.";
+        assert!(!is_in_editor_mode(output));
+
+        // Shell prompt
+        let output2 = "$ ls -la\ntotal 0\n$ ";
+        assert!(!is_in_editor_mode(output2));
+    }
+
+    #[test]
+    fn test_is_in_editor_mode_with_ansi() {
+        // Vim INSERT with ANSI codes (should be stripped)
+        let output = "\x1b[32mSome text\x1b[0m\n-- INSERT --\n";
+        assert!(is_in_editor_mode(output));
+    }
+
+    #[test]
+    fn test_floor_char_boundary() {
+        let s = "Hello 世界"; // 'Hello ' is 6 bytes, '世' is 3 bytes, '界' is 3 bytes
+
+        // At valid boundaries
+        assert_eq!(floor_char_boundary(s, 0), 0);
+        assert_eq!(floor_char_boundary(s, 6), 6);
+        assert_eq!(floor_char_boundary(s, 9), 9);
+        assert_eq!(floor_char_boundary(s, 12), 12);
+
+        // In middle of multi-byte char (should go to start of char)
+        assert_eq!(floor_char_boundary(s, 7), 6);
+        assert_eq!(floor_char_boundary(s, 8), 6);
+
+        // Past end
+        assert_eq!(floor_char_boundary(s, 100), 12);
+    }
 }

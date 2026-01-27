@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/api-types",
-  "version": "2.0.19",
+  "version": "2.0.20",
   "description": "Shared API types and Zod schemas for Agent Relay",
   "type": "module",
   "main": "dist/index.js",
@@ -36,7 +36,7 @@
     "openapi"
   ],
   "author": "Khaliq Gant",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AgentWorkforce/relay.git",

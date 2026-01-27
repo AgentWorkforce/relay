@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/sdk",
-  "version": "2.0.19",
+  "version": "2.0.20",
   "description": "Lightweight SDK for agent-to-agent communication via Agent Relay",
   "type": "module",
   "main": "dist/index.js",
@@ -45,7 +45,7 @@
     "sdk"
   ],
   "author": "Khaliq Gant",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AgentWorkforce/relay.git",
@@ -55,7 +55,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@agent-relay/protocol": "2.0.19"
+    "@agent-relay/protocol": "2.0.20"
   },
   "engines": {
     "node": ">=18.0.0"

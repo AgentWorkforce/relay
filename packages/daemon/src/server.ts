@@ -7,6 +7,7 @@ import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { createRequire } from 'node:module';
 import { Connection, type ConnectionConfig, DEFAULT_CONFIG } from './connection.js';
 import { Router } from './router.js';
 import {
@@ -53,6 +54,11 @@ import {
 } from '@agent-relay/telemetry';
 import { RelayWatchdog, type ProcessedFile } from './relay-watchdog.js';
 import type { RelayPaths } from '@agent-relay/config/relay-file-writer';
+
+// Get version from package.json
+const require = createRequire(import.meta.url);
+const packageJson = require('../package.json');
+const DAEMON_VERSION: string = packageJson.version;
 
 export interface DaemonConfig extends ConnectionConfig {
   socketPath: string;
@@ -131,23 +137,8 @@ export class Daemon {
     if (this.config.teamDir) {
       this.registry = new AgentRegistry(this.config.teamDir);
     }
-    // Initialize SpawnManager if enabled
-    if (this.config.spawnManager) {
-      const spawnConfig = typeof this.config.spawnManager === 'object'
-        ? this.config.spawnManager
-        : {};
-      // Derive projectRoot from teamDir (teamDir is typically {projectRoot}/.agent-relay/)
-      const projectRoot = spawnConfig.projectRoot || path.dirname(this.config.teamDir || this.config.socketPath);
-      this.spawnManager = new SpawnManager({
-        projectRoot,
-        socketPath: this.config.socketPath,
-        ...spawnConfig,
-        // Track spawn count for telemetry
-        onAgentSpawn: () => {
-          this.agentSpawnCount++;
-        },
-      });
-    }
+    // SpawnManager is initialized in start() after router is created
+    // so we can wire up onMarkSpawning/onClearSpawning callbacks
     // Storage is initialized lazily in start() to support async createStorageAdapter
     this.server = net.createServer(this.handleConnection.bind(this));
   }
@@ -215,6 +206,14 @@ export class Daemon {
       const connectedUsers = this.router.getUsers();
       const targetDir = this.config.teamDir ?? path.dirname(this.config.socketPath);
       const targetPath = path.join(targetDir, 'connected-agents.json');
+
+      // Debug: log what we're writing
+      log.info('Writing connected-agents.json', {
+        agents: connectedAgents.join(','),
+        path: targetPath,
+        teamDir: this.config.teamDir,
+      });
+
       // Ensure directory exists (defensive - may have been deleted)
       if (!fs.existsSync(targetDir)) {
         fs.mkdirSync(targetDir, { recursive: true });
@@ -297,6 +296,28 @@ export class Daemon {
       },
       channelMembershipStore,
     });
+
+    // Initialize SpawnManager if enabled (after router, so we can wire callbacks)
+    if (this.config.spawnManager) {
+      const spawnConfig = typeof this.config.spawnManager === 'object'
+        ? this.config.spawnManager
+        : {};
+      // Derive projectRoot from teamDir (teamDir is typically {projectRoot}/.agent-relay/)
+      const projectRoot = spawnConfig.projectRoot || path.dirname(this.config.teamDir || this.config.socketPath);
+      this.spawnManager = new SpawnManager({
+        projectRoot,
+        socketPath: this.config.socketPath,
+        ...spawnConfig,
+        // Track spawn count for telemetry
+        onAgentSpawn: () => {
+          this.agentSpawnCount++;
+        },
+        // Wire spawn tracking to router so messages are queued during spawn
+        onMarkSpawning: (name: string) => this.router.markSpawning(name),
+        onClearSpawning: (name: string) => this.router.clearSpawning(name),
+      });
+      log.info('SpawnManager initialized with spawn tracking callbacks');
+    }
 
     // Initialize consensus (enabled by default, can be disabled with consensus: false)
     if (this.config.consensus !== false) {
@@ -1266,7 +1287,7 @@ export class Daemon {
           id: envelope.id,
           ts: Date.now(),
           payload: {
-            version: '2.0.13',
+            version: DAEMON_VERSION,
             uptime: uptimeMs,
             cloudConnected: this.cloudSync?.isConnected() ?? false,
             agentCount: this.router.connectionCount,
@@ -1286,8 +1307,10 @@ export class Daemon {
             return [];
           }
           try {
+            // If channel is specified, get channel messages; otherwise get DMs to agent
+            const toFilter = inboxPayload.channel || agentName;
             const messages = await this.storage.getMessages({
-              to: agentName,
+              to: toFilter,
               from: inboxPayload.from,
               limit: inboxPayload.limit || 50,
               unreadOnly: inboxPayload.unreadOnly,

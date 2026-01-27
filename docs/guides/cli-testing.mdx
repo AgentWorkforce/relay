@@ -1,0 +1,248 @@
+---
+title: "CLI Auth Testing"
+description: "Debug and test CLI authentication flows in an isolated Docker environment"
+---
+
+The CLI Tester package provides a Docker-based environment for manually testing CLI authentication with real OAuth providers. It's designed for debugging auth issues and verifying authentication flows work correctly.
+
+## When to Use This
+
+- **Debugging auth issues** - A specific CLI (e.g., Cursor) isn't authenticating properly
+- **Testing OAuth flows** - Verify the full authentication flow works end-to-end
+- **Credential verification** - Check that credentials are saved in the correct format
+- **Message injection testing** - Test relay-pty message delivery to CLIs
+
+## Quick Start
+
+```bash
+# Start the test environment (drops into container shell)
+npm run cli-tester:start
+
+# Start with clean credentials (removes any cached auth)
+npm run cli-tester:start:clean
+
+# Build the Docker image (first time or after changes)
+npm run cli-tester:build
+```
+
+## Testing a CLI
+
+Inside the container, use the provided scripts:
+
+<CodeGroup>
+```bash Test Claude
+./scripts/test-cli.sh claude
+```
+
+```bash Test Codex
+./scripts/test-cli.sh codex
+```
+
+```bash Test with Device Auth
+./scripts/test-cli.sh codex --device-auth
+```
+
+```bash Debug Mode
+DEBUG=1 ./scripts/test-cli.sh cursor
+```
+</CodeGroup>
+
+The `test-cli.sh` script:
+1. Spawns the CLI wrapped in `relay-pty`
+2. Shows all CLI output in real-time
+3. Creates a Unix socket for message injection
+4. Enables JSON output in debug mode
+
+## Verifying Credentials
+
+After authenticating, verify credentials were saved correctly:
+
+```bash
+./scripts/verify-auth.sh claude
+```
+
+Example output:
+```
+========================================
+  Checking credentials for: claude
+========================================
+
+✓ Credentials found: /home/workspace/.claude/.credentials.json
+
+Contents (tokens redacted):
+----------------------------------------
+{
+  "claudeAiOauth": {
+    "***accessToken***": "[REDACTED]",
+    "***refreshToken***": "[REDACTED]",
+    "expiresAt": 1706123456789
+  }
+}
+----------------------------------------
+
+Token check:
+  ✓ Access token present (Claude format)
+  ✓ Refresh token present
+```
+
+## Message Injection
+
+Test message delivery via relay-pty socket. In a second terminal (while CLI is running):
+
+```bash
+# Send a message
+./scripts/inject-message.sh test-claude "What is 2+2?"
+
+# Send another
+./scripts/inject-message.sh test-claude "List files in current directory"
+```
+
+The message will be injected into the CLI session and you'll see it processed in the first terminal.
+
+## Clearing Credentials
+
+For fresh testing, clear existing credentials:
+
+```bash
+# Clear one CLI
+./scripts/clear-auth.sh claude
+
+# Clear all CLIs
+./scripts/clear-auth.sh all
+```
+
+## Debugging a Broken CLI
+
+When a CLI isn't working, follow this workflow:
+
+```bash
+# 1. Start with clean credentials
+npm run cli-tester:start:clean
+
+# 2. Test the problematic CLI with debug output
+DEBUG=1 ./scripts/test-cli.sh cursor
+
+# 3. Look for in the output:
+#    - Auth URLs being printed
+#    - Error messages
+#    - Prompt patterns not being detected
+#    - Unexpected behavior
+
+# 4. Check what credentials exist (or don't)
+./scripts/verify-auth.sh cursor
+ls -la ~/.cursor/
+
+# 5. Compare with a working CLI
+./scripts/test-cli.sh claude
+```
+
+## Available CLIs
+
+The container includes these pre-installed CLIs:
+
+| CLI | Command | Auth Type |
+|-----|---------|-----------|
+| Claude | `claude` | OAuth |
+| Codex | `codex` | OAuth / Device Flow |
+| Gemini | `gemini` | OAuth (Google) |
+| Cursor | `cursor` | OAuth |
+| OpenCode | `opencode` | Multi-provider |
+| Droid | `droid` | OAuth |
+
+## Credential Locations
+
+Each CLI stores credentials in a different location:
+
+| CLI | Credential File |
+|-----|-----------------|
+| Claude | `~/.claude/.credentials.json` |
+| Codex | `~/.codex/auth.json` |
+| Gemini | `~/.config/gcloud/application_default_credentials.json` |
+| Cursor | `~/.cursor/auth.json` |
+| OpenCode | `~/.local/share/opencode/auth.json` |
+| Droid | `~/.droid/auth.json` |
+
+## How It Works
+
+<Steps>
+  <Step title="Docker Container">
+    The test environment runs in a Docker container with all CLIs pre-installed from the `relay-workspace:base` image.
+  </Step>
+  <Step title="relay-pty Wrapper">
+    Each CLI is wrapped with `relay-pty`, which provides:
+    - Unix socket for message injection
+    - Output parsing for relay commands
+    - Idle detection for message timing
+  </Step>
+  <Step title="Persistent Volumes">
+    Docker volumes persist credentials between container restarts, so you don't need to re-authenticate each time.
+  </Step>
+</Steps>
+
+## TypeScript API
+
+For programmatic use, the package exports utilities:
+
+```typescript
+import {
+  RelayPtyClient,
+  checkCredentials,
+  clearCredentials
+} from '@agent-relay/cli-tester';
+
+// Check if credentials exist
+const result = checkCredentials('claude');
+console.log(result.exists);      // true/false
+console.log(result.valid);       // has required tokens
+console.log(result.hasAccessToken);
+console.log(result.hasRefreshToken);
+
+// Connect to relay-pty socket
+const client = new RelayPtyClient('/tmp/relay-pty-test-claude.sock');
+await client.connect();
+
+// Inject a message
+const response = await client.inject({
+  from: 'Tester',
+  body: 'Hello world'
+});
+console.log(response.status); // 'queued' | 'delivered' | 'failed'
+
+// Get session status
+const status = await client.getStatus();
+console.log(status.agent_idle);
+console.log(status.queue_length);
+
+// Clean up
+client.close();
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Container won't start">
+    Make sure Docker is running and you have the base image:
+    ```bash
+    docker pull ghcr.io/agentworkforce/relay-workspace:base
+    ```
+    Or build locally:
+    ```bash
+    npm run cli-tester:build
+    ```
+  </Accordion>
+
+  <Accordion title="CLI not found in container">
+    The CLIs are installed in the base image. If missing, rebuild:
+    ```bash
+    npm run cli-tester:build -- --no-cache
+    ```
+  </Accordion>
+
+  <Accordion title="Socket not found when injecting">
+    Make sure the CLI is running with `test-cli.sh` first. The socket is created when relay-pty starts.
+  </Accordion>
+
+  <Accordion title="OAuth callback not working">
+    For Codex OAuth, port 1455 must be exposed. The docker-compose.yml handles this, but check if the port is available on your host.
+  </Accordion>
+</AccordionGroup>

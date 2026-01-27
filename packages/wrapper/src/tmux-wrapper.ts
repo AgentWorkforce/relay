@@ -969,6 +969,23 @@ export class TmuxWrapper extends BaseWrapper {
       };
     }
 
+    // Check if target is a channel (starts with #)
+    if (cmd.to.startsWith('#')) {
+      // Use CHANNEL_MESSAGE protocol for channel targets
+      this.logStderr(`→ [channel] ${cmd.to}: ${cmd.body.substring(0, Math.min(RELAY_LOG_TRUNCATE_LENGTH, cmd.body.length))}...`);
+      const success = this.client.sendChannelMessage(cmd.to, cmd.body, {
+        thread: cmd.thread,
+        data: cmd.data,
+      });
+      if (success) {
+        this.sentMessageHashes.add(msgHash);
+        this.queuedMessageHashes.delete(msgHash);
+        this.trajectory?.message('sent', this.config.name, cmd.to, cmd.body);
+      }
+      return;
+    }
+
+    // Use SEND protocol for direct messages and broadcasts
     if (cmd.sync?.blocking) {
       this.client.sendAndWait(cmd.to, cmd.body, {
         timeoutMs: cmd.sync.timeoutMs,

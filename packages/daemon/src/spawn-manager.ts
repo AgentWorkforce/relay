@@ -32,6 +32,10 @@ export interface SpawnManagerConfig {
   onAgentDeath?: OnAgentDeathCallback;
   /** Callback when an agent is spawned (for telemetry tracking) */
   onAgentSpawn?: () => void;
+  /** Callback to mark an agent as spawning (before HELLO completes) */
+  onMarkSpawning?: (agentName: string) => void;
+  /** Callback to clear the spawning flag for an agent */
+  onClearSpawning?: (agentName: string) => void;
 }
 
 /**
@@ -48,6 +52,8 @@ export class SpawnManager {
     this.spawner = new AgentSpawner({
       projectRoot: config.projectRoot,
       socketPath: config.socketPath,
+      onMarkSpawning: config.onMarkSpawning,
+      onClearSpawning: config.onClearSpawning,
     });
     this.onAgentSpawn = config.onAgentSpawn;
 

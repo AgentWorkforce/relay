@@ -106,6 +106,8 @@ export class SqliteStorageAdapter implements StorageAdapter {
         lastError = null;
         break;
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[storage] SQLite driver "${driver}" failed: ${msg}`);
         lastError = err;
       }
     }

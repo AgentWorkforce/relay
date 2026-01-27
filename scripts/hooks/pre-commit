@@ -1,0 +1,60 @@
+#!/bin/sh
+# Pre-commit hook for agent-relay
+# Handles Rust formatting and bd (beads) sync
+#
+# Install: cp scripts/hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+# Or run: npm run hooks:install
+
+# ============================================================
+# Rust formatting (auto-format staged .rs files)
+# ============================================================
+RUST_STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep '\.rs$' || true)
+if [ -n "$RUST_STAGED" ]; then
+    if command -v rustfmt >/dev/null 2>&1; then
+        echo "Formatting Rust files..."
+        for file in $RUST_STAGED; do
+            if [ -f "$file" ]; then
+                rustfmt "$file" 2>/dev/null || true
+                git add "$file"
+            fi
+        done
+    else
+        echo "Warning: rustfmt not found, skipping Rust formatting" >&2
+        echo "Install with: rustup component add rustfmt" >&2
+    fi
+fi
+
+# ============================================================
+# bd (beads) sync - flush pending changes before commit
+# ============================================================
+# Check if bd is available
+if ! command -v bd >/dev/null 2>&1; then
+    exit 0
+fi
+
+# Check if we're in a bd workspace
+if [ ! -d .beads ]; then
+    exit 0
+fi
+
+# Check if sync-branch is configured (if so, .beads goes to separate branch)
+SYNC_BRANCH="${BEADS_SYNC_BRANCH:-}"
+if [ -z "$SYNC_BRANCH" ] && [ -f .beads/config.yaml ]; then
+    SYNC_BRANCH=$(grep -E '^sync-branch:' .beads/config.yaml 2>/dev/null | head -1 | sed 's/^sync-branch:[[:space:]]*//' | sed 's/^["'"'"']//' | sed 's/["'"'"']$//')
+fi
+if [ -n "$SYNC_BRANCH" ]; then
+    exit 0
+fi
+
+# Flush pending changes
+if ! bd sync --flush-only >/dev/null 2>&1; then
+    echo "Error: Failed to flush bd changes" >&2
+    exit 1
+fi
+
+# Stage JSONL files
+for f in .beads/beads.jsonl .beads/issues.jsonl .beads/deletions.jsonl; do
+    [ -f "$f" ] && git add "$f" 2>/dev/null || true
+done
+
+exit 0

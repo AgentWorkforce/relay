@@ -1,0 +1,71 @@
+services:
+  cli-tester:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-relay-workspace:local}
+    stdin_open: true  # Keep stdin open for interactive use (-i)
+    tty: true         # Allocate TTY for CLI tools (-t)
+    ports:
+      - "1455:1455"   # Codex OAuth callback port
+    volumes:
+      # Persist credentials between runs (named volumes)
+      - cli-config:/home/workspace/.config
+      - claude-credentials:/home/workspace/.claude
+      - codex-credentials:/home/workspace/.codex
+      - gemini-credentials:/home/workspace/.gemini
+      - cursor-credentials:/home/workspace/.cursor
+      - opencode-credentials:/home/workspace/.local/share/opencode
+      # Mount scripts for easy editing during development
+      - ../scripts:/app/scripts:ro
+      # Shared volume for daemon communication
+      - relay-data:/tmp/relay-data
+    environment:
+      - TERM=xterm-256color
+      # Disable auto-updates for deterministic testing
+      - DISABLE_AUTOUPDATER=1
+      - CODEX_CHECK_FOR_UPDATES=false
+      - CODEX_DISABLE_AUTOUPDATE=1
+      # Daemon URL (when running with daemon profile)
+      - RELAY_DAEMON_URL=http://daemon:3377
+    depends_on:
+      daemon:
+        condition: service_healthy
+        required: false  # Make daemon optional
+
+  # Optional daemon service for full integration testing
+  # Run with: docker compose --profile daemon up
+  daemon:
+    image: node:20-slim
+    profiles: [daemon]
+    working_dir: /app
+    volumes:
+      # Mount built daemon package
+      - ../../daemon/dist:/app/dist:ro
+      - ../../daemon/package.json:/app/package.json:ro
+      - ../../daemon/node_modules:/app/node_modules:ro
+      # Shared data directory
+      - relay-data:/tmp/relay-data
+    environment:
+      - RELAY_PORT=3377
+      - RELAY_DATA_DIR=/tmp/relay-data
+      - DEBUG=${DEBUG:-}
+    ports:
+      - "3377:3377"
+    command: ["node", "dist/server.js"]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3377/health", "||", "exit", "1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  cli-config:
+  claude-credentials:
+  codex-credentials:
+  gemini-credentials:
+  cursor-credentials:
+  opencode-credentials:
+  relay-data:

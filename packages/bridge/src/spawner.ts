@@ -418,6 +418,8 @@ export interface AgentSpawnerOptions {
   projectRoot: string;
   /** Explicit socket path for daemon connection (if not provided, derived from projectRoot) */
   socketPath?: string;
+  /** Explicit team directory for agent registration files (if not provided, derived from projectRoot) */
+  teamDir?: string;
   tmuxSession?: string;
   dashboardPort?: number;
   /**
@@ -459,15 +461,21 @@ export class AgentSpawner {
 
     const paths = getProjectPaths(options.projectRoot);
     this.projectRoot = paths.projectRoot;
+    // Use explicit teamDir if provided (ensures spawner checks same files as daemon)
+    // This is critical in cloud workspaces where detectWorkspacePath may return different paths
+    const effectiveTeamDir = options.teamDir ?? paths.teamDir;
     // Use connected-agents.json (live socket connections) instead of agents.json (historical registry)
     // This ensures spawned agents have actual daemon connections for channel message delivery
-    this.agentsPath = path.join(paths.teamDir, 'connected-agents.json');
-    this.registryPath = path.join(paths.teamDir, 'agents.json');
+    this.agentsPath = path.join(effectiveTeamDir, 'connected-agents.json');
+    this.registryPath = path.join(effectiveTeamDir, 'agents.json');
+
+    // Debug: log path configuration
+    log.info(`AgentSpawner paths: projectRoot=${this.projectRoot} teamDir=${effectiveTeamDir} (explicit=${!!options.teamDir}) agentsPath=${this.agentsPath}`);
     // Use explicit socketPath if provided (ensures spawned agents connect to same daemon)
     // Otherwise derive from project paths
     this.socketPath = options.socketPath ?? paths.socketPath;
-    this.logsDir = path.join(paths.teamDir, 'worker-logs');
-    this.workersPath = path.join(paths.teamDir, 'workers.json');
+    this.logsDir = path.join(effectiveTeamDir, 'worker-logs');
+    this.workersPath = path.join(effectiveTeamDir, 'workers.json');
     this.dashboardPort = options.dashboardPort;
 
     // Store spawn tracking callbacks
@@ -727,7 +735,7 @@ export class AgentSpawner {
    * Spawn a new worker agent using relay-pty
    */
   async spawn(request: SpawnRequest): Promise<SpawnResult> {
-    const { name, cli, task, team, spawnerName, userId, includeWorkflowConventions } = request;
+    const { name, cli, task, team, spawnerName, userId, includeWorkflowConventions, interactive } = request;
     const debug = process.env.DEBUG_SPAWN === '1';
 
     // Validate agent name to prevent path traversal attacks
@@ -758,7 +766,7 @@ export class AgentSpawner {
     }
 
     // Enforce agent limit based on plan (MAX_AGENTS is set by provisioner based on plan)
-    const maxAgents = parseInt(process.env.MAX_AGENTS || '10', 10);
+    const maxAgents = parseInt(process.env.MAX_AGENTS ?? '', 10) || 10_000;
     const currentAgentCount = this.activeWorkers.size;
     if (currentAgentCount >= maxAgents) {
       log.warn(`Agent limit reached: ${currentAgentCount}/${maxAgents}`);
@@ -809,18 +817,24 @@ export class AgentSpawner {
       // This creates/updates CLI-specific settings files with agent-relay permissions
       ensureMcpPermissions(this.projectRoot, commandName, debug);
 
-      // Add --dangerously-skip-permissions for Claude agents
+      // Add auto-accept flags for non-interactive agents (normal spawns, not setup terminals)
+      // When interactive=true (setup flows), we SKIP these flags so users can respond to prompts
       const isClaudeCli = commandName.startsWith('claude');
-      if (isClaudeCli) {
-        if (!args.includes('--dangerously-skip-permissions')) {
+      const isCursorCli = commandName === 'agent' || rawCommandName === 'cursor';
+
+      if (!interactive) {
+        // Add --dangerously-skip-permissions for Claude agents
+        if (isClaudeCli && !args.includes('--dangerously-skip-permissions')) {
           args.push('--dangerously-skip-permissions');
         }
-      }
 
-      // Add --force for Cursor agents (CLI is 'agent', may be passed as 'cursor')
-      const isCursorCli = commandName === 'agent' || rawCommandName === 'cursor';
-      if (isCursorCli && !args.includes('--force')) {
-        args.push('--force');
+        // Add --force for Cursor agents (auto-approve tool usage in non-interactive mode)
+        if (isCursorCli && !args.includes('--force')) {
+          args.push('--force');
+        }
+      } else {
+        // Interactive mode: log that we're skipping auto-accept flags
+        if (debug) log.debug(`Interactive mode: skipping auto-accept flags for ${name}`);
       }
 
       // Apply agent config (model, --agent flag) from .claude/agents/ if available
@@ -849,16 +863,20 @@ export class AgentSpawner {
         if (debug) log.debug(`Applied agent config for ${name}: ${args.join(' ')}`);
       }
 
-      // Add --dangerously-bypass-approvals-and-sandbox for Codex agents
+      // Add auto-accept flags for Codex and Gemini (only in non-interactive mode)
       const isCodexCli = commandName.startsWith('codex');
-      if (isCodexCli && !args.includes('--dangerously-bypass-approvals-and-sandbox')) {
-        args.push('--dangerously-bypass-approvals-and-sandbox');
-      }
-
-      // Add --yolo for Gemini agents (auto-accept all prompts)
       const isGeminiCli = commandName === 'gemini';
-      if (isGeminiCli && !args.includes('--yolo')) {
-        args.push('--yolo');
+
+      if (!interactive) {
+        // Add --dangerously-bypass-approvals-and-sandbox for Codex agents
+        if (isCodexCli && !args.includes('--dangerously-bypass-approvals-and-sandbox')) {
+          args.push('--dangerously-bypass-approvals-and-sandbox');
+        }
+
+        // Add --yolo for Gemini agents (auto-accept all prompts)
+        if (isGeminiCli && !args.includes('--yolo')) {
+          args.push('--yolo');
+        }
       }
 
       // Auto-install MCP config if not present (project-local)
@@ -1142,6 +1160,22 @@ export class AgentSpawner {
       await pty.start();
 
       if (debug) log.debug(`PTY started, pid: ${pty.pid}`);
+
+      // Cursor CLI shows "Press any key to log in..." prompt that blocks all progress
+      // Send a keystroke after startup to bypass this initial prompt
+      // Only do this for interactive/setup flows where auth is needed
+      // For normal spawns (already authenticated), this prompt won't appear
+      if (isCursorCli && interactive) {
+        // Wait a moment for CLI to initialize and show the prompt
+        await sleep(1500);
+        if (debug) log.debug(`Sending initial keystroke for Cursor setup to bypass "Press any key" prompt`);
+        try {
+          // Send Enter key to proceed past the initial prompt
+          await pty.write('\r');
+        } catch (err) {
+          log.warn(`Failed to send initial keystroke for Cursor: ${err}`);
+        }
+      }
 
       // Wait for the agent to register with the daemon
       const registered = await this.waitForAgentRegistration(name, 30_000, 500);
@@ -1528,15 +1562,27 @@ export class AgentSpawner {
     pollIntervalMs = 500
   ): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
+    let pollCount = 0;
 
     while (Date.now() < deadline) {
-      if (this.isAgentRegistered(name)) {
+      pollCount++;
+      const connected = this.isAgentConnected(name);
+      const recentlySeen = this.isAgentRecentlySeen(name);
+
+      // Log first few polls and every 10th poll after that
+      if (pollCount <= 3 || pollCount % 10 === 0) {
+        log.info(`Registration poll #${pollCount} for ${name}: connected=${connected} recentlySeen=${recentlySeen} agentsPath=${this.agentsPath}`);
+      }
+
+      if (connected && recentlySeen) {
+        log.info(`Agent ${name} registered after ${pollCount} polls`);
         return true;
       }
 
       await sleep(pollIntervalMs);
     }
 
+    log.info(`Registration timeout for ${name} after ${pollCount} polls`);
     return false;
   }
 
@@ -1545,8 +1591,15 @@ export class AgentSpawner {
   }
 
   private isAgentConnected(name: string): boolean {
-    if (!this.agentsPath) return false;
-    if (!fs.existsSync(this.agentsPath)) return false;
+    const debug = process.env.DEBUG_SPAWN === '1';
+    if (!this.agentsPath) {
+      if (debug) log.debug(`isAgentConnected(${name}): no agentsPath`);
+      return false;
+    }
+    if (!fs.existsSync(this.agentsPath)) {
+      if (debug) log.debug(`isAgentConnected(${name}): file not found: ${this.agentsPath}`);
+      return false;
+    }
 
     try {
       const raw = JSON.parse(fs.readFileSync(this.agentsPath, 'utf-8'));
@@ -1556,13 +1609,17 @@ export class AgentSpawner {
       const updatedAt = typeof raw?.updatedAt === 'number' ? raw.updatedAt : 0;
       const isFresh = Date.now() - updatedAt <= AgentSpawner.ONLINE_THRESHOLD_MS;
 
+      if (debug) {
+        log.debug(`isAgentConnected(${name}): path=${this.agentsPath} agents=${agents.join(',')} updatedAt=${updatedAt} isFresh=${isFresh}`);
+      }
+
       if (!isFresh) return false;
 
       // Case-insensitive check to match router behavior
       const lowerName = name.toLowerCase();
       return agents.some((a) => typeof a === 'string' && a.toLowerCase() === lowerName);
     } catch (err: any) {
-      log.error('Failed to read connected-agents.json', { error: err.message });
+      log.error('Failed to read connected-agents.json', { error: err.message, path: this.agentsPath });
       return false;
     }
   }

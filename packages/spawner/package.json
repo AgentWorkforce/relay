@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/spawner",
-  "version": "2.0.19",
+  "version": "2.0.20",
   "description": "Agent spawning types and utilities for Agent Relay",
   "type": "module",
   "main": "dist/index.js",
@@ -43,5 +43,5 @@
     "url": "git+https://github.com/AgentWorkforce/relay.git",
     "directory": "packages/spawner"
   },
-  "license": "MIT"
+  "license": "Apache-2.0"
 }

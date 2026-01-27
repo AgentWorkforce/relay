@@ -17,9 +17,14 @@ vi.mock('./client.js', () => ({
     name,
     state: 'READY' as string,
     sentMessages: [] as Array<{ to: string; body: string; kind: string; meta?: unknown }>,
+    sentChannelMessages: [] as Array<{ channel: string; body: string; options?: unknown }>,
     onMessage: null as ((from: string, payload: any, messageId: string, meta?: any, originalTo?: string) => void) | null,
     sendMessage: vi.fn().mockImplementation(function(this: any, to: string, body: string, kind: string, meta?: unknown) {
       this.sentMessages.push({ to, body, kind, meta });
+      return true;
+    }),
+    sendChannelMessage: vi.fn().mockImplementation(function(this: any, channel: string, body: string, options?: unknown) {
+      this.sentChannelMessages.push({ channel, body, options });
       return true;
     }),
     destroy: vi.fn(),
@@ -461,6 +466,50 @@ describe('BaseWrapper', () => {
       wrapper.testSendRelayCommand({ to: 'ReceiverAgent', body: 'Hello' });
 
       expect(wrapper.testClient.sentMessages).toHaveLength(0);
+    });
+
+    it('does not add hash when client not ready (allows retry)', () => {
+      // First attempt - client not ready
+      wrapper.testClient.state = 'CONNECTING';
+      wrapper.testSendRelayCommand({ to: 'ReceiverAgent', body: 'Hello' });
+      expect(wrapper.testClient.sentMessages).toHaveLength(0);
+      expect(wrapper.testSentMessageHashes.size).toBe(0);
+
+      // Client becomes ready - retry should work
+      wrapper.testClient.state = 'READY';
+      wrapper.testSendRelayCommand({ to: 'ReceiverAgent', body: 'Hello' });
+      expect(wrapper.testClient.sentMessages).toHaveLength(1);
+      expect(wrapper.testSentMessageHashes.size).toBe(1);
+    });
+
+    it('uses sendChannelMessage for channel targets (starting with #)', () => {
+      wrapper.testSendRelayCommand({
+        to: '#general',
+        body: 'Hello channel!',
+        thread: 'thread-1',
+      });
+
+      // Should use channel message, not regular message
+      expect(wrapper.testClient.sentChannelMessages).toHaveLength(1);
+      expect(wrapper.testClient.sentMessages).toHaveLength(0);
+      expect(wrapper.testClient.sentChannelMessages[0].channel).toBe('#general');
+      expect(wrapper.testClient.sentChannelMessages[0].body).toBe('Hello channel!');
+    });
+
+    it('sends to different channels correctly', () => {
+      wrapper.testSendRelayCommand({ to: '#general', body: 'Hello general!' });
+      wrapper.testSendRelayCommand({ to: '#team', body: 'Hello team!' });
+
+      expect(wrapper.testClient.sentChannelMessages).toHaveLength(2);
+      expect(wrapper.testClient.sentMessages).toHaveLength(0);
+    });
+
+    it('uses sendMessage for non-channel targets', () => {
+      wrapper.testSendRelayCommand({ to: 'Bob', body: 'Direct message' });
+      wrapper.testSendRelayCommand({ to: '*', body: 'Broadcast message' });
+
+      expect(wrapper.testClient.sentMessages).toHaveLength(2);
+      expect(wrapper.testClient.sentChannelMessages).toHaveLength(0);
     });
   });
 

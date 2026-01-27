@@ -20,6 +20,7 @@ import { spawn, ChildProcess } from 'node:child_process';
 import { createConnection, Socket } from 'node:net';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
+import { homedir } from 'node:os';
 import { existsSync, unlinkSync, mkdirSync, symlinkSync, lstatSync, rmSync, watch, readdirSync, readlinkSync, writeFileSync, appendFileSync } from 'node:fs';
 import type { FSWatcher } from 'node:fs';
 import { getProjectPaths } from '@agent-relay/config/project-namespace';
@@ -317,21 +318,12 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       // Legacy path for backwards compat (older agents might still use /tmp/relay-outbox)
       this._legacyOutboxPath = `/tmp/relay-outbox/${config.name}`;
     } else {
-      // Local mode: use ~/.agent-relay paths directly (no symlinks needed)
+      // Local mode: use project paths directly (no symlinks needed)
       this._outboxPath = this._canonicalOutboxPath;
-      // Socket at {projectRoot}/.agent-relay/sockets/{agentName}.sock
-      let localSocketPath = join(projectPaths.dataDir, 'sockets', `${config.name}.sock`);
-
-      // If socket path is too long, fall back to /tmp/relay-local/{projectId}/sockets/
-      if (localSocketPath.length > MAX_SOCKET_PATH_LENGTH) {
-        const tmpSocketPath = `/tmp/relay-local/${projectPaths.projectId}/sockets/${config.name}.sock`;
-        console.warn(
-          `[relay-pty-orchestrator:${config.name}] Socket path too long (${localSocketPath.length} chars); using /tmp fallback`
-        );
-        localSocketPath = tmpSocketPath;
-      }
-
-      this.socketPath = localSocketPath;
+      // Socket path: use ~/.agent-relay/sockets/{projectId}/{agentName}.sock
+      // This keeps paths short (uses 12-char hashed projectId) while staying organized
+      // Example: /Users/foo/.agent-relay/sockets/abc123def456/MyAgent.sock (~65 chars)
+      this.socketPath = join(homedir(), '.agent-relay', 'sockets', projectPaths.projectId, `${config.name}.sock`);
       // Legacy path for backwards compat (older agents might still use /tmp/relay-outbox)
       // Even in local mode, we need this symlink for agents with stale instructions
       this._legacyOutboxPath = `/tmp/relay-outbox/${config.name}`;
@@ -577,19 +569,21 @@ export class RelayPtyOrchestrator extends BaseWrapper {
 
     this.log(` Using binary: ${binaryPath}`);
 
-    // Connect to relay daemon first
+    // Spawn relay-pty process FIRST (before connecting to daemon)
+    // This ensures the CLI is actually running before we register with the daemon
+    await this.spawnRelayPty(binaryPath);
+
+    // Wait for socket to become available and connect
+    await this.connectToSocket();
+
+    // Connect to relay daemon AFTER CLI is spawned
+    // This prevents the spawner from seeing us as "registered" before the CLI runs
     try {
       await this.client.connect();
       this.log(` Relay daemon connected`);
     } catch (err: any) {
       this.logError(` Relay connect failed: ${err.message}`);
     }
-
-    // Spawn relay-pty process
-    await this.spawnRelayPty(binaryPath);
-
-    // Wait for socket to become available and connect
-    await this.connectToSocket();
 
     this.running = true;
     // DON'T set readyForMessages yet - wait for CLI to be ready first
@@ -883,7 +877,9 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     await sleep(500);
 
     if (proc.exitCode !== null) {
-      throw new Error(`relay-pty exited immediately with code ${proc.exitCode}`);
+      // Include any captured stderr in the error for debugging
+      const stderrInfo = stderrBuffer ? `\nStderr: ${stderrBuffer.slice(0, 500)}` : '';
+      throw new Error(`relay-pty exited immediately with code ${proc.exitCode}${stderrInfo}`);
     }
 
     // Register for memory/CPU monitoring
