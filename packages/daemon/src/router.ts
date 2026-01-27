@@ -1082,6 +1082,47 @@ export class Router {
   }
 
   /**
+   * Force remove an agent from the router (used when process dies without clean disconnect).
+   * This cleans up the agent's connection and subscriptions without needing the connection object.
+   */
+  forceRemoveAgent(agentName: string): boolean {
+    const connection = this.agents.get(agentName);
+    if (!connection) {
+      routerLog.debug(`forceRemoveAgent: agent ${agentName} not found in router`);
+      return false;
+    }
+
+    routerLog.info(`Force removing stale agent: ${agentName}`);
+
+    // Remove from agents map
+    this.agents.delete(agentName);
+
+    // Remove from all channel subscriptions
+    for (const [channel, subscribers] of this.subscriptions) {
+      if (subscribers.delete(agentName)) {
+        routerLog.debug(`Removed ${agentName} from channel ${channel}`);
+      }
+    }
+
+    // Remove from connections map
+    this.connections.delete(connection.id);
+
+    // Clear any pending deliveries
+    this.deliveryTracker.clearPendingForConnection(connection.id);
+
+    // Clean up channel memberships (same as unregister)
+    this.removeFromAllChannels(agentName);
+
+    // Clean up shadow relationships
+    this.unbindShadow(agentName);
+
+    // Clear processing state
+    this.clearProcessing(agentName);
+
+    return true;
+  }
+
+  /**
    * Get number of active connections.
    */
   get connectionCount(): number {

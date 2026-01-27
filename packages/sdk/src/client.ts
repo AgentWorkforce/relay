@@ -39,6 +39,10 @@ import {
   type ListAgentsPayload,
   type AgentInfo,
   type ListAgentsResponsePayload,
+  type ListConnectedAgentsPayload,
+  type ListConnectedAgentsResponsePayload,
+  type RemoveAgentPayload,
+  type RemoveAgentResponsePayload,
   type HealthPayload,
   type HealthResponsePayload,
   type MetricsPayload,
@@ -980,6 +984,41 @@ export class RelayClient {
     return this.query<MetricsResponsePayload>('METRICS', payload);
   }
 
+  /**
+   * List only currently connected agents (not historical/registered agents).
+   * Use this instead of listAgents() when you need accurate liveness information.
+   * @param options - Filter options
+   * @param options.project - Filter by project
+   * @returns Array of currently connected agent info
+   */
+  async listConnectedAgents(options: {
+    project?: string;
+  } = {}): Promise<AgentInfo[]> {
+    const payload: ListConnectedAgentsPayload = {
+      project: options.project,
+    };
+    const response = await this.query<ListConnectedAgentsResponsePayload>('LIST_CONNECTED_AGENTS', payload);
+    return response.agents || [];
+  }
+
+  /**
+   * Remove an agent from the registry (sessions, agents.json).
+   * Use this to clean up stale agents that are no longer needed.
+   * @param name - Agent name to remove
+   * @param options - Removal options
+   * @param options.removeMessages - Also remove all messages from/to this agent (default: false)
+   * @returns Result indicating if the agent was removed
+   */
+  async removeAgent(name: string, options: {
+    removeMessages?: boolean;
+  } = {}): Promise<RemoveAgentResponsePayload> {
+    const payload: RemoveAgentPayload = {
+      name,
+      removeMessages: options.removeMessages,
+    };
+    return this.query<RemoveAgentResponsePayload>('REMOVE_AGENT', payload);
+  }
+
   // Private methods
 
   private setState(state: ClientState): void {
@@ -1102,6 +1141,8 @@ export class RelayClient {
       case 'STATUS_RESPONSE':
       case 'INBOX_RESPONSE':
       case 'LIST_AGENTS_RESPONSE':
+      case 'LIST_CONNECTED_AGENTS_RESPONSE':
+      case 'REMOVE_AGENT_RESPONSE':
       case 'HEALTH_RESPONSE':
       case 'METRICS_RESPONSE':
         this.handleQueryResponse(envelope);

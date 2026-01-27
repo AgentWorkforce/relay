@@ -104,6 +104,12 @@ export interface StorageAdapter {
   // Channel membership helpers (optional)
   /** Get channels that an agent is a member of (based on stored membership events) */
   getChannelMembershipsForAgent?(memberName: string): Promise<string[]>;
+
+  // Agent cleanup helpers (optional)
+  /** Remove an agent from sessions table */
+  removeAgent?(agentName: string): Promise<void>;
+  /** Remove all messages from/to an agent */
+  removeMessagesForAgent?(agentName: string): Promise<void>;
 }
 
 /**

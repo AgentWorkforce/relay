@@ -974,4 +974,34 @@ export class SqliteStorageAdapter implements StorageAdapter {
     const rows = stmt.all(memberName) as Array<{ channel: string }>;
     return rows.map(row => row.channel);
   }
+
+  /**
+   * Remove an agent from the sessions table.
+   * This is used to clean up stale agents from the registry.
+   */
+  async removeAgent(agentName: string): Promise<void> {
+    if (!this.db) {
+      await this.init();
+    }
+
+    const stmt = this.db!.prepare(`
+      DELETE FROM sessions WHERE agent_name = ?
+    `);
+    stmt.run(agentName);
+  }
+
+  /**
+   * Remove all messages from/to an agent.
+   * Use with caution - this permanently deletes message history.
+   */
+  async removeMessagesForAgent(agentName: string): Promise<void> {
+    if (!this.db) {
+      await this.init();
+    }
+
+    const stmt = this.db!.prepare(`
+      DELETE FROM messages WHERE sender = ? OR recipient = ?
+    `);
+    stmt.run(agentName, agentName);
+  }
 }

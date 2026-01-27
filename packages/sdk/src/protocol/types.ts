@@ -48,6 +48,10 @@ export type MessageType =
   | 'INBOX_RESPONSE'
   | 'LIST_AGENTS'
   | 'LIST_AGENTS_RESPONSE'
+  | 'LIST_CONNECTED_AGENTS'
+  | 'LIST_CONNECTED_AGENTS_RESPONSE'
+  | 'REMOVE_AGENT'
+  | 'REMOVE_AGENT_RESPONSE'
   | 'HEALTH'
   | 'HEALTH_RESPONSE'
   | 'METRICS'
@@ -559,6 +563,40 @@ export interface ListAgentsResponsePayload {
 }
 
 /**
+ * Payload for LIST_CONNECTED_AGENTS request.
+ * Returns only currently connected agents (not historical/registered agents).
+ */
+export interface ListConnectedAgentsPayload {
+  project?: string;
+}
+
+/**
+ * Response payload for LIST_CONNECTED_AGENTS request.
+ */
+export interface ListConnectedAgentsResponsePayload {
+  agents: AgentInfo[];
+}
+
+/**
+ * Payload for REMOVE_AGENT request.
+ * Removes an agent from the registry (sessions, agents.json).
+ */
+export interface RemoveAgentPayload {
+  name: string;
+  /** If true, also removes all messages from/to this agent */
+  removeMessages?: boolean;
+}
+
+/**
+ * Response payload for REMOVE_AGENT request.
+ */
+export interface RemoveAgentResponsePayload {
+  success: boolean;
+  removed: boolean;
+  message?: string;
+}
+
+/**
  * Payload for HEALTH request.
  */
 export interface HealthPayload {
@@ -670,6 +708,10 @@ export type InboxEnvelope = Envelope<InboxPayload>;
 export type InboxResponseEnvelope = Envelope<InboxResponsePayload>;
 export type ListAgentsEnvelope = Envelope<ListAgentsPayload>;
 export type ListAgentsResponseEnvelope = Envelope<ListAgentsResponsePayload>;
+export type ListConnectedAgentsEnvelope = Envelope<ListConnectedAgentsPayload>;
+export type ListConnectedAgentsResponseEnvelope = Envelope<ListConnectedAgentsResponsePayload>;
+export type RemoveAgentEnvelope = Envelope<RemoveAgentPayload>;
+export type RemoveAgentResponseEnvelope = Envelope<RemoveAgentResponsePayload>;
 export type HealthEnvelope = Envelope<HealthPayload>;
 export type HealthResponseEnvelope = Envelope<HealthResponsePayload>;
 export type MetricsEnvelope = Envelope<MetricsPayload>;

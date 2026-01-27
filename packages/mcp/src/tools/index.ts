@@ -62,3 +62,17 @@ export {
   handleRelayContinuity,
   type RelayContinuityInput,
 } from './relay-continuity.js';
+
+export {
+  relayConnectedTool,
+  relayConnectedSchema,
+  handleRelayConnected,
+  type RelayConnectedInput,
+} from './relay-connected.js';
+
+export {
+  relayRemoveAgentTool,
+  relayRemoveAgentSchema,
+  handleRelayRemoveAgent,
+  type RelayRemoveAgentInput,
+} from './relay-remove-agent.js';

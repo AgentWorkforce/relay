@@ -48,6 +48,10 @@ export type MessageType =
   | 'INBOX_RESPONSE'
   | 'LIST_AGENTS'
   | 'LIST_AGENTS_RESPONSE'
+  | 'LIST_CONNECTED_AGENTS'
+  | 'LIST_CONNECTED_AGENTS_RESPONSE'
+  | 'REMOVE_AGENT'
+  | 'REMOVE_AGENT_RESPONSE'
   | 'HEALTH'
   | 'HEALTH_RESPONSE'
   | 'METRICS'
@@ -539,12 +543,61 @@ export interface ListAgentsResponsePayload {
   }>;
 }
 
+/**
+ * Payload for LIST_CONNECTED_AGENTS request.
+ * Returns only currently connected agents (not historical/registered agents).
+ */
+export interface ListConnectedAgentsPayload {
+  /** Filter by project */
+  project?: string;
+}
+
+/**
+ * Payload for LIST_CONNECTED_AGENTS_RESPONSE.
+ */
+export interface ListConnectedAgentsResponsePayload {
+  /** List of currently connected agents */
+  agents: Array<{
+    name: string;
+    cli?: string;
+    idle?: boolean;
+    parent?: string;
+  }>;
+}
+
+/**
+ * Payload for REMOVE_AGENT request.
+ * Removes an agent from the registry (sessions, agents.json).
+ */
+export interface RemoveAgentPayload {
+  /** Agent name to remove */
+  name: string;
+  /** If true, also removes all messages from/to this agent */
+  removeMessages?: boolean;
+}
+
+/**
+ * Payload for REMOVE_AGENT_RESPONSE.
+ */
+export interface RemoveAgentResponsePayload {
+  /** Whether the operation succeeded */
+  success: boolean;
+  /** Whether an agent was actually removed */
+  removed: boolean;
+  /** Human-readable message */
+  message?: string;
+}
+
 export type StatusEnvelope = Envelope<StatusPayload>;
 export type StatusResponseEnvelope = Envelope<StatusResponsePayload>;
 export type InboxEnvelope = Envelope<InboxPayload>;
 export type InboxResponseEnvelope = Envelope<InboxResponsePayload>;
 export type ListAgentsEnvelope = Envelope<ListAgentsPayload>;
 export type ListAgentsResponseEnvelope = Envelope<ListAgentsResponsePayload>;
+export type ListConnectedAgentsEnvelope = Envelope<ListConnectedAgentsPayload>;
+export type ListConnectedAgentsResponseEnvelope = Envelope<ListConnectedAgentsResponsePayload>;
+export type RemoveAgentEnvelope = Envelope<RemoveAgentPayload>;
+export type RemoveAgentResponseEnvelope = Envelope<RemoveAgentResponsePayload>;
 
 /**
  * Payload for HEALTH request.

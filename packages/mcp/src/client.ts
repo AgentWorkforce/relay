@@ -121,6 +121,8 @@ export interface RelayClient {
   getStatus(): Promise<{ connected: boolean; agentName: string; project: string; socketPath: string; daemonVersion?: string; uptime?: string }>;
   getInbox(options?: { limit?: number; unread_only?: boolean; from?: string; channel?: string }): Promise<Array<{ id: string; from: string; content: string; channel?: string; thread?: string }>>;
   listAgents(options?: { include_idle?: boolean; project?: string }): Promise<Array<{ name: string; cli?: string; idle?: boolean; parent?: string }>>;
+  listConnectedAgents(options?: { project?: string }): Promise<Array<{ name: string; cli?: string; idle?: boolean; parent?: string }>>;
+  removeAgent(name: string, options?: { removeMessages?: boolean }): Promise<{ success: boolean; removed: boolean; message?: string }>;
   getHealth(options?: { include_crashes?: boolean; include_alerts?: boolean }): Promise<HealthResponse>;
   getMetrics(options?: { agent?: string }): Promise<MetricsResponse>;
 }
@@ -382,7 +384,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
       const msgs = response.messages || [];
       return msgs.map(m => ({ id: m.id, from: m.from, content: m.body, channel: m.channel, thread: m.thread }));
     },
-    async listAgents(opts = {}) {
+    async listAgents(opts: { include_idle?: boolean; project?: string } = {}) {
       const payload: ListAgentsPayload = {
         includeIdle: opts.include_idle,
         project: opts.project,
@@ -390,7 +392,16 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
       const response = await request<{ agents: Array<{ name: string; cli?: string; idle?: boolean; parent?: string }> }>('LIST_AGENTS', payload);
       return response.agents || [];
     },
-    async getHealth(opts = {}) {
+    async listConnectedAgents(opts: { project?: string } = {}) {
+      const payload = { project: opts.project };
+      const response = await request<{ agents: Array<{ name: string; cli?: string; idle?: boolean; parent?: string }> }>('LIST_CONNECTED_AGENTS', payload);
+      return response.agents || [];
+    },
+    async removeAgent(name: string, opts: { removeMessages?: boolean } = {}) {
+      const payload = { name, removeMessages: opts.removeMessages };
+      return request<{ success: boolean; removed: boolean; message?: string }>('REMOVE_AGENT', payload);
+    },
+    async getHealth(opts: { include_crashes?: boolean; include_alerts?: boolean } = {}) {
       const payload: HealthPayload = {
         includeCrashes: opts.include_crashes,
         includeAlerts: opts.include_alerts,

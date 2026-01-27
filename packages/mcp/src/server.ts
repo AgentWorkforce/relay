@@ -40,6 +40,12 @@ import {
   relayContinuityTool,
   relayContinuitySchema,
   handleRelayContinuity,
+  relayConnectedTool,
+  relayConnectedSchema,
+  handleRelayConnected,
+  relayRemoveAgentTool,
+  relayRemoveAgentSchema,
+  handleRelayRemoveAgent,
 } from './tools/index.js';
 import { protocolPrompt, getProtocolPrompt } from './prompts/index.js';
 import {
@@ -58,8 +64,10 @@ const TOOLS = [
   relaySendTool,
   relayInboxTool,
   relayWhoTool,
+  relayConnectedTool,
   relaySpawnTool,
   relayReleaseTool,
+  relayRemoveAgentTool,
   relayStatusTool,
   relayLogsTool,
   relayMetricsTool,
@@ -137,6 +145,12 @@ export function createMCPServer(client: RelayClient, config?: MCPServerConfig): 
           break;
         }
 
+        case 'relay_connected': {
+          const input = relayConnectedSchema.parse(args);
+          result = await handleRelayConnected(client, input);
+          break;
+        }
+
         case 'relay_spawn': {
           const input = relaySpawnSchema.parse(args);
           result = await handleRelaySpawn(client, input);
@@ -146,6 +160,12 @@ export function createMCPServer(client: RelayClient, config?: MCPServerConfig): 
         case 'relay_release': {
           const input = relayReleaseSchema.parse(args);
           result = await handleRelayRelease(client, input);
+          break;
+        }
+
+        case 'relay_remove_agent': {
+          const input = relayRemoveAgentSchema.parse(args);
+          result = await handleRelayRemoveAgent(client, input);
           break;
         }
 
