@@ -43,9 +43,9 @@ const RELAY_DASHBOARD_REPO = 'https://github.com/AgentWorkforce/relay-dashboard'
 
 /**
  * Prompt user to choose how to handle missing dashboard package.
- * Returns: 'install' | 'skip'
+ * Returns: 'npx' | 'install' | 'skip'
  */
-async function promptDashboardInstall(): Promise<'install' | 'skip'> {
+async function promptDashboardInstall(): Promise<'npx' | 'install' | 'skip'> {
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -55,15 +55,18 @@ async function promptDashboardInstall(): Promise<'install' | 'skip'> {
 The web dashboard requires @agent-relay/dashboard-server package.
 
 How would you like to proceed?
-  1. View installation instructions
-  2. Skip and continue without dashboard
+  1. Start with npx (recommended - auto-installs temporarily)
+  2. View installation instructions
+  3. Skip and continue without dashboard
 `);
 
   return new Promise((resolve) => {
-    rl.question('Choose [1/2]: ', (answer) => {
+    rl.question('Choose [1/2/3]: ', (answer) => {
       rl.close();
       const choice = answer.trim();
       if (choice === '1') {
+        resolve('npx');
+      } else if (choice === '2') {
         resolve('install');
       } else {
         resolve('skip');
@@ -87,6 +90,65 @@ Then restart with:
 
 For more options, see: ${RELAY_DASHBOARD_REPO}
 `);
+}
+
+/**
+ * Start dashboard via npx (downloads and runs if not installed).
+ * Returns the spawned child process and port.
+ */
+function startDashboardViaNpx(options: {
+  port: number;
+  dataDir: string;
+  teamDir: string;
+  projectRoot: string;
+}): { process: ReturnType<typeof spawnProcess>; port: number } {
+  console.log('Starting dashboard via npx (this may take a moment on first run)...');
+
+  const dashboardProcess = spawnProcess('npx', [
+    '--yes',
+    '@agent-relay/dashboard-server',
+    '--integrated',
+    '--port', String(options.port),
+    '--data-dir', options.dataDir,
+    '--team-dir', options.teamDir,
+    '--project-root', options.projectRoot,
+  ], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      // Pass any additional env vars needed
+    },
+  });
+
+  // Forward dashboard output with prefix
+  dashboardProcess.stdout?.on('data', (data: Buffer) => {
+    const lines = data.toString().split('\n').filter(Boolean);
+    for (const line of lines) {
+      // Don't duplicate the "Dashboard:" line
+      if (!line.includes('Dashboard:')) {
+        console.log(`[dashboard] ${line}`);
+      }
+    }
+  });
+
+  dashboardProcess.stderr?.on('data', (data: Buffer) => {
+    const lines = data.toString().split('\n').filter(Boolean);
+    for (const line of lines) {
+      console.error(`[dashboard] ${line}`);
+    }
+  });
+
+  dashboardProcess.on('error', (err) => {
+    console.error('Failed to start dashboard via npx:', err.message);
+  });
+
+  dashboardProcess.on('exit', (code) => {
+    if (code !== 0 && code !== null) {
+      console.error(`Dashboard process exited with code ${code}`);
+    }
+  });
+
+  return { process: dashboardProcess, port: options.port };
 }
 
 dotenvConfig();
@@ -596,14 +658,56 @@ program
               if (process.stdin.isTTY) {
                 console.log('');
                 const action = await promptDashboardInstall();
-                if (action === 'install') {
+                if (action === 'npx') {
+                  // Start dashboard via npx
+                  const { process: dashboardProcess, port: npxPort } = startDashboardViaNpx({
+                    port,
+                    dataDir: paths.dataDir,
+                    teamDir: paths.teamDir,
+                    projectRoot: paths.projectRoot,
+                  });
+                  dashboardPort = npxPort;
+
+                  // Clean up dashboard process on exit
+                  const cleanupDashboard = () => {
+                    if (dashboardProcess && !dashboardProcess.killed) {
+                      dashboardProcess.kill('SIGTERM');
+                    }
+                  };
+                  process.on('SIGINT', cleanupDashboard);
+                  process.on('SIGTERM', cleanupDashboard);
+                  process.on('exit', cleanupDashboard);
+
+                  // Wait a moment for dashboard to start
+                  await new Promise(resolve => setTimeout(resolve, 2000));
+                  console.log(`Dashboard: http://localhost:${dashboardPort}`);
+                } else if (action === 'install') {
                   showDashboardInstallInstructions();
                 }
               } else {
-                // Non-interactive: just show instructions and exit with error
-                console.error('Dashboard package not installed.');
-                showDashboardInstallInstructions();
-                process.exit(1);
+                // Non-interactive: try npx automatically
+                console.log('Dashboard package not installed. Starting via npx...');
+                const { process: dashboardProcess, port: npxPort } = startDashboardViaNpx({
+                  port,
+                  dataDir: paths.dataDir,
+                  teamDir: paths.teamDir,
+                  projectRoot: paths.projectRoot,
+                });
+                dashboardPort = npxPort;
+
+                // Clean up dashboard process on exit
+                const cleanupDashboard = () => {
+                  if (dashboardProcess && !dashboardProcess.killed) {
+                    dashboardProcess.kill('SIGTERM');
+                  }
+                };
+                process.on('SIGINT', cleanupDashboard);
+                process.on('SIGTERM', cleanupDashboard);
+                process.on('exit', cleanupDashboard);
+
+                // Wait a moment for dashboard to start
+                await new Promise(resolve => setTimeout(resolve, 3000));
+                console.log(`Dashboard: http://localhost:${dashboardPort}`);
               }
             }
             // Silent if user didn't explicitly request dashboard
