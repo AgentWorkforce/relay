@@ -252,7 +252,6 @@ jobs:
           - wrapper
           - sdk
           - daemon
-          - cloud
           - telemetry
 
     steps:

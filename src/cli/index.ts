@@ -52,10 +52,10 @@ async function promptDashboardInstall(): Promise<'install' | 'skip'> {
   });
 
   console.log(`
-The web dashboard is now an external package.
+The web dashboard requires @agent-relay/dashboard-server package.
 
 How would you like to proceed?
-  1. View installation instructions for relay-dashboard
+  1. View installation instructions
   2. Skip and continue without dashboard
 `);
 
@@ -73,23 +73,19 @@ How would you like to proceed?
 }
 
 /**
- * Show instructions for installing the external relay-dashboard package.
+ * Show instructions for installing the external dashboard package.
  */
 function showDashboardInstallInstructions(): void {
   console.log(`
-To install the relay-dashboard, visit:
+To install the dashboard, run:
 
-  ${RELAY_DASHBOARD_REPO}
+  npm install @agent-relay/dashboard-server @agent-relay/dashboard
 
-Install via npm:
+Then restart with:
 
-  npm install -g relay-dashboard
+  agent-relay up --dashboard
 
-Then start the dashboard alongside the daemon:
-
-  relay-dashboard --port 3888
-
-See the repository README for full configuration options.
+For more options, see: ${RELAY_DASHBOARD_REPO}
 `);
 }
 
@@ -548,7 +544,74 @@ program
       await daemon.start();
       console.log('Daemon started.');
 
-      const dashboardPort: number | undefined = undefined;
+      let dashboardPort: number | undefined = undefined;
+
+      // Try to start dashboard if --dashboard flag is set OR if package is available (auto-detect)
+      // --no-dashboard explicitly disables dashboard
+      const wantsDashboard = options.dashboard !== false;
+      const dashboardRequested = options.dashboard === true;
+
+      if (wantsDashboard) {
+        const port = parseInt(options.port, 10);
+        try {
+          // Dynamic import - works with both local packages and npm installed
+          // Use string variable to prevent TypeScript from requiring the module at compile time
+          const moduleName = '@agent-relay/dashboard-server';
+          const dashboardServer = await import(/* webpackIgnore: true */ moduleName) as {
+            startDashboard: (opts: {
+              port: number;
+              dataDir: string;
+              teamDir: string;
+              projectRoot: string;
+              enableSpawner?: boolean;
+              onMarkSpawning?: (name: string) => void;
+              onClearSpawning?: (name: string) => void;
+            }) => Promise<number>;
+          };
+          const { startDashboard } = dashboardServer;
+          dashboardPort = await startDashboard({
+            port,
+            dataDir: paths.dataDir,
+            teamDir: paths.teamDir,
+            projectRoot: paths.projectRoot,
+            enableSpawner: true,
+            onMarkSpawning: (name: string) => daemon.markSpawning(name),
+            onClearSpawning: (name: string) => daemon.clearSpawning(name),
+          });
+          console.log(`Dashboard: http://localhost:${dashboardPort}`);
+
+          // Hook daemon log output to dashboard WebSocket broadcast
+          daemon.onLogOutput = (agentName: string, data: string) => {
+            const broadcast = (global as any).__broadcastLogOutput;
+            if (broadcast) {
+              broadcast(agentName, data);
+            }
+          };
+        } catch (err: any) {
+          if (err.code === 'ERR_MODULE_NOT_FOUND' || err.code === 'MODULE_NOT_FOUND') {
+            // Dashboard package not installed
+            if (dashboardRequested) {
+              // User explicitly asked for dashboard but it's not installed
+              // Only prompt interactively if stdin is a TTY (not in Docker/CI)
+              if (process.stdin.isTTY) {
+                console.log('');
+                const action = await promptDashboardInstall();
+                if (action === 'install') {
+                  showDashboardInstallInstructions();
+                }
+              } else {
+                // Non-interactive: just show instructions and exit with error
+                console.error('Dashboard package not installed.');
+                showDashboardInstallInstructions();
+                process.exit(1);
+              }
+            }
+            // Silent if user didn't explicitly request dashboard
+          } else {
+            console.error('Failed to start dashboard:', err.message);
+          }
+        }
+      }
 
       // Determine if we should auto-spawn agents
       // --spawn: force spawn
