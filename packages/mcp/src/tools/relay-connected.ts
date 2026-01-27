@@ -33,9 +33,6 @@ Example output:
 /**
  * List only currently connected agents (not historical/registered).
  */
-/**
- * List only currently connected agents (not historical/registered).
- */
 export async function handleRelayConnected(
   client: RelayClient,
   input: RelayConnectedInput

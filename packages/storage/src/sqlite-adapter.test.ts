@@ -453,4 +453,89 @@ describe('SqliteStorageAdapter', () => {
       expect(stats.oldestMessageTs).toBeUndefined();
     });
   });
+
+  describe('removeAgent', () => {
+    it('removes agent from sessions table', async () => {
+      // Create a session via startSession
+      await adapter.startSession({
+        id: 'session-1',
+        agentName: 'TestAgent',
+        startedAt: new Date().toISOString(),
+      });
+
+      // Verify session exists
+      let sessions = await adapter.getSessions({});
+      expect(sessions.some(s => s.agentName === 'TestAgent')).toBe(true);
+
+      // Remove the agent
+      await adapter.removeAgent('TestAgent');
+
+      // Verify session is gone
+      sessions = await adapter.getSessions({});
+      expect(sessions.some(s => s.agentName === 'TestAgent')).toBe(false);
+    });
+
+    it('does not throw when removing non-existent agent', async () => {
+      await expect(adapter.removeAgent('NonExistent')).resolves.not.toThrow();
+    });
+
+    it('only removes specified agent, not others', async () => {
+      await adapter.startSession({
+        id: 'session-1',
+        agentName: 'Agent1',
+        startedAt: new Date().toISOString(),
+      });
+      await adapter.startSession({
+        id: 'session-2',
+        agentName: 'Agent2',
+        startedAt: new Date().toISOString(),
+      });
+
+      await adapter.removeAgent('Agent1');
+
+      const sessions = await adapter.getSessions({});
+      expect(sessions.some(s => s.agentName === 'Agent1')).toBe(false);
+      expect(sessions.some(s => s.agentName === 'Agent2')).toBe(true);
+    });
+  });
+
+  describe('removeMessagesForAgent', () => {
+    it('removes messages sent by agent', async () => {
+      await adapter.saveMessage(makeMessage({ id: 'msg-1', from: 'TestAgent', to: 'Other' }));
+      await adapter.saveMessage(makeMessage({ id: 'msg-2', from: 'Other', to: 'Someone' }));
+
+      await adapter.removeMessagesForAgent('TestAgent');
+
+      const messages = await adapter.getMessages({});
+      expect(messages).toHaveLength(1);
+      expect(messages[0].id).toBe('msg-2');
+    });
+
+    it('removes messages sent to agent', async () => {
+      await adapter.saveMessage(makeMessage({ id: 'msg-1', from: 'Other', to: 'TestAgent' }));
+      await adapter.saveMessage(makeMessage({ id: 'msg-2', from: 'Other', to: 'Someone' }));
+
+      await adapter.removeMessagesForAgent('TestAgent');
+
+      const messages = await adapter.getMessages({});
+      expect(messages).toHaveLength(1);
+      expect(messages[0].id).toBe('msg-2');
+    });
+
+    it('removes messages both from and to agent', async () => {
+      await adapter.saveMessage(makeMessage({ id: 'msg-1', from: 'TestAgent', to: 'Other' }));
+      await adapter.saveMessage(makeMessage({ id: 'msg-2', from: 'Other', to: 'TestAgent' }));
+      await adapter.saveMessage(makeMessage({ id: 'msg-3', from: 'Other', to: 'Someone' }));
+
+      await adapter.removeMessagesForAgent('TestAgent');
+
+      const messages = await adapter.getMessages({});
+      expect(messages).toHaveLength(1);
+      expect(messages[0].id).toBe('msg-3');
+    });
+
+    it('does not throw when no messages exist', async () => {
+      await expect(adapter.removeMessagesForAgent('NonExistent')).resolves.not.toThrow();
+    });
+  });
 });

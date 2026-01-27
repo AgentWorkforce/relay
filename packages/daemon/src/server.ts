@@ -1380,7 +1380,8 @@ export class Daemon {
               name,
               cli: registryAgent?.cli,
               idle: false, // Connected agents are not idle
-              parent: registryAgent?.task?.includes('spawned by') ? 'parent' : undefined,
+              // TODO: Add proper parent tracking via spawner relationship
+              parent: undefined,
             };
           });
 
@@ -1423,7 +1424,8 @@ export class Daemon {
               name,
               cli: registryAgent?.cli,
               idle: false,
-              parent: registryAgent?.task?.includes('spawned by') ? 'parent' : undefined,
+              // TODO: Add proper parent tracking via spawner relationship
+              parent: undefined,
             };
           });
 
@@ -1441,6 +1443,31 @@ export class Daemon {
       case 'REMOVE_AGENT': {
         const removePayload = envelope.payload as RemoveAgentPayload;
         const agentName = removePayload.name;
+
+        // Validate agent name
+        if (!agentName || typeof agentName !== 'string' || agentName.length === 0) {
+          const errorResponse: Envelope<RemoveAgentResponsePayload> = {
+            v: PROTOCOL_VERSION,
+            type: 'REMOVE_AGENT_RESPONSE',
+            id: envelope.id,
+            ts: Date.now(),
+            payload: { success: false, removed: false, message: 'Invalid agent name: name is required' },
+          };
+          connection.send(errorResponse);
+          break;
+        }
+
+        if (agentName.length > 128) {
+          const errorResponse: Envelope<RemoveAgentResponsePayload> = {
+            v: PROTOCOL_VERSION,
+            type: 'REMOVE_AGENT_RESPONSE',
+            id: envelope.id,
+            ts: Date.now(),
+            payload: { success: false, removed: false, message: 'Invalid agent name: exceeds 128 characters' },
+          };
+          connection.send(errorResponse);
+          break;
+        }
 
         const doRemove = async (): Promise<{ removed: boolean; message: string }> => {
           let removed = false;

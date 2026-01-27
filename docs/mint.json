@@ -55,8 +55,7 @@
         "guides/multi-project",
         "guides/worker-orchestration",
         "guides/session-continuity",
-        "guides/custom-agents",
-        "guides/cli-testing"
+        "guides/custom-agents"
       ]
     },
     {
