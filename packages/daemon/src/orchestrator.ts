@@ -1142,6 +1142,9 @@ export class Orchestrator extends EventEmitter {
       crashType: 'heartbeat_failure',
     });
 
+    // Remove the stale agent from the router so connected-agents.json is accurate
+    workspace?.daemon?.removeStaleAgent(health.agentName);
+
     logger.error('Agent crashed', {
       workspaceId: health.workspaceId,
       agentName: health.agentName,

@@ -249,6 +249,20 @@ export class Daemon {
   }
 
   /**
+   * Remove a stale agent from the router (used when process dies without clean disconnect).
+   * This is called by the orchestrator's health monitoring when a PID is detected as dead.
+   */
+  removeStaleAgent(agentName: string): boolean {
+    const removed = this.router.forceRemoveAgent(agentName);
+    if (removed) {
+      // Update connected-agents.json to reflect the removal
+      this.writeConnectedAgentsFile();
+      log.info('Removed stale agent from router', { agentName });
+    }
+    return removed;
+  }
+
+  /**
    * Initialize storage adapter (called during start).
    */
   private async initStorage(): Promise<void> {
