@@ -85,7 +85,10 @@ impl SocketServer {
                 // Socket doesn't exist - this is fine
             }
             Err(e) => {
-                warn!("Failed to remove existing socket (will try bind anyway): {}", e);
+                    warn!(
+                    "Failed to remove existing socket (will try bind anyway): {}",
+                    e
+                );
             }
         }
 
@@ -95,11 +98,16 @@ impl SocketServer {
             Ok(l) => l,
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
                 // Another process may have the socket - try removing again and retry
-                warn!("Socket address in use, attempting cleanup and retry: {}", self.socket_path);
+                warn!(
+                    "Socket address in use, attempting cleanup and retry: {}",
+                    self.socket_path
+                );
                 let _ = std::fs::remove_file(path);
                 std::thread::sleep(std::time::Duration::from_millis(100));
-                UnixListener::bind(&self.socket_path)
-                    .context(format!("Failed to bind socket at {} (after retry)", self.socket_path))?
+                UnixListener::bind(&self.socket_path).context(format!(
+                    "Failed to bind socket at {} (after retry)",
+                    self.socket_path
+                ))?
             }
             Err(e) => {
                 return Err(e).context(format!("Failed to bind socket at {}", self.socket_path));
