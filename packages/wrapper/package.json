@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/wrapper",
-  "version": "2.0.20",
+  "version": "2.0.21",
   "description": "CLI agent wrappers for Agent Relay - tmux, pty integration",
   "type": "module",
   "main": "dist/index.js",
@@ -30,11 +30,11 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@agent-relay/api-types": "2.0.20",
-    "@agent-relay/protocol": "2.0.20",
-    "@agent-relay/config": "2.0.20",
-    "@agent-relay/continuity": "2.0.20",
-    "@agent-relay/resiliency": "2.0.20"
+    "@agent-relay/api-types": "2.0.21",
+    "@agent-relay/protocol": "2.0.21",
+    "@agent-relay/config": "2.0.21",
+    "@agent-relay/continuity": "2.0.21",
+    "@agent-relay/resiliency": "2.0.21"
   },
   "devDependencies": {
     "typescript": "^5.9.3",
