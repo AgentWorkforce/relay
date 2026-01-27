@@ -3,11 +3,11 @@
  * Agent Relay CLI
  *
  * Commands:
- *   relay claude                   - Start daemon + Dashboard coordinator with Claude
- *   relay codex                    - Start daemon + Dasbboard coordinator with Codex
+ *   relay claude                   - Start daemon with Claude coordinator
+ *   relay codex                    - Start daemon with Codex coordinator
  *   relay create-agent <cmd>       - Wrap agent with real-time messaging
  *   relay create-agent -n Name cmd - Wrap with specific agent name
- *   relay up                       - Start daemon + dashboard
+ *   relay up                       - Start daemon
  *   relay read <id>                - Read full message by ID
  *   relay agents                   - List connected agents
  *   relay who                      - Show currently active agents
@@ -34,9 +34,64 @@ import {
 import { installMcpConfig } from '@agent-relay/mcp';
 import fs from 'node:fs';
 import path from 'node:path';
+import readline from 'node:readline';
 import { promisify } from 'node:util';
 import { exec, spawn as spawnProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+
+const RELAY_DASHBOARD_REPO = 'https://github.com/AgentWorkforce/relay-dashboard';
+
+/**
+ * Prompt user to choose how to handle missing dashboard package.
+ * Returns: 'install' | 'skip'
+ */
+async function promptDashboardInstall(): Promise<'install' | 'skip'> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  console.log(`
+The web dashboard is now an external package.
+
+How would you like to proceed?
+  1. View installation instructions for relay-dashboard
+  2. Skip and continue without dashboard
+`);
+
+  return new Promise((resolve) => {
+    rl.question('Choose [1/2]: ', (answer) => {
+      rl.close();
+      const choice = answer.trim();
+      if (choice === '1') {
+        resolve('install');
+      } else {
+        resolve('skip');
+      }
+    });
+  });
+}
+
+/**
+ * Show instructions for installing the external relay-dashboard package.
+ */
+function showDashboardInstallInstructions(): void {
+  console.log(`
+To install the relay-dashboard, visit:
+
+  ${RELAY_DASHBOARD_REPO}
+
+Install via npm:
+
+  npm install -g relay-dashboard
+
+Then start the dashboard alongside the daemon:
+
+  relay-dashboard --port 3888
+
+See the repository README for full configuration options.
+`);
+}
 
 dotenvConfig();
 
