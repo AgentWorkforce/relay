@@ -122,7 +122,8 @@ jobs:
       # Test 2: npx execution
       - name: "Test: npx --version"
         run: |
-          VERSION=$(npx -y ${{ steps.pkg.outputs.spec }} --version)
+          # Use --package flag for explicit package specification
+          VERSION=$(npx --yes --package=${{ steps.pkg.outputs.spec }} agent-relay --version)
           echo "npx version output: $VERSION"
           if echo "$VERSION" | grep -qE '[0-9]+\.[0-9]+\.[0-9]+'; then
             echo "npx version check passed"
@@ -131,11 +132,11 @@ jobs:
           fi
 
       - name: "Test: npx --help"
-        run: npx -y ${{ steps.pkg.outputs.spec }} --help | head -20
+        run: npx --yes --package=${{ steps.pkg.outputs.spec }} agent-relay --help | head -20
 
       - name: "Test: npx version command"
         run: |
-          OUTPUT=$(npx -y ${{ steps.pkg.outputs.spec }} version)
+          OUTPUT=$(npx --yes --package=${{ steps.pkg.outputs.spec }} agent-relay version)
           echo "$OUTPUT"
           if echo "$OUTPUT" | grep -qE '[0-9]+\.[0-9]+\.[0-9]+'; then
             echo "npx version command check passed"

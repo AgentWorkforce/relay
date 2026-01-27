@@ -47,11 +47,19 @@ log_info "npm version: $(npm --version)"
 log_info "Package to test: $PACKAGE_SPEC"
 log_info "User: $(whoami)"
 log_info "Working directory: $(pwd)"
+log_info "PATH: $PATH"
+log_info "NPM prefix: $(npm config get prefix)"
+log_info "NPM bin location: $(npm config get prefix)/bin"
 
 # ============================================
 # Test 1: Global npm install
 # ============================================
 log_header "Test 1: Global npm install"
+
+# Ensure npm global bin is in PATH
+NPM_BIN="$(npm config get prefix)/bin"
+export PATH="$NPM_BIN:$PATH"
+log_info "Updated PATH to include: $NPM_BIN"
 
 # Clean any previous installation
 log_info "Cleaning previous global installation..."
@@ -63,6 +71,17 @@ if npm install -g "$PACKAGE_SPEC" 2>&1; then
     record_pass "Global npm install succeeded"
 else
     record_fail "Global npm install failed"
+fi
+
+# Verify the binary exists
+log_info "Checking if agent-relay binary exists..."
+if [ -f "$NPM_BIN/agent-relay" ]; then
+    log_info "Binary found at: $NPM_BIN/agent-relay"
+    ls -la "$NPM_BIN/agent-relay"
+else
+    log_warn "Binary not found at expected location: $NPM_BIN/agent-relay"
+    log_info "Contents of $NPM_BIN:"
+    ls -la "$NPM_BIN" 2>/dev/null || echo "Directory does not exist"
 fi
 
 # Test --version flag
