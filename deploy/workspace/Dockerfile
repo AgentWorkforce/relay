@@ -38,8 +38,6 @@ COPY packages/sdk/package*.json ./packages/sdk/
 COPY packages/api-types/package*.json ./packages/api-types/
 COPY packages/spawner/package*.json ./packages/spawner/
 COPY packages/mcp/package*.json ./packages/mcp/
-COPY packages/dashboard/package*.json ./packages/dashboard/
-COPY packages/dashboard-server/package*.json ./packages/dashboard-server/
 
 # Install ALL dependencies (need devDependencies for build)
 ENV CI=true

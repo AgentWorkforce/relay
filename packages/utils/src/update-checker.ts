@@ -193,6 +193,11 @@ export function printUpdateNotification(info: UpdateInfo): void {
  * This is non-blocking and errors are silently ignored.
  */
 export function checkForUpdatesInBackground(currentVersion: string): void {
+  // Skip update check in test environments
+  if (process.env.AGENT_RELAY_SKIP_UPDATE_CHECK === '1') {
+    return;
+  }
+
   // Run async check without awaiting
   checkForUpdates(currentVersion)
     .then(info => {

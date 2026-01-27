@@ -3,11 +3,11 @@
  * Agent Relay CLI
  *
  * Commands:
- *   relay claude                   - Start daemon + Dashboard coordinator with Claude
- *   relay codex                    - Start daemon + Dasbboard coordinator with Codex
+ *   relay claude                   - Start daemon with Claude coordinator
+ *   relay codex                    - Start daemon with Codex coordinator
  *   relay create-agent <cmd>       - Wrap agent with real-time messaging
  *   relay create-agent -n Name cmd - Wrap with specific agent name
- *   relay up                       - Start daemon + dashboard
+ *   relay up                       - Start daemon
  *   relay read <id>                - Read full message by ID
  *   relay agents                   - List connected agents
  *   relay who                      - Show currently active agents
@@ -39,8 +39,10 @@ import { promisify } from 'node:util';
 import { exec, spawn as spawnProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+const RELAY_DASHBOARD_REPO = 'https://github.com/AgentWorkforce/relay-dashboard';
+
 /**
- * Prompt user to choose how to handle missing dashboard package
+ * Prompt user to choose how to handle missing dashboard package.
  * Returns: 'install' | 'skip'
  */
 async function promptDashboardInstall(): Promise<'install' | 'skip'> {
@@ -50,11 +52,11 @@ async function promptDashboardInstall(): Promise<'install' | 'skip'> {
   });
 
   console.log(`
-Dashboard package not installed.
+The web dashboard is now an external package.
 
 How would you like to proceed?
-  1. Install now (npm install -g @agent-relay/dashboard)
-  2. Continue without dashboard
+  1. View installation instructions for relay-dashboard
+  2. Skip and continue without dashboard
 `);
 
   return new Promise((resolve) => {
@@ -71,28 +73,24 @@ How would you like to proceed?
 }
 
 /**
- * Install dashboard package globally
+ * Show instructions for installing the external relay-dashboard package.
  */
-async function installDashboardGlobally(): Promise<boolean> {
-  console.log('\nInstalling @agent-relay/dashboard globally...\n');
-  return new Promise((resolve) => {
-    const proc = spawnProcess('npm', ['install', '-g', '@agent-relay/dashboard'], {
-      stdio: 'inherit',
-    });
-    proc.on('close', (code) => {
-      if (code === 0) {
-        console.log('\n✓ Dashboard installed successfully.\n');
-        resolve(true);
-      } else {
-        console.error('\n✗ Installation failed. Try running manually:\n  npm install -g @agent-relay/dashboard\n');
-        resolve(false);
-      }
-    });
-    proc.on('error', () => {
-      console.error('\n✗ Installation failed. Try running manually:\n  npm install -g @agent-relay/dashboard\n');
-      resolve(false);
-    });
-  });
+function showDashboardInstallInstructions(): void {
+  console.log(`
+To install the relay-dashboard, visit:
+
+  ${RELAY_DASHBOARD_REPO}
+
+Install via npm:
+
+  npm install -g relay-dashboard
+
+Then start the dashboard alongside the daemon:
+
+  relay-dashboard --port 3888
+
+See the repository README for full configuration options.
+`);
 }
 
 dotenvConfig();
@@ -550,76 +548,7 @@ program
       await daemon.start();
       console.log('Daemon started.');
 
-      let dashboardPort: number | undefined;
-
-      // Dashboard is disabled by default (use --dashboard to enable)
-      // Dashboard is an optional separate package: @agent-relay/dashboard
-      if (options.dashboard === true) {
-        const port = parseInt(options.port, 10);
-        try {
-          const { startDashboard } = await import('@agent-relay/dashboard');
-          dashboardPort = await startDashboard({
-            port,
-            dataDir: paths.dataDir,
-            teamDir: paths.teamDir,
-            dbPath,
-            enableSpawner: true,
-            projectRoot: paths.projectRoot,
-            // Pass spawn tracking callbacks so messages can be queued before HELLO completes
-            onMarkSpawning: (name: string) => daemon.markSpawning(name),
-            onClearSpawning: (name: string) => daemon.clearSpawning(name),
-          });
-          console.log(`Dashboard: http://localhost:${dashboardPort}`);
-
-          // Hook daemon log output to dashboard WebSocket
-          daemon.onLogOutput = (agentName, data, _timestamp) => {
-            const broadcast = (global as any).__broadcastLogOutput;
-            if (broadcast) {
-              broadcast(agentName, data);
-            }
-          };
-        } catch (err: unknown) {
-          const error = err as NodeJS.ErrnoException;
-          if (error.code === 'ERR_MODULE_NOT_FOUND' || error.code === 'MODULE_NOT_FOUND') {
-            // Interactive prompt for dashboard installation
-            const choice = await promptDashboardInstall();
-
-            if (choice === 'install') {
-              const installed = await installDashboardGlobally();
-              if (installed) {
-                // Retry import after installation
-                try {
-                  const { startDashboard } = await import('@agent-relay/dashboard');
-                  dashboardPort = await startDashboard({
-                    port,
-                    dataDir: paths.dataDir,
-                    teamDir: paths.teamDir,
-                    dbPath,
-                    enableSpawner: true,
-                    projectRoot: paths.projectRoot,
-                    onMarkSpawning: (name: string) => daemon.markSpawning(name),
-                    onClearSpawning: (name: string) => daemon.clearSpawning(name),
-                  });
-                  console.log(`Dashboard: http://localhost:${dashboardPort}`);
-
-                  daemon.onLogOutput = (agentName, data, _timestamp) => {
-                    const broadcast = (global as any).__broadcastLogOutput;
-                    if (broadcast) {
-                      broadcast(agentName, data);
-                    }
-                  };
-                } catch {
-                  console.error('Dashboard still not found after installation. Continuing without dashboard.');
-                }
-              }
-            } else {
-              console.log('\nContinuing without dashboard...\n');
-            }
-          } else {
-            throw err;
-          }
-        }
-      }
+      const dashboardPort: number | undefined = undefined;
 
       // Determine if we should auto-spawn agents
       // --spawn: force spawn
@@ -1740,6 +1669,11 @@ interface RelaySessionInfo {
 }
 
 async function discoverRelaySessions(): Promise<RelaySessionInfo[]> {
+  // Skip tmux discovery in test environments to avoid hangs
+  if (process.env.AGENT_RELAY_SKIP_TMUX === '1') {
+    return [];
+  }
+
   try {
     const tmuxPath = getTmuxPath();
     const { stdout } = await execAsync(`"${tmuxPath}" list-sessions -F "#{session_name}"`);

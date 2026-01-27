@@ -31,6 +31,7 @@ describe('Cloud Detection', () => {
     delete process.env.WORKSPACE_TOKEN;
     delete process.env.RELAY_SOCKET;
     delete process.env.RELAY_PROJECT;
+    delete process.env.WORKSPACE_OWNER_USER_ID;
   });
 
   afterEach(() => {

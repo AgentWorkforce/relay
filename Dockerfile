@@ -14,7 +14,6 @@ RUN apt-get update && apt-get install -y \
 
 # Copy package files and scripts needed for postinstall
 COPY package*.json ./
-COPY packages/dashboard/ui/package*.json ./packages/dashboard/ui/
 COPY scripts ./scripts/
 
 # Copy workspace package.json files (required for npm workspaces to install dependencies)
@@ -39,8 +38,6 @@ COPY packages/sdk/package*.json ./packages/sdk/
 COPY packages/api-types/package*.json ./packages/api-types/
 COPY packages/spawner/package*.json ./packages/spawner/
 COPY packages/mcp/package*.json ./packages/mcp/
-COPY packages/dashboard/package*.json ./packages/dashboard/
-COPY packages/dashboard-server/package*.json ./packages/dashboard-server/
 
 # Install dependencies (including workspace dependencies)
 RUN npm ci --include=dev
@@ -51,8 +48,8 @@ COPY . .
 # Build TypeScript
 RUN npm run build
 
-# Build dashboard
-RUN cd packages/dashboard/ui && npm ci && npm run build
+# Install dashboard from npm (for serving static files)
+RUN npm install @agent-relay/dashboard
 
 # Production image
 FROM node:20-slim AS runner
@@ -67,7 +64,6 @@ RUN apt-get update && apt-get install -y \
 # Copy built artifacts
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/packages ./packages
-COPY --from=builder /app/packages/dashboard/ui/out ./packages/dashboard/ui/out
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package*.json ./
 

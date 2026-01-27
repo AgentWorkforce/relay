@@ -47,14 +47,10 @@
       "@agent-relay/cloud/*": ["packages/cloud/dist/*"],
       "@agent-relay/daemon": ["packages/daemon/dist/index.d.ts"],
       "@agent-relay/daemon/*": ["packages/daemon/dist/*"],
-      "@agent-relay/dashboard-server": ["packages/dashboard-server/dist/index.d.ts"],
-      "@agent-relay/dashboard-server/*": ["packages/dashboard-server/dist/*"],
-      "@agent-relay/dashboard": ["packages/dashboard/dist/index.d.ts"],
-      "@agent-relay/dashboard/*": ["packages/dashboard/dist/*"],
       "@agent-relay/wrapper": ["packages/wrapper/dist/index.d.ts"],
       "@agent-relay/wrapper/*": ["packages/wrapper/dist/*"]
     }
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/dashboard/**/*", "src/landing/**/*", "packages/**/*"]
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "packages/**/*"]
 }

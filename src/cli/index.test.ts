@@ -1,18 +1,37 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
+import os from 'node:os';
+import fs from 'node:fs';
 
 const execAsync = promisify(exec);
 
 // Path to the compiled CLI
 const CLI_PATH = path.resolve(__dirname, '../../dist/src/cli/index.js');
 
+// Use a temp directory to isolate tests from any running daemon
+let testProjectRoot: string;
+
+beforeAll(() => {
+  testProjectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-cli-test-'));
+});
+
+afterAll(() => {
+  fs.rmSync(testProjectRoot, { recursive: true, force: true });
+});
+
 // Helper to run CLI commands
 async function runCli(args: string): Promise<{ stdout: string; stderr: string; code: number }> {
   try {
     const { stdout, stderr } = await execAsync(`node ${CLI_PATH} ${args}`, {
-      env: { ...process.env, DOTENV_CONFIG_QUIET: 'true' },
+      cwd: testProjectRoot, // Run in isolated temp directory
+      env: {
+        ...process.env,
+        DOTENV_CONFIG_QUIET: 'true',
+        AGENT_RELAY_SKIP_TMUX: '1', // Skip tmux discovery to avoid hangs in CI
+        AGENT_RELAY_SKIP_UPDATE_CHECK: '1', // Skip update check in tests
+      },
     });
     return { stdout, stderr, code: 0 };
   } catch (err: any) {
