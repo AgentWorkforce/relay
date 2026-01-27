@@ -20,11 +20,20 @@ RUN apt-get update && apt-get install -y \
 
 # Create test user (don't run as root)
 RUN useradd -m -s /bin/bash testuser
+
+# Create npm global directory owned by testuser
+RUN mkdir -p /home/testuser/.npm-global \
+    && chown -R testuser:testuser /home/testuser
+
 WORKDIR /home/testuser
 
 # Store package version for verification script
 ENV PACKAGE_VERSION=${PACKAGE_VERSION}
 ENV NODE_VERSION=${NODE_VERSION}
+
+# Configure npm to use user-owned global directory
+ENV NPM_CONFIG_PREFIX=/home/testuser/.npm-global
+ENV PATH=/home/testuser/.npm-global/bin:$PATH
 
 # Copy verification script
 COPY verify-install.sh /usr/local/bin/verify-install.sh
