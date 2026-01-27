@@ -6,7 +6,8 @@
 #   PACKAGE_VERSION: Version to install (default: latest)
 #   NODE_VERSION: Node version being tested (for logging)
 
-set -e
+# Don't use set -e so we can collect all test results
+# set -e
 
 # Colors for output
 RED='\033[0;31m'
@@ -67,10 +68,13 @@ npm uninstall -g agent-relay 2>/dev/null || true
 
 # Install globally
 log_info "Installing ${PACKAGE_SPEC} globally..."
-if npm install -g "$PACKAGE_SPEC" 2>&1; then
+npm install -g "$PACKAGE_SPEC"
+INSTALL_EXIT=$?
+log_info "npm install exit code: $INSTALL_EXIT"
+if [ $INSTALL_EXIT -eq 0 ]; then
     record_pass "Global npm install succeeded"
 else
-    record_fail "Global npm install failed"
+    record_fail "Global npm install failed with exit code $INSTALL_EXIT"
 fi
 
 # Verify the binary exists
