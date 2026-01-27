@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/utils",
-  "version": "2.0.21",
+  "version": "2.0.22",
   "description": "Shared utilities for agent-relay: logging, name generation, command resolution, update checking",
   "type": "module",
   "main": "dist/index.js",
