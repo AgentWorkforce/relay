@@ -71,5 +71,12 @@
   "footerSocials": {
     "github": "https://github.com/agentworkforce/relay",
     "twitter": "https://twitter.com/agent_relay"
+  },
+  "integrations": {
+    "posthog": {
+      "apiKey": "phc_2uDu01GtnLABJpVkWw4ri1OgScLU90aEmXmDjufGdqr",
+      "apiHost": "https://us.i.posthog.com",
+      "sessionRecording": false
+    }
   }
 }
