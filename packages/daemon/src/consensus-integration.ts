@@ -29,6 +29,7 @@
  */
 
 import { generateId } from '@agent-relay/wrapper';
+import type { VoteValue, ConsensusType } from '@agent-relay/protocol';
 import {
   ConsensusEngine,
   createConsensusEngine,
@@ -40,8 +41,6 @@ import {
   type Proposal,
   type ConsensusResult,
   type ConsensusConfig,
-  type VoteValue,
-  type ConsensusType,
   type ParsedProposalCommand,
 } from './consensus.js';
 import type { Router } from './router.js';

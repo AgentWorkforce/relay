@@ -56,6 +56,7 @@ import {
   type CompactionResult,
 } from '@agent-relay/memory';
 
+import type { VoteValue } from '@agent-relay/protocol';
 import {
   ConsensusEngine,
   createConsensusEngine,
@@ -65,7 +66,6 @@ import {
   type Proposal,
   type ConsensusResult,
   type ConsensusConfig,
-  type VoteValue,
 } from './consensus.js';
 
 // =============================================================================

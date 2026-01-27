@@ -21,25 +21,14 @@
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 
-// =============================================================================
-// Types
-// =============================================================================
-
-export type ConsensusType =
-  | 'majority'      // >50% agree
-  | 'supermajority' // >=threshold agree (default 2/3)
-  | 'unanimous'     // 100% agree
-  | 'weighted'      // Weighted by role
-  | 'quorum';       // Minimum participation + majority
-
-export type VoteValue = 'approve' | 'reject' | 'abstain';
-
-export type ProposalStatus =
-  | 'pending'       // Awaiting votes
-  | 'approved'      // Consensus reached (approved)
-  | 'rejected'      // Consensus reached (rejected)
-  | 'expired'       // Timeout without consensus
-  | 'cancelled';    // Proposer cancelled
+// Import shared types from protocol (canonical source)
+// NOTE: These types are NOT re-exported to avoid duplicate export errors
+// in the main agent-relay package. Import from @agent-relay/protocol instead.
+import type {
+  ConsensusType,
+  VoteValue,
+  ProposalStatus,
+} from '@agent-relay/protocol';
 
 export interface AgentWeight {
   /** Agent name */

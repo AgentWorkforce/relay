@@ -4,7 +4,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { InboxConfig, InboxMessage } from './types.js';
+import type { InboxConfig, ParsedInboxMessage } from './types.js';
 
 /** Default inbox directory */
 export const DEFAULT_INBOX_DIR = '/tmp/agent-relay';
@@ -73,13 +73,13 @@ export function countMessages(inboxPath: string): number {
 /**
  * Parse messages from inbox content
  */
-export function parseMessages(inboxPath: string): InboxMessage[] {
+export function parseMessages(inboxPath: string): ParsedInboxMessage[] {
   const content = readInbox(inboxPath);
   if (!content) {
     return [];
   }
 
-  const messages: InboxMessage[] = [];
+  const messages: ParsedInboxMessage[] = [];
   const messageBlocks = content.split(/(?=## Message from)/);
 
   for (const block of messageBlocks) {
@@ -97,7 +97,7 @@ export function parseMessages(inboxPath: string): InboxMessage[] {
 /**
  * Format a message for display
  */
-export function formatMessagePreview(msg: InboxMessage, maxLength: number = 50): string {
+export function formatMessagePreview(msg: ParsedInboxMessage, maxLength: number = 50): string {
   const preview = msg.body.length > maxLength
     ? msg.body.substring(0, maxLength) + '...'
     : msg.body;

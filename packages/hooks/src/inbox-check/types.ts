@@ -20,7 +20,12 @@ export interface HookOutput {
   reason?: string;
 }
 
-export interface InboxMessage {
+/**
+ * Parsed message from inbox file.
+ * Note: This is different from @agent-relay/protocol's InboxMessage
+ * which is for daemon communication.
+ */
+export interface ParsedInboxMessage {
   from: string;
   timestamp: string;
   body: string;
