@@ -1307,10 +1307,33 @@ export async function createServer(): Promise<CloudServer> {
   // Handles /workspaces/:id/members and /invites with requireAuth on all routes
   app.use('/api', teamsRouter);
 
-  // Serve static dashboard files (Next.js static export)
-  // Path: packages/cloud/dist/server.js -> ../../dashboard/ui/out
-  // In Docker: /app/packages/cloud/dist -> /app/packages/dashboard/ui/out
-  const dashboardPath = path.join(__dirname, '../../dashboard/ui/out');
+  // Serve static dashboard files from @agent-relay/dashboard npm package
+  // The npm package exports pre-built Next.js static files in its 'out' directory
+  const npmDashboardPaths = [
+    // When running from packages/cloud/dist/server.js
+    path.join(__dirname, '../../../node_modules/@agent-relay/dashboard/out'),
+    // When running from root node_modules (monorepo hoisting)
+    path.join(__dirname, '../../../../node_modules/@agent-relay/dashboard/out'),
+    // Docker deployment path
+    '/app/node_modules/@agent-relay/dashboard/out',
+  ];
+
+  // Find the first path that exists
+  let dashboardPath: string | null = null;
+  for (const npmPath of npmDashboardPaths) {
+    if (fs.existsSync(npmPath)) {
+      dashboardPath = npmPath;
+      console.log(`[cloud] Serving dashboard from: ${npmPath}`);
+      break;
+    }
+  }
+
+  if (!dashboardPath) {
+    console.error(`[cloud] Dashboard not found! Install @agent-relay/dashboard package.`);
+    console.error(`[cloud] Checked paths: ${npmDashboardPaths.join(', ')}`);
+    // Use first path as fallback (will 404 but won't crash)
+    dashboardPath = npmDashboardPaths[0];
+  }
 
   // Serve static files (JS, CSS, images, etc.)
   app.use(express.static(dashboardPath));

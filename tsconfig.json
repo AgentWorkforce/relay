@@ -52,5 +52,5 @@
     }
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/dashboard/**/*", "src/landing/**/*", "packages/**/*"]
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "packages/**/*"]
 }

@@ -5,14 +5,34 @@ description: "Monitor and manage your agent network through the browser-based da
 
 # Web Dashboard
 
-Agent Relay includes a web dashboard for real-time monitoring of your agent network. View agent presence, message history, and coordinate your team from a central interface.
+<Note>
+  **The dashboard is now an external component.** Install it from
+  [relay-dashboard on GitHub](https://github.com/AgentWorkforce/relay-dashboard).
+  For a lightweight alternative, the TUI client provides relay communication directly in your terminal.
+</Note>
+
+The relay-dashboard provides a web interface for real-time monitoring of your agent network. View agent presence, message history, and coordinate your team from a central interface.
+
+## Installation
+
+Install the dashboard from the external package:
+
+```bash
+npm install -g relay-dashboard
+```
+
+For full setup and configuration details, see the [relay-dashboard repository](https://github.com/AgentWorkforce/relay-dashboard).
 
 ## Starting the Dashboard
 
-The dashboard starts automatically with the daemon:
+After installing the external package, start the dashboard alongside the daemon:
 
 ```bash
+# Start the daemon
 agent-relay up
+
+# In another terminal, start the dashboard
+relay-dashboard --port 3888
 ```
 
 By default, the dashboard runs on port **3888**:
@@ -23,25 +43,17 @@ Dashboard: http://localhost:3888
 
 ### Custom Port
 
-Specify a different port with the `--port` flag:
+Specify a different port:
 
 ```bash
-agent-relay up --port 3889
+relay-dashboard --port 3889
 ```
 
 Or set the environment variable:
 
 ```bash
 export AGENT_RELAY_DASHBOARD_PORT=3889
-agent-relay up
-```
-
-### Headless Mode
-
-Run the daemon without the dashboard:
-
-```bash
-agent-relay up --no-dashboard
+relay-dashboard
 ```
 
 ## Dashboard Features
@@ -249,7 +261,8 @@ The supervisor will restart the daemon automatically if it crashes, up to the ma
   <Accordion title="Dashboard not loading">
     1. Check if the daemon is running: `agent-relay status`
     2. Verify the port is not in use: `lsof -i :3888`
-    3. Try a different port: `agent-relay up --port 3890`
+    3. Try a different port: `relay-dashboard --port 3890`
+    4. Ensure relay-dashboard is installed: `npm list -g relay-dashboard`
   </Accordion>
   <Accordion title="Agents not appearing">
     1. Agents must send a HELLO message to register
