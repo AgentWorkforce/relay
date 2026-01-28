@@ -41,6 +41,10 @@ jobs:
       - name: Checkout (for scripts)
         uses: actions/checkout@v4
 
+      - name: Pack local tarball (PR only)
+        if: github.event_name == 'pull_request'
+        run: npm pack
+
       - name: Setup Node.js ${{ matrix.node }}
         uses: actions/setup-node@v4
         with:
@@ -319,11 +323,15 @@ jobs:
       - name: Get package spec
         id: pkg
         run: |
-          VERSION="${{ inputs.version || 'latest' }}"
-          if [ "$VERSION" = "latest" ]; then
-            SPEC="agent-relay"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            SPEC="./$(ls agent-relay-*.tgz | head -1)"
           else
-            SPEC="agent-relay@${VERSION}"
+            VERSION="${{ inputs.version || 'latest' }}"
+            if [ "$VERSION" = "latest" ]; then
+              SPEC="agent-relay"
+            else
+              SPEC="agent-relay@${VERSION}"
+            fi
           fi
           echo "spec=$SPEC" >> $GITHUB_OUTPUT
           echo "Testing: $SPEC"
