@@ -41,6 +41,10 @@ jobs:
       - name: Checkout (for scripts)
         uses: actions/checkout@v4
 
+      - name: Install deps for pack (PR only)
+        if: github.event_name == 'pull_request'
+        run: npm ci --ignore-scripts
+
       - name: Pack local tarball (PR only)
         if: github.event_name == 'pull_request'
         run: npm pack
