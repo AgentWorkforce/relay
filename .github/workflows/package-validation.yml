@@ -59,6 +59,11 @@ jobs:
       - name: Build packages
         run: npm run build
 
+      - name: Audit bundled dependencies
+        run: |
+          echo "=== Auditing bundled package dependencies ==="
+          node scripts/audit-bundled-deps.mjs
+
       - name: Validate all
         run: |
           echo "=== Validating packages ==="
