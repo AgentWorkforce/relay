@@ -1041,6 +1041,10 @@ export class RelayPtyOrchestrator extends BaseWrapper {
               this.log(`Rust parsed [${parsed.kind}]: ${parsed.from} -> ${parsed.to}`);
             }
             this.handleRustParsedCommand(parsed);
+          } else if (parsed.type === 'continuity') {
+            // Handle continuity commands from relay-pty file-based protocol
+            this.log(`Rust parsed [continuity]: action=${parsed.action}`);
+            this.handleRustContinuityCommand(parsed);
           }
         } catch (e) {
           // Not JSON, just log (only in debug mode)
@@ -1101,6 +1105,77 @@ export class RelayPtyOrchestrator extends BaseWrapper {
           raw: parsed.raw,
         });
         break;
+    }
+  }
+
+  /**
+   * Handle continuity command from Rust relay-pty
+   *
+   * Maps from Rust ContinuityCommand format to TypeScript ContinuityCommand
+   * and forwards to the ContinuityManager.
+   *
+   * Rust format: { type: "continuity", action: string, content: string }
+   * TypeScript format: { type: 'save' | 'load' | 'uncertain', content?: string, item?: string }
+   */
+  private async handleRustContinuityCommand(parsed: {
+    type: string;
+    action: string;
+    content: string;
+  }): Promise<void> {
+    if (!this.continuity) {
+      this.log('Continuity not initialized, skipping continuity command');
+      return;
+    }
+
+    // Map Rust action to TypeScript ContinuityCommand type
+    const action = parsed.action.toLowerCase();
+    if (!['save', 'load', 'uncertain'].includes(action)) {
+      this.logError(`Unknown continuity action: ${parsed.action}`);
+      return;
+    }
+
+    // Build TypeScript ContinuityCommand
+    const command: { type: 'save' | 'load' | 'uncertain'; content?: string; item?: string } = {
+      type: action as 'save' | 'load' | 'uncertain',
+    };
+
+    if (action === 'save' && parsed.content) {
+      command.content = parsed.content;
+    } else if (action === 'uncertain' && parsed.content) {
+      command.item = parsed.content;
+    }
+
+    // Deduplication (same logic as base-wrapper)
+    const cmdHash = `${command.type}:${command.content || command.item || 'no-content'}`;
+    if (command.content && this.processedContinuityCommands.has(cmdHash)) {
+      this.log(`Continuity command already processed: ${cmdHash}`);
+      return;
+    }
+    this.processedContinuityCommands.add(cmdHash);
+
+    // Limit dedup set size
+    if (this.processedContinuityCommands.size > 100) {
+      const oldest = this.processedContinuityCommands.values().next().value;
+      if (oldest) this.processedContinuityCommands.delete(oldest);
+    }
+
+    try {
+      this.log(`Processing continuity command: ${command.type}`);
+      const response = await this.continuity.handleCommand(this.config.name, command);
+      if (response) {
+        // Queue response for injection (e.g., for 'load' command)
+        this.messageQueue.push({
+          from: 'system',
+          body: response,
+          messageId: `continuity-${Date.now()}`,
+          thread: 'continuity-response',
+        });
+        this.log(`Queued continuity response for injection`);
+      } else {
+        this.log(`Continuity command ${command.type} completed (no response)`);
+      }
+    } catch (err: any) {
+      this.logError(`Continuity command failed: ${err.message}`);
     }
   }
 

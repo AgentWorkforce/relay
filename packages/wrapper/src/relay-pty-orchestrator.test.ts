@@ -791,6 +791,172 @@ describe('RelayPtyOrchestrator', () => {
     });
   });
 
+  describe('continuity command handling', () => {
+    let mockContinuityManager: {
+      handleCommand: ReturnType<typeof vi.fn>;
+      getOrCreateLedger: ReturnType<typeof vi.fn>;
+      findLedgerByAgentId: ReturnType<typeof vi.fn>;
+    };
+
+    beforeEach(async () => {
+      // Create a mock continuity manager
+      mockContinuityManager = {
+        handleCommand: vi.fn().mockResolvedValue(null),
+        getOrCreateLedger: vi.fn().mockResolvedValue({ agentName: 'TestAgent', agentId: 'test-123' }),
+        findLedgerByAgentId: vi.fn().mockResolvedValue(null),
+      };
+
+      // Update the mock to return our manager
+      const { getContinuityManager } = await import('@agent-relay/continuity');
+      (getContinuityManager as any).mockReturnValue(mockContinuityManager);
+    });
+
+    it('handles continuity save command from stderr', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Simulate continuity JSON output from relay-pty stderr
+      const continuityJson = JSON.stringify({
+        type: 'continuity',
+        action: 'save',
+        content: 'Current task: Testing continuity\nCompleted: Setup'
+      });
+
+      mockProcess.stderr!.emit('data', Buffer.from(continuityJson + '\n'));
+
+      // Wait for async processing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Verify handleCommand was called with the mapped command
+      expect(mockContinuityManager.handleCommand).toHaveBeenCalledWith(
+        'TestAgent',
+        expect.objectContaining({
+          type: 'save',
+          content: 'Current task: Testing continuity\nCompleted: Setup'
+        })
+      );
+    });
+
+    it('handles continuity load command from stderr', async () => {
+      // Mock handleCommand to return a response for load
+      mockContinuityManager.handleCommand.mockResolvedValue('Previous context loaded');
+
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Simulate continuity load command
+      const continuityJson = JSON.stringify({
+        type: 'continuity',
+        action: 'load',
+        content: ''
+      });
+
+      mockProcess.stderr!.emit('data', Buffer.from(continuityJson + '\n'));
+
+      // Wait for async processing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Verify handleCommand was called
+      expect(mockContinuityManager.handleCommand).toHaveBeenCalledWith(
+        'TestAgent',
+        expect.objectContaining({
+          type: 'load'
+        })
+      );
+
+      // Verify response was queued for injection
+      const queue = (orchestrator as any).messageQueue;
+      expect(queue.length).toBeGreaterThan(0);
+      expect(queue.some((m: any) => m.body === 'Previous context loaded')).toBe(true);
+    });
+
+    it('handles continuity uncertain command from stderr', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Simulate continuity uncertain command
+      const continuityJson = JSON.stringify({
+        type: 'continuity',
+        action: 'uncertain',
+        content: 'API rate limit handling unclear'
+      });
+
+      mockProcess.stderr!.emit('data', Buffer.from(continuityJson + '\n'));
+
+      // Wait for async processing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Verify handleCommand was called with item field for uncertain
+      expect(mockContinuityManager.handleCommand).toHaveBeenCalledWith(
+        'TestAgent',
+        expect.objectContaining({
+          type: 'uncertain',
+          item: 'API rate limit handling unclear'
+        })
+      );
+    });
+
+    it('deduplicates continuity save commands', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      const continuityJson = JSON.stringify({
+        type: 'continuity',
+        action: 'save',
+        content: 'Same content twice'
+      });
+
+      // Send same command twice
+      mockProcess.stderr!.emit('data', Buffer.from(continuityJson + '\n'));
+      mockProcess.stderr!.emit('data', Buffer.from(continuityJson + '\n'));
+
+      // Wait for async processing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Should only be called once due to deduplication
+      expect(mockContinuityManager.handleCommand).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores unknown continuity actions', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      const continuityJson = JSON.stringify({
+        type: 'continuity',
+        action: 'unknown_action',
+        content: 'Some content'
+      });
+
+      mockProcess.stderr!.emit('data', Buffer.from(continuityJson + '\n'));
+
+      // Wait for async processing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Should not call handleCommand for unknown action
+      expect(mockContinuityManager.handleCommand).not.toHaveBeenCalled();
+    });
+  });
+
   describe('queue monitor', () => {
     it('starts queue monitor on start()', async () => {
       orchestrator = new RelayPtyOrchestrator({
