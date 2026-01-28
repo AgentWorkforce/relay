@@ -79,6 +79,7 @@ vi.mock('node:sqlite', () => {
     private store = mockStore;
 
     constructor(_dbPath: string) {
+      // Closure captures nodeAvailable variable reference - checks at runtime when constructor is called
       if (!nodeAvailable) {
         throw new Error('node:sqlite missing');
       }
