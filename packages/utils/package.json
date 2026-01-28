@@ -3,68 +3,68 @@
   "version": "2.0.29",
   "description": "Shared utilities for agent-relay: logging, name generation, command resolution, update checking",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/cjs/index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
       "require": "./dist/cjs/index.js",
-      "default": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/cjs/index.js"
     },
     "./logger": {
       "types": "./dist/logger.d.ts",
-      "import": "./dist/logger.js",
       "require": "./dist/cjs/logger.js",
-      "default": "./dist/logger.js"
+      "import": "./dist/logger.js",
+      "default": "./dist/cjs/logger.js"
     },
     "./name-generator": {
       "types": "./dist/name-generator.d.ts",
-      "import": "./dist/name-generator.js",
       "require": "./dist/cjs/name-generator.js",
-      "default": "./dist/name-generator.js"
+      "import": "./dist/name-generator.js",
+      "default": "./dist/cjs/name-generator.js"
     },
     "./command-resolver": {
       "types": "./dist/command-resolver.d.ts",
-      "import": "./dist/command-resolver.js",
       "require": "./dist/cjs/command-resolver.js",
-      "default": "./dist/command-resolver.js"
+      "import": "./dist/command-resolver.js",
+      "default": "./dist/cjs/command-resolver.js"
     },
     "./update-checker": {
       "types": "./dist/update-checker.d.ts",
-      "import": "./dist/update-checker.js",
       "require": "./dist/cjs/update-checker.js",
-      "default": "./dist/update-checker.js"
+      "import": "./dist/update-checker.js",
+      "default": "./dist/cjs/update-checker.js"
     },
     "./git-remote": {
       "types": "./dist/git-remote.d.ts",
-      "import": "./dist/git-remote.js",
       "require": "./dist/cjs/git-remote.js",
-      "default": "./dist/git-remote.js"
+      "import": "./dist/git-remote.js",
+      "default": "./dist/cjs/git-remote.js"
     },
     "./precompiled-patterns": {
       "types": "./dist/precompiled-patterns.d.ts",
-      "import": "./dist/precompiled-patterns.js",
       "require": "./dist/cjs/precompiled-patterns.js",
-      "default": "./dist/precompiled-patterns.js"
+      "import": "./dist/precompiled-patterns.js",
+      "default": "./dist/cjs/precompiled-patterns.js"
     },
     "./error-tracking": {
       "types": "./dist/error-tracking.d.ts",
-      "import": "./dist/error-tracking.js",
       "require": "./dist/cjs/error-tracking.js",
-      "default": "./dist/error-tracking.js"
+      "import": "./dist/error-tracking.js",
+      "default": "./dist/cjs/error-tracking.js"
     },
     "./model-mapping": {
       "types": "./dist/model-mapping.d.ts",
-      "import": "./dist/model-mapping.js",
       "require": "./dist/cjs/model-mapping.js",
-      "default": "./dist/model-mapping.js"
+      "import": "./dist/model-mapping.js",
+      "default": "./dist/cjs/model-mapping.js"
     },
     "./relay-pty-path": {
       "types": "./dist/relay-pty-path.d.ts",
-      "import": "./dist/relay-pty-path.js",
       "require": "./dist/cjs/relay-pty-path.js",
-      "default": "./dist/relay-pty-path.js"
+      "import": "./dist/relay-pty-path.js",
+      "default": "./dist/cjs/relay-pty-path.js"
     },
     "./package.json": "./package.json"
   },
