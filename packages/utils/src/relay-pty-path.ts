@@ -13,26 +13,62 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+
+/**
+ * Get the platform-specific binary name for the current system.
+ * Returns null if the platform is not supported.
+ */
+function getPlatformBinaryName(): string | null {
+  const platform = os.platform();
+  const arch = os.arch();
+
+  // Map to supported platforms
+  if (platform === 'darwin' && arch === 'arm64') return 'relay-pty-darwin-arm64';
+  if (platform === 'darwin' && arch === 'x64') return 'relay-pty-darwin-x64';
+  if (platform === 'linux' && arch === 'arm64') return 'relay-pty-linux-arm64';
+  if (platform === 'linux' && arch === 'x64') return 'relay-pty-linux-x64';
+
+  return null;
+}
 
 /** Cached result of relay-pty binary check */
 let cachedBinaryPath: string | null | undefined;
 let cacheChecked = false;
 
+/** Store the last search results for debugging */
+let lastSearchPaths: string[] = [];
+
+/**
+ * Get the paths that were checked in the last binary search.
+ * Useful for debugging when the binary is not found.
+ */
+export function getLastSearchPaths(): string[] {
+  return [...lastSearchPaths];
+}
+
 /**
  * Find the relay-pty binary.
  *
  * Search order:
- * 1. bin/relay-pty in package root (installed by postinstall)
- * 2. relay-pty/target/release/relay-pty (local Rust build)
- * 3. /usr/local/bin/relay-pty (global install)
- * 4. In node_modules when installed as dependency
- * 5. Global npm installs (nvm) - both scoped and root packages
+ * 1. RELAY_PTY_BINARY environment variable (explicit override)
+ * 2. bin/relay-pty in package root (installed by postinstall)
+ * 3. relay-pty/target/release/relay-pty (local Rust build)
+ * 4. /usr/local/bin/relay-pty (global install)
+ * 5. In node_modules when installed as dependency
+ * 6. Global npm installs (nvm) - both scoped and root packages
  *
  * @param callerDirname - The __dirname of the calling module (needed to resolve relative paths)
  * @returns Path to relay-pty binary, or null if not found
  */
 export function findRelayPtyBinary(callerDirname: string): string | null {
+  // Check for explicit environment variable override first
+  const envOverride = process.env.RELAY_PTY_BINARY;
+  if (envOverride && fs.existsSync(envOverride)) {
+    lastSearchPaths = [envOverride];
+    return envOverride;
+  }
   // Determine the agent-relay package root
   // This code runs from either:
   // - packages/{package}/dist/ (development/workspace)
@@ -65,6 +101,9 @@ export function findRelayPtyBinary(callerDirname: string): string | null {
     nodeModulesRoot = nodeModulesMatch[1];
   }
 
+  // Get platform-specific binary name as fallback (in case postinstall didn't run)
+  const platformBinary = getPlatformBinaryName();
+
   const candidates = [
     // Primary: installed by postinstall from platform-specific binary
     path.join(packageRoot, 'bin', 'relay-pty'),
@@ -96,6 +135,26 @@ export function findRelayPtyBinary(callerDirname: string): string | null {
     // pnpm global
     candidates.push(path.join(process.env.HOME, '.local', 'share', 'pnpm', 'global', 'node_modules', 'agent-relay', 'bin', 'relay-pty'));
   }
+
+  // FALLBACK: If postinstall didn't run, try platform-specific binaries directly
+  // This handles cases where better-sqlite3 rebuild failed and blocked postinstall.js
+  if (platformBinary) {
+    // Add platform-specific binary candidates for all the same locations
+    candidates.push(path.join(packageRoot, 'bin', platformBinary));
+    candidates.push(path.join(process.cwd(), 'node_modules', 'agent-relay', 'bin', platformBinary));
+    candidates.push(path.join(process.env.HOME || '', '.nvm', 'versions', 'node', process.version, 'lib', 'node_modules', 'agent-relay', 'bin', platformBinary));
+    if (nodeModulesRoot) {
+      candidates.push(path.join(nodeModulesRoot, 'agent-relay', 'bin', platformBinary));
+    }
+    if (process.env.HOME) {
+      candidates.push(path.join('/usr/local/lib/node_modules', 'agent-relay', 'bin', platformBinary));
+      candidates.push(path.join('/opt/homebrew/lib/node_modules', 'agent-relay', 'bin', platformBinary));
+      candidates.push(path.join(process.env.HOME, '.local', 'share', 'pnpm', 'global', 'node_modules', 'agent-relay', 'bin', platformBinary));
+    }
+  }
+
+  // Store search paths for debugging
+  lastSearchPaths = candidates;
 
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) {

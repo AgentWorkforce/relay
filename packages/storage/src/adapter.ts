@@ -304,22 +304,45 @@ export async function createStorageAdapter(
 
     case 'sqlite-batched':
     case 'batched': {
-      console.log('[storage] Using batched SQLite storage');
-      const { BatchedSqliteAdapter } = await import('./batched-sqlite-adapter.js');
-      const adapter = new BatchedSqliteAdapter({
-        dbPath: finalConfig.path!,
-        batch: finalConfig.batch,
-      });
-      await adapter.init();
-      return adapter;
+      try {
+        console.log('[storage] Using batched SQLite storage');
+        const { BatchedSqliteAdapter } = await import('./batched-sqlite-adapter.js');
+        const adapter = new BatchedSqliteAdapter({
+          dbPath: finalConfig.path!,
+          batch: finalConfig.batch,
+        });
+        await adapter.init();
+        return adapter;
+      } catch (err) {
+        // SQLite failed - fall back to memory storage
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.warn('[storage] ⚠️  SQLite initialization failed:', errMsg);
+        console.warn('[storage] ⚠️  Falling back to in-memory storage (messages will not persist across restarts)');
+        console.warn('[storage] To fix: upgrade to Node.js 22+ or run: npm rebuild better-sqlite3');
+        const adapter = new MemoryStorageAdapter();
+        await adapter.init();
+        return adapter;
+      }
     }
 
     case 'sqlite':
     default: {
-      const { SqliteStorageAdapter } = await import('./sqlite-adapter.js');
-      const adapter = new SqliteStorageAdapter({ dbPath: finalConfig.path! });
-      await adapter.init();
-      return adapter;
+      try {
+        const { SqliteStorageAdapter } = await import('./sqlite-adapter.js');
+        const adapter = new SqliteStorageAdapter({ dbPath: finalConfig.path! });
+        await adapter.init();
+        return adapter;
+      } catch (err) {
+        // SQLite failed (likely better-sqlite3 not built and Node < 22)
+        // Fall back to memory storage so the daemon can still run
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.warn('[storage] ⚠️  SQLite initialization failed:', errMsg);
+        console.warn('[storage] ⚠️  Falling back to in-memory storage (messages will not persist across restarts)');
+        console.warn('[storage] To fix: upgrade to Node.js 22+ or run: npm rebuild better-sqlite3');
+        const adapter = new MemoryStorageAdapter();
+        await adapter.init();
+        return adapter;
+      }
     }
   }
 }
