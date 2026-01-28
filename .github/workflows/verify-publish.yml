@@ -63,14 +63,20 @@ jobs:
         if: inputs.version != 'latest'
         run: |
           echo "Waiting for npm to propagate version ${{ inputs.version }}..."
+          FOUND=0
           for i in {1..30}; do
             if npm view agent-relay@${{ inputs.version }} version 2>/dev/null; then
               echo "Package found on npm registry"
+              FOUND=1
               break
             fi
             echo "Attempt $i: Package not yet available, waiting 10s..."
             sleep 10
           done
+          if [ "$FOUND" -eq 0 ]; then
+            echo "ERROR: Package agent-relay@${{ inputs.version }} not found on npm after 5 minutes"
+            exit 1
+          fi
 
       # Test 1: Global npm install
       - name: "Test: Global npm install"
@@ -320,14 +326,20 @@ jobs:
         if: inputs.version != 'latest'
         run: |
           echo "Waiting for npm to propagate version ${{ inputs.version }}..."
+          FOUND=0
           for i in {1..30}; do
             if npm view agent-relay@${{ inputs.version }} version 2>/dev/null; then
               echo "Package found on npm registry"
+              FOUND=1
               break
             fi
             echo "Attempt $i: Package not yet available, waiting 10s..."
             sleep 10
           done
+          if [ "$FOUND" -eq 0 ]; then
+            echo "ERROR: Package agent-relay@${{ inputs.version }} not found on npm after 5 minutes"
+            exit 1
+          fi
 
       - name: "Test: npm install"
         run: |
@@ -443,6 +455,31 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Node.js (for npm view)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Wait for npm to propagate the package (same as other verify jobs)
+      - name: Wait for npm propagation
+        if: inputs.version != 'latest'
+        run: |
+          echo "Waiting for npm to propagate version ${{ inputs.version }}..."
+          FOUND=0
+          for i in {1..30}; do
+            if npm view agent-relay@${{ inputs.version }} version 2>/dev/null; then
+              echo "Package found on npm registry"
+              FOUND=1
+              break
+            fi
+            echo "Attempt $i: Package not yet available, waiting 10s..."
+            sleep 10
+          done
+          if [ "$FOUND" -eq 0 ]; then
+            echo "ERROR: Package agent-relay@${{ inputs.version }} not found on npm after 5 minutes"
+            exit 1
+          fi
 
       - name: Build verification image
         run: |
