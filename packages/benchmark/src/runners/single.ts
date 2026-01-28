@@ -58,8 +58,8 @@ export class SingleAgentRunner extends ConfigurationRunner {
     let peakMemory = 0;
     try {
       const metrics = await this.orchestrator.getMetrics();
-      totalTokens = this.extractTokens(metrics as Record<string, unknown>);
-      peakMemory = this.extractMemory(metrics as Record<string, unknown>);
+      totalTokens = this.extractTokens(metrics);
+      peakMemory = this.extractMemory(metrics);
     } catch {
       // Metrics collection failed, use defaults
     }

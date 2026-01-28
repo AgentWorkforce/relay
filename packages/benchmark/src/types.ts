@@ -26,6 +26,8 @@ export interface Task {
   files: string[];
   /** Success criteria for the task */
   expectedOutcome: string;
+  /** Optional Harbor-style success criteria key for compatibility */
+  success_criteria?: string;
   /** Task complexity level */
   complexity: TaskComplexity;
   /** Optional timeout in milliseconds (default: 300000 = 5 min) */

@@ -4,15 +4,25 @@
  * Abstract base class for benchmark configuration runners.
  */
 
-import { createRelay, RelayClient, type Relay } from '@agent-relay/sdk';
+import {
+  createRelay,
+  RelayClient,
+  type MetricsResponsePayload,
+  type Relay,
+} from '@agent-relay/sdk';
 import type {
   ConfigurationType,
   Task,
   RunResult,
   RunMetrics,
   BenchmarkConfig,
-  DEFAULT_BENCHMARK_CONFIG,
 } from '../types.js';
+import { DEFAULT_BENCHMARK_CONFIG } from '../types.js';
+
+type AgentMetrics = MetricsResponsePayload['agents'][number] & {
+  tokens?: number;
+  memoryMb?: number;
+};
 
 /**
  * Abstract base class for configuration runners
@@ -99,17 +109,24 @@ export abstract class ConfigurationRunner {
   /**
    * Extract total tokens from metrics response
    */
-  protected extractTokens(metrics: Record<string, unknown>): number {
-    const agents = metrics.agents as Array<{ tokens?: number }> | undefined;
-    return agents?.reduce((sum, a) => sum + (a.tokens || 0), 0) || 0;
+  protected extractTokens(metrics: MetricsResponsePayload): number {
+    const agents = metrics.agents as AgentMetrics[] | undefined;
+    return (
+      agents?.reduce((sum, agent) => sum + (agent.tokens || 0), 0) || 0
+    );
   }
 
   /**
    * Extract peak memory from metrics response
    */
-  protected extractMemory(metrics: Record<string, unknown>): number {
-    const agents = metrics.agents as Array<{ memoryMb?: number }> | undefined;
-    return Math.max(...(agents?.map((a) => a.memoryMb || 0) || [0]));
+  protected extractMemory(metrics: MetricsResponsePayload): number {
+    const agents = metrics.agents as AgentMetrics[] | undefined;
+    const memoryValues = agents?.map((agent) => {
+      if (agent.memoryMb != null) return agent.memoryMb;
+      if (agent.rssBytes != null) return agent.rssBytes / 1024 / 1024;
+      return 0;
+    });
+    return Math.max(...(memoryValues || [0]));
   }
 
   /**

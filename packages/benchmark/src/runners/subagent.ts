@@ -64,8 +64,8 @@ export class SubAgentRunner extends ConfigurationRunner {
     let peakMemory = 0;
     try {
       const metrics = await this.orchestrator.getMetrics();
-      totalTokens = this.extractTokens(metrics as Record<string, unknown>);
-      peakMemory = this.extractMemory(metrics as Record<string, unknown>);
+      totalTokens = this.extractTokens(metrics);
+      peakMemory = this.extractMemory(metrics);
     } catch {
       // Metrics collection failed
     }
@@ -111,11 +111,12 @@ export class SubAgentRunner extends ConfigurationRunner {
       if (from === 'Lead') {
         // Check for spawn patterns in messages
         if (
-          payload.kind === 'spawn' ||
-          payload.body.includes('->relay-file:spawn')
+          payload.body.includes('->relay-file:spawn') ||
+          typeof payload.data?.name === 'string'
         ) {
           this.workerCount++;
-          const workerName = (payload.data?.name as string) || `Worker${this.workerCount}`;
+          const workerName =
+            (payload.data?.name as string) || `Worker${this.workerCount}`;
           this.metrics.spawnedAgents.push(workerName);
           this.log(`Worker spawned: ${workerName}`);
         }
