@@ -280,6 +280,132 @@ function hasSystemTmux() {
 }
 
 /**
+ * Setup workspace package symlinks for global/bundled installs.
+ *
+ * When agent-relay is installed globally (npm install -g), the workspace packages
+ * are included in the tarball at packages/* but Node.js module resolution expects
+ * them at node_modules/@agent-relay/*. This function creates symlinks to bridge
+ * the gap.
+ *
+ * This is needed because npm's bundledDependencies doesn't properly handle
+ * workspace packages (which are symlinks during development).
+ */
+function setupWorkspacePackageLinks() {
+  const pkgRoot = getPackageRoot();
+  const packagesDir = path.join(pkgRoot, 'packages');
+  const nodeModulesDir = path.join(pkgRoot, 'node_modules');
+  const scopeDir = path.join(nodeModulesDir, '@agent-relay');
+
+  // Check if packages/ exists (we're in a bundled/global install)
+  if (!fs.existsSync(packagesDir)) {
+    // Not a bundled install, workspace packages should be in node_modules already
+    return { needed: false };
+  }
+
+  // Check if node_modules/@agent-relay/daemon exists
+  const testPackage = path.join(scopeDir, 'daemon');
+  if (fs.existsSync(testPackage)) {
+    // Already set up (either normal npm install or previously linked)
+    info('Workspace packages already available in node_modules');
+    return { needed: false, alreadySetup: true };
+  }
+
+  // We need to create symlinks
+  info('Setting up workspace package links for global install...');
+
+  // Create node_modules/@agent-relay/ directory
+  try {
+    fs.mkdirSync(scopeDir, { recursive: true });
+  } catch (err) {
+    warn(`Failed to create @agent-relay scope directory: ${err.message}`);
+    return { needed: true, success: false, error: err.message };
+  }
+
+  // Map from package directory name to npm package name
+  const packageDirs = fs.readdirSync(packagesDir).filter(dir => {
+    const pkgJsonPath = path.join(packagesDir, dir, 'package.json');
+    return fs.existsSync(pkgJsonPath);
+  });
+
+  let linked = 0;
+  let failed = 0;
+  const errors = [];
+
+  for (const dir of packageDirs) {
+    const sourcePath = path.join(packagesDir, dir);
+    const targetPath = path.join(scopeDir, dir);
+
+    // Skip if already exists
+    if (fs.existsSync(targetPath)) {
+      continue;
+    }
+
+    try {
+      // Use relative symlink for portability
+      const relativeSource = path.relative(scopeDir, sourcePath);
+      fs.symlinkSync(relativeSource, targetPath, 'dir');
+      linked++;
+    } catch (err) {
+      // If symlink fails (e.g., on Windows without admin), try copying
+      try {
+        // Copy the package directory
+        copyDirSync(sourcePath, targetPath);
+        linked++;
+      } catch (copyErr) {
+        failed++;
+        errors.push(`${dir}: ${copyErr.message}`);
+      }
+    }
+  }
+
+  if (linked > 0) {
+    success(`Linked ${linked} workspace packages to node_modules/@agent-relay/`);
+  }
+
+  if (failed > 0) {
+    warn(`Failed to link ${failed} packages: ${errors.join(', ')}`);
+    return { needed: true, success: false, linked, failed, errors };
+  }
+
+  return { needed: true, success: true, linked };
+}
+
+/**
+ * Recursively copy a directory
+ */
+function copyDirSync(src, dest) {
+  fs.mkdirSync(dest, { recursive: true });
+  const entries = fs.readdirSync(src, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+
+    // Skip node_modules in package copies
+    if (entry.name === 'node_modules') {
+      continue;
+    }
+
+    if (entry.isDirectory()) {
+      copyDirSync(srcPath, destPath);
+    } else if (entry.isSymbolicLink()) {
+      // Resolve symlink and copy the target
+      const linkTarget = fs.readlinkSync(srcPath);
+      const resolvedTarget = path.resolve(path.dirname(srcPath), linkTarget);
+      if (fs.existsSync(resolvedTarget)) {
+        if (fs.statSync(resolvedTarget).isDirectory()) {
+          copyDirSync(resolvedTarget, destPath);
+        } else {
+          fs.copyFileSync(resolvedTarget, destPath);
+        }
+      }
+    } else {
+      fs.copyFileSync(srcPath, destPath);
+    }
+  }
+}
+
+/**
  * Install dashboard dependencies
  */
 function installDashboardDeps() {
@@ -362,7 +488,16 @@ function patchAgentTrajectories() {
   success('Patched agent-trajectories to record agent on trail start');
 }
 
-function logPostinstallDiagnostics(hasRelayPty, sqliteStatus) {
+function logPostinstallDiagnostics(hasRelayPty, sqliteStatus, linkResult) {
+  // Workspace packages status (for global installs)
+  if (linkResult && linkResult.needed) {
+    if (linkResult.success) {
+      console.log(`✓ Workspace packages linked (${linkResult.linked} packages)`);
+    } else {
+      console.log('⚠ Workspace package linking failed - CLI may not work');
+    }
+  }
+
   if (hasRelayPty) {
     console.log('✓ relay-pty binary installed');
   } else {
@@ -388,6 +523,16 @@ function logPostinstallDiagnostics(hasRelayPty, sqliteStatus) {
  * Main postinstall routine
  */
 async function main() {
+  // Setup workspace package links for global installs
+  // This MUST run first so that other postinstall steps can find the packages
+  const linkResult = setupWorkspacePackageLinks();
+  if (linkResult.needed && !linkResult.success) {
+    warn('Workspace package linking failed - CLI may not work correctly');
+    if (linkResult.errors) {
+      linkResult.errors.forEach(e => warn(`  ${e}`));
+    }
+  }
+
   // Install relay-pty binary for current platform (primary mode)
   const hasRelayPty = installRelayPtyBinary();
 
@@ -401,7 +546,7 @@ async function main() {
   installDashboardDeps();
 
   // Always print diagnostics (even in CI)
-  logPostinstallDiagnostics(hasRelayPty, sqliteStatus);
+  logPostinstallDiagnostics(hasRelayPty, sqliteStatus, linkResult);
 
   // Skip tmux check in CI environments
   if (process.env.CI === 'true') {
