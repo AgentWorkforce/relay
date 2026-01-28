@@ -47,6 +47,9 @@ agent-relay claude
 
 # Or with other CLI tools
 agent-relay codex
+agent-relay opencode  # OpenCode with HTTP API support
+agent-relay gemini
+agent-relay droid
 ```
 
 Agents communicate via file-based messaging:
@@ -87,6 +90,8 @@ echo "->relay-file:broadcast"
 |---------|-------------|
 | `agent-relay claude` | Start daemon + coordinator with Claude |
 | `agent-relay codex` | Start daemon + coordinator with Codex |
+| `agent-relay opencode` | Start daemon + coordinator with OpenCode |
+| `agent-relay gemini` | Start daemon + coordinator with Gemini |
 | `agent-relay up` | Start daemon + dashboard |
 | `agent-relay down` | Stop daemon |
 | `agent-relay status` | Check daemon status |
@@ -224,6 +229,9 @@ Supported editors:
 - VS Code (with Continue extension)
 - Windsurf
 - Zed
+- OpenCode
+- Gemini CLI
+- Droid (Factory)
 
 Once configured, AI agents automatically get access to relay tools:
 - `relay_send` - Send messages to agents/channels
@@ -234,6 +242,42 @@ Once configured, AI agents automatically get access to relay tools:
 - `relay_status` - Check connection status
 
 The MCP server auto-discovers your relay daemon and provides a seamless integration. Start your daemon first (`agent-relay up`), then use your AI editor normally - the relay tools will be available automatically.
+
+## OpenCode Integration
+
+OpenCode has enhanced support via its HTTP API (`opencode serve`):
+
+```bash
+# Start OpenCode with agent-relay
+agent-relay opencode
+
+# Or configure MCP for OpenCode
+npx @agent-relay/mcp install --editor opencode
+```
+
+**HTTP API Mode** (recommended when available):
+- Faster message injection via `/tui/append-prompt`
+- Session management via `/session/*` endpoints
+- SSE event streaming for real-time output
+- Auto-fallback to PTY mode if serve unavailable
+
+**Configuration** (`~/.config/opencode/opencode.json`):
+```json
+{
+  "mcp": {
+    "agent-relay": {
+      "type": "local",
+      "command": ["npx", "@agent-relay/mcp", "serve"]
+    }
+  }
+}
+```
+
+**Environment Variables**:
+- `OPENCODE_PORT` - HTTP API port (default: 4096)
+- `OPENCODE_API_URL` - Full HTTP API URL (overrides port, e.g., `http://localhost:8080`)
+- `OPENCODE_SERVER_PASSWORD` - HTTP API authentication (Basic auth)
+- `OPENCODE_HTTP_MODE=1` - Force HTTP API mode even if serve check fails
 
 ## Teaching Agents
 

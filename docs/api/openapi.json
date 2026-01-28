@@ -1,0 +1,1086 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Agent Relay API",
+    "version": "1.0.0",
+    "description": "API types and schemas for Agent Relay communication system"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3888",
+      "description": "Local development server"
+    }
+  ],
+  "components": {
+    "schemas": {
+      "Agent": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "cli": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "online",
+              "idle",
+              "busy",
+              "offline"
+            ]
+          },
+          "lastSeen": {
+            "type": "string"
+          },
+          "lastActive": {
+            "type": "string"
+          },
+          "messageCount": {
+            "type": "number"
+          },
+          "needsAttention": {
+            "type": "boolean"
+          },
+          "currentTask": {
+            "type": "string"
+          },
+          "server": {
+            "type": "string"
+          },
+          "isProcessing": {
+            "type": "boolean"
+          },
+          "processingStartedAt": {
+            "type": "number"
+          },
+          "isSpawned": {
+            "type": "boolean"
+          },
+          "team": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "lastMessageReceivedAt": {
+            "type": "number"
+          },
+          "lastOutputAt": {
+            "type": "number"
+          },
+          "isStuck": {
+            "type": "boolean"
+          },
+          "isHuman": {
+            "type": "boolean"
+          },
+          "avatarUrl": {
+            "type": "string"
+          },
+          "authRevoked": {
+            "type": "boolean"
+          },
+          "isLocal": {
+            "type": "boolean"
+          },
+          "daemonName": {
+            "type": "string"
+          },
+          "machineId": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "spawnPrompt": {
+                "type": "string"
+              },
+              "personaPrompt": {
+                "type": "string"
+              },
+              "personaName": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "workingDirectory": {
+                "type": "string"
+              },
+              "firstSeen": {
+                "type": "string"
+              },
+              "capabilities": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "tags": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "name",
+          "status"
+        ]
+      },
+      "AgentSummary": {
+        "type": "object",
+        "properties": {
+          "agentName": {
+            "type": "string"
+          },
+          "lastUpdated": {
+            "type": "string"
+          },
+          "currentTask": {
+            "type": "string"
+          },
+          "completedTasks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "context": {
+            "type": "string"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "agentName",
+          "lastUpdated"
+        ]
+      },
+      "Message": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "thread": {
+            "type": "string"
+          },
+          "isBroadcast": {
+            "type": "boolean"
+          },
+          "isRead": {
+            "type": "boolean"
+          },
+          "replyCount": {
+            "type": "number"
+          },
+          "threadSummary": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "rootMessage": {
+                "type": "string"
+              },
+              "participantCount": {
+                "type": "number"
+              },
+              "messageCount": {
+                "type": "number"
+              },
+              "lastActivityAt": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "rootMessage",
+              "participantCount",
+              "messageCount",
+              "lastActivityAt"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "unread",
+              "read",
+              "acked",
+              "sending",
+              "failed"
+            ]
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "filename": {
+                  "type": "string"
+                },
+                "mimeType": {
+                  "type": "string"
+                },
+                "size": {
+                  "type": "number"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "filePath": {
+                  "type": "string"
+                },
+                "width": {
+                  "type": "number"
+                },
+                "height": {
+                  "type": "number"
+                },
+                "data": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "filename",
+                "mimeType",
+                "size",
+                "url"
+              ]
+            }
+          },
+          "channel": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "from",
+          "to",
+          "content",
+          "timestamp"
+        ]
+      },
+      "Session": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "agentName": {
+            "type": "string"
+          },
+          "cli": {
+            "type": "string"
+          },
+          "startedAt": {
+            "type": "string"
+          },
+          "endedAt": {
+            "type": "string"
+          },
+          "duration": {
+            "type": "string"
+          },
+          "messageCount": {
+            "type": "number"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "isActive": {
+            "type": "boolean"
+          },
+          "closedBy": {
+            "type": "string",
+            "enum": [
+              "agent",
+              "disconnect",
+              "error"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "agentName",
+          "startedAt",
+          "messageCount",
+          "isActive"
+        ]
+      },
+      "FleetServer": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "healthy",
+              "degraded",
+              "offline"
+            ]
+          },
+          "agents": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "status"
+              ]
+            }
+          },
+          "cpuUsage": {
+            "type": "number"
+          },
+          "memoryUsage": {
+            "type": "number"
+          },
+          "activeConnections": {
+            "type": "number"
+          },
+          "uptime": {
+            "type": "number"
+          },
+          "lastHeartbeat": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "status",
+          "agents",
+          "cpuUsage",
+          "memoryUsage",
+          "activeConnections",
+          "uptime",
+          "lastHeartbeat"
+        ]
+      },
+      "FleetStats": {
+        "type": "object",
+        "properties": {
+          "totalAgents": {
+            "type": "number"
+          },
+          "onlineAgents": {
+            "type": "number"
+          },
+          "busyAgents": {
+            "type": "number"
+          },
+          "pendingDecisions": {
+            "type": "number"
+          },
+          "activeTasks": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "totalAgents",
+          "onlineAgents",
+          "busyAgents",
+          "pendingDecisions",
+          "activeTasks"
+        ]
+      },
+      "TaskAssignment": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "agentName": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "assigned",
+              "in_progress",
+              "completed",
+              "failed"
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "assignedAt": {
+            "type": "string"
+          },
+          "completedAt": {
+            "type": "string"
+          },
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "agentName",
+          "title",
+          "description",
+          "priority",
+          "status",
+          "createdAt"
+        ]
+      },
+      "ApiDecision": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "agentName": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "label"
+              ]
+            }
+          },
+          "urgency": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "approval",
+              "choice",
+              "input",
+              "confirmation"
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "context": {
+            "type": "object",
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "id",
+          "agentName",
+          "title",
+          "description",
+          "urgency",
+          "category",
+          "createdAt"
+        ]
+      },
+      "Decision": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "agentName": {
+            "type": "string"
+          },
+          "timestamp": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              }
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "approval",
+              "choice",
+              "input",
+              "confirmation"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "label"
+              ]
+            }
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "context": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "expiresAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "agentName",
+          "timestamp",
+          "type",
+          "title",
+          "description",
+          "priority"
+        ]
+      },
+      "SendMessageRequest": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "thread": {
+            "type": "string"
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "to",
+          "message"
+        ]
+      },
+      "SpawnAgentRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "cli": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "team": {
+            "type": "string"
+          },
+          "shadowMode": {
+            "type": "string",
+            "enum": [
+              "subagent",
+              "process"
+            ]
+          },
+          "shadowOf": {
+            "type": "string"
+          },
+          "shadowAgent": {
+            "type": "string"
+          },
+          "shadowTriggers": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "SESSION_END",
+                "CODE_WRITTEN",
+                "REVIEW_REQUEST",
+                "EXPLICIT_ASK",
+                "ALL_MESSAGES"
+              ]
+            }
+          },
+          "shadowSpeakOn": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "SESSION_END",
+                "CODE_WRITTEN",
+                "REVIEW_REQUEST",
+                "EXPLICIT_ASK",
+                "ALL_MESSAGES"
+              ]
+            }
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "SpawnAgentResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success",
+          "name"
+        ]
+      },
+      "CreateTaskRequest": {
+        "type": "object",
+        "properties": {
+          "agentName": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          }
+        },
+        "required": [
+          "agentName",
+          "title",
+          "priority"
+        ]
+      },
+      "CreateBeadRequest": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "assignee": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "number"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "task",
+              "bug",
+              "feature"
+            ]
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ]
+      },
+      "ActivityEvent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "agent_spawned",
+              "agent_released",
+              "agent_online",
+              "agent_offline",
+              "user_joined",
+              "user_left",
+              "broadcast",
+              "error"
+            ]
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string"
+          },
+          "actorAvatarUrl": {
+            "type": "string"
+          },
+          "actorType": {
+            "type": "string",
+            "enum": [
+              "user",
+              "agent",
+              "system"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "timestamp",
+          "actor",
+          "actorType",
+          "title"
+        ]
+      },
+      "HistorySession": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "agentName": {
+            "type": "string"
+          },
+          "cli": {
+            "type": "string"
+          },
+          "startedAt": {
+            "type": "string"
+          },
+          "endedAt": {
+            "type": "string"
+          },
+          "duration": {
+            "type": "string"
+          },
+          "messageCount": {
+            "type": "number"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "isActive": {
+            "type": "boolean"
+          },
+          "closedBy": {
+            "type": "string",
+            "enum": [
+              "agent",
+              "disconnect",
+              "error"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "agentName",
+          "startedAt",
+          "duration",
+          "messageCount",
+          "isActive"
+        ]
+      },
+      "HistoryMessage": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "thread": {
+            "type": "string"
+          },
+          "isBroadcast": {
+            "type": "boolean"
+          },
+          "isUrgent": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "id",
+          "from",
+          "to",
+          "content",
+          "timestamp"
+        ]
+      },
+      "Conversation": {
+        "type": "object",
+        "properties": {
+          "participants": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "lastMessage": {
+            "type": "string"
+          },
+          "lastTimestamp": {
+            "type": "string"
+          },
+          "messageCount": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "participants",
+          "lastMessage",
+          "lastTimestamp",
+          "messageCount"
+        ]
+      },
+      "HistoryStats": {
+        "type": "object",
+        "properties": {
+          "messageCount": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "sessionCount": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "activeSessions": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "uniqueAgents": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "oldestMessageDate": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "messageCount",
+          "sessionCount",
+          "activeSessions",
+          "uniqueAgents"
+        ]
+      },
+      "FileSearchResponse": {
+        "type": "object",
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "isDirectory": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "path",
+                "name",
+                "isDirectory"
+              ]
+            }
+          },
+          "query": {
+            "type": "string"
+          },
+          "searchRoot": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "files",
+          "query",
+          "searchRoot"
+        ]
+      }
+    },
+    "parameters": {}
+  },
+  "paths": {},
+  "webhooks": {}
+}

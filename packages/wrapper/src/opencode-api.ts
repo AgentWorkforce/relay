@@ -41,7 +41,10 @@ export class OpenCodeApi {
   private timeout: number;
 
   constructor(config: OpenCodeApiConfig = {}) {
-    this.baseUrl = config.baseUrl ?? 'http://localhost:4096';
+    // Priority: explicit config > OPENCODE_API_URL env > OPENCODE_PORT env > default
+    const defaultPort = process.env.OPENCODE_PORT ?? '4096';
+    const defaultUrl = process.env.OPENCODE_API_URL ?? `http://localhost:${defaultPort}`;
+    this.baseUrl = config.baseUrl ?? defaultUrl;
     this.password = config.password ?? process.env.OPENCODE_SERVER_PASSWORD;
     this.timeout = config.timeout ?? 5000;
   }

@@ -256,7 +256,96 @@ describe('RelayClient', () => {
     });
   });
 
-  // TODO: Re-add spawn/release tests when daemon-based spawning is implemented
-  // See: docs/SDK-MIGRATION-PLAN.md for planned implementation
-  // These methods will be added to RelayClient as part of the SDK extraction work
+  describe('spawn', () => {
+    it('should return error when client not ready', async () => {
+      const client = new RelayClient({ reconnect: false });
+      const result = await client.spawn({ name: 'Worker1', cli: 'claude', task: 'Test task' });
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Client not ready');
+    });
+
+    it('should send SPAWN envelope when ready', async () => {
+      const client = new RelayClient({ reconnect: false });
+      (client as any)._state = 'READY';
+      (client as any).socket = { write: vi.fn() };
+
+      // Mock requestResponse to return a successful result
+      const mockResult = { replyTo: 'test-id', success: true, name: 'Worker1' };
+      vi.spyOn(client as any, 'requestResponse').mockResolvedValue(mockResult);
+
+      const result = await client.spawn({
+        name: 'Worker1',
+        cli: 'claude',
+        task: 'Test task',
+        model: 'opus',
+        cwd: '/test/path',
+      });
+
+      expect((client as any).requestResponse).toHaveBeenCalledWith(
+        'SPAWN',
+        expect.objectContaining({
+          name: 'Worker1',
+          cli: 'claude',
+          task: 'Test task',
+          model: 'opus',
+          cwd: '/test/path',
+        }),
+        30000
+      );
+      expect(result.success).toBe(true);
+    });
+
+    it('should handle spawn failure', async () => {
+      const client = new RelayClient({ reconnect: false });
+      (client as any)._state = 'READY';
+      (client as any).socket = { write: vi.fn() };
+
+      vi.spyOn(client as any, 'requestResponse').mockRejectedValue(new Error('Spawn failed'));
+
+      const result = await client.spawn({ name: 'Worker1', cli: 'claude', task: 'Test task' });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Spawn failed');
+    });
+  });
+
+  describe('release', () => {
+    it('should return error when client not ready', async () => {
+      const client = new RelayClient({ reconnect: false });
+      const result = await client.release('Worker1');
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Client not ready');
+    });
+
+    it('should send RELEASE envelope when ready', async () => {
+      const client = new RelayClient({ reconnect: false });
+      (client as any)._state = 'READY';
+      (client as any).socket = { write: vi.fn() };
+
+      const mockResult = { replyTo: 'test-id', success: true, name: 'Worker1' };
+      vi.spyOn(client as any, 'requestResponse').mockResolvedValue(mockResult);
+
+      const result = await client.release('Worker1', 'Task completed');
+
+      expect((client as any).requestResponse).toHaveBeenCalledWith(
+        'RELEASE',
+        { name: 'Worker1', reason: 'Task completed' },
+        10000
+      );
+      expect(result.success).toBe(true);
+    });
+
+    it('should handle release failure', async () => {
+      const client = new RelayClient({ reconnect: false });
+      (client as any)._state = 'READY';
+      (client as any).socket = { write: vi.fn() };
+
+      vi.spyOn(client as any, 'requestResponse').mockRejectedValue(new Error('Release failed'));
+
+      const result = await client.release('Worker1');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Release failed');
+    });
+  });
 });

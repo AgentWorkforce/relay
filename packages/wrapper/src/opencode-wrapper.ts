@@ -377,6 +377,97 @@ export class OpenCodeWrapper extends BaseWrapper {
   }
 
   // =========================================================================
+  // Spawner Compatibility Methods
+  // =========================================================================
+
+  /**
+   * Get the process ID (undefined in HTTP mode, defined in PTY mode)
+   */
+  get pid(): number | undefined {
+    return this.process?.pid;
+  }
+
+  /**
+   * Log path (not applicable for OpenCodeWrapper)
+   */
+  get logPath(): string | undefined {
+    return undefined;
+  }
+
+  /**
+   * Kill the wrapper (alias for stop())
+   */
+  async kill(): Promise<void> {
+    await this.stop();
+  }
+
+  /**
+   * Write to the process stdin (PTY mode only)
+   */
+  write(data: string): void {
+    if (this.process?.stdin) {
+      this.process.stdin.write(data);
+    }
+  }
+
+  /**
+   * Inject a task into the agent
+   * @param task - The task description to inject
+   * @param _from - The sender name (used for formatting)
+   * @returns true if injection succeeded
+   */
+  async injectTask(task: string, _from?: string): Promise<boolean> {
+    try {
+      await this.performInjection(task);
+      return true;
+    } catch (error) {
+      console.error('[OpenCodeWrapper] Task injection failed:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Get output lines (for compatibility with spawner)
+   */
+  getOutput(limit?: number): string[] {
+    const lines = this.outputBuffer.split('\n');
+    return limit ? lines.slice(-limit) : lines;
+  }
+
+  /**
+   * Get raw output (for compatibility with spawner)
+   */
+  getRawOutput(): string {
+    return this.outputBuffer;
+  }
+
+  /**
+   * Wait until the wrapper is ready to receive messages
+   * In HTTP mode, this checks if the API is available
+   * In PTY mode, this waits for the process to start
+   */
+  async waitUntilReadyForMessages(timeoutMs = 15000, _pollMs = 100): Promise<boolean> {
+    if (!this.running) {
+      return false;
+    }
+
+    if (this.httpApiAvailable) {
+      // HTTP mode: check if API responds
+      return await this.api.waitForAvailable(timeoutMs);
+    }
+
+    // PTY mode: process is ready if stdin is available
+    return this.process?.stdin !== null;
+  }
+
+  /**
+   * Wait until CLI is ready (alias for waitUntilReadyForMessages)
+   */
+  async waitUntilCliReady(timeoutMs = 15000, pollMs = 100): Promise<boolean> {
+    return this.waitUntilReadyForMessages(timeoutMs, pollMs);
+  }
+
+  // =========================================================================
   // Public API
   // =========================================================================
 
