@@ -49,10 +49,12 @@ jobs:
       - name: Get package spec
         id: pkg
         run: |
-          VERSION="${{ inputs.version || 'latest' }}"
-          if [ "$VERSION" = "latest" ]; then
+          VERSION_INPUT="${{ inputs.version }}"
+          if [ -z "$VERSION_INPUT" ] || [ "$VERSION_INPUT" = "latest" ]; then
+            VERSION="latest"
             SPEC="agent-relay"
           else
+            VERSION="$VERSION_INPUT"
             SPEC="agent-relay@${VERSION}"
           fi
           echo "spec=$SPEC" >> $GITHUB_OUTPUT
@@ -129,6 +131,11 @@ jobs:
       # Note: Don't use `--` separator with npx @version syntax - it causes argument parsing issues
       - name: "Test: npx --version"
         run: |
+          echo "npx package spec: ${{ steps.pkg.outputs.spec }}"
+          if [ -z "${{ steps.pkg.outputs.spec }}" ]; then
+            echo "Package spec is empty - failing fast"
+            exit 1
+          fi
           # npx with @ syntax - downloads and runs in one command
           VERSION=$(npx ${{ steps.pkg.outputs.spec }} --version 2>&1)
           echo "npx version output: $VERSION"
