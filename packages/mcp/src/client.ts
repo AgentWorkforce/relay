@@ -27,6 +27,7 @@ import {
   type HealthResponsePayload,
   type MetricsResponsePayload,
   encodeFrameLegacy,
+  PROTOCOL_VERSION,
 } from '@agent-relay/protocol';
 
 // Import shared client helpers for consistency
