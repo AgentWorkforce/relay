@@ -45,6 +45,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Ensure rollup optional dependencies are installed
+        run: npm install --no-save rollup || true
+
       - name: Build packages
         run: npm run build
 
