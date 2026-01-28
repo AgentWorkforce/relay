@@ -99,6 +99,7 @@
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "lint": "eslint src --ext .ts",
+    "audit:deps": "node scripts/audit-bundled-deps.mjs",
     "clean": "rm -rf dist && find packages -maxdepth 2 -name dist -type d -exec rm -rf {} + 2>/dev/null || true",
     "docs:dev": "cd docs && npm run dev",
     "cli-tester:start": "cd packages/cli-tester && ./scripts/start.sh",
@@ -146,8 +147,8 @@
     "@agent-relay/user-directory": "2.0.34",
     "@agent-relay/utils": "2.0.34",
     "@agent-relay/wrapper": "2.0.34",
+    "@modelcontextprotocol/sdk": "^1.0.0",
     "agent-trajectories": "^0.2.3",
-    "posthog-node": "^4.0.1",
     "better-sqlite3": "^12.6.2",
     "chokidar": "^5.0.0",
     "commander": "^12.1.0",
@@ -156,9 +157,14 @@
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "http-proxy-middleware": "^3.0.5",
+    "pg": "^8.16.3",
+    "posthog-node": "^4.0.1",
+    "smol-toml": "^1.6.0",
     "ssh2": "^1.17.0",
     "uuid": "^10.0.0",
-    "ws": "^8.18.3"
+    "ws": "^8.18.3",
+    "zod": "^3.23.8",
+    "zod-to-json-schema": "^3.23.1"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.1",
