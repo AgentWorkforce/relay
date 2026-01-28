@@ -10,6 +10,9 @@ let betterAvailable = true;
 let nodeAvailable = true;
 let mockStore: Map<string, string>;
 
+// Store availability in an object to ensure closure works correctly across module resets
+const mockAvailability = { betterAvailable: true, nodeAvailable: true };
+
 vi.mock('@agent-relay/config', () => ({
   getProjectPaths: () => ({
     dataDir,
@@ -30,7 +33,7 @@ vi.mock('better-sqlite3', () => {
     private store = mockStore;
 
     constructor(_dbPath: string) {
-      if (!betterAvailable) {
+      if (!mockAvailability.betterAvailable) {
         throw new Error('better-sqlite3 missing');
       }
     }
@@ -79,47 +82,47 @@ vi.mock('node:sqlite', () => {
     private store = mockStore;
 
     constructor(_dbPath: string) {
-      // Closure captures nodeAvailable variable reference - checks at runtime when constructor is called
-      if (!nodeAvailable) {
+      // Check mockAvailability object to ensure we get the current value
+      if (!mockAvailability.nodeAvailable) {
         throw new Error('node:sqlite missing');
       }
     }
 
-    exec(_sql: string) {
-      // no-op
-    }
+        exec(_sql: string) {
+          // no-op
+        }
 
-    prepare(sql: string) {
-      if (sql.includes('INSERT OR REPLACE INTO doctor_diagnostics')) {
-        return {
-          run: (key: string, value: string) => {
-            this.store.set(key, value);
-          },
-        };
-      }
-      if (sql.includes('SELECT value FROM doctor_diagnostics')) {
-        return {
-          get: (key: string) =>
-            this.store.has(key) ? { value: this.store.get(key) } : undefined,
-        };
-      }
-      if (sql.includes('DELETE FROM doctor_diagnostics')) {
-        return {
-          run: (key: string) => {
-            this.store.delete(key);
-          },
-        };
-      }
-      return {
-        run: () => {},
-        get: () => ({ result: 1 }),
-      };
-    }
+        prepare(sql: string) {
+          if (sql.includes('INSERT OR REPLACE INTO doctor_diagnostics')) {
+            return {
+              run: (key: string, value: string) => {
+                this.store.set(key, value);
+              },
+            };
+          }
+          if (sql.includes('SELECT value FROM doctor_diagnostics')) {
+            return {
+              get: (key: string) =>
+                this.store.has(key) ? { value: this.store.get(key) } : undefined,
+            };
+          }
+          if (sql.includes('DELETE FROM doctor_diagnostics')) {
+            return {
+              run: (key: string) => {
+                this.store.delete(key);
+              },
+            };
+          }
+          return {
+            run: () => {},
+            get: () => ({ result: 1 }),
+          };
+        }
 
-    close() {
-      // no-op
-    }
-  }
+        close() {
+          // no-op
+        }
+      }
 
   return { DatabaseSync: MockNodeSqlite };
 });
@@ -151,6 +154,8 @@ beforeEach(() => {
   mockStore = new Map<string, string>();
   betterAvailable = true;
   nodeAvailable = true;
+  mockAvailability.betterAvailable = true;
+  mockAvailability.nodeAvailable = true;
   process.env.AGENT_RELAY_DOCTOR_NODE_VERSION = '22.1.0';
   delete process.env.AGENT_RELAY_DOCTOR_FORCE_NODE_SQLITE;
   vi.resetModules();
@@ -195,6 +200,8 @@ describe('doctor diagnostics', () => {
   it('fails gracefully when no SQLite drivers are available', async () => {
     betterAvailable = false;
     nodeAvailable = false;
+    mockAvailability.betterAvailable = false;
+    mockAvailability.nodeAvailable = false;
     delete process.env.AGENT_RELAY_DOCTOR_FORCE_NODE_SQLITE;
     const { logs, restore } = collectLogs();
     const { runDoctor } = await loadDoctor();
