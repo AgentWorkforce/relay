@@ -147,6 +147,7 @@
     "@agent-relay/utils": "2.0.32",
     "@agent-relay/wrapper": "2.0.32",
     "agent-trajectories": "^0.2.3",
+    "posthog-node": "^4.0.1",
     "better-sqlite3": "^12.6.2",
     "chokidar": "^5.0.0",
     "commander": "^12.1.0",

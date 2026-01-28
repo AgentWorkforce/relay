@@ -1118,8 +1118,13 @@ export class AgentSpawner {
         const openCodeApi = new OpenCodeApi();
         const serveAvailable = await openCodeApi.isAvailable() || process.env.OPENCODE_HTTP_MODE === '1';
 
-        if (serveAvailable) {
-          if (debug) log.debug(`OpenCode serve available, using OpenCodeWrapper for ${name}`);
+        // In cloud workspaces, auto-start opencode serve if not already running
+        // This keeps the HTTP API internal to the container (localhost:4096, not exposed)
+        const isCloudWorkspace = !!process.env.WORKSPACE_ID;
+        const shouldUseHttpApi = serveAvailable || isCloudWorkspace;
+
+        if (shouldUseHttpApi) {
+          if (debug) log.debug(`OpenCode: serve=${serveAvailable ? 'available' : 'will-auto-start'}, cloud=${isCloudWorkspace}, using OpenCodeWrapper for ${name}`);
 
           const openCodeConfig: OpenCodeWrapperConfig = {
             name,
@@ -1137,6 +1142,9 @@ export class AgentSpawner {
             httpApi: {
               enabled: true,
               fallbackToPty: true, // Allow fallback if HTTP becomes unavailable
+              // Auto-start opencode serve in cloud workspaces (internal to container)
+              autoStartServe: isCloudWorkspace && !serveAvailable,
+              waitForServeMs: 10000, // Give serve time to start in cloud
             },
             onSpawn: onSpawnHandler,
             onRelease: onReleaseHandler,
@@ -1235,8 +1243,8 @@ export class AgentSpawner {
           };
         }
 
-        // OpenCode serve not available, fall through to RelayPtyOrchestrator
-        if (debug) log.debug(`OpenCode serve not available, falling back to RelayPtyOrchestrator for ${name}`);
+        // OpenCode serve not available and not in cloud workspace, fall through to RelayPtyOrchestrator
+        if (debug) log.debug(`OpenCode: serve not available, not cloud workspace, falling back to RelayPtyOrchestrator for ${name}`);
       }
 
       // Create RelayPtyOrchestrator (relay-pty Rust binary)
