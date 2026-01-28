@@ -576,11 +576,19 @@ export abstract class BaseWrapper extends EventEmitter {
    * Execute a spawn command
    */
   protected async executeSpawn(name: string, cli: string, task: string): Promise<void> {
-    // TODO: Re-enable daemon socket spawn when client.spawn() is implemented
-    // See: docs/SDK-MIGRATION-PLAN.md for planned implementation
-    // For now, go directly to dashboard API or callback
+    // Try daemon socket spawn first (most reliable)
+    if (this.client.state === 'READY') {
+      try {
+        const result = await this.client.spawn({ name, cli, task });
+        if (result.success) return;
+        // If spawn failed, log and fall through to other methods
+        console.warn(`[base-wrapper] Daemon spawn failed: ${result.error}`);
+      } catch (e) {
+        console.warn(`[base-wrapper] Daemon spawn error: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
 
-    // Try dashboard API
+    // Try dashboard API as fallback
     if (this.config.dashboardPort) {
       try {
         const response = await fetch(
@@ -607,9 +615,17 @@ export abstract class BaseWrapper extends EventEmitter {
    * Execute a release command
    */
   protected async executeRelease(name: string): Promise<void> {
-    // TODO: Re-enable daemon socket release when client.release() is implemented
-    // See: docs/SDK-MIGRATION-PLAN.md for planned implementation
-    // For now, go directly to dashboard API or callback
+    // Try daemon socket release first (most reliable)
+    if (this.client.state === 'READY') {
+      try {
+        const result = await this.client.release(name);
+        if (result.success) return;
+        // If release failed, log and fall through to other methods
+        console.warn(`[base-wrapper] Daemon release failed: ${result.error}`);
+      } catch (e) {
+        console.warn(`[base-wrapper] Daemon release error: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
 
     // Try dashboard API as fallback (backwards compatibility)
     if (this.config.dashboardPort) {

@@ -34,7 +34,8 @@
     "@agent-relay/protocol": "2.0.32",
     "@agent-relay/config": "2.0.32",
     "@agent-relay/continuity": "2.0.32",
-    "@agent-relay/resiliency": "2.0.32"
+    "@agent-relay/resiliency": "2.0.32",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

@@ -56,8 +56,21 @@ import {
   type SpeakOnTrigger,
   type LogPayload,
   type EntityType,
+  type SpawnPayload,
+  type SpawnResultPayload,
+  type ReleasePayload,
+  type ReleaseResultPayload,
   PROTOCOL_VERSION,
 } from '@agent-relay/protocol/types';
+import {
+  type SpawnResult,
+  type ReleaseResult,
+  toSpawnResult,
+  toReleaseResult,
+} from '@agent-relay/utils/client-helpers';
+
+// Re-export types for consumers
+export type { SpawnResult, ReleaseResult };
 import type {
   ChannelMessagePayload,
   ChannelJoinEnvelope,
@@ -684,6 +697,139 @@ export class RelayClient {
 
     return this.send(envelope);
   }
+
+  // =============================================================================
+  // Spawn/Release Operations
+  // =============================================================================
+
+  /**
+   * Spawn a worker agent via the daemon.
+   * @param options - Spawn configuration
+   * @returns Promise resolving to spawn result
+   */
+  async spawn(options: {
+    name: string;
+    cli: string;
+    task: string;
+    model?: string;
+    cwd?: string;
+  }): Promise<SpawnResult> {
+    if (this._state !== 'READY') {
+      return { success: false, error: 'Client not ready' };
+    }
+
+    try {
+      const payload: SpawnPayload = {
+        name: options.name,
+        cli: options.cli,
+        task: options.task,
+        model: options.model,
+        cwd: options.cwd,
+        spawnerName: this.config.agentName,
+      };
+
+      const result = await this.requestResponse<SpawnResultPayload>(
+        'SPAWN',
+        payload as unknown as Record<string, unknown>,
+        30000 // 30 second timeout for spawn
+      );
+
+      return toSpawnResult(result);
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  /**
+   * Release (terminate) a worker agent via the daemon.
+   * @param name - Name of the agent to release
+   * @param reason - Optional reason for release
+   * @returns Promise resolving to release result
+   */
+  async release(name: string, reason?: string): Promise<ReleaseResult> {
+    if (this._state !== 'READY') {
+      return { success: false, error: 'Client not ready' };
+    }
+
+    try {
+      const payload: ReleasePayload = { name, reason };
+
+      const result = await this.requestResponse<ReleaseResultPayload>(
+        'RELEASE',
+        payload as unknown as Record<string, unknown>,
+        10000 // 10 second timeout for release
+      );
+
+      return toReleaseResult(result);
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  /**
+   * Send an envelope and wait for a matching response.
+   * Used for request/response operations like spawn/release.
+   */
+  private requestResponse<T>(
+    type: string,
+    payload: Record<string, unknown>,
+    timeoutMs: number
+  ): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      if (!this.socket) {
+        reject(new Error('Not connected'));
+        return;
+      }
+
+      const requestId = generateId();
+      let timeoutHandle: NodeJS.Timeout;
+      let responseHandler: (envelope: Envelope) => void;
+
+      const cleanup = (): void => {
+        clearTimeout(timeoutHandle);
+        // Remove the handler from pending response handlers
+        this.pendingResponses.delete(requestId);
+      };
+
+      timeoutHandle = setTimeout(() => {
+        cleanup();
+        reject(new Error(`Request timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      responseHandler = (envelope: Envelope): void => {
+        // Match by replyTo or id
+        const replyTo = (envelope.payload as { replyTo?: string })?.replyTo;
+        if (replyTo === requestId || envelope.id === requestId) {
+          cleanup();
+
+          if (envelope.type === 'ERROR') {
+            const errorPayload = envelope.payload as { message?: string; code?: string };
+            reject(new Error(errorPayload.message || errorPayload.code || 'Unknown error'));
+          } else {
+            resolve(envelope.payload as T);
+          }
+        }
+      };
+
+      // Register handler for this request
+      this.pendingResponses.set(requestId, responseHandler);
+
+      // Send the request envelope
+      const envelope: Envelope = {
+        v: PROTOCOL_VERSION,
+        type: type as Envelope['type'],
+        id: requestId,
+        ts: Date.now(),
+        payload,
+      };
+
+      this.send(envelope);
+    });
+  }
+
+  // Map to track pending request/response handlers
+  private pendingResponses: Map<string, (envelope: Envelope) => void> = new Map();
+
   private setState(state: ClientState): void {
     this._state = state;
     if (this.onStateChange) {
@@ -768,6 +914,17 @@ export class RelayClient {
   }
 
   private processFrame(envelope: Envelope): void {
+    // Check for pending request/response handlers first
+    // This handles SPAWN_RESULT, RELEASE_RESULT, and ERROR responses
+    const replyTo = (envelope.payload as { replyTo?: string })?.replyTo;
+    if (replyTo && this.pendingResponses.has(replyTo)) {
+      const handler = this.pendingResponses.get(replyTo);
+      if (handler) {
+        handler(envelope);
+        return;
+      }
+    }
+
     switch (envelope.type) {
       case 'WELCOME':
         this.handleWelcome(envelope as Envelope<WelcomePayload>);
@@ -791,6 +948,12 @@ export class RelayClient {
 
       case 'ERROR':
         this.handleErrorFrame(envelope as Envelope<ErrorPayload>);
+        break;
+
+      case 'SPAWN_RESULT':
+      case 'RELEASE_RESULT':
+        // These should be handled by pending response handlers above
+        // If we get here, it's an orphaned response (no handler waiting)
         break;
 
       case 'BUSY':

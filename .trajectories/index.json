@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-28T13:43:17.273Z",
+  "lastUpdated": "2026-01-28T14:46:26.131Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -114,12 +114,33 @@
       "completedAt": "2026-01-28T08:21:36.859Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_kcban1muyxkq.json"
     },
+    "traj_3uo1an98lysm": {
+      "title": "Analyze opencode serve and add HTTP API integration",
+      "status": "completed",
+      "startedAt": "2026-01-28T10:51:06.786Z",
+      "completedAt": "2026-01-28T10:51:41.785Z",
+      "path": "/home/user/relay/.trajectories/completed/2026-01/traj_3uo1an98lysm.json"
+    },
     "traj_tpqflgapr8p8": {
       "title": "Fix PR #334 build errors: doctor.test.ts and Vitest workspace package resolution",
       "status": "completed",
       "startedAt": "2026-01-28T13:42:55.148Z",
       "completedAt": "2026-01-28T13:43:17.245Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_tpqflgapr8p8.json"
+    },
+    "traj_cb7duoimt5e4": {
+      "title": "OpenCode integration completeness investigation",
+      "status": "completed",
+      "startedAt": "2026-01-28T14:25:25.478Z",
+      "completedAt": "2026-01-28T14:26:39.652Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_cb7duoimt5e4.json"
+    },
+    "traj_ziroh3f1q9ci": {
+      "title": "Complete OpenCode integration - spawner, tests, docs, OpenAPI",
+      "status": "completed",
+      "startedAt": "2026-01-28T14:32:43.510Z",
+      "completedAt": "2026-01-28T14:46:26.099Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_ziroh3f1q9ci.json"
     }
   }
 }

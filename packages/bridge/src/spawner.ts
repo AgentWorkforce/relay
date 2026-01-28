@@ -16,6 +16,7 @@ import { createLogger } from '@agent-relay/utils/logger';
 import { mapModelToCli } from '@agent-relay/utils/model-mapping';
 import { findRelayPtyBinary as findRelayPtyBinaryUtil, getLastSearchPaths } from '@agent-relay/utils/relay-pty-path';
 import { RelayPtyOrchestrator, type RelayPtyOrchestratorConfig } from '@agent-relay/wrapper';
+import { OpenCodeWrapper, type OpenCodeWrapperConfig, OpenCodeApi } from '@agent-relay/wrapper';
 import type { SummaryEvent, SessionEndEvent } from '@agent-relay/wrapper';
 import { selectShadowCli } from './shadow-cli.js';
 
@@ -866,6 +867,7 @@ export class AgentSpawner {
       // Add auto-accept flags for Codex and Gemini (only in non-interactive mode)
       const isCodexCli = commandName.startsWith('codex');
       const isGeminiCli = commandName === 'gemini';
+      const isOpenCodeCli = commandName === 'opencode' || rawCommandName === 'opencode';
 
       if (!interactive) {
         // Add --dangerously-bypass-approvals-and-sandbox for Codex agents
@@ -1109,6 +1111,133 @@ export class AgentSpawner {
         if (debug) log.debug(`Release request: ${workerName}`);
         await this.release(workerName);
       };
+
+      // Check if we should use OpenCodeWrapper with HTTP API mode
+      if (isOpenCodeCli) {
+        // OpenCodeApi reads OPENCODE_API_URL or OPENCODE_PORT from env, defaults to localhost:4096
+        const openCodeApi = new OpenCodeApi();
+        const serveAvailable = await openCodeApi.isAvailable() || process.env.OPENCODE_HTTP_MODE === '1';
+
+        if (serveAvailable) {
+          if (debug) log.debug(`OpenCode serve available, using OpenCodeWrapper for ${name}`);
+
+          const openCodeConfig: OpenCodeWrapperConfig = {
+            name,
+            command,
+            args,
+            socketPath: this.socketPath,
+            cwd: agentCwd,
+            dashboardPort: this.dashboardPort,
+            env: {
+              ...userEnv,
+              ...(spawnerName ? { AGENT_RELAY_SPAWNER: spawnerName } : {}),
+              ...(relaySocket ? { RELAY_SOCKET: relaySocket } : {}),
+              RELAY_AGENT_NAME: name,
+            },
+            httpApi: {
+              enabled: true,
+              fallbackToPty: true, // Allow fallback if HTTP becomes unavailable
+            },
+            onSpawn: onSpawnHandler,
+            onRelease: onReleaseHandler,
+          };
+
+          const openCodeWrapper = new OpenCodeWrapper(openCodeConfig);
+
+          // Track listener references for proper cleanup
+          const listeners: ListenerBindings = {};
+
+          // Hook up output events for live log streaming
+          const outputListener = (data: string) => {
+            const broadcast = (global as any).__broadcastLogOutput;
+            if (broadcast) {
+              broadcast(name, data);
+            }
+          };
+          openCodeWrapper.on('output', outputListener);
+          listeners.output = outputListener;
+
+          // Handle exit events
+          openCodeWrapper.on('exit', (code: number) => {
+            onExitHandler(code);
+          });
+
+          // Mark agent as spawning BEFORE starting wrapper
+          if (this.onMarkSpawning) {
+            this.onMarkSpawning(name);
+            if (debug) log.debug(`Marked ${name} as spawning`);
+          }
+
+          await openCodeWrapper.start();
+          if (debug) log.debug(`OpenCodeWrapper started for ${name}, HTTP mode: ${openCodeWrapper.isHttpApiMode}`);
+
+          // Wait for the agent to register with the daemon
+          const registered = await this.waitForAgentRegistration(name, 30_000, 500);
+          if (!registered) {
+            const tracedError = createTraceableError('Agent registration timeout', {
+              agentName: name,
+              cli,
+              pid: openCodeWrapper.pid,
+              timeoutMs: 30_000,
+            });
+            log.error(tracedError.logMessage);
+            if (this.onClearSpawning) {
+              this.onClearSpawning(name);
+            }
+            await openCodeWrapper.kill();
+            return {
+              success: false,
+              name,
+              error: tracedError.userMessage,
+              errorId: tracedError.errorId,
+            };
+          }
+
+          // Send task to the newly spawned agent if provided
+          if (task && task.trim()) {
+            const ready = await openCodeWrapper.waitUntilReadyForMessages(20000, 100);
+            if (ready) {
+              const taskSent = await openCodeWrapper.injectTask(task, spawnerName || 'spawner');
+              if (!taskSent) {
+                log.warn(`Failed to inject task for ${name} via OpenCodeWrapper`);
+              } else if (debug) {
+                log.debug(`Task injected to ${name} via OpenCodeWrapper`);
+              }
+            } else {
+              log.warn(`OpenCodeWrapper ${name} not ready for task injection`);
+            }
+          }
+
+          // Track the worker (cast to AgentWrapper for type compatibility)
+          const workerInfo: ActiveWorker = {
+            name,
+            cli,
+            task,
+            team,
+            userId,
+            spawnedAt: Date.now(),
+            pid: openCodeWrapper.pid,
+            pty: openCodeWrapper as unknown as AgentWrapper,
+            logFile: openCodeWrapper.logPath,
+            listeners,
+          };
+          this.activeWorkers.set(name, workerInfo);
+          this.saveWorkersMetadata();
+
+          const teamInfo = team ? ` [team: ${team}]` : '';
+          const shadowInfo = request.shadowOf ? ` [shadow of: ${request.shadowOf}]` : '';
+          log.info(`Spawned ${name} (${cli}) via OpenCodeWrapper${teamInfo}${shadowInfo} [HTTP mode: ${openCodeWrapper.isHttpApiMode}]`);
+
+          return {
+            success: true,
+            name,
+            pid: openCodeWrapper.pid,
+          };
+        }
+
+        // OpenCode serve not available, fall through to RelayPtyOrchestrator
+        if (debug) log.debug(`OpenCode serve not available, falling back to RelayPtyOrchestrator for ${name}`);
+      }
 
       // Create RelayPtyOrchestrator (relay-pty Rust binary)
       const ptyConfig: RelayPtyOrchestratorConfig = {
