@@ -16,6 +16,7 @@
  */
 
 import { createRelayClient, type RelayClient, type RelayClientOptions } from './client.js';
+import type { AckPayload } from '@agent-relay/protocol';
 
 export interface Message {
   id: string;
@@ -55,7 +56,7 @@ export interface RelayTools {
     to: string,
     message: string,
     options?: { thread?: string; timeoutMs?: number }
-  ): Promise<{ from: string; content: string; thread?: string }>;
+  ): Promise<AckPayload>;
 
   /** Check inbox for messages */
   inbox(options?: {

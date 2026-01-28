@@ -12,6 +12,7 @@ import { join, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { RelayClient } from './client.js';
 import { createRelayClient } from './client.js';
+import type { AckPayload } from '@agent-relay/protocol';
 import { discoverSocket } from './cloud.js';
 
 export interface HybridClientOptions {
@@ -78,7 +79,7 @@ export function createHybridClient(options: HybridClientOptions): RelayClient {
     to: string,
     message: string,
     opts: { thread?: string; timeoutMs?: number } = {}
-  ): Promise<{ from: string; content: string; thread?: string }> => {
+  ): Promise<AckPayload> => {
     // For await responses, we still use socket since we need the response
     // TODO: Implement file-based request/response pattern
     return getSocketClient().sendAndWait(to, message, opts);
@@ -174,7 +175,7 @@ export function createHybridClient(options: HybridClientOptions): RelayClient {
     saveContinuity,
     loadContinuity,
     markUncertain,
-  } as RelayClient & {
+  } as unknown as RelayClient & {
     saveContinuity: typeof saveContinuity;
     loadContinuity: typeof loadContinuity;
     markUncertain: typeof markUncertain;
