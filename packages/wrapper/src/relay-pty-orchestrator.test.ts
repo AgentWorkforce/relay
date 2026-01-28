@@ -1180,6 +1180,182 @@ describe('RelayPtyOrchestrator', () => {
       processQueueSpy.mockRestore();
     });
   });
+
+  describe('output buffer management', () => {
+    it('trims rawBuffer when it exceeds MAX_OUTPUT_BUFFER_SIZE', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Access private MAX_OUTPUT_BUFFER_SIZE constant (10MB)
+      const MAX_SIZE = 10 * 1024 * 1024;
+
+      // Generate data larger than the max size
+      const chunkSize = 1024 * 1024; // 1MB chunks
+      const numChunks = 12; // 12MB total (exceeds 10MB limit)
+
+      for (let i = 0; i < numChunks; i++) {
+        const chunk = `chunk-${i}-${'x'.repeat(chunkSize - 10)}\n`;
+        mockProcess.stdout!.emit('data', Buffer.from(chunk));
+      }
+
+      // Buffer should be trimmed to MAX_SIZE
+      const rawOutput = orchestrator.getRawOutput();
+      expect(rawOutput.length).toBeLessThanOrEqual(MAX_SIZE);
+
+      // Should contain the most recent chunks (tail of buffer)
+      expect(rawOutput).toContain('chunk-11'); // Last chunk
+      expect(rawOutput).not.toContain('chunk-0'); // First chunk should be trimmed
+    });
+
+    it('adjusts lastParsedLength when buffer is trimmed', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Access lastParsedLength via reflection
+      const getLastParsedLength = () => (orchestrator as any).lastParsedLength;
+
+      // Emit some initial output to set lastParsedLength
+      const initialData = 'Initial output that sets parse position\n';
+      mockProcess.stdout!.emit('data', Buffer.from(initialData));
+
+      // Allow parsing to run
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      const initialParsedLength = getLastParsedLength();
+      expect(initialParsedLength).toBeGreaterThan(0);
+
+      // Now emit a lot of data to trigger buffer trimming
+      const MAX_SIZE = 10 * 1024 * 1024;
+      const largeData = 'x'.repeat(MAX_SIZE + 1000);
+      mockProcess.stdout!.emit('data', Buffer.from(largeData));
+
+      // lastParsedLength should be adjusted to stay in sync
+      const adjustedParsedLength = getLastParsedLength();
+
+      // After trimming, lastParsedLength should be reduced by the trim amount
+      // or set to 0 if the trim amount exceeds the previous value
+      expect(adjustedParsedLength).toBeLessThanOrEqual(MAX_SIZE);
+    });
+
+    it('still detects relay commands after buffer trimming', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Access the client mock
+      const client = (orchestrator as any).client;
+      client.sendMessage.mockClear();
+
+      // Emit a lot of data to fill the buffer
+      const MAX_SIZE = 10 * 1024 * 1024;
+      const filler = 'x'.repeat(MAX_SIZE + 1000);
+      mockProcess.stdout!.emit('data', Buffer.from(filler));
+
+      // Now emit a relay command after the buffer was trimmed
+      mockProcess.stdout!.emit('data', Buffer.from('\n->relay:Bob Post-trim message\n'));
+
+      // Allow parsing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // The relay command should still be detected
+      expect(client.sendMessage).toHaveBeenCalled();
+    });
+
+    it('still detects summary blocks after buffer trimming', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      const summaryHandler = vi.fn();
+      orchestrator.on('summary', summaryHandler);
+
+      await orchestrator.start();
+
+      // Emit a lot of data to trigger trimming
+      const MAX_SIZE = 10 * 1024 * 1024;
+      const filler = 'x'.repeat(MAX_SIZE + 1000);
+      mockProcess.stdout!.emit('data', Buffer.from(filler));
+
+      // Now emit a summary block
+      mockProcess.stdout!.emit('data', Buffer.from(
+        '\n[[SUMMARY]]{"currentTask": "Post-trim task"}[[/SUMMARY]]\n'
+      ));
+
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Summary should still be detected
+      expect(summaryHandler).toHaveBeenCalled();
+    });
+
+    it('does not lose data during buffer trimming', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Emit data in chunks, each with a unique marker
+      const markers: string[] = [];
+      for (let i = 0; i < 20; i++) {
+        const marker = `MARKER_${i}_${Date.now()}`;
+        markers.push(marker);
+        // Each chunk is 1MB
+        const chunk = marker + '_' + 'x'.repeat(1024 * 1024 - marker.length - 2) + '\n';
+        mockProcess.stdout!.emit('data', Buffer.from(chunk));
+      }
+
+      const rawOutput = orchestrator.getRawOutput();
+
+      // The most recent markers should be present (within the 10MB limit)
+      // Approximately the last 10 markers should be there
+      const recentMarkers = markers.slice(-10);
+      for (const marker of recentMarkers) {
+        expect(rawOutput).toContain(marker);
+      }
+
+      // The oldest markers should be trimmed
+      const oldMarkers = markers.slice(0, 5);
+      for (const marker of oldMarkers) {
+        expect(rawOutput).not.toContain(marker);
+      }
+    });
+
+    it('handles rapid output without memory exhaustion', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Simulate rapid output (like a build log or test output)
+      const iterations = 100;
+      const chunkSize = 100 * 1024; // 100KB chunks
+
+      for (let i = 0; i < iterations; i++) {
+        const chunk = `iteration-${i}: ${'log'.repeat(chunkSize / 3)}\n`;
+        mockProcess.stdout!.emit('data', Buffer.from(chunk));
+      }
+
+      // Should not throw RangeError
+      const rawOutput = orchestrator.getRawOutput();
+      const MAX_SIZE = 10 * 1024 * 1024;
+      expect(rawOutput.length).toBeLessThanOrEqual(MAX_SIZE);
+    });
+  });
 });
 
 describe('RelayPtyOrchestrator integration', () => {

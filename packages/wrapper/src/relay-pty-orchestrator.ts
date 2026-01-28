@@ -57,6 +57,13 @@ import {
 
 const MAX_SOCKET_PATH_LENGTH = 107;
 
+/**
+ * Maximum size for output buffers (rawBuffer, outputBuffer) in bytes.
+ * Prevents RangeError: Invalid string length when agents produce lots of output.
+ * Set to 10MB - enough to capture context but won't exhaust memory.
+ */
+const MAX_OUTPUT_BUFFER_SIZE = 10 * 1024 * 1024; // 10MB
+
 function hashWorkspaceId(workspaceId: string): string {
   return createHash('sha256').update(workspaceId).digest('hex').slice(0, 12);
 }
@@ -955,6 +962,19 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     this.rawBuffer += data;
     this.outputBuffer += data;
     this.hasReceivedOutput = true;
+
+    // Trim buffers if they exceed max size to prevent RangeError: Invalid string length
+    // Keep the most recent output (tail) as it's more relevant for pattern matching
+    if (this.rawBuffer.length > MAX_OUTPUT_BUFFER_SIZE) {
+      const trimAmount = this.rawBuffer.length - MAX_OUTPUT_BUFFER_SIZE;
+      this.rawBuffer = this.rawBuffer.slice(-MAX_OUTPUT_BUFFER_SIZE);
+      // Adjust lastParsedLength to stay in sync with the trimmed buffer
+      // This ensures parseRelayCommands() doesn't skip content or re-parse old content
+      this.lastParsedLength = Math.max(0, this.lastParsedLength - trimAmount);
+    }
+    if (this.outputBuffer.length > MAX_OUTPUT_BUFFER_SIZE) {
+      this.outputBuffer = this.outputBuffer.slice(-MAX_OUTPUT_BUFFER_SIZE);
+    }
 
     // Feed to idle detector
     this.feedIdleDetectorOutput(data);
