@@ -5,6 +5,15 @@
   "type": "module",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js",
+      "require": "./dist/index.cjs",
+      "default": "./dist/src/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "bin": {
     "agent-relay": "dist/src/cli/index.js"
   },
@@ -42,7 +51,9 @@
     "build:spawner": "cd packages/spawner && npm run build",
     "build:telemetry": "cd packages/telemetry && npm run build",
     "build:benchmark": "cd packages/benchmark && npm run build",
-    "postbuild": "chmod +x dist/src/cli/index.js",
+    "build:cjs": "node ./scripts/build-cjs.mjs",
+    "postbuild": "chmod +x dist/src/cli/index.js && npm run build:cjs",
+    "prepack": "if [ -d node_modules ]; then npm run build; else echo '⚠ node_modules not found, skipping prepack build'; fi",
     "dev:watch": "tsc -w",
     "predev": "npm run clean && npm run build:packages && tsc && chmod +x dist/src/cli/index.js",
     "dev": "node dist/src/cli/index.js up --dashboard --port 3888",
