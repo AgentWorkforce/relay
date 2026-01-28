@@ -1920,8 +1920,11 @@ export class RelayPtyOrchestrator extends BaseWrapper {
           const fullPath = join(parentDir, filename);
           try {
             // If it's a file (not directory) directly in the parent, that's an issue
-            if (existsSync(fullPath) && !lstatSync(fullPath).isDirectory()) {
-              this.handleProtocolIssue('file_in_root', filename);
+            if (existsSync(fullPath)) {
+              const stats = lstatSync(fullPath);
+              if (!stats.isDirectory() && !stats.isSymbolicLink()) {
+                this.handleProtocolIssue('file_in_root', filename);
+              }
             }
             // Check for empty-named directory (double slash symptom)
             if (filename === '' || filename.startsWith('/')) {
@@ -1969,7 +1972,8 @@ export class RelayPtyOrchestrator extends BaseWrapper {
         const fullPath = join(parentDir, entry);
         try {
           // Check for files directly in parent (should only be directories)
-          if (!lstatSync(fullPath).isDirectory()) {
+          const stats = lstatSync(fullPath);
+          if (!stats.isDirectory() && !stats.isSymbolicLink()) {
             this.handleProtocolIssue('file_in_root', entry);
             break; // Only report once
           }

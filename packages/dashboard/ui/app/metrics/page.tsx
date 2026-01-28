@@ -10,6 +10,7 @@
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { getApiUrl, initializeWorkspaceId } from '../../lib/api';
+import { trackPageView } from '../../lib/posthog';
 
 interface AgentMetric {
   name: string;
@@ -116,6 +117,7 @@ export default function MetricsPage() {
   const [_isCloudMode, setIsCloudMode] = useState(false);
 
   useEffect(() => {
+    trackPageView('/metrics', 'Metrics');
     // Initialize workspace ID from localStorage for cloud mode
     const workspaceId = initializeWorkspaceId();
 

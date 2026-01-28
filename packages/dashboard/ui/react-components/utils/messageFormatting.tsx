@@ -220,6 +220,14 @@ function splitTextAndTableSections(content: string): ContentSection[] {
 
 export interface FormatMessageOptions {
   mentions?: string[];
+  /** Channel member IDs - when provided, mentions of non-members show indicator */
+  channelMemberIds?: Set<string>;
+  /** Current user - only the sender sees the invite CTA */
+  currentUser?: string;
+  /** Message sender - used to determine if current user is the sender */
+  messageSender?: string;
+  /** Callback when "Invite to channel" is clicked for a non-member mention */
+  onInviteToChannel?: (username: string) => void;
 }
 
 /**
@@ -239,7 +247,7 @@ export function formatMessageBody(content: string, options: FormatMessageOptions
     return lines.map((line, i) => (
       <React.Fragment key={i}>
         {i > 0 && <br />}
-        {formatLine(line, options.mentions)}
+        {formatLine(line, options.mentions, options)}
       </React.Fragment>
     ));
   }
@@ -274,7 +282,7 @@ export function formatMessageBody(content: string, options: FormatMessageOptions
         {lines.map((line, i) => (
           <React.Fragment key={i}>
             {i > 0 && <br />}
-            {formatLine(line, options.mentions)}
+            {formatLine(line, options.mentions, options)}
           </React.Fragment>
         ))}
       </span>
@@ -285,7 +293,7 @@ export function formatMessageBody(content: string, options: FormatMessageOptions
 /**
  * Format a single line, detecting URLs, inline code, and mentions
  */
-function formatLine(line: string, mentions?: string[]): React.ReactNode {
+function formatLine(line: string, mentions?: string[], options?: FormatMessageOptions): React.ReactNode {
   // Combined regex to match URLs and inline code (backticks)
   // Order matters: check for backticks first to avoid URL detection inside code
   const combinedRegex = /(`[^`]+`|https?:\/\/[^\s]+)/g;
@@ -322,7 +330,7 @@ function formatLine(line: string, mentions?: string[]): React.ReactNode {
       );
     }
 
-    return highlightMentions(part, mentions, `text-${i}`);
+    return highlightMentions(part, mentions, `text-${i}`, options);
   });
 }
 
@@ -330,7 +338,12 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function highlightMentions(text: string, mentions: string[] | undefined, keyPrefix: string): React.ReactNode {
+function highlightMentions(
+  text: string,
+  mentions: string[] | undefined,
+  keyPrefix: string,
+  options?: FormatMessageOptions,
+): React.ReactNode {
   if (!mentions || mentions.length === 0) {
     return text;
   }
@@ -339,6 +352,11 @@ function highlightMentions(text: string, mentions: string[] | undefined, keyPref
   if (escapedMentions.length === 0) {
     return text;
   }
+
+  const channelMemberIds = options?.channelMemberIds;
+  const isSender = options?.currentUser && options?.messageSender &&
+    options.currentUser === options.messageSender;
+  const onInvite = options?.onInviteToChannel;
 
   const pattern = new RegExp(`@(${escapedMentions.join('|')})\\b`, 'g');
   const nodes: React.ReactNode[] = [];
@@ -350,12 +368,35 @@ function highlightMentions(text: string, mentions: string[] | undefined, keyPref
       nodes.push(text.slice(lastIndex, match.index));
     }
 
+    const mentionedName = match[1];
+    const isInChannel = !channelMemberIds || channelMemberIds.has(mentionedName) ||
+      channelMemberIds.has(mentionedName.toLowerCase());
+
     nodes.push(
       <span
         key={`${keyPrefix}-mention-${match.index}`}
-        className="px-1 py-0.5 bg-accent-cyan/20 text-accent-cyan rounded"
+        className="inline-flex items-center gap-1"
       >
-        @{match[1]}
+        <span className="px-1 py-0.5 bg-accent-cyan/20 text-accent-cyan rounded">
+          @{mentionedName}
+        </span>
+        {!isInChannel && channelMemberIds && (
+          <span className="inline-flex items-center gap-1.5 text-xs text-yellow-400/80">
+            <span className="italic">Not in channel</span>
+            {isSender && onInvite && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onInvite(mentionedName);
+                }}
+                className="text-accent-cyan hover:text-accent-cyan/80 hover:underline cursor-pointer bg-transparent border-none p-0 font-medium text-xs"
+              >
+                Invite to channel
+              </button>
+            )}
+          </span>
+        )}
       </span>
     );
 

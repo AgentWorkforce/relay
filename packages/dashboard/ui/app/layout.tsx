@@ -1,11 +1,12 @@
 /**
  * Dashboard V2 - Root Layout
  *
- * Provides global styles, fonts, and metadata for the dashboard.
+ * Provides global styles, fonts, metadata, and analytics for the dashboard.
  */
 
 import type { Metadata } from 'next';
 import './globals.css';
+import { PostHogProvider } from '../react-components/PostHogProvider';
 
 export const metadata: Metadata = {
   title: 'Agent Relay Dashboard',
@@ -19,7 +20,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <PostHogProvider>{children}</PostHogProvider>
+      </body>
     </html>
   );
 }

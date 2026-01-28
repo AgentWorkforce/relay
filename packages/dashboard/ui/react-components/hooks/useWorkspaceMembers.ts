@@ -7,6 +7,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { cloudApi } from '../../lib/cloudApi';
+import { getAvatarUrl } from '../../lib/gravatar';
 import type { UserPresence } from './usePresence';
 
 interface WorkspaceMember {
@@ -64,7 +65,20 @@ export function useWorkspaceMembers(
     try {
       const result = await cloudApi.getWorkspaceMembers(workspaceId);
       if (result.success) {
-        setMembers(result.data.members as WorkspaceMember[]);
+        // Compute Gravatar URL fallback for members missing avatarUrl
+        const membersWithAvatars = (result.data.members as WorkspaceMember[]).map((member) => {
+          if (member.user && !member.user.avatarUrl && member.user.email) {
+            return {
+              ...member,
+              user: {
+                ...member.user,
+                avatarUrl: getAvatarUrl({ email: member.user.email }),
+              },
+            };
+          }
+          return member;
+        });
+        setMembers(membersWithAvatars);
       } else {
         setError(result.error);
         setMembers([]);

@@ -12,6 +12,7 @@ import React, { useState, useEffect, useRef, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Nango from '@nangohq/frontend';
 import { LogoIcon } from '../../react-components/Logo';
+import { trackPageView, trackFormSubmit, trackUserAction } from '../../lib/posthog';
 
 // Loading fallback for Suspense
 function LoginLoading() {
@@ -81,6 +82,7 @@ function LoginContent() {
     };
 
     init();
+    trackPageView('/login', 'Login');
     return () => { mounted = false; };
   }, []);
 
@@ -154,10 +156,12 @@ function LoginContent() {
     setIsAuthenticating(true);
     setError('');
     setAuthStatus('Connecting to GitHub...');
+    trackUserAction('login_attempt', 'navigation', 'github');
 
     try {
       const result = await nangoRef.current.auth('github');
       if (result && 'connectionId' in result) {
+        trackFormSubmit('login', true);
         await handleAuthSuccess(result.connectionId);
       } else {
         throw new Error('No connection ID returned');
@@ -194,6 +198,7 @@ function LoginContent() {
     setError('');
     setIsAuthenticating(true);
     setAuthStatus('Signing in...');
+    trackUserAction('login_attempt', 'navigation', 'email');
 
     try {
       // Get CSRF token first
@@ -226,6 +231,7 @@ function LoginContent() {
       }
 
       // Success - redirect
+      trackFormSubmit('login', true);
       setAuthStatus('Login successful! Redirecting...');
       if (returnUrl) {
         window.location.href = returnUrl;

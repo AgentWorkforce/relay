@@ -35,6 +35,10 @@ export type {
   AgentCrashEvent,
   MessageSendEvent,
   CliCommandRunEvent,
+  DashboardPageViewEvent,
+  DashboardUserActionEvent,
+  DashboardFormSubmitEvent,
+  DashboardSessionStartEvent,
   TelemetryEventName,
   TelemetryEventMap,
 } from './events.js';

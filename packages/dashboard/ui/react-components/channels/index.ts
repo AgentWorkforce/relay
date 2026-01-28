@@ -36,6 +36,12 @@ export {
   setApiMode,
   getApiMode,
   ApiError,
+  // Mention invite API
+  checkMentionMembership,
+  sendMentionInvite,
+  getMentionInvites,
+  respondToMentionInvite,
+  processMentionInvites,
 } from './api';
 
 // Components

@@ -14,6 +14,7 @@ import {
   type SessionError,
   type SessionStatus,
 } from '../../lib/cloudApi';
+import { getAvatarUrl } from '../../lib/gravatar';
 
 export interface UseSessionOptions {
   /** Check session on mount (default: true) */
@@ -104,7 +105,12 @@ export function useSession(options: UseSessionOptions = {}): UseSessionReturn {
       if (!mountedRef.current) return;
 
       if (result.success) {
-        setUser(result.data);
+        const userData = result.data;
+        // Compute Gravatar URL fallback if no explicit avatar
+        if (!userData.avatarUrl && userData.email) {
+          userData.avatarUrl = getAvatarUrl({ email: userData.email });
+        }
+        setUser(userData);
         setIsExpired(false);
         setError(null);
       } else if (result.sessionExpired) {

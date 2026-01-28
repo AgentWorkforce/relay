@@ -55,3 +55,10 @@ export {
   usePinnedAgents,
   type UsePinnedAgentsReturn,
 } from './usePinnedAgents';
+export {
+  useMentionInvite,
+  extractMentions,
+  type UseMentionInviteOptions,
+  type UseMentionInviteReturn,
+  type MentionInviteNotification,
+} from './useMentionInvite';

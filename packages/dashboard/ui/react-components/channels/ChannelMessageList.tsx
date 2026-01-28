@@ -9,23 +9,40 @@
  */
 
 import React, { useRef, useEffect, useCallback, useState, useMemo } from 'react';
-import type { ChannelMessage, ChannelMessageListProps, UnreadState } from './types';
+import type { ChannelMessage, ChannelMember, ChannelMessageListProps, UnreadState } from './types';
 import { formatMessageBody } from '../utils/messageFormatting';
 
 export function ChannelMessageList({
   messages,
   unreadState,
   currentUser,
+  channelMembers,
   isLoadingMore = false,
   hasMore = false,
   onLoadMore,
   onThreadClick,
   onMemberClick,
+  onInviteToChannel,
 }: ChannelMessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const [isNearBottom, setIsNearBottom] = useState(true);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+
+  // Build set of channel member IDs for mention detection
+  const channelMemberIds = useMemo(() => {
+    if (!channelMembers || channelMembers.length === 0) return undefined;
+    const ids = new Set<string>();
+    for (const member of channelMembers) {
+      ids.add(member.id);
+      ids.add(member.id.toLowerCase());
+      if (member.displayName) {
+        ids.add(member.displayName);
+        ids.add(member.displayName.toLowerCase());
+      }
+    }
+    return ids;
+  }, [channelMembers]);
 
   // Group messages by date
   const groupedMessages = useMemo(() => {
@@ -144,8 +161,11 @@ export function ChannelMessageList({
                   <MessageItem
                     message={message}
                     isOwn={message.from === currentUser}
+                    currentUser={currentUser}
+                    channelMemberIds={channelMemberIds}
                     onThreadClick={onThreadClick}
                     onMemberClick={onMemberClick}
+                    onInviteToChannel={onInviteToChannel}
                     showAvatar={shouldShowAvatar(dateMessages, index)}
                   />
                 </React.Fragment>
@@ -179,16 +199,22 @@ export function ChannelMessageList({
 interface MessageItemProps {
   message: ChannelMessage;
   isOwn: boolean;
+  currentUser: string;
+  channelMemberIds?: Set<string>;
   onThreadClick?: (messageId: string) => void;
   onMemberClick?: (memberId: string, entityType: 'user' | 'agent') => void;
+  onInviteToChannel?: (username: string) => void;
   showAvatar: boolean;
 }
 
 function MessageItem({
   message,
   isOwn,
+  currentUser,
+  channelMemberIds,
   onThreadClick,
   onMemberClick,
+  onInviteToChannel,
   showAvatar,
 }: MessageItemProps) {
   const hasThread = message.threadSummary && message.threadSummary.replyCount > 0;
@@ -254,7 +280,13 @@ function MessageItem({
 
           {/* Message content */}
           <div className="text-sm text-text-primary whitespace-pre-wrap break-words">
-            {formatMessageBody(message.content, { mentions: message.mentions })}
+            {formatMessageBody(message.content, {
+              mentions: message.mentions,
+              channelMemberIds,
+              currentUser,
+              messageSender: message.from,
+              onInviteToChannel,
+            })}
           </div>
 
           {/* Attachments */}
