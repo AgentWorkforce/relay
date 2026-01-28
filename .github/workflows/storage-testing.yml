@@ -1,0 +1,96 @@
+name: Storage Testing
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  storage:
+    name: Storage Tests (Node ${{ matrix.node-version }} | ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node-version: [18, 20, 22]
+      fail-fast: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Show Node.js version
+        run: |
+          node --version
+          npm --version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Ensure rollup optional dependencies are installed
+        run: npm install --no-save rollup || true
+
+      - name: Run storage-focused tests
+        env:
+          AGENT_RELAY_SKIP_TMUX: '1'
+          AGENT_RELAY_SKIP_UPDATE_CHECK: '1'
+        run: |
+          npx vitest run \
+            src/cli/commands/doctor.test.ts \
+            packages/storage/src/sqlite-adapter.test.ts \
+            packages/storage/src/jsonl-adapter.test.ts
+
+      - name: Verify postinstall storage status
+        run: |
+          node scripts/postinstall.js || true
+          if [ -f .agent-relay/storage-status.txt ]; then
+            echo "storage-status.txt contents:"
+            cat .agent-relay/storage-status.txt
+          else
+            echo "storage-status.txt missing"
+          fi
+
+  coverage:
+    name: Coverage (upload)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Ensure rollup optional dependencies are installed
+        run: npm install --no-save rollup || true
+
+      - name: Run storage tests with coverage
+        env:
+          AGENT_RELAY_SKIP_TMUX: '1'
+          AGENT_RELAY_SKIP_UPDATE_CHECK: '1'
+        run: |
+          npx vitest run --coverage \
+            src/cli/commands/doctor.test.ts \
+            packages/storage/src/sqlite-adapter.test.ts \
+            packages/storage/src/jsonl-adapter.test.ts
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage/lcov.info

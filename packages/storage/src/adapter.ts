@@ -1,6 +1,22 @@
 import type { PayloadKind, SendMeta } from '@agent-relay/protocol/types';
+import path from 'node:path';
 
 export type MessageStatus = 'unread' | 'read' | 'acked' | 'failed';
+
+/**
+ * Lightweight storage health report for the daemon/CLI.
+ * - persistent: true when data is durable across restarts
+ * - driver: backing implementation identifier
+ * - canRead/canWrite: simple capability probes
+ * - error: optional guidance or last failure reason
+ */
+export interface StorageHealth {
+  persistent: boolean;
+  driver: 'sqlite' | 'jsonl' | 'memory';
+  canWrite: boolean;
+  canRead: boolean;
+  error?: string;
+}
 
 export interface StoredMessage {
   id: string;
@@ -78,6 +94,7 @@ export interface AgentSummary {
 
 export interface StorageAdapter {
   init(): Promise<void>;
+  healthCheck(): Promise<StorageHealth>;
   saveMessage(message: StoredMessage): Promise<void>;
   getMessages(query?: MessageQuery): Promise<StoredMessage[]>;
   getMessageById?(id: string): Promise<StoredMessage | null>;
@@ -117,7 +134,7 @@ export interface StorageAdapter {
  * Can be set via CLI options or environment variables.
  */
 export interface StorageConfig {
-  /** Storage type: 'sqlite', 'sqlite-batched', 'none', or 'postgres' (future) */
+  /** Storage type: 'sqlite', 'sqlite-batched', 'jsonl', 'none', or 'postgres' (future) */
   type?: string;
   /** Path for SQLite database */
   path?: string;
@@ -138,9 +155,24 @@ export interface StorageConfig {
  */
 export class MemoryStorageAdapter implements StorageAdapter {
   private messages: StoredMessage[] = [];
+  private fallbackReason?: string;
+
+  constructor(options?: { reason?: string }) {
+    this.fallbackReason = options?.reason;
+  }
 
   async init(): Promise<void> {
     // No initialization needed
+  }
+
+  async healthCheck(): Promise<StorageHealth> {
+    return {
+      persistent: false,
+      driver: 'memory',
+      canWrite: true,
+      canRead: true,
+      error: this.fallbackReason,
+    };
   }
 
   async saveMessage(message: StoredMessage): Promise<void> {
@@ -168,6 +200,12 @@ export class MemoryStorageAdapter implements StorageAdapter {
     }
     if (query?.sinceTs) {
       result = result.filter(m => m.ts >= query.sinceTs!);
+    }
+    if (query?.unreadOnly) {
+      result = result.filter(m => m.status === 'unread');
+    }
+    if (query?.urgentOnly) {
+      result = result.filter(m => m.is_urgent);
     }
 
     if (query?.order === 'asc') {
@@ -208,6 +246,7 @@ export class MemoryStorageAdapter implements StorageAdapter {
     return this.messages
       .filter(m => m.to === agentName && m.deliverySessionId === sessionId && m.status !== 'acked')
       .sort((a, b) => {
+        // Preserve delivery order by sequence first, timestamp second for deterministic replays
         const seqA = mSeq(a);
         const seqB = mSeq(b);
         return seqA === seqB ? a.ts - b.ts : seqA - seqB;
@@ -261,8 +300,15 @@ export function getStorageConfigFromEnv(): StorageConfig {
  * 2. Environment variables (AGENT_RELAY_STORAGE_TYPE, AGENT_RELAY_STORAGE_PATH, AGENT_RELAY_STORAGE_URL)
  * 3. Default: SQLite at provided dbPath
  *
+ * Fallback strategy:
+ * - Prefer SQLite (or batched SQLite when requested)
+ * - On SQLite failure, try JSONL append-only storage before dropping to in-memory
+ * - If all durable adapters fail, keep daemon running via memory (non-persistent) with guidance
+ *
  * Supported storage types:
  * - 'sqlite' (default): SQLite file-based storage
+ * - 'sqlite-batched': SQLite with buffered writes
+ * - 'jsonl': Append-only JSONL files (durable fallback)
  * - 'none' or 'memory': In-memory storage (no persistence)
  * - 'postgres': PostgreSQL (requires AGENT_RELAY_STORAGE_URL) - future
  */
@@ -314,15 +360,42 @@ export async function createStorageAdapter(
         await adapter.init();
         return adapter;
       } catch (err) {
-        // SQLite failed - fall back to memory storage
+        // SQLite failed - fall back to JSONL, then memory
         const errMsg = err instanceof Error ? err.message : String(err);
         console.warn('[storage] ⚠️  SQLite initialization failed:', errMsg);
-        console.warn('[storage] ⚠️  Falling back to in-memory storage (messages will not persist across restarts)');
+
+        try {
+          const { JsonlStorageAdapter } = await import('./jsonl-adapter.js');
+          const baseDir = path.dirname(finalConfig.path!);
+          console.warn('[storage] ⚠️  Falling back to JSONL storage (append-only files)');
+          const adapter = new JsonlStorageAdapter({
+            baseDir,
+            reason: 'upgrade to Node.js 22+ or run: npm rebuild better-sqlite3',
+          });
+          await adapter.init();
+          return adapter;
+        } catch (jsonErr) {
+          const jsonMsg = jsonErr instanceof Error ? jsonErr.message : String(jsonErr);
+          console.warn('[storage] ⚠️  JSONL fallback failed:', jsonMsg);
+          console.warn('[storage] ⚠️  Falling back to in-memory storage (messages will not persist across restarts)');
+        }
+
         console.warn('[storage] To fix: upgrade to Node.js 22+ or run: npm rebuild better-sqlite3');
-        const adapter = new MemoryStorageAdapter();
+        const adapter = new MemoryStorageAdapter({
+          reason: 'upgrade to Node.js 22+ or run: npm rebuild better-sqlite3',
+        });
         await adapter.init();
         return adapter;
       }
+    }
+
+    case 'jsonl': {
+      const { JsonlStorageAdapter } = await import('./jsonl-adapter.js');
+      const baseDir = path.dirname(finalConfig.path!);
+      console.log('[storage] Using JSONL storage');
+      const adapter = new JsonlStorageAdapter({ baseDir });
+      await adapter.init();
+      return adapter;
     }
 
     case 'sqlite':
@@ -334,12 +407,29 @@ export async function createStorageAdapter(
         return adapter;
       } catch (err) {
         // SQLite failed (likely better-sqlite3 not built and Node < 22)
-        // Fall back to memory storage so the daemon can still run
         const errMsg = err instanceof Error ? err.message : String(err);
         console.warn('[storage] ⚠️  SQLite initialization failed:', errMsg);
-        console.warn('[storage] ⚠️  Falling back to in-memory storage (messages will not persist across restarts)');
+
+        try {
+          const { JsonlStorageAdapter } = await import('./jsonl-adapter.js');
+          const baseDir = path.dirname(finalConfig.path!);
+          console.warn('[storage] ⚠️  Falling back to JSONL storage (append-only files)');
+          const adapter = new JsonlStorageAdapter({
+            baseDir,
+            reason: 'upgrade to Node.js 22+ or run: npm rebuild better-sqlite3',
+          });
+          await adapter.init();
+          return adapter;
+        } catch (jsonErr) {
+          const jsonMsg = jsonErr instanceof Error ? jsonErr.message : String(jsonErr);
+          console.warn('[storage] ⚠️  JSONL fallback failed:', jsonMsg);
+          console.warn('[storage] ⚠️  Falling back to in-memory storage (messages will not persist across restarts)');
+        }
+
         console.warn('[storage] To fix: upgrade to Node.js 22+ or run: npm rebuild better-sqlite3');
-        const adapter = new MemoryStorageAdapter();
+        const adapter = new MemoryStorageAdapter({
+          reason: 'upgrade to Node.js 22+ or run: npm rebuild better-sqlite3',
+        });
         await adapter.init();
         return adapter;
       }

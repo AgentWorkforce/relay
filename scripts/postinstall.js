@@ -10,6 +10,7 @@
  */
 
 import { execSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -41,6 +42,109 @@ function success(msg) {
 
 function warn(msg) {
   console.log(`${colors.yellow}[warn]${colors.reset} ${msg}`);
+}
+
+const nodeRequire = createRequire(import.meta.url);
+
+function formatExecError(err) {
+  if (!err) return 'Unknown error';
+
+  const stderr = err.stderr ? String(err.stderr).trim() : '';
+  const stdout = err.stdout ? String(err.stdout).trim() : '';
+  if (stderr) return stderr.split('\n').slice(-8).join('\n');
+  if (stdout) return stdout.split('\n').slice(-8).join('\n');
+  if (err.message) return err.message;
+  return String(err);
+}
+
+function writeStorageStatus(lines) {
+  const statusDir = path.join(getPackageRoot(), '.agent-relay');
+  const statusPath = path.join(statusDir, 'storage-status.txt');
+
+  try {
+    fs.mkdirSync(statusDir, { recursive: true });
+    fs.writeFileSync(statusPath, `${lines.join('\n')}\n`, 'utf-8');
+    return statusPath;
+  } catch (err) {
+    warn(
+      `Failed to write storage status file: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+    return null;
+  }
+}
+
+function hasBuiltInNodeSqlite() {
+  try {
+    nodeRequire('node:sqlite');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function rebuildBetterSqlite3() {
+  info('Rebuilding better-sqlite3 (SQLite driver)...');
+  try {
+    execSync('npm rebuild better-sqlite3', {
+      cwd: getPackageRoot(),
+      stdio: 'inherit',
+    });
+    success('better-sqlite3 rebuilt successfully');
+    return { ok: true };
+  } catch (err) {
+    const message = formatExecError(err);
+    warn(`better-sqlite3 rebuild failed: ${message}`);
+    return { ok: false, message };
+  }
+}
+
+function ensureSqliteDriver() {
+  const rebuildResult = rebuildBetterSqlite3();
+  const builtInAvailable = hasBuiltInNodeSqlite();
+  const timestamp = new Date().toISOString();
+  const baseStatus = [
+    `node: ${process.version}`,
+    `platform: ${os.platform()}-${os.arch()}`,
+    `timestamp: ${timestamp}`,
+  ];
+
+  if (rebuildResult.ok) {
+    const statusPath = writeStorageStatus([
+      'status: ok',
+      'driver: better-sqlite3',
+      'detail: better-sqlite3 rebuilt successfully',
+      ...baseStatus,
+    ]);
+    return { ok: true, driver: 'better-sqlite3', statusPath };
+  }
+
+  if (builtInAvailable) {
+    const statusPath = writeStorageStatus([
+      'status: degraded',
+      'driver: node:sqlite',
+      `detail: better-sqlite3 rebuild failed (${rebuildResult.message ?? 'unknown error'}), using built-in node:sqlite`,
+      ...baseStatus,
+    ]);
+    return {
+      ok: true,
+      driver: 'node:sqlite',
+      statusPath,
+      error: rebuildResult.message,
+    };
+  }
+
+  const detail = rebuildResult.message ?? 'unknown error';
+  const statusPath = writeStorageStatus([
+    'status: failed',
+    'driver: none',
+    `detail: better-sqlite3 rebuild failed (${detail}); no built-in node:sqlite available`,
+    'fallback: in-memory storage',
+    ...baseStatus,
+  ]);
+
+  return { ok: false, driver: 'none', statusPath, error: detail };
 }
 
 /**
@@ -258,6 +362,28 @@ function patchAgentTrajectories() {
   success('Patched agent-trajectories to record agent on trail start');
 }
 
+function logPostinstallDiagnostics(hasRelayPty, sqliteStatus) {
+  if (hasRelayPty) {
+    console.log('✓ relay-pty binary installed');
+  } else {
+    console.log('⚠ relay-pty binary not installed - falling back to tmux mode if available');
+  }
+
+  if (sqliteStatus.ok && sqliteStatus.driver === 'better-sqlite3') {
+    console.log('✓ SQLite ready (better-sqlite3)');
+  } else if (sqliteStatus.ok && sqliteStatus.driver === 'node:sqlite') {
+    console.log('⚠ better-sqlite3 rebuild failed - using built-in node:sqlite');
+    console.log('  To fix: npm rebuild better-sqlite3 or upgrade to Node 22+');
+  } else {
+    console.log('⚠ SQLite installation failed - using fallback storage');
+    console.log('  To fix: npm rebuild better-sqlite3 or upgrade to Node 22+');
+  }
+
+  if (sqliteStatus.statusPath) {
+    info(`SQLite status written to ${sqliteStatus.statusPath}`);
+  }
+}
+
 /**
  * Main postinstall routine
  */
@@ -265,11 +391,17 @@ async function main() {
   // Install relay-pty binary for current platform (primary mode)
   const hasRelayPty = installRelayPtyBinary();
 
+  // Ensure SQLite driver is available (better-sqlite3 or node:sqlite)
+  const sqliteStatus = ensureSqliteDriver();
+
   // Ensure trail CLI captures agent info on start
   patchAgentTrajectories();
 
   // Always install dashboard dependencies (needed for build)
   installDashboardDeps();
+
+  // Always print diagnostics (even in CI)
+  logPostinstallDiagnostics(hasRelayPty, sqliteStatus);
 
   // Skip tmux check in CI environments
   if (process.env.CI === 'true') {

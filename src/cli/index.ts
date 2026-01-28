@@ -178,7 +178,7 @@ const execAsync = promisify(exec);
 
 // Check for updates in background (non-blocking)
 // Only show notification for interactive commands, not when wrapping agents or running update
-const interactiveCommands = ['up', 'down', 'status', 'agents', 'who', 'version', '--version', '-V', '--help', '-h', 'create-agent', 'claude', 'codex', 'telemetry'];
+const interactiveCommands = ['up', 'down', 'status', 'agents', 'who', 'version', '--version', '-V', '--help', '-h', 'create-agent', 'claude', 'codex', 'telemetry', 'doctor'];
 const shouldCheckUpdates = process.argv.length > 2 &&
   interactiveCommands.includes(process.argv[2]);
 if (shouldCheckUpdates) {
@@ -985,6 +985,26 @@ program
       await client.connect();
       console.log('Status: RUNNING');
       console.log(`Socket: ${paths.socketPath}`);
+      try {
+        const status = await client.getStatus();
+        if (status.storage) {
+          const storage = status.storage;
+          const healthPrefix = storage.persistent ? '✅ Persistent' : '⚠️  Non-persistent';
+          const driver = storage.driver || 'unknown';
+          console.log(`Storage: ${healthPrefix} (${driver})`);
+          if (!storage.persistent) {
+            const fix = driver === 'memory'
+              ? 'npm rebuild better-sqlite3'
+              : 'Check storage configuration';
+            console.log(`         To fix: ${fix}`);
+          }
+          if (storage.error) {
+            console.log(`         Note: ${storage.error}`);
+          }
+        }
+      } catch (err) {
+        console.warn(`Warning: failed to read storage health: ${(err as Error).message}`);
+      }
       logRelaySessions(relaySessions);
       client.disconnect();
     } catch {
@@ -3028,6 +3048,14 @@ program
       const data = await fetchMetrics();
       displayMetrics(data);
     }
+  });
+
+program
+  .command('doctor')
+  .description('Diagnose storage issues and provide remediation steps')
+  .action(async () => {
+    const { runDoctor } = await import('./commands/doctor.js');
+    await runDoctor();
   });
 
 // health - Show crash insights and system health

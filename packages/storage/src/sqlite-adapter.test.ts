@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SqliteStorageAdapter } from './sqlite-adapter.js';
+import { MemoryStorageAdapter } from './adapter.js';
 import type { StoredMessage } from './adapter.js';
 
 const makeMessage = (overrides: Partial<StoredMessage> = {}): StoredMessage => ({
@@ -127,6 +128,26 @@ describe('SqliteStorageAdapter', () => {
     await adapter.saveMessage(makeMessage({ id: 'fallback-1', body: 'ok' }));
     const rows = await adapter.getMessages();
     expect(rows.map(r => r.id)).toEqual(['fallback-1']);
+  });
+
+  it('reports healthy persistent storage via healthCheck', async () => {
+    const health = await adapter.healthCheck();
+    expect(health.persistent).toBe(true);
+    expect(health.driver).toBe('sqlite');
+    expect(health.canRead).toBe(true);
+    expect(health.canWrite).toBe(true);
+    expect(health.error).toBeUndefined();
+  });
+
+  it('reports memory storage health and reason', async () => {
+    const mem = new MemoryStorageAdapter({ reason: 'fallback' });
+    await mem.init();
+    const health = await mem.healthCheck();
+    expect(health.persistent).toBe(false);
+    expect(health.driver).toBe('memory');
+    expect(health.canRead).toBe(true);
+    expect(health.canWrite).toBe(true);
+    expect(health.error).toContain('fallback');
   });
 
   describe('Session Management', () => {
