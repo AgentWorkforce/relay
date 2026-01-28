@@ -2,10 +2,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRelayClient } from '../src/client.js';
 import { createConnection } from 'node:net';
 
-// Mock node:net
-vi.mock('node:net', () => ({
-  createConnection: vi.fn(),
-}));
+// Mock node:net - this needs to be applied before any module imports it
+// Using automock: false ensures we can control the mock behavior
+vi.mock('node:net', async (importOriginal) => {
+  return {
+    ...(await importOriginal<typeof import('node:net')>()),
+    createConnection: vi.fn(),
+  };
+});
 
 /**
  * Encode a response envelope into a length-prefixed frame (matches client protocol).
