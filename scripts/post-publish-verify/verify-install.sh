@@ -223,6 +223,176 @@ else
     record_fail "Local bin executable not found or not executable"
 fi
 
+# ============================================
+# Test 4: relay-pty binary verification
+# ============================================
+log_header "Test 4: relay-pty binary verification"
+
+# Check if relay-pty binary exists
+log_info "Checking for relay-pty binary..."
+
+# Get the installed package location
+PACKAGE_DIR="./node_modules/agent-relay"
+BIN_DIR="$PACKAGE_DIR/bin"
+
+if [ -d "$BIN_DIR" ]; then
+    log_info "Binary directory found: $BIN_DIR"
+    log_info "Contents of bin directory:"
+    ls -la "$BIN_DIR"
+
+    # Check for platform-specific binaries
+    PLATFORM=$(uname -s | tr '[:upper:]' '[:lower:]')
+    ARCH=$(uname -m)
+
+    # Map architecture names
+    case "$ARCH" in
+        x86_64) ARCH_NAME="x64" ;;
+        aarch64|arm64) ARCH_NAME="arm64" ;;
+        *) ARCH_NAME="$ARCH" ;;
+    esac
+
+    log_info "Platform: $PLATFORM, Architecture: $ARCH_NAME"
+
+    # Check for the main relay-pty binary
+    if [ -f "$BIN_DIR/relay-pty" ]; then
+        record_pass "relay-pty binary exists"
+
+        # Check if executable
+        if [ -x "$BIN_DIR/relay-pty" ]; then
+            record_pass "relay-pty binary is executable"
+
+            # Test the binary
+            log_info "Testing relay-pty --help..."
+            PTY_HELP=$("$BIN_DIR/relay-pty" --help 2>&1) || true
+            if echo "$PTY_HELP" | grep -q "PTY wrapper"; then
+                record_pass "relay-pty --help works"
+            else
+                log_info "relay-pty output: $PTY_HELP"
+                record_fail "relay-pty --help doesn't show expected output"
+            fi
+        else
+            record_fail "relay-pty binary is not executable"
+        fi
+    else
+        record_fail "relay-pty binary not found at $BIN_DIR/relay-pty"
+    fi
+
+    # Check for platform-specific binary
+    PLATFORM_BINARY="relay-pty-${PLATFORM}-${ARCH_NAME}"
+    if [ -f "$BIN_DIR/$PLATFORM_BINARY" ]; then
+        log_info "Platform-specific binary found: $PLATFORM_BINARY"
+        if [ -x "$BIN_DIR/$PLATFORM_BINARY" ]; then
+            record_pass "Platform-specific binary $PLATFORM_BINARY is executable"
+        else
+            record_fail "Platform-specific binary $PLATFORM_BINARY is not executable"
+        fi
+    else
+        log_warn "Platform-specific binary not found: $PLATFORM_BINARY (may use generic binary)"
+    fi
+else
+    record_fail "Binary directory not found: $BIN_DIR"
+fi
+
+# ============================================
+# Test 5: Spawn infrastructure verification
+# ============================================
+log_header "Test 5: Spawn infrastructure verification"
+
+# Verify spawner module can be loaded
+log_info "Testing if spawner module is accessible..."
+SPAWNER_TEST=$(node -e "
+try {
+    const pkg = require('agent-relay');
+    // Check if key exports exist
+    const exports = Object.keys(pkg);
+    console.log('Exports:', exports.join(', '));
+
+    // Check for spawn-related functionality
+    if (typeof pkg.AgentSpawner === 'function' || typeof pkg.createSpawner === 'function') {
+        console.log('SPAWN_OK');
+    } else {
+        console.log('NO_SPAWNER');
+    }
+} catch (e) {
+    console.log('ERROR:', e.message);
+}
+" 2>&1) || true
+
+log_info "Spawner test output: $SPAWNER_TEST"
+if echo "$SPAWNER_TEST" | grep -q "SPAWN_OK"; then
+    record_pass "Spawner module is accessible"
+elif echo "$SPAWNER_TEST" | grep -q "NO_SPAWNER"; then
+    log_warn "Spawner not in main exports (may be in submodule)"
+else
+    record_fail "Failed to load agent-relay package: $SPAWNER_TEST"
+fi
+
+# Test binary resolution using actual package logic
+log_info "Testing actual binary resolution from @agent-relay/utils..."
+BINARY_RESOLUTION=$(node -e "
+const path = require('path');
+const fs = require('fs');
+
+// First, try using the actual findRelayPtyBinary function from the package
+try {
+    // Try to load from scoped package first (how it's used in production)
+    const { findRelayPtyBinary, getLastSearchPaths } = require('@agent-relay/utils');
+    const binaryPath = findRelayPtyBinary(__dirname);
+    const searchPaths = getLastSearchPaths();
+
+    console.log('Using @agent-relay/utils findRelayPtyBinary');
+    console.log('Search paths:', JSON.stringify(searchPaths.slice(0, 5), null, 2));
+
+    if (binaryPath) {
+        console.log('Found binary at:', binaryPath);
+        console.log('RESOLUTION_OK');
+    } else {
+        console.log('Binary not found via findRelayPtyBinary');
+        console.log('RESOLUTION_FAILED');
+    }
+} catch (e) {
+    console.log('Could not load @agent-relay/utils:', e.message);
+
+    // Fallback: manual check
+    const packageDir = path.dirname(require.resolve('agent-relay/package.json'));
+    const binDir = path.join(packageDir, 'bin');
+
+    const platform = process.platform;
+    const arch = process.arch;
+
+    const platformMap = { darwin: 'darwin', linux: 'linux', win32: 'windows' };
+    const archMap = { x64: 'x64', arm64: 'arm64' };
+
+    const platformName = platformMap[platform] || platform;
+    const archName = archMap[arch] || arch;
+
+    const specificBinary = path.join(binDir, 'relay-pty-' + platformName + '-' + archName);
+    const genericBinary = path.join(binDir, 'relay-pty');
+
+    console.log('Fallback: manual binary check');
+    console.log('Package dir:', packageDir);
+    console.log('Looking for:', specificBinary);
+    console.log('Fallback:', genericBinary);
+
+    if (fs.existsSync(specificBinary)) {
+        console.log('RESOLUTION_OK (platform-specific)');
+    } else if (fs.existsSync(genericBinary)) {
+        console.log('RESOLUTION_OK (generic)');
+    } else {
+        console.log('RESOLUTION_FAILED');
+    }
+}
+" 2>&1) || true
+
+log_info "Binary resolution output:"
+echo "$BINARY_RESOLUTION"
+
+if echo "$BINARY_RESOLUTION" | grep -q "RESOLUTION_OK"; then
+    record_pass "Binary resolution logic finds relay-pty"
+else
+    record_fail "Binary resolution failed - relay-pty not found"
+fi
+
 # Cleanup test project
 log_info "Cleaning up test project..."
 cd /home/testuser

@@ -120,10 +120,11 @@ jobs:
           npm uninstall -g agent-relay
 
       # Test 2: npx execution
+      # Note: Don't use `--` separator with npx @version syntax - it causes argument parsing issues
       - name: "Test: npx --version"
         run: |
           # npx with @ syntax - downloads and runs in one command
-          VERSION=$(npx ${{ steps.pkg.outputs.spec }} -- --version 2>&1)
+          VERSION=$(npx ${{ steps.pkg.outputs.spec }} --version 2>&1)
           echo "npx version output: $VERSION"
           if echo "$VERSION" | grep -qE '[0-9]+\.[0-9]+\.[0-9]+'; then
             echo "npx version check passed"
@@ -132,11 +133,11 @@ jobs:
           fi
 
       - name: "Test: npx --help"
-        run: npx ${{ steps.pkg.outputs.spec }} -- --help | head -20
+        run: npx ${{ steps.pkg.outputs.spec }} --help | head -20
 
       - name: "Test: npx version command"
         run: |
-          OUTPUT=$(npx ${{ steps.pkg.outputs.spec }} -- version 2>&1)
+          OUTPUT=$(npx ${{ steps.pkg.outputs.spec }} version 2>&1)
           echo "$OUTPUT"
           if echo "$OUTPUT" | grep -qE '[0-9]+\.[0-9]+\.[0-9]+'; then
             echo "npx version command check passed"
@@ -174,6 +175,245 @@ jobs:
             exit 1
           fi
 
+      # Test 4: relay-pty binary verification (critical for spawn)
+      - name: "Test: relay-pty binary exists"
+        run: |
+          cd /tmp/test-project
+          BIN_DIR="./node_modules/agent-relay/bin"
+          echo "Checking for relay-pty binaries..."
+          ls -la "$BIN_DIR" || { echo "Binary directory not found"; exit 1; }
+
+          if [ -f "$BIN_DIR/relay-pty" ]; then
+            echo "relay-pty binary found"
+          else
+            echo "relay-pty binary NOT found - spawn will fail!"
+            exit 1
+          fi
+
+      - name: "Test: relay-pty binary executable"
+        run: |
+          cd /tmp/test-project
+          BIN_DIR="./node_modules/agent-relay/bin"
+
+          if [ -x "$BIN_DIR/relay-pty" ]; then
+            echo "relay-pty is executable"
+          else
+            echo "relay-pty is NOT executable"
+            exit 1
+          fi
+
+      - name: "Test: relay-pty --help works"
+        run: |
+          cd /tmp/test-project
+          BIN_DIR="./node_modules/agent-relay/bin"
+
+          OUTPUT=$("$BIN_DIR/relay-pty" --help 2>&1) || true
+          echo "$OUTPUT"
+
+          if echo "$OUTPUT" | grep -q "PTY wrapper"; then
+            echo "relay-pty --help check passed"
+          else
+            echo "relay-pty --help failed or unexpected output"
+            exit 1
+          fi
+
+      - name: "Test: Platform-specific binary"
+        run: |
+          cd /tmp/test-project
+          BIN_DIR="./node_modules/agent-relay/bin"
+
+          # Determine platform
+          PLATFORM=$(uname -s | tr '[:upper:]' '[:lower:]')
+          ARCH=$(uname -m)
+
+          case "$ARCH" in
+            x86_64) ARCH_NAME="x64" ;;
+            aarch64|arm64) ARCH_NAME="arm64" ;;
+            *) ARCH_NAME="$ARCH" ;;
+          esac
+
+          echo "Platform: $PLATFORM, Architecture: $ARCH_NAME"
+          PLATFORM_BINARY="relay-pty-${PLATFORM}-${ARCH_NAME}"
+
+          if [ -f "$BIN_DIR/$PLATFORM_BINARY" ]; then
+            echo "Platform-specific binary found: $PLATFORM_BINARY"
+            if [ -x "$BIN_DIR/$PLATFORM_BINARY" ]; then
+              echo "Platform-specific binary is executable"
+            else
+              echo "WARNING: Platform-specific binary is not executable"
+            fi
+          else
+            echo "Platform-specific binary not found: $PLATFORM_BINARY"
+            echo "Will rely on generic relay-pty binary"
+          fi
+
+      - name: "Test: Binary resolution simulation"
+        run: |
+          cd /tmp/test-project
+          node -e "
+          const path = require('path');
+          const fs = require('fs');
+
+          const packageDir = path.dirname(require.resolve('agent-relay/package.json'));
+          const binDir = path.join(packageDir, 'bin');
+
+          const platform = process.platform;
+          const arch = process.arch;
+
+          const platformMap = { darwin: 'darwin', linux: 'linux', win32: 'windows' };
+          const archMap = { x64: 'x64', arm64: 'arm64' };
+
+          const platformName = platformMap[platform] || platform;
+          const archName = archMap[arch] || arch;
+
+          const specificBinary = path.join(binDir, 'relay-pty-' + platformName + '-' + archName);
+          const genericBinary = path.join(binDir, 'relay-pty');
+
+          console.log('Package dir:', packageDir);
+          console.log('Platform binary:', specificBinary, fs.existsSync(specificBinary) ? '✓' : '✗');
+          console.log('Generic binary:', genericBinary, fs.existsSync(genericBinary) ? '✓' : '✗');
+
+          if (!fs.existsSync(specificBinary) && !fs.existsSync(genericBinary)) {
+            console.error('ERROR: No relay-pty binary found!');
+            process.exit(1);
+          }
+
+          console.log('Binary resolution check passed');
+          "
+
+      - name: Cleanup
+        run: rm -rf /tmp/test-project
+
+  # macOS verification (tests darwin binaries)
+  verify-macos:
+    name: Verify macOS (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            arch: arm64
+          - os: macos-13
+            arch: x64
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Get package spec
+        id: pkg
+        run: |
+          VERSION="${{ inputs.version || 'latest' }}"
+          if [ "$VERSION" = "latest" ]; then
+            SPEC="agent-relay"
+          else
+            SPEC="agent-relay@${VERSION}"
+          fi
+          echo "spec=$SPEC" >> $GITHUB_OUTPUT
+          echo "Testing: $SPEC"
+
+      - name: "Test: npm install"
+        run: |
+          mkdir -p /tmp/test-project
+          cd /tmp/test-project
+          npm init -y
+          npm install ${{ steps.pkg.outputs.spec }}
+
+      - name: "Test: CLI version"
+        run: |
+          cd /tmp/test-project
+          VERSION=$(npx agent-relay --version)
+          echo "Version: $VERSION"
+          if echo "$VERSION" | grep -qE '[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "Version check passed"
+          else
+            exit 1
+          fi
+
+      - name: "Test: relay-pty binary exists"
+        run: |
+          cd /tmp/test-project
+          BIN_DIR="./node_modules/agent-relay/bin"
+          echo "Checking for relay-pty binaries..."
+          ls -la "$BIN_DIR"
+
+          if [ -f "$BIN_DIR/relay-pty" ]; then
+            echo "relay-pty binary found"
+          else
+            echo "relay-pty binary NOT found!"
+            exit 1
+          fi
+
+      - name: "Test: relay-pty is executable"
+        run: |
+          cd /tmp/test-project
+          BIN_DIR="./node_modules/agent-relay/bin"
+
+          if [ -x "$BIN_DIR/relay-pty" ]; then
+            echo "relay-pty is executable"
+          else
+            echo "relay-pty is NOT executable"
+            exit 1
+          fi
+
+      - name: "Test: relay-pty --help"
+        run: |
+          cd /tmp/test-project
+          BIN_DIR="./node_modules/agent-relay/bin"
+
+          OUTPUT=$("$BIN_DIR/relay-pty" --help 2>&1) || true
+          echo "$OUTPUT"
+
+          if echo "$OUTPUT" | grep -q "PTY wrapper"; then
+            echo "relay-pty --help check passed"
+          else
+            echo "relay-pty --help failed"
+            exit 1
+          fi
+
+      - name: "Test: Darwin-specific binary"
+        run: |
+          cd /tmp/test-project
+          BIN_DIR="./node_modules/agent-relay/bin"
+
+          ARCH="${{ matrix.arch }}"
+          DARWIN_BINARY="relay-pty-darwin-${ARCH}"
+
+          echo "Looking for: $DARWIN_BINARY"
+
+          if [ -f "$BIN_DIR/$DARWIN_BINARY" ]; then
+            echo "Darwin binary found: $DARWIN_BINARY"
+            ls -la "$BIN_DIR/$DARWIN_BINARY"
+
+            if [ -x "$BIN_DIR/$DARWIN_BINARY" ]; then
+              echo "Darwin binary is executable"
+
+              # Test it works
+              OUTPUT=$("$BIN_DIR/$DARWIN_BINARY" --help 2>&1) || true
+              if echo "$OUTPUT" | grep -q "PTY wrapper"; then
+                echo "Darwin binary --help works"
+              else
+                echo "WARNING: Darwin binary --help unexpected output"
+                echo "$OUTPUT"
+              fi
+            else
+              echo "Darwin binary is NOT executable"
+              exit 1
+            fi
+          else
+            echo "Darwin binary not found, checking if generic works..."
+            # The generic binary should work
+            if "$BIN_DIR/relay-pty" --help 2>&1 | grep -q "PTY wrapper"; then
+              echo "Generic binary works on macOS"
+            else
+              echo "Neither darwin-specific nor generic binary works!"
+              exit 1
+            fi
+          fi
+
       - name: Cleanup
         run: rm -rf /tmp/test-project
 
@@ -206,7 +446,7 @@ jobs:
 
   summary:
     name: Verification Summary
-    needs: [verify, verify-docker]
+    needs: [verify, verify-macos, verify-docker]
     runs-on: ubuntu-latest
     if: always()
 
@@ -224,7 +464,13 @@ jobs:
           echo "| Node 20 | ${{ needs.verify.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Node 22 | ${{ needs.verify.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Docker Tests" >> $GITHUB_STEP_SUMMARY
+          echo "### macOS Tests (relay-pty binary)" >> $GITHUB_STEP_SUMMARY
+          echo "| Architecture | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| arm64 (M1/M2) | ${{ needs.verify-macos.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| x64 (Intel) | ${{ needs.verify-macos.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Docker Tests (Linux)" >> $GITHUB_STEP_SUMMARY
           echo "| Node Version | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|--------------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| Node 18 | ${{ needs.verify-docker.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
@@ -232,7 +478,7 @@ jobs:
           echo "| Node 22 | ${{ needs.verify-docker.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Overall" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ needs.verify.result }}" = "success" ] && [ "${{ needs.verify-docker.result }}" = "success" ]; then
+          if [ "${{ needs.verify.result }}" = "success" ] && [ "${{ needs.verify-macos.result }}" = "success" ] && [ "${{ needs.verify-docker.result }}" = "success" ]; then
             echo "✅ All verification tests passed!" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ Some verification tests failed" >> $GITHUB_STEP_SUMMARY
