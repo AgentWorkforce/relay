@@ -14,7 +14,7 @@ import { resolveCommand } from '@agent-relay/utils/command-resolver';
 import { createTraceableError } from '@agent-relay/utils/error-tracking';
 import { createLogger } from '@agent-relay/utils/logger';
 import { mapModelToCli } from '@agent-relay/utils/model-mapping';
-import { findRelayPtyBinary as findRelayPtyBinaryUtil } from '@agent-relay/utils/relay-pty-path';
+import { findRelayPtyBinary as findRelayPtyBinaryUtil, getLastSearchPaths } from '@agent-relay/utils/relay-pty-path';
 import { RelayPtyOrchestrator, type RelayPtyOrchestratorConfig } from '@agent-relay/wrapper';
 import type { SummaryEvent, SessionEndEvent } from '@agent-relay/wrapper';
 import { selectShadowCli } from './shadow-cli.js';
@@ -1033,12 +1033,20 @@ export class AgentSpawner {
 
       // Require relay-pty binary
       if (!hasRelayPtyBinary()) {
+        const checkedPaths = getLastSearchPaths();
         const tracedError = createTraceableError('relay-pty binary not found', {
           agentName: name,
           cli,
-          hint: 'Install with: npm run build:relay-pty',
+          callerDir: __dirname,
+          checkedPaths: checkedPaths.slice(0, 5), // First 5 paths for brevity
+          totalPathsChecked: checkedPaths.length,
+          hint: 'Set RELAY_PTY_BINARY env var to override, or reinstall: npm install agent-relay',
         });
         log.error(tracedError.logMessage);
+        if (debug) {
+          log.debug('All paths checked for relay-pty binary:');
+          checkedPaths.forEach((p, i) => log.debug(`  ${i + 1}. ${p}`));
+        }
         return {
           success: false,
           name,
