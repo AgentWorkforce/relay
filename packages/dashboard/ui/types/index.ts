@@ -1,0 +1,304 @@
+/**
+ * Dashboard V2 Type Definitions
+ */
+
+import type { AgentStatus } from '../lib/colors';
+import type { ThreadMetadata } from './threading';
+
+export type { ThreadMetadata } from './threading';
+
+// Agent Types
+export interface Agent {
+  name: string;
+  role?: string;
+  cli?: string;
+  status: AgentStatus;
+  lastSeen?: string;
+  lastActive?: string;
+  messageCount?: number;
+  needsAttention?: boolean;
+  currentTask?: string;
+  server?: string; // For fleet view - which server the agent is on
+  isProcessing?: boolean; // True when agent is thinking/processing a message
+  processingStartedAt?: number; // Timestamp when processing started
+  isSpawned?: boolean; // True if agent was spawned via dashboard (can be killed)
+  team?: string; // Optional user-defined team grouping (e.g., "frontend-team", "backend-team")
+  agentId?: string; // Unique agent ID for resume functionality
+  lastMessageReceivedAt?: number; // Timestamp when agent last received a message
+  lastOutputAt?: number; // Timestamp when agent last produced output
+  isStuck?: boolean; // True when agent received message but hasn't responded within threshold
+  isHuman?: boolean; // True if this is a human user, not an AI agent
+  avatarUrl?: string; // Avatar URL for human users
+  authRevoked?: boolean; // True if agent's authentication has been revoked (needs re-login)
+  // Local daemon agent fields
+  isLocal?: boolean; // True if agent is from a linked local daemon
+  daemonName?: string; // Name of the linked daemon
+  machineId?: string; // Machine ID of the linked daemon
+  // Profile fields for understanding agent behavior
+  profile?: AgentProfile;
+}
+
+/**
+ * Agent profile information - helps users understand agent behavior
+ */
+export interface AgentProfile {
+  /** Display title/role (e.g., "Lead Developer", "Code Reviewer") */
+  title?: string;
+  /** Short description of what this agent does */
+  description?: string;
+  /** The prompt/task the agent was spawned with */
+  spawnPrompt?: string;
+  /** Agent profile/persona prompt (e.g., lead agent instructions) */
+  personaPrompt?: string;
+  /** Name of the persona preset used (e.g., "lead", "reviewer", "shadow-auditor") */
+  personaName?: string;
+  /** Model being used (e.g., "claude-3-opus", "gpt-4") */
+  model?: string;
+  /** Working directory */
+  workingDirectory?: string;
+  /** When the agent was first seen */
+  firstSeen?: string;
+  /** Capabilities or tools available to the agent */
+  capabilities?: string[];
+  /** Tags for categorization */
+  tags?: string[];
+}
+
+export interface AgentSummary {
+  agentName: string;
+  lastUpdated: string;
+  currentTask?: string;
+  completedTasks?: string[];
+  context?: string;
+  files?: string[];
+}
+
+// Message Status
+export type MessageStatus = 'unread' | 'read' | 'acked' | 'sending' | 'failed';
+
+// Attachment Types
+export interface Attachment {
+  /** Unique identifier for the attachment */
+  id: string;
+  /** Original filename */
+  filename: string;
+  /** MIME type (e.g., 'image/png', 'image/jpeg') */
+  mimeType: string;
+  /** Size in bytes */
+  size: number;
+  /** URL to access the attachment */
+  url: string;
+  /** Absolute file path for agents to read the file directly */
+  filePath?: string;
+  /** Width for images */
+  width?: number;
+  /** Height for images */
+  height?: number;
+  /** Base64-encoded data (for inline display, optional) */
+  data?: string;
+}
+
+
+// Message Types
+export interface Message {
+  id: string;
+  from: string;
+  to: string;
+  content: string;
+  timestamp: string;
+  thread?: string;
+  isBroadcast?: boolean;
+  isRead?: boolean;
+  replyCount?: number;
+  threadSummary?: ThreadMetadata;
+  /** Message delivery status: sending → acked (received by agent) */
+  status?: MessageStatus;
+  /** Attachments (images, files) */
+  attachments?: Attachment[];
+  /** Channel context for routing (e.g., 'general' for broadcasts) */
+  channel?: string;
+}
+
+export interface Thread {
+  id: string;
+  messages: Message[];
+  participants: string[];
+  lastActivity: string;
+}
+
+// Fleet Types
+export interface PeerServer {
+  id: string;
+  url: string;
+  name?: string;
+  status: 'connected' | 'disconnected' | 'error';
+  agentCount: number;
+  latency?: number;
+}
+
+export interface FleetData {
+  servers: PeerServer[];
+  agents: Agent[];
+  totalMessages: number;
+}
+
+export interface Project {
+  id: string;
+  path: string;
+  name?: string;
+  agents: Agent[];
+  lead?: {
+    name: string;
+    connected: boolean;
+  };
+}
+
+// Session Types
+export interface Session {
+  id: string;
+  agentName: string;
+  cli?: string;
+  startedAt: string;
+  endedAt?: string;
+  duration?: string;
+  messageCount: number;
+  summary?: string;
+  isActive: boolean;
+  closedBy?: 'agent' | 'disconnect' | 'error';
+}
+
+// Task Types (Beads Integration)
+export interface Task {
+  id: string;
+  title: string;
+  description?: string;
+  status: 'open' | 'in_progress' | 'completed' | 'blocked';
+  priority: 'P1' | 'P2' | 'P3' | 'P4';
+  type: 'task' | 'bug' | 'feature' | 'epic';
+  assignee?: string;
+  blockedBy?: string[];
+  blocking?: string[];
+  created: string;
+  updated: string;
+}
+
+// Trajectory Types
+export interface Decision {
+  id: string;
+  timestamp: string;
+  agent: string;
+  type: 'tool_call' | 'message' | 'file_edit' | 'command' | 'question';
+  summary: string;
+  details?: string;
+  context?: string;
+  outcome?: 'success' | 'error' | 'pending';
+  children?: Decision[];
+}
+
+export interface Trajectory {
+  agentName: string;
+  sessionId: string;
+  decisions: Decision[];
+  startTime: string;
+  endTime?: string;
+}
+
+// Decision Queue Types
+export interface PendingDecision {
+  id: string;
+  agent: string;
+  question: string;
+  options?: string[];
+  context?: string;
+  priority: 'low' | 'medium' | 'high' | 'critical';
+  createdAt: string;
+  expiresAt?: string;
+}
+
+// Dashboard State
+export interface DashboardState {
+  agents: Agent[];
+  messages: Message[];
+  currentChannel: string;
+  currentThread: string | null;
+  isConnected: boolean;
+  viewMode: 'local' | 'fleet';
+  fleetData: FleetData | null;
+  sessions: Session[];
+  summaries: AgentSummary[];
+}
+
+// WebSocket Message Types
+export interface WSMessage {
+  type: 'data' | 'agents' | 'messages' | 'fleet' | 'error';
+  payload: unknown;
+}
+
+// API Response Types
+export interface ApiResponse<T> {
+  success: boolean;
+  data?: T;
+  error?: string;
+}
+
+export interface SendMessageRequest {
+  to: string;
+  message: string;
+  thread?: string;
+  /** Attachment IDs to include with the message */
+  attachments?: string[];
+}
+
+export type SpeakOnTrigger = 'SESSION_END' | 'CODE_WRITTEN' | 'REVIEW_REQUEST' | 'EXPLICIT_ASK' | 'ALL_MESSAGES';
+
+export interface SpawnAgentRequest {
+  name: string;
+  cli?: string;
+  task?: string;
+  team?: string;
+  /** Shadow execution mode (subagent for Claude/OpenCode, process otherwise) */
+  shadowMode?: 'subagent' | 'process';
+  /** Primary agent to shadow (if this agent is a shadow) */
+  shadowOf?: string;
+  /** Shadow agent profile to use (for subagent mode) */
+  shadowAgent?: string;
+  /** When the shadow should be invoked (for subagent mode) */
+  shadowTriggers?: SpeakOnTrigger[];
+  /** When the shadow should speak */
+  shadowSpeakOn?: SpeakOnTrigger[];
+}
+
+export interface SpawnAgentResponse {
+  success: boolean;
+  name: string;
+  error?: string;
+}
+
+// Activity Feed Types
+export type ActivityEventType =
+  | 'agent_spawned'
+  | 'agent_released'
+  | 'agent_online'
+  | 'agent_offline'
+  | 'user_joined'
+  | 'user_left'
+  | 'broadcast'
+  | 'error';
+
+export interface ActivityEvent {
+  id: string;
+  type: ActivityEventType;
+  timestamp: string;
+  /** Actor who triggered the event (user or agent name) */
+  actor: string;
+  /** Optional avatar URL for the actor */
+  actorAvatarUrl?: string;
+  /** Whether actor is a user or agent */
+  actorType: 'user' | 'agent' | 'system';
+  /** Event title for display */
+  title: string;
+  /** Optional detailed description */
+  description?: string;
+  /** Optional metadata (e.g., task for spawns, cli type, etc.) */
+  metadata?: Record<string, unknown>;
+}
