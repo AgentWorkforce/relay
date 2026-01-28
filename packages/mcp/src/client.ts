@@ -15,8 +15,11 @@ import {
   type Envelope,
   type MessageType,
   type SendPayload,
+  type AckPayload,
   type SpawnPayload,
+  type SpawnResultPayload,
   type ReleasePayload,
+  type ReleaseResultPayload,
   type InboxPayload,
   type ListAgentsPayload,
   type HealthPayload,
@@ -24,9 +27,20 @@ import {
   type HealthResponsePayload,
   type MetricsResponsePayload,
   encodeFrameLegacy,
-  FrameParser,
   PROTOCOL_VERSION,
 } from '@agent-relay/protocol';
+
+// Import shared client helpers for consistency
+import {
+  createRequestEnvelope,
+  createRequestHandler,
+  generateRequestId,
+  toSpawnResult,
+  toReleaseResult,
+  type SpawnResult,
+  type ReleaseResult,
+  type RequestOptions,
+} from '@agent-relay/utils/client-helpers';
 
 // Re-export response types for consumers
 export type HealthResponse = HealthResponsePayload;
@@ -34,13 +48,13 @@ export type MetricsResponse = MetricsResponsePayload;
 
 export interface RelayClient {
   // Basic messaging
-  send(to: string, message: string, options?: { thread?: string }): Promise<void>;
-  sendAndWait(to: string, message: string, options?: { thread?: string; timeoutMs?: number }): Promise<{ from: string; content: string; thread?: string }>;
+  send(to: string, message: string, options?: { thread?: string; kind?: string; data?: Record<string, unknown> }): Promise<void>;
+  sendAndWait(to: string, message: string, options?: { thread?: string; timeoutMs?: number; kind?: string; data?: Record<string, unknown> }): Promise<AckPayload>;
   broadcast(message: string, options?: { kind?: string }): Promise<void>;
 
   // Spawn/Release
-  spawn(options: { name: string; cli: string; task: string; model?: string; cwd?: string }): Promise<{ success: boolean; error?: string; pid?: number }>;
-  release(name: string, reason?: string): Promise<{ success: boolean; error?: string }>;
+  spawn(options: { name: string; cli: string; task: string; model?: string; cwd?: string }): Promise<SpawnResult>;
+  release(name: string, reason?: string): Promise<ReleaseResult>;
 
   // Pub/Sub
   subscribe(topic: string): Promise<{ success: boolean; error?: string }>;
@@ -81,12 +95,12 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   // Prefer explicit socketPath option over discovery to avoid finding wrong daemon
   const socketPath = options.socketPath || discoverSocket()?.socketPath || '/tmp/agent-relay.sock';
 
-  // Generate unique IDs
-  let idCounter = 0;
-  const generateId = () => `mcp-${Date.now().toString(36)}-${(++idCounter).toString(36)}`;
+  // Generate unique IDs with MCP prefix
+  const generateId = () => generateRequestId('mcp-');
 
   // Timeouts for different operations
   const RELEASE_TIMEOUT = 10000; // 10 seconds for release operations
+  const SPAWN_TIMEOUT = 30000; // 30 seconds for spawn operations
 
   /**
    * Fire-and-forget: Send a message without waiting for any response.
@@ -132,101 +146,59 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     type: MessageType,
     payload: Record<string, unknown>,
     customTimeout?: number,
-    payloadMeta?: { sync?: { blocking?: boolean; correlationId?: string; timeoutMs?: number } },
-    envelopeProps?: { from?: string; to?: string }
+    payloadMeta?: RequestOptions['payloadMeta'],
+    envelopeProps?: RequestOptions['envelopeProps']
   ): Promise<T> {
-    return new Promise((resolve, reject) => {
-      const id = generateId();
-      const correlationId = payloadMeta?.sync?.correlationId;
-
-      const envelope: Envelope = {
-        v: PROTOCOL_VERSION,
-        type,
-        id,
-        ts: Date.now(),
-        payload,
-        from: envelopeProps?.from,
-        to: envelopeProps?.to,
-      };
-
-      if (payloadMeta) {
-        (envelope as unknown as Record<string, unknown>).payload_meta = payloadMeta;
-      }
-
-      let timedOut = false;
-      const parser = new FrameParser();
-      parser.setLegacyMode(true); // Use legacy 4-byte header format
-
-      const socket: Socket = createConnection(socketPath);
-
-      const effectiveTimeout = customTimeout ?? timeout;
-      const timeoutId = setTimeout(() => {
-        timedOut = true;
-        socket.destroy();
-        reject(new Error(`Request timeout after ${effectiveTimeout}ms`));
-      }, effectiveTimeout);
-
-      socket.on('connect', () => socket.write(encodeFrameLegacy(envelope)));
-
-      socket.on('data', (data) => {
-        if (timedOut) return;
-
-        const frames = parser.push(data);
-        for (const response of frames) {
-          const responsePayload = response.payload as { replyTo?: string; correlationId?: string; error?: string; message?: string; code?: string };
-
-          // Check if this is a response to our request
-          const isMatchingResponse = response.id === id ||
-            responsePayload?.replyTo === id ||
-            (correlationId && responsePayload?.correlationId === correlationId);
-
-          if (isMatchingResponse) {
-            clearTimeout(timeoutId);
-            socket.end();
-
-            if (response.type === 'ERROR') {
-              reject(new Error(responsePayload?.message || responsePayload?.code || 'Unknown error'));
-            } else if (responsePayload?.error) {
-              reject(new Error(responsePayload.error));
-            } else {
-              resolve(response.payload as T);
-            }
-            return;
-          }
-        }
-      });
-
-      socket.on('error', (err) => {
-        clearTimeout(timeoutId);
-        const errno = (err as NodeJS.ErrnoException).code;
-        if (errno === 'ECONNREFUSED' || errno === 'ENOENT') {
-          reject(new DaemonNotRunningError(`Cannot connect to daemon at ${socketPath}`));
-        } else {
-          reject(err);
-        }
-      });
+    const id = generateId();
+    const envelope = createRequestEnvelope(type, payload, id, {
+      payloadMeta,
+      envelopeProps,
     });
+
+    try {
+      return await createRequestHandler<T>(socketPath, envelope, {
+        timeout: customTimeout ?? timeout,
+        payloadMeta,
+        envelopeProps,
+      });
+    } catch (err) {
+      const errno = (err as NodeJS.ErrnoException).code;
+      if (errno === 'ECONNREFUSED' || errno === 'ENOENT') {
+        throw new DaemonNotRunningError(`Cannot connect to daemon at ${socketPath}`);
+      }
+      throw err;
+    }
   }
 
   return {
     async send(to, message, opts = {}) {
-      const payload: SendPayload = { kind: 'message', body: message, thread: opts.thread };
+      const payload: SendPayload = {
+        kind: (opts.kind as SendPayload['kind']) || 'message',
+        body: message,
+        thread: opts.thread,
+        data: opts.data,
+      };
       await fireAndForget('SEND', payload as unknown as Record<string, unknown>, { from: agentName, to });
     },
 
     async sendAndWait(to, message, opts = {}) {
       const waitTimeout = opts.timeoutMs || 30000;
       const correlationId = randomUUID();
-      const payload: SendPayload = { kind: 'message', body: message, thread: opts.thread };
+      const payload: SendPayload = {
+        kind: (opts.kind as SendPayload['kind']) || 'message',
+        body: message,
+        thread: opts.thread,
+        data: opts.data,
+      };
 
-      const r = await request<{ correlationId?: string; response?: string; from?: string }>(
+      const ack = await request<AckPayload>(
         'SEND',
         payload as unknown as Record<string, unknown>,
         waitTimeout + 5000,
         { sync: { blocking: true, correlationId, timeoutMs: waitTimeout } },
         { from: agentName, to }
       );
-      return { from: r.from ?? to, content: r.response ?? '', thread: opts.thread };
+      return ack;
     },
 
     async broadcast(message, opts = {}) {
@@ -330,8 +302,14 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
           cwd: opts.cwd,
           spawnerName: agentName,
         };
-        await fireAndForget('SPAWN', payload as unknown as Record<string, unknown>);
-        return { success: true };
+        const result = await request<SpawnResultPayload>(
+          'SPAWN',
+          payload as unknown as Record<string, unknown>,
+          SPAWN_TIMEOUT,
+          undefined,
+          { from: agentName }
+        );
+        return toSpawnResult(result);
       } catch (e) {
         return { success: false, error: e instanceof Error ? e.message : String(e) };
       }
@@ -340,8 +318,14 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     async release(name, reason) {
       try {
         const payload: ReleasePayload = { name, reason };
-        await request('RELEASE', payload as unknown as Record<string, unknown>, RELEASE_TIMEOUT);
-        return { success: true };
+        const result = await request<ReleaseResultPayload>(
+          'RELEASE',
+          payload as unknown as Record<string, unknown>,
+          RELEASE_TIMEOUT,
+          undefined,
+          { from: agentName }
+        );
+        return toReleaseResult(result);
       } catch (e) {
         return { success: false, error: e instanceof Error ? e.message : String(e) };
       }

@@ -39,8 +39,7 @@ import {
 } from '@agent-relay/protocol/types';
 import type { ChannelJoinPayload, ChannelLeavePayload, ChannelMessagePayload } from '@agent-relay/protocol/channels';
 import { SpawnManager, type SpawnManagerConfig } from './spawn-manager.js';
-import { createStorageAdapter, type StorageAdapter, type StorageConfig } from '@agent-relay/storage/adapter';
-import { SqliteStorageAdapter } from '@agent-relay/storage/sqlite-adapter';
+import { createStorageAdapter, type StorageAdapter, type StorageConfig, type StorageHealth } from '@agent-relay/storage/adapter';
 import { getProjectPaths } from '@agent-relay/config';
 import { AgentRegistry } from './agent-registry.js';
 import { daemonLog as log } from '@agent-relay/utils/logger';
@@ -119,6 +118,7 @@ export class Daemon {
   private spawnManager?: SpawnManager;
   private shuttingDown = false;
   private relayWatchdog?: RelayWatchdog;
+  private storageHealth?: StorageHealth;
 
   /** Telemetry tracking */
   private startTime?: number;
@@ -367,6 +367,19 @@ export class Daemon {
 
     // Initialize storage
     await this.initStorage();
+
+    // Storage health check: warn if non-persistent (e.g., in-memory fallback)
+    try {
+      if (this.storage?.healthCheck) {
+        this.storageHealth = await this.storage.healthCheck();
+        if (!this.storageHealth.persistent) {
+          console.warn('[daemon] ⚠️  Running in non-persistent mode!');
+          console.warn('[daemon] Messages will be lost on restart.');
+        }
+      }
+    } catch (err) {
+      log.warn('Storage health check failed', { error: String(err) });
+    }
 
     // Restore channel memberships from persisted storage (cloud DB or SQLite)
     await this.router.restoreChannelMemberships();
@@ -1061,9 +1074,9 @@ export class Daemon {
         this.router.autoJoinChannel(connection.agentName, '#general');
 
         // Record session start
-        if (this.storage instanceof SqliteStorageAdapter) {
+        if (this.storage?.startSession) {
           const projectPaths = getProjectPaths();
-          const storage = this.storage as SqliteStorageAdapter;
+          const storage = this.storage;
           const persistSession = async (): Promise<void> => {
             let startedAt = Date.now();
             if (connection.isResumed && storage.getSessionByResumeToken) {
@@ -1073,7 +1086,7 @@ export class Daemon {
               }
             }
 
-            await storage.startSession({
+            await storage.startSession!({
               id: connection.sessionId,
               agentName: connection.agentName!,
               cli: connection.cli,
@@ -1127,7 +1140,7 @@ export class Daemon {
       }
 
       // Record session end (disconnect - agent may still mark it closed explicitly)
-      if (this.storage instanceof SqliteStorageAdapter) {
+      if (this.storage?.endSession) {
         this.storage.endSession(connection.sessionId, { closedBy: 'disconnect' })
           .catch(err => log.error('Failed to record session end', { error: String(err) }));
       }
@@ -1150,7 +1163,7 @@ export class Daemon {
       }
 
       // Record session end on error
-      if (this.storage instanceof SqliteStorageAdapter) {
+      if (this.storage?.endSession) {
         this.storage.endSession(connection.sessionId, { closedBy: 'error' })
           .catch(err => log.error('Failed to record session end', { error: String(err) }));
       }
@@ -1303,19 +1316,37 @@ export class Daemon {
       // Query handlers (MCP/client requests)
       case 'STATUS': {
         const uptimeMs = this.startTime ? Date.now() - this.startTime : 0;
-        const response: Envelope<StatusResponsePayload> = {
-          v: PROTOCOL_VERSION,
-          type: 'STATUS_RESPONSE',
-          id: envelope.id,
-          ts: Date.now(),
-          payload: {
-            version: DAEMON_VERSION,
-            uptime: uptimeMs,
-            cloudConnected: this.cloudSync?.isConnected() ?? false,
-            agentCount: this.router.connectionCount,
-          },
+        const sendStatus = async (): Promise<void> => {
+          let storageHealth: StorageHealth | undefined;
+          if (this.storage?.healthCheck) {
+            try {
+              storageHealth = await this.storage.healthCheck();
+              this.storageHealth = storageHealth;
+            } catch (err) {
+              log.warn('STATUS: storage health check failed', { error: String(err) });
+              storageHealth = this.storageHealth;
+            }
+          }
+
+          const response: Envelope<StatusResponsePayload> = {
+            v: PROTOCOL_VERSION,
+            type: 'STATUS_RESPONSE',
+            id: envelope.id,
+            ts: Date.now(),
+            payload: {
+              version: DAEMON_VERSION,
+              uptime: uptimeMs,
+              cloudConnected: this.cloudSync?.isConnected() ?? false,
+              agentCount: this.router.connectionCount,
+              storage: storageHealth,
+            },
+          };
+          connection.send(response);
         };
-        connection.send(response);
+
+        sendStatus().catch(err => {
+          log.error('Failed to send STATUS response', { error: String(err) });
+        });
         break;
       }
 

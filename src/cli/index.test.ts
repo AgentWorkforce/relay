@@ -4,11 +4,14 @@ import { promisify } from 'node:util';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
+import { execSync } from 'node:child_process';
 
 const execAsync = promisify(exec);
 
 // Path to the compiled CLI
 const CLI_PATH = path.resolve(__dirname, '../../dist/src/cli/index.js');
+const CLI_EXISTS = fs.existsSync(CLI_PATH);
+const describeCli = CLI_EXISTS ? describe : describe.skip;
 
 // Use a temp directory to isolate tests from any running daemon
 let testProjectRoot: string;
@@ -43,7 +46,7 @@ async function runCli(args: string): Promise<{ stdout: string; stderr: string; c
   }
 }
 
-describe('CLI', () => {
+describeCli('CLI', () => {
   describe('version', () => {
     it('should show version', async () => {
       const { stdout } = await runCli('version');
@@ -73,6 +76,27 @@ describe('CLI', () => {
       // Commander outputs help to stderr when no command is provided
       const output = stdout + stderr;
       expect(output).toContain('Usage:');
+    });
+  });
+
+  describe('doctor', () => {
+    it('should run doctor command via CLI', async () => {
+      const env = {
+        ...process.env,
+        DOTENV_CONFIG_QUIET: 'true',
+        AGENT_RELAY_SKIP_TMUX: '1',
+        AGENT_RELAY_SKIP_UPDATE_CHECK: '1',
+        AGENT_RELAY_DOCTOR_FORCE_NODE_SQLITE: '1',
+      };
+
+      const output = execSync(`node ${CLI_PATH} doctor`, {
+        cwd: testProjectRoot,
+        encoding: 'utf-8',
+        env,
+      });
+
+      expect(output).toContain('Storage Diagnostics');
+      expect(output).toMatch(/better-sqlite3|node:sqlite|memory/i);
     });
   });
 

@@ -25,6 +25,20 @@ sudo apt-get update && sudo apt-get install -y build-essential
 | Linux arm64 | Fallback | Uses tmux (install separately) |
 | Windows | Fallback | Uses tmux via WSL |
 
+## Storage Requirements
+- Default adapter: SQLite (persistent, WAL enabled). Path defaults to `~/.agent-relay/relay.db`.
+- Recommended: Node.js 22+ for prebuilt SQLite binaries; Node 20 requires native rebuilds.
+- Configure via env: `AGENT_RELAY_STORAGE_TYPE=sqlite|sqlite-batched|jsonl|memory` and `AGENT_RELAY_STORAGE_PATH=/your/db/path`.
+- Fallback chain: SQLite (better-sqlite3 → node:sqlite) → JSONL (append-only in `~/.agent-relay/messages/YYYY-MM-DD.jsonl`, sessions in `sessions.jsonl`) → Memory (non-persistent).
+- Docs: `docs/architecture/storage.md` (architecture) and `docs/troubleshooting/storage.md` (troubleshooting + doctor output).
+
+## Quick Fix (Storage)
+- See adapter status: `agent-relay doctor`.
+- Rebuild native deps after Node upgrades: `npm rebuild better-sqlite3`.
+- Stuck in non-persistent mode: upgrade to Node 22+, rebuild, or force JSONL via `AGENT_RELAY_STORAGE_TYPE=jsonl`, then restart.
+- Permissions: ensure the storage directory is writable or set `AGENT_RELAY_STORAGE_PATH` to a user-writable location.
+- Full guide: `docs/troubleshooting/storage.md`.
+
 ## Quick Start
 
 ```bash
@@ -143,6 +157,11 @@ Cloud features:
 - **Team collaboration** - Share dashboards, view all agents
 - **Cross-machine messaging** - Send to agents on any linked machine
 - **Centralized monitoring** - See all daemons and agents in one place
+
+## Testing
+- Full test suite: `npm test`
+- Storage doctor diagnostics only: `npx vitest run src/cli/commands/doctor.test.ts`
+- CI storage matrix runs Node 18/20/22 on Linux and macOS via `.github/workflows/storage-testing.yml`; match those locally for platform-specific issues.
 
 The cloud dashboard is the same protocol implementation, scaled for teams.
 

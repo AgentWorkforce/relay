@@ -66,6 +66,12 @@
       "import": "./dist/relay-pty-path.js",
       "default": "./dist/cjs/relay-pty-path.js"
     },
+    "./client-helpers": {
+      "types": "./dist/client-helpers.d.ts",
+      "require": "./dist/cjs/client-helpers.js",
+      "import": "./dist/client-helpers.js",
+      "default": "./dist/cjs/client-helpers.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -88,6 +94,7 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
+    "@agent-relay/protocol": "2.0.30",
     "compare-versions": "^6.1.1"
   },
   "publishConfig": {

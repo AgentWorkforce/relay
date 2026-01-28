@@ -314,7 +314,7 @@ jobs:
         include:
           - os: macos-latest
             arch: arm64
-          - os: macos-13
+          - os: macos-12  # Intel runner (macos-13 retired, macos-12 deprecated but available)
             arch: x64
     runs-on: ${{ matrix.os }}
 

@@ -493,6 +493,14 @@ export interface StatusResponsePayload {
   cloudConnected?: boolean;
   /** Number of connected agents */
   agentCount?: number;
+  /** Storage health information */
+  storage?: {
+    persistent: boolean;
+    driver: 'sqlite' | 'jsonl' | 'memory';
+    canWrite: boolean;
+    canRead: boolean;
+    error?: string;
+  };
 }
 
 /**

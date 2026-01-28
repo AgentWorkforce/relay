@@ -7,6 +7,7 @@ import {
   type MessageStatus,
   type SessionQuery,
   type StorageAdapter,
+  type StorageHealth,
   type StoredMessage,
   type StoredSession,
 } from './adapter.js';
@@ -98,6 +99,7 @@ export class SqliteStorageAdapter implements StorageAdapter {
       ? [preferred, preferred === 'better-sqlite3' ? 'node' : 'better-sqlite3']
       : ['better-sqlite3', 'node'];
 
+    // Try the fastest/native option first, then fall back to the built-in driver so startup still succeeds on systems without prebuilt binaries
     let lastError: unknown = null;
     for (const driver of attempts) {
       try {
@@ -295,6 +297,55 @@ export class SqliteStorageAdapter implements StorageAdapter {
     }
 
     return deleted;
+  }
+
+  /**
+   * Check storage health and persistence characteristics.
+   * Uses a tiny helper table to avoid mutating message data.
+   */
+  async healthCheck(): Promise<StorageHealth> {
+    const result: StorageHealth = {
+      persistent: true,
+      driver: 'sqlite',
+      canRead: false,
+      canWrite: false,
+    };
+
+    try {
+      if (!this.db) {
+        await this.init();
+      }
+
+      if (!this.db) {
+        result.error = 'SqliteStorageAdapter not initialized';
+        return result;
+      }
+
+      try {
+        this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' LIMIT 1").get();
+        result.canRead = true;
+      } catch (err) {
+        result.error = `Read check failed: ${err instanceof Error ? err.message : String(err)}`;
+      }
+
+      try {
+        this.db.exec('CREATE TABLE IF NOT EXISTS __relay_health (ts INTEGER NOT NULL)');
+        this.db.prepare('INSERT OR REPLACE INTO __relay_health (ts) VALUES (?)').run(Date.now());
+        // Keep the helper table tiny
+        this.db.exec('DELETE FROM __relay_health WHERE ts < strftime(\'%s\', \'now\') * 1000 - 86400000');
+        result.canWrite = true;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        result.error = result.error
+          ? `${result.error}; write check failed: ${msg}`
+          : `Write check failed: ${msg}`;
+      }
+    } catch (err) {
+      result.error = err instanceof Error ? err.message : String(err);
+    }
+
+    result.persistent = result.canRead && result.canWrite;
+    return result;
   }
 
   /**

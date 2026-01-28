@@ -59,6 +59,30 @@
  * KIND: release
  * NAME: ReviewerAgent
  * ```
+ *
+ * @example Continuity Save
+ * ```
+ * KIND: continuity
+ * ACTION: save
+ *
+ * Current task: Implementing user auth
+ * Completed: Database schema, API endpoints
+ * In progress: Frontend components
+ * ```
+ *
+ * @example Continuity Load
+ * ```
+ * KIND: continuity
+ * ACTION: load
+ * ```
+ *
+ * @example Continuity Uncertain
+ * ```
+ * KIND: continuity
+ * ACTION: uncertain
+ *
+ * API rate limit handling unclear
+ * ```
  */
 export interface RelayFileFormat {
   // === Headers (case-insensitive) ===
@@ -66,8 +90,11 @@ export interface RelayFileFormat {
   /** Target agent name, "*" for broadcast, or "#channel" */
   TO?: string;
 
-  /** Message type: "message" (default), "spawn", or "release" */
-  KIND?: 'message' | 'spawn' | 'release';
+  /** Message type: "message" (default), "spawn", "release", or "continuity" */
+  KIND?: 'message' | 'spawn' | 'release' | 'continuity';
+
+  /** Action for continuity commands: "save", "load", or "uncertain" */
+  ACTION?: 'save' | 'load' | 'uncertain';
 
   /** Agent name (required for spawn/release) */
   NAME?: string;
@@ -152,6 +179,51 @@ export interface ParsedRelayCommand {
 
   /** For release: agent name to release */
   release_name?: string;
+}
+
+/**
+ * JSON format emitted by relay-pty to stderr for continuity commands.
+ *
+ * This is separate from ParsedRelayCommand because continuity commands
+ * are handled differently - they go to ContinuityManager instead of
+ * being routed to other agents.
+ *
+ * @example Save
+ * ```json
+ * {
+ *   "type": "continuity",
+ *   "action": "save",
+ *   "content": "Current task: Implementing auth\nCompleted: Setup"
+ * }
+ * ```
+ *
+ * @example Load
+ * ```json
+ * {
+ *   "type": "continuity",
+ *   "action": "load",
+ *   "content": ""
+ * }
+ * ```
+ *
+ * @example Uncertain
+ * ```json
+ * {
+ *   "type": "continuity",
+ *   "action": "uncertain",
+ *   "content": "API rate limit handling unclear"
+ * }
+ * ```
+ */
+export interface ContinuityCommandOutput {
+  /** Always "continuity" */
+  type: 'continuity';
+
+  /** Action to perform */
+  action: 'save' | 'load' | 'uncertain';
+
+  /** Content: state for save, item for uncertain, empty for load */
+  content: string;
 }
 
 // =============================================================================

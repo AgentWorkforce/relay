@@ -54,7 +54,7 @@
     "access": "public"
   },
   "scripts": {
-    "postinstall": "npm rebuild better-sqlite3 || true; node scripts/postinstall.js",
+    "postinstall": "node scripts/postinstall.js",
     "build": "npm run clean && npm run build:rust && turbo run build --filter='./packages/*' && tsc",
     "build:sequential": "npm run clean && npm run build:rust && npm run build:protocol && npm run build:config && npm run build:storage && npm run build:state && npm run build:policy && npm run build:trajectory && npm run build:hooks && npm run build:memory && npm run build:utils && npm run build:continuity && npm run build:resiliency && npm run build:user-directory && npm run build:wrapper && npm run build:mcp && npm run build:bridge && npm run build:telemetry && npm run build:daemon && npm run build:sdk && npm run build:api-types && npm run build:spawner && tsc",
     "build:workspace": "npm run clean && npm run build:rust && npm run build:protocol && npm run build:config && npm run build:storage && npm run build:state && npm run build:policy && npm run build:trajectory && npm run build:hooks && npm run build:memory && npm run build:utils && npm run build:continuity && npm run build:resiliency && npm run build:user-directory && npm run build:wrapper && npm run build:mcp && npm run build:bridge && npm run build:telemetry && npm run build:daemon && npm run build:sdk && npm run build:api-types && npm run build:spawner && tsc",
@@ -188,5 +188,24 @@
   "overrides": {
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
-  }
+  },
+  "bundleDependencies": [
+    "@agent-relay/bridge",
+    "@agent-relay/config",
+    "@agent-relay/continuity",
+    "@agent-relay/daemon",
+    "@agent-relay/hooks",
+    "@agent-relay/mcp",
+    "@agent-relay/protocol",
+    "@agent-relay/resiliency",
+    "@agent-relay/sdk",
+    "@agent-relay/spawner",
+    "@agent-relay/state",
+    "@agent-relay/storage",
+    "@agent-relay/telemetry",
+    "@agent-relay/trajectory",
+    "@agent-relay/user-directory",
+    "@agent-relay/utils",
+    "@agent-relay/wrapper"
+  ]
 }

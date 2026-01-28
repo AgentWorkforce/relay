@@ -95,8 +95,11 @@ describe('relay_send', () => {
 
   it('awaits response when requested', async () => {
     vi.mocked(mockClient.sendAndWait).mockResolvedValue({
-      from: 'Worker',
-      content: 'Done!',
+      ack_id: 'msg-123',
+      seq: 1,
+      correlationId: 'corr-456',
+      response: 'Done!',
+      responseData: undefined,
     });
 
     const result = await handleRelaySend(mockClient, {
