@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/sdk",
-  "version": "2.0.30",
+  "version": "2.0.32",
   "description": "Lightweight SDK for agent-to-agent communication via Agent Relay",
   "type": "module",
   "main": "dist/index.js",
@@ -55,7 +55,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@agent-relay/protocol": "2.0.30"
+    "@agent-relay/protocol": "2.0.32"
   },
   "engines": {
     "node": ">=18.0.0"

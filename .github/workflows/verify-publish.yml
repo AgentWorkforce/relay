@@ -43,7 +43,11 @@ jobs:
 
       - name: Install deps for pack (PR only)
         if: github.event_name == 'pull_request'
-        run: npm ci --ignore-scripts
+        run: npm ci
+
+      - name: Build packages (PR only)
+        if: github.event_name == 'pull_request'
+        run: npm run build
 
       - name: Pack local tarball (PR only)
         if: github.event_name == 'pull_request'
@@ -329,7 +333,11 @@ jobs:
 
       - name: Install deps for pack (PR only)
         if: github.event_name == 'pull_request'
-        run: npm ci --ignore-scripts
+        run: npm ci
+
+      - name: Build packages (PR only)
+        if: github.event_name == 'pull_request'
+        run: npm run build
 
       - name: Pack local tarball (PR only)
         if: github.event_name == 'pull_request'
