@@ -203,6 +203,60 @@ describe('doctor diagnostics', () => {
     mockAvailability.betterAvailable = false;
     mockAvailability.nodeAvailable = false;
     delete process.env.AGENT_RELAY_DOCTOR_FORCE_NODE_SQLITE;
+    
+    // Re-apply mocks with current availability state
+    vi.doMock('node:sqlite', () => {
+      class MockNodeSqlite {
+        private store = mockStore;
+        constructor(_dbPath: string) {
+          if (!mockAvailability.nodeAvailable) {
+            throw new Error('node:sqlite missing');
+          }
+        }
+        exec(_sql: string) {}
+        prepare(sql: string) {
+          if (sql.includes('INSERT OR REPLACE INTO doctor_diagnostics')) {
+            return { run: (key: string, value: string) => this.store.set(key, value) };
+          }
+          if (sql.includes('SELECT value FROM doctor_diagnostics')) {
+            return { get: (key: string) => this.store.has(key) ? { value: this.store.get(key) } : undefined };
+          }
+          if (sql.includes('DELETE FROM doctor_diagnostics')) {
+            return { run: (key: string) => this.store.delete(key) };
+          }
+          return { run: () => {}, get: () => ({ result: 1 }) };
+        }
+        close() {}
+      }
+      return { DatabaseSync: MockNodeSqlite };
+    });
+
+    vi.doMock('better-sqlite3', () => {
+      class MockBetterSqlite {
+        private store = mockStore;
+        constructor(_dbPath: string) {
+          if (!mockAvailability.betterAvailable) {
+            throw new Error('better-sqlite3 missing');
+          }
+        }
+        prepare(sql: string) {
+          if (sql.includes('INSERT OR REPLACE INTO doctor_diagnostics')) {
+            return { run: (key: string, value: string) => this.store.set(key, value) };
+          }
+          if (sql.includes('SELECT value FROM doctor_diagnostics')) {
+            return { get: (key: string) => this.store.has(key) ? { value: this.store.get(key) } : undefined };
+          }
+          if (sql.includes('DELETE FROM doctor_diagnostics')) {
+            return { run: (key: string) => this.store.delete(key) };
+          }
+          return { run: () => {}, get: () => ({ result: 1 }) };
+        }
+        exec(_sql: string) {}
+        close() {}
+      }
+      return { default: MockBetterSqlite };
+    });
+
     const { logs, restore } = collectLogs();
     const { runDoctor } = await loadDoctor();
 
