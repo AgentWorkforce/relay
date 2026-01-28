@@ -625,6 +625,7 @@ program
               dataDir: string;
               teamDir: string;
               projectRoot: string;
+              dbPath?: string;
               enableSpawner?: boolean;
               onMarkSpawning?: (name: string) => void;
               onClearSpawning?: (name: string) => void;
@@ -636,6 +637,8 @@ program
             dataDir: paths.dataDir,
             teamDir: paths.teamDir,
             projectRoot: paths.projectRoot,
+            // Use the same database as the daemon for message persistence
+            dbPath: paths.dbPath,
             enableSpawner: true,
             onMarkSpawning: (name: string) => daemon.markSpawning(name),
             onClearSpawning: (name: string) => daemon.clearSpawning(name),
