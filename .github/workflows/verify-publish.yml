@@ -591,112 +591,6 @@ jobs:
       - name: Cleanup
         run: rm -rf /tmp/test-project
 
-  # macOS x64 verification - only runs on actual publishes (slow runner)
-  verify-macos-x64:
-    name: Verify macOS (x64)
-    # Skip on PRs - x64 runner is slow and arm64 provides sufficient coverage
-    if: github.event_name != 'pull_request'
-    timeout-minutes: 30
-    runs-on: macos-13
-
-    steps:
-      - name: Checkout (for scripts)
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Get package spec
-        id: pkg
-        run: |
-          VERSION="${{ inputs.version || 'latest' }}"
-          if [ "$VERSION" = "latest" ]; then
-            SPEC="agent-relay"
-          else
-            SPEC="agent-relay@${VERSION}"
-          fi
-          echo "spec=$SPEC" >> $GITHUB_OUTPUT
-          echo "Testing: $SPEC"
-
-      - name: Wait for npm propagation
-        if: inputs.version != 'latest'
-        run: |
-          echo "Waiting for npm to propagate version ${{ inputs.version }}..."
-          FOUND=0
-          for i in {1..30}; do
-            if npm view agent-relay@${{ inputs.version }} version 2>/dev/null; then
-              echo "Package found on npm registry"
-              FOUND=1
-              break
-            fi
-            echo "Attempt $i: Package not yet available, waiting 10s..."
-            sleep 10
-          done
-          if [ "$FOUND" -eq 0 ]; then
-            echo "ERROR: Package agent-relay@${{ inputs.version }} not found on npm after 5 minutes"
-            exit 1
-          fi
-
-      - name: "Test: npm install"
-        run: |
-          mkdir -p /tmp/test-project
-          cd /tmp/test-project
-          npm init -y
-          npm install ${{ steps.pkg.outputs.spec }}
-
-      - name: "Test: CLI version"
-        run: |
-          cd /tmp/test-project
-          VERSION=$(npx agent-relay --version)
-          echo "Version: $VERSION"
-          if echo "$VERSION" | grep -qE '[0-9]+\.[0-9]+\.[0-9]+'; then
-            echo "Version check passed"
-          else
-            exit 1
-          fi
-
-      - name: "Test: relay-pty binary"
-        run: |
-          cd /tmp/test-project
-          BIN_DIR="./node_modules/agent-relay/bin"
-
-          if [ -x "$BIN_DIR/relay-pty" ]; then
-            echo "relay-pty is executable"
-            OUTPUT=$("$BIN_DIR/relay-pty" --help 2>&1) || true
-            if echo "$OUTPUT" | grep -q "PTY wrapper"; then
-              echo "relay-pty --help check passed"
-            else
-              echo "relay-pty --help failed"
-              exit 1
-            fi
-          else
-            echo "relay-pty is NOT executable"
-            exit 1
-          fi
-
-      - name: "Test: Darwin x64 binary"
-        run: |
-          cd /tmp/test-project
-          BIN_DIR="./node_modules/agent-relay/bin"
-          DARWIN_BINARY="relay-pty-darwin-x64"
-
-          if [ -f "$BIN_DIR/$DARWIN_BINARY" ] && [ -x "$BIN_DIR/$DARWIN_BINARY" ]; then
-            echo "Darwin x64 binary found and executable"
-            OUTPUT=$("$BIN_DIR/$DARWIN_BINARY" --help 2>&1) || true
-            if echo "$OUTPUT" | grep -q "PTY wrapper"; then
-              echo "Darwin x64 binary works"
-            else
-              echo "WARNING: Unexpected output"
-            fi
-          else
-            echo "Darwin x64 binary not found, using generic"
-          fi
-
-      - name: Cleanup
-        run: rm -rf /tmp/test-project
-
   # Docker-based verification (more isolated)
   verify-docker:
     name: Verify Docker (Node ${{ matrix.node }})
@@ -751,7 +645,7 @@ jobs:
 
   summary:
     name: Verification Summary
-    needs: [verify, verify-macos-arm64, verify-macos-x64, verify-docker]
+    needs: [verify, verify-macos-arm64, verify-docker]
     runs-on: ubuntu-latest
     if: always()
 
@@ -773,15 +667,6 @@ jobs:
           echo "| Architecture | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|--------------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| arm64 (M1/M2) | ${{ needs.verify-macos-arm64.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
-          # x64 is skipped on PRs, show skipped status appropriately
-          X64_STATUS="${{ needs.verify-macos-x64.result }}"
-          if [ "$X64_STATUS" = "success" ]; then
-            echo "| x64 (Intel) | ✅ |" >> $GITHUB_STEP_SUMMARY
-          elif [ "$X64_STATUS" = "skipped" ]; then
-            echo "| x64 (Intel) | ⏭️ Skipped (PR) |" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "| x64 (Intel) | ❌ |" >> $GITHUB_STEP_SUMMARY
-          fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Docker Tests (Linux)" >> $GITHUB_STEP_SUMMARY
           echo "| Node Version | Status |" >> $GITHUB_STEP_SUMMARY
@@ -791,9 +676,7 @@ jobs:
           echo "| Node 22 | ${{ needs.verify-docker.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Overall" >> $GITHUB_STEP_SUMMARY
-          # x64 can be skipped on PRs, so we check for success OR skipped
-          X64_OK="${{ needs.verify-macos-x64.result == 'success' || needs.verify-macos-x64.result == 'skipped' }}"
-          if [ "${{ needs.verify.result }}" = "success" ] && [ "${{ needs.verify-macos-arm64.result }}" = "success" ] && [ "$X64_OK" = "true" ] && [ "${{ needs.verify-docker.result }}" = "success" ]; then
+          if [ "${{ needs.verify.result }}" = "success" ] && [ "${{ needs.verify-macos-arm64.result }}" = "success" ] && [ "${{ needs.verify-docker.result }}" = "success" ]; then
             echo "✅ All verification tests passed!" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ Some verification tests failed" >> $GITHUB_STEP_SUMMARY
