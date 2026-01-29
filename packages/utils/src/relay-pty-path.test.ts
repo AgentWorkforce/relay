@@ -15,7 +15,13 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { findRelayPtyBinary, getLastSearchPaths, clearBinaryCache } from './relay-pty-path.js';
+import {
+  findRelayPtyBinary,
+  getLastSearchPaths,
+  clearBinaryCache,
+  isPlatformSupported,
+  getSupportedPlatforms,
+} from './relay-pty-path.js';
 
 describe('findRelayPtyBinary - search path verification', () => {
   beforeEach(() => {
@@ -271,15 +277,16 @@ describe('findRelayPtyBinary - search path verification', () => {
   });
 
   describe('Environment variable override', () => {
-    it('should use RELAY_PTY_BINARY when file exists', () => {
-      // Use an actual file that exists for this test
-      const existingFile = `${process.cwd()}/package.json`;
-      process.env.RELAY_PTY_BINARY = existingFile;
+    it('should use RELAY_PTY_BINARY when file is executable', () => {
+      // Use an actual executable that exists on all Unix systems
+      // /bin/ls is guaranteed to exist and be executable
+      const executableFile = '/bin/ls';
+      process.env.RELAY_PTY_BINARY = executableFile;
 
       const result = findRelayPtyBinary('/any/path');
 
-      // Should return the env var path since the file exists
-      expect(result).toBe(existingFile);
+      // Should return the env var path since the file is executable
+      expect(result).toBe(executableFile);
 
       delete process.env.RELAY_PTY_BINARY;
     });
@@ -312,5 +319,55 @@ describe('findRelayPtyBinary - search path verification', () => {
         expect(result).toMatch(/relay-pty/);
       }
     });
+  });
+});
+
+describe('isPlatformSupported', () => {
+  it('should return true for current platform (darwin/linux arm64/x64)', () => {
+    const platform = process.platform;
+    const arch = process.arch;
+
+    // This test runs on macOS/Linux CI, so current platform should be supported
+    if ((platform === 'darwin' || platform === 'linux') && (arch === 'arm64' || arch === 'x64')) {
+      expect(isPlatformSupported()).toBe(true);
+    }
+  });
+
+  it('should be consistent with platform binary availability', () => {
+    // If platform is supported, we should have a binary name for it
+    const supported = isPlatformSupported();
+    const platforms = getSupportedPlatforms();
+
+    if (supported) {
+      const currentPlatformArch = `${process.platform}-${process.arch}`;
+      expect(platforms).toContain(currentPlatformArch);
+    }
+  });
+});
+
+describe('getSupportedPlatforms', () => {
+  it('should return all supported platform-arch combinations', () => {
+    const platforms = getSupportedPlatforms();
+
+    // Should include all 4 supported combinations
+    expect(platforms).toContain('darwin-arm64');
+    expect(platforms).toContain('darwin-x64');
+    expect(platforms).toContain('linux-arm64');
+    expect(platforms).toContain('linux-x64');
+  });
+
+  it('should not include Windows', () => {
+    const platforms = getSupportedPlatforms();
+
+    expect(platforms).not.toContain('win32-x64');
+    expect(platforms).not.toContain('win32-arm64');
+    expect(platforms).not.toMatch(/win32/);
+  });
+
+  it('should return a comma-separated string', () => {
+    const platforms = getSupportedPlatforms();
+
+    expect(typeof platforms).toBe('string');
+    expect(platforms).toMatch(/^[\w-]+(, [\w-]+)*$/);
   });
 });
