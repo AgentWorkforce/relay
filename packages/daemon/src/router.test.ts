@@ -146,4 +146,58 @@ describe('Router', () => {
       expect(agents).toContain('Agent3');
     });
   });
+
+  describe('agent aliases', () => {
+    it('should route messages to Dashboard via _DashboardUI alias', () => {
+      // Register agent as _DashboardUI (how dashboard actually registers)
+      const dashboardConn = createMockConnection('_DashboardUI');
+      const senderConn = createMockConnection('TestAgent');
+      router.register(dashboardConn);
+      router.register(senderConn);
+
+      // Send message TO: Dashboard (the alias)
+      router.route(senderConn, {
+        v: 1,
+        type: 'SEND',
+        id: 'test-msg-1',
+        ts: Date.now(),
+        from: 'TestAgent',
+        to: 'Dashboard', // Using alias, not _DashboardUI
+        payload: {
+          kind: 'message',
+          body: 'Hello Dashboard!',
+        },
+      });
+
+      // Verify message was delivered to _DashboardUI
+      expect(dashboardConn.send).toHaveBeenCalled();
+      const deliveredEnvelope = (dashboardConn.send as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(deliveredEnvelope.type).toBe('DELIVER');
+      expect(deliveredEnvelope.from).toBe('TestAgent');
+      expect(deliveredEnvelope.to).toBe('_DashboardUI'); // Resolved to actual name
+      expect(deliveredEnvelope.payload.body).toBe('Hello Dashboard!');
+    });
+
+    it('should still work with direct _DashboardUI target', () => {
+      const dashboardConn = createMockConnection('_DashboardUI');
+      const senderConn = createMockConnection('TestAgent');
+      router.register(dashboardConn);
+      router.register(senderConn);
+
+      router.route(senderConn, {
+        v: 1,
+        type: 'SEND',
+        id: 'test-msg-2',
+        ts: Date.now(),
+        from: 'TestAgent',
+        to: '_DashboardUI', // Direct name, no alias
+        payload: {
+          kind: 'message',
+          body: 'Direct message',
+        },
+      });
+
+      expect(dashboardConn.send).toHaveBeenCalled();
+    });
+  });
 });
