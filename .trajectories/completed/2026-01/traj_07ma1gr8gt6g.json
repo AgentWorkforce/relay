@@ -1,0 +1,54 @@
+{
+  "id": "traj_07ma1gr8gt6g",
+  "version": 1,
+  "task": {
+    "title": "Implement @mention CTA for inviting users not in channel",
+    "source": {
+      "system": "plain",
+      "id": "channel-mention-invite"
+    }
+  },
+  "status": "abandoned",
+  "startedAt": "2026-01-28T22:33:08.798Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-01-28T22:33:26.310Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_r12ig5c07p1r",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-28T22:33:26.310Z",
+      "events": [
+        {
+          "ts": 1769639606311,
+          "type": "decision",
+          "content": "UI for @mention invite CTA complete: UI for @mention invite CTA complete",
+          "raw": {
+            "question": "UI for @mention invite CTA complete",
+            "chosen": "UI for @mention invite CTA complete",
+            "alternatives": [],
+            "reasoning": "MentionUIWorker successfully implemented visual indicators and invite CTA. Follows Slack pattern with subtle yellow indicator for non-members and cyan link for invite action visible only to sender. Modified 4 files."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1769643216921,
+          "type": "note",
+          "content": "Abandoned: Stale trajectory from previous session",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-28T23:33:36.921Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/data/repos/relay",
+  "tags": [],
+  "completedAt": "2026-01-28T23:33:36.921Z"
+}

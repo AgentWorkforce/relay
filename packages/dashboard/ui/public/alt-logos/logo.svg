@@ -1,0 +1,38 @@
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bg_grad" cx="50%" cy="50%" r="50%" fx="50%" fy="50%">
+      <stop offset="0%" stop-color="#1a1a2e"/>
+      <stop offset="100%" stop-color="#0a0a0f"/>
+    </radialGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="4" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- Background Circle -->
+  <circle cx="256" cy="256" r="256" fill="url(#bg_grad)"/>
+  
+  <!-- Connections -->
+  <g stroke="#00d9ff" stroke-width="10" stroke-opacity="0.4" stroke-linecap="round">
+    <line x1="256" y1="256" x2="128" y2="128" />
+    <line x1="256" y1="256" x2="384" y2="128" />
+    <line x1="256" y1="256" x2="128" y2="384" />
+    <line x1="256" y1="256" x2="384" y2="384" />
+  </g>
+  
+  <!-- Satellite Nodes -->
+  <g stroke-width="10">
+    <circle cx="128" cy="128" r="32" fill="#0d0d14" stroke="#ff6b35" />
+    <circle cx="384" cy="128" r="32" fill="#0d0d14" stroke="#a855f7" />
+    <circle cx="128" cy="384" r="32" fill="#0d0d14" stroke="#00ffc8" />
+    <circle cx="384" cy="384" r="32" fill="#0d0d14" stroke="#00d9ff" />
+  </g>
+  
+  <!-- Central Node -->
+  <circle cx="256" cy="256" r="64" fill="#0a0a0f" stroke="#00d9ff" stroke-width="12" filter="url(#glow)"/>
+  <circle cx="256" cy="256" r="24" fill="#00d9ff" filter="url(#glow)"/>
+</svg>

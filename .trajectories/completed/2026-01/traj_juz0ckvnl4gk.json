@@ -1,0 +1,65 @@
+{
+  "id": "traj_juz0ckvnl4gk",
+  "version": 1,
+  "task": {
+    "title": "Implement @mention CTA for inviting users not in channel",
+    "source": {
+      "system": "plain",
+      "id": "channel-mention-invite"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-01-28T21:40:28.889Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-01-28T21:41:34.113Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_1w9eq7lzseaq",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-01-28T21:41:34.113Z",
+      "events": [
+        {
+          "ts": 1769636494114,
+          "type": "decision",
+          "content": "Architecture: Add mention invite functions to channels/api.ts as the primary API layer: Architecture: Add mention invite functions to channels/api.ts as the primary API layer",
+          "raw": {
+            "question": "Architecture: Add mention invite functions to channels/api.ts as the primary API layer",
+            "chosen": "Architecture: Add mention invite functions to channels/api.ts as the primary API layer",
+            "alternatives": [],
+            "reasoning": "Channels API already handles channel membership (getChannelMembers, addMember, joinChannel). Adding checkMentionMembership and sendMentionInvite functions here follows the existing pattern. Notification is handled via toast system."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1769637170003,
+          "type": "decision",
+          "content": "Used localStorage fallback for invite persistence: Used localStorage fallback for invite persistence",
+          "raw": {
+            "question": "Used localStorage fallback for invite persistence",
+            "chosen": "Used localStorage fallback for invite persistence",
+            "alternatives": [],
+            "reasoning": "Server endpoints may not exist yet (404 fallback). localStorage provides immediate functionality while daemon API endpoints are being built. Local invites merge with server invites when available."
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-01-28T21:53:27.990Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/data/repos/relay",
+  "tags": [],
+  "completedAt": "2026-01-28T21:53:27.990Z",
+  "retrospective": {
+    "summary": "Implemented @mention channel invite API: checkMentionMembership, sendMentionInvite, getMentionInvites, respondToMentionInvite, processMentionInvites in channels/api.ts. Added full type definitions in channels/types.ts. Created useMentionInvite hook with polling, invite accept/decline, and extractMentions utility. All exported from hooks/index.ts and channels/index.ts. Uses localStorage fallback when server endpoints return 404.",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  }
+}

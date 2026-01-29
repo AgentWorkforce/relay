@@ -1,0 +1,45 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Agent Relay logo" fill="none">
+  <defs>
+    <linearGradient id="primary" x1="128" y1="80" x2="384" y2="420" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#00d9ff" />
+      <stop offset="1" stop-color="#00ffc8" />
+    </linearGradient>
+    <linearGradient id="orbit" x1="96" y1="180" x2="416" y2="332" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#a855f7" />
+      <stop offset="0.55" stop-color="#00d9ff" />
+      <stop offset="1" stop-color="#ff6b35" />
+    </linearGradient>
+    <linearGradient id="signal" x1="220" y1="180" x2="360" y2="360" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#00d9ff" />
+      <stop offset="1" stop-color="#ffffff" />
+    </linearGradient>
+    <filter id="glow" x="0" y="0" width="512" height="512" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse">
+      <feGaussianBlur stdDeviation="8" result="blur" />
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.0  0 0 0 0 0.85  0 0 0 0 1.0  0 0 0 0.6 0" result="color" />
+      <feMerge>
+        <feMergeNode in="color" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <g filter="url(#glow)">
+    <ellipse cx="256" cy="252" rx="174" ry="94" transform="rotate(-18 256 252)" stroke="url(#orbit)" stroke-width="12" stroke-linecap="round" stroke-dasharray="280 150" />
+    <ellipse cx="256" cy="260" rx="152" ry="82" transform="rotate(20 256 260)" stroke="#0c1a26" stroke-opacity="0.4" stroke-width="10" stroke-linecap="round" stroke-dasharray="200 140" />
+
+    <path d="M156 364 L256 120 L356 364" stroke="url(#primary)" stroke-width="20" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="M204 260 H312" stroke="url(#primary)" stroke-width="14" stroke-linecap="round" />
+
+    <path d="M256 188 C 338 176 360 240 300 256 L 360 348" stroke="url(#signal)" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" />
+
+    <circle cx="256" cy="120" r="14" fill="#00d9ff" />
+    <circle cx="156" cy="364" r="10" fill="#a855f7" />
+    <circle cx="356" cy="364" r="10" fill="#ff6b35" />
+    <circle cx="204" cy="260" r="8" fill="#00ffc8" />
+    <circle cx="312" cy="260" r="8" fill="#00ffc8" />
+    <circle cx="360" cy="348" r="9" fill="#00d9ff" />
+
+    <path d="M118 244 C 132 196 178 170 218 178" stroke="#00d9ff" stroke-width="6" stroke-linecap="round" stroke-dasharray="8 10" opacity="0.75" />
+    <path d="M298 168 C 332 156 374 180 390 214" stroke="#00ffc8" stroke-width="6" stroke-linecap="round" stroke-dasharray="10 12" opacity="0.75" />
+  </g>
+</svg>

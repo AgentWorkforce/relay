@@ -1,0 +1,38 @@
+<svg width="512" height="512" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- A shape - cyan -->
+  <path
+    d="M30 80 L 50 20 L 70 80"
+    stroke="#00d9ff"
+    stroke-width="5"
+    stroke-linejoin="round"
+    stroke-linecap="round"
+    fill="none"
+  />
+  <line
+    x1="40"
+    y1="50"
+    x2="60"
+    y2="50"
+    stroke="#00d9ff"
+    stroke-width="5"
+    stroke-linecap="round"
+  />
+
+  <!-- R overlay - teal -->
+  <path
+    d="M50 20 L 50 80"
+    stroke="#00ffc8"
+    stroke-width="3"
+    stroke-linecap="round"
+    opacity="0.8"
+  />
+  <path
+    d="M50 20 C 80 20 80 50 50 50 L 80 80"
+    stroke="#00ffc8"
+    stroke-width="3"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    fill="none"
+    opacity="0.8"
+  />
+</svg>

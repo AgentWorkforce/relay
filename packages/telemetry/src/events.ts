@@ -114,6 +114,54 @@ export interface CliCommandRunEvent {
 }
 
 // =============================================================================
+// Tier 3: Dashboard Events
+// =============================================================================
+
+/**
+ * dashboard_page_view - Emitted when a dashboard page is viewed.
+ */
+export interface DashboardPageViewEvent {
+  /** Page path (e.g., '/', '/metrics', '/login') */
+  page_path: string;
+  /** Page title */
+  page_title?: string;
+  /** Whether the dashboard is in cloud mode */
+  is_cloud_mode: boolean;
+}
+
+/**
+ * dashboard_user_action - Emitted when a user performs a key action in the dashboard.
+ */
+export interface DashboardUserActionEvent {
+  /** Action identifier (e.g., 'spawn_agent', 'send_message', 'open_command_palette') */
+  action: string;
+  /** Category of the action */
+  category: 'agent' | 'message' | 'navigation' | 'settings' | 'workspace';
+  /** Optional additional detail */
+  detail?: string;
+}
+
+/**
+ * dashboard_form_submit - Emitted when a form is submitted in the dashboard.
+ */
+export interface DashboardFormSubmitEvent {
+  /** Form identifier (e.g., 'spawn_modal', 'login', 'create_workspace') */
+  form_name: string;
+  /** Whether the submission succeeded */
+  success: boolean;
+}
+
+/**
+ * dashboard_session_start - Emitted when a dashboard session begins.
+ */
+export interface DashboardSessionStartEvent {
+  /** Whether the dashboard is in cloud mode */
+  is_cloud_mode: boolean;
+  /** Browser user agent */
+  user_agent?: string;
+}
+
+// =============================================================================
 // Event Union Type
 // =============================================================================
 
@@ -124,7 +172,11 @@ export type TelemetryEventName =
   | 'agent_release'
   | 'agent_crash'
   | 'message_send'
-  | 'cli_command_run';
+  | 'cli_command_run'
+  | 'dashboard_page_view'
+  | 'dashboard_user_action'
+  | 'dashboard_form_submit'
+  | 'dashboard_session_start';
 
 export interface TelemetryEventMap {
   daemon_start: DaemonStartEvent;
@@ -134,4 +186,8 @@ export interface TelemetryEventMap {
   agent_crash: AgentCrashEvent;
   message_send: MessageSendEvent;
   cli_command_run: CliCommandRunEvent;
+  dashboard_page_view: DashboardPageViewEvent;
+  dashboard_user_action: DashboardUserActionEvent;
+  dashboard_form_submit: DashboardFormSubmitEvent;
+  dashboard_session_start: DashboardSessionStartEvent;
 }
