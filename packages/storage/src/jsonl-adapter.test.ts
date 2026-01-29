@@ -197,4 +197,35 @@ describe('JsonlStorageAdapter', () => {
     const sessions = await adapter.getSessions({ agentName: 'Agent' });
     expect(sessions[0]?.messageCount).toBe(2);
   });
+
+  it('auto-reloads messages when watchForChanges is enabled', async () => {
+    // Create a watching adapter
+    const watchingAdapter = new JsonlStorageAdapter({
+      baseDir,
+      cleanupIntervalMs: 0,
+      watchForChanges: true,
+      watchDebounceMs: 50,
+    });
+    await watchingAdapter.init();
+
+    // Initially no messages (adapter doesn't share with the default one)
+    const before = await watchingAdapter.getMessages({});
+    const countBefore = before.length;
+
+    // Write a message directly to disk using another adapter (simulating daemon)
+    const writerAdapter = new JsonlStorageAdapter({ baseDir, cleanupIntervalMs: 0 });
+    await writerAdapter.init();
+    await writerAdapter.saveMessage(makeMessage({ id: 'watch-test', body: 'from daemon' }));
+    await writerAdapter.close();
+
+    // Wait for debounce + file watcher to trigger reload
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    // Should now see the new message
+    const after = await watchingAdapter.getMessages({});
+    expect(after.length).toBe(countBefore + 1);
+    expect(after.some(m => m.id === 'watch-test')).toBe(true);
+
+    await watchingAdapter.close();
+  });
 });
