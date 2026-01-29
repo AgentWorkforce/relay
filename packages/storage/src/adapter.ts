@@ -329,7 +329,7 @@ export async function createStorageAdapter(
   switch (storageType) {
     case 'none':
     case 'memory': {
-      console.log('[storage] Using in-memory storage (no persistence)');
+      console.error('[storage] Using in-memory storage (no persistence)');
       const adapter = new MemoryStorageAdapter();
       await adapter.init();
       return adapter;
@@ -351,7 +351,7 @@ export async function createStorageAdapter(
     case 'sqlite-batched':
     case 'batched': {
       try {
-        console.log('[storage] Using batched SQLite storage');
+        console.error('[storage] Using batched SQLite storage');
         const { BatchedSqliteAdapter } = await import('./batched-sqlite-adapter.js');
         const adapter = new BatchedSqliteAdapter({
           dbPath: finalConfig.path!,
@@ -392,7 +392,7 @@ export async function createStorageAdapter(
     case 'jsonl': {
       const { JsonlStorageAdapter } = await import('./jsonl-adapter.js');
       const baseDir = path.dirname(finalConfig.path!);
-      console.log('[storage] Using JSONL storage');
+      console.error('[storage] Using JSONL storage');
       const adapter = new JsonlStorageAdapter({ baseDir });
       await adapter.init();
       return adapter;

@@ -40,7 +40,7 @@ import {
 import type { ChannelJoinPayload, ChannelLeavePayload, ChannelMessagePayload } from '@agent-relay/protocol/channels';
 import { SpawnManager, type SpawnManagerConfig } from './spawn-manager.js';
 import { createStorageAdapter, type StorageAdapter, type StorageConfig, type StorageHealth } from '@agent-relay/storage/adapter';
-import { getProjectPaths } from '@agent-relay/config';
+import { getProjectPaths, saveRuntimeConfig, clearRuntimeConfig } from '@agent-relay/config';
 import { AgentRegistry } from './agent-registry.js';
 import { daemonLog as log } from '@agent-relay/utils/logger';
 import { getCloudSync, type CloudSyncService, type RemoteAgent, type CrossMachineMessage, type AgentMetricsProvider } from './cloud-sync.js';
@@ -379,6 +379,18 @@ export class Daemon {
       }
     } catch (err) {
       log.warn('Storage health check failed', { error: String(err) });
+    }
+
+    // Save runtime config so CLI commands can use the same storage type
+    try {
+      saveRuntimeConfig({
+        storageType: this.storageHealth?.driver ?? this.config.storageConfig?.type ?? 'jsonl',
+        daemonPid: process.pid,
+        startedAt: new Date().toISOString(),
+        version: DAEMON_VERSION,
+      });
+    } catch (err) {
+      log.warn('Failed to save runtime config', { error: String(err) });
     }
 
     // Restore channel memberships from persisted storage (cloud DB or SQLite)
@@ -993,6 +1005,12 @@ export class Daemon {
         // Clean up pid file
         if (fs.existsSync(this.config.pidFilePath)) {
           fs.unlinkSync(this.config.pidFilePath);
+        }
+        // Clear runtime config
+        try {
+          clearRuntimeConfig();
+        } catch {
+          // Ignore errors during shutdown
         }
         if (this.storage?.close) {
           this.storage.close().catch((err) => {
