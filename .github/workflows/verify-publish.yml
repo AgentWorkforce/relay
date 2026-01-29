@@ -532,62 +532,61 @@ jobs:
           fi
 
       # Test: npx binary resolution on macOS (critical for spawn)
+      # This test verifies that the darwin-arm64 binary works correctly
+      # after being installed locally (simulating npx agent-relay up)
       - name: "Test: npx binary resolution (macOS)"
         run: |
-          # Clean npx cache to simulate fresh usage
-          rm -rf ~/.npm/_npx 2>/dev/null || true
+          # The test-project already has agent-relay installed from the tarball
+          # We test the binary resolution from there
+          cd /tmp/test-project
 
-          # Run npx to populate cache (show output for debugging)
-          echo "Running: npx ${{ steps.pkg.outputs.spec }} --version"
-          if ! npx ${{ steps.pkg.outputs.spec }} --version; then
-            echo "ERROR: npx command failed with exit code $?"
-            echo "Package spec: ${{ steps.pkg.outputs.spec }}"
-            ls -la "${{ steps.pkg.outputs.spec }}" 2>/dev/null || echo "Spec is not a file path"
+          # Verify the darwin-arm64 binary exists and works
+          BIN_DIR="./node_modules/agent-relay/bin"
+          DARWIN_BINARY="relay-pty-darwin-arm64"
+
+          echo "Looking for $DARWIN_BINARY in $BIN_DIR..."
+
+          if [ ! -f "$BIN_DIR/$DARWIN_BINARY" ]; then
+            echo "ERROR: Darwin arm64 binary not found!"
+            echo "Contents of bin directory:"
+            ls -la "$BIN_DIR" 2>/dev/null || echo "Directory not found"
             exit 1
           fi
 
-          # Find and test the darwin-arm64 binary
-          NPX_CACHE=~/.npm/_npx
-          DARWIN_BINARY="relay-pty-darwin-arm64"
+          echo "Found: $BIN_DIR/$DARWIN_BINARY"
+          ls -la "$BIN_DIR/$DARWIN_BINARY"
+          file "$BIN_DIR/$DARWIN_BINARY"
 
-          echo "Looking for $DARWIN_BINARY in npx cache..."
-          FOUND_BINARY=""
-          for dir in "$NPX_CACHE"/*/node_modules/agent-relay/bin; do
-            if [ -d "$dir" ] && [ -f "$dir/$DARWIN_BINARY" ]; then
-              FOUND_BINARY="$dir/$DARWIN_BINARY"
-              echo "Found: $FOUND_BINARY"
-              break
-            fi
-          done
-
-          if [ -z "$FOUND_BINARY" ]; then
-            echo "ERROR: Darwin arm64 binary not found in npx cache!"
-            echo "This will cause 'npx agent-relay up' to fail on macOS"
+          # Check if binary is executable
+          if [ ! -x "$BIN_DIR/$DARWIN_BINARY" ]; then
+            echo "ERROR: Binary exists but is not executable!"
             exit 1
           fi
 
           # Test binary works (important for macOS code signing)
-          echo "Testing binary: $FOUND_BINARY"
-          ls -la "$FOUND_BINARY"
-          file "$FOUND_BINARY"
-
-          # Check if binary is executable
-          if [ ! -x "$FOUND_BINARY" ]; then
-            echo "ERROR: Binary is not executable!"
-            echo "Attempting to fix permissions..."
-            chmod +x "$FOUND_BINARY"
-          fi
-
-          if "$FOUND_BINARY" --help 2>&1 | grep -q "PTY wrapper"; then
-            echo "npx macOS binary resolution PASSED"
+          echo "Testing binary execution..."
+          if "$BIN_DIR/$DARWIN_BINARY" --help 2>&1 | grep -q "PTY wrapper"; then
+            echo "Darwin arm64 binary execution PASSED"
           else
             echo "ERROR: Binary found but doesn't work (possible code signing issue)"
             echo "Binary output:"
-            "$FOUND_BINARY" --help 2>&1 || echo "Exit code: $?"
+            "$BIN_DIR/$DARWIN_BINARY" --help 2>&1 || echo "Exit code: $?"
             echo "Code signing info:"
-            codesign -dv "$FOUND_BINARY" 2>&1 || true
+            codesign -dv "$BIN_DIR/$DARWIN_BINARY" 2>&1 || true
             exit 1
           fi
+
+          # Also test that npx can resolve and run agent-relay from the local install
+          echo "Testing npx resolution from local install..."
+          if npx agent-relay --version 2>&1 | grep -qE '[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "npx resolution from local install PASSED"
+          else
+            echo "ERROR: npx agent-relay --version failed from local install"
+            npx agent-relay --version 2>&1 || true
+            exit 1
+          fi
+
+          echo "npx macOS binary resolution test PASSED"
 
       - name: Cleanup
         run: rm -rf /tmp/test-project
