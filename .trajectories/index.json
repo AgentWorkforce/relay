@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-29T08:54:37.765Z",
+  "lastUpdated": "2026-01-29T10:12:48.153Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -169,6 +169,20 @@
       "startedAt": "2026-01-29T08:54:25.152Z",
       "completedAt": "2026-01-29T08:54:37.741Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_azpldna9k695.json"
+    },
+    "traj_yt3taz28y8c9": {
+      "title": "Comprehensive relay-pty binary resolution edge case handling",
+      "status": "completed",
+      "startedAt": "2026-01-29T09:50:39.608Z",
+      "completedAt": "2026-01-29T09:51:14.006Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_yt3taz28y8c9.json"
+    },
+    "traj_xlvah6igh9it": {
+      "title": "Fix macOS CI npx binary resolution test",
+      "status": "completed",
+      "startedAt": "2026-01-29T10:03:49.538Z",
+      "completedAt": "2026-01-29T10:12:48.143Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_xlvah6igh9it.json"
     }
   }
 }
