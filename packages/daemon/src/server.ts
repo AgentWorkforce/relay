@@ -57,8 +57,6 @@ import {
   track,
   shutdown as shutdownTelemetry,
 } from '@agent-relay/telemetry';
-import { RelayWatchdog, type ProcessedFile } from './relay-watchdog.js';
-import type { RelayPaths } from '@agent-relay/config/relay-file-writer';
 
 // Get version from package.json
 const require = createRequire(import.meta.url);
@@ -117,7 +115,6 @@ export class Daemon {
   private cloudSyncDebounceTimer?: NodeJS.Timeout;
   private spawnManager?: SpawnManager;
   private shuttingDown = false;
-  private relayWatchdog?: RelayWatchdog;
   private storageHealth?: StorageHealth;
 
   /** Telemetry tracking */
@@ -508,17 +505,6 @@ export class Daemon {
           this.writeProcessingStateFile();
         }, Daemon.PROCESSING_STATE_INTERVAL_MS);
 
-        // Start RelayWatchdog for MCP file-based messages (ledger-based for durability)
-        // Feature gated: set RELAY_MCP_AUTO_INSTALL=1 to enable file-based MCP messaging
-        const mcpAutoInstallEnabled = process.env.RELAY_MCP_AUTO_INSTALL === '1';
-        if (mcpAutoInstallEnabled) {
-          // Use parent of teamDir since teamDir is .agent-relay/team/ but outbox is at .agent-relay/outbox/
-          const relayRoot = path.dirname(teamDir);
-          this.initRelayWatchdog(relayRoot).catch(err => {
-            log.error('Failed to start RelayWatchdog', { error: String(err) });
-          });
-        }
-
         // Track daemon start
         track('daemon_start', {});
 
@@ -526,112 +512,6 @@ export class Daemon {
         resolve();
       });
     });
-  }
-
-  /**
-   * Initialize RelayWatchdog for MCP and file-based agents.
-   * Uses the ledger-based watchdog for durable file processing.
-   */
-  private async initRelayWatchdog(relayDir: string): Promise<void> {
-    // Create project-local relay paths
-    const relayPaths: RelayPaths = {
-      rootDir: relayDir,
-      outboxDir: path.join(relayDir, 'outbox'),
-      attachmentsDir: path.join(relayDir, 'attachments'),
-      metaDir: path.join(relayDir, 'meta'),
-      legacyOutboxDir: path.join(relayDir, 'outbox'), // Same as outboxDir for project-local
-    };
-
-    this.relayWatchdog = new RelayWatchdog({
-      relayPaths,
-      ledgerPath: path.join(relayDir, 'meta', 'file-ledger.sqlite'),
-    });
-
-    // Handle delivered files from file-based agents (MCP, etc.)
-    this.relayWatchdog.on('file:delivered', (file: ProcessedFile) => {
-      const { agentName, messageType, headers, body } = file;
-      log.debug('File delivered', { agentName, messageType, headers });
-
-      // Determine message type from headers or filename
-      const kind = headers['KIND']?.toLowerCase() || messageType;
-
-      if (kind === 'spawn') {
-        // Handle spawn request
-        if (this.spawnManager) {
-          const envelope: Envelope<SpawnPayload> = {
-            v: PROTOCOL_VERSION,
-            type: 'SPAWN',
-            id: generateId(),
-            ts: Date.now(),
-            payload: {
-              name: headers['NAME'] || '',
-              cli: headers['CLI'] || 'claude',
-              task: body,
-              cwd: headers['CWD'],
-              model: headers['MODEL'],
-              spawnerName: agentName,
-            },
-          };
-          const virtualConnection = { agentName, send: () => true } as any;
-          this.spawnManager.handleSpawn(virtualConnection, envelope);
-        } else {
-          log.warn('Spawn request ignored - SpawnManager not enabled');
-        }
-      } else if (kind === 'release') {
-        // Handle release request
-        if (this.spawnManager) {
-          const envelope: Envelope<ReleasePayload> = {
-            v: PROTOCOL_VERSION,
-            type: 'RELEASE',
-            id: generateId(),
-            ts: Date.now(),
-            payload: {
-              name: headers['NAME'] || '',
-              reason: body || undefined,
-            },
-          };
-          const virtualConnection = { agentName, send: () => true } as any;
-          this.spawnManager.handleRelease(virtualConnection, envelope);
-        } else {
-          log.warn('Release request ignored - SpawnManager not enabled');
-        }
-      } else {
-        // Default: treat as message
-        const to = headers['TO'];
-        if (!to) {
-          log.warn('Message missing TO header', { agentName, headers });
-          return;
-        }
-
-        const envelope: SendEnvelope = {
-          v: PROTOCOL_VERSION,
-          type: 'SEND',
-          id: generateId(),
-          ts: Date.now(),
-          from: agentName,
-          to,
-          payload: {
-            kind: 'message',
-            body,
-            thread: headers['THREAD'],
-          },
-        };
-        const virtualConnection = { agentName } as any;
-        this.router.route(virtualConnection, envelope);
-      }
-    });
-
-    // Log errors
-    this.relayWatchdog.on('error', (error: Error) => {
-      log.error('RelayWatchdog error', { error: error.message });
-    });
-
-    this.relayWatchdog.on('file:failed', (record, error) => {
-      log.error('File processing failed', { fileId: record.fileId, error: error.message });
-    });
-
-    await this.relayWatchdog.start();
-    log.info('RelayWatchdog started', { relayDir });
   }
 
   /**
@@ -981,12 +861,6 @@ export class Daemon {
     if (this.processingStateInterval) {
       clearInterval(this.processingStateInterval);
       this.processingStateInterval = undefined;
-    }
-
-    // Stop RelayWatchdog
-    if (this.relayWatchdog) {
-      await this.relayWatchdog.stop();
-      this.relayWatchdog = undefined;
     }
 
     // Close all active connections

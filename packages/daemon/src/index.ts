@@ -44,9 +44,5 @@ export {
   type StartCLIAuthOptions,
 } from './cli-auth.js';
 
-// Relay file watchdog (file-based message detection and processing)
-export * from './relay-ledger.js';
-export * from './relay-watchdog.js';
-
 // Spawn manager (protocol-based agent spawning)
 export { SpawnManager, type SpawnManagerConfig } from './spawn-manager.js';
