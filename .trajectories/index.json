@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-28T23:40:33.327Z",
+  "lastUpdated": "2026-01-29T01:13:59.672Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -193,9 +193,16 @@
     },
     "traj_r6yf39v7s4cx": {
       "title": "Coordinate dashboard UI improvements team",
-      "status": "active",
+      "status": "completed",
       "startedAt": "2026-01-28T23:38:14.820Z",
-      "path": "/data/repos/relay/.trajectories/active/traj_r6yf39v7s4cx.json"
+      "completedAt": "2026-01-28T23:58:26.708Z",
+      "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_r6yf39v7s4cx.json"
+    },
+    "traj_1w8g6odnj7of": {
+      "title": "Debug and fix GitHub authentication for git push",
+      "status": "active",
+      "startedAt": "2026-01-29T01:13:28.472Z",
+      "path": "/data/repos/relay/.trajectories/active/traj_1w8g6odnj7of.json"
     }
   }
 }
