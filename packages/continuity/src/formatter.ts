@@ -130,40 +130,75 @@ function applyCharacterLimit(result: string, maxLength?: number): string {
 }
 
 /**
- * Compact context data by reducing array sizes
+ * Compact context data by progressively reducing array sizes until we fit within token target.
+ * Uses iterative reduction rather than fixed sizes to maximize preserved content.
  */
 function compactContextData(
   context: Omit<StartupContext, 'formatted'>,
   targetTokens: number
 ): Omit<StartupContext, 'formatted'> {
+  // Compaction levels - progressively more aggressive
+  const levels = [
+    { completed: 5, inProgress: 7, blocked: 5, decisions: 4, files: 5, uncertain: 5, learnings: 3 },
+    { completed: 3, inProgress: 5, blocked: 3, decisions: 2, files: 3, uncertain: 3, learnings: 2 },
+    { completed: 2, inProgress: 3, blocked: 2, decisions: 1, files: 2, uncertain: 2, learnings: 1 },
+    { completed: 1, inProgress: 2, blocked: 1, decisions: 1, files: 1, uncertain: 1, learnings: 0 },
+  ];
+
+  for (const level of levels) {
+    const compacted = applyCompactionLevel(context, level);
+
+    // Test if this level fits within target
+    const testResult = formatStartupContextInternal(compacted, {
+      compact: true,
+      includeLearnings: level.learnings > 0,
+      includeFiles: level.files > 0,
+      includeDecisions: level.decisions > 0,
+    });
+
+    if (estimateTokens(testResult) <= targetTokens) {
+      return compacted;
+    }
+  }
+
+  // If none of the levels fit, return the most aggressive compaction
+  return applyCompactionLevel(context, levels[levels.length - 1]);
+}
+
+/**
+ * Apply a specific compaction level to context data
+ */
+function applyCompactionLevel(
+  context: Omit<StartupContext, 'formatted'>,
+  level: { completed: number; inProgress: number; blocked: number; decisions: number; files: number; uncertain: number; learnings: number }
+): Omit<StartupContext, 'formatted'> {
   const compacted = { ...context };
 
-  // Keep only most recent items
   if (compacted.ledger) {
     compacted.ledger = {
       ...compacted.ledger,
-      completed: compacted.ledger.completed.slice(-3), // Keep last 3
-      inProgress: compacted.ledger.inProgress.slice(0, 5), // Keep first 5
-      blocked: compacted.ledger.blocked.slice(0, 3), // Keep first 3
-      keyDecisions: compacted.ledger.keyDecisions.slice(-2), // Keep last 2
-      fileContext: compacted.ledger.fileContext.slice(-3), // Keep last 3
-      uncertainItems: compacted.ledger.uncertainItems.slice(0, 3), // Keep first 3
+      completed: compacted.ledger.completed.slice(-level.completed),
+      inProgress: compacted.ledger.inProgress.slice(0, level.inProgress),
+      blocked: compacted.ledger.blocked.slice(0, level.blocked),
+      keyDecisions: compacted.ledger.keyDecisions.slice(-level.decisions),
+      fileContext: compacted.ledger.fileContext.slice(-level.files),
+      uncertainItems: compacted.ledger.uncertainItems.slice(0, level.uncertain),
     };
   }
 
   if (compacted.handoff) {
     compacted.handoff = {
       ...compacted.handoff,
-      completedWork: compacted.handoff.completedWork.slice(-3),
-      nextSteps: compacted.handoff.nextSteps.slice(0, 5),
-      decisions: compacted.handoff.decisions.slice(-2),
-      fileReferences: compacted.handoff.fileReferences.slice(-3),
-      learnings: compacted.handoff.learnings?.slice(0, 2),
+      completedWork: compacted.handoff.completedWork.slice(-level.completed),
+      nextSteps: compacted.handoff.nextSteps.slice(0, level.inProgress),
+      decisions: compacted.handoff.decisions.slice(-level.decisions),
+      fileReferences: compacted.handoff.fileReferences.slice(-level.files),
+      learnings: level.learnings > 0 ? compacted.handoff.learnings?.slice(0, level.learnings) : undefined,
     };
   }
 
   if (compacted.learnings) {
-    compacted.learnings = compacted.learnings.slice(0, 2);
+    compacted.learnings = level.learnings > 0 ? compacted.learnings.slice(0, level.learnings) : undefined;
   }
 
   return compacted;
