@@ -1195,8 +1195,9 @@ export class AgentSpawner {
           // Send task to the newly spawned agent if provided
           if (task && task.trim()) {
             const ready = await openCodeWrapper.waitUntilReadyForMessages(20000, 100);
+            let taskSent = false;
             if (ready) {
-              const taskSent = await openCodeWrapper.injectTask(task, spawnerName || 'spawner');
+              taskSent = await openCodeWrapper.injectTask(task, spawnerName || 'spawner');
               if (!taskSent) {
                 log.warn(`Failed to inject task for ${name} via OpenCodeWrapper`);
               } else if (debug) {
@@ -1204,6 +1205,29 @@ export class AgentSpawner {
               }
             } else {
               log.warn(`OpenCodeWrapper ${name} not ready for task injection`);
+            }
+
+            // If task injection failed, kill the agent and return error
+            // An agent without its task is useless and will just sit idle
+            if (!taskSent) {
+              const tracedError = createTraceableError('Task injection failed', {
+                agentName: name,
+                cli,
+                taskLength: task.length,
+                ready,
+              });
+              log.error(`CRITICAL: ${tracedError.logMessage}`);
+              await openCodeWrapper.stop();
+              this.activeWorkers.delete(name);
+              if (this.onClearSpawning) {
+                this.onClearSpawning(name);
+              }
+              return {
+                success: false,
+                name,
+                error: tracedError.userMessage,
+                errorId: tracedError.errorId,
+              };
             }
           }
 
@@ -1371,14 +1395,15 @@ export class AgentSpawner {
               await (pty as RelayPtyOrchestrator).waitUntilCliReady(15000, 100);
             }
 
-            // Inject task via socket (with verification and retries)
+            // Inject task via socket (relay-pty confirms write)
             const success = await pty.injectTask(task, spawnerName || 'spawner');
             if (success) {
               taskSent = true;
               if (debug) log.debug(`Task injected to ${name} (attempt ${attempt})`);
               break;
             } else {
-              throw new Error('Task injection returned false');
+              // Delivery failed - safe to retry
+              throw new Error('Task injection returned false - delivery failed');
             }
           } catch (err: any) {
             // Log retry attempts at DEBUG level to avoid terminal noise
@@ -1398,8 +1423,19 @@ export class AgentSpawner {
             taskLength: task.length,
           });
           log.error(`CRITICAL: ${tracedError.logMessage}`);
-          // Note: We don't return an error here because the agent is running,
-          // but we track the errorId so support can investigate if user reports it
+          // Kill the agent since it's useless without its task - it will just sit idle
+          // Return an error so the caller knows the spawn effectively failed
+          await pty.stop();
+          this.activeWorkers.delete(name);
+          if (this.onClearSpawning) {
+            this.onClearSpawning(name);
+          }
+          return {
+            success: false,
+            name,
+            error: tracedError.userMessage,
+            errorId: tracedError.errorId,
+          };
         }
       }
 

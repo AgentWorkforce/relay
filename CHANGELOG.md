@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+- **Task injection failures now return errors**: When spawning an agent with a task, if delivery fails after 3 retry attempts, spawn returns `success: false` and kills the agent. Previously, spawn would return `success: true` even if task injection silently failed, leaving zombie agents.
+
+### Migration Guidance
+- Callers of `relay.spawn()` with a `task` parameter should handle `success: false` results (though automatic retries make failures rare).
+- Spawning without a task is unaffected and always succeeds.
+- See the updated [Worker Orchestration guide](/docs/guides/worker-orchestration) for retry patterns.
+
+### Fixed
+- Task injection failures are no longer silent - spawn properly returns an error when delivery fails.
+- Zombie agents (spawned but never received their task) are now cleaned up automatically.
+- Automatic retry (3 attempts with 2s delays) for task injection improves reliability.
+
 ## [2.0.20] - 2026-01-26
 
 ### Overview

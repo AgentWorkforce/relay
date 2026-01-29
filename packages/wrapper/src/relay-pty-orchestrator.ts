@@ -2572,17 +2572,34 @@ Then output: \`->relay-file:spawn\`
   }
 
   /**
-   * Inject a task using the socket-based injection system with verification.
+   * Inject a task using the socket-based injection system.
    * This is the preferred method for spawned agent task delivery.
+   *
+   * Returns true when relay-pty confirms the task was written to the CLI's stdin.
+   * This is the delivery guarantee - we trust that if the write succeeded, the CLI received it.
    *
    * @param task The task text to inject
    * @param from The sender name (default: "spawner")
-   * @returns Promise resolving to true if injection succeeded, false otherwise
+   * @returns Promise resolving to true if task was delivered to CLI, false otherwise
    */
   async injectTask(task: string, from = 'spawner'): Promise<boolean> {
+    const delivered = await this.performTaskInjection(task, from);
+    if (!delivered) {
+      this.logError(` Task delivery failed`);
+      return false;
+    }
+
+    this.log(` Task delivered successfully`);
+    return true;
+  }
+
+  /**
+   * Perform a single task injection attempt (without retry logic).
+   * @returns true if the injection was sent successfully, false otherwise
+   */
+  private async performTaskInjection(task: string, from: string): Promise<boolean> {
     if (!this.socket || !this.socketConnected) {
       this.log(` Socket not connected for task injection, falling back to stdin write`);
-      // Fallback to direct write if socket not available
       try {
         await this.write(task + '\n');
         return true;
@@ -2606,7 +2623,7 @@ Then output: \`->relay-file:spawn\`
       priority: 0, // High priority for initial task
     };
 
-    // Send with timeout and verification
+    // Send with timeout and get socket confirmation
     return new Promise<boolean>((resolve) => {
       const timeout = setTimeout(() => {
         this.logError(` Task inject timeout for ${shortId} after 30s`);

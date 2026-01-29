@@ -411,17 +411,22 @@ export class OpenCodeWrapper extends BaseWrapper {
   }
 
   /**
-   * Inject a task into the agent
+   * Inject a task into the agent.
+   *
+   * This method trusts the delivery mechanism (HTTP API or PTY stdin).
+   * A periodic sweep handles any stuck injections as a safety net.
+   *
    * @param task - The task description to inject
    * @param _from - The sender name (used for formatting)
-   * @returns true if injection succeeded
+   * @returns true if injection succeeded, false otherwise
    */
   async injectTask(task: string, _from?: string): Promise<boolean> {
     try {
       await this.performInjection(task);
+      console.log(`[OpenCodeWrapper] Task delivered successfully`);
       return true;
     } catch (error) {
-      console.error('[OpenCodeWrapper] Task injection failed:', error);
+      console.error(`[OpenCodeWrapper] Task delivery failed:`, error);
       return false;
     }
   }
