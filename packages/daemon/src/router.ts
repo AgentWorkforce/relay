@@ -121,16 +121,6 @@ export class Router {
   /** Rate limiter for per-agent throttling */
   private rateLimiter: RateLimiter;
 
-  /**
-   * Agent name aliases for routing.
-   * Maps friendly names to actual registered agent names.
-   * Example: "Dashboard" -> "_DashboardUI" allows agents to send to "Dashboard"
-   * while the actual registration is under "_DashboardUI".
-   */
-  private static readonly AGENT_ALIASES: ReadonlyMap<string, string> = new Map([
-    ['Dashboard', '_DashboardUI'],
-  ]);
-
   constructor(options: {
     storage?: StorageAdapter;
     delivery?: Partial<DeliveryReliabilityOptions>;
@@ -155,15 +145,6 @@ export class Router {
     this.rateLimiter = options.rateLimit === null
       ? new NoOpRateLimiter()
       : new RateLimiter(options.rateLimit);
-  }
-
-  /**
-   * Resolve an agent name alias to its actual registered name.
-   * Returns the original name if no alias exists.
-   * Example: "Dashboard" resolves to "_DashboardUI"
-   */
-  private resolveAgentAlias(name: string): string {
-    return Router.AGENT_ALIASES.get(name) ?? name;
   }
 
   /**
@@ -691,50 +672,47 @@ export class Router {
     to: string,
     envelope: SendEnvelope
   ): boolean {
-    // Resolve any agent name aliases (e.g., "Dashboard" -> "_DashboardUI")
-    const resolvedTo = this.resolveAgentAlias(to);
-
     // Check for agent first, then user connections
-    const agentTarget = this.agents.get(resolvedTo);
-    const userConnections = this.users.get(resolvedTo);
+    const agentTarget = this.agents.get(to);
+    const userConnections = this.users.get(to);
     const hasTarget = agentTarget || (userConnections && userConnections.size > 0);
 
     // If target not found locally, check remote
     if (!hasTarget) {
-      const remoteAgent = this.crossMachineHandler?.isRemoteAgent(resolvedTo);
+      const remoteAgent = this.crossMachineHandler?.isRemoteAgent(to);
       if (remoteAgent) {
-        routerLog.info(`Routing to remote agent: ${resolvedTo}`, { daemonName: remoteAgent.daemonName });
-        return this.sendToRemoteAgent(from, resolvedTo, envelope, remoteAgent);
+        routerLog.info(`Routing to remote agent: ${to}`, { daemonName: remoteAgent.daemonName });
+        return this.sendToRemoteAgent(from, to, envelope, remoteAgent);
       }
       // Also check if it's a remote user (human connected via cloud dashboard)
-      const remoteUser = this.crossMachineHandler?.isRemoteUser?.(resolvedTo);
+      const remoteUser = this.crossMachineHandler?.isRemoteUser?.(to);
       if (remoteUser) {
-        routerLog.info(`Routing to remote user: ${resolvedTo}`, { daemonName: remoteUser.daemonName });
-        return this.sendToRemoteAgent(from, resolvedTo, envelope, remoteUser);
+        routerLog.info(`Routing to remote user: ${to}`, { daemonName: remoteUser.daemonName });
+        return this.sendToRemoteAgent(from, to, envelope, remoteUser);
       }
 
       // Check if this is a known agent (has connected before) - queue for later delivery
       // This prevents message drops during brief disconnections or spawn timing issues
-      if (this.registry?.has(resolvedTo)) {
-        routerLog.info(`Target "${resolvedTo}" offline but known, queueing message for delivery on reconnect`);
-        this.persistMessageForOfflineAgent(from, resolvedTo, envelope);
+      if (this.registry?.has(to)) {
+        routerLog.info(`Target "${to}" offline but known, queueing message for delivery on reconnect`);
+        this.persistMessageForOfflineAgent(from, to, envelope);
         return true; // Message accepted (queued), not dropped
       }
 
       // Check if agent is currently spawning (pre-HELLO) - queue for delivery after registration
       // This handles the race condition between spawn completion and HELLO handshake
-      const spawning = this.isSpawning(resolvedTo);
-      routerLog.debug(`Spawning check for "${resolvedTo}": ${spawning}`, {
+      const spawning = this.isSpawning(to);
+      routerLog.debug(`Spawning check for "${to}": ${spawning}`, {
         spawningAgents: Array.from(this.spawningAgents.keys()),
         hasStorage: !!this.storage,
       });
       if (spawning) {
-        routerLog.info(`Target "${resolvedTo}" is spawning, queueing message for delivery after registration`);
-        this.persistMessageForOfflineAgent(from, resolvedTo, envelope);
+        routerLog.info(`Target "${to}" is spawning, queueing message for delivery after registration`);
+        this.persistMessageForOfflineAgent(from, to, envelope);
         return true; // Message accepted (queued), not dropped
       }
 
-      routerLog.warn(`Target "${to}" (resolved: ${resolvedTo}) not found and unknown`, { availableAgents: Array.from(this.agents.keys()), spawningAgents: Array.from(this.spawningAgents.keys()) });
+      routerLog.warn(`Target "${to}" not found and unknown`, { availableAgents: Array.from(this.agents.keys()), spawningAgents: Array.from(this.spawningAgents.keys()) });
       return false;
     }
 
@@ -742,10 +720,10 @@ export class Router {
     if (userConnections && userConnections.size > 0) {
       let anySent = false;
       for (const userConn of userConnections) {
-        const deliver = this.createDeliverEnvelope(from, resolvedTo, envelope, userConn);
+        const deliver = this.createDeliverEnvelope(from, to, envelope, userConn);
         const sent = userConn.send(deliver);
         if (sent) anySent = true;
-        routerLog.debug(`Delivered ${from} -> ${resolvedTo} (user connection ${userConn.id})`, {
+        routerLog.debug(`Delivered ${from} -> ${to} (user connection ${userConn.id})`, {
           success: sent,
           preview: typeof envelope.payload.body === 'string' ? envelope.payload.body.substring(0, 40) : JSON.stringify(envelope.payload.body)?.substring(0, 40),
         });
@@ -758,21 +736,21 @@ export class Router {
         }
       }
       if (anySent) {
-        this.registry?.recordReceive(resolvedTo);
+        this.registry?.recordReceive(to);
       }
       return anySent;
     }
 
     // For agent targets, send to single connection
     const target = agentTarget!;
-    const deliver = this.createDeliverEnvelope(from, resolvedTo, envelope, target);
+    const deliver = this.createDeliverEnvelope(from, to, envelope, target);
     const sent = target.send(deliver);
-    routerLog.debug(`Delivered ${from} -> ${resolvedTo}`, { success: sent, preview: typeof envelope.payload.body === 'string' ? envelope.payload.body.substring(0, 40) : JSON.stringify(envelope.payload.body)?.substring(0, 40) });
+    routerLog.debug(`Delivered ${from} -> ${to}`, { success: sent, preview: typeof envelope.payload.body === 'string' ? envelope.payload.body.substring(0, 40) : JSON.stringify(envelope.payload.body)?.substring(0, 40) });
     this.persistDeliverEnvelope(deliver);
     if (sent) {
       this.trackDelivery(target, deliver);
-      this.registry?.recordReceive(resolvedTo);
-      this.setProcessing(resolvedTo, deliver.id);
+      this.registry?.recordReceive(to);
+      this.setProcessing(to, deliver.id);
     }
     return sent;
   }
