@@ -72,8 +72,8 @@ struct Args {
     #[arg(long, default_value = r"^[>$%#] $")]
     prompt_pattern: String,
 
-    /// Milliseconds of silence before considering idle
-    #[arg(long, default_value = "500")]
+    /// Milliseconds of silence before considering idle (fallback for stuck injections)
+    #[arg(long, default_value = "5000")]
     idle_timeout: u64,
 
     /// Maximum messages in queue before backpressure

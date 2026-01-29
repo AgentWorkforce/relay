@@ -363,7 +363,7 @@ impl Default for Config {
             name: "agent".to_string(),
             socket_path,
             prompt_pattern: r"^[>$%#] $".to_string(),
-            idle_timeout_ms: 500,
+            idle_timeout_ms: 5000, // 5 seconds - matches TypeScript queue monitor threshold
             queue_max: 50,
             json_output: false,
             command: vec![],
