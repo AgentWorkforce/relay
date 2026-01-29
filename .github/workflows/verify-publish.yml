@@ -170,6 +170,70 @@ jobs:
             exit 1
           fi
 
+      # Test: npx binary resolution (critical for spawn - postinstall doesn't run with npx)
+      - name: "Test: npx binary resolution"
+        run: |
+          # Clear npm cache to simulate fresh npx usage
+          rm -rf ~/.npm/_npx 2>/dev/null || true
+
+          # Run npx and test binary resolution
+          # This simulates what happens when a user runs `npx agent-relay up`
+          npx ${{ steps.pkg.outputs.spec }} --version >/dev/null 2>&1
+
+          # Now verify the platform-specific binary exists in npx cache
+          NPX_CACHE=~/.npm/_npx
+          echo "Checking npx cache at $NPX_CACHE..."
+
+          PLATFORM=$(uname -s | tr '[:upper:]' '[:lower:]')
+          ARCH=$(uname -m)
+          case "$ARCH" in
+            x86_64) ARCH_NAME="x64" ;;
+            aarch64|arm64) ARCH_NAME="arm64" ;;
+            *) ARCH_NAME="$ARCH" ;;
+          esac
+
+          PLATFORM_BINARY="relay-pty-${PLATFORM}-${ARCH_NAME}"
+          echo "Looking for platform binary: $PLATFORM_BINARY"
+
+          # Find the binary in npx cache
+          FOUND_BINARY=""
+          for dir in "$NPX_CACHE"/*/node_modules/agent-relay/bin; do
+            if [ -d "$dir" ]; then
+              echo "Checking: $dir"
+              ls -la "$dir" 2>/dev/null || true
+              if [ -f "$dir/$PLATFORM_BINARY" ]; then
+                FOUND_BINARY="$dir/$PLATFORM_BINARY"
+                echo "Found platform binary: $FOUND_BINARY"
+                break
+              fi
+            fi
+          done
+
+          if [ -z "$FOUND_BINARY" ]; then
+            echo "ERROR: Platform-specific binary not found in npx cache!"
+            echo "This will cause 'npx agent-relay up' to fail with 'relay-pty binary not found'"
+            exit 1
+          fi
+
+          # Verify it's executable
+          if [ -x "$FOUND_BINARY" ]; then
+            echo "Platform binary is executable"
+          else
+            echo "ERROR: Platform binary exists but is not executable!"
+            exit 1
+          fi
+
+          # Test that it works
+          OUTPUT=$("$FOUND_BINARY" --help 2>&1) || true
+          if echo "$OUTPUT" | grep -q "PTY wrapper"; then
+            echo "Platform binary --help works!"
+            echo "npx binary resolution test PASSED"
+          else
+            echo "ERROR: Platform binary --help failed"
+            echo "$OUTPUT"
+            exit 1
+          fi
+
       # Test 3: Local project install
       - name: "Test: Local project install"
         run: |
@@ -465,6 +529,44 @@ jobs:
               echo "Neither darwin-specific nor generic binary works!"
               exit 1
             fi
+          fi
+
+      # Test: npx binary resolution on macOS (critical for spawn)
+      - name: "Test: npx binary resolution (macOS)"
+        run: |
+          # Clean npx cache to simulate fresh usage
+          rm -rf ~/.npm/_npx 2>/dev/null || true
+
+          # Run npx to populate cache
+          npx ${{ steps.pkg.outputs.spec }} --version >/dev/null 2>&1
+
+          # Find and test the darwin-arm64 binary
+          NPX_CACHE=~/.npm/_npx
+          DARWIN_BINARY="relay-pty-darwin-arm64"
+
+          echo "Looking for $DARWIN_BINARY in npx cache..."
+          FOUND_BINARY=""
+          for dir in "$NPX_CACHE"/*/node_modules/agent-relay/bin; do
+            if [ -d "$dir" ] && [ -f "$dir/$DARWIN_BINARY" ]; then
+              FOUND_BINARY="$dir/$DARWIN_BINARY"
+              echo "Found: $FOUND_BINARY"
+              break
+            fi
+          done
+
+          if [ -z "$FOUND_BINARY" ]; then
+            echo "ERROR: Darwin arm64 binary not found in npx cache!"
+            echo "This will cause 'npx agent-relay up' to fail on macOS"
+            exit 1
+          fi
+
+          # Test binary works (important for macOS code signing)
+          if "$FOUND_BINARY" --help 2>&1 | grep -q "PTY wrapper"; then
+            echo "npx macOS binary resolution PASSED"
+          else
+            echo "ERROR: Binary found but doesn't work (possible code signing issue)"
+            codesign -dv "$FOUND_BINARY" 2>&1 || true
+            exit 1
           fi
 
       - name: Cleanup

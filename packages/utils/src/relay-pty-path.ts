@@ -51,13 +51,16 @@ export function getLastSearchPaths(): string[] {
 /**
  * Find the relay-pty binary.
  *
- * Search order:
+ * Search order prioritizes platform-specific binaries FIRST because npx doesn't run postinstall.
+ * This ensures `npx agent-relay up` works without requiring global installation.
+ *
+ * Search locations:
  * 1. RELAY_PTY_BINARY environment variable (explicit override)
- * 2. bin/relay-pty in package root (installed by postinstall)
- * 3. relay-pty/target/release/relay-pty (local Rust build)
- * 4. /usr/local/bin/relay-pty (global install)
- * 5. In node_modules when installed as dependency
- * 6. Global npm installs (nvm) - both scoped and root packages
+ * 2. Platform-specific binary in package (works without postinstall)
+ * 3. Generic relay-pty binary (created by postinstall)
+ * 4. Development builds (local Rust build)
+ * 5. System-wide installs (/usr/local/bin)
+ * 6. Global npm installs (nvm, Homebrew, pnpm)
  *
  * @param callerDirname - The __dirname of the calling module (needed to resolve relative paths)
  * @returns Path to relay-pty binary, or null if not found
@@ -69,89 +72,100 @@ export function findRelayPtyBinary(callerDirname: string): string | null {
     lastSearchPaths = [envOverride];
     return envOverride;
   }
-  // Determine the agent-relay package root
-  // This code runs from either:
-  // - packages/{package}/dist/ (development/workspace)
-  // - node_modules/@agent-relay/{package}/dist/ (npm install)
-  //
-  // We need to find the agent-relay package root where bin/relay-pty lives
-  let packageRoot: string;
 
-  // Check if we're inside node_modules/@agent-relay/*/
-  if (callerDirname.includes('node_modules/@agent-relay/')) {
-    // Go from node_modules/@agent-relay/{package}/dist/ to agent-relay/
-    // dist/ -> {package}/ -> @agent-relay/ -> node_modules/ -> agent-relay/
-    packageRoot = path.join(callerDirname, '..', '..', '..', '..');
-  } else if (callerDirname.includes('node_modules/agent-relay')) {
-    // Direct dependency: node_modules/agent-relay/packages/{package}/dist/
-    // dist/ -> {package}/ -> packages/ -> agent-relay/
-    packageRoot = path.join(callerDirname, '..', '..', '..');
-  } else {
-    // Development: packages/{package}/dist/ -> packages/ -> project root
-    packageRoot = path.join(callerDirname, '..', '..', '..');
-  }
-
-  // Find the node_modules root for global installs
-  // When running from node_modules/@agent-relay/dashboard/node_modules/@agent-relay/wrapper/dist/
-  // we need to look for agent-relay at node_modules/agent-relay
-  // Use non-greedy match (.+?) to get the FIRST node_modules, not the last
-  let nodeModulesRoot: string | null = null;
-  const nodeModulesMatch = callerDirname.match(/^(.+?\/node_modules)\/@agent-relay\//);
-  if (nodeModulesMatch) {
-    nodeModulesRoot = nodeModulesMatch[1];
-  }
-
-  // Get platform-specific binary name as fallback (in case postinstall didn't run)
+  // Get platform-specific binary name (critical for npx where postinstall doesn't run)
   const platformBinary = getPlatformBinaryName();
 
-  const candidates = [
-    // Primary: installed by postinstall from platform-specific binary
-    path.join(packageRoot, 'bin', 'relay-pty'),
-    // Development: local Rust build
-    path.join(packageRoot, 'relay-pty', 'target', 'release', 'relay-pty'),
-    path.join(packageRoot, 'relay-pty', 'target', 'debug', 'relay-pty'),
-    // Local build in cwd (for development)
-    path.join(process.cwd(), 'relay-pty', 'target', 'release', 'relay-pty'),
-    // Docker container (CI tests)
-    '/app/bin/relay-pty',
-    // Installed globally
-    '/usr/local/bin/relay-pty',
-    // In node_modules (when installed as local dependency)
-    path.join(process.cwd(), 'node_modules', 'agent-relay', 'bin', 'relay-pty'),
-    // Global npm install (nvm) - root package
-    path.join(process.env.HOME || '', '.nvm', 'versions', 'node', process.version, 'lib', 'node_modules', 'agent-relay', 'bin', 'relay-pty'),
-  ];
+  // Collect all possible package root locations
+  const packageRoots: string[] = [];
 
-  // Add candidate for root agent-relay package when running from scoped @agent-relay/* packages
-  if (nodeModulesRoot) {
-    candidates.push(path.join(nodeModulesRoot, 'agent-relay', 'bin', 'relay-pty'));
+  // Find node_modules root from caller path
+  // Matches: /path/to/node_modules/@agent-relay/bridge/dist/
+  // Or: /path/to/node_modules/agent-relay/dist/src/cli/
+  const scopedMatch = callerDirname.match(/^(.+?\/node_modules)\/@agent-relay\//);
+  const directMatch = callerDirname.match(/^(.+?\/node_modules\/agent-relay)/);
+
+  if (scopedMatch) {
+    // Running from @agent-relay/* package - binary is in sibling agent-relay package
+    packageRoots.push(path.join(scopedMatch[1], 'agent-relay'));
   }
 
-  // Try common global npm paths
+  if (directMatch) {
+    // Running from agent-relay package directly
+    packageRoots.push(directMatch[1]);
+  }
+
+  // Development: packages/{package}/dist/ -> project root
+  if (!callerDirname.includes('node_modules')) {
+    packageRoots.push(path.join(callerDirname, '..', '..', '..'));
+  }
+
+  // npx cache locations - npm stores packages here when running via npx
+  // The cache path varies by npm version and OS
   if (process.env.HOME) {
-    // Homebrew npm (macOS)
-    candidates.push(path.join('/usr/local/lib/node_modules', 'agent-relay', 'bin', 'relay-pty'));
-    candidates.push(path.join('/opt/homebrew/lib/node_modules', 'agent-relay', 'bin', 'relay-pty'));
-    // pnpm global
-    candidates.push(path.join(process.env.HOME, '.local', 'share', 'pnpm', 'global', 'node_modules', 'agent-relay', 'bin', 'relay-pty'));
+    // npm 7+ uses _npx with hash-based directories
+    const npxCacheBase = path.join(process.env.HOME, '.npm', '_npx');
+    if (fs.existsSync(npxCacheBase)) {
+      try {
+        const entries = fs.readdirSync(npxCacheBase);
+        for (const entry of entries) {
+          const npxPackage = path.join(npxCacheBase, entry, 'node_modules', 'agent-relay');
+          if (fs.existsSync(npxPackage)) {
+            packageRoots.push(npxPackage);
+          }
+        }
+      } catch {
+        // Ignore read errors
+      }
+    }
   }
 
-  // FALLBACK: If postinstall didn't run, try platform-specific binaries directly
-  // This handles cases where better-sqlite3 rebuild failed and blocked postinstall.js
-  if (platformBinary) {
-    // Add platform-specific binary candidates for all the same locations
-    candidates.push(path.join(packageRoot, 'bin', platformBinary));
-    candidates.push(path.join(process.cwd(), 'node_modules', 'agent-relay', 'bin', platformBinary));
-    candidates.push(path.join(process.env.HOME || '', '.nvm', 'versions', 'node', process.version, 'lib', 'node_modules', 'agent-relay', 'bin', platformBinary));
-    if (nodeModulesRoot) {
-      candidates.push(path.join(nodeModulesRoot, 'agent-relay', 'bin', platformBinary));
-    }
-    if (process.env.HOME) {
-      candidates.push(path.join('/usr/local/lib/node_modules', 'agent-relay', 'bin', platformBinary));
-      candidates.push(path.join('/opt/homebrew/lib/node_modules', 'agent-relay', 'bin', platformBinary));
-      candidates.push(path.join(process.env.HOME, '.local', 'share', 'pnpm', 'global', 'node_modules', 'agent-relay', 'bin', platformBinary));
-    }
+  // Add cwd-based paths for local installs
+  packageRoots.push(path.join(process.cwd(), 'node_modules', 'agent-relay'));
+
+  // Global install locations
+  if (process.env.HOME) {
+    // nvm global
+    packageRoots.push(
+      path.join(process.env.HOME, '.nvm', 'versions', 'node', process.version, 'lib', 'node_modules', 'agent-relay')
+    );
+    // pnpm global
+    packageRoots.push(
+      path.join(process.env.HOME, '.local', 'share', 'pnpm', 'global', 'node_modules', 'agent-relay')
+    );
   }
+  // Homebrew npm (macOS)
+  packageRoots.push('/usr/local/lib/node_modules/agent-relay');
+  packageRoots.push('/opt/homebrew/lib/node_modules/agent-relay');
+
+  // Build candidates list - PRIORITIZE platform-specific binaries
+  // This is critical for npx since postinstall doesn't run
+  const candidates: string[] = [];
+
+  for (const root of packageRoots) {
+    // Platform-specific binary FIRST (works without postinstall)
+    if (platformBinary) {
+      candidates.push(path.join(root, 'bin', platformBinary));
+    }
+    // Generic binary (requires postinstall to have run)
+    candidates.push(path.join(root, 'bin', 'relay-pty'));
+  }
+
+  // Development: local Rust builds
+  const devRoot = callerDirname.includes('node_modules')
+    ? null
+    : path.join(callerDirname, '..', '..', '..');
+  if (devRoot) {
+    candidates.push(path.join(devRoot, 'relay-pty', 'target', 'release', 'relay-pty'));
+    candidates.push(path.join(devRoot, 'relay-pty', 'target', 'debug', 'relay-pty'));
+  }
+  candidates.push(path.join(process.cwd(), 'relay-pty', 'target', 'release', 'relay-pty'));
+
+  // Docker container (CI tests)
+  candidates.push('/app/bin/relay-pty');
+
+  // System-wide installs
+  candidates.push('/usr/local/bin/relay-pty');
 
   // Store search paths for debugging
   lastSearchPaths = candidates;
