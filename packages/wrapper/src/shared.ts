@@ -439,12 +439,17 @@ export function createInjectionMetrics(): InjectionMetrics {
  */
 export function detectCliType(command: string): CliType {
   const cmdLower = command.toLowerCase();
+  // Extract just the command name (first word, without path)
+  const cmdName = cmdLower.split(/[\s/\\]/).pop() || cmdLower;
+
   if (cmdLower.includes('gemini')) return 'gemini';
   if (cmdLower.includes('codex')) return 'codex';
   if (cmdLower.includes('claude')) return 'claude';
   if (cmdLower.includes('droid')) return 'droid';
   if (cmdLower.includes('opencode')) return 'opencode';
   if (cmdLower.includes('cursor')) return 'cursor';
+  // 'agent' is the Cursor CLI command name (both older cursor-agent and newer agent)
+  if (cmdName === 'agent' || cmdName === 'cursor-agent') return 'cursor';
   return 'other';
 }
 

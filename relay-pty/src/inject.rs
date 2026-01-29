@@ -417,4 +417,83 @@ mod tests {
         injector.record_output("Some real output").await;
         assert!(!injector.check_idle()); // Not idle due to recent real output
     }
+
+    #[tokio::test]
+    async fn test_auto_suggestion_flag_cleared_by_real_output() {
+        let (pty_tx, _pty_rx) = mpsc::channel(1);
+        let (response_tx, _response_rx) = broadcast::channel(1);
+        let queue = Arc::new(MessageQueue::new(1, response_tx));
+        // Use long timeout so we test the explicit idle flag behavior
+        let injector = Injector::new(pty_tx, queue, test_config(600000));
+
+        // Start idle via explicit flag
+        injector.update_from_parse(&test_parse_result(true));
+        assert!(injector.check_idle());
+
+        // Auto-suggestion blocks injection even though idle flag is set
+        injector
+            .record_output("\x1b[7mH\x1b[27m\x1b[2melp me\x1b[22m")
+            .await;
+        assert!(!injector.check_idle()); // Blocked by auto_suggestion_visible
+
+        // Real output clears the auto_suggestion_visible flag
+        // But also clears is_idle (non-relay output = agent active)
+        injector.record_output("Agent is working...").await;
+        assert!(!injector.check_idle()); // Not idle - real output means agent active
+
+        // Set idle again via parser - this should work now since
+        // auto_suggestion_visible was cleared by the real output
+        injector.update_from_parse(&test_parse_result(true));
+        assert!(injector.check_idle()); // Now idle - auto-suggestion flag was cleared
+    }
+
+    #[test]
+    fn test_is_auto_suggestion_real_world_patterns() {
+        // Real patterns captured from Claude Code output logs
+
+        // Full auto-suggestion with send hint
+        assert!(is_auto_suggestion(
+            "\x1b[7mS\x1b[27m\x1b[2mend Dashboard their first task                                                          ↵ send\x1b[22m"
+        ));
+
+        // Auto-suggestion without send hint
+        assert!(is_auto_suggestion(
+            "\x1b[7mH\x1b[27m\x1b[2melp me set up agent deployment\x1b[22m"
+        ));
+
+        // Just the send hint (partial view)
+        assert!(is_auto_suggestion("                     ↵ send"));
+
+        // Spinner output should NOT be detected (common false positive check)
+        assert!(!is_auto_suggestion("\x1b[38;5;174m✻\x1b[39m"));
+        assert!(!is_auto_suggestion("\x1b[38;5;174m✶\x1b[39m"));
+
+        // Prompt with cursor but no dim text should NOT match
+        // (this is the idle prompt, not an auto-suggestion)
+        assert!(!is_auto_suggestion("> \x1b[7m \x1b[27m"));
+
+        // Tool output should NOT match
+        assert!(!is_auto_suggestion("\x1b[1mBash\x1b[22m(ls -la)"));
+        assert!(!is_auto_suggestion("Relay message from Alice [abc]: Hello"));
+    }
+
+    #[test]
+    fn test_is_auto_suggestion_edge_cases() {
+        // Empty string
+        assert!(!is_auto_suggestion(""));
+
+        // Just reverse video without dim (not a suggestion)
+        assert!(!is_auto_suggestion("\x1b[7mX\x1b[27m"));
+
+        // Just dim without reverse (separator lines, etc)
+        assert!(!is_auto_suggestion("\x1b[2m────────\x1b[22m"));
+
+        // Reverse and dim but not adjacent (unlikely but test it)
+        assert!(!is_auto_suggestion("\x1b[7mX\x1b[27m some text \x1b[2mdim\x1b[22m"));
+
+        // Multiple suggestions in one output (should still detect)
+        assert!(is_auto_suggestion(
+            "line1\n\x1b[7mA\x1b[27m\x1b[2muto complete\x1b[22m\nline2"
+        ));
+    }
 }

@@ -5,7 +5,7 @@
  */
 
 import fs from 'node:fs';
-import { execFile } from 'node:child_process';
+import { execFile, execSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sleep } from './utils.js';
@@ -41,12 +41,83 @@ import type {
 const log = createLogger('spawner');
 
 /**
- * CLI command mapping for providers
+ * Check if a command exists in PATH
+ */
+function commandExists(cmd: string): boolean {
+  try {
+    const whichCmd = process.platform === 'win32' ? 'where' : 'which';
+    execSync(`${whichCmd} ${cmd}`, { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Cache for detected Cursor CLI command
+let detectedCursorCli: string | null = null;
+
+/**
+ * Detect which Cursor CLI command is available.
+ * Newer versions use 'agent', older versions use 'cursor-agent'.
+ * Returns null if neither is found.
+ */
+function detectCursorCli(): string | null {
+  if (detectedCursorCli !== null) {
+    return detectedCursorCli;
+  }
+
+  // Try newer 'agent' command first
+  if (commandExists('agent')) {
+    detectedCursorCli = 'agent';
+    log.debug('Detected Cursor CLI: agent (newer version)');
+    return 'agent';
+  }
+
+  // Fall back to older 'cursor-agent' command
+  if (commandExists('cursor-agent')) {
+    detectedCursorCli = 'cursor-agent';
+    log.debug('Detected Cursor CLI: cursor-agent (older version)');
+    return 'cursor-agent';
+  }
+
+  log.debug('Cursor CLI not found (neither agent nor cursor-agent)');
+  return null;
+}
+
+/**
+ * Resolve CLI command for a provider.
+ * For cursor, detects whether 'agent' or 'cursor-agent' is available.
+ */
+function resolveCli(rawCommand: string): string {
+  const cmdLower = rawCommand.toLowerCase();
+
+  // Handle cursor specially - detect which CLI is installed
+  if (cmdLower === 'cursor' || cmdLower === 'cursor-agent') {
+    const cursorCli = detectCursorCli();
+    if (cursorCli) {
+      return cursorCli;
+    }
+    // Fall back to 'agent' if detection fails (let it fail at spawn time)
+    return 'agent';
+  }
+
+  // Handle other mappings
+  if (cmdLower === 'google') {
+    return 'gemini';
+  }
+
+  // Return as-is for other commands
+  return rawCommand;
+}
+
+/**
+ * CLI command mapping for providers (kept for reference, resolveCli handles logic)
  * Maps provider names to actual CLI command names
  */
 const CLI_COMMAND_MAP: Record<string, string> = {
-  cursor: 'agent',  // Cursor CLI installs as 'agent'
-  google: 'gemini', // Google provider uses 'gemini' CLI
+  cursor: 'agent',         // Cursor CLI installs as 'agent' (newer versions)
+  'cursor-agent': 'agent', // Cursor CLI older name, also maps to 'agent'
+  google: 'gemini',        // Google provider uses 'gemini' CLI
   // Other providers use their name as the command (claude, codex, etc.)
 };
 
@@ -796,10 +867,10 @@ export class AgentSpawner {
     }
 
     try {
-      // Parse CLI command and apply mapping (e.g., cursor -> agent)
+      // Parse CLI command and resolve actual command (e.g., cursor -> agent or cursor-agent)
       const cliParts = cli.split(' ');
       const rawCommandName = cliParts[0];
-      const commandName = CLI_COMMAND_MAP[rawCommandName] || rawCommandName;
+      const commandName = resolveCli(rawCommandName);
       const args = cliParts.slice(1);
 
       if (commandName !== rawCommandName && debug) {
@@ -821,7 +892,7 @@ export class AgentSpawner {
       // Add auto-accept flags for non-interactive agents (normal spawns, not setup terminals)
       // When interactive=true (setup flows), we SKIP these flags so users can respond to prompts
       const isClaudeCli = commandName.startsWith('claude');
-      const isCursorCli = commandName === 'agent' || rawCommandName === 'cursor';
+      const isCursorCli = commandName === 'agent' || rawCommandName === 'cursor' || rawCommandName === 'cursor-agent';
 
       if (!interactive) {
         // Add --dangerously-skip-permissions for Claude agents
