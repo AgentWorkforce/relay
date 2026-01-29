@@ -1,0 +1,83 @@
+# Ensue-Style Test Dataset
+# Tasks designed to test multi-agent decomposition similar to the Putnam 2025 example
+# These tasks benefit from: task decomposition, parallel exploration, shared discoveries
+
+name: Ensue-Style Decomposition Test
+description: Complex tasks that benefit from multi-agent collaboration via decomposition and shared memory
+version: "1.0.0"
+
+tasks:
+  # Multi-file analysis task - benefits from parallel exploration
+  - id: analyze-error-patterns
+    description: |
+      Analyze the codebase to identify all error handling patterns used across the project.
+      For each pattern found: (1) identify the pattern type, (2) count occurrences,
+      (3) list files using it, (4) evaluate consistency.
+      Create a summary report of findings.
+    files:
+      - packages/sdk/src
+      - packages/daemon/src
+      - packages/spawner/src
+      - packages/protocol/src
+      - packages/storage/src
+      - packages/resiliency/src
+    expectedOutcome: Comprehensive error pattern analysis with categorization and recommendations
+    complexity: high
+    timeoutMs: 600000
+    tags:
+      - analysis
+      - decomposable
+      - parallel-exploration
+
+  # Complex refactoring task - benefits from coordinated work
+  - id: type-safety-audit
+    description: |
+      Audit TypeScript type safety across the codebase. Find all uses of 'any',
+      implicit any, type assertions, and non-null assertions. For each finding:
+      (1) categorize the issue, (2) assess risk level, (3) suggest a fix.
+      Prioritize findings by impact.
+    files:
+      - packages/sdk/src
+      - packages/daemon/src
+      - packages/benchmark/src
+      - packages/cli-tester/src
+    expectedOutcome: Type safety audit report with prioritized findings and fix suggestions
+    complexity: high
+    timeoutMs: 600000
+    tags:
+      - audit
+      - typescript
+      - decomposable
+
+  # Medium complexity - good baseline comparison
+  - id: document-api-surface
+    description: |
+      Document the public API surface of the SDK package. For each exported
+      function/class/type: (1) describe its purpose, (2) list parameters,
+      (3) document return types, (4) provide usage examples.
+    files:
+      - packages/sdk/src/index.ts
+      - packages/sdk/src/client.ts
+      - packages/sdk/src/types.ts
+    expectedOutcome: Complete API documentation for SDK package exports
+    complexity: medium
+    timeoutMs: 300000
+    tags:
+      - documentation
+      - api
+
+  # Quick simple task - single agent should win
+  - id: count-dependencies
+    description: |
+      Count the total number of npm dependencies (including devDependencies)
+      across all packages in the monorepo. List the top 5 most frequently
+      used dependencies.
+    files:
+      - package.json
+      - packages/*/package.json
+    expectedOutcome: Dependency count and top 5 most common packages listed
+    complexity: low
+    timeoutMs: 120000
+    tags:
+      - analysis
+      - simple

@@ -31,12 +31,17 @@ export class SubAgentRunner extends ConfigurationRunner {
       this.setupMessageMonitoring();
 
       // Spawn lead agent that will delegate to workers
-      const leadResult = await this.orchestrator.spawn({
-        name: 'Lead',
-        cli: this.config.cli,
-        task: this.buildLeadPrompt(task),
-        cwd: this.config.cwd,
-      });
+      // Use task timeout for spawn (defaults to 5 minutes, but allow 60s minimum for agent startup)
+      const spawnTimeout = Math.max(task.timeoutMs || 300000, 60000);
+      const leadResult = await this.orchestrator.spawn(
+        {
+          name: 'Lead',
+          cli: this.config.cli,
+          task: this.buildLeadPrompt(task),
+          cwd: this.config.cwd,
+        },
+        spawnTimeout
+      );
 
       if (!leadResult.success) {
         this.metrics.errors.push(leadResult.error || 'Lead spawn failed');

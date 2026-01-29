@@ -5,11 +5,10 @@
  */
 
 import {
-  createRelay,
   RelayClient,
   type MetricsResponsePayload,
-  type Relay,
 } from '@agent-relay/sdk';
+import { Daemon } from '@agent-relay/daemon';
 import type {
   ConfigurationType,
   Task,
@@ -19,16 +18,25 @@ import type {
 } from '../types.js';
 import { DEFAULT_BENCHMARK_CONFIG } from '../types.js';
 
+interface BenchmarkRelay {
+  client(name: string, config?: { quiet?: boolean }): Promise<RelayClient>;
+  stop(): Promise<void>;
+  isRunning: boolean;
+  socketPath: string;
+}
+
 type AgentMetrics = MetricsResponsePayload['agents'][number] & {
   tokens?: number;
   memoryMb?: number;
 };
 
+const DEFAULT_SOCKET_PATH = '/tmp/agent-relay-standalone.sock';
+
 /**
  * Abstract base class for configuration runners
  */
 export abstract class ConfigurationRunner {
-  protected relay!: Relay;
+  protected relay!: BenchmarkRelay;
   protected orchestrator!: RelayClient;
   protected config: BenchmarkConfig;
   protected metrics: RunMetrics = {
@@ -38,6 +46,7 @@ export abstract class ConfigurationRunner {
     spawnedAgents: [],
     errors: [],
   };
+  private daemon?: Daemon;
 
   constructor(config: Partial<BenchmarkConfig> = {}) {
     this.config = { ...DEFAULT_BENCHMARK_CONFIG, ...config };
@@ -52,10 +61,61 @@ export abstract class ConfigurationRunner {
    * Set up the relay and orchestrator client
    */
   async setup(): Promise<void> {
-    this.relay = await createRelay({
-      socketPath: this.config.socketPath,
-      quiet: this.config.quiet,
+    const socketPath = this.config.socketPath ?? DEFAULT_SOCKET_PATH;
+    const quiet = this.config.quiet ?? true;
+    const cwd = this.config.cwd ?? process.cwd();
+    const dataDir = `${cwd}/.agent-relay`;
+    const teamDir = `${dataDir}/team`;
+
+    // Ensure team directory exists
+    const fs = await import('node:fs');
+    if (!fs.existsSync(teamDir)) {
+      fs.mkdirSync(teamDir, { recursive: true });
+    }
+
+    // Create daemon with spawn manager enabled for benchmark
+    this.daemon = new Daemon({
+      socketPath,
+      teamDir,
+      consensus: false,
+      cloudSync: false,
+      spawnManager: {
+        projectRoot: cwd,
+      },
     });
+
+    await this.daemon.start();
+
+    const clients: RelayClient[] = [];
+    const daemon = this.daemon;
+
+    this.relay = {
+      async client(name: string, clientConfig: { quiet?: boolean } = {}): Promise<RelayClient> {
+        const client = new RelayClient({
+          agentName: name,
+          socketPath,
+          quiet: clientConfig.quiet ?? quiet,
+          reconnect: true,
+        });
+        await client.connect();
+        clients.push(client);
+        return client;
+      },
+      stop: async (): Promise<void> => {
+        for (const client of clients) {
+          client.destroy();
+        }
+        clients.length = 0;
+        if (daemon) {
+          await daemon.stop();
+        }
+      },
+      get isRunning(): boolean {
+        return daemon?.isRunning ?? false;
+      },
+      socketPath,
+    };
+
     this.orchestrator = await this.relay.client('Orchestrator', {
       quiet: this.config.quiet,
     });

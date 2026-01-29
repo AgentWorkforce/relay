@@ -57,22 +57,14 @@
     "@agent-relay/sdk": "2.1.0",
     "@agent-relay/protocol": "2.1.0",
     "@agent-relay/spawner": "2.1.0",
+    "@agent-relay/daemon": "2.1.0",
     "commander": "^12.1.0",
     "yaml": "^2.3.4"
   },
   "devDependencies": {
-    "@agent-relay/daemon": "2.0.29",
     "@types/node": "^22.19.3",
     "typescript": "^5.9.3",
     "vitest": "^3.0.0"
-  },
-  "peerDependencies": {
-    "@agent-relay/daemon": ">=2.0.0"
-  },
-  "peerDependenciesMeta": {
-    "@agent-relay/daemon": {
-      "optional": true
-    }
   },
   "engines": {
     "node": ">=18.0.0"

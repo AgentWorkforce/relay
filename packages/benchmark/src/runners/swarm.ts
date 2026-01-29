@@ -38,15 +38,20 @@ export class SwarmRunner extends ConfigurationRunner {
       const subtasks = this.partitionTask(task, agentCount);
 
       // Spawn peer agents simultaneously
+      // Use task timeout for spawn (defaults to 5 minutes, but allow 60s minimum for agent startup)
+      const spawnTimeout = Math.max(task.timeoutMs || 300000, 60000);
       this.log(`Spawning ${agentCount} peer agents...`);
       const spawnPromises = subtasks.map((subtask, i) =>
-        this.orchestrator.spawn({
-          name: `Peer${i}`,
-          cli: this.config.cli,
-          task: this.buildPeerPrompt(subtask, i, agentCount, task),
-          cwd: this.config.cwd,
-          team: 'swarm',
-        })
+        this.orchestrator.spawn(
+          {
+            name: `Peer${i}`,
+            cli: this.config.cli,
+            task: this.buildPeerPrompt(subtask, i, agentCount, task),
+            cwd: this.config.cwd,
+            team: 'swarm',
+          },
+          spawnTimeout
+        )
       );
 
       const results = await Promise.all(spawnPromises);
