@@ -21,6 +21,9 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
+  "dependencies": {
+    "@agent-relay/memory": "2.0.37"
+  },
   "devDependencies": {
     "@types/node": "^22.19.3",
     "typescript": "^5.9.3",

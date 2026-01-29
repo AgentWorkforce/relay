@@ -3,16 +3,22 @@
  *
  * Formats ledgers, handoffs, and learnings into markdown
  * for injection into agent context.
+ *
+ * Uses token estimation from @agent-relay/memory for intelligent
+ * compaction when context exceeds token limits.
  */
 
+import { estimateTokens } from '@agent-relay/memory';
 import type { Ledger, Handoff, StartupContext, FileRef, Decision } from './types.js';
 
 /**
  * Format options for context injection
  */
 export interface FormatOptions {
-  /** Maximum length of the formatted context */
+  /** Maximum length of the formatted context (characters) */
   maxLength?: number;
+  /** Maximum tokens for the formatted context (uses intelligent compaction) */
+  maxTokens?: number;
   /** Include file references */
   includeFiles?: boolean;
   /** Include decisions */
@@ -25,6 +31,7 @@ export interface FormatOptions {
 
 const DEFAULT_OPTIONS: FormatOptions = {
   maxLength: 4000,
+  maxTokens: 2000, // ~2000 tokens is a reasonable default for context injection
   includeFiles: true,
   includeDecisions: true,
   includeLearnings: true,
@@ -32,13 +39,143 @@ const DEFAULT_OPTIONS: FormatOptions = {
 };
 
 /**
- * Format a startup context for injection
+ * Format a startup context for injection.
+ * Uses token-based compaction to fit within limits while preserving important content.
  */
 export function formatStartupContext(
   context: Omit<StartupContext, 'formatted'>,
   options: FormatOptions = {}
 ): string {
   const opts = { ...DEFAULT_OPTIONS, ...options };
+
+  // Try formatting with full content first
+  let result = formatStartupContextInternal(context, opts);
+  let tokens = estimateTokens(result);
+
+  // If within token limit, we're done
+  if (!opts.maxTokens || tokens <= opts.maxTokens) {
+    return applyCharacterLimit(result, opts.maxLength);
+  }
+
+  // Progressive compaction: remove less important content until we fit
+  // Priority (highest to lowest):
+  // 1. Current task, in-progress, blocked (critical state)
+  // 2. Completed items (recent work context)
+  // 3. Decisions (reasoning context)
+  // 4. File references (code context)
+  // 5. Learnings (historical context)
+
+  // Step 1: Switch to compact mode
+  if (!opts.compact) {
+    result = formatStartupContextInternal(context, { ...opts, compact: true });
+    tokens = estimateTokens(result);
+    if (tokens <= opts.maxTokens) {
+      return applyCharacterLimit(result, opts.maxLength);
+    }
+  }
+
+  // Step 2: Remove learnings
+  result = formatStartupContextInternal(context, { ...opts, compact: true, includeLearnings: false });
+  tokens = estimateTokens(result);
+  if (tokens <= opts.maxTokens) {
+    return applyCharacterLimit(result, opts.maxLength);
+  }
+
+  // Step 3: Remove file references
+  result = formatStartupContextInternal(context, {
+    ...opts,
+    compact: true,
+    includeLearnings: false,
+    includeFiles: false,
+  });
+  tokens = estimateTokens(result);
+  if (tokens <= opts.maxTokens) {
+    return applyCharacterLimit(result, opts.maxLength);
+  }
+
+  // Step 4: Remove decisions
+  result = formatStartupContextInternal(context, {
+    ...opts,
+    compact: true,
+    includeLearnings: false,
+    includeFiles: false,
+    includeDecisions: false,
+  });
+  tokens = estimateTokens(result);
+  if (tokens <= opts.maxTokens) {
+    return applyCharacterLimit(result, opts.maxLength);
+  }
+
+  // Step 5: Truncate completed items in ledger/handoff
+  const compactedContext = compactContextData(context, opts.maxTokens);
+  result = formatStartupContextInternal(compactedContext, {
+    ...opts,
+    compact: true,
+    includeLearnings: false,
+    includeFiles: false,
+    includeDecisions: false,
+  });
+
+  return applyCharacterLimit(result, opts.maxLength);
+}
+
+/**
+ * Apply character limit with truncation message
+ */
+function applyCharacterLimit(result: string, maxLength?: number): string {
+  if (maxLength && result.length > maxLength) {
+    return result.slice(0, maxLength - 100) + '\n\n*[Context compacted for length]*';
+  }
+  return result;
+}
+
+/**
+ * Compact context data by reducing array sizes
+ */
+function compactContextData(
+  context: Omit<StartupContext, 'formatted'>,
+  targetTokens: number
+): Omit<StartupContext, 'formatted'> {
+  const compacted = { ...context };
+
+  // Keep only most recent items
+  if (compacted.ledger) {
+    compacted.ledger = {
+      ...compacted.ledger,
+      completed: compacted.ledger.completed.slice(-3), // Keep last 3
+      inProgress: compacted.ledger.inProgress.slice(0, 5), // Keep first 5
+      blocked: compacted.ledger.blocked.slice(0, 3), // Keep first 3
+      keyDecisions: compacted.ledger.keyDecisions.slice(-2), // Keep last 2
+      fileContext: compacted.ledger.fileContext.slice(-3), // Keep last 3
+      uncertainItems: compacted.ledger.uncertainItems.slice(0, 3), // Keep first 3
+    };
+  }
+
+  if (compacted.handoff) {
+    compacted.handoff = {
+      ...compacted.handoff,
+      completedWork: compacted.handoff.completedWork.slice(-3),
+      nextSteps: compacted.handoff.nextSteps.slice(0, 5),
+      decisions: compacted.handoff.decisions.slice(-2),
+      fileReferences: compacted.handoff.fileReferences.slice(-3),
+      learnings: compacted.handoff.learnings?.slice(0, 2),
+    };
+  }
+
+  if (compacted.learnings) {
+    compacted.learnings = compacted.learnings.slice(0, 2);
+  }
+
+  return compacted;
+}
+
+/**
+ * Internal formatting function (no compaction logic)
+ */
+function formatStartupContextInternal(
+  context: Omit<StartupContext, 'formatted'>,
+  opts: FormatOptions
+): string {
   const sections: string[] = [];
 
   sections.push('# Session Continuity');
@@ -69,14 +206,7 @@ export function formatStartupContext(
     }
   }
 
-  let result = sections.join('\n');
-
-  // Truncate if too long
-  if (opts.maxLength && result.length > opts.maxLength) {
-    result = result.slice(0, opts.maxLength - 100) + '\n\n*[Context truncated for length]*';
-  }
-
-  return result;
+  return sections.join('\n');
 }
 
 /**
