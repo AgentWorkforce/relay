@@ -88,6 +88,8 @@ export interface WorkerInfo {
   task: string;
   /** Optional team name this agent belongs to */
   team?: string;
+  /** Name of the agent that spawned this worker */
+  spawnerName?: string;
   spawnedAt: number;
   /** PID of the pty process */
   pid?: number;

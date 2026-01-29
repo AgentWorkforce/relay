@@ -1213,6 +1213,7 @@ export class AgentSpawner {
             cli,
             task,
             team,
+            spawnerName,
             userId,
             spawnedAt: Date.now(),
             pid: openCodeWrapper.pid,
@@ -1409,6 +1410,7 @@ export class AgentSpawner {
         cli,
         task,
         team,
+        spawnerName,
         userId,
         spawnedAt: Date.now(),
         pid: pty.pid,
@@ -1636,6 +1638,7 @@ export class AgentSpawner {
       cli: w.cli,
       task: w.task,
       team: w.team,
+      spawnerName: w.spawnerName,
       spawnedAt: w.spawnedAt,
       pid: w.pid,
     }));
