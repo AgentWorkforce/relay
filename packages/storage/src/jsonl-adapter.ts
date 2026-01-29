@@ -19,10 +19,15 @@ export interface JsonlAdapterOptions {
   cleanupIntervalMs?: number;
   /** Optional reason for falling back to JSONL (surfaced in health check) */
   reason?: string;
+  /** Watch for file changes and auto-reload (default: false) */
+  watchForChanges?: boolean;
+  /** Debounce interval for file watching in milliseconds (default: 100ms) */
+  watchDebounceMs?: number;
 }
 
 const DEFAULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+const DEFAULT_WATCH_DEBOUNCE_MS = 100;
 
 interface MessageRecord {
   type: 'message';
@@ -70,6 +75,13 @@ export class JsonlStorageAdapter implements StorageAdapter {
   private sessions: Map<string, StoredSession> = new Map();
   private resumeIndex: Map<string, string> = new Map();
 
+  private watchForChanges: boolean;
+  private watchDebounceMs: number;
+  private messageWatcher?: fs.FSWatcher;
+  private sessionWatcher?: fs.FSWatcher;
+  private reloadDebounceTimer?: NodeJS.Timeout;
+  private sessionReloadDebounceTimer?: NodeJS.Timeout;
+
   constructor(options: JsonlAdapterOptions) {
     this.baseDir = options.baseDir;
     this.messageDir = path.join(this.baseDir, 'messages');
@@ -77,6 +89,8 @@ export class JsonlStorageAdapter implements StorageAdapter {
     this.retentionMs = options.messageRetentionMs ?? DEFAULT_RETENTION_MS;
     this.cleanupIntervalMs = options.cleanupIntervalMs ?? DEFAULT_CLEANUP_INTERVAL_MS;
     this.fallbackReason = options.reason;
+    this.watchForChanges = options.watchForChanges ?? false;
+    this.watchDebounceMs = options.watchDebounceMs ?? DEFAULT_WATCH_DEBOUNCE_MS;
   }
 
   async init(): Promise<void> {
@@ -90,6 +104,10 @@ export class JsonlStorageAdapter implements StorageAdapter {
     if (this.cleanupIntervalMs > 0) {
       this.startCleanupTimer();
     }
+
+    if (this.watchForChanges) {
+      this.startFileWatching();
+    }
   }
 
   async close(): Promise<void> {
@@ -97,6 +115,7 @@ export class JsonlStorageAdapter implements StorageAdapter {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = undefined;
     }
+    this.stopFileWatching();
     this.messages.clear();
     this.deletedMessages.clear();
     this.sessions.clear();
@@ -403,6 +422,73 @@ export class JsonlStorageAdapter implements StorageAdapter {
     if (this.cleanupTimer.unref) {
       this.cleanupTimer.unref();
     }
+  }
+
+  private startFileWatching(): void {
+    // Watch message directory for changes
+    try {
+      this.messageWatcher = fs.watch(this.messageDir, (eventType, filename) => {
+        if (filename && filename.endsWith('.jsonl')) {
+          this.debouncedReloadMessages();
+        }
+      });
+
+      if (this.messageWatcher.unref) {
+        this.messageWatcher.unref();
+      }
+    } catch {
+      // Directory may not exist yet or watching not supported
+    }
+
+    // Watch session file for changes
+    try {
+      this.sessionWatcher = fs.watch(this.sessionFile, () => {
+        this.debouncedReloadSessions();
+      });
+
+      if (this.sessionWatcher.unref) {
+        this.sessionWatcher.unref();
+      }
+    } catch {
+      // File may not exist yet or watching not supported
+    }
+  }
+
+  private stopFileWatching(): void {
+    if (this.messageWatcher) {
+      this.messageWatcher.close();
+      this.messageWatcher = undefined;
+    }
+    if (this.sessionWatcher) {
+      this.sessionWatcher.close();
+      this.sessionWatcher = undefined;
+    }
+    if (this.reloadDebounceTimer) {
+      clearTimeout(this.reloadDebounceTimer);
+      this.reloadDebounceTimer = undefined;
+    }
+    if (this.sessionReloadDebounceTimer) {
+      clearTimeout(this.sessionReloadDebounceTimer);
+      this.sessionReloadDebounceTimer = undefined;
+    }
+  }
+
+  private debouncedReloadMessages(): void {
+    if (this.reloadDebounceTimer) {
+      clearTimeout(this.reloadDebounceTimer);
+    }
+    this.reloadDebounceTimer = setTimeout(() => {
+      this.loadMessagesFromDisk().catch(() => {});
+    }, this.watchDebounceMs);
+  }
+
+  private debouncedReloadSessions(): void {
+    if (this.sessionReloadDebounceTimer) {
+      clearTimeout(this.sessionReloadDebounceTimer);
+    }
+    this.sessionReloadDebounceTimer = setTimeout(() => {
+      this.loadSessionsFromDisk().catch(() => {});
+    }, this.watchDebounceMs);
   }
 
   private async loadMessagesFromDisk(): Promise<void> {

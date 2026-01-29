@@ -147,6 +147,8 @@ export interface StorageConfig {
     maxBatchBytes?: number;
     logBatches?: boolean;
   };
+  /** Watch for file changes and auto-reload (JSONL adapter only) */
+  watchForChanges?: boolean;
 }
 
 /**
@@ -322,6 +324,7 @@ export async function createStorageAdapter(
     type: config?.type ?? envConfig.type ?? 'jsonl',
     path: config?.path ?? envConfig.path ?? dbPath,
     url: config?.url ?? envConfig.url,
+    watchForChanges: config?.watchForChanges,
   };
 
   const storageType = finalConfig.type?.toLowerCase();
@@ -371,6 +374,7 @@ export async function createStorageAdapter(
           const adapter = new JsonlStorageAdapter({
             baseDir,
             reason: 'upgrade to Node.js 22+ or run: npm rebuild better-sqlite3',
+            watchForChanges: finalConfig.watchForChanges,
           });
           await adapter.init();
           return adapter;
@@ -393,7 +397,10 @@ export async function createStorageAdapter(
       const { JsonlStorageAdapter } = await import('./jsonl-adapter.js');
       const baseDir = path.dirname(finalConfig.path!);
       console.error('[storage] Using JSONL storage');
-      const adapter = new JsonlStorageAdapter({ baseDir });
+      const adapter = new JsonlStorageAdapter({
+        baseDir,
+        watchForChanges: finalConfig.watchForChanges,
+      });
       await adapter.init();
       return adapter;
     }
@@ -417,6 +424,7 @@ export async function createStorageAdapter(
           const adapter = new JsonlStorageAdapter({
             baseDir,
             reason: 'upgrade to Node.js 22+ or run: npm rebuild better-sqlite3',
+            watchForChanges: finalConfig.watchForChanges,
           });
           await adapter.init();
           return adapter;
