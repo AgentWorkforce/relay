@@ -149,7 +149,6 @@
     "@agent-relay/wrapper": "2.0.37",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "agent-trajectories": "^0.2.3",
-    "better-sqlite3": "^12.6.2",
     "chokidar": "^5.0.0",
     "commander": "^12.1.0",
     "compare-versions": "^6.1.1",

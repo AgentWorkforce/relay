@@ -447,6 +447,7 @@ program
   .description('Start daemon (use --dashboard to enable web dashboard)')
   .option('--dashboard', 'Enable web dashboard (disabled by default)')
   .option('--port <port>', 'Dashboard port (requires --dashboard)', DEFAULT_DASHBOARD_PORT)
+  .option('--storage <type>', 'Storage type: jsonl (default), sqlite, sqlite-batched, memory', 'jsonl')
   .option('--spawn', 'Force spawn all agents from teams.json')
   .option('--no-spawn', 'Do not auto-spawn agents (just start daemon)')
   .option('--watch', 'Auto-restart daemon on crash (supervisor mode)')
@@ -468,6 +469,7 @@ program
           args.push('--dashboard');
           if (options.port) args.push('--port', options.port);
         }
+        if (options.storage) args.push('--storage', options.storage);
         if (options.spawn === true) args.push('--spawn');
         if (options.spawn === false) args.push('--no-spawn');
 
@@ -541,10 +543,15 @@ program
       console.log(`Team: ${teamsConfig.team} (${teamsConfig.agents.length} agents defined)`);
     }
 
+    // Determine storage type from CLI option (defaults to 'jsonl')
+    const storageType = options.storage || 'jsonl';
+    console.log(`Storage: ${storageType}`);
+
     const daemon = new Daemon({
       socketPath,
       pidFilePath,
       storagePath: dbPath,
+      storageConfig: { type: storageType },
       teamDir: paths.teamDir,
       // Enable protocol-based spawning via SPAWN/RELEASE messages
       spawnManager: {

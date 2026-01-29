@@ -14,6 +14,8 @@ await build({
   bundle: true,
   target: 'node18',
   logLevel: 'info',
+  // Exclude native dependencies from bundle - they're loaded dynamically at runtime
+  external: ['better-sqlite3'],
   banner: {
     js: "const import_meta_url = require('node:url').pathToFileURL(__filename).href;",
   },
