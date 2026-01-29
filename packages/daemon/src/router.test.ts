@@ -146,4 +146,36 @@ describe('Router', () => {
       expect(agents).toContain('Agent3');
     });
   });
+
+  describe('dashboard routing', () => {
+    it('should route messages to Dashboard directly', () => {
+      // Register agent as Dashboard (unified naming)
+      const dashboardConn = createMockConnection('Dashboard');
+      const senderConn = createMockConnection('TestAgent');
+      router.register(dashboardConn);
+      router.register(senderConn);
+
+      // Send message TO: Dashboard
+      router.route(senderConn, {
+        v: 1,
+        type: 'SEND',
+        id: 'test-msg-1',
+        ts: Date.now(),
+        from: 'TestAgent',
+        to: 'Dashboard',
+        payload: {
+          kind: 'message',
+          body: 'Hello Dashboard!',
+        },
+      });
+
+      // Verify message was delivered to Dashboard
+      expect(dashboardConn.send).toHaveBeenCalled();
+      const deliveredEnvelope = (dashboardConn.send as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(deliveredEnvelope.type).toBe('DELIVER');
+      expect(deliveredEnvelope.from).toBe('TestAgent');
+      expect(deliveredEnvelope.to).toBe('Dashboard');
+      expect(deliveredEnvelope.payload.body).toBe('Hello Dashboard!');
+    });
+  });
 });

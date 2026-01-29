@@ -97,6 +97,12 @@ export interface ClientConfig {
   reconnectDelayMs: number;
   /** Max reconnect delay (ms) */
   reconnectMaxDelayMs: number;
+  /**
+   * Mark this client as a system component.
+   * Allows using reserved agent names (Dashboard, cli, system).
+   * Should only be set by trusted system components.
+   */
+  _isSystemComponent?: boolean;
 }
 
 const DEFAULT_SOCKET_PATH = '/tmp/agent-relay.sock';
@@ -1085,6 +1091,7 @@ export class RelayClient {
           supports_topics: true,
         },
         session: this.resumeToken ? { resume_token: this.resumeToken } : undefined,
+        _isSystemComponent: this.config._isSystemComponent,
       },
     };
 

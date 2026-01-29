@@ -40,69 +40,17 @@ import { promisify } from 'node:util';
 import { exec, spawn as spawnProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const RELAY_DASHBOARD_REPO = 'https://github.com/AgentWorkforce/relay-dashboard';
-
-/**
- * Prompt user to choose how to handle missing dashboard package.
- * Returns: 'npx' | 'install' | 'skip'
- */
-async function promptDashboardInstall(): Promise<'npx' | 'install' | 'skip'> {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  console.log(`
-The web dashboard requires @agent-relay/dashboard-server package.
-
-How would you like to proceed?
-  1. Start with npx (recommended - auto-installs temporarily)
-  2. View installation instructions
-  3. Skip and continue without dashboard
-`);
-
-  return new Promise((resolve) => {
-    rl.question('Choose [1/2/3]: ', (answer) => {
-      rl.close();
-      const choice = answer.trim();
-      if (choice === '1') {
-        resolve('npx');
-      } else if (choice === '2') {
-        resolve('install');
-      } else {
-        resolve('skip');
-      }
-    });
-  });
-}
-
-/**
- * Show instructions for installing the external dashboard package.
- */
-function showDashboardInstallInstructions(): void {
-  console.log(`
-To install the dashboard, run:
-
-  npm install @agent-relay/dashboard-server @agent-relay/dashboard
-
-Then restart with:
-
-  agent-relay up --dashboard
-
-For more options, see: ${RELAY_DASHBOARD_REPO}
-`);
-}
 
 /**
  * Start dashboard via npx (downloads and runs if not installed).
- * Returns the spawned child process and port.
+ * Returns the spawned child process, port, and a promise that resolves when ready.
  */
 function startDashboardViaNpx(options: {
   port: number;
   dataDir: string;
   teamDir: string;
   projectRoot: string;
-}): { process: ReturnType<typeof spawnProcess>; port: number } {
+}): { process: ReturnType<typeof spawnProcess>; port: number; ready: Promise<void> } {
   console.log('Starting dashboard via npx (this may take a moment on first run)...');
 
   const dashboardProcess = spawnProcess('npx', [
@@ -121,10 +69,22 @@ function startDashboardViaNpx(options: {
     },
   });
 
+  // Promise that resolves when dashboard is ready (or after timeout)
+  let resolveReady: () => void;
+  const ready = new Promise<void>((resolve) => {
+    resolveReady = resolve;
+    // Fallback timeout in case we miss the ready signal
+    setTimeout(resolve, 30000);
+  });
+
   // Forward dashboard output with prefix
   dashboardProcess.stdout?.on('data', (data: Buffer) => {
     const lines = data.toString().split('\n').filter(Boolean);
     for (const line of lines) {
+      // Detect when dashboard is ready (listening message)
+      if (line.includes('Dashboard:') || line.includes('listening') || line.includes('ready')) {
+        resolveReady();
+      }
       // Don't duplicate the "Dashboard:" line
       if (!line.includes('Dashboard:')) {
         console.log(`[dashboard] ${line}`);
@@ -141,15 +101,61 @@ function startDashboardViaNpx(options: {
 
   dashboardProcess.on('error', (err) => {
     console.error('Failed to start dashboard via npx:', err.message);
+    resolveReady(); // Resolve to not block forever
   });
 
   dashboardProcess.on('exit', (code) => {
+    resolveReady(); // Resolve on exit to not block forever
     if (code !== 0 && code !== null) {
       console.error(`Dashboard process exited with code ${code}`);
     }
   });
 
-  return { process: dashboardProcess, port: options.port };
+  return { process: dashboardProcess, port: options.port, ready };
+}
+
+/**
+ * Install agent-relay-snippet to markdown files using prpm.
+ * Installs to CLAUDE.md, GEMINI.md, and AGENTS.md.
+ * prpm handles idempotency - won't duplicate if already installed.
+ */
+export async function installRelaySnippets(options?: { silent?: boolean }): Promise<{ success: boolean; installed: string[] }> {
+  const execAsync = promisify(exec);
+  const installed: string[] = [];
+  const targets = [
+    { location: 'CLAUDE.md', name: 'CLAUDE.md' },
+    { location: 'GEMINI.md', name: 'GEMINI.md' },
+    { location: undefined, name: 'AGENTS.md' }, // Default location
+  ];
+
+  for (const target of targets) {
+    try {
+      const args = ['npx', 'prpm', 'install', '@agent-relay/agent-relay-snippet'];
+      if (target.location) {
+        args.push('--location', target.location);
+      }
+
+      await execAsync(args.join(' '), { timeout: 60000 });
+      installed.push(target.name);
+
+      if (!options?.silent) {
+        console.log(`    ✓  Installed to ${target.name}`);
+      }
+    } catch (err: any) {
+      // prpm exits with error if already installed or other issues
+      // Check if it's an "already exists" situation by looking at stderr
+      if (err.stderr?.includes('already') || err.stdout?.includes('already')) {
+        if (!options?.silent) {
+          console.log(`    ✓  ${target.name} (already installed)`);
+        }
+        installed.push(target.name);
+      } else if (!options?.silent) {
+        console.error(`    ⚠  Failed to install to ${target.name}: ${err.message}`);
+      }
+    }
+  }
+
+  return { success: installed.length > 0, installed };
 }
 
 dotenvConfig();
@@ -526,6 +532,36 @@ program
     const dbPath = paths.dbPath;
     const pidFilePath = pidFilePathForSocket(socketPath);
 
+    // Auto-install relay protocol snippets if not already present
+    // Check if the snippet marker exists in any of the target files
+    const snippetTargets = ['CLAUDE.md', 'GEMINI.md', 'AGENTS.md'];
+    const snippetMarker = '<!-- prpm:snippet:start @agent-relay/agent-relay-snippet';
+
+    const hasSnippetInstalled = snippetTargets.some(file => {
+      const filePath = path.join(paths.projectRoot, file);
+      if (!fs.existsSync(filePath)) return false;
+      try {
+        const content = fs.readFileSync(filePath, 'utf-8');
+        return content.includes(snippetMarker);
+      } catch {
+        return false;
+      }
+    });
+
+    if (!hasSnippetInstalled) {
+      console.log('Installing relay protocol snippets...');
+      try {
+        const result = await installRelaySnippets({ silent: false });
+        if (result.success) {
+          console.log(`Installed snippets to: ${result.installed.join(', ')}`);
+        }
+      } catch (err: any) {
+        // Non-fatal - continue even if snippet install fails
+        console.log(`Note: Could not auto-install snippets: ${err.message}`);
+      }
+      console.log('');
+    }
+
     // Set up log file to avoid console output polluting TUI terminals
     // Only set if not already configured via environment
     if (!process.env.AGENT_RELAY_LOG_FILE) {
@@ -662,62 +698,29 @@ program
           if (err.code === 'ERR_MODULE_NOT_FOUND' || err.code === 'MODULE_NOT_FOUND') {
             // Dashboard package not installed
             if (dashboardRequested) {
-              // User explicitly asked for dashboard but it's not installed
-              // Only prompt interactively if stdin is a TTY (not in Docker/CI)
-              if (process.stdin.isTTY) {
-                console.log('');
-                const action = await promptDashboardInstall();
-                if (action === 'npx') {
-                  // Start dashboard via npx
-                  const { process: dashboardProcess, port: npxPort } = startDashboardViaNpx({
-                    port,
-                    dataDir: paths.dataDir,
-                    teamDir: paths.teamDir,
-                    projectRoot: paths.projectRoot,
-                  });
-                  dashboardPort = npxPort;
+              // User explicitly asked for dashboard but it's not installed - start via npx
+              console.log('Dashboard package not installed. Starting via npx...');
+              const { process: dashboardProcess, port: npxPort, ready } = startDashboardViaNpx({
+                port,
+                dataDir: paths.dataDir,
+                teamDir: paths.teamDir,
+                projectRoot: paths.projectRoot,
+              });
+              dashboardPort = npxPort;
 
-                  // Clean up dashboard process on exit
-                  const cleanupDashboard = () => {
-                    if (dashboardProcess && !dashboardProcess.killed) {
-                      dashboardProcess.kill('SIGTERM');
-                    }
-                  };
-                  process.on('SIGINT', cleanupDashboard);
-                  process.on('SIGTERM', cleanupDashboard);
-                  process.on('exit', cleanupDashboard);
-
-                  // Wait a moment for dashboard to start
-                  await new Promise(resolve => setTimeout(resolve, 2000));
-                  console.log(`Dashboard: http://localhost:${dashboardPort}`);
-                } else if (action === 'install') {
-                  showDashboardInstallInstructions();
+              // Clean up dashboard process on exit
+              const cleanupDashboard = () => {
+                if (dashboardProcess && !dashboardProcess.killed) {
+                  dashboardProcess.kill('SIGTERM');
                 }
-              } else {
-                // Non-interactive: try npx automatically
-                console.log('Dashboard package not installed. Starting via npx...');
-                const { process: dashboardProcess, port: npxPort } = startDashboardViaNpx({
-                  port,
-                  dataDir: paths.dataDir,
-                  teamDir: paths.teamDir,
-                  projectRoot: paths.projectRoot,
-                });
-                dashboardPort = npxPort;
+              };
+              process.on('SIGINT', cleanupDashboard);
+              process.on('SIGTERM', cleanupDashboard);
+              process.on('exit', cleanupDashboard);
 
-                // Clean up dashboard process on exit
-                const cleanupDashboard = () => {
-                  if (dashboardProcess && !dashboardProcess.killed) {
-                    dashboardProcess.kill('SIGTERM');
-                  }
-                };
-                process.on('SIGINT', cleanupDashboard);
-                process.on('SIGTERM', cleanupDashboard);
-                process.on('exit', cleanupDashboard);
-
-                // Wait a moment for dashboard to start
-                await new Promise(resolve => setTimeout(resolve, 3000));
-                console.log(`Dashboard: http://localhost:${dashboardPort}`);
-              }
+              // Wait for dashboard to be ready
+              await ready;
+              console.log(`Dashboard: http://localhost:${dashboardPort}`);
             }
             // Silent if user didn't explicitly request dashboard
           } else {
@@ -3666,10 +3669,11 @@ async function runInit(options: { yes?: boolean; skipDaemon?: boolean; skipMcp?:
   }
   console.log('');
 
-  // Step 3: Install MCP for editors
+  // Step 1: Install MCP for editors (only if RELAY_MCP_AUTO_INSTALL=1)
   let mcpInstalled = false;
-  if (!options.skipMcp) {
-    console.log('  ┌─ Step 1: MCP Server for AI Editors ─────────────────────┐');
+  const mcpAutoInstallEnabled = process.env.RELAY_MCP_AUTO_INSTALL === '1';
+  if (!options.skipMcp && mcpAutoInstallEnabled) {
+    console.log('  ┌─ MCP Server for AI Editors ───────────────────────────────┐');
     console.log('  │                                                          │');
     console.log('  │  MCP (Model Context Protocol) gives AI editors native    │');
     console.log('  │  tools for agent communication:                          │');
@@ -3705,9 +3709,9 @@ async function runInit(options: { yes?: boolean; skipDaemon?: boolean; skipMcp?:
     }
   }
 
-  // Step 4: Start daemon
+  // Start daemon
   if (!daemonRunning && !options.skipDaemon) {
-    console.log('  ┌─ Step 2: Start the Relay Daemon ─────────────────────────┐');
+    console.log('  ┌─ Start the Relay Daemon ──────────────────────────────────┐');
     console.log('  │                                                          │');
     console.log('  │  The daemon manages agent connections and message        │');
     console.log('  │  routing. It runs in the background.                     │');

@@ -820,8 +820,8 @@ export class Daemon {
    */
   private isInternalAgent(name: string): boolean {
     if (name.startsWith('__')) return true;
-    // Dashboard, _DashboardUI, and cli are internal system agents
-    return name === 'Dashboard' || name === '_DashboardUI' || name === 'cli';
+    // Dashboard and cli are internal system agents
+    return name === 'Dashboard' || name === 'cli';
   }
 
   /**

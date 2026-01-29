@@ -126,6 +126,11 @@ export interface HelloPayload {
   session?: {
     resume_token?: string;
   };
+  /**
+   * Internal flag to indicate this is a system component (e.g., Dashboard).
+   * Allows using reserved names. Should only be set by trusted system components.
+   */
+  _isSystemComponent?: boolean;
 }
 
 export interface WelcomePayload {
