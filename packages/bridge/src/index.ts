@@ -13,6 +13,15 @@ export {
   type ShadowCliSelection,
 } from './shadow-cli.js';
 
+// CLI resolution utilities
+export {
+  commandExists,
+  detectCursorCli,
+  resolveCli,
+  resetCursorCliCache,
+  CLI_COMMAND_MAP,
+} from './cli-resolution.js';
+
 // Agent spawner
 export {
   AgentSpawner,
