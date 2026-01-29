@@ -489,7 +489,9 @@ mod tests {
         assert!(!is_auto_suggestion("\x1b[2m────────\x1b[22m"));
 
         // Reverse and dim but not adjacent (unlikely but test it)
-        assert!(!is_auto_suggestion("\x1b[7mX\x1b[27m some text \x1b[2mdim\x1b[22m"));
+        assert!(!is_auto_suggestion(
+            "\x1b[7mX\x1b[27m some text \x1b[2mdim\x1b[22m"
+        ));
 
         // Multiple suggestions in one output (should still detect)
         assert!(is_auto_suggestion(
