@@ -1,0 +1,24 @@
+{
+  "name": "ar-storage-adapter",
+  "version": "1.0.0",
+  "description": "Custom storage adapter for Agent Relay",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "agent-relay": "^1.3.0",
+    "pg": "^8.11.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/pg": "^8.10.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  }
+}
