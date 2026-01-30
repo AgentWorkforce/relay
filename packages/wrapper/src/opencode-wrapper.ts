@@ -29,7 +29,18 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { BaseWrapper, type BaseWrapperConfig } from './base-wrapper.js';
 import { OpenCodeApi, type OpenCodeApiConfig } from './opencode-api.js';
 import { OutputParser, type ParsedCommand } from './parser.js';
-import { buildInjectionString, type QueuedMessage } from './shared.js';
+import { buildInjectionString, sleep, type QueuedMessage } from './shared.js';
+
+/**
+ * Task injection retry configuration.
+ * Matches RelayPtyOrchestrator for consistent behavior across wrapper types.
+ */
+const TASK_INJECTION = {
+  /** Maximum retries when injection fails */
+  MAX_RETRIES: 3,
+  /** Delay between retries (ms) */
+  RETRY_DELAY_MS: 500,
+};
 
 export interface OpenCodeWrapperConfig extends BaseWrapperConfig {
   /** HTTP API configuration */
@@ -411,24 +422,36 @@ export class OpenCodeWrapper extends BaseWrapper {
   }
 
   /**
-   * Inject a task into the agent.
+   * Inject a task into the agent with retry logic.
    *
-   * This method trusts the delivery mechanism (HTTP API or PTY stdin).
-   * A periodic sweep handles any stuck injections as a safety net.
+   * Retries on transient failures to match RelayPtyOrchestrator behavior.
+   * This ensures consistent reliability across all wrapper types.
    *
    * @param task - The task description to inject
    * @param _from - The sender name (used for formatting)
    * @returns true if injection succeeded, false otherwise
    */
   async injectTask(task: string, _from?: string): Promise<boolean> {
-    try {
-      await this.performInjection(task);
-      console.log(`[OpenCodeWrapper] Task delivered successfully`);
-      return true;
-    } catch (error) {
-      console.error(`[OpenCodeWrapper] Task delivery failed:`, error);
-      return false;
+    const { MAX_RETRIES, RETRY_DELAY_MS } = TASK_INJECTION;
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      if (attempt > 0) {
+        console.log(`[OpenCodeWrapper] Retry ${attempt}/${MAX_RETRIES} - waiting ${RETRY_DELAY_MS}ms before retry`);
+        await sleep(RETRY_DELAY_MS);
+      }
+
+      try {
+        await this.performInjection(task);
+        console.log(`[OpenCodeWrapper] Task delivered successfully${attempt > 0 ? ` (attempt ${attempt + 1})` : ''}`);
+        return true;
+      } catch (error) {
+        console.error(`[OpenCodeWrapper] Task delivery failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}):`, error);
+        // Continue to next retry attempt
+      }
     }
+
+    console.error(`[OpenCodeWrapper] Task injection failed after ${MAX_RETRIES + 1} attempts`);
+    return false;
   }
 
   /**
