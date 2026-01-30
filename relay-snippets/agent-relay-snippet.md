@@ -24,7 +24,9 @@ Real-time agent-to-agent messaging via file-based protocol.
 
 ## Sending Messages
 
-Write a file to your outbox, then output the trigger:
+**TWO STEPS REQUIRED:**
+
+**Step 1:** EXECUTE this bash command (you MUST run it via your Bash/shell tool, not just display it):
 
 ```bash
 cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
@@ -34,7 +36,12 @@ Your message here.
 EOF
 ```
 
-IMPORTANT: Output the trigger `->relay-file:msg` directly in your response text (not via echo in bash). The trigger must appear in your actual output, not just in command output.
+**Step 2:** Output the trigger `->relay-file:msg` directly in your response text (after the bash command succeeds).
+
+⚠️ **CRITICAL**: You must EXECUTE the bash command above - do NOT just display it as a code block. The file must actually be created on disk. Then output the trigger as plain text.
+
+✅ CORRECT: Run Bash tool → then output `->relay-file:msg`
+❌ WRONG: Display the bash code without executing it
 
 > **Note**: `$AGENT_RELAY_OUTBOX` is automatically set by agent-relay when spawning agents. Data is stored in `.agent-relay/` within your project directory.
 
@@ -105,6 +112,7 @@ EOF
 
 **IMPORTANT**: The filename is always `spawn` (not `spawn-agentname`) and the trigger is always `->relay-file:spawn`. Spawn agents one at a time sequentially.
 
+**Step 1:** EXECUTE this bash command (run it, don't just display it):
 ```bash
 # Spawn
 cat > $AGENT_RELAY_OUTBOX/spawn << 'EOF'
@@ -115,8 +123,9 @@ CLI: claude
 Task description here.
 EOF
 ```
-Then: `->relay-file:spawn`
+**Step 2:** Output: `->relay-file:spawn`
 
+**Step 1:** EXECUTE this bash command (run it, don't just display it):
 ```bash
 # Release
 cat > $AGENT_RELAY_OUTBOX/release << 'EOF'
@@ -124,7 +133,7 @@ KIND: release
 NAME: WorkerName
 EOF
 ```
-Then: `->relay-file:release`
+**Step 2:** Output: `->relay-file:release`
 
 ## When You Are Spawned
 
@@ -137,7 +146,10 @@ If you were spawned by another agent:
 ```bash
 # Check your spawner
 echo "I was spawned by: $AGENT_RELAY_SPAWNER"
+```
 
+**Step 1:** EXECUTE this bash command:
+```bash
 # Reply to your spawner
 cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
 TO: $AGENT_RELAY_SPAWNER
@@ -145,7 +157,7 @@ TO: $AGENT_RELAY_SPAWNER
 ACK: Starting on the task.
 EOF
 ```
-Then: `->relay-file:msg`
+**Step 2:** Output: `->relay-file:msg`
 
 ## Receiving Messages
 
