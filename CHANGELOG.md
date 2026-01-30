@@ -20,6 +20,136 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Zombie agents (spawned but never received their task) are now cleaned up automatically.
 - Automatic retry (3 attempts with 2s delays) for task injection improves reliability.
 
+## [2.1.5] - 2026-01-30
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Task injection retries**: Spawning agents with tasks now automatically retries delivery up to 3 times, preventing silent failures that left agents without their initial instructions.
+
+#### User-Impacting Fixes
+- Auto-suggestion injection and cursor-agent reconciliation fixed — agents now correctly receive suggestions and cursor state stays in sync (#347).
+
+### Technical Perspective
+#### Architecture & API Changes
+- Injection retry logic added to spawn flow with configurable attempts and backoff (#349).
+- Cursor-agent reconciliation ensures agent state matches the editor's cursor position after reconnects.
+
+#### Releases
+- v2.1.4, v2.1.5
+
+---
+
+## [2.1.3] - 2026-01-29
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Agent-to-agent JSONL watch**: Agents can now observe each other's activity streams via JSONL watch, enabling real-time coordination (#346).
+- **Onboarding improvements**: Smoother first-run experience with better prompts and flow handling (#345).
+- **SQLite dependency removed**: Storage layer switched from SQLite to JSONL, reducing native binary requirements and simplifying installation (#343).
+
+#### User-Impacting Fixes
+- Relay-pty binary resolution fixed for `npx` usage — no longer requires postinstall scripts, making global installs more reliable (#344).
+- Messages path routing corrected for dashboard storage (#341).
+
+### Technical Perspective
+#### Architecture & API Changes
+- Storage backend migrated from SQLite to JSONL flat files, eliminating the native `better-sqlite3` dependency.
+- Relay-pty binary resolution rewritten with comprehensive edge case handling for npx, global installs, and monorepo setups.
+- Agent-to-agent JSONL watch enables streaming observation of peer agent activity.
+
+#### Performance & Reliability
+- Comprehensive test suite added for relay-pty binary path resolution across install scenarios.
+- Bundled dependency audit added to CI (#339).
+- Timeout and skip logic for x64 macOS verification on PRs (#340).
+
+#### Dependencies & Tooling
+- Removed `better-sqlite3` native dependency in favor of JSONL storage.
+- macOS x64 verification job removed from CI (slow, low value).
+
+#### Releases
+- v2.1.0, v2.1.1, v2.1.2, v2.1.3 (plus v2.0.34–v2.0.37)
+
+---
+
+## [2.0.37] - 2026-01-28
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **OpenCode HTTP API integration**: Full OpenCode provider support via HTTP API, enabling OpenCode as a first-class agent backend (#337).
+- **File-based continuity**: Agents can now save and restore session state through file-based continuity commands, surviving restarts and long operations (#331).
+- **Performance benchmarking**: New benchmarking package for comparing agent configurations and measuring swarm performance (#326).
+- **MCP client parity**: MCP client now aligned with SDK for consistent behavior across both integration paths (#323).
+
+#### User-Impacting Fixes
+- **Unbounded output buffer crash fixed**: `RangeError` from large agent output no longer crashes the process (#338).
+- Storage health reporting and doctor CLI now correctly handle JSONL storage (#334, #335).
+- Stale agents cleaned up automatically when their process dies without a clean disconnect (#319).
+- CJS exports fixed for `agent-relay` and `@agent-relay/utils` — CommonJS consumers can now `require()` the packages (#325, #328).
+
+### Technical Perspective
+#### Architecture & API Changes
+- OpenCode HTTP API integration adds a new provider adapter for the OpenCode backend.
+- File-based continuity command handling added to orchestrator for session persistence.
+- New `listConnectedAgents()` and `removeAgent()` APIs for programmatic agent management.
+- Shared client helpers extracted to `@agent-relay/utils` for SDK/MCP consistency.
+- MCP client aligned with SDK: `sendAndWait` return types updated to `AckPayload`, `PROTOCOL_VERSION` imported consistently.
+- Agent capacity increased to support 10,000 concurrent agents (#318).
+
+#### Performance & Reliability
+- Output buffer bounds enforced to prevent `RangeError` crashes from large payloads.
+- Storage reliability and security fixes: health checks, doctor diagnostics, and JSONL handling hardened.
+- Stale agent cleanup on process death prevents ghost entries in connected agent lists.
+- Relay-pty binary fallback logic improved for cross-platform resolution (#324).
+
+#### Dependencies & Tooling
+- Post-publish verification workflow added for npm packages with npx, Docker, and macOS tests (#323).
+- CJS build artifacts generated during `npm pack` for dual ESM/CJS support.
+- Bundled dependencies ensure tarball includes all `@agent-relay` packages.
+- macOS CI runners updated (macos-13 → macos-15-large, macos-12 for Intel x64).
+- Dashboard publishing removed from relay monorepo (moved to relay-cloud).
+- PostHog analytics added to docs site (#321).
+
+#### Releases
+- v2.0.21–v2.0.32, plus numerous CI and packaging fixes.
+
+---
+
+## [2.0.25] - 2026-01-27
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Dashboard moved to relay-cloud**: Dashboard package removed from the relay monorepo and migrated to the dedicated relay-cloud repository, simplifying the core package.
+- **CLI dashboard startup**: `--dashboard` flag now launches the dashboard via npx fallback when not locally available (#322).
+- **Socket length handling**: Long socket messages no longer truncated or malformed (#317).
+- **Stale agent cleanup**: Agents whose processes die without clean disconnect are now automatically removed (#319).
+- **10K agent capacity**: Relay server now supports up to 10,000 concurrent connected agents (#318).
+
+#### User-Impacting Fixes
+- Dashboard references cleaned up after package removal to prevent broken imports.
+- Socket.rs `warn!` macro indentation corrected for proper Rust compilation.
+- CLI tests isolated from running daemon to prevent interference.
+
+### Technical Perspective
+#### Architecture & API Changes
+- Dashboard package fully removed; CI updated to test daemon via socket instead of HTTP (#315, #316).
+- `listConnectedAgents()` and `removeAgent()` APIs added for agent lifecycle management (#319).
+- Agent capacity limit raised to 10,000 (#318).
+- Socket length handling improved in Rust relay-pty core (#317).
+
+#### Performance & Reliability
+- Stale agent cleanup prevents ghost entries when processes exit uncleanly.
+- CLI tests no longer conflict with a running local daemon.
+
+#### Dependencies & Tooling
+- Dashboard publishing workflow removed; package cleanup across workspaces (#315, #320).
+- PostHog analytics added to documentation site (#321).
+- npx fallback added for dashboard startup in CLI.
+
+#### Releases
+- v2.0.21–v2.0.25
+
+---
+
 ## [2.0.20] - 2026-01-26
 
 ### Overview
