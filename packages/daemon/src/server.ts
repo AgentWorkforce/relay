@@ -36,6 +36,7 @@ import {
   type HealthResponsePayload,
   type MetricsPayload,
   type MetricsResponsePayload,
+  type AgentReadyPayload,
 } from '@agent-relay/protocol/types';
 import type { ChannelJoinPayload, ChannelLeavePayload, ChannelMessagePayload } from '@agent-relay/protocol/channels';
 import { SpawnManager, type SpawnManagerConfig } from './spawn-manager.js';
@@ -1019,6 +1020,12 @@ export class Daemon {
 
       // Update connected agents file for CLI
       this.writeConnectedAgentsFile();
+
+      // Broadcast AGENT_READY event to all connected clients
+      // This allows spawning clients to know when their spawned agent is ready
+      if (connection.agentName) {
+        this.broadcastAgentReady(connection);
+      }
     };
 
     connection.onClose = () => {
@@ -1708,6 +1715,36 @@ export class Daemon {
    */
   broadcastSystemMessage(message: string, data?: Record<string, unknown>): void {
     this.router.broadcastSystemMessage(message, data);
+  }
+
+  /**
+   * Broadcast AGENT_READY event when an agent completes connection.
+   * This allows spawning clients to know when their spawned agent is ready to receive messages.
+   */
+  private broadcastAgentReady(connection: Connection): void {
+    const payload: AgentReadyPayload = {
+      name: connection.agentName!,
+      cli: connection.cli,
+      task: connection.task,
+      connectedAt: Date.now(),
+    };
+
+    const envelope: Envelope<AgentReadyPayload> = {
+      v: PROTOCOL_VERSION,
+      type: 'AGENT_READY',
+      id: generateId(),
+      ts: Date.now(),
+      payload,
+    };
+
+    // Broadcast to all connections except the one that just connected
+    for (const conn of this.connections) {
+      if (conn.id !== connection.id && conn.state === 'ACTIVE') {
+        conn.send(envelope);
+      }
+    }
+
+    log.info('Broadcast AGENT_READY', { agent: connection.agentName });
   }
 
   /**

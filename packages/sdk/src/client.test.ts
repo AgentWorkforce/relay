@@ -10,6 +10,8 @@ import type {
   HealthResponsePayload,
   MetricsResponsePayload,
   InboxResponsePayload,
+  AgentReadyPayload,
+  SpawnResultPayload,
 } from '@agent-relay/protocol';
 import { RelayClient } from './client.js';
 
@@ -256,6 +258,208 @@ describe('RelayClient', () => {
     });
   });
 
+  describe('request', () => {
+    it('resolves when matching response arrives via payload_meta.replyTo', async () => {
+      const client = new RelayClient({ reconnect: false, quiet: true });
+      (client as any)._state = 'READY';
+      const sendMock = vi.fn().mockReturnValue(true);
+      (client as any).send = sendMock;
+
+      const promise = client.request('Worker', 'Do task', { timeout: 1000 });
+      const sentEnvelope = sendMock.mock.calls[0][0];
+      const correlationId = sentEnvelope.payload.data._correlationId;
+
+      // Simulate response from Worker
+      const responseEnvelope: DeliverEnvelope = {
+        v: 1,
+        type: 'DELIVER',
+        id: 'response-1',
+        ts: Date.now(),
+        from: 'Worker',
+        payload: {
+          kind: 'message',
+          body: 'Task completed',
+          data: { result: 'success' },
+        },
+        payload_meta: {
+          replyTo: correlationId,
+        },
+        delivery: {
+          seq: 1,
+          session_id: 'session-1',
+        },
+      };
+
+      (client as any).processFrame(responseEnvelope);
+
+      const result = await promise;
+      expect(result.from).toBe('Worker');
+      expect(result.body).toBe('Task completed');
+      expect(result.data?.result).toBe('success');
+      expect(result.correlationId).toBe(correlationId);
+    });
+
+    it('resolves when matching response arrives via data._correlationId', async () => {
+      const client = new RelayClient({ reconnect: false, quiet: true });
+      (client as any)._state = 'READY';
+      const sendMock = vi.fn().mockReturnValue(true);
+      (client as any).send = sendMock;
+
+      const promise = client.request('Worker', 'Do task', { timeout: 1000 });
+      const sentEnvelope = sendMock.mock.calls[0][0];
+      const correlationId = sentEnvelope.payload.data._correlationId;
+
+      // Simulate response from Worker using data._correlationId
+      const responseEnvelope: DeliverEnvelope = {
+        v: 1,
+        type: 'DELIVER',
+        id: 'response-2',
+        ts: Date.now(),
+        from: 'Worker',
+        payload: {
+          kind: 'message',
+          body: 'Done!',
+          data: { _correlationId: correlationId, _isResponse: true },
+        },
+        delivery: {
+          seq: 2,
+          session_id: 'session-1',
+        },
+      };
+
+      (client as any).processFrame(responseEnvelope);
+
+      const result = await promise;
+      expect(result.from).toBe('Worker');
+      expect(result.body).toBe('Done!');
+      expect(result.correlationId).toBe(correlationId);
+    });
+
+    it('rejects on timeout', async () => {
+      vi.useFakeTimers();
+      try {
+        const client = new RelayClient({ reconnect: false, quiet: true });
+        (client as any)._state = 'READY';
+        const sendMock = vi.fn().mockReturnValue(true);
+        (client as any).send = sendMock;
+
+        const promise = client.request('Worker', 'Do task', { timeout: 50 });
+        const rejection = expect(promise).rejects.toThrow('Request timeout after 50ms waiting for response from Worker');
+        await vi.advanceTimersByTimeAsync(60);
+
+        await rejection;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('rejects when not ready', async () => {
+      const client = new RelayClient({ reconnect: false });
+      await expect(client.request('Worker', 'Do task')).rejects.toThrow('Client not ready');
+    });
+
+    it('rejects when send fails', async () => {
+      const client = new RelayClient({ reconnect: false, quiet: true });
+      (client as any)._state = 'READY';
+      const sendMock = vi.fn().mockReturnValue(false);
+      (client as any).send = sendMock;
+
+      await expect(client.request('Worker', 'Do task')).rejects.toThrow('Failed to send request');
+    });
+
+    it('includes custom data and thread in the sent message', async () => {
+      const client = new RelayClient({ reconnect: false, quiet: true });
+      (client as any)._state = 'READY';
+      const sendMock = vi.fn().mockReturnValue(true);
+      (client as any).send = sendMock;
+
+      // Don't await - we just want to check what was sent
+      client.request('Worker', 'Do task', {
+        timeout: 1000,
+        data: { taskId: '123', priority: 'high' },
+        thread: 'task-thread-1',
+      }).catch(() => {}); // Ignore timeout
+
+      const sentEnvelope = sendMock.mock.calls[0][0];
+      expect(sentEnvelope.to).toBe('Worker');
+      expect(sentEnvelope.payload.body).toBe('Do task');
+      expect(sentEnvelope.payload.data.taskId).toBe('123');
+      expect(sentEnvelope.payload.data.priority).toBe('high');
+      expect(sentEnvelope.payload.data._correlationId).toBeDefined();
+      expect(sentEnvelope.payload.thread).toBe('task-thread-1');
+      expect(sentEnvelope.payload_meta.replyTo).toBe(sentEnvelope.payload.data._correlationId);
+    });
+
+    it('still calls onMessage after resolving request', async () => {
+      const client = new RelayClient({ reconnect: false, quiet: true });
+      (client as any)._state = 'READY';
+      const sendMock = vi.fn().mockReturnValue(true);
+      (client as any).send = sendMock;
+
+      const messages: any[] = [];
+      client.onMessage = (from, payload) => messages.push({ from, payload });
+
+      const promise = client.request('Worker', 'Do task', { timeout: 1000 });
+      const sentEnvelope = sendMock.mock.calls[0][0];
+      const correlationId = sentEnvelope.payload.data._correlationId;
+
+      const responseEnvelope: DeliverEnvelope = {
+        v: 1,
+        type: 'DELIVER',
+        id: 'response-3',
+        ts: Date.now(),
+        from: 'Worker',
+        payload: {
+          kind: 'message',
+          body: 'Task completed',
+        },
+        payload_meta: {
+          replyTo: correlationId,
+        },
+        delivery: {
+          seq: 3,
+          session_id: 'session-1',
+        },
+      };
+
+      (client as any).processFrame(responseEnvelope);
+
+      await promise;
+
+      // onMessage should still be called
+      expect(messages).toHaveLength(1);
+      expect(messages[0].from).toBe('Worker');
+      expect(messages[0].payload.body).toBe('Task completed');
+    });
+  });
+
+  describe('respond', () => {
+    it('returns false when not connected', () => {
+      const client = new RelayClient({ reconnect: false });
+      const result = client.respond('corr-123', 'Alice', 'Done');
+      expect(result).toBe(false);
+    });
+
+    it('sends response with correlation ID', () => {
+      const client = new RelayClient({ reconnect: false, quiet: true });
+      (client as any)._state = 'READY';
+      const sendMock = vi.fn().mockReturnValue(true);
+      (client as any).send = sendMock;
+
+      const result = client.respond('corr-123', 'Alice', 'Task completed', { result: 'success' });
+
+      expect(result).toBe(true);
+      const sentEnvelope = sendMock.mock.calls[0][0];
+      expect(sentEnvelope.type).toBe('SEND');
+      expect(sentEnvelope.to).toBe('Alice');
+      expect(sentEnvelope.payload.body).toBe('Task completed');
+      expect(sentEnvelope.payload.data._correlationId).toBe('corr-123');
+      expect(sentEnvelope.payload.data._isResponse).toBe(true);
+      expect(sentEnvelope.payload.data.result).toBe('success');
+      expect(sentEnvelope.payload_meta.replyTo).toBe('corr-123');
+    });
+  });
+
   describe('channel operations', () => {
     it('should return false for joinChannel when not connected', () => {
       const client = new RelayClient({ reconnect: false });
@@ -479,6 +683,227 @@ describe('RelayClient', () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe('agent ready', () => {
+    it('should call onAgentReady when AGENT_READY received', () => {
+      const client = new RelayClient({ reconnect: false, quiet: true });
+      const readyEvents: AgentReadyPayload[] = [];
+      client.onAgentReady = (info) => readyEvents.push(info);
+
+      const agentReadyEnvelope: Envelope<AgentReadyPayload> = {
+        v: 1,
+        type: 'AGENT_READY',
+        id: 'ready-1',
+        ts: Date.now(),
+        payload: {
+          name: 'Worker',
+          cli: 'claude',
+          task: 'Do something',
+          connectedAt: Date.now(),
+        },
+      };
+
+      (client as any).processFrame(agentReadyEnvelope);
+
+      expect(readyEvents).toHaveLength(1);
+      expect(readyEvents[0].name).toBe('Worker');
+      expect(readyEvents[0].cli).toBe('claude');
+    });
+
+    it('resolves waitForAgentReady when AGENT_READY arrives', async () => {
+      const client = new RelayClient({ reconnect: false, quiet: true });
+      (client as any)._state = 'READY';
+
+      const promise = client.waitForAgentReady('Worker', 1000);
+
+      const agentReadyEnvelope: Envelope<AgentReadyPayload> = {
+        v: 1,
+        type: 'AGENT_READY',
+        id: 'ready-2',
+        ts: Date.now(),
+        payload: {
+          name: 'Worker',
+          cli: 'codex',
+          connectedAt: Date.now(),
+        },
+      };
+
+      (client as any).processFrame(agentReadyEnvelope);
+
+      const result = await promise;
+      expect(result.name).toBe('Worker');
+      expect(result.cli).toBe('codex');
+    });
+
+    it('rejects waitForAgentReady on timeout', async () => {
+      vi.useFakeTimers();
+      try {
+        const client = new RelayClient({ reconnect: false, quiet: true });
+        (client as any)._state = 'READY';
+
+        const promise = client.waitForAgentReady('Worker', 50);
+        const rejection = expect(promise).rejects.toThrow('Agent Worker did not become ready within 50ms');
+        await vi.advanceTimersByTimeAsync(60);
+
+        await rejection;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('rejects waitForAgentReady when not ready', async () => {
+      const client = new RelayClient({ reconnect: false });
+      await expect(client.waitForAgentReady('Worker')).rejects.toThrow('Client not ready');
+    });
+
+    it('rejects waitForAgentReady when already waiting', async () => {
+      const client = new RelayClient({ reconnect: false, quiet: true });
+      (client as any)._state = 'READY';
+
+      // Start waiting
+      client.waitForAgentReady('Worker', 10000).catch(() => {});
+
+      // Try to wait again - should reject
+      await expect(client.waitForAgentReady('Worker')).rejects.toThrow('Already waiting for agent Worker');
+    });
+
+    it('spawn with waitForReady resolves with ready info', async () => {
+      const client = new RelayClient({ reconnect: false, quiet: true });
+      (client as any)._state = 'READY';
+      const sendMock = vi.fn().mockReturnValue(true);
+      (client as any).send = sendMock;
+
+      const spawnPromise = client.spawn(
+        {
+          name: 'Worker',
+          cli: 'claude',
+          task: 'Do work',
+          waitForReady: true,
+          readyTimeoutMs: 5000,
+        },
+        1000
+      );
+
+      // First, SPAWN_RESULT arrives
+      const sentEnvelope = sendMock.mock.calls[0][0];
+      const spawnResultEnvelope: Envelope<SpawnResultPayload> = {
+        v: 1,
+        type: 'SPAWN_RESULT',
+        id: 'spawn-result-1',
+        ts: Date.now(),
+        payload: {
+          replyTo: sentEnvelope.id,
+          success: true,
+          name: 'Worker',
+          pid: 12345,
+        },
+      };
+      (client as any).processFrame(spawnResultEnvelope);
+
+      // Then, AGENT_READY arrives
+      const agentReadyEnvelope: Envelope<AgentReadyPayload> = {
+        v: 1,
+        type: 'AGENT_READY',
+        id: 'ready-3',
+        ts: Date.now(),
+        payload: {
+          name: 'Worker',
+          cli: 'claude',
+          task: 'Do work',
+          connectedAt: Date.now(),
+        },
+      };
+      (client as any).processFrame(agentReadyEnvelope);
+
+      const result = await spawnPromise;
+      expect(result.success).toBe(true);
+      expect(result.ready).toBe(true);
+      expect(result.readyInfo?.name).toBe('Worker');
+      expect(result.readyInfo?.cli).toBe('claude');
+    });
+
+    it('spawn with waitForReady returns ready:false on timeout', async () => {
+      vi.useFakeTimers();
+      try {
+        const client = new RelayClient({ reconnect: false, quiet: true });
+        (client as any)._state = 'READY';
+        const sendMock = vi.fn().mockReturnValue(true);
+        (client as any).send = sendMock;
+
+        const spawnPromise = client.spawn(
+          {
+            name: 'Worker',
+            cli: 'claude',
+            waitForReady: true,
+            readyTimeoutMs: 100,
+          },
+          500
+        );
+
+        // SPAWN_RESULT arrives
+        const sentEnvelope = sendMock.mock.calls[0][0];
+        const spawnResultEnvelope: Envelope<SpawnResultPayload> = {
+          v: 1,
+          type: 'SPAWN_RESULT',
+          id: 'spawn-result-2',
+          ts: Date.now(),
+          payload: {
+            replyTo: sentEnvelope.id,
+            success: true,
+            name: 'Worker',
+            pid: 12346,
+          },
+        };
+        (client as any).processFrame(spawnResultEnvelope);
+
+        // Agent ready timeout expires
+        await vi.advanceTimersByTimeAsync(150);
+
+        const result = await spawnPromise;
+        expect(result.success).toBe(true);
+        expect(result.ready).toBe(false);
+        expect(result.readyInfo).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('spawn without waitForReady does not wait for AGENT_READY', async () => {
+      const client = new RelayClient({ reconnect: false, quiet: true });
+      (client as any)._state = 'READY';
+      const sendMock = vi.fn().mockReturnValue(true);
+      (client as any).send = sendMock;
+
+      const spawnPromise = client.spawn(
+        {
+          name: 'Worker',
+          cli: 'claude',
+        },
+        1000
+      );
+
+      // SPAWN_RESULT arrives
+      const sentEnvelope = sendMock.mock.calls[0][0];
+      const spawnResultEnvelope: Envelope<SpawnResultPayload> = {
+        v: 1,
+        type: 'SPAWN_RESULT',
+        id: 'spawn-result-3',
+        ts: Date.now(),
+        payload: {
+          replyTo: sentEnvelope.id,
+          success: true,
+          name: 'Worker',
+          pid: 12347,
+        },
+      };
+      (client as any).processFrame(spawnResultEnvelope);
+
+      const result = await spawnPromise;
+      expect(result.success).toBe(true);
+      expect(result.ready).toBeUndefined();
+      expect(result.readyInfo).toBeUndefined();
     });
   });
 
