@@ -78,6 +78,7 @@ export class Connection {
   private _model?: string;
   private _task?: string;
   private _workingDirectory?: string;
+  private _team?: string;
   private _displayName?: string;
   private _avatarUrl?: string;
   private _sessionId: string;
@@ -149,6 +150,10 @@ export class Connection {
 
   get workingDirectory(): string | undefined {
     return this._workingDirectory;
+  }
+
+  get team(): string | undefined {
+    return this._team;
   }
 
   get displayName(): string | undefined {
@@ -251,6 +256,7 @@ export class Connection {
     this._model = envelope.payload.model;
     this._task = envelope.payload.task;
     this._workingDirectory = envelope.payload.workingDirectory;
+    this._team = envelope.payload.team;
     this._displayName = envelope.payload.displayName;
     this._avatarUrl = envelope.payload.avatarUrl;
 

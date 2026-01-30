@@ -41,6 +41,7 @@ export interface RoutableConnection {
   model?: string;
   task?: string;
   workingDirectory?: string;
+  team?: string;
   sessionId: string;
   close(): void;
   send(envelope: Envelope): boolean;

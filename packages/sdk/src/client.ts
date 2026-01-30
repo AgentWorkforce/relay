@@ -83,6 +83,8 @@ export interface ClientConfig {
   task?: string;
   /** Working directory */
   workingDirectory?: string;
+  /** Team name */
+  team?: string;
   /** Display name for human users */
   displayName?: string;
   /** Avatar URL for human users */
@@ -1082,6 +1084,7 @@ export class RelayClient {
         model: this.config.model,
         task: this.config.task,
         workingDirectory: this.config.workingDirectory,
+        team: this.config.team,
         displayName: this.config.displayName,
         avatarUrl: this.config.avatarUrl,
         capabilities: {
