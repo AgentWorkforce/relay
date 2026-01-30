@@ -268,6 +268,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   private outputBuffer = '';
   private rawBuffer = '';
   private lastParsedLength = 0;
+  private bufferTrimCount = 0;
 
   // Interactive mode (show output to terminal)
   private isInteractive = false;
@@ -1020,15 +1021,21 @@ export class RelayPtyOrchestrator extends BaseWrapper {
 
     // Trim buffers if they exceed max size to prevent RangeError: Invalid string length
     // Keep the most recent output (tail) as it's more relevant for pattern matching
+    let buffersTrimmed = false;
     if (this.rawBuffer.length > MAX_OUTPUT_BUFFER_SIZE) {
       const trimAmount = this.rawBuffer.length - MAX_OUTPUT_BUFFER_SIZE;
       this.rawBuffer = this.rawBuffer.slice(-MAX_OUTPUT_BUFFER_SIZE);
       // Adjust lastParsedLength to stay in sync with the trimmed buffer
       // This ensures parseRelayCommands() doesn't skip content or re-parse old content
       this.lastParsedLength = Math.max(0, this.lastParsedLength - trimAmount);
+      buffersTrimmed = true;
     }
     if (this.outputBuffer.length > MAX_OUTPUT_BUFFER_SIZE) {
       this.outputBuffer = this.outputBuffer.slice(-MAX_OUTPUT_BUFFER_SIZE);
+      buffersTrimmed = true;
+    }
+    if (buffersTrimmed) {
+      this.bufferTrimCount += 1;
     }
 
     // Feed to idle detector
@@ -2639,8 +2646,17 @@ Then output: \`->relay-file:spawn\`
   private async verifyActivityAfterInjection(outputBefore: string): Promise<boolean> {
     const startTime = Date.now();
     const { TIMEOUT_MS, POLL_INTERVAL_MS, TASK_RECEIVED_PATTERNS, THINKING_PATTERNS, TOOL_EXECUTION_PATTERNS } = ACTIVITY_VERIFICATION;
+    const trimCountBefore = this.bufferTrimCount;
 
     while (Date.now() - startTime < TIMEOUT_MS) {
+      // If buffers were trimmed during verification, treat it as activity.
+      // Large output growth triggers trimming, which would otherwise make slice() return
+      // an empty string and falsely signal no activity.
+      if (this.bufferTrimCount !== trimCountBefore) {
+        this.log(` Activity verified: output buffer trimmed during verification (large output)`);
+        return true;
+      }
+
       // Get new output since injection
       const currentOutput = this.outputBuffer;
       const newOutput = currentOutput.slice(outputBefore.length);
