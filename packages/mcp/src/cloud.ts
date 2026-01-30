@@ -131,7 +131,7 @@ function getDataDir(): string {
  */
 export function discoverSocket(options: CloudConnectionOptions = {}): DiscoveryResult | null {
   // 0. Use override if provided
-  if (options.socketPath && existsSync(options.socketPath)) {
+  if (options.socketPath) {
     const workspace = options.workspace
       ? ({
           workspaceId: options.workspace.workspaceId || 'override',
@@ -150,7 +150,7 @@ export function discoverSocket(options: CloudConnectionOptions = {}): DiscoveryR
 
   // 1. Explicit socket path from environment
   const socketEnv = process.env.RELAY_SOCKET;
-  if (socketEnv && existsSync(socketEnv)) {
+  if (socketEnv) {
     const workspace = detectCloudWorkspace();
     return {
       socketPath: socketEnv,
@@ -162,18 +162,18 @@ export function discoverSocket(options: CloudConnectionOptions = {}): DiscoveryR
   }
 
   // 2. Cloud workspace socket (highest priority for cloud environments)
+  // Return the determined path even if the socket file doesn't exist yet
+  // (daemon may not have started)
   const workspace = detectCloudWorkspace();
   if (workspace) {
     const cloudSocket = getCloudSocketPath(workspace.workspaceId);
-    if (existsSync(cloudSocket)) {
-      return {
-        socketPath: cloudSocket,
-        project: workspace.workspaceId,
-        source: 'cloud',
-        isCloud: true,
-        workspace,
-      };
-    }
+    return {
+      socketPath: cloudSocket,
+      project: workspace.workspaceId,
+      source: 'cloud',
+      isCloud: true,
+      workspace,
+    };
   }
 
   // 3. Project name → data dir lookup
@@ -181,14 +181,12 @@ export function discoverSocket(options: CloudConnectionOptions = {}): DiscoveryR
   if (projectEnv) {
     const dataDir = getDataDir();
     const projectSocket = join(dataDir, 'projects', projectEnv, 'daemon.sock');
-    if (existsSync(projectSocket)) {
-      return {
-        socketPath: projectSocket,
-        project: projectEnv,
-        source: 'env',
-        isCloud: false,
-      };
-    }
+    return {
+      socketPath: projectSocket,
+      project: projectEnv,
+      source: 'env',
+      isCloud: false,
+    };
   }
 
   // 4. Project-local socket (created by daemon in project's .agent-relay directory)
@@ -228,7 +226,7 @@ export function discoverSocket(options: CloudConnectionOptions = {}): DiscoveryR
   if (existsSync(cwdConfig)) {
     try {
       const config = JSON.parse(readFileSync(cwdConfig, 'utf-8'));
-      if (config.socketPath && existsSync(config.socketPath)) {
+      if (config.socketPath) {
         return {
           socketPath: config.socketPath,
           project: config.project || 'local',
