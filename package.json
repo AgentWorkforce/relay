@@ -148,7 +148,7 @@
     "@agent-relay/utils": "2.1.4",
     "@agent-relay/wrapper": "2.1.4",
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "agent-trajectories": "^0.2.3",
+    "agent-trajectories": "^0.3.0",
     "chokidar": "^5.0.0",
     "commander": "^12.1.0",
     "compare-versions": "^6.1.1",
