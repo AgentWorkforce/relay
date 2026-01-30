@@ -52,6 +52,7 @@ import {
   type MetricsResponsePayload,
   type CreateProposalOptions,
   type VoteOptions,
+  type AgentReadyPayload,
   PROTOCOL_VERSION,
   encodeFrameLegacy,
   FrameParser,
@@ -64,6 +65,50 @@ export interface SyncOptions {
   kind?: PayloadKind;
   data?: Record<string, unknown>;
   thread?: string;
+}
+
+/**
+ * Options for the request() method.
+ */
+export interface RequestOptions {
+  /** Timeout in milliseconds (default: 30000) */
+  timeout?: number;
+  /** Optional structured data to include with the request */
+  data?: Record<string, unknown>;
+  /** Optional thread identifier for grouping related messages */
+  thread?: string;
+  /** Message kind (default: 'message') */
+  kind?: PayloadKind;
+}
+
+/**
+ * Response from the request() method.
+ */
+export interface RequestResponse {
+  /** Sender of the response */
+  from: string;
+  /** Response body text */
+  body: string;
+  /** Optional structured data from the response */
+  data?: Record<string, unknown>;
+  /** The correlation ID used for this request/response */
+  correlationId: string;
+  /** Thread identifier if set */
+  thread?: string;
+  /** The full payload for advanced use cases */
+  payload: SendPayload;
+}
+
+/**
+ * Extended spawn result with optional readiness information.
+ * When `waitForReady` is true, the spawn will wait for the agent to complete
+ * its HELLO/WELCOME handshake before resolving.
+ */
+export interface SpawnResult extends SpawnResultPayload {
+  /** Whether the agent is ready to receive messages (only set when waitForReady is true) */
+  ready?: boolean;
+  /** Agent ready details (only set when waitForReady is true and spawn succeeded) */
+  readyInfo?: AgentReadyPayload;
 }
 
 export interface ClientConfig {
@@ -204,6 +249,19 @@ export class RelayClient {
     timeoutHandle: NodeJS.Timeout;
   }> = new Map();
 
+  private pendingRequests: Map<string, {
+    resolve: (response: RequestResponse) => void;
+    reject: (err: Error) => void;
+    timeoutHandle: NodeJS.Timeout;
+    targetAgent: string;
+  }> = new Map();
+
+  private pendingAgentReady: Map<string, {
+    resolve: (info: AgentReadyPayload) => void;
+    reject: (err: Error) => void;
+    timeoutHandle: NodeJS.Timeout;
+  }> = new Map();
+
   // Event handlers
   onMessage?: (from: string, payload: SendPayload, messageId: string, meta?: SendMeta, originalTo?: string) => void;
   /**
@@ -212,6 +270,12 @@ export class RelayClient {
   onChannelMessage?: (from: string, channel: string, body: string, envelope: Envelope<ChannelMessagePayload>) => void;
   onStateChange?: (state: ClientState) => void;
   onError?: (error: Error) => void;
+  /**
+   * Callback when an agent becomes ready (completes HELLO/WELCOME handshake).
+   * This is broadcast by the daemon when any agent connects.
+   * Useful for knowing when a spawned agent is ready to receive messages.
+   */
+  onAgentReady?: (info: AgentReadyPayload) => void;
 
   constructor(config: Partial<ClientConfig> = {}) {
     this.config = { ...DEFAULT_CLIENT_CONFIG, ...config };
@@ -426,6 +490,124 @@ export class RelayClient {
   }
 
   /**
+   * Send a request to another agent and wait for their response.
+   *
+   * This implements a request/response pattern where the message is sent with
+   * a correlation ID, and the method waits for the target agent to respond
+   * with a message containing that correlation ID.
+   *
+   * @example
+   * ```typescript
+   * // Simple request
+   * const response = await client.request('Worker', 'Process this task');
+   * console.log(response.body); // Worker's response
+   *
+   * // With options
+   * const response = await client.request('Worker', 'Process task', {
+   *   timeout: 60000,
+   *   data: { taskId: '123', priority: 'high' },
+   *   thread: 'task-thread-1',
+   * });
+   * ```
+   *
+   * @param to - Target agent name
+   * @param body - Request message body
+   * @param options - Request options (timeout, data, thread, kind)
+   * @returns Promise that resolves with the response from the target agent
+   * @throws Error if client is not ready, send fails, timeout occurs, or agent disconnects
+   */
+  async request(to: string, body: string, options: RequestOptions = {}): Promise<RequestResponse> {
+    if (this._state !== 'READY') {
+      throw new Error('Client not ready');
+    }
+
+    const correlationId = randomUUID();
+    const timeoutMs = options.timeout ?? 30000;
+    const kind = options.kind ?? 'message';
+
+    return new Promise<RequestResponse>((resolve, reject) => {
+      const timeoutHandle = setTimeout(() => {
+        this.pendingRequests.delete(correlationId);
+        reject(new Error(`Request timeout after ${timeoutMs}ms waiting for response from ${to}`));
+      }, timeoutMs);
+
+      this.pendingRequests.set(correlationId, {
+        resolve,
+        reject,
+        timeoutHandle,
+        targetAgent: to,
+      });
+
+      const envelope: SendEnvelope = {
+        v: PROTOCOL_VERSION,
+        type: 'SEND',
+        id: generateId(),
+        ts: Date.now(),
+        to,
+        payload: {
+          kind,
+          body,
+          data: {
+            ...options.data,
+            _correlationId: correlationId,
+          },
+          thread: options.thread,
+        },
+        payload_meta: {
+          replyTo: correlationId,
+        },
+      };
+
+      const sent = this.send(envelope);
+      if (!sent) {
+        clearTimeout(timeoutHandle);
+        this.pendingRequests.delete(correlationId);
+        reject(new Error('Failed to send request'));
+      }
+    });
+  }
+
+  /**
+   * Respond to a request from another agent.
+   *
+   * This is a convenience method for responding to messages that have a
+   * correlation ID. The response will be routed back to the requesting agent.
+   *
+   * @param correlationId - The correlation ID from the original request (from data._correlationId or meta.replyTo)
+   * @param to - Target agent (the one who sent the original request)
+   * @param body - Response body
+   * @param data - Optional structured data to include in the response
+   * @returns true if the message was sent
+   */
+  respond(correlationId: string, to: string, body: string, data?: Record<string, unknown>): boolean {
+    if (this._state !== 'READY') {
+      return false;
+    }
+
+    const envelope: SendEnvelope = {
+      v: PROTOCOL_VERSION,
+      type: 'SEND',
+      id: generateId(),
+      ts: Date.now(),
+      to,
+      payload: {
+        kind: 'message',
+        body,
+        data: {
+          ...data,
+          _correlationId: correlationId,
+          _isResponse: true,
+        },
+      },
+      payload_meta: {
+        replyTo: correlationId,
+      },
+    };
+
+    return this.send(envelope);
+  }
+
+  /**
    * Broadcast a message to all agents.
    */
   broadcast(body: string, kind: PayloadKind = 'message', data?: Record<string, unknown>): boolean {
@@ -545,7 +727,10 @@ export class RelayClient {
    * @param options.interactive - Interactive mode
    * @param options.shadowOf - Spawn as shadow of this agent
    * @param options.shadowSpeakOn - Shadow speak-on triggers
+   * @param options.waitForReady - Wait for the agent to be ready before resolving (default: false)
+   * @param options.readyTimeoutMs - Timeout for agent to become ready (default: 60000ms)
    * @param timeoutMs - Timeout for spawn operation (default: 30000ms)
+   * @returns Spawn result. When waitForReady is true, includes `ready` and `readyInfo` fields.
    */
   async spawn(
     options: {
@@ -557,18 +742,47 @@ export class RelayClient {
       interactive?: boolean;
       shadowOf?: string;
       shadowSpeakOn?: SpeakOnTrigger[];
+      /** Wait for the agent to complete connection before resolving */
+      waitForReady?: boolean;
+      /** Timeout for agent to become ready (default: 60000ms). Only used when waitForReady is true. */
+      readyTimeoutMs?: number;
     },
     timeoutMs = 30000
-  ): Promise<SpawnResultPayload> {
+  ): Promise<SpawnResult> {
     if (this._state !== 'READY') {
       throw new Error('Client not ready');
     }
 
     const envelopeId = generateId();
+    const waitForReady = options.waitForReady ?? false;
+    const readyTimeoutMs = options.readyTimeoutMs ?? 60000;
 
-    return new Promise<SpawnResultPayload>((resolve, reject) => {
+    // If waitForReady, set up the agent ready listener BEFORE spawning
+    // This ensures we don't miss the AGENT_READY event if it arrives quickly
+    let readyPromise: Promise<AgentReadyPayload> | undefined;
+    if (waitForReady) {
+      readyPromise = new Promise<AgentReadyPayload>((resolve, reject) => {
+        const timeoutHandle = setTimeout(() => {
+          this.pendingAgentReady.delete(options.name);
+          reject(new Error(`Agent ${options.name} did not become ready within ${readyTimeoutMs}ms`));
+        }, readyTimeoutMs);
+
+        this.pendingAgentReady.set(options.name, { resolve, reject, timeoutHandle });
+      });
+    }
+
+    // Send the spawn request
+    const spawnResult = await new Promise<SpawnResultPayload>((resolve, reject) => {
       const timeoutHandle = setTimeout(() => {
         this.pendingSpawns.delete(envelopeId);
+        // Also clean up pending agent ready if spawn times out
+        if (waitForReady) {
+          const pending = this.pendingAgentReady.get(options.name);
+          if (pending) {
+            clearTimeout(pending.timeoutHandle);
+            this.pendingAgentReady.delete(options.name);
+          }
+        }
         reject(new Error(`Spawn timeout after ${timeoutMs}ms`));
       }, timeoutMs);
 
@@ -596,8 +810,87 @@ export class RelayClient {
       if (!sent) {
         clearTimeout(timeoutHandle);
         this.pendingSpawns.delete(envelopeId);
+        // Also clean up pending agent ready if send fails
+        if (waitForReady) {
+          const pending = this.pendingAgentReady.get(options.name);
+          if (pending) {
+            clearTimeout(pending.timeoutHandle);
+            this.pendingAgentReady.delete(options.name);
+          }
+        }
         reject(new Error('Failed to send spawn message'));
       }
+    });
+
+    // If spawn failed or we don't need to wait for ready, return immediately
+    if (!spawnResult.success || !waitForReady || !readyPromise) {
+      // Clean up pending agent ready if spawn failed
+      if (!spawnResult.success && waitForReady) {
+        const pending = this.pendingAgentReady.get(options.name);
+        if (pending) {
+          clearTimeout(pending.timeoutHandle);
+          this.pendingAgentReady.delete(options.name);
+        }
+      }
+      return spawnResult;
+    }
+
+    // Wait for the agent to become ready
+    try {
+      const readyInfo = await readyPromise;
+      return {
+        ...spawnResult,
+        ready: true,
+        readyInfo,
+      };
+    } catch (err) {
+      // Agent spawned but didn't become ready in time
+      // Return the spawn result with ready: false
+      return {
+        ...spawnResult,
+        ready: false,
+      };
+    }
+  }
+
+  /**
+   * Wait for an agent to become ready (complete HELLO/WELCOME handshake).
+   * This is useful when you want to wait for an agent that was spawned through
+   * another mechanism, or to verify an agent is connected before sending messages.
+   *
+   * @example
+   * ```typescript
+   * // Wait for an agent that might be spawning
+   * try {
+   *   const readyInfo = await client.waitForAgentReady('Worker', 30000);
+   *   console.log(`Worker is ready: ${readyInfo.cli}`);
+   * } catch (err) {
+   *   console.error('Worker did not become ready in time');
+   * }
+   * ```
+   *
+   * @param name - Agent name to wait for
+   * @param timeoutMs - Timeout in milliseconds (default: 60000ms)
+   * @returns Promise that resolves with AgentReadyPayload when the agent connects
+   * @throws Error if the agent doesn't become ready within the timeout
+   */
+  async waitForAgentReady(name: string, timeoutMs = 60000): Promise<AgentReadyPayload> {
+    if (this._state !== 'READY') {
+      throw new Error('Client not ready');
+    }
+
+    // Check if we're already waiting for this agent
+    if (this.pendingAgentReady.has(name)) {
+      throw new Error(`Already waiting for agent ${name} to be ready`);
+    }
+
+    return new Promise<AgentReadyPayload>((resolve, reject) => {
+      const timeoutHandle = setTimeout(() => {
+        this.pendingAgentReady.delete(name);
+        reject(new Error(`Agent ${name} did not become ready within ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      this.pendingAgentReady.set(name, { resolve, reject, timeoutHandle });
     });
   }
 
@@ -1169,6 +1462,10 @@ export class RelayClient {
         this.handleReleaseResult(envelope as Envelope<ReleaseResultPayload>);
         break;
 
+      case 'AGENT_READY':
+        this.handleAgentReady(envelope as Envelope<AgentReadyPayload>);
+        break;
+
       case 'ERROR':
         this.handleErrorFrame(envelope as Envelope<ErrorPayload>);
         break;
@@ -1221,6 +1518,26 @@ export class RelayClient {
       return;
     }
 
+    // Check if this is a response to a pending request
+    const correlationId = this.extractCorrelationId(envelope);
+    if (correlationId && envelope.from) {
+      const pending = this.pendingRequests.get(correlationId);
+      if (pending) {
+        // This is a response to our request
+        clearTimeout(pending.timeoutHandle);
+        this.pendingRequests.delete(correlationId);
+        pending.resolve({
+          from: envelope.from,
+          body: envelope.payload.body,
+          data: envelope.payload.data,
+          correlationId,
+          thread: envelope.payload.thread,
+          payload: envelope.payload,
+        });
+        // Still call onMessage so the app is aware of the response if needed
+      }
+    }
+
     if (this.onMessage && envelope.from) {
       this.onMessage(
         envelope.from,
@@ -1230,6 +1547,22 @@ export class RelayClient {
         envelope.delivery.originalTo
       );
     }
+  }
+
+  /**
+   * Extract correlation ID from a delivered message.
+   * Checks both payload_meta.replyTo and payload.data._correlationId
+   */
+  private extractCorrelationId(envelope: DeliverEnvelope): string | undefined {
+    // Check payload_meta.replyTo first (the preferred location)
+    if (envelope.payload_meta?.replyTo) {
+      return envelope.payload_meta.replyTo;
+    }
+    // Fall back to checking data._correlationId
+    if (envelope.payload.data && typeof envelope.payload.data._correlationId === 'string') {
+      return envelope.payload.data._correlationId;
+    }
+    return undefined;
   }
 
   private handleChannelMessage(envelope: Envelope<ChannelMessagePayload> & { from?: string }): void {
@@ -1300,6 +1633,23 @@ export class RelayClient {
     pending.resolve(envelope.payload);
   }
 
+  private handleAgentReady(envelope: Envelope<AgentReadyPayload>): void {
+    const agentName = envelope.payload.name;
+
+    // Resolve any pending waitForReady promises for this agent
+    const pending = this.pendingAgentReady.get(agentName);
+    if (pending) {
+      clearTimeout(pending.timeoutHandle);
+      this.pendingAgentReady.delete(agentName);
+      pending.resolve(envelope.payload);
+    }
+
+    // Call the onAgentReady callback if registered
+    if (this.onAgentReady) {
+      this.onAgentReady(envelope.payload);
+    }
+  }
+
   private handleQueryResponse(envelope: Envelope): void {
     // Query responses use the envelope id to match requests
     const pending = this.pendingQueries.get(envelope.id);
@@ -1346,6 +1696,8 @@ export class RelayClient {
     this.rejectPendingSpawns(new Error('Disconnected while awaiting spawn result'));
     this.rejectPendingReleases(new Error('Disconnected while awaiting release result'));
     this.rejectPendingQueries(new Error('Disconnected while awaiting query response'));
+    this.rejectPendingRequests(new Error('Disconnected while awaiting request response'));
+    this.rejectPendingAgentReady(new Error('Disconnected while awaiting agent ready'));
 
     if (this._destroyed) {
       this.setState('DISCONNECTED');
@@ -1402,6 +1754,22 @@ export class RelayClient {
       clearTimeout(pending.timeoutHandle);
       pending.reject(error);
       this.pendingQueries.delete(id);
+    }
+  }
+
+  private rejectPendingRequests(error: Error): void {
+    for (const [correlationId, pending] of this.pendingRequests.entries()) {
+      clearTimeout(pending.timeoutHandle);
+      pending.reject(error);
+      this.pendingRequests.delete(correlationId);
+    }
+  }
+
+  private rejectPendingAgentReady(error: Error): void {
+    for (const [agentName, pending] of this.pendingAgentReady.entries()) {
+      clearTimeout(pending.timeoutHandle);
+      pending.reject(error);
+      this.pendingAgentReady.delete(agentName);
     }
   }
 
