@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/utils",
-  "version": "2.1.4",
+  "version": "2.1.5",
   "description": "Shared utilities for agent-relay: logging, name generation, command resolution, update checking",
   "type": "module",
   "main": "dist/cjs/index.js",
@@ -94,7 +94,7 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
-    "@agent-relay/protocol": "2.1.4",
+    "@agent-relay/protocol": "2.1.5",
     "compare-versions": "^6.1.1"
   },
   "publishConfig": {
