@@ -28,6 +28,7 @@ export interface UseWebSocketOptions {
 export interface UseWebSocketReturn {
   data: DashboardData | null;
   isConnected: boolean;
+  isReconnecting: boolean;
   error: Error | null;
   connect: () => void;
   disconnect: () => void;
@@ -73,6 +74,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
 
   const [data, setData] = useState<DashboardData | null>(null);
   const [isConnected, setIsConnected] = useState(false);
+  const [isReconnecting, setIsReconnecting] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -92,6 +94,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
 
       ws.onopen = () => {
         setIsConnected(true);
+        setIsReconnecting(false);
         setError(null);
         reconnectAttemptsRef.current = 0;
       };
@@ -102,6 +105,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
 
         // Schedule reconnect if enabled
         if (opts.reconnect && reconnectAttemptsRef.current < opts.maxReconnectAttempts) {
+          setIsReconnecting(true);
           const delay = Math.min(
             opts.reconnectDelay * Math.pow(2, reconnectAttemptsRef.current),
             30000
@@ -111,6 +115,8 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
           reconnectTimeoutRef.current = setTimeout(() => {
             connect();
           }, delay);
+        } else {
+          setIsReconnecting(false);
         }
       };
 
@@ -131,6 +137,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
       wsRef.current = ws;
     } catch (e) {
       setError(e instanceof Error ? e : new Error('Failed to create WebSocket'));
+      setIsReconnecting(false);
     }
   }, [opts.url, opts.reconnect, opts.maxReconnectAttempts, opts.reconnectDelay]);
 
@@ -146,6 +153,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
     }
 
     setIsConnected(false);
+    setIsReconnecting(false);
   }, []);
 
   // Auto-connect on mount
@@ -162,6 +170,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
   return {
     data,
     isConnected,
+    isReconnecting,
     error,
     connect,
     disconnect,

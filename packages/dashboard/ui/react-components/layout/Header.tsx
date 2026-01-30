@@ -44,6 +44,8 @@ export interface HeaderProps {
   onMenuClick?: () => void;
   /** Show notification badge on mobile menu button */
   hasUnreadNotifications?: boolean;
+  /** Whether WebSocket is attempting to reconnect */
+  isReconnecting?: boolean;
 }
 
 export function Header({
