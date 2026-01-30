@@ -1218,7 +1218,6 @@ export class AgentSpawner {
               });
               log.error(`CRITICAL: ${tracedError.logMessage}`);
               await openCodeWrapper.stop();
-              this.activeWorkers.delete(name);
               if (this.onClearSpawning) {
                 this.onClearSpawning(name);
               }
