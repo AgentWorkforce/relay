@@ -72,6 +72,18 @@
       "import": "./dist/client-helpers.js",
       "default": "./dist/cjs/client-helpers.js"
     },
+    "./discovery": {
+      "types": "./dist/discovery.d.ts",
+      "require": "./dist/cjs/discovery.js",
+      "import": "./dist/discovery.js",
+      "default": "./dist/cjs/discovery.js"
+    },
+    "./errors": {
+      "types": "./dist/errors.d.ts",
+      "require": "./dist/cjs/errors.js",
+      "import": "./dist/errors.js",
+      "default": "./dist/cjs/errors.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -94,6 +106,7 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
+    "@agent-relay/config": "2.1.5",
     "@agent-relay/protocol": "2.1.5",
     "compare-versions": "^6.1.1"
   },

@@ -49,6 +49,7 @@
   "dependencies": {
     "@agent-relay/config": "2.1.5",
     "@agent-relay/protocol": "2.1.5",
+    "@agent-relay/utils": "2.1.5",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "smol-toml": "^1.6.0",
     "zod": "^3.23.8"
