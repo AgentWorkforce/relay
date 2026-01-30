@@ -2206,43 +2206,45 @@ export async function startDashboard(
         const message = JSON.parse(data.toString());
         
         if (message.type === 'session_init' && message.sessionId) {
-          sessionId = message.sessionId;
+          const currentSessionId: string = message.sessionId;
+          sessionId = currentSessionId;
           const lastMessageId = message.lastMessageId || null;
-          wsToSessionId.set(ws, sessionId);
+          wsToSessionId.set(ws, currentSessionId);
 
           // Get or create session state
-          let sessionState = sessions.get(sessionId);
-          const isReconnection = !!sessionState;
-          
-          if (!sessionState) {
-            sessionState = {
-              sessionId,
-              lastMessageId: null,
-              lastConnectedAt: new Date(),
-              messages: [],
-            };
-            sessions.set(sessionId, sessionState);
-          } else {
+          const existingState = sessions.get(currentSessionId);
+          const isReconnection = !!existingState;
+
+          const currentState = existingState ?? {
+            sessionId: currentSessionId,
+            lastMessageId: null,
+            lastConnectedAt: new Date(),
+            messages: [],
+          };
+
+          if (existingState) {
             // Update last connected time
-            sessionState.lastConnectedAt = new Date();
+            currentState.lastConnectedAt = new Date();
+          } else {
+            sessions.set(currentSessionId, currentState);
           }
 
           // Get current data
           const initialData = await getAllData();
-          
+
           // Send missed messages if this is a reconnection
-          if (isReconnection && lastMessageId && sessionState.messages.length > 0) {
+          if (isReconnection && lastMessageId && currentState.messages.length > 0) {
             // Find messages after the last known message ID
-            const lastMessageIndex = sessionState.messages.findIndex(m => m.id === lastMessageId);
-            const missedMessages = lastMessageIndex >= 0 
-              ? sessionState.messages.slice(lastMessageIndex + 1)
-              : sessionState.messages.slice(-10); // If ID not found, send last 10
-            
+            const lastMessageIndex = currentState.messages.findIndex(m => m.id === lastMessageId);
+            const missedMessages = lastMessageIndex >= 0
+              ? currentState.messages.slice(lastMessageIndex + 1)
+              : currentState.messages.slice(-10); // If ID not found, send last 10
+
             if (missedMessages.length > 0) {
               ws.send(JSON.stringify({
                 type: 'missed_messages',
                 messages: missedMessages.map(m => m.data),
-                lastMessageId: sessionState.lastMessageId,
+                lastMessageId: currentState.lastMessageId,
               }));
             }
           }
@@ -2252,7 +2254,7 @@ export async function startDashboard(
             ws.send(JSON.stringify({
               type: isReconnection ? 'session_restored' : 'session_init',
               data: initialData,
-              lastMessageId: sessionState.lastMessageId,
+              lastMessageId: currentState.lastMessageId,
             }));
           }
           
