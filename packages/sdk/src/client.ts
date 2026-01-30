@@ -7,6 +7,8 @@
 
 import net from 'node:net';
 import { randomUUID } from 'node:crypto';
+import { discoverSocket } from '@agent-relay/utils/discovery';
+import { DaemonNotRunningError, ConnectionError } from '@agent-relay/utils/errors';
 // Import shared protocol types and framing utilities from @agent-relay/protocol
 import {
   type Envelope,
@@ -106,6 +108,16 @@ export interface ClientConfig {
 }
 
 const DEFAULT_SOCKET_PATH = '/tmp/agent-relay.sock';
+
+/**
+ * Resolve the socket path using discovery if not explicitly provided.
+ * Falls back to /tmp/agent-relay.sock if discovery fails.
+ */
+function resolveSocketPath(configPath?: string): string {
+  if (configPath) return configPath;
+  const discovery = discoverSocket();
+  return discovery?.socketPath || DEFAULT_SOCKET_PATH;
+}
 
 const DEFAULT_CLIENT_CONFIG: ClientConfig = {
   socketPath: DEFAULT_SOCKET_PATH,
@@ -215,6 +227,10 @@ export class RelayClient {
 
   constructor(config: Partial<ClientConfig> = {}) {
     this.config = { ...DEFAULT_CLIENT_CONFIG, ...config };
+    // Use socket discovery if no explicit socketPath was provided
+    if (!config.socketPath) {
+      this.config.socketPath = resolveSocketPath();
+    }
     this.parser = new FrameParser();
     this.parser.setLegacyMode(true);
     this.reconnectDelay = this.config.reconnectDelayMs;
@@ -268,7 +284,12 @@ export class RelayClient {
 
       this.socket.on('error', (err) => {
         if (this._state === 'CONNECTING') {
-          settleReject(err);
+          const errno = (err as NodeJS.ErrnoException).code;
+          if (errno === 'ECONNREFUSED' || errno === 'ENOENT') {
+            settleReject(new DaemonNotRunningError(`Cannot connect to daemon at ${this.config.socketPath}`));
+          } else {
+            settleReject(new ConnectionError(err.message));
+          }
         }
         this.handleError(err);
       });

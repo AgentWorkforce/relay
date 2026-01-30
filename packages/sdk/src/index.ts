@@ -101,3 +101,32 @@ export {
   type GetLogsOptions,
   type LogsResult,
 } from './logs.js';
+
+// Discovery (socket discovery, cloud workspace detection, agent identity)
+export {
+  discoverSocket,
+  discoverAgentName,
+  detectCloudWorkspace,
+  isCloudWorkspace,
+  getCloudSocketPath,
+  getCloudOutboxPath,
+  getConnectionInfo,
+  getCloudEnvironmentSummary,
+  cloudApiRequest,
+  getWorkspaceStatus,
+  type DiscoveryResult,
+  type CloudWorkspace,
+  type CloudConnectionOptions,
+  type CloudConnectionInfo,
+} from './discovery.js';
+
+// Error types
+export {
+  RelayError,
+  DaemonNotRunningError,
+  AgentNotFoundError,
+  TimeoutError,
+  ConnectionError,
+  ChannelNotFoundError,
+  SpawnError,
+} from './errors.js';
