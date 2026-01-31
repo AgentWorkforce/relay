@@ -55,7 +55,8 @@
         "guides/multi-project",
         "guides/worker-orchestration",
         "guides/session-continuity",
-        "guides/custom-agents"
+        "guides/custom-agents",
+        "guides/editor-integration"
       ]
     },
     {
