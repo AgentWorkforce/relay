@@ -21,11 +21,6 @@
       "name": "GitHub",
       "icon": "github",
       "url": "https://github.com/agentworkforce/relay"
-    },
-    {
-      "name": "Hosted Cloud",
-      "icon": "cloud",
-      "url": "https://agent-relay.com"
     }
   ],
   "navigation": [
@@ -41,11 +36,9 @@
       "group": "Core Features",
       "pages": [
         "features/messaging",
-        "features/dashboard",
         "features/bridging",
         "features/spawning",
-        "features/shadows",
-        "features/cloud"
+        "features/shadows"
       ]
     },
     {

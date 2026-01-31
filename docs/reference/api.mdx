@@ -66,8 +66,6 @@ new Daemon(config?: Partial<DaemonConfig>)
 | `storagePath` | `string` | Database path | Auto |
 | `storageAdapter` | `StorageAdapter` | Custom storage | SQLite |
 | `teamDir` | `string` | Team data directory | Socket directory |
-| `cloudSync` | `boolean` | Enable cloud sync | `false` |
-| `cloudUrl` | `string` | Cloud API URL | `https://agent-relay.com` |
 | `heartbeatMs` | `number` | Heartbeat interval | `5000` |
 | `maxFrameBytes` | `number` | Max frame size | `1048576` |
 
@@ -278,7 +276,7 @@ client.unsubscribe(topic: string): boolean
 #### Log Streaming
 
 ```typescript
-// Send log data to daemon (for dashboard streaming)
+// Send log data to daemon (for log streaming)
 client.sendLog(data: string): boolean
 ```
 

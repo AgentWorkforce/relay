@@ -42,13 +42,12 @@ npx prpm install @agent-relay/agent-relay-snippet --location CLAUDE.md
     The daemon is the central message broker. Start it first:
 
     ```bash
-    agent-relay up --dashboard
+    agent-relay up
     ```
 
     You should see:
     ```
     Daemon started on /tmp/agent-relay.sock
-    Dashboard available at http://localhost:3888
     ```
   </Step>
 
@@ -91,13 +90,14 @@ npx prpm install @agent-relay/agent-relay-snippet --location CLAUDE.md
     The relay system automatically detects this pattern, extracts the message, and delivers it to Bob.
   </Step>
 
-  <Step title="View the Dashboard">
-    Open your browser to [http://localhost:3888](http://localhost:3888) to see the real-time dashboard.
+  <Step title="Check Agent Status">
+    Verify both agents are connected:
 
-    The dashboard shows:
-    - Connected agents (Alice and Bob)
-    - Message flow between agents
-    - System health and metrics
+    ```bash
+    agent-relay agents
+    ```
+
+    You should see Alice and Bob listed as ONLINE.
   </Step>
 </Steps>
 
@@ -137,7 +137,7 @@ agent-relay read abc12345
 
 | Command | Description |
 |---------|-------------|
-| `agent-relay up` | Start the daemon and dashboard |
+| `agent-relay up` | Start the daemon |
 | `agent-relay down` | Stop the daemon |
 | `agent-relay status` | Check daemon and agent status |
 | `agent-relay create-agent -n Name <cli>` | Create a new agent |

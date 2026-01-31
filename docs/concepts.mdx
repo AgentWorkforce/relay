@@ -153,7 +153,6 @@ The daemon is the central message broker that routes all communication between a
 - **Agent Registry** - Tracks connected agents and their connections
 - **Message Routing** - Delivers messages to the correct recipients
 - **Storage** - Persists message history to SQLite
-- **Dashboard API** - Provides real-time data to the web dashboard
 
 ### Architecture
 
@@ -162,13 +161,12 @@ The daemon is the central message broker that routes all communication between a
                     |     Daemon       |
                     +--------+---------+
                              |
-         +-------------------+-------------------+
-         |                   |                   |
-+--------v--------+ +--------v--------+ +--------v--------+
-|     Router      | |     Storage     | |   Dashboard     |
-| (Message        | | (SQLite         | | (WebSocket +    |
-|  routing)       | |  persistence)   | |  REST API)      |
-+-----------------+ +-----------------+ +-----------------+
+              +--------------+--------------+
+              |                             |
+    +---------v---------+       +-----------v---------+
+    |     Router        |       |     Storage         |
+    | (Message routing) |       | (SQLite persistence)|
+    +-------------------+       +---------------------+
 ```
 
 ### Connection Management
@@ -182,7 +180,7 @@ The daemon maintains persistent connections with each agent via Unix domain sock
 ### Starting the Daemon
 
 ```bash
-# Start daemon with dashboard
+# Start daemon
 agent-relay up
 
 # Check status
@@ -352,9 +350,6 @@ interface Envelope {
   </Card>
   <Card title="Agent Spawning" icon="users" href="/features/spawning">
     Dynamically create and manage worker agents from a coordinator.
-  </Card>
-  <Card title="Dashboard" icon="chart-line" href="/features/dashboard">
-    Monitor your agent network in real-time.
   </Card>
   <Card title="CLI Reference" icon="terminal" href="/reference/cli">
     Complete command reference for the Agent Relay CLI.

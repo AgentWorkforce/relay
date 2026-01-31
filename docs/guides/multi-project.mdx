@@ -38,8 +38,8 @@ With Agent Relay, agents working on each repository can coordinate changes that 
 │            └─────────────────────────┼───────────────────────┘       │
 │                                      │                               │
 │                           ┌──────────┴──────────┐                   │
-│                           │    Cloud Control    │                   │
-│                           │       Plane         │                   │
+│                           │   Bridge Process    │                   │
+│                           │  (Local Routing)    │                   │
 │                           └─────────────────────┘                   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -70,20 +70,6 @@ With Agent Relay, agents working on each repository can coordinate changes that 
         ```
       </Tab>
     </Tabs>
-  </Step>
-
-  <Step title="Link daemons to cloud (recommended)">
-    For cross-machine communication, link each daemon to your cloud account:
-
-    ```bash
-    # In each project directory
-    agent-relay link
-    ```
-
-    This enables:
-    - Cross-machine message routing
-    - Agent discovery across projects
-    - Centralized agent registry
   </Step>
 
   <Step title="Start agents in each project">
@@ -282,13 +268,12 @@ Lead ──► devops:Deploy "Deploy backend then frontend"
 
 ## Latency Considerations
 
-Cross-project messages route through the cloud control plane:
+Cross-project messages route through the bridge process:
 
 | Route | Typical Latency |
 |-------|-----------------|
 | Same daemon (local) | &lt; 50ms |
-| Cross-daemon (cloud) | 100-300ms |
-| Cross-machine (cloud) | 100-500ms |
+| Cross-daemon (bridge) | 50-150ms |
 
 For latency-sensitive coordination, consider:
 - Batching related messages
@@ -332,8 +317,8 @@ agent-relay agents --all-projects
 ### Messages not delivered
 
 ```bash
-# Check cloud connectivity
-agent-relay link --status
+# Check daemon status
+agent-relay status
 
 # View message trace
 agent-relay trace <message-id>
@@ -343,6 +328,6 @@ agent-relay trace <message-id>
 
 If cross-project latency is consistently high:
 
-1. Check cloud connection health
+1. Check daemon connectivity in each project
 2. Consider consolidating related work to single project
 3. Use project groups with coordinator for complex workflows

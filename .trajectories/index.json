@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-30T12:21:19.597Z",
+  "lastUpdated": "2026-01-31T07:50:52.428Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -190,6 +190,20 @@
       "startedAt": "2026-01-30T12:20:59.974Z",
       "completedAt": "2026-01-30T12:21:19.584Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_q6n7i3r1xik1.json"
+    },
+    "traj_87mr8y2pd0xb": {
+      "title": "Review PR #353 (MCP/SDK consolidation)",
+      "status": "completed",
+      "startedAt": "2026-01-30T17:19:24.397Z",
+      "completedAt": "2026-01-30T17:23:50.472Z",
+      "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_87mr8y2pd0xb.json"
+    },
+    "traj_ymw5g279sfjy": {
+      "title": "Audit and update documentation to match current codebase architecture",
+      "status": "completed",
+      "startedAt": "2026-01-31T07:45:18.788Z",
+      "completedAt": "2026-01-31T07:50:52.384Z",
+      "path": "/data/repos/relay/.trajectories/completed/2026-01/traj_ymw5g279sfjy.json"
     }
   }
 }

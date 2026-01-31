@@ -17,7 +17,7 @@ npm install -g agent-relay
 
 | Command | Description |
 |---------|-------------|
-| `agent-relay up` | Start daemon and dashboard |
+| `agent-relay up` | Start the daemon |
 | `agent-relay down` | Stop the daemon |
 | `agent-relay status` | Check daemon status |
 | `agent-relay create-agent` | Wrap an agent with real-time messaging |
@@ -27,7 +27,6 @@ npm install -g agent-relay
 | `agent-relay who` | Show active agents |
 | `agent-relay read` | Read full message by ID |
 | `agent-relay bridge` | Multi-project orchestration |
-| `agent-relay cloud` | Cloud account commands |
 
 ---
 
@@ -35,7 +34,7 @@ npm install -g agent-relay
 
 ### agent-relay up
 
-Start the relay daemon and web dashboard.
+Start the relay daemon.
 
 ```bash
 agent-relay up [options]
@@ -45,8 +44,6 @@ agent-relay up [options]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--no-dashboard` | Disable the web dashboard | Dashboard enabled |
-| `--port <port>` | Dashboard port number | `3888` |
 | `--spawn` | Force spawn all agents from `teams.json` | Auto-detect |
 | `--no-spawn` | Do not auto-spawn agents | Auto-detect |
 | `--watch` | Auto-restart daemon on crash (supervisor mode) | Disabled |
@@ -57,12 +54,6 @@ agent-relay up [options]
 ```bash
 # Start with default settings
 agent-relay up
-
-# Start on custom port
-agent-relay up --port 4000
-
-# Start without dashboard
-agent-relay up --no-dashboard
 
 # Start in supervisor mode (auto-restart on crash)
 agent-relay up --watch
@@ -76,7 +67,6 @@ agent-relay up --spawn
 Project: /Users/you/myproject
 Socket:  /tmp/relay/abc123/agent-relay.sock
 Daemon started.
-Dashboard: http://localhost:3888
 Press Ctrl+C to stop.
 ```
 
@@ -117,7 +107,7 @@ agent-relay status
 Status: RUNNING
 Socket: /tmp/relay/abc123/agent-relay.sock
 Relay tmux sessions:
-- relay-Dashboard (agent: Dashboard, cwd: /Users/you/myproject)
+- relay-Lead (agent: Lead, cwd: /Users/you/myproject)
 - relay-Worker1 (agent: Worker1, cwd: /Users/you/myproject)
 ```
 
@@ -144,7 +134,6 @@ agent-relay create-agent [options] <command...>
 | `-n, --name <name>` | Agent name | Auto-generated |
 | `-d, --debug` | Enable debug output | Disabled |
 | `--prefix <pattern>` | Relay prefix pattern | `->relay:` |
-| `--dashboard-port <port>` | Dashboard port for spawn/release API | Auto-detected |
 | `--shadow <name>` | Spawn a shadow agent with this name | None |
 | `--shadow-role <role>` | Shadow role: `reviewer`, `auditor`, or trigger list | `EXPLICIT_ASK` |
 | `--skip-instructions` | Skip initial instruction injection | Disabled |
@@ -180,7 +169,7 @@ agent-relay create-agent -d codex
 
 ### agent-relay claude
 
-Start the daemon with a Claude-based Dashboard coordinator.
+Start the daemon with a Claude-based coordinator agent.
 
 ```bash
 agent-relay claude
@@ -189,13 +178,13 @@ agent-relay claude
 This command:
 1. Checks if daemon is running, starts if needed
 2. Installs the agent-relay snippet via prpm
-3. Starts a Dashboard coordinator agent using Claude
+3. Starts a coordinator agent using Claude
 
 ---
 
 ### agent-relay codex
 
-Start the daemon with a Codex-based Dashboard coordinator.
+Start the daemon with a Codex-based coordinator agent.
 
 ```bash
 agent-relay codex
@@ -228,7 +217,7 @@ agent-relay agents [options]
 ```
 NAME            STATUS   CLI       TEAM
 --------------------------------------------------
-Dashboard       ONLINE   claude    -
+Lead            ONLINE   claude    -
 Worker1         ONLINE   claude    backend
 Worker2         ONLINE   codex     frontend
 
@@ -259,7 +248,7 @@ agent-relay who [options]
 ```
 NAME            STATUS   CLI       LAST SEEN
 ---------------------------------------------
-Dashboard       ONLINE   claude    2s ago
+Lead            ONLINE   claude    2s ago
 Worker1         ONLINE   claude    5s ago
 ```
 
@@ -341,7 +330,7 @@ agent-relay read <id>
 agent-relay read abc123def
 
 # Output:
-# From: Dashboard
+# From: Lead
 # To: Worker1
 # Time: 2024-01-15T10:30:00.000Z
 # ---
@@ -401,74 +390,6 @@ agent-relay bridge ~/proj1 ~/proj2 --architect codex
 
 ---
 
-## Cloud Commands
-
-### agent-relay cloud link
-
-Link this machine to your Agent Relay Cloud account.
-
-```bash
-agent-relay cloud link [options]
-```
-
-**Options:**
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--name <name>` | Name for this machine | Hostname |
-| `--cloud-url <url>` | Cloud API URL | `https://agent-relay.com` |
-
-**Flow:**
-1. Opens browser for authentication
-2. Prompts for API key after authentication
-3. Saves configuration locally
-
----
-
-### agent-relay cloud unlink
-
-Unlink this machine from Agent Relay Cloud.
-
-```bash
-agent-relay cloud unlink
-```
-
----
-
-### agent-relay cloud status
-
-Show cloud sync status.
-
-```bash
-agent-relay cloud status
-```
-
-**Example Output:**
-
-```
-Cloud sync: Enabled
-
-  Machine: my-laptop
-  ID: my-laptop-a1b2c3d4
-  Cloud URL: https://agent-relay.com
-  Linked: 1/15/2024, 10:30:00 AM
-
-  Daemon: Running
-  Cloud connection: Online
-```
-
----
-
-### agent-relay cloud sync
-
-Manually sync credentials from cloud.
-
-```bash
-agent-relay cloud sync
-```
-
----
-
 ## Utility Commands
 
 ### agent-relay version
@@ -513,8 +434,8 @@ These commands are available but hidden from `--help` (for internal/agent use):
 | Command | Description |
 |---------|-------------|
 | `agent-relay history` | Show recent messages |
-| `agent-relay spawn` | Spawn agent via dashboard API |
-| `agent-relay release` | Release agent via dashboard API |
+| `agent-relay spawn` | Spawn agent via API |
+| `agent-relay release` | Release agent via API |
 | `agent-relay gc` | Clean up orphaned tmux sessions |
 | `agent-relay check-tmux` | Check tmux availability |
 | `agent-relay trail` | Trajectory tracking (proxy to trail CLI) |
@@ -525,12 +446,10 @@ These commands are available but hidden from `--help` (for internal/agent use):
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `AGENT_RELAY_DASHBOARD_PORT` | Default dashboard port | `3888` |
 | `AGENT_RELAY_DATA_DIR` | Data directory for relay files | `~/.local/share/agent-relay` |
 | `AGENT_RELAY_STORAGE_TYPE` | Storage type: `sqlite`, `memory`, `none` | `sqlite` |
 | `AGENT_RELAY_STORAGE_PATH` | Path for SQLite database | Auto |
 | `AGENT_RELAY_STORAGE_URL` | Connection URL for database | None |
-| `AGENT_RELAY_CLOUD_URL` | Cloud API URL | `https://agent-relay.com` |
 | `AGENT_RELAY_SUPERVISED` | Set by supervisor mode | Not set |
 
 ---

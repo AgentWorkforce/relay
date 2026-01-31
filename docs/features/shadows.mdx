@@ -206,24 +206,6 @@ The spawner automatically selects subagent mode when available.
 
 Use the spawner API to create primary-shadow pairs:
 
-### Via Dashboard API
-
-```bash
-curl -X POST http://localhost:3888/api/spawn-with-shadow \
-  -H "Content-Type: application/json" \
-  -d '{
-    "primary": {
-      "name": "Lead",
-      "command": "claude",
-      "task": "Implement user authentication"
-    },
-    "shadow": {
-      "name": "Auditor",
-      "role": "reviewer"
-    }
-  }'
-```
-
 ### Via Relay Protocol
 
 ```bash

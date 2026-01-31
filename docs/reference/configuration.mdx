@@ -24,7 +24,6 @@ Configuration is resolved in the following order (highest priority first):
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `AGENT_RELAY_DASHBOARD_PORT` | Default dashboard port | `3888` |
 | `AGENT_RELAY_DATA_DIR` | Root data directory | `~/.local/share/agent-relay` |
 
 ### Storage Configuration
@@ -36,17 +35,10 @@ Configuration is resolved in the following order (highest priority first):
 | `AGENT_RELAY_STORAGE_URL` | Database connection URL | None |
 | `AGENT_RELAY_SQLITE_DRIVER` | SQLite driver: `node` or `better-sqlite3` | `better-sqlite3` |
 
-### Cloud Configuration
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `AGENT_RELAY_CLOUD_URL` | Cloud API URL | `https://agent-relay.com` |
-
 ### Example Configuration
 
 ```bash
 # Set in shell profile (~/.bashrc, ~/.zshrc)
-export AGENT_RELAY_DASHBOARD_PORT=4000
 export AGENT_RELAY_DATA_DIR="$HOME/.agent-relay"
 export AGENT_RELAY_STORAGE_TYPE=sqlite
 ```
@@ -283,8 +275,6 @@ interface DaemonConfig {
   storageAdapter?: StorageAdapter;  // Custom adapter
   storageConfig?: StorageConfig;    // Storage options
   teamDir?: string;           // Team data directory
-  cloudSync?: boolean;        // Enable cloud sync
-  cloudUrl?: string;          // Cloud API URL
   consensus?: boolean | ConsensusConfig;  // Consensus mechanism
 
   // Connection settings (from ConnectionConfig)
@@ -374,22 +364,6 @@ interface WrapperConfig {
 
 ---
 
-## Dashboard Configuration
-
-Dashboard-specific configuration options:
-
-| CLI Option | Environment Variable | Default |
-|------------|---------------------|---------|
-| `--port` | `AGENT_RELAY_DASHBOARD_PORT` | `3888` |
-| `--no-dashboard` | - | Dashboard enabled |
-
-The dashboard automatically:
-- Detects available ports if default is in use
-- Tries ports 3888, 3889, 3890, 3891 in sequence
-- Exposes health endpoint at `/api/health`
-
----
-
 ## Project Paths
 
 Agent Relay organizes data by project using hashed paths:
@@ -421,26 +395,6 @@ Data directory: ~/.local/share/agent-relay/abc123/
 Socket: /tmp/relay/abc123/agent-relay.sock
 Database: ~/.local/share/agent-relay/abc123/agent-relay.sqlite
 ```
-
----
-
-## Cloud Configuration
-
-Cloud sync configuration is stored locally after linking:
-
-**Location:** `$AGENT_RELAY_DATA_DIR/cloud-config.json`
-
-```json
-{
-  "apiKey": "ar_live_...",
-  "cloudUrl": "https://agent-relay.com",
-  "machineId": "hostname-a1b2c3d4",
-  "machineName": "my-laptop",
-  "linkedAt": "2024-01-15T10:30:00.000Z"
-}
-```
-
-This file is created by `agent-relay cloud link` and has restricted permissions (0600).
 
 ---
 

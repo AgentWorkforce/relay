@@ -67,11 +67,11 @@ Bridge multiple projects together with a single orchestrator. Agents in one proj
 
 ### Human-in-the-Loop Workflows
 
-Monitor agent communication through the real-time dashboard. Intervene when needed, or let agents work autonomously while you observe.
+Monitor agent communication through the CLI tools. Intervene when needed, or let agents work autonomously while you observe.
 
 ## Architecture Overview
 
-Agent Relay consists of three main components:
+Agent Relay consists of two main components:
 
 ```
 +---------------------------------------------------------------------+
@@ -92,21 +92,16 @@ Agent Relay consists of three main components:
 |                   |  (Message Router) |                              |
 |                   +---------+---------+                              |
 |                             |                                        |
-|            +----------------+----------------+                       |
-|            |                                 |                       |
-|   +--------+--------+               +--------+--------+              |
-|   | SQLite Storage  |               |    Dashboard    |              |
-|   | (Message        |               |   localhost:    |              |
-|   |  History)       |               |      3888       |              |
-|   +-----------------+               +-----------------+              |
+|                   +---------+---------+                              |
+|                   | SQLite Storage    |                              |
+|                   | (Message History) |                              |
+|                   +-------------------+                              |
 +---------------------------------------------------------------------+
 ```
 
 **Daemon** - Central message broker that routes messages between agents via Unix domain sockets.
 
 **Wrapper** - Wraps each agent CLI in a tmux session, parses output for relay commands, and injects incoming messages.
-
-**Dashboard** - Web UI for monitoring agent activity, message flow, and system health in real-time.
 
 ## Key Features
 
@@ -122,9 +117,6 @@ Agent Relay consists of three main components:
   </Card>
   <Card title="Session Continuity" icon="rotate">
     Save and restore agent context across sessions for long-running tasks.
-  </Card>
-  <Card title="Real-Time Dashboard" icon="chart-line">
-    Monitor all agent activity, message flow, and system health from a web interface.
   </Card>
   <Card title="Channel Support" icon="hashtag">
     Create topic-based channels for organized group communication.

@@ -251,49 +251,6 @@ agent-relay agents:logs WorkerName
 agent-relay agents:kill WorkerName
 ```
 
-## Dashboard API
-
-The dashboard provides REST endpoints for spawning:
-
-### Spawn via API
-
-```bash
-curl -X POST http://localhost:3888/api/spawn \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "TestWorker",
-    "cli": "claude",
-    "task": "Write unit tests for the auth module"
-  }'
-```
-
-### Release via API
-
-```bash
-curl -X POST http://localhost:3888/api/release \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "TestWorker"
-  }'
-```
-
-## Agent Limits
-
-Worker counts are limited based on your plan:
-
-| Plan | Max Agents |
-|------|------------|
-| Free | 3 |
-| Pro | 10 |
-| Team | 25 |
-| Enterprise | Unlimited |
-
-The spawner returns an error when the limit is reached:
-
-```
-Agent limit reached (10/10). Upgrade your plan for more agents.
-```
-
 ## Policy Enforcement
 
 When `AGENT_POLICY_ENFORCEMENT=1` is set, spawning follows policy rules:
@@ -343,8 +300,8 @@ Policy denied: Lead cannot spawn agent with name AdminBot
   </Accordion>
   <Accordion title="Task not delivered to worker">
     Tasks are sent after registration completes. If the task is missing:
-    1. Verify dashboard port is set correctly
-    2. Check worker logs for errors
+    1. Check worker logs for errors
+    2. Verify daemon is running: `agent-relay status`
     3. Send the task manually via messaging
   </Accordion>
   <Accordion title="Workers crash immediately">
