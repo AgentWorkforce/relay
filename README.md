@@ -1,6 +1,11 @@
 # agent-relay
 
-Real-time messaging between AI agents. Sub-5ms latency, any CLI, any language.
+> Real-time messaging between AI agents. Sub-5ms latency, any CLI, any language.
+
+[![npm](https://img.shields.io/npm/v/agent-relay)](https://www.npmjs.com/package/agent-relay)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
+---
 
 ## Install
 
@@ -10,53 +15,19 @@ npm install -g agent-relay
 
 **Requirements:** Node.js 20+
 
-**Linux:** Install build tools first:
-```bash
-sudo apt-get update && sudo apt-get install -y build-essential
-```
-
-## Quick Start
+## Getting Started
 
 ```bash
-# Start with your preferred CLI
-agent-relay claude
-agent-relay codex
-agent-relay opencode
-agent-relay gemini
-agent-relay droid
+agent-relay up --dashboard
 ```
 
-This starts the relay daemon, a dashboard at http://localhost:3888, and a coordinator agent.
+Navigate to **http://localhost:3888** to:
+- 🤖 Spawn and chat with agents using your locally installed CLI tools
+- 👀 View real-time agent presence and status
+- 💬 Message history and threading
+- 📜 Log streaming from all agents
 
-## How It Works
-
-Agents communicate via a file-based protocol. The relay daemon routes messages between agents over Unix domain sockets with sub-5ms latency.
-
-```bash
-# Send a message (AGENT_RELAY_OUTBOX is set automatically)
-cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
-TO: Bob
-
-Hey, can you help with this task?
-EOF
-```
-Then output: `->relay-file:msg`
-
-Broadcast to all agents:
-```bash
-cat > $AGENT_RELAY_OUTBOX/broadcast << 'EOF'
-TO: *
-
-Message to all agents
-EOF
-```
-Then output: `->relay-file:broadcast`
-
-Wait for acknowledgment:
-```
-->relay:Bob [await] Please confirm
-->relay:Bob [await:30s] Please confirm within 30 seconds
-```
+---
 
 ## CLI Reference
 
@@ -69,6 +40,8 @@ Wait for acknowledgment:
 | `agent-relay create-agent -n Name <cmd>` | Create a named agent |
 | `agent-relay bridge <projects...>` | Bridge multiple projects |
 | `agent-relay doctor` | Diagnose issues |
+
+---
 
 ## Agent Roles
 
@@ -86,6 +59,7 @@ Names automatically match roles (case-insensitive):
 ```bash
 agent-relay create-agent -n Lead claude    # Uses lead.md
 ```
+Agents spawned by that name in the dashboard automatically assume that role.
 
 ## MCP Server
 
@@ -133,89 +107,62 @@ agent-relay cloud agents    # List agents across machines
 agent-relay cloud send AgentName "Your message"
 ```
 
+Connect your CLI tool to your own private workspace and unlock agents working 24/7 against your GitHub repository in their own private sandbox.
+
 ## Teaching Agents
+
+> **Note:** On `agent-relay up` initialization this step happens automatically. If there is already an existing `AGENTS.md`, `CLAUDE.md`, or `GEMINI.md`, it will append the protocol instructions to that file.
 
 Install the messaging protocol snippet for your agents via [prpm](https://prpm.dev):
 
 ```bash
 npx prpm install @agent-relay/agent-relay-snippet
+
+# for Claude
+npx prpm install @agent-relay/agent-relay-snippet --location CLAUDE.md
+```
+
+Prefer skills?
+```bash
+npx prpm install @agent-relay/using-agent-relay
 ```
 
 View all packages on our [prpm organization page](https://prpm.dev/orgs?name=Agent%20Relay).
 
-## Platform Support
-
-| Platform | Status |
-|----------|--------|
-| macOS (Apple Silicon & Intel) | Full support |
-| Linux x64 | Full support |
-| Linux arm64 | Fallback (uses tmux) |
-| Windows | Fallback (uses tmux via WSL) |
+---
 
 <details>
 <summary><h2>For Agents</h2></summary>
 
-This section covers how agents can programmatically run relay, spawn workers, and orchestrate multi-agent workflows.
+This section covers how agents can programmatically manage workers and orchestrate multi-agent workflows.
 
-### Starting Relay
-
-Agents can start the relay daemon and immediately begin orchestrating:
+### Prerequisites
 
 ```bash
-# Start daemon + dashboard (no coordinator agent)
+npm install -g agent-relay
 agent-relay up
-
-# Start daemon with a coordinator agent
-agent-relay claude
 ```
+
+### Agent Management CLI
+
+| Command | Description |
+|---------|-------------|
+| `agent-relay agents` | List all connected agents |
+| `agent-relay who` | Show active agents (seen in last 30s) |
+| `agent-relay spawn <name> <cli> "task"` | Spawn a worker agent |
+| `agent-relay release <name>` | Gracefully release an agent |
+| `agent-relay agents:kill <name>` | Force kill an unresponsive agent |
+| `agent-relay agents:logs <name>` | View agent output logs |
 
 ### Spawning Agents
 
-Spawn worker agents by writing a spawn file to your outbox:
-
+**CLI method (recommended):**
 ```bash
-cat > $AGENT_RELAY_OUTBOX/spawn << 'EOF'
-KIND: spawn
-NAME: Implementer
-CLI: claude
-
-Implement the user authentication module.
-Use JWT tokens with refresh support.
-EOF
+agent-relay spawn Backend claude "Build the REST API for user management"
 ```
-Then output: `->relay-file:spawn`
 
-The spawned agent receives the task body as its initial prompt and has `$AGENT_RELAY_OUTBOX` and `$AGENT_RELAY_SPAWNER` set automatically.
-
-### Sending Messages to Agents
-
+**File-based method** (for agents without CLI access):
 ```bash
-cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
-TO: Implementer
-
-Please also add rate limiting to the login endpoint.
-EOF
-```
-Then output: `->relay-file:msg`
-
-### Releasing Agents
-
-When a worker is done, release it:
-
-```bash
-cat > $AGENT_RELAY_OUTBOX/release << 'EOF'
-KIND: release
-NAME: Implementer
-EOF
-```
-Then output: `->relay-file:release`
-
-### Full Lifecycle Example
-
-Here's a complete orchestration flow — spawn workers, assign tasks, and clean up:
-
-```bash
-# 1. Spawn a backend worker
 cat > $AGENT_RELAY_OUTBOX/spawn << 'EOF'
 KIND: spawn
 NAME: Backend
@@ -224,22 +171,67 @@ CLI: claude
 Build the REST API for user management (CRUD endpoints).
 EOF
 ```
-`->relay-file:spawn`
+Then output: `->relay-file:spawn`
+
+The spawned agent receives the task body as its initial prompt and has `$AGENT_RELAY_OUTBOX` and `$AGENT_RELAY_SPAWNER` set automatically.
+
+### Checking Agent Status
 
 ```bash
-# 2. Spawn a frontend worker
-cat > $AGENT_RELAY_OUTBOX/spawn << 'EOF'
-KIND: spawn
-NAME: Frontend
-CLI: claude
+# List all registered agents
+agent-relay agents
 
-Build the React components for the user management dashboard.
+# Show only active agents (heartbeat within 30s)
+agent-relay who
+
+# View logs from a specific agent
+agent-relay agents:logs Backend
+```
+
+### Sending Messages
+
+**File-based protocol** (required for AI agents):
+```bash
+cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
+TO: Backend
+
+Please also add rate limiting to the login endpoint.
 EOF
 ```
-`->relay-file:spawn`
+Then output: `->relay-file:msg`
+
+### Releasing Agents
+
+**Graceful release** (waits for agent to finish current work):
+```bash
+agent-relay release Backend
+```
+
+**Force kill** (immediate termination):
+```bash
+agent-relay agents:kill Backend
+```
+
+**File-based release** (for AI agents):
+```bash
+cat > $AGENT_RELAY_OUTBOX/release << 'EOF'
+KIND: release
+NAME: Backend
+EOF
+```
+Then output: `->relay-file:release`
+
+### Full Lifecycle Example
 
 ```bash
-# 3. Coordinate between workers
+# 1. Spawn workers
+agent-relay spawn Backend claude "Build REST API for user management"
+agent-relay spawn Frontend claude "Build React dashboard components"
+
+# 2. Check they're online
+agent-relay who
+
+# 3. Send coordination message (file-based for agents)
 cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
 TO: Frontend
 
@@ -250,31 +242,17 @@ EOF
 `->relay-file:msg`
 
 ```bash
-# 4. Check who's online
-cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
-TO: *
+# 4. Monitor progress
+agent-relay agents:logs Backend
+agent-relay agents:logs Frontend
 
-Status check — reply with your progress.
-EOF
-```
-`->relay-file:msg`
-
-```bash
 # 5. Release workers when done
-cat > $AGENT_RELAY_OUTBOX/release << 'EOF'
-KIND: release
-NAME: Backend
-EOF
-```
-`->relay-file:release`
+agent-relay release Backend
+agent-relay release Frontend
 
-```bash
-cat > $AGENT_RELAY_OUTBOX/release << 'EOF'
-KIND: release
-NAME: Frontend
-EOF
+# 6. Force kill if unresponsive
+agent-relay agents:kill Backend
 ```
-`->relay-file:release`
 
 ### Protocol Conventions
 
@@ -309,20 +287,41 @@ When spawned by another agent, follow these conventions:
 
 </details>
 
-## Development
+## Using the Agent Relay SDK
+
+The easiest way to develop against relay:
 
 ```bash
-git clone https://github.com/AgentWorkforce/relay.git
-cd relay
-npm install && npm run build
-npm run dev  # Start daemon + dashboard in dev mode
+# Install globally and start daemon
+npm install -g agent-relay
+agent-relay up
+
+# In your project
+npm install agent-relay
 ```
+
+```typescript
+import { RelayClient } from 'agent-relay';
+
+const client = new RelayClient({ name: 'MyApp' });
+await client.connect();
+
+// Spawn a worker agent
+await client.spawn({ name: 'Worker', cli: 'claude', task: 'Wait for instructions' });
+
+// Send it a message
+await client.send('Worker', 'Hello from my app');
+```
+
+---
 
 ## Philosophy
 
-**Do one thing well**: Real-time agent messaging with sub-5ms latency.
+> **Do one thing well:** Real-time agent messaging with sub-5ms latency.
 
 agent-relay is a messaging layer, not a framework. It works with any CLI tool, any orchestration system, and any memory layer.
+
+---
 
 ## License
 
@@ -330,4 +329,4 @@ Apache-2.0 — Copyright 2025 Agent Workforce Incorporated
 
 ---
 
-**Links:** [Documentation](https://github.com/AgentWorkforce/relay/tree/main/docs) · [Issues](https://github.com/AgentWorkforce/relay/issues) · [Cloud](https://agent-relay.com)
+**Links:** [Documentation](https://docs.agent-relay.com/) · [Issues](https://github.com/AgentWorkforce/relay/issues) · [Cloud](https://agent-relay.com)
