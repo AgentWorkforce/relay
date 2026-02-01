@@ -37,6 +37,13 @@ import type {
   SpawnWithShadowResult,
   SpeakOnTrigger,
 } from './types.js';
+import {
+  applySandbox,
+  mergePermissions,
+  cleanupSandboxProfile,
+  detectCapabilities,
+  type SandboxResult,
+} from '@agent-relay/spawner';
 
 // Logger instance for spawner (uses daemon log system instead of console)
 const log = createLogger('spawner');
@@ -1048,9 +1055,17 @@ export class AgentSpawner {
         };
       }
 
+      // Track sandbox result for cleanup (set later if sandbox is applied)
+      let sandboxResultForCleanup: SandboxResult | undefined;
+
       // Common exit handler for both wrapper types
       const onExitHandler = (code: number) => {
         if (debug) log.debug(`Worker ${name} exited with code ${code}`);
+
+        // Clean up sandbox profile file if one was created
+        if (sandboxResultForCleanup) {
+          cleanupSandboxProfile(sandboxResultForCleanup);
+        }
 
         // Get the agentId and clean up listeners before removing from active workers
         const worker = this.activeWorkers.get(name);
@@ -1103,6 +1118,42 @@ export class AgentSpawner {
         await this.release(workerName);
       };
 
+      // Apply file permission sandbox if configured
+      // This wraps the CLI command with platform-specific sandboxing (sandbox-exec on macOS, bwrap on Linux)
+      const filePermissions = mergePermissions(
+        request.filePermissionPreset,
+        request.filePermissions
+      );
+
+      // Also check agent config for file permissions
+      const agentConfigForPerms = findAgentConfig(name, this.projectRoot);
+      const mergedFilePermissions = agentConfigForPerms?.filePermissions
+        ? mergePermissions(
+            agentConfigForPerms.filePermissionPreset,
+            { ...agentConfigForPerms.filePermissions, ...filePermissions }
+          )
+        : filePermissions;
+
+      let sandboxedCommand = command;
+      let sandboxedArgs = args;
+
+      if (mergedFilePermissions && Object.keys(mergedFilePermissions).length > 0) {
+        const sandboxResult = applySandbox(command, args, mergedFilePermissions, agentCwd);
+        sandboxedCommand = sandboxResult.command;
+        sandboxedArgs = sandboxResult.args;
+        // Store for cleanup on exit
+        sandboxResultForCleanup = sandboxResult;
+
+        if (sandboxResult.sandboxed) {
+          log.info(`Applied ${sandboxResult.method} sandbox for ${name}`);
+          if (debug) {
+            log.debug(`Sandbox permissions: ${JSON.stringify(mergedFilePermissions)}`);
+          }
+        } else if (debug) {
+          log.debug(`No sandbox available for ${name} (platform: ${detectCapabilities().platform})`);
+        }
+      }
+
       // Check if we should use OpenCodeWrapper with HTTP API mode
       if (isOpenCodeCli) {
         // OpenCodeApi reads OPENCODE_API_URL or OPENCODE_PORT from env, defaults to localhost:4096
@@ -1119,8 +1170,8 @@ export class AgentSpawner {
 
           const openCodeConfig: OpenCodeWrapperConfig = {
             name,
-            command,
-            args,
+            command: sandboxedCommand,
+            args: sandboxedArgs,
             socketPath: this.socketPath,
             cwd: agentCwd,
             dashboardPort: this.dashboardPort,
@@ -1264,8 +1315,8 @@ export class AgentSpawner {
       // Create RelayPtyOrchestrator (relay-pty Rust binary)
       const ptyConfig: RelayPtyOrchestratorConfig = {
         name,
-        command,
-        args,
+        command: sandboxedCommand,
+        args: sandboxedArgs,
         socketPath: this.socketPath,
         cwd: agentCwd,
         dashboardPort: this.dashboardPort,

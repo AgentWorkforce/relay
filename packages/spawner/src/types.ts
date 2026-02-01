@@ -42,6 +42,71 @@ export const PolicySourceSchema = z.enum(['repo', 'local', 'workspace', 'default
 export type PolicySource = z.infer<typeof PolicySourceSchema>;
 
 // =============================================================================
+// File Permission Types
+// =============================================================================
+
+/**
+ * File permission configuration for sandbox enforcement.
+ * These permissions are enforced at the OS level, wrapping any CLI.
+ */
+export const FilePermissionsSchema = z.object({
+  /**
+   * Paths the agent can read and write (whitelist).
+   * If specified, only these paths are accessible.
+   * Supports glob patterns: "src/**", "*.ts"
+   */
+  allowed: z.array(z.string()).optional(),
+
+  /**
+   * Paths the agent cannot access at all (blacklist).
+   * Takes precedence over allowed paths.
+   * Common use: ".env*", "secrets/**", "*.pem"
+   */
+  disallowed: z.array(z.string()).optional(),
+
+  /**
+   * Paths the agent can read but not modify.
+   * Useful for config files: "package.json", "tsconfig.json"
+   */
+  readOnly: z.array(z.string()).optional(),
+
+  /**
+   * Paths the agent can write to.
+   * Used with restrictive defaults to explicitly allow writes.
+   */
+  writable: z.array(z.string()).optional(),
+
+  /**
+   * Whether to enable network access (default: true).
+   * Agents typically need network for API calls.
+   */
+  allowNetwork: z.boolean().optional(),
+});
+export type FilePermissions = z.infer<typeof FilePermissionsSchema>;
+
+/**
+ * Predefined file permission profiles for common use cases.
+ */
+export const FilePermissionPreset = {
+  /** Block common sensitive files (.env, secrets, keys) */
+  BLOCK_SECRETS: 'block-secrets',
+  /** Source code only - no config modifications */
+  SOURCE_ONLY: 'source-only',
+  /** Read-only access - no writes allowed */
+  READ_ONLY: 'read-only',
+  /** Documentation agent - docs and markdown only */
+  DOCS_ONLY: 'docs-only',
+} as const;
+
+export const FilePermissionPresetSchema = z.enum([
+  'block-secrets',
+  'source-only',
+  'read-only',
+  'docs-only',
+]);
+export type FilePermissionPresetType = z.infer<typeof FilePermissionPresetSchema>;
+
+// =============================================================================
 // Policy Types
 // =============================================================================
 
@@ -89,6 +154,16 @@ export const SpawnRequestSchema = z.object({
   shadowSpeakOn: z.array(SpeakOnTriggerSchema).optional(),
   /** User ID for per-user credential storage in shared workspaces */
   userId: z.string().optional(),
+  /**
+   * File permission guardrails (OS-level sandbox enforcement).
+   * Wraps the CLI command with platform-specific sandboxing.
+   */
+  filePermissions: FilePermissionsSchema.optional(),
+  /**
+   * Use a predefined file permission preset instead of custom config.
+   * Presets: 'block-secrets', 'source-only', 'read-only', 'docs-only'
+   */
+  filePermissionPreset: FilePermissionPresetSchema.optional(),
 });
 export type SpawnRequest = z.infer<typeof SpawnRequestSchema>;
 
