@@ -118,7 +118,6 @@ describe('Socket Discovery', () => {
   describe('discoverSocket', () => {
     it('uses RELAY_SOCKET env var first', () => {
       process.env.RELAY_SOCKET = '/tmp/test.sock';
-      vi.mocked(existsSync).mockReturnValue(true);
 
       const result = discoverSocket();
 
@@ -127,21 +126,36 @@ describe('Socket Discovery', () => {
       expect(result?.isCloud).toBe(false);
     });
 
-    it('uses socketPath option when provided', () => {
-      vi.mocked(existsSync).mockReturnValue(true);
+    it('returns RELAY_SOCKET path even if socket does not exist yet', () => {
+      process.env.RELAY_SOCKET = '/tmp/nonexistent.sock';
+      vi.mocked(existsSync).mockReturnValue(false);
 
+      const result = discoverSocket();
+
+      expect(result?.socketPath).toBe('/tmp/nonexistent.sock');
+      expect(result?.source).toBe('env');
+    });
+
+    it('uses socketPath option when provided', () => {
       const result = discoverSocket({ socketPath: '/custom/path.sock' });
 
       expect(result?.socketPath).toBe('/custom/path.sock');
       expect(result?.source).toBe('env');
     });
 
+    it('returns socketPath option even if socket does not exist yet', () => {
+      vi.mocked(existsSync).mockReturnValue(false);
+
+      const result = discoverSocket({ socketPath: '/custom/nonexistent.sock' });
+
+      expect(result?.socketPath).toBe('/custom/nonexistent.sock');
+      expect(result?.source).toBe('env');
+    });
+
     it('uses cloud workspace socket when in cloud', () => {
       process.env.WORKSPACE_ID = 'test-workspace';
       process.env.CLOUD_API_URL = 'https://api.example.com';
-      vi.mocked(existsSync).mockImplementation((path) => {
-        return String(path) === '/tmp/relay/test-workspace/sockets/daemon.sock';
-      });
+      vi.mocked(existsSync).mockReturnValue(false);
 
       const result = discoverSocket();
 
@@ -151,7 +165,21 @@ describe('Socket Discovery', () => {
       expect(result?.workspace?.workspaceId).toBe('test-workspace');
     });
 
-    it('returns null when no socket found', () => {
+    it('returns cloud socket path even if socket does not exist yet', () => {
+      process.env.WORKSPACE_ID = 'new-workspace';
+      process.env.CLOUD_API_URL = 'https://api.example.com';
+      vi.mocked(existsSync).mockReturnValue(false);
+
+      const result = discoverSocket();
+
+      expect(result).not.toBeNull();
+      expect(result?.socketPath).toBe('/tmp/relay/new-workspace/sockets/daemon.sock');
+      expect(result?.source).toBe('cloud');
+      expect(result?.isCloud).toBe(true);
+      expect(result?.workspace?.workspaceId).toBe('new-workspace');
+    });
+
+    it('returns null when no socket found and no cloud/env config', () => {
       vi.mocked(existsSync).mockReturnValue(false);
       vi.mocked(readdirSync).mockReturnValue([]);
 
@@ -162,9 +190,7 @@ describe('Socket Discovery', () => {
 
     it('uses RELAY_PROJECT env var for project lookup', () => {
       process.env.RELAY_PROJECT = 'myproject';
-      vi.mocked(existsSync).mockImplementation((path) => {
-        return String(path).includes('myproject');
-      });
+      vi.mocked(existsSync).mockReturnValue(false);
 
       const result = discoverSocket();
 
@@ -173,10 +199,22 @@ describe('Socket Discovery', () => {
       expect(result?.isCloud).toBe(false);
     });
 
+    it('returns RELAY_PROJECT socket path even if socket does not exist', () => {
+      process.env.RELAY_PROJECT = 'myproject';
+      vi.mocked(existsSync).mockReturnValue(false);
+
+      const result = discoverSocket();
+
+      expect(result).not.toBeNull();
+      expect(result?.project).toBe('myproject');
+      expect(result?.socketPath).toContain('myproject');
+      expect(result?.source).toBe('env');
+    });
+
     it('uses cwd config when present', () => {
       vi.mocked(existsSync).mockImplementation((path) => {
         const p = String(path);
-        return p.includes('.relay/config.json') || p === '/my/socket.sock';
+        return p.includes('.relay/config.json');
       });
       vi.mocked(readFileSync).mockReturnValue(
         JSON.stringify({
@@ -190,6 +228,29 @@ describe('Socket Discovery', () => {
       expect(result?.socketPath).toBe('/my/socket.sock');
       expect(result?.project).toBe('local-project');
       expect(result?.source).toBe('cwd');
+    });
+
+    it('env override takes priority over cloud workspace', () => {
+      process.env.RELAY_SOCKET = '/explicit/override.sock';
+      process.env.WORKSPACE_ID = 'cloud-workspace';
+      process.env.CLOUD_API_URL = 'https://api.example.com';
+
+      const result = discoverSocket();
+
+      expect(result?.socketPath).toBe('/explicit/override.sock');
+      expect(result?.source).toBe('env');
+    });
+
+    it('local development uses .agent-relay/relay.sock when socket exists', () => {
+      vi.mocked(existsSync).mockImplementation((path) => {
+        return String(path).endsWith('.agent-relay/relay.sock');
+      });
+
+      const result = discoverSocket();
+
+      expect(result?.socketPath).toContain('.agent-relay/relay.sock');
+      expect(result?.source).toBe('cwd');
+      expect(result?.isCloud).toBe(false);
     });
   });
 });

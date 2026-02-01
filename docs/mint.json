@@ -55,12 +55,14 @@
         "guides/multi-project",
         "guides/worker-orchestration",
         "guides/session-continuity",
-        "guides/custom-agents"
+        "guides/custom-agents",
+        "guides/electron-integration"
       ]
     },
     {
       "group": "Reference",
       "pages": [
+        "reference/sdk",
         "reference/cli",
         "reference/protocol",
         "reference/configuration",

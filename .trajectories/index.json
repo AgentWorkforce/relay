@@ -191,6 +191,27 @@
       "completedAt": "2026-01-30T12:21:19.584Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_q6n7i3r1xik1.json"
     },
+    "traj_ph72lq1bkmuj": {
+      "title": "Implement WebSocket transport for SDK browser compatibility",
+      "status": "abandoned",
+      "startedAt": "2026-01-30T19:44:52.587Z",
+      "completedAt": "2026-01-30T19:45:10.803Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_ph72lq1bkmuj.json"
+    },
+    "traj_ev5g02ddo9nd": {
+      "title": "Implement spawn readiness detection for SDK",
+      "status": "completed",
+      "startedAt": "2026-01-30T19:45:14.358Z",
+      "completedAt": "2026-01-30T19:49:55.236Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_ev5g02ddo9nd.json"
+    },
+    "traj_tyavljk80fna": {
+      "title": "SDK improvements: WebSocket transport, RPC, Electron guide, spawn readiness",
+      "status": "completed",
+      "startedAt": "2026-01-30T20:38:53.393Z",
+      "completedAt": "2026-01-30T20:39:23.085Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_tyavljk80fna.json"
+    },
     "traj_v5w0nh10we24": {
       "title": "Add file permission guardrails as OS-level sandbox",
       "status": "completed",

@@ -1,13 +1,10 @@
 /**
- * Cloud Integration for Agent Relay MCP Server
+ * Socket Discovery & Cloud Workspace Detection
  *
- * This module re-exports all cloud/discovery functionality from
- * @agent-relay/utils, which is the single source of truth for socket
- * discovery, cloud workspace detection, and agent identity discovery.
- *
- * Previously this module contained its own implementation (~520 lines).
- * It has been consolidated into @agent-relay/utils to eliminate code
- * duplication between MCP and SDK packages.
+ * Re-exports all discovery functionality from @agent-relay/utils,
+ * which is the single source of truth. This module exists so SDK
+ * consumers can import discovery from either '@agent-relay/sdk'
+ * or '@agent-relay/sdk/discovery'.
  */
 
 export {

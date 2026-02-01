@@ -218,11 +218,16 @@ describe('JsonlStorageAdapter', () => {
     await writerAdapter.saveMessage(makeMessage({ id: 'watch-test', body: 'from daemon' }));
     await writerAdapter.close();
 
-    // Wait for debounce + file watcher to trigger reload
-    await new Promise(resolve => setTimeout(resolve, 200));
+    // Wait for file watcher to trigger reload (fs.watch can be slow/flaky)
+    // Use polling with retries instead of a fixed timeout
+    let after: StoredMessage[] = [];
+    for (let i = 0; i < 20; i++) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      after = await watchingAdapter.getMessages({});
+      if (after.length > countBefore) break;
+    }
 
     // Should now see the new message
-    const after = await watchingAdapter.getMessages({});
     expect(after.length).toBe(countBefore + 1);
     expect(after.some(m => m.id === 'watch-test')).toBe(true);
 
