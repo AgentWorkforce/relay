@@ -1,0 +1,878 @@
+---
+title: SDK Reference
+description: Complete reference for the @agent-relay/sdk package
+---
+
+# SDK Reference
+
+The `@agent-relay/sdk` package provides a lightweight TypeScript/JavaScript SDK for agent-to-agent communication via Agent Relay.
+
+## Installation
+
+```bash
+npm install @agent-relay/sdk
+```
+
+## Quick Start
+
+### Standalone Mode (No Daemon Required)
+
+The simplest way to get started - creates an in-process daemon automatically:
+
+```typescript
+import { createRelay } from '@agent-relay/sdk';
+
+const relay = await createRelay();
+const alice = await relay.client('Alice');
+const bob = await relay.client('Bob');
+
+bob.onMessage = (from, { body }) => console.log(`${from}: ${body}`);
+alice.sendMessage('Bob', 'Hello!');
+```
+
+### With External Daemon (Node.js)
+
+Connect to a running daemon via Unix socket:
+
+```typescript
+import { RelayClient } from '@agent-relay/sdk';
+
+const client = new RelayClient({ agentName: 'MyAgent' });
+await client.connect();
+
+client.onMessage = (from, { body }) => {
+  console.log(`Message from ${from}: ${body}`);
+};
+
+client.sendMessage('OtherAgent', 'Hello!');
+```
+
+### Browser Usage (WebSocket)
+
+Connect from a browser via WebSocket:
+
+```typescript
+import { BrowserRelayClient } from '@agent-relay/sdk';
+
+const client = new BrowserRelayClient({
+  agentName: 'BrowserAgent',
+  transport: { wsUrl: 'wss://relay.example.com/ws' },
+});
+
+await client.connect();
+client.sendMessage('ServerAgent', 'Hello from browser!');
+```
+
+---
+
+## RelayClient
+
+The primary client for Node.js environments using Unix sockets.
+
+```typescript
+import { RelayClient, type ClientConfig } from '@agent-relay/sdk';
+```
+
+### Constructor
+
+```typescript
+new RelayClient(config?: Partial<ClientConfig>)
+```
+
+**ClientConfig:**
+
+| Property | Type | Description | Default |
+|----------|------|-------------|---------|
+| `socketPath` | `string` | Unix socket path | Auto-discovered or `/tmp/agent-relay.sock` |
+| `agentName` | `string` | Agent identifier | `'agent'` |
+| `entityType` | `'agent' \| 'user'` | Entity type | `'agent'` |
+| `cli` | `string` | CLI identifier (claude, codex, etc.) | None |
+| `task` | `string` | Task description | None |
+| `workingDirectory` | `string` | Working directory | None |
+| `quiet` | `boolean` | Suppress console logging | `false` |
+| `reconnect` | `boolean` | Auto-reconnect on disconnect | `true` |
+| `maxReconnectAttempts` | `number` | Max retry attempts | `10` |
+| `reconnectDelayMs` | `number` | Initial retry delay (ms) | `1000` |
+| `reconnectMaxDelayMs` | `number` | Max retry delay (ms) | `30000` |
+
+### Properties
+
+```typescript
+client.state: ClientState
+// 'DISCONNECTED' | 'CONNECTING' | 'HANDSHAKING' | 'READY' | 'BACKOFF'
+
+client.agentName: string        // Agent name
+client.currentSessionId: string // Session ID (after connection)
+```
+
+### Connection Methods
+
+```typescript
+// Connect to daemon
+await client.connect(): Promise<void>
+
+// Disconnect gracefully
+client.disconnect(): void
+
+// Permanently destroy client (prevents reconnection)
+client.destroy(): void
+```
+
+### Messaging Methods
+
+```typescript
+// Send message to agent
+client.sendMessage(
+  to: string,
+  body: string,
+  kind?: PayloadKind,      // 'message' | 'action' | 'result' | 'status'
+  data?: Record<string, unknown>,
+  thread?: string,
+  meta?: SendMeta
+): boolean
+
+// Broadcast to all agents
+client.broadcast(
+  body: string,
+  kind?: PayloadKind,
+  data?: Record<string, unknown>
+): boolean
+
+// Send and wait for ACK
+await client.sendAndWait(
+  to: string,
+  body: string,
+  options?: SyncOptions
+): Promise<AckPayload>
+```
+
+### Request/Response Pattern
+
+The SDK provides a native RPC pattern for request/response communication:
+
+```typescript
+// Send request and wait for response
+const response = await client.request(
+  to: string,
+  body: string,
+  options?: RequestOptions
+): Promise<RequestResponse>
+
+// Respond to a request
+client.respond(
+  correlationId: string,
+  to: string,
+  body: string,
+  data?: Record<string, unknown>
+): boolean
+```
+
+**RequestOptions:**
+
+| Property | Type | Description | Default |
+|----------|------|-------------|---------|
+| `timeout` | `number` | Timeout in milliseconds | `30000` |
+| `data` | `Record<string, unknown>` | Structured data to include | None |
+| `thread` | `string` | Thread identifier | None |
+| `kind` | `PayloadKind` | Message kind | `'message'` |
+
+**RequestResponse:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `from` | `string` | Sender of the response |
+| `body` | `string` | Response body text |
+| `data` | `Record<string, unknown>` | Structured data from response |
+| `correlationId` | `string` | Correlation ID used |
+| `thread` | `string` | Thread identifier |
+| `payload` | `SendPayload` | Full payload |
+
+**Example:**
+
+```typescript
+// Requester side
+const response = await client.request('Worker', 'Process this task', {
+  timeout: 60000,
+  data: { taskId: '123', priority: 'high' },
+});
+console.log(`Worker responded: ${response.body}`);
+
+// Responder side
+client.onMessage = (from, payload, messageId, meta) => {
+  const correlationId = meta?.replyTo || payload.data?._correlationId;
+  if (correlationId) {
+    // This is a request - send response
+    client.respond(correlationId, from, 'Task completed!', {
+      result: 'success',
+    });
+  }
+};
+```
+
+### Spawn Operations
+
+Spawn and manage agents via the daemon:
+
+```typescript
+// Spawn a new agent
+const result = await client.spawn(options: {
+  name: string;
+  cli: string;           // 'claude', 'codex', 'gemini', etc.
+  task?: string;
+  cwd?: string;
+  team?: string;
+  interactive?: boolean;
+  shadowOf?: string;
+  shadowSpeakOn?: SpeakOnTrigger[];
+  waitForReady?: boolean;    // Wait for agent to connect
+  readyTimeoutMs?: number;   // Timeout for ready (default: 60000)
+}, timeoutMs?: number): Promise<SpawnResult>
+
+// Release (terminate) an agent
+const result = await client.release(
+  name: string,
+  timeoutMs?: number
+): Promise<ReleaseResultPayload>
+
+// Wait for any agent to become ready
+const readyInfo = await client.waitForAgentReady(
+  name: string,
+  timeoutMs?: number
+): Promise<AgentReadyPayload>
+```
+
+**SpawnResult:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `success` | `boolean` | Whether spawn succeeded |
+| `name` | `string` | Agent name |
+| `pid` | `number` | Process ID |
+| `error` | `string` | Error message if failed |
+| `ready` | `boolean` | Whether agent is ready (if `waitForReady` was true) |
+| `readyInfo` | `AgentReadyPayload` | Ready details (if `waitForReady` was true) |
+
+**Example with readiness:**
+
+```typescript
+// Spawn and wait for agent to be ready before sending messages
+const result = await client.spawn({
+  name: 'Worker',
+  cli: 'claude',
+  task: 'Help with coding',
+  waitForReady: true,
+  readyTimeoutMs: 30000,
+});
+
+if (result.success && result.ready) {
+  // Agent is connected and ready to receive messages
+  client.sendMessage('Worker', 'Start working on task X');
+}
+```
+
+### Channel Operations
+
+```typescript
+// Join a channel
+client.joinChannel(channel: string, displayName?: string): boolean
+
+// Leave a channel
+client.leaveChannel(channel: string, reason?: string): boolean
+
+// Send message to channel
+client.sendChannelMessage(
+  channel: string,
+  body: string,
+  options?: {
+    thread?: string;
+    mentions?: string[];
+    attachments?: MessageAttachment[];
+    data?: Record<string, unknown>;
+  }
+): boolean
+```
+
+### Shadow Agent Methods
+
+```typescript
+// Bind as shadow to a primary agent
+client.bindAsShadow(
+  primaryAgent: string,
+  options?: {
+    speakOn?: SpeakOnTrigger[];
+    receiveIncoming?: boolean;
+    receiveOutgoing?: boolean;
+  }
+): boolean
+
+// Unbind from primary agent
+client.unbindAsShadow(primaryAgent: string): boolean
+```
+
+### Query Operations
+
+```typescript
+// Get daemon status
+const status = await client.getStatus(): Promise<StatusResponsePayload>
+
+// Get inbox messages
+const messages = await client.getInbox(options?: {
+  limit?: number;
+  unreadOnly?: boolean;
+  from?: string;
+  channel?: string;
+}): Promise<InboxMessage[]>
+
+// Query message history
+const messages = await client.queryMessages(options?: {
+  limit?: number;
+  sinceTs?: number;
+  from?: string;
+  to?: string;
+  thread?: string;
+  order?: 'asc' | 'desc';
+}): Promise<MessagesResponsePayload['messages']>
+
+// List online agents
+const agents = await client.listAgents(options?: {
+  includeIdle?: boolean;
+  project?: string;
+}): Promise<AgentInfo[]>
+
+// List only currently connected agents
+const connected = await client.listConnectedAgents(options?: {
+  project?: string;
+}): Promise<AgentInfo[]>
+
+// Get system health
+const health = await client.getHealth(options?: {
+  includeCrashes?: boolean;
+  includeAlerts?: boolean;
+}): Promise<HealthResponsePayload>
+
+// Get resource metrics
+const metrics = await client.getMetrics(options?: {
+  agent?: string;
+}): Promise<MetricsResponsePayload>
+
+// Remove agent from registry
+const result = await client.removeAgent(
+  name: string,
+  options?: { removeMessages?: boolean }
+): Promise<RemoveAgentResponsePayload>
+```
+
+### Event Handlers
+
+```typescript
+// Message received
+client.onMessage = (
+  from: string,
+  payload: SendPayload,
+  messageId: string,
+  meta?: SendMeta,
+  originalTo?: string  // '*' for broadcasts
+) => void
+
+// Channel message received
+client.onChannelMessage = (
+  from: string,
+  channel: string,
+  body: string,
+  envelope: Envelope<ChannelMessagePayload>
+) => void
+
+// Agent became ready (after HELLO/WELCOME handshake)
+client.onAgentReady = (info: AgentReadyPayload) => void
+
+// Connection state changed
+client.onStateChange = (state: ClientState) => void
+
+// Error occurred
+client.onError = (error: Error) => void
+```
+
+---
+
+## BrowserRelayClient
+
+A browser-compatible client that uses WebSocket transport.
+
+```typescript
+import { BrowserRelayClient, type BrowserClientConfig } from '@agent-relay/sdk';
+```
+
+### Constructor
+
+```typescript
+new BrowserRelayClient(config: BrowserClientConfig)
+```
+
+**BrowserClientConfig:**
+
+| Property | Type | Description | Default |
+|----------|------|-------------|---------|
+| `agentName` | `string` | Agent identifier | Required |
+| `entityType` | `'agent' \| 'user'` | Entity type | `'agent'` |
+| `cli` | `string` | CLI identifier | None |
+| `displayName` | `string` | Display name for users | None |
+| `avatarUrl` | `string` | Avatar URL for users | None |
+| `quiet` | `boolean` | Suppress console logging | `false` |
+| `reconnect` | `boolean` | Auto-reconnect on disconnect | `true` |
+| `maxReconnectAttempts` | `number` | Max retry attempts | `10` |
+| `reconnectDelayMs` | `number` | Initial retry delay (ms) | `1000` |
+| `reconnectMaxDelayMs` | `number` | Max retry delay (ms) | `30000` |
+| `transport` | `AutoTransportOptions` | Transport configuration | None |
+| `transportInstance` | `Transport` | Pre-configured transport | None |
+
+<Note>
+When using `transportInstance`, auto-reconnection is **not supported** because the SDK cannot recreate an externally-provided transport. Use `transport` options instead, or handle reconnection manually.
+</Note>
+
+### Transport Options
+
+```typescript
+interface AutoTransportOptions {
+  wsUrl?: string;        // WebSocket URL (e.g., 'wss://relay.example.com/ws')
+  socketPath?: string;   // Unix socket path (Node.js only)
+  connectTimeout?: number;
+}
+```
+
+### Example
+
+```typescript
+import { BrowserRelayClient } from '@agent-relay/sdk';
+
+const client = new BrowserRelayClient({
+  agentName: 'BrowserUser',
+  entityType: 'user',
+  displayName: 'John Doe',
+  transport: {
+    wsUrl: 'wss://relay.example.com/ws',
+  },
+});
+
+client.onMessage = (from, payload) => {
+  console.log(`${from}: ${payload.body}`);
+};
+
+client.onStateChange = (state) => {
+  console.log(`Connection state: ${state}`);
+};
+
+await client.connect();
+
+// Same messaging API as RelayClient
+client.sendMessage('Agent', 'Hello from browser!');
+client.joinChannel('#general');
+client.sendChannelMessage('#general', 'Hi everyone!');
+```
+
+### API Differences from RelayClient
+
+`BrowserRelayClient` has most of the same API as `RelayClient`, but with some differences:
+
+| Feature | RelayClient | BrowserRelayClient |
+|---------|-------------|-------------------|
+| Transport | Unix socket | WebSocket |
+| Spawn/Release | Yes | No |
+| Query operations | Yes | No |
+| Log streaming | Yes | Yes |
+| Channels | Yes | Yes |
+| Shadow binding | Yes | Yes |
+| Request/Response | Yes | Yes |
+
+---
+
+## Transport Abstraction
+
+The SDK provides a transport abstraction layer for different environments.
+
+```typescript
+import {
+  type Transport,
+  type TransportState,
+  SocketTransport,
+  WebSocketTransport,
+  createAutoTransport,
+  detectEnvironment,
+  isBrowser,
+  isNode,
+} from '@agent-relay/sdk';
+```
+
+### Transport Interface
+
+```typescript
+interface Transport {
+  readonly state: TransportState;
+  // 'disconnected' | 'connecting' | 'connected' | 'closing'
+
+  connect(): Promise<void>;
+  disconnect(): void;
+  send(data: Uint8Array | Buffer): boolean;
+  setEvents(events: TransportEvents): void;
+}
+
+interface TransportEvents {
+  onConnect?: () => void;
+  onData?: (data: Uint8Array) => void;
+  onClose?: () => void;
+  onError?: (error: Error) => void;
+}
+```
+
+### SocketTransport (Node.js)
+
+```typescript
+import { SocketTransport, createSocketTransport } from '@agent-relay/sdk';
+
+const transport = createSocketTransport({
+  socketPath: '/tmp/agent-relay.sock',
+  connectTimeout: 5000,
+});
+
+await transport.connect();
+```
+
+### WebSocketTransport (Browser + Node.js)
+
+```typescript
+import { WebSocketTransport, createWebSocketTransport } from '@agent-relay/sdk';
+
+const transport = createWebSocketTransport({
+  url: 'wss://relay.example.com/ws',
+  connectTimeout: 5000,
+});
+
+await transport.connect();
+```
+
+### Auto Transport
+
+Automatically selects the appropriate transport based on environment:
+
+```typescript
+import { createAutoTransport } from '@agent-relay/sdk';
+
+// Uses WebSocket in browser, socket in Node.js
+const transport = createAutoTransport({
+  wsUrl: 'wss://relay.example.com/ws',
+  socketPath: '/tmp/agent-relay.sock',
+});
+```
+
+### Environment Detection
+
+```typescript
+import { isBrowser, isNode, detectEnvironment } from '@agent-relay/sdk';
+
+if (isBrowser()) {
+  console.log('Running in browser');
+}
+
+if (isNode()) {
+  console.log('Running in Node.js');
+}
+
+const env = detectEnvironment();
+// { isBrowser: boolean, isNode: boolean, isElectron: boolean, ... }
+```
+
+---
+
+## Standalone Relay
+
+For simple use cases, create an in-process daemon:
+
+```typescript
+import { createRelay, createPair, type Relay } from '@agent-relay/sdk';
+```
+
+### createRelay
+
+```typescript
+const relay = await createRelay(config?: RelayConfig): Promise<Relay>
+```
+
+**RelayConfig:**
+
+| Property | Type | Description | Default |
+|----------|------|-------------|---------|
+| `socketPath` | `string` | Custom socket path | Auto-generated |
+| `quiet` | `boolean` | Suppress logging | `true` |
+
+**Relay:**
+
+```typescript
+interface Relay {
+  client(name: string): Promise<RelayClient>;
+  stop(): Promise<void>;
+  socketPath: string;
+}
+```
+
+**Example:**
+
+```typescript
+const relay = await createRelay();
+
+const alice = await relay.client('Alice');
+const bob = await relay.client('Bob');
+
+bob.onMessage = (from, { body }) => {
+  console.log(`Bob received: ${body}`);
+};
+
+alice.sendMessage('Bob', 'Hello Bob!');
+
+// Cleanup
+await relay.stop();
+```
+
+### createPair
+
+Convenience function to create exactly two connected clients:
+
+```typescript
+const [alice, bob] = await createPair('Alice', 'Bob');
+
+bob.onMessage = (from, { body }) => console.log(`${from}: ${body}`);
+alice.sendMessage('Bob', 'Hello!');
+```
+
+---
+
+## Discovery
+
+The SDK includes utilities for discovering daemon sockets and cloud workspaces.
+
+```typescript
+import {
+  discoverSocket,
+  discoverAgentName,
+  detectCloudWorkspace,
+  isCloudWorkspace,
+  getCloudSocketPath,
+  getConnectionInfo,
+} from '@agent-relay/sdk';
+```
+
+### Socket Discovery
+
+```typescript
+// Find the daemon socket for current directory
+const result = discoverSocket();
+// { socketPath: '/tmp/relay/abc123/agent-relay.sock', source: 'project' }
+
+// Discover suggested agent name from environment
+const name = discoverAgentName();
+// Uses AGENT_RELAY_NAME, git user, or hostname
+```
+
+### Cloud Workspace Detection
+
+```typescript
+// Check if running in cloud workspace
+if (isCloudWorkspace()) {
+  const socketPath = getCloudSocketPath();
+  const outboxPath = getCloudOutboxPath();
+}
+
+// Get full cloud workspace info
+const workspace = detectCloudWorkspace();
+// { provider: 'cloud', workspaceId: '...', socketPath: '...' }
+
+// Get connection info for current environment
+const info = await getConnectionInfo();
+// { socketPath, workspaceId, isCloud, ... }
+```
+
+---
+
+## Error Types
+
+The SDK exports specific error types for better error handling:
+
+```typescript
+import {
+  RelayError,
+  DaemonNotRunningError,
+  AgentNotFoundError,
+  TimeoutError,
+  ConnectionError,
+  ChannelNotFoundError,
+  SpawnError,
+} from '@agent-relay/sdk';
+```
+
+**Example:**
+
+```typescript
+import { RelayClient, DaemonNotRunningError, TimeoutError } from '@agent-relay/sdk';
+
+const client = new RelayClient({ agentName: 'MyAgent' });
+
+try {
+  await client.connect();
+} catch (err) {
+  if (err instanceof DaemonNotRunningError) {
+    console.log('Start the daemon with: agent-relay up');
+  } else if (err instanceof TimeoutError) {
+    console.log('Connection timed out');
+  } else {
+    throw err;
+  }
+}
+```
+
+---
+
+## Protocol Types
+
+The SDK re-exports protocol types for convenience:
+
+```typescript
+import {
+  PROTOCOL_VERSION,
+  type MessageType,
+  type PayloadKind,
+  type Envelope,
+  type EntityType,
+  type SendPayload,
+  type SendMeta,
+  type AckPayload,
+  type ErrorPayload,
+  type SpeakOnTrigger,
+  type ShadowConfig,
+  type SpawnPayload,
+  type SpawnResultPayload,
+  type AgentReadyPayload,
+  type ChannelMessagePayload,
+  type AgentInfo,
+  // ... and more
+} from '@agent-relay/sdk';
+```
+
+---
+
+## Framing Utilities
+
+For low-level protocol work:
+
+```typescript
+import {
+  encodeFrame,
+  encodeFrameLegacy,
+  FrameParser,
+  MAX_FRAME_BYTES,
+} from '@agent-relay/sdk';
+
+// Encode envelope to frame
+const frame = encodeFrameLegacy(envelope);
+
+// Parse incoming data
+const parser = new FrameParser();
+parser.setLegacyMode(true);
+
+const envelopes = parser.push(data);
+for (const envelope of envelopes) {
+  handleEnvelope(envelope);
+}
+```
+
+---
+
+## Complete Examples
+
+### Request/Response RPC
+
+```typescript
+import { createRelay } from '@agent-relay/sdk';
+
+const relay = await createRelay();
+
+// Create worker that responds to requests
+const worker = await relay.client('Worker');
+worker.onMessage = (from, payload, messageId, meta) => {
+  const correlationId = meta?.replyTo;
+  if (correlationId) {
+    // Process the request
+    const result = processTask(payload.body);
+    worker.respond(correlationId, from, `Result: ${result}`);
+  }
+};
+
+// Create coordinator that makes requests
+const coordinator = await relay.client('Coordinator');
+
+const response = await coordinator.request('Worker', 'Calculate 2+2', {
+  timeout: 5000,
+});
+
+console.log(response.body); // "Result: 4"
+```
+
+### Spawn with Readiness
+
+```typescript
+import { RelayClient } from '@agent-relay/sdk';
+
+const lead = new RelayClient({ agentName: 'Lead' });
+await lead.connect();
+
+// Spawn worker and wait for it to be ready
+const result = await lead.spawn({
+  name: 'Worker',
+  cli: 'claude',
+  task: 'Help with data processing',
+  waitForReady: true,
+});
+
+if (result.ready) {
+  console.log(`Worker ready! CLI: ${result.readyInfo?.cli}`);
+  lead.sendMessage('Worker', 'Start processing the data');
+} else {
+  console.log('Worker spawned but not ready yet');
+}
+```
+
+### Browser Dashboard
+
+```typescript
+import { BrowserRelayClient } from '@agent-relay/sdk';
+
+const client = new BrowserRelayClient({
+  agentName: 'Dashboard',
+  entityType: 'user',
+  displayName: 'Admin',
+  transport: { wsUrl: 'wss://relay.example.com/ws' },
+});
+
+// Track all agents
+const agents = new Map();
+
+client.onMessage = (from, payload, messageId, meta, originalTo) => {
+  // Update UI with new message
+  displayMessage(from, payload.body);
+};
+
+client.onStateChange = (state) => {
+  updateConnectionStatus(state === 'READY');
+};
+
+await client.connect();
+
+// Join monitoring channel
+client.joinChannel('#status');
+```
+
+---
+
+## See Also
+
+- [Electron Integration](/guides/electron-integration) - Using the SDK in Electron apps
+- [API Reference](/reference/api) - Full API including Daemon class
+- [Protocol Reference](/reference/protocol) - Wire protocol details
+- [Spawning](/features/spawning) - Agent lifecycle management

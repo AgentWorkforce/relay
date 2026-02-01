@@ -62,6 +62,7 @@
     {
       "group": "Reference",
       "pages": [
+        "reference/sdk",
         "reference/cli",
         "reference/protocol",
         "reference/configuration",
