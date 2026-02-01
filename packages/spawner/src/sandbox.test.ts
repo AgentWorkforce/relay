@@ -226,4 +226,117 @@ describe('sandbox', () => {
       expect(preset.readOnly).toContain('package.json');
     });
   });
+
+  describe('edge cases', () => {
+    const testCommand = 'claude';
+    const testArgs = ['--help'];
+
+    describe('empty permissions', () => {
+      it('handles empty permissions object', () => {
+        const emptyPerms: FilePermissions = {};
+        const result = applySandbox(testCommand, testArgs, emptyPerms, testProjectRoot);
+        // Should still work - empty permissions means default behavior
+        expect(result).toBeDefined();
+        expect(result.command).toBeDefined();
+      });
+
+      it('handles permissions with empty arrays', () => {
+        const perms: FilePermissions = {
+          allowed: [],
+          disallowed: [],
+          readOnly: [],
+          writable: [],
+        };
+        const result = applySandbox(testCommand, testArgs, perms, testProjectRoot);
+        expect(result).toBeDefined();
+      });
+    });
+
+    describe('network isolation', () => {
+      it('respects allowNetwork: false', () => {
+        const perms: FilePermissions = {
+          allowNetwork: false,
+        };
+        const caps = detectCapabilities();
+
+        if (caps.methods.includes('bwrap')) {
+          const result = applySandbox(testCommand, testArgs, perms, testProjectRoot);
+          expect(result.args).toContain('--unshare-net');
+        }
+      });
+
+      it('allows network by default', () => {
+        const perms: FilePermissions = {};
+        const caps = detectCapabilities();
+
+        if (caps.methods.includes('bwrap')) {
+          const result = applySandbox(testCommand, testArgs, perms, testProjectRoot);
+          expect(result.args).not.toContain('--unshare-net');
+        }
+      });
+    });
+
+    describe('mergePermissions edge cases', () => {
+      it('preserves allowNetwork from explicit', () => {
+        const explicit: FilePermissions = { allowNetwork: false };
+        const result = mergePermissions('block-secrets', explicit);
+        expect(result?.allowNetwork).toBe(false);
+      });
+
+      it('preserves allowNetwork from preset when explicit is undefined', () => {
+        const explicit: FilePermissions = { allowed: ['src/**'] };
+        const result = mergePermissions('block-secrets', explicit);
+        // block-secrets doesn't set allowNetwork, so it should be undefined
+        expect(result?.allowNetwork).toBeUndefined();
+      });
+
+      it('handles empty disallowed arrays in merge', () => {
+        const explicit: FilePermissions = { disallowed: [] };
+        const result = mergePermissions('block-secrets', explicit);
+        // Should still have preset disallowed entries
+        expect(result?.disallowed).toContain('.env');
+      });
+
+      it('handles empty readOnly arrays in merge', () => {
+        const explicit: FilePermissions = { readOnly: [] };
+        const result = mergePermissions('source-only', explicit);
+        // Should still have preset readOnly entries
+        expect(result?.readOnly).toContain('package.json');
+      });
+    });
+
+    describe('path handling', () => {
+      it('handles absolute paths in permissions', () => {
+        const perms: FilePermissions = {
+          allowed: ['/absolute/path'],
+        };
+        const result = applySandbox(testCommand, testArgs, perms, testProjectRoot);
+        expect(result).toBeDefined();
+      });
+
+      it('handles relative paths in permissions', () => {
+        const perms: FilePermissions = {
+          allowed: ['relative/path'],
+        };
+        const result = applySandbox(testCommand, testArgs, perms, testProjectRoot);
+        expect(result).toBeDefined();
+      });
+
+      it('handles glob patterns in permissions', () => {
+        const perms: FilePermissions = {
+          allowed: ['**/*.ts', 'src/**/*'],
+        };
+        const result = applySandbox(testCommand, testArgs, perms, testProjectRoot);
+        expect(result).toBeDefined();
+      });
+    });
+
+    describe('read-only preset', () => {
+      it('has empty writable array indicating no writes allowed', () => {
+        const preset = FILE_PERMISSION_PRESETS['read-only'];
+        expect(preset.writable).toBeDefined();
+        expect(preset.writable).toHaveLength(0);
+      });
+    });
+  });
 });

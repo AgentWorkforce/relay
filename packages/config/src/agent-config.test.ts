@@ -242,4 +242,177 @@ model: haiku
       expect(args).toContain('opus'); // Original preserved
     });
   });
+
+  describe('file permissions in agent config', () => {
+    it('parses file-allowed from frontmatter', () => {
+      const agentsDir = path.join(tempDir, '.claude', 'agents');
+      fs.mkdirSync(agentsDir, { recursive: true });
+      fs.writeFileSync(path.join(agentsDir, 'worker.md'), `---
+name: worker
+file-allowed: src/**, tests/**
+---
+`);
+
+      const result = findAgentConfig('worker', tempDir);
+      expect(result?.filePermissions?.allowed).toEqual(['src/**', 'tests/**']);
+    });
+
+    it('parses file-disallowed from frontmatter', () => {
+      const agentsDir = path.join(tempDir, '.claude', 'agents');
+      fs.mkdirSync(agentsDir, { recursive: true });
+      fs.writeFileSync(path.join(agentsDir, 'secure.md'), `---
+name: secure
+file-disallowed: .env*, secrets/**, *.pem
+---
+`);
+
+      const result = findAgentConfig('secure', tempDir);
+      expect(result?.filePermissions?.disallowed).toEqual(['.env*', 'secrets/**', '*.pem']);
+    });
+
+    it('parses file-readonly from frontmatter', () => {
+      const agentsDir = path.join(tempDir, '.claude', 'agents');
+      fs.mkdirSync(agentsDir, { recursive: true });
+      fs.writeFileSync(path.join(agentsDir, 'reader.md'), `---
+name: reader
+file-readonly: package.json, tsconfig.json
+---
+`);
+
+      const result = findAgentConfig('reader', tempDir);
+      expect(result?.filePermissions?.readOnly).toEqual(['package.json', 'tsconfig.json']);
+    });
+
+    it('parses file-writable from frontmatter', () => {
+      const agentsDir = path.join(tempDir, '.claude', 'agents');
+      fs.mkdirSync(agentsDir, { recursive: true });
+      fs.writeFileSync(path.join(agentsDir, 'writer.md'), `---
+name: writer
+file-writable: dist/**, build/**
+---
+`);
+
+      const result = findAgentConfig('writer', tempDir);
+      expect(result?.filePermissions?.writable).toEqual(['dist/**', 'build/**']);
+    });
+
+    it('parses file-network from frontmatter', () => {
+      const agentsDir = path.join(tempDir, '.claude', 'agents');
+      fs.mkdirSync(agentsDir, { recursive: true });
+      fs.writeFileSync(path.join(agentsDir, 'offline.md'), `---
+name: offline
+file-network: false
+---
+`);
+
+      const result = findAgentConfig('offline', tempDir);
+      expect(result?.filePermissions?.allowNetwork).toBe(false);
+    });
+
+    it('parses file-network: true from frontmatter', () => {
+      const agentsDir = path.join(tempDir, '.claude', 'agents');
+      fs.mkdirSync(agentsDir, { recursive: true });
+      fs.writeFileSync(path.join(agentsDir, 'online.md'), `---
+name: online
+file-network: true
+---
+`);
+
+      const result = findAgentConfig('online', tempDir);
+      expect(result?.filePermissions?.allowNetwork).toBe(true);
+    });
+
+    it('parses file-preset from frontmatter', () => {
+      const agentsDir = path.join(tempDir, '.claude', 'agents');
+      fs.mkdirSync(agentsDir, { recursive: true });
+      fs.writeFileSync(path.join(agentsDir, 'preset.md'), `---
+name: preset
+file-preset: block-secrets
+---
+`);
+
+      const result = findAgentConfig('preset', tempDir);
+      expect(result?.filePermissionPreset).toBe('block-secrets');
+    });
+
+    it('parses all file presets', () => {
+      const agentsDir = path.join(tempDir, '.claude', 'agents');
+      fs.mkdirSync(agentsDir, { recursive: true });
+
+      const presets = ['block-secrets', 'source-only', 'read-only', 'docs-only'];
+      for (const preset of presets) {
+        fs.writeFileSync(path.join(agentsDir, `${preset}-test.md`), `---
+name: ${preset}-test
+file-preset: ${preset}
+---
+`);
+        const result = findAgentConfig(`${preset}-test`, tempDir);
+        expect(result?.filePermissionPreset).toBe(preset);
+      }
+    });
+
+    it('ignores invalid file-preset values', () => {
+      const agentsDir = path.join(tempDir, '.claude', 'agents');
+      fs.mkdirSync(agentsDir, { recursive: true });
+      fs.writeFileSync(path.join(agentsDir, 'invalid.md'), `---
+name: invalid
+file-preset: invalid-preset
+---
+`);
+
+      const result = findAgentConfig('invalid', tempDir);
+      expect(result?.filePermissionPreset).toBeUndefined();
+    });
+
+    it('parses allowed-cwd from frontmatter', () => {
+      const agentsDir = path.join(tempDir, '.claude', 'agents');
+      fs.mkdirSync(agentsDir, { recursive: true });
+      fs.writeFileSync(path.join(agentsDir, 'cwd.md'), `---
+name: cwd
+allowed-cwd: src, tests
+---
+`);
+
+      const result = findAgentConfig('cwd', tempDir);
+      expect(result?.allowedCwd).toEqual(['src', 'tests']);
+    });
+
+    it('parses multiple file permission fields together', () => {
+      const agentsDir = path.join(tempDir, '.claude', 'agents');
+      fs.mkdirSync(agentsDir, { recursive: true });
+      fs.writeFileSync(path.join(agentsDir, 'full.md'), `---
+name: full
+file-allowed: src/**
+file-disallowed: .env*
+file-readonly: package.json
+file-writable: dist/**
+file-network: false
+file-preset: block-secrets
+allowed-cwd: src
+---
+`);
+
+      const result = findAgentConfig('full', tempDir);
+      expect(result?.filePermissions?.allowed).toEqual(['src/**']);
+      expect(result?.filePermissions?.disallowed).toEqual(['.env*']);
+      expect(result?.filePermissions?.readOnly).toEqual(['package.json']);
+      expect(result?.filePermissions?.writable).toEqual(['dist/**']);
+      expect(result?.filePermissions?.allowNetwork).toBe(false);
+      expect(result?.filePermissionPreset).toBe('block-secrets');
+      expect(result?.allowedCwd).toEqual(['src']);
+    });
+
+    it('returns undefined filePermissions when no file fields present', () => {
+      const agentsDir = path.join(tempDir, '.claude', 'agents');
+      fs.mkdirSync(agentsDir, { recursive: true });
+      fs.writeFileSync(path.join(agentsDir, 'nofile.md'), `---
+name: nofile
+model: haiku
+---
+`);
+
+      const result = findAgentConfig('nofile', tempDir);
+      expect(result?.filePermissions).toBeUndefined();
+    });
+  });
 });
