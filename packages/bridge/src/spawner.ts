@@ -1118,27 +1118,18 @@ export class AgentSpawner {
         await this.release(workerName);
       };
 
-      // Apply file permission sandbox if configured
+      // Apply file permission sandbox if configured in SpawnRequest
       // This wraps the CLI command with platform-specific sandboxing (sandbox-exec on macOS, bwrap on Linux)
       const filePermissions = mergePermissions(
         request.filePermissionPreset,
         request.filePermissions
       );
 
-      // Also check agent config for file permissions
-      const agentConfigForPerms = findAgentConfig(name, this.projectRoot);
-      const mergedFilePermissions = agentConfigForPerms?.filePermissions
-        ? mergePermissions(
-            agentConfigForPerms.filePermissionPreset,
-            { ...agentConfigForPerms.filePermissions, ...filePermissions }
-          )
-        : filePermissions;
-
       let sandboxedCommand = command;
       let sandboxedArgs = args;
 
-      if (mergedFilePermissions && Object.keys(mergedFilePermissions).length > 0) {
-        const sandboxResult = applySandbox(command, args, mergedFilePermissions, agentCwd);
+      if (filePermissions && Object.keys(filePermissions).length > 0) {
+        const sandboxResult = applySandbox(command, args, filePermissions, agentCwd);
         sandboxedCommand = sandboxResult.command;
         sandboxedArgs = sandboxResult.args;
         // Store for cleanup on exit
@@ -1147,7 +1138,7 @@ export class AgentSpawner {
         if (sandboxResult.sandboxed) {
           log.info(`Applied ${sandboxResult.method} sandbox for ${name}`);
           if (debug) {
-            log.debug(`Sandbox permissions: ${JSON.stringify(mergedFilePermissions)}`);
+            log.debug(`Sandbox permissions: ${JSON.stringify(filePermissions)}`);
           }
         } else if (debug) {
           log.debug(`No sandbox available for ${name} (platform: ${detectCapabilities().platform})`);

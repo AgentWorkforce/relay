@@ -89,14 +89,6 @@ export const AgentFrontmatterSchema = z.object({
   agentType: z.string().optional(),
   role: z.string().optional(),
   'allowed-tools': z.string().optional(),
-  // File permission guardrails (OS-level sandbox enforcement)
-  'file-allowed': z.string().optional(),
-  'file-disallowed': z.string().optional(),
-  'file-readonly': z.string().optional(),
-  'file-writable': z.string().optional(),
-  'file-network': z.string().optional(),
-  'file-preset': z.string().optional(),
-  'allowed-cwd': z.string().optional(),
 });
 
 export const CLIAuthConfigSchema = z.object({

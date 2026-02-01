@@ -8,27 +8,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-/**
- * File permission configuration for OS-level sandbox enforcement.
- */
-export interface FilePermissions {
-  /** Paths the agent can access (whitelist mode) */
-  allowed?: string[];
-  /** Paths the agent cannot access (blacklist) */
-  disallowed?: string[];
-  /** Paths the agent can only read */
-  readOnly?: string[];
-  /** Paths the agent can write to */
-  writable?: string[];
-  /** Whether to allow network access (default: true) */
-  allowNetwork?: boolean;
-}
-
-/**
- * File permission preset names.
- */
-export type FilePermissionPreset = 'block-secrets' | 'source-only' | 'read-only' | 'docs-only';
-
 export interface AgentConfig {
   /** Agent name (from filename or frontmatter) */
   name: string;
@@ -44,77 +23,6 @@ export interface AgentConfig {
   agentType?: string;
   /** Agent role for prompt composition (planner, worker, reviewer, lead, shadow) */
   role?: string;
-  /**
-   * File permission guardrails (OS-level sandbox enforcement).
-   * Parsed from frontmatter fields:
-   *   file-allowed: src/**,tests/**
-   *   file-disallowed: .env*,secrets/**
-   *   file-readonly: package.json
-   *   file-writable: dist/**
-   *   file-network: true/false
-   */
-  filePermissions?: FilePermissions;
-  /**
-   * File permission preset to use.
-   * Options: block-secrets, source-only, read-only, docs-only
-   */
-  filePermissionPreset?: FilePermissionPreset;
-  /**
-   * Allowed working directories for child agents spawned by this agent.
-   */
-  allowedCwd?: string[];
-}
-
-/**
- * Parse file permissions from frontmatter fields.
- *
- * Supported fields:
- *   file-allowed: src/**,tests/**
- *   file-disallowed: .env*,secrets/**
- *   file-readonly: package.json,tsconfig.json
- *   file-writable: dist/**
- *   file-network: true/false
- */
-function parseFilePermissions(frontmatter: Record<string, string>): FilePermissions {
-  const permissions: FilePermissions = {};
-
-  if (frontmatter['file-allowed']) {
-    permissions.allowed = frontmatter['file-allowed'].split(',').map(p => p.trim());
-  }
-
-  if (frontmatter['file-disallowed']) {
-    permissions.disallowed = frontmatter['file-disallowed'].split(',').map(p => p.trim());
-  }
-
-  if (frontmatter['file-readonly']) {
-    permissions.readOnly = frontmatter['file-readonly'].split(',').map(p => p.trim());
-  }
-
-  if (frontmatter['file-writable']) {
-    permissions.writable = frontmatter['file-writable'].split(',').map(p => p.trim());
-  }
-
-  if (frontmatter['file-network']) {
-    permissions.allowNetwork = frontmatter['file-network'].toLowerCase() === 'true';
-  }
-
-  return permissions;
-}
-
-/**
- * Parse and validate file permission preset from frontmatter.
- */
-function parseFilePermissionPreset(value: string | undefined): FilePermissionPreset | undefined {
-  if (!value) return undefined;
-
-  const validPresets: FilePermissionPreset[] = ['block-secrets', 'source-only', 'read-only', 'docs-only'];
-  const normalized = value.toLowerCase().trim();
-
-  if (validPresets.includes(normalized as FilePermissionPreset)) {
-    return normalized as FilePermissionPreset;
-  }
-
-  return undefined;
 }
 
 /**
@@ -190,9 +98,6 @@ export function findAgentConfig(agentName: string, projectRoot?: string): AgentC
           const content = fs.readFileSync(configPath, 'utf-8');
           const frontmatter = parseFrontmatter(content);
 
-          // Parse file permissions from frontmatter
-          const filePermissions = parseFilePermissions(frontmatter);
-
           return {
             name: frontmatter.name || baseName,
             configPath,
@@ -201,9 +106,6 @@ export function findAgentConfig(agentName: string, projectRoot?: string): AgentC
             allowedTools: frontmatter['allowed-tools']?.split(',').map(t => t.trim()),
             agentType: frontmatter.agentType,
             role: frontmatter.role,
-            filePermissions: Object.keys(filePermissions).length > 0 ? filePermissions : undefined,
-            filePermissionPreset: parseFilePermissionPreset(frontmatter['file-preset']),
-            allowedCwd: frontmatter['allowed-cwd']?.split(',').map(p => p.trim()),
           };
         }
       }
