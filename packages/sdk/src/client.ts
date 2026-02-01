@@ -782,6 +782,11 @@ export class RelayClient {
     // This ensures we don't miss the AGENT_READY event if it arrives quickly
     let readyPromise: Promise<AgentReadyPayload> | undefined;
     if (waitForReady) {
+      // Check if we're already waiting for this agent (prevents overwriting existing waiter)
+      if (this.pendingAgentReady.has(options.name)) {
+        throw new Error(`Already waiting for agent ${options.name} to be ready`);
+      }
+
       readyPromise = new Promise<AgentReadyPayload>((resolve, reject) => {
         const timeoutHandle = setTimeout(() => {
           this.pendingAgentReady.delete(options.name);

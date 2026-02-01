@@ -36,9 +36,8 @@ import {
   type ChannelMessageEnvelope,
   type MessageAttachment,
   PROTOCOL_VERSION,
-  encodeFrameLegacy,
-  FrameParser,
 } from '@agent-relay/protocol';
+import { encodeFrameLegacyBrowser, BrowserFrameParser } from './browser-framing.js';
 
 export type BrowserClientState = 'DISCONNECTED' | 'CONNECTING' | 'HANDSHAKING' | 'READY' | 'BACKOFF';
 
@@ -200,7 +199,7 @@ export interface BrowserRequestResponse {
 export class BrowserRelayClient {
   private config: BrowserClientConfig;
   private transport?: Transport;
-  private parser: FrameParser;
+  private parser: BrowserFrameParser;
 
   private _state: BrowserClientState = 'DISCONNECTED';
   private sessionId?: string;
@@ -235,8 +234,7 @@ export class BrowserRelayClient {
 
   constructor(config: BrowserClientConfig) {
     this.config = { ...DEFAULT_CONFIG, ...config };
-    this.parser = new FrameParser();
-    this.parser.setLegacyMode(true);
+    this.parser = new BrowserFrameParser(); // Always uses legacy mode (4-byte header, JSON only)
     this.reconnectDelay = this.config.reconnectDelayMs ?? DEFAULT_CONFIG.reconnectDelayMs;
   }
 
@@ -291,18 +289,24 @@ export class BrowserRelayClient {
 
       // Wait for READY state
       await new Promise<void>((resolve, reject) => {
+        let checkReady: ReturnType<typeof setInterval>;
+
+        const cleanup = () => {
+          clearInterval(checkReady);
+          clearTimeout(timeout);
+        };
+
         const timeout = setTimeout(() => {
+          cleanup();
           reject(new Error('Connection handshake timeout'));
         }, 5000);
 
-        const checkReady = setInterval(() => {
+        checkReady = setInterval(() => {
           if (this._state === 'READY') {
-            clearInterval(checkReady);
-            clearTimeout(timeout);
+            cleanup();
             resolve();
           } else if (this._state === 'DISCONNECTED') {
-            clearInterval(checkReady);
-            clearTimeout(timeout);
+            cleanup();
             reject(new Error('Connection failed'));
           }
         }, 10);
@@ -679,7 +683,7 @@ export class BrowserRelayClient {
     }
 
     try {
-      const frame = encodeFrameLegacy(envelope);
+      const frame = encodeFrameLegacyBrowser(envelope);
       this.writeQueue.push(frame);
 
       if (!this.writeScheduled) {
@@ -713,9 +717,7 @@ export class BrowserRelayClient {
 
   private handleData(data: Uint8Array): void {
     try {
-      // Convert Uint8Array to Buffer for FrameParser
-      const buffer = Buffer.from(data);
-      const frames = this.parser.push(buffer);
+      const frames = this.parser.push(data);
       for (const frame of frames) {
         this.processFrame(frame);
       }
