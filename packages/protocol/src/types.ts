@@ -41,6 +41,8 @@ export type MessageType =
   | 'SPAWN_RESULT'
   | 'RELEASE'
   | 'RELEASE_RESULT'
+  // Agent lifecycle events
+  | 'AGENT_READY'
   // Query types (MCP/client requests)
   | 'STATUS'
   | 'STATUS_RESPONSE'
@@ -450,6 +452,26 @@ export interface ReleaseResultPayload {
 }
 
 // =============================================================================
+// Agent Lifecycle Event Types
+// =============================================================================
+
+/**
+ * Payload for AGENT_READY message.
+ * Broadcast by daemon when an agent completes connection (HELLO/WELCOME handshake).
+ * Subscribers can use this to know when a spawned agent is ready to receive messages.
+ */
+export interface AgentReadyPayload {
+  /** Name of the agent that is now ready */
+  name: string;
+  /** CLI identifier (claude, codex, gemini, etc.) */
+  cli?: string;
+  /** Task description */
+  task?: string;
+  /** Timestamp when the agent connected */
+  connectedAt: number;
+}
+
+// =============================================================================
 // Typed Envelope Helpers
 // =============================================================================
 
@@ -471,6 +493,7 @@ export type SpawnEnvelope = Envelope<SpawnPayload>;
 export type SpawnResultEnvelope = Envelope<SpawnResultPayload>;
 export type ReleaseEnvelope = Envelope<ReleasePayload>;
 export type ReleaseResultEnvelope = Envelope<ReleaseResultPayload>;
+export type AgentReadyEnvelope = Envelope<AgentReadyPayload>;
 export type ChannelJoinEnvelope = Envelope<ChannelJoinPayload>;
 export type ChannelLeaveEnvelope = Envelope<ChannelLeavePayload>;
 export type ChannelMessageEnvelope = Envelope<ChannelMessagePayload>;
