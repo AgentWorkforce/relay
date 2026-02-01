@@ -34,6 +34,16 @@
       "types": "./dist/transports/index.d.ts",
       "import": "./dist/transports/index.js",
       "default": "./dist/transports/index.js"
+    },
+    "./discovery": {
+      "types": "./dist/discovery.d.ts",
+      "import": "./dist/discovery.js",
+      "default": "./dist/discovery.js"
+    },
+    "./errors": {
+      "types": "./dist/errors.d.ts",
+      "import": "./dist/errors.js",
+      "default": "./dist/errors.js"
     }
   },
   "files": [
@@ -67,7 +77,8 @@
     "access": "public"
   },
   "dependencies": {
-    "@agent-relay/protocol": "2.1.5"
+    "@agent-relay/protocol": "2.1.5",
+    "@agent-relay/utils": "2.1.5"
   },
   "engines": {
     "node": ">=18.0.0"

@@ -46,7 +46,14 @@ export function createHybridClient(options: HybridClientOptions): RelayClient {
   }
 
   // Get socket path for queries
-  const socketPath = options.socketPath || discoverSocket()?.socketPath || join(relayDir, 'relay.sock');
+  // Use discoverSocket() which respects cloud workspace config and env overrides.
+  // Only fall back to relayDir/relay.sock for non-cloud local development.
+  const discovery = discoverSocket();
+  const socketPath = options.socketPath || discovery?.socketPath || join(relayDir, 'relay.sock');
+
+  if (process.env.DEBUG || process.env.RELAY_DEBUG) {
+    console.debug('[hybrid-client] Socket path:', socketPath, 'source:', discovery?.source ?? 'fallback', 'isCloud:', discovery?.isCloud ?? false);
+  }
 
   // Create socket client for queries only
   let socketClient: RelayClient | null = null;

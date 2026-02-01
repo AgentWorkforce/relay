@@ -65,7 +65,12 @@ export interface BrowserClientConfig {
   reconnectMaxDelayMs?: number;
   /** Transport options (WebSocket URL, socket path, etc.) */
   transport?: AutoTransportOptions;
-  /** Pre-configured transport instance (alternative to transport options) */
+  /**
+   * Pre-configured transport instance (alternative to transport options).
+   * NOTE: Auto-reconnection is NOT supported when using transportInstance.
+   * If reconnection is needed, use `transport` options instead, or handle
+   * reconnection manually by listening for state changes.
+   */
   transportInstance?: Transport;
 }
 
@@ -941,6 +946,20 @@ export class BrowserRelayClient {
   }
 
   private scheduleReconnect(): void {
+    // Cannot reconnect when using transportInstance - we can't recreate an
+    // externally-provided transport. Users must handle reconnection themselves
+    // or use transport options instead.
+    if (!this.config.transport && this.config.transportInstance) {
+      if (!this.config.quiet) {
+        console.warn(
+          '[sdk] Cannot auto-reconnect with transportInstance. ' +
+          'Use transport options instead, or handle reconnection manually.'
+        );
+      }
+      this.setState('DISCONNECTED');
+      return;
+    }
+
     this.setState('BACKOFF');
     this.reconnectAttempts++;
 
