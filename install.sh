@@ -107,6 +107,89 @@ download_relay_pty() {
     fi
 }
 
+# Download standalone dashboard-server binary
+download_dashboard_binary() {
+    if [ "${AGENT_RELAY_NO_DASHBOARD}" = "true" ]; then
+        info "Skipping dashboard installation (AGENT_RELAY_NO_DASHBOARD=true)"
+        return 0
+    fi
+
+    step "Downloading dashboard-server binary..."
+
+    local binary_name="relay-dashboard-server-${PLATFORM}"
+    local compressed_url="https://github.com/$REPO_DASHBOARD/releases/latest/download/${binary_name}.gz"
+    local uncompressed_url="https://github.com/$REPO_DASHBOARD/releases/latest/download/${binary_name}"
+    local target_path="$BIN_DIR/relay-dashboard-server"
+    local temp_file="/tmp/dashboard-download-$$"
+
+    mkdir -p "$BIN_DIR"
+
+    # Setup cleanup trap for temp files
+    trap 'rm -f "${temp_file}.gz" "${temp_file}"' EXIT
+
+    # Try compressed binary first (faster download)
+    if has_command gunzip; then
+        info "Trying compressed dashboard binary..."
+
+        if curl -fsSL "$compressed_url" -o "${temp_file}.gz" 2>/dev/null; then
+            # Check if we got a valid gzip file
+            local is_gzip=false
+            if has_command file; then
+                file "${temp_file}.gz" 2>/dev/null | grep -q "gzip" && is_gzip=true
+            else
+                head -c 2 "${temp_file}.gz" 2>/dev/null | od -An -tx1 | grep -q "1f 8b" && is_gzip=true
+            fi
+
+            if [ "$is_gzip" = true ]; then
+                if gunzip -c "${temp_file}.gz" > "$target_path" 2>/dev/null; then
+                    rm -f "${temp_file}.gz"
+                    chmod +x "$target_path"
+
+                    if "$target_path" --version &>/dev/null; then
+                        success "Downloaded standalone dashboard-server binary"
+                        trap - EXIT
+                        return 0
+                    else
+                        warn "Dashboard binary failed verification, trying uncompressed..."
+                        rm -f "$target_path"
+                    fi
+                else
+                    rm -f "${temp_file}.gz" "$target_path"
+                fi
+            else
+                rm -f "${temp_file}.gz"
+            fi
+        fi
+    fi
+
+    # Fall back to uncompressed binary
+    info "Trying uncompressed dashboard binary..."
+
+    if curl -fsSL "$uncompressed_url" -o "$target_path" 2>/dev/null; then
+        local file_size
+        file_size=$(stat -f%z "$target_path" 2>/dev/null || stat -c%s "$target_path" 2>/dev/null || echo "0")
+
+        if [ "$file_size" -gt 1000000 ]; then
+            chmod +x "$target_path"
+
+            if "$target_path" --version &>/dev/null; then
+                success "Downloaded standalone dashboard-server binary"
+                trap - EXIT
+                return 0
+            else
+                warn "Dashboard binary failed verification"
+                rm -f "$target_path"
+            fi
+        else
+            rm -f "$target_path"
+        fi
+    fi
+
+    trap - EXIT
+    info "No standalone dashboard binary available for $PLATFORM"
+    return 1
+}
+
 # Check if a command exists
 has_command() {
     command -v "$1" &> /dev/null
@@ -286,8 +369,11 @@ Or use nvm: curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/instal
 
     # Install dashboard if not skipped
     if [ "${AGENT_RELAY_NO_DASHBOARD}" != "true" ]; then
-        info "Installing dashboard..."
-        npm install -g @agent-relay/dashboard-server 2>/dev/null || true
+        # Try binary first, fall back to npm
+        if ! download_dashboard_binary; then
+            info "Installing dashboard via npm..."
+            npm install -g @agent-relay/dashboard-server 2>/dev/null || true
+        fi
     fi
 
     success "Installed via npm"
@@ -419,6 +505,8 @@ main() {
     if download_standalone_binary; then
         # Also download relay-pty binary if available
         download_relay_pty || true
+        # Download dashboard-server binary if available
+        download_dashboard_binary || true
         verify_installation && print_usage && exit 0
     fi
 

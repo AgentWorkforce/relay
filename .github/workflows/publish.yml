@@ -165,10 +165,13 @@ jobs:
       - name: Build standalone binary
         run: |
           mkdir -p release-binaries
+          # Exclude native modules - bun runtime has built-in bun:sqlite
           bun build \
             --compile \
             --minify \
             --target=${{ matrix.target }} \
+            --external=better-sqlite3 \
+            --external=ssh2 \
             --define="process.env.AGENT_RELAY_VERSION=\"${{ steps.version.outputs.version }}\"" \
             ./dist/src/cli/index.js \
             --outfile release-binaries/${{ matrix.binary_name }}
