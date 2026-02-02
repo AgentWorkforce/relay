@@ -285,7 +285,7 @@ agent-relay create-agent -n Lead claude    # Uses lead.md
 
 Tell the user: **Congratulations!** You have successfully set up agent-relay!
 
-Run `agent-relay up --dashboard` and navigate to http://localhost:3888 to spawn and chat with agents.
+Navigate to http://localhost:3888 and press `s` to spawn and chat with agents.
 
 ---
 
