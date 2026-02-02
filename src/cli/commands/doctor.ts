@@ -104,7 +104,7 @@ async function checkBetterSqlite3(): Promise<CheckResult> {
       ok: true,
       message: `Available (v${version})`,
     };
-  } catch (err: any) {
+  } catch {
     return {
       name: 'better-sqlite3',
       ok: false,
@@ -152,7 +152,7 @@ async function checkNodeSqlite(): Promise<CheckResult> {
       ok: true,
       message: `Available (Node ${nodeVersion.raw})`,
     };
-  } catch (err: any) {
+  } catch {
     return {
       name: 'node:sqlite',
       ok: false,
@@ -267,7 +267,7 @@ async function checkDbPermissions(
       ok: true,
       message: `${displayPath} (${mode}${sizeDisplay})`,
     };
-  } catch (err) {
+  } catch {
     return {
       name: 'Database file',
       ok: false,
@@ -368,7 +368,7 @@ async function checkWriteTest(
       ok: true,
       message: 'OK',
     };
-  } catch (err: any) {
+  } catch {
     db?.close?.();
     return {
       name: 'Write test',
@@ -434,7 +434,7 @@ async function checkReadTest(
       ok: true,
       message: 'OK',
     };
-  } catch (err: any) {
+  } catch {
     db?.close?.();
     return {
       name: 'Read test',

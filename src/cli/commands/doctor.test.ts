@@ -6,8 +6,6 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 let tempRoot: string;
 let dataDir: string;
 let storageConfig: { type?: string; path?: string };
-let betterAvailable = true;
-let nodeAvailable = true;
 let mockStore: Map<string, string>;
 
 // Store availability in an object to ensure closure works correctly across module resets
@@ -152,8 +150,6 @@ beforeEach(() => {
     path: path.join(dataDir, 'messages.sqlite'),
   };
   mockStore = new Map<string, string>();
-  betterAvailable = true;
-  nodeAvailable = true;
   mockAvailability.betterAvailable = true;
   mockAvailability.nodeAvailable = true;
   process.env.AGENT_RELAY_DOCTOR_NODE_VERSION = '22.1.0';
@@ -202,8 +198,6 @@ describe('doctor diagnostics', () => {
   });
 
   it('fails gracefully when no SQLite drivers are available', async () => {
-    betterAvailable = false;
-    nodeAvailable = false;
     mockAvailability.betterAvailable = false;
     mockAvailability.nodeAvailable = false;
     process.env.AGENT_RELAY_DOCTOR_NODE_SQLITE_AVAILABLE = '0';

@@ -26,7 +26,6 @@ import { createStorageAdapter } from '@agent-relay/storage/adapter';
 import {
   initTelemetry,
   track,
-  isTelemetryEnabled,
   enableTelemetry,
   disableTelemetry,
   getStatus,
@@ -37,7 +36,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { promisify } from 'node:util';
-import { exec, spawn as spawnProcess } from 'node:child_process';
+import { exec, execSync, spawn as spawnProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 
@@ -69,7 +68,6 @@ function findDashboardBinary(): string | null {
         }
       } else {
         // For relative paths (just binary name), check if it's in PATH
-        const { execSync } = require('node:child_process');
         const result = execSync(`which ${searchPath} 2>/dev/null || where ${searchPath} 2>nul`, { encoding: 'utf8' }).trim();
         if (result) {
           return result.split('\n')[0]; // Take first result
@@ -2402,13 +2400,13 @@ program
 
     // Try daemon socket first (preferred path)
     try {
-        const paths = getProjectPaths();
+        const _paths = getProjectPaths();
 
       // TODO: Re-enable daemon-based spawning when client.spawn() is implemented
       // See: docs/SDK-MIGRATION-PLAN.md for planned implementation
       // For now, fall through to HTTP API
       throw new Error('Daemon-based spawn not yet implemented');
-    } catch (daemonErr) {
+    } catch {
       // Fall through to HTTP API
       // console.log('Daemon not available, trying HTTP API...');
     }
@@ -2457,10 +2455,10 @@ program
 
     // Try daemon socket first (preferred path)
     try {
-        const paths = getProjectPaths();
+        const _paths = getProjectPaths();
 
-      const client = new RelayClient({
-        socketPath: paths.socketPath,
+      const _client = new RelayClient({
+        socketPath: _paths.socketPath,
         agentName: '__cli_releaser__',
         quiet: true,
         reconnect: false,
@@ -2473,7 +2471,7 @@ program
       // See: docs/SDK-MIGRATION-PLAN.md for planned implementation
       // For now, fall through to HTTP API
       throw new Error('Daemon-based release not yet implemented');
-    } catch (daemonErr) {
+    } catch {
       // Fall through to HTTP API
       // console.log('Daemon not available, trying HTTP API...');
     }
