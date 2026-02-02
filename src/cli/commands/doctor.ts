@@ -84,8 +84,8 @@ async function checkBetterSqlite3(): Promise<CheckResult> {
   }
 
   try {
-    // Use Function() constructor to avoid bundler trying to resolve this
-    const mod = await (Function('return import("better-sqlite3")')() as Promise<any>);
+    // Use dynamic import for better-sqlite3
+    const mod = await import('better-sqlite3');
     const DatabaseCtor: any = (mod as any).default ?? mod;
     // Quick sanity check to ensure native binding works
     const db = new DatabaseCtor(':memory:');
@@ -94,7 +94,9 @@ async function checkBetterSqlite3(): Promise<CheckResult> {
     // Try to get version, but don't fail if package.json can't be read
     let version = 'unknown';
     try {
-      const pkg = (Function('return require("better-sqlite3/package.json")')());
+      const { createRequire } = await import('node:module');
+      const require = createRequire(import.meta.url);
+      const pkg = require('better-sqlite3/package.json');
       version = pkg.version ?? 'unknown';
     } catch { /* ignore */ }
     return {

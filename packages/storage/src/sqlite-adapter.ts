@@ -75,8 +75,9 @@ export class SqliteStorageAdapter implements StorageAdapter {
   private async openDatabase(driver: SqliteDriverName): Promise<SqliteDatabase> {
     if (driver === 'bun') {
       // bun:sqlite - built-in to Bun runtime, API compatible with better-sqlite3
-      // Use Function() constructor to avoid bundlers trying to resolve the module
-      const mod = await (Function('return import("bun:sqlite")')() as Promise<any>);
+      // Use indirect import to avoid TypeScript errors in Node.js builds
+      const bunSqlite = 'bun:sqlite';
+      const mod: any = await import(/* @vite-ignore */ bunSqlite);
       const Database = mod.Database;
       const db: any = new Database(this.dbPath);
       db.exec('PRAGMA journal_mode = WAL;');
@@ -92,10 +93,9 @@ export class SqliteStorageAdapter implements StorageAdapter {
       return db as SqliteDatabase;
     }
 
-    // better-sqlite3 - Use Function() constructor to prevent bundlers from trying to resolve it
-    // This is necessary for bun compile which would otherwise fail on native modules
-    const mod = await (Function('return import("better-sqlite3")')() as Promise<any>);
-    const DatabaseCtor: any = (mod as any).default ?? mod;
+    // better-sqlite3 - Use dynamic import
+    const mod: any = await import('better-sqlite3');
+    const DatabaseCtor: any = mod.default ?? mod;
     const db: any = new DatabaseCtor(this.dbPath);
     if (typeof db.pragma === 'function') {
       db.pragma('journal_mode = WAL');
