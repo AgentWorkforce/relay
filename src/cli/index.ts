@@ -2429,8 +2429,9 @@ program
         shadowSpeakOn: spawnRequest.shadowSpeakOn,
       }, 30000);
 
-      await client.disconnect();
+      // Set success flag BEFORE disconnect - disconnect errors shouldn't mask spawn success
       daemonSpawnSucceeded = true;
+      await client.disconnect();
 
       if (result.success) {
         console.log(`Spawned agent: ${name} (pid: ${result.pid})`);
@@ -2514,8 +2515,9 @@ program
 
       const result = await client.release(name, 10000);
 
-      await client.disconnect();
+      // Set success flag BEFORE disconnect - disconnect errors shouldn't mask release success
       daemonReleaseSucceeded = true;
+      await client.disconnect();
 
       if (result.success) {
         console.log(`Released agent: ${name}`);
