@@ -241,6 +241,7 @@ jobs:
 
             echo ""
             echo "=== Verifying ==="
+            export PATH="$PATH:$HOME/.local/bin"
             command -v agent-relay && agent-relay --version || npm list -g agent-relay
           '
 
@@ -272,6 +273,7 @@ jobs:
 
             echo ""
             echo "=== Verifying ==="
+            export PATH="$PATH:$HOME/.local/bin"
             command -v agent-relay && agent-relay --version || npm list -g agent-relay
           '
 
