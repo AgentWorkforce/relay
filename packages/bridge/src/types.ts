@@ -3,6 +3,8 @@
  * Types for multi-project orchestration
  */
 
+import type { FilePermissions, FilePermissionPresetType } from '@agent-relay/spawner';
+
 export interface ProjectConfig {
   /** Absolute path to project root */
   path: string;
@@ -61,6 +63,16 @@ export interface SpawnRequest {
   userId?: string;
   /** Include ACK/DONE workflow conventions in agent instructions (default: false) */
   includeWorkflowConventions?: boolean;
+  /**
+   * File permission guardrails (OS-level sandbox enforcement).
+   * Wraps the CLI command with platform-specific sandboxing.
+   */
+  filePermissions?: FilePermissions;
+  /**
+   * Use a predefined file permission preset instead of custom config.
+   * Presets: 'block-secrets', 'source-only', 'read-only', 'docs-only'
+   */
+  filePermissionPreset?: FilePermissionPresetType;
 }
 
 /** Policy decision details */
