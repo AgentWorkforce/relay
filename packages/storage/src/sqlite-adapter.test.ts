@@ -109,9 +109,22 @@ describe('SqliteStorageAdapter', () => {
   });
 
   it('can force node sqlite driver', async () => {
+    const major = parseInt(process.versions.node.split('.')[0], 10);
+    if (major < 22) {
+      // node:sqlite requires Node.js 22+; verify it fails gracefully and falls back
+      await adapter.close();
+      process.env.AGENT_RELAY_SQLITE_DRIVER = 'node';
+      adapter = new SqliteStorageAdapter({ dbPath, cleanupIntervalMs: 0 });
+      // Should still init successfully via fallback to better-sqlite3
+      await adapter.init();
+      await adapter.saveMessage(makeMessage({ id: 'node-fallback-1', body: 'hi' }));
+      const rows = await adapter.getMessages();
+      expect(rows.map(r => r.id)).toEqual(['node-fallback-1']);
+      return;
+    }
     await adapter.close();
     process.env.AGENT_RELAY_SQLITE_DRIVER = 'node';
-    adapter = new SqliteStorageAdapter({ dbPath });
+    adapter = new SqliteStorageAdapter({ dbPath, cleanupIntervalMs: 0 });
     await adapter.init();
 
     await adapter.saveMessage(makeMessage({ id: 'node-1', body: 'hi' }));

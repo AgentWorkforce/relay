@@ -84,6 +84,12 @@ export class SqliteStorageAdapter implements StorageAdapter {
     }
 
     if (driver === 'node') {
+      // node:sqlite requires Node.js 22.5.0+ (stable DatabaseSync API)
+      const nodeVersion = process.versions.node;
+      const major = parseInt(nodeVersion.split('.')[0], 10);
+      if (major < 22) {
+        throw new Error(`node:sqlite requires Node.js >= 22, current version is ${nodeVersion}`);
+      }
       // Use require() to avoid toolchains that don't recognize node:sqlite yet (Vitest/Vite).
       const require = createRequire(import.meta.url);
       const mod: any = require('node:sqlite');
@@ -92,10 +98,11 @@ export class SqliteStorageAdapter implements StorageAdapter {
       return db as SqliteDatabase;
     }
 
-    // better-sqlite3 - Use Function() constructor to prevent bundlers from trying to resolve it
-    // This is necessary for bun compile which would otherwise fail on native modules
-    const mod = await (Function('return import("better-sqlite3")')() as Promise<any>);
-    const DatabaseCtor: any = (mod as any).default ?? mod;
+    // better-sqlite3 - Use require() for reliable loading across all environments
+    // (Function()-based dynamic import fails in Vitest and some test runners)
+    const require = createRequire(import.meta.url);
+    const mod: any = require('better-sqlite3');
+    const DatabaseCtor: any = mod.default ?? mod;
     const db: any = new DatabaseCtor(this.dbPath);
     if (typeof db.pragma === 'function') {
       db.pragma('journal_mode = WAL');
