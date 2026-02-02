@@ -66,18 +66,43 @@ function parseNodeVersion(): { major: number; minor: number; patch: number; raw:
 }
 
 async function checkBetterSqlite3(): Promise<CheckResult> {
+  // Allow tests to force better-sqlite3 availability status
+  if (process.env.AGENT_RELAY_DOCTOR_FORCE_BETTER_SQLITE3 === '1') {
+    return {
+      name: 'better-sqlite3',
+      ok: true,
+      message: 'Available (test mode)',
+    };
+  }
+  if (process.env.AGENT_RELAY_DOCTOR_FORCE_BETTER_SQLITE3 === '0') {
+    return {
+      name: 'better-sqlite3',
+      ok: false,
+      message: 'Not available',
+      remediation: 'npm rebuild better-sqlite3',
+    };
+  }
+
   try {
+    // Use dynamic import for better-sqlite3
     const mod = await import('better-sqlite3');
     const DatabaseCtor: any = (mod as any).default ?? mod;
-    const pkg = require('better-sqlite3/package.json');
     // Quick sanity check to ensure native binding works
     const db = new DatabaseCtor(':memory:');
     db.prepare('SELECT 1').get();
     db.close?.();
+    // Try to get version, but don't fail if package.json can't be read
+    let version = 'unknown';
+    try {
+      const { createRequire } = await import('node:module');
+      const require = createRequire(import.meta.url);
+      const pkg = require('better-sqlite3/package.json');
+      version = pkg.version ?? 'unknown';
+    } catch { /* ignore */ }
     return {
       name: 'better-sqlite3',
       ok: true,
-      message: `Available (v${pkg.version ?? 'unknown'})`,
+      message: `Available (v${version})`,
     };
   } catch (err: any) {
     return {

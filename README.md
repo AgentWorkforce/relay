@@ -9,11 +9,19 @@
 
 ## Install
 
+**Quick install (recommended - no Node.js required!):**
+```bash
+curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
+```
+
+This downloads a standalone binary that works without any dependencies.
+
+**Or via npm:**
 ```bash
 npm install -g agent-relay
 ```
 
-**Requirements:** Node.js 20+
+*The npm method requires Node.js 18+*
 
 ## Getting Started
 

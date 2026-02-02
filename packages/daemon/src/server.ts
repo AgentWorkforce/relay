@@ -59,10 +59,18 @@ import {
   shutdown as shutdownTelemetry,
 } from '@agent-relay/telemetry';
 
-// Get version from package.json
-const require = createRequire(import.meta.url);
-const packageJson = require('../package.json');
-const DAEMON_VERSION: string = packageJson.version;
+// Get version: prefer build-time injected version (for standalone binaries), fall back to package.json
+const DAEMON_VERSION: string = (() => {
+  const envVersion = process.env.AGENT_RELAY_VERSION;
+  if (envVersion) return envVersion;
+  try {
+    const require = createRequire(import.meta.url);
+    const packageJson = require('../package.json');
+    return packageJson.version as string;
+  } catch {
+    return 'unknown';
+  }
+})();
 
 export interface DaemonConfig extends ConnectionConfig {
   socketPath: string;
@@ -406,6 +414,36 @@ export class Daemon {
         );
       }
       fs.unlinkSync(this.config.socketPath);
+    }
+
+    // Clean up stale mcp-identity-* files from previous runs
+    // These are left behind when agents crash or aren't cleaned up properly
+    const dataDir = path.dirname(this.config.socketPath);
+    try {
+      const files = fs.readdirSync(dataDir);
+      for (const file of files) {
+        if (file.startsWith('mcp-identity-')) {
+          const match = file.match(/mcp-identity-(\d+)/);
+          if (match) {
+            const identityPid = parseInt(match[1], 10);
+            // Check if process is still running
+            let isRunning = false;
+            try {
+              process.kill(identityPid, 0);
+              isRunning = true;
+            } catch {
+              // Process not running
+            }
+            if (!isRunning) {
+              const identityPath = path.join(dataDir, file);
+              fs.unlinkSync(identityPath);
+              log.info('Cleaned up stale identity file', { file });
+            }
+          }
+        }
+      }
+    } catch (err) {
+      log.warn('Failed to clean up stale identity files', { error: String(err) });
     }
 
     // Ensure socket directory exists

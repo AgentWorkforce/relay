@@ -166,6 +166,7 @@ afterEach(() => {
   fs.rmSync(tempRoot, { recursive: true, force: true });
   delete process.env.AGENT_RELAY_DOCTOR_NODE_VERSION;
   delete process.env.AGENT_RELAY_DOCTOR_NODE_SQLITE_AVAILABLE;
+  delete process.env.AGENT_RELAY_DOCTOR_FORCE_BETTER_SQLITE3;
   process.exitCode = undefined;
   vi.restoreAllMocks();
 });
@@ -173,6 +174,7 @@ afterEach(() => {
 describe('doctor diagnostics', () => {
   it('reports success when drivers are available and storage is writable', async () => {
     process.env.AGENT_RELAY_DOCTOR_FORCE_NODE_SQLITE = '1';
+    process.env.AGENT_RELAY_DOCTOR_FORCE_BETTER_SQLITE3 = '1';
     const { logs, restore } = collectLogs();
     const { runDoctor } = await loadDoctor();
 
@@ -251,6 +253,7 @@ describe('doctor diagnostics', () => {
 
   it('reports disk space check as unsupported when statfs is unavailable', async () => {
     process.env.AGENT_RELAY_DOCTOR_FORCE_NODE_SQLITE = '1';
+    process.env.AGENT_RELAY_DOCTOR_FORCE_BETTER_SQLITE3 = '1';
     vi.spyOn(fs, 'statfsSync').mockImplementation(() => {
       const err: any = new Error('not implemented');
       err.code = 'ERR_METHOD_NOT_IMPLEMENTED';
