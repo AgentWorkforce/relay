@@ -29,7 +29,8 @@
     "agent-relay": "dist/src/cli/index.js"
   },
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "www"
   ],
   "bundledDependencies": [
     "@agent-relay/bridge",
@@ -183,6 +184,7 @@
     "esbuild": "^0.27.2",
     "eslint": "^8.57.1",
     "jsdom": "^25.0.1",
+    "sst": "^3.0.0",
     "turbo": "^2.3.0",
     "typescript": "^5.9.3",
     "vitest": "^2.1.9"
