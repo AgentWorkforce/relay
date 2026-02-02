@@ -142,9 +142,16 @@ export class Daemon {
     if (config.socketPath && !config.pidFilePath) {
       this.config.pidFilePath = `${config.socketPath}.pid`;
     }
-    // Default teamDir to same directory as socket
+    // Default teamDir to same directory as socket, but avoid /tmp directly
+    // because macOS can clean temp files causing atomic write failures
     if (!this.config.teamDir) {
-      this.config.teamDir = path.dirname(this.config.socketPath);
+      const socketDir = path.dirname(this.config.socketPath);
+      // If socket is in /tmp or /private/tmp, use a subdirectory
+      if (socketDir === '/tmp' || socketDir === '/private/tmp') {
+        this.config.teamDir = path.join(socketDir, 'agent-relay-state');
+      } else {
+        this.config.teamDir = socketDir;
+      }
     }
     if (this.config.teamDir) {
       this.registry = new AgentRegistry(this.config.teamDir);

@@ -136,6 +136,8 @@ This section covers how agents can programmatically manage workers and orchestra
 agent-relay spawn Backend claude "Build the REST API for user management"
 ```
 
+The `spawn` command communicates directly with the daemon via socket—no dashboard required. This is the simplest way to programmatically create agents. Just ensure the daemon is running (`agent-relay up`).
+
 **File-based method** (for agents without CLI access):
 ```bash
 cat > $AGENT_RELAY_OUTBOX/spawn << 'EOF'
@@ -269,10 +271,10 @@ This section covers starting, stopping, and troubleshooting the agent-relay daem
 ### Starting the Daemon
 
 ```bash
-# Start daemon only (no dashboard)
+# Start daemon only (sufficient for spawning agents)
 agent-relay up
 
-# Start with dashboard (recommended)
+# Start with dashboard (for visual monitoring)
 agent-relay up --dashboard
 
 # Start on a specific port
@@ -280,6 +282,8 @@ agent-relay up --dashboard --port 3890
 ```
 
 Each project directory gets its own daemon with isolated storage in `.agent-relay/`.
+
+**Note:** The daemon alone is sufficient for all agent operations including `spawn`, `release`, messaging, and orchestration. The dashboard is optional and provides visual monitoring.
 
 ### Stopping the Daemon
 

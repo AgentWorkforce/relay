@@ -404,8 +404,14 @@ export interface SpawnPayload {
   spawnerName?: string;
   /** Interactive mode */
   interactive?: boolean;
+  /** Shadow execution mode (subagent = no extra process) */
+  shadowMode?: 'subagent' | 'process';
   /** Spawn as shadow of this agent */
   shadowOf?: string;
+  /** Shadow agent profile to use (for subagent mode) */
+  shadowAgent?: string;
+  /** When to trigger the shadow (for subagent mode) */
+  shadowTriggers?: SpeakOnTrigger[];
   /** Shadow speak-on triggers */
   shadowSpeakOn?: SpeakOnTrigger[];
   /** User ID for cloud persistence */

@@ -2319,7 +2319,7 @@ program
 // Use this for programmatic spawning from scripts, detached processes, or containers
 program
   .command('spawn')
-  .description('Spawn an agent via dashboard API (recommended for programmatic use, no TTY required)')
+  .description('Spawn an agent via daemon (recommended for programmatic use, no TTY or dashboard required)')
   .argument('<name>', 'Agent name')
   .argument('<cli>', 'CLI to use (claude, codex, gemini, etc.)')
   .argument('[task]', 'Task description (can also be piped via stdin)')
@@ -2398,20 +2398,64 @@ program
       shadowSpeakOn: parseTriggers(options.shadowSpeakOn),
     };
 
-    // Try daemon socket first (preferred path)
-    try {
-        const _paths = getProjectPaths();
+    // Try daemon socket first (preferred - no dashboard required)
+    const paths = getProjectPaths();
+    let daemonSpawnSucceeded = false;
 
-      // TODO: Re-enable daemon-based spawning when client.spawn() is implemented
-      // See: docs/SDK-MIGRATION-PLAN.md for planned implementation
-      // For now, fall through to HTTP API
-      throw new Error('Daemon-based spawn not yet implemented');
-    } catch {
-      // Fall through to HTTP API
-      // console.log('Daemon not available, trying HTTP API...');
+    try {
+      const client = new RelayClient({
+        socketPath: paths.socketPath,
+        agentName: options.spawner || '__cli_spawner__',
+        quiet: true,
+        reconnect: false,
+        maxReconnectAttempts: 0,
+        reconnectDelayMs: 0,
+        reconnectMaxDelayMs: 0,
+      });
+
+      await client.connect();
+
+      const result = await client.spawn({
+        name: spawnRequest.name,
+        cli: spawnRequest.cli,
+        task: spawnRequest.task,
+        team: spawnRequest.team,
+        interactive: spawnRequest.interactive,
+        cwd: spawnRequest.cwd,
+        shadowMode: spawnRequest.shadowMode,
+        shadowOf: spawnRequest.shadowOf,
+        shadowAgent: spawnRequest.shadowAgent,
+        shadowTriggers: spawnRequest.shadowTriggers,
+        shadowSpeakOn: spawnRequest.shadowSpeakOn,
+      }, 30000);
+
+      // Set success flag BEFORE disconnect - disconnect errors shouldn't mask spawn success
+      daemonSpawnSucceeded = true;
+      await client.disconnect();
+
+      if (result.success) {
+        console.log(`Spawned agent: ${name} (pid: ${result.pid})`);
+        process.exit(0);
+      } else {
+        if (result.policyDecision) {
+          console.error(`Policy denied spawn: ${result.policyDecision.reason || 'Policy rejected'}`);
+        } else {
+          console.error(`Failed to spawn ${name}: ${result.error || 'Unknown error'}`);
+        }
+        process.exit(1);
+      }
+    } catch (daemonErr: any) {
+      // If daemon connection failed, try HTTP API as fallback
+      if (daemonErr.message?.includes('ENOENT') || daemonErr.message?.includes('ECONNREFUSED') || daemonErr.code === 'ENOENT') {
+        // Socket doesn't exist or daemon not running - try HTTP API
+      } else if (!daemonSpawnSucceeded) {
+        // Other error during spawn - report it
+        console.error(`Failed to spawn ${name}: ${daemonErr.message}`);
+        process.exit(1);
+      }
     }
 
-    // Fall back to HTTP API
+    // Fall back to HTTP API (dashboard) if daemon not available
     try {
       const response = await fetch(`http://localhost:${port}/api/spawn`, {
         method: 'POST',
@@ -2426,8 +2470,7 @@ program
         process.exit(0);
       } else {
         if (result.policyDecision) {
-          console.error(`Policy denied spawn: ${result.policyDecision.reason}`);
-          console.error(`Policy source: ${result.policyDecision.policySource}`);
+          console.error(`Policy denied spawn: ${result.policyDecision.reason || 'Policy rejected'}`);
         } else {
           console.error(`Failed to spawn ${name}: ${result.error || 'Unknown error'}`);
         }
@@ -2435,7 +2478,7 @@ program
       }
     } catch (err: any) {
       if (err.code === 'ECONNREFUSED') {
-        console.error(`Cannot connect to dashboard at port ${port}. Is the daemon running?`);
+        console.error(`Cannot connect to daemon. Is it running?`);
         console.log(`Run 'agent-relay up' to start the daemon.`);
       } else {
         console.error(`Failed to spawn ${name}: ${err.message}`);
@@ -2453,12 +2496,13 @@ program
   .action(async (name: string, options: { port?: string }) => {
     const port = options.port || DEFAULT_DASHBOARD_PORT;
 
-    // Try daemon socket first (preferred path)
-    try {
-        const _paths = getProjectPaths();
+    // Try daemon socket first (preferred - no dashboard required)
+    const paths = getProjectPaths();
+    let daemonReleaseSucceeded = false;
 
-      const _client = new RelayClient({
-        socketPath: _paths.socketPath,
+    try {
+      const client = new RelayClient({
+        socketPath: paths.socketPath,
         agentName: '__cli_releaser__',
         quiet: true,
         reconnect: false,
@@ -2467,16 +2511,33 @@ program
         reconnectMaxDelayMs: 0,
       });
 
-      // TODO: Re-enable daemon-based release when client.release() is implemented
-      // See: docs/SDK-MIGRATION-PLAN.md for planned implementation
-      // For now, fall through to HTTP API
-      throw new Error('Daemon-based release not yet implemented');
-    } catch {
-      // Fall through to HTTP API
-      // console.log('Daemon not available, trying HTTP API...');
+      await client.connect();
+
+      const result = await client.release(name, 10000);
+
+      // Set success flag BEFORE disconnect - disconnect errors shouldn't mask release success
+      daemonReleaseSucceeded = true;
+      await client.disconnect();
+
+      if (result.success) {
+        console.log(`Released agent: ${name}`);
+        process.exit(0);
+      } else {
+        console.error(`Failed to release ${name}: ${result.error || 'Unknown error'}`);
+        process.exit(1);
+      }
+    } catch (daemonErr: any) {
+      // If daemon connection failed, try HTTP API as fallback
+      if (daemonErr.message?.includes('ENOENT') || daemonErr.message?.includes('ECONNREFUSED') || daemonErr.code === 'ENOENT') {
+        // Socket doesn't exist or daemon not running - try HTTP API
+      } else if (!daemonReleaseSucceeded) {
+        // Other error during release - report it
+        console.error(`Failed to release ${name}: ${daemonErr.message}`);
+        process.exit(1);
+      }
     }
 
-    // Fall back to HTTP API
+    // Fall back to HTTP API (dashboard) if daemon not available
     try {
       const response = await fetch(`http://localhost:${port}/api/spawned/${encodeURIComponent(name)}`, {
         method: 'DELETE',
@@ -2494,7 +2555,7 @@ program
     } catch (err: any) {
       // If API call fails, try to provide helpful error message
       if (err.code === 'ECONNREFUSED') {
-        console.error(`Cannot connect to dashboard at port ${port}. Is the daemon running?`);
+        console.error(`Cannot connect to daemon. Is it running?`);
         console.log(`Run 'agent-relay up' to start the daemon.`);
       } else {
         console.error(`Failed to release ${name}: ${err.message}`);

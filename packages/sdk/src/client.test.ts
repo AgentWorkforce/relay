@@ -905,6 +905,54 @@ describe('RelayClient', () => {
       expect(result.ready).toBeUndefined();
       expect(result.readyInfo).toBeUndefined();
     });
+
+    it('spawn passes shadow options through to envelope payload', async () => {
+      const client = new RelayClient({ reconnect: false, quiet: true });
+      (client as any)._state = 'READY';
+      const sendMock = vi.fn().mockReturnValue(true);
+      (client as any).send = sendMock;
+
+      const spawnPromise = client.spawn(
+        {
+          name: 'ShadowWorker',
+          cli: 'claude',
+          task: 'Review code',
+          shadowMode: 'subagent',
+          shadowOf: 'PrimaryAgent',
+          shadowAgent: 'reviewer',
+          shadowTriggers: ['CODE_WRITTEN', 'REVIEW_REQUEST'],
+          shadowSpeakOn: ['EXPLICIT_ASK'],
+        },
+        1000
+      );
+
+      // Verify the envelope payload includes all shadow options
+      const sentEnvelope = sendMock.mock.calls[0][0];
+      expect(sentEnvelope.type).toBe('SPAWN');
+      expect(sentEnvelope.payload.shadowMode).toBe('subagent');
+      expect(sentEnvelope.payload.shadowOf).toBe('PrimaryAgent');
+      expect(sentEnvelope.payload.shadowAgent).toBe('reviewer');
+      expect(sentEnvelope.payload.shadowTriggers).toEqual(['CODE_WRITTEN', 'REVIEW_REQUEST']);
+      expect(sentEnvelope.payload.shadowSpeakOn).toEqual(['EXPLICIT_ASK']);
+
+      // Complete the spawn
+      const spawnResultEnvelope: Envelope<SpawnResultPayload> = {
+        v: 1,
+        type: 'SPAWN_RESULT',
+        id: 'spawn-result-shadow',
+        ts: Date.now(),
+        payload: {
+          replyTo: sentEnvelope.id,
+          success: true,
+          name: 'ShadowWorker',
+          pid: 12348,
+        },
+      };
+      (client as any).processFrame(spawnResultEnvelope);
+
+      const result = await spawnPromise;
+      expect(result.success).toBe(true);
+    });
   });
 
   describe('consensus operations', () => {

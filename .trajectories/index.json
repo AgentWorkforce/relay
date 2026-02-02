@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-01-30T20:39:23.152Z",
+  "lastUpdated": "2026-02-02T15:14:01.802Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -211,6 +211,13 @@
       "startedAt": "2026-01-30T20:38:53.393Z",
       "completedAt": "2026-01-30T20:39:23.085Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-01/traj_tyavljk80fna.json"
+    },
+    "traj_itn5hyej5mi6": {
+      "title": "Fix @agent-relay/wrapper module resolution issues - 17 test failures",
+      "status": "completed",
+      "startedAt": "2026-02-02T10:32:24.710Z",
+      "completedAt": "2026-02-02T15:14:01.719Z",
+      "path": "/data/repos/relay/.trajectories/completed/2026-02/traj_itn5hyej5mi6.json"
     }
   }
 }

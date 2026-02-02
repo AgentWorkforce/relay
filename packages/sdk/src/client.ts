@@ -748,7 +748,10 @@ export class RelayClient {
    * @param options.cwd - Working directory
    * @param options.team - Team name
    * @param options.interactive - Interactive mode
+   * @param options.shadowMode - Shadow execution mode ('subagent' or 'process')
    * @param options.shadowOf - Spawn as shadow of this agent
+   * @param options.shadowAgent - Shadow agent profile to use (for subagent mode)
+   * @param options.shadowTriggers - When to trigger the shadow (for subagent mode)
    * @param options.shadowSpeakOn - Shadow speak-on triggers
    * @param options.waitForReady - Wait for the agent to be ready before resolving (default: false)
    * @param options.readyTimeoutMs - Timeout for agent to become ready (default: 60000ms)
@@ -763,7 +766,10 @@ export class RelayClient {
       cwd?: string;
       team?: string;
       interactive?: boolean;
+      shadowMode?: 'subagent' | 'process';
       shadowOf?: string;
+      shadowAgent?: string;
+      shadowTriggers?: SpeakOnTrigger[];
       shadowSpeakOn?: SpeakOnTrigger[];
       /** Wait for the agent to complete connection before resolving */
       waitForReady?: boolean;
@@ -828,7 +834,10 @@ export class RelayClient {
           cwd: options.cwd,
           team: options.team,
           interactive: options.interactive,
+          shadowMode: options.shadowMode,
           shadowOf: options.shadowOf,
+          shadowAgent: options.shadowAgent,
+          shadowTriggers: options.shadowTriggers,
           shadowSpeakOn: options.shadowSpeakOn,
           spawnerName: this.config.agentName,
         },
