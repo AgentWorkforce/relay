@@ -8,11 +8,17 @@ Set up agent-relay by following the instructions here:
 https://raw.githubusercontent.com/AgentWorkforce/relay/main/docs/guide/agent-setup.md
 ```
 
-**Alternative: Do it yourself**
+**Quick Install (recommended):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
+```
+
+**Alternative: npm install**
 
 ```bash
 npm install -g agent-relay
-agent-relay up
+agent-relay up --dashboard
 ```
 
 Then read the [main README](https://github.com/AgentWorkforce/relay) for usage.
@@ -28,19 +34,38 @@ Follow these steps:
 ### Step 1: Check Prerequisites
 
 ```bash
-# Check Node.js version (20+ required)
-node --version
-
 # Check if agent-relay is already installed
 which agent-relay && agent-relay --version || echo "agent-relay not installed"
-```
 
-If Node.js isn't installed or is below v20, guide the user to install it first.
+# Check Node.js version (18+ required)
+node --version || echo "Node.js not installed"
+```
 
 ### Step 2: Install agent-relay
 
+**Option A: Curl installer (recommended)**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
+```
+
+This automatically:
+- Detects your platform (macOS/Linux, x64/arm64)
+- Installs the latest version via npm
+- Installs the dashboard
+- Verifies the installation
+
+**Option B: npm install**
+
+If Node.js 18+ is already installed:
 ```bash
 npm install -g agent-relay
+```
+
+**Option C: Install specific version**
+
+```bash
+AGENT_RELAY_VERSION=2.1.6 curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
 ```
 
 Verify installation:
@@ -234,6 +259,108 @@ When spawned by another agent, follow these conventions:
 |----------|-------------|
 | `AGENT_RELAY_OUTBOX` | Path to your outbox directory (set automatically) |
 | `AGENT_RELAY_SPAWNER` | Name of the agent that spawned you |
+
+---
+
+## Daemon Management
+
+This section covers starting, stopping, and troubleshooting the agent-relay daemon.
+
+### Starting the Daemon
+
+```bash
+# Start daemon only (no dashboard)
+agent-relay up
+
+# Start with dashboard (recommended)
+agent-relay up --dashboard
+
+# Start on a specific port
+agent-relay up --dashboard --port 3890
+```
+
+Each project directory gets its own daemon with isolated storage in `.agent-relay/`.
+
+### Stopping the Daemon
+
+```bash
+# Stop daemon for current directory
+agent-relay down
+
+# Force stop (kills immediately if graceful shutdown times out)
+agent-relay down --force
+
+# Stop with custom timeout (default: 5000ms)
+agent-relay down --timeout 10000
+
+# Stop ALL agent-relay processes system-wide
+agent-relay down --all
+
+# Force kill all processes
+agent-relay down --all --force
+```
+
+### Checking Status
+
+```bash
+# Check if daemon is running
+agent-relay status
+
+# Check daemon health and metrics
+agent-relay health
+
+# View connected agents
+agent-relay who
+```
+
+### Troubleshooting
+
+**Stale processes consuming high CPU:**
+```bash
+# Kill all agent-relay processes
+agent-relay down --all --force
+
+# Or manually:
+pkill -f "agent-relay up"
+```
+
+**Orphan socket files:**
+The `down` command automatically cleans up stale files including sockets, pid files, runtime config, and identity files. Manual cleanup is rarely needed, but if required:
+```bash
+# Remove socket and pid files
+rm -f .agent-relay/relay.sock .agent-relay/relay.sock.pid
+
+# Remove runtime config
+rm -f .agent-relay/runtime.json
+
+# Remove stale identity files (keeps mcp-identity)
+rm -f .agent-relay/mcp-identity-*
+```
+
+**Note:** Running `agent-relay down --force` will clean all these automatically.
+
+**Port already in use:**
+If port 3888 is busy, the dashboard auto-selects the next available port (3889, 3890, etc.). Check which port was assigned:
+```bash
+agent-relay status
+```
+
+**Multiple projects:**
+Each project has its own daemon. Running `agent-relay up` in different directories starts separate daemons that don't interfere with each other.
+
+### What Gets Cleaned Up
+
+When the daemon stops (gracefully or via `down --force`):
+- `relay.sock` - Unix socket file
+- `relay.sock.pid` - PID file
+- `runtime.json` - Runtime configuration
+- `mcp-identity-*` - Per-process identity files
+
+The following are preserved:
+- `mcp-identity` - Simple identity file
+- `messages/` - Message history
+- `sessions.jsonl` - Session logs
+- `team/` - Team state
 
 ---
 

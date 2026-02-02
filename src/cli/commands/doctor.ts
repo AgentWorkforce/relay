@@ -67,17 +67,23 @@ function parseNodeVersion(): { major: number; minor: number; patch: number; raw:
 
 async function checkBetterSqlite3(): Promise<CheckResult> {
   try {
-    const mod = await import('better-sqlite3');
+    // Use Function() constructor to avoid bundler trying to resolve this
+    const mod = await (Function('return import("better-sqlite3")')() as Promise<any>);
     const DatabaseCtor: any = (mod as any).default ?? mod;
-    const pkg = require('better-sqlite3/package.json');
     // Quick sanity check to ensure native binding works
     const db = new DatabaseCtor(':memory:');
     db.prepare('SELECT 1').get();
     db.close?.();
+    // Try to get version, but don't fail if package.json can't be read
+    let version = 'unknown';
+    try {
+      const pkg = (Function('return require("better-sqlite3/package.json")')());
+      version = pkg.version ?? 'unknown';
+    } catch { /* ignore */ }
     return {
       name: 'better-sqlite3',
       ok: true,
-      message: `Available (v${pkg.version ?? 'unknown'})`,
+      message: `Available (v${version})`,
     };
   } catch (err: any) {
     return {

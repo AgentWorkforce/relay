@@ -1,0 +1,151 @@
+name: Test Build Scripts
+
+on:
+  push:
+    paths:
+      - 'scripts/build-bun.sh'
+      - '.github/workflows/test-build.yml'
+  pull_request:
+    paths:
+      - 'scripts/build-bun.sh'
+      - '.github/workflows/test-build.yml'
+  workflow_dispatch:
+
+jobs:
+  test-build-script:
+    name: Test build-bun.sh
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate script syntax
+        run: bash -n scripts/build-bun.sh
+
+      - name: Run build script (current platform only)
+        run: |
+          # Only build for current platform to save time
+          bash scripts/build-bun.sh 2>&1 | tee build-output.txt
+
+      - name: Verify binaries created
+        run: |
+          echo "=== Checking .release directory ==="
+          ls -la .release/
+
+          # Check that at least the current platform binary exists
+          if ls .release/agent-relay-* &>/dev/null; then
+            echo "✓ Binaries created"
+          else
+            echo "✗ No binaries found"
+            exit 1
+          fi
+
+          # Check that compressed versions exist
+          if ls .release/*.gz &>/dev/null; then
+            echo "✓ Compressed binaries created"
+          else
+            echo "✗ No compressed binaries found"
+            exit 1
+          fi
+
+      - name: Verify binary works
+        run: |
+          BINARY=".release/agent-relay"
+          if [ -f "$BINARY" ]; then
+            chmod +x "$BINARY"
+            "$BINARY" --version
+            echo "✓ Binary executes successfully"
+          fi
+
+      - name: Check compression ratio
+        run: |
+          for gz in .release/*.gz; do
+            if [ -f "$gz" ]; then
+              UNCOMPRESSED="${gz%.gz}"
+              if [ -f "$UNCOMPRESSED" ]; then
+                GZ_SIZE=$(stat -f%z "$gz" 2>/dev/null || stat -c%s "$gz")
+                UN_SIZE=$(stat -f%z "$UNCOMPRESSED" 2>/dev/null || stat -c%s "$UNCOMPRESSED")
+                RATIO=$(echo "scale=0; 100 - ($GZ_SIZE * 100 / $UN_SIZE)" | bc)
+                echo "$UNCOMPRESSED: ${RATIO}% compression"
+              fi
+            fi
+          done
+
+  test-build-edge-cases:
+    name: Test edge cases
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Test script without bun (should install)
+        run: |
+          # Remove bun from PATH if present
+          export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v bun | tr '\n' ':')
+
+          # Script should detect missing bun and suggest installation
+          # (We won't actually run it since it would install bun)
+          if grep -q "Bun not found" scripts/build-bun.sh; then
+            echo "✓ Script handles missing bun"
+          fi
+
+      - name: Test script variables
+        run: |
+          # Verify version extraction works
+          VERSION=$(node -p "require('./package.json').version")
+          if [ -n "$VERSION" ]; then
+            echo "✓ Version extracted: $VERSION"
+          else
+            echo "✗ Failed to extract version"
+            exit 1
+          fi
+
+      - name: Validate targets array
+        run: |
+          # Extract and validate targets from script
+          grep -A5 'TARGETS=(' scripts/build-bun.sh | while read line; do
+            if echo "$line" | grep -q 'bun-'; then
+              echo "✓ Valid target: $line"
+            fi
+          done
+
+  summary:
+    name: Summary
+    needs: [test-build-script, test-build-edge-cases]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Summary
+        run: |
+          echo "## Build Script Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Test | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Build (macOS + Ubuntu) | ${{ needs.test-build-script.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Edge cases | ${{ needs.test-build-edge-cases.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY

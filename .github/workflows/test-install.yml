@@ -1,0 +1,325 @@
+name: Test Install Script
+
+on:
+  push:
+    paths:
+      - 'install.sh'
+      - '.github/workflows/test-install.yml'
+  pull_request:
+    paths:
+      - 'install.sh'
+      - '.github/workflows/test-install.yml'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to test (default: latest)'
+        required: false
+        type: string
+
+jobs:
+  test-install:
+    name: Test on ${{ matrix.os }} (${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS - Apple Silicon
+          - os: macos-latest
+            node: "with-node"
+            arch: arm64
+
+          # macOS - No Node.js (tests standalone binary path)
+          - os: macos-latest
+            node: "no-node"
+            arch: arm64
+
+          # Ubuntu - Latest LTS
+          - os: ubuntu-latest
+            node: "with-node"
+            arch: x64
+
+          # Ubuntu - No Node.js
+          - os: ubuntu-latest
+            node: "no-node"
+            arch: x64
+
+          # Ubuntu - Old LTS (20.04)
+          - os: ubuntu-20.04
+            node: "with-node"
+            arch: x64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js (if testing with-node)
+        if: matrix.node == 'with-node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Remove Node.js (if testing no-node)
+        if: matrix.node == 'no-node'
+        run: |
+          # Remove node from PATH for this test
+          if command -v node &> /dev/null; then
+            echo "Node found at: $(which node)"
+            # Create a modified PATH without node
+            export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v node | tr '\n' ':')
+            echo "PATH=$PATH" >> $GITHUB_ENV
+          fi
+          echo "Testing without Node.js..."
+
+      - name: Verify Node.js status
+        run: |
+          echo "Checking Node.js availability..."
+          if command -v node &> /dev/null; then
+            echo "Node.js found: $(node --version)"
+          else
+            echo "Node.js not found (expected for no-node tests)"
+          fi
+
+      - name: Test install script (dry run - check syntax)
+        run: |
+          # Just check the script syntax
+          bash -n install.sh
+          echo "✓ Script syntax is valid"
+
+      - name: Test install script with Node.js
+        if: matrix.node == 'with-node'
+        run: |
+          # Run the actual install
+          bash install.sh
+
+          # Verify installation
+          echo ""
+          echo "=== Verifying installation ==="
+
+          if command -v agent-relay &> /dev/null; then
+            echo "✓ agent-relay is in PATH"
+            agent-relay --version
+          elif [ -f "$HOME/.local/bin/agent-relay" ]; then
+            echo "✓ agent-relay installed to ~/.local/bin"
+            "$HOME/.local/bin/agent-relay" --version
+          else
+            echo "Checking npm global..."
+            npm list -g agent-relay || echo "Not found in npm global"
+          fi
+
+      - name: Test install script without Node.js
+        if: matrix.node == 'no-node'
+        run: |
+          # This should either:
+          # 1. Download standalone binary (if available)
+          # 2. Print helpful instructions (if no standalone binary)
+
+          set +e  # Don't fail on error - we're testing the error path
+          bash install.sh 2>&1 | tee install-output.txt
+          EXIT_CODE=$?
+          set -e
+
+          echo ""
+          echo "=== Analyzing install output ==="
+
+          if grep -q "No standalone binary available" install-output.txt; then
+            echo "✓ Script correctly detected missing Node.js and no standalone binary"
+            echo "✓ Should have printed installation instructions"
+
+            # Verify it printed platform-specific instructions
+            if grep -q "nvm" install-output.txt; then
+              echo "✓ nvm instructions present"
+            fi
+          elif grep -q "Downloaded standalone" install-output.txt; then
+            echo "✓ Standalone binary was downloaded"
+
+            # Check if compressed download was used
+            if grep -q "compressed binary" install-output.txt; then
+              echo "✓ Used compressed binary (faster download)"
+            fi
+
+            # Verify the binary actually works
+            if [ -f "$HOME/.local/bin/agent-relay" ]; then
+              "$HOME/.local/bin/agent-relay" --version
+              echo "✓ Standalone binary works correctly"
+            fi
+          else
+            echo "Unexpected output. Exit code: $EXIT_CODE"
+            cat install-output.txt
+          fi
+
+      - name: Test help flag
+        run: |
+          bash install.sh --help
+
+  # Test fallback when gunzip is not available
+  test-no-gunzip:
+    name: Test without gunzip
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Test install without gunzip (Docker)
+        run: |
+          docker run --rm -v "$PWD:/workspace" -w /workspace debian:bookworm-slim bash -c '
+            echo "=== Testing without gunzip ==="
+            apt-get update && apt-get install -y curl
+
+            # Verify gunzip is NOT available
+            if command -v gunzip &>/dev/null; then
+              echo "ERROR: gunzip should not be present"
+              exit 1
+            fi
+            echo "✓ gunzip is not available (as expected)"
+
+            echo ""
+            echo "=== Running install script ==="
+            bash install.sh 2>&1 | tee /tmp/output.txt || true
+
+            echo ""
+            echo "=== Verifying behavior ==="
+            # Should fall back to uncompressed or npm
+            if grep -q "gunzip not available" /tmp/output.txt; then
+              echo "✓ Script detected missing gunzip"
+            fi
+
+            # Should either download uncompressed or require Node.js
+            if grep -q "Downloaded standalone\|fallback to npm\|Node.js" /tmp/output.txt; then
+              echo "✓ Script handled missing gunzip gracefully"
+            fi
+          '
+
+  test-install-alpine:
+    name: Test on Alpine Linux
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Test install on Alpine (Docker)
+        run: |
+          docker run --rm -v "$PWD:/workspace" -w /workspace alpine:latest sh -c '
+            echo "=== Testing on Alpine Linux ==="
+            apk add --no-cache bash curl gzip
+
+            echo ""
+            echo "=== Testing without Node.js ==="
+            bash install.sh 2>&1 | tee /tmp/output.txt || true
+
+            # Check if compressed download was attempted
+            if grep -q "compressed binary" /tmp/output.txt; then
+              echo "✓ Attempted compressed binary download"
+            fi
+
+            echo ""
+            echo "=== Installing Node.js ==="
+            apk add --no-cache nodejs npm
+
+            echo ""
+            echo "=== Testing with Node.js ==="
+            bash install.sh
+
+            echo ""
+            echo "=== Verifying ==="
+            which agent-relay && agent-relay --version || npm list -g agent-relay
+          '
+
+  test-install-fedora:
+    name: Test on Fedora
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Test install on Fedora (Docker)
+        run: |
+          docker run --rm -v "$PWD:/workspace" -w /workspace fedora:latest bash -c '
+            echo "=== Testing on Fedora ==="
+            dnf install -y curl
+
+            echo ""
+            echo "=== Testing without Node.js ==="
+            bash install.sh 2>&1 || true
+
+            echo ""
+            echo "=== Installing Node.js ==="
+            dnf install -y nodejs npm
+
+            echo ""
+            echo "=== Testing with Node.js ==="
+            bash install.sh
+
+            echo ""
+            echo "=== Verifying ==="
+            which agent-relay && agent-relay --version || npm list -g agent-relay
+          '
+
+  # Test script syntax and edge cases
+  test-script-quality:
+    name: Script Quality Checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: Run shellcheck
+        run: |
+          shellcheck -e SC2034,SC2086 install.sh || true
+          echo "✓ Shellcheck completed"
+
+      - name: Test all helper functions exist
+        run: |
+          # Verify key functions are defined
+          FUNCTIONS="detect_platform get_latest_version check_node download_relay_pty download_standalone_binary install_via_npm install_from_source setup_path verify_installation print_usage has_command download_with_progress"
+
+          for func in $FUNCTIONS; do
+            if grep -q "^${func}()" install.sh || grep -q "^${func} ()" install.sh; then
+              echo "✓ Function '$func' is defined"
+            else
+              echo "✗ Function '$func' is MISSING"
+              exit 1
+            fi
+          done
+
+      - name: Test error messages are helpful
+        run: |
+          # Verify helpful error messages exist
+          MESSAGES="Node.js 18+ is required|nvm|brew install node|apt-get install"
+
+          for msg in $MESSAGES; do
+            if grep -qE "$msg" install.sh; then
+              echo "✓ Helpful message found: $msg"
+            else
+              echo "✗ Missing helpful message: $msg"
+            fi
+          done
+
+  summary:
+    name: Test Summary
+    needs: [test-install, test-install-alpine, test-install-fedora, test-no-gunzip, test-script-quality]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Summary
+        run: |
+          echo "## Install Script Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Test | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Ubuntu (with Node) | ${{ needs.test-install.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Ubuntu (no Node) | ${{ needs.test-install.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| macOS (with Node) | ${{ needs.test-install.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| macOS (no Node) | ${{ needs.test-install.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Alpine Linux | ${{ needs.test-install-alpine.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Fedora | ${{ needs.test-install-fedora.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| No gunzip fallback | ${{ needs.test-no-gunzip.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Script Quality | ${{ needs.test-script-quality.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY

@@ -5,9 +5,13 @@ node_modules/
 dist/
 ui-dist/
 
+# Release binaries (created by scripts/build-bun.sh)
+.release/
+
 # Bundled binaries (downloaded/built at install time)
 bin/tmux
 bin/relay-pty
+bin/agent-relay-test
 
 # Rust build artifacts (relay-pty)
 relay-pty/target/

@@ -753,6 +753,18 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       this.logError(` Failed to clean up socket: ${err.message}`);
     }
 
+    // Clean up mcp-identity file for this process
+    try {
+      const projectPaths = getProjectPaths(this.config.cwd);
+      const identityPath = join(projectPaths.dataDir, `mcp-identity-${process.pid}`);
+      if (existsSync(identityPath)) {
+        unlinkSync(identityPath);
+        this.log(` Cleaned up identity file: ${identityPath}`);
+      }
+    } catch (err: any) {
+      this.logError(` Failed to clean up identity file: ${err.message}`);
+    }
+
     this.log(` Stopped`);
   }
 

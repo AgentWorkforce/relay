@@ -178,9 +178,18 @@ function findPackageJson(startDir: string): string {
   }
   throw new Error('Could not find package.json');
 }
-const packageJsonPath = findPackageJson(__dirname);
-const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
-const VERSION = packageJson.version;
+// Get version: prefer build-time injected version (for standalone binaries), fall back to package.json
+const VERSION: string = (() => {
+  const envVersion = process.env.AGENT_RELAY_VERSION;
+  if (envVersion) return envVersion;
+  try {
+    const packageJsonPath = findPackageJson(__dirname);
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
+    return packageJson.version as string;
+  } catch {
+    return 'unknown';
+  }
+})();
 const execAsync = promisify(exec);
 
 // Check for updates in background (non-blocking)
@@ -782,22 +791,200 @@ program
 program
   .command('down')
   .description('Stop daemon')
-  .action(async () => {
+  .option('--force', 'Force cleanup even if process is stuck')
+  .option('--all', 'Kill all agent-relay processes system-wide')
+  .option('--timeout <ms>', 'Timeout waiting for graceful shutdown', '5000')
+  .action(async (options: { force?: boolean; all?: boolean; timeout?: string }) => {
     const paths = getProjectPaths();
     const pidPath = pidFilePathForSocket(paths.socketPath);
+    const timeout = parseInt(options.timeout ?? '5000', 10);
+
+    // Helper to check if process is running
+    const isProcessRunning = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0); // Signal 0 just checks if process exists
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    // Helper to wait for process to die
+    const waitForProcessExit = async (pid: number, timeoutMs: number): Promise<boolean> => {
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        if (!isProcessRunning(pid)) {
+          return true;
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      return false;
+    };
+
+    // Helper to clean up stale files
+    const cleanupStaleFiles = () => {
+      // Clean up socket file
+      if (fs.existsSync(paths.socketPath)) {
+        try {
+          fs.unlinkSync(paths.socketPath);
+          console.log('Cleaned up stale socket');
+        } catch { /* ignore */ }
+      }
+
+      // Clean up pid file
+      if (fs.existsSync(pidPath)) {
+        try {
+          fs.unlinkSync(pidPath);
+          console.log('Cleaned up stale pid file');
+        } catch { /* ignore */ }
+      }
+
+      // Clean up runtime.json
+      const runtimePath = path.join(paths.dataDir, 'runtime.json');
+      if (fs.existsSync(runtimePath)) {
+        try {
+          fs.unlinkSync(runtimePath);
+          console.log('Cleaned up runtime config');
+        } catch { /* ignore */ }
+      }
+
+      // Clean up stale mcp-identity-* files (but not mcp-identity)
+      try {
+        const files = fs.readdirSync(paths.dataDir);
+        for (const file of files) {
+          if (file.startsWith('mcp-identity-')) {
+            const identityPath = path.join(paths.dataDir, file);
+            // Check if the PID in the filename is still running
+            const match = file.match(/mcp-identity-(\d+)/);
+            if (match) {
+              const identityPid = parseInt(match[1], 10);
+              if (!isProcessRunning(identityPid)) {
+                fs.unlinkSync(identityPath);
+                console.log(`Cleaned up stale identity file: ${file}`);
+              }
+            }
+          }
+        }
+      } catch { /* ignore errors reading directory */ }
+    };
+
+    // Handle --all flag: kill all agent-relay processes system-wide
+    if (options.all) {
+      console.log('Stopping all agent-relay processes...');
+      const { execSync } = await import('node:child_process');
+
+      try {
+        // Find all agent-relay processes
+        const psOutput = execSync('ps aux', { encoding: 'utf-8' });
+        const lines = psOutput.split('\n');
+        const agentRelayProcesses: { pid: number; cmd: string }[] = [];
+
+        for (const line of lines) {
+          // Match agent-relay daemon processes (not MCP servers or other commands)
+          // Look for "agent-relay up" or "agent-relay.*up" patterns
+          if ((line.includes('agent-relay') && line.includes(' up')) &&
+              !line.includes('grep') &&
+              !line.includes('agent-relay-mcp')) {
+            const parts = line.trim().split(/\s+/);
+            // ps aux format: USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND
+            const pid = parseInt(parts[1], 10);
+            if (!isNaN(pid) && pid !== process.pid && pid > 0) {
+              agentRelayProcesses.push({ pid, cmd: parts.slice(10).join(' ') });
+            }
+          }
+        }
+
+        if (agentRelayProcesses.length === 0) {
+          console.log('No agent-relay processes found');
+        } else {
+          console.log(`Found ${agentRelayProcesses.length} agent-relay process(es)`);
+
+          for (const proc of agentRelayProcesses) {
+            try {
+              console.log(`  Stopping PID ${proc.pid}...`);
+              process.kill(proc.pid, 'SIGTERM');
+            } catch (err: any) {
+              if (err.code !== 'ESRCH') {
+                console.log(`    Warning: ${err.message}`);
+              }
+            }
+          }
+
+          // Wait a bit for graceful shutdown
+          await new Promise(resolve => setTimeout(resolve, 2000));
+
+          // Force kill any remaining
+          if (options.force) {
+            for (const proc of agentRelayProcesses) {
+              if (isProcessRunning(proc.pid)) {
+                try {
+                  console.log(`  Force killing PID ${proc.pid}...`);
+                  process.kill(proc.pid, 'SIGKILL');
+                } catch { /* ignore */ }
+              }
+            }
+          }
+
+          console.log('Done');
+        }
+      } catch (err: any) {
+        console.error(`Error finding processes: ${err.message}`);
+      }
+      return;
+    }
 
     if (!fs.existsSync(pidPath)) {
-      console.log('Not running');
+      // No pid file, but might have stale files
+      if (options.force) {
+        cleanupStaleFiles();
+        console.log('Cleaned up (was not running)');
+      } else {
+        console.log('Not running');
+      }
       return;
     }
 
     const pid = Number(fs.readFileSync(pidPath, 'utf-8').trim());
+
+    // Check if process is actually running
+    if (!isProcessRunning(pid)) {
+      cleanupStaleFiles();
+      console.log('Cleaned up stale state (process was not running)');
+      return;
+    }
+
+    // Try graceful shutdown
     try {
+      console.log(`Stopping daemon (pid: ${pid})...`);
       process.kill(pid, 'SIGTERM');
+
+      // Wait for graceful shutdown
+      const exited = await waitForProcessExit(pid, timeout);
+
+      if (!exited) {
+        if (options.force) {
+          console.log('Graceful shutdown timed out, forcing...');
+          try {
+            process.kill(pid, 'SIGKILL');
+            await waitForProcessExit(pid, 2000);
+          } catch { /* ignore */ }
+        } else {
+          console.log(`Graceful shutdown timed out after ${timeout}ms. Use --force to kill.`);
+          return;
+        }
+      }
+
+      // Clean up any remaining stale files
+      cleanupStaleFiles();
       console.log('Stopped');
-    } catch {
-      fs.unlinkSync(pidPath);
-      console.log('Cleaned up stale pid');
+    } catch (err: any) {
+      if (err.code === 'ESRCH') {
+        // Process doesn't exist
+        cleanupStaleFiles();
+        console.log('Cleaned up stale state');
+      } else {
+        console.error(`Error stopping daemon: ${err.message}`);
+      }
     }
   });
 
