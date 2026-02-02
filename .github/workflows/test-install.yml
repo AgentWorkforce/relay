@@ -4,10 +4,12 @@ on:
   push:
     paths:
       - 'install.sh'
+      - 'install.test.sh'
       - '.github/workflows/test-install.yml'
   pull_request:
     paths:
       - 'install.sh'
+      - 'install.test.sh'
       - '.github/workflows/test-install.yml'
   workflow_dispatch:
     inputs:
@@ -91,6 +93,11 @@ jobs:
           # Just check the script syntax
           bash -n install.sh
           echo "✓ Script syntax is valid"
+
+      - name: Run version parsing tests
+        run: |
+          ./install.test.sh
+          echo "✓ Version parsing tests passed"
 
       - name: Test install script with Node.js
         if: matrix.node == 'with-node'
@@ -234,7 +241,8 @@ jobs:
 
             echo ""
             echo "=== Verifying ==="
-            which agent-relay && agent-relay --version || npm list -g agent-relay
+            export PATH="$PATH:$HOME/.local/bin"
+            command -v agent-relay && agent-relay --version || npm list -g agent-relay
           '
 
   test-install-fedora:
@@ -265,7 +273,8 @@ jobs:
 
             echo ""
             echo "=== Verifying ==="
-            which agent-relay && agent-relay --version || npm list -g agent-relay
+            export PATH="$PATH:$HOME/.local/bin"
+            command -v agent-relay && agent-relay --version || npm list -g agent-relay
           '
 
   # Test script syntax and edge cases

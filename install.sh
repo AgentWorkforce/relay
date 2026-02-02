@@ -5,10 +5,11 @@ set -e
 # Usage: curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
 #
 # Options (set as environment variables):
-#   AGENT_RELAY_VERSION     - Specific version to install (default: latest)
-#   AGENT_RELAY_INSTALL_DIR - Installation directory (default: ~/.agent-relay)
-#   AGENT_RELAY_BIN_DIR     - Binary directory (default: ~/.local/bin)
-#   AGENT_RELAY_NO_DASHBOARD - Skip dashboard installation (default: false)
+#   AGENT_RELAY_VERSION              - Specific version to install (default: latest)
+#   AGENT_RELAY_INSTALL_DIR          - Installation directory (default: ~/.agent-relay)
+#   AGENT_RELAY_BIN_DIR              - Binary directory (default: ~/.local/bin)
+#   AGENT_RELAY_NO_DASHBOARD         - Skip dashboard installation (default: false)
+#   AGENT_RELAY_TELEMETRY_DISABLED   - Disable anonymous install telemetry (default: false)
 
 REPO_RELAY="AgentWorkforce/relay"
 REPO_DASHBOARD="AgentWorkforce/relay-dashboard"
@@ -28,8 +29,74 @@ NC='\033[0m'
 info() { echo -e "${BLUE}[info]${NC} $1"; }
 success() { echo -e "${GREEN}[✓]${NC} $1"; }
 warn() { echo -e "${YELLOW}[warn]${NC} $1"; }
-error() { echo -e "${RED}[error]${NC} $1"; exit 1; }
+error() {
+    echo -e "${RED}[error]${NC} $1"
+    # Track failure if telemetry is initialized
+    if [ -n "$INSTALL_ID" ]; then
+        # Escape special characters for JSON (newlines, quotes, backslashes)
+        local escaped_error
+        escaped_error=$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')
+        track_event "install_failed" ", \"error\": \"$escaped_error\""
+    fi
+    exit 1
+}
 step() { echo -e "\n${CYAN}${BOLD}$1${NC}"; }
+
+# Telemetry (respects AGENT_RELAY_TELEMETRY_DISABLED)
+POSTHOG_API_KEY="phc_2uDu01GtnLABJpVkWw4ri1OgScLU90aEmXmDjufGdqr"
+POSTHOG_HOST="https://us.i.posthog.com"
+INSTALL_ID=""
+INSTALL_METHOD=""
+
+telemetry_enabled() {
+    # Respect opt-out
+    if [ "${AGENT_RELAY_TELEMETRY_DISABLED:-}" = "1" ] || [ "${AGENT_RELAY_TELEMETRY_DISABLED:-}" = "true" ]; then
+        return 1
+    fi
+    # Also check DO_NOT_TRACK (standard env var)
+    if [ "${DO_NOT_TRACK:-}" = "1" ]; then
+        return 1
+    fi
+    return 0
+}
+
+generate_install_id() {
+    # Generate a random ID for this install session
+    if command -v uuidgen &> /dev/null; then
+        INSTALL_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
+    elif [ -f /proc/sys/kernel/random/uuid ]; then
+        INSTALL_ID=$(cat /proc/sys/kernel/random/uuid)
+    else
+        # Fallback: use timestamp + random
+        INSTALL_ID="install-$(date +%s)-$RANDOM"
+    fi
+}
+
+track_event() {
+    if ! telemetry_enabled; then
+        return 0
+    fi
+
+    local event="$1"
+    local extra_props="${2:-}"
+
+    # Send async (don't block install)
+    (curl -sS --max-time 5 -X POST "${POSTHOG_HOST}/capture/" \
+        -H "Content-Type: application/json" \
+        -d "{
+            \"api_key\": \"${POSTHOG_API_KEY}\",
+            \"event\": \"${event}\",
+            \"distinct_id\": \"${INSTALL_ID}\",
+            \"properties\": {
+                \"platform\": \"${PLATFORM:-unknown}\",
+                \"version\": \"${VERSION:-unknown}\",
+                \"method\": \"${INSTALL_METHOD:-unknown}\",
+                \"os\": \"${OS:-unknown}\",
+                \"arch\": \"${ARCH:-unknown}\",
+                \"has_node\": \"${HAS_NODE:-false}\"${extra_props}
+            }
+        }" > /dev/null 2>&1 &) || true
+}
 
 # Detect OS and architecture
 detect_platform() {
@@ -55,7 +122,7 @@ detect_platform() {
 # Get latest version from GitHub
 get_latest_version() {
     if [ "$VERSION" = "latest" ]; then
-        VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO_RELAY/releases/latest" | grep '"tag_name"' | sed -E 's/.*"v?([^"]+)".*/\1/')
+        VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO_RELAY/releases/latest" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
         if [ -z "$VERSION" ]; then
             error "Failed to fetch latest version"
         fi
@@ -493,8 +560,14 @@ main() {
     echo -e "${YELLOW}${BOLD}⚡ Agent Relay${NC} Installer"
     echo ""
 
+    # Initialize telemetry
+    generate_install_id
+
     detect_platform
     get_latest_version
+
+    # Track install started
+    track_event "install_started"
 
     # Try installation methods in order of preference:
     # 1. Standalone binary (no dependencies required!)
@@ -503,18 +576,21 @@ main() {
 
     # Try standalone binary first - works without Node.js
     if download_standalone_binary; then
+        INSTALL_METHOD="binary"
         # Also download relay-pty binary if available
         download_relay_pty || true
         # Download dashboard-server binary if available
         download_dashboard_binary || true
-        verify_installation && print_usage && exit 0
+        verify_installation && print_usage && track_event "install_completed" && exit 0
     fi
 
     # Fall back to npm if Node.js is available
     if check_node; then
-        install_via_npm && verify_installation && print_usage && exit 0
+        INSTALL_METHOD="npm"
+        install_via_npm && verify_installation && print_usage && track_event "install_completed" && exit 0
         warn "npm installation failed, trying source..."
-        install_from_source && verify_installation && print_usage && exit 0
+        INSTALL_METHOD="source"
+        install_from_source && verify_installation && print_usage && track_event "install_completed" && exit 0
     else
         echo ""
         warn "No standalone binary available and Node.js not found."
@@ -560,6 +636,7 @@ main() {
 
         echo ""
         echo "Then re-run this installer."
+        track_event "install_failed" ", \"error\": \"no_nodejs_or_binary\""
         exit 1
     fi
 }
@@ -572,10 +649,14 @@ case "${1:-}" in
         echo "Usage: curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash"
         echo ""
         echo "Environment variables:"
-        echo "  AGENT_RELAY_VERSION       Specific version to install (default: latest)"
-        echo "  AGENT_RELAY_INSTALL_DIR   Installation directory (default: ~/.agent-relay)"
-        echo "  AGENT_RELAY_BIN_DIR       Binary directory (default: ~/.local/bin)"
-        echo "  AGENT_RELAY_NO_DASHBOARD  Skip dashboard installation (default: false)"
+        echo "  AGENT_RELAY_VERSION              Specific version to install (default: latest)"
+        echo "  AGENT_RELAY_INSTALL_DIR          Installation directory (default: ~/.agent-relay)"
+        echo "  AGENT_RELAY_BIN_DIR              Binary directory (default: ~/.local/bin)"
+        echo "  AGENT_RELAY_NO_DASHBOARD         Skip dashboard installation (default: false)"
+        echo "  AGENT_RELAY_TELEMETRY_DISABLED   Disable anonymous install telemetry (default: false)"
+        echo ""
+        echo "Telemetry: This installer collects anonymous usage data to improve the product."
+        echo "           Set AGENT_RELAY_TELEMETRY_DISABLED=1 or DO_NOT_TRACK=1 to opt out."
         exit 0
         ;;
     --version|-v)
