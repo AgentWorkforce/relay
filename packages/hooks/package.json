@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/hooks",
-  "version": "2.1.7",
+  "version": "2.1.8",
   "description": "Hook emitter, registry, and trajectory hooks for Agent Relay",
   "type": "module",
   "main": "dist/index.js",
@@ -37,9 +37,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agent-relay/protocol": "2.1.7",
-    "@agent-relay/config": "2.1.7",
-    "@agent-relay/trajectory": "2.1.7"
+    "@agent-relay/protocol": "2.1.8",
+    "@agent-relay/config": "2.1.8",
+    "@agent-relay/trajectory": "2.1.8"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",
