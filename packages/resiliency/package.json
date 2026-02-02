@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/resiliency",
-  "version": "2.1.6",
+  "version": "2.1.7",
   "description": "Health monitoring, logging, metrics, and crash resilience utilities for Agent Relay",
   "type": "module",
   "main": "dist/index.js",

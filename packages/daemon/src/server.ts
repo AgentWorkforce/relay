@@ -999,6 +999,7 @@ export class Daemon {
           model: connection.model,
           task: connection.task,
           workingDirectory: connection.workingDirectory,
+          team: connection.team,
         });
 
         // Auto-join all agents to #general channel
@@ -1393,17 +1394,24 @@ export class Daemon {
         const registryAgents = this.registry?.getAgents() ?? [];
         const registryMap = new Map(registryAgents.map(a => [a.name, a]));
 
+        // Get active workers from spawn manager for PID lookup
+        const activeWorkers = this.spawnManager?.getActiveWorkers() ?? [];
+        const workerMap = new Map(activeWorkers.map(w => [w.name, w]));
+
         // Build agent list from connected agents
         const agents = connectedAgents
           .filter(name => !this.isInternalAgent(name))
           .map(name => {
             const registryAgent = registryMap.get(name);
+            const conn = this.router.getConnection(name);
+            const worker = workerMap.get(name);
             return {
               name,
-              cli: registryAgent?.cli,
+              cli: conn?.cli ?? registryAgent?.cli,
               idle: false, // Connected agents are not idle
-              // TODO: Add proper parent tracking via spawner relationship
-              parent: undefined,
+              parent: worker?.spawnerName,
+              team: conn?.team ?? worker?.team,
+              pid: worker?.pid,
             };
           });
 
@@ -1416,6 +1424,8 @@ export class Daemon {
                 cli: agent.cli,
                 idle: true,
                 parent: undefined,
+                team: agent.team,
+                pid: undefined,
               });
             }
           }
@@ -1434,20 +1444,27 @@ export class Daemon {
 
       case 'LIST_CONNECTED_AGENTS': {
         // Returns only currently connected agents (not historical/registered agents)
-        const connectedAgents = this.router.getAgents();
+        const connectedAgentNames = this.router.getAgents();
         const registryAgents = this.registry?.getAgents() ?? [];
         const registryMap = new Map(registryAgents.map(a => [a.name, a]));
 
-        const agents = connectedAgents
+        // Get active workers from spawn manager for PID lookup
+        const workers = this.spawnManager?.getActiveWorkers() ?? [];
+        const workersByName = new Map(workers.map(w => [w.name, w]));
+
+        const agents = connectedAgentNames
           .filter(name => !this.isInternalAgent(name))
           .map(name => {
             const registryAgent = registryMap.get(name);
+            const conn = this.router.getConnection(name);
+            const worker = workersByName.get(name);
             return {
               name,
-              cli: registryAgent?.cli,
+              cli: conn?.cli ?? registryAgent?.cli,
               idle: false,
-              // TODO: Add proper parent tracking via spawner relationship
-              parent: undefined,
+              parent: worker?.spawnerName,
+              team: conn?.team ?? worker?.team,
+              pid: worker?.pid,
             };
           });
 

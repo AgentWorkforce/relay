@@ -120,6 +120,8 @@ export interface HelloPayload {
   task?: string;
   /** Working directory */
   workingDirectory?: string;
+  /** Team name */
+  team?: string;
   /** Display name for human users */
   displayName?: string;
   /** Avatar URL for human users */
@@ -621,6 +623,8 @@ export interface ListAgentsResponsePayload {
     cli?: string;
     idle?: boolean;
     parent?: string;
+    team?: string;
+    pid?: number;
   }>;
 }
 
@@ -643,6 +647,8 @@ export interface ListConnectedAgentsResponsePayload {
     cli?: string;
     idle?: boolean;
     parent?: string;
+    team?: string;
+    pid?: number;
   }>;
 }
 
@@ -833,6 +839,8 @@ export interface AgentInfo {
   idle?: boolean;
   parent?: string;
   task?: string;
+  team?: string;
+  pid?: number;
   connectedAt?: number;
 }
 

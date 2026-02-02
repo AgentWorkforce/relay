@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/protocol",
-  "version": "2.1.6",
+  "version": "2.1.7",
   "description": "Wire protocol types and framing for Agent Relay",
   "type": "module",
   "main": "dist/index.js",

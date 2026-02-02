@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/cli-tester",
-  "version": "2.1.6",
+  "version": "2.1.7",
   "description": "Manual interactive testing for CLI authentication flows",
   "type": "module",
   "main": "dist/index.js",
