@@ -38,12 +38,12 @@ log_verbose() {
 }
 
 pass() {
-    ((PASS_COUNT++))
+    ((PASS_COUNT++)) || true
     echo -e "${GREEN}[PASS]${NC} $1"
 }
 
 fail() {
-    ((FAIL_COUNT++))
+    ((FAIL_COUNT++)) || true
     echo -e "${RED}[FAIL]${NC} $1"
     if [[ -n "$2" ]]; then
         echo -e "       Expected: $2"
@@ -54,7 +54,7 @@ fail() {
 }
 
 run_test() {
-    ((TEST_COUNT++))
+    ((TEST_COUNT++)) || true
     local test_name="$1"
     echo ""
     echo "Running: $test_name"

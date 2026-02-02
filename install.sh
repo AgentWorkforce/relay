@@ -33,7 +33,10 @@ error() {
     echo -e "${RED}[error]${NC} $1"
     # Track failure if telemetry is initialized
     if [ -n "$INSTALL_ID" ]; then
-        track_event "install_failed" ", \"error\": \"$1\""
+        # Escape special characters for JSON (newlines, quotes, backslashes)
+        local escaped_error
+        escaped_error=$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')
+        track_event "install_failed" ", \"error\": \"$escaped_error\""
     fi
     exit 1
 }
