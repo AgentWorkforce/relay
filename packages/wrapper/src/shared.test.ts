@@ -13,7 +13,7 @@ describe('buildInjectionString', () => {
   };
 
   describe('sender name display', () => {
-    it('uses msg.from when from is not _DashboardUI', () => {
+    it('uses msg.from when from is not Dashboard', () => {
       const msg: QueuedMessage = {
         ...baseMessage,
         from: 'RegularAgent',
@@ -22,40 +22,40 @@ describe('buildInjectionString', () => {
       expect(result).toContain('Relay message from RegularAgent');
     });
 
-    it('uses msg.from when from is _DashboardUI but no senderName in data', () => {
+    it('uses msg.from when from is Dashboard but no senderName in data', () => {
       const msg: QueuedMessage = {
         ...baseMessage,
-        from: '_DashboardUI',
+        from: 'Dashboard',
       };
       const result = buildInjectionString(msg);
-      expect(result).toContain('Relay message from _DashboardUI');
+      expect(result).toContain('Relay message from Dashboard');
     });
 
-    it('uses senderName when from is _DashboardUI and senderName exists', () => {
+    it('uses senderName when from is Dashboard and senderName exists', () => {
       const msg: QueuedMessage = {
         ...baseMessage,
-        from: '_DashboardUI',
+        from: 'Dashboard',
         data: { senderName: 'GitHubUser123' },
       };
       const result = buildInjectionString(msg);
       expect(result).toContain('Relay message from GitHubUser123');
-      expect(result).not.toContain('_DashboardUI');
+      expect(result).not.toContain('Dashboard');
     });
 
     it('uses msg.from when senderName is not a string', () => {
       const msg: QueuedMessage = {
         ...baseMessage,
-        from: '_DashboardUI',
+        from: 'Dashboard',
         data: { senderName: 12345 }, // not a string
       };
       const result = buildInjectionString(msg);
-      expect(result).toContain('Relay message from _DashboardUI');
+      expect(result).toContain('Relay message from Dashboard');
     });
 
     it('uses msg.from when senderName is empty string', () => {
       const msg: QueuedMessage = {
         ...baseMessage,
-        from: '_DashboardUI',
+        from: 'Dashboard',
         data: { senderName: '' },
       };
       // Empty string is falsy but still a string - our check uses typeof === 'string'
@@ -65,7 +65,7 @@ describe('buildInjectionString', () => {
       expect(result).toContain('Relay message from  ['); // empty between 'from' and '['
     });
 
-    it('does not use senderName when from is not _DashboardUI even if senderName exists', () => {
+    it('does not use senderName when from is not Dashboard even if senderName exists', () => {
       const msg: QueuedMessage = {
         ...baseMessage,
         from: 'OtherAgent',
@@ -317,6 +317,151 @@ describe('Message Priority System', () => {
 
       expect(messages[0].messageId).toBe('low'); // Original unchanged
       expect(sorted[0].messageId).toBe('high'); // Sorted copy
+    });
+  });
+});
+
+// Import auto-suggestion detection functions for testing
+import { detectAutoSuggest, shouldIgnoreForIdleDetection } from './shared.js';
+
+describe('Auto-suggestion Detection', () => {
+  describe('detectAutoSuggest', () => {
+    it('detects dim text styling (common for ghost text)', () => {
+      // \x1B[2m is dim text
+      const output = '\x1B[2msuggested completion\x1B[0m';
+      const result = detectAutoSuggest(output);
+
+      expect(result.isAutoSuggest).toBe(true);
+      expect(result.patterns).toContain('dim');
+      expect(result.confidence).toBeGreaterThanOrEqual(0.4);
+    });
+
+    it('detects bright black (dark gray) styling', () => {
+      // \x1B[90m is bright black (dark gray)
+      const output = '\x1B[90mauto-suggested text\x1B[0m';
+      const result = detectAutoSuggest(output);
+
+      expect(result.isAutoSuggest).toBe(true);
+      expect(result.patterns).toContain('brightBlack');
+      expect(result.confidence).toBeGreaterThanOrEqual(0.4);
+    });
+
+    it('detects 256-color gray styling (pattern detected but alone not enough)', () => {
+      // \x1B[38;5;8m is 256-color dark gray
+      // By itself it only adds 0.3 confidence, below the 0.4 threshold
+      const output = '\x1B[38;5;8msuggestion\x1B[0m';
+      const result = detectAutoSuggest(output);
+
+      expect(result.patterns).toContain('gray256');
+      expect(result.confidence).toBeGreaterThan(0);
+      // 256-color gray alone isn't enough - need additional signals
+      expect(result.isAutoSuggest).toBe(false);
+    });
+
+    it('detects 256-color gray combined with other signals', () => {
+      // 256-color gray + cursor save/restore = strong signal
+      const output = '\x1B[s\x1B[38;5;8msuggestion\x1B[0m\x1B[u';
+      const result = detectAutoSuggest(output);
+
+      expect(result.isAutoSuggest).toBe(true);
+      expect(result.patterns).toContain('gray256');
+      expect(result.patterns).toContain('cursorSaveRestore');
+    });
+
+    it('detects cursor save/restore pair (strong indicator)', () => {
+      // \x1B[s saves cursor, \x1B[u restores cursor
+      const output = '\x1B[s\x1B[90msuggestion\x1B[0m\x1B[u';
+      const result = detectAutoSuggest(output);
+
+      expect(result.isAutoSuggest).toBe(true);
+      expect(result.patterns).toContain('cursorSaveRestore');
+      expect(result.confidence).toBeGreaterThanOrEqual(0.5);
+    });
+
+    it('detects alternative cursor save/restore (ESC 7/8)', () => {
+      // \x1B7 saves cursor, \x1B8 restores cursor (alternative format)
+      const output = '\x1B7\x1B[2mcompletion\x1B0m\x1B8';
+      const result = detectAutoSuggest(output);
+
+      expect(result.patterns).toContain('cursorSaveRestore');
+    });
+
+    it('returns false for normal text output', () => {
+      const output = 'Hello, this is normal output text\n';
+      const result = detectAutoSuggest(output);
+
+      expect(result.isAutoSuggest).toBe(false);
+      expect(result.confidence).toBe(0);
+      expect(result.patterns).toHaveLength(0);
+    });
+
+    it('returns false for colored output without gray/dim', () => {
+      // Regular green text - not an auto-suggestion
+      const output = '\x1B[32mSuccess: Tests passed\x1B[0m';
+      const result = detectAutoSuggest(output);
+
+      expect(result.isAutoSuggest).toBe(false);
+    });
+
+    it('reduces confidence for multi-line output', () => {
+      // Auto-suggestions are typically single-line
+      const multiLine = '\x1B[90mLine 1\nLine 2\nLine 3\nLine 4\x1B[0m';
+      const result = detectAutoSuggest(multiLine);
+
+      // Still detects the pattern but confidence is reduced
+      expect(result.patterns).toContain('brightBlack');
+      // Multi-line reduces confidence by 50%
+      expect(result.confidence).toBeLessThan(0.4);
+    });
+
+    it('combines multiple patterns for higher confidence', () => {
+      // Both dim and cursor save/restore
+      const output = '\x1B[s\x1B[2m\x1B[90msuggestion\x1B[0m\x1B[u';
+      const result = detectAutoSuggest(output);
+
+      expect(result.patterns).toContain('dim');
+      expect(result.patterns).toContain('brightBlack');
+      expect(result.patterns).toContain('cursorSaveRestore');
+      expect(result.confidence).toBeGreaterThanOrEqual(0.8);
+    });
+
+    it('includes stripped content for debugging', () => {
+      const output = '\x1B[90msuggested text\x1B[0m';
+      const result = detectAutoSuggest(output);
+
+      expect(result.strippedContent).toBe('suggested text');
+    });
+  });
+
+  describe('shouldIgnoreForIdleDetection', () => {
+    it('ignores empty output', () => {
+      expect(shouldIgnoreForIdleDetection('')).toBe(true);
+    });
+
+    it('ignores output that is only ANSI control sequences', () => {
+      // Just cursor movement, no actual content
+      const output = '\x1B[2J\x1B[H'; // Clear screen and home cursor
+      expect(shouldIgnoreForIdleDetection(output)).toBe(true);
+    });
+
+    it('ignores auto-suggestion output', () => {
+      const autoSuggest = '\x1B[90mtype "exit" to quit\x1B[0m';
+      expect(shouldIgnoreForIdleDetection(autoSuggest)).toBe(true);
+    });
+
+    it('does not ignore normal text output', () => {
+      const normalOutput = 'Hello world\n';
+      expect(shouldIgnoreForIdleDetection(normalOutput)).toBe(false);
+    });
+
+    it('does not ignore colored output (non-gray)', () => {
+      const greenOutput = '\x1B[32mTest passed!\x1B[0m\n';
+      expect(shouldIgnoreForIdleDetection(greenOutput)).toBe(false);
+    });
+
+    it('does not ignore relay messages', () => {
+      const relayMessage = '->relay:Lead Task completed';
+      expect(shouldIgnoreForIdleDetection(relayMessage)).toBe(false);
     });
   });
 });

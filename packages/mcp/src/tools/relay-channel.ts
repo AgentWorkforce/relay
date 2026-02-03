@@ -91,3 +91,61 @@ export async function handleRelayChannelMessage(client: RelayClient, input: Rela
   await client.sendChannelMessage(input.channel, input.message, { thread: input.thread });
   return `Message sent to channel "${input.channel}"`;
 }
+
+// Admin join channel
+export const relayAdminChannelJoinSchema = z.object({
+  channel: z.string().describe('The channel name'),
+  member: z.string().describe('The agent name to add to the channel'),
+});
+
+export type RelayAdminChannelJoinInput = z.infer<typeof relayAdminChannelJoinSchema>;
+
+export const relayAdminChannelJoinTool: Tool = {
+  name: 'relay_admin_channel_join',
+  description: 'Admin operation: Add any agent to a channel (does not require the agent to be connected).',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      channel: { type: 'string', description: 'The channel name' },
+      member: { type: 'string', description: 'The agent name to add to the channel' },
+    },
+    required: ['channel', 'member'],
+  },
+};
+
+export async function handleRelayAdminChannelJoin(client: RelayClient, input: RelayAdminChannelJoinInput): Promise<string> {
+  const result = await client.adminJoinChannel(input.channel, input.member);
+  if (result.success) {
+    return `Added "${input.member}" to channel "${input.channel}"`;
+  }
+  return `Failed to add member: ${result.error}`;
+}
+
+// Admin remove member
+export const relayAdminRemoveMemberSchema = z.object({
+  channel: z.string().describe('The channel name'),
+  member: z.string().describe('The agent name to remove from the channel'),
+});
+
+export type RelayAdminRemoveMemberInput = z.infer<typeof relayAdminRemoveMemberSchema>;
+
+export const relayAdminRemoveMemberTool: Tool = {
+  name: 'relay_admin_remove_member',
+  description: 'Admin operation: Remove any agent from a channel.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      channel: { type: 'string', description: 'The channel name' },
+      member: { type: 'string', description: 'The agent name to remove from the channel' },
+    },
+    required: ['channel', 'member'],
+  },
+};
+
+export async function handleRelayAdminRemoveMember(client: RelayClient, input: RelayAdminRemoveMemberInput): Promise<string> {
+  const result = await client.adminRemoveMember(input.channel, input.member);
+  if (result.success) {
+    return `Removed "${input.member}" from channel "${input.channel}"`;
+  }
+  return `Failed to remove member: ${result.error}`;
+}

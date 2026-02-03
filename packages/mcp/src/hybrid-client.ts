@@ -1,10 +1,17 @@
 /**
  * Hybrid Client for MCP Tools
  *
- * Uses file-based transport for writes (reliable) and socket for queries.
- * This gives the best of both worlds:
- * - Writes go through proven file-based protocol (no timeouts)
- * - Queries use efficient socket communication
+ * IMPORTANT: The file-based writes ONLY work when relay-pty is wrapping the agent.
+ * relay-pty watches for ->relay-file:* triggers in agent output and processes outbox files.
+ * The daemon does NOT watch outbox directories directly.
+ *
+ * For pure MCP tools (not wrapped by relay-pty), use createRelayClient() instead,
+ * which communicates directly with the daemon via socket.
+ *
+ * This hybrid client is designed for scenarios where:
+ * - An agent is wrapped by relay-pty
+ * - File-based writes avoid socket connection overhead
+ * - Socket is still used for queries (getInbox, listAgents, etc.)
  */
 
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync } from 'node:fs';
@@ -12,6 +19,7 @@ import { join, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { RelayClient } from './client.js';
 import { createRelayClient } from './client.js';
+import type { AckPayload } from '@agent-relay/protocol';
 import { discoverSocket } from './cloud.js';
 
 export interface HybridClientOptions {
@@ -45,7 +53,14 @@ export function createHybridClient(options: HybridClientOptions): RelayClient {
   }
 
   // Get socket path for queries
-  const socketPath = options.socketPath || discoverSocket()?.socketPath || join(relayDir, 'relay.sock');
+  // Use discoverSocket() which respects cloud workspace config and env overrides.
+  // Only fall back to relayDir/relay.sock for non-cloud local development.
+  const discovery = discoverSocket();
+  const socketPath = options.socketPath || discovery?.socketPath || join(relayDir, 'relay.sock');
+
+  if (process.env.DEBUG || process.env.RELAY_DEBUG) {
+    console.debug('[hybrid-client] Socket path:', socketPath, 'source:', discovery?.source ?? 'fallback', 'isCloud:', discovery?.isCloud ?? false);
+  }
 
   // Create socket client for queries only
   let socketClient: RelayClient | null = null;
@@ -70,7 +85,8 @@ export function createHybridClient(options: HybridClientOptions): RelayClient {
 
     const msgPath = join(outboxDir, 'msg');
     writeFileSync(msgPath, content);
-    // Daemon watches outbox and processes
+    // NOTE: relay-pty (not daemon) watches for ->relay-file:msg trigger.
+    // The agent must output "->relay-file:msg" for relay-pty to process.
   };
 
   // File-based sendAndWait (for now, delegate to socket - can improve later)
@@ -78,7 +94,7 @@ export function createHybridClient(options: HybridClientOptions): RelayClient {
     to: string,
     message: string,
     opts: { thread?: string; timeoutMs?: number } = {}
-  ): Promise<{ from: string; content: string; thread?: string }> => {
+  ): Promise<AckPayload> => {
     // For await responses, we still use socket since we need the response
     // TODO: Implement file-based request/response pattern
     return getSocketClient().sendAndWait(to, message, opts);
@@ -174,7 +190,7 @@ export function createHybridClient(options: HybridClientOptions): RelayClient {
     saveContinuity,
     loadContinuity,
     markUncertain,
-  } as RelayClient & {
+  } as unknown as RelayClient & {
     saveContinuity: typeof saveContinuity;
     loadContinuity: typeof loadContinuity;
     markUncertain: typeof markUncertain;

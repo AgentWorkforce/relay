@@ -25,17 +25,20 @@ agent-relay down
 # Running Agents
 # ============================================
 
-# Wrap any command with agent-relay
-agent-relay claude
+# Wrap any command with agent-relay using create-agent
+agent-relay create-agent claude
 
 # Specify a custom agent name
-agent-relay -n Alice claude
+agent-relay create-agent -n Alice claude
 
 # Wrap with quiet mode (less output)
-agent-relay -q -n Bob claude
+agent-relay create-agent -q -n Bob claude
 
-# Custom relay prefix (default: ->relay:)
-agent-relay --prefix ">>msg:" -n Charlie claude
+# Spawn a new agent via the daemon
+agent-relay spawn Worker claude "Help with coding tasks"
+
+# Release an agent
+agent-relay release Worker
 
 # ============================================
 # Message Management

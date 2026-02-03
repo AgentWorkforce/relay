@@ -32,6 +32,7 @@ import {
   sortByPriority,
   getPriorityFromImportance,
   MESSAGE_PRIORITY,
+  shouldIgnoreForIdleDetection,
 } from './shared.js';
 import {
   DEFAULT_IDLE_BEFORE_INJECT_MS,
@@ -267,8 +268,22 @@ export abstract class BaseWrapper extends EventEmitter {
   /**
    * Feed output to the idle and stuck detectors.
    * Call this whenever new output is received from the agent.
+   *
+   * Note: Auto-suggestions (ghost text) are filtered out to prevent
+   * false idle resets. Claude Code and other CLIs show suggestions
+   * in gray/dim text with cursor save/restore, which should not
+   * be treated as "real" output for idle detection.
    */
   protected feedIdleDetectorOutput(output: string): void {
+    // Check if this output is likely an auto-suggestion (ghost text)
+    // Auto-suggestions should not reset the idle timer
+    if (shouldIgnoreForIdleDetection(output)) {
+      // Still feed to stuck detector - it strips ANSI and checks for patterns
+      // But don't feed to idle detector to avoid resetting the silence timer
+      this.stuckDetector.onOutput(output);
+      return;
+    }
+
     this.idleDetector.onOutput(output);
     this.stuckDetector.onOutput(output);
   }
@@ -576,11 +591,19 @@ export abstract class BaseWrapper extends EventEmitter {
    * Execute a spawn command
    */
   protected async executeSpawn(name: string, cli: string, task: string): Promise<void> {
-    // TODO: Re-enable daemon socket spawn when client.spawn() is implemented
-    // See: docs/SDK-MIGRATION-PLAN.md for planned implementation
-    // For now, go directly to dashboard API or callback
+    // Try daemon socket spawn first (most reliable)
+    if (this.client.state === 'READY') {
+      try {
+        const result = await this.client.spawn({ name, cli, task });
+        if (result.success) return;
+        // If spawn failed, log and fall through to other methods
+        console.warn(`[base-wrapper] Daemon spawn failed: ${result.error}`);
+      } catch (e) {
+        console.warn(`[base-wrapper] Daemon spawn error: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
 
-    // Try dashboard API
+    // Try dashboard API as fallback
     if (this.config.dashboardPort) {
       try {
         const response = await fetch(
@@ -607,9 +630,17 @@ export abstract class BaseWrapper extends EventEmitter {
    * Execute a release command
    */
   protected async executeRelease(name: string): Promise<void> {
-    // TODO: Re-enable daemon socket release when client.release() is implemented
-    // See: docs/SDK-MIGRATION-PLAN.md for planned implementation
-    // For now, go directly to dashboard API or callback
+    // Try daemon socket release first (most reliable)
+    if (this.client.state === 'READY') {
+      try {
+        const result = await this.client.release(name);
+        if (result.success) return;
+        // If release failed, log and fall through to other methods
+        console.warn(`[base-wrapper] Daemon release failed: ${result.error}`);
+      } catch (e) {
+        console.warn(`[base-wrapper] Daemon release error: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
 
     // Try dashboard API as fallback (backwards compatibility)
     if (this.config.dashboardPort) {

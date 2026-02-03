@@ -234,6 +234,96 @@ Waiting for:
 - [ ] TestRunner - Running tests
 ```
 
+## Spawn Failures and Retries
+
+When spawning a worker with a task, the system:
+
+1. **Attempts delivery** of the task to the CLI via socket (or stdin fallback)
+2. **Retries delivery** up to 3 times (with 2s delays) if the write fails
+3. **Returns result** - succeeds if delivery was confirmed by relay-pty
+
+A periodic sweep monitors for stuck injections as an additional safety net.
+
+### Why injection can fail
+
+**Delivery failures** (retried automatically):
+- Socket disconnected
+- Write error to stdin
+- relay-pty process issue
+
+### Automatic retry behavior
+
+```
+Delivery attempt 1 → Failed (socket error)
+  ↓ (2s delay)
+Delivery attempt 2 → Failed (write error)
+  ↓ (2s delay)
+Delivery attempt 3 → Success ✓
+  ↓
+Return true
+```
+
+### Handling spawn failures
+
+Even with automatic retries, spawns can still fail. Always check the result:
+
+```typescript
+const result = await relay.spawn({
+  name: 'Worker-1',
+  cli: 'claude',
+  task: 'Implement the login feature',
+});
+
+if (!result.success) {
+  console.error(`Spawn failed after 3 attempts: ${result.error}`);
+  // Additional retry at caller level (optional)
+  await sleep(5000);
+  const retryResult = await relay.spawn({ ... });
+}
+```
+
+### Additional retry strategies
+
+<CardGroup cols={2}>
+
+<Card title="Exponential backoff" icon="clock-rotate-left">
+Wait longer between each caller-level retry: 5s, 10s, 20s...
+</Card>
+
+<Card title="Max retries" icon="rotate">
+Limit total retries (e.g., 2 caller-level attempts) before escalating.
+</Card>
+
+<Card title="Health check first" icon="heart-pulse">
+Verify relay daemon is healthy before retry.
+</Card>
+
+<Card title="Alternative CLI" icon="arrows-rotate">
+Try a different CLI variant if one keeps failing.
+</Card>
+
+</CardGroup>
+
+### Spawn without task
+
+Spawning an agent **without** a task always succeeds (no verification needed):
+
+```typescript
+// This always succeeds - agent waits for messages
+const result = await relay.spawn({
+  name: 'Listener',
+  cli: 'claude',
+  // No task - agent will receive work via messages
+});
+```
+
+Use this pattern when you want to send the task via relay message instead:
+
+```typescript
+await relay.spawn({ name: 'Worker', cli: 'claude' });
+await relay.sendMessage('Worker', 'Your task here...');
+```
+
 ## Error Handling
 
 ### Worker reports failure

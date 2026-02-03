@@ -2,10 +2,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRelayClient } from '../src/client.js';
 import { createConnection } from 'node:net';
 
-// Mock node:net
-vi.mock('node:net', () => ({
-  createConnection: vi.fn(),
-}));
+// Mock node:net - this needs to be applied before any module imports it
+// Using automock: false ensures we can control the mock behavior
+vi.mock('node:net', async (importOriginal) => {
+  return {
+    ...(await importOriginal<typeof import('node:net')>()),
+    createConnection: vi.fn(),
+  };
+});
 
 /**
  * Encode a response envelope into a length-prefixed frame (matches client protocol).
@@ -26,6 +30,13 @@ function decodeFrame(buffer: Buffer): Record<string, unknown> {
   const frameLength = buffer.readUInt32BE(0);
   const payload = buffer.subarray(4, 4 + frameLength);
   return JSON.parse(payload.toString('utf-8'));
+}
+
+/**
+ * Generate a test ID for responses
+ */
+function generateId(): string {
+  return `test-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
 describe('RelayClient', () => {
@@ -150,13 +161,39 @@ describe('RelayClient', () => {
   });
 
   it('spawns worker with all options', async () => {
-    await client.spawn({
+    mockSocket.on.mockImplementation((event: string, cb: any) => {
+      if (event === 'connect') cb();
+      if (event === 'data') {
+        setTimeout(() => {
+          const writeCall = mockSocket.write.mock.calls[0][0];
+          const req = decodeFrame(writeCall);
+          const response = {
+            type: 'SPAWN_RESULT',
+            id: generateId(),
+            payload: {
+              replyTo: req.id,
+              success: true,
+              name: 'TestWorker',
+              pid: 12345,
+            },
+          };
+          cb(encodeFrame(response));
+        }, 10);
+      }
+      return mockSocket;
+    });
+
+    const result = await client.spawn({
       name: 'TestWorker',
       cli: 'claude',
       task: 'Test task',
       model: 'claude-3-opus',
       cwd: '/tmp/project',
     });
+
+    expect(result.success).toBe(true);
+    expect(result.name).toBe('TestWorker');
+    expect(result.pid).toBe(12345);
 
     const writeCall = mockSocket.write.mock.calls[0][0];
     const req = decodeFrame(writeCall);
@@ -169,6 +206,81 @@ describe('RelayClient', () => {
       cwd: '/tmp/project',
       spawnerName: 'test-agent',
     });
+  });
+
+  it('queries messages and returns mapped payload', async () => {
+    const messages = [
+      {
+        id: 'm1',
+        from: 'Alice',
+        to: 'Bob',
+        body: 'Hi',
+        channel: '#team',
+        thread: 'thr-1',
+        timestamp: 1700000000000,
+        status: 'delivered',
+        isBroadcast: false,
+        replyCount: 1,
+        data: { foo: 'bar' },
+      },
+    ];
+
+    mockSocket.on.mockImplementation((event: string, cb: any) => {
+      if (event === 'connect') cb();
+      if (event === 'data') {
+        setTimeout(() => {
+          const writeCall = mockSocket.write.mock.calls[0][0];
+          const req = decodeFrame(writeCall);
+          const response = {
+            id: req.id,
+            type: 'MESSAGES_RESPONSE',
+            payload: { messages },
+          };
+          cb(encodeFrame(response));
+        }, 10);
+      }
+      return mockSocket;
+    });
+
+    const result = await client.queryMessages({
+      limit: 5,
+      sinceTs: 123,
+      from: 'Alice',
+      to: 'Bob',
+      thread: 'thr-1',
+      order: 'asc',
+    });
+
+    expect(result).toEqual(messages);
+
+    const req = decodeFrame(mockSocket.write.mock.calls[0][0]);
+    expect(req.type).toBe('MESSAGES_QUERY');
+    expect(req.payload).toEqual({
+      limit: 5,
+      sinceTs: 123,
+      from: 'Alice',
+      to: 'Bob',
+      thread: 'thr-1',
+      order: 'asc',
+    });
+  });
+
+  it('sends log frames', async () => {
+    const now = new Date('2024-01-01T00:00:00Z').getTime();
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(now);
+
+    await client.sendLog('hello');
+
+    const writeCall = mockSocket.write.mock.calls[0][0];
+    const req = decodeFrame(writeCall);
+    expect(req.type).toBe('LOG');
+    expect(req.from).toBe('test-agent');
+    expect(req.payload).toEqual({
+      data: 'hello',
+      timestamp: now,
+    });
+
+    nowSpy.mockRestore();
   });
 
   it('lists agents', async () => {
@@ -338,6 +450,30 @@ describe('RelayClient multi-agent scenarios', () => {
     const client = createRelayClient({
       agentName: 'orchestrator',
       socketPath: '/tmp/test.sock',
+    });
+
+    let callCount = 0;
+    mockSocket.on.mockImplementation((event: string, cb: any) => {
+      if (event === 'connect') cb();
+      if (event === 'data') {
+        setTimeout(() => {
+          const writeCall = mockSocket.write.mock.calls[callCount][0];
+          const req = decodeFrame(writeCall);
+          const response = {
+            type: 'SPAWN_RESULT',
+            id: generateId(),
+            payload: {
+              replyTo: req.id,
+              success: true,
+              name: (req.payload as any).name,
+              pid: 10000 + callCount,
+            },
+          };
+          callCount++;
+          cb(encodeFrame(response));
+        }, 10);
+      }
+      return mockSocket;
     });
 
     // Spawn Worker1

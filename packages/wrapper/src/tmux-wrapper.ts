@@ -1291,7 +1291,7 @@ export class TmuxWrapper extends BaseWrapper {
           this.logStderr(`${agentName} is online, sending task...`);
 
           // Send task directly via our relay client (not dashboard API)
-          // This ensures the message comes "from" this agent, not from _DashboardUI
+          // This ensures the message comes "from" this agent, not from Dashboard
           if (this.client.state === 'READY') {
             const sent = this.client.sendMessage(agentName, task, 'message');
             if (sent) {

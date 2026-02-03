@@ -36,12 +36,12 @@ import {
   type HealthResponsePayload,
   type MetricsPayload,
   type MetricsResponsePayload,
+  type AgentReadyPayload,
 } from '@agent-relay/protocol/types';
 import type { ChannelJoinPayload, ChannelLeavePayload, ChannelMessagePayload } from '@agent-relay/protocol/channels';
 import { SpawnManager, type SpawnManagerConfig } from './spawn-manager.js';
-import { createStorageAdapter, type StorageAdapter, type StorageConfig } from '@agent-relay/storage/adapter';
-import { SqliteStorageAdapter } from '@agent-relay/storage/sqlite-adapter';
-import { getProjectPaths } from '@agent-relay/config';
+import { createStorageAdapter, type StorageAdapter, type StorageConfig, type StorageHealth } from '@agent-relay/storage/adapter';
+import { getProjectPaths, saveRuntimeConfig, clearRuntimeConfig } from '@agent-relay/config';
 import { AgentRegistry } from './agent-registry.js';
 import { daemonLog as log } from '@agent-relay/utils/logger';
 import { getCloudSync, type CloudSyncService, type RemoteAgent, type CrossMachineMessage, type AgentMetricsProvider } from './cloud-sync.js';
@@ -58,13 +58,19 @@ import {
   track,
   shutdown as shutdownTelemetry,
 } from '@agent-relay/telemetry';
-import { RelayWatchdog, type ProcessedFile } from './relay-watchdog.js';
-import type { RelayPaths } from '@agent-relay/config/relay-file-writer';
 
-// Get version from package.json
-const require = createRequire(import.meta.url);
-const packageJson = require('../package.json');
-const DAEMON_VERSION: string = packageJson.version;
+// Get version: prefer build-time injected version (for standalone binaries), fall back to package.json
+const DAEMON_VERSION: string = (() => {
+  const envVersion = process.env.AGENT_RELAY_VERSION;
+  if (envVersion) return envVersion;
+  try {
+    const require = createRequire(import.meta.url);
+    const packageJson = require('../package.json');
+    return packageJson.version as string;
+  } catch {
+    return 'unknown';
+  }
+})();
 
 export interface DaemonConfig extends ConnectionConfig {
   socketPath: string;
@@ -118,7 +124,7 @@ export class Daemon {
   private cloudSyncDebounceTimer?: NodeJS.Timeout;
   private spawnManager?: SpawnManager;
   private shuttingDown = false;
-  private relayWatchdog?: RelayWatchdog;
+  private storageHealth?: StorageHealth;
 
   /** Telemetry tracking */
   private startTime?: number;
@@ -136,9 +142,16 @@ export class Daemon {
     if (config.socketPath && !config.pidFilePath) {
       this.config.pidFilePath = `${config.socketPath}.pid`;
     }
-    // Default teamDir to same directory as socket
+    // Default teamDir to same directory as socket, but avoid /tmp directly
+    // because macOS can clean temp files causing atomic write failures
     if (!this.config.teamDir) {
-      this.config.teamDir = path.dirname(this.config.socketPath);
+      const socketDir = path.dirname(this.config.socketPath);
+      // If socket is in /tmp or /private/tmp, use a subdirectory
+      if (socketDir === '/tmp' || socketDir === '/private/tmp') {
+        this.config.teamDir = path.join(socketDir, 'agent-relay-state');
+      } else {
+        this.config.teamDir = socketDir;
+      }
     }
     if (this.config.teamDir) {
       this.registry = new AgentRegistry(this.config.teamDir);
@@ -368,6 +381,31 @@ export class Daemon {
     // Initialize storage
     await this.initStorage();
 
+    // Storage health check: warn if non-persistent (e.g., in-memory fallback)
+    try {
+      if (this.storage?.healthCheck) {
+        this.storageHealth = await this.storage.healthCheck();
+        if (!this.storageHealth.persistent) {
+          console.warn('[daemon] ⚠️  Running in non-persistent mode!');
+          console.warn('[daemon] Messages will be lost on restart.');
+        }
+      }
+    } catch (err) {
+      log.warn('Storage health check failed', { error: String(err) });
+    }
+
+    // Save runtime config so CLI commands can use the same storage type
+    try {
+      saveRuntimeConfig({
+        storageType: this.storageHealth?.driver ?? this.config.storageConfig?.type ?? 'jsonl',
+        daemonPid: process.pid,
+        startedAt: new Date().toISOString(),
+        version: DAEMON_VERSION,
+      });
+    } catch (err) {
+      log.warn('Failed to save runtime config', { error: String(err) });
+    }
+
     // Restore channel memberships from persisted storage (cloud DB or SQLite)
     await this.router.restoreChannelMemberships();
 
@@ -383,6 +421,36 @@ export class Daemon {
         );
       }
       fs.unlinkSync(this.config.socketPath);
+    }
+
+    // Clean up stale mcp-identity-* files from previous runs
+    // These are left behind when agents crash or aren't cleaned up properly
+    const dataDir = path.dirname(this.config.socketPath);
+    try {
+      const files = fs.readdirSync(dataDir);
+      for (const file of files) {
+        if (file.startsWith('mcp-identity-')) {
+          const match = file.match(/mcp-identity-(\d+)/);
+          if (match) {
+            const identityPid = parseInt(match[1], 10);
+            // Check if process is still running
+            let isRunning = false;
+            try {
+              process.kill(identityPid, 0);
+              isRunning = true;
+            } catch {
+              // Process not running
+            }
+            if (!isRunning) {
+              const identityPath = path.join(dataDir, file);
+              fs.unlinkSync(identityPath);
+              log.info('Cleaned up stale identity file', { file });
+            }
+          }
+        }
+      }
+    } catch (err) {
+      log.warn('Failed to clean up stale identity files', { error: String(err) });
     }
 
     // Ensure socket directory exists
@@ -483,17 +551,6 @@ export class Daemon {
           this.writeProcessingStateFile();
         }, Daemon.PROCESSING_STATE_INTERVAL_MS);
 
-        // Start RelayWatchdog for MCP file-based messages (ledger-based for durability)
-        // Feature gated: set RELAY_MCP_AUTO_INSTALL=1 to enable file-based MCP messaging
-        const mcpAutoInstallEnabled = process.env.RELAY_MCP_AUTO_INSTALL === '1';
-        if (mcpAutoInstallEnabled) {
-          // Use parent of teamDir since teamDir is .agent-relay/team/ but outbox is at .agent-relay/outbox/
-          const relayRoot = path.dirname(teamDir);
-          this.initRelayWatchdog(relayRoot).catch(err => {
-            log.error('Failed to start RelayWatchdog', { error: String(err) });
-          });
-        }
-
         // Track daemon start
         track('daemon_start', {});
 
@@ -501,112 +558,6 @@ export class Daemon {
         resolve();
       });
     });
-  }
-
-  /**
-   * Initialize RelayWatchdog for MCP and file-based agents.
-   * Uses the ledger-based watchdog for durable file processing.
-   */
-  private async initRelayWatchdog(relayDir: string): Promise<void> {
-    // Create project-local relay paths
-    const relayPaths: RelayPaths = {
-      rootDir: relayDir,
-      outboxDir: path.join(relayDir, 'outbox'),
-      attachmentsDir: path.join(relayDir, 'attachments'),
-      metaDir: path.join(relayDir, 'meta'),
-      legacyOutboxDir: path.join(relayDir, 'outbox'), // Same as outboxDir for project-local
-    };
-
-    this.relayWatchdog = new RelayWatchdog({
-      relayPaths,
-      ledgerPath: path.join(relayDir, 'meta', 'file-ledger.sqlite'),
-    });
-
-    // Handle delivered files from file-based agents (MCP, etc.)
-    this.relayWatchdog.on('file:delivered', (file: ProcessedFile) => {
-      const { agentName, messageType, headers, body } = file;
-      log.debug('File delivered', { agentName, messageType, headers });
-
-      // Determine message type from headers or filename
-      const kind = headers['KIND']?.toLowerCase() || messageType;
-
-      if (kind === 'spawn') {
-        // Handle spawn request
-        if (this.spawnManager) {
-          const envelope: Envelope<SpawnPayload> = {
-            v: PROTOCOL_VERSION,
-            type: 'SPAWN',
-            id: generateId(),
-            ts: Date.now(),
-            payload: {
-              name: headers['NAME'] || '',
-              cli: headers['CLI'] || 'claude',
-              task: body,
-              cwd: headers['CWD'],
-              model: headers['MODEL'],
-              spawnerName: agentName,
-            },
-          };
-          const virtualConnection = { agentName, send: () => true } as any;
-          this.spawnManager.handleSpawn(virtualConnection, envelope);
-        } else {
-          log.warn('Spawn request ignored - SpawnManager not enabled');
-        }
-      } else if (kind === 'release') {
-        // Handle release request
-        if (this.spawnManager) {
-          const envelope: Envelope<ReleasePayload> = {
-            v: PROTOCOL_VERSION,
-            type: 'RELEASE',
-            id: generateId(),
-            ts: Date.now(),
-            payload: {
-              name: headers['NAME'] || '',
-              reason: body || undefined,
-            },
-          };
-          const virtualConnection = { agentName, send: () => true } as any;
-          this.spawnManager.handleRelease(virtualConnection, envelope);
-        } else {
-          log.warn('Release request ignored - SpawnManager not enabled');
-        }
-      } else {
-        // Default: treat as message
-        const to = headers['TO'];
-        if (!to) {
-          log.warn('Message missing TO header', { agentName, headers });
-          return;
-        }
-
-        const envelope: SendEnvelope = {
-          v: PROTOCOL_VERSION,
-          type: 'SEND',
-          id: generateId(),
-          ts: Date.now(),
-          from: agentName,
-          to,
-          payload: {
-            kind: 'message',
-            body,
-            thread: headers['THREAD'],
-          },
-        };
-        const virtualConnection = { agentName } as any;
-        this.router.route(virtualConnection, envelope);
-      }
-    });
-
-    // Log errors
-    this.relayWatchdog.on('error', (error: Error) => {
-      log.error('RelayWatchdog error', { error: error.message });
-    });
-
-    this.relayWatchdog.on('file:failed', (record, error) => {
-      log.error('File processing failed', { fileId: record.fileId, error: error.message });
-    });
-
-    await this.relayWatchdog.start();
-    log.info('RelayWatchdog started', { relayDir });
   }
 
   /**
@@ -915,8 +866,8 @@ export class Daemon {
    */
   private isInternalAgent(name: string): boolean {
     if (name.startsWith('__')) return true;
-    // Dashboard, _DashboardUI, and cli are internal system agents
-    return name === 'Dashboard' || name === '_DashboardUI' || name === 'cli';
+    // Dashboard and cli are internal system agents
+    return name === 'Dashboard' || name === 'cli';
   }
 
   /**
@@ -958,12 +909,6 @@ export class Daemon {
       this.processingStateInterval = undefined;
     }
 
-    // Stop RelayWatchdog
-    if (this.relayWatchdog) {
-      await this.relayWatchdog.stop();
-      this.relayWatchdog = undefined;
-    }
-
     // Close all active connections
     for (const connection of this.connections) {
       connection.close();
@@ -980,6 +925,12 @@ export class Daemon {
         // Clean up pid file
         if (fs.existsSync(this.config.pidFilePath)) {
           fs.unlinkSync(this.config.pidFilePath);
+        }
+        // Clear runtime config
+        try {
+          clearRuntimeConfig();
+        } catch {
+          // Ignore errors during shutdown
         }
         if (this.storage?.close) {
           this.storage.close().catch((err) => {
@@ -1055,15 +1006,16 @@ export class Daemon {
           model: connection.model,
           task: connection.task,
           workingDirectory: connection.workingDirectory,
+          team: connection.team,
         });
 
         // Auto-join all agents to #general channel
         this.router.autoJoinChannel(connection.agentName, '#general');
 
         // Record session start
-        if (this.storage instanceof SqliteStorageAdapter) {
+        if (this.storage?.startSession) {
           const projectPaths = getProjectPaths();
-          const storage = this.storage as SqliteStorageAdapter;
+          const storage = this.storage;
           const persistSession = async (): Promise<void> => {
             let startedAt = Date.now();
             if (connection.isResumed && storage.getSessionByResumeToken) {
@@ -1073,7 +1025,7 @@ export class Daemon {
               }
             }
 
-            await storage.startSession({
+            await storage.startSession!({
               id: connection.sessionId,
               agentName: connection.agentName!,
               cli: connection.cli,
@@ -1114,6 +1066,12 @@ export class Daemon {
 
       // Update connected agents file for CLI
       this.writeConnectedAgentsFile();
+
+      // Broadcast AGENT_READY event to all connected clients
+      // This allows spawning clients to know when their spawned agent is ready
+      if (connection.agentName) {
+        this.broadcastAgentReady(connection);
+      }
     };
 
     connection.onClose = () => {
@@ -1127,7 +1085,7 @@ export class Daemon {
       }
 
       // Record session end (disconnect - agent may still mark it closed explicitly)
-      if (this.storage instanceof SqliteStorageAdapter) {
+      if (this.storage?.endSession) {
         this.storage.endSession(connection.sessionId, { closedBy: 'disconnect' })
           .catch(err => log.error('Failed to record session end', { error: String(err) }));
       }
@@ -1150,7 +1108,7 @@ export class Daemon {
       }
 
       // Record session end on error
-      if (this.storage instanceof SqliteStorageAdapter) {
+      if (this.storage?.endSession) {
         this.storage.endSession(connection.sessionId, { closedBy: 'error' })
           .catch(err => log.error('Failed to record session end', { error: String(err) }));
       }
@@ -1303,19 +1261,37 @@ export class Daemon {
       // Query handlers (MCP/client requests)
       case 'STATUS': {
         const uptimeMs = this.startTime ? Date.now() - this.startTime : 0;
-        const response: Envelope<StatusResponsePayload> = {
-          v: PROTOCOL_VERSION,
-          type: 'STATUS_RESPONSE',
-          id: envelope.id,
-          ts: Date.now(),
-          payload: {
-            version: DAEMON_VERSION,
-            uptime: uptimeMs,
-            cloudConnected: this.cloudSync?.isConnected() ?? false,
-            agentCount: this.router.connectionCount,
-          },
+        const sendStatus = async (): Promise<void> => {
+          let storageHealth: StorageHealth | undefined;
+          if (this.storage?.healthCheck) {
+            try {
+              storageHealth = await this.storage.healthCheck();
+              this.storageHealth = storageHealth;
+            } catch (err) {
+              log.warn('STATUS: storage health check failed', { error: String(err) });
+              storageHealth = this.storageHealth;
+            }
+          }
+
+          const response: Envelope<StatusResponsePayload> = {
+            v: PROTOCOL_VERSION,
+            type: 'STATUS_RESPONSE',
+            id: envelope.id,
+            ts: Date.now(),
+            payload: {
+              version: DAEMON_VERSION,
+              uptime: uptimeMs,
+              cloudConnected: this.cloudSync?.isConnected() ?? false,
+              agentCount: this.router.connectionCount,
+              storage: storageHealth,
+            },
+          };
+          connection.send(response);
         };
-        connection.send(response);
+
+        sendStatus().catch(err => {
+          log.error('Failed to send STATUS response', { error: String(err) });
+        });
         break;
       }
 
@@ -1425,17 +1401,24 @@ export class Daemon {
         const registryAgents = this.registry?.getAgents() ?? [];
         const registryMap = new Map(registryAgents.map(a => [a.name, a]));
 
+        // Get active workers from spawn manager for PID lookup
+        const activeWorkers = this.spawnManager?.getActiveWorkers() ?? [];
+        const workerMap = new Map(activeWorkers.map(w => [w.name, w]));
+
         // Build agent list from connected agents
         const agents = connectedAgents
           .filter(name => !this.isInternalAgent(name))
           .map(name => {
             const registryAgent = registryMap.get(name);
+            const conn = this.router.getConnection(name);
+            const worker = workerMap.get(name);
             return {
               name,
-              cli: registryAgent?.cli,
+              cli: conn?.cli ?? registryAgent?.cli,
               idle: false, // Connected agents are not idle
-              // TODO: Add proper parent tracking via spawner relationship
-              parent: undefined,
+              parent: worker?.spawnerName,
+              team: conn?.team ?? worker?.team,
+              pid: worker?.pid,
             };
           });
 
@@ -1448,6 +1431,8 @@ export class Daemon {
                 cli: agent.cli,
                 idle: true,
                 parent: undefined,
+                team: agent.team,
+                pid: undefined,
               });
             }
           }
@@ -1466,20 +1451,27 @@ export class Daemon {
 
       case 'LIST_CONNECTED_AGENTS': {
         // Returns only currently connected agents (not historical/registered agents)
-        const connectedAgents = this.router.getAgents();
+        const connectedAgentNames = this.router.getAgents();
         const registryAgents = this.registry?.getAgents() ?? [];
         const registryMap = new Map(registryAgents.map(a => [a.name, a]));
 
-        const agents = connectedAgents
+        // Get active workers from spawn manager for PID lookup
+        const workers = this.spawnManager?.getActiveWorkers() ?? [];
+        const workersByName = new Map(workers.map(w => [w.name, w]));
+
+        const agents = connectedAgentNames
           .filter(name => !this.isInternalAgent(name))
           .map(name => {
             const registryAgent = registryMap.get(name);
+            const conn = this.router.getConnection(name);
+            const worker = workersByName.get(name);
             return {
               name,
-              cli: registryAgent?.cli,
+              cli: conn?.cli ?? registryAgent?.cli,
               idle: false,
-              // TODO: Add proper parent tracking via spawner relationship
-              parent: undefined,
+              parent: worker?.spawnerName,
+              team: conn?.team ?? worker?.team,
+              pid: worker?.pid,
             };
           });
 
@@ -1788,6 +1780,36 @@ export class Daemon {
   }
 
   /**
+   * Broadcast AGENT_READY event when an agent completes connection.
+   * This allows spawning clients to know when their spawned agent is ready to receive messages.
+   */
+  private broadcastAgentReady(connection: Connection): void {
+    const payload: AgentReadyPayload = {
+      name: connection.agentName!,
+      cli: connection.cli,
+      task: connection.task,
+      connectedAt: Date.now(),
+    };
+
+    const envelope: Envelope<AgentReadyPayload> = {
+      v: PROTOCOL_VERSION,
+      type: 'AGENT_READY',
+      id: generateId(),
+      ts: Date.now(),
+      payload,
+    };
+
+    // Broadcast to all connections except the one that just connected
+    for (const conn of this.connections) {
+      if (conn.id !== connection.id && conn.state === 'ACTIVE') {
+        conn.send(envelope);
+      }
+    }
+
+    log.info('Broadcast AGENT_READY', { agent: connection.agentName });
+  }
+
+  /**
    * Get connection count.
    */
   get connectionCount(): number {
@@ -1816,8 +1838,11 @@ export class Daemon {
   }
 }
 
-// Run as standalone if executed directly
-const isMainModule = import.meta.url === `file://${process.argv[1]}`;
+// Run as standalone if executed directly (not in bundled CLI)
+// In bundled builds, AGENT_RELAY_VERSION is defined, so we skip auto-start
+// The CLI handles daemon startup via the 'up' command
+const isMainModule = import.meta.url === `file://${process.argv[1]}` &&
+  !process.env.AGENT_RELAY_VERSION;
 if (isMainModule) {
   const daemon = new Daemon();
 

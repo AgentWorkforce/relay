@@ -56,12 +56,14 @@
         "guides/worker-orchestration",
         "guides/session-continuity",
         "guides/custom-agents",
-        "guides/editor-integration"
+        "guides/editor-integration",
+        "guides/electron-integration"
       ]
     },
     {
       "group": "Reference",
       "pages": [
+        "reference/sdk",
         "reference/cli",
         "reference/protocol",
         "reference/configuration",

@@ -26,6 +26,17 @@ import { DEFAULT_CONNECTION_CONFIG } from '@agent-relay/config/relay-config';
 
 export type ConnectionState = 'CONNECTING' | 'HANDSHAKING' | 'ACTIVE' | 'CLOSING' | 'CLOSED' | 'ERROR';
 
+/**
+ * Reserved agent names that cannot be used by user-created agents.
+ * These are used by system components.
+ */
+export const RESERVED_AGENT_NAMES: ReadonlySet<string> = new Set([
+  'Dashboard',  // Dashboard system client
+  'cli',        // CLI tool
+  'system',     // System messages
+  '_router',    // Internal router target
+]);
+
 export interface ConnectionConfig {
   maxFrameBytes: number;
   heartbeatMs: number;
@@ -67,6 +78,7 @@ export class Connection {
   private _model?: string;
   private _task?: string;
   private _workingDirectory?: string;
+  private _team?: string;
   private _displayName?: string;
   private _avatarUrl?: string;
   private _sessionId: string;
@@ -138,6 +150,10 @@ export class Connection {
 
   get workingDirectory(): string | undefined {
     return this._workingDirectory;
+  }
+
+  get team(): string | undefined {
+    return this._team;
   }
 
   get displayName(): string | undefined {
@@ -223,13 +239,24 @@ export class Connection {
       return;
     }
 
-    this._agentName = envelope.payload.agent;
+    const agentName = envelope.payload.agent;
+
+    // Validate agent name is not reserved (unless it's the actual system component)
+    // Names starting with '__' are allowed for internal setup agents
+    // Check reserved names list for exact matches
+    if (RESERVED_AGENT_NAMES.has(agentName) && !envelope.payload._isSystemComponent) {
+      this.sendError('BAD_REQUEST', `Agent name "${agentName}" is reserved for system use`, true);
+      return;
+    }
+
+    this._agentName = agentName;
     this._entityType = envelope.payload.entityType;
     this._cli = envelope.payload.cli;
     this._program = envelope.payload.program;
     this._model = envelope.payload.model;
     this._task = envelope.payload.task;
     this._workingDirectory = envelope.payload.workingDirectory;
+    this._team = envelope.payload.team;
     this._displayName = envelope.payload.displayName;
     this._avatarUrl = envelope.payload.avatarUrl;
 

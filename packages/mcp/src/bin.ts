@@ -24,6 +24,8 @@ const { values, positionals } = parseArgs({
     list: { type: 'boolean', short: 'l' },
     status: { type: 'boolean', short: 's' },
     quiet: { type: 'boolean', short: 'q' },
+    project: { type: 'string', short: 'p' },
+    socket: { type: 'string' },
   },
 });
 
@@ -49,6 +51,10 @@ Install Options:
   -l, --list            List supported editors
   -s, --status          Show installation status
   -q, --quiet           Minimal output
+
+Serve Options:
+  -p, --project <path>  Project root path (where .agent-relay lives)
+  --socket <path>       Socket path override
 
 Supported Editors:
   ${getValidEditors().join(', ')}
@@ -109,15 +115,45 @@ switch (command) {
       try {
         const { runMCPServer, discoverSocket, discoverAgentName } = await import('./index.js');
         const { createHybridClient, discoverProjectRoot } = await import('./hybrid-client.js');
+        const { join } = await import('node:path');
+        const { existsSync } = await import('node:fs');
 
-        // Discover socket and agent identity
+        // Use explicit project path if provided (for MCP servers invoked from different contexts)
+        const explicitProject = values.project as string | undefined;
+        const explicitSocket = values.socket as string | undefined;
+
+        // If explicit project path provided, derive socket path from it
+        let socketPath = explicitSocket;
+        let projectRoot = explicitProject;
+
+        if (explicitProject && !explicitSocket) {
+          // Derive socket path from project root
+          socketPath = join(explicitProject, '.agent-relay', 'relay.sock');
+        }
+
+        // Discover socket and agent identity (uses explicit paths if set via env)
+        if (socketPath) {
+          process.env.RELAY_SOCKET = socketPath;
+        }
         const discovery = discoverSocket();
         const agentName = discoverAgentName(discovery) || `mcp-${process.pid}`;
 
         // Discover project root for file-based transport
-        const projectRoot = discoverProjectRoot();
+        if (!projectRoot) {
+          projectRoot = discoverProjectRoot() ?? undefined;
+        }
+
         if (!projectRoot) {
           console.error('Could not find project root (.agent-relay directory)');
+          console.error('Use --project <path> to specify the project root explicitly');
+          process.exit(1);
+        }
+
+        // Verify project root has .agent-relay directory
+        const relayDir = join(projectRoot, '.agent-relay');
+        if (!existsSync(relayDir)) {
+          console.error(`Project root does not have .agent-relay directory: ${projectRoot}`);
+          console.error('Run "agent-relay up" in the project to start the daemon first');
           process.exit(1);
         }
 
@@ -125,7 +161,7 @@ switch (command) {
         const client = createHybridClient({
           agentName,
           projectRoot,
-          socketPath: discovery?.socketPath,
+          socketPath: socketPath || discovery?.socketPath,
           project: discovery?.project,
         });
 

@@ -201,6 +201,158 @@ export function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * ANSI escape patterns for auto-suggestion (ghost text) detection.
+ *
+ * Claude Code and other CLIs show auto-suggestions using:
+ * - Dim text: \x1B[2m
+ * - Bright black (gray): \x1B[90m
+ * - 256-color gray: \x1B[38;5;8m or \x1B[38;5;240m through \x1B[38;5;250m
+ * - Cursor save/restore: \x1B[s / \x1B[u or \x1B7 / \x1B8
+ *
+ * Auto-suggestions are typically:
+ * 1. Styled with dim/gray text
+ * 2. Cursor position is saved before, restored after (so cursor doesn't advance)
+ * 3. The actual text content is the "ghost" suggestion
+ */
+// eslint-disable-next-line no-control-regex
+const AUTO_SUGGEST_PATTERNS = {
+  // Dim text styling - commonly used for ghost text
+  dim: /\x1B\[2m/,
+  // Bright black (dark gray) - common for suggestions
+  brightBlack: /\x1B\[90m/,
+  // 256-color grays (8 is dark gray, 240-250 are grays)
+  gray256: /\x1B\[38;5;(?:8|24[0-9]|250)m/,
+  // Cursor save (CSI s or ESC 7)
+  cursorSave: /\x1B\[s|\x1B7/,
+  // Cursor restore (CSI u or ESC 8)
+  cursorRestore: /\x1B\[u|\x1B8/,
+  // Italic text - sometimes used for suggestions
+  italic: /\x1B\[3m/,
+};
+
+/**
+ * Result of auto-suggestion detection.
+ */
+export interface AutoSuggestResult {
+  /** True if the output looks like an auto-suggestion */
+  isAutoSuggest: boolean;
+  /** Confidence level (0-1) */
+  confidence: number;
+  /** Which patterns were detected */
+  patterns: string[];
+  /** The actual content after stripping ANSI (for debugging) */
+  strippedContent?: string;
+}
+
+/**
+ * Detect if terminal output is likely an auto-suggestion (ghost text).
+ *
+ * Auto-suggestions should NOT reset the idle timer because they represent
+ * the CLI showing suggestions to the user, not actual output from the agent.
+ *
+ * Detection heuristics:
+ * 1. Contains dim/gray styling without other foreground colors
+ * 2. Has cursor save/restore patterns (suggestion doesn't advance cursor)
+ * 3. Stripped content is non-empty but doesn't contain relay commands
+ *
+ * @param output Raw terminal output including ANSI codes
+ * @returns Detection result with confidence and matched patterns
+ */
+export function detectAutoSuggest(output: string): AutoSuggestResult {
+  const patterns: string[] = [];
+  let confidence = 0;
+
+  // Check for dim styling (very common for ghost text)
+  if (AUTO_SUGGEST_PATTERNS.dim.test(output)) {
+    patterns.push('dim');
+    confidence += 0.4;
+  }
+
+  // Check for bright black (dark gray)
+  if (AUTO_SUGGEST_PATTERNS.brightBlack.test(output)) {
+    patterns.push('brightBlack');
+    confidence += 0.4;
+  }
+
+  // Check for 256-color gray
+  if (AUTO_SUGGEST_PATTERNS.gray256.test(output)) {
+    patterns.push('gray256');
+    confidence += 0.3;
+  }
+
+  // Check for italic (sometimes used for suggestions)
+  if (AUTO_SUGGEST_PATTERNS.italic.test(output)) {
+    patterns.push('italic');
+    confidence += 0.2;
+  }
+
+  // Check for cursor save/restore pair (strong indicator)
+  const hasCursorSave = AUTO_SUGGEST_PATTERNS.cursorSave.test(output);
+  const hasCursorRestore = AUTO_SUGGEST_PATTERNS.cursorRestore.test(output);
+
+  if (hasCursorSave && hasCursorRestore) {
+    patterns.push('cursorSaveRestore');
+    confidence += 0.5;
+  } else if (hasCursorSave || hasCursorRestore) {
+    patterns.push(hasCursorSave ? 'cursorSave' : 'cursorRestore');
+    confidence += 0.2;
+  }
+
+  // Cap confidence at 1.0
+  confidence = Math.min(confidence, 1.0);
+
+  // Strip ANSI to check actual content
+  const stripped = stripAnsi(output);
+
+  // If no patterns detected, it's not an auto-suggest
+  if (patterns.length === 0) {
+    return { isAutoSuggest: false, confidence: 0, patterns, strippedContent: stripped };
+  }
+
+  // Additional checks to reduce false positives:
+  // - Actual content should be relatively short (suggestions are typically one line)
+  // - Should not contain newlines (multi-line output is probably real output)
+  const lines = stripped.split('\n').filter(l => l.trim().length > 0);
+  if (lines.length > 2) {
+    // Multi-line content - less likely to be just a suggestion
+    confidence *= 0.5;
+  }
+
+  // Consider it an auto-suggest if confidence is above threshold
+  const isAutoSuggest = confidence >= 0.4;
+
+  return { isAutoSuggest, confidence, patterns, strippedContent: stripped };
+}
+
+/**
+ * Check if output should be ignored for idle detection purposes.
+ * Returns true if the output is likely an auto-suggestion or control sequence only.
+ *
+ * @param output Raw terminal output
+ * @returns true if output should be ignored for idle detection
+ */
+export function shouldIgnoreForIdleDetection(output: string): boolean {
+  // Empty output should be ignored
+  if (!output || output.length === 0) {
+    return true;
+  }
+
+  // Check if it's an auto-suggestion
+  const result = detectAutoSuggest(output);
+  if (result.isAutoSuggest) {
+    return true;
+  }
+
+  // Check if stripped content is empty (only control sequences)
+  const stripped = stripAnsi(output).trim();
+  if (stripped.length === 0) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Build the injection string for a relay message.
  * Format: Relay message from {from} [{shortId}]{hints}: {body}
  *
@@ -221,9 +373,9 @@ export function buildInjectionString(msg: QueuedMessage): string {
 
   const shortId = msg.messageId.substring(0, 8);
 
-  // Use senderName from data if available (for dashboard messages sent via _DashboardUI)
+  // Use senderName from data if available (for dashboard messages sent via Dashboard)
   // This allows showing the actual GitHub username instead of the system client name
-  const displayFrom = (msg.from === '_DashboardUI' && typeof msg.data?.senderName === 'string')
+  const displayFrom = (msg.from === 'Dashboard' && typeof msg.data?.senderName === 'string')
     ? msg.data.senderName
     : msg.from;
 
@@ -287,12 +439,17 @@ export function createInjectionMetrics(): InjectionMetrics {
  */
 export function detectCliType(command: string): CliType {
   const cmdLower = command.toLowerCase();
+  // Extract just the command name (first word, without path)
+  const cmdName = cmdLower.split(/[\s/\\]/).pop() || cmdLower;
+
   if (cmdLower.includes('gemini')) return 'gemini';
   if (cmdLower.includes('codex')) return 'codex';
   if (cmdLower.includes('claude')) return 'claude';
   if (cmdLower.includes('droid')) return 'droid';
   if (cmdLower.includes('opencode')) return 'opencode';
   if (cmdLower.includes('cursor')) return 'cursor';
+  // 'agent' is the Cursor CLI command name (both older cursor-agent and newer agent)
+  if (cmdName === 'agent' || cmdName === 'cursor-agent') return 'cursor';
   return 'other';
 }
 

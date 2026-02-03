@@ -20,8 +20,23 @@ import { spawn, ChildProcess } from 'node:child_process';
 import { createConnection, Socket } from 'node:net';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
-import { existsSync, unlinkSync, mkdirSync, symlinkSync, lstatSync, rmSync, watch, readdirSync, readlinkSync, writeFileSync, appendFileSync } from 'node:fs';
+import { homedir, freemem, totalmem } from 'node:os';
+import { execSync } from 'node:child_process';
+import {
+  existsSync,
+  unlinkSync,
+  mkdirSync,
+  symlinkSync,
+  lstatSync,
+  rmSync,
+  watch,
+  readdirSync,
+  readlinkSync,
+  writeFileSync,
+  appendFileSync,
+  accessSync,
+  constants as fsConstants,
+} from 'node:fs';
 import type { FSWatcher } from 'node:fs';
 import { getProjectPaths } from '@agent-relay/config/project-namespace';
 import { getAgentOutboxTemplate } from '@agent-relay/config/relay-file-writer';
@@ -56,6 +71,68 @@ import {
 // ============================================================================
 
 const MAX_SOCKET_PATH_LENGTH = 107;
+
+/**
+ * Maximum size for output buffers (rawBuffer, outputBuffer) in bytes.
+ * Prevents RangeError: Invalid string length when agents produce lots of output.
+ * Set to 10MB - enough to capture context but won't exhaust memory.
+ */
+const MAX_OUTPUT_BUFFER_SIZE = 10 * 1024 * 1024; // 10MB
+
+// ============================================================================
+// Activity Verification Constants
+// ============================================================================
+
+/**
+ * Activity patterns used to verify that a CLI has received and started processing
+ * an injected task. These patterns work across Claude Code, Codex, and Droid/Gemini.
+ *
+ * The problem we're solving: Rust confirms "delivered to PTY" but that doesn't mean
+ * the CLI processed it. The T-003 failure showed the CLI wasn't ready when input arrived.
+ *
+ * @see https://github.com/your-org/relay/issues/XXX for the original investigation
+ */
+const ACTIVITY_VERIFICATION = {
+  /** Time to wait for activity patterns after injection (ms) */
+  TIMEOUT_MS: 5000,
+  /** How often to check for activity patterns (ms) */
+  POLL_INTERVAL_MS: 200,
+  /** Maximum retries when no activity is detected */
+  MAX_RETRIES: 3,
+  /** Delay between retries (ms) */
+  RETRY_DELAY_MS: 500,
+
+  /**
+   * Patterns indicating the task was received and displayed.
+   * These are the primary verification patterns.
+   */
+  TASK_RECEIVED_PATTERNS: [
+    /\[Pasted text #\d+/,              // Claude Code shows "[Pasted text #1 +95 lines]"
+    /› Relay message from/,             // Codex shows "› Relay message from"
+    /Relay message from \w+ \[[\w-]+\]/, // Droid/Gemini shows "Relay message from Agent [id]:"
+  ],
+
+  /**
+   * Patterns indicating the CLI is thinking/processing.
+   * Secondary verification - proves the CLI is active.
+   */
+  THINKING_PATTERNS: [
+    /\(.*esc to (?:interrupt|stop)\)/i,  // All CLIs: "(esc to interrupt)" or "(Press ESC to stop)"
+    /[✻✶✳✢·✽⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/,               // Spinner characters (Claude + Droid)
+    /Thinking\.\.\./,                    // Droid: "Thinking..."
+    /Working/,                           // Codex: "Working"
+    /Forming|Noodling|Manifesting/i,     // Claude Code thinking states
+  ],
+
+  /**
+   * Patterns indicating tool execution started.
+   * Tertiary verification - proves the CLI is working.
+   */
+  TOOL_EXECUTION_PATTERNS: [
+    /⏺\s*(Bash|Read|Write|Edit|Glob|Grep|Task|WebFetch)/, // Claude Code tool markers
+    /•\s*Running/,                       // Codex: "• Running: command"
+  ],
+} as const;
 
 function hashWorkspaceId(workspaceId: string): string {
   return createHash('sha256').update(workspaceId).digest('hex').slice(0, 12);
@@ -206,6 +283,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   private outputBuffer = '';
   private rawBuffer = '';
   private lastParsedLength = 0;
+  private bufferTrimCount = 0;
 
   // Interactive mode (show output to terminal)
   private isInteractive = false;
@@ -264,6 +342,55 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   private hasCgroupSetup = false;
 
   // Note: sessionEndProcessed and lastSummaryRawContent are inherited from BaseWrapper
+
+  /**
+   * Gather system diagnostics for debugging SIGKILL/unexpected exits.
+   * Returns a formatted string with memory, process, and system info.
+   */
+  private static gatherSigkillDiagnostics(agentName: string, pid?: number): string {
+    const lines: string[] = [];
+
+    try {
+      // Memory info
+      const free = freemem();
+      const total = totalmem();
+      const usedPercent = Math.round((1 - free / total) * 100);
+      lines.push(`Memory: ${Math.round(free / 1024 / 1024)}MB free / ${Math.round(total / 1024 / 1024)}MB total (${usedPercent}% used)`);
+
+      // Process count (try to get relay-pty count)
+      try {
+        const psOutput = execSync('ps aux | grep -c relay-pty || echo 0', { encoding: 'utf-8', timeout: 1000 }).trim();
+        lines.push(`relay-pty processes: ${psOutput}`);
+      } catch {
+        // Ignore - ps may not be available
+      }
+
+      // Check for OOM killer messages (Linux only)
+      try {
+        const dmesgOutput = execSync('dmesg -T 2>/dev/null | grep -i "killed process" | tail -3 || true', {
+          encoding: 'utf-8',
+          timeout: 1000
+        }).trim();
+        if (dmesgOutput) {
+          lines.push(`Recent OOM kills: ${dmesgOutput.replace(/\n/g, ' | ')}`);
+        }
+      } catch {
+        // Ignore - dmesg may require permissions
+      }
+
+      // Include PID if known
+      if (pid) {
+        lines.push(`Killed process PID: ${pid}`);
+      }
+
+      lines.push(`Agent name: ${agentName}`);
+      lines.push(`Timestamp: ${new Date().toISOString()}`);
+    } catch (err) {
+      lines.push(`Diagnostics error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    return lines.join('\n  ');
+  }
 
   constructor(config: RelayPtyOrchestratorConfig) {
     super(config);
@@ -567,6 +694,12 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       throw new Error('relay-pty binary not found. Build with: cd relay-pty && cargo build --release');
     }
 
+    try {
+      accessSync(binaryPath, fsConstants.X_OK);
+    } catch (err: any) {
+      throw new Error(`relay-pty binary not executable at ${binaryPath}: ${err?.message ?? 'permission denied'}. Build with: cd relay-pty && cargo build --release, or ensure the binary has execute permissions.`);
+    }
+
     this.log(` Using binary: ${binaryPath}`);
 
     // Spawn relay-pty process FIRST (before connecting to daemon)
@@ -690,6 +823,18 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       this.logError(` Failed to clean up socket: ${err.message}`);
     }
 
+    // Clean up mcp-identity file for this process
+    try {
+      const projectPaths = getProjectPaths(this.config.cwd);
+      const identityPath = join(projectPaths.dataDir, `mcp-identity-${process.pid}`);
+      if (existsSync(identityPath)) {
+        unlinkSync(identityPath);
+        this.log(` Cleaned up identity file: ${identityPath}`);
+      }
+    } catch (err: any) {
+      this.logError(` Failed to clean up identity file: ${err.message}`);
+    }
+
     this.log(` Stopped`);
   }
 
@@ -804,6 +949,13 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       // Capture early exit info for better error messages if socket not yet connected
       if (!this.socketConnected) {
         this.earlyExitInfo = { code, signal, stderr: stderrBuffer };
+      }
+
+      // Enhanced logging for SIGKILL/137 exits (likely OOM or resource limits)
+      if (signal === 'SIGKILL' || exitCode === 137) {
+        const diagnostics = RelayPtyOrchestrator.gatherSigkillDiagnostics(this.config.name, proc.pid);
+        this.logError(` SIGKILL DETECTED - gathering diagnostics:\n  ${diagnostics}`);
+        console.error(`[relay-pty-orchestrator] SIGKILL for ${this.config.name}:\n  ${diagnostics}`);
       }
 
       this.running = false;
@@ -956,6 +1108,25 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     this.outputBuffer += data;
     this.hasReceivedOutput = true;
 
+    // Trim buffers if they exceed max size to prevent RangeError: Invalid string length
+    // Keep the most recent output (tail) as it's more relevant for pattern matching
+    let buffersTrimmed = false;
+    if (this.rawBuffer.length > MAX_OUTPUT_BUFFER_SIZE) {
+      const trimAmount = this.rawBuffer.length - MAX_OUTPUT_BUFFER_SIZE;
+      this.rawBuffer = this.rawBuffer.slice(-MAX_OUTPUT_BUFFER_SIZE);
+      // Adjust lastParsedLength to stay in sync with the trimmed buffer
+      // This ensures parseRelayCommands() doesn't skip content or re-parse old content
+      this.lastParsedLength = Math.max(0, this.lastParsedLength - trimAmount);
+      buffersTrimmed = true;
+    }
+    if (this.outputBuffer.length > MAX_OUTPUT_BUFFER_SIZE) {
+      this.outputBuffer = this.outputBuffer.slice(-MAX_OUTPUT_BUFFER_SIZE);
+      buffersTrimmed = true;
+    }
+    if (buffersTrimmed) {
+      this.bufferTrimCount += 1;
+    }
+
     // Feed to idle detector
     this.feedIdleDetectorOutput(data);
 
@@ -1041,6 +1212,10 @@ export class RelayPtyOrchestrator extends BaseWrapper {
               this.log(`Rust parsed [${parsed.kind}]: ${parsed.from} -> ${parsed.to}`);
             }
             this.handleRustParsedCommand(parsed);
+          } else if (parsed.type === 'continuity') {
+            // Handle continuity commands from relay-pty file-based protocol
+            this.log(`Rust parsed [continuity]: action=${parsed.action}`);
+            this.handleRustContinuityCommand(parsed);
           }
         } catch (e) {
           // Not JSON, just log (only in debug mode)
@@ -1101,6 +1276,77 @@ export class RelayPtyOrchestrator extends BaseWrapper {
           raw: parsed.raw,
         });
         break;
+    }
+  }
+
+  /**
+   * Handle continuity command from Rust relay-pty
+   *
+   * Maps from Rust ContinuityCommand format to TypeScript ContinuityCommand
+   * and forwards to the ContinuityManager.
+   *
+   * Rust format: { type: "continuity", action: string, content: string }
+   * TypeScript format: { type: 'save' | 'load' | 'uncertain', content?: string, item?: string }
+   */
+  private async handleRustContinuityCommand(parsed: {
+    type: string;
+    action: string;
+    content: string;
+  }): Promise<void> {
+    if (!this.continuity) {
+      this.log('Continuity not initialized, skipping continuity command');
+      return;
+    }
+
+    // Map Rust action to TypeScript ContinuityCommand type
+    const action = parsed.action.toLowerCase();
+    if (!['save', 'load', 'uncertain'].includes(action)) {
+      this.logError(`Unknown continuity action: ${parsed.action}`);
+      return;
+    }
+
+    // Build TypeScript ContinuityCommand
+    const command: { type: 'save' | 'load' | 'uncertain'; content?: string; item?: string } = {
+      type: action as 'save' | 'load' | 'uncertain',
+    };
+
+    if (action === 'save' && parsed.content) {
+      command.content = parsed.content;
+    } else if (action === 'uncertain' && parsed.content) {
+      command.item = parsed.content;
+    }
+
+    // Deduplication (same logic as base-wrapper)
+    const cmdHash = `${command.type}:${command.content || command.item || 'no-content'}`;
+    if (command.content && this.processedContinuityCommands.has(cmdHash)) {
+      this.log(`Continuity command already processed: ${cmdHash}`);
+      return;
+    }
+    this.processedContinuityCommands.add(cmdHash);
+
+    // Limit dedup set size
+    if (this.processedContinuityCommands.size > 100) {
+      const oldest = this.processedContinuityCommands.values().next().value;
+      if (oldest) this.processedContinuityCommands.delete(oldest);
+    }
+
+    try {
+      this.log(`Processing continuity command: ${command.type}`);
+      const response = await this.continuity.handleCommand(this.config.name, command);
+      if (response) {
+        // Queue response for injection (e.g., for 'load' command)
+        this.messageQueue.push({
+          from: 'system',
+          body: response,
+          messageId: `continuity-${Date.now()}`,
+          thread: 'continuity-response',
+        });
+        this.log(`Queued continuity response for injection`);
+      } else {
+        this.log(`Continuity command ${command.type} completed (no response)`);
+      }
+    } catch (err: any) {
+      this.logError(`Continuity command failed: ${err.message}`);
     }
   }
 
@@ -1260,7 +1506,13 @@ export class RelayPtyOrchestrator extends BaseWrapper {
           const stderrHint = exitInfo.stderr
             ? `\n  stderr: ${exitInfo.stderr.trim().slice(0, 500)}`
             : '';
-          throw new Error(`relay-pty process died early (${exitReason}).${stderrHint}`);
+
+          // Add enhanced diagnostics for SIGKILL (likely OOM or resource limit)
+          const diagnostics = exitInfo.signal === 'SIGKILL' || exitInfo.code === 137
+            ? `\n  Diagnostics (SIGKILL often indicates OOM or resource limits):\n  ${RelayPtyOrchestrator.gatherSigkillDiagnostics(this.config.name, this.relayPtyProcess?.pid)}`
+            : '';
+
+          throw new Error(`relay-pty process died early (${exitReason}).${stderrHint}${diagnostics}`);
         }
         throw new Error('relay-pty process died before socket could be created');
       }
@@ -1286,7 +1538,13 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       const stderrHint = exitInfo.stderr
         ? `\n  stderr: ${exitInfo.stderr.trim().slice(0, 500)}`
         : '';
-      throw new Error(`relay-pty process died during socket connection (${exitReason}).${stderrHint}`);
+
+      // Add enhanced diagnostics for SIGKILL
+      const diagnostics = exitInfo.signal === 'SIGKILL' || exitInfo.code === 137
+        ? `\n  Diagnostics (SIGKILL often indicates OOM or resource limits):\n  ${RelayPtyOrchestrator.gatherSigkillDiagnostics(this.config.name, this.relayPtyProcess?.pid)}`
+        : '';
+
+      throw new Error(`relay-pty process died during socket connection (${exitReason}).${stderrHint}${diagnostics}`);
     }
 
     throw new Error(`Failed to connect to socket after ${maxAttempts} attempts`);
@@ -2477,17 +2735,148 @@ Then output: \`->relay-file:spawn\`
   }
 
   /**
-   * Inject a task using the socket-based injection system with verification.
+   * Verify that the CLI shows activity after task injection.
+   * Checks output for patterns indicating the task was received and processing started.
+   *
+   * This catches the race condition where PTY write succeeds but CLI wasn't ready
+   * (the T-003 failure scenario where CLI showed bell characters instead of processing).
+   *
+   * @param outputBefore The output buffer content before injection
+   * @returns Promise resolving to true if activity detected, false otherwise
+   */
+  private async verifyActivityAfterInjection(outputBefore: string): Promise<boolean> {
+    const startTime = Date.now();
+    const { TIMEOUT_MS, POLL_INTERVAL_MS, TASK_RECEIVED_PATTERNS, THINKING_PATTERNS, TOOL_EXECUTION_PATTERNS } = ACTIVITY_VERIFICATION;
+    const trimCountBefore = this.bufferTrimCount;
+
+    while (Date.now() - startTime < TIMEOUT_MS) {
+      // If buffers were trimmed during verification, treat it as activity.
+      // Large output growth triggers trimming, which would otherwise make slice() return
+      // an empty string and falsely signal no activity.
+      if (this.bufferTrimCount !== trimCountBefore) {
+        this.log(` Activity verified: output buffer trimmed during verification (large output)`);
+        return true;
+      }
+
+      // Get new output since injection
+      const currentOutput = this.outputBuffer;
+      const newOutput = currentOutput.slice(outputBefore.length);
+
+      if (newOutput.length > 0) {
+        // REJECTION CHECK: Multiple BEL characters (0x07) indicate CLI rejected input
+        // The T-003 failure showed CLI producing 1000+ BELs when input was injected
+        // while the CLI wasn't ready (still initializing or in wrong mode)
+        const belCount = (newOutput.match(/\x07/g) || []).length;
+        if (belCount > 10) {
+          this.logError(` Input rejected: CLI produced ${belCount} BEL characters`);
+          return false; // Don't wait - immediately fail so retry can attempt
+        }
+
+        // Check for task received patterns (primary verification)
+        for (const pattern of TASK_RECEIVED_PATTERNS) {
+          if (pattern.test(newOutput)) {
+            this.log(` Activity verified: task received pattern matched`);
+            return true;
+          }
+        }
+
+        // Check for thinking/processing patterns (secondary verification)
+        for (const pattern of THINKING_PATTERNS) {
+          if (pattern.test(newOutput)) {
+            this.log(` Activity verified: thinking pattern matched`);
+            return true;
+          }
+        }
+
+        // Check for tool execution patterns (tertiary verification)
+        for (const pattern of TOOL_EXECUTION_PATTERNS) {
+          if (pattern.test(newOutput)) {
+            this.log(` Activity verified: tool execution pattern matched`);
+            return true;
+          }
+        }
+
+        // Fallback: If output grew significantly (>100 meaningful chars), assume activity
+        // This catches CLIs with unusual output patterns
+        // IMPORTANT: Strip out BEL (0x07) and other control characters - these are rejection
+        // signals not activity. The T-003 failure showed CLI producing 1000+ BELs when input
+        // was injected before it was ready.
+        const meaningfulOutput = newOutput.replace(/[\x00-\x1f]/g, ''); // Strip control chars
+        if (meaningfulOutput.length > 100) {
+          this.log(` Activity verified: significant output growth (${meaningfulOutput.length} meaningful chars)`);
+          return true;
+        }
+      }
+
+      await sleep(POLL_INTERVAL_MS);
+    }
+
+    // No activity detected within timeout
+    this.log(` No activity detected within ${TIMEOUT_MS}ms`);
+    return false;
+  }
+
+  /**
+   * Inject a task using the socket-based injection system with activity verification.
    * This is the preferred method for spawned agent task delivery.
+   *
+   * After socket confirms delivery, verifies the CLI shows activity (task received,
+   * thinking indicators, or tool execution). Retries if no activity is detected.
    *
    * @param task The task text to inject
    * @param from The sender name (default: "spawner")
-   * @returns Promise resolving to true if injection succeeded, false otherwise
+   * @returns Promise resolving to true if task was delivered AND activity verified, false otherwise
    */
   async injectTask(task: string, from = 'spawner'): Promise<boolean> {
+    const { MAX_RETRIES, RETRY_DELAY_MS } = ACTIVITY_VERIFICATION;
+
+    // Claude Code's TUI needs a stabilization delay after displaying the welcome screen
+    // before it's ready to accept stdin input. Without this, input may be silently dropped
+    // even though the CLI appears "idle" and doesn't reject with BELs.
+    // 1500ms is based on observed behavior - Claude Code typically needs 1-1.5s after
+    // its TUI renders before input handlers are fully initialized.
+    const STABILIZATION_DELAY_MS = 1500;
+    this.log(` Waiting ${STABILIZATION_DELAY_MS}ms for CLI stabilization before task injection`);
+    await sleep(STABILIZATION_DELAY_MS);
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      if (attempt > 0) {
+        this.log(` Retry ${attempt}/${MAX_RETRIES} - waiting ${RETRY_DELAY_MS}ms before retry`);
+        await sleep(RETRY_DELAY_MS);
+      }
+
+      // Capture output buffer state before injection
+      const outputBefore = this.outputBuffer;
+
+      // Attempt delivery via socket
+      const delivered = await this.performTaskInjection(task, from);
+      if (!delivered) {
+        this.logError(` Task delivery failed on attempt ${attempt + 1}`);
+        continue; // Retry
+      }
+
+      // Verify CLI shows activity (task received, thinking, or tool execution)
+      const activityVerified = await this.verifyActivityAfterInjection(outputBefore);
+      if (activityVerified) {
+        this.log(` Task delivered and activity verified successfully`);
+        return true;
+      }
+
+      // Delivery succeeded but no activity - CLI might not have been ready
+      this.logError(` Task delivered but no activity detected (attempt ${attempt + 1})`);
+    }
+
+    this.logError(` Task injection failed after ${MAX_RETRIES + 1} attempts - no CLI activity detected`);
+    return false;
+  }
+
+  /**
+   * Perform a single task injection attempt (without retry logic).
+   * @returns true if the injection was sent successfully, false otherwise
+   */
+  private async performTaskInjection(task: string, from: string): Promise<boolean> {
     if (!this.socket || !this.socketConnected) {
       this.log(` Socket not connected for task injection, falling back to stdin write`);
-      // Fallback to direct write if socket not available
       try {
         await this.write(task + '\n');
         return true;
@@ -2511,7 +2900,7 @@ Then output: \`->relay-file:spawn\`
       priority: 0, // High priority for initial task
     };
 
-    // Send with timeout and verification
+    // Send with timeout and get socket confirmation
     return new Promise<boolean>((resolve) => {
       const timeout = setTimeout(() => {
         this.logError(` Task inject timeout for ${shortId} after 30s`);

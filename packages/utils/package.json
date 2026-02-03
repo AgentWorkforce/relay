@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/utils",
-  "version": "2.0.30",
+  "version": "2.1.10",
   "description": "Shared utilities for agent-relay: logging, name generation, command resolution, update checking",
   "type": "module",
   "main": "dist/cjs/index.js",
@@ -66,6 +66,24 @@
       "import": "./dist/relay-pty-path.js",
       "default": "./dist/cjs/relay-pty-path.js"
     },
+    "./client-helpers": {
+      "types": "./dist/client-helpers.d.ts",
+      "require": "./dist/cjs/client-helpers.js",
+      "import": "./dist/client-helpers.js",
+      "default": "./dist/cjs/client-helpers.js"
+    },
+    "./discovery": {
+      "types": "./dist/discovery.d.ts",
+      "require": "./dist/cjs/discovery.js",
+      "import": "./dist/discovery.js",
+      "default": "./dist/cjs/discovery.js"
+    },
+    "./errors": {
+      "types": "./dist/errors.d.ts",
+      "require": "./dist/cjs/errors.js",
+      "import": "./dist/errors.js",
+      "default": "./dist/cjs/errors.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -88,6 +106,8 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
+    "@agent-relay/config": "2.1.10",
+    "@agent-relay/protocol": "2.1.10",
     "compare-versions": "^6.1.1"
   },
   "publishConfig": {

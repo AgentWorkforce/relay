@@ -5,10 +5,11 @@
  */
 
 import fs from 'node:fs';
-import { execFile } from 'node:child_process';
+import { execFile, execSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sleep } from './utils.js';
+import { resolveCli } from './cli-resolution.js';
 import { getProjectPaths, getAgentOutboxTemplate } from '@agent-relay/config';
 import { resolveCommand } from '@agent-relay/utils/command-resolver';
 import { createTraceableError } from '@agent-relay/utils/error-tracking';
@@ -16,6 +17,7 @@ import { createLogger } from '@agent-relay/utils/logger';
 import { mapModelToCli } from '@agent-relay/utils/model-mapping';
 import { findRelayPtyBinary as findRelayPtyBinaryUtil, getLastSearchPaths } from '@agent-relay/utils/relay-pty-path';
 import { RelayPtyOrchestrator, type RelayPtyOrchestratorConfig } from '@agent-relay/wrapper';
+import { OpenCodeWrapper, type OpenCodeWrapperConfig, OpenCodeApi } from '@agent-relay/wrapper';
 import type { SummaryEvent, SessionEndEvent } from '@agent-relay/wrapper';
 import { selectShadowCli } from './shadow-cli.js';
 
@@ -38,16 +40,6 @@ import type {
 
 // Logger instance for spawner (uses daemon log system instead of console)
 const log = createLogger('spawner');
-
-/**
- * CLI command mapping for providers
- * Maps provider names to actual CLI command names
- */
-const CLI_COMMAND_MAP: Record<string, string> = {
-  cursor: 'agent',  // Cursor CLI installs as 'agent'
-  google: 'gemini', // Google provider uses 'gemini' CLI
-  // Other providers use their name as the command (claude, codex, etc.)
-};
 
 function extractGhTokenFromHosts(content: string): string | null {
   const lines = content.split(/\r?\n/);
@@ -451,6 +443,13 @@ export class AgentSpawner {
   private onMarkSpawning?: (agentName: string) => void;
   private onClearSpawning?: (agentName: string) => void;
 
+  /**
+   * Set of agent names currently being spawned.
+   * Prevents race conditions where concurrent spawn requests for the same agent
+   * could both pass the activeWorkers.has() check before either completes.
+   */
+  private spawningAgents: Set<string> = new Set();
+
   constructor(projectRoot: string, _tmuxSession?: string, dashboardPort?: number);
   constructor(options: AgentSpawnerOptions);
   constructor(projectRootOrOptions: string | AgentSpawnerOptions, _tmuxSession?: string, dashboardPort?: number) {
@@ -494,6 +493,99 @@ export class AgentSpawner {
         strictMode: process.env.AGENT_POLICY_STRICT === '1',
       });
       log.info('Policy enforcement enabled');
+    }
+
+    // Clean up orphaned relay-pty processes from previous daemon run
+    // This prevents Bug #8 (fails to restart) and Bug #9 (orphaned agents)
+    this.cleanupOrphanedWorkers();
+  }
+
+  /**
+   * Clean up orphaned relay-pty processes from a previous daemon run.
+   * Reads workers.json to find PIDs from the previous session and kills any
+   * that are still running. This ensures a clean slate after daemon restarts.
+   */
+  private cleanupOrphanedWorkers(): void {
+    if (!fs.existsSync(this.workersPath)) {
+      return;
+    }
+
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.workersPath, 'utf-8'));
+      const workers: WorkerMeta[] = Array.isArray(raw?.workers) ? raw.workers : [];
+
+      if (workers.length === 0) {
+        return;
+      }
+
+      log.info(`Checking for orphaned workers from previous run (${workers.length} entries)`);
+      let orphansKilled = 0;
+
+      for (const worker of workers) {
+        if (!worker.pid) {
+          continue;
+        }
+
+        // Check if process is still running
+        let isRunning = false;
+        try {
+          process.kill(worker.pid, 0); // Signal 0 checks existence without killing
+          isRunning = true;
+        } catch {
+          // Process not running - that's fine
+        }
+
+        if (isRunning) {
+          // Verify it's a relay-pty process before killing
+          try {
+            const psOutput = execSync(`ps -p ${worker.pid} -o comm= 2>/dev/null || true`, {
+              encoding: 'utf-8',
+              timeout: 1000,
+            }).trim();
+
+            // Only kill if it's a relay-pty process or the CLI we spawned
+            if (psOutput.includes('relay-pty') || psOutput.includes(worker.cli)) {
+              log.warn(`Killing orphaned worker "${worker.name}" (PID: ${worker.pid})`);
+
+              // Try graceful termination first
+              try {
+                process.kill(worker.pid, 'SIGTERM');
+              } catch {
+                // Already dead or permission denied
+              }
+
+              // Give it a moment to exit gracefully
+              const pid = worker.pid; // Capture for closure
+              setTimeout(() => {
+                try {
+                  process.kill(pid, 0);
+                  // Still running - force kill
+                  process.kill(pid, 'SIGKILL');
+                  log.warn(`Force killed orphaned worker "${worker.name}" (PID: ${pid})`);
+                } catch {
+                  // Already dead - good
+                }
+              }, 500);
+
+              orphansKilled++;
+            } else {
+              log.debug(`PID ${worker.pid} is running but not relay-pty (${psOutput}), skipping`);
+            }
+          } catch (err) {
+            // ps command failed - be conservative and don't kill
+            log.debug(`Could not verify PID ${worker.pid}, skipping: ${err}`);
+          }
+        }
+      }
+
+      // Clear workers.json to start fresh
+      fs.writeFileSync(this.workersPath, JSON.stringify({ workers: [] }, null, 2));
+
+      if (orphansKilled > 0) {
+        log.info(`Cleaned up ${orphansKilled} orphaned worker(s) from previous run`);
+      }
+    } catch (err) {
+      log.warn(`Failed to clean up orphaned workers: ${err}`);
     }
   }
 
@@ -756,6 +848,15 @@ export class AgentSpawner {
       };
     }
 
+    // Check if spawn is already in progress for this agent (prevents race conditions)
+    if (this.spawningAgents.has(name)) {
+      return {
+        success: false,
+        name,
+        error: `Agent "${name}" spawn is already in progress. Wait for it to complete or use a different name.`,
+      };
+    }
+
     // Check if agent is already connected to daemon (prevents duplicate connection storms)
     if (this.isAgentConnected(name)) {
       return {
@@ -794,11 +895,15 @@ export class AgentSpawner {
       }
     }
 
+    // Acquire spawn lock - prevents concurrent spawn attempts for same agent name
+    this.spawningAgents.add(name);
+    log.info(`Spawn lock acquired for ${name} (concurrent spawns: ${this.spawningAgents.size})`);
+
     try {
-      // Parse CLI command and apply mapping (e.g., cursor -> agent)
+      // Parse CLI command and resolve actual command (e.g., cursor -> agent or cursor-agent)
       const cliParts = cli.split(' ');
       const rawCommandName = cliParts[0];
-      const commandName = CLI_COMMAND_MAP[rawCommandName] || rawCommandName;
+      const commandName = resolveCli(rawCommandName);
       const args = cliParts.slice(1);
 
       if (commandName !== rawCommandName && debug) {
@@ -820,7 +925,7 @@ export class AgentSpawner {
       // Add auto-accept flags for non-interactive agents (normal spawns, not setup terminals)
       // When interactive=true (setup flows), we SKIP these flags so users can respond to prompts
       const isClaudeCli = commandName.startsWith('claude');
-      const isCursorCli = commandName === 'agent' || rawCommandName === 'cursor';
+      const isCursorCli = commandName === 'agent' || rawCommandName === 'cursor' || rawCommandName === 'cursor-agent';
 
       if (!interactive) {
         // Add --dangerously-skip-permissions for Claude agents
@@ -866,6 +971,7 @@ export class AgentSpawner {
       // Add auto-accept flags for Codex and Gemini (only in non-interactive mode)
       const isCodexCli = commandName.startsWith('codex');
       const isGeminiCli = commandName === 'gemini';
+      const isOpenCodeCli = commandName === 'opencode' || rawCommandName === 'opencode';
 
       if (!interactive) {
         // Add --dangerously-bypass-approvals-and-sandbox for Codex agents
@@ -1110,6 +1216,165 @@ export class AgentSpawner {
         await this.release(workerName);
       };
 
+      // Check if we should use OpenCodeWrapper with HTTP API mode
+      if (isOpenCodeCli) {
+        // OpenCodeApi reads OPENCODE_API_URL or OPENCODE_PORT from env, defaults to localhost:4096
+        const openCodeApi = new OpenCodeApi();
+        const serveAvailable = await openCodeApi.isAvailable() || process.env.OPENCODE_HTTP_MODE === '1';
+
+        // In cloud workspaces, auto-start opencode serve if not already running
+        // This keeps the HTTP API internal to the container (localhost:4096, not exposed)
+        const isCloudWorkspace = !!process.env.WORKSPACE_ID;
+        const shouldUseHttpApi = serveAvailable || isCloudWorkspace;
+
+        if (shouldUseHttpApi) {
+          if (debug) log.debug(`OpenCode: serve=${serveAvailable ? 'available' : 'will-auto-start'}, cloud=${isCloudWorkspace}, using OpenCodeWrapper for ${name}`);
+
+          const openCodeConfig: OpenCodeWrapperConfig = {
+            name,
+            command,
+            args,
+            socketPath: this.socketPath,
+            cwd: agentCwd,
+            dashboardPort: this.dashboardPort,
+            env: {
+              ...userEnv,
+              ...(spawnerName ? { AGENT_RELAY_SPAWNER: spawnerName } : {}),
+              ...(relaySocket ? { RELAY_SOCKET: relaySocket } : {}),
+              RELAY_AGENT_NAME: name,
+            },
+            httpApi: {
+              enabled: true,
+              fallbackToPty: true, // Allow fallback if HTTP becomes unavailable
+              // Auto-start opencode serve in cloud workspaces (internal to container)
+              autoStartServe: isCloudWorkspace && !serveAvailable,
+              waitForServeMs: 10000, // Give serve time to start in cloud
+            },
+            onSpawn: onSpawnHandler,
+            onRelease: onReleaseHandler,
+          };
+
+          const openCodeWrapper = new OpenCodeWrapper(openCodeConfig);
+
+          // Track listener references for proper cleanup
+          const listeners: ListenerBindings = {};
+
+          // Hook up output events for live log streaming
+          const outputListener = (data: string) => {
+            const broadcast = (global as any).__broadcastLogOutput;
+            if (broadcast) {
+              broadcast(name, data);
+            }
+          };
+          openCodeWrapper.on('output', outputListener);
+          listeners.output = outputListener;
+
+          // Handle exit events
+          openCodeWrapper.on('exit', (code: number) => {
+            onExitHandler(code);
+          });
+
+          // Mark agent as spawning BEFORE starting wrapper
+          if (this.onMarkSpawning) {
+            this.onMarkSpawning(name);
+            if (debug) log.debug(`Marked ${name} as spawning`);
+          }
+
+          await openCodeWrapper.start();
+          if (debug) log.debug(`OpenCodeWrapper started for ${name}, HTTP mode: ${openCodeWrapper.isHttpApiMode}`);
+
+          // Wait for the agent to register with the daemon
+          const registered = await this.waitForAgentRegistration(name, 30_000, 500);
+          if (!registered) {
+            const tracedError = createTraceableError('Agent registration timeout', {
+              agentName: name,
+              cli,
+              pid: openCodeWrapper.pid,
+              timeoutMs: 30_000,
+            });
+            log.error(tracedError.logMessage);
+            if (this.onClearSpawning) {
+              this.onClearSpawning(name);
+            }
+            await openCodeWrapper.kill();
+            return {
+              success: false,
+              name,
+              error: tracedError.userMessage,
+              errorId: tracedError.errorId,
+            };
+          }
+
+          // Send task to the newly spawned agent if provided
+          if (task && task.trim()) {
+            const ready = await openCodeWrapper.waitUntilReadyForMessages(20000, 100);
+            let taskSent = false;
+            if (ready) {
+              taskSent = await openCodeWrapper.injectTask(task, spawnerName || 'spawner');
+              if (!taskSent) {
+                log.warn(`Failed to inject task for ${name} via OpenCodeWrapper`);
+              } else if (debug) {
+                log.debug(`Task injected to ${name} via OpenCodeWrapper`);
+              }
+            } else {
+              log.warn(`OpenCodeWrapper ${name} not ready for task injection`);
+            }
+
+            // If task injection failed, kill the agent and return error
+            // An agent without its task is useless and will just sit idle
+            if (!taskSent) {
+              const tracedError = createTraceableError('Task injection failed', {
+                agentName: name,
+                cli,
+                taskLength: task.length,
+                ready,
+              });
+              log.error(`CRITICAL: ${tracedError.logMessage}`);
+              await openCodeWrapper.stop();
+              if (this.onClearSpawning) {
+                this.onClearSpawning(name);
+              }
+              return {
+                success: false,
+                name,
+                error: tracedError.userMessage,
+                errorId: tracedError.errorId,
+              };
+            }
+          }
+
+          // Track the worker (cast to AgentWrapper for type compatibility)
+          const workerInfo: ActiveWorker = {
+            name,
+            cli,
+            task,
+            team,
+            spawnerName,
+            userId,
+            spawnedAt: Date.now(),
+            pid: openCodeWrapper.pid,
+            pty: openCodeWrapper as unknown as AgentWrapper,
+            logFile: openCodeWrapper.logPath,
+            listeners,
+          };
+          this.activeWorkers.set(name, workerInfo);
+          this.saveWorkersMetadata();
+
+          const teamInfo = team ? ` [team: ${team}]` : '';
+          const shadowInfo = request.shadowOf ? ` [shadow of: ${request.shadowOf}]` : '';
+          log.info(`Spawned ${name} (${cli}) via OpenCodeWrapper${teamInfo}${shadowInfo} [HTTP mode: ${openCodeWrapper.isHttpApiMode}]`);
+
+          return {
+            success: true,
+            name,
+            pid: openCodeWrapper.pid,
+          };
+        }
+
+        // OpenCode serve not available and not in cloud workspace, fall through to RelayPtyOrchestrator
+        if (debug) log.debug(`OpenCode: serve not available, not cloud workspace, falling back to RelayPtyOrchestrator for ${name}`);
+      }
+
       // Create RelayPtyOrchestrator (relay-pty Rust binary)
       const ptyConfig: RelayPtyOrchestratorConfig = {
         name,
@@ -1243,14 +1508,15 @@ export class AgentSpawner {
               await (pty as RelayPtyOrchestrator).waitUntilCliReady(15000, 100);
             }
 
-            // Inject task via socket (with verification and retries)
+            // Inject task via socket (relay-pty confirms write)
             const success = await pty.injectTask(task, spawnerName || 'spawner');
             if (success) {
               taskSent = true;
               if (debug) log.debug(`Task injected to ${name} (attempt ${attempt})`);
               break;
             } else {
-              throw new Error('Task injection returned false');
+              // Delivery failed - safe to retry
+              throw new Error('Task injection returned false - delivery failed');
             }
           } catch (err: any) {
             // Log retry attempts at DEBUG level to avoid terminal noise
@@ -1270,8 +1536,19 @@ export class AgentSpawner {
             taskLength: task.length,
           });
           log.error(`CRITICAL: ${tracedError.logMessage}`);
-          // Note: We don't return an error here because the agent is running,
-          // but we track the errorId so support can investigate if user reports it
+          // Kill the agent since it's useless without its task - it will just sit idle
+          // Return an error so the caller knows the spawn effectively failed
+          await pty.stop();
+          this.activeWorkers.delete(name);
+          if (this.onClearSpawning) {
+            this.onClearSpawning(name);
+          }
+          return {
+            success: false,
+            name,
+            error: tracedError.userMessage,
+            errorId: tracedError.errorId,
+          };
         }
       }
 
@@ -1281,6 +1558,7 @@ export class AgentSpawner {
         cli,
         task,
         team,
+        spawnerName,
         userId,
         spawnedAt: Date.now(),
         pid: pty.pid,
@@ -1318,6 +1596,10 @@ export class AgentSpawner {
         error: tracedError.userMessage,
         errorId: tracedError.errorId,
       };
+    } finally {
+      // Always release spawn lock, even on success (agent is now tracked in activeWorkers)
+      this.spawningAgents.delete(name);
+      log.info(`Spawn lock released for ${name} (remaining: ${this.spawningAgents.size})`);
     }
   }
 
@@ -1508,6 +1790,7 @@ export class AgentSpawner {
       cli: w.cli,
       task: w.task,
       team: w.team,
+      spawnerName: w.spawnerName,
       spawnedAt: w.spawnedAt,
       pid: w.pid,
     }));

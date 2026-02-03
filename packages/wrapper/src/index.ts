@@ -168,3 +168,32 @@ export {
   RelayPtyOrchestrator,
   type RelayPtyOrchestratorConfig,
 } from './relay-pty-orchestrator.js';
+
+// OpenCode HTTP API integration
+export {
+  OpenCodeApi,
+  openCodeApi,
+  type OpenCodeApiConfig,
+  type OpenCodeSession,
+  type OpenCodeApiResponse,
+} from './opencode-api.js';
+
+// OpenCode wrapper (HTTP API + PTY fallback)
+export {
+  OpenCodeWrapper,
+  type OpenCodeWrapperConfig,
+} from './opencode-wrapper.js';
+
+// Typed event definitions (inspired by opencode's BusEvent pattern)
+export {
+  RelayEvent,
+  defineEvent,
+  relayEventBus,
+  emitEvent,
+  onEvent,
+  onAnyEvent,
+  generateEventSchemas,
+  type EventDefinition,
+  type EventProperties,
+  type EventPayload,
+} from './wrapper-events.js';

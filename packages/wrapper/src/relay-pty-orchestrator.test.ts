@@ -20,10 +20,14 @@ vi.mock('node:net', () => ({
   createConnection: vi.fn(),
 }));
 
-const { mockExistsSync } = vi.hoisted(() => ({
+const { mockExistsSync, mockAccessSync } = vi.hoisted(() => ({
   mockExistsSync: vi.fn((path: string) => {
     // Simulate relay-pty binary exists at any relay-pty path
     return typeof path === 'string' && path.includes('relay-pty');
+  }),
+  mockAccessSync: vi.fn((path: string) => {
+    if (typeof path === 'string' && path.includes('relay-pty')) return undefined;
+    throw new Error('not executable');
   }),
 }));
 
@@ -32,9 +36,11 @@ vi.mock('node:fs', async (importOriginal) => {
   return {
     ...actual,
     existsSync: mockExistsSync,
+    accessSync: (path: any, _mode: any) => mockAccessSync(path),
     default: {
       ...actual,
       existsSync: mockExistsSync,
+      accessSync: (path: any, _mode: any) => mockAccessSync(path),
     },
   };
 });
@@ -791,6 +797,172 @@ describe('RelayPtyOrchestrator', () => {
     });
   });
 
+  describe('continuity command handling', () => {
+    let mockContinuityManager: {
+      handleCommand: ReturnType<typeof vi.fn>;
+      getOrCreateLedger: ReturnType<typeof vi.fn>;
+      findLedgerByAgentId: ReturnType<typeof vi.fn>;
+    };
+
+    beforeEach(async () => {
+      // Create a mock continuity manager
+      mockContinuityManager = {
+        handleCommand: vi.fn().mockResolvedValue(null),
+        getOrCreateLedger: vi.fn().mockResolvedValue({ agentName: 'TestAgent', agentId: 'test-123' }),
+        findLedgerByAgentId: vi.fn().mockResolvedValue(null),
+      };
+
+      // Update the mock to return our manager
+      const { getContinuityManager } = await import('@agent-relay/continuity');
+      (getContinuityManager as any).mockReturnValue(mockContinuityManager);
+    });
+
+    it('handles continuity save command from stderr', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Simulate continuity JSON output from relay-pty stderr
+      const continuityJson = JSON.stringify({
+        type: 'continuity',
+        action: 'save',
+        content: 'Current task: Testing continuity\nCompleted: Setup'
+      });
+
+      mockProcess.stderr!.emit('data', Buffer.from(continuityJson + '\n'));
+
+      // Wait for async processing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Verify handleCommand was called with the mapped command
+      expect(mockContinuityManager.handleCommand).toHaveBeenCalledWith(
+        'TestAgent',
+        expect.objectContaining({
+          type: 'save',
+          content: 'Current task: Testing continuity\nCompleted: Setup'
+        })
+      );
+    });
+
+    it('handles continuity load command from stderr', async () => {
+      // Mock handleCommand to return a response for load
+      mockContinuityManager.handleCommand.mockResolvedValue('Previous context loaded');
+
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Simulate continuity load command
+      const continuityJson = JSON.stringify({
+        type: 'continuity',
+        action: 'load',
+        content: ''
+      });
+
+      mockProcess.stderr!.emit('data', Buffer.from(continuityJson + '\n'));
+
+      // Wait for async processing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Verify handleCommand was called
+      expect(mockContinuityManager.handleCommand).toHaveBeenCalledWith(
+        'TestAgent',
+        expect.objectContaining({
+          type: 'load'
+        })
+      );
+
+      // Verify response was queued for injection
+      const queue = (orchestrator as any).messageQueue;
+      expect(queue.length).toBeGreaterThan(0);
+      expect(queue.some((m: any) => m.body === 'Previous context loaded')).toBe(true);
+    });
+
+    it('handles continuity uncertain command from stderr', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Simulate continuity uncertain command
+      const continuityJson = JSON.stringify({
+        type: 'continuity',
+        action: 'uncertain',
+        content: 'API rate limit handling unclear'
+      });
+
+      mockProcess.stderr!.emit('data', Buffer.from(continuityJson + '\n'));
+
+      // Wait for async processing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Verify handleCommand was called with item field for uncertain
+      expect(mockContinuityManager.handleCommand).toHaveBeenCalledWith(
+        'TestAgent',
+        expect.objectContaining({
+          type: 'uncertain',
+          item: 'API rate limit handling unclear'
+        })
+      );
+    });
+
+    it('deduplicates continuity save commands', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      const continuityJson = JSON.stringify({
+        type: 'continuity',
+        action: 'save',
+        content: 'Same content twice'
+      });
+
+      // Send same command twice
+      mockProcess.stderr!.emit('data', Buffer.from(continuityJson + '\n'));
+      mockProcess.stderr!.emit('data', Buffer.from(continuityJson + '\n'));
+
+      // Wait for async processing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Should only be called once due to deduplication
+      expect(mockContinuityManager.handleCommand).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores unknown continuity actions', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      const continuityJson = JSON.stringify({
+        type: 'continuity',
+        action: 'unknown_action',
+        content: 'Some content'
+      });
+
+      mockProcess.stderr!.emit('data', Buffer.from(continuityJson + '\n'));
+
+      // Wait for async processing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Should not call handleCommand for unknown action
+      expect(mockContinuityManager.handleCommand).not.toHaveBeenCalled();
+    });
+  });
+
   describe('queue monitor', () => {
     it('starts queue monitor on start()', async () => {
       orchestrator = new RelayPtyOrchestrator({
@@ -1012,6 +1184,182 @@ describe('RelayPtyOrchestrator', () => {
       expect(processQueueSpy).not.toHaveBeenCalled();
 
       processQueueSpy.mockRestore();
+    });
+  });
+
+  describe('output buffer management', () => {
+    it('trims rawBuffer when it exceeds MAX_OUTPUT_BUFFER_SIZE', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Access private MAX_OUTPUT_BUFFER_SIZE constant (10MB)
+      const MAX_SIZE = 10 * 1024 * 1024;
+
+      // Generate data larger than the max size
+      const chunkSize = 1024 * 1024; // 1MB chunks
+      const numChunks = 12; // 12MB total (exceeds 10MB limit)
+
+      for (let i = 0; i < numChunks; i++) {
+        const chunk = `chunk-${i}-${'x'.repeat(chunkSize - 10)}\n`;
+        mockProcess.stdout!.emit('data', Buffer.from(chunk));
+      }
+
+      // Buffer should be trimmed to MAX_SIZE
+      const rawOutput = orchestrator.getRawOutput();
+      expect(rawOutput.length).toBeLessThanOrEqual(MAX_SIZE);
+
+      // Should contain the most recent chunks (tail of buffer)
+      expect(rawOutput).toContain('chunk-11'); // Last chunk
+      expect(rawOutput).not.toContain('chunk-0'); // First chunk should be trimmed
+    });
+
+    it('adjusts lastParsedLength when buffer is trimmed', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Access lastParsedLength via reflection
+      const getLastParsedLength = () => (orchestrator as any).lastParsedLength;
+
+      // Emit some initial output to set lastParsedLength
+      const initialData = 'Initial output that sets parse position\n';
+      mockProcess.stdout!.emit('data', Buffer.from(initialData));
+
+      // Allow parsing to run
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      const initialParsedLength = getLastParsedLength();
+      expect(initialParsedLength).toBeGreaterThan(0);
+
+      // Now emit a lot of data to trigger buffer trimming
+      const MAX_SIZE = 10 * 1024 * 1024;
+      const largeData = 'x'.repeat(MAX_SIZE + 1000);
+      mockProcess.stdout!.emit('data', Buffer.from(largeData));
+
+      // lastParsedLength should be adjusted to stay in sync
+      const adjustedParsedLength = getLastParsedLength();
+
+      // After trimming, lastParsedLength should be reduced by the trim amount
+      // or set to 0 if the trim amount exceeds the previous value
+      expect(adjustedParsedLength).toBeLessThanOrEqual(MAX_SIZE);
+    });
+
+    it('still detects relay commands after buffer trimming', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Access the client mock
+      const client = (orchestrator as any).client;
+      client.sendMessage.mockClear();
+
+      // Emit a lot of data to fill the buffer
+      const MAX_SIZE = 10 * 1024 * 1024;
+      const filler = 'x'.repeat(MAX_SIZE + 1000);
+      mockProcess.stdout!.emit('data', Buffer.from(filler));
+
+      // Now emit a relay command after the buffer was trimmed
+      mockProcess.stdout!.emit('data', Buffer.from('\n->relay:Bob Post-trim message\n'));
+
+      // Allow parsing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // The relay command should still be detected
+      expect(client.sendMessage).toHaveBeenCalled();
+    });
+
+    it('still detects summary blocks after buffer trimming', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      const summaryHandler = vi.fn();
+      orchestrator.on('summary', summaryHandler);
+
+      await orchestrator.start();
+
+      // Emit a lot of data to trigger trimming
+      const MAX_SIZE = 10 * 1024 * 1024;
+      const filler = 'x'.repeat(MAX_SIZE + 1000);
+      mockProcess.stdout!.emit('data', Buffer.from(filler));
+
+      // Now emit a summary block
+      mockProcess.stdout!.emit('data', Buffer.from(
+        '\n[[SUMMARY]]{"currentTask": "Post-trim task"}[[/SUMMARY]]\n'
+      ));
+
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Summary should still be detected
+      expect(summaryHandler).toHaveBeenCalled();
+    });
+
+    it('does not lose data during buffer trimming', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Emit data in chunks, each with a unique marker
+      const markers: string[] = [];
+      for (let i = 0; i < 20; i++) {
+        const marker = `MARKER_${i}_${Date.now()}`;
+        markers.push(marker);
+        // Each chunk is 1MB
+        const chunk = marker + '_' + 'x'.repeat(1024 * 1024 - marker.length - 2) + '\n';
+        mockProcess.stdout!.emit('data', Buffer.from(chunk));
+      }
+
+      const rawOutput = orchestrator.getRawOutput();
+
+      // The most recent markers should be present (within the 10MB limit)
+      // Approximately the last 10 markers should be there
+      const recentMarkers = markers.slice(-10);
+      for (const marker of recentMarkers) {
+        expect(rawOutput).toContain(marker);
+      }
+
+      // The oldest markers should be trimmed
+      const oldMarkers = markers.slice(0, 5);
+      for (const marker of oldMarkers) {
+        expect(rawOutput).not.toContain(marker);
+      }
+    });
+
+    it('handles rapid output without memory exhaustion', async () => {
+      orchestrator = new RelayPtyOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Simulate rapid output (like a build log or test output)
+      const iterations = 100;
+      const chunkSize = 100 * 1024; // 100KB chunks
+
+      for (let i = 0; i < iterations; i++) {
+        const chunk = `iteration-${i}: ${'log'.repeat(chunkSize / 3)}\n`;
+        mockProcess.stdout!.emit('data', Buffer.from(chunk));
+      }
+
+      // Should not throw RangeError
+      const rawOutput = orchestrator.getRawOutput();
+      const MAX_SIZE = 10 * 1024 * 1024;
+      expect(rawOutput.length).toBeLessThanOrEqual(MAX_SIZE);
     });
   });
 });

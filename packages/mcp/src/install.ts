@@ -452,7 +452,7 @@ export function installForEditor(
   const defaultConfig = buildServerConfig();
   const serverConfig: McpServerConfig = {
     command: options.command || defaultConfig.command,
-    args: options.args || defaultConfig.args,
+    args: options.args || [...defaultConfig.args],
   };
 
   // Set environment variables if provided (e.g., RELAY_SOCKET for project-local installs)
@@ -460,14 +460,13 @@ export function installForEditor(
     serverConfig.env = { ...options.env };
   }
 
-  // For project-local installs with projectDir, also set RELAY_SOCKET if not already set
+  // For project-local installs with projectDir, add --project argument
+  // This allows the MCP server to find the correct socket even when
+  // invoked from a different working directory (e.g., by Claude Code)
   const isProjectLocal = !options.global && options.projectDir;
-  if (isProjectLocal && !serverConfig.env?.RELAY_SOCKET) {
-    const socketPath = join(options.projectDir!, '.agent-relay', 'relay.sock');
-    serverConfig.env = {
-      ...serverConfig.env,
-      RELAY_SOCKET: socketPath,
-    };
+  if (isProjectLocal) {
+    // Add --project argument with absolute path to project directory
+    serverConfig.args = [...serverConfig.args, '--project', options.projectDir!];
   }
 
   if (options.dryRun) {

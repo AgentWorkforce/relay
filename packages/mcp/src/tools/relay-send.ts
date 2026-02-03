@@ -70,11 +70,13 @@ export async function handleRelaySend(
   const { to, message, thread, await_response, timeout_ms } = input;
 
   if (await_response) {
-    const response = await client.sendAndWait(to, message, {
+    const ack = await client.sendAndWait(to, message, {
       thread,
       timeoutMs: timeout_ms,
     });
-    return `Response from ${response.from}: ${response.content}`;
+    // Extract response from AckPayload
+    const responseText = ack.response || ack.responseData ? String(ack.responseData || ack.response) : 'OK';
+    return `Response from ${to}: ${responseText}`;
   }
 
   await client.send(to, message, { thread });

@@ -17,12 +17,12 @@ npm install -g agent-relay
 
 | Command | Description |
 |---------|-------------|
-| `agent-relay up` | Start daemon and dashboard |
+| `agent-relay up` | Start daemon (add `--dashboard` for web UI) |
 | `agent-relay down` | Stop the daemon |
 | `agent-relay status` | Check daemon status |
 | `agent-relay create-agent` | Wrap an agent with real-time messaging |
-| `agent-relay claude` | Start daemon with Claude coordinator |
-| `agent-relay codex` | Start daemon with Codex coordinator |
+| `agent-relay spawn` | Spawn a new agent |
+| `agent-relay release` | Release an agent |
 | `agent-relay agents` | List connected agents |
 | `agent-relay who` | Show active agents |
 | `agent-relay read` | Read full message by ID |
@@ -175,33 +175,6 @@ agent-relay create-agent --shadow Auditor --shadow-role "SESSION_END,CODE_WRITTE
 # Debug mode
 agent-relay create-agent -d codex
 ```
-
----
-
-### agent-relay claude
-
-Start the daemon with a Claude-based Dashboard coordinator.
-
-```bash
-agent-relay claude
-```
-
-This command:
-1. Checks if daemon is running, starts if needed
-2. Installs the agent-relay snippet via prpm
-3. Starts a Dashboard coordinator agent using Claude
-
----
-
-### agent-relay codex
-
-Start the daemon with a Codex-based Dashboard coordinator.
-
-```bash
-agent-relay codex
-```
-
-Same as `agent-relay claude` but uses OpenAI Codex CLI.
 
 ---
 

@@ -41,6 +41,8 @@ export type MessageType =
   | 'SPAWN_RESULT'
   | 'RELEASE'
   | 'RELEASE_RESULT'
+  // Agent lifecycle events
+  | 'AGENT_READY'
   // Query types (MCP/client requests)
   | 'STATUS'
   | 'STATUS_RESPONSE'
@@ -118,6 +120,8 @@ export interface HelloPayload {
   task?: string;
   /** Working directory */
   workingDirectory?: string;
+  /** Team name */
+  team?: string;
   /** Display name for human users */
   displayName?: string;
   /** Avatar URL for human users */
@@ -126,6 +130,11 @@ export interface HelloPayload {
   session?: {
     resume_token?: string;
   };
+  /**
+   * Internal flag to indicate this is a system component (e.g., Dashboard).
+   * Allows using reserved names. Should only be set by trusted system components.
+   */
+  _isSystemComponent?: boolean;
 }
 
 export interface WelcomePayload {
@@ -395,8 +404,14 @@ export interface SpawnPayload {
   spawnerName?: string;
   /** Interactive mode */
   interactive?: boolean;
+  /** Shadow execution mode (subagent = no extra process) */
+  shadowMode?: 'subagent' | 'process';
   /** Spawn as shadow of this agent */
   shadowOf?: string;
+  /** Shadow agent profile to use (for subagent mode) */
+  shadowAgent?: string;
+  /** When to trigger the shadow (for subagent mode) */
+  shadowTriggers?: SpeakOnTrigger[];
   /** Shadow speak-on triggers */
   shadowSpeakOn?: SpeakOnTrigger[];
   /** User ID for cloud persistence */
@@ -445,6 +460,26 @@ export interface ReleaseResultPayload {
 }
 
 // =============================================================================
+// Agent Lifecycle Event Types
+// =============================================================================
+
+/**
+ * Payload for AGENT_READY message.
+ * Broadcast by daemon when an agent completes connection (HELLO/WELCOME handshake).
+ * Subscribers can use this to know when a spawned agent is ready to receive messages.
+ */
+export interface AgentReadyPayload {
+  /** Name of the agent that is now ready */
+  name: string;
+  /** CLI identifier (claude, codex, gemini, etc.) */
+  cli?: string;
+  /** Task description */
+  task?: string;
+  /** Timestamp when the agent connected */
+  connectedAt: number;
+}
+
+// =============================================================================
 // Typed Envelope Helpers
 // =============================================================================
 
@@ -466,6 +501,7 @@ export type SpawnEnvelope = Envelope<SpawnPayload>;
 export type SpawnResultEnvelope = Envelope<SpawnResultPayload>;
 export type ReleaseEnvelope = Envelope<ReleasePayload>;
 export type ReleaseResultEnvelope = Envelope<ReleaseResultPayload>;
+export type AgentReadyEnvelope = Envelope<AgentReadyPayload>;
 export type ChannelJoinEnvelope = Envelope<ChannelJoinPayload>;
 export type ChannelLeaveEnvelope = Envelope<ChannelLeavePayload>;
 export type ChannelMessageEnvelope = Envelope<ChannelMessagePayload>;
@@ -493,6 +529,14 @@ export interface StatusResponsePayload {
   cloudConnected?: boolean;
   /** Number of connected agents */
   agentCount?: number;
+  /** Storage health information */
+  storage?: {
+    persistent: boolean;
+    driver: 'sqlite' | 'jsonl' | 'memory';
+    canWrite: boolean;
+    canRead: boolean;
+    error?: string;
+  };
 }
 
 /**
@@ -585,6 +629,8 @@ export interface ListAgentsResponsePayload {
     cli?: string;
     idle?: boolean;
     parent?: string;
+    team?: string;
+    pid?: number;
   }>;
 }
 
@@ -607,6 +653,8 @@ export interface ListConnectedAgentsResponsePayload {
     cli?: string;
     idle?: boolean;
     parent?: string;
+    team?: string;
+    pid?: number;
   }>;
 }
 
@@ -797,6 +845,8 @@ export interface AgentInfo {
   idle?: boolean;
   parent?: string;
   task?: string;
+  team?: string;
+  pid?: number;
   connectedAt?: number;
 }
 

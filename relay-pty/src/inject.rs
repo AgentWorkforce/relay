@@ -32,6 +32,8 @@ pub struct Injector {
     last_injection_ms: AtomicU64,
     /// Recent output buffer for verification
     recent_output: Mutex<String>,
+    /// Whether an auto-suggestion is currently visible (blocks injection)
+    auto_suggestion_visible: AtomicBool,
 }
 
 // Injector is Send+Sync safe
@@ -49,6 +51,7 @@ impl Injector {
             last_output_ms: AtomicU64::new(current_timestamp_ms()),
             last_injection_ms: AtomicU64::new(0), // No injection yet
             recent_output: Mutex::new(String::new()),
+            auto_suggestion_visible: AtomicBool::new(false),
         }
     }
 
@@ -61,6 +64,18 @@ impl Injector {
 
     /// Record new output (updates last_output_ms and recent_output)
     pub async fn record_output(&self, output: &str) {
+        // Skip idle state updates for auto-suggestions (ghost text)
+        // Auto-suggestions are NOT real agent activity AND block injection
+        if is_auto_suggestion(output) {
+            // Mark that an auto-suggestion is visible - this blocks injection
+            self.auto_suggestion_visible.store(true, Ordering::SeqCst);
+            debug!("Auto-suggestion detected, blocking injection");
+            return;
+        }
+
+        // Real output detected - clear auto-suggestion flag
+        self.auto_suggestion_visible.store(false, Ordering::SeqCst);
+
         self.last_output_ms
             .store(current_timestamp_ms(), Ordering::SeqCst);
         if !is_relay_echo(output) {
@@ -84,7 +99,14 @@ impl Injector {
     }
 
     /// Check if agent is idle (based on timeout or explicit signal)
+    /// Returns false if an auto-suggestion is currently visible (blocks injection)
     pub fn check_idle(&self) -> bool {
+        // NEVER inject when an auto-suggestion is visible
+        // This prevents accidentally submitting the auto-suggestion text
+        if self.auto_suggestion_visible.load(Ordering::SeqCst) {
+            return false;
+        }
+
         // Check explicit idle flag
         if self.is_idle.load(Ordering::SeqCst) {
             return true;
@@ -252,6 +274,23 @@ fn is_relay_echo(output: &str) -> bool {
     })
 }
 
+/// Detect if output is an auto-suggestion (ghost text).
+/// Claude Code shows auto-suggestions with:
+/// - \x1b[7m (reverse video) for cursor position
+/// - followed by a character
+/// - \x1b[27m (reverse off)
+/// - \x1b[2m (dim) for the ghost text
+fn is_auto_suggestion(output: &str) -> bool {
+    // Pattern: \x1b[7m followed by any char, then \x1b[27m\x1b[2m
+    // This is the cursor position + dim ghost text pattern
+    let has_cursor_ghost = output.contains("\x1b[7m") && output.contains("\x1b[27m\x1b[2m");
+
+    // Also check for the "↵ send" hint which appears in suggestions
+    let has_send_hint = output.contains("↵ send");
+
+    has_cursor_ghost || has_send_hint
+}
+
 /// Get current timestamp in milliseconds
 fn current_timestamp_ms() -> u64 {
     std::time::SystemTime::now()
@@ -337,5 +376,126 @@ mod tests {
         assert!(is_relay_echo("Relay message from Alice [abc]: Hi\n"));
         assert!(is_relay_echo("\nRelay message from Bob [def]: Yo\n\n"));
         assert!(!is_relay_echo("Some other output\n"));
+    }
+
+    #[test]
+    fn test_is_auto_suggestion() {
+        // Real auto-suggestion from Claude Code with cursor + dim ghost text
+        assert!(is_auto_suggestion(
+            "\x1b[7mW\x1b[27m\x1b[2mhat's the task you need help with?\x1b[22m"
+        ));
+        assert!(is_auto_suggestion(
+            "\x1b[7mT\x1b[27m\x1b[2mry \"how do I log an error?\"\x1b[22m"
+        ));
+
+        // With "↵ send" hint
+        assert!(is_auto_suggestion("some text ↵ send"));
+
+        // Normal output should not be detected as auto-suggestion
+        assert!(!is_auto_suggestion("Hello world"));
+        assert!(!is_auto_suggestion("Running tests..."));
+        assert!(!is_auto_suggestion("\x1b[2m───────\x1b[22m")); // dim separator line without cursor
+    }
+
+    #[tokio::test]
+    async fn test_record_output_blocks_injection_on_auto_suggestions() {
+        let (pty_tx, _pty_rx) = mpsc::channel(1);
+        let (response_tx, _response_rx) = broadcast::channel(1);
+        let queue = Arc::new(MessageQueue::new(1, response_tx));
+        let injector = Injector::new(pty_tx, queue, test_config(600000));
+
+        injector.update_from_parse(&test_parse_result(true));
+        assert!(injector.check_idle());
+
+        // Auto-suggestion should BLOCK injection (check_idle returns false)
+        injector
+            .record_output("\x1b[7mW\x1b[27m\x1b[2mhat's the task?\x1b[22m")
+            .await;
+        assert!(!injector.check_idle()); // Should NOT be idle - auto-suggestion blocks injection
+
+        // Real output clears the auto-suggestion flag
+        injector.record_output("Some real output").await;
+        assert!(!injector.check_idle()); // Not idle due to recent real output
+    }
+
+    #[tokio::test]
+    async fn test_auto_suggestion_flag_cleared_by_real_output() {
+        let (pty_tx, _pty_rx) = mpsc::channel(1);
+        let (response_tx, _response_rx) = broadcast::channel(1);
+        let queue = Arc::new(MessageQueue::new(1, response_tx));
+        // Use long timeout so we test the explicit idle flag behavior
+        let injector = Injector::new(pty_tx, queue, test_config(600000));
+
+        // Start idle via explicit flag
+        injector.update_from_parse(&test_parse_result(true));
+        assert!(injector.check_idle());
+
+        // Auto-suggestion blocks injection even though idle flag is set
+        injector
+            .record_output("\x1b[7mH\x1b[27m\x1b[2melp me\x1b[22m")
+            .await;
+        assert!(!injector.check_idle()); // Blocked by auto_suggestion_visible
+
+        // Real output clears the auto_suggestion_visible flag
+        // But also clears is_idle (non-relay output = agent active)
+        injector.record_output("Agent is working...").await;
+        assert!(!injector.check_idle()); // Not idle - real output means agent active
+
+        // Set idle again via parser - this should work now since
+        // auto_suggestion_visible was cleared by the real output
+        injector.update_from_parse(&test_parse_result(true));
+        assert!(injector.check_idle()); // Now idle - auto-suggestion flag was cleared
+    }
+
+    #[test]
+    fn test_is_auto_suggestion_real_world_patterns() {
+        // Real patterns captured from Claude Code output logs
+
+        // Full auto-suggestion with send hint
+        assert!(is_auto_suggestion(
+            "\x1b[7mS\x1b[27m\x1b[2mend Dashboard their first task                                                          ↵ send\x1b[22m"
+        ));
+
+        // Auto-suggestion without send hint
+        assert!(is_auto_suggestion(
+            "\x1b[7mH\x1b[27m\x1b[2melp me set up agent deployment\x1b[22m"
+        ));
+
+        // Just the send hint (partial view)
+        assert!(is_auto_suggestion("                     ↵ send"));
+
+        // Spinner output should NOT be detected (common false positive check)
+        assert!(!is_auto_suggestion("\x1b[38;5;174m✻\x1b[39m"));
+        assert!(!is_auto_suggestion("\x1b[38;5;174m✶\x1b[39m"));
+
+        // Prompt with cursor but no dim text should NOT match
+        // (this is the idle prompt, not an auto-suggestion)
+        assert!(!is_auto_suggestion("> \x1b[7m \x1b[27m"));
+
+        // Tool output should NOT match
+        assert!(!is_auto_suggestion("\x1b[1mBash\x1b[22m(ls -la)"));
+        assert!(!is_auto_suggestion("Relay message from Alice [abc]: Hello"));
+    }
+
+    #[test]
+    fn test_is_auto_suggestion_edge_cases() {
+        // Empty string
+        assert!(!is_auto_suggestion(""));
+
+        // Just reverse video without dim (not a suggestion)
+        assert!(!is_auto_suggestion("\x1b[7mX\x1b[27m"));
+
+        // Just dim without reverse (separator lines, etc)
+        assert!(!is_auto_suggestion("\x1b[2m────────\x1b[22m"));
+
+        // Reverse and dim but not adjacent (unlikely but test it)
+        assert!(!is_auto_suggestion(
+            "\x1b[7mX\x1b[27m some text \x1b[2mdim\x1b[22m"
+        ));
+
+        // Multiple suggestions in one output (should still detect)
+        assert!(is_auto_suggestion(
+            "line1\n\x1b[7mA\x1b[27m\x1b[2muto complete\x1b[22m\nline2"
+        ));
     }
 }

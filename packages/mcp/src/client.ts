@@ -15,32 +15,58 @@ import {
   type Envelope,
   type MessageType,
   type SendPayload,
+  type AckPayload,
   type SpawnPayload,
+  type SpawnResultPayload,
   type ReleasePayload,
+  type ReleaseResultPayload,
   type InboxPayload,
   type ListAgentsPayload,
+  type ListAgentsResponsePayload,
   type HealthPayload,
   type MetricsPayload,
   type HealthResponsePayload,
   type MetricsResponsePayload,
+  type MessagesQueryPayload,
+  type MessagesResponsePayload,
+  type InboxResponsePayload,
+  type StatusResponsePayload,
+  type ListConnectedAgentsResponsePayload,
+  type RemoveAgentResponsePayload,
+  type LogPayload,
   encodeFrameLegacy,
-  FrameParser,
   PROTOCOL_VERSION,
 } from '@agent-relay/protocol';
+
+// Import shared client helpers for consistency
+import {
+  createRequestEnvelope,
+  createRequestHandler,
+  generateRequestId,
+  toSpawnResult,
+  toReleaseResult,
+  type SpawnResult,
+  type ReleaseResult,
+  type RequestOptions,
+} from '@agent-relay/utils/client-helpers';
 
 // Re-export response types for consumers
 export type HealthResponse = HealthResponsePayload;
 export type MetricsResponse = MetricsResponsePayload;
+export type MessagesResponse = MessagesResponsePayload;
+
+// Message shape returned by the daemon
+export type QueryMessage = MessagesResponsePayload['messages'][number];
 
 export interface RelayClient {
   // Basic messaging
-  send(to: string, message: string, options?: { thread?: string }): Promise<void>;
-  sendAndWait(to: string, message: string, options?: { thread?: string; timeoutMs?: number }): Promise<{ from: string; content: string; thread?: string }>;
+  send(to: string, message: string, options?: { thread?: string; kind?: string; data?: Record<string, unknown> }): Promise<void>;
+  sendAndWait(to: string, message: string, options?: { thread?: string; timeoutMs?: number; kind?: string; data?: Record<string, unknown> }): Promise<AckPayload>;
   broadcast(message: string, options?: { kind?: string }): Promise<void>;
 
   // Spawn/Release
-  spawn(options: { name: string; cli: string; task: string; model?: string; cwd?: string }): Promise<{ success: boolean; error?: string; pid?: number }>;
-  release(name: string, reason?: string): Promise<{ success: boolean; error?: string }>;
+  spawn(options: { name: string; cli: string; task: string; model?: string; cwd?: string }): Promise<SpawnResult>;
+  release(name: string, reason?: string): Promise<ReleaseResult>;
 
   // Pub/Sub
   subscribe(topic: string): Promise<{ success: boolean; error?: string }>;
@@ -50,6 +76,10 @@ export interface RelayClient {
   joinChannel(channel: string, displayName?: string): Promise<{ success: boolean; error?: string }>;
   leaveChannel(channel: string, reason?: string): Promise<{ success: boolean; error?: string }>;
   sendChannelMessage(channel: string, message: string, options?: { thread?: string }): Promise<void>;
+  /** Admin join: Add any member to a channel (does not require member to be connected) */
+  adminJoinChannel(channel: string, member: string): Promise<{ success: boolean; error?: string }>;
+  /** Admin remove: Remove any member from a channel */
+  adminRemoveMember(channel: string, member: string): Promise<{ success: boolean; error?: string }>;
 
   // Shadow agent operations
   bindAsShadow(primaryAgent: string, options?: { speakOn?: string[] }): Promise<{ success: boolean; error?: string }>;
@@ -67,6 +97,24 @@ export interface RelayClient {
   removeAgent(name: string, options?: { removeMessages?: boolean }): Promise<{ success: boolean; removed: boolean; message?: string }>;
   getHealth(options?: { include_crashes?: boolean; include_alerts?: boolean }): Promise<HealthResponse>;
   getMetrics(options?: { agent?: string }): Promise<MetricsResponse>;
+
+  /**
+   * Query all messages (not filtered by recipient).
+   * Useful for dashboard views and message history.
+   */
+  queryMessages(options?: {
+    limit?: number;
+    sinceTs?: number;
+    from?: string;
+    to?: string;
+    thread?: string;
+    order?: 'asc' | 'desc';
+  }): Promise<QueryMessage[]>;
+
+  /**
+   * Send log output to the daemon for dashboard streaming.
+   */
+  sendLog(data: string): Promise<void>;
 }
 
 export interface RelayClientOptions {
@@ -81,12 +129,12 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   // Prefer explicit socketPath option over discovery to avoid finding wrong daemon
   const socketPath = options.socketPath || discoverSocket()?.socketPath || '/tmp/agent-relay.sock';
 
-  // Generate unique IDs
-  let idCounter = 0;
-  const generateId = () => `mcp-${Date.now().toString(36)}-${(++idCounter).toString(36)}`;
+  // Generate unique IDs with MCP prefix
+  const generateId = () => generateRequestId('mcp-');
 
   // Timeouts for different operations
   const RELEASE_TIMEOUT = 10000; // 10 seconds for release operations
+  const SPAWN_TIMEOUT = 30000; // 30 seconds for spawn operations
 
   /**
    * Fire-and-forget: Send a message without waiting for any response.
@@ -132,101 +180,62 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     type: MessageType,
     payload: Record<string, unknown>,
     customTimeout?: number,
-    payloadMeta?: { sync?: { blocking?: boolean; correlationId?: string; timeoutMs?: number } },
-    envelopeProps?: { from?: string; to?: string }
+    payloadMeta?: RequestOptions['payloadMeta'],
+    envelopeProps?: RequestOptions['envelopeProps']
   ): Promise<T> {
-    return new Promise((resolve, reject) => {
-      const id = generateId();
-      const correlationId = payloadMeta?.sync?.correlationId;
-
-      const envelope: Envelope = {
-        v: PROTOCOL_VERSION,
-        type,
-        id,
-        ts: Date.now(),
-        payload,
-        from: envelopeProps?.from,
-        to: envelopeProps?.to,
-      };
-
-      if (payloadMeta) {
-        (envelope as unknown as Record<string, unknown>).payload_meta = payloadMeta;
-      }
-
-      let timedOut = false;
-      const parser = new FrameParser();
-      parser.setLegacyMode(true); // Use legacy 4-byte header format
-
-      const socket: Socket = createConnection(socketPath);
-
-      const effectiveTimeout = customTimeout ?? timeout;
-      const timeoutId = setTimeout(() => {
-        timedOut = true;
-        socket.destroy();
-        reject(new Error(`Request timeout after ${effectiveTimeout}ms`));
-      }, effectiveTimeout);
-
-      socket.on('connect', () => socket.write(encodeFrameLegacy(envelope)));
-
-      socket.on('data', (data) => {
-        if (timedOut) return;
-
-        const frames = parser.push(data);
-        for (const response of frames) {
-          const responsePayload = response.payload as { replyTo?: string; correlationId?: string; error?: string; message?: string; code?: string };
-
-          // Check if this is a response to our request
-          const isMatchingResponse = response.id === id ||
-            responsePayload?.replyTo === id ||
-            (correlationId && responsePayload?.correlationId === correlationId);
-
-          if (isMatchingResponse) {
-            clearTimeout(timeoutId);
-            socket.end();
-
-            if (response.type === 'ERROR') {
-              reject(new Error(responsePayload?.message || responsePayload?.code || 'Unknown error'));
-            } else if (responsePayload?.error) {
-              reject(new Error(responsePayload.error));
-            } else {
-              resolve(response.payload as T);
-            }
-            return;
-          }
-        }
-      });
-
-      socket.on('error', (err) => {
-        clearTimeout(timeoutId);
-        const errno = (err as NodeJS.ErrnoException).code;
-        if (errno === 'ECONNREFUSED' || errno === 'ENOENT') {
-          reject(new DaemonNotRunningError(`Cannot connect to daemon at ${socketPath}`));
-        } else {
-          reject(err);
-        }
-      });
+    const id = generateId();
+    const envelope = createRequestEnvelope(type, payload, id, {
+      payloadMeta,
+      envelopeProps,
     });
+
+    try {
+      return await createRequestHandler<T>(socketPath, envelope, {
+        timeout: customTimeout ?? timeout,
+        payloadMeta,
+        envelopeProps,
+      });
+    } catch (err) {
+      const errno = (err as NodeJS.ErrnoException).code;
+      if (errno === 'ECONNREFUSED' || errno === 'ENOENT') {
+        throw new DaemonNotRunningError(`Cannot connect to daemon at ${socketPath}`);
+      }
+      throw err;
+    }
   }
 
   return {
     async send(to, message, opts = {}) {
-      const payload: SendPayload = { kind: 'message', body: message, thread: opts.thread };
+      const payload: SendPayload = {
+        kind: (opts.kind as SendPayload['kind']) || 'message',
+        body: message,
+        thread: opts.thread,
+        data: opts.data,
+      };
+      // Fire-and-forget: message is sent to daemon, but we don't wait for
+      // recipient to ACK. Use sendAndWait() for confirmed delivery.
+      // Connection errors (daemon not running) will still throw.
       await fireAndForget('SEND', payload as unknown as Record<string, unknown>, { from: agentName, to });
     },
 
     async sendAndWait(to, message, opts = {}) {
       const waitTimeout = opts.timeoutMs || 30000;
       const correlationId = randomUUID();
-      const payload: SendPayload = { kind: 'message', body: message, thread: opts.thread };
+      const payload: SendPayload = {
+        kind: (opts.kind as SendPayload['kind']) || 'message',
+        body: message,
+        thread: opts.thread,
+        data: opts.data,
+      };
 
-      const r = await request<{ correlationId?: string; response?: string; from?: string }>(
+      const ack = await request<AckPayload>(
         'SEND',
         payload as unknown as Record<string, unknown>,
         waitTimeout + 5000,
         { sync: { blocking: true, correlationId, timeoutMs: waitTimeout } },
         { from: agentName, to }
       );
-      return { from: r.from ?? to, content: r.response ?? '', thread: opts.thread };
+      return ack;
     },
 
     async broadcast(message, opts = {}) {
@@ -272,6 +281,24 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
 
     async sendChannelMessage(channel, message, opts = {}) {
       await fireAndForget('CHANNEL_MESSAGE', { channel, body: message, thread: opts.thread }, { from: agentName });
+    },
+
+    async adminJoinChannel(channel, member) {
+      try {
+        await fireAndForget('CHANNEL_JOIN', { channel, member }, { from: agentName });
+        return { success: true };
+      } catch (e) {
+        return { success: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+
+    async adminRemoveMember(channel, member) {
+      try {
+        await fireAndForget('CHANNEL_LEAVE', { channel, member }, { from: agentName });
+        return { success: true };
+      } catch (e) {
+        return { success: false, error: e instanceof Error ? e.message : String(e) };
+      }
     },
 
     async bindAsShadow(primaryAgent, opts = {}) {
@@ -330,8 +357,14 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
           cwd: opts.cwd,
           spawnerName: agentName,
         };
-        await fireAndForget('SPAWN', payload as unknown as Record<string, unknown>);
-        return { success: true };
+        const result = await request<SpawnResultPayload>(
+          'SPAWN',
+          payload as unknown as Record<string, unknown>,
+          SPAWN_TIMEOUT,
+          undefined,
+          { from: agentName }
+        );
+        return toSpawnResult(result);
       } catch (e) {
         return { success: false, error: e instanceof Error ? e.message : String(e) };
       }
@@ -340,8 +373,14 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     async release(name, reason) {
       try {
         const payload: ReleasePayload = { name, reason };
-        await request('RELEASE', payload as unknown as Record<string, unknown>, RELEASE_TIMEOUT);
-        return { success: true };
+        const result = await request<ReleaseResultPayload>(
+          'RELEASE',
+          payload as unknown as Record<string, unknown>,
+          RELEASE_TIMEOUT,
+          undefined,
+          { from: agentName }
+        );
+        return toReleaseResult(result);
       } catch (e) {
         return { success: false, error: e instanceof Error ? e.message : String(e) };
       }
@@ -349,7 +388,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
 
     async getStatus() {
       try {
-        const s = await request<{ version?: string; uptime?: number }>('STATUS', {});
+        const s = await request<StatusResponsePayload>('STATUS', {});
         return { connected: true, agentName, project, socketPath, daemonVersion: s.version, uptime: s.uptime ? Math.floor(s.uptime/1000)+'s' : undefined };
       } catch {
         return { connected: false, agentName, project, socketPath };
@@ -364,10 +403,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         from: opts.from,
         channel: opts.channel,
       };
-      const response = await request<{ messages: Array<{ id: string; from: string; body: string; channel?: string; thread?: string; timestamp: number }> }>(
-        'INBOX',
-        payload as unknown as Record<string, unknown>
-      );
+      const response = await request<InboxResponsePayload>('INBOX', payload as unknown as Record<string, unknown>);
       const msgs = response.messages || [];
       return msgs.map(m => ({ id: m.id, from: m.from, content: m.body, channel: m.channel, thread: m.thread }));
     },
@@ -377,25 +413,19 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         includeIdle: opts.include_idle,
         project: opts.project,
       };
-      const response = await request<{ agents: Array<{ name: string; cli?: string; idle?: boolean; parent?: string }> }>(
-        'LIST_AGENTS',
-        payload as unknown as Record<string, unknown>
-      );
+      const response = await request<ListAgentsResponsePayload>('LIST_AGENTS', payload as unknown as Record<string, unknown>);
       return response.agents || [];
     },
 
     async listConnectedAgents(opts: { project?: string } = {}) {
       const payload = { project: opts.project };
-      const response = await request<{ agents: Array<{ name: string; cli?: string; idle?: boolean; parent?: string }> }>(
-        'LIST_CONNECTED_AGENTS',
-        payload
-      );
+      const response = await request<ListConnectedAgentsResponsePayload>('LIST_CONNECTED_AGENTS', payload);
       return response.agents || [];
     },
 
     async removeAgent(name: string, opts: { removeMessages?: boolean } = {}) {
       const payload = { name, removeMessages: opts.removeMessages };
-      return request<{ success: boolean; removed: boolean; message?: string }>('REMOVE_AGENT', payload);
+      return request<RemoveAgentResponsePayload>('REMOVE_AGENT', payload);
     },
 
     async getHealth(opts: { include_crashes?: boolean; include_alerts?: boolean } = {}) {
@@ -409,6 +439,37 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     async getMetrics(opts: { agent?: string } = {}) {
       const payload: MetricsPayload = { agent: opts.agent };
       return request<MetricsResponse>('METRICS', payload as unknown as Record<string, unknown>);
+    },
+
+    async queryMessages(opts: {
+      limit?: number;
+      sinceTs?: number;
+      from?: string;
+      to?: string;
+      thread?: string;
+      order?: 'asc' | 'desc';
+    } = {}) {
+      const payload: MessagesQueryPayload = {
+        limit: opts.limit,
+        sinceTs: opts.sinceTs,
+        from: opts.from,
+        to: opts.to,
+        thread: opts.thread,
+        order: opts.order,
+      };
+      const response = await request<MessagesResponsePayload>(
+        'MESSAGES_QUERY',
+        payload as unknown as Record<string, unknown>
+      );
+      return response.messages || [];
+    },
+
+    async sendLog(data: string) {
+      const payload: LogPayload = {
+        data,
+        timestamp: Date.now(),
+      };
+      await fireAndForget('LOG', payload as unknown as Record<string, unknown>, { from: agentName });
     },
   };
 }

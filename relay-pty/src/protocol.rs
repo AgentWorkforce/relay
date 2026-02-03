@@ -363,7 +363,7 @@ impl Default for Config {
             name: "agent".to_string(),
             socket_path,
             prompt_pattern: r"^[>$%#] $".to_string(),
-            idle_timeout_ms: 500,
+            idle_timeout_ms: 5000, // 5 seconds - matches TypeScript queue monitor threshold
             queue_max: 50,
             json_output: false,
             command: vec![],
@@ -605,14 +605,14 @@ mod tests {
 
     #[test]
     fn test_preformatted_dashboard_sender() {
-        // Dashboard messages show actual username instead of _DashboardUI
+        // Dashboard messages show actual username instead of Dashboard
         let msg = QueuedMessage::new(
             "xyz7890".to_string(),
-            "_DashboardUI".to_string(),
+            "Dashboard".to_string(),
             "Relay message from john_doe [abc12345]: Task from dashboard".to_string(),
             0,
         );
-        // Should preserve the displayed sender (john_doe), not wrap with _DashboardUI
+        // Should preserve the displayed sender (john_doe), not wrap with Dashboard
         assert_eq!(
             msg.format_for_injection(),
             "Relay message from john_doe [abc12345]: Task from dashboard"

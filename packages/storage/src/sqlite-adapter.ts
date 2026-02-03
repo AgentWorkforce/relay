@@ -7,6 +7,7 @@ import {
   type MessageStatus,
   type SessionQuery,
   type StorageAdapter,
+  type StorageHealth,
   type StoredMessage,
   type StoredSession,
 } from './adapter.js';
@@ -27,7 +28,7 @@ const DEFAULT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 // Re-export types for backwards compatibility
 export type { StoredSession, SessionQuery } from './adapter.js';
 
-type SqliteDriverName = 'better-sqlite3' | 'node';
+type SqliteDriverName = 'bun' | 'better-sqlite3' | 'node';
 
 interface SqliteStatement {
   run: (...params: any[]) => unknown;
@@ -61,12 +62,28 @@ export class SqliteStorageAdapter implements StorageAdapter {
   private resolvePreferredDriver(): SqliteDriverName | undefined {
     const raw = process.env.AGENT_RELAY_SQLITE_DRIVER?.trim().toLowerCase();
     if (!raw) return undefined;
+    if (raw === 'bun' || raw === 'bun:sqlite' || raw === 'bunsqlite') return 'bun';
     if (raw === 'node' || raw === 'node:sqlite' || raw === 'nodesqlite') return 'node';
     if (raw === 'better-sqlite3' || raw === 'better' || raw === 'bss') return 'better-sqlite3';
     return undefined;
   }
 
+  private isBunRuntime(): boolean {
+    return typeof (globalThis as any).Bun !== 'undefined';
+  }
+
   private async openDatabase(driver: SqliteDriverName): Promise<SqliteDatabase> {
+    if (driver === 'bun') {
+      // bun:sqlite - built-in to Bun runtime, API compatible with better-sqlite3
+      // Use indirect import to avoid TypeScript errors in Node.js builds
+      const bunSqlite = 'bun:sqlite';
+      const mod: any = await import(/* @vite-ignore */ bunSqlite);
+      const Database = mod.Database;
+      const db: any = new Database(this.dbPath);
+      db.exec('PRAGMA journal_mode = WAL;');
+      return db as SqliteDatabase;
+    }
+
     if (driver === 'node') {
       // Use require() to avoid toolchains that don't recognize node:sqlite yet (Vitest/Vite).
       const require = createRequire(import.meta.url);
@@ -76,8 +93,9 @@ export class SqliteStorageAdapter implements StorageAdapter {
       return db as SqliteDatabase;
     }
 
-    const mod = await import('better-sqlite3');
-    const DatabaseCtor: any = (mod as any).default ?? mod;
+    // better-sqlite3 - Use dynamic import
+    const mod: any = await import('better-sqlite3');
+    const DatabaseCtor: any = mod.default ?? mod;
     const db: any = new DatabaseCtor(this.dbPath);
     if (typeof db.pragma === 'function') {
       db.pragma('journal_mode = WAL');
@@ -94,10 +112,22 @@ export class SqliteStorageAdapter implements StorageAdapter {
     }
 
     const preferred = this.resolvePreferredDriver();
-    const attempts: SqliteDriverName[] = preferred
-      ? [preferred, preferred === 'better-sqlite3' ? 'node' : 'better-sqlite3']
-      : ['better-sqlite3', 'node'];
+    let attempts: SqliteDriverName[];
 
+    if (preferred) {
+      // User specified a preferred driver - try it first, then others
+      const allDrivers: SqliteDriverName[] = ['bun', 'better-sqlite3', 'node'];
+      const others = allDrivers.filter((d): d is SqliteDriverName => d !== preferred);
+      attempts = [preferred, ...others];
+    } else if (this.isBunRuntime()) {
+      // Running in Bun - try bun:sqlite first (built-in, fastest)
+      attempts = ['bun', 'better-sqlite3', 'node'];
+    } else {
+      // Running in Node.js - try better-sqlite3 first (fastest), then built-in
+      attempts = ['better-sqlite3', 'node'];
+    }
+
+    // Try the fastest/native option first, then fall back to the built-in driver so startup still succeeds on systems without prebuilt binaries
     let lastError: unknown = null;
     for (const driver of attempts) {
       try {
@@ -295,6 +325,55 @@ export class SqliteStorageAdapter implements StorageAdapter {
     }
 
     return deleted;
+  }
+
+  /**
+   * Check storage health and persistence characteristics.
+   * Uses a tiny helper table to avoid mutating message data.
+   */
+  async healthCheck(): Promise<StorageHealth> {
+    const result: StorageHealth = {
+      persistent: true,
+      driver: 'sqlite',
+      canRead: false,
+      canWrite: false,
+    };
+
+    try {
+      if (!this.db) {
+        await this.init();
+      }
+
+      if (!this.db) {
+        result.error = 'SqliteStorageAdapter not initialized';
+        return result;
+      }
+
+      try {
+        this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' LIMIT 1").get();
+        result.canRead = true;
+      } catch (err) {
+        result.error = `Read check failed: ${err instanceof Error ? err.message : String(err)}`;
+      }
+
+      try {
+        this.db.exec('CREATE TABLE IF NOT EXISTS __relay_health (ts INTEGER NOT NULL)');
+        this.db.prepare('INSERT OR REPLACE INTO __relay_health (ts) VALUES (?)').run(Date.now());
+        // Keep the helper table tiny
+        this.db.exec('DELETE FROM __relay_health WHERE ts < strftime(\'%s\', \'now\') * 1000 - 86400000');
+        result.canWrite = true;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        result.error = result.error
+          ? `${result.error}; write check failed: ${msg}`
+          : `Write check failed: ${msg}`;
+      }
+    } catch (err) {
+      result.error = err instanceof Error ? err.message : String(err);
+    }
+
+    result.persistent = result.canRead && result.canWrite;
+    return result;
   }
 
   /**

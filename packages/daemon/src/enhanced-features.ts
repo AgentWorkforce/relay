@@ -12,7 +12,6 @@
  * these features into the existing daemon and router.
  */
 
-import type { Database as BetterSqlite3Database } from 'better-sqlite3';
 import type { Pool as PgPool } from 'pg';
 
 // Import new modules
@@ -86,8 +85,8 @@ export interface EnhancedFeaturesConfig {
   dlq?: Partial<DLQConfig> & {
     /** Storage type */
     type?: 'sqlite' | 'postgres' | 'memory';
-    /** SQLite database (if type is sqlite) */
-    sqlite?: BetterSqlite3Database;
+    /** SQLite database (if type is sqlite) - type checked by SQLiteDLQAdapter */
+    sqlite?: unknown;
     /** PostgreSQL pool (if type is postgres) */
     postgres?: PgPool;
   };
@@ -160,7 +159,8 @@ export async function initEnhancedFeatures(
   if (dlqConfig.type === 'postgres' && dlqConfig.postgres) {
     dlq = new PostgresDLQAdapter(dlqConfig.postgres);
   } else if (dlqConfig.type === 'sqlite' && dlqConfig.sqlite) {
-    dlq = new SQLiteDLQAdapter(dlqConfig.sqlite);
+    // Cast to any - actual type checking happens in SQLiteDLQAdapter
+    dlq = new SQLiteDLQAdapter(dlqConfig.sqlite as any);
   } else if (dlqConfig.type === 'memory' || (!dlqConfig.sqlite && !dlqConfig.postgres)) {
     dlq = new InMemoryDLQAdapter();
   } else {

@@ -7,3 +7,6 @@ export * from './handoff-store.js';
 
 export { getContinuityManager } from './manager.js';
 export { parseContinuityCommand, hasContinuityCommand } from './parser.js';
+
+// Re-export token estimation for context size checks
+export { estimateTokens } from '@agent-relay/memory';

@@ -1,154 +1,59 @@
 # agent-relay
 
-Real-time messaging between AI agents. Sub-5ms latency, any CLI, any language.
+> Real-time messaging between AI agents. Sub-5ms latency, any CLI, any language.
+
+[![npm](https://img.shields.io/npm/v/agent-relay)](https://www.npmjs.com/package/agent-relay)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
+---
 
 ## Install
 
+**Quick install (recommended - no Node.js required!):**
+```bash
+curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
+```
+
+This downloads a standalone binary that works without any dependencies.
+
+**Or via npm:**
 ```bash
 npm install -g agent-relay
 ```
 
-**Requirements:** Node.js 20+
+*The npm method requires Node.js 18+*
 
-**Linux:** Install build tools first:
-```bash
-sudo apt-get update && sudo apt-get install -y build-essential
-```
-
-### Platform Support
-
-| Platform | Status | Notes |
-|----------|--------|-------|
-| macOS Apple Silicon | **Full support** | Native relay-pty binary |
-| macOS Intel | **Full support** | Native relay-pty binary |
-| Linux x64 | **Full support** | Native relay-pty binary |
-| Linux arm64 | Fallback | Uses tmux (install separately) |
-| Windows | Fallback | Uses tmux via WSL |
-
-## Quick Start
+## Getting Started
 
 ```bash
-# Start daemon + coordinator agent
-agent-relay claude
-
-# Or with other CLI tools
-agent-relay codex
+agent-relay up --dashboard
 ```
 
-Agents communicate via file-based messaging:
+Navigate to **http://localhost:3888** to:
+- 🤖 Spawn and chat with agents using your locally installed CLI tools
+- 👀 View real-time agent presence and status
+- 💬 Message history and threading
+- 📜 Log streaming from all agents
 
-```bash
-# Write message to outbox (AGENT_RELAY_OUTBOX is set automatically)
-cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
-TO: Bob
-
-Hey, can you help with this task?
-EOF
-
-# Trigger send
-echo "->relay-file:msg"
-```
-
-Synchronous messaging (wait for ACK):
-```
-->relay:Bob [await] Please confirm
-->relay:Bob [await:30s] Please confirm within 30 seconds
-```
-
-Or broadcast to all:
-```bash
-cat > $AGENT_RELAY_OUTBOX/broadcast << 'EOF'
-TO: *
-
-Message to all agents
-EOF
-echo "->relay-file:broadcast"
-```
-
-> **Note**: `$AGENT_RELAY_OUTBOX` is automatically set when agents are spawned via agent-relay. Data is stored in `.agent-relay/` within your project directory (auto-added to `.gitignore`).
+---
 
 ## CLI Reference
 
 | Command | Description |
 |---------|-------------|
-| `agent-relay claude` | Start daemon + coordinator with Claude |
-| `agent-relay codex` | Start daemon + coordinator with Codex |
+| `agent-relay <cli>` | Start daemon + coordinator (claude, codex, gemini, etc.) |
 | `agent-relay up` | Start daemon + dashboard |
 | `agent-relay down` | Stop daemon |
 | `agent-relay status` | Check daemon status |
-| `agent-relay create-agent -n Name <cmd>` | Create named agent |
-| `agent-relay read <id>` | Read truncated message |
+| `agent-relay create-agent -n Name <cmd>` | Create a named agent |
 | `agent-relay bridge <projects...>` | Bridge multiple projects |
+| `agent-relay doctor` | Diagnose issues |
 
-## Architecture
-
-```
-┌─────────────┐     ┌─────────────┐
-│ Agent Alice │     │  Agent Bob  │
-│ (relay-pty) │     │ (relay-pty) │
-└──────┬──────┘     └──────┬──────┘
-       │                   │
-       └─────────┬─────────┘
-                 │
-        Unix Domain Socket
-                 │
-        ┌────────┴────────┐
-        │  relay daemon   │
-        │   (<5ms P2P)    │
-        └────────┬────────┘
-                 │
-        ┌────────┴────────┐
-        │    Dashboard    │
-        │  (Protocol UI)  │
-        └─────────────────┘
-```
-
-**relay-pty** is a Rust binary that wraps your CLI tool, providing:
-- Direct PTY writes for reliable message injection
-- ~550ms injection latency (vs ~1700ms with tmux)
-- File-based message parsing for robustness
-
-The **Dashboard** is a reference implementation of the relay protocol, providing real-time visibility into agent communication, message history, and coordinator controls.
-
-## Dashboard
-
-The dashboard starts automatically with any command (`agent-relay claude`, `agent-relay up`, etc.) at http://localhost:3888
-
-Features:
-- Real-time agent presence and status
-- Message history and threading
-- Coordinator panel for multi-agent orchestration
-- Log streaming from all agents
-
-## Cloud
-
-For maximum scale and team collaboration, use [**agent-relay cloud**](https://agent-relay.com):
-
-```bash
-# Link your machine to cloud
-agent-relay cloud link
-
-# Check cloud status
-agent-relay cloud status
-
-# List agents across all linked machines
-agent-relay cloud agents
-
-# Send message to agent on any machine
-agent-relay cloud send AgentName "Your message"
-```
-
-Cloud features:
-- **Persistent workspaces** - Agents survive disconnects
-- **Team collaboration** - Share dashboards, view all agents
-- **Cross-machine messaging** - Send to agents on any linked machine
-- **Centralized monitoring** - See all daemons and agents in one place
-
-The cloud dashboard is the same protocol implementation, scaled for teams.
+---
 
 ## Agent Roles
 
-Create role-based agents by adding markdown files:
+Define roles by adding markdown files to your project:
 
 ```
 .claude/agents/
@@ -162,10 +67,23 @@ Names automatically match roles (case-insensitive):
 ```bash
 agent-relay create-agent -n Lead claude    # Uses lead.md
 ```
+Agents spawned by that name in the dashboard automatically assume that role.
+
+## MCP Server
+
+Give AI agents native relay tools via [Model Context Protocol](https://modelcontextprotocol.io):
+
+```bash
+npx @agent-relay/mcp install
+```
+
+Supports Claude Desktop, Claude Code, Cursor, VS Code, Windsurf, Zed, OpenCode, Gemini CLI, and Droid.
+
+Once configured, agents get access to: `relay_send`, `relay_inbox`, `relay_who`, `relay_spawn`, `relay_release`, and `relay_status`.
 
 ## Multi-Project Bridge
 
-Orchestrate agents across multiple repositories:
+Orchestrate agents across repositories:
 
 ```bash
 # Start daemons in each project
@@ -176,98 +94,100 @@ cd ~/frontend && agent-relay up
 agent-relay bridge ~/auth ~/frontend ~/api
 ```
 
-Cross-project messaging uses `project:agent` format in the TO header:
+Cross-project messaging uses `project:agent` format:
 ```bash
 cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
 TO: auth:Lead
 
 Please review the token refresh logic
 EOF
-echo "->relay-file:msg"
 ```
+Then output: `->relay-file:msg`
 
-## MCP Server (Model Context Protocol)
+## Cloud
 
-Give AI agents native tools for inter-agent communication via MCP:
+For team collaboration and cross-machine messaging, use [agent-relay cloud](https://agent-relay.com):
 
 ```bash
-# One-time setup: Configure your editor
-npx @agent-relay/mcp install
-
-# Or configure specific editor
-npx @agent-relay/mcp install --editor claude
+agent-relay cloud link      # Link your machine
+agent-relay cloud status    # Check cloud status
+agent-relay cloud agents    # List agents across machines
+agent-relay cloud send AgentName "Your message"
 ```
 
-Supported editors:
-- Claude Desktop
-- Claude Code
-- Cursor
-- VS Code (with Continue extension)
-- Windsurf
-- Zed
-
-Once configured, AI agents automatically get access to relay tools:
-- `relay_send` - Send messages to agents/channels
-- `relay_inbox` - Check pending messages
-- `relay_who` - List online agents
-- `relay_spawn` - Spawn worker agents
-- `relay_release` - Release workers
-- `relay_status` - Check connection status
-
-The MCP server auto-discovers your relay daemon and provides a seamless integration. Start your daemon first (`agent-relay up`), then use your AI editor normally - the relay tools will be available automatically.
+Connect your CLI tool to your own private workspace and unlock agents working 24/7 against your GitHub repository in their own private sandbox.
 
 ## Teaching Agents
 
-Install the messaging skill for your agents via [prpm](https://prpm.dev):
+> **Note:** On `agent-relay up` initialization this step happens automatically. If there is already an existing `AGENTS.md`, `CLAUDE.md`, or `GEMINI.md`, it will append the protocol instructions to that file.
+
+Install the messaging protocol snippet for your agents via [prpm](https://prpm.dev):
 
 ```bash
-# Install snippet for AGENTS.md
 npx prpm install @agent-relay/agent-relay-snippet
 
-# Install snippet for CLAUDE.md
+# for Claude
 npx prpm install @agent-relay/agent-relay-snippet --location CLAUDE.md
 ```
 
-View the rest of our packages on our [prpm organization page](https://prpm.dev/orgs?name=Agent%20Relay)
-
-Or manually add the relay patterns to your agent instructions.
-
-## Development
-
+Prefer skills?
 ```bash
-git clone https://github.com/AgentWorkforce/relay.git
-cd relay
-npm install && npm run build
-npm run dev  # Start daemon + dashboard in dev mode
+npx prpm install @agent-relay/using-agent-relay
 ```
 
-## Philosophy
-
-**Do one thing well**: Real-time agent messaging with <5ms latency.
-
-agent-relay is a messaging layer, not a framework. It integrates with:
-- Any CLI tool (Claude, Codex, Gemini, custom agents)
-- Any orchestration system (your own, Beads, external)
-- Any memory system (Mimir, vector DBs, files)
-
-```
-┌──────────────────────────────────────────┐
-│           Your Agent System              │
-├──────────────────────────────────────────┤
-│  Memory │ Orchestration │ UI/Dashboard   │
-│  (any)  │    (any)      │    (any)       │
-├──────────────────────────────────────────┤
-│           agent-relay                    │
-│        Real-time messaging               │
-├──────────────────────────────────────────┤
-│  Claude  │  Codex  │  Gemini  │  Custom  │
-└──────────────────────────────────────────┘
-```
-
-## License
-
-Apache-2.0 - Copyright 2025 Agent Workforce Incorporated
+View all packages on our [prpm organization page](https://prpm.dev/orgs?name=Agent%20Relay).
 
 ---
 
-**Links:** [Documentation](https://github.com/AgentWorkforce/relay/tree/main/docs) | [Issues](https://github.com/AgentWorkforce/relay/issues) | [Cloud](https://agent-relay.com)
+## For Agents
+
+Paste this into your LLM agent session:
+```bash
+curl -s https://raw.githubusercontent.com/AgentWorkforce/relay/main/docs/guide/agent-setup.md
+```
+
+Or read the full [Agent Setup Guide](./docs/guide/agent-setup.md).
+
+## Using the Agent Relay SDK
+
+The easiest way to develop against relay:
+
+```bash
+# Install globally and start daemon
+npm install -g agent-relay
+agent-relay up
+
+# In your project
+npm install agent-relay
+```
+
+```typescript
+import { RelayClient } from 'agent-relay';
+
+const client = new RelayClient({ name: 'MyApp' });
+await client.connect();
+
+// Spawn a worker agent
+await client.spawn({ name: 'Worker', cli: 'claude', task: 'Wait for instructions' });
+
+// Send it a message
+await client.send('Worker', 'Hello from my app');
+```
+
+---
+
+## Philosophy
+
+> **Do one thing well:** Real-time agent messaging with sub-5ms latency.
+
+agent-relay is a messaging layer, not a framework. It works with any CLI tool, any orchestration system, and any memory layer.
+
+---
+
+## License
+
+Apache-2.0 — Copyright 2025 Agent Workforce Incorporated
+
+---
+
+**Links:** [Documentation](https://docs.agent-relay.com/) · [Issues](https://github.com/AgentWorkforce/relay/issues) · [Cloud](https://agent-relay.com)

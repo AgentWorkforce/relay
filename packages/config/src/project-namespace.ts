@@ -342,3 +342,68 @@ export function listWorkspaceRepos(baseDir: string): string[] {
 
   return repos;
 }
+
+/**
+ * Runtime configuration that the daemon writes when it starts.
+ * CLI commands can read this to use matching storage configuration.
+ */
+export interface RuntimeConfig {
+  /** Storage type currently in use by the daemon */
+  storageType?: string;
+  /** Daemon PID */
+  daemonPid?: number;
+  /** Timestamp when daemon started */
+  startedAt?: string;
+  /** Daemon version */
+  version?: string;
+}
+
+const RUNTIME_CONFIG_FILE = 'runtime.json';
+
+/**
+ * Save runtime configuration for the current project.
+ * Called by the daemon when it starts.
+ */
+export function saveRuntimeConfig(config: RuntimeConfig, projectRoot?: string): void {
+  const paths = getProjectPaths(projectRoot);
+  const configPath = path.join(paths.dataDir, RUNTIME_CONFIG_FILE);
+
+  // Ensure data dir exists
+  if (!fs.existsSync(paths.dataDir)) {
+    fs.mkdirSync(paths.dataDir, { recursive: true });
+  }
+
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+}
+
+/**
+ * Load runtime configuration for the current project.
+ * Returns undefined if no runtime config exists or the daemon isn't running.
+ */
+export function loadRuntimeConfig(projectRoot?: string): RuntimeConfig | undefined {
+  const paths = getProjectPaths(projectRoot);
+  const configPath = path.join(paths.dataDir, RUNTIME_CONFIG_FILE);
+
+  if (!fs.existsSync(configPath)) {
+    return undefined;
+  }
+
+  try {
+    const content = fs.readFileSync(configPath, 'utf-8');
+    return JSON.parse(content) as RuntimeConfig;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Clear runtime configuration (called when daemon stops).
+ */
+export function clearRuntimeConfig(projectRoot?: string): void {
+  const paths = getProjectPaths(projectRoot);
+  const configPath = path.join(paths.dataDir, RUNTIME_CONFIG_FILE);
+
+  if (fs.existsSync(configPath)) {
+    fs.unlinkSync(configPath);
+  }
+}
