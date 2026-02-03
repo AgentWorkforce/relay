@@ -85,17 +85,6 @@ From the Zed Agent Panel you can issue relay CLI-style commands directly (the br
 
 Currently supported commands: spawn/create-agent, release, agents/who. All other messages are still broadcast to your connected agents. A quick help block is shown when a new conversation starts; type `agent-relay help` to see it again.
 
-## Supported ACP Features
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| Session creation | ✅ | New sessions supported |
-| Prompt handling | ✅ | With streaming responses |
-| Cancellation | ✅ | Abort in-flight prompts |
-| Session loading | ❌ | Not yet supported |
-| Tool calls | ❌ | Coming soon |
-| File operations | ❌ | Use relay agents directly |
-
 ## Troubleshooting
 
 ### Bridge not connecting to daemon
@@ -125,64 +114,6 @@ If no agents are listed, spawn some:
 ```bash
 agent-relay spawn Worker claude "Help with coding tasks"
 ```
-
-### Debug logging
-
-Enable debug output to see what's happening:
-
-```bash
-relay-acp --debug --name test-bridge
-```
-
-Debug logs go to stderr to avoid interfering with the ACP protocol on stdout.
-
-## Best Practices
-
-### 1. Use Specialized Agents
-
-Instead of one general agent, spawn specialized agents:
-
-```bash
-# Code specialist
-agent-relay spawn Coder claude "Write and modify code"
-
-# Review specialist
-agent-relay spawn Reviewer claude "Review code quality and security"
-
-# Architecture specialist
-agent-relay spawn Architect claude "Design systems and APIs"
-```
-
-### 2. Name Your Bridge
-
-Use descriptive names to identify which editor is connected:
-
-```bash
-relay-acp --name "vscode-main"
-relay-acp --name "zed-frontend"
-```
-
-### 3. Monitor with Dashboard
-
-Use the relay dashboard to see all connected editors and agents:
-
-```bash
-agent-relay up --dashboard
-```
-
-Then open http://localhost:3888 to see the message flow.
-
-## Comparison with Direct Integration
-
-| Aspect | ACP Bridge | Direct PTY |
-|--------|------------|------------|
-| Multi-agent | ✅ All agents respond | Single agent per session |
-| Editor support | ✅ Any ACP editor | CLI only |
-| Response format | Streamed via ACP | Raw terminal output |
-| Session management | ACP handles it | Manual |
-| Setup complexity | Low | Medium |
-
-The ACP bridge is ideal when you want your editor to access multiple relay agents simultaneously.
 
 ## Other Editors (Advanced)
 
