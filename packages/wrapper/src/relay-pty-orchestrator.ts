@@ -20,7 +20,8 @@ import { spawn, ChildProcess } from 'node:child_process';
 import { createConnection, Socket } from 'node:net';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, freemem, totalmem } from 'node:os';
+import { execSync } from 'node:child_process';
 import { existsSync, unlinkSync, mkdirSync, symlinkSync, lstatSync, rmSync, watch, readdirSync, readlinkSync, writeFileSync, appendFileSync } from 'node:fs';
 import type { FSWatcher } from 'node:fs';
 import { getProjectPaths } from '@agent-relay/config/project-namespace';
@@ -327,6 +328,55 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   private hasCgroupSetup = false;
 
   // Note: sessionEndProcessed and lastSummaryRawContent are inherited from BaseWrapper
+
+  /**
+   * Gather system diagnostics for debugging SIGKILL/unexpected exits.
+   * Returns a formatted string with memory, process, and system info.
+   */
+  private static gatherSigkillDiagnostics(agentName: string, pid?: number): string {
+    const lines: string[] = [];
+
+    try {
+      // Memory info
+      const free = freemem();
+      const total = totalmem();
+      const usedPercent = Math.round((1 - free / total) * 100);
+      lines.push(`Memory: ${Math.round(free / 1024 / 1024)}MB free / ${Math.round(total / 1024 / 1024)}MB total (${usedPercent}% used)`);
+
+      // Process count (try to get relay-pty count)
+      try {
+        const psOutput = execSync('ps aux | grep -c relay-pty || echo 0', { encoding: 'utf-8', timeout: 1000 }).trim();
+        lines.push(`relay-pty processes: ${psOutput}`);
+      } catch {
+        // Ignore - ps may not be available
+      }
+
+      // Check for OOM killer messages (Linux only)
+      try {
+        const dmesgOutput = execSync('dmesg -T 2>/dev/null | grep -i "killed process" | tail -3 || true', {
+          encoding: 'utf-8',
+          timeout: 1000
+        }).trim();
+        if (dmesgOutput) {
+          lines.push(`Recent OOM kills: ${dmesgOutput.replace(/\n/g, ' | ')}`);
+        }
+      } catch {
+        // Ignore - dmesg may require permissions
+      }
+
+      // Include PID if known
+      if (pid) {
+        lines.push(`Killed process PID: ${pid}`);
+      }
+
+      lines.push(`Agent name: ${agentName}`);
+      lines.push(`Timestamp: ${new Date().toISOString()}`);
+    } catch (err) {
+      lines.push(`Diagnostics error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    return lines.join('\n  ');
+  }
 
   constructor(config: RelayPtyOrchestratorConfig) {
     super(config);
@@ -881,6 +931,13 @@ export class RelayPtyOrchestrator extends BaseWrapper {
         this.earlyExitInfo = { code, signal, stderr: stderrBuffer };
       }
 
+      // Enhanced logging for SIGKILL/137 exits (likely OOM or resource limits)
+      if (signal === 'SIGKILL' || exitCode === 137) {
+        const diagnostics = RelayPtyOrchestrator.gatherSigkillDiagnostics(this.config.name, proc.pid);
+        this.logError(` SIGKILL DETECTED - gathering diagnostics:\n  ${diagnostics}`);
+        console.error(`[relay-pty-orchestrator] SIGKILL for ${this.config.name}:\n  ${diagnostics}`);
+      }
+
       this.running = false;
 
       // Get crash context before unregistering from memory monitor
@@ -1429,7 +1486,13 @@ export class RelayPtyOrchestrator extends BaseWrapper {
           const stderrHint = exitInfo.stderr
             ? `\n  stderr: ${exitInfo.stderr.trim().slice(0, 500)}`
             : '';
-          throw new Error(`relay-pty process died early (${exitReason}).${stderrHint}`);
+
+          // Add enhanced diagnostics for SIGKILL (likely OOM or resource limit)
+          const diagnostics = exitInfo.signal === 'SIGKILL' || exitInfo.code === 137
+            ? `\n  Diagnostics (SIGKILL often indicates OOM or resource limits):\n  ${RelayPtyOrchestrator.gatherSigkillDiagnostics(this.config.name, this.relayPtyProcess?.pid)}`
+            : '';
+
+          throw new Error(`relay-pty process died early (${exitReason}).${stderrHint}${diagnostics}`);
         }
         throw new Error('relay-pty process died before socket could be created');
       }
@@ -1455,7 +1518,13 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       const stderrHint = exitInfo.stderr
         ? `\n  stderr: ${exitInfo.stderr.trim().slice(0, 500)}`
         : '';
-      throw new Error(`relay-pty process died during socket connection (${exitReason}).${stderrHint}`);
+
+      // Add enhanced diagnostics for SIGKILL
+      const diagnostics = exitInfo.signal === 'SIGKILL' || exitInfo.code === 137
+        ? `\n  Diagnostics (SIGKILL often indicates OOM or resource limits):\n  ${RelayPtyOrchestrator.gatherSigkillDiagnostics(this.config.name, this.relayPtyProcess?.pid)}`
+        : '';
+
+      throw new Error(`relay-pty process died during socket connection (${exitReason}).${stderrHint}${diagnostics}`);
     }
 
     throw new Error(`Failed to connect to socket after ${maxAttempts} attempts`);

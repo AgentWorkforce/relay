@@ -5,7 +5,7 @@
  */
 
 import fs from 'node:fs';
-import { execFile } from 'node:child_process';
+import { execFile, execSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sleep } from './utils.js';
@@ -443,6 +443,13 @@ export class AgentSpawner {
   private onMarkSpawning?: (agentName: string) => void;
   private onClearSpawning?: (agentName: string) => void;
 
+  /**
+   * Set of agent names currently being spawned.
+   * Prevents race conditions where concurrent spawn requests for the same agent
+   * could both pass the activeWorkers.has() check before either completes.
+   */
+  private spawningAgents: Set<string> = new Set();
+
   constructor(projectRoot: string, _tmuxSession?: string, dashboardPort?: number);
   constructor(options: AgentSpawnerOptions);
   constructor(projectRootOrOptions: string | AgentSpawnerOptions, _tmuxSession?: string, dashboardPort?: number) {
@@ -486,6 +493,99 @@ export class AgentSpawner {
         strictMode: process.env.AGENT_POLICY_STRICT === '1',
       });
       log.info('Policy enforcement enabled');
+    }
+
+    // Clean up orphaned relay-pty processes from previous daemon run
+    // This prevents Bug #8 (fails to restart) and Bug #9 (orphaned agents)
+    this.cleanupOrphanedWorkers();
+  }
+
+  /**
+   * Clean up orphaned relay-pty processes from a previous daemon run.
+   * Reads workers.json to find PIDs from the previous session and kills any
+   * that are still running. This ensures a clean slate after daemon restarts.
+   */
+  private cleanupOrphanedWorkers(): void {
+    if (!fs.existsSync(this.workersPath)) {
+      return;
+    }
+
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.workersPath, 'utf-8'));
+      const workers: WorkerMeta[] = Array.isArray(raw?.workers) ? raw.workers : [];
+
+      if (workers.length === 0) {
+        return;
+      }
+
+      log.info(`Checking for orphaned workers from previous run (${workers.length} entries)`);
+      let orphansKilled = 0;
+
+      for (const worker of workers) {
+        if (!worker.pid) {
+          continue;
+        }
+
+        // Check if process is still running
+        let isRunning = false;
+        try {
+          process.kill(worker.pid, 0); // Signal 0 checks existence without killing
+          isRunning = true;
+        } catch {
+          // Process not running - that's fine
+        }
+
+        if (isRunning) {
+          // Verify it's a relay-pty process before killing
+          try {
+            const psOutput = execSync(`ps -p ${worker.pid} -o comm= 2>/dev/null || true`, {
+              encoding: 'utf-8',
+              timeout: 1000,
+            }).trim();
+
+            // Only kill if it's a relay-pty process or the CLI we spawned
+            if (psOutput.includes('relay-pty') || psOutput.includes(worker.cli)) {
+              log.warn(`Killing orphaned worker "${worker.name}" (PID: ${worker.pid})`);
+
+              // Try graceful termination first
+              try {
+                process.kill(worker.pid, 'SIGTERM');
+              } catch {
+                // Already dead or permission denied
+              }
+
+              // Give it a moment to exit gracefully
+              const pid = worker.pid; // Capture for closure
+              setTimeout(() => {
+                try {
+                  process.kill(pid, 0);
+                  // Still running - force kill
+                  process.kill(pid, 'SIGKILL');
+                  log.warn(`Force killed orphaned worker "${worker.name}" (PID: ${pid})`);
+                } catch {
+                  // Already dead - good
+                }
+              }, 500);
+
+              orphansKilled++;
+            } else {
+              log.debug(`PID ${worker.pid} is running but not relay-pty (${psOutput}), skipping`);
+            }
+          } catch (err) {
+            // ps command failed - be conservative and don't kill
+            log.debug(`Could not verify PID ${worker.pid}, skipping: ${err}`);
+          }
+        }
+      }
+
+      // Clear workers.json to start fresh
+      fs.writeFileSync(this.workersPath, JSON.stringify({ workers: [] }, null, 2));
+
+      if (orphansKilled > 0) {
+        log.info(`Cleaned up ${orphansKilled} orphaned worker(s) from previous run`);
+      }
+    } catch (err) {
+      log.warn(`Failed to clean up orphaned workers: ${err}`);
     }
   }
 
@@ -748,6 +848,15 @@ export class AgentSpawner {
       };
     }
 
+    // Check if spawn is already in progress for this agent (prevents race conditions)
+    if (this.spawningAgents.has(name)) {
+      return {
+        success: false,
+        name,
+        error: `Agent "${name}" spawn is already in progress. Wait for it to complete or use a different name.`,
+      };
+    }
+
     // Check if agent is already connected to daemon (prevents duplicate connection storms)
     if (this.isAgentConnected(name)) {
       return {
@@ -785,6 +894,10 @@ export class AgentSpawner {
         log.debug(`Policy allowed spawn: ${spawnerName} -> ${name} (source: ${decision.policySource})`);
       }
     }
+
+    // Acquire spawn lock - prevents concurrent spawn attempts for same agent name
+    this.spawningAgents.add(name);
+    log.info(`Spawn lock acquired for ${name} (concurrent spawns: ${this.spawningAgents.size})`);
 
     try {
       // Parse CLI command and resolve actual command (e.g., cursor -> agent or cursor-agent)
@@ -1483,6 +1596,10 @@ export class AgentSpawner {
         error: tracedError.userMessage,
         errorId: tracedError.errorId,
       };
+    } finally {
+      // Always release spawn lock, even on success (agent is now tracked in activeWorkers)
+      this.spawningAgents.delete(name);
+      log.info(`Spawn lock released for ${name} (remaining: ${this.spawningAgents.size})`);
     }
   }
 
