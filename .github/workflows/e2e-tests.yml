@@ -1,0 +1,356 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'packages/**'
+      - 'relay-pty/**'
+      - 'package.json'
+      - '.github/workflows/e2e-tests.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'packages/**'
+      - 'relay-pty/**'
+      - 'package.json'
+      - '.github/workflows/e2e-tests.yml'
+  # Allow manual trigger for on-demand testing
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e-test:
+    name: E2E Integration Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node-version: [20]
+      fail-fast: false
+
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: relay-pty
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Ensure rollup optional dependencies are installed
+        run: npm install --no-save rollup || true
+
+      - name: Build project
+        run: npm run build
+
+      - name: Link CLI for local testing
+        run: npm link
+
+      - name: Verify CLI is available
+        run: agent-relay --version
+
+      - name: Download dashboard binary
+        run: |
+          # Determine platform and architecture
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            BINARY_NAME="relay-dashboard-server-linux-x64"
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            # Check architecture
+            if [ "$(uname -m)" = "arm64" ]; then
+              BINARY_NAME="relay-dashboard-server-darwin-arm64"
+            else
+              BINARY_NAME="relay-dashboard-server-darwin-x64"
+            fi
+          else
+            echo "Unsupported OS: ${{ runner.os }}"
+            exit 1
+          fi
+
+          echo "Downloading dashboard binary: $BINARY_NAME"
+
+          # Get latest release from relay-dashboard repo
+          RELEASE_URL="https://github.com/AgentWorkforce/relay-dashboard/releases/latest/download/${BINARY_NAME}.gz"
+          echo "URL: $RELEASE_URL"
+
+          # Install to user local bin (no sudo required)
+          mkdir -p ~/.local/bin
+          curl -fsSL "$RELEASE_URL" | gunzip > ~/.local/bin/relay-dashboard-server
+          chmod +x ~/.local/bin/relay-dashboard-server
+
+          # Add to PATH for this workflow
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+          # Verify
+          echo "Installed dashboard binary:"
+          ~/.local/bin/relay-dashboard-server --version || echo "Binary installed (version check may not be supported)"
+
+      - name: Check for API key
+        id: check-key
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            echo "has_key=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_key=false" >> $GITHUB_OUTPUT
+            echo "::warning::ANTHROPIC_API_KEY not set - Claude spawn test will be skipped"
+          fi
+
+      - name: Run E2E test
+        id: e2e-test
+        if: steps.check-key.outputs.has_key == 'true'
+        timeout-minutes: 5
+        run: |
+          #!/bin/bash
+          set -e
+
+          # Configuration
+          AGENT_NAME="e2e-test-agent"
+          DASHBOARD_PORT=3888
+          SPAWN_TIMEOUT=120
+
+          echo "========================================"
+          echo "  E2E Test: Full Agent Lifecycle"
+          echo "========================================"
+          echo ""
+          echo "Configuration:"
+          echo "  Agent name:     $AGENT_NAME"
+          echo "  Dashboard port: $DASHBOARD_PORT"
+          echo "  OS:             ${{ matrix.os }}"
+          echo ""
+
+          # Cleanup function
+          cleanup() {
+            echo ""
+            echo "========================================"
+            echo "  Cleanup"
+            echo "========================================"
+
+            # Try to release agent if it exists
+            agent-relay release "$AGENT_NAME" --port "$DASHBOARD_PORT" 2>/dev/null || true
+
+            # Stop daemon
+            echo "Stopping daemon..."
+            agent-relay down --force --timeout 10000 || true
+
+            echo "Cleanup complete."
+          }
+          trap cleanup EXIT
+
+          # Phase 1: Start daemon with dashboard
+          echo "========================================"
+          echo "  Phase 1: Starting Daemon"
+          echo "========================================"
+          echo ""
+
+          agent-relay up --dashboard --port "$DASHBOARD_PORT" &
+          DAEMON_PID=$!
+          echo "Daemon started (PID: $DAEMON_PID)"
+
+          # Wait for daemon to be ready (check health endpoint)
+          echo "Waiting for daemon to be ready..."
+          for i in $(seq 1 30); do
+            if curl -s "http://127.0.0.1:${DASHBOARD_PORT}/health" > /dev/null 2>&1; then
+              echo "Daemon is ready!"
+              break
+            fi
+            if [ $i -eq 30 ]; then
+              echo "ERROR: Daemon failed to start within 30 seconds"
+              exit 1
+            fi
+            sleep 1
+          done
+          echo ""
+
+          # Phase 2: Spawn agent
+          echo "========================================"
+          echo "  Phase 2: Spawning Claude Agent"
+          echo "========================================"
+          echo ""
+
+          echo "Spawning agent '$AGENT_NAME'..."
+          agent-relay spawn "$AGENT_NAME" claude "Say hello and then immediately exit. Do not do any work." --port "$DASHBOARD_PORT"
+
+          SPAWN_EXIT_CODE=$?
+          if [ $SPAWN_EXIT_CODE -ne 0 ]; then
+            echo "ERROR: Spawn command failed with exit code $SPAWN_EXIT_CODE"
+            exit 1
+          fi
+          echo "Spawn command succeeded!"
+          echo ""
+
+          # Phase 3: Wait for agent registration
+          echo "========================================"
+          echo "  Phase 3: Verifying Agent Registration"
+          echo "========================================"
+          echo ""
+
+          echo "Polling for agent registration (timeout: ${SPAWN_TIMEOUT}s)..."
+          START_TIME=$(date +%s)
+
+          while true; do
+            CURRENT_TIME=$(date +%s)
+            ELAPSED=$((CURRENT_TIME - START_TIME))
+
+            # Query daemon for connected agents
+            AGENTS=$(curl -s "http://127.0.0.1:${DASHBOARD_PORT}/api/agents" 2>/dev/null || echo "[]")
+
+            # Check if our agent is registered
+            if echo "$AGENTS" | grep -q "\"$AGENT_NAME\""; then
+              echo ""
+              echo "SUCCESS: Agent '$AGENT_NAME' registered after ${ELAPSED}s"
+              echo ""
+              echo "Connected agents:"
+              echo "$AGENTS" | jq . 2>/dev/null || echo "$AGENTS"
+              break
+            fi
+
+            echo "[$(date +%T)] +${ELAPSED}s: Waiting for agent registration..."
+
+            # Check timeout
+            if [ $ELAPSED -ge $SPAWN_TIMEOUT ]; then
+              echo ""
+              echo "ERROR: Agent '$AGENT_NAME' did not register within ${SPAWN_TIMEOUT}s"
+              echo ""
+              echo "Connected agents:"
+              echo "$AGENTS" | jq . 2>/dev/null || echo "$AGENTS"
+              exit 1
+            fi
+
+            sleep 2
+          done
+          echo ""
+
+          # Phase 4: Release agent
+          echo "========================================"
+          echo "  Phase 4: Releasing Agent"
+          echo "========================================"
+          echo ""
+
+          echo "Releasing agent '$AGENT_NAME'..."
+          agent-relay release "$AGENT_NAME" --port "$DASHBOARD_PORT"
+
+          RELEASE_EXIT_CODE=$?
+          if [ $RELEASE_EXIT_CODE -ne 0 ]; then
+            echo "ERROR: Release command failed with exit code $RELEASE_EXIT_CODE"
+            exit 1
+          fi
+          echo "Release command succeeded!"
+          echo ""
+
+          # Phase 5: Verify agent was released
+          echo "========================================"
+          echo "  Phase 5: Verifying Agent Release"
+          echo "========================================"
+          echo ""
+
+          sleep 3
+          AGENTS_AFTER=$(curl -s "http://127.0.0.1:${DASHBOARD_PORT}/api/agents" 2>/dev/null || echo "[]")
+
+          if echo "$AGENTS_AFTER" | grep -q "\"$AGENT_NAME\""; then
+            echo "WARNING: Agent still appears in list after release (may be disconnecting)"
+            echo "Agents: $AGENTS_AFTER"
+          else
+            echo "SUCCESS: Agent '$AGENT_NAME' no longer in agents list"
+          fi
+          echo ""
+
+          # Phase 6: Stop daemon
+          echo "========================================"
+          echo "  Phase 6: Stopping Daemon"
+          echo "========================================"
+          echo ""
+
+          echo "Stopping daemon..."
+          agent-relay down --timeout 10000
+
+          DOWN_EXIT_CODE=$?
+          if [ $DOWN_EXIT_CODE -ne 0 ]; then
+            echo "WARNING: Down command exited with code $DOWN_EXIT_CODE (may already be stopped)"
+          else
+            echo "Daemon stopped successfully!"
+          fi
+          echo ""
+
+          echo "========================================"
+          echo "  E2E TEST PASSED"
+          echo "========================================"
+
+      - name: Run daemon-only test (no API key)
+        if: steps.check-key.outputs.has_key == 'false'
+        timeout-minutes: 2
+        run: |
+          #!/bin/bash
+          set -e
+
+          echo "========================================"
+          echo "  Daemon-Only Test (No API Key)"
+          echo "========================================"
+          echo ""
+          echo "Note: Full E2E test skipped - ANTHROPIC_API_KEY not configured"
+          echo ""
+
+          # Cleanup function
+          cleanup() {
+            echo "Stopping daemon..."
+            agent-relay down --force --timeout 5000 || true
+          }
+          trap cleanup EXIT
+
+          # Start daemon
+          echo "Starting daemon..."
+          agent-relay up --dashboard --port 3888 &
+          sleep 3
+
+          # Check health
+          echo "Checking daemon health..."
+          if curl -s "http://127.0.0.1:3888/health" | grep -q "ok"; then
+            echo "Daemon health check passed!"
+          else
+            echo "ERROR: Daemon health check failed"
+            exit 1
+          fi
+
+          # Stop daemon
+          echo "Stopping daemon..."
+          agent-relay down --timeout 5000
+
+          echo ""
+          echo "========================================"
+          echo "  DAEMON TEST PASSED"
+          echo "========================================"
+
+      - name: Test Summary
+        if: always()
+        run: |
+          echo "## E2E Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **OS:** ${{ matrix.os }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Node:** ${{ matrix.node-version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **API Key Present:** ${{ steps.check-key.outputs.has_key }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.e2e-test.outcome }}" == "success" ]; then
+            echo "- **Status:** Passed" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ steps.e2e-test.outcome }}" == "skipped" ]; then
+            echo "- **Status:** Skipped (no API key)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **Status:** Failed" >> $GITHUB_STEP_SUMMARY
+          fi

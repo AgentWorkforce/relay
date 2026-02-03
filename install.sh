@@ -257,6 +257,63 @@ download_dashboard_binary() {
     return 1
 }
 
+# Download dashboard UI files (required for standalone binary)
+download_dashboard_ui() {
+    if [ "${AGENT_RELAY_NO_DASHBOARD}" = "true" ]; then
+        return 0
+    fi
+
+    step "Downloading dashboard UI files..."
+
+    local ui_url="https://github.com/$REPO_DASHBOARD/releases/latest/download/dashboard-ui.tar.gz"
+    local target_dir="$HOME/.relay/dashboard"
+    local temp_file="/tmp/dashboard-ui-$$"
+
+    mkdir -p "$target_dir"
+
+    # Setup cleanup trap for temp files
+    trap 'rm -f "${temp_file}.tar.gz"' EXIT
+
+    if curl -fsSL "$ui_url" -o "${temp_file}.tar.gz" 2>/dev/null; then
+        # Check if we got a valid gzip file
+        local is_gzip=false
+        if has_command file; then
+            file "${temp_file}.tar.gz" 2>/dev/null | grep -q "gzip" && is_gzip=true
+        else
+            head -c 2 "${temp_file}.tar.gz" 2>/dev/null | od -An -tx1 | grep -q "1f 8b" && is_gzip=true
+        fi
+
+        if [ "$is_gzip" = true ]; then
+            # Remove old UI files if they exist
+            rm -rf "$target_dir/out"
+
+            # Extract to target directory
+            if tar -xzf "${temp_file}.tar.gz" -C "$target_dir" 2>/dev/null; then
+                rm -f "${temp_file}.tar.gz"
+                trap - EXIT
+
+                # Verify extraction
+                if [ -f "$target_dir/out/index.html" ]; then
+                    success "Downloaded dashboard UI files"
+                    return 0
+                else
+                    warn "Dashboard UI extraction incomplete"
+                    return 1
+                fi
+            else
+                warn "Failed to extract dashboard UI"
+                rm -f "${temp_file}.tar.gz"
+            fi
+        else
+            rm -f "${temp_file}.tar.gz"
+        fi
+    fi
+
+    trap - EXIT
+    info "Dashboard UI files not available (dashboard API will still work)"
+    return 1
+}
+
 # Check if a command exists
 has_command() {
     command -v "$1" &> /dev/null
@@ -294,8 +351,6 @@ download_standalone_binary() {
     # Try compressed binary first (faster download, ~60-70% smaller)
     # Only if gunzip is available
     if has_command gunzip; then
-        info "Downloading compressed binary (~25MB instead of ~70MB)..."
-
         if curl -fsSL "$compressed_url" -o "${temp_file}.gz" 2>/dev/null; then
             # Check if we got a valid gzip file (not an error page)
             # Use file command if available, otherwise check magic bytes
@@ -315,7 +370,7 @@ download_standalone_binary() {
 
                     # Verify the binary works
                     if "$target_path" --version &>/dev/null; then
-                        success "Downloaded standalone agent-relay binary (no Node.js required!)"
+                        success "Downloaded standalone agent-relay binary"
                         trap - EXIT  # Clear trap
                         return 0
                     else
@@ -437,7 +492,10 @@ Or use nvm: curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/instal
     # Install dashboard if not skipped
     if [ "${AGENT_RELAY_NO_DASHBOARD}" != "true" ]; then
         # Try binary first, fall back to npm
-        if ! download_dashboard_binary; then
+        if download_dashboard_binary; then
+            # Binary downloaded - also need UI files since they're not embedded
+            download_dashboard_ui || true
+        else
             info "Installing dashboard via npm..."
             npm install -g @agent-relay/dashboard-server 2>/dev/null || true
         fi
@@ -581,6 +639,8 @@ main() {
         download_relay_pty || true
         # Download dashboard-server binary if available
         download_dashboard_binary || true
+        # Download dashboard UI files (required for standalone binary to serve the UI)
+        download_dashboard_ui || true
         verify_installation && print_usage && track_event "install_completed" && exit 0
     fi
 
