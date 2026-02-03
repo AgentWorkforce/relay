@@ -15,24 +15,16 @@ Before you begin, ensure you have:
 
 ## Installation
 
-Install Agent Relay globally via npm:
+Install Agent Relay globally via our shell script:
 
 ```bash
-npm install -g agent-relay
+curl -fsSL https://raw.githubusercontent.com/khaliqgant/agent-relay/main/install.sh | bash
 ```
 
 Verify the installation:
 
 ```bash
 agent-relay --version
-```
-
-Ensure that agents know how to use the agent-relay protocol
-```bash
-npx prpm install @agent-relay/agent-relay-snippet
-
-# If Claude
-npx prpm install @agent-relay/agent-relay-snippet --location CLAUDE.md
 ```
 
 ## Step-by-Step Setup
@@ -53,6 +45,9 @@ npx prpm install @agent-relay/agent-relay-snippet --location CLAUDE.md
   </Step>
 
   <Step title="Create Your First Agent">
+    You can create agents two ways—via terminal or the dashboard.
+
+    **Option 1: Terminal (fastest)**
     Open a new terminal and create an agent named "Alice":
 
     ```bash
@@ -60,6 +55,9 @@ npx prpm install @agent-relay/agent-relay-snippet --location CLAUDE.md
     ```
 
     This wraps the Claude CLI in a tmux session with relay messaging enabled. The agent is now connected to the relay network.
+
+    **Option 2: Dashboard**
+    Open the dashboard at [http://localhost:3888](http://localhost:3888), go to the Agents panel, click **Create Agent**, enter the name (e.g., Alice) and CLI (claude/codex/gemini), then confirm. The dashboard will spawn the agent for you.
 
     <Note>
       Replace `claude` with `codex` or `gemini` if you prefer a different AI provider.
