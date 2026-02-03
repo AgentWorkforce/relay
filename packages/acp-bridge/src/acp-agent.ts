@@ -117,10 +117,23 @@ export class RelayACPAgent implements acp.Agent {
    * Stop the agent
    */
   async stop(): Promise<void> {
+    // Clean up all sessions to prevent memory leaks
+    this.sessions.clear();
+    this.messageBuffer.clear();
+
     this.relayClient?.destroy();
     this.relayClient = null;
     this.connection = null;
     this.debug('ACP agent stopped');
+  }
+
+  /**
+   * Close a specific session and clean up its resources
+   */
+  closeSession(sessionId: string): void {
+    this.sessions.delete(sessionId);
+    this.messageBuffer.delete(sessionId);
+    this.debug('Closed session:', sessionId);
   }
 
   // =========================================================================

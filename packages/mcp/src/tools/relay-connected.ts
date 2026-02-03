@@ -37,7 +37,22 @@ export async function handleRelayConnected(
   client: RelayClient,
   input: RelayConnectedInput
 ): Promise<string> {
-  const agents = await client.listConnectedAgents(input);
+  let agents: Awaited<ReturnType<typeof client.listConnectedAgents>>;
+
+  try {
+    agents = await client.listConnectedAgents(input);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return `Failed to list connected agents: ${message}`;
+  }
+
+  // Defensive check: ensure agents is an array
+  if (!agents || !Array.isArray(agents)) {
+    if (process.env.DEBUG || process.env.RELAY_DEBUG) {
+      console.error('[relay_connected] listConnectedAgents returned non-array:', typeof agents, agents);
+    }
+    return 'Failed to list connected agents: unexpected response format';
+  }
 
   if (agents.length === 0) {
     return 'No agents currently connected.';

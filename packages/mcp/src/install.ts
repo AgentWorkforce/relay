@@ -295,13 +295,80 @@ export function listSupportedEditors(): Array<{ key: string; name: string }> {
 }
 
 /**
- * Strip JSON comments (for JSONC format)
+ * Strip JSONC comments while preserving strings that contain // or /* sequences.
+ * Uses a state machine to track whether we're inside a string literal.
  */
 function stripJsonComments(content: string): string {
-  // Remove single-line comments
-  let result = content.replace(/\/\/.*$/gm, '');
-  // Remove multi-line comments
-  result = result.replace(/\/\*[\s\S]*?\*\//g, '');
+  let result = '';
+  let inString = false;
+  let inSingleLineComment = false;
+  let inMultiLineComment = false;
+  let i = 0;
+
+  while (i < content.length) {
+    const char = content[i];
+    const nextChar = content[i + 1];
+
+    // Handle string state (only when not in a comment)
+    if (!inSingleLineComment && !inMultiLineComment) {
+      if (char === '"' && (i === 0 || content[i - 1] !== '\\')) {
+        inString = !inString;
+        result += char;
+        i++;
+        continue;
+      }
+
+      // If in string, just copy the character
+      if (inString) {
+        result += char;
+        i++;
+        continue;
+      }
+
+      // Check for single-line comment start
+      if (char === '/' && nextChar === '/') {
+        inSingleLineComment = true;
+        i += 2;
+        continue;
+      }
+
+      // Check for multi-line comment start
+      if (char === '/' && nextChar === '*') {
+        inMultiLineComment = true;
+        i += 2;
+        continue;
+      }
+
+      // Not in any comment or string, copy the character
+      result += char;
+      i++;
+      continue;
+    }
+
+    // Handle single-line comment end
+    if (inSingleLineComment) {
+      if (char === '\n') {
+        inSingleLineComment = false;
+        result += char; // Preserve newline
+      }
+      i++;
+      continue;
+    }
+
+    // Handle multi-line comment end
+    if (inMultiLineComment) {
+      if (char === '*' && nextChar === '/') {
+        inMultiLineComment = false;
+        i += 2;
+        continue;
+      }
+      i++;
+      continue;
+    }
+
+    i++;
+  }
+
   return result;
 }
 

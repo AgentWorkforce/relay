@@ -414,13 +414,21 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         project: opts.project,
       };
       const response = await request<ListAgentsResponsePayload>('LIST_AGENTS', payload as unknown as Record<string, unknown>);
-      return response.agents || [];
+      // Defensive: ensure response is an object with agents array
+      if (!response || typeof response !== 'object') {
+        return [];
+      }
+      return Array.isArray(response.agents) ? response.agents : [];
     },
 
     async listConnectedAgents(opts: { project?: string } = {}) {
       const payload = { project: opts.project };
       const response = await request<ListConnectedAgentsResponsePayload>('LIST_CONNECTED_AGENTS', payload);
-      return response.agents || [];
+      // Defensive: ensure response is an object with agents array
+      if (!response || typeof response !== 'object') {
+        return [];
+      }
+      return Array.isArray(response.agents) ? response.agents : [];
     },
 
     async removeAgent(name: string, opts: { removeMessages?: boolean } = {}) {

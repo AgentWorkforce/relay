@@ -43,7 +43,23 @@ export async function handleRelayWho(
   client: RelayClient,
   input: RelayWhoInput
 ): Promise<string> {
-  const agents = await client.listAgents(input);
+  let agents: Awaited<ReturnType<typeof client.listAgents>>;
+
+  try {
+    agents = await client.listAgents(input);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return `Failed to list agents: ${message}`;
+  }
+
+  // Defensive check: ensure agents is an array
+  if (!agents || !Array.isArray(agents)) {
+    // Log for debugging if DEBUG env is set
+    if (process.env.DEBUG || process.env.RELAY_DEBUG) {
+      console.error('[relay_who] listAgents returned non-array:', typeof agents, agents);
+    }
+    return 'Failed to list agents: unexpected response format';
+  }
 
   if (agents.length === 0) {
     return 'No agents online.';
@@ -52,7 +68,7 @@ export async function handleRelayWho(
   const formatted = agents.map((a) => {
     const status = a.idle ? 'idle' : 'active';
     const worker = a.parent ? ` [worker of: ${a.parent}]` : '';
-    return `- ${a.name} (${a.cli}) - ${status}${worker}`;
+    return `- ${a.name} (${a.cli ?? 'unknown'}) - ${status}${worker}`;
   });
 
   return `${agents.length} agent(s) online:\n${formatted.join('\n')}`;

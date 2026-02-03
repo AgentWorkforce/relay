@@ -174,10 +174,81 @@ function startDashboardViaNpx(options: {
 }
 
 /**
- * Lightweight JSONC stripper (// and /* *​/ comments).
+ * Strip JSONC comments while preserving strings that contain // or /* sequences.
+ * Uses a state machine to track whether we're inside a string literal.
  */
 function stripJsonComments(content: string): string {
-  return content.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+  let result = '';
+  let inString = false;
+  let inSingleLineComment = false;
+  let inMultiLineComment = false;
+  let i = 0;
+
+  while (i < content.length) {
+    const char = content[i];
+    const nextChar = content[i + 1];
+
+    // Handle string state (only when not in a comment)
+    if (!inSingleLineComment && !inMultiLineComment) {
+      if (char === '"' && (i === 0 || content[i - 1] !== '\\')) {
+        inString = !inString;
+        result += char;
+        i++;
+        continue;
+      }
+
+      // If in string, just copy the character
+      if (inString) {
+        result += char;
+        i++;
+        continue;
+      }
+
+      // Check for single-line comment start
+      if (char === '/' && nextChar === '/') {
+        inSingleLineComment = true;
+        i += 2;
+        continue;
+      }
+
+      // Check for multi-line comment start
+      if (char === '/' && nextChar === '*') {
+        inMultiLineComment = true;
+        i += 2;
+        continue;
+      }
+
+      // Not in any comment or string, copy the character
+      result += char;
+      i++;
+      continue;
+    }
+
+    // Handle single-line comment end
+    if (inSingleLineComment) {
+      if (char === '\n') {
+        inSingleLineComment = false;
+        result += char; // Preserve newline
+      }
+      i++;
+      continue;
+    }
+
+    // Handle multi-line comment end
+    if (inMultiLineComment) {
+      if (char === '*' && nextChar === '/') {
+        inMultiLineComment = false;
+        i += 2;
+        continue;
+      }
+      i++;
+      continue;
+    }
+
+    i++;
+  }
+
+  return result;
 }
 
 function readJsonWithComments(filePath: string): Record<string, unknown> {
@@ -1208,10 +1279,11 @@ program
   .description('Remove agent-relay data and configuration from the current project')
   .option('--keep-data', 'Keep message history and database (only remove runtime files)')
   .option('--zed', 'Also remove Zed editor configuration')
+  .option('--zed-name <name>', 'Name of the Zed agent server entry to remove (default: Agent Relay)')
   .option('--snippets', 'Also remove agent-relay snippets from CLAUDE.md, GEMINI.md, AGENTS.md')
   .option('--force', 'Skip confirmation prompt')
   .option('--dry-run', 'Show what would be removed without actually removing')
-  .action(async (options: { keepData?: boolean; zed?: boolean; snippets?: boolean; force?: boolean; dryRun?: boolean }) => {
+  .action(async (options: { keepData?: boolean; zed?: boolean; zedName?: string; snippets?: boolean; force?: boolean; dryRun?: boolean }) => {
     const paths = getProjectPaths();
     const readline = await import('node:readline');
 
@@ -1273,7 +1345,8 @@ program
     if (options.zed) {
       const zedSettingsPath = getZedSettingsPath();
       if (fs.existsSync(zedSettingsPath)) {
-        actions.push('Remove Agent Relay from Zed settings');
+        const zedNameToRemove = options.zedName || 'Agent Relay';
+        actions.push(`Remove "${zedNameToRemove}" (and any relay-acp entries) from Zed settings`);
       }
     }
 
@@ -1352,10 +1425,40 @@ program
         try {
           const config = readJsonWithComments(zedSettingsPath);
           const agentServers = config.agent_servers as Record<string, unknown> | undefined;
-          if (agentServers && agentServers['Agent Relay']) {
-            delete agentServers['Agent Relay'];
-            writeJson(zedSettingsPath, config);
-            console.log('  ✓ Removed Agent Relay from Zed settings');
+          if (agentServers) {
+            const removedEntries: string[] = [];
+            const zedNameToRemove = options.zedName || 'Agent Relay';
+
+            // Remove the specified entry by name
+            if (agentServers[zedNameToRemove]) {
+              delete agentServers[zedNameToRemove];
+              removedEntries.push(zedNameToRemove);
+            }
+
+            // Also scan for any entries that look like relay-acp bridge
+            // (command/args contain 'acp-bridge' or 'relay-acp')
+            for (const [key, value] of Object.entries(agentServers)) {
+              if (key === zedNameToRemove) continue; // Already handled
+              if (typeof value === 'object' && value !== null) {
+                const entry = value as Record<string, unknown>;
+                const command = entry.command as string | undefined;
+                const args = entry.args as string[] | undefined;
+                const isRelayAcp =
+                  (command && (command.includes('acp-bridge') || command.includes('relay-acp'))) ||
+                  (args && args.some(arg => arg.includes('acp-bridge') || arg.includes('relay-acp')));
+                if (isRelayAcp) {
+                  delete agentServers[key];
+                  removedEntries.push(key);
+                }
+              }
+            }
+
+            if (removedEntries.length > 0) {
+              writeJson(zedSettingsPath, config);
+              for (const entry of removedEntries) {
+                console.log(`  ✓ Removed "${entry}" from Zed settings`);
+              }
+            }
           }
         } catch (err: any) {
           console.log(`  ✗ Failed to update Zed settings: ${err.message}`);
