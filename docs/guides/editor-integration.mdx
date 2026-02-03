@@ -6,7 +6,7 @@ icon: "code"
 
 # Editor Integration with ACP
 
-Agent Relay can be integrated with code editors like [Zed](https://zed.dev), [Neovim](https://neovim.io), and other editors that support the [Agent Client Protocol (ACP)](https://agentclientprotocol.com).
+Agent Relay can be integrated with code editors like [Zed](https://zed.dev), [VS Code](https://code.visualstudio.com), [Neovim](https://neovim.io), and other editors that support the [Agent Client Protocol (ACP)](https://agentclientprotocol.com).
 
 ## What is ACP?
 
@@ -180,6 +180,18 @@ require('acp').setup({
   }
 })
 ```
+
+### VS Code
+
+The [vscode-acp](https://marketplace.visualstudio.com/items?itemName=omercnet.vscode-acp) extension brings ACP support to VS Code. Install it from the marketplace:
+
+1. Open VS Code Extensions (`Cmd+Shift+X` / `Ctrl+Shift+X`)
+2. Search for "vscode-acp"
+3. Click Install
+
+**Current limitation**: The extension auto-detects agents from a built-in list (Claude Code, OpenCode, Codex, Gemini, etc.) and doesn't yet support custom agents like Agent Relay. You can use any of the supported agents, which will work alongside your relay agents if they're running.
+
+We're working with the vscode-acp maintainer to add custom agent support. Track progress at [omercnet/vscode-acp](https://github.com/omercnet/vscode-acp).
 
 ### Other ACP-Compatible Editors
 
