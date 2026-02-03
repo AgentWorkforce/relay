@@ -58,6 +58,7 @@ export class RelayACPAgent implements acp.Agent {
         body: payload.body,
         thread: payload.thread,
         timestamp: Date.now(),
+        data: payload.data as Record<string, unknown> | undefined,
       });
     };
 
@@ -418,6 +419,12 @@ export class RelayACPAgent implements acp.Agent {
   private handleRelayMessage(message: RelayMessage): void {
     this.debug('Received relay message:', message.from, message.body.substring(0, 50));
 
+    // Check for system messages (crash notifications, etc.)
+    if (message.data?.isSystemMessage) {
+      this.handleSystemMessage(message);
+      return;
+    }
+
     // Route to appropriate session based on thread
     if (message.thread) {
       const buffer = this.messageBuffer.get(message.thread);
@@ -434,6 +441,46 @@ export class RelayACPAgent implements acp.Agent {
         buffer.push(message);
         this.messageBuffer.set(sessionId, buffer);
       }
+    }
+  }
+
+  /**
+   * Handle system messages (crash notifications, etc.)
+   * These are displayed to all sessions regardless of processing state.
+   */
+  private handleSystemMessage(message: RelayMessage): void {
+    const data = message.data || {};
+
+    // Format crash notifications nicely
+    if (data.crashType) {
+      const agentName = data.agentName || message.from || 'Unknown agent';
+      const signal = data.signal ? ` (${data.signal})` : '';
+      const exitCode = data.exitCode !== undefined ? ` [exit code: ${data.exitCode}]` : '';
+
+      const crashNotification = [
+        '',
+        `⚠️ **Agent Crashed**: \`${agentName}\`${signal}${exitCode}`,
+        '',
+        message.body,
+        '',
+      ].join('\n');
+
+      // Send to all sessions (not just processing ones)
+      this.broadcastToAllSessions(crashNotification);
+    } else {
+      // Generic system message
+      this.broadcastToAllSessions(`**System**: ${message.body}`);
+    }
+  }
+
+  /**
+   * Broadcast a message to all active sessions.
+   */
+  private broadcastToAllSessions(text: string): void {
+    for (const [sessionId] of this.sessions) {
+      this.sendTextUpdate(sessionId, text).catch((err) => {
+        this.debug('Failed to send broadcast to session:', sessionId, err);
+      });
     }
   }
 

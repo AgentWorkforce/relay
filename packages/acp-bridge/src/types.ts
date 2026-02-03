@@ -89,6 +89,26 @@ export interface RelayMessage {
   thread?: string;
   /** Timestamp */
   timestamp: number;
+  /** Additional metadata (e.g., for system messages) */
+  data?: RelayMessageData;
+}
+
+/**
+ * Metadata for relay messages (e.g., crash notifications)
+ */
+export interface RelayMessageData {
+  /** Whether this is a system message */
+  isSystemMessage?: boolean;
+  /** Type of crash (if applicable) */
+  crashType?: 'unexpected_exit' | 'oom' | 'timeout' | string;
+  /** Name of the agent that crashed */
+  agentName?: string;
+  /** Exit code */
+  exitCode?: number;
+  /** Signal that caused the exit */
+  signal?: string;
+  /** Additional arbitrary data */
+  [key: string]: unknown;
 }
 
 /**
