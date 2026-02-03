@@ -519,6 +519,8 @@ export class RelayACPAgent implements acp.Agent {
       case 'agents':
       case 'who':
         return this.handleListAgentsCommand(sessionId);
+      case 'status':
+        return this.handleStatusCommand(sessionId);
       case 'help':
         await this.sendTextUpdate(sessionId, this.getHelpText());
         return true;
@@ -612,6 +614,36 @@ export class RelayACPAgent implements acp.Agent {
     return true;
   }
 
+  private async handleStatusCommand(sessionId: string): Promise<boolean> {
+    const lines: string[] = ['Agent Relay Status', ''];
+
+    if (!this.relayClient) {
+      lines.push('Relay client: Not initialized');
+      await this.sendTextUpdate(sessionId, lines.join('\n'));
+      return true;
+    }
+
+    const state = this.relayClient.state;
+    const isConnected = state === 'READY';
+
+    lines.push(`Connection: ${isConnected ? 'Connected' : 'Disconnected'}`);
+    lines.push(`State: ${state}`);
+    lines.push(`Agent name: ${this.config.agentName}`);
+
+    if (isConnected) {
+      // Try to get connected agents count
+      try {
+        const agents = await this.relayClient.listConnectedAgents();
+        lines.push(`Connected agents: ${agents.length}`);
+      } catch {
+        // Ignore errors when listing agents
+      }
+    }
+
+    await this.sendTextUpdate(sessionId, lines.join('\n'));
+    return true;
+  }
+
   private async sendTextUpdate(sessionId: string, text: string): Promise<void> {
     if (!this.connection) return;
 
@@ -685,6 +717,7 @@ export class RelayACPAgent implements acp.Agent {
       '- agent-relay spawn <name> <cli> "task"',
       '- agent-relay release <name>',
       '- agent-relay agents',
+      '- agent-relay status',
       '- agent-relay help',
       '',
       'Other messages are broadcast to connected agents.',
