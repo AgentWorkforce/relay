@@ -15,6 +15,47 @@ import type {
 } from './types.js';
 
 /**
+ * Bounded circular cache for message deduplication.
+ * Evicts oldest entries when capacity is reached to prevent unbounded memory growth.
+ */
+class CircularDedupeCache {
+  private ids: Set<string> = new Set();
+  private ring: string[];
+  private head = 0;
+  private readonly capacity: number;
+
+  constructor(capacity = 2000) {
+    this.capacity = capacity;
+    this.ring = new Array(capacity);
+  }
+
+  /**
+   * Check if ID has been seen. Returns true if duplicate, false if new.
+   * Automatically adds new IDs and evicts oldest when at capacity.
+   */
+  check(id: string): boolean {
+    if (this.ids.has(id)) return true;
+
+    if (this.ids.size >= this.capacity) {
+      const oldest = this.ring[this.head];
+      if (oldest) this.ids.delete(oldest);
+    }
+
+    this.ring[this.head] = id;
+    this.ids.add(id);
+    this.head = (this.head + 1) % this.capacity;
+
+    return false;
+  }
+
+  clear(): void {
+    this.ids.clear();
+    this.ring = new Array(this.capacity);
+    this.head = 0;
+  }
+}
+
+/**
  * ACP Agent that bridges to Agent Relay
  */
 export class RelayACPAgent implements acp.Agent {
@@ -23,7 +64,7 @@ export class RelayACPAgent implements acp.Agent {
   private connection: acp.AgentSideConnection | null = null;
   private sessions = new Map<string, SessionState>();
   private messageBuffer = new Map<string, RelayMessage[]>();
-  private seenMessageIds = new Set<string>();
+  private dedupeCache = new CircularDedupeCache(2000);
 
   constructor(config: ACPBridgeConfig) {
     this.config = config;
@@ -121,7 +162,7 @@ export class RelayACPAgent implements acp.Agent {
     // Clean up all sessions to prevent memory leaks
     this.sessions.clear();
     this.messageBuffer.clear();
-    this.seenMessageIds.clear();
+    this.dedupeCache.clear();
 
     this.relayClient?.destroy();
     this.relayClient = null;
@@ -468,11 +509,11 @@ export class RelayACPAgent implements acp.Agent {
     this.debug('Received relay message:', message.from, message.body.substring(0, 50));
 
     // Deduplicate messages by ID (same message may arrive via multiple routes)
-    if (this.seenMessageIds.has(message.id)) {
+    // Uses bounded cache to prevent unbounded memory growth in long-running sessions
+    if (this.dedupeCache.check(message.id)) {
       this.debug('Skipping duplicate message:', message.id);
       return;
     }
-    this.seenMessageIds.add(message.id);
 
     // Check for system messages (crash notifications, etc.)
     if (message.data?.isSystemMessage) {
