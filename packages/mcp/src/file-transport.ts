@@ -1,14 +1,20 @@
 /**
  * File-Based Transport for MCP Tools
  *
- * Uses the same file-based protocol as relay-pty for reliable communication.
- * This ensures parity between MCP tools and file-based agent communication.
+ * IMPORTANT: This transport requires relay-pty to be running to process outbox files.
+ * The daemon does NOT watch outbox directories directly - only relay-pty does.
  *
- * Protocol:
- * - Send: Write to outbox/msg with TO: header
- * - Spawn: Write to outbox/spawn with KIND: spawn
- * - Release: Write to outbox/release with KIND: release
- * - Queries: Write to outbox/query-{id}, read from inbox/response-{id}
+ * This transport is intended for scenarios where:
+ * 1. An agent is wrapped by relay-pty (standard spawned agents)
+ * 2. The agent outputs triggers like ->relay-file:msg which relay-pty detects
+ *
+ * For MCP tools, prefer using the socket-based client (createRelayClient) instead,
+ * which communicates directly with the daemon.
+ *
+ * Protocol (processed by relay-pty, not daemon):
+ * - Send: Write to outbox/msg with TO: header, output ->relay-file:msg
+ * - Spawn: Write to outbox/spawn with KIND: spawn, output ->relay-file:spawn
+ * - Release: Write to outbox/release with KIND: release, output ->relay-file:release
  */
 
 import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, readdirSync } from 'node:fs';
@@ -84,8 +90,9 @@ export class FileTransport {
     const msgPath = join(this.outboxDir, 'msg');
     writeFileSync(msgPath, content);
 
-    // The daemon watches for outbox files and processes them
-    // No need to trigger - daemon file watcher picks it up
+    // NOTE: relay-pty watches for ->relay-file:msg trigger in agent output.
+    // The daemon does NOT watch outbox files directly.
+    // The caller must output "->relay-file:msg" for relay-pty to process this file.
   }
 
   /**

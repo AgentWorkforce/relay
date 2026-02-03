@@ -1,10 +1,17 @@
 /**
  * Hybrid Client for MCP Tools
  *
- * Uses file-based transport for writes (reliable) and socket for queries.
- * This gives the best of both worlds:
- * - Writes go through proven file-based protocol (no timeouts)
- * - Queries use efficient socket communication
+ * IMPORTANT: The file-based writes ONLY work when relay-pty is wrapping the agent.
+ * relay-pty watches for ->relay-file:* triggers in agent output and processes outbox files.
+ * The daemon does NOT watch outbox directories directly.
+ *
+ * For pure MCP tools (not wrapped by relay-pty), use createRelayClient() instead,
+ * which communicates directly with the daemon via socket.
+ *
+ * This hybrid client is designed for scenarios where:
+ * - An agent is wrapped by relay-pty
+ * - File-based writes avoid socket connection overhead
+ * - Socket is still used for queries (getInbox, listAgents, etc.)
  */
 
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync } from 'node:fs';
@@ -78,7 +85,8 @@ export function createHybridClient(options: HybridClientOptions): RelayClient {
 
     const msgPath = join(outboxDir, 'msg');
     writeFileSync(msgPath, content);
-    // Daemon watches outbox and processes
+    // NOTE: relay-pty (not daemon) watches for ->relay-file:msg trigger.
+    // The agent must output "->relay-file:msg" for relay-pty to process.
   };
 
   // File-based sendAndWait (for now, delegate to socket - can improve later)

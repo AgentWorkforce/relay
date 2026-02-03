@@ -208,6 +208,81 @@ describe('RelayClient', () => {
     });
   });
 
+  it('queries messages and returns mapped payload', async () => {
+    const messages = [
+      {
+        id: 'm1',
+        from: 'Alice',
+        to: 'Bob',
+        body: 'Hi',
+        channel: '#team',
+        thread: 'thr-1',
+        timestamp: 1700000000000,
+        status: 'delivered',
+        isBroadcast: false,
+        replyCount: 1,
+        data: { foo: 'bar' },
+      },
+    ];
+
+    mockSocket.on.mockImplementation((event: string, cb: any) => {
+      if (event === 'connect') cb();
+      if (event === 'data') {
+        setTimeout(() => {
+          const writeCall = mockSocket.write.mock.calls[0][0];
+          const req = decodeFrame(writeCall);
+          const response = {
+            id: req.id,
+            type: 'MESSAGES_RESPONSE',
+            payload: { messages },
+          };
+          cb(encodeFrame(response));
+        }, 10);
+      }
+      return mockSocket;
+    });
+
+    const result = await client.queryMessages({
+      limit: 5,
+      sinceTs: 123,
+      from: 'Alice',
+      to: 'Bob',
+      thread: 'thr-1',
+      order: 'asc',
+    });
+
+    expect(result).toEqual(messages);
+
+    const req = decodeFrame(mockSocket.write.mock.calls[0][0]);
+    expect(req.type).toBe('MESSAGES_QUERY');
+    expect(req.payload).toEqual({
+      limit: 5,
+      sinceTs: 123,
+      from: 'Alice',
+      to: 'Bob',
+      thread: 'thr-1',
+      order: 'asc',
+    });
+  });
+
+  it('sends log frames', async () => {
+    const now = new Date('2024-01-01T00:00:00Z').getTime();
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(now);
+
+    await client.sendLog('hello');
+
+    const writeCall = mockSocket.write.mock.calls[0][0];
+    const req = decodeFrame(writeCall);
+    expect(req.type).toBe('LOG');
+    expect(req.from).toBe('test-agent');
+    expect(req.payload).toEqual({
+      data: 'hello',
+      timestamp: now,
+    });
+
+    nowSpy.mockRestore();
+  });
+
   it('lists agents', async () => {
     const mockAgents = [
       { name: 'Orchestrator', cli: 'sdk', idle: false },

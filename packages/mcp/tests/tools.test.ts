@@ -30,6 +30,12 @@ import {
   relayProposalSchema,
   handleRelayVote,
   relayVoteSchema,
+  handleRelayAdminChannelJoin,
+  relayAdminChannelJoinSchema,
+  handleRelayAdminRemoveMember,
+  relayAdminRemoveMemberSchema,
+  handleRelayQueryMessages,
+  relayQueryMessagesSchema,
 } from '../src/tools/index.js';
 
 /**
@@ -45,16 +51,24 @@ function createMockClient(overrides: Partial<Record<keyof RelayClient, ReturnTyp
     getStatus: vi.fn(),
     getInbox: vi.fn(),
     listAgents: vi.fn(),
+    listConnectedAgents: vi.fn(),
     broadcast: vi.fn(),
     subscribe: vi.fn(),
     unsubscribe: vi.fn(),
     joinChannel: vi.fn(),
     leaveChannel: vi.fn(),
     sendChannelMessage: vi.fn(),
+    adminJoinChannel: vi.fn(),
+    adminRemoveMember: vi.fn(),
     bindAsShadow: vi.fn(),
     unbindAsShadow: vi.fn(),
     createProposal: vi.fn(),
     vote: vi.fn(),
+    removeAgent: vi.fn(),
+    getHealth: vi.fn(),
+    getMetrics: vi.fn(),
+    queryMessages: vi.fn(),
+    sendLog: vi.fn(),
     ...overrides,
   };
 }
@@ -168,6 +182,146 @@ describe('relay_inbox', () => {
     expect(result).toContain('2 message(s):');
     expect(result).toContain('[123] From Lead [#general] (thread: thr-1):\nUpdate');
     expect(result).toContain('[124] From Worker:\nDone');
+  });
+});
+
+describe('relay_admin_channel_join', () => {
+  let mockClient: RelayClient;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockClient = createMockClient();
+  });
+
+  it('adds member and reports success', async () => {
+    vi.mocked(mockClient.adminJoinChannel).mockResolvedValue({ success: true });
+
+    const input = relayAdminChannelJoinSchema.parse({
+      channel: '#ops',
+      member: 'Auditor',
+    });
+    const result = await handleRelayAdminChannelJoin(mockClient, input);
+
+    expect(result).toBe('Added "Auditor" to channel "#ops"');
+    expect(mockClient.adminJoinChannel).toHaveBeenCalledWith('#ops', 'Auditor');
+  });
+
+  it('reports error details', async () => {
+    vi.mocked(mockClient.adminJoinChannel).mockResolvedValue({ success: false, error: 'denied' });
+
+    const input = relayAdminChannelJoinSchema.parse({
+      channel: '#ops',
+      member: 'Auditor',
+    });
+    const result = await handleRelayAdminChannelJoin(mockClient, input);
+
+    expect(result).toBe('Failed to add member: denied');
+  });
+});
+
+describe('relay_admin_remove_member', () => {
+  let mockClient: RelayClient;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockClient = createMockClient();
+  });
+
+  it('removes member and reports success', async () => {
+    vi.mocked(mockClient.adminRemoveMember).mockResolvedValue({ success: true });
+
+    const input = relayAdminRemoveMemberSchema.parse({
+      channel: '#ops',
+      member: 'Auditor',
+    });
+    const result = await handleRelayAdminRemoveMember(mockClient, input);
+
+    expect(result).toBe('Removed "Auditor" from channel "#ops"');
+    expect(mockClient.adminRemoveMember).toHaveBeenCalledWith('#ops', 'Auditor');
+  });
+
+  it('reports error details', async () => {
+    vi.mocked(mockClient.adminRemoveMember).mockResolvedValue({ success: false, error: 'not found' });
+
+    const input = relayAdminRemoveMemberSchema.parse({
+      channel: '#ops',
+      member: 'Auditor',
+    });
+    const result = await handleRelayAdminRemoveMember(mockClient, input);
+
+    expect(result).toBe('Failed to remove member: not found');
+  });
+});
+
+describe('relay_query_messages', () => {
+  let mockClient: RelayClient;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockClient = createMockClient();
+  });
+
+  it('returns formatted messages with filters applied', async () => {
+    vi.mocked(mockClient.queryMessages).mockResolvedValue([
+      {
+        id: 'm1',
+        from: 'Alice',
+        to: 'Bob',
+        body: 'Hello',
+        timestamp: 1_700_000_000_000, // 2023-11-14T22:13:20.000Z
+        thread: 'thread-1',
+        channel: '#ops',
+        status: 'delivered',
+        isBroadcast: false,
+        replyCount: 2,
+        data: { foo: 'bar' },
+      },
+      {
+        id: 'm2',
+        from: 'Bob',
+        to: 'Alice',
+        body: 'Ack',
+        timestamp: 1_700_000_000_500, // 2023-11-14T22:13:20.500Z
+      },
+    ]);
+
+    const input = relayQueryMessagesSchema.parse({
+      limit: 5,
+      since_ts: 1_699_999_999_000,
+      from: 'Alice',
+      thread: 'thread-1',
+      order: 'asc',
+    });
+    const result = await handleRelayQueryMessages(mockClient, input);
+
+    expect(mockClient.queryMessages).toHaveBeenCalledWith({
+      limit: 5,
+      sinceTs: 1_699_999_999_000,
+      from: 'Alice',
+      to: undefined,
+      thread: 'thread-1',
+      order: 'asc',
+    });
+    expect(result).toContain('Found 2 message(s):');
+    expect(result).toContain('[2023-11-14T22:13:20.000Z] Alice -> Bob [thread:thread-1, channel:#ops, status:delivered, replies:2, data]: Hello');
+    expect(result).toContain('[2023-11-14T22:13:20.500Z] Bob -> Alice: Ack');
+  });
+
+  it('returns empty message when no matches', async () => {
+    vi.mocked(mockClient.queryMessages).mockResolvedValue([]);
+
+    const input = relayQueryMessagesSchema.parse({});
+    const result = await handleRelayQueryMessages(mockClient, input);
+
+    expect(mockClient.queryMessages).toHaveBeenCalledWith({
+      limit: undefined,
+      sinceTs: undefined,
+      from: undefined,
+      to: undefined,
+      thread: undefined,
+      order: undefined,
+    });
+    expect(result).toBe('No messages found matching the filters.');
   });
 });
 

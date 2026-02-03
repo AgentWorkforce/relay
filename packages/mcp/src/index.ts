@@ -1,5 +1,5 @@
 // Client interface
-export type { RelayClient } from './client.js';
+export type { RelayClient, QueryMessage, HealthResponse, MetricsResponse, MessagesResponse } from './client.js';
 export { createRelayClient } from './client.js';
 
 // Hybrid client (file-based writes, socket queries)
@@ -64,6 +64,20 @@ export {
   relayContinuitySchema,
   handleRelayContinuity,
   type RelayContinuityInput,
+  // Admin channel operations
+  relayAdminChannelJoinTool,
+  relayAdminChannelJoinSchema,
+  handleRelayAdminChannelJoin,
+  type RelayAdminChannelJoinInput,
+  relayAdminRemoveMemberTool,
+  relayAdminRemoveMemberSchema,
+  handleRelayAdminRemoveMember,
+  type RelayAdminRemoveMemberInput,
+  // Query messages
+  relayQueryMessagesTool,
+  relayQueryMessagesSchema,
+  handleRelayQueryMessages,
+  type RelayQueryMessagesInput,
 } from './tools/index.js';
 
 // Prompts

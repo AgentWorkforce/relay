@@ -108,6 +108,14 @@ export {
   relayChannelMessageSchema,
   handleRelayChannelMessage,
   type RelayChannelMessageInput,
+  relayAdminChannelJoinTool,
+  relayAdminChannelJoinSchema,
+  handleRelayAdminChannelJoin,
+  type RelayAdminChannelJoinInput,
+  relayAdminRemoveMemberTool,
+  relayAdminRemoveMemberSchema,
+  handleRelayAdminRemoveMember,
+  type RelayAdminRemoveMemberInput,
 } from './relay-channel.js';
 
 export {
@@ -131,3 +139,10 @@ export {
   handleRelayVote,
   type RelayVoteInput,
 } from './relay-consensus.js';
+
+export {
+  relayQueryMessagesTool,
+  relayQueryMessagesSchema,
+  handleRelayQueryMessages,
+  type RelayQueryMessagesInput,
+} from './relay-messages.js';

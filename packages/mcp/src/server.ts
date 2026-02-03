@@ -64,6 +64,12 @@ import {
   relayChannelMessageTool,
   relayChannelMessageSchema,
   handleRelayChannelMessage,
+  relayAdminChannelJoinTool,
+  relayAdminChannelJoinSchema,
+  handleRelayAdminChannelJoin,
+  relayAdminRemoveMemberTool,
+  relayAdminRemoveMemberSchema,
+  handleRelayAdminRemoveMember,
   relayShadowBindTool,
   relayShadowBindSchema,
   handleRelayShadowBind,
@@ -76,6 +82,9 @@ import {
   relayVoteTool,
   relayVoteSchema,
   handleRelayVote,
+  relayQueryMessagesTool,
+  relayQueryMessagesSchema,
+  handleRelayQueryMessages,
 } from './tools/index.js';
 import { protocolPrompt, getProtocolPrompt } from './prompts/index.js';
 import {
@@ -109,10 +118,13 @@ const TOOLS = [
   relayChannelJoinTool,
   relayChannelLeaveTool,
   relayChannelMessageTool,
+  relayAdminChannelJoinTool,
+  relayAdminRemoveMemberTool,
   relayShadowBindTool,
   relayShadowUnbindTool,
   relayProposalTool,
   relayVoteTool,
+  relayQueryMessagesTool,
 ];
 
 /**
@@ -275,6 +287,18 @@ export function createMCPServer(client: RelayClient, config?: MCPServerConfig): 
           break;
         }
 
+        case 'relay_admin_channel_join': {
+          const input = relayAdminChannelJoinSchema.parse(args);
+          result = await handleRelayAdminChannelJoin(client, input);
+          break;
+        }
+
+        case 'relay_admin_remove_member': {
+          const input = relayAdminRemoveMemberSchema.parse(args);
+          result = await handleRelayAdminRemoveMember(client, input);
+          break;
+        }
+
         case 'relay_shadow_bind': {
           const input = relayShadowBindSchema.parse(args);
           result = await handleRelayShadowBind(client, input);
@@ -296,6 +320,12 @@ export function createMCPServer(client: RelayClient, config?: MCPServerConfig): 
         case 'relay_vote': {
           const input = relayVoteSchema.parse(args);
           result = await handleRelayVote(client, input);
+          break;
+        }
+
+        case 'relay_query_messages': {
+          const input = relayQueryMessagesSchema.parse(args);
+          result = await handleRelayQueryMessages(client, input);
           break;
         }
 

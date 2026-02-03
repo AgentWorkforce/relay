@@ -20,10 +20,14 @@ vi.mock('node:net', () => ({
   createConnection: vi.fn(),
 }));
 
-const { mockExistsSync } = vi.hoisted(() => ({
+const { mockExistsSync, mockAccessSync } = vi.hoisted(() => ({
   mockExistsSync: vi.fn((path: string) => {
     // Simulate relay-pty binary exists at any relay-pty path
     return typeof path === 'string' && path.includes('relay-pty');
+  }),
+  mockAccessSync: vi.fn((path: string) => {
+    if (typeof path === 'string' && path.includes('relay-pty')) return undefined;
+    throw new Error('not executable');
   }),
 }));
 
@@ -32,9 +36,11 @@ vi.mock('node:fs', async (importOriginal) => {
   return {
     ...actual,
     existsSync: mockExistsSync,
+    accessSync: (path: any, _mode: any) => mockAccessSync(path),
     default: {
       ...actual,
       existsSync: mockExistsSync,
+      accessSync: (path: any, _mode: any) => mockAccessSync(path),
     },
   };
 });
