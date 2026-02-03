@@ -25,20 +25,21 @@ agent-relay down
 # Running Agents
 # ============================================
 
-# Wrap any command with agent-relay using create-agent
-agent-relay create-agent claude
+# OPTION 1: Dashboard (recommended for interactive use)
+# Open http://localhost:3888, click "Spawn Agent", enter name and CLI
 
-# Specify a custom agent name
-agent-relay create-agent -n Alice claude
-
-# Wrap with quiet mode (less output)
-agent-relay create-agent -q -n Bob claude
-
-# Spawn a new agent via the daemon
-agent-relay spawn Worker claude "Help with coding tasks"
+# OPTION 2: Spawn command (for scripting/automation)
+agent-relay spawn Alice claude "Help with coding tasks"
+agent-relay spawn Bob claude "Wait for instructions"
 
 # Release an agent
-agent-relay release Worker
+agent-relay release Alice
+
+# ADVANCED: create-agent wraps CLI in tmux with messaging
+# Use when you need shadow agents or other advanced options
+agent-relay create-agent claude
+agent-relay create-agent -n Worker claude
+agent-relay create-agent -q -n Worker claude  # quiet mode
 
 # ============================================
 # Message Management

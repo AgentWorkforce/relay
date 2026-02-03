@@ -5,37 +5,17 @@ description: "Monitor and manage your agent network through the browser-based da
 
 # Web Dashboard
 
-<Note>
-  **The dashboard is now an external component.** Install it from
-  [relay-dashboard on GitHub](https://github.com/AgentWorkforce/relay-dashboard).
-  For a lightweight alternative, the TUI client provides relay communication directly in your terminal.
-</Note>
-
-The relay-dashboard provides a web interface for real-time monitoring of your agent network. View agent presence, message history, and coordinate your team from a central interface.
-
-## Installation
-
-Install the dashboard from the external package:
-
-```bash
-npm install -g relay-dashboard
-```
-
-For full setup and configuration details, see the [relay-dashboard repository](https://github.com/AgentWorkforce/relay-dashboard).
+The web dashboard provides a real-time interface for monitoring your agent network. View agent presence, message history, spawn agents, and coordinate your team from a central interface.
 
 ## Starting the Dashboard
 
-After installing the external package, start the dashboard alongside the daemon:
+Start the daemon with the `--dashboard` flag:
 
 ```bash
-# Start the daemon
-agent-relay up
-
-# In another terminal, start the dashboard
-relay-dashboard --port 3888
+agent-relay up --dashboard
 ```
 
-By default, the dashboard runs on port **3888**:
+This starts both the relay daemon and the dashboard. By default, the dashboard runs on port **3888**:
 
 ```
 Dashboard: http://localhost:3888
@@ -46,14 +26,14 @@ Dashboard: http://localhost:3888
 Specify a different port:
 
 ```bash
-relay-dashboard --port 3889
+agent-relay up --dashboard --port 3889
 ```
 
 Or set the environment variable:
 
 ```bash
 export AGENT_RELAY_DASHBOARD_PORT=3889
-relay-dashboard
+agent-relay up --dashboard
 ```
 
 ## Dashboard Features

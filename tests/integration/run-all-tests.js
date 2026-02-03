@@ -79,7 +79,22 @@ const mcpTests = [
 ];
 
 const sdkTests = [
-  // SDK integration tests can be added here
+  { file: 'sdk/01-connect.js', name: 'SDK Connect' },
+  { file: 'sdk/02-send-message.js', name: 'SDK Send Message' },
+  { file: 'sdk/03-spawn-agent.js', name: 'SDK Spawn Agent' },
+  { file: 'sdk/04-release-agent.js', name: 'SDK Release Agent' },
+  { file: 'sdk/05-full-flow.js', name: 'SDK Full Flow' },
+  { file: 'sdk/05a-spawn-process.js', name: 'SDK Spawn Process' },
+  { file: 'sdk/05b-worker-message.js', name: 'SDK Worker Message' },
+  { file: 'sdk/05b0-stability.js', name: 'SDK Stability' },
+  { file: 'sdk/05b1-message-stability.js', name: 'SDK Message Stability' },
+  { file: 'sdk/05b2-orch-to-worker.js', name: 'SDK Orch to Worker' },
+  { file: 'sdk/06-multi-worker.js', name: 'SDK Multi-Worker' },
+  { file: 'sdk/07-broadcast.js', name: 'SDK Broadcast' },
+  { file: 'sdk/08-multi-claude.js', name: 'SDK Multi-Claude' },
+  { file: 'sdk/09-budget-negotiation.js', name: 'SDK Budget Negotiation' },
+  { file: 'sdk/10-mediated-negotiation.js', name: 'SDK Mediated Negotiation' },
+  { file: 'sdk/14-orchestration-sdk.js', name: 'SDK Orchestration' },
 ];
 
 // Results tracking

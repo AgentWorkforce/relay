@@ -447,9 +447,16 @@ Define roles by adding markdown files to your project:
 └── designer.md      # UI/UX
 ```
 
-Names automatically match roles (case-insensitive):
+Names automatically match roles (case-insensitive). Create agents using either method:
+
+**Option A: Dashboard (recommended for interactive use)**
+1. Open http://localhost:3888
+2. Click "Spawn Agent"
+3. Enter name "Lead" and select CLI "claude"
+
+**Option B: CLI (for scripting/automation)**
 ```bash
-agent-relay create-agent -n Lead claude    # Uses lead.md
+agent-relay spawn Lead claude "Your task instructions"
 ```
 
 ---

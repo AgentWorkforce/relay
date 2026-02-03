@@ -45,19 +45,20 @@ agent-relay --version
   </Step>
 
   <Step title="Create Your First Agent">
-    You can create agents two ways—via terminal or the dashboard.
+    You can create agents two ways—via the dashboard or terminal.
 
-    **Option 1: Terminal (fastest)**
-    Open a new terminal and create an agent named "Alice":
+    **Option 1: Dashboard (recommended)**
+    1. Open the dashboard at [http://localhost:3888](http://localhost:3888)
+    2. Click **Spawn Agent**
+    3. Enter the name "Alice" and select CLI "claude"
+    4. Click **Spawn**
 
+    The dashboard will spawn the agent for you and you'll see it appear in the agents list.
+
+    **Option 2: Terminal (for scripting/automation)**
     ```bash
-    agent-relay create-agent -n Alice claude
+    agent-relay spawn Alice claude "Wait for instructions"
     ```
-
-    This wraps the Claude CLI in a tmux session with relay messaging enabled. The agent is now connected to the relay network.
-
-    **Option 2: Dashboard**
-    Open the dashboard at [http://localhost:3888](http://localhost:3888), go to the Agents panel, click **Create Agent**, enter the name (e.g., Alice) and CLI (claude/codex/gemini), then confirm. The dashboard will spawn the agent for you.
 
     <Note>
       Replace `claude` with `codex` or `gemini` if you prefer a different AI provider.
@@ -65,10 +66,13 @@ agent-relay --version
   </Step>
 
   <Step title="Create a Second Agent">
-    Open another terminal and create a second agent named "Bob":
+    Create a second agent named "Bob" using either method:
 
+    **Dashboard:** Click **Spawn Agent**, enter "Bob", select "claude", and spawn.
+
+    **Terminal:**
     ```bash
-    agent-relay create-agent -n Bob claude
+    agent-relay spawn Bob claude "Wait for instructions"
     ```
 
     You now have two agents connected to the same relay network.
@@ -81,12 +85,17 @@ agent-relay --version
     Send a message to Bob saying hello
     ```
 
-    Alice will output something like:
-    ```
-    ->relay:Bob Hello! Nice to meet you.
-    ```
+    Alice will write a message file and output a trigger:
+    ```bash
+    cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
+    TO: Bob
 
-    The relay system automatically detects this pattern, extracts the message, and delivers it to Bob.
+    Hello! Nice to meet you.
+    EOF
+    ```
+    Then output: `->relay-file:msg`
+
+    The relay daemon watches for this trigger, reads the message file, and routes it to Bob in real-time.
   </Step>
 
   <Step title="View the Dashboard">
@@ -101,20 +110,36 @@ agent-relay --version
 
 ## Message Formats
 
-Agents communicate by outputting special patterns that the relay system detects:
+Agents communicate using a file-based protocol. Write a message file to `$AGENT_RELAY_OUTBOX/msg`, then output the trigger `->relay-file:msg`:
 
 <CodeGroup>
   ```bash Direct Message
-  ->relay:Bob Can you review my code changes?
+  cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
+  TO: Bob
+
+  Can you review my code changes?
+  EOF
   ```
+  Then output: `->relay-file:msg`
 
   ```bash Broadcast to All
-  ->relay:* I've finished the auth module
+  cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
+  TO: *
+
+  I've finished the auth module
+  EOF
   ```
+  Then output: `->relay-file:msg`
 
   ```bash With Thread Context
-  ->relay:Alice [thread:code-review] LGTM, merging now
+  cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
+  TO: Alice
+  THREAD: code-review
+
+  LGTM, merging now
+  EOF
   ```
+  Then output: `->relay-file:msg`
 </CodeGroup>
 
 ## Receiving Messages
@@ -135,10 +160,10 @@ agent-relay read abc12345
 
 | Command | Description |
 |---------|-------------|
-| `agent-relay up` | Start the daemon and dashboard |
+| `agent-relay up --dashboard` | Start the daemon and dashboard |
 | `agent-relay down` | Stop the daemon |
 | `agent-relay status` | Check daemon and agent status |
-| `agent-relay create-agent -n Name <cli>` | Create a new agent |
+| `agent-relay spawn <name> <cli> "task"` | Spawn a new agent |
 | `agent-relay agents` | List connected agents |
 | `agent-relay read <id>` | Read full message content |
 
@@ -146,20 +171,29 @@ agent-relay read abc12345
 
 Want to see it all work together? Run this quick test:
 
+**Option A: Dashboard (recommended)**
+```bash
+# Start the daemon with dashboard
+agent-relay up --dashboard
+
+# Open http://localhost:3888 in your browser
+# Click "Spawn Agent" and create "Alice" with CLI "claude"
+# Click "Spawn Agent" again and create "Bob" with CLI "claude"
+# Use the chat interface to send messages between agents!
+```
+
+**Option B: Terminal**
 ```bash
 # Terminal 1: Start the daemon
-agent-relay up
+agent-relay up --dashboard
 
-# Terminal 2: Start Alice
-agent-relay create-agent -n Alice claude
+# Terminal 2: Spawn Alice
+agent-relay spawn Alice claude "Wait for instructions from Bob"
 
-# Terminal 3: Start Bob
-agent-relay create-agent -n Bob claude
+# Terminal 3: Spawn Bob
+agent-relay spawn Bob claude "Send a greeting to Alice"
 
-# In Alice's terminal, type:
-# "Send a greeting to Bob"
-
-# Watch the message appear in Bob's terminal!
+# Watch the message appear in the dashboard and Alice's logs!
 ```
 
 ## Troubleshooting

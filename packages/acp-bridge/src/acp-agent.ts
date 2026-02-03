@@ -23,6 +23,7 @@ export class RelayACPAgent implements acp.Agent {
   private connection: acp.AgentSideConnection | null = null;
   private sessions = new Map<string, SessionState>();
   private messageBuffer = new Map<string, RelayMessage[]>();
+  private seenMessageIds = new Set<string>();
 
   constructor(config: ACPBridgeConfig) {
     this.config = config;
@@ -172,7 +173,14 @@ export class RelayACPAgent implements acp.Agent {
     };
 
     this.sessions.set(sessionId, session);
-    this.messageBuffer.set(sessionId, []);
+
+    // Initialize buffer with any pending messages that arrived before session existed
+    const pendingMessages = this.messageBuffer.get('__pending__') || [];
+    this.messageBuffer.set(sessionId, [...pendingMessages]);
+    if (pendingMessages.length > 0) {
+      this.messageBuffer.delete('__pending__');
+      this.debug('Moved', pendingMessages.length, 'pending messages to new session');
+    }
 
     this.debug('Created new session:', sessionId);
 
@@ -212,6 +220,15 @@ export class RelayACPAgent implements acp.Agent {
 
     session.isProcessing = true;
     session.abortController = new AbortController();
+
+    // Drain any pending messages that arrived while idle
+    const pendingMessages = this.messageBuffer.get('__pending__') || [];
+    if (pendingMessages.length > 0) {
+      const sessionBuffer = this.messageBuffer.get(params.sessionId) || [];
+      sessionBuffer.push(...pendingMessages);
+      this.messageBuffer.set(params.sessionId, sessionBuffer);
+      this.messageBuffer.delete('__pending__');
+    }
 
     try {
       // Extract text content from the prompt
@@ -449,6 +466,13 @@ export class RelayACPAgent implements acp.Agent {
   private handleRelayMessage(message: RelayMessage): void {
     this.debug('Received relay message:', message.from, message.body.substring(0, 50));
 
+    // Deduplicate messages by ID (same message may arrive via multiple routes)
+    if (this.seenMessageIds.has(message.id)) {
+      this.debug('Skipping duplicate message:', message.id);
+      return;
+    }
+    this.seenMessageIds.add(message.id);
+
     // Check for system messages (crash notifications, etc.)
     if (message.data?.isSystemMessage) {
       this.handleSystemMessage(message);
@@ -464,13 +488,21 @@ export class RelayACPAgent implements acp.Agent {
       }
     }
 
-    // If no specific session, add to all active sessions
-    for (const [sessionId, session] of this.sessions) {
-      if (session.isProcessing) {
-        const buffer = this.messageBuffer.get(sessionId) || [];
-        buffer.push(message);
-        this.messageBuffer.set(sessionId, buffer);
-      }
+    // Add to all sessions - active ones immediately, idle ones will see on next prompt
+    // This ensures async messages from spawned agents aren't dropped
+    let addedToAny = false;
+    for (const [sessionId] of this.sessions) {
+      const buffer = this.messageBuffer.get(sessionId) || [];
+      buffer.push(message);
+      this.messageBuffer.set(sessionId, buffer);
+      addedToAny = true;
+    }
+
+    // If no sessions exist yet, store in a pending queue
+    if (!addedToAny) {
+      const pending = this.messageBuffer.get('__pending__') || [];
+      pending.push(message);
+      this.messageBuffer.set('__pending__', pending);
     }
   }
 

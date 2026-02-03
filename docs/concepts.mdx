@@ -46,7 +46,10 @@ Agent names are case-insensitive identifiers used for routing messages:
 
 ```bash
 # These all refer to the same agent
-agent-relay create-agent -n Alice claude
+# Via dashboard: Spawn Agent → Name: "Alice", CLI: "claude"
+# Or via CLI: agent-relay spawn Alice claude "Task description"
+
+# All these message targets are equivalent:
 ->relay:alice Hello!
 ->relay:ALICE Hello!
 ```
@@ -152,7 +155,7 @@ The daemon is the central message broker that routes all communication between a
 
 - **Agent Registry** - Tracks connected agents and their connections
 - **Message Routing** - Delivers messages to the correct recipients
-- **Storage** - Persists message history to SQLite
+- **Storage** - Persists message history (JSONL by default, SQLite available)
 - **Dashboard API** - Provides real-time data to the web dashboard
 
 ### Architecture
@@ -166,7 +169,7 @@ The daemon is the central message broker that routes all communication between a
          |                   |                   |
 +--------v--------+ +--------v--------+ +--------v--------+
 |     Router      | |     Storage     | |   Dashboard     |
-| (Message        | | (SQLite         | | (WebSocket +    |
+| (Message        | | (JSONL/SQLite   | | (WebSocket +    |
 |  routing)       | |  persistence)   | |  REST API)      |
 +-----------------+ +-----------------+ +-----------------+
 ```
@@ -219,7 +222,7 @@ Projects are identified by looking for markers in the directory tree:
 Each project gets its own:
 
 - Unix socket
-- SQLite database
+- Storage (JSONL files or SQLite database)
 - Message history
 - Agent registry
 

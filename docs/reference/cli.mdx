@@ -20,8 +20,8 @@ npm install -g agent-relay
 | `agent-relay up` | Start daemon (add `--dashboard` for web UI) |
 | `agent-relay down` | Stop the daemon |
 | `agent-relay status` | Check daemon status |
-| `agent-relay create-agent` | Wrap an agent with real-time messaging |
-| `agent-relay spawn` | Spawn a new agent |
+| `agent-relay spawn` | Spawn a new agent (or use dashboard at localhost:3888) |
+| `agent-relay create-agent` | Wrap an agent with real-time messaging (advanced) |
 | `agent-relay release` | Release an agent |
 | `agent-relay agents` | List connected agents |
 | `agent-relay who` | Show active agents |
@@ -125,7 +125,11 @@ Relay tmux sessions:
 
 ### agent-relay create-agent
 
-Wrap an AI CLI agent with real-time messaging capabilities.
+Wrap an AI CLI agent with real-time messaging capabilities in a tmux session.
+
+<Note>
+For most use cases, we recommend using the **dashboard** at http://localhost:3888 or the simpler `agent-relay spawn` command. Use `create-agent` when you need advanced options like shadow agents or custom prefixes.
+</Note>
 
 ```bash
 agent-relay create-agent [options] <command...>

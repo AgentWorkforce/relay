@@ -18,9 +18,9 @@ See `docs/architecture/storage.md` for adapter structure and fallback diagrams.
 ## Storage Modes
 | Mode | Persistence | Best For | Notes |
 | --- | --- | --- | --- |
-| SQLite (default) | Durable | Most users; low-latency | WAL enabled; 7d retention by default |
+| JSONL (default) | Durable | Most users; zero dependencies | Append-only per-day files; sessions in `sessions.jsonl` |
+| SQLite | Durable | Low-latency queries | WAL enabled; 7d retention by default |
 | SQLite (batched) | Durable | High write throughput | Buffers writes; same retention as SQLite |
-| JSONL | Durable | When SQLite native modules fail or are blocked | Append-only per-day files; sessions in `sessions.jsonl` |
 | Memory | None (process lifetime) | Tests / emergency fallback | Keeps ~1k recent messages only |
 
 ## Quick Diagnostics
