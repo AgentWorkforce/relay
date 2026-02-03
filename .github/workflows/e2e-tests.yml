@@ -72,6 +72,11 @@ jobs:
       - name: Verify CLI is available
         run: agent-relay --version
 
+      - name: Install Claude CLI
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude --version || echo "Claude CLI installed"
+
       - name: Download dashboard binary
         run: |
           # Determine platform and architecture
