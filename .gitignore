@@ -59,3 +59,4 @@ coverage/
 
 # Turborepo
 .turbo/
+.build-standalone/
