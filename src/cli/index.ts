@@ -1202,6 +1202,196 @@ program
     }
   });
 
+// uninstall - Remove agent-relay from the current project
+program
+  .command('uninstall')
+  .description('Remove agent-relay data and configuration from the current project')
+  .option('--keep-data', 'Keep message history and database (only remove runtime files)')
+  .option('--zed', 'Also remove Zed editor configuration')
+  .option('--snippets', 'Also remove agent-relay snippets from CLAUDE.md, GEMINI.md, AGENTS.md')
+  .option('--force', 'Skip confirmation prompt')
+  .option('--dry-run', 'Show what would be removed without actually removing')
+  .action(async (options: { keepData?: boolean; zed?: boolean; snippets?: boolean; force?: boolean; dryRun?: boolean }) => {
+    const paths = getProjectPaths();
+    const readline = await import('node:readline');
+
+    const filesToRemove: string[] = [];
+    const dirsToRemove: string[] = [];
+    const actions: string[] = [];
+
+    // Check if .agent-relay directory exists
+    if (!fs.existsSync(paths.dataDir)) {
+      console.log('Agent Relay is not installed in this project.');
+      console.log(`(No ${paths.dataDir} directory found)`);
+      return;
+    }
+
+    // Stop daemon if running
+    const pidPath = pidFilePathForSocket(paths.socketPath);
+    if (fs.existsSync(pidPath)) {
+      const pid = Number(fs.readFileSync(pidPath, 'utf-8').trim());
+      try {
+        process.kill(pid, 0); // Check if running
+        actions.push(`Stop daemon (pid: ${pid})`);
+        if (!options.dryRun) {
+          try {
+            process.kill(pid, 'SIGTERM');
+            // Wait briefly for graceful shutdown
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          } catch { /* ignore */ }
+        }
+      } catch { /* not running */ }
+    }
+
+    // Collect files to remove
+    if (options.keepData) {
+      // Only remove runtime files, keep database
+      const runtimeFiles = ['relay.sock', 'runtime.json', 'daemon.pid', '.project'];
+      for (const file of runtimeFiles) {
+        const filePath = path.join(paths.dataDir, file);
+        if (fs.existsSync(filePath)) {
+          filesToRemove.push(filePath);
+        }
+      }
+      // Remove mcp-identity-* files
+      try {
+        const files = fs.readdirSync(paths.dataDir);
+        for (const file of files) {
+          if (file.startsWith('mcp-identity')) {
+            filesToRemove.push(path.join(paths.dataDir, file));
+          }
+        }
+      } catch { /* ignore */ }
+      actions.push('Remove runtime files (keeping database and message history)');
+    } else {
+      // Remove entire .agent-relay directory
+      dirsToRemove.push(paths.dataDir);
+      actions.push(`Remove ${paths.dataDir}/ directory (including message history)`);
+    }
+
+    // Zed configuration
+    if (options.zed) {
+      const zedSettingsPath = getZedSettingsPath();
+      if (fs.existsSync(zedSettingsPath)) {
+        actions.push('Remove Agent Relay from Zed settings');
+      }
+    }
+
+    // Snippets
+    if (options.snippets) {
+      const snippetFiles = ['CLAUDE.md', 'GEMINI.md', 'AGENTS.md'];
+      for (const file of snippetFiles) {
+        const filePath = path.join(paths.projectRoot, file);
+        if (fs.existsSync(filePath)) {
+          const content = fs.readFileSync(filePath, 'utf-8');
+          if (content.includes('agent-relay-snippet') || content.includes('agent-relay-protocol')) {
+            actions.push(`Remove agent-relay snippets from ${file}`);
+          }
+        }
+      }
+    }
+
+    // Show what will be done
+    console.log('');
+    console.log('Agent Relay Uninstall');
+    console.log('=====================');
+    console.log('');
+    console.log('The following actions will be performed:');
+    console.log('');
+    for (const action of actions) {
+      console.log(`  • ${action}`);
+    }
+    console.log('');
+
+    if (options.dryRun) {
+      console.log('[dry-run] No changes made.');
+      return;
+    }
+
+    // Confirm unless --force
+    if (!options.force) {
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const answer = await new Promise<string>(resolve => {
+        rl.question('Continue? [y/N] ', resolve);
+      });
+      rl.close();
+
+      if (answer.toLowerCase() !== 'y' && answer.toLowerCase() !== 'yes') {
+        console.log('Aborted.');
+        return;
+      }
+    }
+
+    // Perform removal
+    console.log('');
+
+    // Remove files
+    for (const file of filesToRemove) {
+      try {
+        fs.unlinkSync(file);
+        console.log(`  ✓ Removed ${path.relative(paths.projectRoot, file)}`);
+      } catch (err: any) {
+        console.log(`  ✗ Failed to remove ${path.relative(paths.projectRoot, file)}: ${err.message}`);
+      }
+    }
+
+    // Remove directories
+    for (const dir of dirsToRemove) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+        console.log(`  ✓ Removed ${path.relative(paths.projectRoot, dir)}/`);
+      } catch (err: any) {
+        console.log(`  ✗ Failed to remove ${path.relative(paths.projectRoot, dir)}/: ${err.message}`);
+      }
+    }
+
+    // Remove Zed config
+    if (options.zed) {
+      const zedSettingsPath = getZedSettingsPath();
+      if (fs.existsSync(zedSettingsPath)) {
+        try {
+          const config = readJsonWithComments(zedSettingsPath);
+          const agentServers = config.agent_servers as Record<string, unknown> | undefined;
+          if (agentServers && agentServers['Agent Relay']) {
+            delete agentServers['Agent Relay'];
+            writeJson(zedSettingsPath, config);
+            console.log('  ✓ Removed Agent Relay from Zed settings');
+          }
+        } catch (err: any) {
+          console.log(`  ✗ Failed to update Zed settings: ${err.message}`);
+        }
+      }
+    }
+
+    // Remove snippets
+    if (options.snippets) {
+      const snippetFiles = ['CLAUDE.md', 'GEMINI.md', 'AGENTS.md'];
+      for (const file of snippetFiles) {
+        const filePath = path.join(paths.projectRoot, file);
+        if (fs.existsSync(filePath)) {
+          try {
+            let content = fs.readFileSync(filePath, 'utf-8');
+            const originalLength = content.length;
+
+            // Remove prpm snippet blocks
+            content = content.replace(/<!-- prpm:snippet:start @agent-relay\/agent-relay-snippet.*?<!-- prpm:snippet:end @agent-relay\/agent-relay-snippet[^\n]*\n?/gs, '');
+            content = content.replace(/<!-- prpm:snippet:start @agent-relay\/agent-relay-protocol.*?<!-- prpm:snippet:end @agent-relay\/agent-relay-protocol[^\n]*\n?/gs, '');
+
+            if (content.length !== originalLength) {
+              fs.writeFileSync(filePath, content);
+              console.log(`  ✓ Removed agent-relay snippets from ${file}`);
+            }
+          } catch (err: any) {
+            console.log(`  ✗ Failed to update ${file}: ${err.message}`);
+          }
+        }
+      }
+    }
+
+    console.log('');
+    console.log('Uninstall complete.');
+  });
+
 program
   .command('status')
   .description('Check daemon status')
