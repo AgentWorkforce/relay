@@ -69,7 +69,7 @@ export class RelayACPAgent implements acp.Agent {
 
       // Route channel messages to all sessions
       this.handleRelayMessage({
-        id: `channel-${Date.now()}`,
+        id: `channel-${randomUUID()}`,
         from: `${from} [${channel}]`,
         body,
         timestamp: Date.now(),
@@ -121,6 +121,7 @@ export class RelayACPAgent implements acp.Agent {
     // Clean up all sessions to prevent memory leaks
     this.sessions.clear();
     this.messageBuffer.clear();
+    this.seenMessageIds.clear();
 
     this.relayClient?.destroy();
     this.relayClient = null;

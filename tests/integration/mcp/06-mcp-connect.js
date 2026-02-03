@@ -78,8 +78,8 @@ async function main() {
     process.exit(1);
   }
 
-  // Step 3: Wait for ${CLI} agent to connect and verify
-  console.log('\n3. Waiting for ${CLI} agent to connect (max 30s)...');
+  // Step 3: Wait for agent to connect and verify
+  console.log(`\n3. Waiting for ${CLI} agent to connect (max 30s)...`);
 
   let connected = false;
   const startTime = Date.now();
@@ -102,7 +102,7 @@ async function main() {
   }
 
   if (!connected) {
-    console.log('\n   Timeout: ${CLI} agent did not appear in agent list');
+    console.log(`\n   Timeout: ${CLI} agent did not appear in agent list`);
   }
 
   // Step 4: List all connected agents
@@ -112,8 +112,8 @@ async function main() {
     console.log(`   - ${agent.name} (cli: ${agent.cli || 'sdk'})`);
   }
 
-  // Step 5: Release the ${CLI} agent
-  console.log('\n5. Releasing ${CLI} agent...');
+  // Step 5: Release the agent
+  console.log(`\n5. Releasing ${CLI} agent...`);
   try {
     const releaseResult = await orchestrator.release(workerName);
     if (releaseResult.success) {

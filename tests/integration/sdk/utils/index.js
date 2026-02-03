@@ -88,20 +88,37 @@ export async function measureRetry(fn, options = {}) {
   };
 }
 
+// Import directly for default export (avoid Promise issues)
+import {
+  retry,
+  createRetrier,
+  retryLinear,
+  retryImmediate,
+} from './retry.js';
+
+import {
+  sleep,
+  waitFor,
+  withTimeout,
+  deferred,
+  measureTime,
+  retryWithDelay,
+} from './timing.js';
+
 export default {
   // Retry utilities
-  retry: (await import('./retry.js')).retry,
-  createRetrier: (await import('./retry.js')).createRetrier,
-  retryLinear: (await import('./retry.js')).retryLinear,
-  retryImmediate: (await import('./retry.js')).retryImmediate,
+  retry,
+  createRetrier,
+  retryLinear,
+  retryImmediate,
 
   // Timing utilities
-  sleep: (await import('./timing.js')).sleep,
-  waitFor: (await import('./timing.js')).waitFor,
-  withTimeout: (await import('./timing.js')).withTimeout,
-  deferred: (await import('./timing.js')).deferred,
-  measureTime: (await import('./timing.js')).measureTime,
-  retryWithDelay: (await import('./timing.js')).retryWithDelay,
+  sleep,
+  waitFor,
+  withTimeout,
+  deferred,
+  measureTime,
+  retryWithDelay,
 
   // Combined utilities
   retryWithTimeout,
