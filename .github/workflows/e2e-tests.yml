@@ -72,10 +72,25 @@ jobs:
       - name: Verify CLI is available
         run: agent-relay --version
 
+      - name: Cache Claude CLI
+        id: cache-claude
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm-global
+          key: claude-cli-${{ runner.os }}-${{ hashFiles('.github/workflows/e2e-tests.yml') }}
+
       - name: Install Claude CLI
+        if: steps.cache-claude.outputs.cache-hit != 'true'
         run: |
+          mkdir -p ~/.npm-global
+          npm config set prefix '~/.npm-global'
           npm install -g @anthropic-ai/claude-code
-          claude --version || echo "Claude CLI installed"
+
+      - name: Add Claude CLI to PATH
+        run: |
+          echo "$HOME/.npm-global/bin" >> $GITHUB_PATH
+          export PATH="$HOME/.npm-global/bin:$PATH"
+          claude --version || echo "Claude CLI ready"
 
       - name: Download dashboard binary
         run: |
