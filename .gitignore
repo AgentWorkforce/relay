@@ -60,3 +60,5 @@ coverage/
 # Turborepo
 .turbo/
 .build-standalone/
+bin/agent-relay-bundle
+bin/agent-relay-standalone
