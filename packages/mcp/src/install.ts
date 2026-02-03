@@ -453,17 +453,26 @@ export function installForEditor(
   const serverConfig: McpServerConfig = {
     command: options.command || defaultConfig.command,
     args: options.args || [...defaultConfig.args],
+    env: options.env ? { ...options.env } : undefined,
   };
 
-  // Set environment variables if provided (e.g., RELAY_SOCKET for project-local installs)
-  if (options.env) {
-    serverConfig.env = { ...options.env };
+  // Set environment variables for project-local installs so the MCP server
+  // always targets the correct daemon socket, even when invoked from ~ or GUI
+  // apps. Do this only if values were not already provided explicitly.
+  const isProjectLocal = !options.global && options.projectDir;
+  if (isProjectLocal) {
+    const projectSocket = join(options.projectDir!, '.agent-relay', 'relay.sock');
+    serverConfig.env = {
+      ...(serverConfig.env || {}),
+      RELAY_SOCKET: serverConfig.env?.RELAY_SOCKET || projectSocket,
+      RELAY_PROJECT: serverConfig.env?.RELAY_PROJECT || options.projectDir!,
+      AGENT_RELAY_PROJECT: serverConfig.env?.AGENT_RELAY_PROJECT || options.projectDir!,
+    };
   }
 
   // For project-local installs with projectDir, add --project argument
   // This allows the MCP server to find the correct socket even when
   // invoked from a different working directory (e.g., by Claude Code)
-  const isProjectLocal = !options.global && options.projectDir;
   if (isProjectLocal) {
     // Add --project argument with absolute path to project directory
     serverConfig.args = [...serverConfig.args, '--project', options.projectDir!];
