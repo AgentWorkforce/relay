@@ -49,6 +49,7 @@ npx esbuild "$DIST_DIR/src/cli/index.js" \
     --external:better-sqlite3 \
     --external:cpu-features \
     --external:node-pty \
+    --external:ssh2 \
     --define:process.env.AGENT_RELAY_VERSION="\"$VERSION\"" \
     --minify \
     2>&1

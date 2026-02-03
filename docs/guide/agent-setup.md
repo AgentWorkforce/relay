@@ -55,6 +55,8 @@ This automatically:
 - Installs the dashboard
 - Verifies the installation
 
+> CLI vs file-based? Use CLI commands for human-driven workflows and automation scripts. Use the file-based protocol (`$AGENT_RELAY_OUTBOX`) when an AI agent needs to interact without shell access.
+
 **Option B: npm install**
 
 If Node.js 18+ is already installed:
@@ -88,6 +90,12 @@ Verify the daemon is running:
 agent-relay status
 ```
 
+If the daemon writes logs into your shell, run it in the background with logs captured:
+```bash
+agent-relay up --dashboard > ~/.agent-relay/daemon.log 2>&1 &
+```
+Then use `tail -f ~/.agent-relay/daemon.log` when you need the logs.
+
 ### Step 4: Install MCP Server (Recommended)
 
 Give AI agents native relay tools via Model Context Protocol:
@@ -111,6 +119,24 @@ open http://localhost:3888
 ```
 
 The dashboard should show your connection and allow you to spawn agents.
+
+### Quick troubleshooting tips
+
+- **Clean, scriptable output:** Use `--json` on `agent-relay who` and `agent-relay agents` to avoid daemon log noise, e.g. `agent-relay who --json | jq '.'`.
+- **Daemon vs agent status:** `agent-relay status` checks the socket in the current project. If you started the daemon from a different directory or with a custom data dir, set the same env when checking:  
+  `AGENT_RELAY_DATA_DIR=~/.local/share/agent-relay agent-relay status`. If the dashboard is up, `curl http://localhost:3888/health` should return JSON with `"status":"ok"`.
+- **`who` feels stuck or times out:** Make sure the daemon is up first (`agent-relay status`). If the daemon is still starting, retry with `agent-relay who --json`.
+- **Waiting for a spawn to finish (no built-in flag yet):**
+  ```bash
+  agent-relay spawn Worker claude "Run the build"
+  # Stream logs while it works
+  agent-relay agents:logs Worker --follow &
+  # Wait until the agent goes offline (status flips after ~30s of inactivity)
+  until ! agent-relay agents --json | jq -e '.[] | select(.name=="Worker" and .status=="ONLINE")' >/dev/null; do
+    sleep 3
+  done
+  ```
+  Or have the agent send you a final message via the file protocol and wait for it there.
 
 ---
 

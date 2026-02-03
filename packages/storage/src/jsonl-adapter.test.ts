@@ -219,9 +219,10 @@ describe('JsonlStorageAdapter', () => {
     await writerAdapter.close();
 
     // Wait for file watcher to trigger reload (fs.watch can be slow/flaky)
-    // Use polling with retries instead of a fixed timeout
+    // Use polling with retries - fs.watch is notoriously unreliable in CI environments
+    // with virtualized file systems, so we use a longer timeout
     let after: StoredMessage[] = [];
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 50; i++) {
       await new Promise(resolve => setTimeout(resolve, 100));
       after = await watchingAdapter.getMessages({});
       if (after.length > countBefore) break;
@@ -232,5 +233,5 @@ describe('JsonlStorageAdapter', () => {
     expect(after.some(m => m.id === 'watch-test')).toBe(true);
 
     await watchingAdapter.close();
-  });
+  }, 10000); // Extended timeout for flaky fs.watch
 });

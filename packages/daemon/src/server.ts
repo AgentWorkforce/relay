@@ -1838,8 +1838,11 @@ export class Daemon {
   }
 }
 
-// Run as standalone if executed directly
-const isMainModule = import.meta.url === `file://${process.argv[1]}`;
+// Run as standalone if executed directly (not in bundled CLI)
+// In bundled builds, AGENT_RELAY_VERSION is defined, so we skip auto-start
+// The CLI handles daemon startup via the 'up' command
+const isMainModule = import.meta.url === `file://${process.argv[1]}` &&
+  !process.env.AGENT_RELAY_VERSION;
 if (isMainModule) {
   const daemon = new Daemon();
 

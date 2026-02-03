@@ -112,9 +112,21 @@ EOF
 
 **IMPORTANT**: The filename is always `spawn` (not `spawn-agentname`) and the trigger is always `->relay-file:spawn`. Spawn agents one at a time sequentially.
 
+### CLI Options
+
+The `CLI` header specifies which AI CLI to use. Valid values:
+
+| CLI Value | Description |
+|-----------|-------------|
+| `claude` | Claude Code (Anthropic) |
+| `codex` | Codex CLI (OpenAI) |
+| `gemini` | Gemini CLI (Google) |
+| `aider` | Aider coding assistant |
+| `goose` | Goose AI assistant |
+
 **Step 1:** EXECUTE this bash command (run it, don't just display it):
 ```bash
-# Spawn
+# Spawn a Claude agent
 cat > $AGENT_RELAY_OUTBOX/spawn << 'EOF'
 KIND: spawn
 NAME: WorkerName
@@ -124,6 +136,17 @@ Task description here.
 EOF
 ```
 **Step 2:** Output: `->relay-file:spawn`
+
+```bash
+# Spawn a Codex agent
+cat > $AGENT_RELAY_OUTBOX/spawn << 'EOF'
+KIND: spawn
+NAME: CodexWorker
+CLI: codex
+
+Task description here.
+EOF
+```
 
 **Step 1:** EXECUTE this bash command (run it, don't just display it):
 ```bash
@@ -185,5 +208,5 @@ Reply to the channel shown, not the sender.
 | TO | Yes (messages) | Target agent/channel |
 | KIND | No | `message` (default), `spawn`, `release` |
 | NAME | Yes (spawn/release) | Agent name |
-| CLI | Yes (spawn) | CLI to use |
+| CLI | Yes (spawn) | CLI to use: `claude`, `codex`, `gemini`, `aider`, `goose` |
 | THREAD | No | Thread identifier |
