@@ -21,11 +21,19 @@ interface LogEntry {
   [key: string]: unknown;
 }
 
-// Configuration from environment
-const LOG_FILE = process.env.AGENT_RELAY_LOG_FILE;
-const LOG_LEVEL = (process.env.AGENT_RELAY_LOG_LEVEL ?? 'INFO').toUpperCase() as LogLevel;
-const LOG_JSON = process.env.AGENT_RELAY_LOG_JSON === '1';
-const _DEBUG = process.env.DEBUG === '1' || LOG_LEVEL === 'DEBUG';
+// Configuration getters - read env at runtime to allow late binding
+// (CLI sets AGENT_RELAY_LOG_FILE after imports complete)
+function getLogFile(): string | undefined {
+  return process.env.AGENT_RELAY_LOG_FILE;
+}
+
+function getLogLevel(): LogLevel {
+  return (process.env.AGENT_RELAY_LOG_LEVEL ?? 'INFO').toUpperCase() as LogLevel;
+}
+
+function isLogJson(): boolean {
+  return process.env.AGENT_RELAY_LOG_JSON === '1';
+}
 
 const LEVEL_PRIORITY: Record<LogLevel, number> = {
   DEBUG: 0,
@@ -34,20 +42,23 @@ const LEVEL_PRIORITY: Record<LogLevel, number> = {
   ERROR: 3,
 };
 
-// Ensure log directory exists if file logging enabled
-if (LOG_FILE) {
-  const logDir = path.dirname(LOG_FILE);
-  if (!fs.existsSync(logDir)) {
+// Track which log directories we've already created
+const createdLogDirs = new Set<string>();
+
+function ensureLogDir(logFile: string): void {
+  const logDir = path.dirname(logFile);
+  if (!createdLogDirs.has(logDir) && !fs.existsSync(logDir)) {
     fs.mkdirSync(logDir, { recursive: true });
+    createdLogDirs.add(logDir);
   }
 }
 
 function shouldLog(level: LogLevel): boolean {
-  return LEVEL_PRIORITY[level] >= LEVEL_PRIORITY[LOG_LEVEL];
+  return LEVEL_PRIORITY[level] >= LEVEL_PRIORITY[getLogLevel()];
 }
 
 function formatMessage(entry: LogEntry): string {
-  if (LOG_JSON) {
+  if (isLogJson()) {
     return JSON.stringify(entry);
   }
   const { ts, level, component, msg, ...extra } = entry;
@@ -70,9 +81,11 @@ function log(level: LogLevel, component: string, msg: string, extra?: Record<str
 
   const formatted = formatMessage(entry);
 
-  // Write to file if configured
-  if (LOG_FILE) {
-    fs.appendFileSync(LOG_FILE, formatted + '\n');
+  // Write to file if configured (read at runtime to pick up late binding)
+  const logFile = getLogFile();
+  if (logFile) {
+    ensureLogDir(logFile);
+    fs.appendFileSync(logFile, formatted + '\n');
     // When logging to file, skip console output to avoid polluting TUI terminals
     return;
   }

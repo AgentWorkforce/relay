@@ -90,6 +90,7 @@ function startDashboardViaNpx(options: {
   dataDir: string;
   teamDir: string;
   projectRoot: string;
+  verbose?: boolean;
 }): { process: ReturnType<typeof spawnProcess>; port: number; ready: Promise<void> } {
   const dashboardBinary = findDashboardBinary();
 
@@ -101,6 +102,9 @@ function startDashboardViaNpx(options: {
     '--team-dir', options.teamDir,
     '--project-root', options.projectRoot,
   ];
+  if (options.verbose) {
+    args.push('--verbose');
+  }
 
   if (dashboardBinary) {
     console.log(`Starting dashboard using binary: ${dashboardBinary}`);
@@ -519,6 +523,7 @@ program
   .option('--no-spawn', 'Do not auto-spawn agents (just start daemon)')
   .option('--watch', 'Auto-restart daemon on crash (supervisor mode)')
   .option('--max-restarts <n>', 'Max restarts in 60s before giving up (default: 5)', '5')
+  .option('--verbose', 'Enable verbose logging (show debug output in console)')
   .action(async (options) => {
     // If --watch is specified, run in supervisor mode
     if (options.watch) {
@@ -538,6 +543,7 @@ program
         if (options.storage) args.push('--storage', options.storage);
         if (options.spawn === true) args.push('--spawn');
         if (options.spawn === false) args.push('--no-spawn');
+        if (options.verbose) args.push('--verbose');
 
         console.log(`[supervisor] Starting daemon...`);
         child = spawnProcess(process.execPath, [process.argv[1], ...args], {
@@ -624,9 +630,15 @@ program
 
     // Set up log file to avoid console output polluting TUI terminals
     // Only set if not already configured via environment
-    if (!process.env.AGENT_RELAY_LOG_FILE) {
+    // Skip if --verbose is set (logs go to console in verbose mode)
+    if (!process.env.AGENT_RELAY_LOG_FILE && !options.verbose) {
       const logFile = path.join(paths.dataDir, 'daemon.log');
       process.env.AGENT_RELAY_LOG_FILE = logFile;
+    }
+
+    // In verbose mode, also set DEBUG level for more detailed output
+    if (options.verbose && !process.env.AGENT_RELAY_LOG_LEVEL) {
+      process.env.AGENT_RELAY_LOG_LEVEL = 'DEBUG';
     }
 
     console.log(`Project: ${paths.projectRoot}`);
@@ -731,6 +743,7 @@ program
               enableSpawner?: boolean;
               onMarkSpawning?: (name: string) => void;
               onClearSpawning?: (name: string) => void;
+              verbose?: boolean;
             }) => Promise<number>;
           };
           const { startDashboard } = dashboardServer;
@@ -744,6 +757,7 @@ program
             enableSpawner: true,
             onMarkSpawning: (name: string) => daemon.markSpawning(name),
             onClearSpawning: (name: string) => daemon.clearSpawning(name),
+            verbose: options.verbose,
           });
           console.log(`Dashboard: http://localhost:${dashboardPort}`);
 
@@ -756,15 +770,15 @@ program
           };
         } catch (err: any) {
           if (err.code === 'ERR_MODULE_NOT_FOUND' || err.code === 'MODULE_NOT_FOUND') {
-            // Dashboard package not installed
+            // Dashboard package not installed as a dependency - use binary or npx fallback
             if (dashboardRequested) {
-              // User explicitly asked for dashboard but it's not installed - start via npx
-              console.log('Dashboard package not installed. Starting via npx...');
+              // User explicitly asked for dashboard - start via binary or npx
               const { process: dashboardProcess, port: npxPort, ready } = startDashboardViaNpx({
                 port,
                 dataDir: paths.dataDir,
                 teamDir: paths.teamDir,
                 projectRoot: paths.projectRoot,
+                verbose: options.verbose,
               });
               dashboardPort = npxPort;
 

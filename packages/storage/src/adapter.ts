@@ -396,7 +396,7 @@ export async function createStorageAdapter(
     case 'jsonl': {
       const { JsonlStorageAdapter } = await import('./jsonl-adapter.js');
       const baseDir = path.dirname(finalConfig.path!);
-      console.error('[storage] Using JSONL storage');
+      // Note: Storage type already logged by CLI, no need to log again
       const adapter = new JsonlStorageAdapter({
         baseDir,
         watchForChanges: finalConfig.watchForChanges,
