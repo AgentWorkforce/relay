@@ -152,6 +152,7 @@ This section covers how agents can programmatically manage workers and orchestra
 | `agent-relay who` | Show active agents (seen in last 30s) |
 | `agent-relay spawn <name> <cli> "task"` | Spawn a worker agent |
 | `agent-relay release <name>` | Gracefully release an agent |
+| `agent-relay send <agent> "message"` | Send a message to an agent |
 | `agent-relay agents:kill <name>` | Force kill an unresponsive agent |
 | `agent-relay agents:logs <name>` | View agent output logs |
 
@@ -193,7 +194,22 @@ agent-relay agents:logs Backend
 
 ### Sending Messages
 
-**File-based protocol** (required for AI agents):
+**CLI method (recommended for humans and scripts):**
+```bash
+# Send a message to an agent
+agent-relay send Backend "Please also add rate limiting to the login endpoint."
+
+# Send with custom sender name
+agent-relay send Backend "Hello from the build script" --from BuildBot
+
+# Broadcast to all agents
+agent-relay send "*" "Build starting in 5 minutes"
+
+# Send to a channel
+agent-relay send "#general" "Team standup in 10 minutes"
+```
+
+**File-based protocol** (for AI agents without CLI access):
 ```bash
 cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
 TO: Backend

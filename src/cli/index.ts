@@ -2413,6 +2413,51 @@ program
     }
   });
 
+// send - Send a message to an agent via the local daemon
+program
+  .command('send')
+  .description('Send a message to an agent')
+  .argument('<agent>', 'Target agent name (or * for broadcast, #channel for channel)')
+  .argument('<message>', 'Message to send')
+  .option('--from <name>', 'Sender name', 'cli')
+  .option('--thread <id>', 'Thread identifier')
+  .action(async (agent: string, message: string, options: { from: string; thread?: string }) => {
+    const paths = getProjectPaths();
+
+    const client = new RelayClient({
+      socketPath: paths.socketPath,
+      agentName: options.from,
+      entityType: 'user',
+      quiet: true,
+      reconnect: false,
+      maxReconnectAttempts: 0,
+      reconnectDelayMs: 0,
+      reconnectMaxDelayMs: 0,
+    });
+
+    try {
+      await client.connect();
+
+      const sent = client.sendMessage(agent, message, 'message', undefined, options.thread);
+      if (sent) {
+        console.log(`Message sent to ${agent}`);
+      } else {
+        console.error('Failed to send message');
+        process.exit(1);
+      }
+
+      client.disconnect();
+    } catch (err: any) {
+      if (err.code === 'ECONNREFUSED' || err.code === 'ENOENT' || err.message?.includes('Cannot connect')) {
+        console.error(`Cannot connect to daemon. Is it running?`);
+        console.log(`Run 'agent-relay up' to start the daemon.`);
+      } else {
+        console.error(`Failed to send message: ${err.message}`);
+      }
+      process.exit(1);
+    }
+  });
+
 // agents:kill - Kill a spawned agent by PID
 program
   .command('agents:kill')
