@@ -122,6 +122,7 @@ The dashboard should show your connection and allow you to spawn agents.
 
 ### Quick troubleshooting tips
 
+- **"Cannot connect to daemon" error:** The daemon must be running before spawning agents or sending messages. Run `agent-relay up` first, wait for "Daemon started", then retry your command.
 - **Clean, scriptable output:** Use `--json` on `agent-relay who` and `agent-relay agents` to avoid daemon log noise, e.g. `agent-relay who --json | jq '.'`.
 - **Daemon vs agent status:** `agent-relay status` checks the socket in the current project. If you started the daemon from a different directory or with a custom data dir, set the same env when checking:  
   `AGENT_RELAY_DATA_DIR=~/.local/share/agent-relay agent-relay status`. If the dashboard is up, `curl http://localhost:3888/health` should return JSON with `"status":"ok"`.
@@ -158,12 +159,14 @@ This section covers how agents can programmatically manage workers and orchestra
 
 ### Spawning Agents
 
+> ⚠️ **Important:** The daemon must be running before you can spawn agents. Run `agent-relay up` first, then spawn. If you see "Cannot connect to daemon" errors, start the daemon and try again.
+
 **CLI method (recommended):**
 ```bash
 agent-relay spawn Backend claude "Build the REST API for user management"
 ```
 
-The `spawn` command communicates directly with the daemon via socket—no dashboard required. This is the simplest way to programmatically create agents. Just ensure the daemon is running (`agent-relay up`).
+The `spawn` command communicates directly with the daemon via socket—no dashboard required. This is the simplest way to programmatically create agents.
 
 **File-based method** (for agents without CLI access):
 ```bash
