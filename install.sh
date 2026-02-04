@@ -319,6 +319,98 @@ has_command() {
     command -v "$1" &> /dev/null
 }
 
+# Download relay-acp binary for Zed editor integration
+download_relay_acp() {
+    step "Downloading relay-acp binary (Zed editor integration)..."
+
+    local binary_name="relay-acp-${PLATFORM}"
+    local compressed_url="https://github.com/$REPO_RELAY/releases/download/v${VERSION}/${binary_name}.gz"
+    local uncompressed_url="https://github.com/$REPO_RELAY/releases/download/v${VERSION}/${binary_name}"
+    local target_path="$BIN_DIR/relay-acp"
+    local temp_file="/tmp/relay-acp-download-$$"
+
+    mkdir -p "$BIN_DIR"
+
+    # Setup cleanup trap for temp files
+    trap 'rm -f "${temp_file}.gz" "${temp_file}"' EXIT
+
+    # Try compressed binary first
+    if has_command gunzip; then
+        if curl -fsSL "$compressed_url" -o "${temp_file}.gz" 2>/dev/null; then
+            local is_gzip=false
+            if has_command file; then
+                file "${temp_file}.gz" 2>/dev/null | grep -q "gzip" && is_gzip=true
+            else
+                head -c 2 "${temp_file}.gz" 2>/dev/null | od -An -tx1 | grep -q "1f 8b" && is_gzip=true
+            fi
+
+            if [ "$is_gzip" = true ]; then
+                if gunzip -c "${temp_file}.gz" > "$target_path" 2>/dev/null; then
+                    rm -f "${temp_file}.gz"
+                    chmod +x "$target_path"
+
+                    if "$target_path" --help &>/dev/null; then
+                        success "Downloaded relay-acp binary (Zed ACP bridge)"
+                        trap - EXIT
+                        return 0
+                    else
+                        warn "relay-acp binary failed verification, trying uncompressed..."
+                        rm -f "$target_path"
+                    fi
+                else
+                    rm -f "${temp_file}.gz" "$target_path"
+                fi
+            else
+                rm -f "${temp_file}.gz"
+            fi
+        fi
+    fi
+
+    # Fall back to uncompressed binary
+    if curl -fsSL "$uncompressed_url" -o "$target_path" 2>/dev/null; then
+        local file_size
+        file_size=$(stat -f%z "$target_path" 2>/dev/null || stat -c%s "$target_path" 2>/dev/null || echo "0")
+
+        if [ "$file_size" -gt 1000000 ]; then
+            chmod +x "$target_path"
+
+            if "$target_path" --help &>/dev/null; then
+                success "Downloaded relay-acp binary (Zed ACP bridge)"
+                trap - EXIT
+                return 0
+            else
+                rm -f "$target_path"
+            fi
+        else
+            rm -f "$target_path"
+        fi
+    fi
+
+    trap - EXIT
+    info "No relay-acp binary available for $PLATFORM"
+    return 1
+}
+
+# Install ACP bridge for Zed editor integration (fallback to npm if binary not available)
+install_acp_bridge() {
+    # Try binary first
+    if download_relay_acp; then
+        return 0
+    fi
+
+    # Fall back to npm if Node.js is available
+    if check_node; then
+        info "Installing ACP bridge via npm..."
+        if npm install -g @agent-relay/acp-bridge@"$VERSION" 2>/dev/null || npm install -g @agent-relay/acp-bridge 2>/dev/null; then
+            success "Installed relay-acp via npm (Zed ACP bridge)"
+            return 0
+        fi
+    fi
+
+    warn "relay-acp not available (Zed editor integration won't work)"
+    return 1
+}
+
 # Download with progress indicator
 download_with_progress() {
     local url="$1"
@@ -501,6 +593,9 @@ Or use nvm: curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/instal
         fi
     fi
 
+    # Install ACP bridge for Zed editor integration
+    install_acp_bridge || true
+
     success "Installed via npm"
 }
 
@@ -641,6 +736,8 @@ main() {
         download_dashboard_binary || true
         # Download dashboard UI files (required for standalone binary to serve the UI)
         download_dashboard_ui || true
+        # Install ACP bridge for Zed editor (requires Node.js)
+        install_acp_bridge || true
         verify_installation && print_usage && track_event "install_completed" && exit 0
     fi
 
