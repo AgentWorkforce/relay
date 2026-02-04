@@ -45,7 +45,7 @@ Navigate to **http://localhost:3888** to:
 | `agent-relay up` | Start daemon + dashboard |
 | `agent-relay down` | Stop daemon |
 | `agent-relay status` | Check daemon status |
-| `agent-relay create-agent -n Name <cmd>` | Create a named agent |
+| `agent-relay spawn <name> <cli> "task"` | Spawn a worker agent |
 | `agent-relay bridge <projects...>` | Bridge multiple projects |
 | `agent-relay doctor` | Diagnose issues |
 
@@ -63,11 +63,19 @@ Define roles by adding markdown files to your project:
 └── designer.md      # UI/UX
 ```
 
-Names automatically match roles (case-insensitive):
+Names automatically match roles (case-insensitive). Create agents using either method:
+
+**Option A: Dashboard (recommended for interactive use)**
+1. Open http://localhost:3888
+2. Click "Spawn Agent"
+3. Enter name "Lead" and select CLI "claude"
+
+**Option B: CLI (for scripting/automation)**
 ```bash
-agent-relay create-agent -n Lead claude    # Uses lead.md
+agent-relay spawn Lead claude "Your task instructions"
 ```
-Agents spawned by that name in the dashboard automatically assume that role.
+
+Agents with matching names automatically assume the corresponding role from your `.claude/agents/` directory.
 
 ## MCP Server
 

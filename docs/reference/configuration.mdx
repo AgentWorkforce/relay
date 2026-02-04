@@ -59,15 +59,24 @@ Agent Relay supports multiple storage backends:
 
 | Type | Description | Use Case |
 |------|-------------|----------|
-| `sqlite` | SQLite file-based storage | Default, production |
+| `jsonl` | JSONL file-based storage | Default, production |
+| `sqlite` | SQLite file-based storage | Low-latency queries |
 | `sqlite-batched` | SQLite with write batching | High-throughput |
 | `memory` / `none` | In-memory storage | Testing, no persistence |
 | `postgres` | PostgreSQL (future) | Distributed setups |
 
+### JSONL Configuration (Default)
+
+```bash
+# Default JSONL (no configuration needed)
+# Messages stored in .agent-relay/messages/YYYY-MM-DD.jsonl
+# Sessions stored in .agent-relay/sessions.jsonl
+```
+
 ### SQLite Configuration
 
 ```bash
-# Default SQLite
+# Use SQLite instead of JSONL
 export AGENT_RELAY_STORAGE_TYPE=sqlite
 export AGENT_RELAY_STORAGE_PATH=/path/to/database.sqlite
 

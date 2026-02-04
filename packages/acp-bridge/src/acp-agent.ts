@@ -15,6 +15,47 @@ import type {
 } from './types.js';
 
 /**
+ * Bounded circular cache for message deduplication.
+ * Evicts oldest entries when capacity is reached to prevent unbounded memory growth.
+ */
+class CircularDedupeCache {
+  private ids: Set<string> = new Set();
+  private ring: string[];
+  private head = 0;
+  private readonly capacity: number;
+
+  constructor(capacity = 2000) {
+    this.capacity = capacity;
+    this.ring = new Array(capacity);
+  }
+
+  /**
+   * Check if ID has been seen. Returns true if duplicate, false if new.
+   * Automatically adds new IDs and evicts oldest when at capacity.
+   */
+  check(id: string): boolean {
+    if (this.ids.has(id)) return true;
+
+    if (this.ids.size >= this.capacity) {
+      const oldest = this.ring[this.head];
+      if (oldest) this.ids.delete(oldest);
+    }
+
+    this.ring[this.head] = id;
+    this.ids.add(id);
+    this.head = (this.head + 1) % this.capacity;
+
+    return false;
+  }
+
+  clear(): void {
+    this.ids.clear();
+    this.ring = new Array(this.capacity);
+    this.head = 0;
+  }
+}
+
+/**
  * ACP Agent that bridges to Agent Relay
  */
 export class RelayACPAgent implements acp.Agent {
@@ -23,6 +64,8 @@ export class RelayACPAgent implements acp.Agent {
   private connection: acp.AgentSideConnection | null = null;
   private sessions = new Map<string, SessionState>();
   private messageBuffer = new Map<string, RelayMessage[]>();
+  private dedupeCache = new CircularDedupeCache(2000);
+  private closedSessionIds = new Set<string>();
 
   constructor(config: ACPBridgeConfig) {
     this.config = config;
@@ -68,7 +111,7 @@ export class RelayACPAgent implements acp.Agent {
 
       // Route channel messages to all sessions
       this.handleRelayMessage({
-        id: `channel-${Date.now()}`,
+        id: `channel-${randomUUID()}`,
         from: `${from} [${channel}]`,
         body,
         timestamp: Date.now(),
@@ -120,6 +163,8 @@ export class RelayACPAgent implements acp.Agent {
     // Clean up all sessions to prevent memory leaks
     this.sessions.clear();
     this.messageBuffer.clear();
+    this.dedupeCache.clear();
+    this.closedSessionIds.clear();
 
     this.relayClient?.destroy();
     this.relayClient = null;
@@ -133,6 +178,8 @@ export class RelayACPAgent implements acp.Agent {
   closeSession(sessionId: string): void {
     this.sessions.delete(sessionId);
     this.messageBuffer.delete(sessionId);
+    // Track closed session IDs to distinguish from arbitrary thread names
+    this.closedSessionIds.add(sessionId);
     this.debug('Closed session:', sessionId);
   }
 
@@ -172,7 +219,14 @@ export class RelayACPAgent implements acp.Agent {
     };
 
     this.sessions.set(sessionId, session);
-    this.messageBuffer.set(sessionId, []);
+
+    // Initialize buffer with any pending messages that arrived before session existed
+    const pendingMessages = this.messageBuffer.get('__pending__') || [];
+    this.messageBuffer.set(sessionId, [...pendingMessages]);
+    if (pendingMessages.length > 0) {
+      this.messageBuffer.delete('__pending__');
+      this.debug('Moved', pendingMessages.length, 'pending messages to new session');
+    }
 
     this.debug('Created new session:', sessionId);
 
@@ -212,6 +266,10 @@ export class RelayACPAgent implements acp.Agent {
 
     session.isProcessing = true;
     session.abortController = new AbortController();
+
+    // Note: __pending__ is drained in newSession() when session is created.
+    // We don't drain here to avoid race conditions with multi-session scenarios
+    // where multiple ACP clients (e.g., multiple Zed windows) are connected.
 
     try {
       // Extract text content from the prompt
@@ -327,7 +385,24 @@ export class RelayACPAgent implements acp.Agent {
 
     const responses: RelayMessage[] = [];
 
-    // Clear buffer
+    // First, stream any pending messages that arrived before this prompt
+    const existingMessages = this.messageBuffer.get(session.id) || [];
+    if (existingMessages.length > 0) {
+      for (const msg of existingMessages) {
+        await this.connection.sessionUpdate({
+          sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: {
+              type: 'text',
+              text: `**${msg.from}** (earlier): ${msg.body}\n\n`,
+            },
+          },
+        });
+      }
+    }
+
+    // Clear buffer for new responses
     this.messageBuffer.set(session.id, []);
 
     // Parse @mentions to target specific agents
@@ -449,6 +524,13 @@ export class RelayACPAgent implements acp.Agent {
   private handleRelayMessage(message: RelayMessage): void {
     this.debug('Received relay message:', message.from, message.body.substring(0, 50));
 
+    // Deduplicate messages by ID (same message may arrive via multiple routes)
+    // Uses bounded cache to prevent unbounded memory growth in long-running sessions
+    if (this.dedupeCache.check(message.id)) {
+      this.debug('Skipping duplicate message:', message.id);
+      return;
+    }
+
     // Check for system messages (crash notifications, etc.)
     if (message.data?.isSystemMessage) {
       this.handleSystemMessage(message);
@@ -462,15 +544,37 @@ export class RelayACPAgent implements acp.Agent {
         buffer.push(message);
         return;
       }
+      // Only drop if thread was a known ACP session that is now closed.
+      // Arbitrary thread names (e.g., "code-review") should fall through to broadcast.
+      if (this.closedSessionIds.has(message.thread)) {
+        this.debug('Dropping message for closed session thread:', message.thread);
+        return;
+      }
+      // Thread is not a known session ID - fall through to broadcast to all sessions
+      this.debug('Unknown thread, broadcasting:', message.thread);
     }
 
-    // If no specific session, add to all active sessions
-    for (const [sessionId, session] of this.sessions) {
-      if (session.isProcessing) {
-        const buffer = this.messageBuffer.get(sessionId) || [];
-        buffer.push(message);
-        this.messageBuffer.set(sessionId, buffer);
+    // Add to all sessions - active ones immediately, idle ones will see on next prompt
+    // This ensures async messages from spawned agents aren't dropped
+    let addedToAny = false;
+    for (const [sessionId] of this.sessions) {
+      const buffer = this.messageBuffer.get(sessionId) || [];
+      buffer.push(message);
+      this.messageBuffer.set(sessionId, buffer);
+      addedToAny = true;
+    }
+
+    // If no sessions exist yet, store in a bounded pending queue
+    // Cap at 500 messages to prevent unbounded memory growth
+    if (!addedToAny) {
+      const pending = this.messageBuffer.get('__pending__') || [];
+      pending.push(message);
+      // Evict oldest messages if queue exceeds max size
+      const maxPendingSize = 500;
+      while (pending.length > maxPendingSize) {
+        pending.shift();
       }
+      this.messageBuffer.set('__pending__', pending);
     }
   }
 

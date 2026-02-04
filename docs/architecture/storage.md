@@ -4,9 +4,9 @@ This describes the adapter stack, fallback behavior, and data policies.
 
 ## Components
 - **createStorageAdapter**: Factory that selects an adapter based on config/env and handles fallbacks.
-- **SQLite adapter**: Primary durable store (WAL-enabled, 7d retention default); tries `better-sqlite3` first, then `node:sqlite` (Node 22+).
+- **JSONL adapter**: Default durable store; file-based append-only log (`.agent-relay/messages/YYYY-MM-DD.jsonl`, sessions in `.agent-relay/sessions.jsonl`). Zero native dependencies.
+- **SQLite adapter**: Optional durable store (WAL-enabled, 7d retention default); tries `better-sqlite3` first, then `node:sqlite` (Node 22+).
 - **Batched SQLite adapter**: Wraps SQLite for higher write throughput via buffered flushes.
-- **JSONL adapter**: File-based append-only log (`.agent-relay/messages/YYYY-MM-DD.jsonl`, sessions in `.agent-relay/sessions.jsonl`) used when SQLite native modules fail or are blocked.
 - **Memory adapter**: Volatile fallback to keep the daemon running when persistence fails.
 
 ## Fallback Chain
@@ -16,32 +16,28 @@ Config/env ──┐
       createStorageAdapter
              |
              v
-    SQLite (default)
+    JSONL (default)
+      └─ .agent-relay/messages/*.jsonl
+             |
+     (failure to init)
+             v
+ SQLite [opt-in via AGENT_RELAY_STORAGE_TYPE=sqlite]
       ├─ better-sqlite3
       └─ node:sqlite (Node 22+)
-             |
-     (failure to init)
-             v
- SQLite (batched) [opt-in]
-      ├─ better-sqlite3
-      └─ node:sqlite
-             |
-     (failure to init)
-             v
- JSONL (append-only)
              |
      (failure to init)
              v
        Memory (volatile)
 ```
 Notes:
-- Current behavior: SQLite (better-sqlite3 → node:sqlite) → JSONL → Memory if native modules or permissions break persistence.
-- Each fallback logs the failure reason and a fix hint (upgrade Node or rebuild native deps).
+- Current behavior: JSONL (default) → Memory if filesystem write fails.
+- SQLite available via `AGENT_RELAY_STORAGE_TYPE=sqlite` for low-latency query needs.
+- Each fallback logs the failure reason and a fix hint.
 
 ## When to Use Each Adapter
-- **SQLite**: Default for durability and low latency; use whenever native modules are available.
+- **JSONL**: Default for durability with zero native dependencies; append-only per-day files.
+- **SQLite**: Low-latency queries; use when you need faster reads or complex queries.
 - **SQLite (batched)**: High-volume message bursts; tolerates small window of risk during batch flush.
-- **JSONL**: Environments where native builds are blocked but disk is available; append-only per-day files.
 - **Memory**: Tests, ephemeral runs, or emergency operation when persistence is broken.
 
 ## Performance Characteristics
