@@ -55,6 +55,7 @@ export abstract class ConfigurationRunner {
     this.relay = await createRelay({
       socketPath: this.config.socketPath,
       quiet: this.config.quiet,
+      spawnManager: true,
     });
     this.orchestrator = await this.relay.client('Orchestrator', {
       quiet: this.config.quiet,

@@ -779,6 +779,17 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       this.hasCgroupSetup = false;
     }
 
+    // Auto-save continuity state before shutdown
+    // Pass sessionEndData to populate handoff (fixes empty handoff issue)
+    if (this.continuity) {
+      try {
+        await this.continuity.autoSave(this.config.name, 'session_end', this.sessionEndData);
+        this.log(` Continuity auto-saved`);
+      } catch (err: any) {
+        this.logError(`Continuity auto-save failed: ${err.message}`);
+      }
+    }
+
     this.log(` Stopping...`);
 
     // Send shutdown command via socket
@@ -2500,6 +2511,9 @@ Then output: \`->relay-file:spawn\`
     if (!sessionEnd) {
       return;
     }
+
+    // Store SESSION_END data for use in autoSave (fixes empty handoff issue)
+    this.sessionEndData = sessionEnd;
 
     this.sessionEndProcessed = true;
     this.emit('session-end', {

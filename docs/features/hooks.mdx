@@ -1,0 +1,667 @@
+---
+title: Lifecycle Hooks
+description: Intercept and modify agent behavior at key lifecycle events
+---
+
+# Lifecycle Hooks
+
+Agent Relay's hooks system lets you intercept agent behavior at key lifecycle events. Use hooks to inject context, log events, integrate with external systems, or customize agent behavior.
+
+## Overview
+
+Hooks fire at specific points in an agent's lifecycle:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                     AGENT LIFECYCLE HOOKS                            │
+│                                                                      │
+│   ┌──────────────┐                                                   │
+│   │ onSessionStart │◄── Agent spawns/starts                         │
+│   └───────┬────────┘                                                 │
+│           │                                                          │
+│           ▼                                                          │
+│   ┌──────────────────────────────────────────────────────────────┐  │
+│   │                    Active Session                             │  │
+│   │                                                               │  │
+│   │  ┌─────────────┐  ┌──────────────────┐  ┌─────────────────┐  │  │
+│   │  │  onOutput   │  │ onMessageReceived │  │ onMessageSent   │  │  │
+│   │  └─────────────┘  └──────────────────┘  └─────────────────┘  │  │
+│   │                                                               │  │
+│   │  ┌─────────────┐  ┌─────────────┐                            │  │
+│   │  │   onIdle    │  │   onError   │                            │  │
+│   │  └─────────────┘  └─────────────┘                            │  │
+│   └──────────────────────────────────────────────────────────────┘  │
+│           │                                                          │
+│           ▼                                                          │
+│   ┌──────────────┐                                                   │
+│   │ onSessionEnd │◄── Agent stops/releases                          │
+│   └──────────────┘                                                   │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+## Quick Start
+
+```typescript
+import { HookRegistry, HooksConfig } from '@agent-relay/hooks';
+
+const config: HooksConfig = {
+  hooks: {
+    onSessionStart: async (ctx) => {
+      console.log(`Agent ${ctx.agentId} started`);
+      // Inject custom instructions
+      return { inject: "Remember to follow the style guide." };
+    },
+    onSessionEnd: async (ctx) => {
+      console.log(`Session ended after ${ctx.duration}ms`);
+      // Save metrics, cleanup resources, etc.
+    },
+  },
+  idleTimeout: 30000, // 30 seconds
+};
+
+// Create registry and register hooks
+const registry = new HookRegistry({
+  agentId: 'my-agent',
+  workingDir: process.cwd(),
+});
+registry.registerHooks(config);
+
+// Dispatch events
+await registry.dispatchSessionStart();
+```
+
+## Hook Events
+
+### onSessionStart
+
+Fires when an agent session begins.
+
+```typescript
+onSessionStart: async (ctx: SessionStartContext) => {
+  // ctx includes:
+  // - task?: string - Initial task description
+  // - taskId?: string - External task ID
+  // - taskSource?: string - Task source (e.g., 'github', 'linear')
+
+  console.log(`Starting task: ${ctx.task}`);
+
+  // Inject context at startup
+  return { inject: "Project uses TypeScript with strict mode." };
+}
+```
+
+**Use cases:**
+- Inject project-specific context or rules
+- Load previous session state
+- Initialize external integrations
+- Log session start for analytics
+
+---
+
+### onSessionEnd
+
+Fires when an agent session ends (graceful exit or crash).
+
+```typescript
+onSessionEnd: async (ctx: SessionEndContext) => {
+  // ctx includes:
+  // - exitCode?: number - Process exit code
+  // - duration: number - Session duration in ms
+  // - graceful: boolean - Whether shutdown was graceful
+
+  if (!ctx.graceful) {
+    await notifyTeam(`Agent crashed after ${ctx.duration}ms`);
+  }
+
+  await saveMetrics({ duration: ctx.duration, exitCode: ctx.exitCode });
+}
+```
+
+**Use cases:**
+- Save session metrics and logs
+- Cleanup resources
+- Notify on crashes
+- Create handoffs for continuity
+
+---
+
+### onOutput
+
+Fires when the agent produces output.
+
+```typescript
+onOutput: async (ctx: OutputContext) => {
+  // ctx includes:
+  // - content: string - Cleaned output (no ANSI codes)
+  // - rawContent: string - Raw output with ANSI codes
+  // - isComplete: boolean - Whether this is a complete line
+
+  // Detect specific patterns
+  if (ctx.content.includes('ERROR')) {
+    await logError(ctx.content);
+  }
+
+  // Suppress sensitive output
+  if (ctx.content.includes('API_KEY')) {
+    return { suppress: true };
+  }
+}
+```
+
+**Use cases:**
+- Log or stream agent output
+- Detect patterns (errors, completions)
+- Filter sensitive information
+- Trigger external actions
+
+---
+
+### onMessageReceived
+
+Fires when the agent receives a relay message.
+
+```typescript
+onMessageReceived: async (ctx: MessageReceivedContext) => {
+  // ctx includes:
+  // - from: string - Sender agent name
+  // - body: string - Message content
+  // - messageId: string - Unique message ID
+  // - thread?: string - Thread ID if threaded
+
+  console.log(`Message from ${ctx.from}: ${ctx.body}`);
+
+  // Auto-acknowledge urgent messages
+  if (ctx.body.includes('[URGENT]')) {
+    await ctx.send(ctx.from, 'ACK: Received urgent message');
+  }
+}
+```
+
+**Use cases:**
+- Log incoming messages
+- Auto-respond to patterns
+- Route messages to external systems
+- Implement message filtering
+
+---
+
+### onMessageSent
+
+Fires when the agent sends a relay message.
+
+```typescript
+onMessageSent: async (ctx: MessageSentContext) => {
+  // ctx includes:
+  // - to: string - Target agent name
+  // - body: string - Message content
+  // - thread?: string - Thread ID if threaded
+
+  await logMessage({ to: ctx.to, body: ctx.body, timestamp: Date.now() });
+}
+```
+
+**Use cases:**
+- Log outgoing messages
+- Track communication patterns
+- Implement rate limiting
+- Mirror messages to external systems
+
+---
+
+### onIdle
+
+Fires when the agent has been inactive for the configured timeout.
+
+```typescript
+onIdle: async (ctx: IdleContext) => {
+  // ctx includes:
+  // - idleDuration: number - How long agent has been idle (ms)
+  // - idleCount: number - Times idle hook has fired this session
+
+  if (ctx.idleCount >= 3) {
+    // Agent seems stuck
+    return { inject: "Are you waiting for something? Please continue or ask for help." };
+  }
+}
+```
+
+**Use cases:**
+- Detect stuck agents
+- Prompt for progress updates
+- Auto-save state during idle periods
+- Implement timeout behaviors
+
+---
+
+### onError
+
+Fires when an error occurs during agent operation.
+
+```typescript
+onError: async (ctx: ErrorContext) => {
+  // ctx includes:
+  // - error: Error - The error that occurred
+  // - phase?: string - Where error occurred ('output', 'message', 'tool')
+
+  console.error(`Error in ${ctx.phase}: ${ctx.error.message}`);
+  await alertOps({ error: ctx.error, agent: ctx.agentId });
+
+  // Attempt recovery
+  return { inject: "An error occurred. Please check the logs and retry." };
+}
+```
+
+**Use cases:**
+- Error logging and alerting
+- Automatic recovery attempts
+- Error aggregation and analysis
+
+---
+
+## Hook Context
+
+All hooks receive a base context with common properties:
+
+```typescript
+interface HookContext {
+  /** Unique agent instance identifier */
+  agentId: string;
+
+  /** Current session identifier */
+  sessionId: string;
+
+  /** Agent's working directory */
+  workingDir: string;
+
+  /** Environment variables */
+  env: Record<string, string | undefined>;
+
+  /** Inject content into the agent's input */
+  inject(content: string): void;
+
+  /** Send a relay message */
+  send(to: string, body: string): Promise<void>;
+
+  /** Persistent memory across hook invocations */
+  memory: HookMemory;
+
+  /** Relay interface for communication */
+  relay: HookRelay;
+
+  /** Recent agent outputs */
+  output: AgentOutput[];
+
+  /** Conversation history */
+  messages: ConversationMessage[];
+}
+```
+
+### Hook Memory
+
+Persist data across hook invocations within a session:
+
+```typescript
+onOutput: async (ctx) => {
+  // Track output count
+  const count = ctx.memory.get<number>('outputCount') ?? 0;
+  ctx.memory.set('outputCount', count + 1);
+
+  // Store important findings
+  if (ctx.content.includes('TODO')) {
+    const todos = ctx.memory.get<string[]>('todos') ?? [];
+    todos.push(ctx.content);
+    ctx.memory.set('todos', todos);
+  }
+},
+
+onSessionEnd: async (ctx) => {
+  const todos = ctx.memory.get<string[]>('todos') ?? [];
+  console.log(`Found ${todos.length} TODOs this session`);
+}
+```
+
+---
+
+## Hook Results
+
+Hooks can return a result object to modify behavior:
+
+```typescript
+interface HookResult {
+  /** Content to inject into the agent's input */
+  inject?: string;
+
+  /** Suppress the triggering action */
+  suppress?: boolean;
+
+  /** Stop processing remaining hooks */
+  stop?: boolean;
+}
+```
+
+### Injecting Content
+
+```typescript
+onSessionStart: async (ctx) => {
+  const rules = await loadProjectRules(ctx.workingDir);
+  return { inject: `Project rules:\n${rules}` };
+}
+```
+
+### Suppressing Actions
+
+```typescript
+onOutput: async (ctx) => {
+  // Don't show internal debug messages
+  if (ctx.content.startsWith('[DEBUG]')) {
+    return { suppress: true };
+  }
+}
+```
+
+### Stopping Hook Chain
+
+```typescript
+onMessageReceived: async (ctx) => {
+  if (ctx.from === 'blocked-agent') {
+    console.log('Blocked message from:', ctx.from);
+    return { stop: true, suppress: true };
+  }
+}
+```
+
+---
+
+## Pattern Handlers
+
+Register custom handlers for namespace patterns like `@deploy:staging`:
+
+```typescript
+const config: HooksConfig = {
+  patterns: {
+    '@deploy': async (target, message, ctx) => {
+      // target = 'staging', message = rest of the line
+      console.log(`Deploy to ${target}: ${message}`);
+      await triggerDeploy(target);
+      return { inject: `Deployment to ${target} initiated.` };
+    },
+
+    '@notify': async (target, message, ctx) => {
+      // target = 'slack', message = notification text
+      await sendNotification(target, message);
+    },
+  },
+};
+```
+
+Agents can then use these patterns in their output:
+```
+@deploy:staging Ready for QA testing
+@notify:slack Build completed successfully
+```
+
+---
+
+## HookRegistry API
+
+### Creating a Registry
+
+```typescript
+import { HookRegistry } from '@agent-relay/hooks';
+
+const registry = new HookRegistry({
+  agentId: 'my-agent',
+  agentName: 'MyAgent',
+  workingDir: '/path/to/project',
+  task: 'Implement feature X',
+  taskId: 'TASK-123',
+  taskSource: 'linear',
+  idleTimeout: 30000,
+  inject: (text) => { /* inject into agent */ },
+  send: async (to, body) => { /* send relay message */ },
+});
+```
+
+### Registering Hooks
+
+```typescript
+// From config object
+registry.registerHooks(config);
+
+// Individual lifecycle hooks
+registry.registerLifecycleHooks({
+  onSessionStart: myStartHook,
+  onError: [errorLogger, errorNotifier], // Multiple hooks
+});
+
+// Pattern handlers
+registry.registerPattern('@custom', customHandler);
+```
+
+### Dispatching Events
+
+```typescript
+// Session lifecycle
+await registry.dispatchSessionStart();
+await registry.dispatchSessionEnd(exitCode, graceful);
+
+// During session
+await registry.dispatchOutput(content, rawContent, isComplete);
+await registry.dispatchMessageReceived(from, body, messageId, thread);
+await registry.dispatchMessageSent(to, body, thread);
+await registry.dispatchIdle();
+await registry.dispatchError(error, phase);
+
+// Cleanup
+registry.destroy();
+```
+
+---
+
+## Configuration
+
+### HooksConfig
+
+```typescript
+interface HooksConfig {
+  /** Lifecycle hook handlers */
+  hooks?: {
+    onSessionStart?: OnSessionStartHook | OnSessionStartHook[];
+    onSessionEnd?: OnSessionEndHook | OnSessionEndHook[];
+    onOutput?: OnOutputHook | OnOutputHook[];
+    onMessageReceived?: OnMessageReceivedHook | OnMessageReceivedHook[];
+    onMessageSent?: OnMessageSentHook | OnMessageSentHook[];
+    onIdle?: OnIdleHook | OnIdleHook[];
+    onError?: OnErrorHook | OnErrorHook[];
+  };
+
+  /** Pattern handlers by namespace */
+  patterns?: Record<string, PatternHandler>;
+
+  /** Idle timeout in milliseconds (default: 30000) */
+  idleTimeout?: number;
+
+  /** Memory system configuration */
+  memory?: HooksMemoryConfig | boolean;
+}
+```
+
+### Memory Configuration
+
+Enable persistent memory across sessions:
+
+```typescript
+const config: HooksConfig = {
+  memory: {
+    type: 'supermemory', // or 'inmemory'
+    apiKey: process.env.SUPERMEMORY_API_KEY,
+    injectOnStart: true,     // Load relevant memories on start
+    maxStartMemories: 5,     // Max memories to inject
+    autoSave: true,          // Auto-detect and save learnings
+    autoSaveOnEnd: true,     // Save session summary on end
+  },
+};
+```
+
+---
+
+## Examples
+
+### Logging Hook
+
+```typescript
+const loggingConfig: HooksConfig = {
+  hooks: {
+    onSessionStart: async (ctx) => {
+      console.log(`[${new Date().toISOString()}] Session started: ${ctx.sessionId}`);
+      console.log(`  Task: ${ctx.task}`);
+      console.log(`  Working dir: ${ctx.workingDir}`);
+    },
+
+    onSessionEnd: async (ctx) => {
+      console.log(`[${new Date().toISOString()}] Session ended`);
+      console.log(`  Duration: ${ctx.duration}ms`);
+      console.log(`  Graceful: ${ctx.graceful}`);
+    },
+
+    onError: async (ctx) => {
+      console.error(`[${new Date().toISOString()}] Error in ${ctx.phase}:`, ctx.error);
+    },
+  },
+};
+```
+
+### Auto-Save Continuity Hook
+
+```typescript
+const continuityConfig: HooksConfig = {
+  hooks: {
+    onSessionEnd: async (ctx) => {
+      // Save session state on every exit
+      await saveContinuityState({
+        agentId: ctx.agentId,
+        sessionId: ctx.sessionId,
+        duration: ctx.duration,
+        graceful: ctx.graceful,
+        outputs: ctx.output,
+        messages: ctx.messages,
+      });
+    },
+
+    onSessionStart: async (ctx) => {
+      // Load previous state
+      const state = await loadContinuityState(ctx.agentId);
+      if (state) {
+        return { inject: formatContinuityContext(state) };
+      }
+    },
+  },
+};
+```
+
+### Slack Notification Hook
+
+```typescript
+const slackConfig: HooksConfig = {
+  hooks: {
+    onSessionEnd: async (ctx) => {
+      if (!ctx.graceful) {
+        await fetch(SLACK_WEBHOOK, {
+          method: 'POST',
+          body: JSON.stringify({
+            text: `Agent ${ctx.agentId} crashed after ${ctx.duration}ms`,
+          }),
+        });
+      }
+    },
+  },
+
+  patterns: {
+    '@slack': async (channel, message) => {
+      await postToSlack(channel, message);
+    },
+  },
+};
+```
+
+### Rate Limiting Hook
+
+```typescript
+const rateLimitConfig: HooksConfig = {
+  hooks: {
+    onMessageSent: async (ctx) => {
+      const key = `ratelimit:${ctx.to}`;
+      const count = ctx.memory.get<number>(key) ?? 0;
+
+      if (count > 10) {
+        console.warn(`Rate limit exceeded for messages to ${ctx.to}`);
+        return { suppress: true };
+      }
+
+      ctx.memory.set(key, count + 1);
+
+      // Reset counter after 1 minute
+      setTimeout(() => ctx.memory.delete(key), 60000);
+    },
+  },
+};
+```
+
+---
+
+## Best Practices
+
+<CardGroup cols={2}>
+
+<Card title="Keep Hooks Fast" icon="bolt">
+Hooks run synchronously in the event loop. Avoid long-running operations or use `setTimeout` for async work that doesn't need to block.
+</Card>
+
+<Card title="Handle Errors" icon="shield">
+Always wrap hook logic in try-catch. A failing hook shouldn't crash the agent.
+</Card>
+
+<Card title="Use Memory Wisely" icon="database">
+Hook memory persists for the session. Clear large objects when done to avoid memory leaks.
+</Card>
+
+<Card title="Chain Hooks" icon="link">
+Register multiple hooks for the same event. They run in order, and each can pass data via `inject`.
+</Card>
+
+</CardGroup>
+
+### Error Handling
+
+```typescript
+onOutput: async (ctx) => {
+  try {
+    await riskyOperation(ctx.content);
+  } catch (err) {
+    console.error('Hook error:', err);
+    // Don't throw - return gracefully
+    return {};
+  }
+}
+```
+
+### Async Operations
+
+```typescript
+onSessionStart: async (ctx) => {
+  // Fire-and-forget for non-critical async work
+  loadAnalytics(ctx.agentId).catch(console.error);
+
+  // Await only what's needed for injection
+  const context = await loadCriticalContext();
+  return { inject: context };
+}
+```
+
+---
+
+## See Also
+
+- [Session Continuity](/guides/session-continuity) - Persist state across sessions
+- [Configuration Reference](/reference/configuration) - Full config options
+- [SDK Reference](/reference/sdk) - Programmatic API

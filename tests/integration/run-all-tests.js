@@ -95,6 +95,7 @@ const sdkTests = [
   { file: 'sdk/09-budget-negotiation.js', name: 'SDK Budget Negotiation' },
   { file: 'sdk/10-mediated-negotiation.js', name: 'SDK Mediated Negotiation' },
   { file: 'sdk/14-orchestration-sdk.js', name: 'SDK Orchestration' },
+  { file: 'sdk/15-continuity-handoff.js', name: 'SDK Continuity Handoff' },
 ];
 
 // Results tracking

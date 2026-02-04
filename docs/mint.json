@@ -41,6 +41,7 @@
       "group": "Core Features",
       "pages": [
         "features/messaging",
+        "features/hooks",
         "features/dashboard",
         "features/bridging",
         "features/spawning",

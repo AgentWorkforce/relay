@@ -34,6 +34,8 @@ export interface RelayConfig {
   socketPath?: string;
   /** Suppress console logging. Default: true */
   quiet?: boolean;
+  /** Enable agent spawning. Default: false */
+  spawnManager?: boolean;
 }
 
 export interface Relay {
@@ -95,6 +97,7 @@ export async function createRelay(config: RelayConfig = {}): Promise<Relay> {
     socketPath,
     consensus: false, // Minimal mode - just messaging
     cloudSync: false, // No cloud features
+    spawnManager: config.spawnManager ?? false,
   });
 
   await daemon.start();
