@@ -122,7 +122,13 @@ detect_platform() {
 # Get latest version from GitHub
 get_latest_version() {
     if [ "$VERSION" = "latest" ]; then
-        VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO_RELAY/releases/latest" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+        # Use GitHub token if available (avoids rate limiting)
+        local auth_header=""
+        if [ -n "${GITHUB_TOKEN:-}" ]; then
+            auth_header="-H \"Authorization: token $GITHUB_TOKEN\""
+        fi
+
+        VERSION=$(eval curl -fsSL $auth_header "https://api.github.com/repos/$REPO_RELAY/releases/latest" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
         if [ -z "$VERSION" ]; then
             error "Failed to fetch latest version"
         fi
