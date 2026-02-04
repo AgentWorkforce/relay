@@ -16,24 +16,22 @@ A shadow agent is paired with a primary agent and receives copies of the primary
 - **Audit sessions** - Generate end-of-session reports
 - **Participate actively** - Engage in all conversations
 
-<Frame>
 ```
                 +------------------+
                 |  Primary Agent   |
-                |   (Lead)         |
+                |     (Lead)       |
                 +--------+---------+
                          |
-                    Messages
+                      Messages
                          |
          +---------------+---------------+
          |                               |
          v                               v
-+--------+--------+             +--------+--------+
-|  Relay Daemon   |   copy -->  |  Shadow Agent   |
-|  (routes)       |             |  (Auditor)      |
-+-----------------+             +-----------------+
++--------+---------+            +--------+---------+
+|   Relay Daemon   |   copy --> |   Shadow Agent   |
+|    (routes)      |            |    (Auditor)     |
++------------------+            +------------------+
 ```
-</Frame>
 
 ## Shadow Roles
 
