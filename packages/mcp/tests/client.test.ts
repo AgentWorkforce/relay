@@ -1,67 +1,60 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createRelayClient } from '../src/client.js';
-import { createConnection } from 'node:net';
+import { createRelayClientAdapter, type RelayClient } from '../src/client-adapter.js';
 
-// Mock node:net - this needs to be applied before any module imports it
-// Using automock: false ensures we can control the mock behavior
-vi.mock('node:net', async (importOriginal) => {
+/**
+ * Mock SDK RelayClient for testing the adapter layer.
+ * The adapter wraps SDK methods and translates between MCP and SDK interfaces.
+ */
+function createMockSdkClient() {
   return {
-    ...(await importOriginal<typeof import('node:net')>()),
-    createConnection: vi.fn(),
+    state: 'READY',
+    connect: vi.fn().mockResolvedValue(undefined),
+    destroy: vi.fn(),
+    // SDK sendMessage signature: (to, message, kind, data, thread)
+    sendMessage: vi.fn().mockReturnValue(true),
+    sendAndWait: vi.fn().mockResolvedValue({ success: true }),
+    // SDK broadcast signature: (message, kind, data)
+    broadcast: vi.fn().mockReturnValue(true),
+    spawn: vi.fn().mockResolvedValue({ success: true, name: 'Worker', pid: 12345 }),
+    // SDK release signature: (name, reason)
+    release: vi.fn().mockResolvedValue({ success: true }),
+    getInbox: vi.fn().mockResolvedValue([]),
+    listAgents: vi.fn().mockResolvedValue([]),
+    listConnectedAgents: vi.fn().mockResolvedValue([]),
+    getStatus: vi.fn().mockResolvedValue({ version: '1.0.0', uptime: 3600000 }),
+    getHealth: vi.fn().mockResolvedValue({ healthy: true }),
+    getMetrics: vi.fn().mockResolvedValue({ agents: [] }),
+    queryMessages: vi.fn().mockResolvedValue([]),
+    sendLog: vi.fn().mockResolvedValue(undefined),
+    subscribe: vi.fn().mockReturnValue(true),
+    unsubscribe: vi.fn().mockReturnValue(true),
+    joinChannel: vi.fn().mockReturnValue(true),
+    leaveChannel: vi.fn().mockReturnValue(true),
+    // SDK sendChannelMessage signature: (channel, message, options)
+    sendChannelMessage: vi.fn().mockReturnValue(true),
+    adminJoinChannel: vi.fn().mockReturnValue(true),
+    adminRemoveMember: vi.fn().mockReturnValue(true),
+    // SDK bindAsShadow signature: (primaryAgent, options)
+    bindAsShadow: vi.fn().mockReturnValue(true),
+    unbindAsShadow: vi.fn().mockReturnValue(true),
+    createProposal: vi.fn().mockReturnValue(true),
+    vote: vi.fn().mockReturnValue(true),
+    removeAgent: vi.fn().mockResolvedValue({ success: true, removed: true }),
+    // Event emitter methods
+    on: vi.fn(),
+    off: vi.fn(),
+    once: vi.fn(),
+    emit: vi.fn(),
   };
-});
-
-/**
- * Encode a response envelope into a length-prefixed frame (matches client protocol).
- * Format: 4-byte big-endian length + JSON payload
- */
-function encodeFrame(envelope: Record<string, unknown>): Buffer {
-  const json = JSON.stringify(envelope);
-  const data = Buffer.from(json, 'utf-8');
-  const header = Buffer.alloc(4);
-  header.writeUInt32BE(data.length, 0);
-  return Buffer.concat([header, data]);
 }
 
-/**
- * Decode a length-prefixed frame buffer to extract the JSON envelope.
- */
-function decodeFrame(buffer: Buffer): Record<string, unknown> {
-  const frameLength = buffer.readUInt32BE(0);
-  const payload = buffer.subarray(4, 4 + frameLength);
-  return JSON.parse(payload.toString('utf-8'));
-}
-
-/**
- * Generate a test ID for responses
- */
-function generateId(): string {
-  return `test-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-}
-
-describe('RelayClient', () => {
-  let mockSocket: any;
-  let client: any;
+describe('RelayClient Adapter', () => {
+  let mockSdkClient: ReturnType<typeof createMockSdkClient>;
+  let client: RelayClient;
 
   beforeEach(() => {
-    mockSocket = {
-      on: vi.fn(),
-      write: vi.fn(),
-      end: vi.fn(),
-      destroy: vi.fn(),
-    };
-    vi.mocked(createConnection).mockReturnValue(mockSocket);
-
-    // Setup socket event handlers
-    mockSocket.on.mockImplementation((event: string, cb: any) => {
-      if (event === 'connect') {
-        // Auto-connect for tests
-        setTimeout(cb, 0);
-      }
-      return mockSocket;
-    });
-
-    client = createRelayClient({
+    mockSdkClient = createMockSdkClient();
+    client = createRelayClientAdapter(mockSdkClient as any, {
       agentName: 'test-agent',
       socketPath: '/tmp/test.sock',
     });
@@ -71,374 +64,339 @@ describe('RelayClient', () => {
     vi.clearAllMocks();
   });
 
-  it('sends a message', async () => {
-    // send() uses fireAndForget - no response expected, just connect and write
-    await client.send('Alice', 'Hello');
+  describe('send', () => {
+    it('sends a message to target', async () => {
+      await client.send('Alice', 'Hello');
 
-    expect(createConnection).toHaveBeenCalledWith('/tmp/test.sock');
-    const writeCall = mockSocket.write.mock.calls[0][0];
-    const req = decodeFrame(writeCall);
-    expect(req.type).toBe('SEND');
-    // from/to are at envelope level, kind/body in payload
-    expect(req.from).toBe('test-agent');
-    expect(req.to).toBe('Alice');
-    expect(req.payload).toEqual({
-      kind: 'message',
-      body: 'Hello',
+      // SDK signature: sendMessage(to, message, kind, data, thread)
+      expect(mockSdkClient.sendMessage).toHaveBeenCalledWith('Alice', 'Hello', 'message', undefined, undefined);
+    });
+
+    it('sends a message with thread', async () => {
+      await client.send('Worker', 'Continue', { thread: 'task-123' });
+
+      expect(mockSdkClient.sendMessage).toHaveBeenCalledWith('Worker', 'Continue', 'message', undefined, 'task-123');
+    });
+
+    it('sends a message with custom kind and data', async () => {
+      await client.send('Bob', 'Status update', { kind: 'status', data: { progress: 50 } });
+
+      expect(mockSdkClient.sendMessage).toHaveBeenCalledWith('Bob', 'Status update', 'status', { progress: 50 }, undefined);
     });
   });
 
-  it('gets inbox', async () => {
-    const mockMessages = [
-      { id: '1', from: 'Alice', body: 'Hi' }
-    ];
+  describe('broadcast', () => {
+    it('broadcasts to all agents', async () => {
+      await client.broadcast('Hello everyone');
 
-    mockSocket.on.mockImplementation((event: string, cb: any) => {
-      if (event === 'connect') cb();
-      if (event === 'data') {
-        setTimeout(() => {
-          const writeCall = mockSocket.write.mock.calls[0][0];
-          const req = decodeFrame(writeCall);
-
-          // Response payload has 'messages' array (as expected by client)
-          const response = {
-            id: req.id,
-            payload: { messages: mockMessages },
-          };
-          cb(encodeFrame(response));
-        }, 10);
-      }
-      return mockSocket;
+      // SDK signature: broadcast(message, kind, data)
+      expect(mockSdkClient.broadcast).toHaveBeenCalledWith('Hello everyone', 'message', undefined);
     });
 
-    const inbox = await client.getInbox();
+    it('broadcasts with custom kind', async () => {
+      await client.broadcast('System notice', { kind: 'alert' });
 
-    expect(inbox).toHaveLength(1);
-    expect(inbox[0]).toEqual({
-      id: '1',
-      from: 'Alice',
-      content: 'Hi',
-    });
-
-    const req = decodeFrame(mockSocket.write.mock.calls[0][0]);
-    expect(req.type).toBe('INBOX');
-  });
-
-  it('handles spawn errors', async () => {
-    // spawn() uses fireAndForget, so errors come from connection failures
-    mockSocket.on.mockImplementation((event: string, cb: any) => {
-      if (event === 'error') {
-        // Simulate connection refused error
-        setTimeout(() => {
-          const err = new Error('Connection refused') as NodeJS.ErrnoException;
-          err.code = 'ECONNREFUSED';
-          cb(err);
-        }, 10);
-      }
-      return mockSocket;
-    });
-
-    const result = await client.spawn({
-      name: 'Worker',
-      cli: 'claude',
-      task: 'task',
-    });
-
-    expect(result.success).toBe(false);
-    expect(result.error).toContain('Cannot connect to daemon');
-  });
-
-  it('sends message with thread', async () => {
-    await client.send('Worker', 'Continue', { thread: 'task-123' });
-
-    const writeCall = mockSocket.write.mock.calls[0][0];
-    const req = decodeFrame(writeCall);
-    expect(req.payload).toEqual({
-      kind: 'message',
-      body: 'Continue',
-      thread: 'task-123',
+      expect(mockSdkClient.broadcast).toHaveBeenCalledWith('System notice', 'alert', undefined);
     });
   });
 
-  it('spawns worker with all options', async () => {
-    mockSocket.on.mockImplementation((event: string, cb: any) => {
-      if (event === 'connect') cb();
-      if (event === 'data') {
-        setTimeout(() => {
-          const writeCall = mockSocket.write.mock.calls[0][0];
-          const req = decodeFrame(writeCall);
-          const response = {
-            type: 'SPAWN_RESULT',
-            id: generateId(),
-            payload: {
-              replyTo: req.id,
-              success: true,
-              name: 'TestWorker',
-              pid: 12345,
-            },
-          };
-          cb(encodeFrame(response));
-        }, 10);
-      }
-      return mockSocket;
+  describe('spawn', () => {
+    it('spawns a worker with basic options', async () => {
+      mockSdkClient.spawn.mockResolvedValue({ success: true, name: 'Worker1', pid: 12345 });
+
+      const result = await client.spawn({
+        name: 'Worker1',
+        cli: 'claude',
+        task: 'Test task',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.name).toBe('Worker1');
+      expect(result.pid).toBe(12345);
+      expect(mockSdkClient.spawn).toHaveBeenCalledWith({
+        name: 'Worker1',
+        cli: 'claude',
+        task: 'Test task',
+      });
     });
 
-    const result = await client.spawn({
-      name: 'TestWorker',
-      cli: 'claude',
-      task: 'Test task',
-      model: 'claude-3-opus',
-      cwd: '/tmp/project',
+    it('spawns a worker with all options', async () => {
+      mockSdkClient.spawn.mockResolvedValue({ success: true, name: 'TestWorker', pid: 54321 });
+
+      const result = await client.spawn({
+        name: 'TestWorker',
+        cli: 'codex',
+        task: 'Complex task',
+        model: 'gpt-4',
+        cwd: '/tmp/project',
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockSdkClient.spawn).toHaveBeenCalledWith({
+        name: 'TestWorker',
+        cli: 'codex',
+        task: 'Complex task',
+        model: 'gpt-4',
+        cwd: '/tmp/project',
+      });
     });
 
-    expect(result.success).toBe(true);
-    expect(result.name).toBe('TestWorker');
-    expect(result.pid).toBe(12345);
+    it('handles spawn failure', async () => {
+      mockSdkClient.spawn.mockResolvedValue({ success: false, name: 'FailWorker', error: 'Out of resources' });
 
-    const writeCall = mockSocket.write.mock.calls[0][0];
-    const req = decodeFrame(writeCall);
-    expect(req.type).toBe('SPAWN');
-    expect(req.payload).toMatchObject({
-      name: 'TestWorker',
-      cli: 'claude',
-      task: 'Test task',
-      model: 'claude-3-opus',
-      cwd: '/tmp/project',
-      spawnerName: 'test-agent',
+      const result = await client.spawn({
+        name: 'FailWorker',
+        cli: 'claude',
+        task: 'Will fail',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Out of resources');
     });
   });
 
-  it('queries messages and returns mapped payload', async () => {
-    const messages = [
-      {
-        id: 'm1',
+  describe('release', () => {
+    it('releases a worker', async () => {
+      mockSdkClient.release.mockResolvedValue({ success: true });
+
+      const result = await client.release('Worker1');
+
+      expect(result.success).toBe(true);
+      // SDK signature: release(name, reason)
+      expect(mockSdkClient.release).toHaveBeenCalledWith('Worker1', undefined);
+    });
+
+    it('releases a worker with reason', async () => {
+      mockSdkClient.release.mockResolvedValue({ success: true });
+
+      const result = await client.release('Worker1', 'task completed');
+
+      expect(result.success).toBe(true);
+      expect(mockSdkClient.release).toHaveBeenCalledWith('Worker1', 'task completed');
+    });
+
+    it('handles release failure', async () => {
+      mockSdkClient.release.mockResolvedValue({ success: false, error: 'Agent not found' });
+
+      const result = await client.release('NonExistent');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Agent not found');
+    });
+  });
+
+  describe('getInbox', () => {
+    it('returns empty inbox', async () => {
+      mockSdkClient.getInbox.mockResolvedValue([]);
+
+      const inbox = await client.getInbox();
+
+      expect(inbox).toEqual([]);
+      expect(mockSdkClient.getInbox).toHaveBeenCalled();
+    });
+
+    it('maps inbox messages correctly', async () => {
+      mockSdkClient.getInbox.mockResolvedValue([
+        { id: '1', from: 'Alice', body: 'Hi there', channel: '#team', thread: 'thr-1' },
+        { id: '2', from: 'Bob', body: 'Hello' },
+      ]);
+
+      const inbox = await client.getInbox();
+
+      expect(inbox).toHaveLength(2);
+      expect(inbox[0]).toEqual({
+        id: '1',
         from: 'Alice',
-        to: 'Bob',
-        body: 'Hi',
+        content: 'Hi there',
         channel: '#team',
         thread: 'thr-1',
-        timestamp: 1700000000000,
-        status: 'delivered',
-        isBroadcast: false,
-        replyCount: 1,
-        data: { foo: 'bar' },
-      },
-    ];
-
-    mockSocket.on.mockImplementation((event: string, cb: any) => {
-      if (event === 'connect') cb();
-      if (event === 'data') {
-        setTimeout(() => {
-          const writeCall = mockSocket.write.mock.calls[0][0];
-          const req = decodeFrame(writeCall);
-          const response = {
-            id: req.id,
-            type: 'MESSAGES_RESPONSE',
-            payload: { messages },
-          };
-          cb(encodeFrame(response));
-        }, 10);
-      }
-      return mockSocket;
+      });
+      expect(inbox[1]).toEqual({
+        id: '2',
+        from: 'Bob',
+        content: 'Hello',
+        channel: undefined,
+        thread: undefined,
+      });
     });
 
-    const result = await client.queryMessages({
-      limit: 5,
-      sinceTs: 123,
-      from: 'Alice',
-      to: 'Bob',
-      thread: 'thr-1',
-      order: 'asc',
-    });
+    it('passes filter options', async () => {
+      mockSdkClient.getInbox.mockResolvedValue([]);
 
-    expect(result).toEqual(messages);
+      await client.getInbox({ limit: 10, unread_only: true, from: 'Alice' });
 
-    const req = decodeFrame(mockSocket.write.mock.calls[0][0]);
-    expect(req.type).toBe('MESSAGES_QUERY');
-    expect(req.payload).toEqual({
-      limit: 5,
-      sinceTs: 123,
-      from: 'Alice',
-      to: 'Bob',
-      thread: 'thr-1',
-      order: 'asc',
+      expect(mockSdkClient.getInbox).toHaveBeenCalledWith({
+        limit: 10,
+        unreadOnly: true,
+        from: 'Alice',
+        channel: undefined,
+      });
     });
   });
 
-  it('sends log frames', async () => {
-    const now = new Date('2024-01-01T00:00:00Z').getTime();
-    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(now);
+  describe('listAgents', () => {
+    it('returns list of agents', async () => {
+      const mockAgents = [
+        { name: 'Orchestrator', cli: 'sdk', idle: false },
+        { name: 'Worker1', cli: 'claude', idle: false, parent: 'Orchestrator' },
+        { name: 'Worker2', cli: 'claude', idle: true, parent: 'Orchestrator' },
+      ];
+      mockSdkClient.listAgents.mockResolvedValue(mockAgents);
 
-    await client.sendLog('hello');
+      const agents = await client.listAgents({ include_idle: true });
 
-    const writeCall = mockSocket.write.mock.calls[0][0];
-    const req = decodeFrame(writeCall);
-    expect(req.type).toBe('LOG');
-    expect(req.from).toBe('test-agent');
-    expect(req.payload).toEqual({
-      data: 'hello',
-      timestamp: now,
+      expect(agents).toHaveLength(3);
+      expect(agents[0].name).toBe('Orchestrator');
+      expect(agents[1].parent).toBe('Orchestrator');
+      expect(agents[2].idle).toBe(true);
     });
 
-    nowSpy.mockRestore();
-  });
+    it('passes options correctly', async () => {
+      mockSdkClient.listAgents.mockResolvedValue([]);
 
-  it('lists agents', async () => {
-    const mockAgents = [
-      { name: 'Orchestrator', cli: 'sdk', idle: false },
-      { name: 'Worker1', cli: 'claude', idle: false, parent: 'Orchestrator' },
-      { name: 'Worker2', cli: 'claude', idle: true, parent: 'Orchestrator' },
-    ];
+      await client.listAgents({ include_idle: false, project: 'myproject' });
 
-    mockSocket.on.mockImplementation((event: string, cb: any) => {
-      if (event === 'connect') cb();
-      if (event === 'data') {
-        setTimeout(() => {
-          const writeCall = mockSocket.write.mock.calls[0][0];
-          const req = decodeFrame(writeCall);
-          const response = {
-            id: req.id,
-            payload: { agents: mockAgents },
-          };
-          cb(encodeFrame(response));
-        }, 10);
-      }
-      return mockSocket;
-    });
-
-    const agents = await client.listAgents({ include_idle: true });
-
-    expect(agents).toHaveLength(3);
-    expect(agents[0].name).toBe('Orchestrator');
-    expect(agents[1].parent).toBe('Orchestrator');
-    expect(agents[2].idle).toBe(true);
-
-    const req = decodeFrame(mockSocket.write.mock.calls[0][0]);
-    expect(req.type).toBe('LIST_AGENTS');
-    expect(req.payload).toMatchObject({ includeIdle: true });
-  });
-
-  it('releases worker', async () => {
-    mockSocket.on.mockImplementation((event: string, cb: any) => {
-      if (event === 'connect') cb();
-      if (event === 'data') {
-        setTimeout(() => {
-          const writeCall = mockSocket.write.mock.calls[0][0];
-          const req = decodeFrame(writeCall);
-          const response = {
-            id: req.id,
-            payload: { success: true },
-          };
-          cb(encodeFrame(response));
-        }, 10);
-      }
-      return mockSocket;
-    });
-
-    const result = await client.release('Worker1', 'task completed');
-
-    expect(result.success).toBe(true);
-
-    const req = decodeFrame(mockSocket.write.mock.calls[0][0]);
-    expect(req.type).toBe('RELEASE');
-    expect(req.payload).toMatchObject({
-      name: 'Worker1',
-      reason: 'task completed',
+      expect(mockSdkClient.listAgents).toHaveBeenCalledWith({
+        includeIdle: false,
+        project: 'myproject',
+      });
     });
   });
 
-  it('handles release of non-existent worker', async () => {
-    mockSocket.on.mockImplementation((event: string, cb: any) => {
-      if (event === 'connect') cb();
-      if (event === 'data') {
-        setTimeout(() => {
-          const writeCall = mockSocket.write.mock.calls[0][0];
-          const req = decodeFrame(writeCall);
-          const response = {
-            id: req.id,
-            payload: { success: false, error: 'Agent not found' },
-          };
-          cb(encodeFrame(response));
-        }, 10);
-      }
-      return mockSocket;
+  describe('getStatus', () => {
+    it('returns connection status', async () => {
+      mockSdkClient.getStatus.mockResolvedValue({ version: '2.0.0', uptime: 7200000 });
+      mockSdkClient.state = 'READY';
+
+      const status = await client.getStatus();
+
+      expect(status.connected).toBe(true);
+      expect(status.agentName).toBe('test-agent');
+      expect(status.daemonVersion).toBe('2.0.0');
+      expect(status.uptime).toBe('7200s');
     });
 
-    const result = await client.release('NonExistent');
+    it('handles error state by returning disconnected', async () => {
+      // The adapter catches errors from getStatus and returns disconnected status
+      // Need to make getStatus throw (not connect) since ensureReady won't call connect if state is READY
+      mockSdkClient.getStatus.mockRejectedValue(new Error('Connection failed'));
 
-    expect(result.success).toBe(false);
-    expect(result.error).toBe('Agent not found');
+      const status = await client.getStatus();
+
+      expect(status.connected).toBe(false);
+      expect(status.agentName).toBe('test-agent');
+    });
   });
 
-  it('gets status', async () => {
-    mockSocket.on.mockImplementation((event: string, cb: any) => {
-      if (event === 'connect') cb();
-      if (event === 'data') {
-        setTimeout(() => {
-          const writeCall = mockSocket.write.mock.calls[0][0];
-          const req = decodeFrame(writeCall);
-          const response = {
-            id: req.id,
-            payload: { version: '1.0.0', uptime: 3600000 },
-          };
-          cb(encodeFrame(response));
-        }, 10);
-      }
-      return mockSocket;
+  describe('queryMessages', () => {
+    it('returns queried messages', async () => {
+      const mockMessages = [
+        {
+          id: 'm1',
+          from: 'Alice',
+          to: 'Bob',
+          body: 'Hi',
+          channel: '#team',
+          thread: 'thr-1',
+          timestamp: 1700000000000,
+        },
+      ];
+      mockSdkClient.queryMessages.mockResolvedValue(mockMessages);
+
+      const result = await client.queryMessages({
+        limit: 5,
+        from: 'Alice',
+        to: 'Bob',
+        thread: 'thr-1',
+        order: 'asc',
+      });
+
+      expect(result).toEqual(mockMessages);
+      expect(mockSdkClient.queryMessages).toHaveBeenCalledWith({
+        limit: 5,
+        from: 'Alice',
+        to: 'Bob',
+        thread: 'thr-1',
+        order: 'asc',
+      });
     });
-
-    const status = await client.getStatus();
-
-    expect(status.connected).toBe(true);
-    expect(status.agentName).toBe('test-agent');
-    expect(status.daemonVersion).toBe('1.0.0');
-    expect(status.uptime).toBe('3600s');
   });
 
-  it('handles ENOENT error (socket not found)', async () => {
-    mockSocket.on.mockImplementation((event: string, cb: any) => {
-      if (event === 'error') {
-        setTimeout(() => {
-          const err = new Error('Socket not found') as NodeJS.ErrnoException;
-          err.code = 'ENOENT';
-          cb(err);
-        }, 10);
-      }
-      return mockSocket;
+  describe('sendLog', () => {
+    it('sends log data', async () => {
+      await client.sendLog('hello world');
+
+      expect(mockSdkClient.sendLog).toHaveBeenCalledWith('hello world');
+    });
+  });
+
+  describe('channels', () => {
+    it('joins a channel', async () => {
+      mockSdkClient.joinChannel.mockReturnValue(true);
+
+      const result = await client.joinChannel('#general', 'TestAgent');
+
+      expect(result.success).toBe(true);
+      expect(mockSdkClient.joinChannel).toHaveBeenCalledWith('#general', 'TestAgent');
     });
 
-    const result = await client.spawn({
-      name: 'Worker',
-      cli: 'claude',
-      task: 'task',
+    it('leaves a channel', async () => {
+      mockSdkClient.leaveChannel.mockReturnValue(true);
+
+      const result = await client.leaveChannel('#general', 'done with project');
+
+      expect(result.success).toBe(true);
+      expect(mockSdkClient.leaveChannel).toHaveBeenCalledWith('#general', 'done with project');
     });
 
-    expect(result.success).toBe(false);
-    expect(result.error).toContain('Cannot connect to daemon');
+    it('sends channel message', async () => {
+      await client.sendChannelMessage('#team', 'Hello team');
+
+      // SDK signature: sendChannelMessage(channel, message, { thread })
+      expect(mockSdkClient.sendChannelMessage).toHaveBeenCalledWith('#team', 'Hello team', { thread: undefined });
+    });
+
+    it('sends channel message with thread', async () => {
+      await client.sendChannelMessage('#team', 'Reply', { thread: 'topic-1' });
+
+      expect(mockSdkClient.sendChannelMessage).toHaveBeenCalledWith('#team', 'Reply', { thread: 'topic-1' });
+    });
+  });
+
+  describe('shadow binding', () => {
+    it('binds as shadow', async () => {
+      mockSdkClient.bindAsShadow.mockReturnValue(true);
+
+      const result = await client.bindAsShadow('PrimaryAgent', { speakOn: ['CODE_WRITTEN'] });
+
+      expect(result.success).toBe(true);
+      expect(mockSdkClient.bindAsShadow).toHaveBeenCalledWith('PrimaryAgent', { speakOn: ['CODE_WRITTEN'] });
+    });
+
+    it('unbinds as shadow', async () => {
+      mockSdkClient.unbindAsShadow.mockReturnValue(true);
+
+      const result = await client.unbindAsShadow('PrimaryAgent');
+
+      expect(result.success).toBe(true);
+      expect(mockSdkClient.unbindAsShadow).toHaveBeenCalledWith('PrimaryAgent');
+    });
   });
 });
 
 // ============================================================================
-// Multi-Agent Client Scenarios (SDK parity)
+// Multi-Agent Client Scenarios
 // ============================================================================
 
 describe('RelayClient multi-agent scenarios', () => {
-  let mockSocket: any;
+  let mockSdkClient: ReturnType<typeof createMockSdkClient>;
+  let client: RelayClient;
 
   beforeEach(() => {
-    mockSocket = {
-      on: vi.fn(),
-      write: vi.fn(),
-      end: vi.fn(),
-      destroy: vi.fn(),
-    };
-    vi.mocked(createConnection).mockReturnValue(mockSocket);
-
-    mockSocket.on.mockImplementation((event: string, cb: any) => {
-      if (event === 'connect') {
-        setTimeout(cb, 0);
-      }
-      return mockSocket;
+    mockSdkClient = createMockSdkClient();
+    client = createRelayClientAdapter(mockSdkClient as any, {
+      agentName: 'orchestrator',
+      socketPath: '/tmp/test.sock',
     });
   });
 
@@ -447,101 +405,43 @@ describe('RelayClient multi-agent scenarios', () => {
   });
 
   it('spawns multiple workers from same orchestrator', async () => {
-    const client = createRelayClient({
-      agentName: 'orchestrator',
-      socketPath: '/tmp/test.sock',
+    let spawnCount = 0;
+    mockSdkClient.spawn.mockImplementation(async (opts: any) => {
+      spawnCount++;
+      return { success: true, name: opts.name, pid: 10000 + spawnCount };
     });
 
-    let callCount = 0;
-    mockSocket.on.mockImplementation((event: string, cb: any) => {
-      if (event === 'connect') cb();
-      if (event === 'data') {
-        setTimeout(() => {
-          const writeCall = mockSocket.write.mock.calls[callCount][0];
-          const req = decodeFrame(writeCall);
-          const response = {
-            type: 'SPAWN_RESULT',
-            id: generateId(),
-            payload: {
-              replyTo: req.id,
-              success: true,
-              name: (req.payload as any).name,
-              pid: 10000 + callCount,
-            },
-          };
-          callCount++;
-          cb(encodeFrame(response));
-        }, 10);
-      }
-      return mockSocket;
-    });
+    const results = await Promise.all([
+      client.spawn({ name: 'Worker1', cli: 'claude', task: 'Task 1' }),
+      client.spawn({ name: 'Worker2', cli: 'claude', task: 'Task 2' }),
+      client.spawn({ name: 'Worker3', cli: 'codex', task: 'Task 3' }),
+    ]);
 
-    // Spawn Worker1
-    await client.spawn({ name: 'Worker1', cli: 'claude', task: 'Task 1' });
-
-    // Spawn Worker2
-    await client.spawn({ name: 'Worker2', cli: 'claude', task: 'Task 2' });
-
-    // Spawn Worker3
-    await client.spawn({ name: 'Worker3', cli: 'codex', task: 'Task 3' });
-
-    expect(mockSocket.write).toHaveBeenCalledTimes(3);
-
-    // Verify each spawn has correct spawnerName
-    for (let i = 0; i < 3; i++) {
-      const req = decodeFrame(mockSocket.write.mock.calls[i][0]);
-      expect(req.type).toBe('SPAWN');
-      expect((req.payload as any).spawnerName).toBe('orchestrator');
-    }
+    expect(results).toHaveLength(3);
+    expect(results.every(r => r.success)).toBe(true);
+    expect(mockSdkClient.spawn).toHaveBeenCalledTimes(3);
   });
 
   it('sends messages to multiple agents', async () => {
-    const client = createRelayClient({
-      agentName: 'coordinator',
-      socketPath: '/tmp/test.sock',
-    });
-
     const targets = ['Alice', 'Bob', 'Charlie'];
-    for (const target of targets) {
-      await client.send(target, `Hello ${target}`);
-    }
 
-    expect(mockSocket.write).toHaveBeenCalledTimes(3);
+    await Promise.all(
+      targets.map(target => client.send(target, `Hello ${target}`))
+    );
 
-    // Verify each message has correct target
-    const reqs = mockSocket.write.mock.calls.map((call: any) => decodeFrame(call[0]));
-    expect(reqs[0].to).toBe('Alice');
-    expect(reqs[1].to).toBe('Bob');
-    expect(reqs[2].to).toBe('Charlie');
+    expect(mockSdkClient.sendMessage).toHaveBeenCalledTimes(3);
+    // SDK signature: sendMessage(to, message, kind, data, thread)
+    expect(mockSdkClient.sendMessage).toHaveBeenCalledWith('Alice', 'Hello Alice', 'message', undefined, undefined);
+    expect(mockSdkClient.sendMessage).toHaveBeenCalledWith('Bob', 'Hello Bob', 'message', undefined, undefined);
+    expect(mockSdkClient.sendMessage).toHaveBeenCalledWith('Charlie', 'Hello Charlie', 'message', undefined, undefined);
   });
 
   it('handles inbox with multiple senders', async () => {
-    const mockMessages = [
+    mockSdkClient.getInbox.mockResolvedValue([
       { id: '1', from: 'Alice', body: 'Hello from Alice' },
       { id: '2', from: 'Bob', body: 'Hello from Bob' },
       { id: '3', from: 'Charlie', body: 'Hello from Charlie' },
-    ];
-
-    mockSocket.on.mockImplementation((event: string, cb: any) => {
-      if (event === 'connect') cb();
-      if (event === 'data') {
-        setTimeout(() => {
-          const writeCall = mockSocket.write.mock.calls[0][0];
-          const req = decodeFrame(writeCall);
-          const response = {
-            id: req.id,
-            payload: { messages: mockMessages },
-          };
-          cb(encodeFrame(response));
-        }, 10);
-      }
-      return mockSocket;
-    });
-
-    const client = createRelayClient({
-      agentName: 'coordinator',
-      socketPath: '/tmp/test.sock',
-    });
+    ]);
 
     const inbox = await client.getInbox();
 
