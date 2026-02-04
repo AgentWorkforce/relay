@@ -2,6 +2,8 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { RelayClient, MetricsResponse } from '../client-adapter.js';
 
+type AgentMetric = MetricsResponse['agents'][number];
+
 export const relayMetricsSchema = z.object({
   agent: z.string().optional().describe('Filter metrics to a specific agent'),
 });
@@ -70,9 +72,9 @@ export async function handleRelayMetrics(
 
     // Filter to specific agent if requested
     if (input.agent) {
-      agents = agents.filter(a => a.name === input.agent);
+      agents = agents.filter((a: AgentMetric) => a.name === input.agent);
       if (agents.length === 0) {
-        const available = data.agents.map(a => a.name).join(', ');
+        const available = data.agents.map((a: AgentMetric) => a.name).join(', ');
         return `Agent "${input.agent}" not found.\n\nAvailable agents: ${available || 'none'}`;
       }
     }
@@ -115,8 +117,8 @@ export async function handleRelayMetrics(
     }
 
     // Add recommendations for high resource usage
-    const criticalAgents = agents.filter(a => a.alertLevel === 'critical');
-    const warningAgents = agents.filter(a => a.alertLevel === 'warning');
+    const criticalAgents = agents.filter((a: AgentMetric) => a.alertLevel === 'critical');
+    const warningAgents = agents.filter((a: AgentMetric) => a.alertLevel === 'warning');
 
     if (criticalAgents.length > 0 || warningAgents.length > 0) {
       lines.push('');
