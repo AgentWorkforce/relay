@@ -222,10 +222,7 @@ export function createRelayClientAdapter(client: SdkRelayClient, ctx: RelayClien
 
     async release(name, reason) {
       await ensureReady(client);
-      // Type assertion needed until SDK is published with reason parameter
-      // SDK 2.1.13 has: release(name, timeoutMs?)
-      // SDK 2.1.14+ has: release(name, reason?, timeoutMs?)
-      return (client as any).release(name, reason);
+      return client.release(name, reason);
     },
 
     async getStatus() {
