@@ -36,6 +36,12 @@ export interface SpawnManagerConfig {
   onMarkSpawning?: (agentName: string) => void;
   /** Callback to clear the spawning flag for an agent */
   onClearSpawning?: (agentName: string) => void;
+  /**
+   * Fallback callback when spawner.release() fails.
+   * Used to force-disconnect agents that are connected but weren't spawned by this instance.
+   * Returns true if the fallback successfully released the agent.
+   */
+  onReleaseFallback?: (agentName: string, reason?: string) => Promise<boolean>;
 }
 
 /**
@@ -47,6 +53,7 @@ export class SpawnManager {
   private spawnTimes: Map<string, number> = new Map();
   private agentClis: Map<string, string> = new Map();
   private onAgentSpawn?: () => void;
+  private onReleaseFallback?: (agentName: string, reason?: string) => Promise<boolean>;
 
   constructor(config: SpawnManagerConfig) {
     this.spawner = new AgentSpawner({
@@ -56,6 +63,7 @@ export class SpawnManager {
       onClearSpawning: config.onClearSpawning,
     });
     this.onAgentSpawn = config.onAgentSpawn;
+    this.onReleaseFallback = config.onReleaseFallback;
 
     if (config.cloudPersistence) {
       this.spawner.setCloudPersistence(config.cloudPersistence);
@@ -147,6 +155,7 @@ export class SpawnManager {
   /**
    * Handle a RELEASE message from a connection.
    * Releases the requested agent and sends RELEASE_RESULT back.
+   * If the agent wasn't spawned by this instance, falls back to force-disconnecting.
    */
   async handleRelease(connection: Connection, envelope: Envelope<ReleasePayload>): Promise<void> {
     const payload = envelope.payload;
@@ -155,13 +164,22 @@ export class SpawnManager {
     console.log(`[spawn-manager] RELEASE request from ${requester ?? 'unknown'}: ${payload.name}`);
 
     try {
-      const success = await this.spawner.release(payload.name);
+      // First try to release via spawner (for agents we spawned)
+      let success = await this.spawner.release(payload.name);
+      let releasedVia = 'spawner';
+
+      // If spawner doesn't have the worker, try the fallback (force-disconnect)
+      if (!success && this.onReleaseFallback) {
+        console.log(`[spawn-manager] Worker ${payload.name} not in spawner, trying fallback...`);
+        success = await this.onReleaseFallback(payload.name, payload.reason);
+        releasedVia = 'fallback';
+      }
 
       this.sendResult(connection, 'RELEASE_RESULT', envelope.id, {
         replyTo: envelope.id,
         success,
         name: payload.name,
-        error: success ? undefined : `Worker ${payload.name} not found`,
+        error: success ? undefined : `Agent ${payload.name} not found`,
       });
 
       // Track successful release
@@ -187,7 +205,7 @@ export class SpawnManager {
         this.agentClis.delete(payload.name);
       }
 
-      console.log(`[spawn-manager] RELEASE ${success ? 'succeeded' : 'failed'}: ${payload.name}`);
+      console.log(`[spawn-manager] RELEASE ${success ? 'succeeded' : 'failed'}: ${payload.name}${success ? ` (via ${releasedVia})` : ''}`);
     } catch (err: unknown) {
       const error = err instanceof Error ? err.message : String(err);
       this.sendResult(connection, 'RELEASE_RESULT', envelope.id, {

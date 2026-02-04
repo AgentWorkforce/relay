@@ -350,6 +350,23 @@ export class Daemon {
         // Wire spawn tracking to router so messages are queued during spawn
         onMarkSpawning: (name: string) => this.router.markSpawning(name),
         onClearSpawning: (name: string) => this.router.clearSpawning(name),
+        // Fallback for releasing agents not spawned by this instance
+        onReleaseFallback: async (agentName: string, _reason?: string): Promise<boolean> => {
+          // Check if agent is connected to the router
+          if (this.router.forceRemoveAgent(agentName)) {
+            log.info(`Release fallback: force-disconnected agent ${agentName}`);
+            // Also clean up from storage if available
+            if (this.storage?.removeAgent) {
+              try {
+                await this.storage.removeAgent(agentName);
+              } catch (err) {
+                log.warn(`Failed to remove agent ${agentName} from storage:`, { error: String(err) });
+              }
+            }
+            return true;
+          }
+          return false;
+        },
       });
       log.info('SpawnManager initialized with spawn tracking callbacks');
     }
