@@ -122,7 +122,7 @@ async function main() {
   if (!agentConnected) {
     console.log('\n   Timeout: Claude agent did not connect');
     orchestrator.disconnect();
-    console.log('\n=== Test 08 (MCP/${CLI.toUpperCase()}) FAILED ===');
+    console.log(`\n=== Test 08 (MCP/${CLI.toUpperCase()}) FAILED ===`);
     process.exit(1);
   }
 
@@ -187,10 +187,10 @@ async function main() {
   console.log('   Done\n');
 
   if (acknowledgmentReceived) {
-    console.log('=== Test 08 (MCP/${CLI.toUpperCase()}) PASSED ===');
+    console.log(`=== Test 08 (MCP/${CLI.toUpperCase()}) PASSED ===`);
     process.exit(0);
   } else {
-    console.log('=== Test 08 (MCP/${CLI.toUpperCase()}) FAILED ===');
+    console.log(`=== Test 08 (MCP/${CLI.toUpperCase()}) FAILED ===`);
     process.exit(1);
   }
 }
