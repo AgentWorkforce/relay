@@ -2801,7 +2801,7 @@ program
 
       await client.connect();
 
-      const result = await client.release(name, 10000);
+      const result = await client.release(name);
 
       // Set success flag BEFORE disconnect - disconnect errors shouldn't mask release success
       daemonReleaseSucceeded = true;

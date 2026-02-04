@@ -28,7 +28,8 @@ import { AgentPolicyService, type CloudPolicyFetcher } from '@agent-relay/policy
 import { buildClaudeArgs, findAgentConfig } from '@agent-relay/config/agent-config';
 import { composeForAgent, type AgentRole } from '@agent-relay/wrapper';
 import { getUserDirectoryService } from '@agent-relay/user-directory';
-import { installMcpConfig } from '@agent-relay/mcp';
+// Dynamic import to avoid circular dependency (bridge -> mcp -> sdk -> daemon -> bridge)
+// import { installMcpConfig } from '@agent-relay/mcp';
 import type {
   SpawnRequest,
   SpawnResult,
@@ -995,6 +996,8 @@ export class AgentSpawner {
 
       if (!hasMcpConfig && mcpAutoInstallEnabled) {
         try {
+          // Dynamic import to avoid circular dependency
+          const { installMcpConfig } = await import('@agent-relay/mcp');
           const result = installMcpConfig(projectMcpConfigPath, {
             configKey: 'mcpServers',
             // Set RELAY_SOCKET so MCP server finds daemon regardless of CWD

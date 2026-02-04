@@ -27,13 +27,20 @@
     "@agent-relay/utils": "2.1.13",
     "@agent-relay/policy": "2.1.13",
     "@agent-relay/user-directory": "2.1.13",
-    "@agent-relay/wrapper": "2.1.13",
-    "@agent-relay/mcp": "2.1.13"
+    "@agent-relay/wrapper": "2.1.13"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
+  },
+  "peerDependencies": {
+    "@agent-relay/mcp": ">=2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@agent-relay/mcp": {
+      "optional": true
+    }
   },
   "publishConfig": {
     "access": "public"

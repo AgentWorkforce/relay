@@ -83,7 +83,11 @@ export async function createRelay(config: RelayConfig = {}): Promise<Relay> {
   // Lazy-load daemon to keep SDK lightweight for client-only users
   let Daemon: new (config: Record<string, unknown>) => DaemonLike;
   try {
-    const daemonModule = await import('@agent-relay/daemon');
+    // Dynamic import using variable to prevent TypeScript from resolving the module
+    // This avoids circular dependency: sdk -> daemon -> bridge -> mcp -> sdk
+    const daemonModulePath = '@agent-relay/daemon';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const daemonModule: any = await import(/* webpackIgnore: true */ daemonModulePath);
     Daemon = daemonModule.Daemon;
   } catch {
     throw new Error(

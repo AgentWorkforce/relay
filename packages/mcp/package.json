@@ -49,16 +49,24 @@
   "dependencies": {
     "@agent-relay/config": "2.1.13",
     "@agent-relay/protocol": "2.1.13",
-    "@agent-relay/sdk": "2.1.13",
     "@agent-relay/utils": "2.1.13",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "smol-toml": "^1.6.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@agent-relay/sdk": "2.1.13",
     "@types/node": "^22.19.3",
     "typescript": "^5.9.3",
     "vitest": "^2.1.9"
+  },
+  "peerDependencies": {
+    "@agent-relay/sdk": ">=2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@agent-relay/sdk": {
+      "optional": true
+    }
   },
   "keywords": [
     "mcp",
