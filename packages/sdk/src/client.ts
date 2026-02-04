@@ -936,7 +936,7 @@ export class RelayClient {
    * @param name - Agent name to release
    * @param timeoutMs - Timeout for release operation (default: 10000ms)
    */
-  async release(name: string, timeoutMs = 10000): Promise<ReleaseResultPayload> {
+  async release(name: string, reason?: string, timeoutMs = 10000): Promise<ReleaseResultPayload> {
     if (this._state !== 'READY') {
       throw new Error('Client not ready');
     }
@@ -958,6 +958,7 @@ export class RelayClient {
         ts: Date.now(),
         payload: {
           name,
+          reason,
         },
       };
 
@@ -1828,4 +1829,3 @@ export class RelayClient {
     }, delay);
   }
 }
-

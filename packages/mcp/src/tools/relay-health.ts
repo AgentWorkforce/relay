@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import type { RelayClient, HealthResponse } from '../client.js';
+import type { RelayClient, HealthResponse } from '../client-adapter.js';
 
 export const relayHealthSchema = z.object({
   include_crashes: z.boolean().optional().default(true).describe('Include recent crash history'),

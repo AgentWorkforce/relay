@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import type { RelayClient } from '../client.js';
+import type { RelayClient } from '../client-adapter.js';
 
 export const relayConnectedSchema = z.object({
   project: z.string().optional().describe('Filter by project (for multi-project setups)'),

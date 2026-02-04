@@ -1,0 +1,20 @@
+name: Quick Test
+description: Minimal benchmark for testing swarm vs single agent
+version: "1.0.0"
+
+tasks:
+  - id: count-files
+    description: Count TypeScript files in packages/benchmark/src and list their exports
+    files:
+      - packages/benchmark/src
+    expectedOutcome: Accurate count and export list
+    complexity: low
+    timeoutMs: 60000
+
+  - id: summarize-types
+    description: Read packages/benchmark/src/types.ts and summarize the main interfaces
+    files:
+      - packages/benchmark/src/types.ts
+    expectedOutcome: Clear summary of Task, RunResult, and ComparisonResult interfaces
+    complexity: low
+    timeoutMs: 60000

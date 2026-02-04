@@ -4,7 +4,7 @@
 
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import type { RelayClient } from '../client.js';
+import type { RelayClient } from '../client-adapter.js';
 
 // Bind as shadow
 export const relayShadowBindSchema = z.object({

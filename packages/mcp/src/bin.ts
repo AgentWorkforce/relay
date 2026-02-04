@@ -11,6 +11,8 @@
 
 import { parseArgs } from 'node:util';
 import { runInstall, validateEditor, getValidEditors } from './install-cli.js';
+import { RelayClient } from '@agent-relay/sdk';
+import { createRelayClientAdapter } from './client-adapter.js';
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
@@ -114,7 +116,7 @@ switch (command) {
     (async () => {
       try {
         const { runMCPServer, discoverSocket, discoverAgentName } = await import('./index.js');
-        const { createHybridClient, discoverProjectRoot } = await import('./hybrid-client.js');
+        const { discoverProjectRoot } = await import('./hybrid-client.js');
         const { join } = await import('node:path');
         const { existsSync } = await import('node:fs');
 
@@ -138,7 +140,7 @@ switch (command) {
         const discovery = discoverSocket();
         const agentName = discoverAgentName(discovery) || `mcp-${process.pid}`;
 
-        // Discover project root for file-based transport
+        // Discover project root
         if (!projectRoot) {
           projectRoot = discoverProjectRoot() ?? undefined;
         }
@@ -157,15 +159,28 @@ switch (command) {
           process.exit(1);
         }
 
-        // Create hybrid client (file-based writes, socket queries)
-        const client = createHybridClient({
+        const client = new RelayClient({
           agentName,
-          projectRoot,
           socketPath: socketPath || discovery?.socketPath,
-          project: discovery?.project,
+          quiet: values.quiet,
+          reconnect: true,
         });
 
-        await runMCPServer(client);
+        await client.connect();
+
+        const mcpClient = createRelayClientAdapter(client, {
+          agentName,
+          project: discovery?.project,
+          projectRoot,
+          socketPath: socketPath || discovery?.socketPath,
+        });
+
+        await runMCPServer(mcpClient, {
+          projectRoot,
+          project: discovery?.project,
+          socketPath: socketPath || discovery?.socketPath,
+          agentName,
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.error('Failed to start MCP server:', message);

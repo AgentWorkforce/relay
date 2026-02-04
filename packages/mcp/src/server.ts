@@ -8,7 +8,7 @@ import {
   ListResourcesRequestSchema,
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import type { RelayClient } from './client.js';
+import type { RelayClient } from './client-adapter.js';
 import {
   relaySendTool,
   relaySendSchema,
@@ -143,6 +143,10 @@ const RESOURCES = [agentsResource, inboxResource, projectResource];
 export interface MCPServerConfig {
   name?: string;
   version?: string;
+  agentName?: string;
+  project?: string;
+  projectRoot?: string;
+  socketPath?: string;
 }
 
 /**

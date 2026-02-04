@@ -109,6 +109,42 @@ client.sendMessage('OtherAgent', 'Hello!');
 
 ## API Reference
 
+### Connection
+
+#### connect()
+
+Connect to the relay daemon. Returns a Promise that resolves when the connection is ready.
+
+```typescript
+const client = new RelayClient({ agentName: 'MyAgent' });
+await client.connect();
+// Client is now ready to send/receive messages
+```
+
+#### disconnect()
+
+Gracefully disconnect from the daemon. The client can reconnect later.
+
+```typescript
+client.disconnect();
+```
+
+#### destroy()
+
+Permanently destroy the client. Prevents automatic reconnection.
+
+```typescript
+client.destroy();
+```
+
+#### Properties
+
+```typescript
+client.state;           // 'DISCONNECTED' | 'CONNECTING' | 'HANDSHAKING' | 'READY' | 'BACKOFF'
+client.agentName;       // The agent's name
+client.currentSessionId; // Current session ID (undefined if not connected)
+```
+
 ### Core Messaging
 
 #### sendMessage(to, body, kind?, data?, thread?)
@@ -143,6 +179,63 @@ Send to all connected agents.
 
 ```typescript
 client.broadcast('System notice to everyone');
+```
+
+#### request(to, body, options?)
+
+Send a request and wait for a response from the target agent. This implements a request/response pattern where the target agent can respond with `respond()`.
+
+```typescript
+// Simple request
+const response = await client.request('Worker', 'Process this task');
+console.log(response.body); // Worker's response
+console.log(response.from); // 'Worker'
+
+// With options
+const response = await client.request('Worker', 'Process task', {
+  timeout: 60000,   // default: 30000ms
+  data: { taskId: '123', priority: 'high' },
+  thread: 'task-thread-1',
+  kind: 'action',   // default: 'message'
+});
+```
+
+**RequestResponse type:**
+```typescript
+interface RequestResponse {
+  from: string;           // sender of the response
+  body: string;           // response text
+  data?: Record<string, unknown>;
+  correlationId: string;
+  thread?: string;
+  payload: SendPayload;   // full payload for advanced use
+}
+```
+
+#### respond(correlationId, to, body, data?)
+
+Respond to a request from another agent. Use when you receive a message with a correlation ID.
+
+```typescript
+client.onMessage = (from, payload, messageId, meta) => {
+  const correlationId = meta?.replyTo || payload.data?._correlationId;
+  if (correlationId) {
+    // This is a request - send a response
+    client.respond(correlationId, from, 'Task completed!', { result: 42 });
+  }
+};
+```
+
+#### sendAck(payload)
+
+Send an ACK for a delivered message. Used internally, but available for custom acknowledgment flows.
+
+```typescript
+client.sendAck({
+  ack_id: messageId,
+  seq: 123,
+  correlationId: 'optional-correlation-id',
+});
 ```
 
 #### onMessage
@@ -250,8 +343,45 @@ if (result.success) {
   console.log('Worker spawned!');
 }
 
+// Spawn and wait for the agent to be ready
+const result = await client.spawn({
+  name: 'Worker2',
+  cli: 'claude',
+  task: 'Process data',
+  waitForReady: true,        // wait for agent to connect
+  readyTimeoutMs: 60000,     // timeout for ready (default: 60000)
+});
+
+if (result.ready) {
+  console.log('Worker is ready:', result.readyInfo);
+}
+
 // Release (terminate) an agent
 const releaseResult = await client.release('Worker1');
+const releaseWithReason = await client.release('Worker2', 'Task complete');
+```
+
+#### waitForAgentReady(name, timeoutMs?)
+
+Wait for an agent to become ready (complete HELLO/WELCOME handshake). Useful when waiting for an agent spawned through another mechanism.
+
+```typescript
+try {
+  const readyInfo = await client.waitForAgentReady('Worker', 30000);
+  console.log(`Worker is ready, using ${readyInfo.cli}`);
+} catch (err) {
+  console.error('Worker did not become ready in time');
+}
+```
+
+#### onAgentReady
+
+Callback when any agent becomes ready (completes connection handshake).
+
+```typescript
+client.onAgentReady = (info) => {
+  console.log(`Agent ${info.name} is now ready (cli: ${info.cli})`);
+};
 ```
 
 #### Spawn as Shadow
@@ -413,6 +543,53 @@ const fromAlice = await client.getInbox({ from: 'Alice' });
 const channelMsgs = await client.getInbox({ channel: '#general' });
 ```
 
+#### Query All Messages
+
+Query all messages (not filtered by recipient). Useful for dashboards or analytics.
+
+```typescript
+const messages = await client.queryMessages({
+  limit: 100,           // default: 100
+  sinceTs: Date.now() - 3600000, // last hour
+  from: 'Alice',        // filter by sender
+  to: 'Bob',            // filter by recipient
+  thread: 'thread-123', // filter by thread
+  order: 'desc',        // 'asc' or 'desc' (default: 'desc')
+});
+
+for (const msg of messages) {
+  console.log(`${msg.from} -> ${msg.to}: ${msg.body}`);
+}
+```
+
+#### List Connected Agents Only
+
+Unlike `listAgents()` which includes historical/registered agents, this only returns agents currently connected.
+
+```typescript
+const connected = await client.listConnectedAgents();
+for (const agent of connected) {
+  console.log(`${agent.name} is connected right now`);
+}
+
+// Filter by project
+const projectAgents = await client.listConnectedAgents({ project: 'myproject' });
+```
+
+#### Remove Agent
+
+Remove a stale agent from the registry (sessions, agents.json). Use to clean up agents no longer needed.
+
+```typescript
+const result = await client.removeAgent('OldWorker');
+if (result.success) {
+  console.log('Agent removed');
+}
+
+// Also remove all messages from/to this agent
+await client.removeAgent('OldWorker', { removeMessages: true });
+```
+
 #### Read Agent Logs (File-based)
 
 Logs are stored locally and can be read without a connection:
@@ -520,9 +697,12 @@ import type {
   ClientState,
   ClientConfig,
   SyncOptions,
+  RequestOptions,
+  RequestResponse,
 
   // Messages
   SendPayload,
+  SendMeta,
   PayloadKind,
   AckPayload,
 
@@ -532,15 +712,20 @@ import type {
 
   // Spawning
   SpawnPayload,
+  SpawnResult,
   SpawnResultPayload,
   ReleaseResultPayload,
+  AgentReadyPayload,
 
   // Monitoring
   AgentInfo,
   AgentMetrics,
   HealthResponsePayload,
   MetricsResponsePayload,
+  StatusResponsePayload,
   InboxMessage,
+  MessagesResponsePayload,
+  RemoveAgentResponsePayload,
 
   // Consensus
   ConsensusType,

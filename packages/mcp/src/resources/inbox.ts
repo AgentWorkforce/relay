@@ -6,7 +6,7 @@
  */
 
 import type { Resource } from '@modelcontextprotocol/sdk/types.js';
-import type { RelayClient } from '../client.js';
+import type { RelayClient } from '../client-adapter.js';
 
 export const inboxResource: Resource = {
   uri: 'relay://inbox',

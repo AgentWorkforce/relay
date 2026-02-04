@@ -1,9 +1,16 @@
-// Client interface
-export type { RelayClient, QueryMessage, HealthResponse, MetricsResponse, MessagesResponse } from './client.js';
-export { createRelayClient } from './client.js';
+// Client interface (SDK adapter)
+export {
+  createRelayClient,
+  createRelayClientAdapter,
+  type RelayClient,
+  type QueryMessage,
+  type HealthResponse,
+  type MetricsResponse,
+  type MessagesResponse,
+} from './client-adapter.js';
 
-// Hybrid client (file-based writes, socket queries)
-export { createHybridClient, discoverProjectRoot } from './hybrid-client.js';
+// Project discovery helper
+export { discoverProjectRoot } from './hybrid-client.js';
 
 // Simple programmatic API (no MCP protocol overhead)
 export {

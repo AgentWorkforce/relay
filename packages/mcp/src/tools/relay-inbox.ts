@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import type { RelayClient } from '../client.js';
+import type { RelayClient } from '../client-adapter.js';
 
 export const relayInboxSchema = z.object({
   limit: z.number().optional().default(10).describe('Max messages to return'),

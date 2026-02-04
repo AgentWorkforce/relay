@@ -19,6 +19,37 @@ The wizard will:
 2. Offer to start the daemon
 3. Show you how to use the relay tools
 
+## Breaking Changes
+
+### v1.x: Client Module Restructure
+
+The internal client module has been restructured. **Main package exports are unchanged** - only direct file imports are affected.
+
+**If you import from the main package (recommended), no changes needed:**
+
+```typescript
+// This still works - no changes required
+import { createRelayClient } from '@agent-relay/mcp';
+```
+
+**If you import directly from source files, update your imports:**
+
+```typescript
+// OLD (no longer works):
+import { createRelayClient } from '@agent-relay/mcp/src/client.js';
+
+// NEW:
+import { createRelayClient } from '@agent-relay/mcp';
+
+// Alternative (if you need direct file import):
+import { createRelayClient } from '@agent-relay/mcp/src/client-adapter.js';
+```
+
+**What changed:**
+- `packages/mcp/src/client.ts` has been deleted
+- Functionality moved to `packages/mcp/src/client-adapter.ts`
+- Main package exports (`@agent-relay/mcp`) continue to work unchanged
+
 ## Manual Installation
 
 ### Install MCP for Editors

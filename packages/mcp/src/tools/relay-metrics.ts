@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import type { RelayClient, MetricsResponse } from '../client.js';
+import type { RelayClient, MetricsResponse } from '../client-adapter.js';
 
 export const relayMetricsSchema = z.object({
   agent: z.string().optional().describe('Filter metrics to a specific agent'),

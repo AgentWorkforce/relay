@@ -231,6 +231,7 @@ const result = await client.spawn(options: {
 // Release (terminate) an agent
 const result = await client.release(
   name: string,
+  reason?: string,
   timeoutMs?: number
 ): Promise<ReleaseResultPayload>
 
@@ -290,6 +291,52 @@ client.sendChannelMessage(
     data?: Record<string, unknown>;
   }
 ): boolean
+
+// Admin: Add a member to a channel (they don't need to be connected)
+client.adminJoinChannel(channel: string, member: string): boolean
+
+// Admin: Remove a member from a channel
+client.adminRemoveMember(channel: string, member: string): boolean
+```
+
+**Admin Operations Example:**
+
+```typescript
+// Add an offline agent to a channel for when they connect
+client.adminJoinChannel('#team', 'NewWorker');
+
+// Remove a member from a channel
+client.adminRemoveMember('#team', 'FormerMember');
+```
+
+### Pub/Sub Methods
+
+Subscribe to topics for filtered message delivery:
+
+```typescript
+// Subscribe to a topic
+client.subscribe(topic: string): boolean
+
+// Unsubscribe from a topic
+client.unsubscribe(topic: string): boolean
+```
+
+**Example:**
+
+```typescript
+// Subscribe to build notifications
+client.subscribe('builds');
+client.subscribe('deployments');
+
+// Messages to subscribed topics arrive via onMessage
+client.onMessage = (from, payload) => {
+  if (payload.data?.topic === 'builds') {
+    console.log('Build notification:', payload.body);
+  }
+};
+
+// Unsubscribe when done
+client.unsubscribe('builds');
 ```
 
 ### Shadow Agent Methods
@@ -308,6 +355,107 @@ client.bindAsShadow(
 // Unbind from primary agent
 client.unbindAsShadow(primaryAgent: string): boolean
 ```
+
+### Consensus Methods
+
+Distributed decision-making across agents. **Note:** Consensus requires an external daemon - it's not available in standalone mode.
+
+```typescript
+// Create a consensus proposal
+client.createProposal(options: CreateProposalOptions): boolean
+
+// Vote on a proposal
+client.vote(options: VoteOptions): boolean
+```
+
+**CreateProposalOptions:**
+
+| Property | Type | Description | Default |
+|----------|------|-------------|---------|
+| `title` | `string` | Proposal title | Required |
+| `description` | `string` | Proposal description | Required |
+| `participants` | `string[]` | Agents who can vote | Required |
+| `consensusType` | `ConsensusType` | Voting method | `'majority'` |
+| `timeoutMs` | `number` | Vote timeout | None |
+| `quorum` | `number` | Minimum votes required | None |
+| `threshold` | `number` | Required agreement ratio | None |
+
+**ConsensusType values:**
+
+| Type | Description |
+|------|-------------|
+| `majority` | >50% agreement (default) |
+| `supermajority` | >=2/3 agreement (configurable via threshold) |
+| `unanimous` | 100% agreement required |
+| `weighted` | Votes weighted by role/expertise |
+| `quorum` | Minimum participation + majority |
+
+**VoteOptions:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `proposalId` | `string` | The proposal ID to vote on |
+| `value` | `string` | Vote value: `'approve'`, `'reject'`, or `'abstain'` |
+| `reason` | `string` | Optional reason for vote |
+
+**Example:**
+
+```typescript
+// Create a proposal
+client.createProposal({
+  title: 'Approve API design',
+  description: 'Should we proceed with the REST API design?',
+  participants: ['Developer', 'Reviewer', 'Lead'],
+  consensusType: 'majority',
+  timeoutMs: 300000, // 5 minutes
+});
+
+// Vote on a proposal
+client.vote({
+  proposalId: 'prop_123_abc',
+  value: 'approve',
+  reason: 'Looks good to me',
+});
+
+// Receiving proposals and results via onMessage
+client.onMessage = (from, payload) => {
+  if (payload.data?._isConsensusMessage) {
+    console.log('Consensus message:', payload.body);
+  }
+};
+```
+
+### Logging Methods
+
+Stream logs to the daemon for dashboard display:
+
+```typescript
+// Send log output
+client.sendLog(data: string): boolean
+```
+
+**Example:**
+
+```typescript
+client.sendLog('Starting task...');
+client.sendLog('Processing file 1 of 10');
+client.sendLog('Task completed successfully');
+```
+
+### Low-Level Messaging
+
+```typescript
+// Send ACK for a delivered message (used internally, available for custom flows)
+client.sendAck(payload: AckPayload): boolean
+```
+
+**AckPayload:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `ack_id` | `string` | The message ID being acknowledged |
+| `seq` | `number` | Sequence number |
+| `correlationId` | `string` | Optional correlation ID for sync messaging |
 
 ### Query Operations
 

@@ -4,7 +4,7 @@
 
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import type { RelayClient } from '../client.js';
+import type { RelayClient } from '../client-adapter.js';
 
 export const relayQueryMessagesSchema = z.object({
   limit: z.number().optional().describe('Maximum number of messages to return (default: 100)'),

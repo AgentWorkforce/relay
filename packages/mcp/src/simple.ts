@@ -15,7 +15,7 @@
  * ```
  */
 
-import { createRelayClient, type RelayClient, type RelayClientOptions } from './client.js';
+import { createRelayClient, type RelayClient, type RelayClientOptions } from './client-adapter.js';
 import type { AckPayload } from '@agent-relay/protocol';
 
 export interface Message {
