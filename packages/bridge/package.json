@@ -34,14 +34,6 @@
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
   },
-  "peerDependencies": {
-    "@agent-relay/mcp": ">=2.0.0"
-  },
-  "peerDependenciesMeta": {
-    "@agent-relay/mcp": {
-      "optional": true
-    }
-  },
   "publishConfig": {
     "access": "public"
   },

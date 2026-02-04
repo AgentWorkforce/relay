@@ -28,8 +28,6 @@ import { AgentPolicyService, type CloudPolicyFetcher } from '@agent-relay/policy
 import { buildClaudeArgs, findAgentConfig } from '@agent-relay/config/agent-config';
 import { composeForAgent, type AgentRole } from '@agent-relay/wrapper';
 import { getUserDirectoryService } from '@agent-relay/user-directory';
-// Dynamic import to avoid circular dependency (bridge -> mcp -> sdk -> daemon -> bridge)
-// import { installMcpConfig } from '@agent-relay/mcp';
 import type {
   SpawnRequest,
   SpawnResult,
@@ -986,35 +984,6 @@ export class AgentSpawner {
         }
       }
 
-      // Auto-install MCP config if not present (project-local)
-      // Uses .mcp.json in the project root - doesn't modify global settings
-      // Feature gated: set RELAY_MCP_AUTO_INSTALL=1 to enable
-      const projectMcpConfigPath = path.join(this.projectRoot, '.mcp.json');
-      const mcpSocketPath = path.join(this.projectRoot, '.agent-relay', 'relay.sock');
-      const hasMcpConfig = fs.existsSync(projectMcpConfigPath);
-      const mcpAutoInstallEnabled = process.env.RELAY_MCP_AUTO_INSTALL === '1';
-
-      if (!hasMcpConfig && mcpAutoInstallEnabled) {
-        try {
-          // Dynamic import to avoid circular dependency
-          const { installMcpConfig } = await import('@agent-relay/mcp');
-          const result = installMcpConfig(projectMcpConfigPath, {
-            configKey: 'mcpServers',
-            // Set RELAY_SOCKET so MCP server finds daemon regardless of CWD
-            env: { RELAY_SOCKET: mcpSocketPath },
-          });
-          if (result.success) {
-            if (debug) log.debug(`Auto-installed MCP config at ${projectMcpConfigPath}`);
-          } else {
-            log.warn(`Failed to auto-install MCP config: ${result.error}`);
-          }
-        } catch (err) {
-          log.warn('Failed to auto-install MCP config', {
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }
-
       // Check if MCP tools are available
       // Must verify BOTH conditions (matching inbox hook behavior from commit 18bab59):
       // 1. MCP config exists (user or project scope)
@@ -1023,9 +992,10 @@ export class AgentSpawner {
       // Use the actual socket path from config (project-local .agent-relay/relay.sock)
       // or fall back to environment variable
       const relaySocket = this.socketPath || process.env.RELAY_SOCKET || path.join(this.projectRoot, '.agent-relay', 'relay.sock');
+      const projectMcpConfigPath = path.join(this.projectRoot, '.mcp.json');
+      const hasMcpConfig = fs.existsSync(projectMcpConfigPath);
       let hasMcp = false;
       // Check either user-scope or project-scope MCP config
-      // hasMcpConfig was already computed above
       if (hasMcpConfig) {
         try {
           hasMcp = fs.statSync(relaySocket).isSocket();
