@@ -65,6 +65,7 @@ export class RelayACPAgent implements acp.Agent {
   private sessions = new Map<string, SessionState>();
   private messageBuffer = new Map<string, RelayMessage[]>();
   private dedupeCache = new CircularDedupeCache(2000);
+  private closedSessionIds = new Set<string>();
 
   constructor(config: ACPBridgeConfig) {
     this.config = config;
@@ -163,6 +164,7 @@ export class RelayACPAgent implements acp.Agent {
     this.sessions.clear();
     this.messageBuffer.clear();
     this.dedupeCache.clear();
+    this.closedSessionIds.clear();
 
     this.relayClient?.destroy();
     this.relayClient = null;
@@ -176,6 +178,8 @@ export class RelayACPAgent implements acp.Agent {
   closeSession(sessionId: string): void {
     this.sessions.delete(sessionId);
     this.messageBuffer.delete(sessionId);
+    // Track closed session IDs to distinguish from arbitrary thread names
+    this.closedSessionIds.add(sessionId);
     this.debug('Closed session:', sessionId);
   }
 
@@ -540,10 +544,14 @@ export class RelayACPAgent implements acp.Agent {
         buffer.push(message);
         return;
       }
-      // Thread exists but session was closed - drop the message to avoid
-      // misrouting late replies to unrelated sessions
-      this.debug('Dropping message for closed session thread:', message.thread);
-      return;
+      // Only drop if thread was a known ACP session that is now closed.
+      // Arbitrary thread names (e.g., "code-review") should fall through to broadcast.
+      if (this.closedSessionIds.has(message.thread)) {
+        this.debug('Dropping message for closed session thread:', message.thread);
+        return;
+      }
+      // Thread is not a known session ID - fall through to broadcast to all sessions
+      this.debug('Unknown thread, broadcasting:', message.thread);
     }
 
     // Add to all sessions - active ones immediately, idle ones will see on next prompt
