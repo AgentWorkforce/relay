@@ -528,6 +528,10 @@ export class RelayACPAgent implements acp.Agent {
         buffer.push(message);
         return;
       }
+      // Thread exists but session was closed - drop the message to avoid
+      // misrouting late replies to unrelated sessions
+      this.debug('Dropping message for closed session thread:', message.thread);
+      return;
     }
 
     // Add to all sessions - active ones immediately, idle ones will see on next prompt
@@ -540,10 +544,16 @@ export class RelayACPAgent implements acp.Agent {
       addedToAny = true;
     }
 
-    // If no sessions exist yet, store in a pending queue
+    // If no sessions exist yet, store in a bounded pending queue
+    // Cap at 500 messages to prevent unbounded memory growth
     if (!addedToAny) {
       const pending = this.messageBuffer.get('__pending__') || [];
       pending.push(message);
+      // Evict oldest messages if queue exceeds max size
+      const maxPendingSize = 500;
+      while (pending.length > maxPendingSize) {
+        pending.shift();
+      }
       this.messageBuffer.set('__pending__', pending);
     }
   }
