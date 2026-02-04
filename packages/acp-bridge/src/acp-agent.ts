@@ -263,14 +263,9 @@ export class RelayACPAgent implements acp.Agent {
     session.isProcessing = true;
     session.abortController = new AbortController();
 
-    // Drain any pending messages that arrived while idle
-    const pendingMessages = this.messageBuffer.get('__pending__') || [];
-    if (pendingMessages.length > 0) {
-      const sessionBuffer = this.messageBuffer.get(params.sessionId) || [];
-      sessionBuffer.push(...pendingMessages);
-      this.messageBuffer.set(params.sessionId, sessionBuffer);
-      this.messageBuffer.delete('__pending__');
-    }
+    // Note: __pending__ is drained in newSession() when session is created.
+    // We don't drain here to avoid race conditions with multi-session scenarios
+    // where multiple ACP clients (e.g., multiple Zed windows) are connected.
 
     try {
       // Extract text content from the prompt
@@ -386,7 +381,24 @@ export class RelayACPAgent implements acp.Agent {
 
     const responses: RelayMessage[] = [];
 
-    // Clear buffer
+    // First, stream any pending messages that arrived before this prompt
+    const existingMessages = this.messageBuffer.get(session.id) || [];
+    if (existingMessages.length > 0) {
+      for (const msg of existingMessages) {
+        await this.connection.sessionUpdate({
+          sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: {
+              type: 'text',
+              text: `**${msg.from}** (earlier): ${msg.body}\n\n`,
+            },
+          },
+        });
+      }
+    }
+
+    // Clear buffer for new responses
     this.messageBuffer.set(session.id, []);
 
     // Parse @mentions to target specific agents
