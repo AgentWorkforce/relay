@@ -15,6 +15,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import nodePath from 'node:path';
 import {
   findRelayPtyBinary,
   getLastSearchPaths,
@@ -27,6 +28,8 @@ describe('findRelayPtyBinary - search path verification', () => {
   beforeEach(() => {
     clearBinaryCache();
     delete process.env.RELAY_PTY_BINARY;
+    delete process.env.AGENT_RELAY_INSTALL_DIR;
+    delete process.env.AGENT_RELAY_BIN_DIR;
   });
 
   describe('npx installation (scoped @agent-relay/* package)', () => {
@@ -276,6 +279,58 @@ describe('findRelayPtyBinary - search path verification', () => {
     });
   });
 
+  describe('Bash installer (curl | bash)', () => {
+    // install.sh places binary at ~/.agent-relay/bin/relay-pty
+    // and optionally at ~/.local/bin/relay-pty
+
+    it('should include ~/.agent-relay/bin/ in search paths', () => {
+      const callerDirname = '/some/random/path';
+
+      findRelayPtyBinary(callerDirname);
+      const paths = getLastSearchPaths();
+
+      const home = process.env.HOME || '';
+      expect(paths.some((p) => p.startsWith(`${home}/.agent-relay/bin/`))).toBe(true);
+    });
+
+    it('should include ~/.local/bin/ in search paths', () => {
+      const callerDirname = '/some/random/path';
+
+      findRelayPtyBinary(callerDirname);
+      const paths = getLastSearchPaths();
+
+      const home = process.env.HOME || '';
+      expect(paths.some((p) => p.startsWith(`${home}/.local/bin/`))).toBe(true);
+    });
+
+    it('should respect AGENT_RELAY_INSTALL_DIR override', () => {
+      process.env.AGENT_RELAY_INSTALL_DIR = '/custom/install';
+
+      findRelayPtyBinary('/some/path');
+      const paths = getLastSearchPaths();
+
+      expect(paths.some((p) => p.startsWith('/custom/install/bin/'))).toBe(true);
+
+      delete process.env.AGENT_RELAY_INSTALL_DIR;
+    });
+  });
+
+  describe('nodePrefix universal (process.execPath)', () => {
+    // Derives global node_modules from the running Node binary itself
+    // Works for any version manager (nvm, pnpm, volta, fnm, etc.)
+
+    it('should include nodePrefix-derived path in search paths', () => {
+      const callerDirname = '/some/random/path';
+      const nodePrefix = nodePath.resolve(nodePath.dirname(process.execPath), '..');
+      const expectedBase = `${nodePrefix}/lib/node_modules/agent-relay/bin`;
+
+      findRelayPtyBinary(callerDirname);
+      const paths = getLastSearchPaths();
+
+      expect(paths.some((p) => p.startsWith(expectedBase))).toBe(true);
+    });
+  });
+
   describe('Environment variable override', () => {
     it('should use RELAY_PTY_BINARY when file is executable', () => {
       // Use an actual executable that exists on all Unix systems
@@ -305,18 +360,16 @@ describe('findRelayPtyBinary - search path verification', () => {
   });
 
   describe('Real binary resolution', () => {
-    it('should find actual relay-pty binary in development', () => {
-      // This test uses the real file system to verify the function works
-      // in development context
+    it('should include development paths when run from monorepo', () => {
+      // Verify search paths include dev locations without requiring binary on disk
       const devPath = `${process.cwd()}/packages/utils/dist`;
 
-      const result = findRelayPtyBinary(devPath);
+      findRelayPtyBinary(devPath);
+      const paths = getLastSearchPaths();
 
-      // In development, we should find the binary in bin/
-      // This test only passes when run from the monorepo root
       if (process.cwd().includes('relay')) {
-        expect(result).not.toBeNull();
-        expect(result).toMatch(/relay-pty/);
+        expect(paths.some((p) => p.includes('relay-pty/target/release/relay-pty'))).toBe(true);
+        expect(paths.some((p) => p.includes('relay-pty/target/debug/relay-pty'))).toBe(true);
       }
     });
   });

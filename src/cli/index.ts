@@ -52,14 +52,14 @@ function findDashboardBinary(): string | null {
   const binaryName = 'relay-dashboard-server';
   const homeDir = process.env.HOME || process.env.USERPROFILE || '';
 
-  // Common locations to check
+  // Check explicit install locations FIRST (before PATH) so the bash installer
+  // version takes precedence over stale package-manager installs in PATH
   const searchPaths = [
-    // In PATH (using which/where)
-    binaryName,
-    // Common installation directories
     path.join(homeDir, '.local', 'bin', binaryName),
     path.join(homeDir, '.agent-relay', 'bin', binaryName),
     '/usr/local/bin/' + binaryName,
+    // Fall back to PATH lookup
+    binaryName,
   ];
 
   for (const searchPath of searchPaths) {
@@ -1283,7 +1283,7 @@ program
 // uninstall - Remove agent-relay from the current project
 program
   .command('uninstall')
-  .description('Remove agent-relay data and configuration from the current project')
+  .description('Remove agent-relay data, configuration, and global binaries')
   .option('--keep-data', 'Keep message history and database (only remove runtime files)')
   .option('--zed', 'Also remove Zed editor configuration')
   .option('--zed-name <name>', 'Name of the Zed agent server entry to remove (default: Agent Relay)')
@@ -1298,54 +1298,52 @@ program
     const dirsToRemove: string[] = [];
     const actions: string[] = [];
 
-    // Check if .agent-relay directory exists
-    if (!fs.existsSync(paths.dataDir)) {
-      console.log('Agent Relay is not installed in this project.');
-      console.log(`(No ${paths.dataDir} directory found)`);
-      return;
-    }
+    // Check if .agent-relay directory exists (still continue for global binary cleanup)
+    const hasProjectData = fs.existsSync(paths.dataDir);
 
-    // Stop daemon if running
-    const pidPath = pidFilePathForSocket(paths.socketPath);
-    if (fs.existsSync(pidPath)) {
-      const pid = Number(fs.readFileSync(pidPath, 'utf-8').trim());
-      try {
-        process.kill(pid, 0); // Check if running
-        actions.push(`Stop daemon (pid: ${pid})`);
-        if (!options.dryRun) {
-          try {
-            process.kill(pid, 'SIGTERM');
-            // Wait briefly for graceful shutdown
-            await new Promise(resolve => setTimeout(resolve, 2000));
-          } catch { /* ignore */ }
-        }
-      } catch { /* not running */ }
-    }
-
-    // Collect files to remove
-    if (options.keepData) {
-      // Only remove runtime files, keep database
-      const runtimeFiles = ['relay.sock', 'runtime.json', 'daemon.pid', '.project'];
-      for (const file of runtimeFiles) {
-        const filePath = path.join(paths.dataDir, file);
-        if (fs.existsSync(filePath)) {
-          filesToRemove.push(filePath);
-        }
+    if (hasProjectData) {
+      // Stop daemon if running
+      const pidPath = pidFilePathForSocket(paths.socketPath);
+      if (fs.existsSync(pidPath)) {
+        const pid = Number(fs.readFileSync(pidPath, 'utf-8').trim());
+        try {
+          process.kill(pid, 0); // Check if running
+          actions.push(`Stop daemon (pid: ${pid})`);
+          if (!options.dryRun) {
+            try {
+              process.kill(pid, 'SIGTERM');
+              // Wait briefly for graceful shutdown
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            } catch { /* ignore */ }
+          }
+        } catch { /* not running */ }
       }
-      // Remove mcp-identity-* files
-      try {
-        const files = fs.readdirSync(paths.dataDir);
-        for (const file of files) {
-          if (file.startsWith('mcp-identity')) {
-            filesToRemove.push(path.join(paths.dataDir, file));
+
+      // Collect files to remove
+      if (options.keepData) {
+        // Only remove runtime files, keep database
+        const runtimeFiles = ['relay.sock', 'runtime.json', 'daemon.pid', '.project'];
+        for (const file of runtimeFiles) {
+          const filePath = path.join(paths.dataDir, file);
+          if (fs.existsSync(filePath)) {
+            filesToRemove.push(filePath);
           }
         }
-      } catch { /* ignore */ }
-      actions.push('Remove runtime files (keeping database and message history)');
-    } else {
-      // Remove entire .agent-relay directory
-      dirsToRemove.push(paths.dataDir);
-      actions.push(`Remove ${paths.dataDir}/ directory (including message history)`);
+        // Remove mcp-identity-* files
+        try {
+          const files = fs.readdirSync(paths.dataDir);
+          for (const file of files) {
+            if (file.startsWith('mcp-identity')) {
+              filesToRemove.push(path.join(paths.dataDir, file));
+            }
+          }
+        } catch { /* ignore */ }
+        actions.push('Remove runtime files (keeping database and message history)');
+      } else {
+        // Remove entire .agent-relay directory
+        dirsToRemove.push(paths.dataDir);
+        actions.push(`Remove ${paths.dataDir}/ directory (including message history)`);
+      }
     }
 
     // Zed configuration
@@ -1369,6 +1367,82 @@ program
           }
         }
       }
+    }
+
+    // Global install cleanup (bash installer / install.sh artifacts)
+    const home = homedir();
+    const installDir = process.env.AGENT_RELAY_INSTALL_DIR || path.join(home, '.agent-relay');
+    const binDir = process.env.AGENT_RELAY_BIN_DIR || path.join(home, '.local', 'bin');
+
+    // Binaries placed by install.sh into BIN_DIR
+    const globalBinaries = [
+      path.join(binDir, 'agent-relay'),
+      path.join(binDir, 'relay-dashboard-server'),
+      path.join(binDir, 'relay-acp'),
+    ];
+    for (const bin of globalBinaries) {
+      if (fs.existsSync(bin)) {
+        filesToRemove.push(bin);
+        actions.push(`Remove ${bin}`);
+      }
+    }
+
+    // relay-pty binary in INSTALL_DIR/bin/
+    const relayPtyPath = path.join(installDir, 'bin', 'relay-pty');
+    if (fs.existsSync(relayPtyPath)) {
+      filesToRemove.push(relayPtyPath);
+      actions.push(`Remove ${relayPtyPath}`);
+    }
+
+    // INSTALL_DIR itself (e.g. ~/.agent-relay) if it exists and is different from project .agent-relay
+    if (fs.existsSync(installDir) && path.resolve(installDir) !== path.resolve(paths.dataDir)) {
+      dirsToRemove.push(installDir);
+      actions.push(`Remove install directory ${installDir}/`);
+    }
+
+    // Dashboard UI files (~/.relay/dashboard/)
+    const dashboardDir = path.join(home, '.relay', 'dashboard');
+    if (fs.existsSync(dashboardDir)) {
+      dirsToRemove.push(dashboardDir);
+      actions.push(`Remove dashboard UI files from ${dashboardDir}/`);
+    }
+
+    // Package manager global install cleanup
+    const packagesToCheck = ['agent-relay', '@agent-relay/acp-bridge', '@agent-relay/dashboard-server'];
+    const npmGlobalPackages: string[] = [];
+    const pnpmGlobalPackages: string[] = [];
+
+    // npm global
+    try {
+      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf-8', timeout: 5000 }).trim();
+      const npmGlobalModules = path.join(npmPrefix, 'lib', 'node_modules');
+      for (const pkg of packagesToCheck) {
+        if (fs.existsSync(path.join(npmGlobalModules, pkg))) {
+          npmGlobalPackages.push(pkg);
+        }
+      }
+      if (npmGlobalPackages.length > 0) {
+        actions.push(`npm uninstall -g ${npmGlobalPackages.join(', ')}`);
+      }
+    } catch { /* npm not available */ }
+
+    // pnpm global
+    try {
+      const pnpmRoot = execSync('pnpm root -g', { encoding: 'utf-8', timeout: 5000 }).trim();
+      for (const pkg of packagesToCheck) {
+        if (fs.existsSync(path.join(pnpmRoot, pkg))) {
+          pnpmGlobalPackages.push(pkg);
+        }
+      }
+      if (pnpmGlobalPackages.length > 0) {
+        actions.push(`pnpm remove -g ${pnpmGlobalPackages.join(', ')}`);
+      }
+    } catch { /* pnpm not available */ }
+
+    // Nothing to do
+    if (actions.length === 0) {
+      console.log('Agent Relay is not installed (no project data or global binaries found).');
+      return;
     }
 
     // Show what will be done
@@ -1405,13 +1479,19 @@ program
     // Perform removal
     console.log('');
 
+    // Helper: display path relative to project if inside it, absolute otherwise
+    const displayPath = (p: string): string => {
+      const rel = path.relative(paths.projectRoot, p);
+      return rel.startsWith('..') ? p : rel;
+    };
+
     // Remove files
     for (const file of filesToRemove) {
       try {
         fs.unlinkSync(file);
-        console.log(`  ✓ Removed ${path.relative(paths.projectRoot, file)}`);
+        console.log(`  ✓ Removed ${displayPath(file)}`);
       } catch (err: any) {
-        console.log(`  ✗ Failed to remove ${path.relative(paths.projectRoot, file)}: ${err.message}`);
+        console.log(`  ✗ Failed to remove ${displayPath(file)}: ${err.message}`);
       }
     }
 
@@ -1419,9 +1499,31 @@ program
     for (const dir of dirsToRemove) {
       try {
         fs.rmSync(dir, { recursive: true, force: true });
-        console.log(`  ✓ Removed ${path.relative(paths.projectRoot, dir)}/`);
+        console.log(`  ✓ Removed ${displayPath(dir)}/`);
       } catch (err: any) {
-        console.log(`  ✗ Failed to remove ${path.relative(paths.projectRoot, dir)}/: ${err.message}`);
+        console.log(`  ✗ Failed to remove ${displayPath(dir)}/: ${err.message}`);
+      }
+    }
+
+    // Remove package manager global packages
+    for (const pkg of npmGlobalPackages) {
+      try {
+        execSync(`npm uninstall -g ${pkg}`, { encoding: 'utf-8', timeout: 30000, stdio: 'pipe' });
+        console.log(`  ✓ npm uninstall -g ${pkg}`);
+      } catch (err: any) {
+        const stderr = err.stderr?.toString?.() || '';
+        const hint = stderr.includes('EACCES') ? ' (try with sudo)' : '';
+        console.log(`  ✗ Failed to npm uninstall -g ${pkg}${hint}: ${stderr || err.message}`);
+      }
+    }
+    for (const pkg of pnpmGlobalPackages) {
+      try {
+        execSync(`pnpm remove -g ${pkg}`, { encoding: 'utf-8', timeout: 30000, stdio: 'pipe' });
+        console.log(`  ✓ pnpm remove -g ${pkg}`);
+      } catch (err: any) {
+        const stderr = err.stderr?.toString?.() || '';
+        const hint = stderr.includes('EACCES') ? ' (try with sudo)' : '';
+        console.log(`  ✗ Failed to pnpm remove -g ${pkg}${hint}: ${stderr || err.message}`);
       }
     }
 
