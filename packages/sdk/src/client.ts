@@ -33,8 +33,14 @@ import {
   type SpawnResultPayload,
   type ReleasePayload,
   type ReleaseResultPayload,
+  type SendInputPayload,
+  type SendInputResultPayload,
+  type ListWorkersPayload,
+  type ListWorkersResultPayload,
   type SpawnEnvelope,
   type ReleaseEnvelope,
+  type SendInputEnvelope,
+  type ListWorkersEnvelope,
   type StatusResponsePayload,
   type InboxPayload,
   type InboxMessage,
@@ -253,6 +259,18 @@ export class RelayClient {
 
   private pendingReleases: Map<string, {
     resolve: (result: ReleaseResultPayload) => void;
+    reject: (err: Error) => void;
+    timeoutHandle: NodeJS.Timeout;
+  }> = new Map();
+
+  private pendingSendInputs: Map<string, {
+    resolve: (result: SendInputResultPayload) => void;
+    reject: (err: Error) => void;
+    timeoutHandle: NodeJS.Timeout;
+  }> = new Map();
+
+  private pendingListWorkers: Map<string, {
+    resolve: (result: ListWorkersResultPayload) => void;
     reject: (err: Error) => void;
     timeoutHandle: NodeJS.Timeout;
   }> = new Map();
@@ -771,6 +789,10 @@ export class RelayClient {
       shadowAgent?: string;
       shadowTriggers?: SpeakOnTrigger[];
       shadowSpeakOn?: SpeakOnTrigger[];
+      /** User ID for cloud persistence */
+      userId?: string;
+      /** Include ACK/DONE workflow conventions in agent instructions */
+      includeWorkflowConventions?: boolean;
       /** Wait for the agent to complete connection before resolving */
       waitForReady?: boolean;
       /** Timeout for agent to become ready (default: 60000ms). Only used when waitForReady is true. */
@@ -839,6 +861,8 @@ export class RelayClient {
           shadowAgent: options.shadowAgent,
           shadowTriggers: options.shadowTriggers,
           shadowSpeakOn: options.shadowSpeakOn,
+          userId: options.userId,
+          includeWorkflowConventions: options.includeWorkflowConventions,
           spawnerName: this.config.agentName,
         },
       };
@@ -967,6 +991,83 @@ export class RelayClient {
         clearTimeout(timeoutHandle);
         this.pendingReleases.delete(envelopeId);
         reject(new Error('Failed to send release message'));
+      }
+    });
+  }
+
+  /**
+   * Send input data to a spawned agent's PTY.
+   * @param name - Agent name to send input to
+   * @param data - Input data to send
+   * @param timeoutMs - Timeout for the operation (default: 10000ms)
+   */
+  async sendWorkerInput(name: string, data: string, timeoutMs = 10000): Promise<SendInputResultPayload> {
+    if (this._state !== 'READY') {
+      throw new Error('Client not ready');
+    }
+
+    const envelopeId = generateId();
+
+    return new Promise<SendInputResultPayload>((resolve, reject) => {
+      const timeoutHandle = setTimeout(() => {
+        this.pendingSendInputs.delete(envelopeId);
+        reject(new Error(`Send input timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      this.pendingSendInputs.set(envelopeId, { resolve, reject, timeoutHandle });
+
+      const envelope: SendInputEnvelope = {
+        v: PROTOCOL_VERSION,
+        type: 'SEND_INPUT',
+        id: envelopeId,
+        ts: Date.now(),
+        payload: {
+          name,
+          data,
+        },
+      };
+
+      const sent = this.send(envelope);
+      if (!sent) {
+        clearTimeout(timeoutHandle);
+        this.pendingSendInputs.delete(envelopeId);
+        reject(new Error('Failed to send input message'));
+      }
+    });
+  }
+
+  /**
+   * List active spawned workers.
+   * @param timeoutMs - Timeout for the operation (default: 10000ms)
+   */
+  async listWorkers(timeoutMs = 10000): Promise<ListWorkersResultPayload> {
+    if (this._state !== 'READY') {
+      throw new Error('Client not ready');
+    }
+
+    const envelopeId = generateId();
+
+    return new Promise<ListWorkersResultPayload>((resolve, reject) => {
+      const timeoutHandle = setTimeout(() => {
+        this.pendingListWorkers.delete(envelopeId);
+        reject(new Error(`List workers timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      this.pendingListWorkers.set(envelopeId, { resolve, reject, timeoutHandle });
+
+      const envelope: ListWorkersEnvelope = {
+        v: PROTOCOL_VERSION,
+        type: 'LIST_WORKERS',
+        id: envelopeId,
+        ts: Date.now(),
+        payload: {},
+      };
+
+      const sent = this.send(envelope);
+      if (!sent) {
+        clearTimeout(timeoutHandle);
+        this.pendingListWorkers.delete(envelopeId);
+        reject(new Error('Failed to send list workers message'));
       }
     });
   }
@@ -1501,6 +1602,14 @@ export class RelayClient {
         this.handleReleaseResult(envelope as Envelope<ReleaseResultPayload>);
         break;
 
+      case 'SEND_INPUT_RESULT':
+        this.handleSendInputResult(envelope as Envelope<SendInputResultPayload>);
+        break;
+
+      case 'LIST_WORKERS_RESULT':
+        this.handleListWorkersResult(envelope as Envelope<ListWorkersResultPayload>);
+        break;
+
       case 'AGENT_READY':
         this.handleAgentReady(envelope as Envelope<AgentReadyPayload>);
         break;
@@ -1672,6 +1781,30 @@ export class RelayClient {
     pending.resolve(envelope.payload);
   }
 
+  private handleSendInputResult(envelope: Envelope<SendInputResultPayload>): void {
+    const replyTo = envelope.payload.replyTo;
+    if (!replyTo) return;
+
+    const pending = this.pendingSendInputs.get(replyTo);
+    if (!pending) return;
+
+    clearTimeout(pending.timeoutHandle);
+    this.pendingSendInputs.delete(replyTo);
+    pending.resolve(envelope.payload);
+  }
+
+  private handleListWorkersResult(envelope: Envelope<ListWorkersResultPayload>): void {
+    const replyTo = envelope.payload.replyTo;
+    if (!replyTo) return;
+
+    const pending = this.pendingListWorkers.get(replyTo);
+    if (!pending) return;
+
+    clearTimeout(pending.timeoutHandle);
+    this.pendingListWorkers.delete(replyTo);
+    pending.resolve(envelope.payload);
+  }
+
   private handleAgentReady(envelope: Envelope<AgentReadyPayload>): void {
     const agentName = envelope.payload.name;
 
@@ -1734,6 +1867,8 @@ export class RelayClient {
     this.rejectPendingSyncAcks(new Error('Disconnected while awaiting ACK'));
     this.rejectPendingSpawns(new Error('Disconnected while awaiting spawn result'));
     this.rejectPendingReleases(new Error('Disconnected while awaiting release result'));
+    this.rejectPendingSendInputs(new Error('Disconnected while awaiting send input result'));
+    this.rejectPendingListWorkers(new Error('Disconnected while awaiting list workers result'));
     this.rejectPendingQueries(new Error('Disconnected while awaiting query response'));
     this.rejectPendingRequests(new Error('Disconnected while awaiting request response'));
     this.rejectPendingAgentReady(new Error('Disconnected while awaiting agent ready'));
@@ -1785,6 +1920,22 @@ export class RelayClient {
       clearTimeout(pending.timeoutHandle);
       pending.reject(error);
       this.pendingReleases.delete(id);
+    }
+  }
+
+  private rejectPendingSendInputs(error: Error): void {
+    for (const [id, pending] of this.pendingSendInputs.entries()) {
+      clearTimeout(pending.timeoutHandle);
+      pending.reject(error);
+      this.pendingSendInputs.delete(id);
+    }
+  }
+
+  private rejectPendingListWorkers(error: Error): void {
+    for (const [id, pending] of this.pendingListWorkers.entries()) {
+      clearTimeout(pending.timeoutHandle);
+      pending.reject(error);
+      this.pendingListWorkers.delete(id);
     }
   }
 

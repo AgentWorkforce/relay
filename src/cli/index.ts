@@ -971,6 +971,7 @@ program
               onMarkSpawning?: (name: string) => void;
               onClearSpawning?: (name: string) => void;
               verbose?: boolean;
+              spawnManager?: unknown;
             }) => Promise<number>;
           };
           const { startDashboard } = dashboardServer;
@@ -985,6 +986,9 @@ program
             onMarkSpawning: (name: string) => daemon.markSpawning(name),
             onClearSpawning: (name: string) => daemon.clearSpawning(name),
             verbose: options.verbose,
+            // Pass daemon's SpawnManager for read operations (logs, worker listing)
+            // Spawn/release go through SDK → daemon socket instead of local AgentSpawner
+            spawnManager: daemon.getSpawnManager(),
           });
           console.log(`Dashboard: http://localhost:${dashboardPort}`);
 
