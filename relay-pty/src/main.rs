@@ -922,8 +922,8 @@ fn is_in_editor_mode(recent_output: &str) -> bool {
 /// and one of the allow options ("Allow once" or "Allow for this session").
 fn detect_gemini_action_required(clean_output: &str) -> (bool, bool) {
     let has_header = clean_output.contains("Action Required");
-    let has_allow_option = clean_output.contains("Allow once")
-        || clean_output.contains("Allow for this session");
+    let has_allow_option =
+        clean_output.contains("Allow once") || clean_output.contains("Allow for this session");
     (has_header, has_allow_option)
 }
 
@@ -933,8 +933,8 @@ fn detect_gemini_action_required(clean_output: &str) -> (bool, bool) {
 /// - has_confirmation: output contains yes/no or proceed/accept prompt
 fn detect_bypass_permissions_prompt(clean_output: &str) -> (bool, bool) {
     let lower = clean_output.to_lowercase();
-    let has_bypass_ref = (lower.contains("bypass") && lower.contains("permission"))
-        || lower.contains("dangerously");
+    let has_bypass_ref =
+        (lower.contains("bypass") && lower.contains("permission")) || lower.contains("dangerously");
     let has_confirmation = lower.contains("(yes/no)")
         || lower.contains("(y/n)")
         || (lower.contains("proceed") && lower.contains("yes"))
@@ -1107,21 +1107,30 @@ Allow execution of: 'cat, redirection (>), heredoc (<<)'?
         // Simulate ANSI-stripped output (the caller strips ANSI before passing)
         let output = "Action Required\n1. Allow once\n2. Allow for this session";
         let (has_header, has_allow_option) = detect_gemini_action_required(output);
-        assert!(has_header && has_allow_option, "should match with clean text");
+        assert!(
+            has_header && has_allow_option,
+            "should match with clean text"
+        );
     }
 
     #[test]
     fn test_gemini_action_required_partial_allow_once() {
         let output = "Action Required\nAllow once";
         let (has_header, has_allow_option) = detect_gemini_action_required(output);
-        assert!(has_header && has_allow_option, "should match with just Allow once");
+        assert!(
+            has_header && has_allow_option,
+            "should match with just Allow once"
+        );
     }
 
     #[test]
     fn test_gemini_action_required_partial_allow_session() {
         let output = "Action Required\nAllow for this session";
         let (has_header, has_allow_option) = detect_gemini_action_required(output);
-        assert!(has_header && has_allow_option, "should match with just Allow for this session");
+        assert!(
+            has_header && has_allow_option,
+            "should match with just Allow for this session"
+        );
     }
 
     // ==================== Bypass Permissions Prompt Detection ====================
@@ -1144,7 +1153,8 @@ Allow execution of: 'cat, redirection (>), heredoc (<<)'?
 
     #[test]
     fn test_bypass_perms_accept_risk_variant() {
-        let output = "bypass permissions mode enabled\nDo you accept the risk of running in this mode?";
+        let output =
+            "bypass permissions mode enabled\nDo you accept the risk of running in this mode?";
         let (has_ref, has_confirm) = detect_bypass_permissions_prompt(output);
         assert!(has_ref, "should detect bypass + permission");
         assert!(has_confirm, "should detect accept + risk");
@@ -1198,7 +1208,10 @@ Allow execution of: 'cat, redirection (>), heredoc (<<)'?
         let output = "-- INSERT -- ⏵⏵ bypass permissions on (shift+tab to cycle)";
         let (has_ref, has_confirm) = detect_bypass_permissions_prompt(output);
         assert!(has_ref, "status bar has bypass+permissions");
-        assert!(!has_confirm, "but no confirmation prompt - not a full match");
+        assert!(
+            !has_confirm,
+            "but no confirmation prompt - not a full match"
+        );
     }
 
     #[test]
@@ -1206,7 +1219,10 @@ Allow execution of: 'cat, redirection (>), heredoc (<<)'?
         // Prompt text split across buffer accumulation
         let output = "Warning: dangerously skip permissions mode\nAll tools will run without confirmation.\nDo you want to proceed? (yes/no)";
         let (has_ref, has_confirm) = detect_bypass_permissions_prompt(output);
-        assert!(has_ref && has_confirm, "should detect across multi-line output");
+        assert!(
+            has_ref && has_confirm,
+            "should detect across multi-line output"
+        );
     }
 
     // ==================== False Positive Prevention Tests ====================
@@ -1250,7 +1266,10 @@ Allow execution of: 'cat, redirection (>), heredoc (<<)'?
         let raw = "\x1b[1mAction Required\x1b[0m\n\x1b[32m● 1. Allow once\x1b[0m\n  2. Allow for this session";
         let clean = strip_ansi(raw);
         let (has_header, has_allow_option) = detect_gemini_action_required(&clean);
-        assert!(has_header && has_allow_option, "should match after ANSI stripping");
+        assert!(
+            has_header && has_allow_option,
+            "should match after ANSI stripping"
+        );
     }
 
     #[test]
