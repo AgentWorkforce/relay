@@ -358,18 +358,16 @@ describe('findRelayPtyBinary - search path verification', () => {
   });
 
   describe('Real binary resolution', () => {
-    it('should find actual relay-pty binary in development', () => {
-      // This test uses the real file system to verify the function works
-      // in development context
+    it('should include development paths when run from monorepo', () => {
+      // Verify search paths include dev locations without requiring binary on disk
       const devPath = `${process.cwd()}/packages/utils/dist`;
 
-      const result = findRelayPtyBinary(devPath);
+      findRelayPtyBinary(devPath);
+      const paths = getLastSearchPaths();
 
-      // In development, we should find the binary in bin/
-      // This test only passes when run from the monorepo root
       if (process.cwd().includes('relay')) {
-        expect(result).not.toBeNull();
-        expect(result).toMatch(/relay-pty/);
+        expect(paths.some((p) => p.includes('relay-pty/target/release/relay-pty'))).toBe(true);
+        expect(paths.some((p) => p.includes('relay-pty/target/debug/relay-pty'))).toBe(true);
       }
     });
   });
