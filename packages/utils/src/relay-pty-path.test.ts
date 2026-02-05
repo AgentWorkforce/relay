@@ -15,6 +15,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import nodePath from 'node:path';
 import {
   findRelayPtyBinary,
   getLastSearchPaths,
@@ -27,6 +28,8 @@ describe('findRelayPtyBinary - search path verification', () => {
   beforeEach(() => {
     clearBinaryCache();
     delete process.env.RELAY_PTY_BINARY;
+    delete process.env.AGENT_RELAY_INSTALL_DIR;
+    delete process.env.AGENT_RELAY_BIN_DIR;
   });
 
   describe('npx installation (scoped @agent-relay/* package)', () => {
@@ -318,8 +321,7 @@ describe('findRelayPtyBinary - search path verification', () => {
 
     it('should include nodePrefix-derived path in search paths', () => {
       const callerDirname = '/some/random/path';
-      const path = require('path');
-      const nodePrefix = path.resolve(path.dirname(process.execPath), '..');
+      const nodePrefix = nodePath.resolve(nodePath.dirname(process.execPath), '..');
       const expectedBase = `${nodePrefix}/lib/node_modules/agent-relay/bin`;
 
       findRelayPtyBinary(callerDirname);

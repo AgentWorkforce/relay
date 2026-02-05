@@ -1407,14 +1407,16 @@ program
       actions.push(`Remove dashboard UI files from ${dashboardDir}/`);
     }
 
-    // npm global install cleanup
-    // Detect if agent-relay is installed globally via npm
+    // Package manager global install cleanup
+    const packagesToCheck = ['agent-relay', '@agent-relay/acp-bridge', '@agent-relay/dashboard-server'];
     const npmGlobalPackages: string[] = [];
+    const pnpmGlobalPackages: string[] = [];
+
+    // npm global
     try {
       const npmPrefix = execSync('npm prefix -g', { encoding: 'utf-8', timeout: 5000 }).trim();
       const npmGlobalModules = path.join(npmPrefix, 'lib', 'node_modules');
-      const npmPackagesToCheck = ['agent-relay', '@agent-relay/acp-bridge', '@agent-relay/dashboard-server'];
-      for (const pkg of npmPackagesToCheck) {
+      for (const pkg of packagesToCheck) {
         if (fs.existsSync(path.join(npmGlobalModules, pkg))) {
           npmGlobalPackages.push(pkg);
         }
@@ -1422,7 +1424,20 @@ program
       if (npmGlobalPackages.length > 0) {
         actions.push(`npm uninstall -g ${npmGlobalPackages.join(', ')}`);
       }
-    } catch { /* npm not available or timed out */ }
+    } catch { /* npm not available */ }
+
+    // pnpm global
+    try {
+      const pnpmRoot = execSync('pnpm root -g', { encoding: 'utf-8', timeout: 5000 }).trim();
+      for (const pkg of packagesToCheck) {
+        if (fs.existsSync(path.join(pnpmRoot, pkg))) {
+          pnpmGlobalPackages.push(pkg);
+        }
+      }
+      if (pnpmGlobalPackages.length > 0) {
+        actions.push(`pnpm remove -g ${pnpmGlobalPackages.join(', ')}`);
+      }
+    } catch { /* pnpm not available */ }
 
     // Nothing to do
     if (actions.length === 0) {
@@ -1464,13 +1479,19 @@ program
     // Perform removal
     console.log('');
 
+    // Helper: display path relative to project if inside it, absolute otherwise
+    const displayPath = (p: string): string => {
+      const rel = path.relative(paths.projectRoot, p);
+      return rel.startsWith('..') ? p : rel;
+    };
+
     // Remove files
     for (const file of filesToRemove) {
       try {
         fs.unlinkSync(file);
-        console.log(`  ✓ Removed ${path.relative(paths.projectRoot, file)}`);
+        console.log(`  ✓ Removed ${displayPath(file)}`);
       } catch (err: any) {
-        console.log(`  ✗ Failed to remove ${path.relative(paths.projectRoot, file)}: ${err.message}`);
+        console.log(`  ✗ Failed to remove ${displayPath(file)}: ${err.message}`);
       }
     }
 
@@ -1478,21 +1499,31 @@ program
     for (const dir of dirsToRemove) {
       try {
         fs.rmSync(dir, { recursive: true, force: true });
-        console.log(`  ✓ Removed ${path.relative(paths.projectRoot, dir)}/`);
+        console.log(`  ✓ Removed ${displayPath(dir)}/`);
       } catch (err: any) {
-        console.log(`  ✗ Failed to remove ${path.relative(paths.projectRoot, dir)}/: ${err.message}`);
+        console.log(`  ✗ Failed to remove ${displayPath(dir)}/: ${err.message}`);
       }
     }
 
-    // Remove npm global packages
-    if (npmGlobalPackages.length > 0) {
-      for (const pkg of npmGlobalPackages) {
-        try {
-          execSync(`npm uninstall -g ${pkg}`, { encoding: 'utf-8', timeout: 30000, stdio: 'pipe' });
-          console.log(`  ✓ npm uninstall -g ${pkg}`);
-        } catch (err: any) {
-          console.log(`  ✗ Failed to npm uninstall -g ${pkg}: ${err.message}`);
-        }
+    // Remove package manager global packages
+    for (const pkg of npmGlobalPackages) {
+      try {
+        execSync(`npm uninstall -g ${pkg}`, { encoding: 'utf-8', timeout: 30000, stdio: 'pipe' });
+        console.log(`  ✓ npm uninstall -g ${pkg}`);
+      } catch (err: any) {
+        const stderr = err.stderr?.toString?.() || '';
+        const hint = stderr.includes('EACCES') ? ' (try with sudo)' : '';
+        console.log(`  ✗ Failed to npm uninstall -g ${pkg}${hint}: ${stderr || err.message}`);
+      }
+    }
+    for (const pkg of pnpmGlobalPackages) {
+      try {
+        execSync(`pnpm remove -g ${pkg}`, { encoding: 'utf-8', timeout: 30000, stdio: 'pipe' });
+        console.log(`  ✓ pnpm remove -g ${pkg}`);
+      } catch (err: any) {
+        const stderr = err.stderr?.toString?.() || '';
+        const hint = stderr.includes('EACCES') ? ' (try with sudo)' : '';
+        console.log(`  ✗ Failed to pnpm remove -g ${pkg}${hint}: ${stderr || err.message}`);
       }
     }
 
