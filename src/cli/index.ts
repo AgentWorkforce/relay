@@ -24,6 +24,7 @@ import { RelayPtyOrchestrator, getTmuxPath } from '@agent-relay/wrapper';
 import { AgentSpawner, readWorkersMetadata, getWorkerLogsDir, selectShadowCli, ensureMcpPermissions } from '@agent-relay/bridge';
 import type { SpawnRequest, SpawnResult } from '@agent-relay/bridge';
 import { generateAgentName, checkForUpdatesInBackground, checkForUpdates } from '@agent-relay/utils';
+import { findRelayPtyBinary } from '@agent-relay/utils/relay-pty-path';
 import { getShadowForAgent, getProjectPaths, loadRuntimeConfig } from '@agent-relay/config';
 import { createStorageAdapter } from '@agent-relay/storage/adapter';
 import {
@@ -852,6 +853,15 @@ program
         console.log(`[zed] ${status}: ${result.path} (${result.key})`);
       } catch (err: any) {
         console.log(`[zed] Failed to configure Zed agent_servers: ${err.message}`);
+      }
+    }
+
+    // Resolve relay-pty binary path and export as env var so child processes
+    // (e.g. dashboard-server) can find it regardless of their bundled utils version
+    if (!process.env.RELAY_PTY_BINARY) {
+      const ptyPath = findRelayPtyBinary(__dirname);
+      if (ptyPath) {
+        process.env.RELAY_PTY_BINARY = ptyPath;
       }
     }
 
