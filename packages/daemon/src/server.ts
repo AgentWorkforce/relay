@@ -431,15 +431,38 @@ export class Daemon {
     // Initialize cloud sync if configured
     await this.initCloudSync();
 
-    // Clean up stale socket (only if it's actually a socket)
-    if (fs.existsSync(this.config.socketPath)) {
-      const stat = fs.lstatSync(this.config.socketPath);
-      if (!stat.isSocket()) {
+    // Clean up stale socket (symlinks, sockets OK — refuse regular files)
+    // Use lstatSync directly to detect broken symlinks (existsSync follows
+    // symlinks and returns false for dangling ones, leaving them uncleaned)
+    let lstat: fs.Stats | null = null;
+    try {
+      lstat = fs.lstatSync(this.config.socketPath);
+    } catch {
+      // ENOENT — nothing at this path, proceed to listen
+    }
+    if (lstat) {
+      if (lstat.isSymbolicLink()) {
+        // Symlinks (e.g., /tmp/agent-relay.sock -> project/.agent-relay/relay.sock)
+        // are safe to replace — they don't destroy the target
+        fs.unlinkSync(this.config.socketPath);
+      } else if (lstat.isSocket()) {
+        // Check if socket is actively in use by another daemon
+        const alive = await new Promise<boolean>((resolve) => {
+          const client = net.createConnection(this.config.socketPath);
+          client.on('connect', () => { client.destroy(); resolve(true); });
+          client.on('error', () => resolve(false));
+        });
+        if (alive) {
+          throw new Error(
+            `Another daemon is already listening on ${this.config.socketPath}`
+          );
+        }
+        fs.unlinkSync(this.config.socketPath);
+      } else {
         throw new Error(
           `Refusing to unlink non-socket at ${this.config.socketPath}`
         );
       }
-      fs.unlinkSync(this.config.socketPath);
     }
 
     // Clean up stale mcp-identity-* files from previous runs
@@ -1926,7 +1949,12 @@ export class Daemon {
 // Run as standalone if executed directly (not in bundled CLI)
 // In bundled builds, AGENT_RELAY_VERSION is defined, so we skip auto-start
 // The CLI handles daemon startup via the 'up' command
-const isMainModule = import.meta.url === `file://${process.argv[1]}` &&
+// Also verify the script path ends with server.ts/server.js to avoid triggering
+// inside Bun compiled binaries (e.g., dashboard binary) that bundle this file
+const scriptPath = new URL(import.meta.url).pathname;
+const isServerScript = scriptPath.endsWith('/server.ts') || scriptPath.endsWith('/server.js');
+const isMainModule = isServerScript &&
+  import.meta.url === `file://${process.argv[1]}` &&
   !process.env.AGENT_RELAY_VERSION;
 if (isMainModule) {
   const daemon = new Daemon();

@@ -202,6 +202,21 @@ agent-relay agents              # List active agents
 agent-relay agents:logs <name>  # View agent output
 agent-relay agents:kill <name>  # Kill a spawned agent
 agent-relay read <id>           # Read truncated message
+agent-relay history             # Show recent message history
+```
+
+## Viewing Message History
+
+Use `agent-relay history` to review previous messages:
+
+```bash
+agent-relay history                    # Last 50 messages
+agent-relay history -n 20              # Last 20 messages
+agent-relay history -f Lead            # Messages from Lead
+agent-relay history -t Worker1         # Messages to Worker1
+agent-relay history --thread task-123  # Messages in a thread
+agent-relay history --since 1h         # Messages from the last hour
+agent-relay history --json             # JSON output for parsing
 ```
 
 ## Synchronous Messaging

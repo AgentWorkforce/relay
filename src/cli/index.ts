@@ -12,6 +12,7 @@
  *   relay agents                   - List connected agents
  *   relay who                      - Show currently active agents
  *   relay read <id>                - Read full message by ID
+ *   relay history                  - Show recent message history
  *   relay status                   - Check daemon status
  *   relay down                     - Stop daemon
  */
@@ -1920,21 +1921,18 @@ program
     await adapter.close?.();
   });
 
-// ============================================
-// Hidden commands (for agents, not in --help)
-// ============================================
-
-// history - Show recent messages (hidden from help, for agent use)
+// history - Show recent message history
 program
-  .command('history', { hidden: true })
-  .description('Show recent messages')
+  .command('history')
+  .description('Show recent message history')
   .option('-n, --limit <count>', 'Number of messages to show', '50')
   .option('-f, --from <agent>', 'Filter by sender')
   .option('-t, --to <agent>', 'Filter by recipient')
-  .option('--since <time>', 'Since time (e.g., "1h", "2024-01-01")')
+  .option('--thread <id>', 'Filter by thread ID')
+  .option('--since <time>', 'Since time (e.g., "1h", "30m", "2024-01-01")')
   .option('--json', 'Output as JSON')
   .option('--storage <type>', 'Storage type override (jsonl, sqlite, memory)')
-  .action(async (options: { limit?: string; from?: string; to?: string; since?: string; json?: boolean; storage?: string }) => {
+  .action(async (options: { limit?: string; from?: string; to?: string; thread?: string; since?: string; json?: boolean; storage?: string }) => {
     const paths = getProjectPaths();
     // Use runtime config to match daemon's storage type, CLI option overrides
     const runtimeConfig = loadRuntimeConfig();
@@ -1948,6 +1946,7 @@ program
         limit,
         from: options.from,
         to: options.to,
+        thread: options.thread,
         sinceTs,
         order: 'desc',
       });
@@ -1963,6 +1962,7 @@ program
           thread: m.thread,
           kind: m.kind,
           body: m.body,
+          status: m.status,
         }));
         console.log(JSON.stringify(payload, null, 2));
         return;
@@ -1975,8 +1975,13 @@ program
 
       messages.forEach((msg) => {
         const ts = new Date(msg.ts).toISOString();
-        const body = msg.body.length > 120 ? `${msg.body.slice(0, 117)}...` : msg.body;
-        console.log(`${ts} ${msg.from} -> ${msg.to}:${body}`);
+        const meta: string[] = [];
+        if (msg.thread) meta.push(`thread:${msg.thread}`);
+        if (msg.status && msg.status !== 'read') meta.push(`status:${msg.status}`);
+        if (msg.is_broadcast) meta.push('broadcast');
+        const metaStr = meta.length ? ` [${meta.join(', ')}]` : '';
+        const body = msg.body.length > 200 ? `${msg.body.slice(0, 197)}...` : msg.body;
+        console.log(`[${ts}] ${msg.from} -> ${msg.to}${metaStr}: ${body}`);
       });
     } finally {
       await adapter.close?.();
