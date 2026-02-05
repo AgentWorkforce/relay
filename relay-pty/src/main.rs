@@ -566,12 +566,15 @@ async fn main() -> Result<()> {
 
                         let full_match = has_bypass_ref && has_confirmation;
 
-                        // Timeout-based approval for partial matches
-                        let timeout_approval = if has_bypass_ref || has_confirmation {
+                        // Timeout-based approval for fragmented output where both
+                        // signals are present but arrived in separate chunks.
+                        // IMPORTANT: Require BOTH bypass ref AND confirmation to avoid
+                        // false positives on unrelated yes/no prompts (e.g., "File permission denied. (yes/no)").
+                        let timeout_approval = if has_bypass_ref && has_confirmation {
                             match bypass_perms_partial_since {
                                 None => {
                                     bypass_perms_partial_since = Some(Instant::now());
-                                    debug!("Bypass perms detection: Starting timeout timer for partial match");
+                                    debug!("Bypass perms detection: Starting timeout timer (both signals present)");
                                     false
                                 }
                                 Some(since) => {
@@ -623,12 +626,15 @@ async fn main() -> Result<()> {
 
                             let full_match = has_header && has_allow_option;
 
-                            // Timeout-based approval for partial matches
-                            let timeout_approval = if has_header || has_allow_option {
+                            // Timeout-based approval for fragmented output where both
+                            // signals are present but arrived in separate chunks.
+                            // IMPORTANT: Require BOTH header AND allow option to avoid
+                            // false positives on unrelated "Action Required" text.
+                            let timeout_approval = if has_header && has_allow_option {
                                 match gemini_action_partial_since {
                                     None => {
                                         gemini_action_partial_since = Some(Instant::now());
-                                        debug!("Gemini action detection: Starting timeout timer for partial match");
+                                        debug!("Gemini action detection: Starting timeout timer (both signals present)");
                                         false
                                     }
                                     Some(since) => {
@@ -647,7 +653,7 @@ async fn main() -> Result<()> {
                                     info!("Gemini action detection: Timeout reached, approving based on partial match");
                                 }
                                 tokio::time::sleep(Duration::from_millis(100)).await;
-                                if let Err(e) = async_pty.send(b"2".to_vec()).await {
+                                if let Err(e) = async_pty.send(b"2\n".to_vec()).await {
                                     warn!("Failed to send Gemini action approval: {}", e);
                                 }
                                 gemini_action_buffer.clear();
@@ -1257,6 +1263,58 @@ Allow execution of: 'cat, redirection (>), heredoc (<<)'?
         let output = "Warning: dangerously skip permissions mode\nAll tools will run without confirmation.\nDo you want to proceed? (yes/no)";
         let (has_ref, has_confirm) = detect_bypass_permissions_prompt(output);
         assert!(has_ref && has_confirm, "should detect across multi-line output");
+    }
+
+    // ==================== Timeout Safety Tests ====================
+    // These tests document the fix for Codex review feedback:
+    // - Timeout should only fire when BOTH signals are present
+    // - A single signal alone must NOT trigger timeout-based approval
+
+    #[test]
+    fn test_bypass_perms_single_signal_no_timeout_risk() {
+        // Only has_confirmation=true, has_bypass_ref=false
+        // With the old || logic, this would start the timeout timer and
+        // eventually auto-send "y" to an unrelated yes/no prompt.
+        // With the fix (&&), timeout never starts.
+        let output = "Do you want to delete this file? (yes/no)";
+        let (has_ref, has_confirm) = detect_bypass_permissions_prompt(output);
+        assert!(!has_ref, "no bypass reference");
+        assert!(has_confirm, "has confirmation prompt");
+        // Key assertion: since has_ref is false, AND logic means timeout won't start
+        assert!(!(has_ref && has_confirm), "AND of both signals is false - timeout safe");
+    }
+
+    #[test]
+    fn test_bypass_perms_single_signal_bypass_only_no_timeout_risk() {
+        // Only has_bypass_ref=true, has_confirmation=false
+        // Status bar text shouldn't trigger timeout
+        let output = "bypass permissions on (shift+tab to cycle)";
+        let (has_ref, has_confirm) = detect_bypass_permissions_prompt(output);
+        assert!(has_ref, "has bypass reference");
+        assert!(!has_confirm, "no confirmation prompt");
+        assert!(!(has_ref && has_confirm), "AND of both signals is false - timeout safe");
+    }
+
+    #[test]
+    fn test_gemini_header_only_no_timeout_risk() {
+        // Only has_header=true, has_allow_option=false
+        // Gemini might show "Action Required" in other contexts
+        let output = "Action Required: Please authenticate with Google Cloud";
+        let (has_header, has_allow) = detect_gemini_action_required(output);
+        assert!(has_header, "has header");
+        assert!(!has_allow, "no allow option");
+        assert!(!(has_header && has_allow), "AND of both signals is false - timeout safe");
+    }
+
+    #[test]
+    fn test_gemini_allow_only_no_timeout_risk() {
+        // Only has_allow_option=true, has_header=false
+        // "Allow once" might appear in other CLI output
+        let output = "Allow once for this directory? [y/n]";
+        let (has_header, has_allow) = detect_gemini_action_required(output);
+        assert!(!has_header, "no Action Required header");
+        assert!(has_allow, "has allow option text");
+        assert!(!(has_header && has_allow), "AND of both signals is false - timeout safe");
     }
 
     // ==================== Strip ANSI Integration ====================
