@@ -633,6 +633,595 @@ agent-relay moltbot install-skill
 
 ---
 
+## Reliability Layer (Hardened)
+
+OpenClaw's `sessions_send` has known reliability issues that require mitigation. This section specifies the reliability guarantees the bridge provides.
+
+### Known OpenClaw Issues (Mitigated)
+
+| Issue | OpenClaw Behavior | Bridge Mitigation |
+|-------|-------------------|-------------------|
+| [#549](https://github.com/openclaw/openclaw/issues/549) WebSocket race conditions | Responses drop mid-stream due to unsynchronized `ChatRunRegistry` | Connection health monitoring + automatic reconnect |
+| [#5531](https://github.com/openclaw/openclaw/issues/5531) Multi-channel routing | `deliveryContext` ignored, defaults to webchat | Explicit channel targeting in all sends |
+| No delivery confirmation | `sessions_send` is fire-and-forget | Application-level ACK protocol |
+| No message ordering | Messages can arrive out-of-order | Sequence numbers + reordering buffer |
+| Session state races | Concurrent access to unprotected maps | Mutex per session in bridge |
+
+### Reliability Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        @agent-relay/moltbot Bridge                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐         │
+│  │ Outbox Queue    │    │ Delivery        │    │ Inbox Queue     │         │
+│  │ (persistent)    │───►│ Manager         │───►│ (deduplicated)  │         │
+│  └─────────────────┘    └────────┬────────┘    └─────────────────┘         │
+│                                  │                                          │
+│                         ┌────────┴────────┐                                 │
+│                         │ Health Monitor  │                                 │
+│                         └────────┬────────┘                                 │
+│                                  │                                          │
+├──────────────────────────────────┼──────────────────────────────────────────┤
+│                                  ▼                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐       │
+│  │                    OpenClaw Gateway (Untrusted)                  │       │
+│  │                    ws://127.0.0.1:18789                          │       │
+│  └─────────────────────────────────────────────────────────────────┘       │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Message Envelope (Bridge Protocol)
+
+Every message through the bridge includes reliability metadata:
+
+```typescript
+interface BridgeEnvelope {
+  // Identity
+  id: string;              // UUIDv7 (time-sortable)
+  correlationId?: string;  // For request-response pairing
+
+  // Ordering
+  seq: number;             // Per (sender, recipient) sequence number
+  timestamp: number;       // Unix ms
+
+  // Routing
+  from: string;            // Sender identifier
+  to: string;              // Target session key or agent name
+  channel?: string;        // Explicit channel (never rely on deliveryContext)
+
+  // Payload
+  type: 'message' | 'ack' | 'nack' | 'ping' | 'pong';
+  body: string;
+  metadata?: Record<string, unknown>;
+
+  // Delivery
+  attempt: number;         // Retry attempt (1-based)
+  maxAttempts: number;     // Default: 3
+  ttl: number;             // Time-to-live in ms
+}
+```
+
+### Delivery Guarantees
+
+#### At-Least-Once Delivery
+
+The bridge guarantees at-least-once delivery for messages to OpenClaw sessions:
+
+```typescript
+class DeliveryManager {
+  private outbox: PersistentQueue<BridgeEnvelope>;
+  private pending: Map<string, PendingMessage>;
+  private readonly ackTimeout = 10_000;  // 10 seconds
+  private readonly maxRetries = 3;
+  private readonly backoffBase = 1000;   // 1 second
+
+  async send(envelope: BridgeEnvelope): Promise<DeliveryResult> {
+    // 1. Persist to outbox (survives crashes)
+    await this.outbox.enqueue(envelope);
+
+    // 2. Attempt delivery
+    return this.attemptDelivery(envelope);
+  }
+
+  private async attemptDelivery(envelope: BridgeEnvelope): Promise<DeliveryResult> {
+    for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
+      envelope.attempt = attempt;
+
+      try {
+        // Send via OpenClaw sessions_send with explicit channel
+        await this.openclawSend(envelope);
+
+        // Wait for application-level ACK
+        const acked = await this.waitForAck(envelope.id, this.ackTimeout);
+
+        if (acked) {
+          await this.outbox.remove(envelope.id);
+          return { success: true, attempts: attempt };
+        }
+      } catch (err) {
+        this.emit('delivery_error', { envelope, error: err, attempt });
+      }
+
+      // Exponential backoff with jitter
+      const backoff = this.backoffBase * Math.pow(2, attempt - 1);
+      const jitter = backoff * (0.5 + Math.random() * 0.5);
+      await sleep(jitter);
+    }
+
+    // Move to dead letter queue
+    await this.deadLetterQueue.enqueue(envelope);
+    await this.outbox.remove(envelope.id);
+
+    return { success: false, attempts: this.maxRetries, reason: 'max_retries_exceeded' };
+  }
+}
+```
+
+#### Application-Level ACK Protocol
+
+Since OpenClaw provides no delivery confirmation, we implement our own:
+
+```typescript
+// Sender side: include ACK request in message metadata
+const envelope: BridgeEnvelope = {
+  id: uuidv7(),
+  type: 'message',
+  body: 'Hello from Agent A',
+  metadata: {
+    requiresAck: true,
+    ackDeadline: Date.now() + 10_000,
+  },
+};
+
+// Receiver side: auto-ACK after processing
+class InboxProcessor {
+  async processMessage(envelope: BridgeEnvelope): Promise<void> {
+    try {
+      // Deliver to Relay agent
+      await this.relayClient.send(envelope.to, envelope.body);
+
+      // Send ACK back via OpenClaw
+      if (envelope.metadata?.requiresAck) {
+        await this.sendAck(envelope);
+      }
+    } catch (err) {
+      // Send NACK with error details
+      await this.sendNack(envelope, err);
+    }
+  }
+
+  private async sendAck(original: BridgeEnvelope): Promise<void> {
+    const ack: BridgeEnvelope = {
+      id: uuidv7(),
+      correlationId: original.id,
+      type: 'ack',
+      from: this.bridgeName,
+      to: original.from,
+      channel: original.channel,  // Explicit channel!
+      body: '',
+      seq: this.nextSeq(original.from),
+      timestamp: Date.now(),
+      attempt: 1,
+      maxAttempts: 1,
+      ttl: 5000,
+    };
+    await this.openclawSend(ack);
+  }
+}
+```
+
+### Deduplication
+
+Prevent duplicate processing due to retries:
+
+```typescript
+class InboxDeduplicator {
+  private seen: LRUCache<string, number>;  // messageId → timestamp
+  private readonly windowMs = 300_000;     // 5 minutes
+
+  isDuplicate(envelope: BridgeEnvelope): boolean {
+    const existing = this.seen.get(envelope.id);
+    if (existing) {
+      this.emit('duplicate_detected', {
+        id: envelope.id,
+        originalTs: existing,
+        duplicateTs: envelope.timestamp,
+      });
+      return true;
+    }
+
+    this.seen.set(envelope.id, envelope.timestamp);
+    return false;
+  }
+}
+```
+
+### Sequence Ordering
+
+Reorder out-of-sequence messages:
+
+```typescript
+class SequenceReorderer {
+  private expected: Map<string, number>;  // sender → next expected seq
+  private buffer: Map<string, BridgeEnvelope[]>;  // sender → buffered messages
+  private readonly maxBufferSize = 100;
+  private readonly maxWaitMs = 5000;
+
+  async process(envelope: BridgeEnvelope): Promise<BridgeEnvelope[]> {
+    const sender = envelope.from;
+    const expectedSeq = this.expected.get(sender) ?? 1;
+
+    if (envelope.seq === expectedSeq) {
+      // In order - process immediately + flush buffer
+      this.expected.set(sender, expectedSeq + 1);
+      return [envelope, ...this.flushBuffer(sender)];
+    }
+
+    if (envelope.seq < expectedSeq) {
+      // Already processed (late duplicate)
+      return [];
+    }
+
+    // Out of order - buffer it
+    this.bufferMessage(sender, envelope);
+
+    // Set timer to force delivery if gap not filled
+    setTimeout(() => this.forceFlush(sender, expectedSeq), this.maxWaitMs);
+
+    return [];
+  }
+}
+```
+
+### Connection Health Monitoring
+
+Detect and recover from OpenClaw WebSocket issues:
+
+```typescript
+class HealthMonitor {
+  private lastPong: number = Date.now();
+  private readonly pingInterval = 5000;
+  private readonly pongTimeout = 10000;
+  private consecutiveFailures = 0;
+  private readonly maxFailures = 3;
+
+  async start(): Promise<void> {
+    this.pingTimer = setInterval(() => this.ping(), this.pingInterval);
+  }
+
+  private async ping(): Promise<void> {
+    const pingEnvelope: BridgeEnvelope = {
+      id: uuidv7(),
+      type: 'ping',
+      from: this.bridgeName,
+      to: 'bridge:health',  // Special session for health checks
+      body: '',
+      seq: 0,
+      timestamp: Date.now(),
+      attempt: 1,
+      maxAttempts: 1,
+      ttl: this.pongTimeout,
+    };
+
+    try {
+      await this.openclawSend(pingEnvelope);
+
+      // Wait for pong
+      const ponged = await this.waitForPong(pingEnvelope.id, this.pongTimeout);
+
+      if (ponged) {
+        this.lastPong = Date.now();
+        this.consecutiveFailures = 0;
+        this.emit('health_ok');
+      } else {
+        this.handleFailure('pong_timeout');
+      }
+    } catch (err) {
+      this.handleFailure('ping_error', err);
+    }
+  }
+
+  private handleFailure(reason: string, error?: Error): void {
+    this.consecutiveFailures++;
+    this.emit('health_degraded', { reason, error, failures: this.consecutiveFailures });
+
+    if (this.consecutiveFailures >= this.maxFailures) {
+      this.emit('health_critical');
+      this.triggerReconnect();
+    }
+  }
+
+  private async triggerReconnect(): Promise<void> {
+    this.emit('reconnecting');
+
+    // Close existing connection
+    await this.transport.disconnect();
+
+    // Exponential backoff reconnect
+    for (let attempt = 1; attempt <= 10; attempt++) {
+      try {
+        await this.transport.connect(this.gatewayUrl);
+        this.consecutiveFailures = 0;
+        this.emit('reconnected', { attempt });
+
+        // Replay unacknowledged messages from outbox
+        await this.replayOutbox();
+        return;
+      } catch (err) {
+        const backoff = Math.min(30000, 1000 * Math.pow(2, attempt));
+        await sleep(backoff);
+      }
+    }
+
+    this.emit('reconnect_failed');
+  }
+}
+```
+
+### Explicit Channel Targeting
+
+Never rely on OpenClaw's `deliveryContext` - always specify channel explicitly:
+
+```typescript
+class ExplicitChannelRouter {
+  // Track the originating channel for each session
+  private sessionChannels: Map<string, string> = new Map();
+
+  async sendToSession(sessionKey: string, message: string): Promise<void> {
+    const channel = this.sessionChannels.get(sessionKey);
+
+    if (!channel) {
+      throw new Error(`Unknown channel for session: ${sessionKey}`);
+    }
+
+    // ALWAYS use explicit channel in the send command
+    // This bypasses OpenClaw's broken deliveryContext routing
+    await this.openclaw.tool('message', {
+      channel,           // Explicit!
+      to: sessionKey,
+      message,
+    });
+  }
+
+  // On incoming message, record the channel
+  handleIncoming(sessionKey: string, channel: string): void {
+    this.sessionChannels.set(sessionKey, channel);
+  }
+}
+```
+
+### Mutex Per Session
+
+Prevent race conditions in session state:
+
+```typescript
+class SessionStateManager {
+  private locks: Map<string, Mutex> = new Map();
+  private state: Map<string, SessionState> = new Map();
+
+  private getLock(sessionKey: string): Mutex {
+    let lock = this.locks.get(sessionKey);
+    if (!lock) {
+      lock = new Mutex();
+      this.locks.set(sessionKey, lock);
+    }
+    return lock;
+  }
+
+  async withSession<T>(
+    sessionKey: string,
+    fn: (state: SessionState) => Promise<T>
+  ): Promise<T> {
+    const lock = this.getLock(sessionKey);
+
+    return lock.runExclusive(async () => {
+      const state = this.state.get(sessionKey) ?? this.createState(sessionKey);
+      const result = await fn(state);
+      this.state.set(sessionKey, state);
+      return result;
+    });
+  }
+}
+```
+
+### Persistent Queues
+
+Survive bridge restarts:
+
+```typescript
+interface PersistentQueue<T> {
+  enqueue(item: T): Promise<void>;
+  dequeue(): Promise<T | null>;
+  peek(): Promise<T | null>;
+  remove(id: string): Promise<void>;
+  size(): Promise<number>;
+
+  // Recovery
+  getUnprocessed(): Promise<T[]>;
+}
+
+// SQLite-backed implementation
+class SQLiteQueue<T> implements PersistentQueue<T> {
+  constructor(
+    private db: Database,
+    private tableName: string,
+  ) {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS ${tableName} (
+        id TEXT PRIMARY KEY,
+        data TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        attempts INTEGER DEFAULT 0,
+        last_attempt_at INTEGER,
+        status TEXT DEFAULT 'pending'
+      )
+    `);
+  }
+
+  async enqueue(item: T & { id: string }): Promise<void> {
+    this.db.prepare(`
+      INSERT INTO ${this.tableName} (id, data, created_at)
+      VALUES (?, ?, ?)
+    `).run(item.id, JSON.stringify(item), Date.now());
+  }
+
+  async getUnprocessed(): Promise<T[]> {
+    const rows = this.db.prepare(`
+      SELECT data FROM ${this.tableName}
+      WHERE status = 'pending'
+      ORDER BY created_at ASC
+    `).all();
+
+    return rows.map(r => JSON.parse(r.data));
+  }
+}
+```
+
+### Dead Letter Queue
+
+Handle permanently failed messages:
+
+```typescript
+interface DeadLetter {
+  envelope: BridgeEnvelope;
+  reason: string;
+  attempts: AttemptRecord[];
+  deadAt: number;
+}
+
+interface AttemptRecord {
+  attempt: number;
+  timestamp: number;
+  error?: string;
+  duration: number;
+}
+
+class DeadLetterHandler {
+  private dlq: PersistentQueue<DeadLetter>;
+
+  async handleDeadLetter(letter: DeadLetter): Promise<void> {
+    // Persist to DLQ
+    await this.dlq.enqueue(letter);
+
+    // Emit event for monitoring
+    this.emit('dead_letter', letter);
+
+    // Optional: notify via relay-cloud
+    if (this.cloudEnabled) {
+      await this.cloud.reportDeadLetter(letter);
+    }
+  }
+
+  // Manual retry interface
+  async retryDeadLetter(id: string): Promise<DeliveryResult> {
+    const letter = await this.dlq.get(id);
+    if (!letter) throw new Error('Dead letter not found');
+
+    // Reset envelope for retry
+    letter.envelope.attempt = 0;
+    letter.envelope.timestamp = Date.now();
+
+    return this.deliveryManager.send(letter.envelope);
+  }
+}
+```
+
+### Metrics & Observability
+
+```typescript
+interface BridgeMetrics {
+  // Throughput
+  messagesSent: Counter;
+  messagesReceived: Counter;
+  messagesAcked: Counter;
+  messagesNacked: Counter;
+
+  // Reliability
+  deliveryAttempts: Histogram;
+  deliveryLatency: Histogram;
+  retryCount: Counter;
+  deadLetterCount: Counter;
+
+  // Health
+  connectionState: Gauge;  // 0=disconnected, 1=connecting, 2=connected
+  consecutiveFailures: Gauge;
+  lastPongAge: Gauge;
+
+  // Queues
+  outboxSize: Gauge;
+  inboxSize: Gauge;
+  dlqSize: Gauge;
+
+  // Deduplication
+  duplicatesDetected: Counter;
+
+  // Reordering
+  outOfOrderMessages: Counter;
+  reorderBufferSize: Gauge;
+}
+```
+
+### Configuration (Reliability)
+
+```typescript
+interface ReliabilityConfig {
+  /** Delivery settings */
+  delivery: {
+    /** Max retry attempts (default: 3) */
+    maxRetries: number;
+    /** Base backoff in ms (default: 1000) */
+    backoffBase: number;
+    /** Max backoff in ms (default: 30000) */
+    backoffMax: number;
+    /** ACK timeout in ms (default: 10000) */
+    ackTimeout: number;
+    /** Message TTL in ms (default: 300000 = 5 min) */
+    messageTtl: number;
+  };
+
+  /** Health monitoring */
+  health: {
+    /** Ping interval in ms (default: 5000) */
+    pingInterval: number;
+    /** Pong timeout in ms (default: 10000) */
+    pongTimeout: number;
+    /** Failures before reconnect (default: 3) */
+    maxFailures: number;
+    /** Max reconnect attempts (default: 10) */
+    maxReconnectAttempts: number;
+  };
+
+  /** Deduplication */
+  dedup: {
+    /** Window size in ms (default: 300000 = 5 min) */
+    windowMs: number;
+    /** Max cached message IDs (default: 10000) */
+    maxCacheSize: number;
+  };
+
+  /** Reordering */
+  reorder: {
+    /** Max buffered messages per sender (default: 100) */
+    maxBufferSize: number;
+    /** Max wait for missing seq (default: 5000) */
+    maxWaitMs: number;
+  };
+
+  /** Persistence */
+  persistence: {
+    /** Queue storage path */
+    dbPath: string;
+    /** Flush interval in ms (default: 1000) */
+    flushInterval: number;
+  };
+}
+```
+
+---
+
 ## Relay-Cloud Integration
 
 The Moltbot bridge can integrate with relay-cloud for team collaboration, centralized monitoring, and multi-machine orchestration.
