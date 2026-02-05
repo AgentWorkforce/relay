@@ -2967,7 +2967,7 @@ program
   .description('Send a message to an agent')
   .argument('<agent>', 'Target agent name (or * for broadcast, #channel for channel)')
   .argument('<message>', 'Message to send')
-  .option('--from <name>', 'Sender name', 'cli')
+  .option('--from <name>', 'Sender name', '__cli_sender__')
   .option('--thread <id>', 'Thread identifier')
   .action(async (agent: string, message: string, options: { from: string; thread?: string }) => {
     const paths = getProjectPaths();
@@ -3511,7 +3511,7 @@ cloudCommand
   .description('Send a message to an agent on any linked machine')
   .argument('<agent>', 'Target agent name')
   .argument('<message>', 'Message to send')
-  .option('--from <name>', 'Sender name', 'cli')
+  .option('--from <name>', 'Sender name', '__cli_sender__')
   .action(async (agent: string, message: string, options: { from: string }) => {
     const os = await import('node:os');
 

@@ -568,6 +568,23 @@ export class Daemon {
           this.writeProcessingStateFile();
         }, Daemon.PROCESSING_STATE_INTERVAL_MS);
 
+        // Write active daemon marker for cross-cwd discovery
+        try {
+          const markerDir = path.join(os.homedir(), '.agent-relay');
+          if (!fs.existsSync(markerDir)) {
+            fs.mkdirSync(markerDir, { recursive: true });
+          }
+          const markerData = JSON.stringify({
+            socketPath: this.config.socketPath,
+            projectRoot: path.dirname(path.dirname(this.config.socketPath)),
+            pid: process.pid,
+            startedAt: new Date().toISOString(),
+          }, null, 2);
+          fs.writeFileSync(path.join(markerDir, 'active-daemon.json'), markerData, 'utf-8');
+        } catch (err) {
+          log.warn('Failed to write active daemon marker', { error: String(err) });
+        }
+
         // Track daemon start
         track('daemon_start', {});
 
@@ -946,6 +963,18 @@ export class Daemon {
         // Clear runtime config
         try {
           clearRuntimeConfig();
+        } catch {
+          // Ignore errors during shutdown
+        }
+        // Remove active daemon marker only if we own it
+        try {
+          const markerPath = path.join(os.homedir(), '.agent-relay', 'active-daemon.json');
+          if (fs.existsSync(markerPath)) {
+            const marker = JSON.parse(fs.readFileSync(markerPath, 'utf-8'));
+            if (marker.pid === process.pid) {
+              fs.unlinkSync(markerPath);
+            }
+          }
         } catch {
           // Ignore errors during shutdown
         }

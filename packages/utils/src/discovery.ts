@@ -282,6 +282,35 @@ export function discoverSocket(options: CloudConnectionOptions = {}): DiscoveryR
     }
   }
 
+  // 6. Check active daemon marker file (~/.agent-relay/active-daemon.json)
+  // This allows discovery when cwd doesn't contain .agent-relay/
+  try {
+    const markerPath = join(homedir(), '.agent-relay', 'active-daemon.json');
+    if (existsSync(markerPath)) {
+      const marker = JSON.parse(readFileSync(markerPath, 'utf-8'));
+      if (marker.pid && marker.socketPath) {
+        // Verify the daemon process is still alive
+        let alive = false;
+        try {
+          process.kill(marker.pid, 0);
+          alive = true;
+        } catch {
+          // Process not running
+        }
+        if (alive) {
+          return {
+            socketPath: marker.socketPath,
+            project: marker.projectRoot || 'unknown',
+            source: 'scan',
+            isCloud: false,
+          };
+        }
+      }
+    }
+  } catch {
+    // Non-fatal: ignore marker read errors
+  }
+
   return null;
 }
 
