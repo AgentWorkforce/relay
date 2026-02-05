@@ -1407,6 +1407,23 @@ program
       actions.push(`Remove dashboard UI files from ${dashboardDir}/`);
     }
 
+    // npm global install cleanup
+    // Detect if agent-relay is installed globally via npm
+    const npmGlobalPackages: string[] = [];
+    try {
+      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf-8', timeout: 5000 }).trim();
+      const npmGlobalModules = path.join(npmPrefix, 'lib', 'node_modules');
+      const npmPackagesToCheck = ['agent-relay', '@agent-relay/acp-bridge', '@agent-relay/dashboard-server'];
+      for (const pkg of npmPackagesToCheck) {
+        if (fs.existsSync(path.join(npmGlobalModules, pkg))) {
+          npmGlobalPackages.push(pkg);
+        }
+      }
+      if (npmGlobalPackages.length > 0) {
+        actions.push(`npm uninstall -g ${npmGlobalPackages.join(', ')}`);
+      }
+    } catch { /* npm not available or timed out */ }
+
     // Nothing to do
     if (actions.length === 0) {
       console.log('Agent Relay is not installed (no project data or global binaries found).');
@@ -1464,6 +1481,18 @@ program
         console.log(`  ✓ Removed ${path.relative(paths.projectRoot, dir)}/`);
       } catch (err: any) {
         console.log(`  ✗ Failed to remove ${path.relative(paths.projectRoot, dir)}/: ${err.message}`);
+      }
+    }
+
+    // Remove npm global packages
+    if (npmGlobalPackages.length > 0) {
+      for (const pkg of npmGlobalPackages) {
+        try {
+          execSync(`npm uninstall -g ${pkg}`, { encoding: 'utf-8', timeout: 30000, stdio: 'pipe' });
+          console.log(`  ✓ npm uninstall -g ${pkg}`);
+        } catch (err: any) {
+          console.log(`  ✗ Failed to npm uninstall -g ${pkg}: ${err.message}`);
+        }
       }
     }
 
