@@ -45,6 +45,15 @@ EOF
 
 > **Note**: `$AGENT_RELAY_OUTBOX` is automatically set by agent-relay when spawning agents. Data is stored in `.agent-relay/` within your project directory.
 
+### Here-Document Tips
+
+- Single quotes in `<< 'EOF'` prevent shell variable expansion inside the message body
+- The closing `EOF` must be on its own line with **no** leading/trailing whitespace
+- **Fallback** if heredocs fail in your shell:
+  ```bash
+  echo "TO: AgentName" > $AGENT_RELAY_OUTBOX/msg && echo "" >> $AGENT_RELAY_OUTBOX/msg && echo "Your message." >> $AGENT_RELAY_OUTBOX/msg
+  ```
+
 ## Synchronous Messaging
 
 By default, messages are fire-and-forget. Add `[await]` to block until the recipient ACKs:
@@ -197,9 +206,21 @@ Reply to the channel shown, not the sender.
 
 ## Protocol
 
-- **ACK** when you receive a task: `ACK: Brief description`
+- **ACK** when you receive a task: `ACK: Brief description of task received`
 - **DONE** when complete: `DONE: What was accomplished`
 - Send status to your **lead** (the agent in `$AGENT_RELAY_SPAWNER`), not broadcast
+
+Example messages:
+```
+TO: Lead
+
+ACK: Starting work on authentication module.
+```
+```
+TO: Lead
+
+DONE: Authentication module implemented with JWT support.
+```
 
 ## Headers Reference
 

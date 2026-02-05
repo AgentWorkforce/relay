@@ -358,6 +358,24 @@ async fn main() -> Result<()> {
     // Timeout duration for partial match approval (5 seconds)
     const MCP_APPROVAL_TIMEOUT: Duration = Duration::from_secs(5);
 
+    // Claude Code --dangerously-skip-permissions confirmation prompt auto-acceptance
+    // Newer Claude Code versions show a startup confirmation dialog when bypass mode is used.
+    // The default is "No, exit" which causes immediate termination. Auto-send "y" to accept.
+    let bypass_perms_accepted = AtomicBool::new(false);
+    let mut bypass_perms_buffer = String::new();
+    let mut bypass_perms_partial_since: Option<Instant> = None;
+    const BYPASS_PERMS_TIMEOUT: Duration = Duration::from_secs(5);
+
+    // Gemini "Action Required" permission prompt auto-approval
+    // Gemini shows "Action Required" prompts even with --yolo for certain operations
+    // (e.g., shell redirects, heredocs). Auto-send "2" to select "Allow for this session".
+    let mut gemini_action_buffer = String::new();
+    let mut gemini_action_partial_since: Option<Instant> = None;
+    const GEMINI_ACTION_TIMEOUT: Duration = Duration::from_secs(5);
+    // Cooldown between Gemini action approvals to prevent rapid-fire duplicates
+    let mut last_gemini_action_approval: Option<Instant> = None;
+    const GEMINI_ACTION_COOLDOWN: Duration = Duration::from_secs(2);
+
     // Auto-Enter detection for stuck agents
     // After injecting a message, if agent becomes idle for too long, send Enter
     // This handles cases where the CLI is waiting for user confirmation
@@ -528,6 +546,118 @@ async fn main() -> Result<()> {
                             // Clear buffer and reset state after approval
                             mcp_detection_buffer.clear();
                             mcp_partial_match_since = None;
+                        }
+                    }
+
+                    // Auto-accept Claude Code --dangerously-skip-permissions confirmation
+                    // Newer versions show a startup dialog asking to confirm bypass mode.
+                    // Default is "No, exit" which terminates the agent immediately.
+                    // Detect the prompt and send "y" + Enter to accept.
+                    if !bypass_perms_accepted.load(Ordering::SeqCst) {
+                        bypass_perms_buffer.push_str(&text);
+                        if bypass_perms_buffer.len() > 2500 {
+                            let start = floor_char_boundary(&bypass_perms_buffer, bypass_perms_buffer.len() - 2000);
+                            bypass_perms_buffer = bypass_perms_buffer[start..].to_string();
+                        }
+
+                        let clean = strip_ansi(&bypass_perms_buffer);
+
+                        let (has_bypass_ref, has_confirmation) = detect_bypass_permissions_prompt(&clean);
+
+                        let full_match = has_bypass_ref && has_confirmation;
+
+                        // Timeout-based approval for partial matches
+                        let timeout_approval = if has_bypass_ref || has_confirmation {
+                            match bypass_perms_partial_since {
+                                None => {
+                                    bypass_perms_partial_since = Some(Instant::now());
+                                    debug!("Bypass perms detection: Starting timeout timer for partial match");
+                                    false
+                                }
+                                Some(since) => {
+                                    since.elapsed() >= BYPASS_PERMS_TIMEOUT
+                                }
+                            }
+                        } else {
+                            bypass_perms_partial_since = None;
+                            false
+                        };
+
+                        if full_match || timeout_approval {
+                            if full_match {
+                                info!("Detected Claude Code bypass permissions confirmation, auto-accepting with 'y'");
+                            } else {
+                                info!("Bypass perms detection: Timeout reached, accepting based on partial match");
+                            }
+                            bypass_perms_accepted.store(true, Ordering::SeqCst);
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            // Send "y" + Enter to confirm acceptance
+                            if let Err(e) = async_pty.send(b"y\n".to_vec()).await {
+                                warn!("Failed to send bypass permissions acceptance: {}", e);
+                            }
+                            bypass_perms_buffer.clear();
+                            bypass_perms_partial_since = None;
+                        }
+                    }
+
+                    // Auto-approve Gemini "Action Required" permission prompts
+                    // Gemini shows these even with --yolo for shell redirects, heredocs, etc.
+                    // Detects "Action Required" header + "Allow once"/"Allow for this session"
+                    // and sends "2" to select "Allow for this session"
+                    {
+                        // Check cooldown - skip if we just approved recently
+                        let in_cooldown = last_gemini_action_approval
+                            .map(|t| t.elapsed() < GEMINI_ACTION_COOLDOWN)
+                            .unwrap_or(false);
+
+                        if !in_cooldown {
+                            gemini_action_buffer.push_str(&text);
+                            if gemini_action_buffer.len() > 2500 {
+                                let start = floor_char_boundary(&gemini_action_buffer, gemini_action_buffer.len() - 2000);
+                                gemini_action_buffer = gemini_action_buffer[start..].to_string();
+                            }
+
+                            let clean = strip_ansi(&gemini_action_buffer);
+
+                            let (has_header, has_allow_option) = detect_gemini_action_required(&clean);
+
+                            let full_match = has_header && has_allow_option;
+
+                            // Timeout-based approval for partial matches
+                            let timeout_approval = if has_header || has_allow_option {
+                                match gemini_action_partial_since {
+                                    None => {
+                                        gemini_action_partial_since = Some(Instant::now());
+                                        debug!("Gemini action detection: Starting timeout timer for partial match");
+                                        false
+                                    }
+                                    Some(since) => {
+                                        since.elapsed() >= GEMINI_ACTION_TIMEOUT
+                                    }
+                                }
+                            } else {
+                                gemini_action_partial_since = None;
+                                false
+                            };
+
+                            if full_match || timeout_approval {
+                                if full_match {
+                                    info!("Detected Gemini 'Action Required' prompt, auto-approving with '2' (Allow for this session)");
+                                } else {
+                                    info!("Gemini action detection: Timeout reached, approving based on partial match");
+                                }
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                                if let Err(e) = async_pty.send(b"2".to_vec()).await {
+                                    warn!("Failed to send Gemini action approval: {}", e);
+                                }
+                                gemini_action_buffer.clear();
+                                gemini_action_partial_since = None;
+                                last_gemini_action_approval = Some(Instant::now());
+                            }
+                        } else {
+                            // In cooldown - still accumulate but don't check
+                            // Clear buffer so stale content doesn't trigger immediately after cooldown
+                            gemini_action_buffer.clear();
                         }
                     }
 
@@ -837,6 +967,31 @@ fn is_in_editor_mode(recent_output: &str) -> bool {
     false
 }
 
+/// Detect Gemini "Action Required" permission prompt in output.
+/// Returns true if the output contains both the "Action Required" header
+/// and one of the allow options ("Allow once" or "Allow for this session").
+fn detect_gemini_action_required(clean_output: &str) -> (bool, bool) {
+    let has_header = clean_output.contains("Action Required");
+    let has_allow_option = clean_output.contains("Allow once")
+        || clean_output.contains("Allow for this session");
+    (has_header, has_allow_option)
+}
+
+/// Detect Claude Code --dangerously-skip-permissions confirmation prompt.
+/// Returns (has_bypass_ref, has_confirmation) where:
+/// - has_bypass_ref: output references bypass/permissions or dangerously-skip
+/// - has_confirmation: output contains yes/no or proceed/accept prompt
+fn detect_bypass_permissions_prompt(clean_output: &str) -> (bool, bool) {
+    let lower = clean_output.to_lowercase();
+    let has_bypass_ref = (lower.contains("bypass") && lower.contains("ermission"))
+        || lower.contains("dangerously");
+    let has_confirmation = lower.contains("(yes/no)")
+        || lower.contains("(y/n)")
+        || (lower.contains("proceed") && lower.contains("yes"))
+        || (lower.contains("accept") && lower.contains("risk"));
+    (has_bypass_ref, has_confirmation)
+}
+
 /// Strip ANSI escape sequences from text for robust pattern matching
 /// Handles CSI sequences (ESC[...), OSC sequences (ESC]...), and other common escapes
 fn strip_ansi(text: &str) -> String {
@@ -956,6 +1111,171 @@ mod tests {
         // Vim INSERT with ANSI codes (should be stripped)
         let output = "\x1b[32mSome text\x1b[0m\n-- INSERT --\n";
         assert!(is_in_editor_mode(output));
+    }
+
+    // ==================== Gemini Action Required Detection ====================
+
+    #[test]
+    fn test_gemini_action_required_full_match() {
+        let output = r#"Action Required
+? Shell cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
+Allow execution of: 'cat, redirection (>), heredoc (<<)'?
+● 1. Allow once
+  2. Allow for this session
+  3. No, suggest changes (esc)"#;
+        let (has_header, has_allow_option) = detect_gemini_action_required(output);
+        assert!(has_header, "should detect Action Required header");
+        assert!(has_allow_option, "should detect Allow options");
+    }
+
+    #[test]
+    fn test_gemini_action_required_header_only() {
+        let output = "Action Required\nSome other content without allow options";
+        let (has_header, has_allow_option) = detect_gemini_action_required(output);
+        assert!(has_header, "should detect header");
+        assert!(!has_allow_option, "should not detect allow option");
+    }
+
+    #[test]
+    fn test_gemini_action_required_allow_only() {
+        let output = "Some prompt\nAllow once\nAllow for this session";
+        let (has_header, has_allow_option) = detect_gemini_action_required(output);
+        assert!(!has_header, "should not detect header");
+        assert!(has_allow_option, "should detect allow option");
+    }
+
+    #[test]
+    fn test_gemini_action_required_no_match() {
+        let output = "✦ I'll help you implement that feature. Let me search the codebase first.";
+        let (has_header, has_allow_option) = detect_gemini_action_required(output);
+        assert!(!has_header, "should not match normal output");
+        assert!(!has_allow_option, "should not match normal output");
+    }
+
+    #[test]
+    fn test_gemini_action_required_with_ansi() {
+        // Simulate ANSI-stripped output (the caller strips ANSI before passing)
+        let output = "Action Required\n1. Allow once\n2. Allow for this session";
+        let (has_header, has_allow_option) = detect_gemini_action_required(output);
+        assert!(has_header && has_allow_option, "should match with clean text");
+    }
+
+    #[test]
+    fn test_gemini_action_required_partial_allow_once() {
+        let output = "Action Required\nAllow once";
+        let (has_header, has_allow_option) = detect_gemini_action_required(output);
+        assert!(has_header && has_allow_option, "should match with just Allow once");
+    }
+
+    #[test]
+    fn test_gemini_action_required_partial_allow_session() {
+        let output = "Action Required\nAllow for this session";
+        let (has_header, has_allow_option) = detect_gemini_action_required(output);
+        assert!(has_header && has_allow_option, "should match with just Allow for this session");
+    }
+
+    // ==================== Bypass Permissions Prompt Detection ====================
+
+    #[test]
+    fn test_bypass_perms_yes_no_prompt() {
+        let output = "⚠️  Bypassing all permission checks.\nDo you want to proceed? (yes/no)";
+        let (has_ref, has_confirm) = detect_bypass_permissions_prompt(output);
+        assert!(has_ref, "should detect bypass + permission reference");
+        assert!(has_confirm, "should detect (yes/no) confirmation");
+    }
+
+    #[test]
+    fn test_bypass_perms_dangerously_with_yn() {
+        let output = "Running with --dangerously-skip-permissions\nAccept the risks? (y/n)";
+        let (has_ref, has_confirm) = detect_bypass_permissions_prompt(output);
+        assert!(has_ref, "should detect dangerously reference");
+        assert!(has_confirm, "should detect (y/n) confirmation");
+    }
+
+    #[test]
+    fn test_bypass_perms_accept_risk_variant() {
+        let output = "bypass permissions mode enabled\nDo you accept the risk of running in this mode?";
+        let (has_ref, has_confirm) = detect_bypass_permissions_prompt(output);
+        assert!(has_ref, "should detect bypass + permission");
+        assert!(has_confirm, "should detect accept + risk");
+    }
+
+    #[test]
+    fn test_bypass_perms_proceed_with_yes() {
+        let output = "dangerously skip permissions\nDo you want to proceed? Yes / No";
+        let (has_ref, has_confirm) = detect_bypass_permissions_prompt(output);
+        assert!(has_ref, "should detect dangerously");
+        assert!(has_confirm, "should detect proceed + Yes");
+    }
+
+    #[test]
+    fn test_bypass_perms_capital_yes_no() {
+        let output = "Bypass Permission mode\nContinue? (Yes/No)";
+        let (has_ref, has_confirm) = detect_bypass_permissions_prompt(output);
+        assert!(has_ref, "should detect Bypass + Permission");
+        assert!(has_confirm, "should detect (Yes/No)");
+    }
+
+    #[test]
+    fn test_bypass_perms_no_match_normal_output() {
+        let output = "I'll help you fix that bug. Let me read the file first.";
+        let (has_ref, has_confirm) = detect_bypass_permissions_prompt(output);
+        assert!(!has_ref, "should not match normal output");
+        assert!(!has_confirm, "should not match normal output");
+    }
+
+    #[test]
+    fn test_bypass_perms_no_match_permission_without_bypass() {
+        // "permission" alone without "bypass" should not trigger
+        let output = "File permission denied. (yes/no)";
+        let (has_ref, has_confirm) = detect_bypass_permissions_prompt(output);
+        assert!(!has_ref, "permission without bypass should not match");
+        assert!(has_confirm, "but yes/no should be detected");
+    }
+
+    #[test]
+    fn test_bypass_perms_no_match_bypass_without_confirmation() {
+        // bypass + permission without a yes/no prompt should be partial only
+        let output = "bypass permissions on (shift+tab to cycle)";
+        let (has_ref, has_confirm) = detect_bypass_permissions_prompt(output);
+        assert!(has_ref, "bypass + permission ref should match");
+        assert!(!has_confirm, "no confirmation prompt present");
+    }
+
+    #[test]
+    fn test_bypass_perms_claude_status_bar_no_false_positive() {
+        // Claude status bar shows "bypass permissions" but no confirmation prompt
+        let output = "-- INSERT -- ⏵⏵ bypass permissions on (shift+tab to cycle)";
+        let (has_ref, has_confirm) = detect_bypass_permissions_prompt(output);
+        assert!(has_ref, "status bar has bypass+permissions");
+        assert!(!has_confirm, "but no confirmation prompt - not a full match");
+    }
+
+    #[test]
+    fn test_bypass_perms_fragmented_output() {
+        // Prompt text split across buffer accumulation
+        let output = "Warning: dangerously skip permissions mode\nAll tools will run without confirmation.\nDo you want to proceed? (yes/no)";
+        let (has_ref, has_confirm) = detect_bypass_permissions_prompt(output);
+        assert!(has_ref && has_confirm, "should detect across multi-line output");
+    }
+
+    // ==================== Strip ANSI Integration ====================
+
+    #[test]
+    fn test_gemini_detection_with_raw_ansi() {
+        // Real-world output with ANSI codes
+        let raw = "\x1b[1mAction Required\x1b[0m\n\x1b[32m● 1. Allow once\x1b[0m\n  2. Allow for this session";
+        let clean = strip_ansi(raw);
+        let (has_header, has_allow_option) = detect_gemini_action_required(&clean);
+        assert!(has_header && has_allow_option, "should match after ANSI stripping");
+    }
+
+    #[test]
+    fn test_bypass_detection_with_raw_ansi() {
+        let raw = "\x1b[33m⚠️  bypass permissions\x1b[0m mode\nProceed? \x1b[1m(yes/no)\x1b[0m";
+        let clean = strip_ansi(raw);
+        let (has_ref, has_confirm) = detect_bypass_permissions_prompt(&clean);
+        assert!(has_ref && has_confirm, "should match after ANSI stripping");
     }
 
     #[test]
