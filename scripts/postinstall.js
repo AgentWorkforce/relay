@@ -11,6 +11,7 @@
 
 import { execSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import https from 'node:https';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -177,6 +178,78 @@ function getRelayPtyBinaryName() {
   return `relay-pty-${targetPlatform}-${targetArch}`;
 }
 
+/** Read the package version from package.json */
+function getPackageVersion(pkgRoot) {
+  const packageJsonPath = path.join(pkgRoot, 'package.json');
+  try {
+    const pkgJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
+    return pkgJson.version;
+  } catch (err) {
+    warn(
+      `Unable to read package version from package.json: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+    return null;
+  }
+}
+
+/**
+ * Download a file via HTTPS, following redirects
+ * Uses only built-in https module (no deps)
+ */
+function downloadRelayPtyBinary(url, destPath, maxRedirects = 5) {
+  fs.mkdirSync(path.dirname(destPath), { recursive: true });
+
+  const attemptDownload = (currentUrl, redirectsRemaining, resolve, reject) => {
+    const request = https.get(currentUrl, res => {
+      const status = res.statusCode ?? 0;
+      const location = res.headers.location;
+      const isRedirect = status >= 300 && status < 400 && location;
+
+      if (isRedirect) {
+        if (redirectsRemaining <= 0) {
+          res.resume();
+          reject(new Error('Too many redirects while downloading relay-pty binary'));
+          return;
+        }
+
+        const nextUrl = new URL(location, currentUrl).toString();
+        res.resume();
+        attemptDownload(nextUrl, redirectsRemaining - 1, resolve, reject);
+        return;
+      }
+
+      if (status !== 200) {
+        res.resume();
+        reject(new Error(`Download failed with status ${status}`));
+        return;
+      }
+
+      const fileStream = fs.createWriteStream(destPath);
+      res.pipe(fileStream);
+      fileStream.on('finish', () => {
+        fileStream.close(resolve);
+      });
+      fileStream.on('error', err => reject(err));
+      res.on('error', err => reject(err));
+    });
+
+    request.on('error', err => reject(err));
+  };
+
+  return new Promise((resolve, reject) => {
+    attemptDownload(url, maxRedirects, resolve, reject);
+  }).catch(err => {
+    try {
+      fs.unlinkSync(destPath);
+    } catch {
+      // Ignore cleanup errors
+    }
+    throw err;
+  });
+}
+
 /**
  * Re-sign a binary with ad-hoc signature on macOS.
  * This is required because macOS code signature validation can fail
@@ -210,7 +283,7 @@ function resignBinaryForMacOS(binaryPath) {
 /**
  * Install the relay-pty binary for the current platform
  */
-function installRelayPtyBinary() {
+async function installRelayPtyBinary() {
   const pkgRoot = getPackageRoot();
   const binaryName = getRelayPtyBinaryName();
 
@@ -223,11 +296,28 @@ function installRelayPtyBinary() {
   const sourcePath = path.join(pkgRoot, 'bin', binaryName);
   const targetPath = path.join(pkgRoot, 'bin', 'relay-pty');
 
-  // Check if platform-specific binary exists
+  // Check if platform-specific binary exists (bundled install)
   if (!fs.existsSync(sourcePath)) {
-    warn(`relay-pty binary not found for ${os.platform()}-${os.arch()}`);
-    warn('Will fall back to tmux mode');
-    return false;
+    const version = getPackageVersion(pkgRoot);
+    if (!version) {
+      warn('relay-pty binary not available and package version unknown');
+      warn('Will fall back to tmux mode');
+      return false;
+    }
+
+    const downloadUrl = `https://github.com/AgentWorkforce/relay/releases/download/v${version}/${binaryName}`;
+    info(`relay-pty binary not bundled, downloading from ${downloadUrl} ...`);
+
+    try {
+      await downloadRelayPtyBinary(downloadUrl, sourcePath);
+      fs.chmodSync(sourcePath, 0o755);
+      success(`Downloaded relay-pty binary for ${os.platform()}-${os.arch()}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      warn(`Failed to download relay-pty binary: ${message}`);
+      warn('Will fall back to tmux mode');
+      return false;
+    }
   }
 
   // Check if already installed (and is a symlink or copy of correct binary)
@@ -534,7 +624,7 @@ async function main() {
   }
 
   // Install relay-pty binary for current platform (primary mode)
-  const hasRelayPty = installRelayPtyBinary();
+  const hasRelayPty = await installRelayPtyBinary();
 
   // Ensure SQLite driver is available (better-sqlite3 or node:sqlite)
   const sqliteStatus = ensureSqliteDriver();
