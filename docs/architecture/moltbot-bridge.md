@@ -633,326 +633,330 @@ agent-relay moltbot install-skill
 
 ---
 
-## Reliability Layer (Hardened)
+## Transport Architecture: Relay-Native
 
-OpenClaw's `sessions_send` has known reliability issues that require mitigation. This section specifies the reliability guarantees the bridge provides.
+**Key Design Decision**: We do NOT use OpenClaw's `sessions_send` for agent-to-agent communication. OpenClaw has known reliability issues ([#549](https://github.com/openclaw/openclaw/issues/549), [#5531](https://github.com/openclaw/openclaw/issues/5531)) that make it unsuitable for reliable messaging.
 
-### Known OpenClaw Issues (Mitigated)
+Instead, we use Agent Relay's battle-tested protocol for ALL inter-agent communication. OpenClaw is used ONLY as a **channel adapter** for external messaging platforms.
 
-| Issue | OpenClaw Behavior | Bridge Mitigation |
-|-------|-------------------|-------------------|
-| [#549](https://github.com/openclaw/openclaw/issues/549) WebSocket race conditions | Responses drop mid-stream due to unsynchronized `ChatRunRegistry` | Connection health monitoring + automatic reconnect |
-| [#5531](https://github.com/openclaw/openclaw/issues/5531) Multi-channel routing | `deliveryContext` ignored, defaults to webchat | Explicit channel targeting in all sends |
-| No delivery confirmation | `sessions_send` is fire-and-forget | Application-level ACK protocol |
-| No message ordering | Messages can arrive out-of-order | Sequence numbers + reordering buffer |
-| Session state races | Concurrent access to unprotected maps | Mutex per session in bridge |
+### Why Relay-Native?
 
-### Reliability Architecture
+| Concern | OpenClaw `sessions_send` | Agent Relay Protocol |
+|---------|--------------------------|----------------------|
+| Delivery confirmation | None (fire-and-forget) | ACK/NACK built-in |
+| Message ordering | No guarantees | Sequence numbers per stream |
+| Persistence | None | SQLite WAL mode |
+| Deduplication | Per-channel only | Hash-based global |
+| Connection recovery | Manual | Automatic with backoff |
+| Dead letter handling | None | DLQ with manual retry |
+| Concurrency | Unsynchronized maps | Mutex per session |
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        @agent-relay/moltbot Bridge                          │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐         │
-│  │ Outbox Queue    │    │ Delivery        │    │ Inbox Queue     │         │
-│  │ (persistent)    │───►│ Manager         │───►│ (deduplicated)  │         │
-│  └─────────────────┘    └────────┬────────┘    └─────────────────┘         │
-│                                  │                                          │
-│                         ┌────────┴────────┐                                 │
-│                         │ Health Monitor  │                                 │
-│                         └────────┬────────┘                                 │
-│                                  │                                          │
-├──────────────────────────────────┼──────────────────────────────────────────┤
-│                                  ▼                                          │
-│  ┌─────────────────────────────────────────────────────────────────┐       │
-│  │                    OpenClaw Gateway (Untrusted)                  │       │
-│  │                    ws://127.0.0.1:18789                          │       │
-│  └─────────────────────────────────────────────────────────────────┘       │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+### Minimal OpenClaw Interface
 
-### Message Envelope (Bridge Protocol)
-
-Every message through the bridge includes reliability metadata:
+The bridge uses OpenClaw for exactly two things:
 
 ```typescript
-interface BridgeEnvelope {
-  // Identity
-  id: string;              // UUIDv7 (time-sortable)
-  correlationId?: string;  // For request-response pairing
+// 1. Receive messages FROM external channels
+interface ChannelInbound {
+  onMessage(handler: (msg: ChannelMessage) => void): void;
+}
 
-  // Ordering
-  seq: number;             // Per (sender, recipient) sequence number
-  timestamp: number;       // Unix ms
+// 2. Send messages TO external channels
+interface ChannelOutbound {
+  send(channel: string, recipient: string, message: string): Promise<void>;
+}
 
-  // Routing
-  from: string;            // Sender identifier
-  to: string;              // Target session key or agent name
-  channel?: string;        // Explicit channel (never rely on deliveryContext)
-
-  // Payload
-  type: 'message' | 'ack' | 'nack' | 'ping' | 'pong';
-  body: string;
+interface ChannelMessage {
+  channel: 'whatsapp' | 'telegram' | 'slack' | 'discord' | string;
+  sender: string;      // External user identifier
+  content: string;
+  timestamp: number;
   metadata?: Record<string, unknown>;
-
-  // Delivery
-  attempt: number;         // Retry attempt (1-based)
-  maxAttempts: number;     // Default: 3
-  ttl: number;             // Time-to-live in ms
 }
 ```
 
-### Delivery Guarantees
+That's it. No `sessions_send`, no `sessions_list`, no `sessions_history`.
 
-#### At-Least-Once Delivery
+### Architecture: Relay as Transport
 
-The bridge guarantees at-least-once delivery for messages to OpenClaw sessions:
-
-```typescript
-class DeliveryManager {
-  private outbox: PersistentQueue<BridgeEnvelope>;
-  private pending: Map<string, PendingMessage>;
-  private readonly ackTimeout = 10_000;  // 10 seconds
-  private readonly maxRetries = 3;
-  private readonly backoffBase = 1000;   // 1 second
-
-  async send(envelope: BridgeEnvelope): Promise<DeliveryResult> {
-    // 1. Persist to outbox (survives crashes)
-    await this.outbox.enqueue(envelope);
-
-    // 2. Attempt delivery
-    return this.attemptDelivery(envelope);
-  }
-
-  private async attemptDelivery(envelope: BridgeEnvelope): Promise<DeliveryResult> {
-    for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
-      envelope.attempt = attempt;
-
-      try {
-        // Send via OpenClaw sessions_send with explicit channel
-        await this.openclawSend(envelope);
-
-        // Wait for application-level ACK
-        const acked = await this.waitForAck(envelope.id, this.ackTimeout);
-
-        if (acked) {
-          await this.outbox.remove(envelope.id);
-          return { success: true, attempts: attempt };
-        }
-      } catch (err) {
-        this.emit('delivery_error', { envelope, error: err, attempt });
-      }
-
-      // Exponential backoff with jitter
-      const backoff = this.backoffBase * Math.pow(2, attempt - 1);
-      const jitter = backoff * (0.5 + Math.random() * 0.5);
-      await sleep(jitter);
-    }
-
-    // Move to dead letter queue
-    await this.deadLetterQueue.enqueue(envelope);
-    await this.outbox.remove(envelope.id);
-
-    return { success: false, attempts: this.maxRetries, reason: 'max_retries_exceeded' };
-  }
-}
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                               External World                                         │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐                            │
+│  │ WhatsApp │  │ Telegram │  │  Slack   │  │ Discord  │                            │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘                            │
+│       └─────────────┴─────────────┴─────────────┘                                   │
+│                              │                                                       │
+│                              ▼                                                       │
+│       ┌──────────────────────────────────────────┐                                  │
+│       │         OpenClaw Gateway                  │                                  │
+│       │   (Channel I/O ONLY - no sessions_send)   │                                  │
+│       └──────────────────────┬───────────────────┘                                  │
+│                              │                                                       │
+├──────────────────────────────┼───────────────────────────────────────────────────────┤
+│                              ▼                                                       │
+│       ┌──────────────────────────────────────────┐                                  │
+│       │      @agent-relay/moltbot Bridge          │                                  │
+│       │                                          │                                  │
+│       │  ┌────────────────┐  ┌────────────────┐  │                                  │
+│       │  │ Channel        │  │ Channel        │  │                                  │
+│       │  │ Receiver       │  │ Sender         │  │                                  │
+│       │  │ (inbound)      │  │ (outbound)     │  │                                  │
+│       │  └───────┬────────┘  └───────▲────────┘  │                                  │
+│       │          │                   │           │                                  │
+│       │          │   ┌───────────┐   │           │                                  │
+│       │          └──►│  Router   │───┘           │                                  │
+│       │              └─────┬─────┘               │                                  │
+│       └────────────────────┼─────────────────────┘                                  │
+│                            │                                                         │
+│                            │ Relay Protocol (reliable)                              │
+│                            ▼                                                         │
+│       ┌──────────────────────────────────────────┐                                  │
+│       │         Agent Relay Daemon                │                                  │
+│       │                                          │                                  │
+│       │  • ACK/NACK delivery confirmation        │                                  │
+│       │  • Sequence numbers & ordering           │                                  │
+│       │  • SQLite persistence (WAL mode)         │                                  │
+│       │  • Dead letter queue                     │                                  │
+│       │  • Sub-5ms latency                       │                                  │
+│       └──────────────────────┬───────────────────┘                                  │
+│                              │                                                       │
+│         ┌────────────────────┼────────────────────┐                                 │
+│         ▼                    ▼                    ▼                                 │
+│  ┌─────────────┐      ┌─────────────┐      ┌─────────────┐                         │
+│  │    Lead     │      │   Worker    │      │   Worker    │                         │
+│  │   Agent     │◄────►│   Agent     │◄────►│   Agent     │                         │
+│  └─────────────┘      └─────────────┘      └─────────────┘                         │
+│         │                                                                           │
+│         │ All agent-to-agent communication via Relay (NOT OpenClaw)                │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-#### Application-Level ACK Protocol
-
-Since OpenClaw provides no delivery confirmation, we implement our own:
+### Message Flow: Inbound (WhatsApp → Agent)
 
 ```typescript
-// Sender side: include ACK request in message metadata
-const envelope: BridgeEnvelope = {
-  id: uuidv7(),
-  type: 'message',
-  body: 'Hello from Agent A',
-  metadata: {
-    requiresAck: true,
-    ackDeadline: Date.now() + 10_000,
-  },
-};
+// 1. OpenClaw receives WhatsApp message
+openclawGateway.onMessage((msg) => {
+  // msg = { channel: 'whatsapp', sender: '+1234567890', content: 'Hello' }
 
-// Receiver side: auto-ACK after processing
-class InboxProcessor {
-  async processMessage(envelope: BridgeEnvelope): Promise<void> {
-    try {
-      // Deliver to Relay agent
-      await this.relayClient.send(envelope.to, envelope.body);
+  // 2. Bridge translates to Relay envelope
+  const envelope: Envelope = {
+    type: 'SEND',
+    to: routeToAgent(msg.channel, msg.sender),  // e.g., 'Lead' or 'WhatsAppHandler'
+    from: `moltbot:${msg.channel}:${msg.sender}`,
+    body: msg.content,
+    metadata: {
+      source: 'moltbot',
+      channel: msg.channel,
+      externalSender: msg.sender,
+    },
+  };
 
-      // Send ACK back via OpenClaw
-      if (envelope.metadata?.requiresAck) {
-        await this.sendAck(envelope);
-      }
-    } catch (err) {
-      // Send NACK with error details
-      await this.sendNack(envelope, err);
-    }
-  }
-
-  private async sendAck(original: BridgeEnvelope): Promise<void> {
-    const ack: BridgeEnvelope = {
-      id: uuidv7(),
-      correlationId: original.id,
-      type: 'ack',
-      from: this.bridgeName,
-      to: original.from,
-      channel: original.channel,  // Explicit channel!
-      body: '',
-      seq: this.nextSeq(original.from),
-      timestamp: Date.now(),
-      attempt: 1,
-      maxAttempts: 1,
-      ttl: 5000,
-    };
-    await this.openclawSend(ack);
-  }
-}
+  // 3. Send via Relay daemon (RELIABLE - ACK/NACK, persistence, etc.)
+  await relayClient.send(envelope);
+});
 ```
 
-### Deduplication
-
-Prevent duplicate processing due to retries:
+### Message Flow: Outbound (Agent → WhatsApp)
 
 ```typescript
-class InboxDeduplicator {
-  private seen: LRUCache<string, number>;  // messageId → timestamp
-  private readonly windowMs = 300_000;     // 5 minutes
+// 1. Agent sends to Moltbot channel via Relay
+// Agent output: ->relay:#moltbot-whatsapp Hello from the agent!
 
-  isDuplicate(envelope: BridgeEnvelope): boolean {
-    const existing = this.seen.get(envelope.id);
-    if (existing) {
-      this.emit('duplicate_detected', {
-        id: envelope.id,
-        originalTs: existing,
-        duplicateTs: envelope.timestamp,
-      });
-      return true;
-    }
+// 2. Bridge receives via Relay (daemon delivers with full guarantees)
+relayClient.onChannelMessage('#moltbot-whatsapp', (from, body, metadata) => {
+  const recipient = metadata?.recipient ?? inferRecipient(from);
 
-    this.seen.set(envelope.id, envelope.timestamp);
-    return false;
-  }
-}
+  // 3. Send via OpenClaw's channel adapter (simple HTTP/WS call)
+  await openclawGateway.send('whatsapp', recipient, body);
+});
 ```
 
-### Sequence Ordering
+### Bridge as Relay Agent
 
-Reorder out-of-sequence messages:
-
-```typescript
-class SequenceReorderer {
-  private expected: Map<string, number>;  // sender → next expected seq
-  private buffer: Map<string, BridgeEnvelope[]>;  // sender → buffered messages
-  private readonly maxBufferSize = 100;
-  private readonly maxWaitMs = 5000;
-
-  async process(envelope: BridgeEnvelope): Promise<BridgeEnvelope[]> {
-    const sender = envelope.from;
-    const expectedSeq = this.expected.get(sender) ?? 1;
-
-    if (envelope.seq === expectedSeq) {
-      // In order - process immediately + flush buffer
-      this.expected.set(sender, expectedSeq + 1);
-      return [envelope, ...this.flushBuffer(sender)];
-    }
-
-    if (envelope.seq < expectedSeq) {
-      // Already processed (late duplicate)
-      return [];
-    }
-
-    // Out of order - buffer it
-    this.bufferMessage(sender, envelope);
-
-    // Set timer to force delivery if gap not filled
-    setTimeout(() => this.forceFlush(sender, expectedSeq), this.maxWaitMs);
-
-    return [];
-  }
-}
-```
-
-### Connection Health Monitoring
-
-Detect and recover from OpenClaw WebSocket issues:
+The bridge itself is a first-class Relay agent:
 
 ```typescript
-class HealthMonitor {
-  private lastPong: number = Date.now();
-  private readonly pingInterval = 5000;
-  private readonly pongTimeout = 10000;
-  private consecutiveFailures = 0;
-  private readonly maxFailures = 3;
+import { RelayClient } from '@agent-relay/sdk';
+
+class MoltbotBridge {
+  private relay: RelayClient;
+  private openclaw: OpenClawChannelAdapter;
 
   async start(): Promise<void> {
-    this.pingTimer = setInterval(() => this.ping(), this.pingInterval);
-  }
+    // Connect to Relay daemon as agent "MoltbotBridge"
+    this.relay = new RelayClient({ agentName: 'MoltbotBridge' });
+    await this.relay.connect();
 
-  private async ping(): Promise<void> {
-    const pingEnvelope: BridgeEnvelope = {
-      id: uuidv7(),
-      type: 'ping',
-      from: this.bridgeName,
-      to: 'bridge:health',  // Special session for health checks
-      body: '',
-      seq: 0,
-      timestamp: Date.now(),
-      attempt: 1,
-      maxAttempts: 1,
-      ttl: this.pongTimeout,
+    // Join channel for each Moltbot platform
+    await this.relay.joinChannel('#moltbot-whatsapp');
+    await this.relay.joinChannel('#moltbot-telegram');
+    await this.relay.joinChannel('#moltbot-slack');
+    await this.relay.joinChannel('#moltbot-discord');
+
+    // Route inbound channel messages to Relay
+    this.openclaw.onMessage((msg) => this.handleInbound(msg));
+
+    // Route Relay channel messages to external platforms
+    this.relay.onChannelMessage = (channel, from, body, meta) => {
+      this.handleOutbound(channel, from, body, meta);
     };
 
-    try {
-      await this.openclawSend(pingEnvelope);
+    // Handle direct messages to the bridge
+    this.relay.onMessage = (from, body, meta) => {
+      this.handleDirectMessage(from, body, meta);
+    };
+  }
+}
+```
 
-      // Wait for pong
-      const ponged = await this.waitForPong(pingEnvelope.id, this.pongTimeout);
+### Routing Logic
 
-      if (ponged) {
-        this.lastPong = Date.now();
-        this.consecutiveFailures = 0;
-        this.emit('health_ok');
-      } else {
-        this.handleFailure('pong_timeout');
-      }
-    } catch (err) {
-      this.handleFailure('ping_error', err);
-    }
+```typescript
+class MessageRouter {
+  private channelToAgent: Map<string, string>;   // channel → default agent
+  private userToSession: Map<string, string>;    // externalUser → assigned agent
+
+  // Determine which Relay agent should handle an inbound message
+  routeInbound(channel: string, sender: string): string {
+    // Check for existing conversation assignment
+    const sessionKey = `${channel}:${sender}`;
+    const assigned = this.userToSession.get(sessionKey);
+    if (assigned) return assigned;
+
+    // Fall back to channel default
+    const channelDefault = this.channelToAgent.get(channel);
+    if (channelDefault) return channelDefault;
+
+    // Fall back to Lead agent
+    return 'Lead';
   }
 
-  private handleFailure(reason: string, error?: Error): void {
-    this.consecutiveFailures++;
-    this.emit('health_degraded', { reason, error, failures: this.consecutiveFailures });
+  // Determine which external recipient for outbound message
+  routeOutbound(channel: string, metadata?: Record<string, unknown>): string {
+    // Explicit recipient in metadata
+    if (metadata?.recipient) return metadata.recipient as string;
 
-    if (this.consecutiveFailures >= this.maxFailures) {
-      this.emit('health_critical');
-      this.triggerReconnect();
-    }
+    // Infer from conversation context
+    // ...
+  }
+}
+```
+
+### Leveraging Existing Relay Features
+
+Since we use Relay as transport, we get ALL existing features for free:
+
+#### 1. Delivery Guarantees (from `@agent-relay/daemon`)
+
+```typescript
+// Already implemented in Relay - no bridge code needed
+- ACK/NACK confirmation
+- At-least-once delivery
+- Exponential backoff retries
+- Dead letter queue
+```
+
+#### 2. Message Persistence (from `@agent-relay/storage`)
+
+```typescript
+// Already implemented - messages survive restarts
+- SQLite with WAL mode
+- Batched writes for performance
+- Indexed by timestamp, sender, recipient, topic
+```
+
+#### 3. Sequence Ordering (from `@agent-relay/protocol`)
+
+```typescript
+// Already implemented - no reordering logic needed in bridge
+- Per (topic, peer) sequence numbers
+- Automatic reordering in daemon
+```
+
+#### 4. Health Monitoring (from `@agent-relay/daemon`)
+
+```typescript
+// Already implemented
+- PING/PONG every 5 seconds
+- 10-second timeout
+- Automatic reconnection with exponential backoff
+```
+
+#### 5. Observability (from `@agent-relay/telemetry`)
+
+```typescript
+// Already implemented
+- Message counters
+- Latency histograms
+- Connection state tracking
+```
+
+### What the Bridge Actually Does
+
+With Relay handling all the hard stuff, the bridge is remarkably simple:
+
+```typescript
+// The ENTIRE bridge core logic
+class MoltbotBridge {
+  // Inbound: OpenClaw → Relay
+  private handleInbound(msg: ChannelMessage): void {
+    const target = this.router.routeInbound(msg.channel, msg.sender);
+    this.relay.send(target, msg.content, {
+      source: 'moltbot',
+      channel: msg.channel,
+      sender: msg.sender,
+    });
   }
 
-  private async triggerReconnect(): Promise<void> {
-    this.emit('reconnecting');
+  // Outbound: Relay → OpenClaw
+  private handleOutbound(
+    channel: string,
+    from: string,
+    body: string,
+    meta?: Record<string, unknown>
+  ): void {
+    const platform = this.channelToPlatform(channel);  // '#moltbot-whatsapp' → 'whatsapp'
+    const recipient = this.router.routeOutbound(channel, meta);
+    this.openclaw.send(platform, recipient, body);
+  }
+}
+```
 
-    // Close existing connection
-    await this.transport.disconnect();
+### OpenClaw Connection Health
 
-    // Exponential backoff reconnect
+The only reliability concern is the OpenClaw Gateway WebSocket. We handle this simply:
+
+```typescript
+class OpenClawChannelAdapter {
+  private ws: WebSocket;
+  private reconnecting = false;
+
+  async connect(): Promise<void> {
+    this.ws = new WebSocket('ws://127.0.0.1:18789');
+
+    this.ws.on('close', () => {
+      if (!this.reconnecting) this.reconnect();
+    });
+
+    this.ws.on('error', (err) => {
+      this.emit('error', err);
+      if (!this.reconnecting) this.reconnect();
+    });
+  }
+
+  private async reconnect(): Promise<void> {
+    this.reconnecting = true;
+
     for (let attempt = 1; attempt <= 10; attempt++) {
       try {
-        await this.transport.connect(this.gatewayUrl);
-        this.consecutiveFailures = 0;
-        this.emit('reconnected', { attempt });
-
-        // Replay unacknowledged messages from outbox
-        await this.replayOutbox();
+        await this.connect();
+        this.reconnecting = false;
+        this.emit('reconnected');
         return;
-      } catch (err) {
-        const backoff = Math.min(30000, 1000 * Math.pow(2, attempt));
-        await sleep(backoff);
+      } catch {
+        await sleep(Math.min(30000, 1000 * Math.pow(2, attempt)));
       }
     }
 
@@ -961,264 +965,52 @@ class HealthMonitor {
 }
 ```
 
-### Explicit Channel Targeting
+Note: If OpenClaw goes down, inbound messages are lost (OpenClaw's problem). But any messages already in Relay are safe and will be delivered when agents reconnect.
 
-Never rely on OpenClaw's `deliveryContext` - always specify channel explicitly:
-
-```typescript
-class ExplicitChannelRouter {
-  // Track the originating channel for each session
-  private sessionChannels: Map<string, string> = new Map();
-
-  async sendToSession(sessionKey: string, message: string): Promise<void> {
-    const channel = this.sessionChannels.get(sessionKey);
-
-    if (!channel) {
-      throw new Error(`Unknown channel for session: ${sessionKey}`);
-    }
-
-    // ALWAYS use explicit channel in the send command
-    // This bypasses OpenClaw's broken deliveryContext routing
-    await this.openclaw.tool('message', {
-      channel,           // Explicit!
-      to: sessionKey,
-      message,
-    });
-  }
-
-  // On incoming message, record the channel
-  handleIncoming(sessionKey: string, channel: string): void {
-    this.sessionChannels.set(sessionKey, channel);
-  }
-}
-```
-
-### Mutex Per Session
-
-Prevent race conditions in session state:
+### Configuration
 
 ```typescript
-class SessionStateManager {
-  private locks: Map<string, Mutex> = new Map();
-  private state: Map<string, SessionState> = new Map();
-
-  private getLock(sessionKey: string): Mutex {
-    let lock = this.locks.get(sessionKey);
-    if (!lock) {
-      lock = new Mutex();
-      this.locks.set(sessionKey, lock);
-    }
-    return lock;
-  }
-
-  async withSession<T>(
-    sessionKey: string,
-    fn: (state: SessionState) => Promise<T>
-  ): Promise<T> {
-    const lock = this.getLock(sessionKey);
-
-    return lock.runExclusive(async () => {
-      const state = this.state.get(sessionKey) ?? this.createState(sessionKey);
-      const result = await fn(state);
-      this.state.set(sessionKey, state);
-      return result;
-    });
-  }
-}
-```
-
-### Persistent Queues
-
-Survive bridge restarts:
-
-```typescript
-interface PersistentQueue<T> {
-  enqueue(item: T): Promise<void>;
-  dequeue(): Promise<T | null>;
-  peek(): Promise<T | null>;
-  remove(id: string): Promise<void>;
-  size(): Promise<number>;
-
-  // Recovery
-  getUnprocessed(): Promise<T[]>;
-}
-
-// SQLite-backed implementation
-class SQLiteQueue<T> implements PersistentQueue<T> {
-  constructor(
-    private db: Database,
-    private tableName: string,
-  ) {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS ${tableName} (
-        id TEXT PRIMARY KEY,
-        data TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        attempts INTEGER DEFAULT 0,
-        last_attempt_at INTEGER,
-        status TEXT DEFAULT 'pending'
-      )
-    `);
-  }
-
-  async enqueue(item: T & { id: string }): Promise<void> {
-    this.db.prepare(`
-      INSERT INTO ${this.tableName} (id, data, created_at)
-      VALUES (?, ?, ?)
-    `).run(item.id, JSON.stringify(item), Date.now());
-  }
-
-  async getUnprocessed(): Promise<T[]> {
-    const rows = this.db.prepare(`
-      SELECT data FROM ${this.tableName}
-      WHERE status = 'pending'
-      ORDER BY created_at ASC
-    `).all();
-
-    return rows.map(r => JSON.parse(r.data));
-  }
-}
-```
-
-### Dead Letter Queue
-
-Handle permanently failed messages:
-
-```typescript
-interface DeadLetter {
-  envelope: BridgeEnvelope;
-  reason: string;
-  attempts: AttemptRecord[];
-  deadAt: number;
-}
-
-interface AttemptRecord {
-  attempt: number;
-  timestamp: number;
-  error?: string;
-  duration: number;
-}
-
-class DeadLetterHandler {
-  private dlq: PersistentQueue<DeadLetter>;
-
-  async handleDeadLetter(letter: DeadLetter): Promise<void> {
-    // Persist to DLQ
-    await this.dlq.enqueue(letter);
-
-    // Emit event for monitoring
-    this.emit('dead_letter', letter);
-
-    // Optional: notify via relay-cloud
-    if (this.cloudEnabled) {
-      await this.cloud.reportDeadLetter(letter);
-    }
-  }
-
-  // Manual retry interface
-  async retryDeadLetter(id: string): Promise<DeliveryResult> {
-    const letter = await this.dlq.get(id);
-    if (!letter) throw new Error('Dead letter not found');
-
-    // Reset envelope for retry
-    letter.envelope.attempt = 0;
-    letter.envelope.timestamp = Date.now();
-
-    return this.deliveryManager.send(letter.envelope);
-  }
-}
-```
-
-### Metrics & Observability
-
-```typescript
-interface BridgeMetrics {
-  // Throughput
-  messagesSent: Counter;
-  messagesReceived: Counter;
-  messagesAcked: Counter;
-  messagesNacked: Counter;
-
-  // Reliability
-  deliveryAttempts: Histogram;
-  deliveryLatency: Histogram;
-  retryCount: Counter;
-  deadLetterCount: Counter;
-
-  // Health
-  connectionState: Gauge;  // 0=disconnected, 1=connecting, 2=connected
-  consecutiveFailures: Gauge;
-  lastPongAge: Gauge;
-
-  // Queues
-  outboxSize: Gauge;
-  inboxSize: Gauge;
-  dlqSize: Gauge;
-
-  // Deduplication
-  duplicatesDetected: Counter;
-
-  // Reordering
-  outOfOrderMessages: Counter;
-  reorderBufferSize: Gauge;
-}
-```
-
-### Configuration (Reliability)
-
-```typescript
-interface ReliabilityConfig {
-  /** Delivery settings */
-  delivery: {
-    /** Max retry attempts (default: 3) */
-    maxRetries: number;
-    /** Base backoff in ms (default: 1000) */
-    backoffBase: number;
-    /** Max backoff in ms (default: 30000) */
-    backoffMax: number;
-    /** ACK timeout in ms (default: 10000) */
-    ackTimeout: number;
-    /** Message TTL in ms (default: 300000 = 5 min) */
-    messageTtl: number;
+interface MoltbotBridgeConfig {
+  // OpenClaw connection (channel I/O only)
+  openclaw: {
+    gatewayUrl: string;  // ws://127.0.0.1:18789
+    reconnectAttempts?: number;
+    reconnectBackoff?: number;
   };
 
-  /** Health monitoring */
-  health: {
-    /** Ping interval in ms (default: 5000) */
-    pingInterval: number;
-    /** Pong timeout in ms (default: 10000) */
-    pongTimeout: number;
-    /** Failures before reconnect (default: 3) */
-    maxFailures: number;
-    /** Max reconnect attempts (default: 10) */
-    maxReconnectAttempts: number;
+  // Relay connection (all the reliability)
+  relay: {
+    agentName: string;   // 'MoltbotBridge'
+    socketPath?: string; // Auto-discovered
   };
 
-  /** Deduplication */
-  dedup: {
-    /** Window size in ms (default: 300000 = 5 min) */
-    windowMs: number;
-    /** Max cached message IDs (default: 10000) */
-    maxCacheSize: number;
+  // Routing
+  routing: {
+    // Map channels to default handlers
+    channelDefaults: Record<string, string>;
+    // Default agent for unrouted messages
+    fallbackAgent: string;
   };
 
-  /** Reordering */
-  reorder: {
-    /** Max buffered messages per sender (default: 100) */
-    maxBufferSize: number;
-    /** Max wait for missing seq (default: 5000) */
-    maxWaitMs: number;
-  };
-
-  /** Persistence */
-  persistence: {
-    /** Queue storage path */
-    dbPath: string;
-    /** Flush interval in ms (default: 1000) */
-    flushInterval: number;
-  };
+  // Channels to bridge
+  channels: string[];  // ['whatsapp', 'telegram', 'slack', 'discord']
 }
 ```
+
+### Summary: Responsibilities
+
+| Component | Responsibility |
+|-----------|----------------|
+| **OpenClaw Gateway** | Channel I/O only (send/receive external messages) |
+| **Moltbot Bridge** | Translate between channel messages and Relay envelopes |
+| **Relay Daemon** | ALL reliability: delivery, persistence, ordering, health |
+| **Relay Agents** | Business logic, conversation handling |
+
+This architecture is:
+- **Simpler**: Bridge is ~100 lines of core logic
+- **More reliable**: Leverages battle-tested Relay protocol
+- **Easier to maintain**: No duplicate reliability code
+- **Consistent**: Same guarantees as native Relay agents
 
 ---
 
