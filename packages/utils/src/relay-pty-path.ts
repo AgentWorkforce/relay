@@ -202,6 +202,13 @@ export function findRelayPtyBinary(callerDirname: string): string | null {
   const bashInstallerBinDir = process.env.AGENT_RELAY_BIN_DIR
     || (home ? path.join(home, '.local', 'bin') : null);
 
+  // Universal: derive global node_modules from Node's own executable path.
+  // This covers ALL Node installations regardless of version manager
+  // (nvm, volta, fnm, mise, asdf, n, system, Homebrew, direct download, etc.)
+  // Node binary is at <prefix>/bin/node, global modules at <prefix>/lib/node_modules/
+  const nodePrefix = path.resolve(path.dirname(process.execPath), '..');
+  packageRoots.push(path.join(nodePrefix, 'lib', 'node_modules', 'agent-relay'));
+
   // Homebrew npm (macOS)
   packageRoots.push('/usr/local/lib/node_modules/agent-relay');
   packageRoots.push('/opt/homebrew/lib/node_modules/agent-relay');

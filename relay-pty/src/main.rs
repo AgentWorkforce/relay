@@ -357,21 +357,22 @@ async fn main() -> Result<()> {
     let mut mcp_partial_match_since: Option<Instant> = None;
     // Timeout duration for partial match approval (5 seconds)
     const MCP_APPROVAL_TIMEOUT: Duration = Duration::from_secs(5);
+    // NOTE: MCP timeout intentionally uses `||` (partial match) rather than `&&` (full match).
+    // Unlike bypass-perms and Gemini, MCP's `has_header` signal ("MCP Server Approval Required")
+    // is highly specific and unlikely to appear in normal output. The `[a]` signal is generic,
+    // but MCP approval is one-shot (AtomicBool), so a single false positive is bounded.
+    // The timeout allows approval when the prompt renders in fragments across read boundaries.
 
     // Claude Code --dangerously-skip-permissions confirmation prompt auto-acceptance
     // Newer Claude Code versions show a startup confirmation dialog when bypass mode is used.
     // The default is "No, exit" which causes immediate termination. Auto-send "y" to accept.
     let bypass_perms_accepted = AtomicBool::new(false);
     let mut bypass_perms_buffer = String::new();
-    let mut bypass_perms_partial_since: Option<Instant> = None;
-    const BYPASS_PERMS_TIMEOUT: Duration = Duration::from_secs(5);
 
     // Gemini "Action Required" permission prompt auto-approval
     // Gemini shows "Action Required" prompts even with --yolo for certain operations
     // (e.g., shell redirects, heredocs). Auto-send "2" to select "Allow for this session".
     let mut gemini_action_buffer = String::new();
-    let mut gemini_action_partial_since: Option<Instant> = None;
-    const GEMINI_ACTION_TIMEOUT: Duration = Duration::from_secs(5);
     // Cooldown between Gemini action approvals to prevent rapid-fire duplicates
     let mut last_gemini_action_approval: Option<Instant> = None;
     const GEMINI_ACTION_COOLDOWN: Duration = Duration::from_secs(2);
@@ -552,7 +553,8 @@ async fn main() -> Result<()> {
                     // Auto-accept Claude Code --dangerously-skip-permissions confirmation
                     // Newer versions show a startup dialog asking to confirm bypass mode.
                     // Default is "No, exit" which terminates the agent immediately.
-                    // Detect the prompt and send "y" + Enter to accept.
+                    // Requires BOTH bypass reference AND confirmation prompt (no timeout fallback
+                    // since the signals are generic enough to cause false positives individually).
                     if !bypass_perms_accepted.load(Ordering::SeqCst) {
                         bypass_perms_buffer.push_str(&text);
                         if bypass_perms_buffer.len() > 2500 {
@@ -561,54 +563,25 @@ async fn main() -> Result<()> {
                         }
 
                         let clean = strip_ansi(&bypass_perms_buffer);
-
                         let (has_bypass_ref, has_confirmation) = detect_bypass_permissions_prompt(&clean);
 
-                        let full_match = has_bypass_ref && has_confirmation;
-
-                        // Timeout-based approval for fragmented output where both
-                        // signals are present but arrived in separate chunks.
-                        // IMPORTANT: Require BOTH bypass ref AND confirmation to avoid
-                        // false positives on unrelated yes/no prompts (e.g., "File permission denied. (yes/no)").
-                        let timeout_approval = if has_bypass_ref && has_confirmation {
-                            match bypass_perms_partial_since {
-                                None => {
-                                    bypass_perms_partial_since = Some(Instant::now());
-                                    debug!("Bypass perms detection: Starting timeout timer (both signals present)");
-                                    false
-                                }
-                                Some(since) => {
-                                    since.elapsed() >= BYPASS_PERMS_TIMEOUT
-                                }
-                            }
-                        } else {
-                            bypass_perms_partial_since = None;
-                            false
-                        };
-
-                        if full_match || timeout_approval {
-                            if full_match {
-                                info!("Detected Claude Code bypass permissions confirmation, auto-accepting with 'y'");
-                            } else {
-                                info!("Bypass perms detection: Timeout reached, accepting based on partial match");
-                            }
+                        if has_bypass_ref && has_confirmation {
+                            info!("Detected Claude Code bypass permissions confirmation, auto-accepting with 'y'");
                             bypass_perms_accepted.store(true, Ordering::SeqCst);
                             tokio::time::sleep(Duration::from_millis(100)).await;
-                            // Send "y" + Enter to confirm acceptance
                             if let Err(e) = async_pty.send(b"y\n".to_vec()).await {
                                 warn!("Failed to send bypass permissions acceptance: {}", e);
                             }
                             bypass_perms_buffer.clear();
-                            bypass_perms_partial_since = None;
                         }
                     }
 
                     // Auto-approve Gemini "Action Required" permission prompts
                     // Gemini shows these even with --yolo for shell redirects, heredocs, etc.
-                    // Detects "Action Required" header + "Allow once"/"Allow for this session"
-                    // and sends "2" to select "Allow for this session"
+                    // Requires BOTH "Action Required" header AND "Allow" option text (no timeout
+                    // fallback since "Action Required" alone is too generic for timeout approval).
+                    // Uses cooldown to prevent rapid-fire duplicates on repeated prompts.
                     {
-                        // Check cooldown - skip if we just approved recently
                         let in_cooldown = last_gemini_action_approval
                             .map(|t| t.elapsed() < GEMINI_ACTION_COOLDOWN)
                             .unwrap_or(false);
@@ -621,48 +594,19 @@ async fn main() -> Result<()> {
                             }
 
                             let clean = strip_ansi(&gemini_action_buffer);
-
                             let (has_header, has_allow_option) = detect_gemini_action_required(&clean);
 
-                            let full_match = has_header && has_allow_option;
-
-                            // Timeout-based approval for fragmented output where both
-                            // signals are present but arrived in separate chunks.
-                            // IMPORTANT: Require BOTH header AND allow option to avoid
-                            // false positives on unrelated "Action Required" text.
-                            let timeout_approval = if has_header && has_allow_option {
-                                match gemini_action_partial_since {
-                                    None => {
-                                        gemini_action_partial_since = Some(Instant::now());
-                                        debug!("Gemini action detection: Starting timeout timer (both signals present)");
-                                        false
-                                    }
-                                    Some(since) => {
-                                        since.elapsed() >= GEMINI_ACTION_TIMEOUT
-                                    }
-                                }
-                            } else {
-                                gemini_action_partial_since = None;
-                                false
-                            };
-
-                            if full_match || timeout_approval {
-                                if full_match {
-                                    info!("Detected Gemini 'Action Required' prompt, auto-approving with '2' (Allow for this session)");
-                                } else {
-                                    info!("Gemini action detection: Timeout reached, approving based on partial match");
-                                }
+                            if has_header && has_allow_option {
+                                info!("Detected Gemini 'Action Required' prompt, auto-approving with '2' (Allow for this session)");
                                 tokio::time::sleep(Duration::from_millis(100)).await;
                                 if let Err(e) = async_pty.send(b"2\n".to_vec()).await {
                                     warn!("Failed to send Gemini action approval: {}", e);
                                 }
                                 gemini_action_buffer.clear();
-                                gemini_action_partial_since = None;
                                 last_gemini_action_approval = Some(Instant::now());
                             }
                         } else {
-                            // In cooldown - still accumulate but don't check
-                            // Clear buffer so stale content doesn't trigger immediately after cooldown
+                            // In cooldown - clear buffer so stale content doesn't trigger after cooldown
                             gemini_action_buffer.clear();
                         }
                     }
@@ -989,7 +933,7 @@ fn detect_gemini_action_required(clean_output: &str) -> (bool, bool) {
 /// - has_confirmation: output contains yes/no or proceed/accept prompt
 fn detect_bypass_permissions_prompt(clean_output: &str) -> (bool, bool) {
     let lower = clean_output.to_lowercase();
-    let has_bypass_ref = (lower.contains("bypass") && lower.contains("ermission"))
+    let has_bypass_ref = (lower.contains("bypass") && lower.contains("permission"))
         || lower.contains("dangerously");
     let has_confirmation = lower.contains("(yes/no)")
         || lower.contains("(y/n)")
@@ -1265,56 +1209,37 @@ Allow execution of: 'cat, redirection (>), heredoc (<<)'?
         assert!(has_ref && has_confirm, "should detect across multi-line output");
     }
 
-    // ==================== Timeout Safety Tests ====================
-    // These tests document the fix for Codex review feedback:
-    // - Timeout should only fire when BOTH signals are present
-    // - A single signal alone must NOT trigger timeout-based approval
+    // ==================== False Positive Prevention Tests ====================
+    // These test real-world scenarios where a single signal is present but should NOT
+    // trigger auto-approval. The detection requires BOTH signals for bypass-perms and
+    // Gemini (no timeout fallback), so these single-signal cases are safe.
 
     #[test]
-    fn test_bypass_perms_single_signal_no_timeout_risk() {
-        // Only has_confirmation=true, has_bypass_ref=false
-        // With the old || logic, this would start the timeout timer and
-        // eventually auto-send "y" to an unrelated yes/no prompt.
-        // With the fix (&&), timeout never starts.
+    fn test_bypass_perms_unrelated_yesno_prompt_safe() {
+        // A generic yes/no prompt without any bypass reference must not auto-approve.
+        // This was the false positive reported by Codex review.
         let output = "Do you want to delete this file? (yes/no)";
         let (has_ref, has_confirm) = detect_bypass_permissions_prompt(output);
-        assert!(!has_ref, "no bypass reference");
-        assert!(has_confirm, "has confirmation prompt");
-        // Key assertion: since has_ref is false, AND logic means timeout won't start
-        assert!(!(has_ref && has_confirm), "AND of both signals is false - timeout safe");
+        assert!(!has_ref, "no bypass reference in unrelated prompt");
+        assert!(has_confirm, "yes/no detected but insufficient alone");
     }
 
     #[test]
-    fn test_bypass_perms_single_signal_bypass_only_no_timeout_risk() {
-        // Only has_bypass_ref=true, has_confirmation=false
-        // Status bar text shouldn't trigger timeout
-        let output = "bypass permissions on (shift+tab to cycle)";
-        let (has_ref, has_confirm) = detect_bypass_permissions_prompt(output);
-        assert!(has_ref, "has bypass reference");
-        assert!(!has_confirm, "no confirmation prompt");
-        assert!(!(has_ref && has_confirm), "AND of both signals is false - timeout safe");
-    }
-
-    #[test]
-    fn test_gemini_header_only_no_timeout_risk() {
-        // Only has_header=true, has_allow_option=false
-        // Gemini might show "Action Required" in other contexts
+    fn test_gemini_unrelated_action_required_safe() {
+        // "Action Required" in a non-permission context must not auto-approve.
         let output = "Action Required: Please authenticate with Google Cloud";
         let (has_header, has_allow) = detect_gemini_action_required(output);
-        assert!(has_header, "has header");
-        assert!(!has_allow, "no allow option");
-        assert!(!(has_header && has_allow), "AND of both signals is false - timeout safe");
+        assert!(has_header, "header detected but insufficient alone");
+        assert!(!has_allow, "no allow option in auth prompt");
     }
 
     #[test]
-    fn test_gemini_allow_only_no_timeout_risk() {
-        // Only has_allow_option=true, has_header=false
-        // "Allow once" might appear in other CLI output
+    fn test_gemini_allow_in_other_context_safe() {
+        // "Allow once" appearing outside an Action Required prompt must not auto-approve.
         let output = "Allow once for this directory? [y/n]";
         let (has_header, has_allow) = detect_gemini_action_required(output);
         assert!(!has_header, "no Action Required header");
-        assert!(has_allow, "has allow option text");
-        assert!(!(has_header && has_allow), "AND of both signals is false - timeout safe");
+        assert!(has_allow, "allow text detected but insufficient alone");
     }
 
     // ==================== Strip ANSI Integration ====================
