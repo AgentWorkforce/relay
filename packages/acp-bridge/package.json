@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/acp-bridge",
-  "version": "2.1.17",
+  "version": "2.1.18",
   "description": "ACP (Agent Client Protocol) bridge for Agent Relay - expose relay agents to ACP-compatible editors like Zed",
   "type": "module",
   "main": "dist/index.js",
@@ -46,7 +46,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@agent-relay/sdk": "2.1.17",
+    "@agent-relay/sdk": "2.1.18",
     "@agentclientprotocol/sdk": "^0.12.0"
   },
   "devDependencies": {

@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/config",
-  "version": "2.1.17",
+  "version": "2.1.18",
   "description": "Shared configuration schemas and loaders for Agent Relay",
   "type": "module",
   "main": "dist/index.js",
@@ -83,7 +83,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agent-relay/protocol": "2.1.17",
+    "@agent-relay/protocol": "2.1.18",
     "zod": "^3.23.8",
     "zod-to-json-schema": "^3.23.1"
   },

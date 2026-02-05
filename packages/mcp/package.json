@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/mcp",
-  "version": "2.1.17",
+  "version": "2.1.18",
   "description": "MCP server for Agent Relay - native messaging tools for AI agents in Claude, Cursor, and VS Code",
   "author": "Agent Workforce Inc.",
   "license": "Apache-2.0",
@@ -47,9 +47,9 @@
     "prepublishOnly": "npm run clean && npm run build && npm test"
   },
   "dependencies": {
-    "@agent-relay/config": "2.1.17",
-    "@agent-relay/protocol": "2.1.17",
-    "@agent-relay/utils": "2.1.17",
+    "@agent-relay/config": "2.1.18",
+    "@agent-relay/protocol": "2.1.18",
+    "@agent-relay/utils": "2.1.18",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "smol-toml": "^1.6.0",
     "zod": "^3.23.8"

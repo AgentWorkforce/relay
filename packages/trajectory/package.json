@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/trajectory",
-  "version": "2.1.17",
+  "version": "2.1.18",
   "description": "Trajectory integration utilities (trail/PDERO) for Relay",
   "type": "module",
   "main": "dist/index.js",
@@ -22,7 +22,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agent-relay/config": "2.1.17"
+    "@agent-relay/config": "2.1.18"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",

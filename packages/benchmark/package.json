@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/benchmark",
-  "version": "2.1.17",
+  "version": "2.1.18",
   "description": "Performance benchmarking for agent swarms, sub-agents, and single agents using Harbor",
   "type": "module",
   "main": "dist/index.js",
@@ -54,9 +54,9 @@
     "directory": "packages/benchmark"
   },
   "dependencies": {
-    "@agent-relay/sdk": "2.1.17",
-    "@agent-relay/protocol": "2.1.17",
-    "@agent-relay/spawner": "2.1.17",
+    "@agent-relay/sdk": "2.1.18",
+    "@agent-relay/protocol": "2.1.18",
+    "@agent-relay/spawner": "2.1.18",
     "commander": "^12.1.0",
     "yaml": "^2.3.4"
   },

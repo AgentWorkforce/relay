@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/spawner",
-  "version": "2.1.17",
+  "version": "2.1.18",
   "description": "Agent spawning types and utilities for Agent Relay",
   "type": "module",
   "main": "dist/index.js",
