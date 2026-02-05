@@ -1283,7 +1283,7 @@ program
 // uninstall - Remove agent-relay from the current project
 program
   .command('uninstall')
-  .description('Remove agent-relay data and configuration from the current project')
+  .description('Remove agent-relay data, configuration, and global binaries')
   .option('--keep-data', 'Keep message history and database (only remove runtime files)')
   .option('--zed', 'Also remove Zed editor configuration')
   .option('--zed-name <name>', 'Name of the Zed agent server entry to remove (default: Agent Relay)')
@@ -1298,54 +1298,52 @@ program
     const dirsToRemove: string[] = [];
     const actions: string[] = [];
 
-    // Check if .agent-relay directory exists
-    if (!fs.existsSync(paths.dataDir)) {
-      console.log('Agent Relay is not installed in this project.');
-      console.log(`(No ${paths.dataDir} directory found)`);
-      return;
-    }
+    // Check if .agent-relay directory exists (still continue for global binary cleanup)
+    const hasProjectData = fs.existsSync(paths.dataDir);
 
-    // Stop daemon if running
-    const pidPath = pidFilePathForSocket(paths.socketPath);
-    if (fs.existsSync(pidPath)) {
-      const pid = Number(fs.readFileSync(pidPath, 'utf-8').trim());
-      try {
-        process.kill(pid, 0); // Check if running
-        actions.push(`Stop daemon (pid: ${pid})`);
-        if (!options.dryRun) {
-          try {
-            process.kill(pid, 'SIGTERM');
-            // Wait briefly for graceful shutdown
-            await new Promise(resolve => setTimeout(resolve, 2000));
-          } catch { /* ignore */ }
-        }
-      } catch { /* not running */ }
-    }
-
-    // Collect files to remove
-    if (options.keepData) {
-      // Only remove runtime files, keep database
-      const runtimeFiles = ['relay.sock', 'runtime.json', 'daemon.pid', '.project'];
-      for (const file of runtimeFiles) {
-        const filePath = path.join(paths.dataDir, file);
-        if (fs.existsSync(filePath)) {
-          filesToRemove.push(filePath);
-        }
+    if (hasProjectData) {
+      // Stop daemon if running
+      const pidPath = pidFilePathForSocket(paths.socketPath);
+      if (fs.existsSync(pidPath)) {
+        const pid = Number(fs.readFileSync(pidPath, 'utf-8').trim());
+        try {
+          process.kill(pid, 0); // Check if running
+          actions.push(`Stop daemon (pid: ${pid})`);
+          if (!options.dryRun) {
+            try {
+              process.kill(pid, 'SIGTERM');
+              // Wait briefly for graceful shutdown
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            } catch { /* ignore */ }
+          }
+        } catch { /* not running */ }
       }
-      // Remove mcp-identity-* files
-      try {
-        const files = fs.readdirSync(paths.dataDir);
-        for (const file of files) {
-          if (file.startsWith('mcp-identity')) {
-            filesToRemove.push(path.join(paths.dataDir, file));
+
+      // Collect files to remove
+      if (options.keepData) {
+        // Only remove runtime files, keep database
+        const runtimeFiles = ['relay.sock', 'runtime.json', 'daemon.pid', '.project'];
+        for (const file of runtimeFiles) {
+          const filePath = path.join(paths.dataDir, file);
+          if (fs.existsSync(filePath)) {
+            filesToRemove.push(filePath);
           }
         }
-      } catch { /* ignore */ }
-      actions.push('Remove runtime files (keeping database and message history)');
-    } else {
-      // Remove entire .agent-relay directory
-      dirsToRemove.push(paths.dataDir);
-      actions.push(`Remove ${paths.dataDir}/ directory (including message history)`);
+        // Remove mcp-identity-* files
+        try {
+          const files = fs.readdirSync(paths.dataDir);
+          for (const file of files) {
+            if (file.startsWith('mcp-identity')) {
+              filesToRemove.push(path.join(paths.dataDir, file));
+            }
+          }
+        } catch { /* ignore */ }
+        actions.push('Remove runtime files (keeping database and message history)');
+      } else {
+        // Remove entire .agent-relay directory
+        dirsToRemove.push(paths.dataDir);
+        actions.push(`Remove ${paths.dataDir}/ directory (including message history)`);
+      }
     }
 
     // Zed configuration
@@ -1369,6 +1367,50 @@ program
           }
         }
       }
+    }
+
+    // Global install cleanup (bash installer / install.sh artifacts)
+    const home = homedir();
+    const installDir = process.env.AGENT_RELAY_INSTALL_DIR || path.join(home, '.agent-relay');
+    const binDir = process.env.AGENT_RELAY_BIN_DIR || path.join(home, '.local', 'bin');
+
+    // Binaries placed by install.sh into BIN_DIR
+    const globalBinaries = [
+      path.join(binDir, 'agent-relay'),
+      path.join(binDir, 'relay-dashboard-server'),
+      path.join(binDir, 'relay-acp'),
+    ];
+    for (const bin of globalBinaries) {
+      if (fs.existsSync(bin)) {
+        filesToRemove.push(bin);
+        actions.push(`Remove ${bin}`);
+      }
+    }
+
+    // relay-pty binary in INSTALL_DIR/bin/
+    const relayPtyPath = path.join(installDir, 'bin', 'relay-pty');
+    if (fs.existsSync(relayPtyPath)) {
+      filesToRemove.push(relayPtyPath);
+      actions.push(`Remove ${relayPtyPath}`);
+    }
+
+    // INSTALL_DIR itself (e.g. ~/.agent-relay) if it exists and is different from project .agent-relay
+    if (fs.existsSync(installDir) && path.resolve(installDir) !== path.resolve(paths.dataDir)) {
+      dirsToRemove.push(installDir);
+      actions.push(`Remove install directory ${installDir}/`);
+    }
+
+    // Dashboard UI files (~/.relay/dashboard/)
+    const dashboardDir = path.join(home, '.relay', 'dashboard');
+    if (fs.existsSync(dashboardDir)) {
+      dirsToRemove.push(dashboardDir);
+      actions.push(`Remove dashboard UI files from ${dashboardDir}/`);
+    }
+
+    // Nothing to do
+    if (actions.length === 0) {
+      console.log('Agent Relay is not installed (no project data or global binaries found).');
+      return;
     }
 
     // Show what will be done
