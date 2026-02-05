@@ -127,9 +127,9 @@
       "installedPath": ".claude/skills/github-oauth-nango-integration/SKILL.md"
     },
     "@agent-relay/agent-relay-snippet#agents.md:AGENTS.md": {
-      "version": "1.1.2",
-      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-relay%2Fagent-relay-snippet/1.1.2.tar.gz",
-      "integrity": "sha256-1b575f52991910e379b7e1828ee4d593135e774e2a2cea139c76d683e831ad72",
+      "version": "1.1.4",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-relay%2Fagent-relay-snippet/1.1.4.tar.gz",
+      "integrity": "sha256-8ef5f570144dc7d6861e0714458ff64c579205404e6e4a348fc2d32dba58d1af",
       "format": "agents.md",
       "subtype": "snippet",
       "sourceFormat": "generic",
@@ -188,5 +188,5 @@
       }
     }
   },
-  "generated": "2026-01-26T10:11:09.885Z"
+  "generated": "2026-02-05T08:20:36.768Z"
 }

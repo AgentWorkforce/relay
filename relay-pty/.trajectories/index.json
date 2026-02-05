@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "lastUpdated": "2026-02-05T08:16:59.172Z",
+  "trajectories": {
+    "traj_1gcau1cajwm9": {
+      "title": "Fix Gemini Action Required auto-approval, Claude Code bypass permissions confirmation, and relay-pty binary resolution for bash installer",
+      "status": "completed",
+      "startedAt": "2026-02-05T08:14:32.399Z",
+      "completedAt": "2026-02-05T08:16:59.161Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/relay-pty/.trajectories/completed/2026-02/traj_1gcau1cajwm9.json"
+    }
+  }
+}
