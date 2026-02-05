@@ -37,6 +37,8 @@ import {
   type MetricsPayload,
   type MetricsResponsePayload,
   type AgentReadyPayload,
+  type SendInputPayload,
+  type ListWorkersPayload,
 } from '@agent-relay/protocol/types';
 import type { ChannelJoinPayload, ChannelLeavePayload, ChannelMessagePayload } from '@agent-relay/protocol/channels';
 import { SpawnManager, type SpawnManagerConfig } from './spawn-manager.js';
@@ -574,9 +576,14 @@ export class Daemon {
           if (!fs.existsSync(markerDir)) {
             fs.mkdirSync(markerDir, { recursive: true });
           }
+          // Derive projectRoot from socket path (e.g., /project/.agent-relay/relay.sock -> /project)
+          // Only valid for project-namespaced sockets, not the default /tmp/agent-relay.sock
+          const socketDir = path.dirname(this.config.socketPath);
+          const isProjectSocket = path.basename(socketDir) === '.agent-relay';
+          const projectRoot = isProjectSocket ? path.dirname(socketDir) : undefined;
           const markerData = JSON.stringify({
             socketPath: this.config.socketPath,
-            projectRoot: path.dirname(path.dirname(this.config.socketPath)),
+            ...(projectRoot && { projectRoot }),
             pid: process.pid,
             startedAt: new Date().toISOString(),
           }, null, 2);
@@ -1304,6 +1311,28 @@ export class Daemon {
         break;
       }
 
+      case 'SEND_INPUT': {
+        if (!this.spawnManager) {
+          this.sendErrorEnvelope(connection, 'SpawnManager not enabled. Configure spawnManager: true in daemon config.');
+          break;
+        }
+        const sendInputEnvelope = envelope as Envelope<SendInputPayload>;
+        log.info(`SEND_INPUT request: from=${connection.agentName} agent=${sendInputEnvelope.payload.name}`);
+        this.spawnManager.handleSendInput(connection, sendInputEnvelope);
+        break;
+      }
+
+      case 'LIST_WORKERS': {
+        if (!this.spawnManager) {
+          this.sendErrorEnvelope(connection, 'SpawnManager not enabled. Configure spawnManager: true in daemon config.');
+          break;
+        }
+        const listWorkersEnvelope = envelope as Envelope<ListWorkersPayload>;
+        log.info(`LIST_WORKERS request: from=${connection.agentName}`);
+        this.spawnManager.handleListWorkers(connection, listWorkersEnvelope);
+        break;
+      }
+
       // Query handlers (MCP/client requests)
       case 'STATUS': {
         const uptimeMs = this.startTime ? Date.now() - this.startTime : 0;
@@ -1881,6 +1910,16 @@ export class Daemon {
    */
   getConsensus(): ConsensusIntegration | undefined {
     return this.consensus;
+  }
+
+  /**
+   * Get the SpawnManager instance.
+   * Used by co-located services (e.g. dashboard-server) to access
+   * spawner read operations (logs, worker listing) without going
+   * through the protocol socket.
+   */
+  getSpawnManager(): SpawnManager | undefined {
+    return this.spawnManager;
   }
 }
 

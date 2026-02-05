@@ -2594,7 +2594,7 @@ function loadAgents(agentsPath: string): RegistryAgent[] {
 const STALE_THRESHOLD_MS = 30_000;
 
 // Internal agents that should be hidden from `agents` and `who` by default
-const INTERNAL_AGENTS = new Set(['cli', 'Dashboard', 'zed-bridge']);
+const INTERNAL_AGENTS = new Set(['Dashboard', 'zed-bridge']);
 
 function isInternalAgent(name: string | undefined): boolean {
   if (!name) return true;
