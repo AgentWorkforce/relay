@@ -1486,6 +1486,8 @@ export class RelayPtyOrchestrator extends BaseWrapper {
       await this.config.onRelease(name);
       return;
     }
+
+    throw new Error(`No release mechanism available (client=${this.client.state}, dashboardPort=${this.config.dashboardPort}, onRelease=${!!this.config.onRelease})`);
   }
 
   /**

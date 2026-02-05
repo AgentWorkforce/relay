@@ -251,7 +251,15 @@ export class Router {
         routerLog.debug(`Cleaned up stale spawning entry: ${name}`);
       }
     }
-    // Also clean up stale recently-disconnected user entries
+    this.cleanupStaleRecentUsers();
+  }
+
+  /**
+   * Clean up recently-disconnected user entries older than RECENT_USER_TTL_MS.
+   * Called from both cleanupStaleSpawning() and unregister() to prevent unbounded growth.
+   */
+  private cleanupStaleRecentUsers(): void {
+    const now = Date.now();
     for (const [name, timestamp] of this.recentlyDisconnectedUsers) {
       if (now - timestamp > Router.RECENT_USER_TTL_MS) {
         this.recentlyDisconnectedUsers.delete(name);
@@ -339,6 +347,8 @@ export class Router {
             // (e.g., agent replies to __cli_sender__ show up in dashboard)
             this.recentlyDisconnectedUsers.set(connection.agentName, Date.now());
             routerLog.info(`User fully unregistered: ${connection.agentName} (all connections closed, tracked for ${Router.RECENT_USER_TTL_MS / 1000}s)`);
+            // Clean up stale entries on each disconnect so the map doesn't grow unbounded
+            this.cleanupStaleRecentUsers();
           } else {
             routerLog.debug(`User connection closed: ${connection.agentName} (${userConnections.size} connections remaining)`);
           }
