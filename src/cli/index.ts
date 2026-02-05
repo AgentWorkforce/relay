@@ -52,14 +52,14 @@ function findDashboardBinary(): string | null {
   const binaryName = 'relay-dashboard-server';
   const homeDir = process.env.HOME || process.env.USERPROFILE || '';
 
-  // Common locations to check
+  // Check explicit install locations FIRST (before PATH) so the bash installer
+  // version takes precedence over stale package-manager installs in PATH
   const searchPaths = [
-    // In PATH (using which/where)
-    binaryName,
-    // Common installation directories
     path.join(homeDir, '.local', 'bin', binaryName),
     path.join(homeDir, '.agent-relay', 'bin', binaryName),
     '/usr/local/bin/' + binaryName,
+    // Fall back to PATH lookup
+    binaryName,
   ];
 
   for (const searchPath of searchPaths) {
