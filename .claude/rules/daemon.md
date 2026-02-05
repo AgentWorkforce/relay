@@ -50,9 +50,12 @@ The daemon manages agent connections using a state machine pattern:
 
 - Enable protocol-based spawning with `spawnManager: true` in config
 - `SPAWN` and `RELEASE` messages are delegated to `SpawnManager`
+- `SEND_INPUT` messages send input data to a spawned agent's PTY (via SpawnManager)
+- `LIST_WORKERS` messages return the list of active spawned workers (via SpawnManager)
 - SpawnManager wraps `AgentSpawner` from `@agent-relay/bridge`
-- Sends `SPAWN_RESULT` and `RELEASE_RESULT` envelopes back to requestor
-- If SpawnManager not enabled, sends ERROR envelope for spawn requests
+- Sends `SPAWN_RESULT`, `RELEASE_RESULT`, `SEND_INPUT_RESULT`, and `LIST_WORKERS_RESULT` envelopes back to requestor
+- If SpawnManager not enabled, sends ERROR envelope for spawn/worker management requests
+- `daemon.getSpawnManager()` exposes the SpawnManager instance for co-located services (e.g., dashboard-server) to access read operations (logs, worker listing) without going through the socket protocol
 
 ## Example Pattern
 
@@ -71,6 +74,12 @@ private async processFrame(envelope: Envelope): Promise<void> {
       break;
     case 'RELEASE':
       this.spawnManager?.handleRelease(connection, envelope as Envelope<ReleasePayload>);
+      break;
+    case 'SEND_INPUT':
+      this.spawnManager?.handleSendInput(connection, envelope as Envelope<SendInputPayload>);
+      break;
+    case 'LIST_WORKERS':
+      this.spawnManager?.handleListWorkers(connection, envelope as Envelope<ListWorkersPayload>);
       break;
     // ... other cases
   }

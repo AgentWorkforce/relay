@@ -692,6 +692,26 @@
           "team": {
             "type": "string"
           },
+          "cwd": {
+            "type": "string",
+            "description": "Working directory for the spawned agent"
+          },
+          "spawnerName": {
+            "type": "string",
+            "description": "Name of the agent requesting the spawn (for policy enforcement)"
+          },
+          "userId": {
+            "type": "string",
+            "description": "User ID for cloud persistence"
+          },
+          "includeWorkflowConventions": {
+            "type": "boolean",
+            "description": "Include ACK/DONE workflow conventions in agent instructions"
+          },
+          "interactive": {
+            "type": "boolean",
+            "description": "Disables auto-accept for auth setup flows"
+          },
           "shadowMode": {
             "type": "string",
             "enum": [
@@ -734,6 +754,97 @@
         },
         "required": [
           "name"
+        ]
+      },
+      "SendInputRequest": {
+        "type": "object",
+        "description": "Send input data to a spawned agent's PTY via the daemon's SEND_INPUT protocol message",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Agent name to send input to"
+          },
+          "data": {
+            "type": "string",
+            "description": "Input data to send to the agent's PTY"
+          }
+        },
+        "required": [
+          "name",
+          "data"
+        ]
+      },
+      "SendInputResponse": {
+        "type": "object",
+        "properties": {
+          "replyTo": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "replyTo",
+          "success",
+          "name"
+        ]
+      },
+      "ListWorkersResponse": {
+        "type": "object",
+        "description": "Response from the daemon's LIST_WORKERS protocol message",
+        "properties": {
+          "replyTo": {
+            "type": "string"
+          },
+          "workers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "cli": {
+                  "type": "string"
+                },
+                "task": {
+                  "type": "string"
+                },
+                "team": {
+                  "type": "string"
+                },
+                "spawnerName": {
+                  "type": "string"
+                },
+                "spawnedAt": {
+                  "type": "number"
+                },
+                "pid": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "name",
+                "cli",
+                "task",
+                "spawnedAt"
+              ]
+            }
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "replyTo",
+          "workers"
         ]
       },
       "SpawnAgentResponse": {

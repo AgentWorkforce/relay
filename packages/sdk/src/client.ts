@@ -793,6 +793,8 @@ export class RelayClient {
       userId?: string;
       /** Include ACK/DONE workflow conventions in agent instructions */
       includeWorkflowConventions?: boolean;
+      /** Override the spawner name (defaults to this client's agentName) */
+      spawnerName?: string;
       /** Wait for the agent to complete connection before resolving */
       waitForReady?: boolean;
       /** Timeout for agent to become ready (default: 60000ms). Only used when waitForReady is true. */
@@ -863,7 +865,7 @@ export class RelayClient {
           shadowSpeakOn: options.shadowSpeakOn,
           userId: options.userId,
           includeWorkflowConventions: options.includeWorkflowConventions,
-          spawnerName: this.config.agentName,
+          spawnerName: options.spawnerName || this.config.agentName,
         },
       };
 
