@@ -8,325 +8,765 @@ When a user orchestrates multiple agents through agent-relay, they have no visib
 
 This is a critical primitive for production multi-agent workflows where cost control is non-negotiable.
 
-## Goals
+## Design Principles
 
-1. **Track token usage per agent** — input tokens, output tokens, cache reads/writes, per-turn and cumulative
-2. **Aggregate usage across orchestration sessions** — a single command or API call to see total consumption
-3. **CLI-agnostic design** — work across Claude, Codex, Gemini, Aider, Goose, and future CLIs
-4. **Budget enforcement** — allow users to set token/cost limits that trigger warnings or hard stops
-5. **Zero agent modification** — consistent with relay's core principle of output parsing, not API integration
-6. **Low overhead** — tracking should not meaningfully impact agent latency or throughput
+1. **SDK-first** — The SDK (`@agent-relay/sdk`) is the primary interface. Every other surface (CLI, dashboard, MCP) is a thin layer on top of SDK methods. If it can't be done from the SDK, it doesn't exist.
+2. **Developer experience over infrastructure** — Start with what code you write, work backwards to what the system needs.
+3. **Event-driven** — Usage updates flow as real-time events through callbacks, not just poll-based queries.
+4. **Budget at spawn time** — Cost limits are set where work is created: `spawn()`, `createRelay()`, and configuration.
+5. **Progressive fidelity** — Works immediately with estimates, gets precise when real data is available.
 
 ## Non-Goals
 
 - Replacing provider-level billing (Anthropic Console, OpenAI Dashboard, etc.)
-- Sub-request granularity (e.g., tracking individual tool calls within a single agent turn)
+- Sub-request granularity (e.g., tracking individual tool calls within a single turn)
 - Real-time streaming of token counts during generation (we capture post-completion)
 
 ---
 
-## Architecture Overview
+## Part 1: SDK Interface (Developer Experience)
 
+Everything starts here. This is what a developer writes.
+
+### 1.1 Basic Usage Tracking
+
+```typescript
+import { createRelay } from '@agent-relay/sdk';
+
+const relay = await createRelay();
+const lead = await relay.client('Lead');
+
+// Spawn workers
+await lead.spawn({ name: 'Writer', cli: 'claude', task: 'Write the docs' });
+await lead.spawn({ name: 'Reviewer', cli: 'claude:opus', task: 'Review the code' });
+
+// Check usage at any point — like client.state, always available
+const usage = await lead.getUsage();
+console.log(usage.totalCostUsd);        // 0.42
+console.log(usage.totalTokens.input);   // 45230
+console.log(usage.totalTokens.output);  // 12450
+console.log(usage.byAgent);             // per-agent breakdown
 ```
-┌──────────────────────────────────────────────────────────┐
-│                   Orchestration Session                   │
-│                                                          │
-│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐   │
-│  │  Lead    │  │ Worker1 │  │ Worker2 │  │ Shadow  │   │
-│  │ (Claude) │  │ (Claude)│  │ (Codex) │  │ (Claude)│   │
-│  └────┬─────┘  └────┬────┘  └────┬────┘  └────┬────┘   │
-│       │              │            │             │        │
-│       ▼              ▼            ▼             ▼        │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │              Usage Collector (per-wrapper)        │   │
-│  │  • Output parsing (CLI-specific patterns)         │   │
-│  │  • File-based reporting ($AGENT_RELAY_OUTBOX)     │   │
-│  │  • API polling (where available)                  │   │
-│  └──────────────────┬───────────────────────────────┘   │
-│                     │                                    │
-│                     ▼                                    │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │              Usage Aggregator (daemon)             │   │
-│  │  • Per-agent accumulation                         │   │
-│  │  • Session-level rollups                          │   │
-│  │  • Budget enforcement                             │   │
-│  │  • Cost estimation                                │   │
-│  └──────────────────┬───────────────────────────────┘   │
-│                     │                                    │
-│                     ▼                                    │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │              Storage (SQLite / JSONL)              │   │
-│  │  • token_usage table                              │   │
-│  │  • Queryable by agent, session, time range        │   │
-│  └──────────────────────────────────────────────────┘   │
-│                                                          │
-└──────────────────────────────────────────────────────────┘
+
+`getUsage()` is the single entry point. No separate commands for "by agent" vs "by model" — it always returns the full picture and you destructure what you need.
+
+### 1.2 Real-Time Usage Events
+
+```typescript
+// Stream usage updates as they arrive
+lead.onUsageUpdate = (report) => {
+  console.log(`${report.agentName} used ${report.tokens.input} input tokens`);
+  console.log(`Running total: $${report.runningTotalCostUsd}`);
+};
+```
+
+This fires every time the daemon receives a usage report from any agent in the session. The `report` includes the per-agent delta AND the running session total, so the consumer never has to do aggregation math.
+
+### 1.3 Budget at Spawn Time
+
+The most natural place to set a cost limit is where you create work:
+
+```typescript
+// Per-agent budget: kill this worker if it exceeds $2
+await lead.spawn({
+  name: 'ExpensiveWorker',
+  cli: 'claude:opus',
+  task: 'Analyze the entire codebase',
+  budget: { maxCostUsd: 2.00 },
+});
+
+// Session-wide budget: set on the relay itself
+const relay = await createRelay({
+  budget: {
+    maxCostUsd: 10.00,
+    onExceeded: 'pause',       // 'warn' | 'pause' | 'kill'
+    warningThreshold: 0.8,     // alert at 80%
+  },
+});
+```
+
+When a budget is exceeded:
+- `'warn'` — Fires `onBudgetAlert` callback; agents keep running
+- `'pause'` — Agents are paused (no new input injected); lead is notified
+- `'kill'` — Agent is released with reason `'budget_exceeded'`
+
+### 1.4 Budget Alerts
+
+```typescript
+lead.onBudgetAlert = (alert) => {
+  console.log(`Budget warning: ${alert.percentUsed * 100}% used`);
+  console.log(`Agent: ${alert.agentName}, Limit: $${alert.limitValue}`);
+
+  if (alert.action === 'pause') {
+    // Lead can decide: release the worker or increase the budget
+    lead.setBudget(alert.agentName, { maxCostUsd: 5.00 }); // increase
+    // or
+    lead.release(alert.agentName, 'Too expensive');
+  }
+};
+```
+
+### 1.5 Self-Reporting Usage (SDK Agents)
+
+For agents built directly with the SDK (not PTY-wrapped CLIs), they can report their own usage:
+
+```typescript
+// SDK-based agent reports its own token consumption
+const worker = new RelayClient({ agentName: 'Worker' });
+await worker.connect();
+
+// After calling an LLM API directly
+const completion = await anthropic.messages.create({ ... });
+
+worker.reportUsage({
+  input: completion.usage.input_tokens,
+  output: completion.usage.output_tokens,
+  cacheRead: completion.usage.cache_read_input_tokens,
+  cacheWrite: completion.usage.cache_creation_input_tokens,
+  model: 'claude-sonnet-4',
+});
+```
+
+This is the highest-fidelity path: the agent has exact numbers from the API response and reports them directly through the relay protocol. No parsing, no estimation.
+
+### 1.6 Query Usage Programmatically
+
+```typescript
+// Get usage for a specific agent
+const workerUsage = await lead.getUsage({ agent: 'Writer' });
+
+// Get usage for a team
+const teamUsage = await lead.getUsage({ team: 'frontend' });
+
+// Get usage since a specific time
+const recentUsage = await lead.getUsage({ since: Date.now() - 60_000 });
+
+// Get per-model breakdown
+console.log(workerUsage.byModel);
+// [{ model: 'claude-sonnet-4', tokens: {...}, costUsd: 0.23 }]
+```
+
+### 1.7 Full Example: Cost-Aware Orchestration
+
+This is what production code looks like — the SDK makes cost a first-class concern:
+
+```typescript
+import { createRelay } from '@agent-relay/sdk';
+
+const relay = await createRelay({
+  budget: { maxCostUsd: 15.00, warningThreshold: 0.7 },
+});
+
+const lead = await relay.client('Lead');
+
+// Cost-aware model selection: start cheap, escalate if needed
+await lead.spawn({ name: 'Analyzer', cli: 'claude:haiku', task: 'Triage the issues' });
+
+lead.onMessage = async (from, { body, data }) => {
+  if (from === 'Analyzer' && data?.needsDeepAnalysis) {
+    // Check budget before spawning expensive agent
+    const usage = await lead.getUsage();
+    const remaining = 15.00 - usage.totalCostUsd;
+
+    if (remaining > 5.00) {
+      await lead.spawn({
+        name: 'DeepAnalyzer',
+        cli: 'claude:opus',
+        task: `Deep analysis: ${body}`,
+        budget: { maxCostUsd: remaining * 0.5 }, // use at most half of what's left
+      });
+    } else {
+      lead.sendMessage('Analyzer', 'Budget tight — summarize what you have');
+    }
+  }
+};
+
+lead.onBudgetAlert = (alert) => {
+  if (alert.percentUsed > 0.9) {
+    // Emergency: release all non-essential workers
+    lead.release('DeepAnalyzer', 'budget_pressure');
+  }
+};
+
+lead.onUsageUpdate = (report) => {
+  lead.sendLog(`Cost: $${report.runningTotalCostUsd.toFixed(2)} / $15.00`);
+};
 ```
 
 ---
 
-## Data Model
+## Part 2: Data Model
 
-### TokenUsageReport
+### TokenUsage (the core shape)
 
-The core data structure reported by each agent per turn or per session.
+Every usage-related API returns or accepts this shape:
 
 ```typescript
-interface TokenUsageReport {
-  /** Agent name (e.g., "Worker1") */
-  agentName: string;
-  /** Session ID from daemon WELCOME handshake */
-  sessionId: string;
-  /** CLI type (claude, codex, gemini, aider, goose) */
-  cli: string;
-  /** Model identifier (e.g., "claude-sonnet-4", "gpt-4o") */
-  model?: string;
-  /** Timestamp of the report (Unix ms) */
-  ts: number;
-  /** Granularity of the report */
-  granularity: 'turn' | 'cumulative';
-  /** Token counts */
-  tokens: {
-    /** Tokens sent to the model (prompt) */
-    input: number;
-    /** Tokens generated by the model (completion) */
-    output: number;
-    /** Tokens read from cache (prompt caching) */
-    cacheRead?: number;
-    /** Tokens written to cache */
-    cacheWrite?: number;
-  };
-  /** Estimated cost in USD (computed by relay using pricing table) */
-  estimatedCostUsd?: number;
-  /** Turn number within this session (for turn-level reports) */
-  turnNumber?: number;
-  /** Source of the data */
-  source: UsageDataSource;
+interface TokenCounts {
+  input: number;
+  output: number;
+  cacheRead?: number;
+  cacheWrite?: number;
 }
 
-type UsageDataSource =
-  | 'output_parse'    // Extracted from CLI terminal output
-  | 'file_report'     // Written by agent to $AGENT_RELAY_OUTBOX/usage
-  | 'api_poll'        // Retrieved via CLI-specific API
-  | 'self_report'     // Agent sent via relay protocol (USAGE_REPORT message)
-  | 'estimated';      // Estimated from message length when no real data available
+interface TokenUsageReport {
+  /** Agent that generated this usage */
+  agentName: string;
+  /** Session ID */
+  sessionId: string;
+  /** CLI type */
+  cli: string;
+  /** Model identifier */
+  model?: string;
+  /** Timestamp (Unix ms) */
+  ts: number;
+  /** Token counts for this report */
+  tokens: TokenCounts;
+  /** Estimated cost in USD */
+  costUsd: number;
+  /** Running total cost across the entire session (all agents) */
+  runningTotalCostUsd: number;
+  /** Running total tokens across the entire session (all agents) */
+  runningTotalTokens: TokenCounts;
+  /** How this data was collected */
+  source: 'sdk' | 'output_parse' | 'file_report' | 'estimated';
+}
 ```
 
-### TokenUsageSummary
+The key DX decision: every report includes both the per-agent delta AND the running session total. The consumer never has to aggregate. This is what makes `onUsageUpdate` useful — you always know the full picture from a single event.
 
-Aggregated view across agents and sessions.
+### UsageSummary (query response)
 
 ```typescript
-interface TokenUsageSummary {
-  /** Scope of the summary */
-  scope: 'agent' | 'session' | 'team' | 'global';
-  /** Scope identifier (agent name, session ID, or team name) */
-  scopeId: string;
-  /** Time range */
+interface UsageSummary {
+  /** Total tokens across all agents in scope */
+  totalTokens: TokenCounts;
+  /** Total estimated cost in USD */
+  totalCostUsd: number;
+  /** Time range of the data */
   from: number;
   to: number;
-  /** Total tokens across all agents in scope */
-  totalTokens: {
-    input: number;
-    output: number;
-    cacheRead: number;
-    cacheWrite: number;
-  };
-  /** Total estimated cost in USD */
-  totalEstimatedCostUsd: number;
-  /** Breakdown by agent (when scope is session/team/global) */
-  byAgent?: Array<{
-    agentName: string;
-    cli: string;
-    model?: string;
-    tokens: TokenUsageReport['tokens'];
-    estimatedCostUsd: number;
-    turnCount: number;
-  }>;
-  /** Breakdown by model (when scope is session/team/global) */
-  byModel?: Array<{
-    model: string;
-    tokens: TokenUsageReport['tokens'];
-    estimatedCostUsd: number;
-  }>;
+  /** Per-agent breakdown */
+  byAgent: AgentUsage[];
+  /** Per-model breakdown */
+  byModel: ModelUsage[];
+  /** Budget status (if a budget is set) */
+  budget?: BudgetStatus;
+}
+
+interface AgentUsage {
+  agentName: string;
+  cli: string;
+  model?: string;
+  tokens: TokenCounts;
+  costUsd: number;
+  turnCount: number;
+  /** Per-agent budget status (if set) */
+  budget?: BudgetStatus;
+}
+
+interface ModelUsage {
+  model: string;
+  tokens: TokenCounts;
+  costUsd: number;
+  agentCount: number;
+}
+
+interface BudgetStatus {
+  maxCostUsd?: number;
+  maxTotalTokens?: number;
+  currentCostUsd: number;
+  currentTotalTokens: number;
+  percentUsed: number;
+  onExceeded: 'warn' | 'pause' | 'kill';
+  /** Whether the budget has been exceeded */
+  exceeded: boolean;
 }
 ```
 
-### Budget Configuration
+### UsageBudget (configuration)
 
 ```typescript
 interface UsageBudget {
-  /** Maximum total tokens (input + output) across all agents */
-  maxTotalTokens?: number;
   /** Maximum estimated cost in USD */
   maxCostUsd?: number;
-  /** Per-agent token limit */
-  maxTokensPerAgent?: number;
-  /** Per-agent cost limit */
-  maxCostPerAgent?: number;
+  /** Maximum total tokens (input + output) */
+  maxTotalTokens?: number;
   /** Action when budget is exceeded */
-  onExceeded: 'warn' | 'pause' | 'kill';
-  /** Warning threshold (0-1, e.g., 0.8 = warn at 80%) */
+  onExceeded?: 'warn' | 'pause' | 'kill';
+  /** Warning threshold (0-1, default 0.8) */
   warningThreshold?: number;
 }
 ```
 
+Simple. No separate "per-agent token limit" vs "per-agent cost limit" — just `maxCostUsd` and `maxTotalTokens`. Applied at two levels:
+- **Session-wide** via `createRelay({ budget })` or `lead.setSessionBudget()`
+- **Per-agent** via `spawn({ budget })` or `lead.setBudget(agentName, budget)`
+
 ---
 
-## Data Collection Strategies
+## Part 3: SDK API Surface
 
-Agent-relay operates at the PTY layer — it wraps CLI processes and parses their output. This constrains how we collect token usage data. We use a tiered approach, from highest-fidelity to lowest.
-
-### Tier 1: Output Parsing (Primary)
-
-Each CLI tool prints usage information in its terminal output. The existing `OutputParser` in `packages/wrapper/src/parser.ts` already strips ANSI codes and detects relay commands. We extend it to detect usage patterns.
-
-**Claude Code** outputs a status line at the end of each turn:
-```
-> Total cost: $0.42 | Input: 12,345 | Output: 3,456 | Cache read: 8,000 | Cache write: 2,000
-```
-
-And a session summary on exit:
-```
-Total tokens: 45,678 (input: 30,000, output: 15,678)
-Total cost: $1.23
-```
-
-**Codex** outputs:
-```
-Tokens used: 8,234 prompt + 1,456 completion = 9,690 tokens
-```
-
-**Gemini** outputs:
-```
-Token count: 5,432 input, 2,100 output
-```
-
-Each CLI gets a dedicated parser module:
+### New Methods on RelayClient
 
 ```typescript
-// packages/wrapper/src/usage-parsers/claude.ts
-interface UsageParser {
-  /** CLI this parser handles */
-  cli: string;
-  /** Attempt to extract usage from a line of output */
-  parseLine(line: string): Partial<TokenUsageReport['tokens']> | null;
-  /** Attempt to extract session summary from output */
-  parseSessionEnd(lines: string[]): TokenUsageReport | null;
-}
-```
+class RelayClient {
+  // === Existing methods ===
+  // connect(), disconnect(), sendMessage(), spawn(), release(), etc.
 
-**Advantages**: No agent modification, works today, captures real numbers.
-**Limitations**: Fragile if CLI output format changes; not all CLIs report tokens.
+  // === New: Usage Tracking ===
 
-### Tier 2: File-Based Reporting
-
-Agents can write usage data to `$AGENT_RELAY_OUTBOX/usage`. This is consistent with the existing file-based relay protocol.
-
-```bash
-cat > $AGENT_RELAY_OUTBOX/usage << 'EOF'
-KIND: usage
-INPUT_TOKENS: 12345
-OUTPUT_TOKENS: 3456
-CACHE_READ: 8000
-CACHE_WRITE: 2000
-MODEL: claude-sonnet-4
-TURN: 5
-EOF
-```
-
-The `OutboxMonitor` (in `relay-pty/src/outbox_monitor.rs` and `packages/wrapper/`) already watches this directory. Adding a `usage` file type is a natural extension.
-
-**Advantages**: Works for any CLI; agents can report programmatically; structured data.
-**Limitations**: Requires agent awareness (needs to be instructed to write usage).
-
-### Tier 3: Protocol-Level Reporting (USAGE_REPORT Message)
-
-Add a new message type to the relay protocol for agents that can report usage via relay commands:
-
-```
-->relay-usage: {"input": 12345, "output": 3456, "model": "claude-sonnet-4"}
-```
-
-Or via the block format:
-```
-[[RELAY]]{"type":"usage","input":12345,"output":3456,"model":"claude-sonnet-4"}[[/RELAY]]
-```
-
-This adds a new `USAGE_REPORT` message type to the protocol:
-
-```typescript
-// Addition to packages/protocol/src/types.ts
-
-export type MessageType =
-  | /* ...existing types... */
-  | 'USAGE_REPORT'
-  | 'USAGE_QUERY'
-  | 'USAGE_RESPONSE'
-  | 'BUDGET_ALERT';
-
-interface UsageReportPayload {
-  tokens: {
+  /**
+   * Report token usage from this agent.
+   * Used by SDK-built agents that call LLM APIs directly.
+   */
+  reportUsage(usage: {
     input: number;
     output: number;
     cacheRead?: number;
     cacheWrite?: number;
-  };
-  model?: string;
-  turnNumber?: number;
-  /** If true, these are cumulative totals (not per-turn deltas) */
-  cumulative?: boolean;
-}
+    model?: string;
+  }): boolean;
 
-interface UsageQueryPayload {
-  /** Query scope */
-  scope: 'agent' | 'session' | 'team' | 'global';
-  /** Scope ID (optional, defaults to caller's scope) */
-  scopeId?: string;
-  /** Time range filter */
-  sinceTs?: number;
-  untilTs?: number;
-}
+  /**
+   * Query token usage for the current session.
+   * Returns aggregated usage with per-agent and per-model breakdowns.
+   */
+  getUsage(options?: {
+    agent?: string;
+    team?: string;
+    since?: number;
+  }): Promise<UsageSummary>;
 
-interface UsageResponsePayload {
-  summary: TokenUsageSummary;
-}
+  // === New: Budget Management ===
 
-interface BudgetAlertPayload {
+  /**
+   * Set or update the session-wide budget.
+   */
+  setSessionBudget(budget: UsageBudget): Promise<void>;
+
+  /**
+   * Set or update budget for a specific agent.
+   */
+  setBudget(agentName: string, budget: UsageBudget): Promise<void>;
+
+  // === New: Callbacks ===
+
+  /**
+   * Fired when any agent in the session reports usage.
+   * Includes both the per-agent delta and running session totals.
+   */
+  onUsageUpdate?: (report: TokenUsageReport) => void;
+
+  /**
+   * Fired when a budget threshold or limit is reached.
+   */
+  onBudgetAlert?: (alert: BudgetAlert) => void;
+}
+```
+
+### Budget Alert Shape
+
+```typescript
+interface BudgetAlert {
   /** Which budget was triggered */
-  budgetType: 'total_tokens' | 'total_cost' | 'per_agent_tokens' | 'per_agent_cost';
+  scope: 'session' | 'agent';
+  /** Agent name (for per-agent budgets) */
+  agentName?: string;
+  /** Budget type that was exceeded */
+  budgetType: 'cost' | 'tokens';
   /** Current value */
   currentValue: number;
-  /** Budget limit */
+  /** Limit value */
   limitValue: number;
   /** Percentage consumed (0-1) */
   percentUsed: number;
   /** Action being taken */
   action: 'warn' | 'pause' | 'kill';
-  /** Agent that triggered (for per-agent budgets) */
-  agentName?: string;
+  /** Whether this is the final exceeded alert (vs. a warning threshold alert) */
+  exceeded: boolean;
 }
 ```
 
-**Advantages**: Real-time, structured, integrated with existing protocol.
-**Limitations**: Requires agents to include usage reporting in their output.
+### Extended Spawn Options
 
-### Tier 4: Estimation (Fallback)
+```typescript
+// Existing spawn signature, extended with budget
+await client.spawn({
+  name: string;
+  cli: string;
+  task?: string;
+  // ... existing options ...
 
-When no real data is available, estimate token usage based on:
-- Message body length (approximately 1 token per 4 characters for English text)
-- Known model context sizes
-- Message direction (relay messages captured are a lower bound on actual usage)
+  /** Per-agent usage budget */
+  budget?: UsageBudget;
+});
+```
 
-This is clearly marked as `source: 'estimated'` and never presented as actual usage.
+### Extended createRelay Options
+
+```typescript
+const relay = await createRelay({
+  socketPath?: string;
+  quiet?: boolean;
+
+  /** Session-wide usage budget */
+  budget?: UsageBudget;
+
+  /** Custom model pricing (merged with defaults) */
+  pricing?: Record<string, ModelPricing>;
+});
+```
 
 ---
 
-## Storage Schema
+## Part 4: Data Collection (How Usage Data Gets In)
 
-### SQLite
+The system collects usage data through multiple channels, ordered by fidelity. The SDK unifies them all behind the same `TokenUsageReport` shape.
 
-New table added to the existing SQLite adapter:
+### Source 1: SDK Self-Report (highest fidelity)
+
+Agents built with the SDK call `client.reportUsage()` with exact numbers from their LLM API responses. This sends a `USAGE_REPORT` envelope to the daemon with `source: 'sdk'`.
+
+This is the primary path for production orchestrations. When you build a swarm with the SDK, your agents have direct access to API responses and can report exact token counts.
+
+```typescript
+// Agent reports exact usage from Anthropic API response
+const response = await anthropic.messages.create({ model: 'claude-sonnet-4', ... });
+worker.reportUsage({
+  input: response.usage.input_tokens,
+  output: response.usage.output_tokens,
+  cacheRead: response.usage.cache_read_input_tokens,
+  model: 'claude-sonnet-4',
+});
+```
+
+### Source 2: Output Parsing (PTY-wrapped CLIs)
+
+For agents spawned as CLI processes (Claude Code, Codex, Gemini), the wrapper's output parser extracts usage from terminal output. Each CLI has a parser module:
+
+```typescript
+// packages/wrapper/src/usage-parsers/index.ts
+interface UsageParser {
+  cli: string;
+  parseLine(line: string): Partial<TokenCounts> | null;
+  parseSessionEnd(lines: string[]): { tokens: TokenCounts; model?: string } | null;
+}
+```
+
+The wrapper sends `USAGE_REPORT` to the daemon with `source: 'output_parse'`. The SDK consumer doesn't need to know or care that the data came from parsing — it arrives through the same `onUsageUpdate` callback.
+
+**CLI output patterns** (the fragile part — isolated into per-CLI modules):
+
+| CLI | Pattern | Frequency |
+|-----|---------|-----------|
+| Claude Code | Status line with cost/tokens after each turn | Per-turn |
+| Claude Code | Session summary on exit | Session end |
+| Codex | `Tokens used: X prompt + Y completion` | Session end |
+| Gemini | `Token count: X input, Y output` | Per-response |
+| Aider | `Tokens: X sent, Y received. Cost: $Z` | Per-edit |
+
+### Source 3: File-Based Report (fallback for any CLI)
+
+Agents write to `$AGENT_RELAY_OUTBOX/usage`. Consistent with the existing outbox protocol:
+
+```
+KIND: usage
+INPUT_TOKENS: 12345
+OUTPUT_TOKENS: 3456
+MODEL: claude-sonnet-4
+```
+
+The outbox monitor picks this up and forwards as `USAGE_REPORT` with `source: 'file_report'`.
+
+### Source 4: Estimation (lowest fidelity, always available)
+
+When no real data is available, the system estimates based on relay message sizes. Clearly marked as `source: 'estimated'` in all APIs and UI. Provides a floor — "at least this many tokens were used" — not a ceiling.
+
+### Priority & Deduplication
+
+When multiple sources report for the same agent:
+- Higher-fidelity source wins (`sdk` > `output_parse` > `file_report` > `estimated`)
+- The daemon deduplicates by (agentName, turnNumber) — a later `sdk` report for turn 5 replaces an earlier `output_parse` report for turn 5
+- Estimates are replaced by real data as it arrives; the `onUsageUpdate` callback fires again with corrected values
+
+---
+
+## Part 5: Protocol
+
+### New Message Types
+
+| Type | Direction | Purpose |
+|------|-----------|---------|
+| `USAGE_REPORT` | Client → Daemon | Report token usage |
+| `USAGE_QUERY` | Client → Daemon | Query aggregated usage |
+| `USAGE_RESPONSE` | Daemon → Client | Usage query response |
+| `BUDGET_SET` | Client → Daemon | Set/update a budget |
+| `BUDGET_ALERT` | Daemon → Client(s) | Budget threshold or limit reached |
+| `USAGE_UPDATE` | Daemon → Client(s) | Broadcast usage update to subscribers |
+
+### USAGE_REPORT Payload
+
+```typescript
+interface UsageReportPayload {
+  tokens: TokenCounts;
+  model?: string;
+  source: 'sdk' | 'output_parse' | 'file_report' | 'estimated';
+  /** Optional turn number for deduplication */
+  turnNumber?: number;
+  /** If true, these are cumulative totals (not per-turn deltas) */
+  cumulative?: boolean;
+}
+```
+
+### USAGE_UPDATE Payload (daemon → subscribers)
+
+After receiving and processing a `USAGE_REPORT`, the daemon broadcasts an `USAGE_UPDATE` to all connected clients that have subscribed to usage updates. This is what powers the `onUsageUpdate` callback:
+
+```typescript
+interface UsageUpdatePayload {
+  /** The agent that generated the usage */
+  agentName: string;
+  /** Per-agent token delta */
+  tokens: TokenCounts;
+  /** Per-agent cost delta */
+  costUsd: number;
+  /** Session running totals */
+  sessionTotalTokens: TokenCounts;
+  sessionTotalCostUsd: number;
+  /** Model used */
+  model?: string;
+  /** Data source */
+  source: 'sdk' | 'output_parse' | 'file_report' | 'estimated';
+}
+```
+
+### BUDGET_SET Payload
+
+```typescript
+interface BudgetSetPayload {
+  /** 'session' for session-wide, or agent name for per-agent */
+  scope: string;
+  budget: UsageBudget;
+}
+```
+
+### BUDGET_ALERT Payload
+
+```typescript
+interface BudgetAlertPayload {
+  scope: 'session' | 'agent';
+  agentName?: string;
+  budgetType: 'cost' | 'tokens';
+  currentValue: number;
+  limitValue: number;
+  percentUsed: number;
+  action: 'warn' | 'pause' | 'kill';
+  exceeded: boolean;
+}
+```
+
+### Subscription Model
+
+Clients opt into usage updates by subscribing to the `usage` topic. The SDK does this automatically when `onUsageUpdate` or `onBudgetAlert` is set:
+
+```typescript
+// SDK auto-subscribes when callback is set
+client.onUsageUpdate = (report) => { ... };
+// Internally: client.subscribe('_usage');
+```
+
+---
+
+## Part 6: Pricing
+
+### Built-In Pricing Table
+
+```typescript
+interface ModelPricing {
+  inputPer1M: number;
+  outputPer1M: number;
+  cacheReadPer1M?: number;
+  cacheWritePer1M?: number;
+}
+
+const DEFAULT_PRICING: Record<string, ModelPricing> = {
+  'claude-sonnet-4':   { inputPer1M: 3.00, outputPer1M: 15.00, cacheReadPer1M: 0.30, cacheWritePer1M: 3.75 },
+  'claude-opus-4':     { inputPer1M: 15.00, outputPer1M: 75.00, cacheReadPer1M: 1.50, cacheWritePer1M: 18.75 },
+  'claude-haiku-3.5':  { inputPer1M: 0.80, outputPer1M: 4.00, cacheReadPer1M: 0.08, cacheWritePer1M: 1.00 },
+  'gpt-4o':            { inputPer1M: 2.50, outputPer1M: 10.00 },
+  'gpt-4o-mini':       { inputPer1M: 0.15, outputPer1M: 0.60 },
+  'o3':                { inputPer1M: 10.00, outputPer1M: 40.00 },
+  'gemini-2.5-pro':    { inputPer1M: 1.25, outputPer1M: 10.00 },
+  'gemini-2.5-flash':  { inputPer1M: 0.15, outputPer1M: 0.60 },
+};
+```
+
+### Model Resolution
+
+When a `USAGE_REPORT` arrives, the daemon resolves the model for cost calculation:
+
+1. `model` field from the report (highest priority — exact model from API response)
+2. `model` from the agent's HELLO handshake payload
+3. Inferred from `cli` field via `model-mapping.ts` (e.g., `claude:opus` → `claude-opus-4`)
+4. Falls back to cheapest model for that CLI family (conservative estimate)
+
+### Custom Pricing
+
+```typescript
+// Via SDK
+const relay = await createRelay({
+  pricing: {
+    'my-fine-tuned-model': { inputPer1M: 5.00, outputPer1M: 20.00 },
+  },
+});
+
+// Via file: ~/.agent-relay/pricing.json or .agent-relay/pricing.json
+// Custom entries merge with (and override) defaults
+```
+
+---
+
+## Part 7: CLI Interface
+
+The CLI is a thin layer over SDK methods, aimed at operators and humans monitoring sessions.
+
+### `agent-relay usage`
+
+```bash
+# Current session (default: all agents, table format)
+agent-relay usage
+
+# Specific agent
+agent-relay usage --agent Worker1
+
+# JSON output (for scripting)
+agent-relay usage --json
+
+# Live mode (refreshes every 2s)
+agent-relay usage --live
+```
+
+**Table output:**
+```
+ Agent      Model       In Tok    Out Tok   Cache     Cost      Budget
+ ─────────  ──────────  ────────  ────────  ────────  ────────  ────────
+ Lead       opus-4       45,230    12,450    30,100    $4.28
+ Writer     sonnet-4     23,100     8,340    15,200    $0.20    $2.00 (10%)
+ Reviewer   sonnet-4     18,500     5,200     9,800    $0.15
+ Shadow     haiku-3.5     8,900     2,100     6,000    $0.02
+ ─────────  ──────────  ────────  ────────  ────────  ────────
+ TOTAL                   95,730    28,090    61,100    $4.65    $15.00 (31%)
+
+ Session s_abc123 | 12m 34s | Sources: sdk (2), output_parse (1), estimated (1)
+```
+
+Key UX decisions:
+- Budget column only appears when budgets are set
+- Percentage shows how much of the budget is consumed
+- Source summary at bottom so you know data quality
+- No `--by-agent` / `--by-model` flags — the table always shows both; use `--json` for programmatic access
+
+### `agent-relay budget`
+
+```bash
+# Set session budget
+agent-relay budget set --max-cost 10.00
+agent-relay budget set --max-cost 10.00 --on-exceeded pause --warn-at 0.8
+
+# Set per-agent budget
+agent-relay budget set --agent Worker1 --max-cost 2.00
+
+# View budget status
+agent-relay budget status
+
+# Clear budget
+agent-relay budget clear
+agent-relay budget clear --agent Worker1
+```
+
+**Status output:**
+```
+ Session Budget: $10.00 (on exceeded: pause, warn at 80%)
+   Current: $4.65 (46.5%)
+   ████████████░░░░░░░░░░░░░  46%
+
+ Per-Agent Budgets:
+   Writer:  $0.20 / $2.00 (10%)  ██░░░░░░░░░░░░░░░░░░░░░░  10%
+```
+
+---
+
+## Part 8: Dashboard UI
+
+The dashboard (`public/index.html`) gains a usage panel that provides real-time cost visibility during orchestration sessions.
+
+### Usage Panel (Main View)
+
+Embedded in the existing agent grid view. Each agent card shows a cost badge:
+
+```
+┌─────────────────────────────┐
+│ Writer (claude:sonnet)      │
+│ Status: active              │
+│ Task: Write the docs        │
+│                             │
+│ Tokens: 23.1K in / 8.3K out│
+│ Cost: $0.20                 │
+│ ████░░░░░░  10% of $2.00   │
+└─────────────────────────────┘
+```
+
+### Session Cost Bar (Header)
+
+Always visible at the top of the dashboard when usage data exists:
+
+```
+Session Cost: $4.65 / $15.00    ████████████░░░░░░░░░░░░░  31%
+  Lead: $4.28  Writer: $0.20  Reviewer: $0.15  Shadow: $0.02
+```
+
+Color coding:
+- Green: < warning threshold
+- Yellow: > warning threshold, < 100%
+- Red: exceeded, pulsing if action is `'kill'`
+
+### Cost Timeline (Expandable)
+
+A sparkline or area chart showing cumulative cost over session duration. Each agent is a stacked area so you can see who's driving cost:
+
+```
+$5 ┤                                    ╭──── Lead (opus)
+   │                              ╭─────╯
+   │                        ╭─────╯
+$2 ┤              ╭─────────╯
+   │        ╭─────╯───────────────────── Writer (sonnet)
+$1 ┤  ╭─────╯
+   │──╯─────────────────────────────────  Reviewer + Shadow
+$0 ┤
+   └──────────────────────────────────── time
+   0m       5m       10m       15m
+```
+
+### WebSocket Push
+
+The dashboard connects as a system client and subscribes to `_usage`. Usage updates stream in real-time — no polling. The MCP server uses the same `USAGE_QUERY` / `USAGE_RESPONSE` protocol as the SDK.
+
+### MCP Tools
+
+```typescript
+'relay-usage'          // Get usage summary (same as client.getUsage())
+'relay-budget-set'     // Set budget (same as client.setSessionBudget())
+'relay-budget-status'  // Get budget status
+```
+
+---
+
+## Part 9: Storage
+
+Usage data is stored alongside messages in the existing storage layer.
+
+### SQLite Schema
 
 ```sql
 CREATE TABLE IF NOT EXISTS token_usage (
@@ -336,28 +776,27 @@ CREATE TABLE IF NOT EXISTS token_usage (
   cli TEXT NOT NULL,
   model TEXT,
   ts INTEGER NOT NULL,
-  granularity TEXT NOT NULL CHECK (granularity IN ('turn', 'cumulative')),
   input_tokens INTEGER NOT NULL DEFAULT 0,
   output_tokens INTEGER NOT NULL DEFAULT 0,
   cache_read_tokens INTEGER DEFAULT 0,
   cache_write_tokens INTEGER DEFAULT 0,
-  estimated_cost_usd REAL,
+  cost_usd REAL NOT NULL DEFAULT 0,
   turn_number INTEGER,
   source TEXT NOT NULL,
   created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000)
 );
 
-CREATE INDEX idx_token_usage_agent ON token_usage(agent_name);
 CREATE INDEX idx_token_usage_session ON token_usage(session_id);
-CREATE INDEX idx_token_usage_ts ON token_usage(ts);
+CREATE INDEX idx_token_usage_agent_session ON token_usage(agent_name, session_id);
+
+-- Running totals maintained in memory by the daemon for fast budget checks.
+-- Storage is the source of truth for historical queries.
 ```
 
-### JSONL
-
-Appended as structured lines to a `usage.jsonl` file:
+### JSONL Format
 
 ```json
-{"id":"u_abc123","agentName":"Worker1","sessionId":"s_xyz","cli":"claude","model":"claude-sonnet-4","ts":1706000000000,"granularity":"turn","tokens":{"input":12345,"output":3456,"cacheRead":8000,"cacheWrite":2000},"estimatedCostUsd":0.042,"turnNumber":5,"source":"output_parse"}
+{"id":"u_abc","agent":"Writer","session":"s_xyz","cli":"claude","model":"claude-sonnet-4","ts":1706000000000,"tokens":{"in":12345,"out":3456,"cacheR":8000},"cost":0.042,"source":"sdk"}
 ```
 
 ### StorageAdapter Extension
@@ -366,301 +805,67 @@ Appended as structured lines to a `usage.jsonl` file:
 interface StorageAdapter {
   // ... existing methods ...
 
-  // Token usage tracking
-  saveUsageReport?(report: TokenUsageReport): Promise<void>;
-  getUsageReports?(query: UsageQuery): Promise<TokenUsageReport[]>;
-  getUsageSummary?(scope: UsageSummaryScope): Promise<TokenUsageSummary>;
-}
-
-interface UsageQuery {
-  agentName?: string;
-  sessionId?: string;
-  cli?: string;
-  model?: string;
-  sinceTs?: number;
-  untilTs?: number;
-  granularity?: 'turn' | 'cumulative';
-  limit?: number;
-}
-
-interface UsageSummaryScope {
-  scope: 'agent' | 'session' | 'team' | 'global';
-  scopeId?: string;
-  sinceTs?: number;
-  untilTs?: number;
+  saveUsageReport?(report: StoredUsageReport): Promise<void>;
+  getUsageReports?(query: UsageQuery): Promise<StoredUsageReport[]>;
+  getUsageSummary?(sessionId: string, options?: { agent?: string; since?: number }): Promise<UsageSummary>;
 }
 ```
 
 ---
 
-## Pricing Table
-
-A static, versioned pricing table enables cost estimation. Users can override with custom pricing.
-
-```typescript
-interface ModelPricing {
-  /** Price per 1M input tokens in USD */
-  inputPer1M: number;
-  /** Price per 1M output tokens in USD */
-  outputPer1M: number;
-  /** Price per 1M cached input tokens (if applicable) */
-  cacheReadPer1M?: number;
-  /** Price per 1M cache write tokens (if applicable) */
-  cacheWritePer1M?: number;
-}
-
-const DEFAULT_PRICING: Record<string, ModelPricing> = {
-  // Claude
-  'claude-sonnet-4': { inputPer1M: 3.00, outputPer1M: 15.00, cacheReadPer1M: 0.30, cacheWritePer1M: 3.75 },
-  'claude-opus-4':   { inputPer1M: 15.00, outputPer1M: 75.00, cacheReadPer1M: 1.50, cacheWritePer1M: 18.75 },
-  'claude-haiku-3.5':{ inputPer1M: 0.80, outputPer1M: 4.00, cacheReadPer1M: 0.08, cacheWritePer1M: 1.00 },
-  // OpenAI
-  'gpt-4o':          { inputPer1M: 2.50, outputPer1M: 10.00 },
-  'gpt-4o-mini':     { inputPer1M: 0.15, outputPer1M: 0.60 },
-  'o3':              { inputPer1M: 10.00, outputPer1M: 40.00 },
-  // Gemini
-  'gemini-2.5-pro':  { inputPer1M: 1.25, outputPer1M: 10.00 },
-  'gemini-2.5-flash':{ inputPer1M: 0.15, outputPer1M: 0.60 },
-};
-```
-
-Users can supply a custom pricing file at `~/.agent-relay/pricing.json` or per-project at `.agent-relay/pricing.json`. Custom entries merge with (and override) defaults.
-
----
-
-## CLI Interface
-
-### `agent-relay usage` — View Usage
-
-```bash
-# Current session usage (all agents)
-agent-relay usage
-
-# Per-agent breakdown
-agent-relay usage --by-agent
-
-# Per-model breakdown
-agent-relay usage --by-model
-
-# Specific agent
-agent-relay usage --agent Worker1
-
-# Time range
-agent-relay usage --since 1h
-agent-relay usage --since "2026-02-06T10:00:00"
-
-# Output formats
-agent-relay usage --format table    # Default: formatted table
-agent-relay usage --format json     # Machine-readable JSON
-agent-relay usage --format csv      # For spreadsheets
-```
-
-**Example output:**
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        Token Usage Summary                                  │
-├──────────┬──────────┬────────────┬─────────────┬────────────┬──────────────┤
-│ Agent    │ Model    │ Input Tok  │ Output Tok  │ Cache Read │ Est. Cost    │
-├──────────┼──────────┼────────────┼─────────────┼────────────┼──────────────┤
-│ Lead     │ opus-4   │   45,230   │   12,450    │   30,100   │   $4.28      │
-│ Worker1  │ sonnet-4 │   23,100   │    8,340    │   15,200   │   $0.20      │
-│ Worker2  │ gpt-4o   │   18,500   │    5,200    │        -   │   $0.10      │
-│ Shadow   │ haiku-3.5│    8,900   │    2,100    │    6,000   │   $0.02      │
-├──────────┼──────────┼────────────┼─────────────┼────────────┼──────────────┤
-│ TOTAL    │          │   95,730   │   28,090    │   51,300   │   $4.60      │
-└──────────┴──────────┴────────────┴─────────────┴────────────┴──────────────┘
-  Session: s_abc123 | Duration: 12m 34s | Source: output_parse (3), estimated (1)
-```
-
-### `agent-relay budget` — Set Budgets
-
-```bash
-# Set session budget
-agent-relay budget --max-cost 10.00
-agent-relay budget --max-tokens 500000
-agent-relay budget --max-cost-per-agent 2.00
-
-# Set action on budget exceeded
-agent-relay budget --max-cost 10.00 --on-exceeded warn     # Default: log warning
-agent-relay budget --max-cost 10.00 --on-exceeded pause    # Pause agents, notify lead
-agent-relay budget --max-cost 10.00 --on-exceeded kill     # Kill all agents
-
-# Warning threshold
-agent-relay budget --max-cost 10.00 --warn-at 0.8          # Warn at 80%
-
-# View current budget status
-agent-relay budget --status
-```
-
-### `agent-relay usage --live` — Live Monitoring
-
-```bash
-# Live-updating usage table (refreshes every 5 seconds)
-agent-relay usage --live
-```
-
----
-
-## Protocol Integration
-
-### New Message Types
-
-| Type | Direction | Purpose |
-|------|-----------|---------|
-| `USAGE_REPORT` | Agent → Daemon | Agent reports its token usage |
-| `USAGE_QUERY` | Client → Daemon | Request usage summary |
-| `USAGE_RESPONSE` | Daemon → Client | Usage summary response |
-| `BUDGET_ALERT` | Daemon → Agent(s) | Budget threshold or limit reached |
-
-### USAGE_REPORT Flow
-
-```
-Agent (wrapper)                     Daemon
-    │                                 │
-    │  ── USAGE_REPORT ──────────►    │
-    │     { tokens: {...},            │
-    │       model: "sonnet-4",        │
-    │       source: "output_parse" }  │
-    │                                 │
-    │                          ┌──────┴──────┐
-    │                          │ Store in DB  │
-    │                          │ Check budget │
-    │                          └──────┬──────┘
-    │                                 │
-    │  ◄── BUDGET_ALERT ─────────     │  (if threshold exceeded)
-    │     { budgetType: "total_cost", │
-    │       percentUsed: 0.85,        │
-    │       action: "warn" }          │
-    │                                 │
-```
-
-### USAGE_QUERY Flow
-
-Same request/response pattern as existing `STATUS`, `HEALTH`, `METRICS` queries. The MCP server, dashboard, and CLI all use this to retrieve usage data.
-
----
-
-## Wrapper Integration
-
-### UsageCollector Class
-
-A new component in `packages/wrapper/` that plugs into the existing output processing pipeline:
-
-```typescript
-// packages/wrapper/src/usage-collector.ts
-
-class UsageCollector extends EventEmitter {
-  private cli: string;
-  private parser: UsageParser;
-  private cumulative: TokenUsageReport['tokens'];
-  private turnCount: number;
-
-  constructor(cli: string) {
-    super();
-    this.cli = cli;
-    this.parser = getUsageParser(cli);
-    this.cumulative = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-    this.turnCount = 0;
-  }
-
-  /** Called by wrapper/orchestrator on each line of agent output */
-  processLine(line: string): void {
-    const parsed = this.parser.parseLine(line);
-    if (parsed) {
-      this.turnCount++;
-      this.updateCumulative(parsed);
-      this.emit('usage', {
-        granularity: 'turn',
-        tokens: parsed,
-        turnNumber: this.turnCount,
-        source: 'output_parse',
-      });
-    }
-  }
-
-  /** Called when agent session ends */
-  processSessionEnd(recentOutput: string[]): TokenUsageReport | null {
-    return this.parser.parseSessionEnd(recentOutput);
-  }
-
-  /** Called when file-based report is detected */
-  processFileReport(content: string): void { /* parse and emit */ }
-
-  /** Get current cumulative totals */
-  getCumulative(): TokenUsageReport['tokens'] {
-    return { ...this.cumulative };
-  }
-}
-```
-
-### Integration Points
-
-The `UsageCollector` hooks into existing wrapper infrastructure:
-
-1. **RelayPtyOrchestrator**: Process each output line through `usageCollector.processLine()` alongside the existing relay command parser
-2. **TmuxWrapper**: Same integration via the output polling loop
-3. **OutboxMonitor**: Watch for `$AGENT_RELAY_OUTBOX/usage` files
-4. **Session end detection**: On `session-end` event, call `processSessionEnd()` and send final cumulative report to daemon
-
----
-
-## Daemon Integration
+## Part 10: Daemon Integration
 
 ### UsageAggregator
 
-A new component in `packages/daemon/` that:
-
-1. Receives `USAGE_REPORT` messages from wrappers
-2. Stores reports via `StorageAdapter.saveUsageReport()`
-3. Computes summaries on-demand for `USAGE_QUERY` requests
-4. Evaluates budget rules and emits `BUDGET_ALERT` when thresholds are crossed
-5. Tracks per-session running totals in memory for fast budget checks
+A new component in the daemon that:
+1. Receives `USAGE_REPORT` from wrappers and SDK clients
+2. Maintains in-memory running totals per session (for fast budget checks)
+3. Persists to storage
+4. Evaluates budget rules and sends `BUDGET_ALERT`
+5. Broadcasts `USAGE_UPDATE` to subscribed clients
+6. Deduplicates by (agentName, turnNumber, source) — higher fidelity wins
 
 ```typescript
-// packages/daemon/src/usage-aggregator.ts
-
 class UsageAggregator {
-  private sessionTotals: Map<string, Map<string, TokenUsageReport['tokens']>>;
-  private budget?: UsageBudget;
-  private storage: StorageAdapter;
+  private sessionTotals: Map<string, { byAgent: Map<string, TokenCounts>; total: TokenCounts; totalCostUsd: number }>;
+  private budgets: { session?: UsageBudget; perAgent: Map<string, UsageBudget> };
 
-  constructor(storage: StorageAdapter, budget?: UsageBudget) { /* ... */ }
+  handleReport(report: UsageReportPayload, fromAgent: string, sessionId: string): {
+    update: UsageUpdatePayload;
+    alert?: BudgetAlertPayload;
+  };
 
-  /** Process incoming usage report */
-  async handleReport(report: TokenUsageReport): Promise<BudgetAlertPayload | null> {
-    await this.storage.saveUsageReport?.(report);
-    this.updateSessionTotals(report);
-    return this.checkBudget(report);
-  }
-
-  /** Compute summary for a query */
-  async getSummary(scope: UsageSummaryScope): Promise<TokenUsageSummary> {
-    return this.storage.getUsageSummary?.(scope) ?? this.computeFromReports(scope);
-  }
-
-  /** Check if budget limits are exceeded */
-  private checkBudget(report: TokenUsageReport): BudgetAlertPayload | null { /* ... */ }
+  getSummary(sessionId: string, options?: { agent?: string }): UsageSummary;
+  setBudget(scope: string, budget: UsageBudget): void;
 }
 ```
 
----
+The aggregator lives in the daemon's main event loop. When a `USAGE_REPORT` arrives:
 
-## Telemetry Events
+```
+USAGE_REPORT (from wrapper/SDK)
+  → Resolve model & compute cost (pricing table)
+  → Deduplicate (skip if lower-fidelity report for same turn exists)
+  → Update in-memory totals
+  → Persist to storage
+  → Check budgets → BUDGET_ALERT (if threshold crossed)
+  → Broadcast USAGE_UPDATE (to all _usage subscribers)
+```
 
-New telemetry events (following existing PostHog patterns in `packages/telemetry/src/events.ts`):
+### Telemetry Events
+
+Following existing PostHog patterns in `packages/telemetry/src/events.ts`:
 
 ```typescript
-/** Emitted when a usage report is received */
-interface UsageReportEvent {
+interface UsageReportTelemetryEvent {
   cli: string;
-  source: UsageDataSource;
+  source: 'sdk' | 'output_parse' | 'file_report' | 'estimated';
   has_cache_data: boolean;
-  granularity: 'turn' | 'cumulative';
 }
 
-/** Emitted when a budget alert fires */
-interface BudgetAlertEvent {
-  budget_type: string;
+interface BudgetAlertTelemetryEvent {
+  scope: 'session' | 'agent';
+  budget_type: 'cost' | 'tokens';
   percent_used: number;
   action: 'warn' | 'pause' | 'kill';
 }
@@ -668,91 +873,95 @@ interface BudgetAlertEvent {
 
 ---
 
-## Dashboard Integration
+## Part 11: Implementation Plan
 
-The existing dashboard (served from `public/index.html` and backed by MCP tools) gains:
+### Phase 1: SDK Core + Protocol (ship first)
 
-1. **Usage panel** — live-updating token/cost table per agent
-2. **Budget bar** — visual indicator of budget consumption
-3. **Cost timeline** — chart showing cumulative spend over session duration
+The SDK is the primary interface, so it ships first.
 
-The MCP server (`packages/mcp/`) exposes new tools:
+- `TokenCounts`, `UsageSummary`, `UsageBudget` types in `packages/protocol/`
+- `USAGE_REPORT`, `USAGE_QUERY`, `USAGE_RESPONSE`, `BUDGET_SET`, `BUDGET_ALERT`, `USAGE_UPDATE` message types
+- `client.reportUsage()` — SDK self-reporting
+- `client.getUsage()` — query daemon for summary
+- `client.onUsageUpdate` / `client.onBudgetAlert` callbacks
+- `UsageAggregator` in daemon (in-memory totals + storage persist)
+- `spawn({ budget })` and `createRelay({ budget })` integration
+- `client.setSessionBudget()` and `client.setBudget()`
+- SQLite storage schema
+- Built-in pricing table
+
+**This phase alone makes the feature fully usable for SDK-built orchestrations.**
+
+### Phase 2: PTY Agent Support
+
+- Claude Code output parser
+- Codex, Gemini, Aider output parser modules
+- `UsageCollector` in `packages/wrapper/` hooked into `RelayPtyOrchestrator`
+- File-based reporting via `$AGENT_RELAY_OUTBOX/usage`
+- Estimation fallback
+- Source deduplication / priority logic
+
+### Phase 3: CLI + Dashboard UX
+
+- `agent-relay usage` command (table, JSON, live modes)
+- `agent-relay budget` command (set, status, clear)
+- Dashboard usage panel (agent cards with cost badges)
+- Session cost bar in dashboard header
+- Cost timeline chart
+- MCP tools (`relay-usage`, `relay-budget-set`, `relay-budget-status`)
+- JSONL adapter support
+
+### Phase 4: Advanced
+
+- Cost timeline analytics (historical cost per session over days/weeks)
+- Custom pricing via SDK and config files
+- Usage export (CSV, JSON)
+- Telemetry events
+- Usage alerts via channels (post to #cost-alerts)
+
+---
+
+## Decisions (not open questions)
+
+These were listed as "open questions" in the prior draft. Decided here:
+
+1. **Usage data flows through the relay protocol.** Same socket, same framing. The volume is tiny (one small envelope per agent turn) compared to messages. Consistency > optimization.
+
+2. **Model is resolved from spawn config when not reported.** The `cli` field in `SpawnPayload` (e.g., `claude:opus`) maps to a model via the existing `model-mapping.ts`. No new infrastructure needed.
+
+3. **The lead agent has full access to worker usage.** This is what makes cost-aware orchestration possible. `getUsage()` returns data for all agents the caller can see (same visibility as `listWorkers()`).
+
+4. **Default reporting granularity is cumulative.** The daemon stores cumulative snapshots per agent. Diffs are computed on read when needed. This is simpler to implement, easier to reason about, and what the SDK consumer actually wants ("how much has this agent used total?").
+
+5. **Reports are forwarded to daemon per-turn, not batched.** One envelope per agent turn is negligible load. Batching adds latency to budget enforcement which defeats the purpose.
+
+---
+
+## Appendix: Type Exports
+
+All types are exported from `@agent-relay/sdk` and `@agent-relay/protocol`:
 
 ```typescript
-// New MCP tools
-'relay-usage-summary'   // Get token usage summary
-'relay-usage-by-agent'  // Get per-agent breakdown
-'relay-set-budget'      // Configure usage budget
-'relay-budget-status'   // Check current budget status
+import type {
+  // Usage
+  TokenCounts,
+  TokenUsageReport,
+  UsageSummary,
+  AgentUsage,
+  ModelUsage,
+
+  // Budget
+  UsageBudget,
+  BudgetStatus,
+  BudgetAlert,
+
+  // Pricing
+  ModelPricing,
+
+  // Protocol
+  UsageReportPayload,
+  UsageUpdatePayload,
+  BudgetSetPayload,
+  BudgetAlertPayload,
+} from '@agent-relay/sdk';
 ```
-
----
-
-## Implementation Phases
-
-### Phase 1: Core Infrastructure
-- `TokenUsageReport` and `TokenUsageSummary` types in `packages/protocol/`
-- `UsageCollector` class in `packages/wrapper/`
-- Claude output parser (most common CLI, best-defined output format)
-- `USAGE_REPORT` message type
-- SQLite storage schema and adapter methods
-- `agent-relay usage` CLI command (basic table output)
-
-### Phase 2: Budget Enforcement
-- `UsageBudget` configuration type
-- `UsageAggregator` in daemon with budget checking
-- `BUDGET_ALERT` message type
-- `agent-relay budget` CLI command
-- Warning/pause/kill actions on budget exceeded
-- Pricing table with user overrides
-
-### Phase 3: Multi-CLI Support
-- Codex output parser
-- Gemini output parser
-- Aider / Goose output parsers
-- File-based reporting (`$AGENT_RELAY_OUTBOX/usage`)
-- Estimation fallback for CLIs without parseable output
-
-### Phase 4: Observability
-- `USAGE_QUERY` / `USAGE_RESPONSE` protocol messages
-- MCP tools for dashboard
-- Dashboard usage panel
-- `agent-relay usage --live` real-time monitoring
-- JSONL adapter support
-- Telemetry events
-
----
-
-## Open Questions
-
-1. **Should usage data flow through the relay protocol or a side-channel?** The relay protocol path (USAGE_REPORT message) is clean but adds traffic to the daemon socket. A side-channel (e.g., writing to a shared file or SQLite directly from the wrapper) reduces daemon load but fragments the architecture.
-
-2. **How do we handle model identification when the CLI doesn't report it?** Claude Code reports the model; Codex doesn't always. We could infer from the `cli` field in spawn config (e.g., `claude:opus` → `claude-opus-4`) using the existing `model-mapping.ts`.
-
-3. **Should the lead agent have access to worker usage?** If the lead can query usage via relay messages, it could make cost-aware decisions (e.g., "switch Worker2 to a cheaper model"). This is powerful but adds complexity.
-
-4. **Per-turn vs. cumulative reporting?** Per-turn is more granular but generates more data. Cumulative is simpler but loses turn-level visibility. The spec supports both — we should decide the default.
-
-5. **How frequently should we poll / parse for usage?** Every line of output is already processed for relay commands. Adding usage parsing to the same loop is zero additional I/O. But how often should we forward reports to the daemon — every turn, or batched?
-
----
-
-## Appendix: CLI Output Format Research
-
-### Claude Code
-Claude Code displays usage in the status line and session summary. Format varies by version but typically includes:
-- Per-turn: input/output token counts, cost
-- Session end: cumulative totals, total cost
-- Available via `--output-format json` for structured data
-
-### Codex CLI
-Reports tokens at session end. Format: `Tokens used: X prompt + Y completion = Z tokens`
-
-### Gemini CLI
-Reports token counts per response. Format varies.
-
-### Aider
-Reports token usage per edit cycle with cost. Format: `Tokens: X sent, Y received. Cost: $Z`
-
-### Goose
-Token reporting varies by version and backend.
