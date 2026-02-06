@@ -1414,7 +1414,10 @@ Allow execution of: 'cat, redirection (>), heredoc (<<)'?
         let (has_ref, has_confirm) = detect_bypass_permissions_prompt(output);
         assert!(has_ref, "should detect bypass+permission");
         assert!(has_confirm, "should detect accept+no,+exit");
-        assert!(is_bypass_selection_menu(output), "should detect selection menu format");
+        assert!(
+            is_bypass_selection_menu(output),
+            "should detect selection menu format"
+        );
     }
 
     #[test]
@@ -1436,7 +1439,10 @@ Allow execution of: 'cat, redirection (>), heredoc (<<)'?
         let output = "bypass permissions mode\nProceed? (yes/no)";
         let (has_ref, has_confirm) = detect_bypass_permissions_prompt(output);
         assert!(has_ref && has_confirm, "legacy should still detect");
-        assert!(!is_bypass_selection_menu(output), "legacy should NOT be selection menu");
+        assert!(
+            !is_bypass_selection_menu(output),
+            "legacy should NOT be selection menu"
+        );
     }
 
     #[test]
