@@ -168,7 +168,30 @@ agent-relay spawn Backend claude "Build the REST API for user management"
 
 The `spawn` command communicates directly with the daemon via socket—no dashboard required. This is the simplest way to programmatically create agents.
 
+**Example: spawn a reviewer agent (copy/paste):**
+```bash
+# Start the daemon (required)
+agent-relay up --dashboard
+
+# Spawn a Claude reviewer
+agent-relay spawn Reviewer claude "Review my recent changes. Reply with: bugs/risks, suggested fixes, and tests to add."
+
+# Follow output (Ctrl+C to stop)
+agent-relay agents:logs Reviewer --follow
+```
+
+Tip: ask the reviewer to post a short summary to `#general`:
+```bash
+agent-relay send Reviewer "When you finish, post a short summary to #general." --from Dashboard
+```
+
 **File-based method** (for agents without CLI access):
+> Note: `$AGENT_RELAY_OUTBOX` is set automatically for agents spawned by agent-relay. If you're running this manually, point it at the current project's outbox:
+>
+> ```bash
+> export AGENT_RELAY_OUTBOX="$PWD/.agent-relay/outbox"
+> mkdir -p "$AGENT_RELAY_OUTBOX"
+> ```
 ```bash
 cat > $AGENT_RELAY_OUTBOX/spawn << 'EOF'
 KIND: spawn
@@ -213,6 +236,7 @@ agent-relay send "#general" "Team standup in 10 minutes"
 ```
 
 **File-based protocol** (for AI agents without CLI access):
+> If `$AGENT_RELAY_OUTBOX` isn't set, run: `export AGENT_RELAY_OUTBOX="$PWD/.agent-relay/outbox"` (and `mkdir -p "$AGENT_RELAY_OUTBOX"` if needed).
 ```bash
 cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
 TO: Backend
@@ -235,6 +259,7 @@ agent-relay agents:kill Backend
 ```
 
 **File-based release** (for AI agents):
+> If `$AGENT_RELAY_OUTBOX` isn't set, see the note above for how to set it to this project's outbox.
 ```bash
 cat > $AGENT_RELAY_OUTBOX/release << 'EOF'
 KIND: release
