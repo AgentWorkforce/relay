@@ -59,6 +59,8 @@ class CircularDedupeCache {
  * ACP Agent that bridges to Agent Relay
  */
 export class RelayACPAgent implements acp.Agent {
+  private static readonly RECONNECT_COOLDOWN_MS = 10_000;
+
   private readonly config: ACPBridgeConfig;
   private relayClient: RelayClient | null = null;
   private connection: acp.AgentSideConnection | null = null;
@@ -66,6 +68,8 @@ export class RelayACPAgent implements acp.Agent {
   private messageBuffer = new Map<string, RelayMessage[]>();
   private dedupeCache = new CircularDedupeCache(2000);
   private closedSessionIds = new Set<string>();
+  private reconnectPromise: Promise<boolean> | null = null;
+  private lastReconnectAttempt = 0;
 
   constructor(config: ACPBridgeConfig) {
     this.config = config;
@@ -88,43 +92,7 @@ export class RelayACPAgent implements acp.Agent {
     }
 
     this.relayClient = new RelayClient(relayConfig);
-
-    // Set up message handlers
-    this.relayClient.onMessage = (from, payload, messageId) => {
-      if (typeof payload.body !== 'string') {
-        return;
-      }
-
-      this.handleRelayMessage({
-        id: messageId,
-        from,
-        body: payload.body,
-        thread: payload.thread,
-        timestamp: Date.now(),
-        data: payload.data as Record<string, unknown> | undefined,
-      });
-    };
-
-    // Handle channel messages (e.g., #general)
-    this.relayClient.onChannelMessage = (from, channel, body) => {
-      this.debug('Received channel message:', from, channel, body.substring(0, 50));
-
-      // Route channel messages to all sessions
-      this.handleRelayMessage({
-        id: `channel-${randomUUID()}`,
-        from: `${from} [${channel}]`,
-        body,
-        timestamp: Date.now(),
-      });
-    };
-
-    this.relayClient.onStateChange = (state) => {
-      this.debug('Relay client state:', state);
-    };
-
-    this.relayClient.onError = (error) => {
-      this.debug('Relay client error:', error);
-    };
+    this.setupRelayHandlers();
 
     try {
       await this.relayClient.connect();
@@ -170,6 +138,137 @@ export class RelayACPAgent implements acp.Agent {
     this.relayClient = null;
     this.connection = null;
     this.debug('ACP agent stopped');
+  }
+
+  /**
+   * Wire up message, channel, state change, and error handlers on the relay client.
+   */
+  private setupRelayHandlers(): void {
+    if (!this.relayClient) return;
+
+    this.relayClient.onMessage = (from, payload, messageId) => {
+      if (typeof payload.body !== 'string') {
+        return;
+      }
+
+      this.handleRelayMessage({
+        id: messageId,
+        from,
+        body: payload.body,
+        thread: payload.thread,
+        timestamp: Date.now(),
+        data: payload.data as Record<string, unknown> | undefined,
+      });
+    };
+
+    this.relayClient.onChannelMessage = (from, channel, body) => {
+      this.debug('Received channel message:', from, channel, body.substring(0, 50));
+
+      this.handleRelayMessage({
+        id: `channel-${randomUUID()}`,
+        from: `${from} [${channel}]`,
+        body,
+        timestamp: Date.now(),
+      });
+    };
+
+    this.relayClient.onStateChange = (state) => {
+      this.debug('Relay client state:', state);
+
+      // Re-subscribe to #general on successful reconnect
+      if (state === 'READY' && this.relayClient) {
+        this.relayClient.subscribe('#general');
+        this.debug('Re-subscribed to #general after reconnect');
+      }
+    };
+
+    this.relayClient.onError = (error) => {
+      this.debug('Relay client error:', error);
+    };
+  }
+
+  /**
+   * Attempt to reconnect to the relay daemon.
+   * Creates a fresh RelayClient to reset reconnect attempt counters.
+   */
+  private async reconnectToRelay(): Promise<boolean> {
+    this.debug('Attempting to reconnect to relay daemon...');
+
+    if (this.relayClient) {
+      this.relayClient.destroy();
+      this.relayClient = null;
+    }
+
+    const relayConfig: Partial<ClientConfig> = {
+      agentName: this.config.agentName,
+      program: '@agent-relay/acp-bridge',
+      cli: 'acp-bridge',
+      quiet: true,
+    };
+
+    if (this.config.socketPath) {
+      relayConfig.socketPath = this.config.socketPath;
+    }
+
+    this.relayClient = new RelayClient(relayConfig);
+    this.setupRelayHandlers();
+
+    try {
+      await this.relayClient.connect();
+      this.debug('Reconnected to relay daemon');
+      this.relayClient.subscribe('#general');
+      this.debug('Re-subscribed to #general channel');
+      return true;
+    } catch (err) {
+      this.debug('Failed to reconnect to relay daemon:', err);
+      return false;
+    }
+  }
+
+  /**
+   * Ensure the relay client is connected and ready.
+   * If disconnected (SDK exhausted reconnect attempts), creates a fresh client.
+   * If in a transient state, waits briefly for READY.
+   */
+  private async ensureRelayReady(): Promise<boolean> {
+    if (this.relayClient?.state === 'READY') {
+      return true;
+    }
+
+    if (!this.relayClient || this.relayClient.state === 'DISCONNECTED') {
+      // Deduplicate concurrent reconnect attempts
+      if (this.reconnectPromise) {
+        return this.reconnectPromise;
+      }
+
+      // Enforce cooldown to avoid rapid reconnect attempts
+      const elapsed = Date.now() - this.lastReconnectAttempt;
+      if (elapsed < RelayACPAgent.RECONNECT_COOLDOWN_MS) {
+        return false;
+      }
+
+      this.lastReconnectAttempt = Date.now();
+      this.reconnectPromise = this.reconnectToRelay().finally(() => {
+        this.reconnectPromise = null;
+      });
+      return this.reconnectPromise;
+    }
+
+    // In a transient state (CONNECTING, HANDSHAKING, BACKOFF) — wait briefly.
+    // State changes asynchronously during await, so re-check the full type.
+    const client = this.relayClient;
+    const waitMs = 5000;
+    const startWait = Date.now();
+    while (Date.now() - startWait < waitMs) {
+      const currentState = client.state as string;
+      if (currentState === 'READY') return true;
+      if (currentState === 'DISCONNECTED') {
+        return this.reconnectToRelay();
+      }
+      await this.sleep(100);
+    }
+
+    return false;
   }
 
   /**
@@ -364,8 +463,7 @@ export class RelayACPAgent implements acp.Agent {
       };
     }
 
-    if (!this.relayClient || this.relayClient.state !== 'READY') {
-      // If not connected to relay, return a helpful message
+    if (!await this.ensureRelayReady()) {
       await this.connection.sessionUpdate({
         sessionId,
         update: {
@@ -426,16 +524,18 @@ export class RelayACPAgent implements acp.Agent {
     });
 
     // Send to specific agents or broadcast
+    // relayClient is guaranteed non-null after ensureRelayReady() succeeds
+    const relay = this.relayClient!;
     let sent = false;
     if (hasTargets) {
       // Send to each mentioned agent
       for (const target of targets) {
-        const result = this.relayClient.sendMessage(target, cleanMessage, 'message', undefined, session.id);
+        const result = relay.sendMessage(target, cleanMessage, 'message', undefined, session.id);
         if (result) sent = true;
       }
     } else {
       // Broadcast to all agents
-      sent = this.relayClient.sendMessage('*', userMessage, 'message', undefined, session.id);
+      sent = relay.sendMessage('*', userMessage, 'message', undefined, session.id);
     }
 
     if (!sent) {
@@ -670,7 +770,7 @@ export class RelayACPAgent implements acp.Agent {
       return true;
     }
 
-    if (!this.relayClient || this.relayClient.state !== 'READY') {
+    if (!await this.ensureRelayReady()) {
       await this.sendTextUpdate(sessionId, 'Relay daemon is not connected (cannot spawn).');
       return true;
     }
@@ -679,7 +779,7 @@ export class RelayACPAgent implements acp.Agent {
     await this.sendTextUpdate(sessionId, `Spawning ${name} (${cli})${task ? `: ${task}` : ''}`);
 
     try {
-      const result = await this.relayClient.spawn({
+      const result = await this.relayClient!.spawn({
         name,
         cli,
         task,
@@ -706,7 +806,7 @@ export class RelayACPAgent implements acp.Agent {
       return true;
     }
 
-    if (!this.relayClient || this.relayClient.state !== 'READY') {
+    if (!await this.ensureRelayReady()) {
       await this.sendTextUpdate(sessionId, 'Relay daemon is not connected (cannot release).');
       return true;
     }
@@ -714,7 +814,7 @@ export class RelayACPAgent implements acp.Agent {
     await this.sendTextUpdate(sessionId, `Releasing ${name}...`);
 
     try {
-      const result = await this.relayClient.release(name);
+      const result = await this.relayClient!.release(name);
       if (result.success) {
         await this.sendTextUpdate(sessionId, `Released ${name}.`);
       } else {
@@ -728,13 +828,13 @@ export class RelayACPAgent implements acp.Agent {
   }
 
   private async handleListAgentsCommand(sessionId: string): Promise<boolean> {
-    if (!this.relayClient || this.relayClient.state !== 'READY') {
+    if (!await this.ensureRelayReady()) {
       await this.sendTextUpdate(sessionId, 'Relay daemon is not connected (cannot list agents).');
       return true;
     }
 
     try {
-      const agents = await this.relayClient.listConnectedAgents();
+      const agents = await this.relayClient!.listConnectedAgents();
       if (!agents.length) {
         await this.sendTextUpdate(sessionId, 'No agents are currently connected.');
       } else {
