@@ -263,7 +263,7 @@ export class RelayACPAgent implements acp.Agent {
       const currentState = client.state as string;
       if (currentState === 'READY') return true;
       if (currentState === 'DISCONNECTED') {
-        return this.reconnectToRelay();
+        return this.ensureRelayReady();
       }
       await this.sleep(100);
     }
