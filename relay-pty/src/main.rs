@@ -365,9 +365,22 @@ async fn main() -> Result<()> {
 
     // Claude Code --dangerously-skip-permissions confirmation prompt auto-acceptance
     // Newer Claude Code versions show a startup confirmation dialog when bypass mode is used.
-    // The default is "No, exit" which causes immediate termination. Auto-send "y" to accept.
-    let bypass_perms_accepted = AtomicBool::new(false);
+    // The default is "No, exit" which causes immediate termination.
+    // Uses cooldown instead of one-shot flag because Claude re-renders the prompt
+    // multiple times during startup (terminal resize, etc.), which can consume our
+    // keystrokes before the final render is active.
+    let mut last_bypass_perms_send: Option<Instant> = None;
+    let mut bypass_perms_send_count: u32 = 0;
+    const BYPASS_PERMS_COOLDOWN: Duration = Duration::from_secs(2);
+    const BYPASS_PERMS_MAX_SENDS: u32 = 5;
     let mut bypass_perms_buffer = String::new();
+
+    // Codex model upgrade prompt auto-dismissal
+    // Codex shows a selection menu when a new model is available:
+    //   "› 1. Try new model / 2. Use existing model"
+    // Auto-select option 2 ("Use existing model") to avoid changing models mid-session.
+    let codex_model_prompt_handled = AtomicBool::new(false);
+    let mut codex_model_buffer = String::new();
 
     // Gemini "Action Required" permission prompt auto-approval
     // Gemini shows "Action Required" prompts even with --yolo for certain operations
@@ -553,25 +566,57 @@ async fn main() -> Result<()> {
                     // Auto-accept Claude Code --dangerously-skip-permissions confirmation
                     // Newer versions show a startup dialog asking to confirm bypass mode.
                     // Default is "No, exit" which terminates the agent immediately.
-                    // Requires BOTH bypass reference AND confirmation prompt (no timeout fallback
-                    // since the signals are generic enough to cause false positives individually).
-                    if !bypass_perms_accepted.load(Ordering::SeqCst) {
-                        bypass_perms_buffer.push_str(&text);
-                        if bypass_perms_buffer.len() > 2500 {
-                            let start = floor_char_boundary(&bypass_perms_buffer, bypass_perms_buffer.len() - 2000);
-                            bypass_perms_buffer = bypass_perms_buffer[start..].to_string();
-                        }
+                    // Supports two formats:
+                    //   1. Legacy text prompt: sends "y\n"
+                    //   2. Selection menu ("1. No, exit / 2. Yes, I accept"): sends
+                    //      down-arrow to select option 2, then Enter to confirm.
+                    // Uses cooldown-based retries because Claude re-renders the prompt
+                    // multiple times during startup, which can consume keystrokes.
+                    {
+                        let in_cooldown = last_bypass_perms_send
+                            .map(|t| t.elapsed() < BYPASS_PERMS_COOLDOWN)
+                            .unwrap_or(false);
+                        let under_max = bypass_perms_send_count < BYPASS_PERMS_MAX_SENDS;
 
-                        let clean = strip_ansi(&bypass_perms_buffer);
-                        let (has_bypass_ref, has_confirmation) = detect_bypass_permissions_prompt(&clean);
-
-                        if has_bypass_ref && has_confirmation {
-                            info!("Detected Claude Code bypass permissions confirmation, auto-accepting with 'y'");
-                            bypass_perms_accepted.store(true, Ordering::SeqCst);
-                            tokio::time::sleep(Duration::from_millis(100)).await;
-                            if let Err(e) = async_pty.send(b"y\n".to_vec()).await {
-                                warn!("Failed to send bypass permissions acceptance: {}", e);
+                        if !in_cooldown && under_max {
+                            bypass_perms_buffer.push_str(&text);
+                            if bypass_perms_buffer.len() > 2500 {
+                                let start = floor_char_boundary(&bypass_perms_buffer, bypass_perms_buffer.len() - 2000);
+                                bypass_perms_buffer = bypass_perms_buffer[start..].to_string();
                             }
+
+                            let clean = strip_ansi(&bypass_perms_buffer);
+                            let (has_bypass_ref, has_confirmation) = detect_bypass_permissions_prompt(&clean);
+
+                            if has_bypass_ref && has_confirmation {
+                                bypass_perms_send_count += 1;
+                                last_bypass_perms_send = Some(Instant::now());
+                                // Wait for prompt to stabilize before sending keystrokes
+                                tokio::time::sleep(Duration::from_millis(500)).await;
+
+                                if is_bypass_selection_menu(&clean) {
+                                    // Selection menu: arrow down to "Yes, I accept", then Enter
+                                    info!("Detected Claude Code bypass permissions selection menu, sending down-arrow + Enter (attempt {})", bypass_perms_send_count);
+                                    // Down arrow = ESC [ B
+                                    if let Err(e) = async_pty.send(b"\x1b[B".to_vec()).await {
+                                        warn!("Failed to send down-arrow for bypass permissions: {}", e);
+                                    }
+                                    tokio::time::sleep(Duration::from_millis(200)).await;
+                                    // Enter to confirm
+                                    if let Err(e) = async_pty.send(b"\r".to_vec()).await {
+                                        warn!("Failed to send Enter for bypass permissions: {}", e);
+                                    }
+                                } else {
+                                    // Legacy text prompt: send "y"
+                                    info!("Detected Claude Code bypass permissions text prompt, auto-accepting with 'y' (attempt {})", bypass_perms_send_count);
+                                    if let Err(e) = async_pty.send(b"y\n".to_vec()).await {
+                                        warn!("Failed to send bypass permissions acceptance: {}", e);
+                                    }
+                                }
+                                bypass_perms_buffer.clear();
+                            }
+                        } else if in_cooldown {
+                            // In cooldown - clear buffer so stale content doesn't accumulate
                             bypass_perms_buffer.clear();
                         }
                     }
@@ -608,6 +653,38 @@ async fn main() -> Result<()> {
                         } else {
                             // In cooldown - clear buffer so stale content doesn't trigger after cooldown
                             gemini_action_buffer.clear();
+                        }
+                    }
+
+                    // Auto-dismiss Codex model upgrade prompt
+                    // Codex shows a selection menu when a new model is available:
+                    //   "› 1. Try new model / 2. Use existing model"
+                    // Default is option 1 ("Try new model"). Auto-select option 2 to keep
+                    // the existing model and avoid unexpected behavior changes.
+                    if !codex_model_prompt_handled.load(Ordering::SeqCst) {
+                        codex_model_buffer.push_str(&text);
+                        if codex_model_buffer.len() > 2500 {
+                            let start = floor_char_boundary(&codex_model_buffer, codex_model_buffer.len() - 2000);
+                            codex_model_buffer = codex_model_buffer[start..].to_string();
+                        }
+
+                        let clean = strip_ansi(&codex_model_buffer);
+                        let (has_upgrade_ref, has_model_options) = detect_codex_model_prompt(&clean);
+
+                        if has_upgrade_ref && has_model_options {
+                            info!("Detected Codex model upgrade prompt, selecting 'Use existing model' (down-arrow + Enter)");
+                            codex_model_prompt_handled.store(true, Ordering::SeqCst);
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            // Down arrow to select option 2
+                            if let Err(e) = async_pty.send(b"\x1b[B".to_vec()).await {
+                                warn!("Failed to send down-arrow for Codex model prompt: {}", e);
+                            }
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            // Enter to confirm
+                            if let Err(e) = async_pty.send(b"\r".to_vec()).await {
+                                warn!("Failed to send Enter for Codex model prompt: {}", e);
+                            }
+                            codex_model_buffer.clear();
                         }
                     }
 
@@ -927,10 +1004,39 @@ fn detect_gemini_action_required(clean_output: &str) -> (bool, bool) {
     (has_header, has_allow_option)
 }
 
+/// Detect Codex model upgrade/selection prompt in output.
+/// Returns (has_upgrade_ref, has_model_options) where:
+/// - has_upgrade_ref: output references a new model or upgrade
+/// - has_model_options: output contains "Try new model" and "Use existing model"
+///
+/// Note: Like Claude Code, Codex uses cursor-forward sequences instead of spaces
+/// in TUI output. After ANSI stripping, words may be concatenated without spaces.
+/// Detection uses individual keyword checks rather than exact phrase matching.
+fn detect_codex_model_prompt(clean_output: &str) -> (bool, bool) {
+    let lower = clean_output.to_lowercase();
+    let has_upgrade_ref = (lower.contains("codex") && lower.contains("upgrade"))
+        || (lower.contains("codex") && lower.contains("new") && lower.contains("model"))
+        || (lower.contains("just") && lower.contains("got") && lower.contains("upgrade"));
+    // Individual keyword checks resilient to missing spaces:
+    // "Try new model" -> "try" + "new" + "model" (already in has_upgrade_ref)
+    // "Use existing model" -> "existing" is unique enough
+    let has_model_options = lower.contains("try") && lower.contains("existing");
+    (has_upgrade_ref, has_model_options)
+}
+
 /// Detect Claude Code --dangerously-skip-permissions confirmation prompt.
 /// Returns (has_bypass_ref, has_confirmation) where:
 /// - has_bypass_ref: output references bypass/permissions or dangerously-skip
 /// - has_confirmation: output contains yes/no or proceed/accept prompt
+///
+/// Supports two prompt formats:
+/// 1. Legacy text prompt: "(yes/no)" or "(y/n)" style
+/// 2. Selection menu: "1. No, exit / 2. Yes, I accept / Enter to confirm"
+///
+/// Note: Claude Code uses CSI cursor-forward sequences (\x1b[1C) instead of spaces
+/// in its TUI output. After ANSI stripping, words may be concatenated without spaces
+/// (e.g., "Yes,Iaccept" instead of "Yes, I accept"). Detection patterns must be
+/// resilient to missing spaces by checking for individual keywords.
 fn detect_bypass_permissions_prompt(clean_output: &str) -> (bool, bool) {
     let lower = clean_output.to_lowercase();
     let has_bypass_ref =
@@ -938,8 +1044,24 @@ fn detect_bypass_permissions_prompt(clean_output: &str) -> (bool, bool) {
     let has_confirmation = lower.contains("(yes/no)")
         || lower.contains("(y/n)")
         || (lower.contains("proceed") && lower.contains("yes"))
-        || (lower.contains("accept") && lower.contains("risk"));
+        || (lower.contains("accept") && lower.contains("risk"))
+        // New selection menu format: check for keywords resilient to missing spaces
+        // "Yes, I accept" may render as "Yes,Iaccept" after ANSI stripping
+        || (lower.contains("accept") && lower.contains("no,") && lower.contains("exit"));
     (has_bypass_ref, has_confirmation)
+}
+
+/// Check if the bypass permissions prompt is in selection menu format
+/// (as opposed to legacy y/n text prompt).
+/// Resilient to missing spaces from CSI cursor-forward sequences in TUI output.
+fn is_bypass_selection_menu(clean_output: &str) -> bool {
+    let lower = clean_output.to_lowercase();
+    // Check for selection menu markers: "No, exit" + "accept" + "enter to confirm"
+    // Words may be concatenated (e.g., "enterto" or "entertoconfirm")
+    let has_accept = lower.contains("accept");
+    let has_exit_option = lower.contains("exit");
+    let has_enter_confirm = lower.contains("enter") && lower.contains("confirm");
+    has_accept && has_exit_option && has_enter_confirm
 }
 
 /// Strip ANSI escape sequences from text for robust pattern matching
@@ -1278,6 +1400,75 @@ Allow execution of: 'cat, redirection (>), heredoc (<<)'?
         let clean = strip_ansi(raw);
         let (has_ref, has_confirm) = detect_bypass_permissions_prompt(&clean);
         assert!(has_ref && has_confirm, "should match after ANSI stripping");
+    }
+
+    #[test]
+    fn test_bypass_perms_selection_menu_format() {
+        // Simulates the actual Claude Code selection menu after ANSI stripping
+        // with cursor-forward sequences removed (words concatenated)
+        let output = "WARNING: ClaudeCoderunninginBypassPermissionsmode\n\
+                       Byproceeding,youacceptallresponsibility\n\
+                       No,exit\n\
+                       Yes,Iaccept\n\
+                       Entertoconfirm";
+        let (has_ref, has_confirm) = detect_bypass_permissions_prompt(output);
+        assert!(has_ref, "should detect bypass+permission");
+        assert!(has_confirm, "should detect accept+no,+exit");
+        assert!(
+            is_bypass_selection_menu(output),
+            "should detect selection menu format"
+        );
+    }
+
+    #[test]
+    fn test_bypass_perms_selection_menu_with_spaces() {
+        // If spaces are preserved (future fix or different terminal)
+        let output = "WARNING: Claude Code running in Bypass Permissions mode\n\
+                       By proceeding, you accept all responsibility\n\
+                       1. No, exit\n\
+                       2. Yes, I accept\n\
+                       Enter to confirm";
+        let (has_ref, has_confirm) = detect_bypass_permissions_prompt(output);
+        assert!(has_ref && has_confirm);
+        assert!(is_bypass_selection_menu(output));
+    }
+
+    #[test]
+    fn test_bypass_selection_menu_not_legacy() {
+        // Legacy format should NOT be detected as selection menu
+        let output = "bypass permissions mode\nProceed? (yes/no)";
+        let (has_ref, has_confirm) = detect_bypass_permissions_prompt(output);
+        assert!(has_ref && has_confirm, "legacy should still detect");
+        assert!(
+            !is_bypass_selection_menu(output),
+            "legacy should NOT be selection menu"
+        );
+    }
+
+    #[test]
+    fn test_codex_model_prompt_full_match() {
+        let output = "Codex just got an upgrade. Introducing gpt-5.2-codex.\n\
+                       Choose how you'd like Codex to proceed.\n\
+                       1. Try new model\n\
+                       2. Use existing model";
+        let (has_upgrade, has_options) = detect_codex_model_prompt(output);
+        assert!(has_upgrade, "should detect codex upgrade reference");
+        assert!(has_options, "should detect model options");
+    }
+
+    #[test]
+    fn test_codex_model_prompt_no_match_normal() {
+        let output = "Running codex analysis...\nModel loaded successfully";
+        let (_has_upgrade, has_options) = detect_codex_model_prompt(output);
+        assert!(!has_options, "should not match without model options");
+    }
+
+    #[test]
+    fn test_codex_model_prompt_partial_no_options() {
+        let output = "Codex just got an upgrade!";
+        let (has_upgrade, has_options) = detect_codex_model_prompt(output);
+        assert!(has_upgrade, "should detect upgrade reference");
+        assert!(!has_options, "should not match without options");
     }
 
     #[test]
