@@ -11,6 +11,10 @@ import {
   type SpawnResultPayload,
   type ReleasePayload,
   type ReleaseResultPayload,
+  type SendInputPayload,
+  type SendInputResultPayload,
+  type ListWorkersPayload,
+  type ListWorkersResultPayload,
   type MessageType,
   PROTOCOL_VERSION,
 } from '@agent-relay/protocol/types';
@@ -219,13 +223,75 @@ export class SpawnManager {
   }
 
   /**
+   * Handle a SEND_INPUT message from a connection.
+   * Sends input to a worker's PTY and returns a result.
+   */
+  handleSendInput(connection: Connection, envelope: Envelope<SendInputPayload>): void {
+    const payload = envelope.payload;
+    const requester = connection.agentName;
+
+    console.log(`[spawn-manager] SEND_INPUT request from ${requester ?? 'unknown'}: ${payload.name}`);
+
+    try {
+      const success = this.spawner.sendWorkerInput(payload.name, payload.data);
+      this.sendResult(connection, 'SEND_INPUT_RESULT', envelope.id, {
+        replyTo: envelope.id,
+        success,
+        name: payload.name,
+        error: success ? undefined : `Agent ${payload.name} not found or input failed`,
+      });
+      if (!success) {
+        console.warn(`[spawn-manager] SEND_INPUT failed: ${payload.name}`);
+      }
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err.message : String(err);
+      this.sendResult(connection, 'SEND_INPUT_RESULT', envelope.id, {
+        replyTo: envelope.id,
+        success: false,
+        name: payload.name,
+        error,
+      });
+      console.error(`[spawn-manager] SEND_INPUT error for ${payload.name}:`, error);
+    }
+  }
+
+  /**
+   * Handle a LIST_WORKERS message from a connection.
+   * Returns a list of active workers.
+   */
+  handleListWorkers(connection: Connection, envelope: Envelope<ListWorkersPayload>): void {
+    const requester = connection.agentName;
+    console.log(`[spawn-manager] LIST_WORKERS request from ${requester ?? 'unknown'}`);
+
+    try {
+      const workers = this.spawner.getActiveWorkers();
+      this.sendResult(connection, 'LIST_WORKERS_RESULT', envelope.id, {
+        replyTo: envelope.id,
+        workers,
+      });
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err.message : String(err);
+      this.sendResult(connection, 'LIST_WORKERS_RESULT', envelope.id, {
+        replyTo: envelope.id,
+        workers: [],
+        error,
+      });
+      console.error('[spawn-manager] LIST_WORKERS error:', error);
+    }
+  }
+
+  /**
    * Send a result envelope back to the requesting connection.
    */
   private sendResult(
     connection: Connection,
     type: MessageType,
     _replyTo: string,
-    payload: SpawnResultPayload | ReleaseResultPayload
+    payload:
+      | SpawnResultPayload
+      | ReleaseResultPayload
+      | SendInputResultPayload
+      | ListWorkersResultPayload
   ): void {
     connection.send({
       v: PROTOCOL_VERSION,

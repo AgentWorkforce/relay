@@ -102,7 +102,7 @@ client.sendMessage('OtherAgent', 'Hello!');
 | **Broadcast** | Send to all agents with `*` |
 | **Channels** | Group messaging with `#channel` |
 | **Pub/Sub** | Topic-based subscriptions |
-| **Agent spawning** | Spawn and release worker agents |
+| **Agent spawning** | Spawn, release, list, and send input to worker agents |
 | **Shadow agents** | Monitor another agent's communication |
 | **Consensus** | Distributed decision-making (external daemon only) |
 | **Monitoring** | Health, metrics, agent discovery |
@@ -359,6 +359,16 @@ if (result.ready) {
 // Release (terminate) an agent
 const releaseResult = await client.release('Worker1');
 const releaseWithReason = await client.release('Worker2', 'Task complete');
+
+// Send input to a spawned agent's PTY
+const inputResult = await client.sendWorkerInput('Worker1', 'yes\n');
+console.log(inputResult.success); // true
+
+// List active spawned workers
+const workers = await client.listWorkers();
+for (const w of workers.workers) {
+  console.log(`${w.name} (${w.cli}) spawned at ${new Date(w.spawnedAt)}`);
+}
 ```
 
 #### waitForAgentReady(name, timeoutMs?)
@@ -382,6 +392,45 @@ Callback when any agent becomes ready (completes connection handshake).
 client.onAgentReady = (info) => {
   console.log(`Agent ${info.name} is now ready (cli: ${info.cli})`);
 };
+```
+
+#### sendWorkerInput(name, data, timeoutMs?)
+
+Send input data to a spawned agent's PTY. Useful for answering prompts or sending commands to interactive agents.
+
+```typescript
+const result = await client.sendWorkerInput('Worker1', 'yes\n');
+if (result.success) {
+  console.log('Input sent');
+}
+```
+
+#### listWorkers(timeoutMs?)
+
+List all active spawned workers managed by the daemon's SpawnManager.
+
+```typescript
+const result = await client.listWorkers();
+for (const worker of result.workers) {
+  console.log(`${worker.name} (${worker.cli}) - team: ${worker.team || 'none'}`);
+}
+```
+
+**ListWorkersResultPayload:**
+```typescript
+interface ListWorkersResultPayload {
+  replyTo: string;
+  workers: Array<{
+    name: string;
+    cli: string;
+    task: string;
+    team?: string;
+    spawnerName?: string;
+    spawnedAt: number;
+    pid?: number;
+  }>;
+  error?: string;
+}
 ```
 
 #### Spawn as Shadow
@@ -717,6 +766,12 @@ import type {
   ReleaseResultPayload,
   AgentReadyPayload,
 
+  // Worker Management
+  SendInputPayload,
+  SendInputResultPayload,
+  ListWorkersPayload,
+  ListWorkersResultPayload,
+
   // Monitoring
   AgentInfo,
   AgentMetrics,
@@ -750,6 +805,8 @@ The SDK provides primitives that map directly to swarm capabilities:
 | `getMetrics()` / `getHealth()` | **Monitoring** - Auto-scaling decisions |
 | `bindAsShadow()` | **Observation** - QA and oversight |
 | `spawn()` / `release()` | **Dynamic teams** - Scale workers on demand |
+| `sendWorkerInput()` | **Interactive control** - Send input to agent PTYs |
+| `listWorkers()` | **Fleet visibility** - Enumerate active workers |
 
 ### Example: Hierarchical Swarm
 

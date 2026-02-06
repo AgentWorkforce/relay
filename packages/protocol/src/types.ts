@@ -41,6 +41,11 @@ export type MessageType =
   | 'SPAWN_RESULT'
   | 'RELEASE'
   | 'RELEASE_RESULT'
+  // Worker management types
+  | 'SEND_INPUT'
+  | 'SEND_INPUT_RESULT'
+  | 'LIST_WORKERS'
+  | 'LIST_WORKERS_RESULT'
   // Agent lifecycle events
   | 'AGENT_READY'
   // Query types (MCP/client requests)
@@ -460,6 +465,60 @@ export interface ReleaseResultPayload {
 }
 
 // =============================================================================
+// Worker Management Types
+// =============================================================================
+
+/**
+ * Payload for SEND_INPUT message.
+ * Sends input data to a spawned agent's PTY.
+ */
+export interface SendInputPayload {
+  /** Agent name */
+  name: string;
+  /** Input data to send */
+  data: string;
+}
+
+/**
+ * Payload for SEND_INPUT_RESULT message.
+ */
+export interface SendInputResultPayload {
+  /** Correlation ID (matches original SEND_INPUT envelope ID) */
+  replyTo: string;
+  /** Whether the input was sent successfully */
+  success: boolean;
+  /** Agent name */
+  name: string;
+  /** Error message (if failed) */
+  error?: string;
+}
+
+/**
+ * Payload for LIST_WORKERS message.
+ */
+export interface ListWorkersPayload {}
+
+/**
+ * Payload for LIST_WORKERS_RESULT message.
+ */
+export interface ListWorkersResultPayload {
+  /** Correlation ID (matches original LIST_WORKERS envelope ID) */
+  replyTo: string;
+  /** Active workers */
+  workers: Array<{
+    name: string;
+    cli: string;
+    task: string;
+    team?: string;
+    spawnerName?: string;
+    spawnedAt: number;
+    pid?: number;
+  }>;
+  /** Error message if the list operation failed */
+  error?: string;
+}
+
+// =============================================================================
 // Agent Lifecycle Event Types
 // =============================================================================
 
@@ -501,6 +560,10 @@ export type SpawnEnvelope = Envelope<SpawnPayload>;
 export type SpawnResultEnvelope = Envelope<SpawnResultPayload>;
 export type ReleaseEnvelope = Envelope<ReleasePayload>;
 export type ReleaseResultEnvelope = Envelope<ReleaseResultPayload>;
+export type SendInputEnvelope = Envelope<SendInputPayload>;
+export type SendInputResultEnvelope = Envelope<SendInputResultPayload>;
+export type ListWorkersEnvelope = Envelope<ListWorkersPayload>;
+export type ListWorkersResultEnvelope = Envelope<ListWorkersResultPayload>;
 export type AgentReadyEnvelope = Envelope<AgentReadyPayload>;
 export type ChannelJoinEnvelope = Envelope<ChannelJoinPayload>;
 export type ChannelLeaveEnvelope = Envelope<ChannelLeavePayload>;

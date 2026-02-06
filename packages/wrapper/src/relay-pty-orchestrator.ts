@@ -1378,31 +1378,58 @@ export class RelayPtyOrchestrator extends BaseWrapper {
 
     // Log spawn attempts (only in debug mode to avoid TUI pollution)
     this.log(`SPAWN REQUEST: ${name} (${cli})`);
-    this.log(`  dashboardPort=${this.config.dashboardPort}, onSpawn=${!!this.config.onSpawn}`);
+    this.log(`  client=${this.client.state}, dashboardPort=${this.config.dashboardPort}, onSpawn=${!!this.config.onSpawn}`);
 
-    // Try dashboard API first, fall back to callback
-    // The spawner will send the task after waitUntilCliReady()
-    if (this.config.dashboardPort) {
-      this.log(`Calling dashboard API at port ${this.config.dashboardPort}`);
-      this.spawnViaDashboardApi(name, cli, task)
-        .then(() => {
-          this.log(`SPAWN SUCCESS: ${name} via dashboard API`);
-        })
-        .catch(err => {
-          this.logError(`SPAWN FAILED: ${name} - ${err.message}`);
-          if (this.config.onSpawn) {
-            this.log(`Falling back to onSpawn callback`);
-            Promise.resolve(this.config.onSpawn(name, cli, task))
-              .catch(e => this.logError(`SPAWN CALLBACK FAILED: ${e.message}`));
-          }
-        });
-    } else if (this.config.onSpawn) {
-      this.log(`Using onSpawn callback directly`);
-      Promise.resolve(this.config.onSpawn(name, cli, task))
-        .catch(e => this.logError(`SPAWN CALLBACK FAILED: ${e.message}`));
-    } else {
-      this.logError(`SPAWN FAILED: No spawn mechanism available! (dashboardPort=${this.config.dashboardPort}, onSpawn=${!!this.config.onSpawn})`);
+    // Try daemon socket first (most reliable - daemon has relay-pty binary),
+    // then dashboard API, then onSpawn callback as final fallback.
+    this.executeSpawnWithFallbacks(name, cli, task).catch(err => {
+      this.logError(`SPAWN FAILED: ${name} - all methods exhausted: ${err.message}`);
+    });
+  }
+
+  /**
+   * Execute spawn with daemon-first fallback chain.
+   * Order: daemon socket → dashboard API → onSpawn callback
+   */
+  private async executeSpawnWithFallbacks(name: string, cli: string, task: string): Promise<void> {
+    // 1. Try daemon socket spawn first (daemon always has access to relay-pty)
+    if (this.client.state === 'READY') {
+      try {
+        this.log(`Spawning ${name} via daemon socket`);
+        const result = await this.client.spawn({ name, cli, task });
+        if (result.success) {
+          this.log(`SPAWN SUCCESS: ${name} via daemon socket`);
+        } else {
+          // Daemon explicitly rejected - respect its decision (policy, duplicate, etc.)
+          this.logError(`Daemon spawn rejected: ${result.error}`);
+        }
+        // Always return if daemon responded - only fall through on transport errors
+        return;
+      } catch (err: any) {
+        this.logError(`Daemon spawn transport error: ${err.message}`);
+      }
     }
+
+    // 2. Fall back to dashboard API
+    if (this.config.dashboardPort) {
+      try {
+        this.log(`Spawning ${name} via dashboard API at port ${this.config.dashboardPort}`);
+        await this.spawnViaDashboardApi(name, cli, task);
+        this.log(`SPAWN SUCCESS: ${name} via dashboard API`);
+        return;
+      } catch (err: any) {
+        this.logError(`Dashboard spawn failed: ${err.message}`);
+      }
+    }
+
+    // 3. Final fallback: onSpawn callback
+    if (this.config.onSpawn) {
+      this.log(`Spawning ${name} via onSpawn callback`);
+      await this.config.onSpawn(name, cli, task);
+      return;
+    }
+
+    throw new Error(`No spawn mechanism available (client=${this.client.state}, dashboardPort=${this.config.dashboardPort}, onSpawn=${!!this.config.onSpawn})`);
   }
 
   /**
@@ -1417,15 +1444,50 @@ export class RelayPtyOrchestrator extends BaseWrapper {
 
     this.log(` Release: ${name}`);
 
-    // Try dashboard API first, fall back to callback
-    if (this.config.dashboardPort) {
-      this.releaseViaDashboardApi(name).catch(err => {
-        this.logError(` Dashboard release failed: ${err.message}`);
-        this.config.onRelease?.(name);
-      });
-    } else if (this.config.onRelease) {
-      this.config.onRelease(name);
+    // Try daemon socket first, then dashboard API, then callback
+    this.executeReleaseWithFallbacks(name).catch(err => {
+      this.logError(`RELEASE FAILED: ${name} - all methods exhausted: ${err.message}`);
+    });
+  }
+
+  /**
+   * Execute release with daemon-first fallback chain.
+   * Order: daemon socket → dashboard API → onRelease callback
+   */
+  private async executeReleaseWithFallbacks(name: string): Promise<void> {
+    // 1. Try daemon socket release first
+    if (this.client.state === 'READY') {
+      try {
+        const result = await this.client.release(name);
+        if (result.success) {
+          return;
+        }
+        // Daemon explicitly rejected - respect its decision
+        this.logError(`Daemon release rejected: ${result.error}`);
+        // Always return if daemon responded - only fall through on transport errors
+        return;
+      } catch (err: any) {
+        this.logError(`Daemon release transport error: ${err.message}`);
+      }
     }
+
+    // 2. Fall back to dashboard API
+    if (this.config.dashboardPort) {
+      try {
+        await this.releaseViaDashboardApi(name);
+        return;
+      } catch (err: any) {
+        this.logError(`Dashboard release failed: ${err.message}`);
+      }
+    }
+
+    // 3. Final fallback: onRelease callback
+    if (this.config.onRelease) {
+      await this.config.onRelease(name);
+      return;
+    }
+
+    throw new Error(`No release mechanism available (client=${this.client.state}, dashboardPort=${this.config.dashboardPort}, onRelease=${!!this.config.onRelease})`);
   }
 
   /**

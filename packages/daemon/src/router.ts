@@ -110,6 +110,14 @@ export class Router {
    */
   private spawningAgents: Map<string, number> = new Map();
 
+  /**
+   * Recently disconnected user-type connections (e.g., __cli_sender__).
+   * Maps agent name to disconnect timestamp.
+   * Messages to these users are persisted so they appear in the dashboard.
+   */
+  private recentlyDisconnectedUsers: Map<string, number> = new Map();
+  private static readonly RECENT_USER_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
   /** Default timeout for processing indicator (30 seconds) */
   private static readonly PROCESSING_TIMEOUT_MS = 30_000;
 
@@ -243,6 +251,21 @@ export class Router {
         routerLog.debug(`Cleaned up stale spawning entry: ${name}`);
       }
     }
+    this.cleanupStaleRecentUsers();
+  }
+
+  /**
+   * Clean up recently-disconnected user entries older than RECENT_USER_TTL_MS.
+   * Called from both cleanupStaleSpawning() and unregister() to prevent unbounded growth.
+   */
+  private cleanupStaleRecentUsers(): void {
+    const now = Date.now();
+    for (const [name, timestamp] of this.recentlyDisconnectedUsers) {
+      if (now - timestamp > Router.RECENT_USER_TTL_MS) {
+        this.recentlyDisconnectedUsers.delete(name);
+        routerLog.debug(`Cleaned up stale recently-disconnected user: ${name}`);
+      }
+    }
   }
 
   /**
@@ -261,6 +284,8 @@ export class Router {
           this.users.set(connection.agentName, new Set());
         }
         this.users.get(connection.agentName)!.add(connection);
+        // Clear recently-disconnected tracking since user is back online
+        this.recentlyDisconnectedUsers.delete(connection.agentName);
         routerLog.info(`User registered: ${connection.agentName} (${this.users.get(connection.agentName)!.size} connections)`);
       } else {
         // Handle existing agent connection with same name (disconnect old)
@@ -318,7 +343,12 @@ export class Router {
           if (userConnections.size === 0) {
             this.users.delete(connection.agentName);
             wasCurrentConnection = true;
-            routerLog.info(`User fully unregistered: ${connection.agentName} (all connections closed)`);
+            // Track recently disconnected users so messages to them are persisted
+            // (e.g., agent replies to __cli_sender__ show up in dashboard)
+            this.recentlyDisconnectedUsers.set(connection.agentName, Date.now());
+            routerLog.info(`User fully unregistered: ${connection.agentName} (all connections closed, tracked for ${Router.RECENT_USER_TTL_MS / 1000}s)`);
+            // Clean up stale entries on each disconnect so the map doesn't grow unbounded
+            this.cleanupStaleRecentUsers();
           } else {
             routerLog.debug(`User connection closed: ${connection.agentName} (${userConnections.size} connections remaining)`);
           }
@@ -698,6 +728,15 @@ export class Router {
         routerLog.info(`Target "${to}" offline but known, queueing message for delivery on reconnect`);
         this.persistMessageForOfflineAgent(from, to, envelope);
         return true; // Message accepted (queued), not dropped
+      }
+
+      // Check if target is a recently disconnected user (e.g., __cli_sender__)
+      // Persist the message so it appears in dashboard history even though the user disconnected
+      const recentUserTs = this.recentlyDisconnectedUsers.get(to);
+      if (recentUserTs && Date.now() - recentUserTs < Router.RECENT_USER_TTL_MS) {
+        routerLog.info(`Target "${to}" is a recently disconnected user, persisting message for dashboard visibility`);
+        this.persistMessageForOfflineAgent(from, to, envelope);
+        return true; // Message accepted (persisted), not dropped
       }
 
       // Check if agent is currently spawning (pre-HELLO) - queue for delivery after registration

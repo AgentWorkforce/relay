@@ -12,6 +12,7 @@
  *   relay agents                   - List connected agents
  *   relay who                      - Show currently active agents
  *   relay read <id>                - Read full message by ID
+ *   relay history                  - Show recent message history
  *   relay status                   - Check daemon status
  *   relay down                     - Stop daemon
  */
@@ -971,6 +972,7 @@ program
               onMarkSpawning?: (name: string) => void;
               onClearSpawning?: (name: string) => void;
               verbose?: boolean;
+              spawnManager?: unknown;
             }) => Promise<number>;
           };
           const { startDashboard } = dashboardServer;
@@ -985,6 +987,9 @@ program
             onMarkSpawning: (name: string) => daemon.markSpawning(name),
             onClearSpawning: (name: string) => daemon.clearSpawning(name),
             verbose: options.verbose,
+            // Pass daemon's SpawnManager for read operations (logs, worker listing)
+            // Spawn/release go through SDK → daemon socket instead of local AgentSpawner
+            spawnManager: daemon.getSpawnManager(),
           });
           console.log(`Dashboard: http://localhost:${dashboardPort}`);
 
@@ -1916,21 +1921,18 @@ program
     await adapter.close?.();
   });
 
-// ============================================
-// Hidden commands (for agents, not in --help)
-// ============================================
-
-// history - Show recent messages (hidden from help, for agent use)
+// history - Show recent message history
 program
-  .command('history', { hidden: true })
-  .description('Show recent messages')
+  .command('history')
+  .description('Show recent message history')
   .option('-n, --limit <count>', 'Number of messages to show', '50')
   .option('-f, --from <agent>', 'Filter by sender')
   .option('-t, --to <agent>', 'Filter by recipient')
-  .option('--since <time>', 'Since time (e.g., "1h", "2024-01-01")')
+  .option('--thread <id>', 'Filter by thread ID')
+  .option('--since <time>', 'Since time (e.g., "1h", "30m", "2024-01-01")')
   .option('--json', 'Output as JSON')
   .option('--storage <type>', 'Storage type override (jsonl, sqlite, memory)')
-  .action(async (options: { limit?: string; from?: string; to?: string; since?: string; json?: boolean; storage?: string }) => {
+  .action(async (options: { limit?: string; from?: string; to?: string; thread?: string; since?: string; json?: boolean; storage?: string }) => {
     const paths = getProjectPaths();
     // Use runtime config to match daemon's storage type, CLI option overrides
     const runtimeConfig = loadRuntimeConfig();
@@ -1944,6 +1946,7 @@ program
         limit,
         from: options.from,
         to: options.to,
+        thread: options.thread,
         sinceTs,
         order: 'desc',
       });
@@ -1959,6 +1962,7 @@ program
           thread: m.thread,
           kind: m.kind,
           body: m.body,
+          status: m.status,
         }));
         console.log(JSON.stringify(payload, null, 2));
         return;
@@ -1971,8 +1975,13 @@ program
 
       messages.forEach((msg) => {
         const ts = new Date(msg.ts).toISOString();
-        const body = msg.body.length > 120 ? `${msg.body.slice(0, 117)}...` : msg.body;
-        console.log(`${ts} ${msg.from} -> ${msg.to}:${body}`);
+        const meta: string[] = [];
+        if (msg.thread) meta.push(`thread:${msg.thread}`);
+        if (msg.status && msg.status !== 'read') meta.push(`status:${msg.status}`);
+        if (msg.is_broadcast) meta.push('broadcast');
+        const metaStr = meta.length ? ` [${meta.join(', ')}]` : '';
+        const body = msg.body.length > 200 ? `${msg.body.slice(0, 197)}...` : msg.body;
+        console.log(`[${ts}] ${msg.from} -> ${msg.to}${metaStr}: ${body}`);
       });
     } finally {
       await adapter.close?.();
@@ -2594,7 +2603,7 @@ function loadAgents(agentsPath: string): RegistryAgent[] {
 const STALE_THRESHOLD_MS = 30_000;
 
 // Internal agents that should be hidden from `agents` and `who` by default
-const INTERNAL_AGENTS = new Set(['cli', 'Dashboard', 'zed-bridge']);
+const INTERNAL_AGENTS = new Set(['Dashboard', 'zed-bridge']);
 
 function isInternalAgent(name: string | undefined): boolean {
   if (!name) return true;
@@ -2967,7 +2976,7 @@ program
   .description('Send a message to an agent')
   .argument('<agent>', 'Target agent name (or * for broadcast, #channel for channel)')
   .argument('<message>', 'Message to send')
-  .option('--from <name>', 'Sender name', 'cli')
+  .option('--from <name>', 'Sender name', '__cli_sender__')
   .option('--thread <id>', 'Thread identifier')
   .action(async (agent: string, message: string, options: { from: string; thread?: string }) => {
     const paths = getProjectPaths();
@@ -3511,7 +3520,7 @@ cloudCommand
   .description('Send a message to an agent on any linked machine')
   .argument('<agent>', 'Target agent name')
   .argument('<message>', 'Message to send')
-  .option('--from <name>', 'Sender name', 'cli')
+  .option('--from <name>', 'Sender name', '__cli_sender__')
   .action(async (agent: string, message: string, options: { from: string }) => {
     const os = await import('node:os');
 

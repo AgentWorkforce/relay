@@ -37,6 +37,8 @@ import {
   type MetricsPayload,
   type MetricsResponsePayload,
   type AgentReadyPayload,
+  type SendInputPayload,
+  type ListWorkersPayload,
 } from '@agent-relay/protocol/types';
 import type { ChannelJoinPayload, ChannelLeavePayload, ChannelMessagePayload } from '@agent-relay/protocol/channels';
 import { SpawnManager, type SpawnManagerConfig } from './spawn-manager.js';
@@ -429,15 +431,38 @@ export class Daemon {
     // Initialize cloud sync if configured
     await this.initCloudSync();
 
-    // Clean up stale socket (only if it's actually a socket)
-    if (fs.existsSync(this.config.socketPath)) {
-      const stat = fs.lstatSync(this.config.socketPath);
-      if (!stat.isSocket()) {
+    // Clean up stale socket (symlinks, sockets OK — refuse regular files)
+    // Use lstatSync directly to detect broken symlinks (existsSync follows
+    // symlinks and returns false for dangling ones, leaving them uncleaned)
+    let lstat: fs.Stats | null = null;
+    try {
+      lstat = fs.lstatSync(this.config.socketPath);
+    } catch {
+      // ENOENT — nothing at this path, proceed to listen
+    }
+    if (lstat) {
+      if (lstat.isSymbolicLink()) {
+        // Symlinks (e.g., /tmp/agent-relay.sock -> project/.agent-relay/relay.sock)
+        // are safe to replace — they don't destroy the target
+        fs.unlinkSync(this.config.socketPath);
+      } else if (lstat.isSocket()) {
+        // Check if socket is actively in use by another daemon
+        const alive = await new Promise<boolean>((resolve) => {
+          const client = net.createConnection(this.config.socketPath);
+          client.on('connect', () => { client.destroy(); resolve(true); });
+          client.on('error', () => resolve(false));
+        });
+        if (alive) {
+          throw new Error(
+            `Another daemon is already listening on ${this.config.socketPath}`
+          );
+        }
+        fs.unlinkSync(this.config.socketPath);
+      } else {
         throw new Error(
           `Refusing to unlink non-socket at ${this.config.socketPath}`
         );
       }
-      fs.unlinkSync(this.config.socketPath);
     }
 
     // Clean up stale mcp-identity-* files from previous runs
@@ -567,6 +592,28 @@ export class Daemon {
         this.processingStateInterval = setInterval(() => {
           this.writeProcessingStateFile();
         }, Daemon.PROCESSING_STATE_INTERVAL_MS);
+
+        // Write active daemon marker for cross-cwd discovery
+        try {
+          const markerDir = path.join(os.homedir(), '.agent-relay');
+          if (!fs.existsSync(markerDir)) {
+            fs.mkdirSync(markerDir, { recursive: true });
+          }
+          // Derive projectRoot from socket path (e.g., /project/.agent-relay/relay.sock -> /project)
+          // Only valid for project-namespaced sockets, not the default /tmp/agent-relay.sock
+          const socketDir = path.dirname(this.config.socketPath);
+          const isProjectSocket = path.basename(socketDir) === '.agent-relay';
+          const projectRoot = isProjectSocket ? path.dirname(socketDir) : undefined;
+          const markerData = JSON.stringify({
+            socketPath: this.config.socketPath,
+            ...(projectRoot && { projectRoot }),
+            pid: process.pid,
+            startedAt: new Date().toISOString(),
+          }, null, 2);
+          fs.writeFileSync(path.join(markerDir, 'active-daemon.json'), markerData, 'utf-8');
+        } catch (err) {
+          log.warn('Failed to write active daemon marker', { error: String(err) });
+        }
 
         // Track daemon start
         track('daemon_start', {});
@@ -949,6 +996,18 @@ export class Daemon {
         } catch {
           // Ignore errors during shutdown
         }
+        // Remove active daemon marker only if we own it
+        try {
+          const markerPath = path.join(os.homedir(), '.agent-relay', 'active-daemon.json');
+          if (fs.existsSync(markerPath)) {
+            const marker = JSON.parse(fs.readFileSync(markerPath, 'utf-8'));
+            if (marker.pid === process.pid) {
+              fs.unlinkSync(markerPath);
+            }
+          }
+        } catch {
+          // Ignore errors during shutdown
+        }
         if (this.storage?.close) {
           this.storage.close().catch((err) => {
             log.error('Failed to close storage', { error: String(err) });
@@ -1272,6 +1331,28 @@ export class Daemon {
         const releaseEnvelope = envelope as Envelope<ReleasePayload>;
         log.info(`RELEASE request: from=${connection.agentName} agent=${releaseEnvelope.payload.name}`);
         this.spawnManager.handleRelease(connection, releaseEnvelope);
+        break;
+      }
+
+      case 'SEND_INPUT': {
+        if (!this.spawnManager) {
+          this.sendErrorEnvelope(connection, 'SpawnManager not enabled. Configure spawnManager: true in daemon config.');
+          break;
+        }
+        const sendInputEnvelope = envelope as Envelope<SendInputPayload>;
+        log.info(`SEND_INPUT request: from=${connection.agentName} agent=${sendInputEnvelope.payload.name}`);
+        this.spawnManager.handleSendInput(connection, sendInputEnvelope);
+        break;
+      }
+
+      case 'LIST_WORKERS': {
+        if (!this.spawnManager) {
+          this.sendErrorEnvelope(connection, 'SpawnManager not enabled. Configure spawnManager: true in daemon config.');
+          break;
+        }
+        const listWorkersEnvelope = envelope as Envelope<ListWorkersPayload>;
+        log.info(`LIST_WORKERS request: from=${connection.agentName}`);
+        this.spawnManager.handleListWorkers(connection, listWorkersEnvelope);
         break;
       }
 
@@ -1853,12 +1934,27 @@ export class Daemon {
   getConsensus(): ConsensusIntegration | undefined {
     return this.consensus;
   }
+
+  /**
+   * Get the SpawnManager instance.
+   * Used by co-located services (e.g. dashboard-server) to access
+   * spawner read operations (logs, worker listing) without going
+   * through the protocol socket.
+   */
+  getSpawnManager(): SpawnManager | undefined {
+    return this.spawnManager;
+  }
 }
 
 // Run as standalone if executed directly (not in bundled CLI)
 // In bundled builds, AGENT_RELAY_VERSION is defined, so we skip auto-start
 // The CLI handles daemon startup via the 'up' command
-const isMainModule = import.meta.url === `file://${process.argv[1]}` &&
+// Also verify the script path ends with server.ts/server.js to avoid triggering
+// inside Bun compiled binaries (e.g., dashboard binary) that bundle this file
+const scriptPath = new URL(import.meta.url).pathname;
+const isServerScript = scriptPath.endsWith('/server.ts') || scriptPath.endsWith('/server.js');
+const isMainModule = isServerScript &&
+  import.meta.url === `file://${process.argv[1]}` &&
   !process.env.AGENT_RELAY_VERSION;
 if (isMainModule) {
   const daemon = new Daemon();

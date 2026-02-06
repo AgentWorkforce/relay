@@ -32,6 +32,11 @@ interface Envelope<T = unknown> {
 - `ERROR` - Protocol errors
 - `LOG` - Agent log streaming
 - `SHADOW_BIND` / `SHADOW_UNBIND` - Shadow agent management
+- `SPAWN` / `SPAWN_RESULT` - Agent spawning
+- `RELEASE` / `RELEASE_RESULT` - Agent release
+- `SEND_INPUT` / `SEND_INPUT_RESULT` - Send input to a spawned agent's PTY
+- `LIST_WORKERS` / `LIST_WORKERS_RESULT` - List active spawned workers
+- `AGENT_READY` - Agent lifecycle event (handshake complete)
 
 ## Type Naming
 

@@ -222,6 +222,20 @@ TO: Lead
 DONE: Authentication module implemented with JWT support.
 ```
 
+## Viewing Message History
+
+Use `agent-relay history` to view previous messages:
+
+```bash
+agent-relay history                    # Last 50 messages
+agent-relay history -n 20              # Last 20 messages
+agent-relay history -f Lead            # Messages from Lead
+agent-relay history -t Worker1         # Messages to Worker1
+agent-relay history --thread task-123  # Messages in a thread
+agent-relay history --since 1h         # Messages from the last hour
+agent-relay history --json             # JSON output for parsing
+```
+
 ## Headers Reference
 
 | Header | Required | Description |
