@@ -27,8 +27,9 @@ import {
 import express from 'express';
 import { Storage } from './storage.js';
 import { Engine } from './engine.js';
-import { ALL_TOOLS, handleToolCall } from './tools.js';
+import { ALL_TOOLS, handleToolCall, handleToolCallWithNotification } from './tools.js';
 import type { SessionState } from './types.js';
+import type { MessageEvent } from './engine.js';
 
 // ---------------------------------------------------------------------------
 // System prompt for agents
@@ -93,7 +94,7 @@ export function createMCPSession(engine: Engine): {
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
-    const result = await handleToolCall(
+    const result = await handleToolCallWithNotification(
       engine,
       session,
       name,
@@ -231,11 +232,34 @@ async function runHttp(engine: Engine, port: number): Promise<void> {
   const app = express();
   app.use(express.json());
 
-  // Track active SSE sessions
+  // Track active SSE sessions — keyed by SSE session ID
   const sessions = new Map<
     string,
-    { transport: SSEServerTransport; session: SessionState }
+    { transport: SSEServerTransport; session: SessionState; server: Server }
   >();
+
+  // Layer 3: Proactive MCP notifications.
+  // When a message arrives, notify all connected agents who are recipients.
+  // Clients that support resource subscriptions will re-read slack://inbox.
+  engine.onMessage((event: MessageEvent) => {
+    for (const [, entry] of sessions) {
+      if (
+        entry.session.agentId &&
+        event.recipientAgentIds.includes(entry.session.agentId)
+      ) {
+        // Send MCP resource-updated notification (best-effort)
+        entry.server
+          .notification({
+            method: 'notifications/resources/updated',
+            params: { uri: 'slack://inbox' },
+          })
+          .catch(() => {
+            // Client may not support notifications — that's OK,
+            // the piggyback layer (Layer 1) will catch it on next tool call.
+          });
+      }
+    }
+  });
 
   // Health check
   app.get('/health', (_req, res) => {
@@ -247,7 +271,7 @@ async function runHttp(engine: Engine, port: number): Promise<void> {
     const transport = new SSEServerTransport('/messages', res);
     const { server, session } = createMCPSession(engine);
 
-    sessions.set(transport.sessionId, { transport, session });
+    sessions.set(transport.sessionId, { transport, session, server });
 
     res.on('close', () => {
       sessions.delete(transport.sessionId);

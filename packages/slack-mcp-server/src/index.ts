@@ -8,9 +8,9 @@
  */
 
 export { Storage } from './storage.js';
-export { Engine } from './engine.js';
+export { Engine, type MessageEvent, type MessageListener } from './engine.js';
 export { createMCPSession } from './server.js';
-export { ALL_TOOLS, handleToolCall } from './tools.js';
+export { ALL_TOOLS, handleToolCall, handleToolCallWithNotification } from './tools.js';
 export { snowflake, snowflakeToTimestamp, timestampToSnowflake } from './snowflake.js';
 
 export type {

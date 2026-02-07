@@ -23,11 +23,55 @@ import {
   type ReactionSummary,
 } from './types.js';
 
+// ---------------------------------------------------------------------------
+// Message event — emitted after every message creation.
+// Used by the server layer to push MCP notifications to connected agents.
+// ---------------------------------------------------------------------------
+
+export interface MessageEvent {
+  message: Message;
+  channelId: string;
+  /** Agent IDs of all members in the channel (potential recipients) */
+  recipientAgentIds: string[];
+}
+
+export type MessageListener = (event: MessageEvent) => void;
+
 export class Engine {
+  private messageListeners: MessageListener[] = [];
+
   constructor(
     private storage: Storage,
     private defaultWorkspaceName: string = 'default',
   ) {}
+
+  /**
+   * Subscribe to message events. Returns an unsubscribe function.
+   * Used by the MCP server to push notifications to connected agents.
+   */
+  onMessage(listener: MessageListener): () => void {
+    this.messageListeners.push(listener);
+    return () => {
+      const idx = this.messageListeners.indexOf(listener);
+      if (idx >= 0) this.messageListeners.splice(idx, 1);
+    };
+  }
+
+  private emitMessage(message: Message, channelId: string): void {
+    if (this.messageListeners.length === 0) return;
+    const members = this.storage.getChannelMembers(channelId);
+    const recipientAgentIds = members
+      .map((m) => m.agent_id)
+      .filter((id) => id !== message.agent_id);
+    const event: MessageEvent = { message, channelId, recipientAgentIds };
+    for (const listener of this.messageListeners) {
+      try {
+        listener(event);
+      } catch {
+        // Don't let listener errors break message flow
+      }
+    }
+  }
 
   // =========================================================================
   // Registration
@@ -186,12 +230,14 @@ export class Engine {
       throw new Error(`Channel #${channelName} is archived`);
     }
 
-    return this.storage.createMessage(
+    const msg = this.storage.createMessage(
       agent.workspace_id,
       channel.id,
       agentId,
       text,
     );
+    this.emitMessage(msg, channel.id);
+    return msg;
   }
 
   /**
@@ -216,13 +262,15 @@ export class Engine {
     // Verify agent is a member of the channel
     this.requireMembership(parent.channel_id, agentId);
 
-    return this.storage.createMessage(
+    const msg = this.storage.createMessage(
       agent.workspace_id,
       parent.channel_id,
       agentId,
       text,
       rootThreadId,
     );
+    this.emitMessage(msg, parent.channel_id);
+    return msg;
   }
 
   /**
@@ -283,12 +331,14 @@ export class Engine {
     }
 
     const channel = this.findOrCreateDmChannel(agent, target);
-    return this.storage.createMessage(
+    const msg = this.storage.createMessage(
       agent.workspace_id,
       channel.id,
       agentId,
       text,
     );
+    this.emitMessage(msg, channel.id);
+    return msg;
   }
 
   /**

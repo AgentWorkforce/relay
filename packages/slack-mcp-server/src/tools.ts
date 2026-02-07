@@ -454,6 +454,38 @@ export const ALL_TOOLS: Tool[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Inbox notification — appended to every tool response so agents
+// always know they have messages, regardless of CLI.
+//
+// This is the key "consciousness injection" mechanism: instead of
+// requiring agents to poll, we surface unread state on every
+// interaction with the workspace. One indexed SQL query, sub-ms.
+// ---------------------------------------------------------------------------
+
+function inboxNotification(engine: Engine, agentId: string): string {
+  try {
+    const inbox = engine.checkInbox(agentId);
+    const parts: string[] = [];
+
+    for (const u of inbox.unread_channels) {
+      parts.push(`${u.unread_count} in #${u.channel_name}`);
+    }
+    for (const u of inbox.unread_dms) {
+      const name = u.channel_name.replace(/^dm:/, '');
+      parts.push(`${u.unread_count} DM${u.unread_count > 1 ? 's' : ''} ${name}`);
+    }
+    if (inbox.mentions.length > 0) {
+      parts.push(`${inbox.mentions.length} @mention${inbox.mentions.length > 1 ? 's' : ''}`);
+    }
+
+    if (parts.length === 0) return '';
+    return `\n\n---\nInbox: ${parts.join(' | ')}`;
+  } catch {
+    return '';
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Tool handler dispatcher
 // ---------------------------------------------------------------------------
 
@@ -678,4 +710,25 @@ export async function handleToolCall(
     const message = err instanceof Error ? err.message : String(err);
     return { text: `Error: ${message}`, isError: true };
   }
+}
+
+/**
+ * Wraps handleToolCall to append inbox notification to every response.
+ * This is the primary mechanism for injecting message awareness into
+ * any AI agent, regardless of which CLI they use.
+ */
+export async function handleToolCallWithNotification(
+  engine: Engine,
+  session: SessionState,
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<{ text: string; isError?: boolean }> {
+  const result = await handleToolCall(engine, session, toolName, args);
+
+  // Append inbox status to every non-error response (except check_inbox itself)
+  if (!result.isError && session.agentId && toolName !== 'check_inbox') {
+    result.text += inboxNotification(engine, session.agentId);
+  }
+
+  return result;
 }
