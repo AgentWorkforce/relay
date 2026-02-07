@@ -34,6 +34,7 @@ pnpm-debug.log*
 .claude/settings.local.json
 
 # Relay runtime artifacts
+.agent-relay/
 *.sock
 *.pid
 
