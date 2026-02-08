@@ -322,6 +322,10 @@ export function createRelayClientAdapter(client: SdkRelayClient, ctx: RelayClien
 export interface RelayClientOptions {
   agentName: string;
   socketPath?: string;
+  /** WebSocket URL for hosted daemon mode (auto-detected from RELAY_URL env var) */
+  wsUrl?: string;
+  /** Auth token for hosted daemon (auto-detected from RELAY_TOKEN env var) */
+  wsToken?: string;
   project?: string;
   quiet?: boolean;
   timeout?: number;
@@ -329,11 +333,17 @@ export interface RelayClientOptions {
 
 /**
  * Factory that creates an SDK RelayClient and wraps it with the MCP adapter.
+ *
+ * Supports both local daemon (Unix socket) and hosted daemon (WebSocket) modes.
+ * Hosted mode is auto-detected from RELAY_URL environment variable, or set explicitly
+ * via the wsUrl option.
  */
 export function createRelayClient(options: RelayClientOptions): RelayClient {
   const sdkClient = new SdkRelayClient({
     agentName: options.agentName,
     socketPath: options.socketPath,
+    wsUrl: options.wsUrl,
+    wsToken: options.wsToken,
     quiet: options.quiet,
     reconnect: true,
   });

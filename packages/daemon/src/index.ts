@@ -46,3 +46,8 @@ export {
 
 // Spawn manager (protocol-based agent spawning)
 export { SpawnManager, type SpawnManagerConfig } from './spawn-manager.js';
+
+// Hosted daemon (WebSocket-based, deployable service)
+export { HostedDaemon, type HostedDaemonConfig } from './hosted-daemon.js';
+export { WsConnection, type WsConnectionConfig, type WebSocketHandle } from './ws-connection.js';
+export { Connector, connect, type ConnectorConfig } from './connector.js';

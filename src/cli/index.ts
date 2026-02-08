@@ -4619,4 +4619,98 @@ program
     }
   });
 
+// serve - Start a hosted daemon (WebSocket server)
+program
+  .command('serve')
+  .description('Start a hosted daemon that agents connect to via WebSocket')
+  .option('-p, --port <port>', 'Port to listen on', '4080')
+  .option('-H, --host <host>', 'Host to bind to (default: :: for dual-stack)')
+  .option('-t, --token <token>', 'Require workspace token for auth')
+  .option('--allow-origins <origins>', 'Comma-separated list of allowed CORS origins')
+  .action(async (options) => {
+    try {
+      const { HostedDaemon } = await import('@agent-relay/daemon');
+      const port = parseInt(options.port, 10);
+      const host = options.host || '::';
+      const token = options.token || process.env.RELAY_TOKEN;
+
+      const daemon = new HostedDaemon({
+        port,
+        host,
+        workspaceToken: token,
+        allowedOrigins: options.allowOrigins?.split(','),
+      });
+
+      await daemon.start();
+
+      console.log('');
+      console.log('Agents can connect by setting:');
+      console.log(`  export RELAY_URL=ws://localhost:${port}/ws`);
+      if (token) {
+        console.log(`  export RELAY_TOKEN=${token}`);
+      }
+      console.log('');
+      console.log('Then just run: claude');
+      console.log('');
+
+      // Handle graceful shutdown
+      const shutdown = async () => {
+        console.log('\nShutting down...');
+        await daemon.stop();
+        process.exit(0);
+      };
+      process.on('SIGINT', shutdown);
+      process.on('SIGTERM', shutdown);
+    } catch (err: any) {
+      console.error('Failed to start hosted daemon:', err.message);
+      process.exit(1);
+    }
+  });
+
+// connect - Connect to a hosted daemon (lightweight local bridge)
+program
+  .command('connect')
+  .description('Connect to a hosted daemon via WebSocket (bridges local outbox)')
+  .argument('<url>', 'WebSocket URL of the hosted daemon (e.g. wss://host/ws)')
+  .option('-n, --name <name>', 'Agent name for this connector')
+  .option('-t, --token <token>', 'Workspace token for authentication')
+  .option('--cli <cli>', 'CLI identifier (e.g. claude, codex)')
+  .option('--task <task>', 'Task description')
+  .action(async (url, options) => {
+    try {
+      const { Connector } = await import('@agent-relay/daemon');
+      const token = options.token || process.env.RELAY_TOKEN;
+
+      const connector = new Connector({
+        url,
+        agentName: options.name,
+        token,
+        cli: options.cli,
+        task: options.task,
+      });
+
+      await connector.start();
+
+      console.log('');
+      console.log('Connector is running. Agents can write to the outbox at:');
+      console.log(`  ${connector.outboxPath}`);
+      console.log('');
+      console.log('Messages will be bridged to the hosted daemon.');
+      console.log('Press Ctrl+C to stop.');
+      console.log('');
+
+      // Handle graceful shutdown
+      const shutdown = () => {
+        console.log('\nDisconnecting...');
+        connector.stop();
+        process.exit(0);
+      };
+      process.on('SIGINT', shutdown);
+      process.on('SIGTERM', shutdown);
+    } catch (err: any) {
+      console.error('Failed to connect:', err.message);
+      process.exit(1);
+    }
+  });
+
 program.parse();

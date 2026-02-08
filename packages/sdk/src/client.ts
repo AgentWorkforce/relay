@@ -3,6 +3,10 @@
  * @agent-relay/sdk
  *
  * Lightweight client for agent-to-agent communication via Agent Relay daemon.
+ * Supports both Unix socket (local daemon) and WebSocket (hosted daemon) transports.
+ *
+ * To use hosted daemon, set RELAY_URL env var or pass wsUrl in config:
+ *   RELAY_URL=wss://your-host/ws claude
  */
 
 import net from 'node:net';
@@ -122,6 +126,17 @@ export interface SpawnResult extends SpawnResultPayload {
 export interface ClientConfig {
   /** Daemon socket path (default: /tmp/agent-relay.sock) */
   socketPath: string;
+  /**
+   * WebSocket URL for hosted daemon mode (e.g. wss://your-host/ws).
+   * When set, the client connects over WebSocket instead of Unix socket.
+   * Auto-detected from RELAY_URL environment variable if not provided.
+   */
+  wsUrl?: string;
+  /**
+   * Authentication token for hosted daemon.
+   * Auto-detected from RELAY_TOKEN environment variable if not provided.
+   */
+  wsToken?: string;
   /** Agent name */
   agentName: string;
   /** Entity type: 'agent' (default) or 'user' */
@@ -226,11 +241,50 @@ class CircularDedupeCache {
 }
 
 /**
+ * Lazy-load WebSocket module (only needed for hosted daemon mode).
+ */
+let WsConstructor: (new (url: string) => WebSocket) | null = null;
+async function getWsConstructor(): Promise<new (url: string) => WebSocket> {
+  if (WsConstructor) return WsConstructor;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mod = await import('ws' as any) as any;
+  WsConstructor = (mod.default ?? mod) as new (url: string) => WebSocket;
+  return WsConstructor;
+}
+
+/**
+ * Resolve the WebSocket URL from config or environment.
+ * Returns undefined if no hosted daemon URL is configured.
+ */
+function resolveWsUrl(config: Partial<ClientConfig>): string | undefined {
+  if (config.wsUrl) return config.wsUrl;
+  const envUrl = process.env.RELAY_URL || process.env.AGENT_RELAY_URL;
+  if (envUrl) {
+    const token = config.wsToken || process.env.RELAY_TOKEN || process.env.AGENT_RELAY_TOKEN;
+    if (token) {
+      const separator = envUrl.includes('?') ? '&' : '?';
+      return `${envUrl}${separator}token=${token}`;
+    }
+    return envUrl;
+  }
+  return undefined;
+}
+
+/**
  * RelayClient for agent-to-agent communication.
+ *
+ * Supports two transport modes:
+ * - **Unix socket** (default): connects to local daemon via /tmp/agent-relay.sock
+ * - **WebSocket** (hosted): connects to hosted daemon via wss://host/ws
+ *
+ * WebSocket mode is auto-detected from RELAY_URL env var, or set explicitly:
+ *   new RelayClient({ wsUrl: 'wss://your-host/ws', agentName: 'MyAgent' })
  */
 export class RelayClient {
   private config: ClientConfig;
   private socket?: net.Socket;
+  private ws?: WebSocket;
+  private _useWebSocket: boolean;
   private parser: FrameParser;
 
   private _state: ClientState = 'DISCONNECTED';
@@ -311,10 +365,19 @@ export class RelayClient {
 
   constructor(config: Partial<ClientConfig> = {}) {
     this.config = { ...DEFAULT_CLIENT_CONFIG, ...config };
-    // Use socket discovery if no explicit socketPath was provided
-    if (!config.socketPath) {
+
+    // Auto-detect WebSocket URL from config or RELAY_URL env var
+    const wsUrl = resolveWsUrl(config);
+    if (wsUrl) {
+      this.config.wsUrl = wsUrl;
+    }
+    this._useWebSocket = !!this.config.wsUrl;
+
+    // Use socket discovery only when not in WebSocket mode
+    if (!this._useWebSocket && !config.socketPath) {
       this.config.socketPath = resolveSocketPath();
     }
+
     this.parser = new FrameParser();
     this.parser.setLegacyMode(true);
     this.reconnectDelay = this.config.reconnectDelayMs;
@@ -333,13 +396,28 @@ export class RelayClient {
   }
 
   /**
+   * Whether this client is using WebSocket transport (hosted daemon mode).
+   */
+  get isWebSocket(): boolean {
+    return this._useWebSocket;
+  }
+
+  /**
    * Connect to the relay daemon.
+   * Uses WebSocket transport if wsUrl is configured, otherwise Unix socket.
    */
   connect(): Promise<void> {
     if (this._state !== 'DISCONNECTED' && this._state !== 'BACKOFF') {
       return Promise.resolve();
     }
 
+    return this._useWebSocket ? this.connectWebSocket() : this.connectSocket();
+  }
+
+  /**
+   * Connect via Unix socket (traditional local daemon mode).
+   */
+  private connectSocket(): Promise<void> {
     return new Promise((resolve, reject) => {
       let settled = false;
       const settleResolve = (): void => {
@@ -397,6 +475,88 @@ export class RelayClient {
   }
 
   /**
+   * Connect via WebSocket (hosted daemon mode).
+   * Each WebSocket message is a complete JSON-encoded envelope.
+   * No binary framing needed — WebSocket handles message boundaries.
+   */
+  private async connectWebSocket(): Promise<void> {
+    const url = this.config.wsUrl!;
+
+    return new Promise(async (resolve, reject) => {
+      let settled = false;
+      const settleResolve = (): void => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      const settleReject = (err: Error): void => {
+        if (settled) return;
+        settled = true;
+        reject(err);
+      };
+
+      this.setState('CONNECTING');
+
+      try {
+        const WsImpl = await getWsConstructor();
+        this.ws = new WsImpl(url);
+      } catch (err) {
+        settleReject(new ConnectionError(`Failed to create WebSocket: ${(err as Error).message}`));
+        return;
+      }
+
+      this.ws.onopen = () => {
+        this.setState('HANDSHAKING');
+        this.sendHello();
+      };
+
+      this.ws.onmessage = (event: { data: unknown }) => {
+        const raw = typeof event.data === 'string'
+          ? event.data
+          : (event.data as Buffer).toString('utf-8');
+        try {
+          const envelope = JSON.parse(raw) as Envelope;
+          this.processFrame(envelope);
+        } catch (err) {
+          this.handleError(new Error(`Invalid JSON from hosted daemon: ${(err as Error).message}`));
+        }
+      };
+
+      this.ws.onclose = () => {
+        this.ws = undefined;
+        this.handleDisconnect();
+      };
+
+      this.ws.onerror = (event: unknown) => {
+        // 'ws' package emits Error objects; browser emits Event objects
+        const err = event instanceof Error ? event : new Error('WebSocket error');
+        const msg = err.message || 'WebSocket error';
+        if (this._state === 'CONNECTING') {
+          settleReject(new ConnectionError(msg));
+        }
+        this.handleError(new Error(msg));
+      };
+
+      const checkReady = setInterval(() => {
+        if (this._state === 'READY') {
+          clearInterval(checkReady);
+          clearTimeout(timeout);
+          settleResolve();
+        }
+      }, 10);
+
+      const timeout = setTimeout(() => {
+        if (this._state !== 'READY') {
+          clearInterval(checkReady);
+          try { this.ws?.close(); } catch {}
+          this.ws = undefined;
+          settleReject(new Error('WebSocket connection timeout'));
+        }
+      }, 10000);
+    });
+  }
+
+  /**
    * Disconnect from the relay daemon.
    */
   disconnect(): void {
@@ -405,16 +565,22 @@ export class RelayClient {
       this.reconnectTimer = undefined;
     }
 
+    // Send BYE envelope
+    this.send({
+      v: PROTOCOL_VERSION,
+      type: 'BYE',
+      id: generateId(),
+      ts: Date.now(),
+      payload: {},
+    });
+
     if (this.socket) {
-      this.send({
-        v: PROTOCOL_VERSION,
-        type: 'BYE',
-        id: generateId(),
-        ts: Date.now(),
-        payload: {},
-      });
       this.socket.end();
       this.socket = undefined;
+    }
+    if (this.ws) {
+      try { this.ws.close(); } catch {}
+      this.ws = undefined;
     }
 
     this.setState('DISCONNECTED');
@@ -1534,6 +1700,19 @@ export class RelayClient {
   }
 
   private send(envelope: Envelope): boolean {
+    // WebSocket mode: send JSON strings directly (no binary framing)
+    if (this._useWebSocket) {
+      if (!this.ws || this.ws.readyState !== 1 /* OPEN */) return false;
+      try {
+        this.ws.send(JSON.stringify(envelope));
+        return true;
+      } catch (err) {
+        this.handleError(err as Error);
+        return false;
+      }
+    }
+
+    // Unix socket mode: send binary-framed data
     if (!this.socket) return false;
 
     try {
@@ -1866,6 +2045,7 @@ export class RelayClient {
   private handleDisconnect(): void {
     this.parser.reset();
     this.socket = undefined;
+    this.ws = undefined;
     this.rejectPendingSyncAcks(new Error('Disconnected while awaiting ACK'));
     this.rejectPendingSpawns(new Error('Disconnected while awaiting spawn result'));
     this.rejectPendingReleases(new Error('Disconnected while awaiting release result'));
