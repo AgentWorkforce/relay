@@ -1849,6 +1849,21 @@ export class RelayClient {
       console.error('[sdk] Server error:', envelope.payload);
     }
 
+    const errorMessage = envelope.payload.message || 'Server error';
+    const isSpawnManagerDisabled =
+      envelope.payload.code === 'INTERNAL' &&
+      /spawnmanager not enabled/i.test(errorMessage);
+
+    // Fail fast for spawn-related operations when daemon cannot service them.
+    // Without this, spawn/release/input/list-workers calls sit until timeout.
+    if (isSpawnManagerDisabled) {
+      const err = new Error(errorMessage);
+      this.rejectPendingSpawns(err);
+      this.rejectPendingReleases(err);
+      this.rejectPendingSendInputs(err);
+      this.rejectPendingListWorkers(err);
+    }
+
     if (envelope.payload.code === 'RESUME_TOO_OLD') {
       this.resumeToken = undefined;
       this.sessionId = undefined;
@@ -1860,6 +1875,11 @@ export class RelayClient {
         console.error('[sdk] Fatal error received, will not reconnect:', envelope.payload.message);
       }
       this._destroyed = true;
+    }
+
+    // Surface server-side ERROR frames to SDK consumers.
+    if (this.onError) {
+      this.onError(new Error(errorMessage));
     }
   }
 

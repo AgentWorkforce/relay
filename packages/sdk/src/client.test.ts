@@ -188,6 +188,39 @@ describe('RelayClient', () => {
       // Should not throw
       expect(() => (client as any).processFrame(errorEnvelope)).not.toThrow();
     });
+
+    it('rejects pending spawn when SpawnManager is disabled', async () => {
+      const client = new RelayClient({ reconnect: false, quiet: true });
+      (client as any)._state = 'READY';
+      const sendMock = vi.fn().mockReturnValue(true);
+      (client as any).send = sendMock;
+
+      const spawnPromise = client.spawn(
+        {
+          name: 'Worker',
+          cli: 'codex',
+          task: 'Do work',
+        },
+        10000
+      );
+
+      const errorEnvelope: Envelope<ErrorPayload> = {
+        v: 1,
+        type: 'ERROR',
+        id: 'err-spawn-disabled',
+        ts: Date.now(),
+        payload: {
+          code: 'INTERNAL' as any,
+          message: 'SpawnManager not enabled. Configure spawnManager: true in daemon config.',
+          fatal: false,
+        },
+      };
+
+      (client as any).processFrame(errorEnvelope);
+
+      await expect(spawnPromise).rejects.toThrow('SpawnManager not enabled');
+      expect((client as any).pendingSpawns.size).toBe(0);
+    });
   });
 
   describe('sendMessage', () => {
