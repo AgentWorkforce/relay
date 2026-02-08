@@ -12,8 +12,12 @@
  *   1. Spawns relay-pty wrapping the target CLI (proven PTY injection)
  *   2. Connects to messaging backend (relaycast WebSocket or custom daemon)
  *   3. Incoming messages → inject into CLI via relay-pty's socket
- *   4. Outgoing messages → agent uses MCP tools (relaycast) or outbox files
+ *   4. Outgoing messages → ALL routed through messaging backend (no local shortcuts)
  *   5. Spawn/release → creates/stops additional relay-pty instances locally
+ *
+ * All messages go through the messaging backend (relaycast or custom daemon)
+ * even for local-to-local agent communication. This ensures persistence,
+ * message history, and billing tracking via relaycast.
  *
  * Two messaging modes:
  *   - relaycast: Uses relaycast.dev hosted messaging (RELAYCAST_API_KEY)
@@ -754,34 +758,26 @@ export class HostedRunner {
           break;
         }
         default: {
-          // In custom daemon mode, forward messages via WebSocket
-          // In relaycast mode, agent uses MCP tools — but handle local routing
           if (this.mode === 'custom' && parsed.to) {
-            const targetWorker = this.workers.get(parsed.to);
-            if (targetWorker?.socketConnected) {
-              this.injectToWorker(parsed.to, worker.name, parsed.body, generateId());
-            } else {
-              this.wsSend({
-                v: PROTOCOL_VERSION,
-                type: 'SEND',
-                id: generateId(),
-                ts: Date.now(),
-                from: worker.name,
-                to: parsed.to,
-                payload: {
-                  kind: (parsed.kind as SendPayload['kind']) ?? 'message',
-                  body: parsed.body,
-                  thread: parsed.thread,
-                },
-              });
-            }
+            // Custom daemon mode: route via WebSocket
+            this.wsSend({
+              v: PROTOCOL_VERSION,
+              type: 'SEND',
+              id: generateId(),
+              ts: Date.now(),
+              from: worker.name,
+              to: parsed.to,
+              payload: {
+                kind: (parsed.kind as SendPayload['kind']) ?? 'message',
+                body: parsed.body,
+                thread: parsed.thread,
+              },
+            });
           } else if (this.mode === 'relaycast' && parsed.to) {
-            // Local-to-local routing for spawned agents
-            const targetWorker = this.workers.get(parsed.to);
-            if (targetWorker?.socketConnected) {
-              this.injectToWorker(parsed.to, worker.name, parsed.body, generateId());
-            }
-            // Remote messages go through relaycast MCP tools (agent handles it)
+            // Relaycast mode: ALL messages go through relaycast for
+            // persistence, memory, and billing — no local shortcuts.
+            // Relaycast delivers back via WebSocket → injector → relay-pty.
+            this.sendViaRelaycast(worker, parsed.to, parsed.body, parsed.thread);
           }
           break;
         }
@@ -814,22 +810,20 @@ export class HostedRunner {
           if (event.name) this.handleRelease(event.name);
           break;
         case 'message':
-          // In custom mode, route via WebSocket. In relaycast mode, agent uses MCP.
           if (this.mode === 'custom' && event.to && event.body) {
-            const target = this.workers.get(event.to);
-            if (target?.socketConnected) {
-              this.injectToWorker(event.to, worker.name, event.body, generateId());
-            } else {
-              this.wsSend({
-                v: PROTOCOL_VERSION,
-                type: 'SEND',
-                id: generateId(),
-                ts: Date.now(),
-                from: worker.name,
-                to: event.to,
-                payload: { kind: 'message', body: event.body, thread: event.thread },
-              });
-            }
+            // Custom daemon mode: route via WebSocket
+            this.wsSend({
+              v: PROTOCOL_VERSION,
+              type: 'SEND',
+              id: generateId(),
+              ts: Date.now(),
+              from: worker.name,
+              to: event.to,
+              payload: { kind: 'message', body: event.body, thread: event.thread },
+            });
+          } else if (this.mode === 'relaycast' && event.to && event.body) {
+            // Relaycast mode: route through relaycast for persistence/billing
+            this.sendViaRelaycast(worker, event.to, event.body, event.thread);
           }
           break;
       }
@@ -929,6 +923,36 @@ export class HostedRunner {
     worker.socket?.destroy();
     try { unlinkSync(worker.socketPath); } catch {}
     this.workers.delete(name);
+  }
+
+  // ─── Relaycast Outbound ──────────────────────────────────────────
+
+  /**
+   * Send a message through relaycast API for persistence, memory, and billing.
+   * The message will be delivered back to the target via relaycast WebSocket →
+   * RelaycastInjector → relay-pty injection socket.
+   *
+   * For channel targets (#channel), uses postMessage. For agents, uses sendDm.
+   */
+  private sendViaRelaycast(worker: PtyWorker, to: string, body: string, thread?: string): void {
+    const injector = worker.injector;
+    if (!injector) {
+      this.log(`Cannot send via relaycast: no injector for ${worker.name}`);
+      return;
+    }
+
+    if (to.startsWith('#')) {
+      // Channel message
+      const channel = to.substring(1);
+      injector.postMessage(channel, body, thread).catch((err) => {
+        this.log(`relaycast postMessage error: ${(err as Error).message}`);
+      });
+    } else {
+      // Direct message to agent
+      injector.sendDm(to, body).catch((err) => {
+        this.log(`relaycast sendDm error: ${(err as Error).message}`);
+      });
+    }
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────

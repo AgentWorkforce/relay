@@ -177,6 +177,78 @@ export class RelaycastInjector {
     return this.agentToken;
   }
 
+  // ─── Outbound Messaging (via relaycast API) ─────────────────────────
+
+  /**
+   * Send a direct message to another agent via relaycast API.
+   * This ensures the message is persisted in relaycast for memory/billing.
+   */
+  async sendDm(to: string, text: string): Promise<boolean> {
+    if (!this.agentToken) {
+      this.log('Cannot send DM: no agent token');
+      return false;
+    }
+
+    try {
+      const url = `${this.apiUrl}/v1/dms/send`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.agentToken}`,
+        },
+        body: JSON.stringify({ to, text }),
+      });
+
+      if (!response.ok) {
+        const body = await response.text();
+        this.log(`sendDm failed: ${response.status} ${body}`);
+        return false;
+      }
+
+      this.log(`DM sent to ${to} (${text.length}B)`);
+      return true;
+    } catch (err) {
+      this.log(`sendDm error: ${(err as Error).message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Post a message to a channel via relaycast API.
+   * This ensures the message is persisted in relaycast for memory/billing.
+   */
+  async postMessage(channel: string, text: string, thread?: string): Promise<boolean> {
+    if (!this.agentToken) {
+      this.log('Cannot post message: no agent token');
+      return false;
+    }
+
+    try {
+      const url = `${this.apiUrl}/v1/channels/${encodeURIComponent(channel)}/messages`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.agentToken}`,
+        },
+        body: JSON.stringify({ text, ...(thread ? { thread_id: thread } : {}) }),
+      });
+
+      if (!response.ok) {
+        const body = await response.text();
+        this.log(`postMessage failed: ${response.status} ${body}`);
+        return false;
+      }
+
+      this.log(`Message posted to #${channel} (${text.length}B)`);
+      return true;
+    } catch (err) {
+      this.log(`postMessage error: ${(err as Error).message}`);
+      return false;
+    }
+  }
+
   // ─── Relaycast API ─────────────────────────────────────────────────
 
   /**
