@@ -21,10 +21,60 @@ A single Rust binary that:
 5. Spawns child relay-broker processes on demand
 
 ```
-relay-broker claude
+agent-relay run claude
 ```
 
 That's the entire user experience.
+
+---
+
+## User Experience: Zero Configuration
+
+The user never sees or thinks about relaycast. All cloud communication is handled seamlessly under the hood.
+
+### First-time Setup (one-time)
+
+```
+agent-relay cloud login
+```
+
+Opens browser, authenticates, stores API key (`ar_live_...`) in `~/.agent-relay/cloud-config.json`. Done once.
+
+### Every Time After That
+
+```
+agent-relay run claude
+```
+
+Under the hood, this:
+1. `agent-relay` reads the stored API key from `~/.agent-relay/cloud-config.json`
+2. Passes it to relay-broker via environment variable (never visible to the user)
+3. relay-broker registers with relaycast, gets an agent token
+4. relay-broker connects WebSocket to relaycast
+5. relay-broker subscribes to channels
+6. CLI launches and is ready to send/receive messages
+
+The user sees none of steps 2-6. They just see their CLI start up.
+
+### What the User Never Has To Do
+
+- Type an API key or token
+- Know that relaycast exists
+- Configure a WebSocket URL
+- Set environment variables
+- Manage agent registration
+- Think about channels or subscriptions
+
+### Spawned Agents Are Equally Seamless
+
+When a CLI writes `->relay-file:spawn`, relay-broker:
+1. Reads the stored API key (same one from cloud-config.json)
+2. Passes it to the child relay-broker process
+3. Child registers itself with relaycast
+4. Child connects its own WebSocket
+5. Parent and child communicate through relaycast
+
+The spawning agent just writes the outbox file. Everything else is automatic.
 
 ---
 
@@ -87,7 +137,10 @@ WS /v1/stream?token={agent-token}
 ### Auth Flow
 
 ```
-RELAYCAST_API_KEY (rk_live_...)
+~/.agent-relay/cloud-config.json  (stored by `agent-relay cloud login`)
+        |
+        v
+relay-broker reads API key (ar_live_...) automatically
         |
         v
 POST /v1/agents --> agent_token (at_live_...)
@@ -96,12 +149,16 @@ POST /v1/agents --> agent_token (at_live_...)
 Use agent_token for all HTTP + WebSocket
 ```
 
+The user never touches this flow. It happens silently on every `agent-relay run`.
+
 ### Token Lifecycle
 
+- API key is read from `~/.agent-relay/cloud-config.json` on startup (set by `agent-relay cloud login`)
 - Agent tokens are obtained on startup via POST /v1/agents
 - On WebSocket disconnect + reconnect, re-register to get a fresh token
 - If an HTTP request returns 401, re-register and retry once
 - No background token refresh — tokens are refreshed on-demand at failure boundaries
+- If no API key is found, relay-broker prints: `Run 'agent-relay cloud login' first.` and exits 1
 
 ---
 
@@ -137,7 +194,7 @@ When the CLI writes a `KIND: continuity` outbox file:
 ### Channel Subscription Management
 
 - On startup, subscribe to channels from `--channels` flag (default: `general`)
-- Spawned children inherit parent's `--api-key` but get their own channel subscriptions (default: `general` only)
+- Spawned children inherit parent's API key (via env var) but get their own channel subscriptions (default: `general` only)
 - Dynamic subscription changes via outbox files: `KIND: subscribe` / `KIND: unsubscribe` with channel name in body
 - On WebSocket reconnect, re-subscribe to all active channels
 
@@ -217,7 +274,8 @@ relay-broker (parent: "claude")
     | parses: NAME=Worker1, CLI=codex
     |
     v
-fork/exec: relay-broker --spawner=claude --api-key=... codex
+fork/exec: relay-broker --spawner=claude codex
+                        (API key passed via env, inherited from parent)
     |
     v
 relay-broker (child: "Worker1")
@@ -241,8 +299,6 @@ relay-broker [OPTIONS] <COMMAND> [ARGS...]
 
 OPTIONS:
   --name <NAME>           Agent name (default: auto-generated)
-  --api-key <KEY>         Relaycast API key (or RELAYCAST_API_KEY env)
-  --api-url <URL>         Relaycast API URL (default: https://api.relaycast.dev)
   --channels <CH>         Channels to subscribe (default: general)
   --spawner <NAME>        Parent agent name (set by parent on spawn)
   --human-cooldown <MS>   Pause injection after human input (default: 3000)
@@ -258,20 +314,25 @@ OPTIONS:
   --log-file <PATH>       Log file path
   --json-output           JSON events on stderr
 
+  # Advanced overrides (users should never need these):
+  --api-key <KEY>         Override API key (default: reads from ~/.agent-relay/cloud-config.json)
+  --api-url <URL>         Override API URL (default: https://api.relaycast.dev)
+
 EXAMPLES:
-  relay-broker claude
-  relay-broker --name lead --channels general,ops claude
-  relay-broker --api-key rk_live_xxx codex
+  relay-broker claude                                    # typical usage
+  relay-broker --name lead --channels general,ops claude # named agent with channels
 ```
 
 ### How `agent-relay run` Invokes relay-broker
 
 The Node.js `agent-relay run` command becomes a thin launcher:
 
-1. Find the `relay-broker` binary (PATH lookup, then `~/.npm/bin/relay-broker`, then adjacent `./relay-broker/target/release/relay-broker`)
-2. Pass through all CLI arguments: `agent-relay run claude --name lead` → `relay-broker --name lead claude`
-3. `execvp` (replace process) — the Node.js process exits, relay-broker owns the terminal
-4. If relay-broker binary not found, print install instructions and exit 1
+1. Read API key from `~/.agent-relay/cloud-config.json` — if missing, prompt: `Run 'agent-relay cloud login' first.`
+2. Find the `relay-broker` binary (PATH lookup, then `~/.npm/bin/relay-broker`, then adjacent `./relay-broker/target/release/relay-broker`)
+3. Set `RELAY_API_KEY` environment variable (relay-broker reads it, never shown to user)
+4. Pass through all CLI arguments: `agent-relay run claude --name lead` → `relay-broker --name lead claude`
+5. `execvp` (replace process) — the Node.js process exits, relay-broker owns the terminal
+6. If relay-broker binary not found, print install instructions and exit 1
 
 ---
 
@@ -410,7 +471,7 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 ```
 
-**Deliverable:** Can run `relay-broker --api-key rk_live_xxx echo "hello"` and see the agent register + connect to relaycast WebSocket.
+**Deliverable:** Can run `relay-broker echo "hello"` (with API key in cloud-config.json) and see the agent register + connect to relaycast WebSocket.
 
 **Agents:** 2 parallel
 - Agent A [claude]: HTTP client + auth flow + agent registration
@@ -751,4 +812,4 @@ These design decisions are intentional and should not be revisited:
 | Cross-platform | reqwest + tungstenite work on Linux/macOS/Windows |
 | relaycast downtime | Outbox buffer (500 msg / 5MB), CLI continues functioning, reconnect on recovery |
 | Token expiry mid-session | Re-register on 401, transparent to CLI |
-| Spawned agent auth | Parent passes --api-key to child, child registers independently |
+| Spawned agent auth | Parent passes API key to child via env var, child registers independently |
