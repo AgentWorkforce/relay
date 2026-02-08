@@ -1,3 +1,6 @@
+# Runtime data
+.agent-relay/
+
 # Dependencies
 node_modules/
 
