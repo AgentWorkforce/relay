@@ -13,12 +13,7 @@
  *                   ERROR -------> CLOSED
  */
 
-import { randomUUID } from 'node:crypto';
-
-/** Generate a short unique ID */
-function generateId(): string {
-  return randomUUID().replace(/-/g, '').substring(0, 16);
-}
+import { generateId } from '@agent-relay/wrapper';
 import {
   type Envelope,
   type HelloPayload,

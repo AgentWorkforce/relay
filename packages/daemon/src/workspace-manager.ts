@@ -16,11 +16,9 @@ import type {
   AddWorkspaceRequest,
 } from './types.js';
 
-const logger = createLogger('workspace-manager');
+import { generateId } from '@agent-relay/wrapper';
 
-function generateId(): string {
-  return Math.random().toString(36).substring(2, 15);
-}
+const logger = createLogger('workspace-manager');
 
 export class WorkspaceManager extends EventEmitter {
   private workspaces = new Map<string, Workspace>();

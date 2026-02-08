@@ -47,6 +47,20 @@ export {
 // Spawn manager (protocol-based agent spawning)
 export { SpawnManager, type SpawnManagerConfig } from './spawn-manager.js';
 
+// Shared utilities
+export { parseOutboxFile, type ParsedOutboxFile } from './outbox-parser.js';
+export {
+  type PtyWorker,
+  type SpawnOptions,
+  findRelayPtyBinary,
+  spawnRelayPtyProcess,
+  connectToInjectionSocket,
+  injectMessage,
+  releaseWorker,
+  cleanupWorker,
+  getPermissionFlags,
+} from './pty-spawner.js';
+
 // Hosted daemon (WebSocket-based, deployable service)
 export { HostedDaemon, type HostedDaemonConfig } from './hosted-daemon.js';
 export { WsConnection, type WsConnectionConfig, type WebSocketHandle } from './ws-connection.js';

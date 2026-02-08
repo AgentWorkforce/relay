@@ -34,12 +34,18 @@ import {
   type DeliverEnvelope,
   type PongPayload,
 } from '@agent-relay/protocol/types';
-import { randomUUID } from 'node:crypto';
-
-/** Generate a short unique ID */
-function generateId(): string {
-  return randomUUID().replace(/-/g, '').substring(0, 16);
-}
+import { generateId } from '@agent-relay/wrapper';
+import { parseOutboxFile } from './outbox-parser.js';
+import {
+  type PtyWorker,
+  findRelayPtyBinary,
+  spawnRelayPtyProcess,
+  connectToInjectionSocket,
+  injectMessage,
+  releaseWorker,
+  cleanupWorker as cleanupPtyWorker,
+  getPermissionFlags,
+} from './pty-spawner.js';
 
 export interface ConnectorConfig {
   /** WebSocket URL of the hosted daemon (e.g. wss://your-host/ws) */
@@ -64,78 +70,6 @@ export interface ConnectorConfig {
 
 type ConnectorState = 'disconnected' | 'connecting' | 'handshaking' | 'connected' | 'closed';
 
-/**
- * Parse a header-format outbox file.
- *
- * Format:
- *   TO: AgentName
- *   KIND: message|spawn|release
- *   THREAD: optional-thread
- *
- *   Body content here
- */
-function parseOutboxFile(content: string): {
-  to?: string;
-  kind?: string;
-  name?: string;
-  cli?: string;
-  thread?: string;
-  action?: string;
-  body: string;
-} | null {
-  // Split at first blank line
-  const blankLineIdx = content.indexOf('\n\n');
-  let headerSection: string;
-  let body: string;
-
-  if (blankLineIdx === -1) {
-    // No blank line — treat entire content as headers (no body)
-    headerSection = content;
-    body = '';
-  } else {
-    headerSection = content.substring(0, blankLineIdx);
-    body = content.substring(blankLineIdx + 2);
-  }
-
-  const headers: Record<string, string> = {};
-  for (const line of headerSection.split('\n')) {
-    const colonIdx = line.indexOf(':');
-    if (colonIdx === -1) continue;
-    const key = line.substring(0, colonIdx).trim().toUpperCase();
-    const value = line.substring(colonIdx + 1).trim();
-    if (key && value) {
-      headers[key] = value;
-    }
-  }
-
-  // Must have TO or KIND header to be valid
-  if (!headers['TO'] && !headers['KIND']) {
-    // Try JSON fallback
-    try {
-      const json = JSON.parse(content);
-      return {
-        to: json.to,
-        kind: json.kind ?? 'message',
-        name: json.name,
-        cli: json.cli,
-        thread: json.thread,
-        body: json.body ?? '',
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  return {
-    to: headers['TO'],
-    kind: headers['KIND'] ?? 'message',
-    name: headers['NAME'],
-    cli: headers['CLI'],
-    thread: headers['THREAD'],
-    action: headers['ACTION'],
-    body: body.trim(),
-  };
-}
 
 export class Connector {
   private config: ConnectorConfig;
@@ -148,9 +82,12 @@ export class Connector {
   private outboxWatcher?: FSWatcher;
   private outboxDir: string;
   private inboxDir: string;
+  private baseDir: string;
   private agentName: string;
   private pendingFiles: Set<string> = new Set();
   private debounceTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+  /** Locally spawned workers (relay-pty processes) */
+  private workers: Map<string, PtyWorker> = new Map();
 
   /** Callback for received messages */
   onMessage?: (from: string, body: string, envelope: Envelope) => void;
@@ -190,6 +127,9 @@ export class Connector {
     } else {
       this.inboxDir = path.join(path.dirname(this.outboxDir), '..', 'inbox', this.agentName);
     }
+
+    // Base directory for spawned workers (sockets, logs, outbox)
+    this.baseDir = path.join(os.homedir(), '.agent-relay');
   }
 
   // ─── Lifecycle ────────────────────────────────────────────────────
@@ -242,6 +182,13 @@ export class Connector {
       this.outboxWatcher.close();
       this.outboxWatcher = undefined;
     }
+
+    // Release all spawned workers
+    for (const [name, worker] of this.workers) {
+      releaseWorker(worker);
+      cleanupPtyWorker(worker);
+    }
+    this.workers.clear();
 
     // Close WebSocket
     if (this.ws) {
@@ -396,6 +343,13 @@ export class Connector {
         const deliver = envelope as DeliverEnvelope;
         const from = deliver.from ?? 'unknown';
         const body = deliver.payload?.body ?? '';
+        const target = deliver.to ?? this.agentName;
+
+        // If the message is for a spawned worker, inject it directly
+        const targetWorker = this.workers.get(target);
+        if (targetWorker) {
+          injectMessage(targetWorker, from, body, deliver.id);
+        }
 
         // Write to inbox file for local agents to read
         this.writeInboxMessage(from, body, deliver);
@@ -548,37 +502,16 @@ export class Connector {
       // Handle different message kinds
       switch (parsed.kind) {
         case 'spawn': {
-          // Forward spawn request to hosted daemon
+          // Spawn locally via relay-pty
           if (parsed.name && parsed.cli) {
-            this.sendEnvelope({
-              v: PROTOCOL_VERSION,
-              type: 'SPAWN',
-              id: generateId(),
-              ts: Date.now(),
-              from: this.agentName,
-              payload: {
-                name: parsed.name,
-                cli: parsed.cli,
-                task: parsed.body,
-              },
-            });
+            this.handleSpawn(parsed.name, parsed.cli, parsed.body, this.agentName);
           }
           break;
         }
 
         case 'release': {
           if (parsed.name) {
-            this.sendEnvelope({
-              v: PROTOCOL_VERSION,
-              type: 'RELEASE',
-              id: generateId(),
-              ts: Date.now(),
-              from: this.agentName,
-              payload: {
-                name: parsed.name,
-                reason: parsed.body || 'Released by connector',
-              },
-            });
+            this.handleRelease(parsed.name);
           }
           break;
         }
@@ -612,6 +545,181 @@ export class Connector {
     } finally {
       this.pendingFiles.delete(filename);
     }
+  }
+
+  // ─── Spawn / Release (local relay-pty) ──────────────────────────
+
+  private async handleSpawn(name: string, cli: string, task: string, spawner: string): Promise<void> {
+    if (this.workers.has(name)) {
+      console.log(`[connector] Agent ${name} already running`);
+      return;
+    }
+
+    console.log(`[connector] Spawning: ${name} (cli: ${cli}, spawner: ${spawner})`);
+
+    const args = getPermissionFlags(cli);
+
+    const worker = await spawnRelayPtyProcess(name, cli, args, {
+      baseDir: this.baseDir,
+      cwd: process.cwd(),
+      env: {
+        ...(this.config.url ? { RELAY_URL: this.config.url } : {}),
+        ...(this.config.token ? { RELAY_TOKEN: this.config.token } : {}),
+      },
+      log: (msg) => console.log(`[connector] ${msg}`),
+    });
+
+    if (!worker) {
+      console.error(`[connector] Failed to spawn ${name}: relay-pty binary not found`);
+      return;
+    }
+
+    this.workers.set(name, worker);
+
+    // Parse stderr for relay commands from the spawned agent
+    if (worker.process.stderr) {
+      let buf = '';
+      worker.process.stderr.on('data', (data: Buffer) => {
+        buf += data.toString('utf-8');
+        const lines = buf.split('\n');
+        buf = lines.pop() ?? '';
+        for (const line of lines) {
+          this.handleWorkerStderr(worker, line.trim());
+        }
+      });
+    }
+
+    // Connect to injection socket
+    await connectToInjectionSocket(worker, {
+      log: (msg) => console.log(`[connector] ${msg}`),
+      stopped: () => this.state === 'closed',
+    });
+
+    // Watch spawned agent's outbox for messages to forward
+    this.startWorkerOutboxWatcher(worker);
+
+    // Wait for socket, then inject task
+    const start = Date.now();
+    while (!worker.socketConnected && Date.now() - start < 20000) {
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    if (worker.socketConnected && task) {
+      await new Promise(r => setTimeout(r, 2000));
+      injectMessage(worker, spawner, task, generateId(), (msg) => console.log(`[connector] ${msg}`));
+    }
+
+    // Notify spawner that the agent is ready
+    injectMessage(
+      this.workers.get(spawner) ?? worker,
+      name,
+      `ACK: ${name} spawned and ready`,
+      generateId(),
+    );
+
+    // Handle worker exit
+    worker.process.on('exit', (code) => {
+      console.log(`[connector] Worker ${name} exited (${code ?? 0})`);
+      cleanupPtyWorker(worker, this.workers);
+      const spawnerWorker = this.workers.get(spawner);
+      if (spawnerWorker) {
+        injectMessage(spawnerWorker, name, `DONE: ${name} exited (${code ?? 0})`, generateId());
+      }
+    });
+  }
+
+  private handleRelease(name: string): void {
+    const worker = this.workers.get(name);
+    if (!worker) return;
+    releaseWorker(worker, (msg) => console.log(`[connector] ${msg}`));
+  }
+
+  private startWorkerOutboxWatcher(worker: PtyWorker): void {
+    try {
+      worker.outboxWatcher = watch(worker.outboxDir, (_type, filename) => {
+        if (!filename) return;
+        const existing = worker.debounceTimers.get(filename);
+        if (existing) clearTimeout(existing);
+        worker.debounceTimers.set(filename, setTimeout(() => {
+          worker.debounceTimers.delete(filename);
+          this.processWorkerOutboxFile(worker, filename);
+        }, 100));
+      });
+    } catch {}
+
+    // Process any pre-existing files
+    try {
+      for (const f of fs.readdirSync(worker.outboxDir)) {
+        this.processWorkerOutboxFile(worker, f);
+      }
+    } catch {}
+  }
+
+  private processWorkerOutboxFile(worker: PtyWorker, filename: string): void {
+    if (filename.startsWith('.') || filename.endsWith('.tmp')) return;
+    if (worker.pendingFiles.has(filename)) return;
+
+    const filePath = path.join(worker.outboxDir, filename);
+    if (!fs.existsSync(filePath)) return;
+
+    worker.pendingFiles.add(filename);
+
+    try {
+      const content = fs.readFileSync(filePath, 'utf-8');
+      const parsed = parseOutboxFile(content);
+      if (!parsed) { worker.pendingFiles.delete(filename); return; }
+
+      switch (parsed.kind) {
+        case 'spawn': {
+          if (parsed.name && parsed.cli) {
+            this.handleSpawn(parsed.name, parsed.cli, parsed.body, worker.name);
+          }
+          break;
+        }
+        case 'release': {
+          if (parsed.name) this.handleRelease(parsed.name);
+          break;
+        }
+        default: {
+          // Forward message through WebSocket to the hosted daemon
+          if (parsed.to) {
+            this.sendMessage(parsed.to, parsed.body, { thread: parsed.thread, kind: parsed.kind });
+          }
+          break;
+        }
+      }
+
+      try { fs.unlinkSync(filePath); } catch {}
+    } catch (err) {
+      console.error(`[connector] Worker outbox error ${filename}: ${(err as Error).message}`);
+    } finally {
+      worker.pendingFiles.delete(filename);
+    }
+  }
+
+  private handleWorkerStderr(worker: PtyWorker, line: string): void {
+    if (!line.startsWith('{')) return;
+
+    try {
+      const event = JSON.parse(line);
+      if (event.type !== 'relay_command') return;
+
+      switch (event.kind) {
+        case 'spawn':
+          if (event.name && event.cli) {
+            this.handleSpawn(event.name, event.cli, event.task || event.body || '', worker.name);
+          }
+          break;
+        case 'release':
+          if (event.name) this.handleRelease(event.name);
+          break;
+        case 'message':
+          if (event.to && event.body) {
+            this.sendMessage(event.to, event.body, { thread: event.thread });
+          }
+          break;
+      }
+    } catch {}
   }
 
   // ─── Inbox Writer ─────────────────────────────────────────────────

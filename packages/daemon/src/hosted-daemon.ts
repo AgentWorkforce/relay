@@ -27,12 +27,7 @@ import { AgentRegistry } from './agent-registry.js';
 // SpawnManager is not used in hosted mode — spawning is a local operation
 // import { SpawnManager, type SpawnManagerConfig } from './spawn-manager.js';
 import { createStorageAdapter, type StorageAdapter, type StorageConfig, type StorageHealth } from '@agent-relay/storage/adapter';
-import { randomUUID } from 'node:crypto';
-
-/** Generate a short unique ID */
-function generateId(): string {
-  return randomUUID().replace(/-/g, '').substring(0, 16);
-}
+import { generateId } from '@agent-relay/wrapper';
 import {
   PROTOCOL_VERSION,
   type Envelope,

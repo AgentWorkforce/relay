@@ -34,11 +34,9 @@ import type {
   SpawnAgentRequest,
 } from './types.js';
 
-const logger = createLogger('orchestrator');
+import { generateId } from '@agent-relay/wrapper';
 
-function generateId(): string {
-  return Math.random().toString(36).substring(2, 15);
-}
+const logger = createLogger('orchestrator');
 
 export interface OrchestratorConfig {
   /** Port for HTTP/WebSocket API */

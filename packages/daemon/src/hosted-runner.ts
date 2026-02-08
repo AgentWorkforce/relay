@@ -35,8 +35,8 @@ import { watch, existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, sy
 import type { FSWatcher } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { randomUUID } from 'node:crypto';
 import WebSocket from 'ws';
+import { generateId } from '@agent-relay/wrapper';
 import {
   PROTOCOL_VERSION,
   type Envelope,
@@ -46,10 +46,7 @@ import {
   type DeliverEnvelope,
 } from '@agent-relay/protocol/types';
 import { RelaycastInjector, type RelaycastInjectorConfig } from './relaycast-injector.js';
-
-function generateId(): string {
-  return randomUUID().replace(/-/g, '').substring(0, 16);
-}
+import { parseOutboxFile } from './outbox-parser.js';
 
 export interface HostedRunnerConfig {
   /** Command to run (e.g. 'claude') */
@@ -109,68 +106,6 @@ interface PtyWorker {
   pendingFiles: Set<string>;
   /** Relaycast injector for this worker (relaycast mode only) */
   injector?: RelaycastInjector;
-}
-
-/**
- * Parse a header-format outbox file.
- */
-function parseOutboxFile(content: string): {
-  to?: string;
-  kind?: string;
-  name?: string;
-  cli?: string;
-  thread?: string;
-  action?: string;
-  body: string;
-} | null {
-  const blankLineIdx = content.indexOf('\n\n');
-  let headerSection: string;
-  let body: string;
-
-  if (blankLineIdx === -1) {
-    headerSection = content;
-    body = '';
-  } else {
-    headerSection = content.substring(0, blankLineIdx);
-    body = content.substring(blankLineIdx + 2);
-  }
-
-  const headers: Record<string, string> = {};
-  for (const line of headerSection.split('\n')) {
-    const colonIdx = line.indexOf(':');
-    if (colonIdx === -1) continue;
-    const key = line.substring(0, colonIdx).trim().toUpperCase();
-    const value = line.substring(colonIdx + 1).trim();
-    if (key && value) {
-      headers[key] = value;
-    }
-  }
-
-  if (!headers['TO'] && !headers['KIND']) {
-    try {
-      const json = JSON.parse(content);
-      return {
-        to: json.to,
-        kind: json.kind ?? 'message',
-        name: json.name,
-        cli: json.cli,
-        thread: json.thread,
-        body: json.body ?? '',
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  return {
-    to: headers['TO'],
-    kind: headers['KIND'] ?? 'message',
-    name: headers['NAME'],
-    cli: headers['CLI'],
-    thread: headers['THREAD'],
-    action: headers['ACTION'],
-    body: body.trim(),
-  };
 }
 
 type MessagingMode = 'relaycast' | 'custom';
@@ -627,7 +562,7 @@ export class HostedRunner {
 
     try {
       const { findRelayPtyBinary: findBin } = await import('@agent-relay/utils/relay-pty-path');
-      return await findBin();
+      return findBin(import.meta.dirname ?? '.');
     } catch {}
 
     return null;

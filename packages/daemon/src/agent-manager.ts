@@ -28,11 +28,9 @@ export interface CloudPersistenceHandler {
   destroy?: () => void;
 }
 
-const logger = createLogger('agent-manager');
+import { generateId } from '@agent-relay/wrapper';
 
-function generateId(): string {
-  return Math.random().toString(36).substring(2, 15);
-}
+const logger = createLogger('agent-manager');
 
 interface ManagedAgent extends Agent {
   pty?: RelayPtyOrchestrator;

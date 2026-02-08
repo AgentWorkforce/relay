@@ -21,12 +21,8 @@
 
 import { createConnection, type Socket } from 'node:net';
 import { existsSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
 import WebSocket from 'ws';
-
-function generateId(): string {
-  return randomUUID().replace(/-/g, '').substring(0, 16);
-}
+import { generateId } from '@agent-relay/wrapper';
 
 // ─── Relaycast Event Types (minimal, matching @relaycast/types) ──────
 
