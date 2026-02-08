@@ -96,6 +96,60 @@ POST /v1/agents --> agent_token (at_live_...)
 Use agent_token for all HTTP + WebSocket
 ```
 
+### Token Lifecycle
+
+- Agent tokens are obtained on startup via POST /v1/agents
+- On WebSocket disconnect + reconnect, re-register to get a fresh token
+- If an HTTP request returns 401, re-register and retry once
+- No background token refresh — tokens are refreshed on-demand at failure boundaries
+
+---
+
+## Operational Behavior
+
+### Disconnection Handling
+
+When the WebSocket connection to relaycast drops:
+
+1. **Outbound messages**: Buffer in memory (max 500 messages or 5MB). If buffer overflows, drop oldest P4 messages first, then P3, etc. Never drop P1.
+2. **Inbound messages**: relaycast holds undelivered messages server-side. On reconnect, relay-broker re-subscribes to channels and receives queued messages.
+3. **User visibility**: Emit a JSON event on stderr: `{"type":"connection","status":"disconnected"}` and `{"type":"connection","status":"reconnected"}`. The CLI continues to function — the human can still type and interact.
+4. **Reconnection**: Exponential backoff starting at 1s, max 30s, with jitter. Unlimited retries.
+
+### Graceful Shutdown
+
+On SIGTERM or SIGINT:
+
+1. Send `agent.offline` to relaycast via HTTP (best-effort, 2s timeout)
+2. Send SIGTERM to all child relay-broker processes
+3. Wait up to 5s for children to exit, then SIGKILL stragglers
+4. Close WebSocket connection
+5. Flush any pending log writes
+6. Exit 0
+
+### Continuity Protocol
+
+When the CLI writes a `KIND: continuity` outbox file:
+- `ACTION: save` — Forward the body to relaycast as a DM to self (persisted server-side)
+- `ACTION: load` — Fetch last continuity save from relaycast and inject into CLI
+- `ACTION: uncertain` — Forward as a tagged DM to self for future reference
+
+### Channel Subscription Management
+
+- On startup, subscribe to channels from `--channels` flag (default: `general`)
+- Spawned children inherit parent's `--api-key` but get their own channel subscriptions (default: `general` only)
+- Dynamic subscription changes via outbox files: `KIND: subscribe` / `KIND: unsubscribe` with channel name in body
+- On WebSocket reconnect, re-subscribe to all active channels
+
+### Logging
+
+- Uses `tracing` + `tracing-subscriber` (existing)
+- New log targets: `relay_broker::relaycast`, `relay_broker::ws_client`, `relay_broker::scheduler`, `relay_broker::spawner`
+- Connection events logged at INFO level
+- Message injection logged at DEBUG level
+- Auth flow logged at DEBUG level (tokens redacted)
+- `--json-output` flag emits structured JSON events on stderr (existing behavior, extended with new event types)
+
 ---
 
 ## Injection Scheduler (enhanced from current queue)
@@ -193,6 +247,7 @@ OPTIONS:
   --spawner <NAME>        Parent agent name (set by parent on spawn)
   --human-cooldown <MS>   Pause injection after human input (default: 3000)
   --coalesce-window <MS>  Message coalescing window (default: 500)
+  --outbox-buffer <N>     Max buffered outbox messages when disconnected (default: 500)
 
   # Inherited from current relay-broker:
   --idle-timeout <MS>     Silence before marking idle (default: 5000)
@@ -209,42 +264,71 @@ EXAMPLES:
   relay-broker --api-key rk_live_xxx codex
 ```
 
+### How `relay run` Invokes relay-broker
+
+The Node.js `relay run` command becomes a thin launcher:
+
+1. Find the `relay-broker` binary (PATH lookup, then `~/.npm/bin/relay-broker`, then adjacent `./relay-broker/target/release/relay-broker`)
+2. Pass through all CLI arguments: `relay run claude --name lead` → `relay-broker --name lead claude`
+3. `execvp` (replace process) — the Node.js process exits, relay-broker owns the terminal
+4. If relay-broker binary not found, print install instructions and exit 1
+
 ---
 
 ## What Gets Deleted from Node.js
 
 ### Entire packages deleted
 
-| Package | Lines (approx) | Reason |
-|---------|----------------|--------|
-| packages/storage | ~3,000 | relaycast persists |
-| packages/benchmark | ~500 | benchmarks dead system |
+| Package | Lines | Reason |
+|---------|-------|--------|
+| packages/storage | 5,647 | relaycast persists |
+| packages/benchmark | 1,888 | benchmarks dead system |
 
-### Daemon package gutted (~80% deleted)
+### Daemon package gutted (~90% deleted)
 
 | File | Lines | Status | Reason |
 |------|-------|--------|--------|
-| server.ts | ~800 | DELETE | local daemon — relaycast replaces |
-| router.ts | ~1,800 | DELETE | message routing — relaycast replaces |
-| connection.ts | ~600 | DELETE | connection FSM — relaycast replaces |
-| ws-connection.ts | 414 | DELETE | WebSocket adapter — not needed |
-| hosted-daemon.ts | 724 | DELETE | hosted daemon — relaycast replaces |
-| hosted-runner.ts | 1,015 | DELETE | Node.js orchestrator — relay-broker replaces |
-| relaycast-injector.ts | 532 | DELETE | Node.js bridge — relay-broker replaces |
-| connector.ts | 658 | DELETE | Node.js bridge — relay-broker replaces |
-| pty-spawner.ts | ~280 | DELETE | Node.js spawn utils — relay-broker replaces |
-| outbox-parser.ts | ~85 | DELETE | moved to Rust |
-| orchestrator.ts | ~800 | DELETE | workspace mgmt — relaycast replaces |
-| workspace-manager.ts | ~400 | DELETE | workspace mgmt — relaycast replaces |
-| agent-manager.ts | ~500 | DELETE | agent mgmt — relaycast replaces |
-| cloud-sync.ts | ~300 | DELETE | auto-sync via relaycast |
-| agent-registry.ts | ~400 | DELETE | relaycast tracks agents |
-| registry.ts | ~200 | DELETE | relaycast tracks agents |
-| consensus.ts | ~600 | DELETE | not needed |
-| agent-signing.ts | ~300 | DELETE | not needed |
-| enhanced-features.ts | ~400 | DELETE | not needed |
+| server.ts | 1,978 | DELETE | local daemon — relaycast replaces |
+| router.ts | 1,925 | DELETE | message routing — relaycast replaces |
+| orchestrator.ts | 1,374 | DELETE | workspace mgmt — relaycast replaces |
+| api.ts | 1,012 | DELETE | daemon HTTP API — relaycast replaces |
+| hosted-runner.ts | 950 | DELETE | Node.js orchestrator — relay-broker replaces |
+| cli-auth.ts | 906 | DELETE | daemon auth — relaycast handles auth |
+| cloud-sync.ts | 902 | DELETE | auto-sync via relaycast |
+| consensus.ts | 848 | DELETE | not needed |
+| connector.ts | 766 | DELETE | Node.js bridge — relay-broker replaces |
+| hosted-daemon.ts | 719 | DELETE | hosted daemon — relaycast replaces |
+| agent-signing.ts | 707 | DELETE | not needed |
+| agent-manager.ts | 677 | DELETE | agent mgmt — relaycast replaces |
+| connection.ts | 561 | DELETE | connection FSM — relaycast replaces |
+| relaycast-injector.ts | 528 | DELETE | Node.js bridge — relay-broker replaces |
+| consensus-integration.ts | 510 | DELETE | not needed |
+| sync-queue.ts | 477 | DELETE | sync/queue — relaycast replaces |
+| repo-manager.ts | 468 | DELETE | repo management — relaycast replaces |
+| ws-connection.ts | 409 | DELETE | WebSocket adapter — not needed |
+| enhanced-features.ts | 390 | DELETE | not needed |
+| workspace-manager.ts | 369 | DELETE | workspace mgmt — relaycast replaces |
+| spawn-manager.ts | 362 | DELETE | spawning — relay-broker replaces |
+| pty-spawner.ts | 313 | DELETE | Node.js spawn utils — relay-broker replaces |
+| agent-registry.ts | 284 | DELETE | relaycast tracks agents |
+| auth.ts | 276 | DELETE | daemon auth — relaycast replaces |
+| channel-membership-store.ts | 217 | DELETE | relaycast tracks membership |
+| rate-limiter.ts | 172 | DELETE | relaycast handles rate limiting |
+| delivery-tracker.ts | 145 | DELETE | relaycast tracks delivery |
+| outbox-parser.ts | 86 | DELETE | moved to Rust |
+| registry.ts | 8 | DELETE | relaycast tracks agents |
+| orchestrator.test.ts | 231 | DELETE | tests dead code |
+| router.test.ts | 181 | DELETE | tests dead code |
+| outbox-parser.test.ts | 98 | DELETE | tests dead code |
 
-**Total deleted from daemon: ~9,800 lines**
+**Daemon files kept:**
+
+| File | Lines | Reason |
+|------|-------|--------|
+| index.ts | 73 | MODIFY — re-export only what survives |
+| types.ts | 158 | KEEP — shared types used by MCP/SDK |
+
+**Total deleted from daemon: ~16,840 lines**
 
 ### CLI commands deleted/simplified
 
@@ -256,20 +340,42 @@ EXAMPLES:
 | `relay gc` | DELETE — no local state |
 | `relay serve` | DELETE — no hosted daemon |
 | `relay connect` | DELETE — no connector |
+| `relay run` | REFACTOR — becomes thin launcher for relay-broker |
+| `relay spawn` | DELETE — relay-broker handles spawning |
+| `relay cloud` | DELETE — no cloud-sync |
+| `relay bridge` | REVIEW — may still be needed for cross-project relay |
 
 ### SDK simplified
 
-- Delete Unix socket transport
-- Refactor RelayClient to use relaycast API
-- ~40% of sdk code removed
+- Delete Unix socket transport (`socket-transport.ts`, 115 lines)
+- Keep/enhance WebSocket transport (`websocket-transport.ts`, 245 lines)
+- Refactor `client.ts` (2,164 lines) to use relaycast API directly
+- Review `browser-client.ts` (985 lines) for relaycast compatibility
+- Total SDK: 17 files, 5,907 lines — ~40% deleted/refactored
+
+### Packages NOT mentioned above — disposition
+
+| Package | Lines | Decision | Reason |
+|---------|-------|----------|--------|
+| packages/protocol | 2,701 | KEEP | Message types still used by MCP/SDK |
+| packages/bridge | ~800 | DELETE | Local bridging — relay-broker replaces |
+| packages/acp-bridge | ~300 | DELETE | ACP bridge — relay-broker replaces |
+| packages/api-types | ~500 | KEEP | Type definitions for relaycast API |
+| packages/spawner | 621 | DELETE | Node.js spawning — relay-broker replaces |
+| packages/trajectory | 1,269 | KEEP | Work trajectory tracking (CLI tool) |
+| packages/state | 500 | REVIEW | May merge into continuity |
+| packages/user-directory | ~200 | KEEP | User directory service |
+| packages/cli-tester | ~300 | KEEP | CLI testing utilities |
+| packages/dashboard-server | ~400 | REFACTOR | Switch backend to relaycast API |
 
 ### What stays in Node.js
 
 | Component | Why |
 |-----------|-----|
 | `relay` CLI | Thin wrapper, shells out to relay-broker |
-| Dashboard web UI | User-facing, talks to relaycast API |
-| MCP server | Agent tool interface, refactored to relaycast backend |
+| Dashboard web UI | User-facing Next.js app, talks to relaycast API |
+| Dashboard server | Backend for dashboard, refactored to relaycast API |
+| MCP server | Agent tool interface (36 files, 4,697 lines), refactored to relaycast backend |
 | packages/wrapper | PTY orchestration utilities |
 | packages/config | Project configuration |
 | packages/utils | Name generation, command resolution |
@@ -279,6 +385,11 @@ EXAMPLES:
 | packages/policy | Agent behavior control |
 | packages/hooks | Event emission |
 | packages/telemetry | Usage analytics |
+| packages/protocol | Message types |
+| packages/api-types | Relaycast API type definitions |
+| packages/trajectory | Work trajectory tracking |
+| packages/user-directory | User directory service |
+| packages/cli-tester | CLI testing utilities |
 
 ---
 
@@ -291,7 +402,7 @@ EXAMPLES:
 **New Rust modules:**
 - `relaycast.rs` — HTTP client (reqwest): register, send DM, post message
 - `ws_client.rs` — WebSocket client (tokio-tungstenite): connect, subscribe, handle events
-- `auth.rs` — API key -> agent token flow, token caching
+- `auth.rs` — API key -> agent token flow, token caching, on-demand refresh
 
 **New dependencies (Cargo.toml):**
 ```toml
@@ -302,8 +413,8 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 **Deliverable:** Can run `relay-broker --api-key rk_live_xxx echo "hello"` and see the agent register + connect to relaycast WebSocket.
 
 **Agents:** 2 parallel
-- Agent A: HTTP client + auth flow + agent registration
-- Agent B: WebSocket client + event handling + reconnection logic
+- Agent A [claude]: HTTP client + auth flow + agent registration
+- Agent B [codex]: WebSocket client + event handling + reconnection logic
 
 ---
 
@@ -322,12 +433,12 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 **Deliverable:** Two relay-broker instances can message each other through relaycast. Agent A sends `->relay-file:msg`, Agent B sees it injected.
 
 **Agents:** 2 parallel
-- Agent C: Inbound path (WebSocket events -> injection queue)
-- Agent D: Outbound path (outbox watcher -> relaycast HTTP API)
+- Agent C [claude]: Inbound path (WebSocket events -> injection queue)
+- Agent D [codex]: Outbound path (outbox watcher -> relaycast HTTP API)
 
 ---
 
-### Wave 3: Injection Scheduler (human-aware queuing)
+### Wave 3: Injection Scheduler (human-aware queuing) — parallel with Wave 4
 
 **Goal:** Smart injection that respects human typing and coalesces burst messages
 
@@ -342,11 +453,11 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 **Deliverable:** Human typing pauses injection. Burst messages from same sender are coalesced.
 
 **Agents:** 1
-- Agent E: Scheduler implementation + stdin monitoring + coalescing logic
+- Agent E [claude]: Scheduler implementation + stdin monitoring + coalescing logic
 
 ---
 
-### Wave 4: Spawning (multi-agent)
+### Wave 4: Spawning (multi-agent) — parallel with Wave 3
 
 **Goal:** relay-broker can spawn child relay-broker processes
 
@@ -360,26 +471,30 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 **Deliverable:** `relay-broker claude` can spawn a child `relay-broker codex` via `->relay-file:spawn`. Both communicate through relaycast.
 
 **Agents:** 1
-- Agent F: Spawn/release lifecycle, child process management, cleanup on exit
+- Agent F [claude]: Spawn/release lifecycle, child process management, SIGCHLD handling, cleanup on exit
+
+**Note:** Escalated from Codex to Claude. Tokio signal handling + async child process reaping + cascading cleanup + auth propagation crosses the complexity threshold for a worker agent.
 
 ---
 
-### Wave 5: Socket Removal + CLI Rename
+### Wave 5: Socket Removal + Directory Rename
 
-**Goal:** Remove the Unix socket server, rename binary to relay-broker
+**Goal:** Remove the Unix socket server, rename binary and directory to relay-broker
 
 **Changes:**
 - `socket.rs` — DELETE entirely (no external injection needed)
-- `main.rs` — Remove socket server startup, remove socket-related CLI flags
-- `Cargo.toml` — Update binary name to `relay-broker`
-- Update all references across the codebase
+- `main.rs` — Remove socket server startup, remove socket-related CLI flags (`--socket`, `--name` for socket path)
+- `Cargo.toml` — Update `[[bin]] name` to `relay-broker`
+- Rename directory `relay-pty/` to `relay-broker/`
+- Update all references across the codebase (import paths, build scripts, CI, npm package)
+- Update `findRelayPtyBinary` references in Node.js to `findRelayBrokerBinary`
 
 **What stays from the socket protocol:** The internal InjectRequest/InjectResponse types stay — they just become in-memory structs passed between channels instead of JSON over a socket.
 
-**Deliverable:** Binary is `relay-broker`. No Unix socket. All injection is internal.
+**Deliverable:** Binary is `relay-broker`. Directory is `relay-broker/`. No Unix socket. All injection is internal.
 
 **Agents:** 1
-- Agent G: Socket removal, rename, reference updates
+- Agent G [codex]: Socket removal, directory rename, binary rename, reference updates
 
 ---
 
@@ -388,21 +503,25 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 **Goal:** Delete all Node.js code that relay-broker replaces
 
 **Deletions:**
-- packages/storage (entire package)
-- packages/benchmark (entire package)
-- packages/daemon: server.ts, router.ts, connection.ts, ws-connection.ts, hosted-daemon.ts, hosted-runner.ts, relaycast-injector.ts, connector.ts, pty-spawner.ts, outbox-parser.ts, orchestrator.ts, workspace-manager.ts, agent-manager.ts, cloud-sync.ts, agent-registry.ts, registry.ts, consensus.ts, agent-signing.ts, enhanced-features.ts
-- src/cli: remove `up`, `down`, `daemons`, `gc`, `serve`, `connect` commands
-- Update `relay run` to shell out to `relay-broker`
+- packages/storage (entire package, 5,647 lines)
+- packages/benchmark (entire package, 1,888 lines)
+- packages/bridge (entire package, ~800 lines)
+- packages/acp-bridge (entire package, ~300 lines)
+- packages/spawner (entire package, 621 lines)
+- packages/daemon: ALL files listed in the deletion table above (~16,840 lines)
+- src/cli: remove `up`, `down`, `daemons`, `gc`, `serve`, `connect`, `spawn`, `cloud` commands
+- Update `relay run` to exec relay-broker binary
 
 **Refactors:**
-- MCP server: switch backend from daemon to relaycast API
-- SDK: remove socket transport, simplify to relaycast
-- Dashboard: switch from daemon WebSocket to relaycast API
+- MCP server (36 files, 4,697 lines): switch backend from daemon to relaycast API
+- SDK (17 files, 5,907 lines): remove socket transport, simplify to relaycast
+- Dashboard server: switch from daemon WebSocket to relaycast API
+- packages/daemon/index.ts: re-export only types.ts
 
 **Agents:** 3 parallel
-- Agent H: Delete daemon files + storage package + benchmark
-- Agent I: Refactor CLI commands (delete dead commands, update `relay run`)
-- Agent J: Refactor MCP + SDK to use relaycast API
+- Agent H [codex]: Delete daemon files + storage + benchmark + bridge + acp-bridge + spawner packages
+- Agent I [codex]: Delete dead CLI commands, refactor `relay run` to exec relay-broker
+- Agent J [claude]: Refactor MCP + SDK + dashboard-server to use relaycast API
 
 ---
 
@@ -414,10 +533,11 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 - Rust: unit tests for relaycast client, ws_client, message_bridge, scheduler, spawner
 - Integration: two relay-broker instances messaging through relaycast
 - E2E: `relay run claude` works with the new relay-broker binary
+- Disconnection: verify buffering, reconnection, message redelivery
 
 **Agents:** 2 parallel
-- Agent K: Rust unit + integration tests
-- Agent L: E2E tests + CLI integration tests
+- Agent K [claude]: Integration tests: two relay-brokers through relaycast, spawn/release, disconnection
+- Agent L [codex]: Rust unit tests for new modules (relaycast.rs, ws_client.rs, scheduler.rs, spawner.rs)
 
 ---
 
@@ -463,7 +583,7 @@ Wave 2 (message bridge) ──────────────────�
   └─ Deliverable: Two relay-broker instances message each other through relaycast
 
 
-Wave 3 (injection scheduler) ──────────────────────────────────────────────
+Wave 3 (injection scheduler) — parallel with Wave 4 ──────────────────────
   |
   ├─ Lead-3 [claude]     Scheduler: priority, human-awareness, coalescing
   |                       WHY CLAUDE: Novel design work. No existing pattern to
@@ -476,37 +596,40 @@ Wave 3 (injection scheduler) ─────────────────
 
 Wave 4 (spawning) — parallel with Wave 3 ──────────────────────────────────
   |
-  ├─ Worker-3 [codex]    Spawner: fork child relay-broker, track PIDs, cleanup
-  |                       WHY CODEX: Well-defined behavior — parse spawn file,
-  |                       fork/exec with args, track PID, handle SIGCHLD, kill
-  |                       on release. Process management is mechanical.
+  ├─ Lead-4 [claude]     Spawner: fork child relay-broker, track PIDs, cleanup
+  |                       WHY CLAUDE: Escalated from Codex. Tokio signal handling
+  |                       for SIGCHLD, async child process reaping, cascading
+  |                       cleanup, and auth key propagation to children. Requires
+  |                       modifying main.rs + outbox_monitor.rs + new spawner.rs.
   |
   └─ Deliverable: relay-broker spawns child relay-broker via ->relay-file:spawn
 
 
 Wave 5 (socket removal + rename) ──────────────────────────────────────────
   |
-  ├─ Worker-4 [codex]    Delete socket.rs, remove socket CLI flags, rename binary
+  ├─ Worker-3 [codex]    Delete socket.rs, remove socket CLI flags, rename binary
+  |                       and directory from relay-pty to relay-broker
   |                       WHY CODEX: Mechanical deletion and find-replace. Clear
   |                       checklist: delete file, remove imports, update Cargo.toml,
-  |                       update references.
+  |                       rename directory, update references.
   |
-  └─ Deliverable: Binary is relay-broker. No Unix socket.
+  └─ Deliverable: Binary is relay-broker. Directory is relay-broker/. No Unix socket.
 
 
 Wave 6 (Node.js cleanup) ──────────────────────────────────────────────────
   |
-  ├─ Worker-5 [codex]    Delete daemon files + storage + benchmark packages
+  ├─ Worker-4 [codex]    Delete daemon files + storage + benchmark + bridge +
+  |                       acp-bridge + spawner packages
   |                       WHY CODEX: Pure deletion. Delete listed files, remove
-  |                       package.json entries, update index.ts exports. No design
+  |                       package.json entries, update monorepo config. No design
   |                       decisions.
   |
-  ├─ Worker-6 [codex]    Delete dead CLI commands, update relay run
-  |                       WHY CODEX: Remove up/down/daemons/gc/serve/connect
-  |                       commands from src/cli/index.ts. Update relay run to
-  |                       shell out to relay-broker. Mechanical edits.
+  ├─ Worker-5 [codex]    Delete dead CLI commands, refactor relay run
+  |                       WHY CODEX: Remove up/down/daemons/gc/serve/connect/spawn/
+  |                       cloud commands from src/cli/index.ts. Refactor relay run
+  |                       to exec relay-broker. Mechanical edits.
   |
-  ├─ Lead-4 [claude]     Refactor MCP + SDK to use relaycast API
+  ├─ Lead-5 [claude]     Refactor MCP + SDK + dashboard-server to relaycast API
   |                       WHY CLAUDE: Requires understanding MCP tool contracts,
   |                       SDK consumer expectations, and designing the new backend
   |                       integration. Not mechanical — needs judgment about what
@@ -517,12 +640,12 @@ Wave 6 (Node.js cleanup) ──────────────────�
 
 Wave 7 (testing) ──────────────────────────────────────────────────────────
   |
-  ├─ Lead-5 [claude]     Integration tests: two relay-brokers through relaycast
+  ├─ Lead-6 [claude]     Integration tests: two relay-brokers through relaycast
   |                       WHY CLAUDE: Designs test harness, manages test relaycast
   |                       environment, validates end-to-end message flow including
-  |                       spawn/release, coalescing, human-awareness.
+  |                       spawn/release, coalescing, human-awareness, disconnection.
   |
-  ├─ Worker-7 [codex]    Rust unit tests for new modules
+  ├─ Worker-6 [codex]    Rust unit tests for new modules
   |                       WHY CODEX: Each module has clear inputs/outputs.
   |                       relaycast.rs, ws_client.rs, scheduler.rs, spawner.rs
   |                       all have testable interfaces. Write tests against spec.
@@ -539,26 +662,26 @@ Wave 7 (testing) ─────────────────────
 | Lead-2 | 2 | claude | Integrate | Inbound message path into event loop |
 | Worker-2 | 2 | codex | Implement | Outbound outbox -> relaycast |
 | Lead-3 | 3 | claude | Design | Injection scheduler (novel) |
-| Worker-3 | 4 | codex | Implement | Process spawner |
-| Worker-4 | 5 | codex | Refactor | Socket removal + rename |
-| Worker-5 | 6 | codex | Delete | Daemon files + packages |
-| Worker-6 | 6 | codex | Delete | CLI commands cleanup |
-| Lead-4 | 6 | claude | Refactor | MCP + SDK backend swap |
-| Lead-5 | 7 | claude | Design | Integration test harness |
-| Worker-7 | 7 | codex | Implement | Unit tests |
+| Lead-4 | 4 | claude | Design | Process spawner + signal handling |
+| Worker-3 | 5 | codex | Refactor | Socket removal + rename |
+| Worker-4 | 6 | codex | Delete | Daemon files + packages |
+| Worker-5 | 6 | codex | Delete | CLI commands cleanup |
+| Lead-5 | 6 | claude | Refactor | MCP + SDK + dashboard backend swap |
+| Lead-6 | 7 | claude | Design | Integration test harness |
+| Worker-6 | 7 | codex | Implement | Unit tests |
 
 ### Resource Allocation
 
 ```
              Wave 1    Wave 2    Wave 3    Wave 4    Wave 5    Wave 6    Wave 7
-Claude        1         1         1         -         -         1         1      = 5 assignments
-Codex         1         1         -         1         1         2         1      = 7 assignments
+Claude        1         1         1         1         -         1         1      = 6 assignments
+Codex         1         1         -         -         1         2         1      = 6 assignments
                                                                                 ────────────────
-Parallel      2         2         1        [1]        1         3         2      Total: 12
-                                           ↑
-                                    runs parallel with Wave 3
+Parallel      2         2        [1]       [1]        1         3         2      Total: 12
+                                  ↑         ↑
+                                  └── run in parallel ──┘
 
-Claude:Codex ratio = 5:7 (42% lead, 58% worker)
+Claude:Codex ratio = 6:6 (50% lead, 50% worker)
 ```
 
 ### When to Escalate Worker -> Lead
@@ -572,17 +695,31 @@ A Codex worker should be replaced with Claude if:
 ### Dependencies Between Waves
 
 ```
-Wave 1 ─────► Wave 2 ─────► Wave 3 ─────► Wave 5 ─────► Wave 6 ─────► Wave 7
-                |                                           ▲
-                └──────────► Wave 4 ────────────────────────┘
+Wave 1 ─────► Wave 2 ─────┬─► Wave 3 ─┬──► Wave 5 ─────► Wave 6 ─────► Wave 7
+                           |            |
+                           └─► Wave 4 ──┘
 ```
 
 - Wave 2 needs Wave 1 (relaycast client must exist to bridge messages)
 - Wave 3 needs Wave 2 (scheduler needs working message flow)
-- Wave 4 needs Wave 2 (spawning needs working message flow), can parallel with Wave 3
+- Wave 4 needs Wave 2 (spawning needs working message flow), runs parallel with Wave 3
 - Wave 5 needs Waves 3+4 (socket removal needs all new paths working)
 - Wave 6 needs Wave 5 (don't delete Node.js until Rust is the runtime)
 - Wave 7 needs Wave 6 (test the final system)
+
+---
+
+## Decisions Made
+
+These design decisions are intentional and should not be revisited:
+
+| Decision | Rationale |
+|----------|-----------|
+| No "custom daemon" mode | relay-broker only talks to relaycast. Local-only mode is dropped. |
+| No configuration files | relay-broker is configured entirely via CLI flags and env vars. packages/config stays for the Node.js CLI layer only. |
+| exec, not spawn | `relay run` replaces its process with relay-broker via execvp. No Node.js parent process stays alive. |
+| Token refresh on failure | No background refresh thread. Re-register on 401. Simpler. |
+| Outbox buffer cap | 500 messages / 5MB max during disconnection. Prevents unbounded memory growth. |
 
 ---
 
@@ -598,7 +735,7 @@ Wave 1 ─────► Wave 2 ─────► Wave 3 ─────► Wa
 | src/spawner.rs | 4 | ~200 | Fork/exec child relay-broker, PID tracking |
 
 **Total new Rust: ~1,180 lines**
-**Total deleted Node.js: ~14,000+ lines**
+**Total deleted Node.js: ~26,000+ lines** (daemon ~16,840 + storage 5,647 + benchmark 1,888 + bridge ~800 + acp-bridge ~300 + spawner 621)
 
 ---
 
@@ -607,8 +744,11 @@ Wave 1 ─────► Wave 2 ─────► Wave 3 ─────► Wa
 | Risk | Mitigation |
 |------|------------|
 | relaycast API changes | Pin API version, integration tests |
-| WebSocket reliability | Exponential backoff reconnect (existing pattern) |
-| Human typing detection false positives | Configurable cooldown, conservative default |
-| Child process zombies | SIGCHLD handler, periodic PID reaping |
-| Binary size increase | reqwest + tungstenite add ~2MB, still under 5MB |
+| WebSocket reliability | Exponential backoff reconnect with jitter (1s-30s) |
+| Human typing detection false positives | Configurable cooldown, conservative 3s default |
+| Child process zombies | SIGCHLD handler, periodic PID reaping, graceful shutdown cascade |
+| Binary size increase | reqwest + tungstenite add ~4-5MB, total ~7-8MB |
 | Cross-platform | reqwest + tungstenite work on Linux/macOS/Windows |
+| relaycast downtime | Outbox buffer (500 msg / 5MB), CLI continues functioning, reconnect on recovery |
+| Token expiry mid-session | Re-register on 401, transparent to CLI |
+| Spawned agent auth | Parent passes --api-key to child, child registers independently |
