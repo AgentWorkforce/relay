@@ -1,0 +1,407 @@
+# Agent-Relay Slack Integration — Requirements Specification (v1)
+
+## 1. Overview
+
+Agent-Relay integrates with Slack to allow teams to collaborate with cloud-hosted AI agents through a conversational interface. Users mention `@agent-relay` in any configured channel to start a conversation. The Lead Agent engages in a back-and-forth dialogue to understand requirements, then coordinates a team of specialized agents to implement the solution and open pull requests.
+
+---
+
+## 2. Goals
+
+- Provide a natural conversational interface for building software through Slack
+- Support developers and non-developers equally—anyone can describe what they want
+- Enable secure GitHub access with channel-level repo configuration
+- Use a Lead Agent to engage users, generate PRDs, and coordinate implementation
+- Deliver working code as PRs, not just advice or documentation
+- Allow users to steer, pause, and adjust work mid-flight
+- Monitor PRs post-creation and respond to review feedback
+
+---
+
+## 3. Non-Goals (v1)
+
+- IDE-style editing in Slack
+- Support for non-GitHub providers
+- Auto-merge without human approval
+- Enterprise governance (SOC2, audit logs, RBAC)
+- Custom LLM fine-tuning
+- Scheduling or recurring tasks
+
+---
+
+## 4. Personas
+
+| Persona | Description |
+|---------|-------------|
+| **Human** | Any user in the Slack workspace who interacts with @agent-relay |
+| **Lead Agent** | The primary AI agent that engages users, generates PRDs, and orchestrates implementation |
+| **Sub-Agents** | Specialized agents spawned by Lead for specific tasks (Code, Test, Docs, etc.) |
+
+---
+
+## 5. Core Product Flow
+
+### 5.1 Starting a Conversation
+
+1. User posts in a configured channel mentioning `@agent-relay` with an idea or request
+2. Lead Agent opens a **thread** on that message
+3. Lead responds: *"How can I help you?"*
+
+### 5.2 Refinement Discussion
+
+4. User and Lead have a back-and-forth conversation in the thread
+5. Lead asks clarifying questions, suggests approaches, identifies constraints
+6. Discussion continues until the idea is well-defined
+
+### 5.3 Transition to Build
+
+7. When Lead believes the scope is clear, it asks: *"Are we ready to build? Want me to create a plan?"*
+8. User confirms: *"Yes"*
+
+### 5.4 PRD Generation & Approval
+
+9. Lead generates a **PRD** (Product Requirements Document) scaled to complexity:
+   - Simple requests → brief summary + task list
+   - Complex features → detailed requirements, technical approach, affected repos/files
+10. Lead posts PRD in the thread for user review
+11. User can request changes or approve: *"Looks good, let's build"*
+
+### 5.5 Implementation
+
+12. Lead spawns a team of sub-agents to implement the work
+13. Lead posts **periodic progress updates** in the thread as milestones complete
+14. User can **pause and adjust** by posting in the thread (e.g., *"Actually, change X"*)
+15. Lead pauses work, discusses the change, then resumes or re-plans
+
+### 5.6 PR Delivery
+
+16. When implementation completes, Lead opens PR(s) to the configured repos
+17. Lead posts PR link(s) in the thread
+18. **Multi-repo support**: One conversation can result in multiple PRs if the feature spans repos
+
+### 5.7 Post-PR Monitoring
+
+19. Lead monitors the PR for review comments
+20. If reviewers request changes, Lead can respond in the Slack thread and push fixes
+21. Conversation remains active until PR is merged or user closes it
+
+---
+
+## 6. Core Product Principles
+
+### Conversational First
+
+The primary interface is natural language conversation in threads. No commands required to start—just describe what you want.
+
+### PRD as Contract
+
+Nothing gets built without an approved PRD. This ensures alignment and gives users a chance to correct course before implementation.
+
+### User Stays in Control
+
+Users can pause, adjust, or cancel at any point. The Lead Agent is a collaborator, not an autonomous actor.
+
+### Slack = Conversation, Web = Configuration
+
+Slack is where work happens. The web console is for one-time setup: connecting GitHub, selecting repos, configuring channels
+
+---
+
+## 7. Architecture Overview
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│    Slack    │────▶│   Gateway   │────▶│ Lead Agent  │
+│  (Events)   │     │   (HTTP)    │     │             │
+└─────────────┘     └─────────────┘     └──────┬──────┘
+                                               │
+                           ┌───────────────────┼───────────────────┐
+                           ▼                   ▼                   ▼
+                    ┌────────────┐      ┌────────────┐      ┌────────────┐
+                    │ Code Agent │      │ Test Agent │      │ Docs Agent │
+                    └────────────┘      └────────────┘      └────────────┘
+                           │                   │                   │
+                           └───────────────────┼───────────────────┘
+                                               ▼
+                                        ┌────────────┐
+                                        │   GitHub   │
+                                        │  (PRs)     │
+                                        └────────────┘
+```
+
+---
+
+## 8. Workspace and Channel Model
+
+### Workspace Installation
+
+A workspace admin installs the Agent-Relay Slack app via OAuth. This grants the app permission to:
+- Receive mention events
+- Post messages and threads
+- Access user profiles for @mentions
+
+### Channel Configuration
+
+Before @agent-relay can be used in a channel, it must be configured with:
+- Which GitHub repos are available
+- Model preferences
+- Permission policies
+
+Configuration happens through the web console (see Onboarding Flow).
+
+### ChannelConfig Schema
+
+| Field | Type | Description |
+|-------|------|-------------|
+| workspaceId | string | Slack workspace ID |
+| channelId | string | Slack channel ID |
+| projectId | string | Internal project reference |
+| allowedRepos | string[] | GitHub repos this channel can access |
+| defaultRepo | string? | Default repo if not specified |
+| modelProvider | string | LLM provider (e.g., "anthropic") |
+| modelName | string | Model to use (e.g., "claude-sonnet-4-20250514") |
+| permissionPolicyId | string | What actions are allowed |
+
+---
+
+## 9. Onboarding Flow
+
+When @agent-relay is mentioned in an unconfigured channel:
+
+1. Lead responds: *"This channel isn't configured yet. [Set it up →]"* with a link
+2. User clicks through to web console
+3. **GitHub Connection**: Connect GitHub account or use existing connection
+4. **Repo Selection**: Choose which repos this channel can access
+5. **Defaults**: Set default repo, model preferences
+6. **Review & Activate**: Confirm settings and activate
+7. User returns to Slack, channel is now active
+
+---
+
+## 10. Lead Agent Behavior
+
+### Role
+
+The Lead Agent is the user's primary collaborator. It:
+- Engages in natural conversation to understand requirements
+- Asks clarifying questions before committing to a plan
+- Generates PRDs that serve as the contract for implementation
+- Spawns and coordinates sub-agents for implementation
+- Reports progress and handles mid-flight adjustments
+- Monitors PRs and responds to review feedback
+
+### Conversation States
+
+| State | Lead Behavior |
+|-------|---------------|
+| **Discovery** | Asking questions, understanding the request |
+| **Refinement** | Suggesting approaches, clarifying constraints |
+| **Ready Check** | Asking if user wants to proceed to PRD |
+| **PRD Review** | Presenting plan, awaiting approval |
+| **Implementation** | Posting progress updates, handling adjustments |
+| **PR Active** | Monitoring for review comments, pushing fixes |
+| **Complete** | PR merged or user closed conversation |
+
+### Sub-Agents
+
+Lead spawns specialized agents as needed:
+
+| Agent | Purpose |
+|-------|---------|
+| **Code** | Write implementation code |
+| **Test** | Write and run tests |
+| **Docs** | Update documentation |
+| **Review** | Review code before PR |
+| **Research** | Investigate codebase, find examples |
+
+### Progress Updates
+
+During implementation, Lead posts updates at key milestones:
+- "Starting work on task 1 of 4..."
+- "Finished implementing the API endpoint. Moving to tests..."
+- "Tests passing. Creating PR..."
+
+### Handling Adjustments
+
+If user posts during implementation:
+- Lead pauses active work
+- Discusses the requested change
+- Either incorporates it into the current plan or generates a revised PRD
+- Resumes implementation
+
+---
+
+## 11. Slack Interaction Model
+
+### Primary Interaction: Threads
+
+All substantive conversation happens in threads:
+- User mentions @agent-relay in channel → Lead opens thread
+- All back-and-forth happens in that thread
+- PRD, progress updates, and PR links posted to thread
+- Thread serves as the complete record of the conversation
+
+### Starting a Conversation
+
+```
+User: @agent-relay I want to add a dark mode toggle to the settings page
+      └── Lead: How can I help you? Tell me more about what you're imagining
+          for dark mode...
+          └── User: It should save the preference to localStorage and...
+              └── Lead: Got it. A few questions...
+```
+
+### Slash Commands (Secondary)
+
+| Command | Description |
+|---------|-------------|
+| `/agent-relay help` | Show available commands |
+| `/agent-relay status` | List active conversations in this channel |
+| `/agent-relay configure` | Open channel configuration |
+| `/agent-relay stop [thread]` | Cancel an active implementation |
+
+### Button Actions
+
+Some messages include action buttons:
+- **[Set it up →]** — Configure unconfigured channel
+- **[Approve Plan]** / **[Request Changes]** — PRD review
+- **[Pause]** / **[Cancel]** — During implementation
+
+---
+
+## 12. PRD Format
+
+The PRD (Product Requirements Document) is the contract between user and Lead Agent. Its detail scales with complexity.
+
+### Simple Request PRD
+
+```
+## Dark Mode Toggle
+
+**Summary**: Add a dark mode toggle to the settings page that persists to localStorage.
+
+**Tasks**:
+1. Add toggle component to SettingsPage
+2. Create useTheme hook with localStorage persistence
+3. Update CSS variables for dark theme
+4. Add tests for theme switching
+
+**Repos**: frontend (1 PR)
+```
+
+### Complex Feature PRD
+
+```
+## User Authentication System
+
+**Summary**: Implement JWT-based authentication with login, registration, and password reset.
+
+**Requirements**:
+- Users can register with email/password
+- Users can log in and receive JWT tokens
+- Tokens refresh automatically before expiry
+- Password reset via email link
+
+**Technical Approach**:
+- Backend: New /auth routes, User model, JWT middleware
+- Frontend: AuthContext, protected routes, login/register forms
+- Database: users table with hashed passwords
+
+**Affected Files**:
+- backend/src/routes/auth.ts (new)
+- backend/src/models/user.ts (new)
+- frontend/src/contexts/AuthContext.tsx (new)
+- frontend/src/pages/Login.tsx (new)
+
+**Risks**:
+- Email sending requires SMTP configuration
+- Need to decide on token expiry duration
+
+**Repos**: backend, frontend (2 PRs)
+```
+
+---
+
+## 13. GitHub Integration
+
+### Connection Model
+
+Each workspace connects to GitHub via a **GitHub App** installation:
+- Installed at the organization or user level
+- Grants access to selected repositories
+- Permissions: read code, create branches, open PRs, read/write PR comments
+
+### PR Workflow
+
+Lead Agent follows a PR-only workflow:
+1. Creates a feature branch from default branch
+2. Commits changes to feature branch
+3. Opens PR with description linking back to Slack thread
+4. Never pushes directly to main/master
+
+### Multi-Repo PRs
+
+When a feature spans repos:
+- Lead opens one PR per repo
+- PRs reference each other in descriptions
+- Lead posts all PR links in the Slack thread
+
+### PR Monitoring
+
+After opening a PR:
+- Lead subscribes to PR webhook events
+- When reviewers comment, Lead is notified
+- Lead can respond in Slack and push follow-up commits
+
+---
+
+## 14. Permissions and Policies
+
+### Roles
+
+| Role | Capabilities |
+|------|--------------|
+| **Admin** | Configure channels, manage GitHub connections, set policies |
+| **User** | Start conversations, approve PRDs, interact with Lead |
+
+### Permission Policies
+
+Policies control what Lead can do during implementation:
+
+| Policy | Description |
+|--------|-------------|
+| **pr-only** | Can only open PRs, never push to protected branches |
+| **limited-files** | Restrict changes to specific paths (e.g., `src/` only) |
+| **require-tests** | Implementation must include tests |
+
+---
+
+## 15. Edge Cases & Error Handling
+
+| Scenario | Lead Behavior |
+|----------|---------------|
+| **Unconfigured channel** | Posts setup link, does not proceed |
+| **No repo access** | Explains the issue, links to GitHub App settings |
+| **PR conflicts** | Notifies user in thread, offers to rebase or asks for help |
+| **Rate limited** | Pauses work, notifies user, resumes when limit clears |
+| **User goes silent** | After 24h of inactivity, Lead posts a gentle reminder |
+| **Implementation fails** | Reports error in thread, asks if user wants to retry or adjust |
+
+---
+
+## 16. Open Questions (v1)
+
+- **Budget controls**: Should there be limits on tokens/API calls per conversation?
+- **Multiple users in thread**: How to handle if multiple people respond—who has authority?
+- **Conversation timeout**: When does a conversation become "stale" and require restart?
+- **PR merge**: Should Lead offer to merge after approval, or always leave to humans?
+
+---
+
+## 17. Future Considerations (v2+)
+
+- Scheduled/recurring tasks ("every Monday, summarize open PRs")
+- Non-GitHub providers (GitLab, Bitbucket)
+- Enterprise governance (audit logs, SSO, RBAC)
+- Custom agent personas per channel
+- Slack Enterprise Grid support
