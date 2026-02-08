@@ -4713,4 +4713,32 @@ program
     }
   });
 
+// run - Run a CLI with relay message injection (hosted mode)
+program
+  .command('run')
+  .description('Run a CLI with relay messaging (replaces relay-pty wrapping)')
+  .argument('<command>', 'Command to run (e.g. claude, codex, gemini)')
+  .argument('[args...]', 'Arguments for the command')
+  .option('-n, --name <name>', 'Agent name')
+  .option('-u, --url <url>', 'Hosted daemon URL (default: RELAY_URL env var)')
+  .option('-t, --token <token>', 'Auth token (default: RELAY_TOKEN env var)')
+  .option('--format <format>', 'Message format: relay or plain', 'relay')
+  .action(async (command, args, options) => {
+    try {
+      const { runWithInjection } = await import('@agent-relay/daemon');
+      const code = await runWithInjection({
+        command,
+        args,
+        agentName: options.name,
+        url: options.url,
+        token: options.token,
+        messageFormat: options.format,
+      });
+      process.exit(code);
+    } catch (err: any) {
+      console.error('Failed to run:', err.message);
+      process.exit(1);
+    }
+  });
+
 program.parse();

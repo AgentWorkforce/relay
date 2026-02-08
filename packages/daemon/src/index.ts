@@ -51,3 +51,6 @@ export { SpawnManager, type SpawnManagerConfig } from './spawn-manager.js';
 export { HostedDaemon, type HostedDaemonConfig } from './hosted-daemon.js';
 export { WsConnection, type WsConnectionConfig, type WebSocketHandle } from './ws-connection.js';
 export { Connector, connect, type ConnectorConfig } from './connector.js';
+
+// Stdin injector (thin wrapper for hosted mode — replaces relay-pty)
+export { runWithInjection, type StdinInjectorConfig } from './stdin-injector.js';
