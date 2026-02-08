@@ -1862,6 +1862,7 @@ export class RelayClient {
       this.rejectPendingReleases(err);
       this.rejectPendingSendInputs(err);
       this.rejectPendingListWorkers(err);
+      this.clearPendingAgentReady();
     }
 
     if (envelope.payload.code === 'RESUME_TOO_OLD') {
@@ -1981,6 +1982,13 @@ export class RelayClient {
     for (const [agentName, pending] of this.pendingAgentReady.entries()) {
       clearTimeout(pending.timeoutHandle);
       pending.reject(error);
+      this.pendingAgentReady.delete(agentName);
+    }
+  }
+
+  private clearPendingAgentReady(): void {
+    for (const [agentName, pending] of this.pendingAgentReady.entries()) {
+      clearTimeout(pending.timeoutHandle);
       this.pendingAgentReady.delete(agentName);
     }
   }
