@@ -14,6 +14,7 @@ import type {
   SpawnResultPayload,
 } from '@agent-relay/protocol';
 import { RelayClient } from './client.js';
+import { RelayServerError } from './errors.js';
 
 describe('RelayClient', () => {
   describe('configuration', () => {
@@ -258,6 +259,38 @@ describe('RelayClient', () => {
       await expect(spawnPromise).rejects.toThrow('SpawnManager not enabled');
       expect((client as any).pendingSpawns.size).toBe(0);
       expect((client as any).pendingAgentReady.size).toBe(0);
+    });
+
+    it('invokes onError callback with structured error for server ERROR frames', async () => {
+      const onErrorMock = vi.fn();
+      const client = new RelayClient({
+        reconnect: false,
+        quiet: true,
+      });
+      client.onError = onErrorMock;
+      (client as any)._state = 'READY';
+
+      const errorEnvelope: Envelope<ErrorPayload> = {
+        v: 1,
+        type: 'ERROR',
+        id: 'err-test-structured',
+        ts: Date.now(),
+        payload: {
+          code: 'UNAUTHORIZED' as any,
+          message: 'Authentication failed',
+          fatal: false,
+        },
+      };
+
+      (client as any).processFrame(errorEnvelope);
+
+      expect(onErrorMock).toHaveBeenCalledTimes(1);
+      const errorArg = onErrorMock.mock.calls[0][0];
+      expect(errorArg).toBeInstanceOf(RelayServerError);
+      expect(errorArg.message).toBe('Authentication failed');
+      expect(errorArg.code).toBe('UNAUTHORIZED');
+      expect(errorArg.fatal).toBe(false);
+      expect(errorArg.envelope).toBe(errorEnvelope);
     });
   });
 
