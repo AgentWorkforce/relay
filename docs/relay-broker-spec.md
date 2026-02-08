@@ -264,12 +264,12 @@ EXAMPLES:
   relay-broker --api-key rk_live_xxx codex
 ```
 
-### How `relay run` Invokes relay-broker
+### How `agent-relay run` Invokes relay-broker
 
-The Node.js `relay run` command becomes a thin launcher:
+The Node.js `agent-relay run` command becomes a thin launcher:
 
 1. Find the `relay-broker` binary (PATH lookup, then `~/.npm/bin/relay-broker`, then adjacent `./relay-broker/target/release/relay-broker`)
-2. Pass through all CLI arguments: `relay run claude --name lead` → `relay-broker --name lead claude`
+2. Pass through all CLI arguments: `agent-relay run claude --name lead` → `relay-broker --name lead claude`
 3. `execvp` (replace process) — the Node.js process exits, relay-broker owns the terminal
 4. If relay-broker binary not found, print install instructions and exit 1
 
@@ -334,16 +334,16 @@ The Node.js `relay run` command becomes a thin launcher:
 
 | Command | Status |
 |---------|--------|
-| `relay up` | DELETE — no daemon |
-| `relay down` | DELETE — no daemon |
-| `relay daemons` | DELETE — no daemon instances |
-| `relay gc` | DELETE — no local state |
-| `relay serve` | DELETE — no hosted daemon |
-| `relay connect` | DELETE — no connector |
-| `relay run` | REFACTOR — becomes thin launcher for relay-broker |
-| `relay spawn` | DELETE — relay-broker handles spawning |
-| `relay cloud` | DELETE — no cloud-sync |
-| `relay bridge` | REVIEW — may still be needed for cross-project relay |
+| `agent-relay up` | DELETE — no daemon |
+| `agent-relay down` | DELETE — no daemon |
+| `agent-relay daemons` | DELETE — no daemon instances |
+| `agent-relay gc` | DELETE — no local state |
+| `agent-relay serve` | DELETE — no hosted daemon |
+| `agent-relay connect` | DELETE — no connector |
+| `agent-relay run` | REFACTOR — becomes thin launcher for relay-broker |
+| `agent-relay spawn` | DELETE — relay-broker handles spawning |
+| `agent-relay cloud` | DELETE — no cloud-sync |
+| `agent-relay bridge` | REVIEW — may still be needed for cross-project relay |
 
 ### SDK simplified
 
@@ -372,7 +372,7 @@ The Node.js `relay run` command becomes a thin launcher:
 
 | Component | Why |
 |-----------|-----|
-| `relay` CLI | Thin wrapper, shells out to relay-broker |
+| `agent-relay` CLI | Thin wrapper, shells out to relay-broker |
 | Dashboard web UI | User-facing Next.js app, talks to relaycast API |
 | Dashboard server | Backend for dashboard, refactored to relaycast API |
 | MCP server | Agent tool interface (36 files, 4,697 lines), refactored to relaycast backend |
@@ -510,7 +510,7 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 - packages/spawner (entire package, 621 lines)
 - packages/daemon: ALL files listed in the deletion table above (~16,840 lines)
 - src/cli: remove `up`, `down`, `daemons`, `gc`, `serve`, `connect`, `spawn`, `cloud` commands
-- Update `relay run` to exec relay-broker binary
+- Update `agent-relay run` to exec relay-broker binary
 
 **Refactors:**
 - MCP server (36 files, 4,697 lines): switch backend from daemon to relaycast API
@@ -520,7 +520,7 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 
 **Agents:** 3 parallel
 - Agent H [codex]: Delete daemon files + storage + benchmark + bridge + acp-bridge + spawner packages
-- Agent I [codex]: Delete dead CLI commands, refactor `relay run` to exec relay-broker
+- Agent I [codex]: Delete dead CLI commands, refactor `agent-relay run` to exec relay-broker
 - Agent J [claude]: Refactor MCP + SDK + dashboard-server to use relaycast API
 
 ---
@@ -532,7 +532,7 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 **Tests:**
 - Rust: unit tests for relaycast client, ws_client, message_bridge, scheduler, spawner
 - Integration: two relay-broker instances messaging through relaycast
-- E2E: `relay run claude` works with the new relay-broker binary
+- E2E: `agent-relay run claude` works with the new relay-broker binary
 - Disconnection: verify buffering, reconnection, message redelivery
 
 **Agents:** 2 parallel
@@ -624,9 +624,9 @@ Wave 6 (Node.js cleanup) ──────────────────�
   |                       package.json entries, update monorepo config. No design
   |                       decisions.
   |
-  ├─ Worker-5 [codex]    Delete dead CLI commands, refactor relay run
+  ├─ Worker-5 [codex]    Delete dead CLI commands, refactor agent-relay run
   |                       WHY CODEX: Remove up/down/daemons/gc/serve/connect/spawn/
-  |                       cloud commands from src/cli/index.ts. Refactor relay run
+  |                       cloud commands from src/cli/index.ts. Refactor agent-relay run
   |                       to exec relay-broker. Mechanical edits.
   |
   ├─ Lead-5 [claude]     Refactor MCP + SDK + dashboard-server to relaycast API
@@ -717,7 +717,7 @@ These design decisions are intentional and should not be revisited:
 |----------|-----------|
 | No "custom daemon" mode | relay-broker only talks to relaycast. Local-only mode is dropped. |
 | No configuration files | relay-broker is configured entirely via CLI flags and env vars. packages/config stays for the Node.js CLI layer only. |
-| exec, not spawn | `relay run` replaces its process with relay-broker via execvp. No Node.js parent process stays alive. |
+| exec, not spawn | `agent-relay run` replaces its process with relay-broker via execvp. No Node.js parent process stays alive. |
 | Token refresh on failure | No background refresh thread. Re-register on 401. Simpler. |
 | Outbox buffer cap | 500 messages / 5MB max during disconnection. Prevents unbounded memory growth. |
 
