@@ -473,8 +473,8 @@ function pidFilePathForSocket(socketPath: string): string {
 }
 
 program
-  .name('agent-relay')
-  .description('Agent-to-agent messaging')
+  .name('relay')
+  .description('Agent-to-agent messaging — run with no args to start the dashboard')
   .version(VERSION, '-V, --version', 'Output the version number');
 
 // create-agent - Wrap agent with real-time messaging (requires TTY)
@@ -4926,5 +4926,11 @@ program
       process.exit(1);
     }
   });
+
+// Default to 'dashboard' when no command is given
+// This makes `relay` equivalent to `relay dashboard`
+if (process.argv.length <= 2) {
+  process.argv.push('dashboard');
+}
 
 program.parse();
