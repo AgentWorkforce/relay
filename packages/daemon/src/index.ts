@@ -54,3 +54,9 @@ export { Connector, connect, type ConnectorConfig } from './connector.js';
 
 // Stdin injector (thin wrapper for hosted mode — replaces relay-pty)
 export { runWithInjection, type StdinInjectorConfig } from './stdin-injector.js';
+
+// Hosted runner (relay-pty + messaging backend bridge)
+export { HostedRunner, hostedRun, type HostedRunnerConfig } from './hosted-runner.js';
+
+// Relaycast injector (relaycast WebSocket → relay-pty socket injection)
+export { RelaycastInjector, type RelaycastInjectorConfig } from './relaycast-injector.js';

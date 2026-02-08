@@ -4713,26 +4713,43 @@ program
     }
   });
 
-// run - Run a CLI with relay message injection (hosted mode)
+// run - Run a CLI with relay messaging via relay-pty + messaging backend
+//
+// Auto-detects messaging backend:
+//   RELAYCAST_API_KEY → uses relaycast.dev (channels, DMs, threads)
+//   RELAY_URL          → uses custom hosted daemon (relay protocol)
+//
+// Examples:
+//   RELAYCAST_API_KEY=rk_live_... relay run claude
+//   RELAY_URL=wss://host/ws relay run claude
+//   relay run claude --name Alice --debug
+//
 program
   .command('run')
-  .description('Run a CLI with relay messaging (replaces relay-pty wrapping)')
+  .description('Run a CLI with relay messaging (relay-pty + relaycast or hosted daemon)')
   .argument('<command>', 'Command to run (e.g. claude, codex, gemini)')
   .argument('[args...]', 'Arguments for the command')
   .option('-n, --name <name>', 'Agent name')
-  .option('-u, --url <url>', 'Hosted daemon URL (default: RELAY_URL env var)')
+  .option('-u, --url <url>', 'Custom daemon URL (default: RELAY_URL env var)')
   .option('-t, --token <token>', 'Auth token (default: RELAY_TOKEN env var)')
-  .option('--format <format>', 'Message format: relay or plain', 'relay')
+  .option('--relaycast-key <key>', 'Relaycast API key (default: RELAYCAST_API_KEY env var)')
+  .option('--relaycast-token <token>', 'Relaycast agent token (default: RELAYCAST_AGENT_TOKEN env var)')
+  .option('--channels <channels>', 'Comma-separated channels to join (default: general)')
+  .option('--debug', 'Enable debug logging')
   .action(async (command, args, options) => {
     try {
-      const { runWithInjection } = await import('@agent-relay/daemon');
-      const code = await runWithInjection({
+      const { hostedRun } = await import('@agent-relay/daemon');
+      const channels = options.channels ? options.channels.split(',').map((c: string) => c.trim()) : undefined;
+      const code = await hostedRun({
         command,
         args,
         agentName: options.name,
         url: options.url,
         token: options.token,
-        messageFormat: options.format,
+        relaycastApiKey: options.relaycastKey,
+        relaycastAgentToken: options.relaycastToken,
+        channels,
+        debug: options.debug,
       });
       process.exit(code);
     } catch (err: any) {
