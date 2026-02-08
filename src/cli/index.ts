@@ -4619,6 +4619,175 @@ program
     }
   });
 
+// dashboard - The simplest entry point: start the dashboard and control everything from the UI
+//
+// This is the recommended way to use Agent Relay:
+//   relay dashboard
+//
+// The dashboard lets you:
+//   - Spawn agents (Claude, Codex, Gemini, etc.) with a click
+//   - Monitor all agents in real-time (status, logs, output)
+//   - Send messages between agents (DMs, channels, broadcasts)
+//   - Release agents when done
+//
+// Messaging is handled by relaycast (or custom daemon).
+// Agent spawning uses relay-pty locally for proven PTY injection.
+//
+program
+  .command('dashboard')
+  .description('Start the dashboard — spawn and control agents from the web UI')
+  .option('-p, --port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
+  .option('--relaycast-key <key>', 'Relaycast API key (default: RELAYCAST_API_KEY env var)')
+  .option('--url <url>', 'Custom daemon URL (default: RELAY_URL env var)')
+  .option('--token <token>', 'Auth token (default: RELAY_TOKEN env var)')
+  .option('--verbose', 'Enable verbose logging')
+  .option('--mock', 'Run with mock data (for development/demo)')
+  .action(async (options) => {
+    const port = parseInt(options.port, 10) || 3888;
+    const relaycastKey = options.relaycastKey || process.env.RELAYCAST_API_KEY;
+    const relayUrl = options.url || process.env.RELAY_URL;
+    const token = options.token || process.env.RELAY_TOKEN;
+
+    // Pass relaycast/relay config to environment so dashboard server picks it up
+    if (relaycastKey) process.env.RELAYCAST_API_KEY = relaycastKey;
+    if (relayUrl) process.env.RELAY_URL = relayUrl;
+    if (token) process.env.RELAY_TOKEN = token;
+
+    // Determine data directories
+    const home = homedir();
+    const dataDir = path.join(home, '.agent-relay');
+    const teamDir = path.join(dataDir, 'team');
+    const projectRoot = process.cwd();
+
+    // Ensure directories exist
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.mkdirSync(teamDir, { recursive: true });
+
+    console.log('Starting Agent Relay Dashboard...');
+    if (relaycastKey) {
+      console.log('Messaging: relaycast');
+    } else if (relayUrl) {
+      console.log(`Messaging: ${relayUrl}`);
+    } else {
+      console.log('Messaging: local (set RELAYCAST_API_KEY or RELAY_URL for remote messaging)');
+    }
+
+    // Try integrated mode first (if @agent-relay/dashboard-server is importable)
+    try {
+      const moduleName = '@agent-relay/dashboard-server';
+      const dashboardServer = await import(/* webpackIgnore: true */ moduleName) as {
+        startDashboard: (opts: {
+          port: number;
+          dataDir: string;
+          teamDir: string;
+          projectRoot: string;
+          enableSpawner?: boolean;
+          verbose?: boolean;
+        }) => Promise<number>;
+      };
+
+      const actualPort = await dashboardServer.startDashboard({
+        port,
+        dataDir,
+        teamDir,
+        projectRoot,
+        enableSpawner: true,
+        verbose: options.verbose,
+      });
+
+      console.log('');
+      console.log(`Dashboard: http://localhost:${actualPort}`);
+      console.log('');
+      console.log('Open in your browser to spawn and manage agents.');
+      console.log('Press Ctrl+C to stop.');
+
+      // Keep process alive
+      await new Promise<void>((resolve) => {
+        process.on('SIGINT', resolve);
+        process.on('SIGTERM', resolve);
+      });
+      process.exit(0);
+    } catch {
+      // Fall back to binary or npx
+    }
+
+    // Try starting via binary or npx
+    const dashboardArgs: string[] = [];
+    if (options.mock) {
+      dashboardArgs.push('--mock');
+    } else {
+      dashboardArgs.push(
+        '--integrated',
+        '--data-dir', dataDir,
+        '--team-dir', teamDir,
+        '--project-root', projectRoot,
+      );
+    }
+    dashboardArgs.push('--port', String(port));
+    if (options.verbose) dashboardArgs.push('--verbose');
+
+    const dashboardBinary = findDashboardBinary();
+    let proc: ReturnType<typeof spawnProcess>;
+
+    if (dashboardBinary) {
+      console.log(`Using: ${dashboardBinary}`);
+      proc = spawnProcess(dashboardBinary, dashboardArgs, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env },
+      });
+    } else {
+      console.log('Installing dashboard (first run only)...');
+      proc = spawnProcess('npx', [
+        '--yes',
+        '@agent-relay/dashboard-server',
+        ...dashboardArgs,
+      ], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env },
+      });
+    }
+
+    proc.stdout?.on('data', (data: Buffer) => {
+      const lines = data.toString().split('\n').filter(Boolean);
+      for (const line of lines) {
+        if (line.includes('listening') || line.includes('ready') || line.includes('Dashboard:')) {
+          console.log('');
+          console.log(`Dashboard: http://localhost:${port}`);
+          console.log('');
+          console.log('Open in your browser to spawn and manage agents.');
+          console.log('Press Ctrl+C to stop.');
+        } else {
+          console.log(`[dashboard] ${line}`);
+        }
+      }
+    });
+
+    proc.stderr?.on('data', (data: Buffer) => {
+      for (const line of data.toString().split('\n').filter(Boolean)) {
+        console.error(`[dashboard] ${line}`);
+      }
+    });
+
+    proc.on('error', (err) => {
+      console.error('Failed to start dashboard:', err.message);
+      console.error('Install with: npm install -g @agent-relay/dashboard-server');
+      process.exit(1);
+    });
+
+    // Clean up on exit
+    const shutdown = () => {
+      if (proc && !proc.killed) proc.kill('SIGTERM');
+      process.exit(0);
+    };
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+
+    // Wait for process to exit
+    proc.on('exit', (code) => {
+      process.exit(code ?? 0);
+    });
+  });
+
 // serve - Start a hosted daemon (WebSocket server)
 program
   .command('serve')
