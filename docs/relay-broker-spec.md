@@ -30,34 +30,26 @@ That's the entire user experience.
 
 ## User Experience: Zero Configuration
 
-The user never sees or thinks about relaycast. All cloud communication is handled seamlessly under the hood.
+The user never sees or thinks about relaycast. There is no login, no API key, no authentication step. All cloud communication is handled seamlessly under the hood.
 
-### First-time Setup (one-time)
-
-```
-agent-relay cloud login
-```
-
-Opens browser, authenticates, stores API key (`ar_live_...`) in `~/.agent-relay/cloud-config.json`. Done once.
-
-### Every Time After That
+### The Entire Setup
 
 ```
 agent-relay run claude
 ```
 
-Under the hood, this:
-1. `agent-relay` reads the stored API key from `~/.agent-relay/cloud-config.json`
-2. Passes it to relay-broker via environment variable (never visible to the user)
-3. relay-broker registers with relaycast, gets an agent token
-4. relay-broker connects WebSocket to relaycast
-5. relay-broker subscribes to channels
-6. CLI launches and is ready to send/receive messages
+That's it. On first run, relay-broker:
+1. Auto-registers with relaycast (generates a machine/project identity)
+2. Gets an agent token, caches it locally in `~/.agent-relay/relaycast.json`
+3. Connects WebSocket to relaycast
+4. Subscribes to channels
+5. CLI launches and is ready to send/receive messages
 
-The user sees none of steps 2-6. They just see their CLI start up.
+The user sees none of this. They just see their CLI start up.
 
 ### What the User Never Has To Do
 
+- Log in or authenticate
 - Type an API key or token
 - Know that relaycast exists
 - Configure a WebSocket URL
@@ -68,11 +60,10 @@ The user sees none of steps 2-6. They just see their CLI start up.
 ### Spawned Agents Are Equally Seamless
 
 When a CLI writes `->relay-file:spawn`, relay-broker:
-1. Reads the stored API key (same one from cloud-config.json)
-2. Passes it to the child relay-broker process
-3. Child registers itself with relaycast
-4. Child connects its own WebSocket
-5. Parent and child communicate through relaycast
+1. Passes the cached credentials to the child relay-broker process (via env)
+2. Child registers itself with relaycast
+3. Child connects its own WebSocket
+4. Parent and child communicate through relaycast
 
 The spawning agent just writes the outbox file. Everything else is automatic.
 
@@ -137,28 +128,37 @@ WS /v1/stream?token={agent-token}
 ### Auth Flow
 
 ```
-~/.agent-relay/cloud-config.json  (stored by `agent-relay cloud login`)
+First run:
+  relay-broker generates machine identity (machine ID + project hash)
         |
         v
-relay-broker reads API key (ar_live_...) automatically
+  POST /v1/agents --> api_key + agent_token
         |
         v
-POST /v1/agents --> agent_token (at_live_...)
+  Cache credentials in ~/.agent-relay/relaycast.json
         |
         v
-Use agent_token for all HTTP + WebSocket
+  Use agent_token for all HTTP + WebSocket
+
+Subsequent runs:
+  Read cached credentials from ~/.agent-relay/relaycast.json
+        |
+        v
+  POST /v1/agents --> agent_token (refresh)
+        |
+        v
+  Use agent_token for all HTTP + WebSocket
 ```
 
-The user never touches this flow. It happens silently on every `agent-relay run`.
+No user involvement at any point.
 
 ### Token Lifecycle
 
-- API key is read from `~/.agent-relay/cloud-config.json` on startup (set by `agent-relay cloud login`)
-- Agent tokens are obtained on startup via POST /v1/agents
+- On first run, relay-broker auto-registers and caches credentials locally
+- On subsequent runs, cached credentials are reused to obtain fresh agent tokens
 - On WebSocket disconnect + reconnect, re-register to get a fresh token
 - If an HTTP request returns 401, re-register and retry once
 - No background token refresh — tokens are refreshed on-demand at failure boundaries
-- If no API key is found, relay-broker prints: `Run 'agent-relay cloud login' first.` and exits 1
 
 ---
 
@@ -194,7 +194,7 @@ When the CLI writes a `KIND: continuity` outbox file:
 ### Channel Subscription Management
 
 - On startup, subscribe to channels from `--channels` flag (default: `general`)
-- Spawned children inherit parent's API key (via env var) but get their own channel subscriptions (default: `general` only)
+- Spawned children inherit parent's credentials (via env) but get their own channel subscriptions (default: `general` only)
 - Dynamic subscription changes via outbox files: `KIND: subscribe` / `KIND: unsubscribe` with channel name in body
 - On WebSocket reconnect, re-subscribe to all active channels
 
@@ -275,7 +275,7 @@ relay-broker (parent: "claude")
     |
     v
 fork/exec: relay-broker --spawner=claude codex
-                        (API key passed via env, inherited from parent)
+                        (credentials inherited from parent via env)
     |
     v
 relay-broker (child: "Worker1")
@@ -314,10 +314,6 @@ OPTIONS:
   --log-file <PATH>       Log file path
   --json-output           JSON events on stderr
 
-  # Advanced overrides (users should never need these):
-  --api-key <KEY>         Override API key (default: reads from ~/.agent-relay/cloud-config.json)
-  --api-url <URL>         Override API URL (default: https://api.relaycast.dev)
-
 EXAMPLES:
   relay-broker claude                                    # typical usage
   relay-broker --name lead --channels general,ops claude # named agent with channels
@@ -327,12 +323,12 @@ EXAMPLES:
 
 The Node.js `agent-relay run` command becomes a thin launcher:
 
-1. Read API key from `~/.agent-relay/cloud-config.json` — if missing, prompt: `Run 'agent-relay cloud login' first.`
-2. Find the `relay-broker` binary (PATH lookup, then `~/.npm/bin/relay-broker`, then adjacent `./relay-broker/target/release/relay-broker`)
-3. Set `RELAY_API_KEY` environment variable (relay-broker reads it, never shown to user)
-4. Pass through all CLI arguments: `agent-relay run claude --name lead` → `relay-broker --name lead claude`
-5. `execvp` (replace process) — the Node.js process exits, relay-broker owns the terminal
-6. If relay-broker binary not found, print install instructions and exit 1
+1. Find the `relay-broker` binary (PATH lookup, then `~/.npm/bin/relay-broker`, then adjacent `./relay-broker/target/release/relay-broker`)
+2. Pass through all CLI arguments: `agent-relay run claude --name lead` → `relay-broker --name lead claude`
+3. `execvp` (replace process) — the Node.js process exits, relay-broker owns the terminal
+4. If relay-broker binary not found, print install instructions and exit 1
+
+relay-broker handles its own registration and credential caching — `agent-relay run` has no auth responsibility.
 
 ---
 
@@ -779,6 +775,7 @@ These design decisions are intentional and should not be revisited:
 | No "custom daemon" mode | relay-broker only talks to relaycast. Local-only mode is dropped. |
 | No configuration files | relay-broker is configured entirely via CLI flags and env vars. packages/config stays for the Node.js CLI layer only. |
 | exec, not spawn | `agent-relay run` replaces its process with relay-broker via execvp. No Node.js parent process stays alive. |
+| No user authentication | relay-broker auto-registers with relaycast on first run. No login, no API key, no browser flow. Credentials cached in `~/.agent-relay/relaycast.json`. |
 | Token refresh on failure | No background refresh thread. Re-register on 401. Simpler. |
 | Outbox buffer cap | 500 messages / 5MB max during disconnection. Prevents unbounded memory growth. |
 
@@ -812,4 +809,4 @@ These design decisions are intentional and should not be revisited:
 | Cross-platform | reqwest + tungstenite work on Linux/macOS/Windows |
 | relaycast downtime | Outbox buffer (500 msg / 5MB), CLI continues functioning, reconnect on recovery |
 | Token expiry mid-session | Re-register on 401, transparent to CLI |
-| Spawned agent auth | Parent passes API key to child via env var, child registers independently |
+| Spawned agent auth | Parent passes credentials to child via env, child registers independently |
