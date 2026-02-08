@@ -473,7 +473,7 @@ function pidFilePathForSocket(socketPath: string): string {
 }
 
 program
-  .name('relay')
+  .name('agent-relay')
   .description('Agent-to-agent messaging — run with no args to start the dashboard')
   .version(VERSION, '-V, --version', 'Output the version number');
 
