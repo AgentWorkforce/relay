@@ -14,8 +14,10 @@
  * 10. Environment variable override
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import nodePath from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
 import {
   findRelayPtyBinary,
   getLastSearchPaths,
@@ -332,18 +334,40 @@ describe('findRelayPtyBinary - search path verification', () => {
   });
 
   describe('Environment variable override', () => {
-    it('should use RELAY_PTY_BINARY when file is executable', () => {
-      // Use an actual executable that exists on all Unix systems
-      // /bin/ls is guaranteed to exist and be executable
-      const executableFile = '/bin/ls';
-      process.env.RELAY_PTY_BINARY = executableFile;
+    let tmpDir: string;
 
-      const result = findRelayPtyBinary('/any/path');
+    beforeEach(() => {
+      tmpDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'relay-pty-env-test-'));
+    });
 
-      // Should return the env var path since the file is executable
-      expect(result).toBe(executableFile);
-
+    afterEach(() => {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
       delete process.env.RELAY_PTY_BINARY;
+    });
+
+    it('should use RELAY_PTY_BINARY when file is executable and platform-compatible', () => {
+      // Create a fake binary with correct magic bytes for the current platform
+      const binPath = nodePath.join(tmpDir, 'relay-pty');
+      const buf = Buffer.alloc(64);
+      if (process.platform === 'darwin') {
+        // Mach-O 64-bit little-endian magic
+        buf.writeUInt8(0xcf, 0);
+        buf.writeUInt8(0xfa, 1);
+        buf.writeUInt8(0xed, 2);
+        buf.writeUInt8(0xfe, 3);
+      } else {
+        // ELF magic
+        buf.writeUInt8(0x7f, 0);
+        buf.writeUInt8(0x45, 1);
+        buf.writeUInt8(0x4c, 2);
+        buf.writeUInt8(0x46, 3);
+      }
+      fs.writeFileSync(binPath, buf);
+      fs.chmodSync(binPath, 0o755);
+
+      process.env.RELAY_PTY_BINARY = binPath;
+      const result = findRelayPtyBinary('/any/path');
+      expect(result).toBe(binPath);
     });
 
     it('should fall back to normal search when RELAY_PTY_BINARY file does not exist', () => {
@@ -354,8 +378,6 @@ describe('findRelayPtyBinary - search path verification', () => {
 
       // Should have searched multiple paths (not just the env var)
       expect(paths.length).toBeGreaterThan(1);
-
-      delete process.env.RELAY_PTY_BINARY;
     });
   });
 
@@ -373,6 +395,108 @@ describe('findRelayPtyBinary - search path verification', () => {
       }
     });
   });
+});
+
+describe('isPlatformCompatibleBinary - cross-platform binary validation', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    clearBinaryCache();
+    tmpDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'relay-pty-test-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env.RELAY_PTY_BINARY;
+  });
+
+  function createFakeBinary(name: string, magicBytes: number[]): string {
+    const filePath = nodePath.join(tmpDir, name);
+    const buf = Buffer.alloc(64);
+    for (let i = 0; i < magicBytes.length; i++) {
+      buf[i] = magicBytes[i];
+    }
+    fs.writeFileSync(filePath, buf);
+    fs.chmodSync(filePath, 0o755);
+    return filePath;
+  }
+
+  // Mach-O 64-bit (as it appears on arm64/x64 little-endian systems)
+  const MACHO_CIGAM_64 = [0xcf, 0xfa, 0xed, 0xfe];
+  // Mach-O 64-bit native byte order
+  const MACHO_MAGIC_64 = [0xfe, 0xed, 0xfa, 0xcf];
+  // Universal/fat binary
+  const FAT_MAGIC = [0xca, 0xfe, 0xba, 0xbe];
+  // ELF magic: 7F 45 4C 46
+  const ELF_MAGIC = [0x7f, 0x45, 0x4c, 0x46];
+
+  it('should accept correct binary for current platform via RELAY_PTY_BINARY', () => {
+    const platform = process.platform;
+    const magic = platform === 'darwin' ? MACHO_CIGAM_64 : ELF_MAGIC;
+    const binPath = createFakeBinary('relay-pty', magic);
+    process.env.RELAY_PTY_BINARY = binPath;
+
+    const result = findRelayPtyBinary('/any/path');
+    expect(result).toBe(binPath);
+  });
+
+  it('should reject wrong-platform binary via RELAY_PTY_BINARY', () => {
+    const platform = process.platform;
+    // Use the opposite platform's magic bytes
+    const magic = platform === 'darwin' ? ELF_MAGIC : MACHO_CIGAM_64;
+    const binPath = createFakeBinary('relay-pty', magic);
+    process.env.RELAY_PTY_BINARY = binPath;
+
+    const result = findRelayPtyBinary('/any/path');
+    // Should NOT return the env override since binary is for wrong platform
+    expect(result).not.toBe(binPath);
+  });
+
+  it('should reject file too small to be a valid binary', () => {
+    const binPath = nodePath.join(tmpDir, 'relay-pty');
+    fs.writeFileSync(binPath, Buffer.from([0x00, 0x00])); // Only 2 bytes
+    fs.chmodSync(binPath, 0o755);
+    process.env.RELAY_PTY_BINARY = binPath;
+
+    const result = findRelayPtyBinary('/any/path');
+    expect(result).not.toBe(binPath);
+  });
+
+  if (process.platform === 'darwin') {
+    it('should accept MH_MAGIC_64 (native byte order) on macOS', () => {
+      const binPath = createFakeBinary('relay-pty', MACHO_MAGIC_64);
+      process.env.RELAY_PTY_BINARY = binPath;
+
+      const result = findRelayPtyBinary('/any/path');
+      expect(result).toBe(binPath);
+    });
+
+    it('should accept fat/universal binaries on macOS', () => {
+      const binPath = createFakeBinary('relay-pty', FAT_MAGIC);
+      process.env.RELAY_PTY_BINARY = binPath;
+
+      const result = findRelayPtyBinary('/any/path');
+      expect(result).toBe(binPath);
+    });
+  }
+
+  if (process.platform === 'linux') {
+    it('should reject Mach-O binaries on Linux', () => {
+      const binPath = createFakeBinary('relay-pty', MACHO_CIGAM_64);
+      process.env.RELAY_PTY_BINARY = binPath;
+
+      const result = findRelayPtyBinary('/any/path');
+      expect(result).not.toBe(binPath);
+    });
+
+    it('should reject fat/universal binaries on Linux', () => {
+      const binPath = createFakeBinary('relay-pty', FAT_MAGIC);
+      process.env.RELAY_PTY_BINARY = binPath;
+
+      const result = findRelayPtyBinary('/any/path');
+      expect(result).not.toBe(binPath);
+    });
+  }
 });
 
 describe('isPlatformSupported', () => {

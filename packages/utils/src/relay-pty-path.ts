@@ -93,7 +93,7 @@ export function getLastSearchPaths(): string[] {
 export function findRelayPtyBinary(callerDirname: string): string | null {
   // Check for explicit environment variable override first
   const envOverride = process.env.RELAY_PTY_BINARY;
-  if (envOverride && isExecutable(envOverride)) {
+  if (envOverride && isExecutable(envOverride) && isPlatformCompatibleBinary(envOverride)) {
     lastSearchPaths = [envOverride];
     return envOverride;
   }
@@ -266,7 +266,7 @@ export function findRelayPtyBinary(callerDirname: string): string | null {
   lastSearchPaths = candidates;
 
   for (const candidate of candidates) {
-    if (isExecutable(candidate)) {
+    if (isExecutable(candidate) && isPlatformCompatibleBinary(candidate)) {
       return candidate;
     }
   }
@@ -285,6 +285,59 @@ function isExecutable(filePath: string): boolean {
     // File doesn't exist or isn't executable
     return false;
   }
+}
+
+/**
+ * Check if a binary is compatible with the current platform by reading its magic bytes.
+ * Prevents using a macOS binary on Linux or vice versa, which would fail at runtime
+ * with cryptic errors like "Syntax error: word unexpected".
+ */
+function isPlatformCompatibleBinary(filePath: string): boolean {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const header = Buffer.alloc(4);
+    const bytesRead = fs.readSync(fd, header, 0, 4, 0);
+    if (bytesRead < 4) {
+      return false; // Too small to be a valid binary
+    }
+
+    const magic = header.readUInt32BE(0);
+    const platform = os.platform();
+
+    if (platform === 'darwin') {
+      return isMachOBinary(magic);
+    }
+    if (platform === 'linux') {
+      // ELF magic: 0x7f 'E' 'L' 'F'
+      return magic === 0x7f454c46;
+    }
+
+    // Unknown platform — don't block
+    return true;
+  } catch {
+    // Can't read file (e.g. execute-only permissions) — let execution attempt proceed
+    return true;
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* ignore close errors */ }
+    }
+  }
+}
+
+/**
+ * Check if a magic value corresponds to any valid Mach-O format.
+ * Handles all variants: 32/64-bit, native/byte-swapped, and fat/universal.
+ */
+function isMachOBinary(magic: number): boolean {
+  return (
+    magic === 0xcffaedfe || // MH_CIGAM_64 — 64-bit, byte-swapped (arm64/x64 LE files read as BE)
+    magic === 0xfeedfacf || // MH_MAGIC_64 — 64-bit, native byte order
+    magic === 0xcefaedfe || // MH_CIGAM    — 32-bit, byte-swapped
+    magic === 0xfeedface || // MH_MAGIC    — 32-bit, native byte order
+    magic === 0xcafebabe || // FAT_MAGIC   — universal/fat binary
+    magic === 0xbebafeca    // FAT_CIGAM   — universal/fat binary, byte-swapped
+  );
 }
 
 /**
