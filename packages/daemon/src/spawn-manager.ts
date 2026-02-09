@@ -13,6 +13,8 @@ import {
   type ReleaseResultPayload,
   type SendInputPayload,
   type SendInputResultPayload,
+  type SetModelPayload,
+  type SetModelResultPayload,
   type ListWorkersPayload,
   type ListWorkersResultPayload,
   type MessageType,
@@ -101,6 +103,7 @@ export class SpawnManager {
         task: payload.task,
         team: payload.team,
         cwd: payload.cwd,
+        model: payload.model,
         spawnerName: payload.spawnerName ?? spawnerName,
         interactive: payload.interactive,
         shadowMode: payload.shadowMode,
@@ -256,6 +259,48 @@ export class SpawnManager {
   }
 
   /**
+   * Handle a SET_MODEL message from a connection.
+   * Switches the model of a running worker and sends SET_MODEL_RESULT back.
+   */
+  async handleSetModel(connection: Connection, envelope: Envelope<SetModelPayload>): Promise<void> {
+    const payload = envelope.payload;
+    const requester = connection.agentName;
+
+    console.log(`[spawn-manager] SET_MODEL request from ${requester ?? 'unknown'}: ${payload.name} -> ${payload.model}`);
+
+    try {
+      const result = await this.spawner.setWorkerModel(
+        payload.name,
+        payload.model,
+        payload.timeoutMs ?? 30000,
+      );
+
+      const resultModel = result.normalizedModel ?? payload.model;
+
+      this.sendResult(connection, 'SET_MODEL_RESULT', envelope.id, {
+        replyTo: envelope.id,
+        success: result.success,
+        name: payload.name,
+        model: resultModel,
+        previousModel: result.previousModel,
+        error: result.error,
+      });
+
+      console.log(`[spawn-manager] SET_MODEL ${result.success ? 'succeeded' : 'failed'}: ${payload.name}${result.success ? ` (${result.previousModel ?? 'unknown'} -> ${resultModel})` : ''}`);
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err.message : String(err);
+      this.sendResult(connection, 'SET_MODEL_RESULT', envelope.id, {
+        replyTo: envelope.id,
+        success: false,
+        name: payload.name,
+        model: payload.model,
+        error,
+      });
+      console.error(`[spawn-manager] SET_MODEL error for ${payload.name}:`, error);
+    }
+  }
+
+  /**
    * Handle a LIST_WORKERS message from a connection.
    * Returns a list of active workers.
    */
@@ -291,6 +336,7 @@ export class SpawnManager {
       | SpawnResultPayload
       | ReleaseResultPayload
       | SendInputResultPayload
+      | SetModelResultPayload
       | ListWorkersResultPayload
   ): void {
     connection.send({
@@ -358,5 +404,12 @@ export class SpawnManager {
    */
   sendWorkerInput(name: string, data: string): boolean {
     return this.spawner.sendWorkerInput(name, data);
+  }
+
+  /**
+   * Set model for a running worker.
+   */
+  async setWorkerModel(name: string, model: string, timeoutMs?: number) {
+    return this.spawner.setWorkerModel(name, model, timeoutMs);
   }
 }

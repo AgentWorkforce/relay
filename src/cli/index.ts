@@ -2739,12 +2739,14 @@ program
   .option('--shadow-agent <profile>', 'Shadow agent profile to use')
   .option('--shadow-triggers <triggers>', 'When to trigger shadow (comma-separated: SESSION_END,CODE_WRITTEN,REVIEW_REQUEST,EXPLICIT_ASK,ALL_MESSAGES)')
   .option('--shadow-speak-on <triggers>', 'When shadow should speak (comma-separated, same values as --shadow-triggers)')
+  .option('--model <model>', 'Model override (e.g., opus, sonnet, haiku, o3, gemini-2.5-pro)')
   .action(async (name: string, cli: string, task: string | undefined, options: {
     port?: string;
     team?: string;
     spawner?: string;
     interactive?: boolean;
     cwd?: string;
+    model?: string;
     shadowMode?: string;
     shadowOf?: string;
     shadowAgent?: string;
@@ -2794,6 +2796,7 @@ program
       cli,
       task: finalTask,
       team: options.team,
+      model: options.model,
       spawnerName: options.spawner,
       interactive: options.interactive,
       cwd: options.cwd,
@@ -2826,6 +2829,7 @@ program
         cli: spawnRequest.cli,
         task: spawnRequest.task,
         team: spawnRequest.team,
+        model: spawnRequest.model,
         interactive: spawnRequest.interactive,
         cwd: spawnRequest.cwd,
         shadowMode: spawnRequest.shadowMode,
@@ -2965,6 +2969,53 @@ program
         console.log(`Run 'agent-relay up' to start the daemon.`);
       } else {
         console.error(`Failed to release ${name}: ${err.message}`);
+      }
+      process.exit(1);
+    }
+  });
+
+// set-model - Switch the model of a running spawned agent
+program
+  .command('set-model')
+  .description('Switch the model of a running spawned agent')
+  .argument('<name>', 'Agent name')
+  .argument('<model>', 'Target model (e.g., opus, sonnet, haiku)')
+  .option('--timeout <ms>', 'Idle wait timeout in milliseconds', '30000')
+  .action(async (name: string, model: string, options: { timeout?: string }) => {
+    const paths = getProjectPaths();
+    const timeoutMs = parseInt(options.timeout || '30000', 10);
+
+    try {
+      const client = new RelayClient({
+        socketPath: paths.socketPath,
+        agentName: '__cli_set_model__',
+        quiet: true,
+        reconnect: false,
+        maxReconnectAttempts: 0,
+        reconnectDelayMs: 0,
+        reconnectMaxDelayMs: 0,
+      });
+
+      await client.connect();
+
+      const result = await client.setWorkerModel(name, model, { timeoutMs }, timeoutMs + 15000);
+
+      await client.disconnect();
+
+      if (result.success) {
+        console.log(`Model switched for ${name}: ${result.previousModel || 'unknown'} → ${result.model || model}`);
+        process.exit(0);
+      } else {
+        console.error(`Failed to switch model for ${name}: ${result.error}`);
+        process.exit(1);
+      }
+    } catch (err: unknown) {
+      const errObj = err as { code?: string; message?: string };
+      if (errObj.code === 'ENOENT' || errObj.message?.includes('ECONNREFUSED')) {
+        console.error('Cannot connect to daemon. Is it running?');
+        console.log("Run 'agent-relay up' to start the daemon.");
+      } else {
+        console.error(`Failed to switch model for ${name}: ${errObj.message ?? String(err)}`);
       }
       process.exit(1);
     }
