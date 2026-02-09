@@ -106,7 +106,7 @@ export function validateModelForCli(
 
   const normalizedModel = config.normalizeModel ? config.normalizeModel(model) : model;
 
-  if (config.validModels && !config.validModels.includes(model.trim().toLowerCase())) {
+  if (config.validModels && !config.validModels.includes(normalizedModel)) {
     const displayModels = config.validModels.filter(m => !m.includes('-')); // Show short names only
     return {
       valid: false,
