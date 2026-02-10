@@ -558,8 +558,20 @@ export async function runDoctor(): Promise<void> {
   results.forEach((res) => printResult(res));
   console.log('');
 
-  const failed = results.some((r) => !r.ok);
-  console.log(`Status: ${failed ? 'Some checks failed ✗' : 'All checks passed ✓'}`);
+  const driverOk = availability.betterSqlite3 || availability.nodeSqlite;
+  const failed = results.some((r) => {
+    if (r.name === 'better-sqlite3' || r.name === 'node:sqlite') {
+      return !driverOk;
+    }
+    return !r.ok;
+  });
+  const hasWarnings = results.some((r) => !r.ok) && !failed;
+  const statusMessage = failed
+    ? 'Some checks failed ✗'
+    : hasWarnings
+      ? 'Checks passed with warnings ⚠'
+      : 'All checks passed ✓';
+  console.log(`Status: ${statusMessage}`);
 
   process.exitCode = failed ? 1 : 0;
 }
