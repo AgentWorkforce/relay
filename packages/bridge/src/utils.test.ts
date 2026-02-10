@@ -2,7 +2,8 @@
  * Unit tests for Bridge Utilities
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
 import { parseTarget, escapeForShell, escapeForTmux, resolveAgentCwd } from './utils.js';
 
 describe('Bridge Utils', () => {
@@ -97,73 +98,138 @@ describe('Bridge Utils', () => {
   });
 
   describe('resolveAgentCwd', () => {
-    // Multi-repo workspace: /data/repos/relay is the project, /data/repos is the workspace root
-    const projectRoot = '/data/repos/relay';
+    let existsSyncSpy: ReturnType<typeof vi.spyOn>;
 
-    it('resolves sibling repo name to workspace root', () => {
-      const result = resolveAgentCwd(projectRoot, 'relaycast');
-      expect(result).toEqual({ cwd: '/data/repos/relaycast' });
+    beforeEach(() => {
+      existsSyncSpy = vi.spyOn(fs, 'existsSync');
     });
 
-    it('resolves same repo name back to project root', () => {
-      const result = resolveAgentCwd(projectRoot, 'relay');
-      expect(result).toEqual({ cwd: '/data/repos/relay' });
+    afterEach(() => {
+      existsSyncSpy.mockRestore();
     });
 
-    it('resolves subdirectory within sibling repo', () => {
-      const result = resolveAgentCwd(projectRoot, 'relaycast/packages/app');
-      expect(result).toEqual({ cwd: '/data/repos/relaycast/packages/app' });
+    // Helper: projectRoot IS a git repo (spawned agent inside a repo)
+    function mockIsGitRepo() {
+      existsSyncSpy.mockImplementation((p) => String(p).endsWith('.git'));
+    }
+
+    // Helper: projectRoot is NOT a git repo (lead/daemon at workspace root)
+    function mockNotGitRepo() {
+      existsSyncSpy.mockReturnValue(false);
+    }
+
+    // === Case 1: Spawned agent in a repo (projectRoot has .git) ===
+    describe('when projectRoot is a git repo (spawned agent)', () => {
+      const projectRoot = '/data/repos/relay';
+
+      beforeEach(() => mockIsGitRepo());
+
+      it('resolves sibling repo name to workspace root', () => {
+        const result = resolveAgentCwd(projectRoot, 'relaycast');
+        expect(result).toEqual({ cwd: '/data/repos/relaycast' });
+      });
+
+      it('resolves same repo name back to project root', () => {
+        const result = resolveAgentCwd(projectRoot, 'relay');
+        expect(result).toEqual({ cwd: '/data/repos/relay' });
+      });
+
+      it('resolves subdirectory within sibling repo', () => {
+        const result = resolveAgentCwd(projectRoot, 'relaycast/packages/app');
+        expect(result).toEqual({ cwd: '/data/repos/relaycast/packages/app' });
+      });
+
+      it('defaults to projectRoot when no cwd is provided', () => {
+        expect(resolveAgentCwd(projectRoot, undefined)).toEqual({ cwd: '/data/repos/relay' });
+      });
+
+      it('defaults to projectRoot when cwd is null', () => {
+        expect(resolveAgentCwd(projectRoot, null)).toEqual({ cwd: '/data/repos/relay' });
+      });
+
+      it('defaults to projectRoot when cwd is empty string', () => {
+        expect(resolveAgentCwd(projectRoot, '')).toEqual({ cwd: '/data/repos/relay' });
+      });
+
+      it('rejects path traversal above workspace root', () => {
+        const result = resolveAgentCwd(projectRoot, '../../etc/passwd');
+        expect(result).toHaveProperty('error');
+        expect((result as { error: string }).error).toContain('must be within the workspace root');
+      });
+
+      it('allows workspace root itself', () => {
+        const result = resolveAgentCwd(projectRoot, '.');
+        expect(result).toEqual({ cwd: '/data/repos' });
+      });
     });
 
-    it('defaults to projectRoot when no cwd is provided', () => {
-      const result = resolveAgentCwd(projectRoot, undefined);
-      expect(result).toEqual({ cwd: '/data/repos/relay' });
+    // === Case 2: Lead/daemon at workspace root (no .git) ===
+    describe('when projectRoot is the workspace root (lead/daemon)', () => {
+      const projectRoot = '/data/repos';
+
+      beforeEach(() => mockNotGitRepo());
+
+      it('resolves repo name correctly', () => {
+        const result = resolveAgentCwd(projectRoot, 'relaycast');
+        expect(result).toEqual({ cwd: '/data/repos/relaycast' });
+      });
+
+      it('resolves another repo name', () => {
+        const result = resolveAgentCwd(projectRoot, 'relay');
+        expect(result).toEqual({ cwd: '/data/repos/relay' });
+      });
+
+      it('resolves subdirectory within a repo', () => {
+        const result = resolveAgentCwd(projectRoot, 'relay/packages/bridge');
+        expect(result).toEqual({ cwd: '/data/repos/relay/packages/bridge' });
+      });
+
+      it('defaults to projectRoot when no cwd', () => {
+        expect(resolveAgentCwd(projectRoot, undefined)).toEqual({ cwd: '/data/repos' });
+      });
+
+      it('rejects path traversal', () => {
+        const result = resolveAgentCwd(projectRoot, '../etc/passwd');
+        expect(result).toHaveProperty('error');
+      });
+
+      it('allows workspace root itself', () => {
+        const result = resolveAgentCwd(projectRoot, '.');
+        expect(result).toEqual({ cwd: '/data/repos' });
+      });
     });
 
-    it('defaults to projectRoot when cwd is null', () => {
-      const result = resolveAgentCwd(projectRoot, null);
-      expect(result).toEqual({ cwd: '/data/repos/relay' });
-    });
+    // === Case 3: Single-repo local setup ===
+    describe('single-repo local setup', () => {
+      const projectRoot = '/home/user/myproject';
 
-    it('defaults to projectRoot when cwd is empty string', () => {
-      const result = resolveAgentCwd(projectRoot, '');
-      expect(result).toEqual({ cwd: '/data/repos/relay' });
-    });
+      it('defaults correctly (with .git)', () => {
+        mockIsGitRepo();
+        expect(resolveAgentCwd(projectRoot, undefined)).toEqual({ cwd: '/home/user/myproject' });
+      });
 
-    it('rejects path traversal above workspace root', () => {
-      const result = resolveAgentCwd(projectRoot, '../../etc/passwd');
-      expect(result).toHaveProperty('error');
-      expect((result as { error: string }).error).toContain('must be within the workspace root');
-    });
+      it('resolves sibling when projectRoot is a repo', () => {
+        mockIsGitRepo();
+        const result = resolveAgentCwd(projectRoot, 'other-project');
+        expect(result).toEqual({ cwd: '/home/user/other-project' });
+      });
 
-    it('rejects traversal with ../', () => {
-      const result = resolveAgentCwd(projectRoot, '../../../tmp');
-      expect(result).toHaveProperty('error');
-    });
+      it('resolves same dir name when projectRoot is a repo', () => {
+        mockIsGitRepo();
+        const result = resolveAgentCwd(projectRoot, 'myproject');
+        expect(result).toEqual({ cwd: '/home/user/myproject' });
+      });
 
-    it('allows workspace root itself (parent dir)', () => {
-      // CWD: "." resolves to /data/repos (the workspace root) which is allowed
-      const result = resolveAgentCwd(projectRoot, '.');
-      expect(result).toEqual({ cwd: '/data/repos' });
-    });
+      it('defaults correctly (without .git)', () => {
+        mockNotGitRepo();
+        expect(resolveAgentCwd(projectRoot, undefined)).toEqual({ cwd: '/home/user/myproject' });
+      });
 
-    // Single-repo setup: /home/user/myproject is the only project
-    it('works in single-repo setup — defaults correctly', () => {
-      const singleRoot = '/home/user/myproject';
-      const result = resolveAgentCwd(singleRoot, undefined);
-      expect(result).toEqual({ cwd: '/home/user/myproject' });
-    });
-
-    it('works in single-repo setup — resolves sibling name', () => {
-      const singleRoot = '/home/user/myproject';
-      const result = resolveAgentCwd(singleRoot, 'other-project');
-      expect(result).toEqual({ cwd: '/home/user/other-project' });
-    });
-
-    it('works in single-repo setup — resolves same dir name', () => {
-      const singleRoot = '/home/user/myproject';
-      const result = resolveAgentCwd(singleRoot, 'myproject');
-      expect(result).toEqual({ cwd: '/home/user/myproject' });
+      it('resolves child dir when projectRoot has no .git', () => {
+        mockNotGitRepo();
+        const result = resolveAgentCwd(projectRoot, 'subdir');
+        expect(result).toEqual({ cwd: '/home/user/myproject/subdir' });
+      });
     });
   });
 });

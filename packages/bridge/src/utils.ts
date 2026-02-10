@@ -69,9 +69,16 @@ export function escapeForTmux(str: string): string {
 /**
  * Resolve the working directory for a spawned agent.
  *
- * CWD is resolved relative to the **parent** of projectRoot (the workspace/repos root).
- * This allows spawning agents in sibling repos:
- *   projectRoot = /data/repos/relay, cwd = "relaycast" → /data/repos/relaycast
+ * Determines the workspace root (the directory containing repos), then resolves
+ * CWD relative to it. Two cases:
+ *
+ * 1. projectRoot IS a git repo (e.g., /data/repos/relay has .git)
+ *    → workspace root = parent dir (/data/repos)
+ *    → CWD: "relaycast" resolves to /data/repos/relaycast
+ *
+ * 2. projectRoot is NOT a git repo (e.g., /data/repos — the workspace root itself)
+ *    → workspace root = projectRoot (/data/repos)
+ *    → CWD: "relaycast" resolves to /data/repos/relaycast
  *
  * Returns { cwd: string } on success, or { error: string } if the path escapes
  * the workspace root (traversal protection).
@@ -86,15 +93,19 @@ export function resolveAgentCwd(
     return { cwd: projectRoot };
   }
 
-  const parentDir = path.dirname(projectRoot);
-  const resolvedCwd = path.resolve(parentDir, cwd);
-  const normalizedParentDir = path.resolve(parentDir);
-  const parentDirWithSep = normalizedParentDir.endsWith(path.sep)
-    ? normalizedParentDir
-    : normalizedParentDir + path.sep;
+  // Determine workspace root: if projectRoot is a git repo, its parent contains
+  // sibling repos. Otherwise projectRoot is already the workspace root.
+  const isRepo = fs.existsSync(path.join(projectRoot, '.git'));
+  const workspaceRoot = isRepo ? path.dirname(projectRoot) : projectRoot;
 
-  // Ensure the resolved cwd is within the parent directory to prevent traversal
-  if (resolvedCwd !== normalizedParentDir && !resolvedCwd.startsWith(parentDirWithSep)) {
+  const resolvedCwd = path.resolve(workspaceRoot, cwd);
+  const normalizedRoot = path.resolve(workspaceRoot);
+  const rootWithSep = normalizedRoot.endsWith(path.sep)
+    ? normalizedRoot
+    : normalizedRoot + path.sep;
+
+  // Ensure the resolved cwd is within the workspace root to prevent traversal
+  if (resolvedCwd !== normalizedRoot && !resolvedCwd.startsWith(rootWithSep)) {
     return { error: `Invalid cwd: "${cwd}" must be within the workspace root` };
   }
 
