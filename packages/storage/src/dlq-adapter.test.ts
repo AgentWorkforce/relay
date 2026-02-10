@@ -6,7 +6,6 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import Database from 'better-sqlite3';
 import {
   SQLiteDLQAdapter,
   InMemoryDLQAdapter,
@@ -15,6 +14,16 @@ import {
   type MessageEnvelope,
   type DLQFailureReason,
 } from './dlq-adapter.js';
+
+// Check if better-sqlite3 is available (it's an optional peer dependency)
+let Database: typeof import('better-sqlite3').default | null = null;
+let hasBetterSqlite3 = false;
+try {
+  Database = (await import('better-sqlite3')).default;
+  hasBetterSqlite3 = true;
+} catch {
+  // better-sqlite3 not available, SQLite tests will be skipped
+}
 
 // =============================================================================
 // Test Helpers
@@ -436,19 +445,26 @@ function runAdapterTests(
 // Run Tests for Each Adapter
 // =============================================================================
 
-runAdapterTests('SQLiteDLQAdapter', async () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dlq-test-'));
-  const dbPath = path.join(tmpDir, 'dlq.sqlite');
-  const db = new Database(dbPath);
+// Only run SQLite adapter tests if better-sqlite3 is available
+if (hasBetterSqlite3 && Database) {
+  runAdapterTests('SQLiteDLQAdapter', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dlq-test-'));
+    const dbPath = path.join(tmpDir, 'dlq.sqlite');
+    const db = new Database!(dbPath);
 
-  return {
-    adapter: new SQLiteDLQAdapter(db),
-    cleanup: async () => {
-      db.close();
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    },
-  };
-});
+    return {
+      adapter: new SQLiteDLQAdapter(db),
+      cleanup: async () => {
+        db.close();
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      },
+    };
+  });
+} else {
+  describe.skip('SQLiteDLQAdapter (better-sqlite3 not available)', () => {
+    it('skipped', () => {});
+  });
+}
 
 runAdapterTests('InMemoryDLQAdapter', async () => {
   return {
@@ -462,9 +478,10 @@ runAdapterTests('InMemoryDLQAdapter', async () => {
 // =============================================================================
 
 describe('createDLQAdapter', () => {
-  it('creates SQLite adapter', () => {
+  // SQLite adapter test only runs if better-sqlite3 is available
+  (hasBetterSqlite3 && Database ? it : it.skip)('creates SQLite adapter', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dlq-factory-'));
-    const db = new Database(path.join(tmpDir, 'test.db'));
+    const db = new Database!(path.join(tmpDir, 'test.db'));
 
     const adapter = createDLQAdapter({ type: 'sqlite', sqlite: db });
     expect(adapter).toBeInstanceOf(SQLiteDLQAdapter);
