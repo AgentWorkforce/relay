@@ -194,7 +194,8 @@ describe('doctor diagnostics', () => {
     const output = logs.join('\n');
     expect(output).toContain('node:sqlite');
     expect(output).toContain('Upgrade to Node 22+ or install better-sqlite3');
-    expect(process.exitCode).toBe(1);
+    // Exit 0 because better-sqlite3 is still available (mocked). The remediation message is shown as a warning, not a failure.
+    expect(process.exitCode).toBe(0);
   });
 
   it('fails gracefully when no SQLite drivers are available', async () => {
