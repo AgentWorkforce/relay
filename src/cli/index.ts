@@ -26,7 +26,7 @@ import { AgentSpawner, readWorkersMetadata, getWorkerLogsDir, selectShadowCli, e
 import type { SpawnRequest, SpawnResult } from '@agent-relay/bridge';
 import { generateAgentName, checkForUpdatesInBackground, checkForUpdates } from '@agent-relay/utils';
 import { getShadowForAgent, getProjectPaths, loadRuntimeConfig } from '@agent-relay/config';
-import { CLI_AUTH_CONFIG } from '@agent-relay/config/cli-auth-config';
+import { CLI_AUTH_CONFIG, stripAnsiCodes } from '@agent-relay/config/cli-auth-config';
 import { createStorageAdapter } from '@agent-relay/storage/adapter';
 import {
   initTelemetry,
@@ -4317,8 +4317,12 @@ program
       process.exit(1);
     }
 
+    // Get success/error patterns from CLI_AUTH_CONFIG for auto-detection
+    const successPatterns = providerConfig.successPatterns || [];
+    const errorPatterns = providerConfig.errorPatterns || [];
+
     const execInteractive = async (cmd: string, timeoutMs: number) => {
-      return await new Promise<{ exitCode: number | null; exitSignal: string | null }>((resolve, reject) => {
+      return await new Promise<{ exitCode: number | null; exitSignal: string | null; authDetected: boolean }>((resolve, reject) => {
         const cols = process.stdout.columns || 80;
         const rows = process.stdout.rows || 24;
         const term = process.env.TERM || 'xterm-256color';
@@ -4331,6 +4335,8 @@ program
 
             let exitCode: number | null = null;
             let exitSignal: string | null = null;
+            let authDetected = false;
+            let outputBuffer = ''; // Rolling buffer for pattern matching
 
             const stdin = process.stdin;
             const stdout = process.stdout;
@@ -4349,8 +4355,52 @@ program
             };
             stdin.on('data', onStdinData);
 
+            const cleanup = () => {
+              stdin.off('data', onStdinData);
+              stdout.off('resize', onResize);
+              try {
+                stdin.setRawMode?.(wasRaw);
+              } catch {
+                // ignore
+              }
+              stdin.pause();
+            };
+
+            // Auto-close the session when auth success is detected
+            const closeOnAuthSuccess = () => {
+              authDetected = true;
+              // Brief delay so the user sees the success message
+              setTimeout(() => {
+                cleanup();
+                clearTimeout(timer);
+                try {
+                  stream.close();
+                } catch {
+                  // ignore
+                }
+              }, 1500);
+            };
+
             stream.on('data', (data: Buffer) => {
               stdout.write(data);
+
+              // Accumulate output for pattern matching (keep last 2KB to avoid memory growth)
+              const text = data.toString();
+              outputBuffer += text;
+              if (outputBuffer.length > 2048) {
+                outputBuffer = outputBuffer.slice(-2048);
+              }
+
+              // Check for auth success patterns
+              if (!authDetected && successPatterns.length > 0) {
+                const clean = stripAnsiCodes(outputBuffer);
+                for (const pattern of successPatterns) {
+                  if (pattern.test(clean)) {
+                    closeOnAuthSuccess();
+                    break;
+                  }
+                }
+              }
             });
 
             stream.stderr.on('data', (data: Buffer) => {
@@ -4365,17 +4415,6 @@ program
               }
             };
             stdout.on('resize', onResize);
-
-            const cleanup = () => {
-              stdin.off('data', onStdinData);
-              stdout.off('resize', onResize);
-              try {
-                stdin.setRawMode?.(wasRaw);
-              } catch {
-                // ignore
-              }
-              stdin.pause();
-            };
 
             const timer = setTimeout(() => {
               cleanup();
@@ -4395,7 +4434,7 @@ program
             stream.on('close', () => {
               clearTimeout(timer);
               cleanup();
-              resolve({ exitCode, exitSignal });
+              resolve({ exitCode, exitSignal, authDetected });
             });
 
             stream.on('error', (e: unknown) => {
@@ -4408,11 +4447,11 @@ program
       });
     };
 
-    let execResult: { exitCode: number | null; exitSignal: string | null } | null = null;
+    let execResult: { exitCode: number | null; exitSignal: string | null; authDetected: boolean } | null = null;
     let execError: Error | null = null;
     try {
       console.log(yellow('Starting interactive authentication...'));
-      console.log(dim('Follow the prompts below. Press Ctrl+C in the remote CLI to abort.'));
+      console.log(dim('Follow the prompts below. The session will close automatically when auth completes.'));
       console.log('');
       execResult = await execInteractive(remoteCommand, TIMEOUT_MS);
     } catch (err) {
@@ -4427,7 +4466,8 @@ program
     // Step 2: Notify cloud completion (cloud will verify and persist credentials).
     console.log('');
     console.log('Finalizing authentication with cloud...');
-    const success = execError === null && execResult?.exitCode === 0;
+    // Auth is successful if: success patterns were detected, OR the process exited cleanly (code 0)
+    const success = execError === null && (execResult?.authDetected === true || execResult?.exitCode === 0);
     const providerForComplete =
       (typeof start.provider === 'string' && start.provider.trim().length > 0)
         ? start.provider.trim()
