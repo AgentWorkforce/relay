@@ -26,6 +26,7 @@ import { AgentSpawner, readWorkersMetadata, getWorkerLogsDir, selectShadowCli, e
 import type { SpawnRequest, SpawnResult } from '@agent-relay/bridge';
 import { generateAgentName, checkForUpdatesInBackground, checkForUpdates } from '@agent-relay/utils';
 import { getShadowForAgent, getProjectPaths, loadRuntimeConfig } from '@agent-relay/config';
+import { CLI_AUTH_CONFIG } from '@agent-relay/config/cli-auth-config';
 import { createStorageAdapter } from '@agent-relay/storage/adapter';
 import {
   initTelemetry,
@@ -4048,6 +4049,434 @@ program
 
     await wrapper.start();
     console.log(`Profiling ${agentName}... Press Ctrl+C to stop.`);
+  });
+
+// ============================================================================
+// auth - SSH-based interactive provider authentication (cloud workspaces)
+// ============================================================================
+
+program
+  .command('auth <provider>')
+  .description('Authenticate a provider CLI in a cloud workspace over SSH (interactive)')
+  .option('--workspace <id>', 'Workspace ID to authenticate in')
+  .option('--cloud-url <url>', 'Cloud API URL (overrides linked config and AGENT_RELAY_CLOUD_URL)')
+  .option('--timeout <seconds>', 'Timeout in seconds (default: 300)', '300')
+  .action(async (providerArg: string, options: { workspace?: string; cloudUrl?: string; timeout: string }) => {
+    const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`;
+    const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
+    const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
+    const red = (s: string) => `\x1b[31m${s}\x1b[0m`;
+    const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
+
+    const timeoutSeconds = parseInt(options.timeout, 10);
+    if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
+      console.log(red(`Invalid --timeout value: ${options.timeout}`));
+      process.exit(1);
+    }
+    const TIMEOUT_MS = timeoutSeconds * 1000;
+
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      console.log(red('This command requires an interactive terminal (TTY).'));
+      console.log(dim('Run it directly in your terminal (not piped/redirected).'));
+      process.exit(1);
+    }
+
+    const providerInput = providerArg.toLowerCase().trim();
+    const providerMap: Record<string, string> = {
+      claude: 'anthropic',
+      codex: 'openai',
+      gemini: 'google',
+    };
+    const provider = providerMap[providerInput] || providerInput;
+
+    const providerConfig = CLI_AUTH_CONFIG[provider];
+    if (!providerConfig) {
+      const known = Object.keys(CLI_AUTH_CONFIG).sort();
+      console.log(red(`Unknown provider: ${providerArg}`));
+      console.log('');
+      console.log('Examples:');
+      console.log(`  ${cyan('npx agent-relay auth claude --workspace=<ID>')}`);
+      console.log(`  ${cyan('npx agent-relay auth codex --workspace=<ID>')}`);
+      console.log(`  ${cyan('npx agent-relay auth gemini --workspace=<ID>')}`);
+      console.log('');
+      console.log('Supported provider ids:');
+      console.log(`  ${known.join(', ')}`);
+      process.exit(1);
+    }
+
+    const shellEscape = (s: string) => {
+      // Basic POSIX shell escaping for args (remote exec uses a shell).
+      if (s.length === 0) return "''";
+      if (/^[a-zA-Z0-9_\\/\\-\\.=:]+$/.test(s)) return s;
+      return `'${s.replace(/'/g, `'\"'\"'`)}'`;
+    };
+
+    const remoteCommandFallback = [providerConfig.command, ...providerConfig.args].map(shellEscape).join(' ');
+
+    const dataDir = process.env.AGENT_RELAY_DATA_DIR || path.join(homedir(), '.local', 'share', 'agent-relay');
+    const configPath = path.join(dataDir, 'cloud-config.json');
+
+    if (!fs.existsSync(configPath)) {
+      console.log(red('Cloud config not found.'));
+      console.log(dim(`Expected: ${configPath}`));
+      console.log('');
+      console.log(`Run ${cyan('agent-relay cloud link')} first to link this machine to Agent Relay Cloud.`);
+      process.exit(1);
+    }
+
+    let cloudConfig: { apiKey?: string; cloudUrl?: string };
+    try {
+      cloudConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as typeof cloudConfig;
+    } catch (err) {
+      console.log(red(`Failed to read cloud config: ${err instanceof Error ? err.message : String(err)}`));
+      process.exit(1);
+    }
+
+    if (!cloudConfig.apiKey) {
+      console.log(red('Cloud config is missing apiKey.'));
+      console.log(dim(`Config path: ${configPath}`));
+      console.log(`Re-link with ${cyan('agent-relay cloud link')}.`);
+      process.exit(1);
+    }
+
+    const CLOUD_URL = (options.cloudUrl || process.env.AGENT_RELAY_CLOUD_URL || cloudConfig.cloudUrl || 'https://agent-relay.com')
+      .replace(/\/$/, '');
+
+    const requestedWorkspaceId = options.workspace || process.env.WORKSPACE_ID;
+
+    console.log('');
+    console.log(cyan('═══════════════════════════════════════════════════'));
+    console.log(cyan('        Provider Authentication (SSH)'));
+    console.log(cyan('═══════════════════════════════════════════════════'));
+    console.log('');
+    console.log(`Provider: ${providerConfig.displayName} (${provider})`);
+    console.log(`Workspace: ${requestedWorkspaceId ? `${requestedWorkspaceId.slice(0, 8)}...` : '(default)'}`);
+    console.log(dim(`Cloud: ${CLOUD_URL}`));
+    console.log('');
+
+    // Step 1: Request SSH session info from cloud.
+    console.log('Requesting SSH session from cloud...');
+    type StartResponse = {
+      sessionId: string;
+      ssh: {
+        host: string;
+        port: number | string;
+        user: string;
+        password: string;
+      };
+      command?: string;
+      provider?: string;
+      workspaceId: string;
+      workspaceName?: string;
+      expiresAt?: string;
+    };
+
+    let start: StartResponse;
+    try {
+      const response = await fetch(`${CLOUD_URL}/api/auth/ssh/start`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${cloudConfig.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ provider, workspaceId: requestedWorkspaceId }),
+      });
+
+      if (!response.ok) {
+        let details = response.statusText;
+        try {
+          const json = await response.json() as { error?: string; message?: string };
+          details = json.error || json.message || details;
+        } catch {
+          try {
+            details = await response.text();
+          } catch {
+            // ignore
+          }
+        }
+        console.log(red(`Failed to start SSH auth session: ${details || response.statusText}`));
+        process.exit(1);
+      }
+
+      start = await response.json() as StartResponse;
+    } catch (err) {
+      console.log(red(`Failed to connect to cloud API: ${err instanceof Error ? err.message : String(err)}`));
+      process.exit(1);
+    }
+
+    const sshPort = typeof start.ssh?.port === 'string' ? parseInt(start.ssh.port, 10) : start.ssh?.port;
+    if (!start.sessionId || !start.workspaceId || !start.ssh?.host || !sshPort || !start.ssh.user || !start.ssh.password) {
+      console.log(red('Cloud returned invalid SSH session details.'));
+      process.exit(1);
+    }
+
+    const remoteCommand = (typeof start.command === 'string' && start.command.trim().length > 0)
+      ? start.command.trim()
+      : remoteCommandFallback;
+
+    console.log(green('✓ SSH session created'));
+    if (start.workspaceName) {
+      console.log(`Workspace: ${cyan(start.workspaceName)} (${start.workspaceId.slice(0, 8)}...)`);
+    } else {
+      console.log(`Workspace: ${start.workspaceId.slice(0, 8)}...`);
+    }
+    console.log(dim(`  SSH: ${start.ssh.user}@${start.ssh.host}:${sshPort}`));
+    console.log(dim(`  Command: ${remoteCommand}`));
+    console.log('');
+
+    const { Client } = await import('ssh2');
+    const net = await import('node:net');
+
+    const TUNNEL_PORT = 1455;
+    const sshClient = new Client();
+    let sshReady = false;
+    const tunnel: { server: ReturnType<typeof net.createServer> | null } = { server: null };
+
+    const sshReadyPromise = new Promise<void>((resolve, reject) => {
+      sshClient.on('ready', () => {
+        sshReady = true;
+
+        // Set up port forwarding for OAuth callbacks: localhost:1455 -> workspace:1455
+        tunnel.server = net.createServer((localSocket) => {
+          sshClient.forwardOut(
+            '127.0.0.1',
+            TUNNEL_PORT,
+            'localhost',
+            TUNNEL_PORT,
+            (err, stream) => {
+              if (err) {
+                localSocket.end();
+                return;
+              }
+              localSocket.pipe(stream).pipe(localSocket);
+            }
+          );
+        });
+
+        tunnel.server.on('error', (err: NodeJS.ErrnoException) => {
+          if (err.code === 'EADDRINUSE') {
+            console.log(dim(`Note: Port ${TUNNEL_PORT} in use, OAuth callbacks may not work.`));
+          }
+          // Non-fatal: resolve anyway so the auth command still runs.
+          // Device-flow providers don't need port forwarding.
+          resolve();
+        });
+
+        tunnel.server.listen(TUNNEL_PORT, '127.0.0.1', () => {
+          resolve();
+        });
+      });
+
+      sshClient.on('error', (err) => {
+        let msg: string;
+        if (err.message.includes('Authentication')) {
+          msg = 'SSH authentication failed.';
+        } else if (err.message.includes('ECONNREFUSED')) {
+          msg = `Cannot connect to SSH server at ${start.ssh.host}:${sshPort}. Is the workspace running and SSH enabled?`;
+        } else if (err.message.includes('ENOTFOUND') || err.message.includes('getaddrinfo')) {
+          msg = `Cannot resolve hostname: ${start.ssh.host}. Check network connectivity.`;
+        } else if (err.message.includes('ETIMEDOUT')) {
+          msg = `Connection timed out to ${start.ssh.host}:${sshPort}. Is the workspace running?`;
+        } else {
+          msg = `SSH error: ${err.message}`;
+        }
+        reject(new Error(msg));
+      });
+
+      sshClient.on('close', () => {
+        if (!sshReady) {
+          reject(new Error(`SSH connection to ${start.ssh.host}:${sshPort} closed unexpectedly.`));
+        }
+      });
+    });
+
+    console.log(yellow('Connecting via SSH...'));
+    console.log(dim(`  Tunnel: localhost:${TUNNEL_PORT} → workspace:${TUNNEL_PORT}`));
+    console.log(dim(`  Running: ${remoteCommand}`));
+    console.log('');
+
+    try {
+      sshClient.connect({
+        host: start.ssh.host,
+        port: sshPort,
+        username: start.ssh.user,
+        password: start.ssh.password,
+        readyTimeout: 10000,
+        // Workspace containers use ephemeral SSH hosts; skip host key checking.
+        hostVerifier: () => true,
+      });
+
+      await Promise.race([
+        sshReadyPromise,
+        new Promise<void>((_, reject) => setTimeout(() => reject(new Error('SSH connection timeout')), 15000)),
+      ]);
+    } catch (err) {
+      console.log(red(`Failed to connect via SSH: ${err instanceof Error ? err.message : String(err)}`));
+      if (tunnel.server) tunnel.server.close();
+      sshClient.end();
+      process.exit(1);
+    }
+
+    const execInteractive = async (cmd: string, timeoutMs: number) => {
+      return await new Promise<{ exitCode: number | null; exitSignal: string | null }>((resolve, reject) => {
+        const cols = process.stdout.columns || 80;
+        const rows = process.stdout.rows || 24;
+        const term = process.env.TERM || 'xterm-256color';
+
+        sshClient.exec(
+          cmd,
+          { pty: { term, cols, rows } },
+          (err, stream) => {
+            if (err) return reject(err);
+
+            let exitCode: number | null = null;
+            let exitSignal: string | null = null;
+
+            const stdin = process.stdin;
+            const stdout = process.stdout;
+            const stderr = process.stderr;
+
+            const wasRaw = (stdin as unknown as { isRaw?: boolean }).isRaw ?? false;
+            try {
+              stdin.setRawMode?.(true);
+            } catch {
+              // ignore
+            }
+            stdin.resume();
+
+            const onStdinData = (data: Buffer) => {
+              stream.write(data);
+            };
+            stdin.on('data', onStdinData);
+
+            stream.on('data', (data: Buffer) => {
+              stdout.write(data);
+            });
+
+            stream.stderr.on('data', (data: Buffer) => {
+              stderr.write(data);
+            });
+
+            const onResize = () => {
+              try {
+                stream.setWindow(stdout.rows || 24, stdout.columns || 80, 0, 0);
+              } catch {
+                // ignore
+              }
+            };
+            stdout.on('resize', onResize);
+
+            const cleanup = () => {
+              stdin.off('data', onStdinData);
+              stdout.off('resize', onResize);
+              try {
+                stdin.setRawMode?.(wasRaw);
+              } catch {
+                // ignore
+              }
+            };
+
+            const timer = setTimeout(() => {
+              cleanup();
+              try {
+                stream.close();
+              } catch {
+                // ignore
+              }
+              reject(new Error(`Authentication timed out after ${Math.floor(timeoutMs / 1000)}s`));
+            }, timeoutMs);
+
+            stream.on('exit', (code: any, signal?: any) => {
+              if (typeof code === 'number') exitCode = code;
+              if (typeof signal === 'string') exitSignal = signal;
+            });
+
+            stream.on('close', () => {
+              clearTimeout(timer);
+              cleanup();
+              resolve({ exitCode, exitSignal });
+            });
+
+            stream.on('error', (e: unknown) => {
+              clearTimeout(timer);
+              cleanup();
+              reject(e instanceof Error ? e : new Error(String(e)));
+            });
+          }
+        );
+      });
+    };
+
+    let execResult: { exitCode: number | null; exitSignal: string | null } | null = null;
+    let execError: Error | null = null;
+    try {
+      console.log(yellow('Starting interactive authentication...'));
+      console.log(dim('Follow the prompts below. Press Ctrl+C in the remote CLI to abort.'));
+      console.log('');
+      execResult = await execInteractive(remoteCommand, TIMEOUT_MS);
+    } catch (err) {
+      execError = err instanceof Error ? err : new Error(String(err));
+      console.log('');
+      console.log(red(`Remote auth command failed: ${execError.message}`));
+    } finally {
+      if (tunnel.server) tunnel.server.close();
+      sshClient.end();
+    }
+
+    // Step 2: Notify cloud completion (cloud will verify and persist credentials).
+    console.log('');
+    console.log('Finalizing authentication with cloud...');
+    const success = execError === null && execResult?.exitCode === 0;
+    const providerForComplete =
+      (typeof start.provider === 'string' && start.provider.trim().length > 0)
+        ? start.provider.trim()
+        : provider;
+    try {
+      const response = await fetch(`${CLOUD_URL}/api/auth/ssh/complete`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${cloudConfig.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ sessionId: start.sessionId, workspaceId: start.workspaceId, provider: providerForComplete, success }),
+      });
+
+      if (!response.ok) {
+        let details = response.statusText;
+        try {
+          const json = await response.json() as { error?: string; message?: string };
+          details = json.error || json.message || details;
+        } catch {
+          try {
+            details = await response.text();
+          } catch {
+            // ignore
+          }
+        }
+        console.log(red(`Failed to complete auth session: ${details || response.statusText}`));
+        process.exit(1);
+      }
+    } catch (err) {
+      console.log(red(`Failed to complete auth session: ${err instanceof Error ? err.message : String(err)}`));
+      process.exit(1);
+    }
+
+    if (!success) {
+      const exitCode = execResult?.exitCode;
+      if (typeof exitCode === 'number' && exitCode !== 0) {
+        console.log('');
+        console.log(red(`Remote auth command exited with code ${exitCode}.`));
+      }
+      process.exit(1);
+    }
+
+    console.log('');
+    console.log(green('═══════════════════════════════════════════════════'));
+    console.log(green('          Authentication Complete!'));
+    console.log(green('═══════════════════════════════════════════════════'));
+    console.log('');
+    console.log(`${providerConfig.displayName} is now connected to workspace ${start.workspaceId.slice(0, 8)}...`);
+    console.log('');
   });
 
 // ============================================================================
