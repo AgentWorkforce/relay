@@ -65,3 +65,38 @@ export function escapeForTmux(str: string): string {
     .replace(/`/g, '\\`')
     .replace(/!/g, '\\!');
 }
+
+/**
+ * Resolve the working directory for a spawned agent.
+ *
+ * CWD is resolved relative to the **parent** of projectRoot (the workspace/repos root).
+ * This allows spawning agents in sibling repos:
+ *   projectRoot = /data/repos/relay, cwd = "relaycast" → /data/repos/relaycast
+ *
+ * Returns { cwd: string } on success, or { error: string } if the path escapes
+ * the workspace root (traversal protection).
+ *
+ * When no cwd is provided, returns projectRoot as the default.
+ */
+export function resolveAgentCwd(
+  projectRoot: string,
+  cwd?: string | null,
+): { cwd: string } | { error: string } {
+  if (!cwd || typeof cwd !== 'string') {
+    return { cwd: projectRoot };
+  }
+
+  const parentDir = path.dirname(projectRoot);
+  const resolvedCwd = path.resolve(parentDir, cwd);
+  const normalizedParentDir = path.resolve(parentDir);
+  const parentDirWithSep = normalizedParentDir.endsWith(path.sep)
+    ? normalizedParentDir
+    : normalizedParentDir + path.sep;
+
+  // Ensure the resolved cwd is within the parent directory to prevent traversal
+  if (resolvedCwd !== normalizedParentDir && !resolvedCwd.startsWith(parentDirWithSep)) {
+    return { error: `Invalid cwd: "${cwd}" must be within the workspace root` };
+  }
+
+  return { cwd: resolvedCwd };
+}

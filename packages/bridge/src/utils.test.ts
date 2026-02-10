@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { parseTarget, escapeForShell, escapeForTmux } from './utils.js';
+import { parseTarget, escapeForShell, escapeForTmux, resolveAgentCwd } from './utils.js';
 
 describe('Bridge Utils', () => {
   describe('parseTarget', () => {
@@ -93,6 +93,77 @@ describe('Bridge Utils', () => {
       const input = 'Hello\nWorld\r\n$test "quoted"';
       const expected = 'Hello World \\$test \\"quoted\\"';
       expect(escapeForTmux(input)).toBe(expected);
+    });
+  });
+
+  describe('resolveAgentCwd', () => {
+    // Multi-repo workspace: /data/repos/relay is the project, /data/repos is the workspace root
+    const projectRoot = '/data/repos/relay';
+
+    it('resolves sibling repo name to workspace root', () => {
+      const result = resolveAgentCwd(projectRoot, 'relaycast');
+      expect(result).toEqual({ cwd: '/data/repos/relaycast' });
+    });
+
+    it('resolves same repo name back to project root', () => {
+      const result = resolveAgentCwd(projectRoot, 'relay');
+      expect(result).toEqual({ cwd: '/data/repos/relay' });
+    });
+
+    it('resolves subdirectory within sibling repo', () => {
+      const result = resolveAgentCwd(projectRoot, 'relaycast/packages/app');
+      expect(result).toEqual({ cwd: '/data/repos/relaycast/packages/app' });
+    });
+
+    it('defaults to projectRoot when no cwd is provided', () => {
+      const result = resolveAgentCwd(projectRoot, undefined);
+      expect(result).toEqual({ cwd: '/data/repos/relay' });
+    });
+
+    it('defaults to projectRoot when cwd is null', () => {
+      const result = resolveAgentCwd(projectRoot, null);
+      expect(result).toEqual({ cwd: '/data/repos/relay' });
+    });
+
+    it('defaults to projectRoot when cwd is empty string', () => {
+      const result = resolveAgentCwd(projectRoot, '');
+      expect(result).toEqual({ cwd: '/data/repos/relay' });
+    });
+
+    it('rejects path traversal above workspace root', () => {
+      const result = resolveAgentCwd(projectRoot, '../../etc/passwd');
+      expect(result).toHaveProperty('error');
+      expect((result as { error: string }).error).toContain('must be within the workspace root');
+    });
+
+    it('rejects traversal with ../', () => {
+      const result = resolveAgentCwd(projectRoot, '../../../tmp');
+      expect(result).toHaveProperty('error');
+    });
+
+    it('allows workspace root itself (parent dir)', () => {
+      // CWD: "." resolves to /data/repos (the workspace root) which is allowed
+      const result = resolveAgentCwd(projectRoot, '.');
+      expect(result).toEqual({ cwd: '/data/repos' });
+    });
+
+    // Single-repo setup: /home/user/myproject is the only project
+    it('works in single-repo setup — defaults correctly', () => {
+      const singleRoot = '/home/user/myproject';
+      const result = resolveAgentCwd(singleRoot, undefined);
+      expect(result).toEqual({ cwd: '/home/user/myproject' });
+    });
+
+    it('works in single-repo setup — resolves sibling name', () => {
+      const singleRoot = '/home/user/myproject';
+      const result = resolveAgentCwd(singleRoot, 'other-project');
+      expect(result).toEqual({ cwd: '/home/user/other-project' });
+    });
+
+    it('works in single-repo setup — resolves same dir name', () => {
+      const singleRoot = '/home/user/myproject';
+      const result = resolveAgentCwd(singleRoot, 'myproject');
+      expect(result).toEqual({ cwd: '/home/user/myproject' });
     });
   });
 });
