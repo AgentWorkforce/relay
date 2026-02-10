@@ -54,3 +54,17 @@ export class SpawnError extends RelayError {
     this.name = 'SpawnError';
   }
 }
+
+export class RelayServerError extends RelayError {
+  code: string;
+  fatal: boolean;
+  envelope?: any;
+
+  constructor(message: string, code: string, fatal: boolean, envelope?: any) {
+    super(message);
+    this.name = 'RelayServerError';
+    this.code = code;
+    this.fatal = fatal;
+    this.envelope = envelope;
+  }
+}

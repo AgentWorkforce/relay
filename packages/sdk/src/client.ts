@@ -9,6 +9,7 @@ import net from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { discoverSocket } from '@agent-relay/utils/discovery';
 import { DaemonNotRunningError, ConnectionError } from '@agent-relay/utils/errors';
+import { RelayServerError } from './errors.js';
 // Import shared protocol types and framing utilities from @agent-relay/protocol
 import {
   type Envelope,
@@ -830,60 +831,71 @@ export class RelayClient {
     }
 
     // Send the spawn request
-    const spawnResult = await new Promise<SpawnResultPayload>((resolve, reject) => {
-      const timeoutHandle = setTimeout(() => {
-        this.pendingSpawns.delete(envelopeId);
-        // Also clean up pending agent ready if spawn times out
-        if (waitForReady) {
-          const pending = this.pendingAgentReady.get(options.name);
-          if (pending) {
-            clearTimeout(pending.timeoutHandle);
-            this.pendingAgentReady.delete(options.name);
+    let spawnResult: SpawnResultPayload;
+    try {
+      spawnResult = await new Promise<SpawnResultPayload>((resolve, reject) => {
+        const timeoutHandle = setTimeout(() => {
+          this.pendingSpawns.delete(envelopeId);
+          // Also clean up pending agent ready if spawn times out
+          if (waitForReady) {
+            const pending = this.pendingAgentReady.get(options.name);
+            if (pending) {
+              clearTimeout(pending.timeoutHandle);
+              this.pendingAgentReady.delete(options.name);
+            }
           }
-        }
-        reject(new Error(`Spawn timeout after ${timeoutMs}ms`));
-      }, timeoutMs);
+          reject(new Error(`Spawn timeout after ${timeoutMs}ms`));
+        }, timeoutMs);
 
-      this.pendingSpawns.set(envelopeId, { resolve, reject, timeoutHandle });
+        this.pendingSpawns.set(envelopeId, { resolve, reject, timeoutHandle });
 
-      const envelope: SpawnEnvelope = {
-        v: PROTOCOL_VERSION,
-        type: 'SPAWN',
-        id: envelopeId,
-        ts: Date.now(),
-        payload: {
-          name: options.name,
-          cli: options.cli,
-          task: options.task || '',
-          cwd: options.cwd,
-          team: options.team,
-          interactive: options.interactive,
-          shadowMode: options.shadowMode,
-          shadowOf: options.shadowOf,
-          shadowAgent: options.shadowAgent,
-          shadowTriggers: options.shadowTriggers,
-          shadowSpeakOn: options.shadowSpeakOn,
-          userId: options.userId,
-          includeWorkflowConventions: options.includeWorkflowConventions,
-          spawnerName: options.spawnerName || this.config.agentName,
-        },
-      };
+        const envelope: SpawnEnvelope = {
+          v: PROTOCOL_VERSION,
+          type: 'SPAWN',
+          id: envelopeId,
+          ts: Date.now(),
+          payload: {
+            name: options.name,
+            cli: options.cli,
+            task: options.task || '',
+            cwd: options.cwd,
+            team: options.team,
+            interactive: options.interactive,
+            shadowMode: options.shadowMode,
+            shadowOf: options.shadowOf,
+            shadowAgent: options.shadowAgent,
+            shadowTriggers: options.shadowTriggers,
+            shadowSpeakOn: options.shadowSpeakOn,
+            userId: options.userId,
+            includeWorkflowConventions: options.includeWorkflowConventions,
+            spawnerName: options.spawnerName || this.config.agentName,
+          },
+        };
 
-      const sent = this.send(envelope);
-      if (!sent) {
-        clearTimeout(timeoutHandle);
-        this.pendingSpawns.delete(envelopeId);
-        // Also clean up pending agent ready if send fails
-        if (waitForReady) {
-          const pending = this.pendingAgentReady.get(options.name);
-          if (pending) {
-            clearTimeout(pending.timeoutHandle);
-            this.pendingAgentReady.delete(options.name);
+        const sent = this.send(envelope);
+        if (!sent) {
+          clearTimeout(timeoutHandle);
+          this.pendingSpawns.delete(envelopeId);
+          // Also clean up pending agent ready if send fails
+          if (waitForReady) {
+            const pending = this.pendingAgentReady.get(options.name);
+            if (pending) {
+              clearTimeout(pending.timeoutHandle);
+              this.pendingAgentReady.delete(options.name);
+            }
           }
+          reject(new Error('Failed to send spawn message'));
         }
-        reject(new Error('Failed to send spawn message'));
+      });
+    } catch (err) {
+      // Spawn request failed - suppress any pending readyPromise rejection
+      if (readyPromise) {
+        readyPromise.catch(() => {
+          // Suppress unhandled rejection from readyPromise
+        });
       }
-    });
+      throw err;
+    }
 
     // If spawn failed or we don't need to wait for ready, return immediately
     if (!spawnResult.success || !waitForReady || !readyPromise) {
@@ -1849,6 +1861,22 @@ export class RelayClient {
       console.error('[sdk] Server error:', envelope.payload);
     }
 
+    const errorMessage = envelope.payload.message || 'Server error';
+    const isSpawnManagerDisabled =
+      envelope.payload.code === 'INTERNAL' &&
+      /spawnmanager not enabled/i.test(errorMessage);
+
+    // Fail fast for spawn-related operations when daemon cannot service them.
+    // Without this, spawn/release/input/list-workers calls sit until timeout.
+    if (isSpawnManagerDisabled) {
+      const err = new Error(errorMessage);
+      this.rejectPendingSpawns(err);
+      this.rejectPendingReleases(err);
+      this.rejectPendingSendInputs(err);
+      this.rejectPendingListWorkers(err);
+      this.rejectPendingAgentReady(err);
+    }
+
     if (envelope.payload.code === 'RESUME_TOO_OLD') {
       this.resumeToken = undefined;
       this.sessionId = undefined;
@@ -1860,6 +1888,17 @@ export class RelayClient {
         console.error('[sdk] Fatal error received, will not reconnect:', envelope.payload.message);
       }
       this._destroyed = true;
+    }
+
+    // Surface server-side ERROR frames to SDK consumers.
+    if (this.onError) {
+      const serverError = new RelayServerError(
+        errorMessage,
+        envelope.payload.code,
+        envelope.payload.fatal,
+        envelope
+      );
+      this.onError(serverError);
     }
   }
 
