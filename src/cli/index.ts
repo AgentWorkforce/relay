@@ -4374,6 +4374,7 @@ program
               } catch {
                 // ignore
               }
+              stdin.pause();
             };
 
             const timer = setTimeout(() => {
