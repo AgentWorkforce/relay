@@ -95,6 +95,8 @@ interface WorkerMeta {
   logFile?: string;
   /** Current model if known */
   model?: string;
+  /** Working directory (repo name) the agent was spawned in */
+  cwd?: string;
 }
 
 /** Stored listener references for cleanup */
@@ -951,6 +953,8 @@ export class AgentSpawner {
 
       // Apply agent config (model, --agent flag) from .claude/agents/ if available
       // This ensures spawned agents respect their profile settings
+      let effectiveModel: string | undefined;
+
       if (isClaudeCli) {
         // Get agent config for model tracking and CLI variant selection
         const agentConfig = findAgentConfig(name, this.projectRoot);
@@ -964,7 +968,7 @@ export class AgentSpawner {
 
         // Extract effective model name for logging and tracking
         // Model override from spawn request takes precedence over agent profile
-        const effectiveModel = modelOverride || modelFromProfile || 'opus';
+        effectiveModel = modelOverride || modelFromProfile || 'opus';
         spawnModel = effectiveModel;
 
         // If model override provided, add --model before buildClaudeArgs so it takes precedence
@@ -1351,6 +1355,7 @@ export class AgentSpawner {
             logFile: openCodeWrapper.logPath,
             listeners,
             model: spawnModel,
+            cwd: request.cwd,
           };
           this.activeWorkers.set(name, workerInfo);
           this.saveWorkersMetadata();
@@ -1561,6 +1566,7 @@ export class AgentSpawner {
         logFile: pty.logPath,
         listeners, // Store for cleanup
         model: spawnModel,
+        cwd: request.cwd,
       };
       this.activeWorkers.set(name, workerInfo);
       this.saveWorkersMetadata();
@@ -1790,6 +1796,7 @@ export class AgentSpawner {
       spawnedAt: w.spawnedAt,
       pid: w.pid,
       model: w.model,
+      cwd: w.cwd,
     }));
   }
 
@@ -2021,6 +2028,7 @@ export class AgentSpawner {
         pid: w.pid,
         logFile: w.logFile,
         model: w.model,
+        cwd: w.cwd,
       }));
 
       fs.writeFileSync(this.workersPath, JSON.stringify({ workers }, null, 2));

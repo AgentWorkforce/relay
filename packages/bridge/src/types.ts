@@ -97,6 +97,8 @@ export interface WorkerInfo {
   pid?: number;
   /** Current model if known (e.g., 'opus', 'sonnet', 'haiku') */
   model?: string;
+  /** Working directory (repo name) the agent was spawned in */
+  cwd?: string;
 }
 
 /** SpeakOn trigger types for shadow agents */
