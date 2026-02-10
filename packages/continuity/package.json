@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/continuity",
-  "version": "2.1.22",
+  "version": "2.1.23-beta.0",
   "description": "Session continuity manager for Relay (ledgers, handoffs, resume)",
   "type": "module",
   "main": "dist/index.js",
@@ -22,7 +22,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agent-relay/memory": "2.1.22"
+    "@agent-relay/memory": "2.1.23-beta.0"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",
