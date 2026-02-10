@@ -47,15 +47,6 @@ jobs:
           key: turbo-${{ github.sha }}
           restore-keys: turbo-
 
-      # Cache package dist directories
-      - name: Cache package builds
-        uses: actions/cache@v4
-        with:
-          path: |
-            packages/*/dist
-            dist
-          key: dist-${{ hashFiles('packages/*/src/**', 'src/**', 'tsconfig.json') }}
-
       - name: Build packages
         run: npm run build
 
