@@ -28,6 +28,16 @@ on:
         description: "Custom version (optional, overrides version type)"
         required: false
         type: string
+      preid:
+        description: "Prerelease identifier (used with pre* version types)"
+        required: false
+        type: choice
+        options:
+          - beta
+          - alpha
+          - rc
+          - next
+        default: "beta"
       dry_run:
         description: "Dry run (do not actually publish)"
         required: false
@@ -312,6 +322,7 @@ jobs:
         run: |
           CUSTOM_VERSION="${{ github.event.inputs.custom_version }}"
           VERSION_TYPE="${{ github.event.inputs.version }}"
+          PREID="${{ github.event.inputs.preid }}"
           CURRENT_VERSION=$(node -p "require('./package.json').version")
           echo "Current version: $CURRENT_VERSION"
 
@@ -319,13 +330,22 @@ jobs:
             echo "Setting version to custom value: $CUSTOM_VERSION"
             npm version "$CUSTOM_VERSION" --no-git-tag-version --allow-same-version
           else
-            echo "Bumping version: $VERSION_TYPE"
-            npm version "$VERSION_TYPE" --no-git-tag-version --preid=beta
+            echo "Bumping version: $VERSION_TYPE (preid=$PREID)"
+            npm version "$VERSION_TYPE" --no-git-tag-version --preid="$PREID"
           fi
 
           NEW_VERSION=$(node -p "require('./package.json').version")
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "New version: $NEW_VERSION"
+
+          # Detect if this is a prerelease version (contains hyphen, e.g. 2.2.0-beta.1)
+          if [[ "$NEW_VERSION" == *"-"* ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+            echo "This is a PRERELEASE version"
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+            echo "This is a STABLE version"
+          fi
 
           # Sync all package versions and internal dependencies using node script
           # (avoids npm version which validates dependencies against registry)
@@ -981,17 +1001,25 @@ jobs:
           git config user.email "actions@github.com"
 
           NEW_VERSION="${{ needs.build.outputs.new_version }}"
+          IS_PRERELEASE="${{ needs.build.outputs.is_prerelease }}"
 
           git add package.json package-lock.json packages/*/package.json
           if ! git diff --staged --quiet; then
-            git commit -m "chore(release): v${NEW_VERSION}"
-            git push origin HEAD:main
+            if [ "$IS_PRERELEASE" = "true" ]; then
+              git commit -m "chore(prerelease): v${NEW_VERSION}"
+              # Prerelease: push to staging branch, not main
+              git push origin HEAD:staging
+            else
+              git commit -m "chore(release): v${NEW_VERSION}"
+              git push origin HEAD:main
+            fi
           fi
 
           git tag -a "v${NEW_VERSION}" -m "Release v${NEW_VERSION}"
           git push origin "v${NEW_VERSION}"
 
-      - name: Create GitHub Release
+      - name: Create GitHub Release (stable)
+        if: needs.build.outputs.is_prerelease != 'true'
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ needs.build.outputs.new_version }}
@@ -1040,6 +1068,52 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Create GitHub Release (prerelease)
+        if: needs.build.outputs.is_prerelease == 'true'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ needs.build.outputs.new_version }}
+          name: v${{ needs.build.outputs.new_version }} (prerelease)
+          prerelease: true
+          body: |
+            ## agent-relay v${{ needs.build.outputs.new_version }} (prerelease)
+
+            > This is a **prerelease** version published under the `${{ github.event.inputs.tag }}` npm dist-tag.
+            > It is not installed by default. Use `npm install agent-relay@${{ github.event.inputs.tag }}` to test.
+
+            ### Install this prerelease
+            ```bash
+            npm install -g agent-relay@${{ needs.build.outputs.new_version }}
+            npm install @agent-relay/sdk@${{ needs.build.outputs.new_version }}
+            ```
+
+            Or by dist-tag:
+            ```bash
+            npm install -g agent-relay@${{ github.event.inputs.tag }}
+            ```
+
+            ### Standalone binaries
+            | Platform | Compressed | Uncompressed |
+            |----------|------------|--------------|
+            | Linux x64 | `agent-relay-linux-x64.gz` | `agent-relay-linux-x64` |
+            | Linux ARM64 | `agent-relay-linux-arm64.gz` | `agent-relay-linux-arm64` |
+            | macOS Intel | `agent-relay-darwin-x64.gz` | `agent-relay-darwin-x64` |
+            | macOS Apple Silicon | `agent-relay-darwin-arm64.gz` | `agent-relay-darwin-arm64` |
+
+            ### relay-pty / relay-acp binaries
+            - `relay-pty-{linux,darwin}-{x64,arm64}`
+            - `relay-acp-{linux,darwin}-{x64,arm64}`
+
+            ### Next Steps
+            1. Deploy to staging: Run **Deploy Staging** workflow in relay-cloud with `relay_version=${{ needs.build.outputs.new_version }}`
+            2. Test on staging environment
+            3. If validated, run this workflow again with `tag=latest` for the stable release
+          files: |
+            release-binaries/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   # Trigger post-publish verification
   verify-publish:
     name: Verify Published Package
@@ -1061,12 +1135,23 @@ jobs:
     steps:
       - name: Summary
         run: |
-          echo "## NPM Publish Summary" >> $GITHUB_STEP_SUMMARY
+          IS_PRERELEASE="${{ needs.build.outputs.is_prerelease }}"
+
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            echo "## Prerelease Publish Summary" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## NPM Publish Summary" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Version**: \`${{ needs.build.outputs.new_version }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**NPM Tag**: \`${{ github.event.inputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Prerelease**: \`$IS_PRERELEASE\`" >> $GITHUB_STEP_SUMMARY
           echo "**Dry Run**: \`${{ github.event.inputs.dry_run }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            echo "> Users running \`npm install agent-relay\` or \`install.sh\` are **NOT** affected by this prerelease." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "### Results" >> $GITHUB_STEP_SUMMARY
           echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
@@ -1082,3 +1167,10 @@ jobs:
           echo "| Publish Packages | ${{ needs.publish-packages.result == 'success' && '✅' || (needs.publish-packages.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-packages.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Main | ${{ needs.publish-main.result == 'success' && '✅' || (needs.publish-main.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-main.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Post-Publish Verify | ${{ needs.verify-publish.result == 'success' && '✅' || (needs.verify-publish.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-publish.result }} |" >> $GITHUB_STEP_SUMMARY
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+            echo "1. Deploy to staging: Run **Deploy Staging** workflow in relay-cloud with \`relay_version=${{ needs.build.outputs.new_version }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "2. Test on staging environment" >> $GITHUB_STEP_SUMMARY
+            echo "3. If validated, run this workflow again with \`version=patch/minor/major\` and \`tag=latest\` for the stable release" >> $GITHUB_STEP_SUMMARY
+          fi
