@@ -296,6 +296,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       new_version: ${{ steps.bump.outputs.new_version }}
+      is_prerelease: ${{ steps.bump.outputs.is_prerelease }}
 
     steps:
       - name: Checkout code
