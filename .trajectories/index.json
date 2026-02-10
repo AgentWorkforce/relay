@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-02-06T08:42:23.316Z",
+  "lastUpdated": "2026-02-10T12:22:59.333Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -253,6 +253,12 @@
       "startedAt": "2026-02-06T08:33:52.113Z",
       "completedAt": "2026-02-06T08:42:23.268Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-02/traj_fjarwwxhil8i.json"
+    },
+    "traj_vdh6i80daoao": {
+      "title": "Make doctor tolerant of missing better-sqlite3",
+      "status": "active",
+      "startedAt": "2026-02-10T12:22:56.063Z",
+      "path": "/data/repos/relay/.worktrees/doctor-fix/.trajectories/active/traj_vdh6i80daoao.json"
     }
   }
 }
