@@ -355,11 +355,13 @@ jobs:
             const path = require('path');
             const version = '$NEW_VERSION';
 
-            // Update root package internal dependencies
+            // Update root package internal dependencies (both regular and dev)
             const rootPkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            for (const dep of Object.keys(rootPkg.dependencies || {})) {
-              if (dep.startsWith('@agent-relay/')) {
-                rootPkg.dependencies[dep] = version;
+            for (const depType of ['dependencies', 'devDependencies']) {
+              for (const dep of Object.keys(rootPkg[depType] || {})) {
+                if (dep.startsWith('@agent-relay/')) {
+                  rootPkg[depType][dep] = version;
+                }
               }
             }
             fs.writeFileSync('package.json', JSON.stringify(rootPkg, null, 2) + '\n');
@@ -376,10 +378,12 @@ jobs:
                 console.log('@agent-relay/' + dir);
                 console.log('v' + version);
 
-                // Update internal dependencies
-                for (const dep of Object.keys(pkg.dependencies || {})) {
-                  if (dep.startsWith('@agent-relay/')) {
-                    pkg.dependencies[dep] = version;
+                // Update internal dependencies (both regular and dev)
+                for (const depType of ['dependencies', 'devDependencies']) {
+                  for (const dep of Object.keys(pkg[depType] || {})) {
+                    if (dep.startsWith('@agent-relay/')) {
+                      pkg[depType][dep] = version;
+                    }
                   }
                 }
                 fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
