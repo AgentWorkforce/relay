@@ -18,6 +18,13 @@ export interface RelayClient {
 
   spawn(options: { name: string; cli: string; task?: string; model?: string; cwd?: string }): Promise<SpawnResult>;
   release(name: string, reason?: string): Promise<ReleaseResultPayload>;
+  setWorkerModel(name: string, model: string, options?: { timeoutMs?: number }): Promise<{
+    success: boolean;
+    name: string;
+    model: string;
+    previousModel?: string;
+    error?: string;
+  }>;
 
   subscribe(topic: string): Promise<{ success: boolean; error?: string }>;
   unsubscribe(topic: string): Promise<{ success: boolean; error?: string }>;
@@ -223,6 +230,11 @@ export function createRelayClientAdapter(client: SdkRelayClient, ctx: RelayClien
     async release(name, reason) {
       await ensureReady(client);
       return client.release(name, reason);
+    },
+
+    async setWorkerModel(name, model, options = {}) {
+      await ensureReady(client);
+      return client.setWorkerModel(name, model, options);
     },
 
     async getStatus() {

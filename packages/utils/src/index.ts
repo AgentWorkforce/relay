@@ -6,5 +6,6 @@ export * from './git-remote.js';
 export * from './update-checker.js';
 export * from './error-tracking.js';
 export * from './model-mapping.js';
+export * from './model-commands.js';
 export * from './relay-pty-path.js';
 export * from './client-helpers.js';

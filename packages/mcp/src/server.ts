@@ -25,6 +25,9 @@ import {
   relayReleaseTool,
   relayReleaseSchema,
   handleRelayRelease,
+  relaySetModelTool,
+  relaySetModelSchema,
+  handleRelaySetModel,
   relayStatusTool,
   relayStatusSchema,
   handleRelayStatus,
@@ -106,6 +109,7 @@ const TOOLS = [
   relayConnectedTool,
   relaySpawnTool,
   relayReleaseTool,
+  relaySetModelTool,
   relayRemoveAgentTool,
   relayStatusTool,
   relayLogsTool,
@@ -216,6 +220,12 @@ export function createMCPServer(client: RelayClient, config?: MCPServerConfig): 
         case 'relay_release': {
           const input = relayReleaseSchema.parse(args);
           result = await handleRelayRelease(client, input);
+          break;
+        }
+
+        case 'relay_set_model': {
+          const input = relaySetModelSchema.parse(args);
+          result = await handleRelaySetModel(client, input);
           break;
         }
 

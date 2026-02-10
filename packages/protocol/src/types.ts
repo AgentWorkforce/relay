@@ -44,6 +44,8 @@ export type MessageType =
   // Worker management types
   | 'SEND_INPUT'
   | 'SEND_INPUT_RESULT'
+  | 'SET_MODEL'
+  | 'SET_MODEL_RESULT'
   | 'LIST_WORKERS'
   | 'LIST_WORKERS_RESULT'
   // Agent lifecycle events
@@ -494,6 +496,37 @@ export interface SendInputResultPayload {
 }
 
 /**
+ * Payload for SET_MODEL message.
+ * Requests a model change for a running spawned agent.
+ */
+export interface SetModelPayload {
+  /** Agent name to change model for */
+  name: string;
+  /** Target model identifier (e.g., 'opus', 'sonnet', 'haiku') */
+  model: string;
+  /** Timeout in ms to wait for agent to become idle before sending command (default: 30000) */
+  timeoutMs?: number;
+}
+
+/**
+ * Payload for SET_MODEL_RESULT message.
+ */
+export interface SetModelResultPayload {
+  /** Correlation ID (matches original SET_MODEL envelope ID) */
+  replyTo: string;
+  /** Whether the model switch command was sent successfully */
+  success: boolean;
+  /** Agent name */
+  name: string;
+  /** The model that was requested */
+  model: string;
+  /** The previous model (if tracked) */
+  previousModel?: string;
+  /** Error message (if failed) */
+  error?: string;
+}
+
+/**
  * Payload for LIST_WORKERS message.
  */
 export interface ListWorkersPayload {}
@@ -513,6 +546,8 @@ export interface ListWorkersResultPayload {
     spawnerName?: string;
     spawnedAt: number;
     pid?: number;
+    /** Current model if known */
+    model?: string;
   }>;
   /** Error message if the list operation failed */
   error?: string;
@@ -562,6 +597,8 @@ export type ReleaseEnvelope = Envelope<ReleasePayload>;
 export type ReleaseResultEnvelope = Envelope<ReleaseResultPayload>;
 export type SendInputEnvelope = Envelope<SendInputPayload>;
 export type SendInputResultEnvelope = Envelope<SendInputResultPayload>;
+export type SetModelEnvelope = Envelope<SetModelPayload>;
+export type SetModelResultEnvelope = Envelope<SetModelResultPayload>;
 export type ListWorkersEnvelope = Envelope<ListWorkersPayload>;
 export type ListWorkersResultEnvelope = Envelope<ListWorkersResultPayload>;
 export type AgentReadyEnvelope = Envelope<AgentReadyPayload>;
