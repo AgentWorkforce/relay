@@ -92,6 +92,10 @@ interface WorkerMeta {
   spawnedAt: number;
   pid?: number;
   logFile?: string;
+  /** Current model if known */
+  model?: string;
+  /** Working directory (repo name) the agent was spawned in */
+  cwd?: string;
 }
 
 /** Stored listener references for cleanup */
@@ -943,6 +947,8 @@ export class AgentSpawner {
 
       // Apply agent config (model, --agent flag) from .claude/agents/ if available
       // This ensures spawned agents respect their profile settings
+      let effectiveModel: string | undefined;
+
       if (isClaudeCli) {
         // Get agent config for model tracking and CLI variant selection
         const agentConfig = findAgentConfig(name, this.projectRoot);
@@ -955,7 +961,7 @@ export class AgentSpawner {
           : mapModelToCli(); // defaults to claude:sonnet
 
         // Extract effective model name for logging
-        const effectiveModel = modelFromProfile || 'opus';
+        effectiveModel = modelFromProfile || 'opus';
 
         const configuredArgs = buildClaudeArgs(name, args, this.projectRoot);
         // Replace args with configured version (includes --model and --agent if found)
@@ -1329,6 +1335,8 @@ export class AgentSpawner {
             pty: openCodeWrapper as unknown as AgentWrapper,
             logFile: openCodeWrapper.logPath,
             listeners,
+            model: effectiveModel,
+            cwd: request.cwd,
           };
           this.activeWorkers.set(name, workerInfo);
           this.saveWorkersMetadata();
@@ -1538,6 +1546,8 @@ export class AgentSpawner {
         pty,
         logFile: pty.logPath,
         listeners, // Store for cleanup
+        model: effectiveModel,
+        cwd: request.cwd,
       };
       this.activeWorkers.set(name, workerInfo);
       this.saveWorkersMetadata();
@@ -1766,6 +1776,8 @@ export class AgentSpawner {
       spawnerName: w.spawnerName,
       spawnedAt: w.spawnedAt,
       pid: w.pid,
+      model: w.model,
+      cwd: w.cwd,
     }));
   }
 
@@ -1929,6 +1941,8 @@ export class AgentSpawner {
         spawnedAt: w.spawnedAt,
         pid: w.pid,
         logFile: w.logFile,
+        model: w.model,
+        cwd: w.cwd,
       }));
 
       fs.writeFileSync(this.workersPath, JSON.stringify({ workers }, null, 2));

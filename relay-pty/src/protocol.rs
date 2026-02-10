@@ -139,6 +139,9 @@ pub struct ParsedRelayCommand {
     /// For spawn: task description
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spawn_task: Option<String>,
+    /// For spawn: working directory
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spawn_cwd: Option<String>,
     /// For release: agent name to release
     #[serde(skip_serializing_if = "Option::is_none")]
     pub release_name: Option<String>,
@@ -210,6 +213,7 @@ impl ParsedRelayCommand {
             spawn_name: None,
             spawn_cli: None,
             spawn_task: None,
+            spawn_cwd: None,
             release_name: None,
         }
     }
@@ -227,6 +231,25 @@ impl ParsedRelayCommand {
             spawn_name: Some(name),
             spawn_cli: Some(cli),
             spawn_task: Some(task),
+            spawn_cwd: None,
+            release_name: None,
+        }
+    }
+
+    pub fn new_spawn_with_cwd(from: String, name: String, cli: String, task: String, cwd: Option<String>, raw: String) -> Self {
+        Self {
+            cmd_type: "relay_command".to_string(),
+            kind: "spawn".to_string(),
+            from,
+            to: "spawn".to_string(),
+            body: task.clone(),
+            raw,
+            thread: None,
+            sync: None,
+            spawn_name: Some(name),
+            spawn_cli: Some(cli),
+            spawn_task: Some(task),
+            spawn_cwd: cwd,
             release_name: None,
         }
     }
@@ -244,6 +267,7 @@ impl ParsedRelayCommand {
             spawn_name: None,
             spawn_cli: None,
             spawn_task: None,
+            spawn_cwd: None,
             release_name: Some(name),
         }
     }
