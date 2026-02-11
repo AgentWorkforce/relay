@@ -49,6 +49,8 @@ export interface MessageQuery {
   sinceTs?: number;
   from?: string;
   to?: string;
+  /** When true (and both from/to are set), match both directions for conversations. */
+  bidirectional?: boolean;
   topic?: string;
   /** Filter by thread ID */
   thread?: string;
@@ -187,12 +189,20 @@ export class MemoryStorageAdapter implements StorageAdapter {
 
   async getMessages(query?: MessageQuery): Promise<StoredMessage[]> {
     let result = [...this.messages];
+    const hasBidirectionalPairFilter = Boolean(query?.bidirectional && query?.from && query?.to);
 
-    if (query?.from) {
-      result = result.filter(m => m.from === query.from);
-    }
-    if (query?.to) {
-      result = result.filter(m => m.to === query.to);
+    if (hasBidirectionalPairFilter) {
+      result = result.filter(m =>
+        (m.from === query!.from && m.to === query!.to) ||
+        (m.from === query!.to && m.to === query!.from)
+      );
+    } else {
+      if (query?.from) {
+        result = result.filter(m => m.from === query.from);
+      }
+      if (query?.to) {
+        result = result.filter(m => m.to === query.to);
+      }
     }
     if (query?.topic) {
       result = result.filter(m => m.topic === query.topic);

@@ -66,6 +66,32 @@ describe('JsonlStorageAdapter', () => {
     expect(filtered[0].replyCount).toBe(1);
   });
 
+  it('supports bidirectional DM queries when bidirectional is enabled', async () => {
+    const now = Date.now();
+    await adapter.saveMessage(makeMessage({ id: 'dm-1', ts: now - 3000, from: 'Alice', to: 'Bob' }));
+    await adapter.saveMessage(makeMessage({ id: 'dm-2', ts: now - 2000, from: 'Bob', to: 'Alice' }));
+    await adapter.saveMessage(makeMessage({ id: 'dm-3', ts: now - 1000, from: 'Alice', to: 'Charlie' }));
+
+    const oneWay = await adapter.getMessages({ from: 'Alice', to: 'Bob', order: 'asc' });
+    expect(oneWay.map(r => r.id)).toEqual(['dm-1']);
+
+    const ascending = await adapter.getMessages({
+      from: 'Alice',
+      to: 'Bob',
+      bidirectional: true,
+      order: 'asc',
+    });
+    expect(ascending.map(r => r.id)).toEqual(['dm-1', 'dm-2']);
+
+    const descending = await adapter.getMessages({
+      from: 'Alice',
+      to: 'Bob',
+      bidirectional: true,
+      order: 'desc',
+    });
+    expect(descending.map(r => r.id)).toEqual(['dm-2', 'dm-1']);
+  });
+
   it('supports pending delivery helpers', async () => {
     const sessionId = 'sess-1';
     await adapter.saveMessage(makeMessage({

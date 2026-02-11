@@ -440,7 +440,7 @@ export class SqliteStorageAdapter implements StorageAdapter {
 
     const clauses: string[] = [];
     const params: unknown[] = [];
-    const hasBidirectionalPairFilter = Boolean(query.from && query.to);
+    const hasBidirectionalPairFilter = Boolean(query.bidirectional && query.from && query.to);
 
     if (query.sinceTs) {
       clauses.push('m.ts >= ?');
@@ -479,7 +479,7 @@ export class SqliteStorageAdapter implements StorageAdapter {
     }
 
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-    const order = hasBidirectionalPairFilter ? 'ASC' : (query.order === 'asc' ? 'ASC' : 'DESC');
+    const order = query.order === 'asc' ? 'ASC' : 'DESC';
     const limit = query.limit ?? 200;
 
     const stmt = this.db.prepare(`
