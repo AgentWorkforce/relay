@@ -35,6 +35,9 @@ import {
   type ReleaseResultPayload,
   type SendInputPayload,
   type SendInputResultPayload,
+  type SetModelPayload,
+  type SetModelResultPayload,
+  type SetModelEnvelope,
   type ListWorkersPayload,
   type ListWorkersResultPayload,
   type SpawnEnvelope,
@@ -265,6 +268,12 @@ export class RelayClient {
 
   private pendingSendInputs: Map<string, {
     resolve: (result: SendInputResultPayload) => void;
+    reject: (err: Error) => void;
+    timeoutHandle: NodeJS.Timeout;
+  }> = new Map();
+
+  private pendingSetModels: Map<string, {
+    resolve: (result: SetModelResultPayload) => void;
     reject: (err: Error) => void;
     timeoutHandle: NodeJS.Timeout;
   }> = new Map();
@@ -783,6 +792,8 @@ export class RelayClient {
       task?: string;
       cwd?: string;
       team?: string;
+      /** Model override (e.g., 'opus', 'sonnet', 'haiku'). Takes precedence over agent profile. */
+      model?: string;
       interactive?: boolean;
       shadowMode?: 'subagent' | 'process';
       shadowOf?: string;
@@ -857,6 +868,7 @@ export class RelayClient {
           task: options.task || '',
           cwd: options.cwd,
           team: options.team,
+          model: options.model,
           interactive: options.interactive,
           shadowMode: options.shadowMode,
           shadowOf: options.shadowOf,
@@ -1034,6 +1046,56 @@ export class RelayClient {
         clearTimeout(timeoutHandle);
         this.pendingSendInputs.delete(envelopeId);
         reject(new Error('Failed to send input message'));
+      }
+    });
+  }
+
+  /**
+   * Change the model of a running spawned agent.
+   * The command waits for the agent to be idle before sending the model switch command.
+   *
+   * @param name - Agent name to switch model for
+   * @param model - Target model (e.g., 'opus', 'sonnet', 'haiku')
+   * @param options - Options including idle wait timeout
+   * @param operationTimeoutMs - Timeout for the overall protocol operation (default: 45000ms)
+   */
+  async setWorkerModel(
+    name: string,
+    model: string,
+    options?: { timeoutMs?: number },
+    operationTimeoutMs = 45000,
+  ): Promise<SetModelResultPayload> {
+    if (this._state !== 'READY') {
+      throw new Error('Client not ready');
+    }
+
+    const envelopeId = generateId();
+
+    return new Promise<SetModelResultPayload>((resolve, reject) => {
+      const timeoutHandle = setTimeout(() => {
+        this.pendingSetModels.delete(envelopeId);
+        reject(new Error(`Set model timeout after ${operationTimeoutMs}ms`));
+      }, operationTimeoutMs);
+
+      this.pendingSetModels.set(envelopeId, { resolve, reject, timeoutHandle });
+
+      const envelope: SetModelEnvelope = {
+        v: PROTOCOL_VERSION,
+        type: 'SET_MODEL',
+        id: envelopeId,
+        ts: Date.now(),
+        payload: {
+          name,
+          model,
+          timeoutMs: options?.timeoutMs,
+        },
+      };
+
+      const sent = this.send(envelope);
+      if (!sent) {
+        clearTimeout(timeoutHandle);
+        this.pendingSetModels.delete(envelopeId);
+        reject(new Error('Failed to send set model message'));
       }
     });
   }
@@ -1608,6 +1670,10 @@ export class RelayClient {
         this.handleSendInputResult(envelope as Envelope<SendInputResultPayload>);
         break;
 
+      case 'SET_MODEL_RESULT':
+        this.handleSetModelResult(envelope as Envelope<SetModelResultPayload>);
+        break;
+
       case 'LIST_WORKERS_RESULT':
         this.handleListWorkersResult(envelope as Envelope<ListWorkersResultPayload>);
         break;
@@ -1795,6 +1861,18 @@ export class RelayClient {
     pending.resolve(envelope.payload);
   }
 
+  private handleSetModelResult(envelope: Envelope<SetModelResultPayload>): void {
+    const replyTo = envelope.payload.replyTo;
+    if (!replyTo) return;
+
+    const pending = this.pendingSetModels.get(replyTo);
+    if (!pending) return;
+
+    clearTimeout(pending.timeoutHandle);
+    this.pendingSetModels.delete(replyTo);
+    pending.resolve(envelope.payload);
+  }
+
   private handleListWorkersResult(envelope: Envelope<ListWorkersResultPayload>): void {
     const replyTo = envelope.payload.replyTo;
     if (!replyTo) return;
@@ -1870,6 +1948,7 @@ export class RelayClient {
     this.rejectPendingSpawns(new Error('Disconnected while awaiting spawn result'));
     this.rejectPendingReleases(new Error('Disconnected while awaiting release result'));
     this.rejectPendingSendInputs(new Error('Disconnected while awaiting send input result'));
+    this.rejectPendingSetModels(new Error('Disconnected while awaiting set model result'));
     this.rejectPendingListWorkers(new Error('Disconnected while awaiting list workers result'));
     this.rejectPendingQueries(new Error('Disconnected while awaiting query response'));
     this.rejectPendingRequests(new Error('Disconnected while awaiting request response'));
@@ -1930,6 +2009,14 @@ export class RelayClient {
       clearTimeout(pending.timeoutHandle);
       pending.reject(error);
       this.pendingSendInputs.delete(id);
+    }
+  }
+
+  private rejectPendingSetModels(error: Error): void {
+    for (const [id, pending] of this.pendingSetModels.entries()) {
+      clearTimeout(pending.timeoutHandle);
+      pending.reject(error);
+      this.pendingSetModels.delete(id);
     }
   }
 

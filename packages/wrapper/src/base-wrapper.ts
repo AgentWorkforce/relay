@@ -70,7 +70,7 @@ export interface BaseWrapperConfig {
   /** Dashboard port for spawn/release API */
   dashboardPort?: number;
   /** Callback when spawn command is parsed */
-  onSpawn?: (name: string, cli: string, task: string) => Promise<void>;
+  onSpawn?: (name: string, cli: string, task: string, cwd?: string) => Promise<void>;
   /** Callback when release command is parsed */
   onRelease?: (name: string) => Promise<void>;
   /** Agent ID to resume from (for continuity) */

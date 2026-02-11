@@ -39,6 +39,8 @@ export interface SpawnRequest {
   cli: string;
   /** Initial task to inject */
   task: string;
+  /** Model override (e.g., 'opus', 'sonnet', 'haiku'). Takes precedence over agent profile. */
+  model?: string;
   /** Optional team name to organize agents under */
   team?: string;
   /** Working directory for the agent (defaults to detected workspace) */

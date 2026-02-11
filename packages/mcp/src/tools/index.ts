@@ -29,6 +29,13 @@ export {
 } from './relay-release.js';
 
 export {
+  relaySetModelTool,
+  relaySetModelSchema,
+  handleRelaySetModel,
+  type RelaySetModelInput,
+} from './relay-set-model.js';
+
+export {
   relayStatusTool,
   relayStatusSchema,
   handleRelayStatus,

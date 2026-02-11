@@ -36,6 +36,8 @@ import {
   relayAdminRemoveMemberSchema,
   handleRelayQueryMessages,
   relayQueryMessagesSchema,
+  handleRelaySetModel,
+  relaySetModelSchema,
 } from '../src/tools/index.js';
 
 /**
@@ -69,6 +71,7 @@ function createMockClient(overrides: Partial<Record<keyof RelayClient, ReturnTyp
     getMetrics: vi.fn(),
     queryMessages: vi.fn(),
     sendLog: vi.fn(),
+    setWorkerModel: vi.fn(),
     ...overrides,
   };
 }
@@ -1392,5 +1395,122 @@ describe('SDK/MCP parity scenarios', () => {
       await handleRelayChannelLeave(mockClient, { channel, reason: 'Task complete' });
     }
     expect(mockClient.leaveChannel).toHaveBeenCalledTimes(3);
+  });
+});
+
+// ============================================================================
+// Set Model Tool Tests
+// ============================================================================
+
+describe('relay_set_model', () => {
+  let mockClient: RelayClient;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockClient = createMockClient();
+  });
+
+  it('should return success message with previous model when switch succeeds', async () => {
+    vi.mocked(mockClient.setWorkerModel).mockResolvedValue({
+      success: true,
+      name: 'Worker1',
+      model: 'opus',
+      previousModel: 'sonnet',
+    });
+
+    const input = relaySetModelSchema.parse({
+      name: 'Worker1',
+      model: 'opus',
+    });
+    const result = await handleRelaySetModel(mockClient, input);
+
+    expect(result).toBe('Model for "Worker1" switched to "opus" (was: sonnet).');
+    expect(mockClient.setWorkerModel).toHaveBeenCalledWith('Worker1', 'opus', {
+      timeoutMs: undefined,
+    });
+  });
+
+  it('should return success message without previous model when not provided', async () => {
+    vi.mocked(mockClient.setWorkerModel).mockResolvedValue({
+      success: true,
+      name: 'Worker1',
+      model: 'haiku',
+    });
+
+    const input = relaySetModelSchema.parse({
+      name: 'Worker1',
+      model: 'haiku',
+    });
+    const result = await handleRelaySetModel(mockClient, input);
+
+    expect(result).toBe('Model for "Worker1" switched to "haiku".');
+  });
+
+  it('should pass timeout_ms as timeoutMs option when provided', async () => {
+    vi.mocked(mockClient.setWorkerModel).mockResolvedValue({
+      success: true,
+      name: 'Worker1',
+      model: 'opus',
+      previousModel: 'sonnet',
+    });
+
+    const input = relaySetModelSchema.parse({
+      name: 'Worker1',
+      model: 'opus',
+      timeout_ms: 60000,
+    });
+    await handleRelaySetModel(mockClient, input);
+
+    expect(mockClient.setWorkerModel).toHaveBeenCalledWith('Worker1', 'opus', {
+      timeoutMs: 60000,
+    });
+  });
+
+  it('should return error message when model switch fails', async () => {
+    vi.mocked(mockClient.setWorkerModel).mockResolvedValue({
+      success: false,
+      name: 'Worker1',
+      model: 'opus',
+      error: 'Agent not found',
+    });
+
+    const input = relaySetModelSchema.parse({
+      name: 'Worker1',
+      model: 'opus',
+    });
+    const result = await handleRelaySetModel(mockClient, input);
+
+    expect(result).toBe('Failed to switch model for "Worker1": Agent not found');
+    expect(mockClient.setWorkerModel).toHaveBeenCalledWith('Worker1', 'opus', {
+      timeoutMs: undefined,
+    });
+  });
+
+  it('should require name and model fields in schema', () => {
+    // Missing name should throw
+    expect(() => relaySetModelSchema.parse({ model: 'opus' })).toThrow();
+
+    // Missing model should throw
+    expect(() => relaySetModelSchema.parse({ name: 'Worker1' })).toThrow();
+
+    // Both missing should throw
+    expect(() => relaySetModelSchema.parse({})).toThrow();
+  });
+
+  it('should accept optional timeout_ms in schema', () => {
+    // Without timeout_ms - should parse successfully
+    const withoutTimeout = relaySetModelSchema.parse({
+      name: 'Worker1',
+      model: 'opus',
+    });
+    expect(withoutTimeout.timeout_ms).toBeUndefined();
+
+    // With timeout_ms - should parse successfully
+    const withTimeout = relaySetModelSchema.parse({
+      name: 'Worker1',
+      model: 'opus',
+      timeout_ms: 15000,
+    });
+    expect(withTimeout.timeout_ms).toBe(15000);
   });
 });

@@ -60,6 +60,12 @@
       "import": "./dist/model-mapping.js",
       "default": "./dist/cjs/model-mapping.js"
     },
+    "./model-commands": {
+      "types": "./dist/model-commands.d.ts",
+      "require": "./dist/cjs/model-commands.js",
+      "import": "./dist/model-commands.js",
+      "default": "./dist/cjs/model-commands.js"
+    },
     "./relay-pty-path": {
       "types": "./dist/relay-pty-path.d.ts",
       "require": "./dist/cjs/relay-pty-path.js",

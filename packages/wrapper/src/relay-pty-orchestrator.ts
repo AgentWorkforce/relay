@@ -1433,7 +1433,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     // 3. Final fallback: onSpawn callback
     if (this.config.onSpawn) {
       this.log(`Spawning ${name} via onSpawn callback`);
-      await this.config.onSpawn(name, cli, task);
+      await this.config.onSpawn(name, cli, task, cwd);
       return;
     }
 

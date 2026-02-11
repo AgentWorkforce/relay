@@ -15,6 +15,7 @@ import { resolveCommand } from '@agent-relay/utils/command-resolver';
 import { createTraceableError } from '@agent-relay/utils/error-tracking';
 import { createLogger } from '@agent-relay/utils/logger';
 import { mapModelToCli } from '@agent-relay/utils/model-mapping';
+import { isModelSwitchSupported, buildModelSwitchCommand, validateModelForCli } from '@agent-relay/utils/model-commands';
 import { findRelayPtyBinary as findRelayPtyBinaryUtil, getLastSearchPaths } from '@agent-relay/utils/relay-pty-path';
 import { RelayPtyOrchestrator, type RelayPtyOrchestratorConfig } from '@agent-relay/wrapper';
 import { OpenCodeWrapper, type OpenCodeWrapperConfig, OpenCodeApi } from '@agent-relay/wrapper';
@@ -830,7 +831,7 @@ export class AgentSpawner {
    * Spawn a new worker agent using relay-pty
    */
   async spawn(request: SpawnRequest): Promise<SpawnResult> {
-    const { name, cli, task, team, spawnerName, userId, includeWorkflowConventions, interactive } = request;
+    const { name, cli, task, team, spawnerName, userId, includeWorkflowConventions, interactive, model: modelOverride } = request;
     const debug = process.env.DEBUG_SPAWN === '1';
 
     // Validate agent name to prevent path traversal attacks
@@ -921,6 +922,11 @@ export class AgentSpawner {
         log.warn(`Could not resolve path for '${commandName}', spawn may fail`);
       }
 
+      // Track the effective model for this spawn.
+      // Model override from spawn request applies to ALL CLIs.
+      // CLI-specific blocks below may refine this (e.g., Claude agent profile lookup).
+      let spawnModel: string | undefined = modelOverride;
+
       // Pre-configure MCP permissions for all supported CLIs
       // This creates/updates CLI-specific settings files with agent-relay permissions
       ensureMcpPermissions(this.projectRoot, commandName, debug);
@@ -960,8 +966,15 @@ export class AgentSpawner {
           ? mapModelToCli(modelFromProfile)
           : mapModelToCli(); // defaults to claude:sonnet
 
-        // Extract effective model name for logging
-        effectiveModel = modelFromProfile || 'opus';
+        // Extract effective model name for logging and tracking
+        // Model override from spawn request takes precedence over agent profile
+        effectiveModel = modelOverride || modelFromProfile || 'opus';
+        spawnModel = effectiveModel;
+
+        // If model override provided, add --model before buildClaudeArgs so it takes precedence
+        if (modelOverride && !args.includes('--model')) {
+          args.push('--model', modelOverride);
+        }
 
         const configuredArgs = buildClaudeArgs(name, args, this.projectRoot);
         // Replace args with configured version (includes --model and --agent if found)
@@ -988,6 +1001,12 @@ export class AgentSpawner {
         if (isGeminiCli && !args.includes('--yolo')) {
           args.push('--yolo');
         }
+      }
+
+      // Pass model override to non-Claude CLIs via --model flag
+      // Claude handles this separately in its agent config block above
+      if (modelOverride && !isClaudeCli && !args.includes('--model') && !args.includes('-m')) {
+        args.push('--model', modelOverride);
       }
 
       // Check if MCP tools are available
@@ -1163,12 +1182,13 @@ export class AgentSpawner {
       };
 
       // Common spawn/release handlers
-      const onSpawnHandler = this.dashboardPort ? undefined : async (workerName: string, workerCli: string, workerTask: string) => {
+      const onSpawnHandler = this.dashboardPort ? undefined : async (workerName: string, workerCli: string, workerTask: string, workerCwd?: string) => {
         if (debug) log.debug(`Nested spawn: ${workerName}`);
         await this.spawn({
           name: workerName,
           cli: workerCli,
           task: workerTask,
+          cwd: workerCwd,
           userId,
         });
       };
@@ -1318,7 +1338,7 @@ export class AgentSpawner {
             pty: openCodeWrapper as unknown as AgentWrapper,
             logFile: openCodeWrapper.logPath,
             listeners,
-            model: effectiveModel,
+            model: spawnModel,
             cwd: request.cwd,
           };
           this.activeWorkers.set(name, workerInfo);
@@ -1529,7 +1549,7 @@ export class AgentSpawner {
         pty,
         logFile: pty.logPath,
         listeners, // Store for cleanup
-        model: effectiveModel,
+        model: spawnModel,
         cwd: request.cwd,
       };
       this.activeWorkers.set(name, workerInfo);
@@ -1784,6 +1804,7 @@ export class AgentSpawner {
       team: worker.team,
       spawnedAt: worker.spawnedAt,
       pid: worker.pid,
+      model: worker.model,
       cwd: worker.cwd,
     };
   }
@@ -1817,6 +1838,72 @@ export class AgentSpawner {
     if (!worker) return false;
     worker.pty.write(data);
     return true;
+  }
+
+  /**
+   * Switch the model of a running worker agent.
+   * Waits for the agent to be idle, then sends the CLI-specific model switch command.
+   *
+   * @param name - Worker name
+   * @param model - Target model identifier (e.g., 'opus', 'sonnet', 'haiku')
+   * @param timeoutMs - Max time to wait for agent idle (default: 30000)
+   * @returns Result of the model switch attempt
+   */
+  async setWorkerModel(
+    name: string,
+    model: string,
+    timeoutMs = 30000,
+  ): Promise<{ success: boolean; previousModel?: string; normalizedModel?: string; error?: string }> {
+    const worker = this.activeWorkers.get(name);
+    if (!worker) {
+      return { success: false, error: `Agent "${name}" not found` };
+    }
+
+    // Validate CLI supports model switching
+    if (!isModelSwitchSupported(worker.cli)) {
+      return { success: false, error: `CLI "${worker.cli}" does not support mid-session model switching` };
+    }
+
+    // Validate and normalize model name
+    const validation = validateModelForCli(worker.cli, model);
+    if (!validation.valid) {
+      return { success: false, error: validation.error };
+    }
+    const normalizedModel = validation.normalizedModel ?? model;
+
+    // Build the command using normalized model
+    const command = buildModelSwitchCommand(worker.cli, normalizedModel);
+    if (!command) {
+      return { success: false, error: `Failed to build model switch command for "${worker.cli}"` };
+    }
+
+    // Wait for agent idle via readiness detection
+    const pty = worker.pty;
+    if ('waitUntilReadyForMessages' in pty && typeof pty.waitUntilReadyForMessages === 'function') {
+      const ready = await pty.waitUntilReadyForMessages(timeoutMs, 200);
+      if (!ready) {
+        return {
+          success: false,
+          error: `Agent "${name}" did not become idle within ${timeoutMs}ms. The agent may be processing a task. Try again later.`,
+        };
+      }
+    } else {
+      log.warn(`PTY for ${name} does not support idle detection; sending model switch without waiting`);
+    }
+
+    // Send the command via write() (raw stdin)
+    try {
+      const previousModel = worker.model;
+      await pty.write(command);
+      worker.model = normalizedModel;
+      this.saveWorkersMetadata();
+
+      log.info(`Model switched for ${name}: ${previousModel ?? 'unknown'} -> ${normalizedModel}`);
+      return { success: true, previousModel, normalizedModel };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: false, error: `Failed to send model switch command: ${message}` };
+    }
   }
 
   /**
