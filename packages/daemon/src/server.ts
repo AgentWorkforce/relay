@@ -38,6 +38,7 @@ import {
   type MetricsResponsePayload,
   type AgentReadyPayload,
   type SendInputPayload,
+  type SetModelPayload,
   type ListWorkersPayload,
 } from '@agent-relay/protocol/types';
 import type { ChannelJoinPayload, ChannelLeavePayload, ChannelMessagePayload } from '@agent-relay/protocol/channels';
@@ -1342,6 +1343,17 @@ export class Daemon {
         const sendInputEnvelope = envelope as Envelope<SendInputPayload>;
         log.info(`SEND_INPUT request: from=${connection.agentName} agent=${sendInputEnvelope.payload.name}`);
         this.spawnManager.handleSendInput(connection, sendInputEnvelope);
+        break;
+      }
+
+      case 'SET_MODEL': {
+        if (!this.spawnManager) {
+          this.sendErrorEnvelope(connection, 'SpawnManager not enabled. Configure spawnManager: true in daemon config.');
+          break;
+        }
+        const setModelEnvelope = envelope as Envelope<SetModelPayload>;
+        log.info(`SET_MODEL request: from=${connection.agentName} agent=${setModelEnvelope.payload.name} model=${setModelEnvelope.payload.model}`);
+        this.spawnManager.handleSetModel(connection, setModelEnvelope);
         break;
       }
 

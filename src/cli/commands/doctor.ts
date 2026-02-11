@@ -228,9 +228,8 @@ function describeCurrentAdapter(
 
   return {
     name: 'Current adapter',
-    ok: false,
-    message: `SQLite drivers unavailable for ${relativePath(dbPath)}`,
-    remediation: 'Upgrade to Node 22+ or run: npm rebuild better-sqlite3',
+    ok: true,
+    message: 'Memory fallback (no SQLite driver available)',
   };
 }
 
@@ -344,9 +343,8 @@ async function checkWriteTest(
   if (!driver) {
     return {
       name: 'Write test',
-      ok: false,
-      message: 'Could not write (no SQLite driver available)',
-      remediation: 'Upgrade to Node 22+ or run: npm rebuild better-sqlite3',
+      ok: true,
+      message: 'Skipped (no SQLite driver available)',
     };
   }
 
@@ -405,9 +403,8 @@ async function checkReadTest(
   if (!driver) {
     return {
       name: 'Read test',
-      ok: false,
-      message: 'Could not read (no SQLite driver available)',
-      remediation: 'Upgrade to Node 22+ or run: npm rebuild better-sqlite3',
+      ok: true,
+      message: 'Skipped (no SQLite driver available)',
     };
   }
 
@@ -558,8 +555,21 @@ export async function runDoctor(): Promise<void> {
   results.forEach((res) => printResult(res));
   console.log('');
 
-  const failed = results.some((r) => !r.ok);
-  console.log(`Status: ${failed ? 'Some checks failed ✗' : 'All checks passed ✓'}`);
+  const failed = results.some((r) => {
+    // Individual driver availability is informational — missing drivers are
+    // warnings, not failures, because the system falls back to memory storage.
+    if (r.name === 'better-sqlite3' || r.name === 'node:sqlite') {
+      return false;
+    }
+    return !r.ok;
+  });
+  const hasWarnings = results.some((r) => !r.ok) && !failed;
+  const statusMessage = failed
+    ? 'Some checks failed ✗'
+    : hasWarnings
+      ? 'Checks passed with warnings ⚠'
+      : 'All checks passed ✓';
+  console.log(`Status: ${statusMessage}`);
 
   process.exitCode = failed ? 1 : 0;
 }

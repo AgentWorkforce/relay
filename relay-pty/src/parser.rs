@@ -53,6 +53,8 @@ struct RelayMessage {
     cli: Option<String>,
     /// Optional thread identifier
     thread: Option<String>,
+    /// Optional working directory (for spawn)
+    cwd: Option<String>,
 }
 
 /// Structured continuity message (parsed from header format)
@@ -87,6 +89,9 @@ struct JsonRelayMessage {
     /// Optional thread identifier
     #[serde(default)]
     thread: Option<String>,
+    /// Optional working directory (for spawn)
+    #[serde(default)]
+    cwd: Option<String>,
 }
 
 /// Parse simple header-based format:
@@ -124,6 +129,7 @@ fn parse_header_format(content: &str) -> Option<RelayMessage> {
                 "NAME" => msg.name = Some(value),
                 "CLI" => msg.cli = Some(value),
                 "THREAD" => msg.thread = Some(value),
+                "CWD" | "DIR" => msg.cwd = Some(value),
                 _ => {} // Ignore unknown headers
             }
         }
@@ -432,6 +438,7 @@ impl OutputParser {
                                 name: json_msg.name,
                                 cli: json_msg.cli,
                                 thread: json_msg.thread,
+                                cwd: json_msg.cwd,
                             })
                         }
                         Err(e) => {
@@ -457,11 +464,12 @@ impl OutputParser {
                                 "SPAWN PARSED: {} spawning {} with {} (task: {}...)",
                                 self.agent_name, name, cli, task_preview
                             );
-                            Some(ParsedRelayCommand::new_spawn(
+                            Some(ParsedRelayCommand::new_spawn_with_cwd(
                                 self.agent_name.clone(),
                                 name.clone(),
                                 cli.clone(),
                                 msg.body.unwrap_or_default(),
+                                msg.cwd.clone(),
                                 raw.to_string(),
                             ))
                         } else {

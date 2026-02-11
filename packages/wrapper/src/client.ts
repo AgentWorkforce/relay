@@ -713,6 +713,16 @@ export class RelayClient {
     task: string;
     model?: string;
     cwd?: string;
+    team?: string;
+    interactive?: boolean;
+    spawnerName?: string;
+    userId?: string;
+    includeWorkflowConventions?: boolean;
+    shadowMode?: 'subagent' | 'process';
+    shadowOf?: string;
+    shadowAgent?: string;
+    shadowTriggers?: SpeakOnTrigger[];
+    shadowSpeakOn?: SpeakOnTrigger[];
   }): Promise<SpawnResult> {
     if (this._state !== 'READY') {
       return { success: false, error: 'Client not ready' };
@@ -725,7 +735,16 @@ export class RelayClient {
         task: options.task,
         model: options.model,
         cwd: options.cwd,
-        spawnerName: this.config.agentName,
+        team: options.team,
+        interactive: options.interactive,
+        spawnerName: options.spawnerName || this.config.agentName,
+        userId: options.userId,
+        includeWorkflowConventions: options.includeWorkflowConventions,
+        shadowMode: options.shadowMode,
+        shadowOf: options.shadowOf,
+        shadowAgent: options.shadowAgent,
+        shadowTriggers: options.shadowTriggers,
+        shadowSpeakOn: options.shadowSpeakOn,
       };
 
       const result = await this.requestResponse<SpawnResultPayload>(

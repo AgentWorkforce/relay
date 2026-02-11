@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/utils",
-  "version": "2.1.22",
+  "version": "2.1.26",
   "description": "Shared utilities for agent-relay: logging, name generation, command resolution, update checking",
   "type": "module",
   "main": "dist/cjs/index.js",
@@ -60,6 +60,12 @@
       "import": "./dist/model-mapping.js",
       "default": "./dist/cjs/model-mapping.js"
     },
+    "./model-commands": {
+      "types": "./dist/model-commands.d.ts",
+      "require": "./dist/cjs/model-commands.js",
+      "import": "./dist/model-commands.js",
+      "default": "./dist/cjs/model-commands.js"
+    },
     "./relay-pty-path": {
       "types": "./dist/relay-pty-path.d.ts",
       "require": "./dist/cjs/relay-pty-path.js",
@@ -106,8 +112,8 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
-    "@agent-relay/config": "2.1.22",
-    "@agent-relay/protocol": "2.1.22",
+    "@agent-relay/config": "2.1.26",
+    "@agent-relay/protocol": "2.1.26",
     "compare-versions": "^6.1.1"
   },
   "publishConfig": {

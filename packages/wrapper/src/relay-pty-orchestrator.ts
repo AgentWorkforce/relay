@@ -1258,13 +1258,14 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     spawn_name?: string;
     spawn_cli?: string;
     spawn_task?: string;
+    spawn_cwd?: string;
     release_name?: string;
   }): void {
     switch (parsed.kind) {
       case 'spawn':
         if (parsed.spawn_name && parsed.spawn_cli) {
-          this.log(` Spawn detected: ${parsed.spawn_name} (${parsed.spawn_cli})`);
-          this.handleSpawnCommand(parsed.spawn_name, parsed.spawn_cli, parsed.spawn_task || '');
+          this.log(` Spawn detected: ${parsed.spawn_name} (${parsed.spawn_cli})${parsed.spawn_cwd ? ` in ${parsed.spawn_cwd}` : ''}`);
+          this.handleSpawnCommand(parsed.spawn_name, parsed.spawn_cli, parsed.spawn_task || '', parsed.spawn_cwd);
         }
         break;
 
@@ -1368,7 +1369,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
    * now handles it after waitUntilCliReady(). Sending it here would cause
    * duplicate task delivery.
    */
-  private handleSpawnCommand(name: string, cli: string, task: string): void {
+  private handleSpawnCommand(name: string, cli: string, task: string, cwd?: string): void {
     const key = `spawn:${name}:${cli}`;
     if (this.processedSpawnCommands.has(key)) {
       this.log(`Spawn already processed: ${key}`);
@@ -1377,12 +1378,12 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     this.processedSpawnCommands.add(key);
 
     // Log spawn attempts (only in debug mode to avoid TUI pollution)
-    this.log(`SPAWN REQUEST: ${name} (${cli})`);
+    this.log(`SPAWN REQUEST: ${name} (${cli})${cwd ? ` cwd=${cwd}` : ''}`);
     this.log(`  client=${this.client.state}, dashboardPort=${this.config.dashboardPort}, onSpawn=${!!this.config.onSpawn}`);
 
     // Try daemon socket first (most reliable - daemon has relay-pty binary),
     // then dashboard API, then onSpawn callback as final fallback.
-    this.executeSpawnWithFallbacks(name, cli, task).catch(err => {
+    this.executeSpawnWithFallbacks(name, cli, task, cwd).catch(err => {
       this.logError(`SPAWN FAILED: ${name} - all methods exhausted: ${err.message}`);
     });
   }
@@ -1391,14 +1392,21 @@ export class RelayPtyOrchestrator extends BaseWrapper {
    * Execute spawn with daemon-first fallback chain.
    * Order: daemon socket → dashboard API → onSpawn callback
    */
-  private async executeSpawnWithFallbacks(name: string, cli: string, task: string): Promise<void> {
+  private async executeSpawnWithFallbacks(name: string, cli: string, task: string, cwd?: string): Promise<void> {
     // 1. Try daemon socket spawn first (daemon always has access to relay-pty)
     if (this.client.state === 'READY') {
       try {
         this.log(`Spawning ${name} via daemon socket`);
-        const result = await this.client.spawn({ name, cli, task });
+        const result = await this.client.spawn({ name, cli, task, cwd });
         if (result.success) {
           this.log(`SPAWN SUCCESS: ${name} via daemon socket`);
+          // Also register cwd with dashboard API so agentCwdMap is populated
+          // (daemon socket spawn bypasses /api/spawn which normally sets this)
+          if (cwd && this.config.dashboardPort) {
+            this.registerCwdWithDashboard(name, cwd).catch(err => {
+              this.log(`Failed to register cwd with dashboard: ${err.message}`);
+            });
+          }
         } else {
           // Daemon explicitly rejected - respect its decision (policy, duplicate, etc.)
           this.logError(`Daemon spawn rejected: ${result.error}`);
@@ -1414,7 +1422,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     if (this.config.dashboardPort) {
       try {
         this.log(`Spawning ${name} via dashboard API at port ${this.config.dashboardPort}`);
-        await this.spawnViaDashboardApi(name, cli, task);
+        await this.spawnViaDashboardApi(name, cli, task, cwd);
         this.log(`SPAWN SUCCESS: ${name} via dashboard API`);
         return;
       } catch (err: any) {
@@ -1425,7 +1433,7 @@ export class RelayPtyOrchestrator extends BaseWrapper {
     // 3. Final fallback: onSpawn callback
     if (this.config.onSpawn) {
       this.log(`Spawning ${name} via onSpawn callback`);
-      await this.config.onSpawn(name, cli, task);
+      await this.config.onSpawn(name, cli, task, cwd);
       return;
     }
 
@@ -1491,15 +1499,32 @@ export class RelayPtyOrchestrator extends BaseWrapper {
   }
 
   /**
+   * Register an agent's cwd with the dashboard API.
+   * Used after daemon socket spawns which bypass /api/spawn and its agentCwdMap.
+   */
+  private async registerCwdWithDashboard(name: string, cwd: string): Promise<void> {
+    const url = `http://localhost:${this.config.dashboardPort}/api/agents/${encodeURIComponent(name)}/cwd`;
+    const response = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cwd }),
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+  }
+
+  /**
    * Spawn agent via dashboard API
    */
-  private async spawnViaDashboardApi(name: string, cli: string, task: string): Promise<void> {
+  private async spawnViaDashboardApi(name: string, cli: string, task: string, cwd?: string): Promise<void> {
     const url = `http://localhost:${this.config.dashboardPort}/api/spawn`;
-    const body = {
+    const body: Record<string, string | undefined> = {
       name,
       cli,
       task,
       spawnerName: this.config.name, // Include spawner name so task appears from correct agent
+      cwd,
     };
 
     try {
