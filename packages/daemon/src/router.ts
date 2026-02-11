@@ -1563,7 +1563,7 @@ export class Router {
     }
 
     // Persist channel message
-    this.persistChannelMessage(envelope, senderName);
+    this.persistChannelMessage(envelope, senderName, allMembers);
 
     const recipientCount = allMembers.length - 1; // Exclude sender
     routerLog.info(`${senderName} -> ${channel}: delivered to ${deliveredCount}/${recipientCount} members`);
@@ -1579,14 +1579,16 @@ export class Router {
    */
   private persistChannelMessage(
     envelope: Envelope<ChannelMessagePayload>,
-    from: string
+    from: string,
+    channelMembers?: string[]
   ): void {
     if (!this.storage) return;
 
+    const channel = envelope.payload.channel;
     const payloadData = {
       ...envelope.payload.data,
       _isChannelMessage: true,
-      _channel: envelope.payload.channel,
+      _channel: channel,
       _mentions: envelope.payload.mentions,
     };
 
@@ -1594,7 +1596,7 @@ export class Router {
       id: envelope.id,
       ts: envelope.ts,
       from,
-      to: envelope.payload.channel, // Channel name as "to"
+      to: channel, // Channel name as "to"
       topic: undefined,
       kind: 'message',
       body: envelope.payload.body,
@@ -1606,6 +1608,43 @@ export class Router {
     }).catch((err) => {
       routerLog.error('Failed to persist channel message', { error: String(err) });
     });
+
+    // For direct relay channels (dm:*), also persist per-participant copies so
+    // history queries can resolve messages by sender/recipient pairs.
+    if (!channel.startsWith('dm:')) {
+      return;
+    }
+
+    const participants = (channelMembers && channelMembers.length > 0
+      ? channelMembers
+      : channel.split(':').slice(1)).filter(Boolean);
+
+    // Include a sender self-copy so the sender's DM history survives refresh/reload.
+    for (const [index, participant] of participants.entries()) {
+      const participantData = {
+        ...payloadData,
+        _isDirectRelayMessage: true,
+        _directChannel: channel,
+        _directParticipant: participant,
+      };
+
+      this.storage.saveMessage({
+        id: `${envelope.id}:dm:${index}`,
+        ts: envelope.ts,
+        from,
+        to: participant,
+        topic: undefined,
+        kind: 'message',
+        body: envelope.payload.body,
+        data: participantData,
+        thread: envelope.payload.thread,
+        status: 'unread',
+        is_urgent: false,
+        is_broadcast: false,
+      }).catch((err) => {
+        routerLog.error('Failed to persist direct relay participant copy', { error: String(err) });
+      });
+    }
   }
 
   private persistChannelMembership(

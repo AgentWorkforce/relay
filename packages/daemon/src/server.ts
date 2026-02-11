@@ -1465,6 +1465,7 @@ export class Daemon {
               sinceTs: queryPayload.sinceTs,
               from: queryPayload.from,
               to: queryPayload.to,
+              bidirectional: Boolean(queryPayload.from && queryPayload.to),
               thread: queryPayload.thread,
               order: queryPayload.order || 'desc',
             });
