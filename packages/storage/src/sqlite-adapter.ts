@@ -72,6 +72,12 @@ export class SqliteStorageAdapter implements StorageAdapter {
     return typeof (globalThis as any).Bun !== 'undefined';
   }
 
+  /** node:sqlite is only available in Node 22.5+ */
+  private hasNodeSqlite(): boolean {
+    const major = parseInt(process.versions.node.split('.')[0], 10);
+    return major >= 22;
+  }
+
   private async openDatabase(driver: SqliteDriverName): Promise<SqliteDatabase> {
     if (driver === 'bun') {
       // bun:sqlite - built-in to Bun runtime, API compatible with better-sqlite3
@@ -114,6 +120,8 @@ export class SqliteStorageAdapter implements StorageAdapter {
     const preferred = this.resolvePreferredDriver();
     let attempts: SqliteDriverName[];
 
+    const canUseNodeSqlite = this.hasNodeSqlite();
+
     if (preferred) {
       // User specified a preferred driver - try it first, then others
       const allDrivers: SqliteDriverName[] = ['bun', 'better-sqlite3', 'node'];
@@ -124,7 +132,12 @@ export class SqliteStorageAdapter implements StorageAdapter {
       attempts = ['bun', 'better-sqlite3', 'node'];
     } else {
       // Running in Node.js - try better-sqlite3 first (fastest), then built-in
-      attempts = ['better-sqlite3', 'node'];
+      attempts = canUseNodeSqlite ? ['better-sqlite3', 'node'] : ['better-sqlite3'];
+    }
+
+    // node:sqlite requires Node 22.5+ — skip it on older versions
+    if (!canUseNodeSqlite) {
+      attempts = attempts.filter(d => d !== 'node');
     }
 
     // Try the fastest/native option first, then fall back to the built-in driver so startup still succeeds on systems without prebuilt binaries
