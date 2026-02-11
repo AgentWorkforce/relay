@@ -1784,6 +1784,7 @@ export class AgentSpawner {
       team: worker.team,
       spawnedAt: worker.spawnedAt,
       pid: worker.pid,
+      cwd: worker.cwd,
     };
   }
 
