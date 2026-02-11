@@ -86,7 +86,6 @@ describeCli('CLI', () => {
         DOTENV_CONFIG_QUIET: 'true',
         AGENT_RELAY_SKIP_TMUX: '1',
         AGENT_RELAY_SKIP_UPDATE_CHECK: '1',
-        AGENT_RELAY_DOCTOR_FORCE_NODE_SQLITE: '1',
       };
 
       const output = execSync(`node ${CLI_PATH} doctor`, {

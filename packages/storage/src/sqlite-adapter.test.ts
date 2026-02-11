@@ -6,6 +6,24 @@ import { SqliteStorageAdapter } from './sqlite-adapter.js';
 import { MemoryStorageAdapter } from './adapter.js';
 import type { StoredMessage } from './adapter.js';
 
+// Check if any SQLite driver is available (better-sqlite3 is an optional peer dependency,
+// node:sqlite requires Node 22.5+)
+let hasSqliteDriver = false;
+try {
+  await import('better-sqlite3');
+  hasSqliteDriver = true;
+} catch {
+  // better-sqlite3 not available
+}
+if (!hasSqliteDriver) {
+  const major = parseInt(process.versions.node.split('.')[0], 10);
+  if (major >= 22) {
+    hasSqliteDriver = true;
+  }
+}
+
+const hasNodeSqlite = parseInt(process.versions.node.split('.')[0], 10) >= 22;
+
 const makeMessage = (overrides: Partial<StoredMessage> = {}): StoredMessage => ({
   id: overrides.id ?? 'msg-1',
   ts: overrides.ts ?? Date.now(),
@@ -25,7 +43,7 @@ const makeMessage = (overrides: Partial<StoredMessage> = {}): StoredMessage => (
   is_broadcast: overrides.is_broadcast ?? false,
 });
 
-describe('SqliteStorageAdapter', () => {
+describe.skipIf(!hasSqliteDriver)('SqliteStorageAdapter', () => {
   let dbPath: string;
   let adapter: SqliteStorageAdapter;
   const originalDriver = process.env.AGENT_RELAY_SQLITE_DRIVER;
@@ -108,7 +126,7 @@ describe('SqliteStorageAdapter', () => {
     expect(rows.map(r => r.id)).toEqual(['t1']);
   });
 
-  it('can force node sqlite driver', async () => {
+  it.skipIf(!hasNodeSqlite)('can force node sqlite driver', async () => {
     await adapter.close();
     process.env.AGENT_RELAY_SQLITE_DRIVER = 'node';
     adapter = new SqliteStorageAdapter({ dbPath });
