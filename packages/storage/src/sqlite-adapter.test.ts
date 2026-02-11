@@ -100,6 +100,17 @@ describe.skipIf(!hasSqliteDriver)('SqliteStorageAdapter', () => {
     expect(limited).toHaveLength(1);
   });
 
+  it('supports bidirectional DM queries when from and to are both provided', async () => {
+    const now = Date.now();
+    await adapter.saveMessage(makeMessage({ id: 'dm-1', ts: now - 3000, from: 'Alice', to: 'Bob' }));
+    await adapter.saveMessage(makeMessage({ id: 'dm-2', ts: now - 2000, from: 'Bob', to: 'Alice' }));
+    await adapter.saveMessage(makeMessage({ id: 'dm-3', ts: now - 1000, from: 'Alice', to: 'Charlie' }));
+
+    // Even if order=desc is requested, bidirectional DM query is always chronological.
+    const rows = await adapter.getMessages({ from: 'Alice', to: 'Bob', order: 'desc' });
+    expect(rows.map(r => r.id)).toEqual(['dm-1', 'dm-2']);
+  });
+
   it('supports unread and urgent filters', async () => {
     const now = Date.now();
     await adapter.saveMessage(makeMessage({ id: 'u1', ts: now - 3000, status: 'unread', is_urgent: false }));
