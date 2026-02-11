@@ -147,6 +147,19 @@ EOF
 **Step 2:** Output: `->relay-file:spawn`
 
 ```bash
+# Spawn an agent in a specific directory (e.g., a specific repo in a multi-repo workspace)
+cat > $AGENT_RELAY_OUTBOX/spawn << 'EOF'
+KIND: spawn
+NAME: RepoWorker
+CLI: claude
+CWD: relay
+
+Work on the relay repository.
+EOF
+```
+**Step 2:** Output: `->relay-file:spawn`
+
+```bash
 # Spawn a Codex agent
 cat > $AGENT_RELAY_OUTBOX/spawn << 'EOF'
 KIND: spawn
@@ -244,4 +257,5 @@ agent-relay history --json             # JSON output for parsing
 | KIND | No | `message` (default), `spawn`, `release` |
 | NAME | Yes (spawn/release) | Agent name |
 | CLI | Yes (spawn) | CLI to use: `claude`, `codex`, `gemini`, `aider`, `goose` |
+| CWD | No | Working directory for spawned agent (e.g., repo name in multi-repo workspace) |
 | THREAD | No | Thread identifier |

@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import { execFile, execSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { sleep } from './utils.js';
+import { sleep, resolveAgentCwd } from './utils.js';
 import { resolveCli } from './cli-resolution.js';
 import { getProjectPaths, getAgentOutboxTemplate } from '@agent-relay/config';
 import { resolveCommand } from '@agent-relay/utils/command-resolver';
@@ -95,6 +95,8 @@ interface WorkerMeta {
   logFile?: string;
   /** Current model if known */
   model?: string;
+  /** Working directory (repo name) the agent was spawned in */
+  cwd?: string;
 }
 
 /** Stored listener references for cleanup */
@@ -951,6 +953,8 @@ export class AgentSpawner {
 
       // Apply agent config (model, --agent flag) from .claude/agents/ if available
       // This ensures spawned agents respect their profile settings
+      let effectiveModel: string | undefined;
+
       if (isClaudeCli) {
         // Get agent config for model tracking and CLI variant selection
         const agentConfig = findAgentConfig(name, this.projectRoot);
@@ -964,7 +968,7 @@ export class AgentSpawner {
 
         // Extract effective model name for logging and tracking
         // Model override from spawn request takes precedence over agent profile
-        const effectiveModel = modelOverride || modelFromProfile || 'opus';
+        effectiveModel = modelOverride || modelFromProfile || 'opus';
         spawnModel = effectiveModel;
 
         // If model override provided, add --model before buildClaudeArgs so it takes precedence
@@ -1078,29 +1082,12 @@ export class AgentSpawner {
       // Fall back to callbacks only if no dashboardPort is not set
       // Note: Spawned agents CAN spawn sub-workers intentionally - the parser is strict enough
       // to avoid accidental spawns from documentation text (requires line start, PascalCase, known CLI)
-      // Use request.cwd if specified, otherwise use projectRoot
-      // Validate cwd to prevent path traversal attacks
-      let agentCwd: string;
-      if (request.cwd && typeof request.cwd === 'string') {
-        // Resolve cwd relative to project root and ensure it stays within that root
-        const resolvedCwd = path.resolve(this.projectRoot, request.cwd);
-        const normalizedProjectRoot = path.resolve(this.projectRoot);
-        const projectRootWithSep = normalizedProjectRoot.endsWith(path.sep)
-          ? normalizedProjectRoot
-          : normalizedProjectRoot + path.sep;
-        
-        // Ensure the resolved cwd is within the project root to prevent traversal
-        if (resolvedCwd !== normalizedProjectRoot && !resolvedCwd.startsWith(projectRootWithSep)) {
-          return {
-            success: false,
-            name,
-            error: `Invalid cwd: "${request.cwd}" must be within the project root`,
-          };
-        }
-        agentCwd = resolvedCwd;
-      } else {
-        agentCwd = this.projectRoot;
+      // Resolve CWD relative to workspace root (parent of project root)
+      const cwdResult = resolveAgentCwd(this.projectRoot, request.cwd);
+      if ('error' in cwdResult) {
+        return { success: false, name, error: cwdResult.error };
       }
+      const agentCwd = cwdResult.cwd;
 
       // Log whether nested spawning will be enabled for this agent
       log.info(`Spawning ${name}: dashboardPort=${this.dashboardPort || 'none'} (${this.dashboardPort ? 'nested spawns enabled' : 'nested spawns disabled'})`);
@@ -1195,12 +1182,13 @@ export class AgentSpawner {
       };
 
       // Common spawn/release handlers
-      const onSpawnHandler = this.dashboardPort ? undefined : async (workerName: string, workerCli: string, workerTask: string) => {
+      const onSpawnHandler = this.dashboardPort ? undefined : async (workerName: string, workerCli: string, workerTask: string, workerCwd?: string) => {
         if (debug) log.debug(`Nested spawn: ${workerName}`);
         await this.spawn({
           name: workerName,
           cli: workerCli,
           task: workerTask,
+          cwd: workerCwd,
           userId,
         });
       };
@@ -1351,6 +1339,7 @@ export class AgentSpawner {
             logFile: openCodeWrapper.logPath,
             listeners,
             model: spawnModel,
+            cwd: request.cwd,
           };
           this.activeWorkers.set(name, workerInfo);
           this.saveWorkersMetadata();
@@ -1561,6 +1550,7 @@ export class AgentSpawner {
         logFile: pty.logPath,
         listeners, // Store for cleanup
         model: spawnModel,
+        cwd: request.cwd,
       };
       this.activeWorkers.set(name, workerInfo);
       this.saveWorkersMetadata();
@@ -1790,6 +1780,7 @@ export class AgentSpawner {
       spawnedAt: w.spawnedAt,
       pid: w.pid,
       model: w.model,
+      cwd: w.cwd,
     }));
   }
 
@@ -1814,6 +1805,7 @@ export class AgentSpawner {
       spawnedAt: worker.spawnedAt,
       pid: worker.pid,
       model: worker.model,
+      cwd: worker.cwd,
     };
   }
 
@@ -2021,6 +2013,7 @@ export class AgentSpawner {
         pid: w.pid,
         logFile: w.logFile,
         model: w.model,
+        cwd: w.cwd,
       }));
 
       fs.writeFileSync(this.workersPath, JSON.stringify({ workers }, null, 2));

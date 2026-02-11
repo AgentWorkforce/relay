@@ -65,3 +65,49 @@ export function escapeForTmux(str: string): string {
     .replace(/`/g, '\\`')
     .replace(/!/g, '\\!');
 }
+
+/**
+ * Resolve the working directory for a spawned agent.
+ *
+ * Determines the workspace root (the directory containing repos), then resolves
+ * CWD relative to it. Two cases:
+ *
+ * 1. projectRoot IS a git repo (e.g., /data/repos/relay has .git)
+ *    → workspace root = parent dir (/data/repos)
+ *    → CWD: "relaycast" resolves to /data/repos/relaycast
+ *
+ * 2. projectRoot is NOT a git repo (e.g., /data/repos — the workspace root itself)
+ *    → workspace root = projectRoot (/data/repos)
+ *    → CWD: "relaycast" resolves to /data/repos/relaycast
+ *
+ * Returns { cwd: string } on success, or { error: string } if the path escapes
+ * the workspace root (traversal protection).
+ *
+ * When no cwd is provided, returns projectRoot as the default.
+ */
+export function resolveAgentCwd(
+  projectRoot: string,
+  cwd?: string | null,
+): { cwd: string } | { error: string } {
+  if (!cwd || typeof cwd !== 'string') {
+    return { cwd: projectRoot };
+  }
+
+  // Determine workspace root: if projectRoot is a git repo, its parent contains
+  // sibling repos. Otherwise projectRoot is already the workspace root.
+  const isRepo = fs.existsSync(path.join(projectRoot, '.git'));
+  const workspaceRoot = isRepo ? path.dirname(projectRoot) : projectRoot;
+
+  const resolvedCwd = path.resolve(workspaceRoot, cwd);
+  const normalizedRoot = path.resolve(workspaceRoot);
+  const rootWithSep = normalizedRoot.endsWith(path.sep)
+    ? normalizedRoot
+    : normalizedRoot + path.sep;
+
+  // Ensure the resolved cwd is within the workspace root to prevent traversal
+  if (resolvedCwd !== normalizedRoot && !resolvedCwd.startsWith(rootWithSep)) {
+    return { error: `Invalid cwd: "${cwd}" must be within the workspace root` };
+  }
+
+  return { cwd: resolvedCwd };
+}

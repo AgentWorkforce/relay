@@ -160,6 +160,22 @@ EOF
 ```
 Then: `->relay-file:spawn`
 
+### Spawn in a Specific Directory
+
+Use `CWD` to spawn an agent in a specific repo within a multi-repo workspace:
+
+```bash
+cat > ~/.agent-relay/outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
+KIND: spawn
+NAME: RepoWorker
+CLI: claude
+CWD: relay
+
+Work on the relay repository.
+EOF
+```
+Then: `->relay-file:spawn`
+
 ### Release a Worker
 
 ```bash
@@ -178,6 +194,7 @@ Then: `->relay-file:release`
 | KIND | No | `message` (default), `spawn`, `release` |
 | NAME | Yes (spawn/release) | Agent name |
 | CLI | Yes (spawn) | CLI to use |
+| CWD | No | Working directory for spawned agent (e.g., repo name in multi-repo workspace) |
 | THREAD | No | Thread identifier |
 
 ## Status Updates
