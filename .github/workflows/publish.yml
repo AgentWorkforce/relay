@@ -260,6 +260,7 @@ jobs:
             --compile \
             --minify \
             --target=${{ matrix.target }} \
+            --external better-sqlite3 \
             --define="process.env.AGENT_RELAY_VERSION=\"${{ needs.build.outputs.new_version }}\"" \
             ./packages/acp-bridge/dist/cli.js \
             --outfile release-binaries/${{ matrix.binary_name }}
