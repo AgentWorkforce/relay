@@ -209,6 +209,13 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
     waitTimeout: 30000,
     prompts: [
       {
+        // Trust directory prompt - numbered menu: 1. Trust this folder, 2. Trust parent, 3. Don't trust
+        pattern: /trust\s*(this|the)?\s*(files|directory|folder|workspace|parent)|do\s*you\s*trust|don't\s*trust|safety\s*check/i,
+        response: '1\r',
+        delay: 200,
+        description: 'Trust directory prompt',
+      },
+      {
         // Auth method selection - select first option (Login with Google for OAuth)
         pattern: /login\s*with\s*google|google\s*account|choose.*auth|how\s*would\s*you\s*like\s*to\s*authenticate/i,
         response: '\r',
