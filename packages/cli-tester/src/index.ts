@@ -18,14 +18,14 @@
  */
 
 export {
-  RelayPtyClient,
+  AgentRelayClient,
   createClient,
   getSocketPath,
   type InjectRequest,
   type InjectResponse,
   type StatusRequest,
   type StatusResponse,
-  type RelayPtyResponse,
+  type AgentRelayResponse,
 } from './utils/socket-client.js';
 
 export {

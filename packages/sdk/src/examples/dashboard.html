@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Relay Dashboard</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #1c2333;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --yellow: #d29922;
+    --red: #f85149;
+    --purple: #bc8cff;
+    --orange: #f0883e;
+    --cyan: #39d2c0;
+    --font: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.5;
+    overflow: hidden;
+    height: 100vh;
+  }
+
+  /* --- Layout --- */
+  .app {
+    display: grid;
+    grid-template-rows: auto 1fr;
+    height: 100vh;
+  }
+
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    z-index: 10;
+  }
+
+  header h1 {
+    font-family: var(--sans);
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .logo {
+    width: 22px;
+    height: 22px;
+    background: linear-gradient(135deg, var(--accent), var(--purple));
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    color: #fff;
+    font-weight: 700;
+  }
+
+  .status-pill {
+    font-size: 11px;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .status-pill.connected {
+    background: rgba(63, 185, 80, 0.15);
+    color: var(--green);
+  }
+
+  .status-pill.disconnected {
+    background: rgba(248, 81, 73, 0.15);
+    color: var(--red);
+  }
+
+  .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  .agent-bar {
+    display: flex;
+    gap: 8px;
+    margin-left: auto;
+    align-items: center;
+  }
+
+  .agent-chip {
+    font-family: var(--sans);
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 6px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.3s ease;
+  }
+
+  .agent-chip.alive {
+    border-color: var(--green);
+    color: var(--green);
+    background: rgba(63, 185, 80, 0.08);
+  }
+
+  .agent-chip.exited {
+    border-color: var(--red);
+    color: var(--red);
+    background: rgba(248, 81, 73, 0.08);
+    opacity: 0.6;
+  }
+
+  .agent-chip .runtime {
+    font-size: 9px;
+    text-transform: uppercase;
+    opacity: 0.7;
+  }
+
+  /* --- Main content --- */
+  .content {
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    overflow: hidden;
+  }
+
+  /* --- Event feed --- */
+  .feed {
+    overflow-y: auto;
+    padding: 8px 0;
+    scroll-behavior: smooth;
+  }
+
+  .feed::-webkit-scrollbar { width: 6px; }
+  .feed::-webkit-scrollbar-track { background: transparent; }
+  .feed::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  .event-row {
+    display: grid;
+    grid-template-columns: 140px 110px 1fr;
+    gap: 12px;
+    padding: 6px 20px;
+    border-bottom: 1px solid transparent;
+    animation: slideIn 0.25s ease-out;
+    transition: background 0.15s;
+    align-items: start;
+  }
+
+  .event-row:hover {
+    background: rgba(88, 166, 255, 0.04);
+  }
+
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .event-ts {
+    color: var(--text-dim);
+    font-size: 11px;
+    white-space: nowrap;
+    padding-top: 1px;
+  }
+
+  .event-kind {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 1px 8px;
+    border-radius: 4px;
+    text-align: center;
+    white-space: nowrap;
+    display: inline-block;
+  }
+
+  .event-kind.relay_inbound  { background: rgba(88, 166, 255, 0.15); color: var(--accent); }
+  .event-kind.worker_stream  { background: rgba(188, 140, 255, 0.12); color: var(--purple); }
+  .event-kind.agent_spawned  { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+  .event-kind.agent_released { background: rgba(210, 153, 34, 0.15); color: var(--yellow); }
+  .event-kind.agent_exited   { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+  .event-kind.broker_stderr  { background: rgba(139, 148, 158, 0.12); color: var(--text-dim); }
+  .event-kind.system         { background: rgba(57, 210, 192, 0.12); color: var(--cyan); }
+  .event-kind.delivery_retry { background: rgba(240, 136, 62, 0.15); color: var(--orange); }
+  .event-kind.delivery_dropped { background: rgba(248, 81, 73, 0.2); color: var(--red); }
+  .event-kind.acl_denied     { background: rgba(248, 81, 73, 0.2); color: var(--red); }
+
+  .event-body {
+    color: var(--text);
+    word-break: break-word;
+    white-space: pre-wrap;
+  }
+
+  .event-body .from  { color: var(--cyan); font-weight: 600; }
+  .event-body .to    { color: var(--orange); font-weight: 600; }
+  .event-body .agent { color: var(--purple); font-weight: 600; }
+  .event-body .dim   { color: var(--text-dim); }
+  .event-body .msg   { color: var(--text); }
+
+  /* Relay message highlight */
+  .event-row.highlight {
+    background: rgba(88, 166, 255, 0.06);
+    border-bottom: 1px solid rgba(88, 166, 255, 0.1);
+  }
+
+  /* --- Side panel (worker streams) --- */
+  .side-panel {
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .side-panel h2 {
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-dim);
+    padding: 12px 16px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .worker-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    overflow-x: auto;
+  }
+
+  .worker-tab {
+    font-family: var(--font);
+    font-size: 11px;
+    padding: 8px 14px;
+    cursor: pointer;
+    border: none;
+    background: transparent;
+    color: var(--text-dim);
+    border-bottom: 2px solid transparent;
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+
+  .worker-tab:hover { color: var(--text); background: var(--surface2); }
+  .worker-tab.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+
+  .worker-output {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px 16px;
+    font-size: 12px;
+    line-height: 1.6;
+    background: var(--bg);
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text-dim);
+  }
+
+  .worker-output::-webkit-scrollbar { width: 6px; }
+  .worker-output::-webkit-scrollbar-track { background: transparent; }
+  .worker-output::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  .worker-output .stdout { color: var(--text); }
+  .worker-output .stderr { color: var(--yellow); }
+
+  /* Counters row */
+  .counters {
+    display: flex;
+    gap: 16px;
+    margin-left: 12px;
+    font-family: var(--sans);
+  }
+
+  .counter {
+    font-size: 11px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .counter .n {
+    font-weight: 700;
+    font-family: var(--font);
+    color: var(--text);
+  }
+
+  /* --- Filters --- */
+  .filters {
+    padding: 6px 20px;
+    display: flex;
+    gap: 6px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    flex-wrap: wrap;
+  }
+
+  .filter-btn {
+    font-family: var(--font);
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .filter-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .filter-btn.active {
+    background: rgba(88, 166, 255, 0.12);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .scroll-anchor-btn {
+    margin-left: auto;
+    font-family: var(--font);
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .scroll-anchor-btn.active {
+    background: rgba(63, 185, 80, 0.12);
+    border-color: var(--green);
+    color: var(--green);
+  }
+
+  .empty-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-dim);
+    font-family: var(--sans);
+    font-size: 14px;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .empty-state .hint {
+    font-size: 12px;
+    opacity: 0.6;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1><span class="logo">R</span> Agent Relay</h1>
+    <div id="status" class="status-pill disconnected"><span class="status-dot"></span> connecting</div>
+    <div class="counters">
+      <div class="counter">events <span class="n" id="cnt-events">0</span></div>
+      <div class="counter">messages <span class="n" id="cnt-relay">0</span></div>
+    </div>
+    <div class="agent-bar" id="agent-bar"></div>
+  </header>
+
+  <div class="content">
+    <div style="display:flex;flex-direction:column;overflow:hidden;">
+      <div class="filters" id="filters">
+        <button class="filter-btn active" data-filter="all">all</button>
+        <button class="filter-btn" data-filter="relay_inbound">relay</button>
+        <button class="filter-btn" data-filter="agent_spawned,agent_released,agent_exited">lifecycle</button>
+        <button class="filter-btn" data-filter="system">system</button>
+        <button class="scroll-anchor-btn active" id="autoscroll-btn">auto-scroll</button>
+      </div>
+      <div class="feed" id="feed"></div>
+    </div>
+
+    <div class="side-panel">
+      <h2>Worker Output</h2>
+      <div class="worker-tabs" id="worker-tabs"></div>
+      <div class="worker-output" id="worker-output">
+        <div class="empty-state">
+          <div>No worker output yet</div>
+          <div class="hint">Output will appear when agents start streaming</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  const feed = document.getElementById("feed");
+  const agentBar = document.getElementById("agent-bar");
+  const cntEvents = document.getElementById("cnt-events");
+  const cntRelay = document.getElementById("cnt-relay");
+  const statusEl = document.getElementById("status");
+  const workerTabs = document.getElementById("worker-tabs");
+  const workerOutput = document.getElementById("worker-output");
+  const autoscrollBtn = document.getElementById("autoscroll-btn");
+
+  let autoScroll = true;
+  let activeFilter = "all";
+  let activeWorker = null;
+  let totalEvents = 0;
+  let relayCount = 0;
+
+  // Agent tracking
+  const agents = new Map(); // name -> { runtime, alive }
+  // Worker stream buffers: name -> [{ stream, chunk }]
+  const workerBuffers = new Map();
+
+  // --- Filter buttons ---
+  document.getElementById("filters").addEventListener("click", (e) => {
+    const btn = e.target.closest(".filter-btn");
+    if (!btn) return;
+    document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    activeFilter = btn.dataset.filter;
+    applyFilter();
+  });
+
+  autoscrollBtn.addEventListener("click", () => {
+    autoScroll = !autoScroll;
+    autoscrollBtn.classList.toggle("active", autoScroll);
+    if (autoScroll) scrollToBottom();
+  });
+
+  // Pause auto-scroll when user scrolls up
+  feed.addEventListener("scroll", () => {
+    const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40;
+    if (!atBottom && autoScroll) {
+      autoScroll = false;
+      autoscrollBtn.classList.remove("active");
+    }
+  });
+
+  function applyFilter() {
+    const rows = feed.querySelectorAll(".event-row");
+    const kinds = activeFilter === "all" ? null : activeFilter.split(",");
+    rows.forEach(row => {
+      if (!kinds) { row.style.display = ""; return; }
+      row.style.display = kinds.includes(row.dataset.kind) ? "" : "none";
+    });
+  }
+
+  function scrollToBottom() {
+    feed.scrollTop = feed.scrollHeight;
+  }
+
+  function esc(s) {
+    const d = document.createElement("div");
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function fmtTime(iso) {
+    const d = new Date(iso);
+    return d.toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" })
+      + "." + String(d.getMilliseconds()).padStart(3, "0");
+  }
+
+  function renderAgentBar() {
+    agentBar.innerHTML = "";
+    for (const [name, info] of agents) {
+      const cls = info.alive ? "alive" : "exited";
+      agentBar.innerHTML += '<div class="agent-chip ' + cls + '">'
+        + '<span class="runtime">' + esc(info.runtime) + '</span> '
+        + esc(name)
+        + '</div>';
+    }
+  }
+
+  function renderWorkerTabs() {
+    const names = [...workerBuffers.keys()];
+    if (names.length === 0) return;
+    if (!activeWorker || !workerBuffers.has(activeWorker)) activeWorker = names[0];
+
+    workerTabs.innerHTML = names.map(n =>
+      '<button class="worker-tab' + (n === activeWorker ? ' active' : '') + '" data-name="' + esc(n) + '">' + esc(n) + '</button>'
+    ).join("");
+
+    workerTabs.onclick = (e) => {
+      const btn = e.target.closest(".worker-tab");
+      if (!btn) return;
+      activeWorker = btn.dataset.name;
+      renderWorkerTabs();
+      renderWorkerOutput();
+    };
+
+    renderWorkerOutput();
+  }
+
+  function renderWorkerOutput() {
+    const buf = workerBuffers.get(activeWorker);
+    if (!buf || buf.length === 0) {
+      workerOutput.innerHTML = '<div class="empty-state"><div>No output from ' + esc(activeWorker) + '</div></div>';
+      return;
+    }
+    // Render last 500 lines (each chunk is now a clean line from the server)
+    const slice = buf.slice(-500);
+    workerOutput.innerHTML = slice.map(c =>
+      '<div class="' + (c.stream === "stderr" ? "stderr" : "stdout") + '">' + esc(c.chunk) + '</div>'
+    ).join("");
+    workerOutput.scrollTop = workerOutput.scrollHeight;
+  }
+
+  function formatBody(data) {
+    const kind = data.kind;
+
+    switch (kind) {
+      case "relay_inbound":
+        return '<span class="from">' + esc(data.from) + '</span>'
+          + ' <span class="dim">&rarr;</span> '
+          + '<span class="to">' + esc(data.target) + '</span>'
+          + (data.thread_id ? ' <span class="dim">[thread ' + esc(data.thread_id.slice(0,8)) + ']</span>' : '')
+          + '\n<span class="msg">' + esc(data.body) + '</span>';
+
+      case "worker_stream":
+        return '<span class="agent">' + esc(data.name) + '</span>'
+          + ' <span class="dim">[' + esc(data.stream) + ']</span> '
+          + esc(data.chunk.length > 200 ? data.chunk.slice(0, 200) + "..." : data.chunk);
+
+      case "agent_spawned":
+        return '<span class="agent">' + esc(data.name) + '</span>'
+          + ' <span class="dim">(' + esc(data.runtime) + ')</span>'
+          + (data.parent ? ' <span class="dim">parent=' + esc(data.parent) + '</span>' : '');
+
+      case "agent_released":
+        return '<span class="agent">' + esc(data.name) + '</span>';
+
+      case "agent_exited":
+        return '<span class="agent">' + esc(data.name) + '</span>'
+          + (data.code != null ? ' <span class="dim">code=' + data.code + '</span>' : '')
+          + (data.signal ? ' <span class="dim">signal=' + esc(data.signal) + '</span>' : '');
+
+      case "delivery_retry":
+        return '<span class="agent">' + esc(data.name) + '</span>'
+          + ' <span class="dim">attempt ' + data.attempts + '</span>';
+
+      case "delivery_dropped":
+        return '<span class="agent">' + esc(data.name) + '</span>'
+          + ' <span class="dim">' + data.count + ' dropped: ' + esc(data.reason) + '</span>';
+
+      case "acl_denied":
+        return '<span class="agent">' + esc(data.name) + '</span>'
+          + ' <span class="dim">sender=' + esc(data.sender) + '</span>';
+
+      case "broker_stderr":
+        return '<span class="dim">' + esc(data.line) + '</span>';
+
+      case "system":
+        return '<span class="msg">' + esc(data.message) + '</span>';
+
+      default:
+        return '<span class="dim">' + esc(JSON.stringify(data)) + '</span>';
+    }
+  }
+
+  function addEvent(evt) {
+    totalEvents++;
+    cntEvents.textContent = totalEvents;
+
+    const data = evt.data;
+    const kind = data.kind;
+
+    // Track agents
+    if (kind === "agent_spawned") {
+      agents.set(data.name, { runtime: data.runtime, alive: true });
+      if (!workerBuffers.has(data.name)) workerBuffers.set(data.name, []);
+      renderAgentBar();
+      renderWorkerTabs();
+    } else if (kind === "agent_released" || kind === "agent_exited") {
+      const a = agents.get(data.name);
+      if (a) a.alive = false;
+      renderAgentBar();
+    }
+
+    // Track relay count
+    if (kind === "relay_inbound") {
+      relayCount++;
+      cntRelay.textContent = relayCount;
+    }
+
+    // Buffer worker output (side panel only — not the main feed)
+    if (kind === "worker_stream") {
+      if (!workerBuffers.has(data.name)) workerBuffers.set(data.name, []);
+      const buf = workerBuffers.get(data.name);
+      buf.push({ stream: data.stream, chunk: data.chunk });
+      if (buf.length > 2000) buf.splice(0, buf.length - 2000);
+      if (data.name === activeWorker) renderWorkerOutput();
+      if (!activeWorker) renderWorkerTabs();
+      return; // don't add to main feed
+    }
+
+    // broker_stderr is internal noise — skip the main feed
+    if (kind === "broker_stderr") return;
+
+    // Render row in main feed
+    const isHighlight = kind === "relay_inbound";
+    const filterKinds = activeFilter === "all" ? null : activeFilter.split(",");
+    const hidden = filterKinds && !filterKinds.includes(kind);
+
+    const row = document.createElement("div");
+    row.className = "event-row" + (isHighlight ? " highlight" : "");
+    row.dataset.kind = kind;
+    if (hidden) row.style.display = "none";
+
+    row.innerHTML =
+      '<span class="event-ts">' + fmtTime(evt.ts) + '</span>'
+      + '<span class="event-kind ' + esc(kind) + '">' + esc(kind.replace(/_/g, " ")) + '</span>'
+      + '<span class="event-body">' + formatBody(data) + '</span>';
+
+    feed.appendChild(row);
+
+    if (autoScroll) {
+      requestAnimationFrame(scrollToBottom);
+    }
+  }
+
+  // --- SSE connection ---
+  function connect() {
+    const es = new EventSource("/events");
+
+    es.onopen = () => {
+      statusEl.className = "status-pill connected";
+      statusEl.innerHTML = '<span class="status-dot"></span> live';
+    };
+
+    es.onmessage = (e) => {
+      try {
+        const evt = JSON.parse(e.data);
+        addEvent(evt);
+      } catch {}
+    };
+
+    es.onerror = () => {
+      statusEl.className = "status-pill disconnected";
+      statusEl.innerHTML = '<span class="status-dot"></span> reconnecting';
+      es.close();
+      setTimeout(connect, 2000);
+    };
+  }
+
+  connect();
+})();
+</script>
+</body>
+</html>

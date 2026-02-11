@@ -1,16 +1,16 @@
 #!/bin/bash
-# Send a message to a CLI via relay-pty socket
+# Send a message to a CLI via agent-relay socket
 # Usage: ./inject-message.sh <session-name> <message>
 # Example: ./inject-message.sh test-claude "What is 2+2?"
 
 NAME=${1:-test-claude}
 MESSAGE=${2:-"Test message from inject script"}
-SOCKET="/tmp/relay-pty-${NAME}.sock"
+SOCKET="/tmp/agent-relay-${NAME}.sock"
 
 if [ ! -S "$SOCKET" ]; then
     echo "Error: Socket not found: $SOCKET"
     echo ""
-    echo "Make sure relay-pty is running with --name ${NAME}"
+    echo "Make sure agent-relay is running with --name ${NAME}"
     echo "Run: test-cli.sh ${NAME#test-}"
     exit 1
 fi

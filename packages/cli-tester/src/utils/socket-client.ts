@@ -1,5 +1,5 @@
 /**
- * Socket client for communicating with relay-pty Unix socket
+ * Socket client for communicating with agent-relay Unix socket
  * Used for programmatic message injection and status queries
  */
 
@@ -34,9 +34,9 @@ export interface StatusResponse {
   last_output_ms: number;
 }
 
-export type RelayPtyResponse = InjectResponse | StatusResponse;
+export type AgentRelayResponse = InjectResponse | StatusResponse;
 
-export class RelayPtyClient {
+export class AgentRelayClient {
   private socket: Socket | null = null;
   private socketPath: string;
   private responseBuffer: string = '';
@@ -46,7 +46,7 @@ export class RelayPtyClient {
   }
 
   /**
-   * Connect to the relay-pty socket
+   * Connect to the agent-relay socket
    */
   async connect(): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -67,7 +67,7 @@ export class RelayPtyClient {
   /**
    * Send a request and wait for response
    */
-  private async sendRequest<T extends RelayPtyResponse>(request: object): Promise<T> {
+  private async sendRequest<T extends AgentRelayResponse>(request: object): Promise<T> {
     if (!this.socket) {
       throw new Error('Not connected. Call connect() first.');
     }
@@ -197,8 +197,8 @@ export class RelayPtyClient {
 /**
  * Helper to create a connected client
  */
-export async function createClient(socketPath: string): Promise<RelayPtyClient> {
-  const client = new RelayPtyClient(socketPath);
+export async function createClient(socketPath: string): Promise<AgentRelayClient> {
+  const client = new AgentRelayClient(socketPath);
   await client.connect();
   return client;
 }
@@ -207,5 +207,5 @@ export async function createClient(socketPath: string): Promise<RelayPtyClient> 
  * Get socket path for a named session
  */
 export function getSocketPath(sessionName: string): string {
-  return `/tmp/relay-pty-${sessionName}.sock`;
+  return `/tmp/agent-relay-${sessionName}.sock`;
 }

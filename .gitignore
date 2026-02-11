@@ -10,12 +10,12 @@ ui-dist/
 
 # Bundled binaries (downloaded/built at install time)
 bin/tmux
-bin/relay-pty
-bin/relay-pty-*
+bin/agent-relay
+bin/agent-relay-*
 bin/agent-relay-test
 
-# Rust build artifacts (relay-pty)
-relay-pty/target/
+# Rust build artifacts (relay-broker)
+relay-broker/target/
 
 # TypeScript build info (if enabled later)
 *.tsbuildinfo

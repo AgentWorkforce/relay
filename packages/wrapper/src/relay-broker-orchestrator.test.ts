@@ -1,0 +1,1386 @@
+/**
+ * Tests for RelayBrokerOrchestrator
+ *
+ * Tests the TypeScript orchestrator that manages the agent-relay Rust binary.
+ * Uses mocks for child process and socket communication.
+ */
+
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import { EventEmitter } from 'node:events';
+import type { ChildProcess } from 'node:child_process';
+import type { Socket } from 'node:net';
+import { createHash } from 'node:crypto';
+
+// Mock modules before importing the class
+vi.mock('node:child_process', () => ({
+  spawn: vi.fn(),
+}));
+
+vi.mock('node:net', () => ({
+  createConnection: vi.fn(),
+}));
+
+const { mockExistsSync, mockAccessSync } = vi.hoisted(() => ({
+  mockExistsSync: vi.fn((path: string) => {
+    // Simulate agent-relay binary exists at any agent-relay path
+    return typeof path === 'string' && path.includes('agent-relay');
+  }),
+  mockAccessSync: vi.fn((path: string) => {
+    if (typeof path === 'string' && path.includes('agent-relay')) return undefined;
+    throw new Error('not executable');
+  }),
+}));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    existsSync: mockExistsSync,
+    accessSync: (path: any, _mode: any) => mockAccessSync(path),
+    default: {
+      ...actual,
+      existsSync: mockExistsSync,
+      accessSync: (path: any, _mode: any) => mockAccessSync(path),
+    },
+  };
+});
+
+// Mock the client module
+vi.mock('./client.js', () => ({
+  RelayClient: vi.fn().mockImplementation((options: any) => ({
+    name: options.agentName,
+    state: 'READY' as string,
+    connect: vi.fn().mockResolvedValue(undefined),
+    sendMessage: vi.fn().mockReturnValue(true),
+    sendLog: vi.fn(),
+    destroy: vi.fn(),
+    onMessage: null,
+    onChannelMessage: null,
+  })),
+}));
+
+// Mock continuity
+vi.mock('@agent-relay/continuity', () => ({
+  getContinuityManager: vi.fn(() => null),
+  parseContinuityCommand: vi.fn(),
+  hasContinuityCommand: vi.fn(() => false),
+}));
+
+// Now import after mocks
+import { spawn } from 'node:child_process';
+import { createConnection } from 'node:net';
+import { RelayBrokerOrchestrator } from './relay-broker-orchestrator.js';
+
+/**
+ * Create a mock ChildProcess
+ */
+function createMockProcess(): ChildProcess {
+  const proc = new EventEmitter() as ChildProcess;
+  proc.stdout = new EventEmitter() as any;
+  proc.stderr = new EventEmitter() as any;
+  proc.stdin = { write: vi.fn() } as any;
+  proc.pid = 12345;
+  proc.killed = false;
+  proc.kill = vi.fn(() => {
+    proc.killed = true;
+    setTimeout(() => proc.emit('exit', 0, null), 0);
+    return true;
+  });
+  proc.exitCode = null;
+  return proc;
+}
+
+/**
+ * Create a mock Socket
+ */
+function createMockSocket(): Socket {
+  const socket = new EventEmitter() as Socket;
+  socket.write = vi.fn((data: any, cb?: any) => {
+    if (typeof cb === 'function') cb();
+    return true;
+  });
+  socket.destroy = vi.fn();
+  (socket as any).destroyed = false;
+  return socket;
+}
+
+describe('RelayBrokerOrchestrator', () => {
+  let orchestrator: RelayBrokerOrchestrator;
+  let mockProcess: ChildProcess;
+  let mockSocket: Socket;
+  const mockSpawn = spawn as unknown as ReturnType<typeof vi.fn>;
+  const mockCreateConnection = createConnection as unknown as ReturnType<typeof vi.fn>;
+
+  // Save original WORKSPACE_ID to restore after each test
+  let originalWorkspaceId: string | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    // Save and clear WORKSPACE_ID to test legacy paths by default
+    // Tests that need workspace namespacing can set it explicitly
+    originalWorkspaceId = process.env.WORKSPACE_ID;
+    delete process.env.WORKSPACE_ID;
+
+    // Reset existsSync mock to default implementation
+    mockExistsSync.mockImplementation((path: string) => {
+      return typeof path === 'string' && path.includes('agent-relay');
+    });
+
+    // Set up mock process
+    mockProcess = createMockProcess();
+    mockSpawn.mockReturnValue(mockProcess);
+
+    // Set up mock socket
+    mockSocket = createMockSocket();
+    mockCreateConnection.mockImplementation((_path: string, callback: () => void) => {
+      setTimeout(() => callback(), 10);
+      return mockSocket;
+    });
+
+    // Mock waitUntilCliReady to resolve immediately in tests
+    // This avoids waiting for CLI readiness checks which require complex simulation
+    vi.spyOn(RelayBrokerOrchestrator.prototype, 'waitUntilCliReady').mockResolvedValue(true);
+
+    // Mock isProcessAlive to return true - the real implementation uses process.kill(pid, 0)
+    // which fails for mock PIDs that don't correspond to real processes
+    vi.spyOn(RelayBrokerOrchestrator.prototype as any, 'isProcessAlive').mockReturnValue(true);
+  });
+
+  afterEach(async () => {
+    if (orchestrator?.isRunning) {
+      await orchestrator.stop();
+    }
+
+    // Restore original WORKSPACE_ID
+    if (originalWorkspaceId !== undefined) {
+      process.env.WORKSPACE_ID = originalWorkspaceId;
+    } else {
+      delete process.env.WORKSPACE_ID;
+    }
+  });
+
+  describe('constructor', () => {
+    it('sets socket path based on agent name', () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      // Local mode uses ~/.agent-relay paths
+      expect(orchestrator.getSocketPath()).toContain('.agent-relay');
+      expect(orchestrator.getSocketPath()).toContain('TestAgent.sock');
+    });
+
+    it('uses workspace-namespaced paths when WORKSPACE_ID is in config.env', () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+        env: { WORKSPACE_ID: 'ws-12345' },
+      });
+
+      expect(orchestrator.getSocketPath()).toBe('/tmp/relay/ws-12345/sockets/TestAgent.sock');
+      expect(orchestrator.outboxPath).toBe('/tmp/relay/ws-12345/outbox/TestAgent');
+    });
+
+    it('hashes workspace id when socket path is too long', () => {
+      const longWorkspaceId = `ws-${'a'.repeat(140)}`;
+      const hashedWorkspaceId = createHash('sha256').update(longWorkspaceId).digest('hex').slice(0, 12);
+
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'LongAgent',
+        command: 'claude',
+        env: { WORKSPACE_ID: longWorkspaceId },
+      });
+
+      expect(orchestrator.getSocketPath()).toBe(`/tmp/relay/${hashedWorkspaceId}/sockets/LongAgent.sock`);
+      expect(orchestrator.outboxPath).toBe(`/tmp/relay/${hashedWorkspaceId}/outbox/LongAgent`);
+    });
+
+    it('uses workspace-namespaced paths when WORKSPACE_ID is in process.env', () => {
+      const originalEnv = process.env.WORKSPACE_ID;
+      process.env.WORKSPACE_ID = 'ws-cloud-99';
+
+      try {
+        orchestrator = new RelayBrokerOrchestrator({
+          name: 'CloudAgent',
+          command: 'claude',
+        });
+
+        expect(orchestrator.getSocketPath()).toBe('/tmp/relay/ws-cloud-99/sockets/CloudAgent.sock');
+        expect(orchestrator.outboxPath).toBe('/tmp/relay/ws-cloud-99/outbox/CloudAgent');
+      } finally {
+        if (originalEnv === undefined) {
+          delete process.env.WORKSPACE_ID;
+        } else {
+          process.env.WORKSPACE_ID = originalEnv;
+        }
+      }
+    });
+
+    it('uses canonical ~/.agent-relay paths when WORKSPACE_ID is not set', () => {
+      // beforeEach already clears WORKSPACE_ID
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'LocalAgent',
+        command: 'claude',
+      });
+
+      // Local mode uses ~/.agent-relay paths, not /tmp
+      expect(orchestrator.getSocketPath()).toContain('.agent-relay');
+      expect(orchestrator.getSocketPath()).toContain('LocalAgent.sock');
+      expect(orchestrator.outboxPath).toContain('.agent-relay');
+      expect(orchestrator.outboxPath).toContain('outbox/LocalAgent');
+      expect(orchestrator.outboxPath).not.toContain('/tmp/');
+    });
+  });
+
+  describe('binary detection', () => {
+    it('finds binary at release path', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      expect(mockSpawn).toHaveBeenCalled();
+      const spawnCall = mockSpawn.mock.calls[0];
+      expect(spawnCall[0]).toContain('agent-relay');
+    });
+
+    it('uses custom binary path if provided', async () => {
+      // Update mock to accept custom path
+      mockExistsSync.mockImplementation((path: string) => {
+        return path === '/custom/path/agent-relay' || (typeof path === 'string' && path.includes('agent-relay'));
+      });
+
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+        agentRelayPath: '/custom/path/agent-relay',
+      });
+
+      await orchestrator.start();
+
+      const spawnCall = mockSpawn.mock.calls[0];
+      expect(spawnCall[0]).toBe('/custom/path/agent-relay');
+
+      // Reset mock
+      mockExistsSync.mockImplementation((path: string) => {
+        return typeof path === 'string' && path.includes('agent-relay');
+      });
+    });
+  });
+
+  describe('process management', () => {
+    it('spawns agent-relay with correct arguments', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+        args: ['--model', 'opus'],
+        idleBeforeInjectMs: 1000,
+      });
+
+      await orchestrator.start();
+
+      const spawnCall = mockSpawn.mock.calls[0];
+      const args = spawnCall[1] as string[];
+
+      expect(args).toContain('--name');
+      expect(args).toContain('TestAgent');
+      expect(args).toContain('--socket');
+      // Socket path should be in ~/.agent-relay for local mode
+      const socketArg = args[args.indexOf('--socket') + 1];
+      expect(socketArg).toContain('.agent-relay');
+      expect(socketArg).toContain('TestAgent.sock');
+      expect(args).toContain('--idle-timeout');
+      expect(args).toContain('1000');
+      expect(args).toContain('--');
+      expect(args).toContain('claude');
+      expect(args).toContain('--model');
+      expect(args).toContain('opus');
+    });
+
+    it('sets environment variables', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+        env: { CUSTOM_VAR: 'value' },
+      });
+
+      await orchestrator.start();
+
+      const spawnCall = mockSpawn.mock.calls[0];
+      const options = spawnCall[2];
+
+      expect(options.env.AGENT_RELAY_NAME).toBe('TestAgent');
+      expect(options.env.TERM).toBe('xterm-256color');
+      expect(options.env.CUSTOM_VAR).toBe('value');
+    });
+
+    it('emits exit event when process exits', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      const exitHandler = vi.fn();
+      orchestrator.on('exit', exitHandler);
+
+      await orchestrator.start();
+
+      // Simulate process exit
+      mockProcess.emit('exit', 0, null);
+
+      expect(exitHandler).toHaveBeenCalledWith(0);
+    });
+
+    it('calls onExit callback', async () => {
+      const onExit = vi.fn();
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+        onExit,
+      });
+
+      await orchestrator.start();
+      mockProcess.emit('exit', 1, null);
+
+      expect(onExit).toHaveBeenCalledWith(1);
+    });
+  });
+
+  describe('socket communication', () => {
+    it('connects to socket after spawn', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Should connect to the socket at ~/.agent-relay path for local mode
+      expect(mockCreateConnection).toHaveBeenCalled();
+      const socketPath = mockCreateConnection.mock.calls[0][0];
+      expect(socketPath).toContain('.agent-relay');
+      expect(socketPath).toContain('TestAgent.sock');
+    });
+
+    it('retries socket connection on failure', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+        socketConnectTimeoutMs: 100,
+        socketReconnectAttempts: 3,
+      });
+
+      // First two attempts fail, third succeeds
+      let attempts = 0;
+      mockCreateConnection.mockImplementation((_path: string, callback: () => void) => {
+        const sock = createMockSocket();
+        attempts++;
+        if (attempts < 3) {
+          setTimeout(() => sock.emit('error', new Error('Connection refused')), 10);
+        } else {
+          setTimeout(() => callback(), 10);
+        }
+        return sock;
+      });
+
+      await orchestrator.start();
+
+      expect(mockCreateConnection).toHaveBeenCalledTimes(3);
+    });
+
+    it('handles socket close', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+      mockSocket.emit('close');
+
+      // Socket should be marked as disconnected
+      // (Internal state, verified by inability to inject)
+    });
+  });
+
+  describe('output handling', () => {
+    it('emits output event for stdout data', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      const outputHandler = vi.fn();
+      orchestrator.on('output', outputHandler);
+
+      await orchestrator.start();
+      mockProcess.stdout!.emit('data', Buffer.from('Hello from agent'));
+
+      expect(outputHandler).toHaveBeenCalledWith('Hello from agent');
+    });
+
+    it('accumulates raw output buffer', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+      mockProcess.stdout!.emit('data', Buffer.from('Line 1\n'));
+      mockProcess.stdout!.emit('data', Buffer.from('Line 2\n'));
+
+      expect(orchestrator.getRawOutput()).toContain('Line 1');
+      expect(orchestrator.getRawOutput()).toContain('Line 2');
+    });
+
+    it('parses relay commands from output', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Access the client mock to verify sendMessage calls
+      const client = (orchestrator as any).client;
+
+      // Emit output containing a relay command
+      mockProcess.stdout!.emit('data', Buffer.from('->relay:Bob Hello Bob!\n'));
+
+      // Allow async parsing
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      expect(client.sendMessage).toHaveBeenCalled();
+    });
+  });
+
+  describe('message injection', () => {
+    it('processes queued messages when ready', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Trigger message handler (normally done by RelayClient)
+      const handler = (orchestrator as any).handleIncomingMessage.bind(orchestrator);
+      handler('Sender', { body: 'Test message', kind: 'message' }, 'msg-123');
+
+      // Allow async processing
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Verify socket write was called with inject request
+      expect(mockSocket.write).toHaveBeenCalled();
+      const writeCall = (mockSocket.write as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(writeCall).toContain('"type":"inject"');
+      expect(writeCall).toContain('msg-123');
+    });
+
+    it('handles inject_result responses', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Trigger a message to inject
+      const handler = (orchestrator as any).handleIncomingMessage.bind(orchestrator);
+      handler('Sender', { body: 'Test message', kind: 'message' }, 'msg-456');
+
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Simulate output containing the injected message pattern
+      // This is needed because handleInjectResult now verifies the message appeared in output
+      mockProcess.stdout?.emit('data', Buffer.from(
+        'Relay message from Sender [msg-456]: Test message\n'
+      ));
+
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Simulate successful delivery response
+      mockSocket.emit('data', Buffer.from(JSON.stringify({
+        type: 'inject_result',
+        id: 'msg-456',
+        status: 'delivered',
+        timestamp: Date.now(),
+      }) + '\n'));
+
+      // Allow time for async verification (verifyInjection polls for up to 2 seconds)
+      await new Promise(resolve => setTimeout(resolve, 200));
+
+      // Check metrics
+      const metrics = orchestrator.getInjectionMetrics();
+      expect(metrics.total).toBeGreaterThan(0);
+      expect(metrics.successFirstTry).toBeGreaterThan(0);
+    });
+
+    it('handles backpressure', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      const backpressureHandler = vi.fn();
+      orchestrator.on('backpressure', backpressureHandler);
+
+      await orchestrator.start();
+
+      // Simulate backpressure response
+      mockSocket.emit('data', Buffer.from(JSON.stringify({
+        type: 'backpressure',
+        queue_length: 50,
+        accept: false,
+      }) + '\n'));
+
+      expect(backpressureHandler).toHaveBeenCalledWith({
+        queueLength: 50,
+        accept: false,
+      });
+      expect(orchestrator.isBackpressureActive()).toBe(true);
+
+      // Clear backpressure
+      mockSocket.emit('data', Buffer.from(JSON.stringify({
+        type: 'backpressure',
+        queue_length: 5,
+        accept: true,
+      }) + '\n'));
+
+      expect(orchestrator.isBackpressureActive()).toBe(false);
+    });
+  });
+
+  describe('lifecycle', () => {
+    it('tracks running state', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      expect(orchestrator.isRunning).toBe(false);
+
+      await orchestrator.start();
+      expect(orchestrator.isRunning).toBe(true);
+
+      await orchestrator.stop();
+      expect(orchestrator.isRunning).toBe(false);
+    });
+
+    it('sends shutdown command on stop', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+      await orchestrator.stop();
+
+      // Verify shutdown request was sent
+      const writeCalls = (mockSocket.write as ReturnType<typeof vi.fn>).mock.calls;
+      const shutdownCall = writeCalls.find((call: any[]) =>
+        call[0].includes('"type":"shutdown"')
+      );
+      expect(shutdownCall).toBeDefined();
+    });
+
+    it('kills process on stop', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Simulate process not exiting gracefully
+      const stopPromise = orchestrator.stop();
+
+      // Emit exit after kill
+      setTimeout(() => mockProcess.emit('exit', 0, null), 100);
+
+      await stopPromise;
+
+      expect(mockProcess.kill).toHaveBeenCalled();
+    });
+
+    it('returns PID', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      expect(orchestrator.pid).toBe(12345);
+    });
+  });
+
+  describe('summary and session end detection', () => {
+    it('emits summary event', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      const summaryHandler = vi.fn();
+      orchestrator.on('summary', summaryHandler);
+
+      await orchestrator.start();
+
+      // Emit output with summary block
+      mockProcess.stdout!.emit('data', Buffer.from(
+        '[[SUMMARY]]{"currentTask": "Test task", "completedTasks": ["Task 1"]}[[/SUMMARY]]'
+      ));
+
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      expect(summaryHandler).toHaveBeenCalled();
+      expect(summaryHandler.mock.calls[0][0].agentName).toBe('TestAgent');
+    });
+
+    it('emits session-end event', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      const sessionEndHandler = vi.fn();
+      orchestrator.on('session-end', sessionEndHandler);
+
+      await orchestrator.start();
+
+      // Emit output with session end
+      mockProcess.stdout!.emit('data', Buffer.from(
+        '[[SESSION_END]]Work complete.[[/SESSION_END]]'
+      ));
+
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      expect(sessionEndHandler).toHaveBeenCalled();
+      expect(sessionEndHandler.mock.calls[0][0].agentName).toBe('TestAgent');
+    });
+  });
+
+  describe('spawn with auto-send task', () => {
+    let fetchMock: ReturnType<typeof vi.fn>;
+    let originalFetch: typeof globalThis.fetch;
+
+    beforeEach(() => {
+      originalFetch = globalThis.fetch;
+      fetchMock = vi.fn();
+      globalThis.fetch = fetchMock;
+    });
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
+    it('calls spawn API when dashboard port is configured', async () => {
+      // Mock successful spawn API response
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ success: true }),
+      });
+
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'LeadAgent',
+        command: 'claude',
+        dashboardPort: 3000,
+      });
+
+      await orchestrator.start();
+
+      // Access the private method via prototype - simulate spawn command detection
+      // We'll trigger it by emitting spawn command in output
+      // Note: Use "DevWorker" instead of "Worker" since "worker" is a placeholder target
+      mockProcess.stdout!.emit('data', Buffer.from(
+        '->relay:spawn DevWorker claude "Implement feature X"\n'
+      ));
+
+      // Wait for async spawn processing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Verify spawn API was called with task included
+      // Note: The spawner (not orchestrator) sends the initial task after waitUntilCliReady()
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://localhost:3000/api/spawn',
+        expect.objectContaining({
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'DevWorker', cli: 'claude', task: 'Implement feature X' }),
+        })
+      );
+    });
+
+    it('calls onSpawn callback with task when no dashboard port', async () => {
+      const onSpawnMock = vi.fn().mockResolvedValue(undefined);
+
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'LeadAgent',
+        command: 'claude',
+        onSpawn: onSpawnMock,
+      });
+
+      await orchestrator.start();
+
+      // Trigger spawn command
+      // Note: Use "CodeDev" instead of "Developer" to avoid any potential placeholder filtering
+      mockProcess.stdout!.emit('data', Buffer.from(
+        '->relay:spawn CodeDev claude "Fix the bug"\n'
+      ));
+
+      // Wait for async spawn processing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Verify onSpawn was called with task included
+      // Note: The callback is responsible for sending the initial task
+      expect(onSpawnMock).toHaveBeenCalledWith('CodeDev', 'claude', 'Fix the bug');
+    });
+
+    it('does not send task message when task is empty', async () => {
+      const onSpawnMock = vi.fn().mockResolvedValue(undefined);
+
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'LeadAgent',
+        command: 'claude',
+        onSpawn: onSpawnMock,
+      });
+
+      await orchestrator.start();
+
+      // Clear any previous calls
+      const { RelayClient } = await import('./client.js');
+      const mockClientInstance = (RelayClient as any).mock.results[0].value;
+      mockClientInstance.sendMessage.mockClear();
+
+      // Trigger spawn command with empty task (using fenced format with whitespace only)
+      // Note: Use "DevAgent" instead of "Worker" since "worker" is a placeholder target
+      mockProcess.stdout!.emit('data', Buffer.from(
+        '->relay:spawn DevAgent claude ""\n'
+      ));
+
+      // Wait for async spawn processing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Verify no task message was sent (empty task)
+      expect(mockClientInstance.sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('deduplicates spawn commands (only spawns once)', async () => {
+      const onSpawnMock = vi.fn().mockResolvedValue(undefined);
+
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'LeadAgent',
+        command: 'claude',
+        onSpawn: onSpawnMock,
+      });
+
+      await orchestrator.start();
+
+      // Trigger same spawn command twice
+      // Note: Use "TaskAgent" instead of "Worker" since "worker" is a placeholder target
+      mockProcess.stdout!.emit('data', Buffer.from(
+        '->relay:spawn TaskAgent claude "Task A"\n'
+      ));
+      mockProcess.stdout!.emit('data', Buffer.from(
+        '->relay:spawn TaskAgent claude "Task A"\n'
+      ));
+
+      // Wait for async spawn processing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // onSpawn should only be called once (deduplication)
+      expect(onSpawnMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('continuity command handling', () => {
+    let mockContinuityManager: {
+      handleCommand: ReturnType<typeof vi.fn>;
+      getOrCreateLedger: ReturnType<typeof vi.fn>;
+      findLedgerByAgentId: ReturnType<typeof vi.fn>;
+    };
+
+    beforeEach(async () => {
+      // Create a mock continuity manager
+      mockContinuityManager = {
+        handleCommand: vi.fn().mockResolvedValue(null),
+        getOrCreateLedger: vi.fn().mockResolvedValue({ agentName: 'TestAgent', agentId: 'test-123' }),
+        findLedgerByAgentId: vi.fn().mockResolvedValue(null),
+      };
+
+      // Update the mock to return our manager
+      const { getContinuityManager } = await import('@agent-relay/continuity');
+      (getContinuityManager as any).mockReturnValue(mockContinuityManager);
+    });
+
+    it('handles continuity save command from stderr', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Simulate continuity JSON output from agent-relay stderr
+      const continuityJson = JSON.stringify({
+        type: 'continuity',
+        action: 'save',
+        content: 'Current task: Testing continuity\nCompleted: Setup'
+      });
+
+      mockProcess.stderr!.emit('data', Buffer.from(continuityJson + '\n'));
+
+      // Wait for async processing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Verify handleCommand was called with the mapped command
+      expect(mockContinuityManager.handleCommand).toHaveBeenCalledWith(
+        'TestAgent',
+        expect.objectContaining({
+          type: 'save',
+          content: 'Current task: Testing continuity\nCompleted: Setup'
+        })
+      );
+    });
+
+    it('handles continuity load command from stderr', async () => {
+      // Mock handleCommand to return a response for load
+      mockContinuityManager.handleCommand.mockResolvedValue('Previous context loaded');
+
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Simulate continuity load command
+      const continuityJson = JSON.stringify({
+        type: 'continuity',
+        action: 'load',
+        content: ''
+      });
+
+      mockProcess.stderr!.emit('data', Buffer.from(continuityJson + '\n'));
+
+      // Wait for async processing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Verify handleCommand was called
+      expect(mockContinuityManager.handleCommand).toHaveBeenCalledWith(
+        'TestAgent',
+        expect.objectContaining({
+          type: 'load'
+        })
+      );
+
+      // Verify response was queued for injection
+      const queue = (orchestrator as any).messageQueue;
+      expect(queue.length).toBeGreaterThan(0);
+      expect(queue.some((m: any) => m.body === 'Previous context loaded')).toBe(true);
+    });
+
+    it('handles continuity uncertain command from stderr', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Simulate continuity uncertain command
+      const continuityJson = JSON.stringify({
+        type: 'continuity',
+        action: 'uncertain',
+        content: 'API rate limit handling unclear'
+      });
+
+      mockProcess.stderr!.emit('data', Buffer.from(continuityJson + '\n'));
+
+      // Wait for async processing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Verify handleCommand was called with item field for uncertain
+      expect(mockContinuityManager.handleCommand).toHaveBeenCalledWith(
+        'TestAgent',
+        expect.objectContaining({
+          type: 'uncertain',
+          item: 'API rate limit handling unclear'
+        })
+      );
+    });
+
+    it('deduplicates continuity save commands', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      const continuityJson = JSON.stringify({
+        type: 'continuity',
+        action: 'save',
+        content: 'Same content twice'
+      });
+
+      // Send same command twice
+      mockProcess.stderr!.emit('data', Buffer.from(continuityJson + '\n'));
+      mockProcess.stderr!.emit('data', Buffer.from(continuityJson + '\n'));
+
+      // Wait for async processing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Should only be called once due to deduplication
+      expect(mockContinuityManager.handleCommand).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores unknown continuity actions', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      const continuityJson = JSON.stringify({
+        type: 'continuity',
+        action: 'unknown_action',
+        content: 'Some content'
+      });
+
+      mockProcess.stderr!.emit('data', Buffer.from(continuityJson + '\n'));
+
+      // Wait for async processing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Should not call handleCommand for unknown action
+      expect(mockContinuityManager.handleCommand).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('queue monitor', () => {
+    it('starts queue monitor on start()', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      // Spy on setInterval
+      const setIntervalSpy = vi.spyOn(global, 'setInterval');
+
+      await orchestrator.start();
+
+      // Queue monitor should be started (30 second interval)
+      expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 30000);
+
+      setIntervalSpy.mockRestore();
+    });
+
+    it('stops queue monitor on stop()', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      const clearIntervalSpy = vi.spyOn(global, 'clearInterval');
+
+      await orchestrator.start();
+      await orchestrator.stop();
+
+      // Queue monitor should be cleared
+      expect(clearIntervalSpy).toHaveBeenCalled();
+
+      clearIntervalSpy.mockRestore();
+    });
+
+    it('triggers processMessageQueue when queue has stuck messages and agent is idle', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Directly add a message to the queue (simulating a message that got stuck)
+      (orchestrator as any).messageQueue.push({
+        from: 'Alice',
+        body: 'Test message',
+        messageId: 'msg-123',
+        kind: 'message',
+      });
+
+      // Verify message is in queue
+      expect(orchestrator.pendingMessageCount).toBe(1);
+
+      // Spy on processMessageQueue to verify it gets called
+      const processQueueSpy = vi.spyOn(orchestrator as any, 'processMessageQueue');
+
+      // Simulate time passing (agent becomes idle - need 2000ms silence for checkForStuckQueue)
+      // Mock the idle detector to report idle
+      const idleDetector = (orchestrator as any).idleDetector;
+      vi.spyOn(idleDetector, 'checkIdle').mockReturnValue({
+        isIdle: true,
+        confidence: 0.9,
+        signals: [{ source: 'output_silence', confidence: 0.9, timestamp: Date.now() }],
+      });
+
+      // Manually trigger the queue check (simulating timer firing)
+      (orchestrator as any).checkForStuckQueue();
+
+      // processMessageQueue should have been called
+      expect(processQueueSpy).toHaveBeenCalled();
+
+      processQueueSpy.mockRestore();
+    });
+
+    it('does not trigger processing when agent is busy', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Set isInjecting to true (agent is busy)
+      // Also set injectionStartTime to a recent time to avoid stuck injection recovery
+      (orchestrator as any).isInjecting = true;
+      (orchestrator as any).injectionStartTime = Date.now();
+
+      // Add a message to the queue directly
+      (orchestrator as any).messageQueue.push({
+        from: 'Bob',
+        body: 'Test message 2',
+        messageId: 'msg-456',
+        kind: 'message',
+      });
+
+      // Mock idle detector to report idle (to isolate the isInjecting check)
+      const idleDetector = (orchestrator as any).idleDetector;
+      vi.spyOn(idleDetector, 'checkIdle').mockReturnValue({
+        isIdle: true,
+        confidence: 0.9,
+        signals: [],
+      });
+
+      // Spy on processMessageQueue
+      const processQueueSpy = vi.spyOn(orchestrator as any, 'processMessageQueue');
+
+      // Trigger queue check while busy
+      (orchestrator as any).checkForStuckQueue();
+
+      // processMessageQueue should NOT be called because isInjecting=true
+      expect(processQueueSpy).not.toHaveBeenCalled();
+
+      // Reset
+      (orchestrator as any).isInjecting = false;
+      (orchestrator as any).injectionStartTime = 0;
+      processQueueSpy.mockRestore();
+    });
+
+    it('does not trigger processing when backpressure is active', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Simulate backpressure
+      mockSocket.emit('data', Buffer.from(JSON.stringify({
+        type: 'backpressure',
+        accept: false,
+        queue_length: 50,
+      }) + '\n'));
+
+      expect(orchestrator.isBackpressureActive()).toBe(true);
+
+      // Add a message to the queue
+      (orchestrator as any).messageQueue.push({
+        from: 'Carol',
+        body: 'Test message 3',
+        messageId: 'msg-789',
+        kind: 'message',
+      });
+
+      // Mock idle detector to report idle (to isolate the backpressure check)
+      const idleDetector = (orchestrator as any).idleDetector;
+      vi.spyOn(idleDetector, 'checkIdle').mockReturnValue({
+        isIdle: true,
+        confidence: 0.9,
+        signals: [],
+      });
+
+      // Spy on processMessageQueue
+      const processQueueSpy = vi.spyOn(orchestrator as any, 'processMessageQueue');
+
+      // Trigger queue check with backpressure active
+      (orchestrator as any).checkForStuckQueue();
+
+      // processMessageQueue should NOT be called because backpressure is active
+      expect(processQueueSpy).not.toHaveBeenCalled();
+
+      processQueueSpy.mockRestore();
+    });
+
+    it('does not trigger processing when queue is empty', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Queue should be empty
+      expect(orchestrator.pendingMessageCount).toBe(0);
+
+      // Spy on processMessageQueue
+      const processQueueSpy = vi.spyOn(orchestrator as any, 'processMessageQueue');
+
+      // Trigger queue check with empty queue
+      (orchestrator as any).checkForStuckQueue();
+
+      // processMessageQueue should not be called
+      expect(processQueueSpy).not.toHaveBeenCalled();
+
+      processQueueSpy.mockRestore();
+    });
+
+    it('does not trigger processing when agent is not idle', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Add a message to the queue
+      (orchestrator as any).messageQueue.push({
+        from: 'Dave',
+        body: 'Test message 4',
+        messageId: 'msg-999',
+        kind: 'message',
+      });
+
+      // Mock idle detector to report NOT idle (agent is still working)
+      const idleDetector = (orchestrator as any).idleDetector;
+      vi.spyOn(idleDetector, 'checkIdle').mockReturnValue({
+        isIdle: false,
+        confidence: 0.3,
+        signals: [],
+      });
+
+      // Spy on processMessageQueue
+      const processQueueSpy = vi.spyOn(orchestrator as any, 'processMessageQueue');
+
+      // Trigger queue check while agent is active
+      (orchestrator as any).checkForStuckQueue();
+
+      // processMessageQueue should NOT be called because agent is not idle
+      expect(processQueueSpy).not.toHaveBeenCalled();
+
+      processQueueSpy.mockRestore();
+    });
+  });
+
+  describe('output buffer management', () => {
+    it('trims rawBuffer when it exceeds MAX_OUTPUT_BUFFER_SIZE', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Access private MAX_OUTPUT_BUFFER_SIZE constant (10MB)
+      const MAX_SIZE = 10 * 1024 * 1024;
+
+      // Generate data larger than the max size
+      const chunkSize = 1024 * 1024; // 1MB chunks
+      const numChunks = 12; // 12MB total (exceeds 10MB limit)
+
+      for (let i = 0; i < numChunks; i++) {
+        const chunk = `chunk-${i}-${'x'.repeat(chunkSize - 10)}\n`;
+        mockProcess.stdout!.emit('data', Buffer.from(chunk));
+      }
+
+      // Buffer should be trimmed to MAX_SIZE
+      const rawOutput = orchestrator.getRawOutput();
+      expect(rawOutput.length).toBeLessThanOrEqual(MAX_SIZE);
+
+      // Should contain the most recent chunks (tail of buffer)
+      expect(rawOutput).toContain('chunk-11'); // Last chunk
+      expect(rawOutput).not.toContain('chunk-0'); // First chunk should be trimmed
+    });
+
+    it('adjusts lastParsedLength when buffer is trimmed', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Access lastParsedLength via reflection
+      const getLastParsedLength = () => (orchestrator as any).lastParsedLength;
+
+      // Emit some initial output to set lastParsedLength
+      const initialData = 'Initial output that sets parse position\n';
+      mockProcess.stdout!.emit('data', Buffer.from(initialData));
+
+      // Allow parsing to run
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      const initialParsedLength = getLastParsedLength();
+      expect(initialParsedLength).toBeGreaterThan(0);
+
+      // Now emit a lot of data to trigger buffer trimming
+      const MAX_SIZE = 10 * 1024 * 1024;
+      const largeData = 'x'.repeat(MAX_SIZE + 1000);
+      mockProcess.stdout!.emit('data', Buffer.from(largeData));
+
+      // lastParsedLength should be adjusted to stay in sync
+      const adjustedParsedLength = getLastParsedLength();
+
+      // After trimming, lastParsedLength should be reduced by the trim amount
+      // or set to 0 if the trim amount exceeds the previous value
+      expect(adjustedParsedLength).toBeLessThanOrEqual(MAX_SIZE);
+    });
+
+    it('still detects relay commands after buffer trimming', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Access the client mock
+      const client = (orchestrator as any).client;
+      client.sendMessage.mockClear();
+
+      // Emit a lot of data to fill the buffer
+      const MAX_SIZE = 10 * 1024 * 1024;
+      const filler = 'x'.repeat(MAX_SIZE + 1000);
+      mockProcess.stdout!.emit('data', Buffer.from(filler));
+
+      // Now emit a relay command after the buffer was trimmed
+      mockProcess.stdout!.emit('data', Buffer.from('\n->relay:Bob Post-trim message\n'));
+
+      // Allow parsing
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // The relay command should still be detected
+      expect(client.sendMessage).toHaveBeenCalled();
+    });
+
+    it('still detects summary blocks after buffer trimming', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      const summaryHandler = vi.fn();
+      orchestrator.on('summary', summaryHandler);
+
+      await orchestrator.start();
+
+      // Emit a lot of data to trigger trimming
+      const MAX_SIZE = 10 * 1024 * 1024;
+      const filler = 'x'.repeat(MAX_SIZE + 1000);
+      mockProcess.stdout!.emit('data', Buffer.from(filler));
+
+      // Now emit a summary block
+      mockProcess.stdout!.emit('data', Buffer.from(
+        '\n[[SUMMARY]]{"currentTask": "Post-trim task"}[[/SUMMARY]]\n'
+      ));
+
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Summary should still be detected
+      expect(summaryHandler).toHaveBeenCalled();
+    });
+
+    it('does not lose data during buffer trimming', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Emit data in chunks, each with a unique marker
+      const markers: string[] = [];
+      for (let i = 0; i < 20; i++) {
+        const marker = `MARKER_${i}_${Date.now()}`;
+        markers.push(marker);
+        // Each chunk is 1MB
+        const chunk = marker + '_' + 'x'.repeat(1024 * 1024 - marker.length - 2) + '\n';
+        mockProcess.stdout!.emit('data', Buffer.from(chunk));
+      }
+
+      const rawOutput = orchestrator.getRawOutput();
+
+      // The most recent markers should be present (within the 10MB limit)
+      // Approximately the last 10 markers should be there
+      const recentMarkers = markers.slice(-10);
+      for (const marker of recentMarkers) {
+        expect(rawOutput).toContain(marker);
+      }
+
+      // The oldest markers should be trimmed
+      const oldMarkers = markers.slice(0, 5);
+      for (const marker of oldMarkers) {
+        expect(rawOutput).not.toContain(marker);
+      }
+    });
+
+    it('handles rapid output without memory exhaustion', async () => {
+      orchestrator = new RelayBrokerOrchestrator({
+        name: 'TestAgent',
+        command: 'claude',
+      });
+
+      await orchestrator.start();
+
+      // Simulate rapid output (like a build log or test output)
+      const iterations = 100;
+      const chunkSize = 100 * 1024; // 100KB chunks
+
+      for (let i = 0; i < iterations; i++) {
+        const chunk = `iteration-${i}: ${'log'.repeat(chunkSize / 3)}\n`;
+        mockProcess.stdout!.emit('data', Buffer.from(chunk));
+      }
+
+      // Should not throw RangeError
+      const rawOutput = orchestrator.getRawOutput();
+      const MAX_SIZE = 10 * 1024 * 1024;
+      expect(rawOutput.length).toBeLessThanOrEqual(MAX_SIZE);
+    });
+  });
+});
+
+describe('RelayBrokerOrchestrator integration', () => {
+  // Integration tests would require the actual agent-relay binary
+  // These are placeholder tests that would be run with:
+  // npm test -- --testNamePattern="integration" --runInBand
+
+  it.skip('spawns real agent-relay with echo', async () => {
+    // This test requires the agent-relay binary to be built
+    const orchestrator = new RelayBrokerOrchestrator({
+      name: 'IntegrationTest',
+      command: 'cat', // Simple command that echoes input
+    });
+
+    await orchestrator.start();
+
+    // Inject a message
+    // ... verify it appears in output
+
+    await orchestrator.stop();
+  });
+});

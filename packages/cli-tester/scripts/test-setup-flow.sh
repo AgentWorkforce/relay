@@ -4,7 +4,7 @@
 #
 # The setup flow:
 # 1. Frontend calls POST /api/workspaces/{id}/agents with { name, provider, interactive: true }
-# 2. Spawner runs: relay-pty --name __setup__cursor-xxx -- agent (NO --force flag!)
+# 2. Spawner runs: agent-relay --name __setup__cursor-xxx -- agent (NO --force flag!)
 # 3. Spawner waits up to 30s for agent to register with daemon
 # 4. If timeout, spawn fails with "Agent registration timeout"
 #
@@ -28,7 +28,7 @@ if [ "$CLI" = "cursor" ]; then
     CLI_CMD="agent"
 fi
 
-SOCKET="/tmp/relay-pty-${NAME}.sock"
+SOCKET="/tmp/agent-relay-${NAME}.sock"
 
 echo "========================================"
 echo "  Setup Terminal Flow Test: $CLI"
@@ -66,9 +66,9 @@ case $CLI in
 esac
 
 if [ ${#CLI_ARGS[@]} -gt 0 ]; then
-    echo "Command: relay-pty --name $NAME -- $CLI_CMD ${CLI_ARGS[*]}"
+    echo "Command: agent-relay --name $NAME -- $CLI_CMD ${CLI_ARGS[*]}"
 else
-    echo "Command: relay-pty --name $NAME -- $CLI_CMD"
+    echo "Command: agent-relay --name $NAME -- $CLI_CMD"
 fi
 echo "         (no auto-accept flags because interactive=true)"
 echo ""
@@ -92,7 +92,7 @@ echo "  Starting Setup Terminal"
 echo "========================================"
 echo ""
 
-# Build relay-pty args
+# Build agent-relay args
 RELAY_ARGS=(
     --name "$NAME"
     --socket "$SOCKET"
@@ -108,13 +108,13 @@ fi
 
 # Start in background so we can monitor
 if [ ${#CLI_ARGS[@]} -gt 0 ]; then
-    relay-pty "${RELAY_ARGS[@]}" -- "$CLI_CMD" "${CLI_ARGS[@]}" 2>&1 &
+    agent-relay "${RELAY_ARGS[@]}" -- "$CLI_CMD" "${CLI_ARGS[@]}" 2>&1 &
 else
-    relay-pty "${RELAY_ARGS[@]}" -- "$CLI_CMD" 2>&1 &
+    agent-relay "${RELAY_ARGS[@]}" -- "$CLI_CMD" 2>&1 &
 fi
 PTY_PID=$!
 
-echo "[$(date +%T)] Started relay-pty (PID: $PTY_PID)"
+echo "[$(date +%T)] Started agent-relay (PID: $PTY_PID)"
 echo ""
 echo "The CLI is now running. In a real setup flow, you would see"
 echo "the terminal output in the browser and respond to prompts there."
@@ -130,7 +130,7 @@ sleep 2
 
 # Check if still running
 if ! kill -0 $PTY_PID 2>/dev/null; then
-    echo "[$(date +%T)] ERROR: relay-pty exited immediately!"
+    echo "[$(date +%T)] ERROR: agent-relay exited immediately!"
     echo ""
     echo "This means the CLI crashed on startup."
     echo "Common causes:"

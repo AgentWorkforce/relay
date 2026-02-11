@@ -8,7 +8,7 @@ This package provides a Docker-based environment for testing CLI authentication 
 
 - **Debugging auth issues** - Isolate problems with specific CLIs (e.g., "Cursor doesn't work")
 - **Testing auth flows** - Verify OAuth flows work end-to-end
-- **Message injection** - Test relay-pty message delivery
+- **Message injection** - Test agent-relay message delivery
 - **Credential verification** - Check that credentials are saved correctly
 
 ## Quick Start
@@ -31,7 +31,7 @@ npm run cli-tester:start:daemon
 ### Test a CLI
 
 ```bash
-# Test Claude CLI with relay-pty
+# Test Claude CLI with agent-relay
 ./scripts/test-cli.sh claude
 
 # Test Codex with device auth
@@ -55,7 +55,7 @@ DEBUG=1 ./scripts/test-cli.sh cursor
 In a second terminal (while CLI is running):
 
 ```bash
-# Send a message via relay-pty socket
+# Send a message via agent-relay socket
 ./scripts/inject-message.sh test-claude "What is 2+2?"
 ```
 
@@ -207,7 +207,7 @@ tail -f /tmp/relay-spawn-*.log
 
 The spawner waits for TWO conditions:
 1. Agent in `connected-agents.json` (daemon updates this when CLI connects)
-2. Agent in `agents.json` (relay-pty hook updates this)
+2. Agent in `agents.json` (agent-relay hook updates this)
 
 Without a running daemon, both files are empty → timeout.
 
@@ -229,7 +229,7 @@ The container includes these pre-installed CLIs:
 
 ## How It Works
 
-1. **relay-pty** wraps the CLI and provides:
+1. **agent-relay** wraps the CLI and provides:
    - Unix socket for message injection
    - Output parsing for relay commands
    - Idle detection for message timing
@@ -243,14 +243,14 @@ The container includes these pre-installed CLIs:
 For programmatic use:
 
 ```typescript
-import { RelayPtyClient, checkCredentials } from '@agent-relay/cli-tester';
+import { AgentRelayClient, checkCredentials } from '@agent-relay/cli-tester';
 
 // Check credentials
 const result = checkCredentials('claude');
 console.log(result.exists, result.valid, result.hasAccessToken);
 
 // Inject messages via socket
-const client = new RelayPtyClient('/tmp/relay-pty-test-claude.sock');
+const client = new AgentRelayClient('/tmp/agent-relay-test-claude.sock');
 await client.connect();
 await client.inject({ from: 'Test', body: 'Hello' });
 ```
@@ -264,13 +264,13 @@ packages/cli-tester/
 │   └── docker-compose.yml   # Container configuration
 ├── scripts/
 │   ├── start.sh             # Start container
-│   ├── test-cli.sh          # Test a CLI with relay-pty
+│   ├── test-cli.sh          # Test a CLI with agent-relay
 │   ├── verify-auth.sh       # Check credentials
 │   ├── inject-message.sh    # Send message via socket
 │   └── clear-auth.sh        # Clear credentials
 ├── src/
 │   └── utils/
-│       ├── socket-client.ts     # relay-pty socket communication
+│       ├── socket-client.ts     # agent-relay socket communication
 │       └── credential-check.ts  # Credential file utilities
 └── tests/
     └── credential-check.test.ts

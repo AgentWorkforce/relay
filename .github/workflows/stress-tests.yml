@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'relay-pty/src/**'
+      - 'relay-broker/src/**'
       - 'packages/daemon/src/orchestrator.ts'
       - 'packages/daemon/src/relay-*.ts'
       - 'scripts/stress-test-*.sh'
@@ -14,7 +14,7 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'relay-pty/src/**'
+      - 'relay-broker/src/**'
       - 'packages/daemon/src/orchestrator.ts'
       - 'packages/daemon/src/relay-*.ts'
       - 'scripts/stress-test-*.sh'
@@ -32,8 +32,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  stress-test-relay-pty:
-    name: Relay-PTY Stress Tests
+  stress-test-relay-broker:
+    name: Relay Broker Stress Tests
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -54,31 +54,31 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run relay-pty stress tests
-        id: relay-pty-stress
+      - name: Run relay-broker stress tests
+        id: relay-broker-stress
         run: |
-          chmod +x scripts/stress-test-relay-pty.sh
-          ./scripts/stress-test-relay-pty.sh > relay-pty-results.json || echo "exit_code=$?" >> $GITHUB_OUTPUT
-          cat relay-pty-results.json
+          chmod +x scripts/stress-test-relay-broker.sh
+          ./scripts/stress-test-relay-broker.sh > relay-broker-results.json || echo "exit_code=$?" >> $GITHUB_OUTPUT
+          cat relay-broker-results.json
         continue-on-error: true
 
-      - name: Upload relay-pty results
+      - name: Upload relay-broker results
         uses: actions/upload-artifact@v4
         with:
-          name: relay-pty-stress-results-${{ matrix.os }}-node${{ matrix.node-version }}
-          path: relay-pty-results.json
+          name: relay-broker-stress-results-${{ matrix.os }}-node${{ matrix.node-version }}
+          path: relay-broker-results.json
           retention-days: 30
 
-      - name: Check relay-pty results
+      - name: Check relay-broker results
         run: |
           if ! node -e "
             const fs = require('fs');
-            const results = JSON.parse(fs.readFileSync('relay-pty-results.json', 'utf8'));
+            const results = JSON.parse(fs.readFileSync('relay-broker-results.json', 'utf8'));
             const allPassed = Object.values(results).every(r => r.passed);
             console.log('All tests passed:', allPassed);
             process.exit(allPassed ? 0 : 1);
           "; then
-            echo "::error::Relay-PTY stress tests failed"
+            echo "::error::Relay Broker stress tests failed"
             exit 1
           fi
 
@@ -194,7 +194,7 @@ jobs:
 
   stress-test-summary:
     name: Stress Test Summary
-    needs: [stress-test-relay-pty, stress-test-orchestrator, stress-test-orchestrator-integration]
+    needs: [stress-test-relay-broker, stress-test-orchestrator, stress-test-orchestrator-integration]
     runs-on: ubuntu-latest
     if: always()
 
@@ -208,10 +208,10 @@ jobs:
         run: |
           echo "## Stress Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Relay-PTY Tests" >> $GITHUB_STEP_SUMMARY
+          echo "### Relay Broker Tests" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          for file in stress-results/relay-pty-*/relay-pty-results.json; do
+          for file in stress-results/relay-broker-*/relay-broker-results.json; do
             if [ -f "$file" ]; then
               dirname=$(dirname "$file" | xargs basename)
               echo "#### $dirname" >> $GITHUB_STEP_SUMMARY
@@ -251,7 +251,7 @@ jobs:
           done
 
       - name: Check overall status
-        if: needs.stress-test-relay-pty.result == 'failure' || needs.stress-test-orchestrator.result == 'failure' || needs.stress-test-orchestrator-integration.result == 'failure'
+        if: needs.stress-test-relay-broker.result == 'failure' || needs.stress-test-orchestrator.result == 'failure' || needs.stress-test-orchestrator-integration.result == 'failure'
         run: |
           echo "::error::One or more stress tests failed"
           exit 1

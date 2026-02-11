@@ -26,10 +26,10 @@
       "import": "./dist/channels.js",
       "default": "./dist/channels.js"
     },
-    "./relay-pty-schemas": {
-      "types": "./dist/relay-pty-schemas.d.ts",
-      "import": "./dist/relay-pty-schemas.js",
-      "default": "./dist/relay-pty-schemas.js"
+    "./relay-broker-schemas": {
+      "types": "./dist/relay-broker-schemas.d.ts",
+      "import": "./dist/relay-broker-schemas.js",
+      "default": "./dist/relay-broker-schemas.js"
     }
   },
   "files": [

@@ -18,7 +18,7 @@ if [ "$CLI" = "cursor" ]; then
 fi
 
 NAME="reg-test-${CLI}"
-SOCKET="/tmp/relay-pty-${NAME}.sock"
+SOCKET="/tmp/agent-relay-${NAME}.sock"
 
 # Test data directories (mimic real daemon structure)
 TEST_DATA_DIR="/tmp/relay-registration-test"
@@ -47,7 +47,7 @@ cleanup() {
     echo ""
     echo "Cleaning up processes..."
     rm -f "$SOCKET"
-    pkill -f "relay-pty.*${NAME}" 2>/dev/null || true
+    pkill -f "agent-relay.*${NAME}" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -89,7 +89,7 @@ echo "  Phase 1: Starting CLI"
 echo "========================================"
 echo ""
 
-# Start relay-pty in background
+# Start agent-relay in background
 RELAY_ARGS=(
     --name "$NAME"
     --socket "$SOCKET"
@@ -98,25 +98,25 @@ RELAY_ARGS=(
 )
 
 if [ ${#CLI_ARGS[@]} -gt 0 ]; then
-    relay-pty "${RELAY_ARGS[@]}" -- "$CLI_CMD" "${CLI_ARGS[@]}" 2>&1 &
+    agent-relay "${RELAY_ARGS[@]}" -- "$CLI_CMD" "${CLI_ARGS[@]}" 2>&1 &
 else
-    relay-pty "${RELAY_ARGS[@]}" -- "$CLI_CMD" 2>&1 &
+    agent-relay "${RELAY_ARGS[@]}" -- "$CLI_CMD" 2>&1 &
 fi
 
 PTY_PID=$!
-echo "[$(date +%T)] Started relay-pty (PID: $PTY_PID)"
+echo "[$(date +%T)] Started agent-relay (PID: $PTY_PID)"
 
 # Give it a moment to start
 sleep 1
 
 # Check if process is still running
 if ! kill -0 $PTY_PID 2>/dev/null; then
-    echo "[$(date +%T)] ERROR: relay-pty exited immediately"
+    echo "[$(date +%T)] ERROR: agent-relay exited immediately"
     wait $PTY_PID || true
     exit 1
 fi
 
-echo "[$(date +%T)] relay-pty is running"
+echo "[$(date +%T)] agent-relay is running"
 echo ""
 
 echo "========================================"
@@ -139,7 +139,7 @@ while true; do
     # Check if process is still running
     if ! kill -0 $PTY_PID 2>/dev/null; then
         echo ""
-        echo "[$(date +%T)] ERROR: relay-pty exited after ${ELAPSED}s"
+        echo "[$(date +%T)] ERROR: agent-relay exited after ${ELAPSED}s"
         echo ""
         echo "This is likely the issue - the CLI crashed or exited before registration."
         echo "Check the output above for error messages."
@@ -173,7 +173,7 @@ while true; do
         echo ""
         echo "To debug further:"
         echo "  1. Check if the CLI started correctly (auth issues?)"
-        echo "  2. Check if relay-pty connected to the daemon"
+        echo "  2. Check if agent-relay connected to the daemon"
         echo "  3. Check daemon logs for this agent name"
         exit 1
     fi

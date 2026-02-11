@@ -4,7 +4,7 @@
  * Handles CLI-based authentication (claude, codex, etc.) via PTY.
  * Runs inside the workspace container where CLI tools are installed.
  *
- * Uses relay-pty binary for PTY emulation, providing better Node.js
+ * Uses agent-relay binary for PTY emulation, providing better Node.js
  * version compatibility by avoiding native module compilation.
  */
 
@@ -27,7 +27,7 @@ import {
   type PromptHandler,
 } from '@agent-relay/config/cli-auth-config';
 import { getUserDirectoryService } from '@agent-relay/user-directory';
-import { findRelayPtyBinary as findRelayPtyBinaryUtil } from '@agent-relay/utils/relay-pty-path';
+import { findAgentRelayBinary as findAgentRelayBinaryUtil } from '@agent-relay/utils/agent-relay-path';
 
 // Get the directory where this module is located
 const __filename = fileURLToPath(import.meta.url);
@@ -40,11 +40,11 @@ export { CLI_AUTH_CONFIG, getSupportedProviders };
 export type { CLIAuthConfig, PromptHandler };
 
 /**
- * Find the relay-pty binary path.
+ * Find the agent-relay binary path.
  * Uses shared utility from @agent-relay/utils.
  */
-function findRelayPtyBinary(): string | null {
-  return findRelayPtyBinaryUtil(__dirname);
+function findAgentRelayBinary(): string | null {
+  return findAgentRelayBinaryUtil(__dirname);
 }
 
 /** Process wrapper interface for session management */
@@ -153,11 +153,11 @@ export async function startCLIAuth(
     // No existing credentials, proceed with auth flow
   }
 
-  // Find relay-pty binary
-  const relayPtyPath = findRelayPtyBinary();
-  if (!relayPtyPath) {
+  // Find agent-relay binary
+  const agentRelayPath = findAgentRelayBinary();
+  if (!agentRelayPath) {
     session.status = 'error';
-    session.error = 'relay-pty binary not found. Build with: cd relay-pty && cargo build --release';
+    session.error = 'agent-relay binary not found. Build with: cd relay-broker && cargo build --release';
     return session;
   }
 
@@ -210,17 +210,17 @@ export async function startCLIAuth(
       }
     }
 
-    // Build relay-pty arguments
+    // Build agent-relay arguments
     const relayArgs = [
       '--name', `auth-${sessionId.substring(0, 8)}`,
       '--rows', '30',
       '--cols', '120',
-      '--log-level', 'error', // Suppress relay-pty logs
+      '--log-level', 'error', // Suppress agent-relay logs
       '--', config.command,
       ...args,
     ];
 
-    const proc: ChildProcess = spawn(relayPtyPath, relayArgs, {
+    const proc: ChildProcess = spawn(agentRelayPath, relayArgs, {
       cwd: process.cwd(),
       env: {
         ...process.env,
@@ -355,7 +355,7 @@ export async function startCLIAuth(
       handleData(data.toString());
     });
 
-    // Handle stderr (relay-pty logs and some CLI output)
+    // Handle stderr (agent-relay logs and some CLI output)
     proc.stderr?.on('data', (data: Buffer) => {
       handleData(data.toString());
     });

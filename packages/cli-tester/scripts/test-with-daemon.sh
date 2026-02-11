@@ -17,7 +17,7 @@ if [ "$CLI" = "cursor" ]; then
 fi
 
 NAME="daemon-test-${CLI}"
-SOCKET="/tmp/relay-pty-${NAME}.sock"
+SOCKET="/tmp/agent-relay-${NAME}.sock"
 
 # Daemon configuration
 DAEMON_PORT=${DAEMON_PORT:-3377}
@@ -37,7 +37,7 @@ cleanup() {
         kill $DAEMON_PID 2>/dev/null || true
     fi
     if [ -n "$PTY_PID" ]; then
-        echo "Stopping relay-pty (PID: $PTY_PID)..."
+        echo "Stopping agent-relay (PID: $PTY_PID)..."
         kill $PTY_PID 2>/dev/null || true
     fi
     echo "Done."
@@ -53,7 +53,7 @@ echo "========================================"
 echo ""
 echo "This test starts a real daemon and tests the complete flow:"
 echo "  1. Start relay-daemon"
-echo "  2. Start relay-pty with CLI"
+echo "  2. Start agent-relay with CLI"
 echo "  3. Wait for agent registration"
 echo "  4. Monitor the full flow"
 echo ""
@@ -120,7 +120,7 @@ fi
 echo ""
 
 echo "========================================"
-echo "  Phase 2: Starting CLI with relay-pty"
+echo "  Phase 2: Starting CLI with agent-relay"
 echo "========================================"
 echo ""
 
@@ -137,7 +137,7 @@ esac
 
 echo "Command: $CLI_CMD ${CLI_ARGS[*]}"
 
-# Build relay-pty args
+# Build agent-relay args
 RELAY_ARGS=(
     --name "$NAME"
     --socket "$SOCKET"
@@ -149,18 +149,18 @@ if [ -n "$DEBUG" ]; then
     RELAY_ARGS+=(--json-output)
 fi
 
-# Set daemon URL environment variable so relay-pty connects to our test daemon
+# Set daemon URL environment variable so agent-relay connects to our test daemon
 export RELAY_DAEMON_URL="$DAEMON_URL"
 
-echo "Starting relay-pty..."
+echo "Starting agent-relay..."
 if [ ${#CLI_ARGS[@]} -gt 0 ]; then
-    relay-pty "${RELAY_ARGS[@]}" -- "$CLI_CMD" "${CLI_ARGS[@]}" 2>&1 &
+    agent-relay "${RELAY_ARGS[@]}" -- "$CLI_CMD" "${CLI_ARGS[@]}" 2>&1 &
 else
-    relay-pty "${RELAY_ARGS[@]}" -- "$CLI_CMD" 2>&1 &
+    agent-relay "${RELAY_ARGS[@]}" -- "$CLI_CMD" 2>&1 &
 fi
 
 PTY_PID=$!
-echo "relay-pty started (PID: $PTY_PID)"
+echo "agent-relay started (PID: $PTY_PID)"
 echo ""
 
 echo "========================================"
@@ -182,7 +182,7 @@ while true; do
     # Check if PTY process is still running
     if ! kill -0 $PTY_PID 2>/dev/null; then
         echo ""
-        echo "[$(date +%T)] ERROR: relay-pty exited after ${ELAPSED}s"
+        echo "[$(date +%T)] ERROR: agent-relay exited after ${ELAPSED}s"
         echo ""
         echo "The CLI crashed or exited before completing registration."
         echo ""

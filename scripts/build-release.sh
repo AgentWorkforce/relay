@@ -64,11 +64,11 @@ tar -czf "agent-relay-v$VERSION.tar.gz" agent-relay
 
 # Create platform-specific tarballs with native binaries
 for platform in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
-    if [ -f "$ROOT_DIR/bin/relay-pty-$platform" ]; then
+    if [ -f "$ROOT_DIR/bin/agent-relay-$platform" ]; then
         info "Creating $platform tarball..."
-        cp "$ROOT_DIR/bin/relay-pty-$platform" agent-relay/bin/relay-pty
+        cp "$ROOT_DIR/bin/agent-relay-$platform" agent-relay/bin/agent-relay
         tar -czf "agent-relay-v$VERSION-$platform.tar.gz" agent-relay
-        rm agent-relay/bin/relay-pty
+        rm agent-relay/bin/agent-relay
     fi
 done
 

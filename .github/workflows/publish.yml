@@ -69,7 +69,7 @@ env:
 jobs:
   # Build Rust binaries for all platforms (in parallel)
   build-binaries:
-    name: Build relay-pty (${{ matrix.target }})
+    name: Build agent-relay (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main'
     strategy:
@@ -77,16 +77,20 @@ jobs:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
-            binary_name: relay-pty-darwin-arm64
+            binary_name: agent-relay-darwin-arm64
+            artifact_name: broker-agent-relay-darwin-arm64
           - os: macos-latest
             target: x86_64-apple-darwin
-            binary_name: relay-pty-darwin-x64
+            binary_name: agent-relay-darwin-x64
+            artifact_name: broker-agent-relay-darwin-x64
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            binary_name: relay-pty-linux-x64
+            binary_name: agent-relay-linux-x64
+            artifact_name: broker-agent-relay-linux-x64
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            binary_name: relay-pty-linux-arm64
+            binary_name: agent-relay-linux-arm64
+            artifact_name: broker-agent-relay-linux-arm64
 
     steps:
       - name: Checkout code
@@ -106,22 +110,22 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: relay-pty
+          workspaces: relay-broker
           key: ${{ matrix.target }}
 
-      - name: Build relay-pty
-        working-directory: relay-pty
+      - name: Build agent-relay
+        working-directory: relay-broker
         run: cargo build --release --target ${{ matrix.target }}
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
       - name: Copy binary with platform name
-        run: cp relay-pty/target/${{ matrix.target }}/release/relay-pty bin/${{ matrix.binary_name }}
+        run: cp relay-broker/target/${{ matrix.target }}/release/agent-relay bin/${{ matrix.binary_name }}
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.binary_name }}
+          name: ${{ matrix.artifact_name }}
           path: bin/${{ matrix.binary_name }}
           retention-days: 1
 
@@ -532,7 +536,7 @@ jobs:
       - name: Download all binaries
         uses: actions/download-artifact@v4
         with:
-          pattern: relay-pty-*
+          pattern: broker-agent-relay-*
           path: bin/
           merge-multiple: true
 
@@ -545,7 +549,7 @@ jobs:
         run: |
           MISSING=0
 
-          for BINARY in relay-pty-darwin-arm64 relay-pty-darwin-x64 relay-pty-linux-x64 relay-pty-linux-arm64; do
+          for BINARY in agent-relay-darwin-arm64 agent-relay-darwin-x64 agent-relay-linux-x64 agent-relay-linux-arm64; do
             if [ -f "bin/$BINARY" ]; then
               echo "✓ $BINARY exists ($(stat -c%s "bin/$BINARY" 2>/dev/null || stat -f%z "bin/$BINARY") bytes)"
             else
@@ -564,12 +568,12 @@ jobs:
           echo "All platform binaries present."
 
       - name: Make binaries executable
-        run: chmod +x bin/relay-pty-*
+        run: chmod +x bin/agent-relay-*
 
       - name: Verify Linux binary works
         run: |
-          echo "Testing relay-pty-linux-x64 --help..."
-          OUTPUT=$(./bin/relay-pty-linux-x64 --help 2>&1) || true
+          echo "Testing agent-relay-linux-x64 --help..."
+          OUTPUT=$(./bin/agent-relay-linux-x64 --help 2>&1) || true
           echo "$OUTPUT"
 
           if echo "$OUTPUT" | grep -q "PTY wrapper"; then
@@ -584,7 +588,7 @@ jobs:
           # Binaries should be at least 1MB (to catch empty/corrupt files)
           MIN_SIZE=1000000
 
-          for BINARY in bin/relay-pty-*; do
+          for BINARY in bin/agent-relay-*; do
             SIZE=$(stat -c%s "$BINARY" 2>/dev/null || stat -f%z "$BINARY")
             if [ "$SIZE" -lt "$MIN_SIZE" ]; then
               echo "✗ $BINARY is suspiciously small: $SIZE bytes"
@@ -599,7 +603,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Binary | Status | Size |" >> $GITHUB_STEP_SUMMARY
           echo "|--------|--------|------|" >> $GITHUB_STEP_SUMMARY
-          for BINARY in bin/relay-pty-*; do
+          for BINARY in bin/agent-relay-*; do
             NAME=$(basename "$BINARY")
             SIZE=$(stat -c%s "$BINARY" 2>/dev/null || stat -f%z "$BINARY")
             SIZE_MB=$(echo "scale=2; $SIZE / 1048576" | bc)
@@ -617,14 +621,15 @@ jobs:
         include:
           - os: macos-latest
             arch: arm64
-            binary: relay-pty-darwin-arm64
+            binary: agent-relay-darwin-arm64
+            artifact: broker-agent-relay-darwin-arm64
     runs-on: ${{ matrix.os }}
 
     steps:
       - name: Download binary
         uses: actions/download-artifact@v4
         with:
-          name: ${{ matrix.binary }}
+          name: ${{ matrix.artifact }}
           path: bin/
 
       - name: Make binary executable
@@ -838,8 +843,8 @@ jobs:
           echo "✅ All platform binaries verified and ready for publish" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Verified Binaries" >> $GITHUB_STEP_SUMMARY
-          echo "- relay-pty: Linux x64, Linux ARM64, macOS x64, macOS ARM64" >> $GITHUB_STEP_SUMMARY
-          echo "- agent-relay: Linux x64, macOS ARM64 (both compressed and uncompressed)" >> $GITHUB_STEP_SUMMARY
+          echo "- agent-relay (Rust broker): Linux x64, Linux ARM64, macOS x64, macOS ARM64" >> $GITHUB_STEP_SUMMARY
+          echo "- agent-relay (standalone): Linux x64, macOS ARM64 (both compressed and uncompressed)" >> $GITHUB_STEP_SUMMARY
           echo "- relay-acp: Linux x64, macOS ARM64 (both compressed and uncompressed)" >> $GITHUB_STEP_SUMMARY
 
   # Publish main package
@@ -870,15 +875,15 @@ jobs:
           name: build-output
           path: .
 
-      - name: Download relay-pty binaries
+      - name: Download agent-relay binaries
         uses: actions/download-artifact@v4
         with:
-          pattern: relay-pty-*
+          pattern: broker-agent-relay-*
           path: bin/
           merge-multiple: true
 
       - name: Make binaries executable
-        run: chmod +x bin/relay-pty-*
+        run: chmod +x bin/agent-relay-*
 
       - name: Update npm for OIDC support
         run: npm install -g npm@latest
@@ -916,10 +921,10 @@ jobs:
           name: build-output
           path: .
 
-      - name: Download relay-pty binaries
+      - name: Download agent-relay binaries
         uses: actions/download-artifact@v4
         with:
-          pattern: relay-pty-*
+          pattern: broker-agent-relay-*
           path: release-binaries/
           merge-multiple: true
 
@@ -953,8 +958,8 @@ jobs:
 
           MISSING=0
 
-          # Check relay-pty binaries
-          for BINARY in relay-pty-darwin-arm64 relay-pty-darwin-x64 relay-pty-linux-x64 relay-pty-linux-arm64; do
+          # Check agent-relay binaries
+          for BINARY in agent-relay-darwin-arm64 agent-relay-darwin-x64 agent-relay-linux-x64 agent-relay-linux-arm64; do
             if [ -f "release-binaries/$BINARY" ]; then
               echo "✓ $BINARY"
             else
@@ -1055,12 +1060,12 @@ jobs:
             | macOS Intel | `agent-relay-darwin-x64.gz` | `agent-relay-darwin-x64` |
             | macOS Apple Silicon | `agent-relay-darwin-arm64.gz` | `agent-relay-darwin-arm64` |
 
-            ### relay-pty binaries
+            ### agent-relay binaries
             PTY wrapper for spawning agents:
-            - `relay-pty-linux-x64` - Linux x86_64
-            - `relay-pty-linux-arm64` - Linux ARM64
-            - `relay-pty-darwin-x64` - macOS Intel
-            - `relay-pty-darwin-arm64` - macOS Apple Silicon
+            - `agent-relay-linux-x64` - Linux x86_64
+            - `agent-relay-linux-arm64` - Linux ARM64
+            - `agent-relay-darwin-x64` - macOS Intel
+            - `agent-relay-darwin-arm64` - macOS Apple Silicon
 
             ### relay-acp binaries (Zed editor integration)
             ACP bridge for Zed editor:
@@ -1106,8 +1111,8 @@ jobs:
             | macOS Intel | `agent-relay-darwin-x64.gz` | `agent-relay-darwin-x64` |
             | macOS Apple Silicon | `agent-relay-darwin-arm64.gz` | `agent-relay-darwin-arm64` |
 
-            ### relay-pty / relay-acp binaries
-            - `relay-pty-{linux,darwin}-{x64,arm64}`
+            ### agent-relay / relay-acp binaries
+            - `agent-relay-{linux,darwin}-{x64,arm64}`
             - `relay-acp-{linux,darwin}-{x64,arm64}`
 
             ### Next Steps
@@ -1165,7 +1170,7 @@ jobs:
           echo "| Build Binaries (Rust) | ${{ needs.build-binaries.result == 'success' && '✅' || (needs.build-binaries.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.build-binaries.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Build Standalone (Bun) | ${{ needs.build-standalone.result == 'success' && '✅' || (needs.build-standalone.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.build-standalone.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Build relay-acp (Bun) | ${{ needs.build-acp-standalone.result == 'success' && '✅' || (needs.build-acp-standalone.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.build-acp-standalone.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Verify relay-pty | ${{ needs.verify-binaries.result == 'success' && '✅' || (needs.verify-binaries.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-binaries.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Verify agent-relay | ${{ needs.verify-binaries.result == 'success' && '✅' || (needs.verify-binaries.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-binaries.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Verify Standalone (Linux) | ${{ needs.verify-standalone-linux.result == 'success' && '✅' || (needs.verify-standalone-linux.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-standalone-linux.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Verify Standalone (macOS) | ${{ needs.verify-standalone-macos.result == 'success' && '✅' || (needs.verify-standalone-macos.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-standalone-macos.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Verify relay-acp (Linux) | ${{ needs.verify-acp-linux.result == 'success' && '✅' || (needs.verify-acp-linux.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-acp-linux.result }} |" >> $GITHUB_STEP_SUMMARY

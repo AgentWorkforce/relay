@@ -12,7 +12,7 @@
  *
  * NOTE: Message intent detection (agent says "I'll send" but doesn't) was removed
  * because pattern-based NLP detection is unreliable. A protocol-level approach
- * (detecting stale outbox files) should be implemented in relay-pty instead.
+ * (detecting stale outbox files) should be implemented in agent-relay instead.
  *
  * Emits 'stuck' event when detected, with reason and details.
  */

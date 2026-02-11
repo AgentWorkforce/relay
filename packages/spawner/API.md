@@ -248,7 +248,7 @@ type OnAgentDeathCallback = (info: {
 ## Package Dependencies
 
 ### Required
-- `@agent-relay/wrapper` - RelayPtyOrchestrator for PTY management
+- `@agent-relay/wrapper` - RelayBrokerOrchestrator for PTY management
 
 ### Optional
 - Policy service (when enforcement enabled)

@@ -638,12 +638,12 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
 
 #### Agent Relay: Wrapper-Managed Lifecycle
 
-Agent Relay takes a **completely automatic approach** - the wrapper (`relay-pty`) manages all connection lifecycle:
+Agent Relay takes a **completely automatic approach** - the wrapper (`agent-relay`) manages all connection lifecycle:
 
 **How it works:**
 
 1. **Wrapper maintains Unix Domain Socket connection**
-   - `relay-pty` opens connection to daemon on startup
+   - `agent-relay` opens connection to daemon on startup
    - Sends HELLO, receives WELCOME
    - Heartbeats every 5 seconds automatically
 
@@ -669,21 +669,21 @@ Agent Relay takes a **completely automatic approach** - the wrapper (`relay-pty`
    Daemon routes to Alice's wrapper
    ```
 
-**Code: Wrapper Connection** (`packages/wrapper/src/relay-pty-orchestrator.ts`)
+**Code: Wrapper Connection** (`packages/wrapper/src/relay-broker-orchestrator.ts`)
 
 ```typescript
 // Wrapper automatically maintains connection
-class RelayPtyOrchestrator {
+class RelayBrokerOrchestrator {
   async spawn(config) {
-    // relay-pty binary handles UDS connection
-    const child = spawn('relay-pty', [
+    // agent-relay binary handles UDS connection
+    const child = spawn('agent-relay', [
       '--socket', SOCKET_PATH,
       '--agent', config.agent,
       '--',
       ...config.cmd
     ]);
     
-    // relay-pty manages:
+    // agent-relay manages:
     // - UDS connection to daemon
     // - HELLO/WELCOME handshake
     // - PING/PONG heartbeats
@@ -693,7 +693,7 @@ class RelayPtyOrchestrator {
 }
 ```
 
-**Code: Message Injection** (`relay-pty/src/main.rs`)
+**Code: Message Injection** (`relay-broker/src/main.rs`)
 
 ```rust
 // When DELIVER arrives from daemon
@@ -729,7 +729,7 @@ fn parse_output(line: &str) {
 
 **Agent Workflow:**
 ```
-1. Agent starts → relay-pty wrapper auto-starts
+1. Agent starts → agent-relay wrapper auto-starts
 2. Wrapper maintains UDS connection (transparent)
 3. When message arrives:
    - Daemon → Wrapper DELIVER frame

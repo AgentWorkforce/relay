@@ -21,7 +21,7 @@
     "cli",
     "testing",
     "authentication",
-    "relay-pty"
+    "agent-relay"
   ],
   "author": "Agent Workforce",
   "license": "Apache-2.0",

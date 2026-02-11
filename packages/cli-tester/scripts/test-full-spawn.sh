@@ -27,7 +27,7 @@ else
     NAME="spawn-test-${CLI}"
 fi
 
-SOCKET="/tmp/relay-pty-${NAME}.sock"
+SOCKET="/tmp/agent-relay-${NAME}.sock"
 LOG_FILE="/tmp/relay-spawn-${NAME}.log"
 REGISTRATION_TIMEOUT=30
 
@@ -85,7 +85,7 @@ cleanup() {
     echo "========================================"
     rm -f "$SOCKET"
     if [ -n "$PTY_PID" ] && kill -0 $PTY_PID 2>/dev/null; then
-        echo "Stopping relay-pty (PID: $PTY_PID)..."
+        echo "Stopping agent-relay (PID: $PTY_PID)..."
         kill $PTY_PID 2>/dev/null || true
     fi
     echo ""
@@ -119,14 +119,14 @@ if [ -n "$DEBUG" ]; then
     RELAY_ARGS+=(--json-output)
 fi
 
-echo "[$(date +%T)] Starting: relay-pty ${RELAY_ARGS[*]} -- $CLI_CMD ${CLI_ARGS[*]}"
+echo "[$(date +%T)] Starting: agent-relay ${RELAY_ARGS[*]} -- $CLI_CMD ${CLI_ARGS[*]}"
 echo ""
 
-# Start relay-pty and capture output
+# Start agent-relay and capture output
 if [ ${#CLI_ARGS[@]} -gt 0 ]; then
-    relay-pty "${RELAY_ARGS[@]}" -- "$CLI_CMD" "${CLI_ARGS[@]}" > "$LOG_FILE" 2>&1 &
+    agent-relay "${RELAY_ARGS[@]}" -- "$CLI_CMD" "${CLI_ARGS[@]}" > "$LOG_FILE" 2>&1 &
 else
-    relay-pty "${RELAY_ARGS[@]}" -- "$CLI_CMD" > "$LOG_FILE" 2>&1 &
+    agent-relay "${RELAY_ARGS[@]}" -- "$CLI_CMD" > "$LOG_FILE" 2>&1 &
 fi
 PTY_PID=$!
 

@@ -33,7 +33,7 @@ import { buildInjectionString, sleep, type QueuedMessage } from './shared.js';
 
 /**
  * Task injection retry configuration.
- * Matches RelayPtyOrchestrator for consistent behavior across wrapper types.
+ * Matches RelayBrokerOrchestrator for consistent behavior across wrapper types.
  */
 const TASK_INJECTION = {
   /** Maximum retries when injection fails */
@@ -424,7 +424,7 @@ export class OpenCodeWrapper extends BaseWrapper {
   /**
    * Inject a task into the agent with retry logic.
    *
-   * Retries on transient failures to match RelayPtyOrchestrator behavior.
+   * Retries on transient failures to match RelayBrokerOrchestrator behavior.
    * This ensures consistent reliability across all wrapper types.
    *
    * @param task - The task description to inject

@@ -22,7 +22,7 @@ if [ "$CLI" = "cursor" ]; then
 fi
 
 NAME="spawn-test-${CLI}"
-SOCKET="/tmp/relay-pty-${NAME}.sock"
+SOCKET="/tmp/agent-relay-${NAME}.sock"
 RELAY_DATA_DIR="/tmp/relay-test-data"
 
 # Create test data directories
@@ -33,7 +33,7 @@ cleanup() {
     echo ""
     echo "Cleaning up..."
     rm -f "$SOCKET"
-    pkill -f "relay-pty.*${NAME}" 2>/dev/null || true
+    pkill -f "agent-relay.*${NAME}" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -46,7 +46,7 @@ echo "========================================"
 echo ""
 echo "This test simulates what AgentSpawner.spawn() does:"
 echo "  1. Builds command with appropriate flags"
-echo "  2. Starts relay-pty with the CLI"
+echo "  2. Starts agent-relay with the CLI"
 echo "  3. Monitors for daemon registration"
 echo ""
 echo "Session name: $NAME"
@@ -106,7 +106,7 @@ echo ""
 echo "Command: $CLI_CMD ${CLI_ARGS[*]}"
 echo ""
 
-# Build relay-pty args
+# Build agent-relay args
 RELAY_ARGS=(
     --name "$NAME"
     --socket "$SOCKET"
@@ -120,7 +120,7 @@ if [ -n "$DEBUG_SPAWN" ] || [ -n "$DEBUG" ]; then
 fi
 
 echo "========================================"
-echo "  Starting CLI with relay-pty"
+echo "  Starting CLI with agent-relay"
 echo "========================================"
 echo ""
 echo "Press Ctrl+C to stop."
@@ -131,10 +131,10 @@ echo "  - Inject message: echo '{\"type\":\"inject\",\"body\":\"test\"}' | nc -U
 echo "  - Monitor registration: watch -n1 'cat $RELAY_DATA_DIR/*.json 2>/dev/null || echo no files'"
 echo ""
 
-# Start the CLI with relay-pty
+# Start the CLI with agent-relay
 # In a real spawn, this would be done via AgentSpawner which handles registration waiting
 if [ ${#CLI_ARGS[@]} -gt 0 ]; then
-    exec relay-pty "${RELAY_ARGS[@]}" -- "$CLI_CMD" "${CLI_ARGS[@]}"
+    exec agent-relay "${RELAY_ARGS[@]}" -- "$CLI_CMD" "${CLI_ARGS[@]}"
 else
-    exec relay-pty "${RELAY_ARGS[@]}" -- "$CLI_CMD"
+    exec agent-relay "${RELAY_ARGS[@]}" -- "$CLI_CMD"
 fi

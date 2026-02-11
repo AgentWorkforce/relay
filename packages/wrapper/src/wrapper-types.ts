@@ -1,5 +1,5 @@
 /**
- * Shared types for PTY wrappers (RelayPtyOrchestrator, PtyWrapper)
+ * Shared types for PTY wrappers (RelayBrokerOrchestrator, PtyWrapper)
  *
  * These types are used for event handling across different wrapper implementations.
  */

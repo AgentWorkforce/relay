@@ -31,18 +31,18 @@ else
 fi
 echo ""
 
-# Show relay-pty status
-if command -v relay-pty &> /dev/null; then
-    echo "relay-pty: ✓ available"
+# Show agent-relay status
+if command -v agent-relay &> /dev/null; then
+    echo "agent-relay: ✓ available"
 else
-    echo "relay-pty: ✗ not found"
+    echo "agent-relay: ✗ not found"
 fi
 echo ""
 
 # Show usage
 echo "Quick Start:"
-echo "  test-cli.sh claude      # Test Claude CLI with relay-pty"
-echo "  test-cli.sh codex       # Test Codex CLI with relay-pty"
+echo "  test-cli.sh claude      # Test Claude CLI with agent-relay"
+echo "  test-cli.sh codex       # Test Codex CLI with agent-relay"
 echo "  verify-auth.sh claude   # Check if credentials exist"
 echo "  clear-auth.sh claude    # Clear credentials for fresh test"
 echo ""

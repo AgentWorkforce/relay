@@ -90,7 +90,7 @@
     "dev:local": "npm run build && npm link && echo '✓ agent-relay linked globally'",
     "dev:unlink": "npm unlink -g agent-relay && echo '✓ agent-relay unlinked'",
     "dev:rebuild": "npm run build && echo '✓ Rebuilt (linked version updated)'",
-    "build:rust": "if command -v ~/.cargo/bin/cargo >/dev/null 2>&1; then cd relay-pty && ~/.cargo/bin/cargo build --release && cp target/release/relay-pty ../bin/relay-pty && node -e \"const os=require('os'); const fs=require('fs'); const p=os.platform(); const a=os.arch(); const name='relay-pty-'+p+'-'+a; fs.copyFileSync('target/release/relay-pty', '../bin/'+name); console.log('✓ relay-pty binary built and copied to bin/ and bin/'+name)\"; else echo '⚠ Rust not installed, using prebuilt binaries from bin/'; fi",
+    "build:rust": "if command -v ~/.cargo/bin/cargo >/dev/null 2>&1; then cd relay-broker && ~/.cargo/bin/cargo build --release && cp target/release/agent-relay ../bin/agent-relay && node -e \"const os=require('os'); const fs=require('fs'); const p=os.platform(); const a=os.arch(); const name='agent-relay-'+p+'-'+a; fs.copyFileSync('target/release/agent-relay', '../bin/'+name); console.log('✓ agent-relay binary built and copied to bin/ and bin/'+name)\"; else echo '⚠ Rust not installed, using prebuilt binaries from bin/'; fi",
     "start": "node dist/src/cli/index.js",
     "daemon": "node packages/daemon/dist/server.js",
     "pretest": "npm run build",
@@ -111,7 +111,7 @@
     "cli-tester:start:daemon": "cd packages/cli-tester && ./scripts/start.sh --daemon",
     "cli-tester:build": "cd packages/cli-tester && docker compose -f docker/docker-compose.yml build",
     "hooks:install": "./scripts/hooks/install.sh",
-    "fmt:rust": "cd relay-pty && cargo fmt"
+    "fmt:rust": "cd relay-broker && cargo fmt"
   },
   "keywords": [
     "agent",

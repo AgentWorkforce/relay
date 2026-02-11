@@ -87,7 +87,7 @@ jobs:
         run: npm run lint
 
   rust-test:
-    name: Rust Tests (relay-pty)
+    name: Rust Tests (agent-relay)
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -104,16 +104,16 @@ jobs:
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: relay-pty
+          workspaces: relay-broker
 
       - name: Run Rust tests
-        working-directory: relay-pty
+        working-directory: relay-broker
         run: cargo test --release
 
       - name: Check Rust formatting
-        working-directory: relay-pty
+        working-directory: relay-broker
         run: cargo fmt --check
 
       - name: Run Clippy lints
-        working-directory: relay-pty
+        working-directory: relay-broker
         run: cargo clippy -- -D warnings

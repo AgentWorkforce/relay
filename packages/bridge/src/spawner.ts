@@ -1,6 +1,6 @@
 /**
  * Agent Spawner
- * Handles spawning and releasing worker agents via relay-pty.
+ * Handles spawning and releasing worker agents via agent-relay.
  * Workers run headlessly with output capture for logs.
  */
 
@@ -16,8 +16,8 @@ import { createTraceableError } from '@agent-relay/utils/error-tracking';
 import { createLogger } from '@agent-relay/utils/logger';
 import { mapModelToCli } from '@agent-relay/utils/model-mapping';
 import { isModelSwitchSupported, buildModelSwitchCommand, validateModelForCli } from '@agent-relay/utils/model-commands';
-import { findRelayPtyBinary as findRelayPtyBinaryUtil, getLastSearchPaths } from '@agent-relay/utils/relay-pty-path';
-import { RelayPtyOrchestrator, type RelayPtyOrchestratorConfig } from '@agent-relay/wrapper';
+import { findAgentRelayBinary as findAgentRelayBinaryUtil, getLastSearchPaths } from '@agent-relay/utils/agent-relay-path';
+import { RelayBrokerOrchestrator, type RelayBrokerOrchestratorConfig } from '@agent-relay/wrapper';
 import { OpenCodeWrapper, type OpenCodeWrapperConfig, OpenCodeApi } from '@agent-relay/wrapper';
 import type { SummaryEvent, SessionEndEvent } from '@agent-relay/wrapper';
 import { selectShadowCli } from './shadow-cli.js';
@@ -106,8 +106,8 @@ interface ListenerBindings {
   sessionEnd?: (event: SessionEndEvent) => void;
 }
 
-/** Type alias for the wrapper - uses RelayPtyOrchestrator (relay-pty Rust binary) */
-type AgentWrapper = RelayPtyOrchestrator;
+/** Type alias for the wrapper - uses RelayBrokerOrchestrator (agent-relay Rust binary) */
+type AgentWrapper = RelayBrokerOrchestrator;
 
 interface ActiveWorker extends WorkerInfo {
   pty: AgentWrapper;
@@ -378,35 +378,35 @@ function getRelayInstructions(agentName: string, options: { hasMcp?: boolean; in
 }
 
 /**
- * Check if the relay-pty binary is available.
+ * Check if the agent-relay binary is available.
  * Returns the path to the binary if found, null otherwise.
  * Uses shared utility from @agent-relay/utils.
  */
-function findRelayPtyBinary(): string | null {
-  return findRelayPtyBinaryUtil(__dirname);
+function findAgentRelayBinary(): string | null {
+  return findAgentRelayBinaryUtil(__dirname);
 }
 
-/** Cached result of relay-pty binary check */
-let relayPtyBinaryPath: string | null | undefined;
-let relayPtyBinaryChecked = false;
+/** Cached result of agent-relay binary check */
+let agentRelayBinaryPath: string | null | undefined;
+let agentRelayBinaryChecked = false;
 
 /**
- * Check if relay-pty binary is available (cached).
+ * Check if agent-relay binary is available (cached).
  * Returns true if the binary exists, false otherwise.
  */
-function hasRelayPtyBinary(): boolean {
-  if (!relayPtyBinaryChecked) {
-    relayPtyBinaryPath = findRelayPtyBinary();
-    relayPtyBinaryChecked = true;
+function hasAgentRelayBinary(): boolean {
+  if (!agentRelayBinaryChecked) {
+    agentRelayBinaryPath = findAgentRelayBinary();
+    agentRelayBinaryChecked = true;
     if (process.env.DEBUG_SPAWN === '1') {
-      if (relayPtyBinaryPath) {
-        log.debug(`relay-pty binary found: ${relayPtyBinaryPath}`);
+      if (agentRelayBinaryPath) {
+        log.debug(`agent-relay binary found: ${agentRelayBinaryPath}`);
       } else {
-        log.debug('relay-pty binary not found, will use PtyWrapper fallback');
+        log.debug('agent-relay binary not found, will use PtyWrapper fallback');
       }
     }
   }
-  return relayPtyBinaryPath !== null;
+  return agentRelayBinaryPath !== null;
 }
 
 /** Options for AgentSpawner constructor */
@@ -499,13 +499,13 @@ export class AgentSpawner {
       log.info('Policy enforcement enabled');
     }
 
-    // Clean up orphaned relay-pty processes from previous daemon run
+    // Clean up orphaned agent-relay processes from previous daemon run
     // This prevents Bug #8 (fails to restart) and Bug #9 (orphaned agents)
     this.cleanupOrphanedWorkers();
   }
 
   /**
-   * Clean up orphaned relay-pty processes from a previous daemon run.
+   * Clean up orphaned agent-relay processes from a previous daemon run.
    * Reads workers.json to find PIDs from the previous session and kills any
    * that are still running. This ensures a clean slate after daemon restarts.
    */
@@ -540,15 +540,15 @@ export class AgentSpawner {
         }
 
         if (isRunning) {
-          // Verify it's a relay-pty process before killing
+          // Verify it's a agent-relay process before killing
           try {
             const psOutput = execSync(`ps -p ${worker.pid} -o comm= 2>/dev/null || true`, {
               encoding: 'utf-8',
               timeout: 1000,
             }).trim();
 
-            // Only kill if it's a relay-pty process or the CLI we spawned
-            if (psOutput.includes('relay-pty') || psOutput.includes(worker.cli)) {
+            // Only kill if it's a agent-relay process or the CLI we spawned
+            if (psOutput.includes('agent-relay') || psOutput.includes(worker.cli)) {
               log.warn(`Killing orphaned worker "${worker.name}" (PID: ${worker.pid})`);
 
               // Try graceful termination first
@@ -573,7 +573,7 @@ export class AgentSpawner {
 
               orphansKilled++;
             } else {
-              log.debug(`PID ${worker.pid} is running but not relay-pty (${psOutput}), skipping`);
+              log.debug(`PID ${worker.pid} is running but not agent-relay (${psOutput}), skipping`);
             }
           } catch (err) {
             // ps command failed - be conservative and don't kill
@@ -770,7 +770,7 @@ export class AgentSpawner {
   }
 
   /**
-   * Set cloud persistence handler for forwarding RelayPtyOrchestrator events.
+   * Set cloud persistence handler for forwarding RelayBrokerOrchestrator events.
    * When set, 'summary' and 'session-end' events from spawned agents
    * are forwarded to the handler for cloud persistence (PostgreSQL/Redis).
    *
@@ -782,7 +782,7 @@ export class AgentSpawner {
   }
 
   /**
-   * Bind cloud persistence event handlers to a RelayPtyOrchestrator.
+   * Bind cloud persistence event handlers to a RelayBrokerOrchestrator.
    * Returns the listener references for cleanup.
    */
   private bindCloudPersistenceEvents(name: string, pty: AgentWrapper): Partial<ListenerBindings> {
@@ -811,7 +811,7 @@ export class AgentSpawner {
   }
 
   /**
-   * Unbind all tracked listeners from a RelayPtyOrchestrator.
+   * Unbind all tracked listeners from a RelayBrokerOrchestrator.
    */
   private unbindListeners(pty: AgentWrapper, listeners?: ListenerBindings): void {
     if (!listeners) return;
@@ -828,7 +828,7 @@ export class AgentSpawner {
   }
 
   /**
-   * Spawn a new worker agent using relay-pty
+   * Spawn a new worker agent using agent-relay
    */
   async spawn(request: SpawnRequest): Promise<SpawnResult> {
     const { name, cli, task, team, spawnerName, userId, includeWorkflowConventions, interactive, model: modelOverride } = request;
@@ -1118,20 +1118,20 @@ export class AgentSpawner {
 
       if (debug) log.debug(`Socket path for ${name}: ${this.socketPath ?? 'undefined'}`);
 
-      // Require relay-pty binary
-      if (!hasRelayPtyBinary()) {
+      // Require agent-relay binary
+      if (!hasAgentRelayBinary()) {
         const checkedPaths = getLastSearchPaths();
-        const tracedError = createTraceableError('relay-pty binary not found', {
+        const tracedError = createTraceableError('agent-relay binary not found', {
           agentName: name,
           cli,
           callerDir: __dirname,
           checkedPaths: checkedPaths.slice(0, 5), // First 5 paths for brevity
           totalPathsChecked: checkedPaths.length,
-          hint: 'Set RELAY_PTY_BINARY env var to override, or reinstall: npm install agent-relay',
+          hint: 'Set AGENT_RELAY_BINARY env var to override, or reinstall: npm install agent-relay',
         });
         log.error(tracedError.logMessage);
         if (debug) {
-          log.debug('All paths checked for relay-pty binary:');
+          log.debug('All paths checked for agent-relay binary:');
           checkedPaths.forEach((p, i) => log.debug(`  ${i + 1}. ${p}`));
         }
         return {
@@ -1355,12 +1355,12 @@ export class AgentSpawner {
           };
         }
 
-        // OpenCode serve not available and not in cloud workspace, fall through to RelayPtyOrchestrator
-        if (debug) log.debug(`OpenCode: serve not available, not cloud workspace, falling back to RelayPtyOrchestrator for ${name}`);
+        // OpenCode serve not available and not in cloud workspace, fall through to RelayBrokerOrchestrator
+        if (debug) log.debug(`OpenCode: serve not available, not cloud workspace, falling back to RelayBrokerOrchestrator for ${name}`);
       }
 
-      // Create RelayPtyOrchestrator (relay-pty Rust binary)
-      const ptyConfig: RelayPtyOrchestratorConfig = {
+      // Create RelayBrokerOrchestrator (agent-relay Rust binary)
+      const ptyConfig: RelayBrokerOrchestratorConfig = {
         name,
         command,
         args,
@@ -1391,8 +1391,8 @@ export class AgentSpawner {
           ? parseInt(process.env.AGENT_CPU_LIMIT || '100', 10)
           : undefined,
       };
-      const pty = new RelayPtyOrchestrator(ptyConfig);
-      if (debug) log.debug(`Using RelayPtyOrchestrator for ${name}`);
+      const pty = new RelayBrokerOrchestrator(ptyConfig);
+      if (debug) log.debug(`Using RelayBrokerOrchestrator for ${name}`);
 
       // Track listener references for proper cleanup
       const listeners: ListenerBindings = {};
@@ -1475,7 +1475,7 @@ export class AgentSpawner {
           try {
             // Wait for full orchestrator readiness (CLI + socket + internal flags)
             if ('waitUntilReadyForMessages' in pty) {
-              const orchestrator = pty as RelayPtyOrchestrator;
+              const orchestrator = pty as RelayBrokerOrchestrator;
               const ready = await orchestrator.waitUntilReadyForMessages(20000, 100);
               if (!ready) {
                 // Log retry attempts at DEBUG level to avoid terminal noise
@@ -1489,10 +1489,10 @@ export class AgentSpawner {
               }
             } else if ('waitUntilCliReady' in pty) {
               // Fallback for older wrapper types
-              await (pty as RelayPtyOrchestrator).waitUntilCliReady(15000, 100);
+              await (pty as RelayBrokerOrchestrator).waitUntilCliReady(15000, 100);
             }
 
-            // Inject task via socket (relay-pty confirms write)
+            // Inject task via socket (agent-relay confirms write)
             const success = await pty.injectTask(task, spawnerName || 'spawner');
             if (success) {
               taskSent = true;

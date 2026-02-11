@@ -192,7 +192,7 @@ jobs:
             *) ARCH_NAME="$ARCH" ;;
           esac
 
-          PLATFORM_BINARY="relay-pty-${PLATFORM}-${ARCH_NAME}"
+          PLATFORM_BINARY="agent-relay-${PLATFORM}-${ARCH_NAME}"
           echo "Looking for platform binary: $PLATFORM_BINARY"
 
           # Find the binary in npx cache
@@ -211,7 +211,7 @@ jobs:
 
           if [ -z "$FOUND_BINARY" ]; then
             echo "ERROR: Platform-specific binary not found in npx cache!"
-            echo "This will cause 'npx agent-relay up' to fail with 'relay-pty binary not found'"
+            echo "This will cause 'npx agent-relay up' to fail with 'agent-relay binary not found'"
             exit 1
           fi
 
@@ -264,45 +264,45 @@ jobs:
             exit 1
           fi
 
-      # Test 4: relay-pty binary verification (critical for spawn)
-      - name: "Test: relay-pty binary exists"
+      # Test 4: agent-relay binary verification (critical for spawn)
+      - name: "Test: agent-relay binary exists"
         run: |
           cd /tmp/test-project
           BIN_DIR="./node_modules/agent-relay/bin"
-          echo "Checking for relay-pty binaries..."
+          echo "Checking for agent-relay binaries..."
           ls -la "$BIN_DIR" || { echo "Binary directory not found"; exit 1; }
 
-          if [ -f "$BIN_DIR/relay-pty" ]; then
-            echo "relay-pty binary found"
+          if [ -f "$BIN_DIR/agent-relay" ]; then
+            echo "agent-relay binary found"
           else
-            echo "relay-pty binary NOT found - spawn will fail!"
+            echo "agent-relay binary NOT found - spawn will fail!"
             exit 1
           fi
 
-      - name: "Test: relay-pty binary executable"
+      - name: "Test: agent-relay binary executable"
         run: |
           cd /tmp/test-project
           BIN_DIR="./node_modules/agent-relay/bin"
 
-          if [ -x "$BIN_DIR/relay-pty" ]; then
-            echo "relay-pty is executable"
+          if [ -x "$BIN_DIR/agent-relay" ]; then
+            echo "agent-relay is executable"
           else
-            echo "relay-pty is NOT executable"
+            echo "agent-relay is NOT executable"
             exit 1
           fi
 
-      - name: "Test: relay-pty --help works"
+      - name: "Test: agent-relay --help works"
         run: |
           cd /tmp/test-project
           BIN_DIR="./node_modules/agent-relay/bin"
 
-          OUTPUT=$("$BIN_DIR/relay-pty" --help 2>&1) || true
+          OUTPUT=$("$BIN_DIR/agent-relay" --help 2>&1) || true
           echo "$OUTPUT"
 
           if echo "$OUTPUT" | grep -q "PTY wrapper"; then
-            echo "relay-pty --help check passed"
+            echo "agent-relay --help check passed"
           else
-            echo "relay-pty --help failed or unexpected output"
+            echo "agent-relay --help failed or unexpected output"
             exit 1
           fi
 
@@ -322,7 +322,7 @@ jobs:
           esac
 
           echo "Platform: $PLATFORM, Architecture: $ARCH_NAME"
-          PLATFORM_BINARY="relay-pty-${PLATFORM}-${ARCH_NAME}"
+          PLATFORM_BINARY="agent-relay-${PLATFORM}-${ARCH_NAME}"
 
           if [ -f "$BIN_DIR/$PLATFORM_BINARY" ]; then
             echo "Platform-specific binary found: $PLATFORM_BINARY"
@@ -333,7 +333,7 @@ jobs:
             fi
           else
             echo "Platform-specific binary not found: $PLATFORM_BINARY"
-            echo "Will rely on generic relay-pty binary"
+            echo "Will rely on generic agent-relay binary"
           fi
 
       - name: "Test: Binary resolution simulation"
@@ -355,15 +355,15 @@ jobs:
           const platformName = platformMap[platform] || platform;
           const archName = archMap[arch] || arch;
 
-          const specificBinary = path.join(binDir, 'relay-pty-' + platformName + '-' + archName);
-          const genericBinary = path.join(binDir, 'relay-pty');
+          const specificBinary = path.join(binDir, 'agent-relay-' + platformName + '-' + archName);
+          const genericBinary = path.join(binDir, 'agent-relay');
 
           console.log('Package dir:', packageDir);
           console.log('Platform binary:', specificBinary, fs.existsSync(specificBinary) ? '✓' : '✗');
           console.log('Generic binary:', genericBinary, fs.existsSync(genericBinary) ? '✓' : '✗');
 
           if (!fs.existsSync(specificBinary) && !fs.existsSync(genericBinary)) {
-            console.error('ERROR: No relay-pty binary found!');
+            console.error('ERROR: No agent-relay binary found!');
             process.exit(1);
           }
 
@@ -455,44 +455,44 @@ jobs:
             exit 1
           fi
 
-      - name: "Test: relay-pty binary exists"
+      - name: "Test: agent-relay binary exists"
         run: |
           cd /tmp/test-project
           BIN_DIR="./node_modules/agent-relay/bin"
-          echo "Checking for relay-pty binaries..."
+          echo "Checking for agent-relay binaries..."
           ls -la "$BIN_DIR"
 
-          if [ -f "$BIN_DIR/relay-pty" ]; then
-            echo "relay-pty binary found"
+          if [ -f "$BIN_DIR/agent-relay" ]; then
+            echo "agent-relay binary found"
           else
-            echo "relay-pty binary NOT found!"
+            echo "agent-relay binary NOT found!"
             exit 1
           fi
 
-      - name: "Test: relay-pty is executable"
+      - name: "Test: agent-relay is executable"
         run: |
           cd /tmp/test-project
           BIN_DIR="./node_modules/agent-relay/bin"
 
-          if [ -x "$BIN_DIR/relay-pty" ]; then
-            echo "relay-pty is executable"
+          if [ -x "$BIN_DIR/agent-relay" ]; then
+            echo "agent-relay is executable"
           else
-            echo "relay-pty is NOT executable"
+            echo "agent-relay is NOT executable"
             exit 1
           fi
 
-      - name: "Test: relay-pty --help"
+      - name: "Test: agent-relay --help"
         run: |
           cd /tmp/test-project
           BIN_DIR="./node_modules/agent-relay/bin"
 
-          OUTPUT=$("$BIN_DIR/relay-pty" --help 2>&1) || true
+          OUTPUT=$("$BIN_DIR/agent-relay" --help 2>&1) || true
           echo "$OUTPUT"
 
           if echo "$OUTPUT" | grep -q "PTY wrapper"; then
-            echo "relay-pty --help check passed"
+            echo "agent-relay --help check passed"
           else
-            echo "relay-pty --help failed"
+            echo "agent-relay --help failed"
             exit 1
           fi
 
@@ -500,7 +500,7 @@ jobs:
         run: |
           cd /tmp/test-project
           BIN_DIR="./node_modules/agent-relay/bin"
-          DARWIN_BINARY="relay-pty-darwin-arm64"
+          DARWIN_BINARY="agent-relay-darwin-arm64"
 
           echo "Looking for: $DARWIN_BINARY"
 
@@ -523,7 +523,7 @@ jobs:
             fi
           else
             echo "Darwin binary not found, checking if generic works..."
-            if "$BIN_DIR/relay-pty" --help 2>&1 | grep -q "PTY wrapper"; then
+            if "$BIN_DIR/agent-relay" --help 2>&1 | grep -q "PTY wrapper"; then
               echo "Generic binary works on macOS"
             else
               echo "Neither darwin-specific nor generic binary works!"
@@ -542,7 +542,7 @@ jobs:
 
           # Verify the darwin-arm64 binary exists and works
           BIN_DIR="./node_modules/agent-relay/bin"
-          DARWIN_BINARY="relay-pty-darwin-arm64"
+          DARWIN_BINARY="agent-relay-darwin-arm64"
 
           echo "Looking for $DARWIN_BINARY in $BIN_DIR..."
 
@@ -663,7 +663,7 @@ jobs:
           echo "| Node 20 | ${{ needs.verify.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Node 22 | ${{ needs.verify.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### macOS Tests (relay-pty binary)" >> $GITHUB_STEP_SUMMARY
+          echo "### macOS Tests (agent-relay binary)" >> $GITHUB_STEP_SUMMARY
           echo "| Architecture | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|--------------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| arm64 (M1/M2) | ${{ needs.verify-macos-arm64.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY

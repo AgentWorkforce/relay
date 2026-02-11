@@ -146,7 +146,7 @@ check "test -f dist/src/cli/index.js" "Relay CLI built"
 check "test -f packages/sdk/dist/client.js" "SDK package built"
 check "test -f packages/daemon/dist/server.js" "Daemon package built"
 check "test -f packages/protocol/dist/types.js" "Protocol package built"
-check "test -f packages/wrapper/dist/relay-pty-orchestrator.js" "Wrapper package built"
+check "test -f packages/wrapper/dist/relay-broker-orchestrator.js" "Wrapper package built"
 
 if [ -d "$DASHBOARD_DIR" ]; then
   check "test -f $DASHBOARD_DIR/packages/dashboard-server/dist/server.js" "Dashboard server built"
@@ -247,8 +247,8 @@ phase "Phase 4: Wrapper Fallback Chain Verification"
 info "Checking orchestrator fallback logic..."
 
 # Verify the fix: daemon responses always return (no fall-through to HTTP)
-check "grep -q 'Always return if daemon responded' packages/wrapper/dist/relay-pty-orchestrator.js 2>/dev/null || \
-       grep -q 'transport error' packages/wrapper/dist/relay-pty-orchestrator.js 2>/dev/null" \
+check "grep -q 'Always return if daemon responded' packages/wrapper/dist/relay-broker-orchestrator.js 2>/dev/null || \
+       grep -q 'transport error' packages/wrapper/dist/relay-broker-orchestrator.js 2>/dev/null" \
   "Fallback chain: daemon rejection stops cascade"
 
 # -------------------------------------------------------

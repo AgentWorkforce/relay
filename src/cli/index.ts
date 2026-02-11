@@ -21,7 +21,7 @@ import { Command } from 'commander';
 import { config as dotenvConfig } from 'dotenv';
 import { Daemon } from '@agent-relay/daemon';
 import { RelayClient } from '@agent-relay/sdk';
-import { RelayPtyOrchestrator, getTmuxPath } from '@agent-relay/wrapper';
+import { RelayBrokerOrchestrator, getTmuxPath } from '@agent-relay/wrapper';
 import { AgentSpawner, readWorkersMetadata, getWorkerLogsDir, selectShadowCli, ensureMcpPermissions } from '@agent-relay/bridge';
 import type { SpawnRequest, SpawnResult } from '@agent-relay/bridge';
 import { generateAgentName, checkForUpdatesInBackground, checkForUpdates } from '@agent-relay/utils';
@@ -579,7 +579,7 @@ program
     // Create spawner as fallback for direct spawn (if dashboard API not available)
     const spawner = new AgentSpawner(paths.projectRoot, undefined, dashboardPort);
 
-    const wrapper = new RelayPtyOrchestrator({
+    const wrapper = new RelayBrokerOrchestrator({
       name: agentName,
       command: mainCommand,
       args: finalArgs,
@@ -1392,11 +1392,11 @@ program
       }
     }
 
-    // relay-pty binary in INSTALL_DIR/bin/
-    const relayPtyPath = path.join(installDir, 'bin', 'relay-pty');
-    if (fs.existsSync(relayPtyPath)) {
-      filesToRemove.push(relayPtyPath);
-      actions.push(`Remove ${relayPtyPath}`);
+    // agent-relay binary in INSTALL_DIR/bin/
+    const agentRelayPath = path.join(installDir, 'bin', 'agent-relay');
+    if (fs.existsSync(agentRelayPath)) {
+      filesToRemove.push(agentRelayPath);
+      actions.push(`Remove ${agentRelayPath}`);
     }
 
     // INSTALL_DIR itself (e.g. ~/.agent-relay) if it exists and is different from project .agent-relay
@@ -2313,7 +2313,7 @@ Start by greeting the project leads and asking for status updates.`;
       }
 
       try {
-        architectWrapper = new RelayPtyOrchestrator({
+        architectWrapper = new RelayBrokerOrchestrator({
           name: 'Architect',
           command,
           args,
@@ -4054,7 +4054,7 @@ program
     // Use the regular wrapper but with profiling environment
     const paths = getProjectPaths();
 
-    const wrapper = new RelayPtyOrchestrator({
+    const wrapper = new RelayBrokerOrchestrator({
       name: agentName,
       command: cmd,
       args,

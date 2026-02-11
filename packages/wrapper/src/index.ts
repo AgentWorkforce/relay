@@ -163,11 +163,11 @@ export {
   type BaseWrapperConfig,
 } from './base-wrapper.js';
 
-// RelayPtyOrchestrator (relay-pty Rust binary)
+// RelayBrokerOrchestrator (agent-relay Rust binary)
 export {
-  RelayPtyOrchestrator,
-  type RelayPtyOrchestratorConfig,
-} from './relay-pty-orchestrator.js';
+  RelayBrokerOrchestrator,
+  type RelayBrokerOrchestratorConfig,
+} from './relay-broker-orchestrator.js';
 
 // OpenCode HTTP API integration
 export {

@@ -307,7 +307,7 @@ jobs:
       - name: Test all helper functions exist
         run: |
           # Verify key functions are defined
-          FUNCTIONS="detect_platform get_latest_version check_node download_relay_pty download_standalone_binary install_via_npm install_from_source setup_path verify_installation print_usage has_command download_with_progress"
+          FUNCTIONS="detect_platform get_latest_version check_node download_agent_relay download_standalone_binary install_via_npm install_from_source setup_path verify_installation print_usage has_command download_with_progress"
 
           for func in $FUNCTIONS; do
             if grep -q "^${func}()" install.sh || grep -q "^${func} ()" install.sh; then

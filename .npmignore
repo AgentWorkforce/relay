@@ -2,7 +2,7 @@
 src/
 
 # Rust source code (we ship pre-built binaries in bin/)
-relay-pty/
+relay-broker/
 
 # Tmux binary (users should install system tmux)
 bin/tmux

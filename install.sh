@@ -152,13 +152,13 @@ check_node() {
     return 1
 }
 
-# Download relay-pty binary
-download_relay_pty() {
-    step "Downloading relay-pty binary..."
+# Download agent-relay binary
+download_agent_relay() {
+    step "Downloading agent-relay binary..."
 
-    local binary_name="relay-pty-${PLATFORM}"
+    local binary_name="agent-relay-${PLATFORM}"
     local download_url="https://github.com/$REPO_RELAY/releases/download/v${VERSION}/${binary_name}"
-    local target_path="$INSTALL_DIR/bin/relay-pty"
+    local target_path="$INSTALL_DIR/bin/agent-relay"
 
     mkdir -p "$INSTALL_DIR/bin"
 
@@ -167,15 +167,15 @@ download_relay_pty() {
         chmod +x "$target_path"
         # Verify binary works
         if "$target_path" --help &>/dev/null; then
-            success "Downloaded relay-pty binary"
+            success "Downloaded agent-relay binary"
             return 0
         else
-            warn "relay-pty binary failed verification"
+            warn "agent-relay binary failed verification"
             rm -f "$target_path"
             return 1
         fi
     else
-        warn "No prebuilt relay-pty binary for $PLATFORM"
+        warn "No prebuilt agent-relay binary for $PLATFORM"
         return 1
     fi
 }
@@ -736,8 +736,8 @@ main() {
     # Try standalone binary first - works without Node.js
     if download_standalone_binary; then
         INSTALL_METHOD="binary"
-        # Also download relay-pty binary if available
-        download_relay_pty || true
+        # Also download agent-relay binary if available
+        download_agent_relay || true
         # Download dashboard-server binary if available
         download_dashboard_binary || true
         # Download dashboard UI files (required for standalone binary to serve the UI)

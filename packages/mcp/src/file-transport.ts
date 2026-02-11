@@ -1,17 +1,17 @@
 /**
  * File-Based Transport for MCP Tools
  *
- * IMPORTANT: This transport requires relay-pty to be running to process outbox files.
- * The daemon does NOT watch outbox directories directly - only relay-pty does.
+ * IMPORTANT: This transport requires agent-relay to be running to process outbox files.
+ * The daemon does NOT watch outbox directories directly - only agent-relay does.
  *
  * This transport is intended for scenarios where:
- * 1. An agent is wrapped by relay-pty (standard spawned agents)
- * 2. The agent outputs triggers like ->relay-file:msg which relay-pty detects
+ * 1. An agent is wrapped by agent-relay (standard spawned agents)
+ * 2. The agent outputs triggers like ->relay-file:msg which agent-relay detects
  *
  * For MCP tools, prefer using the socket-based client (createRelayClient) instead,
  * which communicates directly with the daemon.
  *
- * Protocol (processed by relay-pty, not daemon):
+ * Protocol (processed by agent-relay, not daemon):
  * - Send: Write to outbox/msg with TO: header, output ->relay-file:msg
  * - Spawn: Write to outbox/spawn with KIND: spawn, output ->relay-file:spawn
  * - Release: Write to outbox/release with KIND: release, output ->relay-file:release
@@ -50,7 +50,7 @@ export interface ReleaseOptions {
 }
 
 /**
- * File-based transport that mirrors the relay-pty file protocol.
+ * File-based transport that mirrors the agent-relay file protocol.
  */
 export class FileTransport {
   private outboxDir: string;
@@ -74,7 +74,7 @@ export class FileTransport {
 
   /**
    * Send a message using file-based protocol.
-   * Writes to outbox/msg in the format expected by relay-pty.
+   * Writes to outbox/msg in the format expected by agent-relay.
    */
   async send(options: SendOptions): Promise<void> {
     const { to, message, thread } = options;
@@ -90,9 +90,9 @@ export class FileTransport {
     const msgPath = join(this.outboxDir, 'msg');
     writeFileSync(msgPath, content);
 
-    // NOTE: relay-pty watches for ->relay-file:msg trigger in agent output.
+    // NOTE: agent-relay watches for ->relay-file:msg trigger in agent output.
     // The daemon does NOT watch outbox files directly.
-    // The caller must output "->relay-file:msg" for relay-pty to process this file.
+    // The caller must output "->relay-file:msg" for agent-relay to process this file.
   }
 
   /**

@@ -224,12 +224,12 @@ else
 fi
 
 # ============================================
-# Test 4: relay-pty binary verification
+# Test 4: agent-relay binary verification
 # ============================================
-log_header "Test 4: relay-pty binary verification"
+log_header "Test 4: agent-relay binary verification"
 
-# Check if relay-pty binary exists
-log_info "Checking for relay-pty binary..."
+# Check if agent-relay binary exists
+log_info "Checking for agent-relay binary..."
 
 # Get the installed package location
 PACKAGE_DIR="./node_modules/agent-relay"
@@ -253,32 +253,32 @@ if [ -d "$BIN_DIR" ]; then
 
     log_info "Platform: $PLATFORM, Architecture: $ARCH_NAME"
 
-    # Check for the main relay-pty binary
-    if [ -f "$BIN_DIR/relay-pty" ]; then
-        record_pass "relay-pty binary exists"
+    # Check for the main agent-relay binary
+    if [ -f "$BIN_DIR/agent-relay" ]; then
+        record_pass "agent-relay binary exists"
 
         # Check if executable
-        if [ -x "$BIN_DIR/relay-pty" ]; then
-            record_pass "relay-pty binary is executable"
+        if [ -x "$BIN_DIR/agent-relay" ]; then
+            record_pass "agent-relay binary is executable"
 
             # Test the binary
-            log_info "Testing relay-pty --help..."
-            PTY_HELP=$("$BIN_DIR/relay-pty" --help 2>&1) || true
+            log_info "Testing agent-relay --help..."
+            PTY_HELP=$("$BIN_DIR/agent-relay" --help 2>&1) || true
             if echo "$PTY_HELP" | grep -q "PTY wrapper"; then
-                record_pass "relay-pty --help works"
+                record_pass "agent-relay --help works"
             else
-                log_info "relay-pty output: $PTY_HELP"
-                record_fail "relay-pty --help doesn't show expected output"
+                log_info "agent-relay output: $PTY_HELP"
+                record_fail "agent-relay --help doesn't show expected output"
             fi
         else
-            record_fail "relay-pty binary is not executable"
+            record_fail "agent-relay binary is not executable"
         fi
     else
-        record_fail "relay-pty binary not found at $BIN_DIR/relay-pty"
+        record_fail "agent-relay binary not found at $BIN_DIR/agent-relay"
     fi
 
     # Check for platform-specific binary
-    PLATFORM_BINARY="relay-pty-${PLATFORM}-${ARCH_NAME}"
+    PLATFORM_BINARY="agent-relay-${PLATFORM}-${ARCH_NAME}"
     if [ -f "$BIN_DIR/$PLATFORM_BINARY" ]; then
         log_info "Platform-specific binary found: $PLATFORM_BINARY"
         if [ -x "$BIN_DIR/$PLATFORM_BINARY" ]; then
@@ -333,21 +333,21 @@ BINARY_RESOLUTION=$(node -e "
 const path = require('path');
 const fs = require('fs');
 
-// First, try using the actual findRelayPtyBinary function from the package
+// First, try using the actual findAgentRelayBinary function from the package
 try {
     // Try to load from scoped package first (how it's used in production)
-    const { findRelayPtyBinary, getLastSearchPaths } = require('@agent-relay/utils');
-    const binaryPath = findRelayPtyBinary(__dirname);
+    const { findAgentRelayBinary, getLastSearchPaths } = require('@agent-relay/utils');
+    const binaryPath = findAgentRelayBinary(__dirname);
     const searchPaths = getLastSearchPaths();
 
-    console.log('Using @agent-relay/utils findRelayPtyBinary');
+    console.log('Using @agent-relay/utils findAgentRelayBinary');
     console.log('Search paths:', JSON.stringify(searchPaths.slice(0, 5), null, 2));
 
     if (binaryPath) {
         console.log('Found binary at:', binaryPath);
         console.log('RESOLUTION_OK');
     } else {
-        console.log('Binary not found via findRelayPtyBinary');
+        console.log('Binary not found via findAgentRelayBinary');
         console.log('RESOLUTION_FAILED');
     }
 } catch (e) {
@@ -366,8 +366,8 @@ try {
     const platformName = platformMap[platform] || platform;
     const archName = archMap[arch] || arch;
 
-    const specificBinary = path.join(binDir, 'relay-pty-' + platformName + '-' + archName);
-    const genericBinary = path.join(binDir, 'relay-pty');
+    const specificBinary = path.join(binDir, 'agent-relay-' + platformName + '-' + archName);
+    const genericBinary = path.join(binDir, 'agent-relay');
 
     console.log('Fallback: manual binary check');
     console.log('Package dir:', packageDir);
@@ -388,9 +388,9 @@ log_info "Binary resolution output:"
 echo "$BINARY_RESOLUTION"
 
 if echo "$BINARY_RESOLUTION" | grep -q "RESOLUTION_OK"; then
-    record_pass "Binary resolution logic finds relay-pty"
+    record_pass "Binary resolution logic finds agent-relay"
 else
-    record_fail "Binary resolution failed - relay-pty not found"
+    record_fail "Binary resolution failed - agent-relay not found"
 fi
 
 # Cleanup test project

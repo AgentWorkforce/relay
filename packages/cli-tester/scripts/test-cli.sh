@@ -1,5 +1,5 @@
 #!/bin/bash
-# Test a specific CLI with relay-pty
+# Test a specific CLI with agent-relay
 # Usage: ./test-cli.sh <cli> [extra-args...]
 # Example: ./test-cli.sh claude
 #          ./test-cli.sh codex --device-auth
@@ -17,7 +17,7 @@ if [ "$CLI" = "cursor" ]; then
 fi
 
 NAME="test-${CLI}"
-SOCKET="/tmp/relay-pty-${NAME}.sock"
+SOCKET="/tmp/agent-relay-${NAME}.sock"
 
 # Remove stale socket if exists
 rm -f "$SOCKET"
@@ -37,7 +37,7 @@ echo "Press Ctrl+C to stop the session."
 echo "========================================"
 echo ""
 
-# Build relay-pty args
+# Build agent-relay args
 RELAY_ARGS=(
     --name "$NAME"
     --socket "$SOCKET"
@@ -51,6 +51,6 @@ if [ -n "$DEBUG" ]; then
     echo ""
 fi
 
-# Run relay-pty with the CLI
+# Run agent-relay with the CLI
 # Pass through any extra arguments to the CLI
-exec relay-pty "${RELAY_ARGS[@]}" -- "$CLI_CMD" "$@"
+exec agent-relay "${RELAY_ARGS[@]}" -- "$CLI_CMD" "$@"

@@ -7,7 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { EventEmitter } from 'events';
 import { createLogger, getSupervisor, detectProvider } from '@agent-relay/resiliency';
-import { RelayPtyOrchestrator, type RelayPtyOrchestratorConfig } from '@agent-relay/wrapper';
+import { RelayBrokerOrchestrator, type RelayBrokerOrchestratorConfig } from '@agent-relay/wrapper';
 import type { SummaryEvent, SessionEndEvent } from '@agent-relay/wrapper';
 import { resolveCommand } from '@agent-relay/utils/command-resolver';
 import type {
@@ -35,7 +35,7 @@ function generateId(): string {
 }
 
 interface ManagedAgent extends Agent {
-  pty?: RelayPtyOrchestrator;
+  pty?: RelayBrokerOrchestrator;
 }
 
 export class AgentManager extends EventEmitter {
@@ -72,7 +72,7 @@ export class AgentManager extends EventEmitter {
   }
 
   /**
-   * Set cloud persistence handler for forwarding RelayPtyOrchestrator events.
+   * Set cloud persistence handler for forwarding RelayBrokerOrchestrator events.
    * When set, 'summary' and 'session-end' events from agents are forwarded
    * to the handler for cloud persistence (PostgreSQL/Redis).
    */
@@ -137,7 +137,7 @@ export class AgentManager extends EventEmitter {
       };
 
       // Create PTY config
-      const ptyConfig: RelayPtyOrchestratorConfig = {
+      const ptyConfig: RelayBrokerOrchestratorConfig = {
         name,
         command,
         args,
@@ -158,13 +158,13 @@ export class AgentManager extends EventEmitter {
       };
 
       // Create and start PTY
-      const pty = new RelayPtyOrchestrator(ptyConfig);
+      const pty = new RelayBrokerOrchestrator(ptyConfig);
       await pty.start();
 
       agent.pid = pty.pid;
       agent.pty = pty;
 
-      // Subscribe to RelayPtyOrchestrator events for cloud persistence
+      // Subscribe to RelayBrokerOrchestrator events for cloud persistence
       this.bindPtyEvents(agent.id, pty);
 
       // Inject initial task
@@ -420,7 +420,7 @@ export class AgentManager extends EventEmitter {
       }
 
       // Create new PTY
-      const ptyConfig: RelayPtyOrchestratorConfig = {
+      const ptyConfig: RelayBrokerOrchestratorConfig = {
         name: agent.name,
         command,
         args,
@@ -439,7 +439,7 @@ export class AgentManager extends EventEmitter {
         },
       };
 
-      const pty = new RelayPtyOrchestrator(ptyConfig);
+      const pty = new RelayBrokerOrchestrator(ptyConfig);
       await pty.start();
 
       agent.pid = pty.pid;
@@ -498,14 +498,14 @@ export class AgentManager extends EventEmitter {
   }
 
   /**
-   * Bind RelayPtyOrchestrator events to cloud persistence and daemon events.
+   * Bind RelayBrokerOrchestrator events to cloud persistence and daemon events.
    *
    * Events bound:
    * - 'summary': Agent output a [[SUMMARY]] block
    * - 'session-end': Agent output a [[SESSION_END]] block
    * - 'injection-failed': Message injection failed after retries
    */
-  private bindPtyEvents(agentId: string, pty: RelayPtyOrchestrator): void {
+  private bindPtyEvents(agentId: string, pty: RelayBrokerOrchestrator): void {
     const agent = this.agents.get(agentId);
     if (!agent) return;
 
