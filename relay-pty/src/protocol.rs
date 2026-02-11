@@ -236,7 +236,14 @@ impl ParsedRelayCommand {
         }
     }
 
-    pub fn new_spawn_with_cwd(from: String, name: String, cli: String, task: String, cwd: Option<String>, raw: String) -> Self {
+    pub fn new_spawn_with_cwd(
+        from: String,
+        name: String,
+        cli: String,
+        task: String,
+        cwd: Option<String>,
+        raw: String,
+    ) -> Self {
         Self {
             cmd_type: "relay_command".to_string(),
             kind: "spawn".to_string(),
