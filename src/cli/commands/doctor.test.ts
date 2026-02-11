@@ -199,7 +199,7 @@ describe('doctor diagnostics', () => {
     expect(process.exitCode).toBe(0);
   });
 
-  it('fails gracefully when no SQLite drivers are available', async () => {
+  it('passes with warnings when no SQLite drivers are available', async () => {
     mockAvailability.betterAvailable = false;
     mockAvailability.nodeAvailable = false;
     process.env.AGENT_RELAY_DOCTOR_NODE_SQLITE_AVAILABLE = '0';
@@ -214,8 +214,9 @@ describe('doctor diagnostics', () => {
     const output = logs.join('\n');
     expect(output).toContain('better-sqlite3: Not available');
     expect(output).toContain('node:sqlite: Not available');
-    expect(output).toContain('Could not write (no SQLite driver available)');
-    expect(process.exitCode).toBe(1);
+    expect(output).toContain('Skipped (no SQLite driver available)');
+    expect(output).toContain('Memory fallback');
+    expect(process.exitCode).toBe(0);
   });
 
   it('includes installation status details when storage-status.txt exists', async () => {
