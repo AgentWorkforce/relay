@@ -4432,7 +4432,18 @@ program
             // Auto-close the session when auth success is detected
             const closeOnAuthSuccess = () => {
               authDetected = true;
-              // Brief delay so the user sees the success message
+              // Delay sending Enter so the CLI has time to render
+              // the "Press Enter to continue..." prompt with its input listener.
+              // Success patterns match on "Logged in" / "Login successful" which
+              // may arrive before the Ink "Press Enter" screen is fully rendered.
+              setTimeout(() => {
+                try {
+                  stream.write('\r');
+                } catch {
+                  // ignore - process may have exited
+                }
+              }, 500);
+              // Close the stream after giving the CLI time to process the Enter
               setTimeout(() => {
                 cleanup();
                 clearTimeout(timer);
@@ -4441,17 +4452,19 @@ program
                 } catch {
                   // ignore
                 }
-              }, 1500);
+              }, 2500);
             };
 
             stream.on('data', (data: Buffer) => {
               stdout.write(data);
 
-              // Accumulate output for pattern matching (keep last 2KB to avoid memory growth)
+              // Accumulate output for pattern matching (keep last 8KB to avoid memory growth)
+              // Ink-based CLIs use heavy ANSI escape codes, so raw output is much
+              // larger than visible text. 8KB ensures success patterns aren't truncated.
               const text = data.toString();
               outputBuffer += text;
-              if (outputBuffer.length > 2048) {
-                outputBuffer = outputBuffer.slice(-2048);
+              if (outputBuffer.length > 8192) {
+                outputBuffer = outputBuffer.slice(-8192);
               }
 
               // Check for auth success patterns
@@ -4536,13 +4549,21 @@ program
         ? start.provider.trim()
         : provider;
     try {
+      const completeHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (!cliToken && cloudConfig.apiKey) {
+        completeHeaders['Authorization'] = `Bearer ${cloudConfig.apiKey}`;
+      }
+
       const response = await fetch(`${CLOUD_URL}/api/auth/ssh/complete`, {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${cloudConfig.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ sessionId: start.sessionId, workspaceId: start.workspaceId, provider: providerForComplete, success }),
+        headers: completeHeaders,
+        body: JSON.stringify({
+          sessionId: start.sessionId,
+          workspaceId: start.workspaceId,
+          provider: providerForComplete,
+          success,
+          ...(cliToken && { token: cliToken }),
+        }),
       });
 
       if (!response.ok) {
@@ -4570,6 +4591,12 @@ program
       if (typeof exitCode === 'number' && exitCode !== 0) {
         console.log('');
         console.log(red(`Remote auth command exited with code ${exitCode}.`));
+      }
+      // Exit code 127 = command not found
+      if (execResult?.exitCode === 127) {
+        console.log('');
+        console.log(yellow(`The ${providerConfig.displayName} CLI ("${providerConfig.command}") is not installed on this workspace.`));
+        console.log(dim('Ask your workspace administrator to install it, or check the workspace Dockerfile.'));
       }
       process.exit(1);
     }
