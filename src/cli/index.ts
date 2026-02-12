@@ -26,7 +26,7 @@ import { AgentSpawner, readWorkersMetadata, getWorkerLogsDir, selectShadowCli, e
 import type { SpawnRequest, SpawnResult } from '@agent-relay/bridge';
 import { generateAgentName, checkForUpdatesInBackground, checkForUpdates } from '@agent-relay/utils';
 import { getShadowForAgent, getProjectPaths, loadRuntimeConfig } from '@agent-relay/config';
-import { CLI_AUTH_CONFIG, stripAnsiCodes } from '@agent-relay/config/cli-auth-config';
+import { CLI_AUTH_CONFIG, stripAnsiCodes, findMatchingError } from '@agent-relay/config/cli-auth-config';
 import { createStorageAdapter } from '@agent-relay/storage/adapter';
 import {
   initTelemetry,
@@ -4159,7 +4159,7 @@ program
     const shellEscape = (s: string) => {
       // Basic POSIX shell escaping for args (remote exec uses a shell).
       if (s.length === 0) return "''";
-      if (/^[a-zA-Z0-9_\\/\\-\\.=:]+$/.test(s)) return s;
+      if (/^[a-zA-Z0-9_/\\.=:-]+$/.test(s)) return s;
       return `'${s.replace(/'/g, `'\"'\"'`)}'`;
     };
 
@@ -4288,7 +4288,7 @@ program
     // Set per-user HOME so credentials persist to the authenticated user's directory.
     // Multi-user workspaces use /data/users/{userId} as per-user HOME (see entrypoint.sh).
     const remoteCommand = start.userId
-      ? `mkdir -p /data/users/${start.userId} && HOME=/data/users/${start.userId} ${baseCommand}`
+      ? `mkdir -p /data/users/${shellEscape(start.userId)} && HOME=/data/users/${shellEscape(start.userId)} ${baseCommand}`
       : baseCommand;
 
     console.log(green('✓ SSH session created'));
@@ -4486,6 +4486,17 @@ program
                     closeOnAuthSuccess();
                     break;
                   }
+                }
+              }
+
+              // Check for auth error patterns (early exit instead of waiting for timeout)
+              if (!authDetected && errorPatterns.length > 0) {
+                const matched = findMatchingError(outputBuffer, errorPatterns);
+                if (matched) {
+                  clearTimeout(timer);
+                  cleanup();
+                  try { stream.close(); } catch { /* ignore */ }
+                  reject(new Error(matched.message + (matched.hint ? ` ${matched.hint}` : '')));
                 }
               }
             });
