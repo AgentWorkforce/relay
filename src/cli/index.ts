@@ -4163,7 +4163,14 @@ program
       return `'${s.replace(/'/g, `'\"'\"'`)}'`;
     };
 
-    const remoteCommandFallback = [providerConfig.command, ...providerConfig.args].map(shellEscape).join(' ');
+    // Build the fallback command to run on the remote workspace.
+    // For Cursor, the installer creates both "agent" (primary) and "cursor-agent" (legacy)
+    // symlinks. Try the primary first, fall back to legacy if not found.
+    const primaryCmd = [providerConfig.command, ...providerConfig.args].map(shellEscape).join(' ');
+    const fallbackCmd = provider === 'cursor'
+      ? `command -v agent >/dev/null 2>&1 && ${primaryCmd} || cursor-agent ${providerConfig.args.map(shellEscape).join(' ')}`
+      : primaryCmd;
+    const remoteCommandFallback = fallbackCmd;
 
     // When --token is provided (from dashboard CLI command), skip cloud config requirement.
     // The token authenticates directly with the /start endpoint.
