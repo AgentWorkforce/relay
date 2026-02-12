@@ -853,7 +853,7 @@ jobs:
       always() &&
       (github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease') &&
       needs.build.result == 'success' &&
-      (needs.verify-binaries.result == 'success' || needs.verify-binaries.result == 'skipped') &&
+      (needs.verify-binaries.result == 'success' || (needs.verify-binaries.result == 'skipped' && github.event.inputs.package == 'cli-prerelease')) &&
       (needs.publish-packages.result == 'success' || needs.publish-packages.result == 'skipped')
 
     steps:
