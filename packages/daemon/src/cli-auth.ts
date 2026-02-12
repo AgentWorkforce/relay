@@ -195,6 +195,8 @@ export async function startCLIAuth(
     if (options.userId) {
       try {
         const userDirService = getUserDirectoryService();
+        // Initialize provider directories BEFORE getting env, so CLI can write credentials
+        userDirService.initializeUserEnvironment(options.userId);
         userEnv = userDirService.getUserEnvironment(options.userId);
         logger.info('Using per-user environment for CLI auth', {
           provider,

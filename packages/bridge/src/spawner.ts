@@ -1096,6 +1096,8 @@ export class AgentSpawner {
       if (userId) {
         try {
           const userDirService = getUserDirectoryService();
+          // Initialize provider directories so spawned agents can find credentials
+          userDirService.initializeUserEnvironment(userId);
           userEnv = userDirService.getUserEnvironment(userId);
         } catch (err) {
           log.warn('Failed to resolve user environment, using default', {
