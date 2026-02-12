@@ -132,6 +132,17 @@ jobs:
       - name: Test
         run: npm test
 
+      # Re-setup registry auth immediately before publish (matching publish.yml pattern).
+      # npm ci / npm install / build / test can clobber the .npmrc that setup-node creates.
+      - name: Setup registry for publish
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Update npm for OIDC support
+        run: npm install -g npm@latest
+
       - name: Dry run check
         if: github.event.inputs.dry_run == 'true'
         run: |
@@ -140,9 +151,7 @@ jobs:
 
       - name: Publish to NPM
         if: github.event.inputs.dry_run != 'true'
-        run: |
-          npm install -g npm@latest
-          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
       - name: Tag and push
         if: github.event.inputs.dry_run != 'true'
