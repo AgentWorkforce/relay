@@ -4110,9 +4110,10 @@ program
   .command('auth <provider>')
   .description('Authenticate a provider CLI in a cloud workspace over SSH (interactive)')
   .option('--workspace <id>', 'Workspace ID to authenticate in')
+  .option('--token <token>', 'One-time CLI token from dashboard (skips cloud config requirement)')
   .option('--cloud-url <url>', 'Cloud API URL (overrides linked config and AGENT_RELAY_CLOUD_URL)')
   .option('--timeout <seconds>', 'Timeout in seconds (default: 300)', '300')
-  .action(async (providerArg: string, options: { workspace?: string; cloudUrl?: string; timeout: string }) => {
+  .action(async (providerArg: string, options: { workspace?: string; token?: string; cloudUrl?: string; timeout: string }) => {
     const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`;
     const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
     const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
@@ -4164,30 +4165,36 @@ program
 
     const remoteCommandFallback = [providerConfig.command, ...providerConfig.args].map(shellEscape).join(' ');
 
-    const dataDir = process.env.AGENT_RELAY_DATA_DIR || path.join(homedir(), '.local', 'share', 'agent-relay');
-    const configPath = path.join(dataDir, 'cloud-config.json');
+    // When --token is provided (from dashboard CLI command), skip cloud config requirement.
+    // The token authenticates directly with the /start endpoint.
+    const cliToken = options.token;
+    let cloudConfig: { apiKey?: string; cloudUrl?: string } = {};
 
-    if (!fs.existsSync(configPath)) {
-      console.log(red('Cloud config not found.'));
-      console.log(dim(`Expected: ${configPath}`));
-      console.log('');
-      console.log(`Run ${cyan('agent-relay cloud link')} first to link this machine to Agent Relay Cloud.`);
-      process.exit(1);
-    }
+    if (!cliToken) {
+      const dataDir = process.env.AGENT_RELAY_DATA_DIR || path.join(homedir(), '.local', 'share', 'agent-relay');
+      const configPath = path.join(dataDir, 'cloud-config.json');
 
-    let cloudConfig: { apiKey?: string; cloudUrl?: string };
-    try {
-      cloudConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as typeof cloudConfig;
-    } catch (err) {
-      console.log(red(`Failed to read cloud config: ${err instanceof Error ? err.message : String(err)}`));
-      process.exit(1);
-    }
+      if (!fs.existsSync(configPath)) {
+        console.log(red('Cloud config not found.'));
+        console.log(dim(`Expected: ${configPath}`));
+        console.log('');
+        console.log(`Run ${cyan('agent-relay cloud link')} first to link this machine to Agent Relay Cloud.`);
+        process.exit(1);
+      }
 
-    if (!cloudConfig.apiKey) {
-      console.log(red('Cloud config is missing apiKey.'));
-      console.log(dim(`Config path: ${configPath}`));
-      console.log(`Re-link with ${cyan('agent-relay cloud link')}.`);
-      process.exit(1);
+      try {
+        cloudConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as typeof cloudConfig;
+      } catch (err) {
+        console.log(red(`Failed to read cloud config: ${err instanceof Error ? err.message : String(err)}`));
+        process.exit(1);
+      }
+
+      if (!cloudConfig.apiKey) {
+        console.log(red('Cloud config is missing apiKey.'));
+        console.log(dim(`Config path: ${configPath}`));
+        console.log(`Re-link with ${cyan('agent-relay cloud link')}.`);
+        process.exit(1);
+      }
     }
 
     const CLOUD_URL = (options.cloudUrl || process.env.AGENT_RELAY_CLOUD_URL || cloudConfig.cloudUrl || 'https://agent-relay.com')
@@ -4224,13 +4231,18 @@ program
 
     let start: StartResponse;
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (!cliToken && cloudConfig.apiKey) {
+        headers['Authorization'] = `Bearer ${cloudConfig.apiKey}`;
+      }
       const response = await fetch(`${CLOUD_URL}/api/auth/ssh/start`, {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${cloudConfig.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ provider, workspaceId: requestedWorkspaceId }),
+        headers,
+        body: JSON.stringify({
+          provider,
+          workspaceId: requestedWorkspaceId,
+          ...(cliToken && { token: cliToken }),
+        }),
       });
 
       if (!response.ok) {
