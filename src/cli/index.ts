@@ -4421,6 +4421,17 @@ program
             stdin.resume();
 
             const onStdinData = (data: Buffer) => {
+              // Escape (0x1b) or Ctrl+C (0x03) after auth success → close session
+              if (authDetected && (data[0] === 0x1b || data[0] === 0x03)) {
+                cleanup();
+                clearTimeout(timer);
+                try {
+                  stream.close();
+                } catch {
+                  // ignore
+                }
+                return;
+              }
               stream.write(data);
             };
             stdin.on('data', onStdinData);
@@ -4436,30 +4447,16 @@ program
               stdin.pause();
             };
 
-            // Auto-close the session when auth success is detected
+            // Notify user when auth success is detected
             const closeOnAuthSuccess = () => {
               authDetected = true;
-              // Delay sending Enter so the CLI has time to render
-              // the "Press Enter to continue..." prompt with its input listener.
-              // Success patterns match on "Logged in" / "Login successful" which
-              // may arrive before the Ink "Press Enter" screen is fully rendered.
-              setTimeout(() => {
-                try {
-                  stream.write('\r');
-                } catch {
-                  // ignore - process may have exited
-                }
-              }, 500);
-              // Close the stream after giving the CLI time to process the Enter
-              setTimeout(() => {
-                cleanup();
-                clearTimeout(timer);
-                try {
-                  stream.close();
-                } catch {
-                  // ignore
-                }
-              }, 2500);
+              // Don't try to auto-navigate post-login prompts (trust directory,
+              // bypass permissions, etc.) — they vary by CLI version and are fragile
+              // to automate. Just tell the user they're done.
+              stdout.write('\n');
+              stdout.write(green('  ✓ Authentication successful!') + '\n');
+              stdout.write(dim('  Press Escape or Ctrl+C to exit.') + '\n');
+              stdout.write('\n');
             };
 
             stream.on('data', (data: Buffer) => {
