@@ -10,6 +10,7 @@ on:
         options:
           - all
           - main
+          - cli-prerelease
           - sdk
         default: "all"
       version:
@@ -72,6 +73,7 @@ jobs:
     name: Build relay-pty (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main'
+    # Skipped for cli-prerelease (no binaries needed)
     strategy:
       matrix:
         include:
@@ -849,9 +851,9 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       always() &&
-      (github.event.inputs.package == 'all' || github.event.inputs.package == 'main') &&
+      (github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease') &&
       needs.build.result == 'success' &&
-      needs.verify-binaries.result == 'success' &&
+      (needs.verify-binaries.result == 'success' || (needs.verify-binaries.result == 'skipped' && github.event.inputs.package == 'cli-prerelease')) &&
       (needs.publish-packages.result == 'success' || needs.publish-packages.result == 'skipped')
 
     steps:
@@ -871,6 +873,7 @@ jobs:
           path: .
 
       - name: Download relay-pty binaries
+        if: github.event.inputs.package != 'cli-prerelease'
         uses: actions/download-artifact@v4
         with:
           pattern: relay-pty-*
@@ -878,6 +881,7 @@ jobs:
           merge-multiple: true
 
       - name: Make binaries executable
+        if: github.event.inputs.package != 'cli-prerelease'
         run: chmod +x bin/relay-pty-*
 
       - name: Update npm for OIDC support
@@ -900,6 +904,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       always() &&
+      github.event.inputs.package != 'cli-prerelease' &&
       github.event.inputs.dry_run != 'true' &&
       needs.publish-main.result == 'success'
 
