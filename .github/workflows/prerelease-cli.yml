@@ -123,13 +123,6 @@ jobs:
           rm -rf node_modules packages/*/node_modules package-lock.json
           npm install
 
-      # Re-setup Node.js registry auth (clean reinstall clobbers .npmrc)
-      - name: Re-setup Node.js registry
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          registry-url: "https://registry.npmjs.org"
-
       - name: Ensure rollup optional dependencies are installed
         run: npm install --no-save rollup || true
 
@@ -138,6 +131,14 @@ jobs:
 
       - name: Test
         run: npm test
+
+      # Re-setup registry auth immediately before publish (matching publish.yml pattern).
+      # npm ci / npm install / build / test can clobber the .npmrc that setup-node creates.
+      - name: Setup registry for publish
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
 
       - name: Update npm for OIDC support
         run: npm install -g npm@latest
