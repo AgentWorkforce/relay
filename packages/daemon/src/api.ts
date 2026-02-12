@@ -658,6 +658,17 @@ export class DaemonApi extends EventEmitter {
       return { status: 200, body: { success: true } };
     });
 
+    // Delete credential files for a provider (used by cloud disconnect flow)
+    this.routes.set('DELETE /api/credentials/apikey', async (req): Promise<ApiResponse> => {
+      const { userId, provider } = req.body || {};
+      if (!provider) {
+        return { status: 400, body: { error: 'Missing provider' } };
+      }
+      const { deleteProviderCredentials } = await import('./cli-auth.js');
+      const result = await deleteProviderCredentials(provider, userId);
+      return { status: 200, body: { success: true, deletedPaths: result.deletedPaths } };
+    });
+
     // Check if provider is authenticated (credentials exist)
     this.routes.set('GET /auth/cli/:provider/check', async (req): Promise<ApiResponse> => {
       const { provider } = req.params;
@@ -816,9 +827,9 @@ export class DaemonApi extends EventEmitter {
       query[key] = value;
     });
 
-    // Parse body for POST/PUT
+    // Parse body for POST/PUT/DELETE
     let body: unknown;
-    if (req.method === 'POST' || req.method === 'PUT') {
+    if (req.method === 'POST' || req.method === 'PUT' || req.method === 'DELETE') {
       body = await this.parseBody(req);
     }
 

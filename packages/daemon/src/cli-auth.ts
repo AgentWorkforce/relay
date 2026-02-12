@@ -890,6 +890,43 @@ async function extractCredentials(
 }
 
 /**
+ * Delete credential files for a provider.
+ * Used when a user disconnects a provider from the dashboard.
+ */
+export async function deleteProviderCredentials(
+  provider: string,
+  userId?: string
+): Promise<{ deleted: boolean; deletedPaths: string[] }> {
+  const config = CLI_AUTH_CONFIG[provider];
+  if (!config) {
+    return { deleted: false, deletedPaths: [] };
+  }
+
+  const credPath = resolveCredentialPath(provider, config, userId);
+  if (!credPath) {
+    return { deleted: false, deletedPaths: [] };
+  }
+
+  const deletedPaths: string[] = [];
+  try {
+    const fs = await import('fs/promises');
+    await fs.unlink(credPath);
+    deletedPaths.push(credPath);
+    logger.info('Deleted credential file', { provider, path: credPath, userId });
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      logger.warn('Failed to delete credential file', {
+        provider,
+        path: credPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return { deleted: deletedPaths.length > 0, deletedPaths };
+}
+
+/**
  * Check if a provider is authenticated (credentials exist)
  * Used by the auth check endpoint for SSH tunnel flow
  */
