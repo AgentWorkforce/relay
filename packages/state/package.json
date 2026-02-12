@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/state",
-  "version": "2.1.27-beta.1",
+  "version": "2.1.27-beta.2",
   "description": "Agent state persistence for non-hook CLIs (Codex, Gemini, etc.)",
   "type": "module",
   "main": "dist/index.js",
