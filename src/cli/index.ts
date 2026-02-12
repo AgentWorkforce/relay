@@ -4287,9 +4287,11 @@ program
 
     // Set per-user HOME so credentials persist to the authenticated user's directory.
     // Multi-user workspaces use /data/users/{userId} as per-user HOME (see entrypoint.sh).
+    // Include /home/workspace/.local/bin in PATH since SSH direct commands don't source
+    // /etc/profile.d/ scripts where the workspace PATH is normally configured.
     const remoteCommand = start.userId
-      ? `mkdir -p /data/users/${shellEscape(start.userId)} && HOME=/data/users/${shellEscape(start.userId)} ${baseCommand}`
-      : baseCommand;
+      ? `mkdir -p /data/users/${shellEscape(start.userId)} && HOME=/data/users/${shellEscape(start.userId)} PATH=/home/workspace/.local/bin:$PATH ${baseCommand}`
+      : `PATH=/home/workspace/.local/bin:$PATH ${baseCommand}`;
 
     console.log(green('✓ SSH session created'));
     if (start.workspaceName) {
