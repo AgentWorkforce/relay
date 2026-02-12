@@ -123,6 +123,13 @@ jobs:
           rm -rf node_modules packages/*/node_modules package-lock.json
           npm install
 
+      # Re-setup Node.js registry auth (clean reinstall clobbers .npmrc)
+      - name: Re-setup Node.js registry
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
       - name: Ensure rollup optional dependencies are installed
         run: npm install --no-save rollup || true
 
@@ -132,6 +139,9 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Update npm for OIDC support
+        run: npm install -g npm@latest
+
       - name: Dry run check
         if: github.event.inputs.dry_run == 'true'
         run: |
@@ -140,9 +150,7 @@ jobs:
 
       - name: Publish to NPM
         if: github.event.inputs.dry_run != 'true'
-        run: |
-          npm install -g npm@latest
-          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
       - name: Tag and push
         if: github.event.inputs.dry_run != 'true'
