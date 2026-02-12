@@ -496,11 +496,22 @@ export class DaemonApi extends EventEmitter {
 
     // Get auth session status
     this.routes.set('GET /auth/cli/:provider/status/:sessionId', async (req): Promise<ApiResponse> => {
-      const { sessionId } = req.params;
+      const { provider, sessionId } = req.params;
       const session = getAuthSession(sessionId);
       if (!session) {
         return { status: 404, body: { error: 'Session not found' } };
       }
+
+      // Fallback: if status is still waiting_auth, check if credentials exist on disk.
+      // The CLI may have completed auth without matching our success patterns.
+      if (session.status === 'waiting_auth') {
+        const { checkProviderAuth } = await import('./cli-auth.js');
+        const authenticated = await checkProviderAuth(provider, session.userId);
+        if (authenticated) {
+          session.status = 'success';
+        }
+      }
+
       return {
         status: 200,
         body: {
