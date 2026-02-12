@@ -121,7 +121,7 @@ export class CloudSyncService extends EventEmitter {
       cloudUrl: config.cloudUrl || process.env.AGENT_RELAY_CLOUD_URL || 'https://agent-relay.com',
       heartbeatInterval: config.heartbeatInterval
         || (process.env.AGENT_RELAY_HEARTBEAT_INTERVAL ? parseInt(process.env.AGENT_RELAY_HEARTBEAT_INTERVAL, 10) : 0)
-        || 30000, // 30 seconds default; override via AGENT_RELAY_HEARTBEAT_INTERVAL env var
+        || 60000, // 60 seconds default; override via AGENT_RELAY_HEARTBEAT_INTERVAL env var
       enabled: config.enabled ?? true,
       useOptimizedSync: config.useOptimizedSync ?? true,
       syncQueue: config.syncQueue,
