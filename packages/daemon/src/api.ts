@@ -660,7 +660,7 @@ export class DaemonApi extends EventEmitter {
 
     // Delete credential files for a provider (used by cloud disconnect flow)
     this.routes.set('DELETE /api/credentials/apikey', async (req): Promise<ApiResponse> => {
-      const { userId, provider } = req.body || {};
+      const { userId, provider } = (req.body || {}) as { userId?: string; provider?: string };
       if (!provider) {
         return { status: 400, body: { error: 'Missing provider' } };
       }
