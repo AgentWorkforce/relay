@@ -4234,6 +4234,7 @@ program
       workspaceId: string;
       workspaceName?: string;
       expiresAt?: string;
+      userId?: string;
     };
 
     let start: StartResponse;
@@ -4280,9 +4281,15 @@ program
       process.exit(1);
     }
 
-    const remoteCommand = (typeof start.command === 'string' && start.command.trim().length > 0)
+    const baseCommand = (typeof start.command === 'string' && start.command.trim().length > 0)
       ? start.command.trim()
       : remoteCommandFallback;
+
+    // Set per-user HOME so credentials persist to the authenticated user's directory.
+    // Multi-user workspaces use /data/users/{userId} as per-user HOME (see entrypoint.sh).
+    const remoteCommand = start.userId
+      ? `mkdir -p /data/users/${start.userId} && HOME=/data/users/${start.userId} ${baseCommand}`
+      : baseCommand;
 
     console.log(green('✓ SSH session created'));
     if (start.workspaceName) {
