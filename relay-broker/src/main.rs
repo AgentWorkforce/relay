@@ -1165,7 +1165,8 @@ async fn run_listen(cmd: ListenCommand) -> Result<()> {
                                 mapped.from,
                                 mapped.target,
                                 if mapped.text.len() > 120 {
-                                    format!("{}…", &mapped.text[..120])
+                                    let end = floor_char_boundary(&mapped.text, 120);
+                                    format!("{}…", &mapped.text[..end])
                                 } else {
                                     mapped.text.clone()
                                 }
