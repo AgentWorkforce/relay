@@ -46,7 +46,8 @@
         "features/bridging",
         "features/spawning",
         "features/shadows",
-        "features/cloud"
+        "features/cloud",
+        "features/pr-review"
       ]
     },
     {
