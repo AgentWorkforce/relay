@@ -26,6 +26,7 @@ import { AgentSpawner, readWorkersMetadata, getWorkerLogsDir, selectShadowCli, e
 import type { SpawnRequest, SpawnResult } from '@agent-relay/bridge';
 import { generateAgentName, checkForUpdatesInBackground, checkForUpdates } from '@agent-relay/utils';
 import { getShadowForAgent, getProjectPaths, loadRuntimeConfig } from '@agent-relay/config';
+import { CLI_AUTH_CONFIG, stripAnsiCodes, findMatchingError } from '@agent-relay/config/cli-auth-config';
 import { createStorageAdapter } from '@agent-relay/storage/adapter';
 import {
   initTelemetry,
@@ -4102,135 +4103,225 @@ program
   });
 
 // ============================================================================
-// codex-auth - SSH tunnel helper for Codex/OpenAI authentication
+// auth - SSH-based interactive provider authentication (cloud workspaces)
 // ============================================================================
 
 program
-  .command('codex-auth')
-  .description('Connect Codex via SSH tunnel to workspace (run this when connecting Codex in Agent Relay)')
-  .option('--workspace <id>', 'Workspace ID to connect to')
-  .option('--cloud-url <url>', 'Cloud API URL', process.env.AGENT_RELAY_CLOUD_URL || 'https://agent-relay.com')
-  .option('--token <token>', 'CLI authentication token (from dashboard)')
-  .option('--session-cookie <cookie>', 'Session cookie for authentication (deprecated, use --token)')
+  .command('auth <provider>')
+  .description('Authenticate a provider CLI in a cloud workspace over SSH (interactive)')
+  .option('--workspace <id>', 'Workspace ID to authenticate in')
+  .option('--token <token>', 'One-time CLI token from dashboard (skips cloud config requirement)')
+  .option('--cloud-url <url>', 'Cloud API URL (overrides linked config and AGENT_RELAY_CLOUD_URL)')
   .option('--timeout <seconds>', 'Timeout in seconds (default: 300)', '300')
-  .action(async (options: { workspace?: string; cloudUrl: string; token?: string; sessionCookie?: string; timeout: string }) => {
-    const TIMEOUT_MS = parseInt(options.timeout, 10) * 1000;
-    const CLOUD_URL = options.cloudUrl.replace(/\/$/, '');
-    const TUNNEL_PORT = 1455;
-
-    // Colors for terminal output
+  .action(async (providerArg: string, options: { workspace?: string; token?: string; cloudUrl?: string; timeout: string }) => {
     const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`;
     const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
     const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
     const red = (s: string) => `\x1b[31m${s}\x1b[0m`;
     const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 
-    console.log('');
-    console.log(cyan('═══════════════════════════════════════════════════'));
-    console.log(cyan('       Codex Authentication Helper'));
-    console.log(cyan('═══════════════════════════════════════════════════'));
-    console.log('');
+    const timeoutSeconds = parseInt(options.timeout, 10);
+    if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
+      console.log(red(`Invalid --timeout value: ${options.timeout}`));
+      process.exit(1);
+    }
+    const TIMEOUT_MS = timeoutSeconds * 1000;
 
-    if (!options.workspace) {
-      console.log(red('Missing --workspace parameter.'));
-      console.log('');
-      console.log('To connect Codex, follow these steps:');
-      console.log('');
-      console.log('  1. Go to the Agent Relay dashboard');
-      console.log('  2. Click "Connect with Codex" (Settings → AI Providers)');
-      console.log('  3. Copy the command shown (it includes the workspace ID and token)');
-      console.log('  4. Run the command in your terminal');
-      console.log('');
-      console.log('The command will look like:');
-      console.log(cyan('  npx agent-relay codex-auth --workspace=<ID> --token=<TOKEN>'));
-      console.log('');
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      console.log(red('This command requires an interactive terminal (TTY).'));
+      console.log(dim('Run it directly in your terminal (not piped/redirected).'));
       process.exit(1);
     }
 
-    const workspaceId = options.workspace;
-    console.log(`Workspace: ${workspaceId.slice(0, 8)}...`);
+    const providerInput = providerArg.toLowerCase().trim();
+    const providerMap: Record<string, string> = {
+      claude: 'anthropic',
+      codex: 'openai',
+      gemini: 'google',
+    };
+    const provider = providerMap[providerInput] || providerInput;
 
-    // Get tunnel info from cloud API
-    console.log('Getting workspace connection info...');
-
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (options.sessionCookie) {
-      headers['Cookie'] = options.sessionCookie;
-    }
-
-    // Validate token is provided
-    if (!options.token && !options.sessionCookie) {
-      console.log(red('Missing --token parameter.'));
+    const providerConfig = CLI_AUTH_CONFIG[provider];
+    if (!providerConfig) {
+      const known = Object.keys(CLI_AUTH_CONFIG).sort();
+      console.log(red(`Unknown provider: ${providerArg}`));
       console.log('');
-      console.log('The token is provided by the dashboard when you click "Connect with Codex".');
-      console.log('Copy the complete command from the dashboard and paste it here.');
+      console.log('Examples:');
+      console.log(`  ${cyan('npx agent-relay auth claude --workspace=<ID>')}`);
+      console.log(`  ${cyan('npx agent-relay auth codex --workspace=<ID>')}`);
+      console.log(`  ${cyan('npx agent-relay auth gemini --workspace=<ID>')}`);
       console.log('');
+      console.log('Supported provider ids:');
+      console.log(`  ${known.join(', ')}`);
       process.exit(1);
     }
 
-    let tunnelInfo: {
-      host: string;
-      port: number;
-      user: string;
-      password: string;
-      tunnelPort: number;
-      workspaceName: string;
-      authUrl?: string; // OAuth URL if provided by dashboard
+    const shellEscape = (s: string) => {
+      // Basic POSIX shell escaping for args (remote exec uses a shell).
+      if (s.length === 0) return "''";
+      if (/^[a-zA-Z0-9_/\\.=:-]+$/.test(s)) return s;
+      return `'${s.replace(/'/g, `'\"'\"'`)}'`;
     };
 
-    try {
-      // Build URL with token query parameter
-      const tunnelInfoUrl = new URL(`${CLOUD_URL}/api/auth/codex-helper/tunnel-info/${workspaceId}`);
-      if (options.token) {
-        tunnelInfoUrl.searchParams.set('token', options.token);
-      }
+    // Build the fallback command to run on the remote workspace.
+    // For Cursor, the installer creates both "agent" (primary) and "cursor-agent" (legacy)
+    // symlinks. Try the primary first, fall back to legacy if not found.
+    const primaryCmd = [providerConfig.command, ...providerConfig.args].map(shellEscape).join(' ');
+    const fallbackCmd = provider === 'cursor'
+      ? `command -v agent >/dev/null 2>&1 && ${primaryCmd} || cursor-agent ${providerConfig.args.map(shellEscape).join(' ')}`
+      : primaryCmd;
+    const remoteCommandFallback = fallbackCmd;
 
-      const response = await fetch(tunnelInfoUrl.toString(), {
-        method: 'GET',
-        headers,
-        credentials: 'include',
-      });
+    // When --token is provided (from dashboard CLI command), skip cloud config requirement.
+    // The token authenticates directly with the /start endpoint.
+    const cliToken = options.token;
+    let cloudConfig: { apiKey?: string; cloudUrl?: string } = {};
 
-      if (!response.ok) {
-        const errorData = await response.json() as { error?: string };
-        console.log(red(`Failed to get tunnel info: ${errorData.error || response.statusText}`));
+    if (!cliToken) {
+      const dataDir = process.env.AGENT_RELAY_DATA_DIR || path.join(homedir(), '.local', 'share', 'agent-relay');
+      const configPath = path.join(dataDir, 'cloud-config.json');
+
+      if (!fs.existsSync(configPath)) {
+        console.log(red('Cloud config not found.'));
+        console.log(dim(`Expected: ${configPath}`));
+        console.log('');
+        console.log(`Run ${cyan('agent-relay cloud link')} first to link this machine to Agent Relay Cloud.`);
         process.exit(1);
       }
 
-      tunnelInfo = await response.json() as typeof tunnelInfo;
+      try {
+        cloudConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as typeof cloudConfig;
+      } catch (err) {
+        console.log(red(`Failed to read cloud config: ${err instanceof Error ? err.message : String(err)}`));
+        process.exit(1);
+      }
+
+      if (!cloudConfig.apiKey) {
+        console.log(red('Cloud config is missing apiKey.'));
+        console.log(dim(`Config path: ${configPath}`));
+        console.log(`Re-link with ${cyan('agent-relay cloud link')}.`);
+        process.exit(1);
+      }
+    }
+
+    const CLOUD_URL = (options.cloudUrl || process.env.AGENT_RELAY_CLOUD_URL || cloudConfig.cloudUrl || 'https://agent-relay.com')
+      .replace(/\/$/, '');
+
+    const requestedWorkspaceId = options.workspace || process.env.WORKSPACE_ID;
+
+    console.log('');
+    console.log(cyan('═══════════════════════════════════════════════════'));
+    console.log(cyan('        Provider Authentication (SSH)'));
+    console.log(cyan('═══════════════════════════════════════════════════'));
+    console.log('');
+    console.log(`Provider: ${providerConfig.displayName} (${provider})`);
+    console.log(`Workspace: ${requestedWorkspaceId ? `${requestedWorkspaceId.slice(0, 8)}...` : '(default)'}`);
+    console.log(dim(`Cloud: ${CLOUD_URL}`));
+    console.log('');
+
+    // Step 1: Request SSH session info from cloud.
+    console.log('Requesting SSH session from cloud...');
+    type StartResponse = {
+      sessionId: string;
+      ssh: {
+        host: string;
+        port: number | string;
+        user: string;
+        password: string;
+      };
+      command?: string;
+      provider?: string;
+      workspaceId: string;
+      workspaceName?: string;
+      expiresAt?: string;
+      userId?: string;
+    };
+
+    let start: StartResponse;
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (!cliToken && cloudConfig.apiKey) {
+        headers['Authorization'] = `Bearer ${cloudConfig.apiKey}`;
+      }
+      const response = await fetch(`${CLOUD_URL}/api/auth/ssh/start`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          provider,
+          workspaceId: requestedWorkspaceId,
+          ...(cliToken && { token: cliToken }),
+        }),
+      });
+
+      if (!response.ok) {
+        let details = response.statusText;
+        try {
+          const json = await response.json() as { error?: string; message?: string };
+          details = json.error || json.message || details;
+        } catch {
+          try {
+            details = await response.text();
+          } catch {
+            // ignore
+          }
+        }
+        console.log(red(`Failed to start SSH auth session: ${details || response.statusText}`));
+        process.exit(1);
+      }
+
+      start = await response.json() as StartResponse;
     } catch (err) {
       console.log(red(`Failed to connect to cloud API: ${err instanceof Error ? err.message : String(err)}`));
       process.exit(1);
     }
 
-    console.log(`Workspace: ${cyan(tunnelInfo.workspaceName)}`);
-    console.log('');
+    const sshPort = typeof start.ssh?.port === 'string' ? parseInt(start.ssh.port, 10) : start.ssh?.port;
+    if (!start.sessionId || !start.workspaceId || !start.ssh?.host || !sshPort || !start.ssh.user || !start.ssh.password) {
+      console.log(red('Cloud returned invalid SSH session details.'));
+      process.exit(1);
+    }
 
-    // Establish SSH tunnel using ssh2 library (no external tools needed)
-    console.log(yellow('Establishing SSH tunnel...'));
-    console.log(dim(`  SSH: ${tunnelInfo.host}:${tunnelInfo.port}`));
-    console.log(dim(`  Tunnel: localhost:${TUNNEL_PORT} → workspace:${tunnelInfo.tunnelPort}`));
+    const baseCommand = (typeof start.command === 'string' && start.command.trim().length > 0)
+      ? start.command.trim()
+      : remoteCommandFallback;
+
+    // Set per-user HOME so credentials persist to the authenticated user's directory.
+    // Multi-user workspaces use /data/users/{userId} as per-user HOME (see entrypoint.sh).
+    // Include /home/workspace/.local/bin in PATH since SSH direct commands don't source
+    // /etc/profile.d/ scripts where the workspace PATH is normally configured.
+    const remoteCommand = start.userId
+      ? `mkdir -p /data/users/${shellEscape(start.userId)} && HOME=/data/users/${shellEscape(start.userId)} PATH=/home/workspace/.local/bin:$PATH ${baseCommand}`
+      : `PATH=/home/workspace/.local/bin:$PATH ${baseCommand}`;
+
+    console.log(green('✓ SSH session created'));
+    if (start.workspaceName) {
+      console.log(`Workspace: ${cyan(start.workspaceName)} (${start.workspaceId.slice(0, 8)}...)`);
+    } else {
+      console.log(`Workspace: ${start.workspaceId.slice(0, 8)}...`);
+    }
+    console.log(dim(`  SSH: ${start.ssh.user}@${start.ssh.host}:${sshPort}`));
+    console.log(dim(`  Command: ${remoteCommand}`));
     console.log('');
 
     const { Client } = await import('ssh2');
     const net = await import('node:net');
 
+    const TUNNEL_PORT = 1455;
     const sshClient = new Client();
-    // Use object to hold server reference (avoids TypeScript narrowing issues)
+    let sshReady = false;
     const tunnel: { server: ReturnType<typeof net.createServer> | null } = { server: null };
-    let tunnelReady = false;
-    let tunnelError: string | null = null;
 
-    // Create a promise that resolves when tunnel is ready or rejects on error
-    const tunnelPromise = new Promise<void>((resolve, reject) => {
+    const sshReadyPromise = new Promise<void>((resolve, reject) => {
       sshClient.on('ready', () => {
-        // Create local server that forwards connections through SSH
+        sshReady = true;
+
+        // Set up port forwarding for OAuth callbacks: localhost:1455 -> workspace:1455
         tunnel.server = net.createServer((localSocket) => {
           sshClient.forwardOut(
             '127.0.0.1',
             TUNNEL_PORT,
             'localhost',
-            tunnelInfo.tunnelPort,
+            TUNNEL_PORT,
             (err, stream) => {
               if (err) {
                 localSocket.end();
@@ -4243,162 +4334,704 @@ program
 
         tunnel.server.on('error', (err: NodeJS.ErrnoException) => {
           if (err.code === 'EADDRINUSE') {
-            tunnelError = `Port ${TUNNEL_PORT} is already in use. Close any other applications using this port.`;
-          } else {
-            tunnelError = err.message;
+            console.log(dim(`Note: Port ${TUNNEL_PORT} in use, OAuth callbacks may not work.`));
           }
-          reject(new Error(tunnelError));
+          // Non-fatal: resolve anyway so the auth command still runs.
+          // Device-flow providers don't need port forwarding.
+          resolve();
         });
 
         tunnel.server.listen(TUNNEL_PORT, '127.0.0.1', () => {
-          tunnelReady = true;
           resolve();
         });
       });
 
       sshClient.on('error', (err) => {
+        let msg: string;
         if (err.message.includes('Authentication')) {
-          tunnelError = 'SSH authentication failed. Check the password.';
+          msg = 'SSH authentication failed.';
         } else if (err.message.includes('ECONNREFUSED')) {
-          tunnelError = `Cannot connect to SSH server at ${tunnelInfo.host}:${tunnelInfo.port}. Is the workspace running and SSH enabled?`;
+          msg = `Cannot connect to SSH server at ${start.ssh.host}:${sshPort}. Is the workspace running and SSH enabled?`;
         } else if (err.message.includes('ENOTFOUND') || err.message.includes('getaddrinfo')) {
-          tunnelError = `Cannot resolve hostname: ${tunnelInfo.host}. Check network connectivity.`;
+          msg = `Cannot resolve hostname: ${start.ssh.host}. Check network connectivity.`;
         } else if (err.message.includes('ETIMEDOUT')) {
-          tunnelError = `Connection timed out to ${tunnelInfo.host}:${tunnelInfo.port}. Is the workspace running?`;
+          msg = `Connection timed out to ${start.ssh.host}:${sshPort}. Is the workspace running?`;
         } else {
-          tunnelError = `SSH error: ${err.message}`;
+          msg = `SSH error: ${err.message}`;
+        }
+        reject(new Error(msg));
+      });
+
+      sshClient.on('close', () => {
+        if (!sshReady) {
+          reject(new Error(`SSH connection to ${start.ssh.host}:${sshPort} closed unexpectedly.`));
+        }
+      });
+    });
+
+    console.log(yellow('Connecting via SSH...'));
+    console.log(dim(`  Tunnel: localhost:${TUNNEL_PORT} → workspace:${TUNNEL_PORT}`));
+    console.log(dim(`  Running: ${remoteCommand}`));
+    console.log('');
+
+    try {
+      sshClient.connect({
+        host: start.ssh.host,
+        port: sshPort,
+        username: start.ssh.user,
+        password: start.ssh.password,
+        readyTimeout: 10000,
+        // Workspace containers use ephemeral SSH hosts; skip host key checking.
+        hostVerifier: () => true,
+      });
+
+      await Promise.race([
+        sshReadyPromise,
+        new Promise<void>((_, reject) => setTimeout(() => reject(new Error('SSH connection timeout')), 15000)),
+      ]);
+    } catch (err) {
+      console.log(red(`Failed to connect via SSH: ${err instanceof Error ? err.message : String(err)}`));
+      if (tunnel.server) tunnel.server.close();
+      sshClient.end();
+      process.exit(1);
+    }
+
+    // Get success/error patterns from CLI_AUTH_CONFIG for auto-detection
+    const successPatterns = providerConfig.successPatterns || [];
+    const errorPatterns = providerConfig.errorPatterns || [];
+
+    const execInteractive = async (cmd: string, timeoutMs: number) => {
+      return await new Promise<{ exitCode: number | null; exitSignal: string | null; authDetected: boolean }>((resolve, reject) => {
+        const cols = process.stdout.columns || 80;
+        const rows = process.stdout.rows || 24;
+        const term = process.env.TERM || 'xterm-256color';
+
+        sshClient.exec(
+          cmd,
+          { pty: { term, cols, rows } },
+          (err, stream) => {
+            if (err) return reject(err);
+
+            let exitCode: number | null = null;
+            let exitSignal: string | null = null;
+            let authDetected = false;
+            let outputBuffer = ''; // Rolling buffer for pattern matching
+
+            const stdin = process.stdin;
+            const stdout = process.stdout;
+            const stderr = process.stderr;
+
+            const wasRaw = (stdin as unknown as { isRaw?: boolean }).isRaw ?? false;
+            try {
+              stdin.setRawMode?.(true);
+            } catch {
+              // ignore
+            }
+            stdin.resume();
+
+            const onStdinData = (data: Buffer) => {
+              // Escape (0x1b) or Ctrl+C (0x03) after auth success → close session
+              if (authDetected && (data[0] === 0x1b || data[0] === 0x03)) {
+                cleanup();
+                clearTimeout(timer);
+                try {
+                  stream.close();
+                } catch {
+                  // ignore
+                }
+                return;
+              }
+              stream.write(data);
+            };
+            stdin.on('data', onStdinData);
+
+            const cleanup = () => {
+              stdin.off('data', onStdinData);
+              stdout.off('resize', onResize);
+              try {
+                stdin.setRawMode?.(wasRaw);
+              } catch {
+                // ignore
+              }
+              stdin.pause();
+            };
+
+            // Notify user when auth success is detected
+            const closeOnAuthSuccess = () => {
+              authDetected = true;
+              // Don't try to auto-navigate post-login prompts (trust directory,
+              // bypass permissions, etc.) — they vary by CLI version and are fragile
+              // to automate. Just tell the user they're done.
+              stdout.write('\n');
+              stdout.write(green('  ✓ Authentication successful!') + '\n');
+              stdout.write(dim('  Press Escape or Ctrl+C to exit.') + '\n');
+              stdout.write('\n');
+            };
+
+            stream.on('data', (data: Buffer) => {
+              stdout.write(data);
+
+              // Accumulate output for pattern matching (keep last 8KB to avoid memory growth)
+              // Ink-based CLIs use heavy ANSI escape codes, so raw output is much
+              // larger than visible text. 8KB ensures success patterns aren't truncated.
+              const text = data.toString();
+              outputBuffer += text;
+              if (outputBuffer.length > 8192) {
+                outputBuffer = outputBuffer.slice(-8192);
+              }
+
+              // Check for auth success patterns
+              if (!authDetected && successPatterns.length > 0) {
+                const clean = stripAnsiCodes(outputBuffer);
+                for (const pattern of successPatterns) {
+                  if (pattern.test(clean)) {
+                    closeOnAuthSuccess();
+                    break;
+                  }
+                }
+              }
+
+              // Check for auth error patterns (early exit instead of waiting for timeout)
+              if (!authDetected && errorPatterns.length > 0) {
+                const matched = findMatchingError(outputBuffer, errorPatterns);
+                if (matched) {
+                  clearTimeout(timer);
+                  cleanup();
+                  try { stream.close(); } catch { /* ignore */ }
+                  reject(new Error(matched.message + (matched.hint ? ` ${matched.hint}` : '')));
+                }
+              }
+            });
+
+            stream.stderr.on('data', (data: Buffer) => {
+              stderr.write(data);
+            });
+
+            const onResize = () => {
+              try {
+                stream.setWindow(stdout.rows || 24, stdout.columns || 80, 0, 0);
+              } catch {
+                // ignore
+              }
+            };
+            stdout.on('resize', onResize);
+
+            const timer = setTimeout(() => {
+              cleanup();
+              try {
+                stream.close();
+              } catch {
+                // ignore
+              }
+              reject(new Error(`Authentication timed out after ${Math.floor(timeoutMs / 1000)}s`));
+            }, timeoutMs);
+
+            stream.on('exit', (code: any, signal?: any) => {
+              if (typeof code === 'number') exitCode = code;
+              if (typeof signal === 'string') exitSignal = signal;
+            });
+
+            stream.on('close', () => {
+              clearTimeout(timer);
+              cleanup();
+              resolve({ exitCode, exitSignal, authDetected });
+            });
+
+            stream.on('error', (e: unknown) => {
+              clearTimeout(timer);
+              cleanup();
+              reject(e instanceof Error ? e : new Error(String(e)));
+            });
+          }
+        );
+      });
+    };
+
+    let execResult: { exitCode: number | null; exitSignal: string | null; authDetected: boolean } | null = null;
+    let execError: Error | null = null;
+    try {
+      console.log(yellow('Starting interactive authentication...'));
+      console.log(dim('Follow the prompts below. The session will close automatically when auth completes.'));
+      console.log('');
+      execResult = await execInteractive(remoteCommand, TIMEOUT_MS);
+    } catch (err) {
+      execError = err instanceof Error ? err : new Error(String(err));
+      console.log('');
+      console.log(red(`Remote auth command failed: ${execError.message}`));
+    } finally {
+      if (tunnel.server) tunnel.server.close();
+      sshClient.end();
+    }
+
+    // Step 2: Notify cloud completion (cloud will verify and persist credentials).
+    console.log('');
+    console.log('Finalizing authentication with cloud...');
+    // Auth is successful if: success patterns were detected, OR the process exited cleanly (code 0)
+    const success = execError === null && (execResult?.authDetected === true || execResult?.exitCode === 0);
+    const providerForComplete =
+      (typeof start.provider === 'string' && start.provider.trim().length > 0)
+        ? start.provider.trim()
+        : provider;
+    try {
+      const completeHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (!cliToken && cloudConfig.apiKey) {
+        completeHeaders['Authorization'] = `Bearer ${cloudConfig.apiKey}`;
+      }
+
+      const response = await fetch(`${CLOUD_URL}/api/auth/ssh/complete`, {
+        method: 'POST',
+        headers: completeHeaders,
+        body: JSON.stringify({
+          sessionId: start.sessionId,
+          workspaceId: start.workspaceId,
+          provider: providerForComplete,
+          success,
+          ...(cliToken && { token: cliToken }),
+        }),
+      });
+
+      if (!response.ok) {
+        let details = response.statusText;
+        try {
+          const json = await response.json() as { error?: string; message?: string };
+          details = json.error || json.message || details;
+        } catch {
+          try {
+            details = await response.text();
+          } catch {
+            // ignore
+          }
+        }
+        console.log(red(`Failed to complete auth session: ${details || response.statusText}`));
+        process.exit(1);
+      }
+    } catch (err) {
+      console.log(red(`Failed to complete auth session: ${err instanceof Error ? err.message : String(err)}`));
+      process.exit(1);
+    }
+
+    if (!success) {
+      const exitCode = execResult?.exitCode;
+      if (typeof exitCode === 'number' && exitCode !== 0) {
+        console.log('');
+        console.log(red(`Remote auth command exited with code ${exitCode}.`));
+      }
+      // Exit code 127 = command not found
+      if (execResult?.exitCode === 127) {
+        console.log('');
+        console.log(yellow(`The ${providerConfig.displayName} CLI ("${providerConfig.command}") is not installed on this workspace.`));
+        console.log(dim('Ask your workspace administrator to install it, or check the workspace Dockerfile.'));
+      }
+      process.exit(1);
+    }
+
+    console.log('');
+    console.log(green('═══════════════════════════════════════════════════'));
+    console.log(green('          Authentication Complete!'));
+    console.log(green('═══════════════════════════════════════════════════'));
+    console.log('');
+    console.log(`${providerConfig.displayName} is now connected to workspace ${start.workspaceId.slice(0, 8)}...`);
+    console.log('');
+  });
+
+// ============================================================================
+// cli-auth - SSH tunnel helper for provider authentication (Claude, Codex, Cursor, etc.)
+// ============================================================================
+
+// Provider display names for CLI output
+const CLI_AUTH_DISPLAY_NAMES: Record<string, string> = {
+  anthropic: 'Claude',
+  openai: 'Codex',
+  google: 'Gemini',
+  cursor: 'Cursor',
+  copilot: 'GitHub Copilot',
+  opencode: 'OpenCode',
+  droid: 'Droid',
+};
+
+// CLI command names per provider (used in help text)
+const CLI_AUTH_COMMAND_NAMES: Record<string, string> = {
+  anthropic: 'claude',
+  openai: 'codex',
+  google: 'gemini',
+  cursor: 'cursor',
+  copilot: 'copilot',
+  opencode: 'opencode',
+  droid: 'droid',
+};
+
+// Provider alias mapping (CLI name → config key)
+const CLI_AUTH_PROVIDER_MAP: Record<string, string> = {
+  claude: 'anthropic',
+  codex: 'openai',
+  gemini: 'google',
+};
+
+/**
+ * Shared action handler for cli-auth and its provider-specific aliases.
+ */
+async function runCliAuth(
+  providerArg: string,
+  options: { workspace?: string; cloudUrl: string; token?: string; sessionCookie?: string; timeout: string }
+) {
+  // Resolve provider alias
+  const provider = CLI_AUTH_PROVIDER_MAP[providerArg.toLowerCase()] || providerArg.toLowerCase();
+  const displayName = CLI_AUTH_DISPLAY_NAMES[provider] || provider;
+  const cliName = CLI_AUTH_COMMAND_NAMES[provider] || provider;
+
+  const TIMEOUT_MS = parseInt(options.timeout, 10) * 1000;
+  const CLOUD_URL = options.cloudUrl.replace(/\/$/, '');
+  const TUNNEL_PORT = 1455;
+
+  // Colors for terminal output
+  const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`;
+  const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
+  const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
+  const red = (s: string) => `\x1b[31m${s}\x1b[0m`;
+  const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
+
+  console.log('');
+  console.log(cyan('═══════════════════════════════════════════════════'));
+  console.log(cyan(`       ${displayName} Authentication Helper`));
+  console.log(cyan('═══════════════════════════════════════════════════'));
+  console.log('');
+
+  if (!options.workspace) {
+    console.log(red('Missing --workspace parameter.'));
+    console.log('');
+    console.log(`To connect ${displayName}, follow these steps:`);
+    console.log('');
+    console.log('  1. Go to the Agent Relay dashboard');
+    console.log(`  2. Click "Connect with ${displayName}" (Settings → AI Providers)`);
+    console.log('  3. Copy the command shown (it includes the workspace ID and token)');
+    console.log('  4. Run the command in your terminal');
+    console.log('');
+    console.log('The command will look like:');
+    console.log(cyan(`  npx agent-relay cli-auth ${cliName} --workspace=<ID> --token=<TOKEN>`));
+    console.log('');
+    process.exit(1);
+  }
+
+  const workspaceId = options.workspace;
+  console.log(`Provider: ${displayName}`);
+  console.log(`Workspace: ${workspaceId.slice(0, 8)}...`);
+
+  // Get tunnel info from cloud API
+  console.log('Getting workspace connection info...');
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (options.sessionCookie) {
+    headers['Cookie'] = options.sessionCookie;
+  }
+
+  // Validate token is provided
+  if (!options.token && !options.sessionCookie) {
+    console.log(red('Missing --token parameter.'));
+    console.log('');
+    console.log(`The token is provided by the dashboard when you click "Connect with ${displayName}".`);
+    console.log('Copy the complete command from the dashboard and paste it here.');
+    console.log('');
+    process.exit(1);
+  }
+
+  let tunnelInfo: {
+    host: string;
+    port: number;
+    user: string;
+    password: string;
+    tunnelPort: number;
+    workspaceName: string;
+    authUrl?: string; // OAuth URL if provided by dashboard
+  };
+
+  try {
+    // Build URL with token and provider query parameters
+    const tunnelInfoUrl = new URL(`${CLOUD_URL}/api/auth/codex-helper/tunnel-info/${workspaceId}`);
+    if (options.token) {
+      tunnelInfoUrl.searchParams.set('token', options.token);
+    }
+    tunnelInfoUrl.searchParams.set('provider', provider);
+
+    const response = await fetch(tunnelInfoUrl.toString(), {
+      method: 'GET',
+      headers,
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json() as { error?: string };
+      console.log(red(`Failed to get tunnel info: ${errorData.error || response.statusText}`));
+      process.exit(1);
+    }
+
+    tunnelInfo = await response.json() as typeof tunnelInfo;
+  } catch (err) {
+    console.log(red(`Failed to connect to cloud API: ${err instanceof Error ? err.message : String(err)}`));
+    process.exit(1);
+  }
+
+  console.log(`Workspace: ${cyan(tunnelInfo.workspaceName)}`);
+  console.log('');
+
+  // Establish SSH tunnel using ssh2 library (no external tools needed)
+  console.log(yellow('Establishing SSH tunnel...'));
+  console.log(dim(`  SSH: ${tunnelInfo.host}:${tunnelInfo.port}`));
+  console.log(dim(`  Tunnel: localhost:${TUNNEL_PORT} → workspace:${tunnelInfo.tunnelPort}`));
+  console.log('');
+
+  const { Client } = await import('ssh2');
+  const net = await import('node:net');
+
+  const sshClient = new Client();
+  // Use object to hold server reference (avoids TypeScript narrowing issues)
+  const tunnel: { server: ReturnType<typeof net.createServer> | null } = { server: null };
+  let tunnelReady = false;
+  let tunnelError: string | null = null;
+
+  // Create a promise that resolves when tunnel is ready or rejects on error
+  const tunnelPromise = new Promise<void>((resolve, reject) => {
+    sshClient.on('ready', () => {
+      // Create local server that forwards connections through SSH
+      tunnel.server = net.createServer((localSocket) => {
+        sshClient.forwardOut(
+          '127.0.0.1',
+          TUNNEL_PORT,
+          'localhost',
+          tunnelInfo.tunnelPort,
+          (err, stream) => {
+            if (err) {
+              localSocket.end();
+              return;
+            }
+            localSocket.pipe(stream).pipe(localSocket);
+          }
+        );
+      });
+
+      tunnel.server.on('error', (err: NodeJS.ErrnoException) => {
+        if (err.code === 'EADDRINUSE') {
+          tunnelError = `Port ${TUNNEL_PORT} is already in use. Close any other applications using this port.`;
+        } else {
+          tunnelError = err.message;
         }
         reject(new Error(tunnelError));
       });
 
-      sshClient.on('close', () => {
-        if (!tunnelReady) {
-          // Only set error if not already set by error handler
-          if (!tunnelError) {
-            tunnelError = `SSH connection to ${tunnelInfo.host}:${tunnelInfo.port} closed unexpectedly. The workspace may not have SSH enabled or the port may be blocked.`;
-          }
-          reject(new Error(tunnelError));
-        }
-      });
-
-      // Connect to SSH server
-      sshClient.connect({
-        host: tunnelInfo.host,
-        port: tunnelInfo.port,
-        username: tunnelInfo.user,
-        password: tunnelInfo.password,
-        readyTimeout: 10000,
-        // Disable host key checking for simplicity (workspace containers)
-        hostVerifier: () => true,
+      tunnel.server.listen(TUNNEL_PORT, '127.0.0.1', () => {
+        tunnelReady = true;
+        resolve();
       });
     });
 
-    // Wait for tunnel to establish
-    try {
-      await Promise.race([
-        tunnelPromise,
-        new Promise<void>((_, reject) =>
-          setTimeout(() => reject(new Error('SSH connection timeout')), 15000)
-        ),
-      ]);
-    } catch (err) {
-      console.log(red(`Failed to establish tunnel: ${err instanceof Error ? err.message : String(err)}`));
-      sshClient.end();
-      process.exit(1);
-    }
+    sshClient.on('error', (err) => {
+      if (err.message.includes('Authentication')) {
+        tunnelError = 'SSH authentication failed. Check the password.';
+      } else if (err.message.includes('ECONNREFUSED')) {
+        tunnelError = `Cannot connect to SSH server at ${tunnelInfo.host}:${tunnelInfo.port}. Is the workspace running and SSH enabled?`;
+      } else if (err.message.includes('ENOTFOUND') || err.message.includes('getaddrinfo')) {
+        tunnelError = `Cannot resolve hostname: ${tunnelInfo.host}. Check network connectivity.`;
+      } else if (err.message.includes('ETIMEDOUT')) {
+        tunnelError = `Connection timed out to ${tunnelInfo.host}:${tunnelInfo.port}. Is the workspace running?`;
+      } else {
+        tunnelError = `SSH error: ${err.message}`;
+      }
+      reject(new Error(tunnelError));
+    });
 
-    console.log(green('✓ SSH tunnel established!'));
+    sshClient.on('close', () => {
+      if (!tunnelReady) {
+        // Only set error if not already set by error handler
+        if (!tunnelError) {
+          tunnelError = `SSH connection to ${tunnelInfo.host}:${tunnelInfo.port} closed unexpectedly. The workspace may not have SSH enabled or the port may be blocked.`;
+        }
+        reject(new Error(tunnelError));
+      }
+    });
+
+    // Connect to SSH server
+    sshClient.connect({
+      host: tunnelInfo.host,
+      port: tunnelInfo.port,
+      username: tunnelInfo.user,
+      password: tunnelInfo.password,
+      readyTimeout: 10000,
+      // Disable host key checking for simplicity (workspace containers)
+      hostVerifier: () => true,
+    });
+  });
+
+  // Wait for tunnel to establish
+  try {
+    await Promise.race([
+      tunnelPromise,
+      new Promise<void>((_, reject) =>
+        setTimeout(() => reject(new Error('SSH connection timeout')), 15000)
+      ),
+    ]);
+  } catch (err) {
+    console.log(red(`Failed to establish tunnel: ${err instanceof Error ? err.message : String(err)}`));
+    sshClient.end();
+    process.exit(1);
+  }
+
+  console.log(green('✓ SSH tunnel established!'));
+  console.log('');
+
+  // Handle Ctrl+C gracefully
+  const cleanup = () => {
     console.log('');
-
-    // Handle Ctrl+C gracefully
-    const cleanup = () => {
-      console.log('');
-      console.log(dim('Shutting down...'));
-      if (tunnel.server) {
-        tunnel.server.close();
-      }
-      sshClient.end();
-      process.exit(0);
-    };
-    process.on('SIGINT', cleanup);
-    process.on('SIGTERM', cleanup);
-
-    // Display the OAuth URL
-    if (tunnelInfo.authUrl) {
-      console.log('');
-      console.log(green('Ready! Open this URL in your browser to complete authentication:'));
-      console.log('');
-      console.log(cyan(tunnelInfo.authUrl));
-      console.log('');
-      console.log(dim('The browser will redirect to localhost:1455, which tunnels to the workspace.'));
-      console.log(dim('The Codex CLI in the workspace will receive the callback and complete auth.'));
-      console.log('');
-    } else {
-      console.log('');
-      console.log(yellow('OAuth URL not available. Please start authentication from the dashboard.'));
-      console.log('');
-    }
-
-    // Poll for authentication completion
-    console.log(cyan(`Waiting for authentication... (timeout: ${options.timeout}s)`));
-
-    const startTime = Date.now();
-    let authenticated = false;
-
-    while (!authenticated && (Date.now() - startTime) < TIMEOUT_MS) {
-      await new Promise(resolve => setTimeout(resolve, 3000));
-
-      try {
-        // Build URL with token for authentication
-        const authStatusUrl = new URL(`${CLOUD_URL}/api/auth/codex-helper/auth-status/${workspaceId}`);
-        if (options.token) {
-          authStatusUrl.searchParams.set('token', options.token);
-        }
-
-        const statusResponse = await fetch(
-          authStatusUrl.toString(),
-          { method: 'GET', headers, credentials: 'include' }
-        );
-
-        if (statusResponse.ok) {
-          const statusData = await statusResponse.json() as { authenticated: boolean };
-          if (statusData.authenticated) {
-            authenticated = true;
-          }
-        }
-      } catch {
-        // Ignore polling errors
-      }
-
-      const elapsed = Math.floor((Date.now() - startTime) / 1000);
-      if (!authenticated && elapsed > 0 && elapsed % 30 === 0) {
-        console.log(`  Still waiting... (${elapsed}s)`);
-      }
-    }
-
-    // Cleanup SSH tunnel
+    console.log(dim('Shutting down...'));
     if (tunnel.server) {
       tunnel.server.close();
     }
     sshClient.end();
+    process.exit(0);
+  };
+  process.on('SIGINT', cleanup);
+  process.on('SIGTERM', cleanup);
 
-    if (authenticated) {
-      console.log('');
-      console.log(green('═══════════════════════════════════════════════════'));
-      console.log(green('          Authentication Complete!'));
-      console.log(green('═══════════════════════════════════════════════════'));
-      console.log('');
-      console.log('Your Codex account is now connected to the workspace.');
-      console.log('You can close this terminal and return to the dashboard.');
-      console.log('');
-    } else {
-      console.log('');
-      console.log(red('Timeout waiting for authentication.'));
-      console.log('');
-      console.log('If you completed sign-in, the workspace may not have received');
-      console.log('the callback. Check if the SSH tunnel was working correctly.');
-      process.exit(1);
+  // Display the OAuth URL
+  if (tunnelInfo.authUrl) {
+    console.log('');
+    console.log(green('Ready! Open this URL in your browser to complete authentication:'));
+    console.log('');
+    console.log(cyan(tunnelInfo.authUrl));
+    console.log('');
+    console.log(dim(`The browser will redirect to localhost:${TUNNEL_PORT}, which tunnels to the workspace.`));
+    console.log(dim(`The ${displayName} CLI in the workspace will receive the callback and complete auth.`));
+    console.log('');
+  } else {
+    console.log('');
+    console.log(yellow('OAuth URL not available. Please start authentication from the dashboard.'));
+    console.log('');
+  }
+
+  // Poll for authentication completion
+  console.log(cyan(`Waiting for authentication... (timeout: ${options.timeout}s)`));
+
+  const startTime = Date.now();
+  let authenticated = false;
+
+  while (!authenticated && (Date.now() - startTime) < TIMEOUT_MS) {
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    try {
+      // Build URL with token and provider for authentication
+      const authStatusUrl = new URL(`${CLOUD_URL}/api/auth/codex-helper/auth-status/${workspaceId}`);
+      if (options.token) {
+        authStatusUrl.searchParams.set('token', options.token);
+      }
+      authStatusUrl.searchParams.set('provider', provider);
+
+      const statusResponse = await fetch(
+        authStatusUrl.toString(),
+        { method: 'GET', headers, credentials: 'include' }
+      );
+
+      if (statusResponse.ok) {
+        const statusData = await statusResponse.json() as { authenticated: boolean };
+        if (statusData.authenticated) {
+          authenticated = true;
+        }
+      }
+    } catch {
+      // Ignore polling errors
     }
+
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    if (!authenticated && elapsed > 0 && elapsed % 30 === 0) {
+      console.log(`  Still waiting... (${elapsed}s)`);
+    }
+  }
+
+  // Cleanup SSH tunnel
+  if (tunnel.server) {
+    tunnel.server.close();
+  }
+  sshClient.end();
+
+  if (authenticated) {
+    console.log('');
+    console.log(green('═══════════════════════════════════════════════════'));
+    console.log(green('          Authentication Complete!'));
+    console.log(green('═══════════════════════════════════════════════════'));
+    console.log('');
+    console.log(`Your ${displayName} account is now connected to the workspace.`);
+    console.log('You can close this terminal and return to the dashboard.');
+    console.log('');
+  } else {
+    console.log('');
+    console.log(red('Timeout waiting for authentication.'));
+    console.log('');
+    console.log('If you completed sign-in, the workspace may not have received');
+    console.log('the callback. Check if the SSH tunnel was working correctly.');
+    process.exit(1);
+  }
+}
+
+// Shared options for all cli-auth commands
+const cliAuthOptions = {
+  workspace: '--workspace <id>',
+  cloudUrl: '--cloud-url <url>',
+  token: '--token <token>',
+  sessionCookie: '--session-cookie <cookie>',
+  timeout: '--timeout <seconds>',
+};
+
+type CliAuthOptions = { workspace?: string; cloudUrl: string; token?: string; sessionCookie?: string; timeout: string };
+
+const defaultCloudUrl = process.env.AGENT_RELAY_CLOUD_URL || 'https://agent-relay.com';
+
+// cli-auth <provider> - Generic command
+program
+  .command('cli-auth <provider>')
+  .description('Connect a provider via SSH tunnel to workspace (Claude, Codex, Cursor, etc.)')
+  .option(cliAuthOptions.workspace, 'Workspace ID to connect to')
+  .option(cliAuthOptions.cloudUrl, 'Cloud API URL', defaultCloudUrl)
+  .option(cliAuthOptions.token, 'CLI authentication token (from dashboard)')
+  .option(cliAuthOptions.sessionCookie, 'Session cookie for authentication (deprecated, use --token)')
+  .option(cliAuthOptions.timeout, 'Timeout in seconds (default: 300)', '300')
+  .action(async (providerArg: string, options: CliAuthOptions) => {
+    await runCliAuth(providerArg, options);
+  });
+
+// codex-auth - Backward-compatible alias
+program
+  .command('codex-auth')
+  .description('Connect Codex via SSH tunnel to workspace (alias for cli-auth codex)')
+  .option(cliAuthOptions.workspace, 'Workspace ID to connect to')
+  .option(cliAuthOptions.cloudUrl, 'Cloud API URL', defaultCloudUrl)
+  .option(cliAuthOptions.token, 'CLI authentication token (from dashboard)')
+  .option(cliAuthOptions.sessionCookie, 'Session cookie for authentication (deprecated, use --token)')
+  .option(cliAuthOptions.timeout, 'Timeout in seconds (default: 300)', '300')
+  .action(async (options: CliAuthOptions) => {
+    await runCliAuth('codex', options);
+  });
+
+// claude-auth - Alias for Claude/Anthropic
+program
+  .command('claude-auth')
+  .description('Connect Claude via SSH tunnel to workspace (alias for cli-auth claude)')
+  .option(cliAuthOptions.workspace, 'Workspace ID to connect to')
+  .option(cliAuthOptions.cloudUrl, 'Cloud API URL', defaultCloudUrl)
+  .option(cliAuthOptions.token, 'CLI authentication token (from dashboard)')
+  .option(cliAuthOptions.sessionCookie, 'Session cookie for authentication (deprecated, use --token)')
+  .option(cliAuthOptions.timeout, 'Timeout in seconds (default: 300)', '300')
+  .action(async (options: CliAuthOptions) => {
+    await runCliAuth('claude', options);
+  });
+
+// cursor-auth - Alias for Cursor
+program
+  .command('cursor-auth')
+  .description('Connect Cursor via SSH tunnel to workspace (alias for cli-auth cursor)')
+  .option(cliAuthOptions.workspace, 'Workspace ID to connect to')
+  .option(cliAuthOptions.cloudUrl, 'Cloud API URL', defaultCloudUrl)
+  .option(cliAuthOptions.token, 'CLI authentication token (from dashboard)')
+  .option(cliAuthOptions.sessionCookie, 'Session cookie for authentication (deprecated, use --token)')
+  .option(cliAuthOptions.timeout, 'Timeout in seconds (default: 300)', '300')
+  .action(async (options: CliAuthOptions) => {
+    await runCliAuth('cursor', options);
   });
 
 // init - First-time setup wizard for Agent Relay

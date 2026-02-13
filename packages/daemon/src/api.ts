@@ -496,11 +496,22 @@ export class DaemonApi extends EventEmitter {
 
     // Get auth session status
     this.routes.set('GET /auth/cli/:provider/status/:sessionId', async (req): Promise<ApiResponse> => {
-      const { sessionId } = req.params;
+      const { provider, sessionId } = req.params;
       const session = getAuthSession(sessionId);
       if (!session) {
         return { status: 404, body: { error: 'Session not found' } };
       }
+
+      // Fallback: if status is still waiting_auth, check if credentials exist on disk.
+      // The CLI may have completed auth without matching our success patterns.
+      if (session.status === 'waiting_auth') {
+        const { checkProviderAuth } = await import('./cli-auth.js');
+        const authenticated = await checkProviderAuth(provider, session.userId);
+        if (authenticated) {
+          session.status = 'success';
+        }
+      }
+
       return {
         status: 200,
         body: {
@@ -645,6 +656,17 @@ export class DaemonApi extends EventEmitter {
         return { status: 404, body: { error: 'Session not found' } };
       }
       return { status: 200, body: { success: true } };
+    });
+
+    // Delete credential files for a provider (used by cloud disconnect flow)
+    this.routes.set('DELETE /api/credentials/apikey', async (req): Promise<ApiResponse> => {
+      const { userId, provider } = (req.body || {}) as { userId?: string; provider?: string };
+      if (!provider) {
+        return { status: 400, body: { error: 'Missing provider' } };
+      }
+      const { deleteProviderCredentials } = await import('./cli-auth.js');
+      const result = await deleteProviderCredentials(provider, userId);
+      return { status: 200, body: { success: true, deletedPaths: result.deletedPaths } };
     });
 
     // Check if provider is authenticated (credentials exist)
@@ -805,9 +827,9 @@ export class DaemonApi extends EventEmitter {
       query[key] = value;
     });
 
-    // Parse body for POST/PUT
+    // Parse body for POST/PUT/DELETE
     let body: unknown;
-    if (req.method === 'POST' || req.method === 'PUT') {
+    if (req.method === 'POST' || req.method === 'PUT' || req.method === 'DELETE') {
       body = await this.parseBody(req);
     }
 
