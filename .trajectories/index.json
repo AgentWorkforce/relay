@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-02-06T08:42:23.316Z",
+  "lastUpdated": "2026-02-13T03:18:21.324Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -253,6 +253,27 @@
       "startedAt": "2026-02-06T08:33:52.113Z",
       "completedAt": "2026-02-06T08:42:23.268Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-02/traj_fjarwwxhil8i.json"
+    },
+    "traj_yo9tijj0e8sn": {
+      "title": "Track GitHub stars in PostHog",
+      "status": "completed",
+      "startedAt": "2026-02-12T02:55:15.064Z",
+      "completedAt": "2026-02-12T02:56:30.520Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-02/traj_yo9tijj0e8sn.json"
+    },
+    "traj_qeucn3159q6x": {
+      "title": "Require PostHog key as GitHub secret for stars tracking",
+      "status": "completed",
+      "startedAt": "2026-02-12T02:58:20.021Z",
+      "completedAt": "2026-02-12T02:58:39.017Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-02/traj_qeucn3159q6x.json"
+    },
+    "traj_xxcra8ywee78": {
+      "title": "Force default PostHog host for stars tracking",
+      "status": "completed",
+      "startedAt": "2026-02-13T03:18:03.210Z",
+      "completedAt": "2026-02-13T03:18:21.245Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-02/traj_xxcra8ywee78.json"
     }
   }
 }
