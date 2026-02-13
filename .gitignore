@@ -1,31 +1,15 @@
-# Dependencies
+# Rust
+target/
+*.rs.bk
+
+# Node/TypeScript
 node_modules/
-
-# Build output
-dist/
-ui-dist/
-
-# Release binaries (created by scripts/build-bun.sh)
-.release/
-
-# Bundled binaries (downloaded/built at install time)
-bin/tmux
-bin/relay-pty
-bin/relay-pty-*
-bin/agent-relay-test
-
-# Rust build artifacts (relay-pty)
-relay-pty/target/
-
-# TypeScript build info (if enabled later)
+packages/*/dist/
+packages/*/bin/
 *.tsbuildinfo
 
-# Logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
+# Build artifacts
+dist/
 
 # OS / editor
 .DS_Store
@@ -34,29 +18,25 @@ pnpm-debug.log*
 .claude/settings.local.json
 
 # Relay runtime artifacts
+.agent-relay/
 *.sock
 *.pid
 
-# Local test artifacts
-.agent-relay-test-*/
-.tmp/
-.tmp-*/
+# Caches
+.npm-cache/
+.turbo/
 
-# Coverage output
-coverage/
-.npm-cache
-
-.next
-
-# Next.js build output
-**/out/
-
-.env.local
+# Environment
 .env
+.env.local
 .env.production
 
-# Turborepo
-.turbo/
-.build-standalone/
-bin/agent-relay-bundle
-bin/agent-relay-standalone
+# Logs
+*.log
+
+# Coverage
+coverage/
+
+# Test artifacts
+.tmp/
+.tmp-*/

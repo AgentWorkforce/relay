@@ -1,485 +1,242 @@
 ---
-title: Custom Agent Roles
-description: Create custom agent definitions with specialized skills and behaviors
+title: "Custom Agents"
+description: "Spawn custom CLI tools and configure agent behavior"
 ---
 
-# Custom Agent Roles
+# Custom Agents
 
-Agent Relay supports custom agent definitions that give agents specialized skills, behaviors, and personalities. Define agents in `.claude/agents/` to create reusable roles.
+Agent Relay supports any CLI tool as a PTY worker, not just Claude, Codex, and Gemini. Use `spawnPty` to wrap any command.
 
-## Agent Definition Files
+## Spawning Custom CLIs
 
-### Location
+### Any command as an agent
 
-Agent definitions live in your project:
+```typescript
+import { AgentRelay } from "@agent-relay/sdk";
 
+const relay = new AgentRelay();
+
+// Wrap any CLI tool
+const agent = await relay.spawnPty({
+  name: "Aider",
+  cli: "aider",
+  args: ["--model", "gpt-4.1"],
+});
+
+// Wrap a custom script
+const script = await relay.spawnPty({
+  name: "Analyzer",
+  cli: "python",
+  args: ["analyze.py", "--verbose"],
+});
 ```
-project/
-├── .claude/
-│   └── agents/
-│       ├── reviewer.md
-│       ├── architect.md
-│       ├── tester.md
-│       └── roles/
-│           ├── planner-strategy.md
-│           └── worker-focus.md
-└── src/
+
+### Using the low-level client
+
+```typescript
+import { AgentRelayClient } from "@agent-relay/sdk";
+
+const client = await AgentRelayClient.start();
+
+await client.spawnPty({
+  name: "GooseWorker",
+  cli: "goose",
+  args: ["--profile", "coding"],
+  channels: ["general"],
+});
 ```
 
-### Basic Structure
+## Supported CLI Tools
 
+The broker recognizes certain CLI tools and adds appropriate auto-accept flags:
+
+| CLI | Auto-flags | Notes |
+|-----|------------|-------|
+| `claude` | `--dangerously-skip-permissions` | Claude Code CLI |
+| `codex` | `--full-auto` | OpenAI Codex CLI |
+| `gemini` | (defaults) | Gemini CLI |
+| `aider` | (none) | Aider coding assistant |
+| `goose` | (none) | Goose AI assistant |
+| Any command | (none) | Custom CLI tools |
+
+For CLIs without auto-flags, pass the necessary arguments explicitly:
+
+```typescript
+const agent = await relay.spawnPty({
+  name: "Custom",
+  cli: "my-tool",
+  args: ["--auto-approve", "--no-confirm"],
+});
+```
+
+## CLI Arguments
+
+Pass additional arguments to the wrapped CLI:
+
+```typescript
+// Claude with specific model
+const claude = await relay.claude.spawn({
+  name: "Reviewer",
+  args: ["--model", "sonnet"],
+});
+
+// Codex with custom model
+const codex = await relay.codex.spawn({
+  name: "Builder",
+  args: ["--model", "gpt-4.1"],
+});
+
+// Custom CLI with many args
+const custom = await relay.spawnPty({
+  name: "Worker",
+  cli: "my-tool",
+  args: ["--config", "prod.json", "--verbose", "--timeout", "300"],
+});
+```
+
+## Channel Assignment
+
+Assign agents to channels for targeted message delivery:
+
+```typescript
+// Backend workers on the backend channel
+const api = await relay.spawnPty({
+  name: "API",
+  cli: "codex",
+  channels: ["backend", "general"],
+});
+
+// Frontend workers on the frontend channel
+const ui = await relay.spawnPty({
+  name: "UI",
+  cli: "claude",
+  channels: ["frontend", "general"],
+});
+
+// Send to a specific channel
+const human = relay.human({ name: "Lead" });
+await human.sendMessage({
+  to: "#backend",
+  text: "API endpoints need to support pagination",
+});
+```
+
+If no channels are specified, agents default to `["general"]`.
+
+## Agent Profiles with Claude
+
+When using Claude CLI, you can leverage `.claude/agents/` profile files for specialized behavior:
+
+```typescript
+// Spawn Claude with a specific agent profile
+const reviewer = await relay.claude.spawn({
+  name: "Reviewer",
+  args: ["--agent", "reviewer"],
+});
+```
+
+This loads the agent definition from `.claude/agents/reviewer.md` in your project. The profile can include:
+
+- Model selection
+- System prompts
+- Allowed tools
+- Role-specific behavior
+
+### Example profile
+
+**`.claude/agents/reviewer.md`**
 ```markdown
 ---
 name: reviewer
-description: Code review for quality, security, and best practices
+description: Code review specialist
+model: sonnet
 tools: Read, Grep, Glob, Bash
-skills: using-agent-relay
 ---
 
 # Code Reviewer
 
-You are a code review specialist. Your purpose is to...
+You are a code review specialist. Focus on:
+- Security vulnerabilities
+- Error handling gaps
+- Performance concerns
+- Type safety issues
 
-## Core Principles
-
-### 1. Prioritize Blocking Issues
-- Security vulnerabilities first
-- Correctness bugs second
-...
-
-## Review Checklist
-
-### Security (Critical)
-- [ ] No hardcoded secrets
-- [ ] Input validation
-...
+Report findings with file paths and line numbers.
 ```
 
-## Frontmatter Options
+## Broker Configuration
 
-The YAML frontmatter at the top of the file configures the agent:
+Configure the broker through the `AgentRelay` constructor:
 
-```yaml
----
-name: reviewer              # Agent identifier (required)
-description: Code review... # Short description for selection
-model: sonnet               # Model to use (haiku, sonnet, opus)
-tools: Read, Grep, Glob     # Allowed tools
-skills: using-agent-relay   # Skills to load
-role: reviewer              # Role type (affects prompt composition)
----
+```typescript
+const relay = new AgentRelay({
+  // Path to the agent-relay binary (auto-detected by default)
+  binaryPath: "/usr/local/bin/agent-relay",
+
+  // Additional broker arguments
+  binaryArgs: [],
+
+  // Broker instance name
+  brokerName: "my-broker",
+
+  // Default channels for all agents
+  channels: ["general", "status"],
+
+  // Working directory for the broker
+  cwd: "/path/to/project",
+
+  // Environment variables for the broker
+  env: { ...process.env, RELAY_API_KEY: "key" },
+
+  // Request timeout (default: 10s)
+  requestTimeoutMs: 15_000,
+
+  // Shutdown timeout (default: 3s)
+  shutdownTimeoutMs: 5_000,
+});
 ```
 
-### Available Options
+## Monitoring Custom Agents
 
-| Option | Required | Description |
-|--------|----------|-------------|
-| `name` | Yes | Unique identifier for the agent |
-| `description` | No | Human-readable description |
-| `model` | No | Model selection (haiku, sonnet, opus). Default: sonnet |
-| `tools` | No | Comma-separated list of allowed tools |
-| `skills` | No | Skills to inject into agent context |
-| `role` | No | Role type for prompt composition |
+### Stream PTY output
 
-### Model Selection
+Watch what your custom agent is doing:
 
-| Model | Best For | Cost |
-|-------|----------|------|
-| `haiku` | Simple tasks, quick decisions, coordination | Low |
-| `sonnet` | General coding, review, debugging | Medium |
-| `opus` | Complex architecture, difficult debugging | High |
+```typescript
+const client = await AgentRelayClient.start();
 
-## Creating Custom Agents
-
-<Steps>
-  <Step title="Create the agent file">
-    ```bash
-    mkdir -p .claude/agents
-    touch .claude/agents/security-auditor.md
-    ```
-  </Step>
-
-  <Step title="Define frontmatter">
-    ```yaml
-    ---
-    name: security-auditor
-    description: Security-focused code review and vulnerability assessment
-    model: sonnet
-    tools: Read, Grep, Glob, Bash
-    skills: using-agent-relay
-    ---
-    ```
-  </Step>
-
-  <Step title="Write the agent prompt">
-    ```markdown
-    # Security Auditor
-
-    You are a security specialist focused on identifying vulnerabilities
-    and ensuring secure coding practices.
-
-    ## Core Principles
-
-    ### 1. Defense in Depth
-    - Assume all input is malicious
-    - Validate at every layer
-    - Fail securely
-
-    ### 2. OWASP Top 10 Awareness
-    - Injection attacks
-    - Broken authentication
-    - Sensitive data exposure
-    - XML External Entities (XXE)
-    ...
-
-    ## Review Checklist
-
-    ### Critical (Block Immediately)
-    - [ ] No hardcoded secrets, API keys, or credentials
-    - [ ] No SQL injection vulnerabilities
-    - [ ] No command injection
-    - [ ] Proper authentication on all endpoints
-
-    ### High Priority
-    - [ ] Input validation on all user data
-    - [ ] Output encoding to prevent XSS
-    - [ ] Secure session management
-    - [ ] Proper error handling (no stack traces)
-
-    ## Output Format
-
-    When reviewing code, provide:
-
-    1. **Severity**: CRITICAL, HIGH, MEDIUM, LOW
-    2. **Location**: File and line number
-    3. **Issue**: What's wrong
-    4. **Impact**: What could happen
-    5. **Fix**: How to remediate
-    ```
-  </Step>
-
-  <Step title="Use the agent">
-    ```bash
-    agent-relay -n Security claude --agent security-auditor
-    ```
-  </Step>
-</Steps>
-
-## Example Agent Definitions
-
-### Lead/Coordinator
-
-```markdown
----
-name: lead
-model: haiku
-description: Coordinates multi-agent teams. Delegates tasks, tracks progress.
-tools: Read, Grep, Glob, Bash, Task, AskUserQuestion
-skills: using-agent-relay
----
-
-# Lead Agent
-
-You are a coordinator, NOT an implementer. Your job is to delegate
-tasks to specialists and keep work moving.
-
-## Core Principles
-
-### 1. Delegate, Don't Do
-- Quick investigation only (2-3 minutes max)
-- Never write significant code yourself
-- Trust your specialists
-
-### 2. Decide Fast
-- Make decisions in under 30 seconds
-- Ask ONE clarifying question, then decide
-- "Good enough" beats perfect
-
-## When to Spawn Workers
-
-| Situation | Action |
-|-----------|--------|
-| Deep implementation work | Spawn specialist |
-| Code review needed | Spawn reviewer |
-| Tests required | Spawn tester |
-| Quick question | Handle yourself |
-
-## Communication
-
-Always ACK incoming messages immediately:
-
-\`\`\`bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/ack << 'EOF'
-TO: Sender
-
-ACK: [Brief description of task received]
-EOF
-\`\`\`
-
-Report progress regularly. Release workers when done.
+client.onEvent((event) => {
+  if (event.kind === "worker_stream" && event.name === "Custom") {
+    process.stdout.write(event.chunk);
+  }
+});
 ```
 
-### Tester
+### Track lifecycle
 
-```markdown
----
-name: tester
-description: Test writing specialist for unit, integration, and e2e tests
-tools: Read, Write, Edit, Grep, Glob, Bash
-skills: using-agent-relay
----
+```typescript
+relay.onAgentSpawned = (agent) => {
+  console.log(`${agent.name} started (${agent.runtime})`);
+};
 
-# Tester Agent
-
-You write comprehensive, maintainable test suites.
-
-## Test Pyramid
-
-- **Unit tests**: Fast, isolated, many (base)
-- **Integration tests**: Component interactions (middle)
-- **E2E tests**: Critical user journeys (top)
-
-## Coverage Guidelines
-
-| Priority | What to Test |
-|----------|--------------|
-| Critical | Business logic, calculations |
-| High | API endpoints, auth |
-| Medium | UI components, forms |
-| Low | Simple getters/setters |
-
-## Test Naming
-
-Use descriptive names:
-
-\`\`\`typescript
-// Good
-it('should return empty array when no items match filter')
-it('throws ValidationError when email format is invalid')
-
-// Bad
-it('test1')
-it('works')
-\`\`\`
-
-## Output Format
-
-\`\`\`
-**Test Plan:**
-- [List of scenarios to cover]
-
-**Files Created:**
-- path/to/test.ts - [description]
-
-**Coverage:**
-- Functions: X/Y covered
-- Edge cases: [list]
-\`\`\`
+relay.onAgentExited = (agent) => {
+  console.log(`${agent.name} exited`);
+};
 ```
-
-### Architect
-
-```markdown
----
-name: architect
-description: System design and architecture decisions
-model: opus
-tools: Read, Grep, Glob, Write, Edit
-skills: using-agent-relay
----
-
-# Architect
-
-You design systems and make technical decisions.
-
-## Core Principles
-
-### 1. Understand Before Designing
-Know the requirements (functional and non-functional)
-
-### 2. Tradeoffs Are Explicit
-Every decision has costs and benefits. Document both.
-
-### 3. Design for Change
-- Identify what's likely to change
-- Isolate volatility behind interfaces
-
-## Decision Process
-
-1. **Context**: What problem? What constraints?
-2. **Options**: What approaches possible?
-3. **Analysis**: What are the tradeoffs?
-4. **Decision**: Which best fits?
-
-## Output: Architecture Decision Record
-
-\`\`\`markdown
-# ADR-001: [Title]
-
-## Status
-[Proposed | Accepted | Deprecated]
-
-## Context
-[What motivates this decision?]
-
-## Decision
-[What are we doing?]
-
-## Consequences
-[What becomes easier/harder?]
-
-## Alternatives Considered
-[What else was evaluated?]
-\`\`\`
-```
-
-## Role-Based Loading
-
-Agents can reference role templates for consistent behavior patterns.
-
-### Role Files
-
-Create reusable role definitions:
-
-```markdown
-<!-- .claude/agents/roles/worker-focus.md -->
-
-## Worker Focus Principles
-
-As a worker agent, you:
-
-1. **Execute, don't decide architecture**
-   - Implement the assigned task
-   - Ask for clarification if unclear
-   - Don't redesign the system
-
-2. **Report progress regularly**
-   - ACK when you start
-   - Status updates every 15 minutes
-   - DONE when complete
-
-3. **Stay in your lane**
-   - Focus on the assigned task
-   - Flag scope creep to lead
-   - Don't spawn sub-workers without approval
-```
-
-### Using Roles
-
-Reference roles in agent definitions:
-
-```yaml
----
-name: backend-worker
-description: Backend implementation specialist
-role: worker
-skills: using-agent-relay
----
-```
-
-The `role: worker` triggers loading of `roles/worker-focus.md` content.
-
-## Spawning Custom Agents
-
-### From CLI
-
-```bash
-agent-relay -n MyReviewer claude --agent reviewer
-```
-
-### From Another Agent
-
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
-KIND: spawn
-NAME: Reviewer
-CLI: claude --agent reviewer
-
-Please review the changes in src/auth/:
-- Focus on security implications
-- Check error handling
-- Verify test coverage
-EOF
-```
-
-Then: `->relay-file:spawn`
 
 ## Best Practices
 
-### Agent Design
-
 <CardGroup cols={2}>
-
-<Card title="Single Responsibility" icon="bullseye">
-Each agent should have one clear purpose. Don't create "do everything" agents.
-</Card>
-
-<Card title="Clear Boundaries" icon="border-all">
-Define what the agent should and shouldn't do. Include explicit "don'ts".
-</Card>
-
-<Card title="Actionable Output" icon="list-check">
-Specify the expected output format so results are consistent and usable.
-</Card>
-
-<Card title="Communication Protocol" icon="comments">
-Include how the agent should communicate (ACK, DONE, relay usage).
-</Card>
-
+  <Card title="Test CLI First" icon="terminal">
+    Run the CLI manually before wrapping it to ensure it works and is authenticated.
+  </Card>
+  <Card title="Use Auto-Accept Flags" icon="check">
+    Pass flags that skip confirmation prompts so the agent can run autonomously.
+  </Card>
+  <Card title="Name by Role" icon="tag">
+    Use descriptive names that reflect the agent's purpose, not the CLI tool.
+  </Card>
+  <Card title="Channel Isolation" icon="hashtag">
+    Use channels to scope communication by domain or team.
+  </Card>
 </CardGroup>
-
-### Model Selection Guidelines
-
-| Use Haiku | Use Sonnet | Use Opus |
-|-----------|------------|----------|
-| Coordination tasks | General coding | Complex architecture |
-| Simple decisions | Code review | Difficult debugging |
-| Message routing | Test writing | Security audits |
-| Status tracking | Documentation | Novel problems |
-
-### Organizing Agents
-
-```
-.claude/agents/
-├── # Core roles
-├── lead.md
-├── reviewer.md
-├── tester.md
-├── architect.md
-│
-├── # Domain specialists
-├── frontend.md
-├── backend.md
-├── database.md
-├── devops.md
-│
-├── # Shadow agents
-├── shadow-reviewer.md
-├── shadow-auditor.md
-│
-└── roles/
-    ├── planner-strategy.md
-    ├── worker-focus.md
-    └── reviewer-criteria.md
-```
-
-## Sharing Agent Definitions
-
-### Project-specific
-
-Commit `.claude/agents/` to your repository. All team members get the same agent definitions.
-
-### Organization-wide
-
-For consistent agents across projects:
-
-1. Create a shared repository with agent definitions
-2. Use git submodules or copy scripts to sync
-3. Or use Agent Relay Cloud for centralized management
-
-### Community
-
-Share useful agent definitions:
-- Document the use case clearly
-- Include example usage
-- Test across different scenarios

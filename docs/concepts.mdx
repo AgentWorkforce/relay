@@ -1,365 +1,245 @@
 ---
 title: "Core Concepts"
-description: "Understanding agents, messages, and the relay protocol"
+description: "Understanding the broker, workers, Relaycast, and the SDK architecture"
 ---
 
 This page explains the fundamental concepts behind Agent Relay. Understanding these will help you build effective multi-agent workflows.
 
-## Agents
+## Architecture Overview
 
-An agent is any AI CLI tool (Claude, Codex, Gemini, etc.) wrapped by Agent Relay for messaging capabilities. Each agent has a unique name within the relay network.
-
-### Agent Types
-
-<CardGroup cols={3}>
-  <Card title="Coordinator" icon="crown">
-    Orchestrates work across other agents. Breaks down tasks, delegates work, and tracks progress.
-  </Card>
-  <Card title="Worker" icon="hammer">
-    Focuses on specific tasks assigned by the coordinator. Can be spawned dynamically and released when done.
-  </Card>
-  <Card title="Shadow" icon="eye">
-    Observes agent activity without participating. Useful for monitoring, logging, or human oversight.
-  </Card>
-</CardGroup>
-
-### Agent Lifecycle
+Agent Relay consists of four layers:
 
 ```
-+-------------+     +--------------+     +------------+
-|   Created   | --> |   Active     | --> |  Released  |
-| (Spawned)   |     | (Connected)  |     | (Stopped)  |
-+-------------+     +--------------+     +------------+
-      |                    |
-      |                    v
-      |             +--------------+
-      +-----------> | Disconnected |
-                    | (Reconnects) |
-                    +--------------+
++-----------------------------------------------------------+
+|  Your Code (TypeScript)                                   |
+|  AgentRelay / AgentRelayClient                            |
++-----------------------------+-----------------------------+
+              |  stdio JSON
++-----------------------------+-----------------------------+
+|  Rust Broker (agent-relay init)                           |
+|  - Spawns and manages worker processes                    |
+|  - Routes messages via Relaycast WebSocket                |
+|  - Emits events back to the SDK                           |
++-------+----------------+----------------+----------------+
+        |                |                |
+   +----+----+     +-----+-----+    +-----+-----+
+   |PTY Worker|    |PTY Worker |    |Headless   |
+   |(codex)   |    |(claude)   |    |Claude     |
+   +----------+    +-----------+    +-----------+
+
++-----------------------------------------------------------+
+|  Relaycast (cloud)                                        |
+|  Channels, DMs, threads, delivery, persistence            |
++-----------------------------------------------------------+
 ```
 
-When an agent starts, it connects to the daemon and registers with its name. The daemon maintains this connection until the agent disconnects or is explicitly released.
+## Broker
 
-### Agent Names
+The broker is the `agent-relay` Rust binary running in `init` mode. The SDK spawns it automatically as a child process -- you never need to start it manually.
 
-Agent names are case-insensitive identifiers used for routing messages:
+The broker:
 
-```bash
-# These all refer to the same agent
-# Via dashboard: Spawn Agent → Name: "Alice", CLI: "claude"
-# Or via CLI: agent-relay spawn Alice claude "Task description"
+- Communicates with the SDK over **stdio** using JSON envelopes
+- Connects to **Relaycast** via WebSocket for message transport
+- Spawns and manages **worker processes** (PTY and headless)
+- Emits **events** to the SDK (agent_spawned, relay_inbound, worker_stream, etc.)
+- Handles **message delivery** to workers, including retries and deduplication
 
-# All these message targets are equivalent:
-->relay:alice Hello!
-->relay:ALICE Hello!
-```
+<Tip>
+The broker is a runtime artifact. You interact with it through the SDK, not directly.
+</Tip>
 
-Names can also match role definitions if you create agent configuration files:
+## Workers
 
-```
-.claude/agents/
-  lead.md          # Matches "Lead" agent
-  implementer.md   # Matches "Implementer" agent
-  reviewer.md      # Matches "Reviewer" agent
-```
-
-## Messages
-
-Messages are the core unit of communication between agents. Every message contains:
-
-- **Sender** - The agent that sent the message
-- **Recipient** - The target agent, broadcast (`*`), or channel (`#name`)
-- **Body** - The message content
-- **Metadata** - Timestamp, thread context, message ID
-
-### Message Types
+Workers are the agent processes managed by the broker. There are two runtimes:
 
 <Tabs>
-  <Tab title="Direct Messages">
-    Sent to a specific agent by name:
+  <Tab title="PTY Workers">
+    PTY workers wrap a real CLI tool (Claude, Codex, Gemini, or any command) in a pseudo-terminal. The broker:
 
-    ```
-    ->relay:Bob Can you review my changes?
-    ```
+    1. Spawns the CLI process in a PTY
+    2. Injects relay instructions so the agent knows how to communicate
+    3. Delivers incoming messages by writing to the PTY stdin
+    4. Streams PTY output back as `worker_stream` events
 
-    Only Bob receives this message.
+    PTY workers are the default runtime. They work with any CLI tool that accepts text input.
+
+    ```typescript
+    // Spawn a PTY worker wrapping Codex
+    const agent = await relay.codex.spawn({ name: "Worker" });
+
+    // Or use spawnPty for full control
+    const agent = await relay.spawnPty({
+      name: "CustomAgent",
+      cli: "codex",
+      args: ["--model", "gpt-4.1"],
+    });
+    ```
   </Tab>
 
-  <Tab title="Broadcasts">
-    Sent to all connected agents except the sender:
+  <Tab title="Headless Claude">
+    Headless Claude workers run Claude without a terminal. The broker uses Claude's SDK directly, which means:
 
+    - No PTY overhead
+    - No ANSI escape sequences to parse
+    - Cleaner input/output handling
+
+    Headless mode is currently available for Claude only.
+
+    ```typescript
+    // Via the low-level client
+    const client = await AgentRelayClient.start();
+    await client.spawnHeadlessClaude({
+      name: "Analyzer",
+      args: ["--model", "sonnet"],
+    });
     ```
-    ->relay:* I've completed the auth module
-    ```
-
-    Every agent in the network receives this message.
-  </Tab>
-
-  <Tab title="Channel Messages">
-    Sent to agents subscribed to a specific channel:
-
-    ```
-    ->relay:#frontend New component ready for review
-    ```
-
-    Only agents subscribed to `#frontend` receive this message.
   </Tab>
 </Tabs>
 
-### Message Flow
-
-When an agent outputs a relay command, here is what happens:
+### Worker Lifecycle
 
 ```
-1. Agent outputs: ->relay:Bob Hello!
-           |
-           v
-2. Wrapper detects pattern, extracts message
-           |
-           v
-3. Wrapper sends SEND envelope to daemon
-           |
-           v
-4. Daemon looks up "Bob" in registry
-           |
-           v
-5. Daemon sends DELIVER envelope to Bob's wrapper
-           |
-           v
-6. Bob's wrapper waits for idle state
-           |
-           v
-7. Message injected into Bob's terminal:
-   "Relay message from Alice [abc123]: Hello!"
++----------+     +--------+     +-----------+
+| Spawned  | --> | Active | --> | Released  |
+| (PID     |     | (recv/ |     | (graceful |
+|  assigned)|    |  send) |     |  shutdown)|
++----------+     +--------+     +-----------+
+                     |
+                     v
+                 +--------+
+                 | Exited |
+                 | (proc  |
+                 |  died) |
+                 +--------+
 ```
 
-### Message Injection
+- **Spawned** -- The broker creates the worker process and assigns a PID
+- **Active** -- The worker is running, sending and receiving messages
+- **Released** -- The SDK sends a release command; the broker terminates the worker gracefully
+- **Exited** -- The worker process exited on its own (completed its task or crashed)
 
-Messages are injected into the recipient's terminal when the agent is idle (no output for 1.5 seconds). This prevents interrupting the agent mid-thought.
+## Relaycast
 
-If an agent is busy, messages queue up and deliver when the agent becomes idle.
+Relaycast is the cloud message transport -- think of it as headless Slack for agents. It is not an optional add-on; it **is** the transport layer.
 
-### Truncated Messages
+### What Relaycast provides
 
-Long messages are truncated in the terminal display. Use the message ID to read the full content:
+| Feature | Description |
+|---------|-------------|
+| **Channels** | Named channels (e.g., `general`, `backend`) for group communication |
+| **DMs** | Direct messages between named agents |
+| **Threads** | Thread support for organizing conversations |
+| **Persistence** | Messages persist in the cloud and survive broker restarts |
+| **Delivery** | At-least-once delivery with deduplication at the broker level |
 
-```bash
-agent-relay read abc123
-```
+### How it connects
 
-## The Daemon
+The broker maintains a WebSocket connection to Relaycast. When you send a message through the SDK, the flow is:
 
-The daemon is the central message broker that routes all communication between agents.
+1. SDK sends `send_message` to the broker via stdio
+2. Broker publishes the message to a Relaycast channel
+3. Relaycast delivers the message to all subscribers
+4. The broker receives the message over WebSocket
+5. Broker delivers it to the target worker's PTY (or emits it as an event)
 
-### Responsibilities
+### Workspace and API Key
 
-- **Agent Registry** - Tracks connected agents and their connections
-- **Message Routing** - Delivers messages to the correct recipients
-- **Storage** - Persists message history (JSONL by default, SQLite available)
-- **Dashboard API** - Provides real-time data to the web dashboard
+Each broker session belongs to a Relaycast **workspace**. The workspace is identified by an API key set via the `RELAY_API_KEY` environment variable. If no key is set, the broker creates a new workspace automatically on first run and caches the credentials locally.
 
-### Architecture
+## SDK
 
-```
-                    +------------------+
-                    |     Daemon       |
-                    +--------+---------+
-                             |
-         +-------------------+-------------------+
-         |                   |                   |
-+--------v--------+ +--------v--------+ +--------v--------+
-|     Router      | |     Storage     | |   Dashboard     |
-| (Message        | | (JSONL/SQLite   | | (WebSocket +    |
-|  routing)       | |  persistence)   | |  REST API)      |
-+-----------------+ +-----------------+ +-----------------+
-```
+The TypeScript SDK (`@agent-relay/sdk`) is the primary integration point. It provides two levels of abstraction:
 
-### Connection Management
+<CardGroup cols={2}>
+  <Card title="AgentRelay (high-level)" icon="layer-group">
+    Event-hook based facade. Provides `codex`, `claude`, `gemini` spawners, `human()` for non-agent messaging, and lifecycle management.
+  </Card>
+  <Card title="AgentRelayClient (low-level)" icon="gears">
+    Direct protocol access. Provides `spawnPty()`, `spawnHeadlessClaude()`, `sendMessage()`, `release()`, `listAgents()`, and raw event streaming.
+  </Card>
+</CardGroup>
 
-The daemon maintains persistent connections with each agent via Unix domain sockets. Key features:
-
-- **Heartbeat** - PING/PONG every 5 seconds to detect dead connections
-- **Reconnection** - Automatic reconnect with exponential backoff (100ms to 30s)
-- **State Machine** - Connections follow strict states: CONNECTING -> HANDSHAKING -> ACTIVE -> CLOSED
-
-### Starting the Daemon
-
-```bash
-# Start daemon with dashboard
-agent-relay up
-
-# Check status
-agent-relay status
-
-# Stop daemon
-agent-relay down
-```
-
-The daemon creates these files in `/tmp/agent-relay/`:
-
-| File | Purpose |
-|------|---------|
-| `relay.sock` | Unix domain socket for agent connections |
-| `relay.sock.pid` | Process ID file |
-| `messages.sqlite` | Message history database |
-| `agents.json` | Current agent registry |
-
-## Projects and Namespaces
-
-Agent Relay automatically isolates data per project based on your project root directory.
-
-### Project Detection
-
-Projects are identified by looking for markers in the directory tree:
-
-- `.git`
-- `package.json`
-- `Cargo.toml`
-- `go.mod`
-- `pyproject.toml`
-- `.agent-relay`
-
-Each project gets its own:
-
-- Unix socket
-- Storage (JSONL files or SQLite database)
-- Message history
-- Agent registry
-
-### Project ID
-
-A project ID is generated from a hash of the project root path:
-
-```
-/home/user/my-project -> abc123def456
-```
-
-This ensures complete isolation between projects even when running multiple relay networks.
-
-## Bridging
-
-Bridging connects multiple project daemons together, enabling cross-project communication.
-
-```
-+------------------+          +------------------+
-|   Project A      |          |   Project B      |
-|                  |          |                  |
-|  +------------+  |          |  +------------+  |
-|  | Alice      |  |          |  | Dave       |  |
-|  +------------+  |          |  +------------+  |
-|  | Bob        |  |  Bridge  |  | Eve        |  |
-|  +------------+  | <------> |  +------------+  |
-|  | Daemon A   |  |          |  | Daemon B   |  |
-+------------------+          +------------------+
-```
-
-### Cross-Project Messaging
-
-When bridged, agents can message across projects using the `project:agent` format:
-
-```
-->relay:project-b:Dave Please update your API endpoints
-```
-
-Special targets for bridged networks:
-
-| Target | Description |
-|--------|-------------|
-| `project:agent` | Specific agent in specific project |
-| `project:*` | Broadcast to all agents in a project |
-| `*:*` | Broadcast to all agents in all bridged projects |
-
-## Session Continuity
-
-Session continuity allows agents to save and restore their context across sessions.
-
-### Saving Context
-
-Agents can save their current state:
-
-```
-KIND: continuity
-ACTION: save
-
-Current task: Implementing user authentication
-Completed: User model, JWT utils
-In progress: Login endpoint
-Key decisions: Using refresh tokens
-Files: src/auth/*.ts
-```
-
-### Loading Context
-
-Context is automatically loaded on startup, or can be requested manually:
-
-```
-KIND: continuity
-ACTION: load
-```
-
-### Use Cases
-
-- **Long-running tasks** - Save progress before ending a session
-- **Context switching** - Save state when moving to a different task
-- **Recovery** - Restore after crashes or interruptions
+Both classes manage the broker process automatically. Call `shutdown()` when done.
 
 ## Protocol
 
-Agent Relay uses a custom protocol over Unix domain sockets.
-
-### Wire Format
-
-Messages use length-prefixed framing:
-
-```
-+----------------+--------------------------------+
-| Length (4B)    | JSON Payload (UTF-8)           |
-| Big-endian     | (up to 1 MiB)                  |
-+----------------+--------------------------------+
-```
-
-### Envelope Structure
-
-Every message follows this structure:
+The SDK and broker communicate over **stdio** using newline-delimited JSON envelopes. Every envelope has this shape:
 
 ```typescript
-interface Envelope {
-  v: number;           // Protocol version (1)
-  type: MessageType;   // HELLO, SEND, DELIVER, etc.
-  id: string;          // Unique message ID
-  ts: number;          // Timestamp (milliseconds)
-  from?: string;       // Sender name
-  to?: string;         // Recipient or "*" for broadcast
-  topic?: string;      // Optional channel
-  payload: object;     // Type-specific content
+interface ProtocolEnvelope {
+  v: 1;             // Protocol version
+  type: string;     // Request type or response type
+  request_id?: string; // Correlates requests with responses
+  payload: unknown; // Type-specific data
 }
 ```
 
-### Message Types
+### Request flow
 
-| Type | Direction | Purpose |
-|------|-----------|---------|
-| `HELLO` | Client -> Daemon | Initiate handshake |
-| `WELCOME` | Daemon -> Client | Confirm connection |
-| `SEND` | Client -> Daemon | Send a message |
-| `DELIVER` | Daemon -> Client | Deliver a message |
-| `ACK` | Both | Acknowledge receipt |
-| `PING/PONG` | Both | Heartbeat |
-| `BYE` | Both | Graceful disconnect |
+```
+SDK                          Broker
+ |                              |
+ |-- { type: "hello" } ------->|
+ |<- { type: "hello_ack" } ----|
+ |                              |
+ |-- { type: "spawn_agent" } ->|
+ |<- { type: "ok" } -----------|
+ |                              |
+ |<- { type: "event" } --------|  (async events)
+ |<- { type: "event" } --------|
+```
+
+See [Protocol Reference](/reference/protocol) for the full specification.
+
+## Events
+
+The broker emits real-time events to the SDK as things happen. Events are delivered as `{ type: "event", payload: BrokerEvent }` envelopes.
+
+| Event | Description |
+|-------|-------------|
+| `agent_spawned` | A worker was created (includes name and runtime) |
+| `agent_released` | A worker was released via the SDK |
+| `agent_exited` | A worker process exited (includes exit code/signal) |
+| `relay_inbound` | An incoming message was received from Relaycast |
+| `worker_stream` | PTY output chunk from a worker (stdout/stderr) |
+| `delivery_retry` | A message delivery to a worker was retried |
+| `delivery_dropped` | Messages to a worker were dropped (queue overflow) |
+| `acl_denied` | A message was blocked by access control rules |
+
+### Subscribing to events
+
+```typescript
+// High-level API
+relay.onMessageReceived = (msg) => { /* relay_inbound */ };
+relay.onAgentSpawned = (agent) => { /* agent_spawned */ };
+
+// Low-level API
+const unsub = client.onEvent((event) => {
+  switch (event.kind) {
+    case "worker_stream":
+      process.stdout.write(event.chunk);
+      break;
+    case "relay_inbound":
+      console.log(`${event.from}: ${event.body}`);
+      break;
+  }
+});
+```
 
 ## Next Steps
 
 <CardGroup cols={2}>
   <Card title="Messaging" icon="messages" href="/features/messaging">
-    Learn advanced messaging patterns including threads and synchronous messaging.
+    Learn about DMs, broadcasts, channels, and message delivery.
   </Card>
   <Card title="Agent Spawning" icon="users" href="/features/spawning">
-    Dynamically create and manage worker agents from a coordinator.
+    Spawn PTY workers and headless agents from the SDK.
   </Card>
-  <Card title="Dashboard" icon="chart-line" href="/features/dashboard">
-    Monitor your agent network in real-time.
+  <Card title="Relaycast" icon="cloud" href="/features/cloud">
+    Understand the cloud transport layer and workspace management.
   </Card>
-  <Card title="CLI Reference" icon="terminal" href="/reference/cli">
-    Complete command reference for the Agent Relay CLI.
+  <Card title="SDK Reference" icon="code" href="/reference/sdk">
+    Full API reference for AgentRelay and AgentRelayClient.
   </Card>
 </CardGroup>

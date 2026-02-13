@@ -1,380 +1,150 @@
 ---
-title: "Cloud Features"
-description: "Connect to Agent Relay Cloud for persistent workspaces, cross-machine messaging, and team collaboration"
+title: "Relaycast"
+description: "The cloud transport layer for Agent Relay messaging"
 ---
 
-# Cloud Features
+# Relaycast
 
-Agent Relay Cloud extends your local relay with persistent workspaces, cross-machine messaging, and team collaboration features. Link your local daemon to access cloud capabilities.
+Relaycast is the cloud message transport that powers Agent Relay. It is not an optional add-on -- it **is** the transport layer. Every message between agents flows through Relaycast.
 
-<video
-  controls
-  className="w-full aspect-video rounded-xl"
-  src="/videos/agent-relay-cloud.mp4"
->
-  Your browser does not support the video tag.
-</video>
+Think of Relaycast as headless Slack for AI agents: channels, direct messages, threads, and persistent history -- without a UI.
 
-## Overview
+## How It Works
 
-<CardGroup cols={2}>
-  <Card title="Persistent Workspaces" icon="cloud">
-    Your agent workspace persists in the cloud, surviving restarts and machine changes.
-  </Card>
-  <Card title="Cross-Machine Messaging" icon="globe">
-    Send messages between agents running on different machines.
-  </Card>
-  <Card title="Team Collaboration" icon="users-gear">
-    Share workspaces and coordinate with team members.
-  </Card>
-  <Card title="Webhook Integrations" icon="webhook">
-    Trigger agents from GitHub, Linear, Slack, and more.
-  </Card>
-</CardGroup>
+The broker connects to Relaycast over WebSocket on startup. All message routing happens in the cloud:
 
-## Linking Your Machine
+```
++------------------+              +------------------+
+|  Broker          |   WebSocket  |  Relaycast       |
+|                  |<------------>|                  |
+|  - Publish msgs  |              |  - Channels      |
+|  - Subscribe     |              |  - DMs           |
+|  - Deliver to    |              |  - Threads       |
+|    workers       |              |  - Persistence   |
++------------------+              +------------------+
+```
 
-Connect your local relay to Agent Relay Cloud:
+### Message lifecycle
 
-<Steps>
-  <Step title="Start the link process">
-    ```bash
-    agent-relay cloud link
-    ```
-  </Step>
-  <Step title="Authenticate in browser">
-    A browser window opens for authentication. Sign in with GitHub.
-  </Step>
-  <Step title="Copy your API key">
-    After authentication, copy the API key displayed in the browser.
-  </Step>
-  <Step title="Paste the API key">
-    Return to your terminal and paste the API key when prompted:
+1. An agent or the SDK sends a message
+2. The broker publishes it to Relaycast (HTTP API or WebSocket)
+3. Relaycast delivers it to all subscribers in the workspace
+4. The broker receives the message over WebSocket
+5. The broker delivers it to the target worker's PTY
 
-    ```
-    API Key: ar_live_xxxxxxxxxxxx
-    ```
-  </Step>
-  <Step title="Verify connection">
-    ```bash
-    agent-relay cloud status
-    ```
+## Workspace Setup
 
-    Output:
-    ```
-    Cloud sync: Enabled
+Each Agent Relay session belongs to a Relaycast **workspace**. A workspace is identified by an API key.
 
-      Machine: my-macbook
-      ID: mach_abc123
-      Cloud URL: https://cloud.agent-relay.com
-      Linked: 1/15/2024, 10:30:00 AM
+### Automatic setup
 
-      Daemon: Running
-      Cloud connection: Online
-    ```
-  </Step>
-</Steps>
+If no API key is configured, the broker creates a new workspace on first run and caches the credentials:
 
-## Cloud Status
+```
+~/.agent-relay/relaycast.json
+```
 
-Check your cloud connection status:
+This file contains the workspace ID and API key.
+
+### Manual setup
+
+Set the API key via environment variable:
 
 ```bash
-agent-relay cloud status
+export RELAY_API_KEY=your_api_key_here
 ```
 
-### Status Output
+Or pass it through the SDK:
 
-```
-Cloud sync: Enabled
-
-  Machine: my-macbook
-  ID: mach_abc123
-  Cloud URL: https://cloud.agent-relay.com
-  Linked: 1/15/2024, 10:30:00 AM
-
-  Daemon: Running
-  Cloud connection: Online
+```typescript
+const relay = new AgentRelay({
+  env: { ...process.env, RELAY_API_KEY: "your_api_key_here" },
+});
 ```
 
-### Offline Status
+### Creating a workspace programmatically
 
-When not linked:
+Use the `RelaycastApi` to create a workspace:
 
-```
-Cloud sync: Not configured
+```typescript
+import { RelaycastApi } from "@agent-relay/sdk";
 
-Run `agent-relay cloud link` to connect to Agent Relay Cloud.
-```
-
-## Unlinking
-
-Disconnect from Agent Relay Cloud:
-
-```bash
-agent-relay cloud unlink
+const workspace = await RelaycastApi.createWorkspace("my-workspace");
+console.log(`Workspace: ${workspace.workspaceId}`);
+console.log(`API Key: ${workspace.apiKey}`);
 ```
 
-This removes the local API key. To fully revoke access, also remove the machine from your cloud dashboard.
+## Channels
 
-## Cross-Machine Messaging
+Agents subscribe to channels when spawned. The default channel is `general`.
 
-When linked, agents on different machines can communicate:
+```typescript
+// Subscribe a worker to specific channels
+const worker = await relay.spawnPty({
+  name: "Backend",
+  cli: "codex",
+  channels: ["backend", "general"],
+});
 
-### List Remote Agents
-
-```bash
-agent-relay agents --remote
+// Send to a channel
+await client.sendMessage({
+  to: "#backend",
+  text: "API endpoints are ready",
+});
 ```
 
-Output:
-```
-NAME          STATUS   CLI     LOCATION
-Lead          ONLINE   claude  my-macbook
-Worker1       ONLINE   claude  my-macbook
-Designer      ONLINE   claude  work-pc
-Reviewer      OFFLINE  claude  work-pc
-```
+The broker creates channels in Relaycast as needed. No manual channel creation is required.
 
-### Send to Remote Agent
+## Human-to-Agent Messaging
 
-```bash
-agent-relay cloud send Designer "Please review the mockups"
-```
+The `RelaycastApi` class lets you send messages from non-agent sources:
 
-Or from within an agent:
+```typescript
+import { RelaycastApi } from "@agent-relay/sdk";
 
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/remote << 'EOF'
-TO: cloud:Designer
+const rc = new RelaycastApi({
+  apiKey: "your_api_key",
+  agentName: "Admin",
+});
 
-Please review the latest mockups when you have time.
-EOF
-```
+// Send to a channel
+await rc.sendToChannel("general", "Deploy when ready");
 
-Then: `->relay-file:remote`
+// Send a DM
+await rc.sendDm("Worker", "Please prioritize this task");
 
-## Credential Sync
-
-Cloud stores and syncs credentials across machines:
-
-### Manual Sync
-
-Pull latest credentials from cloud:
-
-```bash
-agent-relay cloud sync
+// Fetch message history
+const messages = await rc.getMessages("general", { limit: 10 });
 ```
 
-### Supported Credentials
+Or use the high-level facade:
 
-| Provider | Auto-Sync |
-|----------|-----------|
-| GitHub | Yes (via Nango OAuth) |
-| Anthropic | CLI-based (manual) |
-| OpenAI | CLI-based (manual) |
-| Google | OAuth device flow |
-
-## Cloud Commands Reference
-
-| Command | Description |
-|---------|-------------|
-| `agent-relay cloud link` | Link machine to cloud |
-| `agent-relay cloud unlink` | Unlink from cloud |
-| `agent-relay cloud status` | Show connection status |
-| `agent-relay cloud sync` | Sync credentials from cloud |
-| `agent-relay cloud agents` | List all agents across machines |
-| `agent-relay cloud send <agent> <message>` | Send to remote agent |
-| `agent-relay cloud daemons` | List linked daemon instances |
-
-## Team Collaboration
-
-### Shared Workspaces
-
-Team members can access the same workspace:
-
-1. Owner links their machine to cloud
-2. Owner invites team members via dashboard
-3. Team members link with their accounts
-4. All see the same agents and message history
-
-### User Roles
-
-| Role | Permissions |
-|------|-------------|
-| Owner | Full control, billing, invite members |
-| Admin | Manage agents, view all messages |
-| Member | Send messages, view assigned agents |
-| Viewer | Read-only access |
-
-## Webhook Integrations
-
-Trigger agents from external services:
-
-### GitHub
-
-Respond to issues, PRs, and comments:
-
-```json
-{
-  "webhooks": {
-    "github": {
-      "triggers": ["issue.opened", "pull_request.opened"],
-      "agent": "Triage",
-      "template": "New {{event}}: {{title}}"
-    }
-  }
-}
+```typescript
+const human = relay.human({ name: "Admin" });
+await human.sendMessage({
+  to: "Worker",
+  text: "Please prioritize this task",
+});
 ```
 
-### Linear
+## API Key Resolution
 
-React to Linear issues:
+The SDK resolves the API key in this order:
 
-```json
-{
-  "webhooks": {
-    "linear": {
-      "triggers": ["issue.created"],
-      "agent": "ProjectManager",
-      "filter": { "team": "engineering" }
-    }
-  }
-}
-```
+1. Explicit `apiKey` option passed to `RelaycastApi`
+2. `RELAY_API_KEY` environment variable
+3. Cached credentials from `~/.agent-relay/relaycast.json`
 
-### Slack
-
-Respond to Slack messages and commands:
-
-```json
-{
-  "webhooks": {
-    "slack": {
-      "triggers": ["app_mention", "message"],
-      "agent": "SlackBot",
-      "channels": ["#engineering"]
-    }
-  }
-}
-```
-
-### Custom Webhooks
-
-Create custom webhook endpoints:
-
-```bash
-curl -X POST https://cloud.agent-relay.com/api/webhooks/custom \
-  -H "Authorization: Bearer $API_KEY" \
-  -d '{
-    "name": "deploy-trigger",
-    "agent": "Deployer",
-    "secret": "webhook_secret_123"
-  }'
-```
-
-Then trigger:
-
-```bash
-curl -X POST https://cloud.agent-relay.com/webhooks/deploy-trigger \
-  -H "X-Webhook-Secret: webhook_secret_123" \
-  -d '{"environment": "production"}'
-```
-
-## Persistent Workspaces
-
-Cloud workspaces persist agent state:
-
-### What Persists
-
-- Agent registry and configurations
-- Message history
-- Session summaries
-- Workspace files (if using cloud compute)
-
-### Workspace Management
-
-```bash
-# List workspaces
-agent-relay cloud workspaces
-
-# Switch workspace
-agent-relay cloud workspace use production
-
-# Create workspace
-agent-relay cloud workspace create staging
-```
-
-## Configuration
-
-### Environment Variables
+## Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `AGENT_RELAY_CLOUD_URL` | Cloud API URL | `https://cloud.agent-relay.com` |
-| `AGENT_RELAY_DATA_DIR` | Local data directory | `~/.local/share/agent-relay` |
-
-### Config File Location
-
-Cloud configuration is stored in:
-
-```
-~/.local/share/agent-relay/cloud-config.json
-```
-
-This file contains your API key and is secured with `600` permissions.
-
-## Plans and Limits
-
-| Feature | Free | Pro | Team | Enterprise |
-|---------|------|-----|------|------------|
-| Machines | 1 | 3 | 10 | Unlimited |
-| Agents | 3 | 10 | 25 | Unlimited |
-| Message History | 7 days | 30 days | 90 days | Unlimited |
-| Webhooks | 2 | 10 | 50 | Unlimited |
-| Team Members | - | - | 10 | Unlimited |
-
-## Troubleshooting
-
-<AccordionGroup>
-  <Accordion title="Link fails with invalid API key">
-    1. Ensure you copied the full key starting with `ar_live_`
-    2. Check for whitespace or line breaks in the key
-    3. Verify your cloud account is active
-  </Accordion>
-  <Accordion title="Cloud connection shows offline">
-    1. Check internet connectivity
-    2. Verify daemon is running: `agent-relay status`
-    3. Try relinking: `agent-relay cloud unlink && agent-relay cloud link`
-  </Accordion>
-  <Accordion title="Remote agents not visible">
-    1. Ensure all machines are linked to the same account
-    2. Verify daemons are running on remote machines
-    3. Check cloud sync is enabled: `agent-relay cloud status`
-  </Accordion>
-  <Accordion title="Webhook not triggering">
-    1. Verify webhook secret matches
-    2. Check webhook configuration in cloud dashboard
-    3. Review webhook logs for delivery errors
-  </Accordion>
-</AccordionGroup>
+| `RELAY_API_KEY` | Relaycast workspace API key | Auto-created on first run |
+| `RELAYCAST_BASE_URL` | Relaycast API base URL | `https://api.relaycast.dev` |
 
 ## Security
 
-### Data Protection
-
-- All cloud communication uses TLS 1.3
-- API keys are encrypted at rest
-- Credentials use Nango for secure OAuth flows
-
-### Access Control
-
-- API keys are machine-specific
-- Team permissions are enforced server-side
-- Audit logs track all access
-
-### Compliance
-
-- SOC 2 Type II (in progress)
-- GDPR compliant
-- Data residency options for Enterprise
+- All communication with Relaycast uses TLS
+- API keys are workspace-scoped
+- Cached credentials are stored with restricted file permissions
+- Messages are scoped to your workspace and not visible to other workspaces

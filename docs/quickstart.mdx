@@ -5,266 +5,166 @@ description: "Get up and running with Agent Relay in 5 minutes"
 
 This guide will have you running your first multi-agent network in under 5 minutes.
 
-<Tip>Prefer to watch? See the demo below.</Tip>
-
-<Frame>
-  <video
-    controls
-    className="w-full aspect-video rounded-xl"
-    src="/videos/agent-relay-cli.mp4"
-  >
-    Your browser does not support the video tag.
-  </video>
-</Frame>
-
 ## Prerequisites
 
 Before you begin, ensure you have:
 
 - **Node.js** 18 or higher
-- **tmux** installed on your system
-- At least one AI CLI installed (Claude, Codex, Cursor, or Gemini)
+- At least one AI CLI installed ([Claude](https://docs.anthropic.com/en/docs/claude-cli), [Codex](https://github.com/openai/codex), or [Gemini](https://github.com/google-gemini/gemini-cli))
+- A **Relaycast API key** (set `RELAY_API_KEY` in your environment, or the broker will create a workspace on first run)
 
 ## Installation
 
-Install Agent Relay globally via our shell script:
+Install the SDK as a project dependency:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
+npm install @agent-relay/sdk
 ```
 
-Verify the installation:
-
-```bash
-agent-relay --version
-```
+The SDK ships with the `agent-relay` Rust binary bundled. No separate installation step is needed.
 
 ## Step-by-Step Setup
 
 <Steps>
-  <Step title="Start the Daemon">
-    The daemon is the central message broker. Start it first:
+  <Step title="Create a script">
+    Create a file called `orchestrate.ts`:
 
-    ```bash
-    agent-relay up --dashboard
-    ```
+    ```typescript
+    import { AgentRelay } from "@agent-relay/sdk";
 
-    You should see:
-    ```
-    Daemon started on /tmp/agent-relay.sock
-    Dashboard available at http://localhost:3888
+    const relay = new AgentRelay();
+
+    // Listen for incoming messages
+    relay.onMessageReceived = (msg) => {
+      console.log(`[${msg.from} -> ${msg.to}] ${msg.text}`);
+    };
+
+    // Listen for lifecycle events
+    relay.onAgentSpawned = (agent) => {
+      console.log(`Agent spawned: ${agent.name} (${agent.runtime})`);
+    };
+
+    // Spawn a Codex agent
+    const worker = await relay.codex.spawn({ name: "Worker" });
+
+    // Send a message from a human source
+    const human = relay.human({ name: "System" });
+    await human.sendMessage({
+      to: worker.name,
+      text: "Hello from the quickstart!",
+    });
+
+    // List all agents
+    const agents = await relay.listAgents();
+    for (const agent of agents) {
+      console.log(`  ${agent.name} runtime=${agent.runtime}`);
+    }
+
+    // Clean up
+    await worker.release();
+    await relay.shutdown();
     ```
   </Step>
 
-  <Step title="Create Your First Agent">
-    You can create agents two ways—via the dashboard or terminal.
-
-    **Option 1: Dashboard (recommended)**
-    1. Open the dashboard at [http://localhost:3888](http://localhost:3888)
-    2. Click **Spawn Agent**
-    3. Enter the name "Alice" and select CLI "claude"
-    4. Click **Spawn**
-
-    The dashboard will spawn the agent for you and you'll see it appear in the agents list.
-
-    **Option 2: Terminal (for scripting/automation)**
+  <Step title="Run it">
     ```bash
-    agent-relay spawn Alice claude "Wait for instructions"
+    npx tsx orchestrate.ts
     ```
 
-    <Note>
-      Replace `claude` with `codex` or `gemini` if you prefer a different AI provider.
-    </Note>
-  </Step>
-
-  <Step title="Create a Second Agent">
-    Create a second agent named "Bob" using either method:
-
-    **Dashboard:** Click **Spawn Agent**, enter "Bob", select "claude", and spawn.
-
-    **Terminal:**
-    ```bash
-    agent-relay spawn Bob claude "Wait for instructions"
-    ```
-
-    You now have two agents connected to the same relay network.
-  </Step>
-
-  <Step title="Send Your First Message">
-    In Alice's terminal, ask the agent to send a message to Bob:
-
-    ```
-    Send a message to Bob saying hello
-    ```
-
-    Alice will write a message file and output a trigger:
-    ```bash
-    cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
-    TO: Bob
-
-    Hello! Nice to meet you.
-    EOF
-    ```
-    Then output: `->relay-file:msg`
-
-    The relay daemon watches for this trigger, reads the message file, and routes it to Bob in real-time.
-  </Step>
-
-  <Step title="View the Dashboard">
-    Open your browser to [http://localhost:3888](http://localhost:3888) to see the real-time dashboard.
-
-    The dashboard shows:
-    - Connected agents (Alice and Bob)
-    - Message flow between agents
-    - System health and metrics
+    You should see output showing the agent spawn, message delivery, and clean shutdown.
   </Step>
 </Steps>
 
-## Message Formats
+## Using the High-Level API
 
-Agents communicate using a file-based protocol. Write a message file to `$AGENT_RELAY_OUTBOX/msg`, then output the trigger `->relay-file:msg`:
+The `AgentRelay` class is the recommended entry point. It manages the broker lifecycle and provides a clean facade.
 
-<CodeGroup>
-  ```bash Direct Message
-  cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
-  TO: Bob
+### Spawn agents by provider
 
-  Can you review my code changes?
-  EOF
-  ```
-  Then output: `->relay-file:msg`
-
-  ```bash Broadcast to All
-  cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
-  TO: *
-
-  I've finished the auth module
-  EOF
-  ```
-  Then output: `->relay-file:msg`
-
-  ```bash With Thread Context
-  cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
-  TO: Alice
-  THREAD: code-review
-
-  LGTM, merging now
-  EOF
-  ```
-  Then output: `->relay-file:msg`
-</CodeGroup>
-
-## Receiving Messages
-
-When Bob receives a message from Alice, it appears in their terminal as:
-
-```
-Relay message from Alice [abc12345]: Hello! Nice to meet you.
+```typescript
+const codex  = await relay.codex.spawn();   // Spawns a Codex PTY worker
+const claude = await relay.claude.spawn();  // Spawns a Claude PTY worker
+const gemini = await relay.gemini.spawn();  // Spawns a Gemini PTY worker
 ```
 
-The message ID (`abc12345`) can be used to read the full content if the message was truncated:
+### Spawn with custom options
 
-```bash
-agent-relay read abc12345
+```typescript
+const worker = await relay.spawnPty({
+  name: "Backend",
+  cli: "codex",
+  args: ["--model", "gpt-4.1"],
+  channels: ["backend"],
+});
 ```
 
-## Common Commands
+### Event hooks
 
-| Command | Description |
-|---------|-------------|
-| `agent-relay up --dashboard` | Start the daemon and dashboard |
-| `agent-relay down` | Stop the daemon |
-| `agent-relay status` | Check daemon and agent status |
-| `agent-relay spawn <name> <cli> "task"` | Spawn a new agent |
-| `agent-relay agents` | List connected agents |
-| `agent-relay read <id>` | Read full message content |
-
-## Quick Test Script
-
-Want to see it all work together? Run this quick test:
-
-**Option A: Dashboard (recommended)**
-```bash
-# Start the daemon with dashboard
-agent-relay up --dashboard
-
-# Open http://localhost:3888 in your browser
-# Click "Spawn Agent" and create "Alice" with CLI "claude"
-# Click "Spawn Agent" again and create "Bob" with CLI "claude"
-# Use the chat interface to send messages between agents!
+```typescript
+relay.onMessageReceived = (msg) => { /* incoming message */ };
+relay.onMessageSent     = (msg) => { /* outgoing message */ };
+relay.onAgentSpawned    = (agent) => { /* agent started */ };
+relay.onAgentReleased   = (agent) => { /* agent released */ };
+relay.onAgentExited     = (agent) => { /* agent process exited */ };
 ```
 
-**Option B: Terminal**
-```bash
-# Terminal 1: Start the daemon
-agent-relay up --dashboard
+## Using the Low-Level Client
 
-# Terminal 2: Spawn Alice
-agent-relay spawn Alice claude "Wait for instructions from Bob"
+For advanced use cases, use `AgentRelayClient` directly:
 
-# Terminal 3: Spawn Bob
-agent-relay spawn Bob claude "Send a greeting to Alice"
+```typescript
+import { AgentRelayClient } from "@agent-relay/sdk";
 
-# Watch the message appear in the dashboard and Alice's logs!
+const client = await AgentRelayClient.start();
+
+// Spawn a PTY worker
+const result = await client.spawnPty({
+  name: "Worker",
+  cli: "claude",
+  args: ["--dangerously-skip-permissions"],
+});
+
+// Listen for events
+const unsub = client.onEvent((event) => {
+  if (event.kind === "relay_inbound") {
+    console.log(`${event.from}: ${event.body}`);
+  }
+});
+
+// Send a message
+await client.sendMessage({ to: "Worker", text: "Start working" });
+
+// List agents
+const agents = await client.listAgents();
+
+// Shut down
+await client.shutdown();
 ```
 
-## Troubleshooting
+## What Just Happened?
 
-<AccordionGroup>
-  <Accordion title="Daemon not running">
-    If you see "Daemon not running" errors:
+When you called `new AgentRelay()` and spawned an agent:
 
-    ```bash
-    # Check status
-    agent-relay status
+1. The SDK spawned the `agent-relay` Rust binary in **broker mode** (`agent-relay init`)
+2. The broker connected to Relaycast over WebSocket for message transport
+3. On `relay.codex.spawn()`, the broker launched a **PTY worker** wrapping the Codex CLI
+4. Messages flowed through Relaycast channels, delivered to agents via the broker
 
-    # Start the daemon
-    agent-relay up
-    ```
-  </Accordion>
-
-  <Accordion title="tmux not found">
-    Install tmux for your platform:
-
-    ```bash
-    # macOS
-    brew install tmux
-
-    # Linux
-    sudo apt-get install tmux
-    ```
-  </Accordion>
-
-  <Accordion title="Messages not delivering">
-    1. Verify both agents are connected: `agent-relay agents`
-    2. Check agent names match exactly (case-insensitive)
-    3. Ensure the message format is correct: `->relay:Name message`
-  </Accordion>
-
-  <Accordion title="Permission denied on socket">
-    Remove stale socket file and restart:
-
-    ```bash
-    rm /tmp/agent-relay.sock
-    agent-relay down
-    agent-relay up
-    ```
-  </Accordion>
-</AccordionGroup>
+No daemon process to start. No socket files to manage. The SDK handles everything.
 
 ## Next Steps
 
 <CardGroup cols={2}>
   <Card title="Core Concepts" icon="book" href="/concepts">
-    Learn about agents, messages, channels, and the relay protocol in depth.
+    Learn about the broker, workers, Relaycast, and the protocol.
   </Card>
   <Card title="Messaging" icon="messages" href="/features/messaging">
-    Explore advanced messaging patterns including broadcasts, threads, and channels.
+    Explore messaging patterns: DMs, broadcasts, channels, and threads.
   </Card>
   <Card title="Agent Spawning" icon="users" href="/features/spawning">
-    Learn how to dynamically create and release worker agents.
+    Learn about PTY workers, headless agents, and lifecycle management.
   </Card>
-  <Card title="Multi-Project Setup" icon="bridge" href="/guides/multi-project">
-    Connect agents across multiple codebases with bridging.
+  <Card title="SDK Reference" icon="code" href="/reference/sdk">
+    Full API reference for AgentRelay and AgentRelayClient.
   </Card>
 </CardGroup>

@@ -1,6 +1,6 @@
 ---
 title: "Swarm Primitives"
-description: "Build powerful multi-agent swarms using Agent Relay's flexible communication primitives"
+description: "Build multi-agent swarms using Agent Relay's SDK primitives"
 ---
 
 Agent Relay provides the foundational primitives that enable any swarm orchestration pattern. Unlike frameworks that impose specific architectures, Agent Relay gives you complete flexibility to design your own multi-agent systems.
@@ -12,43 +12,44 @@ Agent Relay provides the foundational primitives that enable any swarm orchestra
 | OpenAI Agents | Handoff-based routing | Prescriptive flow control |
 | Swarms.ai | Pre-built swarm types | Configuration-heavy |
 | Strands | Self-organizing swarms | AWS ecosystem lock-in |
-| **Agent Relay** | **Communication primitives** | **You design the orchestration** |
+| **Agent Relay** | **SDK primitives** | **You design the orchestration** |
 
-## Primitives to Capabilities Mapping
+## Primitives
 
-Every swarm framework needs certain capabilities. Here's how Agent Relay primitives map to them:
+Every swarm pattern maps back to these SDK operations:
 
-| Capability | What It Enables | Agent Relay Primitive |
-|------------|-----------------|----------------------|
-| **Handoffs** | Transfer tasks between agents | `sendMessage()` with context |
-| **Continuity** | Maintain state across disconnections | Session resume + `getInbox()` |
-| **Consensus** | Group decision-making | `createProposal()` / `vote()` |
-| **Memory** | Shared state across agents | Channels + state payloads |
-| **Discovery** | Find available workers | `listAgents()` |
-| **Monitoring** | Health checks, auto-scaling | `getMetrics()` / `getHealth()` |
-| **Spawning** | Dynamic team composition | `spawn()` / `release()` |
+| Capability | Agent Relay Primitive |
+|------------|----------------------|
+| **Spawning** | `relay.codex.spawn()`, `relay.spawnPty()` |
+| **Messaging** | `client.sendMessage()`, `agent.sendMessage()` |
+| **Discovery** | `relay.listAgents()`, `client.listAgents()` |
+| **Lifecycle** | `agent.release()`, `agent.waitForExit()` |
+| **Events** | `relay.onMessageReceived`, `client.onEvent()` |
+| **Human input** | `relay.human()` |
 
 ---
 
 ## 1. Handoffs (Task Transfer)
 
-Transfer work between agents with full context.
+Transfer work between agents by sending messages with context:
 
 ```typescript
-// Direct handoff with context
-sourceAgent.sendMessage(targetAgent, task, 'action', {
-  handoff: true,
-  context: { completedSteps: ['step1', 'step2'], state: myState },
-  originalRequester: 'User',
-});
+import { AgentRelay } from "@agent-relay/sdk";
 
-// Target receives and continues
-targetAgent.onMessage = (from, { body, data }) => {
-  if (data?.handoff) {
-    // Continue the task with transferred context
-    processTask(body, data.context);
-  }
-};
+const relay = new AgentRelay();
+
+const analyzer = await relay.claude.spawn({ name: "Analyzer" });
+const implementer = await relay.codex.spawn({ name: "Implementer" });
+
+// Analyzer finishes analysis, hands off to Implementer
+const human = relay.human({ name: "Orchestrator" });
+await human.sendMessage({
+  to: "Implementer",
+  text: `Implement the following based on Analyzer's findings:
+    - Add input validation to /api/users endpoint
+    - Fix SQL injection in search query
+    - Add rate limiting middleware`,
+});
 ```
 
 ### Handoff Patterns
@@ -58,295 +59,132 @@ targetAgent.onMessage = (from, { body, data }) => {
     Route to specialists based on task content:
 
     ```typescript
-    function routeToSpecialist(task: string, context: any) {
-      const specialist = determineSpecialist(task);
-      coordinator.sendMessage(specialist, task, 'action', { context });
+    async function routeToSpecialist(task: string) {
+      const agents = await relay.listAgents();
+      const target = agents.find(a => a.name.toLowerCase().includes("backend"));
+      if (target) {
+        await target.sendMessage({ to: target.name, text: task });
+      }
     }
     ```
   </Tab>
 
-  <Tab title="Chain Handoff">
+  <Tab title="Pipeline">
     Pass work through a sequence of agents:
 
     ```typescript
-    agentA.sendMessage('AgentB', result, 'action', {
-      chain: ['AgentC', 'AgentD'], // remaining chain
-      accumulated: { stepA: result },
-    });
+    const pipeline = ["Analyzer", "Implementer", "Reviewer"];
+
+    for (const agentName of pipeline) {
+      const agent = await relay.codex.spawn({ name: agentName });
+      const result = await agent.waitForExit(120_000);
+      if (result === "timeout") {
+        await agent.release();
+        break;
+      }
+    }
     ```
   </Tab>
 
-  <Tab title="Escalation">
-    Escalate complex issues to supervisors:
+  <Tab title="Fan-Out">
+    Spawn multiple workers for parallel execution:
 
     ```typescript
-    if (needsEscalation(result)) {
-      worker.sendMessage('Supervisor', task, 'action', {
-        escalation: true,
-        reason: 'Complexity exceeded threshold',
-      });
-    }
+    const workers = await Promise.all([
+      relay.codex.spawn({ name: "TestUnit" }),
+      relay.codex.spawn({ name: "TestIntegration" }),
+      relay.codex.spawn({ name: "TestE2E" }),
+    ]);
+
+    // Wait for all to finish
+    const results = await Promise.all(
+      workers.map(w => w.waitForExit(300_000))
+    );
     ```
   </Tab>
 </Tabs>
 
 ---
 
-## 2. Continuity (Session Persistence)
+## 2. Discovery (Agent Registry)
 
-Maintain state across disconnections and handoffs.
-
-```typescript
-// Session resume - automatic on reconnect
-const client = new RelayClient({
-  agentName: 'Worker',
-  reconnect: true, // Resumes session automatically
-});
-
-// Inbox - messages stored when offline
-const missed = await client.getInbox({ unreadOnly: true });
-
-// State payloads - share state in messages
-client.sendMessage(target, summary, 'state', {
-  currentStep: 3,
-  completedTasks: ['a', 'b'],
-  sharedContext: { key: 'value' },
-});
-```
-
-### Checkpoint Pattern
-
-Save progress at each step for recovery:
+Find available agents dynamically:
 
 ```typescript
-async function processWithCheckpoints(task: string) {
-  const checkpoints: any[] = [];
+const agents = await relay.listAgents();
 
-  for (const step of steps) {
-    const result = await executeStep(step);
-    checkpoints.push({ step, result, timestamp: Date.now() });
-
-    // Save checkpoint as state message
-    client.sendMessage('StateStore', JSON.stringify(checkpoints), 'state');
-  }
+for (const agent of agents) {
+  console.log(`${agent.name} — runtime=${agent.runtime}, channels=[${agent.channels}]`);
 }
 
-// Recovery from inbox
-async function recoverState() {
-  const stateMessages = await client.getInbox({ from: 'StateStore' });
-  if (stateMessages.length > 0) {
-    const latest = stateMessages[stateMessages.length - 1];
-    return JSON.parse(latest.body);
-  }
-  return null; // Fresh start
+// Find a specific worker
+const reviewer = agents.find(a => a.name === "Reviewer");
+if (reviewer) {
+  await reviewer.sendMessage({
+    to: "Reviewer",
+    text: "Code is ready for review",
+  });
 }
 ```
 
 ---
 
-## 3. Consensus (Group Decisions)
+## 3. Event-Driven Coordination
 
-Native distributed decision-making without external dependencies.
-
-```typescript
-// Create a proposal
-client.createProposal({
-  title: 'Architecture Decision',
-  description: 'Should we use microservices or monolith?',
-  participants: ['Architect', 'DevLead', 'DevOps'],
-  consensusType: 'supermajority', // majority | supermajority | unanimous | weighted | quorum
-  threshold: 0.67,
-  timeoutMs: 300000,
-});
-
-// Vote
-client.vote({
-  proposalId: 'prop_123',
-  value: 'approve', // approve | reject | abstain
-  reason: 'Microservices align with our scaling needs',
-});
-```
-
-### Consensus Types
-
-| Type | Description | Use Case |
-|------|-------------|----------|
-| `majority` | >50% agreement | General decisions |
-| `supermajority` | >=threshold (default 2/3) | Important changes |
-| `unanimous` | 100% agreement | Critical decisions |
-| `weighted` | Votes weighted by role | Expert opinions matter more |
-| `quorum` | Minimum participation + majority | Ensure enough voters |
-
-### Use Cases
-
-<CardGroup cols={3}>
-  <Card title="Code Review" icon="code">
-    Require N approvals before merge
-  </Card>
-  <Card title="Deployment Gates" icon="rocket">
-    Unanimous approval for production
-  </Card>
-  <Card title="API Design" icon="diagram-project">
-    Weighted voting by expertise
-  </Card>
-</CardGroup>
-
----
-
-## 4. Memory (Shared State)
-
-Multiple approaches to shared memory across agents.
-
-### Dedicated State Agent
+React to events in real-time:
 
 ```typescript
-class StateAgent {
-  private state: Map<string, any> = new Map();
+const relay = new AgentRelay();
 
-  constructor() {
-    this.client = new RelayClient({ agentName: 'StateStore' });
+const completedWorkers = new Set<string>();
+const totalWorkers = 3;
+
+relay.onAgentExited = (agent) => {
+  completedWorkers.add(agent.name);
+  console.log(`${agent.name} finished (${completedWorkers.size}/${totalWorkers})`);
+
+  if (completedWorkers.size === totalWorkers) {
+    console.log("All workers complete — starting review phase");
+    relay.claude.spawn({ name: "Reviewer" });
   }
+};
 
-  async start() {
-    await this.client.connect();
+relay.onMessageReceived = (msg) => {
+  console.log(`[${msg.from}] ${msg.text}`);
+};
 
-    this.client.onMessage = (from, { body, data }) => {
-      if (data?.action === 'get') {
-        const value = this.state.get(data.key);
-        this.client.sendMessage(from, JSON.stringify(value), 'state');
-      } else if (data?.action === 'set') {
-        this.state.set(data.key, JSON.parse(body));
-        this.client.sendMessage(from, 'OK', 'state');
-      }
-    };
-  }
-}
-```
-
-### Channel-Based Shared Memory
-
-```typescript
-class SharedMemory {
-  private cache: Map<string, any> = new Map();
-
-  async init(client: RelayClient) {
-    client.joinChannel('#memory');
-
-    client.onChannelMessage = (from, channel, body) => {
-      if (channel === '#memory') {
-        const { key, value } = JSON.parse(body);
-        this.cache.set(key, value);
-      }
-    };
-  }
-
-  set(client: RelayClient, key: string, value: any) {
-    this.cache.set(key, value);
-    client.sendChannelMessage('#memory', JSON.stringify({ key, value }));
-  }
-
-  get(key: string) {
-    return this.cache.get(key);
-  }
-}
+// Spawn parallel workers
+await relay.codex.spawn({ name: "Worker1" });
+await relay.codex.spawn({ name: "Worker2" });
+await relay.codex.spawn({ name: "Worker3" });
 ```
 
 ---
 
-## 5. Discovery (Agent Registry)
+## 4. Human-in-the-Loop
 
-Find and monitor available agents dynamically.
-
-```typescript
-// List all agents
-const agents = await client.listAgents();
-
-// Filter options
-const active = await client.listAgents({ includeIdle: false });
-const projectAgents = await client.listAgents({ project: 'myproject' });
-
-// Agent info returned
-interface AgentInfo {
-  name: string;
-  cli?: string;      // claude, codex, gemini
-  idle?: boolean;
-  parent?: string;   // spawner
-  task?: string;
-  connectedAt?: number;
-}
-```
-
-### Discovery Patterns
+Inject human decisions into the agent workflow:
 
 ```typescript
-// Find specialist by task content
-async function findSpecialist(specialty: string): Promise<string | null> {
-  const agents = await client.listAgents({ includeIdle: false });
+const relay = new AgentRelay();
+const human = relay.human({ name: "Manager" });
 
-  for (const agent of agents) {
-    if (agent.task?.toLowerCase().includes(specialty)) {
-      return agent.name;
-    }
-  }
-  return null;
-}
+// Start a worker
+const worker = await relay.codex.spawn({ name: "Developer" });
 
-// Load balancing - find least busy worker
-async function leastBusyWorker(): Promise<string> {
-  const metrics = await client.getMetrics();
-  const workers = metrics.agents.filter(a => a.name.startsWith('Worker'));
-
-  // Sort by CPU usage
-  workers.sort((a, b) => (a.cpuPercent || 0) - (b.cpuPercent || 0));
-
-  return workers[0]?.name || 'Worker-0';
-}
-```
-
----
-
-## 6. Monitoring (Observability)
-
-Built-in monitoring without external integrations.
-
-```typescript
-// System health
-const health = await client.getHealth();
-// { healthScore, issues, recommendations, crashes, alerts }
-
-// Resource metrics
-const metrics = await client.getMetrics();
-// { agents: [...], system: { heapUsed, freeMemory } }
-
-// Shadow monitoring (invisible observation)
-client.bindAsShadow('TargetAgent', {
-  receiveIncoming: true,
-  receiveOutgoing: true,
+// Send instructions from a human source
+await human.sendMessage({
+  to: worker.name,
+  text: "Implement the login page. Use React and Tailwind CSS.",
 });
 
-// Agent logs
-import { getLogs } from '@agent-relay/sdk';
-const logs = await getLogs('Worker1', { lines: 100 });
-```
-
-### Auto-Scaling Pattern
-
-```typescript
-async function autoScale(minWorkers: number, maxWorkers: number) {
-  const metrics = await client.getMetrics();
-  const workers = metrics.agents.filter(a => a.name.startsWith('Worker'));
-  const avgCpu = workers.reduce((sum, w) => sum + (w.cpuPercent || 0), 0) / workers.length;
-
-  if (avgCpu > 80 && workers.length < maxWorkers) {
-    await client.spawn({
-      name: `Worker-${workers.length}`,
-      cli: 'claude',
-      task: 'General worker'
-    });
-  } else if (avgCpu < 20 && workers.length > minWorkers) {
-    await client.release(workers[workers.length - 1].name);
+// Monitor progress
+relay.onMessageReceived = (msg) => {
+  if (msg.from === worker.name) {
+    console.log(`Developer update: ${msg.text}`);
+    // Could prompt the actual human here and relay their response
   }
-}
+};
 ```
 
 ---
@@ -366,84 +204,72 @@ These primitives combine to enable common swarm patterns:
     Sequential processing through agent stages. Best for multi-step workflows.
   </Card>
   <Card title="Self-Organizing" icon="users-gear">
-    Agents discover each other and claim tasks. Best for dynamic workloads.
+    Agents claim tasks from a shared channel. Best for dynamic workloads.
   </Card>
 </CardGroup>
 
-### Example: Full-Featured Swarm Coordinator
+### Example: Full Swarm Coordinator
 
 ```typescript
+import { AgentRelay, type Agent } from "@agent-relay/sdk";
+
 class SwarmCoordinator {
-  constructor(private client: RelayClient) {}
+  private relay: AgentRelay;
+  private workers = new Map<string, Agent>();
 
-  // Handoff with continuity
-  async delegateTask(target: string, task: string, context: any) {
-    return this.client.sendAndWait(target, task, {
-      data: { handoff: true, context },
-    });
+  constructor() {
+    this.relay = new AgentRelay();
+
+    this.relay.onAgentExited = (agent) => {
+      this.workers.delete(agent.name);
+      console.log(`Worker ${agent.name} finished. ${this.workers.size} remaining.`);
+
+      if (this.workers.size === 0) {
+        this.onAllComplete();
+      }
+    };
+
+    this.relay.onMessageReceived = (msg) => {
+      console.log(`[${msg.from}] ${msg.text}`);
+    };
   }
 
-  // Consensus for critical decisions
-  async groupDecision(question: string, voters: string[]) {
-    this.client.createProposal({
-      title: question,
-      participants: voters,
-      consensusType: 'majority',
-    });
+  async spawnWorker(name: string, cli: string) {
+    const agent = await this.relay.spawnPty({ name, cli });
+    this.workers.set(name, agent);
+    return agent;
   }
 
-  // Memory via state channel
-  async shareState(key: string, value: any) {
-    this.client.sendChannelMessage('#swarm-state', JSON.stringify({ key, value }));
+  async releaseAll() {
+    for (const agent of this.workers.values()) {
+      await agent.release();
+    }
+    this.workers.clear();
   }
 
-  // Discovery for dynamic routing
-  async findAvailableWorker(): Promise<string | null> {
-    const agents = await this.client.listAgents({ includeIdle: true });
-    const workers = agents.filter(a => a.name.startsWith('Worker') && a.idle);
-    return workers[0]?.name || null;
+  async shutdown() {
+    await this.releaseAll();
+    await this.relay.shutdown();
   }
 
-  // Monitoring via shadows
-  async monitorWorker(name: string) {
-    this.client.bindAsShadow(name, { receiveIncoming: true, receiveOutgoing: true });
+  private onAllComplete() {
+    console.log("All workers complete");
   }
 }
 ```
 
 ---
 
-## Real-World Example: AgentSwarm
-
-[AgentSwarm](https://github.com/AgentWorkforce/agentswarm) is a production multi-agent orchestrator built entirely on Agent Relay primitives:
-
-```
-Bootstrap → Conductor → Planner → Workers → Judge → Repeat
-                ↓           ↓         ↓        ↓
-           (spawn)    (sendMessage) (spawn) (consensus)
-```
-
-- **Conductor**: Deterministic orchestrator using `spawn()` and `sendMessage()`
-- **Planner**: LLM agent that breaks down goals into tasks
-- **Workers**: Parallel agents in isolated git worktrees
-- **Judge**: Evaluates progress and decides next steps
-
-Agent Relay handles all the communication, spawning, and coordination—you focus on the swarm logic.
-
 ## Summary
 
-| Primitive | Capability |
-|-----------|------------|
-| `sendMessage()` | Handoffs, task delegation |
-| `sendAndWait()` | Synchronous handoffs, checkpoints |
-| `getInbox()` | Continuity, missed message recovery |
-| Session resume | Continuity across disconnections |
-| `createProposal()` / `vote()` | Consensus decisions |
-| `sendChannelMessage()` | Shared memory, pub/sub |
-| State payloads (`data`) | Context transfer, memory |
-| `listAgents()` | Discovery, registry |
-| `getMetrics()` / `getHealth()` | Monitoring, auto-scaling |
-| `bindAsShadow()` | Invisible monitoring, QA |
-| `spawn()` / `release()` | Dynamic team composition |
+| Primitive | What It Enables |
+|-----------|-----------------|
+| `relay.codex.spawn()` / `spawnPty()` | Dynamic team composition |
+| `client.sendMessage()` | Task delegation, handoffs |
+| `agent.waitForExit()` | Pipeline sequencing |
+| `relay.listAgents()` | Discovery, load balancing |
+| `relay.onAgentExited` | Fan-in aggregation |
+| `relay.onMessageReceived` | Event-driven coordination |
+| `relay.human()` | Human-in-the-loop |
 
 **Agent Relay gives you primitives. You build the swarm.**
