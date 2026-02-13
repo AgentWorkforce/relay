@@ -24,6 +24,8 @@ export interface CloudSyncConfig {
   apiKey?: string;
   cloudUrl: string;
   heartbeatInterval: number; // ms
+  /** Interval for polling cloud messages, separate from heartbeat (default: 5000ms) */
+  messagePollInterval?: number;
   enabled: boolean;
   /** Enable message sync to cloud (default: true if connected) */
   messageSyncEnabled?: boolean;
@@ -94,6 +96,7 @@ export interface CrossMachineMessage {
 export class CloudSyncService extends EventEmitter {
   private config: CloudSyncConfig;
   private heartbeatTimer?: NodeJS.Timeout;
+  private messagePollTimer?: NodeJS.Timeout;
   private machineId: string;
   private localAgents: Map<string, { name: string; status: string; isHuman?: boolean; avatarUrl?: string }> = new Map();
   private remoteAgents: RemoteAgent[] = [];
@@ -122,6 +125,9 @@ export class CloudSyncService extends EventEmitter {
       heartbeatInterval: config.heartbeatInterval
         || (process.env.AGENT_RELAY_HEARTBEAT_INTERVAL ? parseInt(process.env.AGENT_RELAY_HEARTBEAT_INTERVAL, 10) : 0)
         || 60000, // 60 seconds default; override via AGENT_RELAY_HEARTBEAT_INTERVAL env var
+      messagePollInterval: config.messagePollInterval
+        || (process.env.AGENT_RELAY_MESSAGE_POLL_INTERVAL ? parseInt(process.env.AGENT_RELAY_MESSAGE_POLL_INTERVAL, 10) : 0)
+        || 5000, // 5 seconds default for fast message delivery
       enabled: config.enabled ?? true,
       useOptimizedSync: config.useOptimizedSync ?? true,
       syncQueue: config.syncQueue,
@@ -204,6 +210,16 @@ export class CloudSyncService extends EventEmitter {
       this.config.heartbeatInterval
     );
 
+    // Start fast message polling (separate from heartbeat for low-latency delivery)
+    const pollInterval = this.config.messagePollInterval || 5000;
+    if (pollInterval < this.config.heartbeatInterval) {
+      this.messagePollTimer = setInterval(
+        () => this.fetchMessages().catch((err) => log.error('Message poll failed', { error: String(err) })),
+        pollInterval,
+      );
+      log.info('Fast message polling enabled', { intervalMs: pollInterval });
+    }
+
     this.connected = true;
     this.emit('connected');
   }
@@ -215,6 +231,10 @@ export class CloudSyncService extends EventEmitter {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = undefined;
+    }
+    if (this.messagePollTimer) {
+      clearInterval(this.messagePollTimer);
+      this.messagePollTimer = undefined;
     }
 
     // Gracefully close sync queue (flushes pending messages)
@@ -335,13 +355,17 @@ export class CloudSyncService extends EventEmitter {
         }
       }
 
-      // Fetch messages, sync agents, sync local messages, and push metrics to cloud
-      await Promise.all([
-        this.fetchMessages(),
+      // Fetch messages (skip if fast poll timer handles it), sync agents, sync local messages, and push metrics to cloud
+      const tasks: Promise<unknown>[] = [
         this.syncAgents(),
         this.syncMessagesToCloud(),
         this.pushAgentMetrics(),
-      ]);
+      ];
+      // Only fetch messages in heartbeat if fast polling is not active
+      if (!this.messagePollTimer) {
+        tasks.push(this.fetchMessages());
+      }
+      await Promise.all(tasks);
     } catch (error) {
       // Provide more specific error messages for common issues
       const errorMessage = String(error);
