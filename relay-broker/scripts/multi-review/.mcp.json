@@ -8,7 +8,7 @@
       "command": "npx",
       "env": {
         "RELAY_AGENT_NAME": "broker",
-        "RELAY_API_KEY": "rk_live_b00fd0ddeca96468d72140c9c4b3a910",
+        "RELAY_API_KEY": "${RELAY_API_KEY}",
         "RELAY_BASE_URL": "https://api.relaycast.dev"
       }
     }
