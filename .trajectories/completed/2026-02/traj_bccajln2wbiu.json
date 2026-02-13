@@ -1,0 +1,54 @@
+{
+  "id": "traj_bccajln2wbiu",
+  "version": 1,
+  "task": {
+    "title": "Replace 5-second message polling with long-poll endpoint in both relay-cloud and relay repos"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-13T14:17:07.414Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-02-13T14:19:26.402Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_enxxgskpac4b",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-02-13T14:19:26.402Z",
+      "events": [
+        {
+          "ts": 1770992366403,
+          "type": "decision",
+          "content": "Used server-side 500ms polling in long-poll endpoint rather than pub/sub: Used server-side 500ms polling in long-poll endpoint rather than pub/sub",
+          "raw": {
+            "question": "Used server-side 500ms polling in long-poll endpoint rather than pub/sub",
+            "chosen": "Used server-side 500ms polling in long-poll endpoint rather than pub/sub",
+            "alternatives": [],
+            "reasoning": "Simple to implement with existing DB queries, no additional infrastructure needed, and 500ms polling is fast enough for the use case"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-13T14:19:28.268Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "892e20814284766ea28e6995ffb0dd10be2e50cb",
+    "endRef": "463b9924646d8e40cdfc8f7a177caea195346ed4",
+    "traceId": "trace_hvf8wyck9i8f"
+  },
+  "completedAt": "2026-02-13T14:19:28.268Z",
+  "retrospective": {
+    "summary": "Replaced 5-second interval polling with long-poll endpoint. Cloud side adds ?wait=N param that holds connection for up to 30s. Daemon side uses AbortController-based loop requesting with wait=25.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  }
+}
