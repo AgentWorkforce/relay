@@ -97,6 +97,7 @@ if bun build \
     --external better-sqlite3 \
     --external cpu-features \
     --external node-pty \
+    --external ssh2 \
     ./dist/src/cli/index.js \
     --outfile "$CURRENT_OUTPUT" 2>&1; then
 

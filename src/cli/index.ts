@@ -5013,8 +5013,9 @@ async function runCliAuth(
         clearTimeout(timeout);
         if (code !== null && code !== 0) {
           console.log(red(`SSH exited with code ${code}. Check credentials and connectivity.`));
-          resolve(false);
         }
+        // Any exit during the connection window means tunnel failed
+        resolve(false);
       });
       child.stderr?.on('data', (data: Buffer) => {
         const msg = data.toString().trim();
