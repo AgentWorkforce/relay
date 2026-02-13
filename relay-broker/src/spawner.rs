@@ -135,7 +135,7 @@ impl Spawner {
     }
 }
 
-async fn terminate_child(child: &mut Child, timeout_duration: Duration) -> Result<()> {
+pub async fn terminate_child(child: &mut Child, timeout_duration: Duration) -> Result<()> {
     #[cfg(unix)]
     {
         if let Some(pid) = child.id() {
