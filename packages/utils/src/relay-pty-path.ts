@@ -92,7 +92,7 @@ export function getLastSearchPaths(): string[] {
  */
 export function findRelayPtyBinary(callerDirname: string): string | null {
   // Check for explicit environment variable override first
-  const envOverride = process.env.AGENT_RELAY_BINARY || process.env.RELAY_PTY_BINARY;
+  const envOverride = process.env.RELAY_PTY_BINARY;
   if (envOverride && isExecutable(envOverride) && isPlatformCompatibleBinary(envOverride)) {
     lastSearchPaths = [envOverride];
     return envOverride;

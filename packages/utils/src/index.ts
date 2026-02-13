@@ -8,9 +8,4 @@ export * from './error-tracking.js';
 export * from './model-mapping.js';
 export * from './model-commands.js';
 export * from './relay-pty-path.js';
-export {
-  findRelayPtyBinary as findAgentRelayBinary,
-  hasRelayPtyBinary as hasAgentRelayBinary,
-  getCachedRelayPtyPath as getCachedAgentRelayPath,
-} from './relay-pty-path.js';
 export * from './client-helpers.js';

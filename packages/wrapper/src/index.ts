@@ -169,12 +169,6 @@ export {
   type RelayPtyOrchestratorConfig,
 } from './relay-pty-orchestrator.js';
 
-// Forward-compatibility alias for hybrid migration.
-export {
-  RelayPtyOrchestrator as RelayBrokerOrchestrator,
-  type RelayPtyOrchestratorConfig as RelayBrokerOrchestratorConfig,
-} from './relay-pty-orchestrator.js';
-
 // OpenCode HTTP API integration
 export {
   OpenCodeApi,
