@@ -4,7 +4,11 @@ pub fn is_human_sender(sender: &str, sender_kind: SenderKind) -> bool {
     if matches!(sender_kind, SenderKind::Human) {
         return true;
     }
-
+    // If the protocol explicitly marks the sender as an agent, trust that.
+    if matches!(sender_kind, SenderKind::Agent) {
+        return false;
+    }
+    // Fallback heuristic for Unknown sender_kind (e.g. command.invoked events).
     let s = sender.trim().to_ascii_lowercase();
     s == "human" || s.starts_with("human:")
 }
@@ -23,6 +27,8 @@ mod tests {
         assert!(is_human_sender("alice", SenderKind::Human));
         assert!(is_human_sender("human:alice", SenderKind::Unknown));
         assert!(!is_human_sender("Worker1", SenderKind::Agent));
+        // Explicit Agent kind overrides string heuristic
+        assert!(!is_human_sender("human:spoofed", SenderKind::Agent));
     }
 
     #[test]
