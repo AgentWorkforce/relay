@@ -15,10 +15,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Spawning without a task is unaffected and always succeeds.
 - See the updated [Worker Orchestration guide](/docs/guides/worker-orchestration) for retry patterns.
 
+### Added
+- **CLI SSH Authentication**: New SSH-based authentication for CLI local auth workflows, enabling secure agent spawning and communication (#648e7782).
+- **Multi-Repository Spawning**: Agents can now be spawned across multiple repositories in a single operation, improving orchestration flexibility (#2d2bf610).
+- **Model Hotswap**: Runtime model switching for agents, allowing dynamic provider and model changes without restart (#5a80bdc0).
+- **Prerelease Publishing**: New prerelease script for staging environment, enabling faster iteration and testing cycles (#495428cd).
+
 ### Fixed
 - Task injection failures are no longer silent - spawn properly returns an error when delivery fails.
 - Zombie agents (spawned but never received their task) are now cleaned up automatically.
 - Automatic retry (3 attempts with 2s delays) for task injection improves reliability.
+- **Breaking cache removed**: Removed cache logic that caused agent initialization failures (#d1166cf9).
+- **Better-sqlite3 optional in tests**: Database dependency now properly marked as optional for test environments, improving CI reliability (#190611b7).
+- Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 
 ## [2.1.5] - 2026-01-30
 
