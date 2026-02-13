@@ -128,6 +128,11 @@ export class Daemon {
   private spawnManager?: SpawnManager;
   private shuttingDown = false;
   private storageHealth?: StorageHealth;
+  /** Cloud credentials for API calls (stored during cloud sync init) */
+  private cloudApiKey?: string;
+  private cloudUrl?: string;
+  /** Track Slack reply contexts for agents (agent name -> slack context) */
+  private slackContexts = new Map<string, { channelId: string; threadTs: string; workspaceId: string }>();
 
   /** Telemetry tracking */
   private startTime?: number;
@@ -728,6 +733,15 @@ export class Daemon {
       };
       this.cloudSync.setMetricsProvider(metricsProvider);
 
+      // Store cloud credentials for API calls (e.g., Slack reply forwarding)
+      this.cloudApiKey = apiKey;
+      this.cloudUrl = cloudUrl || this.config.cloudUrl;
+
+      // Set up cloud message handler for __cloud__ routing
+      this.router.setOnCloudMessage((from, body, data) => {
+        this.handleCloudMessage(from, body, data);
+      });
+
       log.info('Cloud sync enabled');
     } catch (err) {
       log.error('Failed to initialize cloud sync', { error: String(err) });
@@ -790,6 +804,21 @@ export class Daemon {
     if (msg.to === '__spawner__' && msg.metadata?.type === 'spawn_command') {
       this.handleCloudSpawnCommand(msg);
       return;
+    }
+
+    // Store Slack context for reply routing
+    if (msg.metadata?.slackReply && msg.metadata?.channelId && msg.metadata?.threadTs && msg.metadata?.workspaceId) {
+      this.slackContexts.set(msg.to, {
+        channelId: msg.metadata.channelId as string,
+        threadTs: msg.metadata.threadTs as string,
+        workspaceId: msg.metadata.workspaceId as string,
+      });
+    }
+
+    // Enrich Slack messages with correct reply command (daemon knows the cloud URL)
+    if (msg.metadata?.slackReply && this.cloudUrl && msg.metadata?.workspaceToken) {
+      const slackCmd = `RELAY_CLOUD_URL="${this.cloudUrl}" WORKSPACE_TOKEN="${msg.metadata.workspaceToken}" WORKSPACE_ID="${msg.metadata.workspaceId}" slack reply --channel ${msg.metadata.channelId} --thread ${msg.metadata.threadTs} --text "your response here"`;
+      msg.content = `${msg.content}\n\nTo reply using the slack CLI:\n\`\`\`\n${slackCmd}\n\`\`\``;
     }
 
     // Find local agent
@@ -856,11 +885,25 @@ export class Daemon {
       });
 
       const spawner = this.spawnManager.getSpawner();
+
+      // Build extra env vars for spawned agent
+      const extraEnv: Record<string, string> = {};
+      if (this.cloudUrl) {
+        extraEnv.RELAY_CLOUD_URL = this.cloudUrl;
+      }
+      if (command.metadata?.workspaceToken) {
+        extraEnv.WORKSPACE_TOKEN = command.metadata.workspaceToken as string;
+      }
+      if (command.metadata?.workspaceId) {
+        extraEnv.WORKSPACE_ID = command.metadata.workspaceId as string;
+      }
+
       const result = await spawner.spawn({
         name: command.agentName,
         cli: command.cli,
         task: command.task || 'You were spawned by the cloud orchestrator. Check your inbox for messages.',
         spawnerName: msg.from.agent,
+        extraEnv: Object.keys(extraEnv).length > 0 ? extraEnv : undefined,
       });
 
       if (result.success) {
@@ -868,6 +911,15 @@ export class Daemon {
           name: command.agentName,
           pid: result.pid,
         });
+
+        // Store Slack context if this is a Slack-spawned agent
+        if (command.metadata?.slackReply && command.metadata?.channel && command.metadata?.threadTs && command.metadata?.workspaceId) {
+          this.slackContexts.set(command.agentName, {
+            channelId: command.metadata.channel as string,
+            threadTs: command.metadata.threadTs as string,
+            workspaceId: command.metadata.workspaceId as string,
+          });
+        }
       } else {
         log.error('Cloud spawn failed', {
           name: command.agentName,
@@ -877,6 +929,61 @@ export class Daemon {
     } catch (err: unknown) {
       const error = err instanceof Error ? err.message : String(err);
       log.error('Failed to parse cloud spawn command', { error });
+    }
+  }
+
+  /**
+   * Handle a message addressed to __cloud__ from a local agent.
+   * Looks up the Slack context for the sender and forwards the message
+   * to the cloud server for Slack delivery.
+   */
+  private async handleCloudMessage(
+    from: string,
+    body: string | Record<string, unknown>,
+    data?: Record<string, unknown>,
+  ): Promise<void> {
+    const slackContext = this.slackContexts.get(from);
+    if (!slackContext) {
+      log.warn('No Slack context found for cloud message sender', { from });
+      return;
+    }
+
+    if (!this.cloudApiKey || !this.cloudUrl) {
+      log.warn('Cannot forward cloud message: missing cloud credentials');
+      return;
+    }
+
+    const text = typeof body === 'string' ? body : JSON.stringify(body);
+
+    try {
+      const response = await fetch(`${this.cloudUrl}/api/daemons/slack-reply`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.cloudApiKey}`,
+        },
+        body: JSON.stringify({
+          text,
+          channelId: slackContext.channelId,
+          threadTs: slackContext.threadTs,
+          workspaceId: slackContext.workspaceId,
+        }),
+      });
+
+      if (!response.ok) {
+        log.error('Failed to forward cloud message to Slack', {
+          status: response.status,
+          from,
+        });
+      } else {
+        log.info('Cloud message forwarded to Slack', {
+          from,
+          channelId: slackContext.channelId,
+        });
+      }
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err.message : String(err);
+      log.error('Error forwarding cloud message to Slack', { error, from });
     }
   }
 
