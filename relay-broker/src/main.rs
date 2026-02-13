@@ -25,7 +25,7 @@ use relay_broker::{
     protocol::{AgentRuntime, AgentSpec, ProtocolEnvelope, RelayDelivery, PROTOCOL_VERSION},
     pty::PtySession,
     relaycast_ws::{RelaycastWsClient, WsControl},
-    snippets::ensure_reaycast_mcp_config,
+    snippets::ensure_relaycast_mcp_config,
     spawner::Spawner,
     types::{BrokerCommandEvent, BrokerCommandPayload, SenderKind},
 };
@@ -584,7 +584,7 @@ async fn run_init(cmd: InitCommand) -> Result<()> {
         .await;
     });
 
-    if let Err(error) = ensure_reaycast_mcp_config(
+    if let Err(error) = ensure_relaycast_mcp_config(
         &runtime_cwd,
         Some(relay_workspace_key.as_str()),
         Some(http_base.as_str()),
@@ -1414,7 +1414,7 @@ async fn run_wrap(cli_name: String, cli_args: Vec<String>) -> Result<()> {
     tracing::debug!("connected to relaycast");
 
     // Ensure .mcp.json has relaycast server config (pass agent name so MCP server uses same identity)
-    if let Err(error) = ensure_reaycast_mcp_config(
+    if let Err(error) = ensure_relaycast_mcp_config(
         &runtime_cwd,
         Some(relay_workspace_key.as_str()),
         Some(http_base.as_str()),

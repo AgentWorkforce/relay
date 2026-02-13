@@ -84,7 +84,7 @@ pub fn ensure_protocol_snippets(root: &Path) -> io::Result<SnippetInstallReport>
     ensure_protocol_snippets_inner(root, dirs::home_dir())
 }
 
-pub fn ensure_reaycast_mcp_config(
+pub fn ensure_relaycast_mcp_config(
     root: &Path,
     relay_api_key: Option<&str>,
     relay_base_url: Option<&str>,
@@ -351,7 +351,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        ensure_protocol_snippets_inner, ensure_reaycast_mcp_config, find_project_root,
+        ensure_protocol_snippets_inner, ensure_relaycast_mcp_config, find_project_root,
         should_install_in, snippet_block, MARKER_START,
     };
 
@@ -516,7 +516,7 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         let temp = tempdir().expect("tempdir");
         let root = temp.path();
 
-        let report = ensure_reaycast_mcp_config(root, Some("rk_test_123"), None, None)
+        let report = ensure_relaycast_mcp_config(root, Some("rk_test_123"), None, None)
             .expect("create mcp config");
         assert_eq!(report.created, 1);
         assert_eq!(report.updated, 0);
@@ -555,7 +555,7 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         .expect("write existing mcp file");
 
         let report =
-            ensure_reaycast_mcp_config(root, None, Some("https://api.relaycast.dev"), None)
+            ensure_relaycast_mcp_config(root, None, Some("https://api.relaycast.dev"), None)
                 .expect("update mcp config");
         assert_eq!(report.created, 0);
         assert_eq!(report.updated, 1);
@@ -580,7 +580,7 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
         )
         .expect("write existing mcp file");
 
-        let report = ensure_reaycast_mcp_config(root, Some("rk_new"), None, Some("my-agent"))
+        let report = ensure_relaycast_mcp_config(root, Some("rk_new"), None, Some("my-agent"))
             .expect("update mcp config env");
         assert_eq!(report.created, 0);
         assert_eq!(report.updated, 1);
