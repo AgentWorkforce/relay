@@ -72,6 +72,12 @@
       "import": "./dist/relay-pty-path.js",
       "default": "./dist/cjs/relay-pty-path.js"
     },
+    "./agent-relay-path": {
+      "types": "./dist/agent-relay-path.d.ts",
+      "require": "./dist/cjs/agent-relay-path.js",
+      "import": "./dist/agent-relay-path.js",
+      "default": "./dist/cjs/agent-relay-path.js"
+    },
     "./client-helpers": {
       "types": "./dist/client-helpers.d.ts",
       "require": "./dist/cjs/client-helpers.js",
