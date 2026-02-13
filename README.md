@@ -125,6 +125,27 @@ agent-relay cloud send AgentName "Your message"
 
 Connect your CLI tool to your own private workspace and unlock agents working 24/7 against your GitHub repository in their own private sandbox.
 
+## Integrations
+
+### Slack
+
+Receive and respond to Slack messages directly from your agents:
+
+```bash
+# Link your Slack workspace
+agent-relay cloud slack link
+
+# Agents automatically receive Slack messages via relay
+# and can reply using the slack CLI
+```
+
+When linked, agents receive Slack messages as relay events and can reply using:
+```bash
+slack reply --channel CHANNEL_ID --thread THREAD_TS --text "Your message"
+```
+
+This enables seamless agent-to-Slack communication for notifications, status updates, and interactive workflows.
+
 ## Teaching Agents
 
 > **Note:** On `agent-relay up` initialization this step happens automatically. If there is already an existing `AGENTS.md`, `CLAUDE.md`, or `GEMINI.md`, it will append the protocol instructions to that file.
