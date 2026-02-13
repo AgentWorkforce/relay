@@ -1,11 +1,11 @@
 ---
-title: SDK Reference
-description: Complete reference for the @agent-relay/sdk package
+title: "SDK Reference"
+description: "Complete API reference for @agent-relay/sdk"
 ---
 
 # SDK Reference
 
-The `@agent-relay/sdk` package provides a lightweight TypeScript/JavaScript SDK for agent-to-agent communication via Agent Relay.
+The `@agent-relay/sdk` package provides a TypeScript SDK for spawning, messaging, and orchestrating AI agents through the Agent Relay broker.
 
 ## Installation
 
@@ -13,1014 +13,541 @@ The `@agent-relay/sdk` package provides a lightweight TypeScript/JavaScript SDK 
 npm install @agent-relay/sdk
 ```
 
-## Quick Start
-
-### Standalone Mode (No Daemon Required)
-
-The simplest way to get started - creates an in-process daemon automatically:
-
-```typescript
-import { createRelay } from '@agent-relay/sdk';
-
-const relay = await createRelay();
-const alice = await relay.client('Alice');
-const bob = await relay.client('Bob');
-
-bob.onMessage = (from, { body }) => console.log(`${from}: ${body}`);
-alice.sendMessage('Bob', 'Hello!');
-```
-
-### With External Daemon (Node.js)
-
-Connect to a running daemon via Unix socket:
-
-```typescript
-import { RelayClient } from '@agent-relay/sdk';
-
-const client = new RelayClient({ agentName: 'MyAgent' });
-await client.connect();
-
-client.onMessage = (from, { body }) => {
-  console.log(`Message from ${from}: ${body}`);
-};
-
-client.sendMessage('OtherAgent', 'Hello!');
-```
-
-### Browser Usage (WebSocket)
-
-Connect from a browser via WebSocket:
-
-```typescript
-import { BrowserRelayClient } from '@agent-relay/sdk';
-
-const client = new BrowserRelayClient({
-  agentName: 'BrowserAgent',
-  transport: { wsUrl: 'wss://relay.example.com/ws' },
-});
-
-await client.connect();
-client.sendMessage('ServerAgent', 'Hello from browser!');
-```
-
 ---
 
-## RelayClient
+## AgentRelay
 
-The primary client for Node.js environments using Unix sockets.
+High-level facade that manages the broker lifecycle and provides a clean, event-driven API.
 
 ```typescript
-import { RelayClient, type ClientConfig } from '@agent-relay/sdk';
+import { AgentRelay } from "@agent-relay/sdk";
 ```
 
 ### Constructor
 
 ```typescript
-new RelayClient(config?: Partial<ClientConfig>)
+new AgentRelay(options?: AgentRelayOptions)
 ```
 
-**ClientConfig:**
+**AgentRelayOptions:**
 
 | Property | Type | Description | Default |
 |----------|------|-------------|---------|
-| `socketPath` | `string` | Unix socket path | Auto-discovered or `/tmp/agent-relay.sock` |
-| `agentName` | `string` | Agent identifier | `'agent'` |
-| `entityType` | `'agent' \| 'user'` | Entity type | `'agent'` |
-| `cli` | `string` | CLI identifier (claude, codex, etc.) | None |
-| `task` | `string` | Task description | None |
-| `workingDirectory` | `string` | Working directory | None |
-| `quiet` | `boolean` | Suppress console logging | `false` |
-| `reconnect` | `boolean` | Auto-reconnect on disconnect | `true` |
-| `maxReconnectAttempts` | `number` | Max retry attempts | `10` |
-| `reconnectDelayMs` | `number` | Initial retry delay (ms) | `1000` |
-| `reconnectMaxDelayMs` | `number` | Max retry delay (ms) | `30000` |
+| `binaryPath` | `string` | Path to the `agent-relay` binary | Auto-detected |
+| `binaryArgs` | `string[]` | Additional arguments for the binary | `[]` |
+| `brokerName` | `string` | Name for the broker instance | `"broker"` |
+| `channels` | `string[]` | Default channels for agents | `["general"]` |
+| `cwd` | `string` | Working directory for the broker | `process.cwd()` |
+| `env` | `NodeJS.ProcessEnv` | Environment variables | `process.env` |
+| `requestTimeoutMs` | `number` | Timeout for protocol requests | `10000` |
+| `shutdownTimeoutMs` | `number` | Timeout for graceful shutdown | `3000` |
 
-### Properties
+### Event Hooks
 
-```typescript
-client.state: ClientState
-// 'DISCONNECTED' | 'CONNECTING' | 'HANDSHAKING' | 'READY' | 'BACKOFF'
-
-client.agentName: string        // Agent name
-client.currentSessionId: string // Session ID (after connection)
-```
-
-### Connection Methods
+Assign a callback to handle events, or set to `null` to clear:
 
 ```typescript
-// Connect to daemon
-await client.connect(): Promise<void>
-
-// Disconnect gracefully
-client.disconnect(): void
-
-// Permanently destroy client (prevents reconnection)
-client.destroy(): void
+relay.onMessageReceived: ((msg: Message) => void) | null
+relay.onMessageSent: ((msg: Message) => void) | null
+relay.onAgentSpawned: ((agent: Agent) => void) | null
+relay.onAgentReleased: ((agent: Agent) => void) | null
+relay.onAgentExited: ((agent: Agent) => void) | null
 ```
 
-### Messaging Methods
+### Shorthand Spawners
 
 ```typescript
-// Send message to agent
-client.sendMessage(
-  to: string,
-  body: string,
-  kind?: PayloadKind,      // 'message' | 'action' | 'result' | 'status'
-  data?: Record<string, unknown>,
-  thread?: string,
-  meta?: SendMeta
-): boolean
-
-// Broadcast to all agents
-client.broadcast(
-  body: string,
-  kind?: PayloadKind,
-  data?: Record<string, unknown>
-): boolean
-
-// Send and wait for ACK
-await client.sendAndWait(
-  to: string,
-  body: string,
-  options?: SyncOptions
-): Promise<AckPayload>
+relay.codex: AgentSpawner   // Spawns Codex PTY workers
+relay.claude: AgentSpawner  // Spawns Claude PTY workers
+relay.gemini: AgentSpawner  // Spawns Gemini PTY workers
 ```
 
-### Request/Response Pattern
-
-The SDK provides a native RPC pattern for request/response communication:
+Each spawner has a single method:
 
 ```typescript
-// Send request and wait for response
-const response = await client.request(
-  to: string,
-  body: string,
-  options?: RequestOptions
-): Promise<RequestResponse>
-
-// Respond to a request
-client.respond(
-  correlationId: string,
-  to: string,
-  body: string,
-  data?: Record<string, unknown>
-): boolean
+interface AgentSpawner {
+  spawn(options?: {
+    name?: string;
+    args?: string[];
+    channels?: string[];
+  }): Promise<Agent>;
+}
 ```
 
-**RequestOptions:**
+### Methods
+
+#### spawnPty
+
+Spawn a PTY worker wrapping any CLI tool.
+
+```typescript
+async spawnPty(input: SpawnPtyInput): Promise<Agent>
+```
+
+**SpawnPtyInput:**
 
 | Property | Type | Description | Default |
 |----------|------|-------------|---------|
-| `timeout` | `number` | Timeout in milliseconds | `30000` |
-| `data` | `Record<string, unknown>` | Structured data to include | None |
-| `thread` | `string` | Thread identifier | None |
-| `kind` | `PayloadKind` | Message kind | `'message'` |
+| `name` | `string` | Agent name | Required |
+| `cli` | `string` | CLI command to wrap | Required |
+| `args` | `string[]` | CLI arguments | `[]` |
+| `channels` | `string[]` | Relaycast channels | `["general"]` |
 
-**RequestResponse:**
+#### human
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `from` | `string` | Sender of the response |
-| `body` | `string` | Response body text |
-| `data` | `Record<string, unknown>` | Structured data from response |
-| `correlationId` | `string` | Correlation ID used |
-| `thread` | `string` | Thread identifier |
-| `payload` | `SendPayload` | Full payload |
-
-**Example:**
+Create a handle for sending messages from a non-agent source.
 
 ```typescript
-// Requester side
-const response = await client.request('Worker', 'Process this task', {
-  timeout: 60000,
-  data: { taskId: '123', priority: 'high' },
-});
-console.log(`Worker responded: ${response.body}`);
-
-// Responder side
-client.onMessage = (from, payload, messageId, meta) => {
-  const correlationId = meta?.replyTo || payload.data?._correlationId;
-  if (correlationId) {
-    // This is a request - send response
-    client.respond(correlationId, from, 'Task completed!', {
-      result: 'success',
-    });
-  }
-};
+human(opts: { name: string }): HumanHandle
 ```
 
-### Spawn Operations
-
-Spawn and manage agents via the daemon:
+**HumanHandle:**
 
 ```typescript
-// Spawn a new agent
-const result = await client.spawn(options: {
+interface HumanHandle {
+  readonly name: string;
+  sendMessage(input: {
+    to: string;
+    text: string;
+    threadId?: string;
+    priority?: number;
+  }): Promise<Message>;
+}
+```
+
+#### listAgents
+
+List all agents managed by the broker.
+
+```typescript
+async listAgents(): Promise<Agent[]>
+```
+
+#### shutdown
+
+Shut down the broker and all workers.
+
+```typescript
+async shutdown(): Promise<void>
+```
+
+---
+
+## Agent
+
+Represents a spawned agent. Returned by spawn methods.
+
+```typescript
+interface Agent {
+  readonly name: string;
+  readonly runtime: AgentRuntime;  // "pty" | "headless_claude"
+  readonly channels: string[];
+
+  release(): Promise<void>;
+
+  waitForExit(timeoutMs?: number): Promise<"exited" | "timeout" | "released">;
+
+  sendMessage(input: {
+    to: string;
+    text: string;
+    threadId?: string;
+    priority?: number;
+  }): Promise<Message>;
+}
+```
+
+### release()
+
+Terminate the agent gracefully. The broker sends a shutdown signal to the worker process.
+
+### waitForExit(timeoutMs?)
+
+Wait for the agent to exit. Returns:
+
+- `"exited"` -- The agent process exited naturally
+- `"released"` -- The agent was released (by you or another caller)
+- `"timeout"` -- The timeout expired before the agent exited
+
+### sendMessage(input)
+
+Send a message from this agent through Relaycast.
+
+---
+
+## Message
+
+```typescript
+interface Message {
+  eventId: string;
+  from: string;
+  to: string;
+  text: string;
+  threadId?: string;
+}
+```
+
+---
+
+## AgentRelayClient
+
+Low-level protocol client. Provides direct access to all broker operations.
+
+```typescript
+import { AgentRelayClient } from "@agent-relay/sdk";
+```
+
+### Static Factory
+
+```typescript
+static async start(options?: AgentRelayClientOptions): Promise<AgentRelayClient>
+```
+
+### Constructor
+
+```typescript
+new AgentRelayClient(options?: AgentRelayClientOptions)
+```
+
+**AgentRelayClientOptions:**
+
+| Property | Type | Description | Default |
+|----------|------|-------------|---------|
+| `binaryPath` | `string` | Path to `agent-relay` binary | Auto-detected |
+| `binaryArgs` | `string[]` | Additional binary arguments | `[]` |
+| `brokerName` | `string` | Broker instance name | `"broker"` |
+| `channels` | `string[]` | Default channels | `["general"]` |
+| `cwd` | `string` | Working directory | `process.cwd()` |
+| `env` | `NodeJS.ProcessEnv` | Environment variables | `process.env` |
+| `requestTimeoutMs` | `number` | Protocol request timeout | `10000` |
+| `shutdownTimeoutMs` | `number` | Shutdown timeout | `3000` |
+| `clientName` | `string` | Client identifier | `"@agent-relay/sdk-ts"` |
+| `clientVersion` | `string` | Client version | `"0.1.0"` |
+
+### Methods
+
+#### start()
+
+Start the broker child process and perform the hello handshake.
+
+```typescript
+async start(): Promise<void>
+```
+
+#### spawnPty(input)
+
+Spawn a PTY worker.
+
+```typescript
+async spawnPty(input: SpawnPtyInput): Promise<{ name: string; runtime: AgentRuntime }>
+```
+
+#### spawnHeadlessClaude(input)
+
+Spawn a headless Claude worker (no terminal).
+
+```typescript
+async spawnHeadlessClaude(input: SpawnHeadlessClaudeInput): Promise<{ name: string; runtime: AgentRuntime }>
+```
+
+**SpawnHeadlessClaudeInput:**
+
+| Property | Type | Description | Default |
+|----------|------|-------------|---------|
+| `name` | `string` | Agent name | Required |
+| `args` | `string[]` | Claude CLI arguments | `[]` |
+| `channels` | `string[]` | Relaycast channels | `[]` |
+
+#### release(name)
+
+Release (terminate) a named agent.
+
+```typescript
+async release(name: string): Promise<{ name: string }>
+```
+
+#### sendMessage(input)
+
+Send a message through the broker.
+
+```typescript
+async sendMessage(input: SendMessageInput): Promise<{ event_id: string; targets: string[] }>
+```
+
+**SendMessageInput:**
+
+| Property | Type | Description | Default |
+|----------|------|-------------|---------|
+| `to` | `string` | Target agent, `*` for broadcast, or `#channel` | Required |
+| `text` | `string` | Message text | Required |
+| `from` | `string` | Sender name override | Broker default |
+| `threadId` | `string` | Thread identifier | None |
+| `priority` | `number` | Message priority | None |
+
+#### listAgents()
+
+List all agents managed by the broker.
+
+```typescript
+async listAgents(): Promise<ListAgent[]>
+```
+
+**ListAgent:**
+
+```typescript
+interface ListAgent {
   name: string;
-  cli: string;           // 'claude', 'codex', 'gemini', etc.
-  task?: string;
-  cwd?: string;
-  team?: string;
-  interactive?: boolean;
-  shadowOf?: string;
-  shadowSpeakOn?: SpeakOnTrigger[];
-  waitForReady?: boolean;    // Wait for agent to connect
-  readyTimeoutMs?: number;   // Timeout for ready (default: 60000)
-}, timeoutMs?: number): Promise<SpawnResult>
-
-// Release (terminate) an agent
-const result = await client.release(
-  name: string,
-  reason?: string,
-  timeoutMs?: number
-): Promise<ReleaseResultPayload>
-
-// Wait for any agent to become ready
-const readyInfo = await client.waitForAgentReady(
-  name: string,
-  timeoutMs?: number
-): Promise<AgentReadyPayload>
-```
-
-**SpawnResult:**
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `success` | `boolean` | Whether spawn succeeded |
-| `name` | `string` | Agent name |
-| `pid` | `number` | Process ID |
-| `error` | `string` | Error message if failed |
-| `ready` | `boolean` | Whether agent is ready (if `waitForReady` was true) |
-| `readyInfo` | `AgentReadyPayload` | Ready details (if `waitForReady` was true) |
-
-**Example with readiness:**
-
-```typescript
-// Spawn and wait for agent to be ready before sending messages
-const result = await client.spawn({
-  name: 'Worker',
-  cli: 'claude',
-  task: 'Help with coding',
-  waitForReady: true,
-  readyTimeoutMs: 30000,
-});
-
-if (result.success && result.ready) {
-  // Agent is connected and ready to receive messages
-  client.sendMessage('Worker', 'Start working on task X');
+  runtime: AgentRuntime;
+  channels: string[];
+  parent?: string;
+  pid?: number;
 }
 ```
 
-### Channel Operations
+#### shutdown()
+
+Send a shutdown command to the broker and wait for the process to exit.
 
 ```typescript
-// Join a channel
-client.joinChannel(channel: string, displayName?: string): boolean
-
-// Leave a channel
-client.leaveChannel(channel: string, reason?: string): boolean
-
-// Send message to channel
-client.sendChannelMessage(
-  channel: string,
-  body: string,
-  options?: {
-    thread?: string;
-    mentions?: string[];
-    attachments?: MessageAttachment[];
-    data?: Record<string, unknown>;
-  }
-): boolean
-
-// Admin: Add a member to a channel (they don't need to be connected)
-client.adminJoinChannel(channel: string, member: string): boolean
-
-// Admin: Remove a member from a channel
-client.adminRemoveMember(channel: string, member: string): boolean
+async shutdown(): Promise<void>
 ```
 
-**Admin Operations Example:**
+#### waitForExit()
+
+Wait for the broker process to exit.
 
 ```typescript
-// Add an offline agent to a channel for when they connect
-client.adminJoinChannel('#team', 'NewWorker');
-
-// Remove a member from a channel
-client.adminRemoveMember('#team', 'FormerMember');
+async waitForExit(): Promise<void>
 ```
 
-### Pub/Sub Methods
+### Event Subscriptions
 
-Subscribe to topics for filtered message delivery:
+#### onEvent(listener)
+
+Subscribe to broker events. Returns an unsubscribe function.
 
 ```typescript
-// Subscribe to a topic
-client.subscribe(topic: string): boolean
-
-// Unsubscribe from a topic
-client.unsubscribe(topic: string): boolean
+onEvent(listener: (event: BrokerEvent) => void): () => void
 ```
 
-**Example:**
+#### onBrokerStderr(listener)
+
+Subscribe to broker stderr output. Returns an unsubscribe function.
 
 ```typescript
-// Subscribe to build notifications
-client.subscribe('builds');
-client.subscribe('deployments');
-
-// Messages to subscribed topics arrive via onMessage
-client.onMessage = (from, payload) => {
-  if (payload.data?.topic === 'builds') {
-    console.log('Build notification:', payload.body);
-  }
-};
-
-// Unsubscribe when done
-client.unsubscribe('builds');
-```
-
-### Shadow Agent Methods
-
-```typescript
-// Bind as shadow to a primary agent
-client.bindAsShadow(
-  primaryAgent: string,
-  options?: {
-    speakOn?: SpeakOnTrigger[];
-    receiveIncoming?: boolean;
-    receiveOutgoing?: boolean;
-  }
-): boolean
-
-// Unbind from primary agent
-client.unbindAsShadow(primaryAgent: string): boolean
-```
-
-### Consensus Methods
-
-Distributed decision-making across agents. **Note:** Consensus requires an external daemon - it's not available in standalone mode.
-
-```typescript
-// Create a consensus proposal
-client.createProposal(options: CreateProposalOptions): boolean
-
-// Vote on a proposal
-client.vote(options: VoteOptions): boolean
-```
-
-**CreateProposalOptions:**
-
-| Property | Type | Description | Default |
-|----------|------|-------------|---------|
-| `title` | `string` | Proposal title | Required |
-| `description` | `string` | Proposal description | Required |
-| `participants` | `string[]` | Agents who can vote | Required |
-| `consensusType` | `ConsensusType` | Voting method | `'majority'` |
-| `timeoutMs` | `number` | Vote timeout | None |
-| `quorum` | `number` | Minimum votes required | None |
-| `threshold` | `number` | Required agreement ratio | None |
-
-**ConsensusType values:**
-
-| Type | Description |
-|------|-------------|
-| `majority` | >50% agreement (default) |
-| `supermajority` | >=2/3 agreement (configurable via threshold) |
-| `unanimous` | 100% agreement required |
-| `weighted` | Votes weighted by role/expertise |
-| `quorum` | Minimum participation + majority |
-
-**VoteOptions:**
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `proposalId` | `string` | The proposal ID to vote on |
-| `value` | `string` | Vote value: `'approve'`, `'reject'`, or `'abstain'` |
-| `reason` | `string` | Optional reason for vote |
-
-**Example:**
-
-```typescript
-// Create a proposal
-client.createProposal({
-  title: 'Approve API design',
-  description: 'Should we proceed with the REST API design?',
-  participants: ['Developer', 'Reviewer', 'Lead'],
-  consensusType: 'majority',
-  timeoutMs: 300000, // 5 minutes
-});
-
-// Vote on a proposal
-client.vote({
-  proposalId: 'prop_123_abc',
-  value: 'approve',
-  reason: 'Looks good to me',
-});
-
-// Receiving proposals and results via onMessage
-client.onMessage = (from, payload) => {
-  if (payload.data?._isConsensusMessage) {
-    console.log('Consensus message:', payload.body);
-  }
-};
-```
-
-### Logging Methods
-
-Stream logs to the daemon for dashboard display:
-
-```typescript
-// Send log output
-client.sendLog(data: string): boolean
-```
-
-**Example:**
-
-```typescript
-client.sendLog('Starting task...');
-client.sendLog('Processing file 1 of 10');
-client.sendLog('Task completed successfully');
-```
-
-### Low-Level Messaging
-
-```typescript
-// Send ACK for a delivered message (used internally, available for custom flows)
-client.sendAck(payload: AckPayload): boolean
-```
-
-**AckPayload:**
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `ack_id` | `string` | The message ID being acknowledged |
-| `seq` | `number` | Sequence number |
-| `correlationId` | `string` | Optional correlation ID for sync messaging |
-
-### Query Operations
-
-```typescript
-// Get daemon status
-const status = await client.getStatus(): Promise<StatusResponsePayload>
-
-// Get inbox messages
-const messages = await client.getInbox(options?: {
-  limit?: number;
-  unreadOnly?: boolean;
-  from?: string;
-  channel?: string;
-}): Promise<InboxMessage[]>
-
-// Query message history
-const messages = await client.queryMessages(options?: {
-  limit?: number;
-  sinceTs?: number;
-  from?: string;
-  to?: string;
-  thread?: string;
-  order?: 'asc' | 'desc';
-}): Promise<MessagesResponsePayload['messages']>
-
-// List online agents
-const agents = await client.listAgents(options?: {
-  includeIdle?: boolean;
-  project?: string;
-}): Promise<AgentInfo[]>
-
-// List only currently connected agents
-const connected = await client.listConnectedAgents(options?: {
-  project?: string;
-}): Promise<AgentInfo[]>
-
-// Get system health
-const health = await client.getHealth(options?: {
-  includeCrashes?: boolean;
-  includeAlerts?: boolean;
-}): Promise<HealthResponsePayload>
-
-// Get resource metrics
-const metrics = await client.getMetrics(options?: {
-  agent?: string;
-}): Promise<MetricsResponsePayload>
-
-// Remove agent from registry
-const result = await client.removeAgent(
-  name: string,
-  options?: { removeMessages?: boolean }
-): Promise<RemoveAgentResponsePayload>
-```
-
-### Event Handlers
-
-```typescript
-// Message received
-client.onMessage = (
-  from: string,
-  payload: SendPayload,
-  messageId: string,
-  meta?: SendMeta,
-  originalTo?: string  // '*' for broadcasts
-) => void
-
-// Channel message received
-client.onChannelMessage = (
-  from: string,
-  channel: string,
-  body: string,
-  envelope: Envelope<ChannelMessagePayload>
-) => void
-
-// Agent became ready (after HELLO/WELCOME handshake)
-client.onAgentReady = (info: AgentReadyPayload) => void
-
-// Connection state changed
-client.onStateChange = (state: ClientState) => void
-
-// Error occurred
-client.onError = (error: Error) => void
+onBrokerStderr(listener: (line: string) => void): () => void
 ```
 
 ---
 
-## BrowserRelayClient
+## RelaycastApi
 
-A browser-compatible client that uses WebSocket transport.
+Direct access to the Relaycast HTTP API for human-to-agent messaging.
 
 ```typescript
-import { BrowserRelayClient, type BrowserClientConfig } from '@agent-relay/sdk';
+import { RelaycastApi } from "@agent-relay/sdk";
 ```
 
 ### Constructor
 
 ```typescript
-new BrowserRelayClient(config: BrowserClientConfig)
+new RelaycastApi(options?: RelaycastApiOptions)
 ```
 
-**BrowserClientConfig:**
+**RelaycastApiOptions:**
 
 | Property | Type | Description | Default |
 |----------|------|-------------|---------|
-| `agentName` | `string` | Agent identifier | Required |
-| `entityType` | `'agent' \| 'user'` | Entity type | `'agent'` |
-| `cli` | `string` | CLI identifier | None |
-| `displayName` | `string` | Display name for users | None |
-| `avatarUrl` | `string` | Avatar URL for users | None |
-| `quiet` | `boolean` | Suppress console logging | `false` |
-| `reconnect` | `boolean` | Auto-reconnect on disconnect | `true` |
-| `maxReconnectAttempts` | `number` | Max retry attempts | `10` |
-| `reconnectDelayMs` | `number` | Initial retry delay (ms) | `1000` |
-| `reconnectMaxDelayMs` | `number` | Max retry delay (ms) | `30000` |
-| `transport` | `AutoTransportOptions` | Transport configuration | None |
-| `transportInstance` | `Transport` | Pre-configured transport | None |
+| `apiKey` | `string` | Workspace API key | From env or cache |
+| `baseUrl` | `string` | Relaycast API URL | `https://api.relaycast.dev` |
+| `cachePath` | `string` | Path to cached credentials | `~/.agent-relay/relaycast.json` |
+| `agentName` | `string` | Agent name to register with | Random `sdk-<hex>` |
 
-<Note>
-When using `transportInstance`, auto-reconnection is **not supported** because the SDK cannot recreate an externally-provided transport. Use `transport` options instead, or handle reconnection manually.
-</Note>
+### Static Methods
 
-### Transport Options
+#### createWorkspace(name, baseUrl?)
+
+Create a new Relaycast workspace.
 
 ```typescript
-interface AutoTransportOptions {
-  wsUrl?: string;        // WebSocket URL (e.g., 'wss://relay.example.com/ws')
-  socketPath?: string;   // Unix socket path (Node.js only)
-  connectTimeout?: number;
-}
+static async createWorkspace(name: string, baseUrl?: string): Promise<RelaycastWorkspace>
 ```
 
-### Example
+Returns `{ workspaceId: string; apiKey: string }`.
+
+### Instance Methods
+
+#### sendDm(to, text)
+
+Send a direct message to a named agent.
 
 ```typescript
-import { BrowserRelayClient } from '@agent-relay/sdk';
-
-const client = new BrowserRelayClient({
-  agentName: 'BrowserUser',
-  entityType: 'user',
-  displayName: 'John Doe',
-  transport: {
-    wsUrl: 'wss://relay.example.com/ws',
-  },
-});
-
-client.onMessage = (from, payload) => {
-  console.log(`${from}: ${payload.body}`);
-};
-
-client.onStateChange = (state) => {
-  console.log(`Connection state: ${state}`);
-};
-
-await client.connect();
-
-// Same messaging API as RelayClient
-client.sendMessage('Agent', 'Hello from browser!');
-client.joinChannel('#general');
-client.sendChannelMessage('#general', 'Hi everyone!');
+async sendDm(to: string, text: string): Promise<void>
 ```
 
-### API Differences from RelayClient
+#### sendToChannel(channel, text)
 
-`BrowserRelayClient` has most of the same API as `RelayClient`, but with some differences:
-
-| Feature | RelayClient | BrowserRelayClient |
-|---------|-------------|-------------------|
-| Transport | Unix socket | WebSocket |
-| Spawn/Release | Yes | No |
-| Query operations | Yes | No |
-| Log streaming | Yes | Yes |
-| Channels | Yes | Yes |
-| Shadow binding | Yes | Yes |
-| Request/Response | Yes | Yes |
-
----
-
-## Transport Abstraction
-
-The SDK provides a transport abstraction layer for different environments.
+Send a message to a channel (without the `#` prefix).
 
 ```typescript
-import {
-  type Transport,
-  type TransportState,
-  SocketTransport,
-  WebSocketTransport,
-  createAutoTransport,
-  detectEnvironment,
-  isBrowser,
-  isNode,
-} from '@agent-relay/sdk';
+async sendToChannel(channel: string, text: string): Promise<void>
 ```
 
-### Transport Interface
+#### send(to, text)
+
+Send to a target -- prefixed with `#` for channel, otherwise DM.
 
 ```typescript
-interface Transport {
-  readonly state: TransportState;
-  // 'disconnected' | 'connecting' | 'connected' | 'closing'
-
-  connect(): Promise<void>;
-  disconnect(): void;
-  send(data: Uint8Array | Buffer): boolean;
-  setEvents(events: TransportEvents): void;
-}
-
-interface TransportEvents {
-  onConnect?: () => void;
-  onData?: (data: Uint8Array) => void;
-  onClose?: () => void;
-  onError?: (error: Error) => void;
-}
+async send(to: string, text: string): Promise<void>
 ```
 
-### SocketTransport (Node.js)
+#### getMessages(channel, opts?)
+
+Fetch message history from a channel.
 
 ```typescript
-import { SocketTransport, createSocketTransport } from '@agent-relay/sdk';
-
-const transport = createSocketTransport({
-  socketPath: '/tmp/agent-relay.sock',
-  connectTimeout: 5000,
-});
-
-await transport.connect();
-```
-
-### WebSocketTransport (Browser + Node.js)
-
-```typescript
-import { WebSocketTransport, createWebSocketTransport } from '@agent-relay/sdk';
-
-const transport = createWebSocketTransport({
-  url: 'wss://relay.example.com/ws',
-  connectTimeout: 5000,
-});
-
-await transport.connect();
-```
-
-### Auto Transport
-
-Automatically selects the appropriate transport based on environment:
-
-```typescript
-import { createAutoTransport } from '@agent-relay/sdk';
-
-// Uses WebSocket in browser, socket in Node.js
-const transport = createAutoTransport({
-  wsUrl: 'wss://relay.example.com/ws',
-  socketPath: '/tmp/agent-relay.sock',
-});
-```
-
-### Environment Detection
-
-```typescript
-import { isBrowser, isNode, detectEnvironment } from '@agent-relay/sdk';
-
-if (isBrowser()) {
-  console.log('Running in browser');
-}
-
-if (isNode()) {
-  console.log('Running in Node.js');
-}
-
-const env = detectEnvironment();
-// { isBrowser: boolean, isNode: boolean, isElectron: boolean, ... }
-```
-
----
-
-## Standalone Relay
-
-For simple use cases, create an in-process daemon:
-
-```typescript
-import { createRelay, createPair, type Relay } from '@agent-relay/sdk';
-```
-
-### createRelay
-
-```typescript
-const relay = await createRelay(config?: RelayConfig): Promise<Relay>
-```
-
-**RelayConfig:**
-
-| Property | Type | Description | Default |
-|----------|------|-------------|---------|
-| `socketPath` | `string` | Custom socket path | Auto-generated |
-| `quiet` | `boolean` | Suppress logging | `true` |
-
-**Relay:**
-
-```typescript
-interface Relay {
-  client(name: string): Promise<RelayClient>;
-  stop(): Promise<void>;
-  socketPath: string;
-}
-```
-
-**Example:**
-
-```typescript
-const relay = await createRelay();
-
-const alice = await relay.client('Alice');
-const bob = await relay.client('Bob');
-
-bob.onMessage = (from, { body }) => {
-  console.log(`Bob received: ${body}`);
-};
-
-alice.sendMessage('Bob', 'Hello Bob!');
-
-// Cleanup
-await relay.stop();
-```
-
-### createPair
-
-Convenience function to create exactly two connected clients:
-
-```typescript
-const [alice, bob] = await createPair('Alice', 'Bob');
-
-bob.onMessage = (from, { body }) => console.log(`${from}: ${body}`);
-alice.sendMessage('Bob', 'Hello!');
-```
-
----
-
-## Discovery
-
-The SDK includes utilities for discovering daemon sockets and cloud workspaces.
-
-```typescript
-import {
-  discoverSocket,
-  discoverAgentName,
-  detectCloudWorkspace,
-  isCloudWorkspace,
-  getCloudSocketPath,
-  getConnectionInfo,
-} from '@agent-relay/sdk';
-```
-
-### Socket Discovery
-
-```typescript
-// Find the daemon socket for current directory
-const result = discoverSocket();
-// { socketPath: '/tmp/relay/abc123/agent-relay.sock', source: 'project' }
-
-// Discover suggested agent name from environment
-const name = discoverAgentName();
-// Uses AGENT_RELAY_NAME, git user, or hostname
-```
-
-### Cloud Workspace Detection
-
-```typescript
-// Check if running in cloud workspace
-if (isCloudWorkspace()) {
-  const socketPath = getCloudSocketPath();
-  const outboxPath = getCloudOutboxPath();
-}
-
-// Get full cloud workspace info
-const workspace = detectCloudWorkspace();
-// { provider: 'cloud', workspaceId: '...', socketPath: '...' }
-
-// Get connection info for current environment
-const info = await getConnectionInfo();
-// { socketPath, workspaceId, isCloud, ... }
-```
-
----
-
-## Error Types
-
-The SDK exports specific error types for better error handling:
-
-```typescript
-import {
-  RelayError,
-  DaemonNotRunningError,
-  AgentNotFoundError,
-  TimeoutError,
-  ConnectionError,
-  ChannelNotFoundError,
-  SpawnError,
-} from '@agent-relay/sdk';
-```
-
-**Example:**
-
-```typescript
-import { RelayClient, DaemonNotRunningError, TimeoutError } from '@agent-relay/sdk';
-
-const client = new RelayClient({ agentName: 'MyAgent' });
-
-try {
-  await client.connect();
-} catch (err) {
-  if (err instanceof DaemonNotRunningError) {
-    console.log('Start the daemon with: agent-relay up');
-  } else if (err instanceof TimeoutError) {
-    console.log('Connection timed out');
-  } else {
-    throw err;
-  }
-}
+async getMessages(
+  channel: string,
+  opts?: { limit?: number; before?: string; after?: string }
+): Promise<Array<{ id: string; agent_name: string; text: string; created_at: string }>>
 ```
 
 ---
 
 ## Protocol Types
 
-The SDK re-exports protocol types for convenience:
+### BrokerEvent
+
+Events emitted by the broker to the SDK.
 
 ```typescript
-import {
-  PROTOCOL_VERSION,
-  type MessageType,
-  type PayloadKind,
-  type Envelope,
-  type EntityType,
-  type SendPayload,
-  type SendMeta,
-  type AckPayload,
-  type ErrorPayload,
-  type SpeakOnTrigger,
-  type ShadowConfig,
-  type SpawnPayload,
-  type SpawnResultPayload,
-  type AgentReadyPayload,
-  type ChannelMessagePayload,
-  type AgentInfo,
-  // ... and more
-} from '@agent-relay/sdk';
+type BrokerEvent =
+  | { kind: "agent_spawned"; name: string; runtime: AgentRuntime; parent?: string }
+  | { kind: "agent_released"; name: string }
+  | { kind: "agent_exited"; name: string; code?: number; signal?: string }
+  | { kind: "relay_inbound"; event_id: string; from: string; target: string; body: string; thread_id?: string }
+  | { kind: "worker_stream"; name: string; stream: string; chunk: string }
+  | { kind: "delivery_retry"; name: string; delivery_id: string; event_id: string; attempts: number }
+  | { kind: "delivery_dropped"; name: string; count: number; reason: string }
+  | { kind: "acl_denied"; name: string; sender: string; owner_chain: string[] }
 ```
 
----
-
-## Framing Utilities
-
-For low-level protocol work:
+### AgentRuntime
 
 ```typescript
-import {
-  encodeFrame,
-  encodeFrameLegacy,
-  FrameParser,
-  MAX_FRAME_BYTES,
-} from '@agent-relay/sdk';
+type AgentRuntime = "pty" | "headless_claude";
+```
 
-// Encode envelope to frame
-const frame = encodeFrameLegacy(envelope);
+### AgentSpec
 
-// Parse incoming data
-const parser = new FrameParser();
-parser.setLegacyMode(true);
+Internal specification for spawning an agent.
 
-const envelopes = parser.push(data);
-for (const envelope of envelopes) {
-  handleEnvelope(envelope);
+```typescript
+interface AgentSpec {
+  name: string;
+  runtime: AgentRuntime;
+  cli?: string;
+  args?: string[];
+  channels?: string[];
+}
+```
+
+### ProtocolEnvelope
+
+The wire format for SDK-broker communication.
+
+```typescript
+interface ProtocolEnvelope<TPayload> {
+  v: number;           // Always 1
+  type: string;
+  request_id?: string;
+  payload: TPayload;
+}
+```
+
+### ProtocolError
+
+Error payload from the broker.
+
+```typescript
+interface ProtocolError {
+  code: string;
+  message: string;
+  retryable: boolean;
+  data?: unknown;
 }
 ```
 
 ---
 
-## Complete Examples
+## Error Types
 
-### Request/Response RPC
+### AgentRelayProtocolError
+
+Thrown when the broker returns a protocol-level error.
 
 ```typescript
-import { createRelay } from '@agent-relay/sdk';
+class AgentRelayProtocolError extends Error {
+  code: string;
+  retryable: boolean;
+  data?: unknown;
+}
+```
 
-const relay = await createRelay();
+### AgentRelayProcessError
 
-// Create worker that responds to requests
-const worker = await relay.client('Worker');
-worker.onMessage = (from, payload, messageId, meta) => {
-  const correlationId = meta?.replyTo;
-  if (correlationId) {
-    // Process the request
-    const result = processTask(payload.body);
-    worker.respond(correlationId, from, `Result: ${result}`);
+Thrown when the broker process fails (crash, timeout, not found).
+
+```typescript
+class AgentRelayProcessError extends Error {}
+```
+
+**Example:**
+
+```typescript
+import { AgentRelayProtocolError, AgentRelayProcessError } from "@agent-relay/sdk";
+
+try {
+  await client.spawnPty({ name: "Worker", cli: "codex" });
+} catch (err) {
+  if (err instanceof AgentRelayProtocolError) {
+    console.log(`Protocol error [${err.code}]: ${err.message}`);
+    if (err.retryable) { /* retry */ }
+  } else if (err instanceof AgentRelayProcessError) {
+    console.log(`Process error: ${err.message}`);
   }
-};
-
-// Create coordinator that makes requests
-const coordinator = await relay.client('Coordinator');
-
-const response = await coordinator.request('Worker', 'Calculate 2+2', {
-  timeout: 5000,
-});
-
-console.log(response.body); // "Result: 4"
-```
-
-### Spawn with Readiness
-
-```typescript
-import { RelayClient } from '@agent-relay/sdk';
-
-const lead = new RelayClient({ agentName: 'Lead' });
-await lead.connect();
-
-// Spawn worker and wait for it to be ready
-const result = await lead.spawn({
-  name: 'Worker',
-  cli: 'claude',
-  task: 'Help with data processing',
-  waitForReady: true,
-});
-
-if (result.ready) {
-  console.log(`Worker ready! CLI: ${result.readyInfo?.cli}`);
-  lead.sendMessage('Worker', 'Start processing the data');
-} else {
-  console.log('Worker spawned but not ready yet');
 }
-```
-
-### Browser Dashboard
-
-```typescript
-import { BrowserRelayClient } from '@agent-relay/sdk';
-
-const client = new BrowserRelayClient({
-  agentName: 'Dashboard',
-  entityType: 'user',
-  displayName: 'Admin',
-  transport: { wsUrl: 'wss://relay.example.com/ws' },
-});
-
-// Track all agents
-const agents = new Map();
-
-client.onMessage = (from, payload, messageId, meta, originalTo) => {
-  // Update UI with new message
-  displayMessage(from, payload.body);
-};
-
-client.onStateChange = (state) => {
-  updateConnectionStatus(state === 'READY');
-};
-
-await client.connect();
-
-// Join monitoring channel
-client.joinChannel('#status');
 ```
 
 ---
 
-## See Also
+## Utilities
 
-- [Electron Integration](/guides/electron-integration) - Using the SDK in Electron apps
-- [API Reference](/reference/api) - Full API including Daemon class
-- [Protocol Reference](/reference/protocol) - Wire protocol details
-- [Spawning](/features/spawning) - Agent lifecycle management
+### stripAnsi(s)
+
+Strip ANSI escape sequences from a string.
+
+```typescript
+import { stripAnsi } from "@agent-relay/sdk";
+
+const clean = stripAnsi("\x1b[32mHello\x1b[0m");
+// "Hello"
+```
+
+### cleanLines(raw)
+
+Strip ANSI, split on newlines, trim, and drop empty lines.
+
+```typescript
+import { cleanLines } from "@agent-relay/sdk";
+
+const lines = cleanLines(rawPtyOutput);
+```
+
+---
+
+## Constants
+
+```typescript
+import { PROTOCOL_VERSION } from "@agent-relay/sdk";
+// PROTOCOL_VERSION === 1
+```

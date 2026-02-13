@@ -1,249 +1,59 @@
 ---
-title: Protocol Reference
-description: Wire protocol specification for agent-relay communication
+title: "Protocol Reference"
+description: "Specification for the stdio JSON protocol between the SDK and broker"
 ---
 
 # Protocol Reference
 
-Agent Relay uses a binary-framed JSON protocol for communication between agents and the daemon. This document specifies the wire format, message types, and handshake flow.
+The SDK and broker communicate over **stdio** using newline-delimited JSON envelopes. This document specifies the envelope format, request types, event types, and error model.
 
 ## Protocol Version
 
 Current protocol version: **1**
 
-The version is included in every envelope and used for compatibility checking.
+The version is included in every envelope and checked during the hello handshake.
 
 ---
 
 ## Wire Format
 
-Messages are transmitted as length-prefixed frames with an optional format indicator.
-
-### Frame Structure
+Each message is a single line of JSON written to stdin (SDK to broker) or stdout (broker to SDK), terminated by a newline character.
 
 ```
-+----------------+------------------+-------------------+
-| Format (1 byte)| Length (4 bytes) | Payload (N bytes) |
-+----------------+------------------+-------------------+
+{"v":1,"type":"hello","request_id":"req_1","payload":{...}}\n
 ```
 
-| Field | Size | Description |
-|-------|------|-------------|
-| Format | 1 byte | `0x00` = JSON, `0x01` = MessagePack |
-| Length | 4 bytes | Big-endian payload length |
-| Payload | N bytes | JSON or MessagePack encoded envelope |
-
-### Legacy Frame Format
-
-For backwards compatibility, clients can use a 4-byte header without the format byte:
-
-```
-+------------------+-------------------+
-| Length (4 bytes) | Payload (N bytes) |
-+------------------+-------------------+
-```
-
-Legacy format always uses JSON encoding.
-
-### Limits
-
-| Parameter | Value |
-|-----------|-------|
-| Max frame size | 1 MiB (1,048,576 bytes) |
-| Header size | 5 bytes (modern) or 4 bytes (legacy) |
+There is no length prefix or binary framing. Each line is a complete JSON object.
 
 ---
 
 ## Envelope Structure
 
-Every message is wrapped in an envelope with standard metadata:
+Every message is wrapped in a protocol envelope:
 
 ```typescript
-interface Envelope<T = unknown> {
-  v: number;          // Protocol version (1)
-  type: MessageType;  // Message type
-  id: string;         // Unique message ID
-  ts: number;         // Unix timestamp (milliseconds)
-  from?: string;      // Sender agent name
-  to?: string | '*';  // Recipient or broadcast
-  topic?: string;     // Optional topic for pub/sub
-  payload: T;         // Type-specific payload
+interface ProtocolEnvelope<TPayload> {
+  v: number;           // Protocol version (always 1)
+  type: string;        // Message type
+  request_id?: string; // Correlates requests with responses
+  payload: TPayload;   // Type-specific data
 }
 ```
 
-### Example Envelope
+### Example
 
 ```json
 {
   "v": 1,
-  "type": "SEND",
-  "id": "a1b2c3d4e5f6",
-  "ts": 1705312200000,
-  "from": "Dashboard",
-  "to": "Worker1",
+  "type": "spawn_agent",
+  "request_id": "req_3",
   "payload": {
-    "kind": "message",
-    "body": "Please implement the login feature"
-  }
-}
-```
-
----
-
-## Message Types
-
-### Handshake Messages
-
-| Type | Direction | Description |
-|------|-----------|-------------|
-| `HELLO` | Client -> Daemon | Initial connection handshake |
-| `WELCOME` | Daemon -> Client | Handshake acknowledgment |
-| `BYE` | Client -> Daemon | Graceful disconnect |
-
-### Core Messaging
-
-| Type | Direction | Description |
-|------|-----------|-------------|
-| `SEND` | Client -> Daemon | Send message to agent(s) |
-| `DELIVER` | Daemon -> Client | Deliver message to recipient |
-| `ACK` | Bidirectional | Acknowledge message receipt |
-| `NACK` | Daemon -> Client | Negative acknowledgment |
-
-### Flow Control
-
-| Type | Direction | Description |
-|------|-----------|-------------|
-| `PING` | Daemon -> Client | Heartbeat request |
-| `PONG` | Client -> Daemon | Heartbeat response |
-| `BUSY` | Daemon -> Client | Backpressure signal |
-| `RESUME` | Daemon -> Client | Resume after backpressure |
-
-### State Management
-
-| Type | Direction | Description |
-|------|-----------|-------------|
-| `STATE` | Bidirectional | State update |
-| `SYNC` | Daemon -> Client | Session sync (legacy) |
-| `SYNC_SNAPSHOT` | Daemon -> Client | Full state snapshot |
-| `SYNC_DELTA` | Daemon -> Client | Incremental state update |
-| `SUBSCRIBE` | Client -> Daemon | Subscribe to topic |
-| `UNSUBSCRIBE` | Client -> Daemon | Unsubscribe from topic |
-
-### Shadow Agents
-
-| Type | Direction | Description |
-|------|-----------|-------------|
-| `SHADOW_BIND` | Client -> Daemon | Attach as shadow to primary |
-| `SHADOW_UNBIND` | Client -> Daemon | Detach from primary |
-
-### Channel Messaging
-
-| Type | Direction | Description |
-|------|-----------|-------------|
-| `CHANNEL_JOIN` | Client -> Daemon | Join a channel |
-| `CHANNEL_LEAVE` | Client -> Daemon | Leave a channel |
-| `CHANNEL_MESSAGE` | Bidirectional | Message to channel |
-| `CHANNEL_INFO` | Daemon -> Client | Channel metadata |
-| `CHANNEL_MEMBERS` | Daemon -> Client | Channel member list |
-| `CHANNEL_TYPING` | Client -> Daemon | Typing indicator |
-
-### Utility
-
-| Type | Direction | Description |
-|------|-----------|-------------|
-| `LOG` | Client -> Daemon | Agent output for streaming |
-| `ERROR` | Daemon -> Client | Protocol error |
-
----
-
-## Handshake Flow
-
-### Connection Sequence
-
-```
-Client                          Daemon
-   |                               |
-   |-------- HELLO --------------->|
-   |                               |
-   |<------- WELCOME --------------|
-   |                               |
-   |<======= READY ===============>|
-   |                               |
-```
-
-### HELLO Payload
-
-```typescript
-interface HelloPayload {
-  agent: string;                    // Agent name (required)
-  capabilities: {
-    ack: boolean;                   // Supports ACK messages
-    resume: boolean;                // Supports session resume
-    max_inflight: number;           // Max concurrent messages
-    supports_topics: boolean;       // Supports pub/sub topics
-  };
-  entityType?: 'agent' | 'user';    // Entity type (default: 'agent')
-  cli?: string;                     // CLI identifier
-  program?: string;                 // Program identifier
-  model?: string;                   // Model identifier
-  task?: string;                    // Task/role description
-  workingDirectory?: string;        // Working directory
-  displayName?: string;             // Display name (users)
-  avatarUrl?: string;               // Avatar URL (users)
-  session?: {
-    resume_token?: string;          // Token for session resume
-  };
-}
-```
-
-**Example:**
-
-```json
-{
-  "v": 1,
-  "type": "HELLO",
-  "id": "hello-001",
-  "ts": 1705312200000,
-  "payload": {
-    "agent": "Worker1",
-    "cli": "claude",
-    "capabilities": {
-      "ack": true,
-      "resume": true,
-      "max_inflight": 256,
-      "supports_topics": true
-    }
-  }
-}
-```
-
-### WELCOME Payload
-
-```typescript
-interface WelcomePayload {
-  session_id: string;        // Assigned session ID
-  resume_token?: string;     // Token for future session resume
-  server: {
-    max_frame_bytes: number; // Server's max frame size
-    heartbeat_ms: number;    // Heartbeat interval
-  };
-}
-```
-
-**Example:**
-
-```json
-{
-  "v": 1,
-  "type": "WELCOME",
-  "id": "welcome-001",
-  "ts": 1705312200100,
-  "payload": {
-    "session_id": "sess_abc123",
-    "resume_token": "rt_xyz789",
-    "server": {
-      "max_frame_bytes": 1048576,
-      "heartbeat_ms": 5000
+    "agent": {
+      "name": "Worker",
+      "runtime": "pty",
+      "cli": "codex",
+      "args": [],
+      "channels": ["general"]
     }
   }
 }
@@ -251,301 +61,337 @@ interface WelcomePayload {
 
 ---
 
-## Message Payloads
+## Request Types (SDK to Broker)
 
-### SEND Payload
+### hello
 
-```typescript
-interface SendPayload {
-  kind: PayloadKind;              // Message type
-  body: string;                   // Message content
-  data?: Record<string, unknown>; // Structured data
-  thread?: string;                // Thread ID for grouping
-}
-
-type PayloadKind = 'message' | 'action' | 'state' | 'thinking';
-```
-
-### SEND Metadata
-
-Optional metadata can be attached to SEND messages:
+Initiate the protocol handshake. Must be the first message sent.
 
 ```typescript
-interface SendMeta {
-  requires_ack?: boolean;   // Require recipient ACK
-  ttl_ms?: number;          // Time-to-live in ms
-  importance?: number;      // 0-100, higher is more important
-  replyTo?: string;         // Correlation ID for replies
-  sync?: SyncMeta;          // For synchronous messaging
-}
-
-interface SyncMeta {
-  correlationId: string;    // For matching response
-  timeoutMs?: number;       // Timeout for blocking
-  blocking: boolean;        // Block until ACK
-}
-```
-
-**Example SEND:**
-
-```json
 {
-  "v": 1,
-  "type": "SEND",
-  "id": "msg-001",
-  "ts": 1705312200000,
-  "to": "Worker1",
-  "payload": {
-    "kind": "message",
-    "body": "Please review the auth module",
-    "thread": "feature-auth"
-  },
-  "payload_meta": {
-    "requires_ack": true,
-    "importance": 80
-  }
+  type: "hello";
+  payload: {
+    client_name: string;     // e.g., "@agent-relay/sdk-ts"
+    client_version: string;  // e.g., "0.1.0"
+  };
 }
 ```
 
-### DELIVER Payload
+### spawn_agent
 
-Delivered messages include additional delivery metadata:
+Spawn a new worker agent.
 
 ```typescript
-interface DeliveryInfo {
-  seq: number;           // Sequence number for this stream
-  session_id: string;    // Recipient's session ID
-  originalTo?: string;   // Original 'to' field ('*' for broadcasts)
-}
-```
-
-**Example DELIVER:**
-
-```json
 {
-  "v": 1,
-  "type": "DELIVER",
-  "id": "msg-001",
-  "ts": 1705312200000,
-  "from": "Dashboard",
-  "to": "Worker1",
-  "payload": {
-    "kind": "message",
-    "body": "Please review the auth module"
-  },
-  "delivery": {
-    "seq": 42,
-    "session_id": "sess_abc123"
-  }
+  type: "spawn_agent";
+  payload: {
+    agent: {
+      name: string;
+      runtime: "pty" | "headless_claude";
+      cli?: string;        // CLI to wrap (PTY only)
+      args?: string[];     // Additional CLI arguments
+      channels?: string[]; // Relaycast channels to subscribe
+    };
+  };
 }
 ```
 
-### ACK Payload
+### send_message
+
+Send a message through Relaycast.
 
 ```typescript
-interface AckPayload {
-  ack_id: string;          // ID of acknowledged message
-  seq: number;             // Sequence number
-  cumulative_seq?: number; // Cumulative acknowledgment
-  sack?: number[];         // Selective ACK list
-  correlationId?: string;  // For sync messaging
-  response?: boolean;      // Has response data
-  responseData?: unknown;  // Response payload
+{
+  type: "send_message";
+  payload: {
+    to: string;          // Target agent, "*", or "#channel"
+    text: string;        // Message content
+    from?: string;       // Sender name override
+    thread_id?: string;  // Thread identifier
+    priority?: number;   // Message priority
+  };
 }
 ```
 
-### NACK Payload
+### release_agent
+
+Release (terminate) a named agent.
 
 ```typescript
-interface NackPayload {
-  ack_id: string;                               // Message ID
-  code?: 'BUSY' | 'INVALID' | 'FORBIDDEN' | 'STALE';
-  reason?: string;                               // Legacy
-  message?: string;                              // Error description
+{
+  type: "release_agent";
+  payload: {
+    name: string;   // Agent to release
+  };
 }
 ```
 
-### ERROR Payload
+### list_agents
+
+List all agents managed by the broker.
 
 ```typescript
-interface ErrorPayload {
-  code: ErrorCode;    // Error code
-  message: string;    // Error description
-  fatal: boolean;     // Connection should close
-}
-
-type ErrorCode =
-  | 'BAD_REQUEST'
-  | 'UNAUTHORIZED'
-  | 'NOT_FOUND'
-  | 'INTERNAL'
-  | 'RESUME_TOO_OLD';
-```
-
----
-
-## Channel Payloads
-
-### CHANNEL_JOIN Payload
-
-```typescript
-interface ChannelJoinPayload {
-  channel: string;        // Channel name (e.g., '#general')
-  displayName?: string;   // Display name for member list
-  avatarUrl?: string;     // Avatar URL
-  member?: string;        // Admin: add this member
+{
+  type: "list_agents";
+  payload: {};
 }
 ```
 
-### CHANNEL_MESSAGE Payload
+### shutdown
+
+Initiate a graceful broker shutdown.
 
 ```typescript
-interface ChannelMessagePayload {
-  channel: string;                     // Target channel
-  body: string;                        // Message content
-  thread?: string;                     // Thread ID
-  attachments?: MessageAttachment[];   // File attachments
-  data?: Record<string, unknown>;      // Metadata
-  mentions?: string[];                 // Mentioned users/agents
-}
-```
-
-### Channel Naming Conventions
-
-| Pattern | Type | Example |
-|---------|------|---------|
-| `#name` | Public channel | `#general`, `#dev` |
-| `dm:a:b` | Direct message | `dm:alice:bob` |
-| `private:name` | Private channel | `private:team-leads` |
-
----
-
-## Shadow Agent Payloads
-
-### SHADOW_BIND Payload
-
-```typescript
-interface ShadowBindPayload {
-  primaryAgent: string;            // Agent to shadow
-  speakOn?: SpeakOnTrigger[];      // When to speak
-  receiveIncoming?: boolean;       // Receive messages TO primary
-  receiveOutgoing?: boolean;       // Receive messages FROM primary
-}
-
-type SpeakOnTrigger =
-  | 'SESSION_END'
-  | 'CODE_WRITTEN'
-  | 'REVIEW_REQUEST'
-  | 'EXPLICIT_ASK'
-  | 'ALL_MESSAGES';
-```
-
-### SHADOW_UNBIND Payload
-
-```typescript
-interface ShadowUnbindPayload {
-  primaryAgent: string;   // Agent to stop shadowing
+{
+  type: "shutdown";
+  payload: {};
 }
 ```
 
 ---
 
-## Heartbeat
+## Response Types (Broker to SDK)
 
-The daemon sends periodic PING messages to verify client connectivity:
+### hello_ack
 
-```typescript
-interface PingPayload {
-  nonce: string;   // Random string to echo back
-}
-
-interface PongPayload {
-  nonce: string;   // Echoed nonce from PING
-}
-```
-
-**Default Configuration:**
-
-| Parameter | Value |
-|-----------|-------|
-| Heartbeat interval | 5000ms |
-| Timeout multiplier | 6x (30s total) |
-
-Clients should respond to PING with PONG within the timeout period.
-
----
-
-## Backpressure
-
-When the daemon is overloaded, it sends a BUSY message:
+Response to the `hello` handshake.
 
 ```typescript
-interface BusyPayload {
-  retry_after_ms: number;   // Wait before sending
-  queue_depth: number;      // Current queue size
+{
+  type: "hello_ack";
+  payload: {
+    broker_version: string;    // Broker version string
+    protocol_version: number;  // Protocol version (1)
+  };
 }
 ```
 
-Clients should pause sending until receiving a RESUME message or waiting the specified duration.
+### ok
 
----
-
-## Frame Parser
-
-The protocol uses a ring buffer-based parser for efficient streaming:
+Successful response to a request. The `result` field contains type-specific data.
 
 ```typescript
-import { FrameParser, encodeFrame } from 'agent-relay';
+{
+  type: "ok";
+  payload: {
+    result: unknown;  // Request-specific result
+  };
+}
+```
 
-// Create parser
-const parser = new FrameParser();
+**Result shapes by request type:**
 
-// Push incoming data
-socket.on('data', (data) => {
-  const frames = parser.push(data);
-  for (const envelope of frames) {
-    handleMessage(envelope);
-  }
-});
+| Request | Result |
+|---------|--------|
+| `spawn_agent` | `{ name: string; runtime: "pty" \| "headless_claude" }` |
+| `release_agent` | `{ name: string }` |
+| `send_message` | `{ event_id: string; targets: string[] }` |
+| `list_agents` | `{ agents: ListAgent[] }` |
+| `shutdown` | `{}` |
 
-// Encode outgoing message
-const frame = encodeFrame({
-  v: 1,
-  type: 'SEND',
-  id: generateId(),
-  ts: Date.now(),
-  to: 'Agent',
-  payload: { kind: 'message', body: 'Hello' }
-});
-socket.write(frame);
+### error
+
+Error response to a request.
+
+```typescript
+{
+  type: "error";
+  payload: {
+    code: string;       // Error code
+    message: string;    // Human-readable description
+    retryable: boolean; // Whether the request can be retried
+    data?: unknown;     // Additional error context
+  };
+}
+```
+
+### event
+
+Asynchronous event from the broker. Has no `request_id`.
+
+```typescript
+{
+  type: "event";
+  payload: BrokerEvent;
+}
 ```
 
 ---
 
-## MessagePack Support
+## Event Types
 
-For improved performance, MessagePack encoding can be enabled:
+Events are delivered asynchronously from the broker to the SDK. They have no `request_id` and do not require a response.
+
+### agent_spawned
+
+A worker was created.
 
 ```typescript
-import { initMessagePack, hasMessagePack, encodeFrame } from 'agent-relay';
-
-// Initialize MessagePack (requires @msgpack/msgpack)
-await initMessagePack();
-
-if (hasMessagePack()) {
-  const frame = encodeFrame(envelope, 'msgpack');
+{
+  kind: "agent_spawned";
+  name: string;           // Agent name
+  runtime: AgentRuntime;  // "pty" | "headless_claude"
+  parent?: string;        // Parent agent name (if spawned by another agent)
 }
 ```
 
-MessagePack provides:
-- Smaller message sizes
-- Faster serialization/deserialization
-- Binary data support
+### agent_released
+
+A worker was released via the SDK.
+
+```typescript
+{
+  kind: "agent_released";
+  name: string;   // Agent name
+}
+```
+
+### agent_exited
+
+A worker process exited.
+
+```typescript
+{
+  kind: "agent_exited";
+  name: string;      // Agent name
+  code?: number;     // Exit code (if available)
+  signal?: string;   // Signal name (if killed by signal)
+}
+```
+
+### relay_inbound
+
+An incoming message was received from Relaycast.
+
+```typescript
+{
+  kind: "relay_inbound";
+  event_id: string;     // Relaycast event ID
+  from: string;         // Sender name
+  target: string;       // Target agent name
+  body: string;         // Message text
+  thread_id?: string;   // Thread identifier
+}
+```
+
+### worker_stream
+
+PTY output from a worker. Emitted in real-time as the worker produces output.
+
+```typescript
+{
+  kind: "worker_stream";
+  name: string;    // Agent name
+  stream: string;  // "stdout" or "stderr"
+  chunk: string;   // Raw output text (may contain ANSI escapes)
+}
+```
+
+### delivery_retry
+
+A message delivery to a worker was retried.
+
+```typescript
+{
+  kind: "delivery_retry";
+  name: string;         // Target agent
+  delivery_id: string;  // Delivery identifier
+  event_id: string;     // Original event ID
+  attempts: number;     // Number of attempts so far
+}
+```
+
+### delivery_dropped
+
+Messages to a worker were dropped (e.g., queue overflow).
+
+```typescript
+{
+  kind: "delivery_dropped";
+  name: string;    // Target agent
+  count: number;   // Number of messages dropped
+  reason: string;  // Reason for dropping
+}
+```
+
+### acl_denied
+
+A message was blocked by access control rules.
+
+```typescript
+{
+  kind: "acl_denied";
+  name: string;           // Target agent
+  sender: string;         // Blocked sender
+  owner_chain: string[];  // Ownership chain of the target
+}
+```
 
 ---
 
-## See Also
+## Worker Protocol
 
-- [CLI Reference](/reference/cli) - Command-line interface
-- [Configuration](/reference/configuration) - Configuration options
-- [API Reference](/reference/api) - Programmatic API
+The broker communicates with workers (PTY and headless) using a separate protocol over their stdin/stdout. This is an internal protocol not typically used by SDK consumers.
+
+### Broker to Worker
+
+| Type | Description |
+|------|-------------|
+| `init_worker` | Initialize the worker with agent specification |
+| `deliver_relay` | Deliver an incoming message |
+| `shutdown_worker` | Request graceful shutdown |
+| `ping` | Health check |
+
+### Worker to Broker
+
+| Type | Description |
+|------|-------------|
+| `worker_ready` | Worker is initialized and ready |
+| `delivery_ack` | Acknowledge message delivery |
+| `worker_stream` | Output chunk (stdout/stderr) |
+| `worker_error` | Error report |
+| `worker_exited` | Worker is exiting |
+| `pong` | Health check response |
+
+---
+
+## Request/Response Flow
+
+Every request from the SDK includes a `request_id`. The broker responds with the same `request_id` so the SDK can match responses to requests.
+
+```
+SDK                          Broker
+ |                              |
+ |-- hello (req_1) ----------->|
+ |<- hello_ack (req_1) --------|
+ |                              |
+ |-- spawn_agent (req_2) ----->|
+ |<- ok (req_2) ---------------|
+ |                              |
+ |<- event (no req_id) --------|  agent_spawned
+ |<- event (no req_id) --------|  worker_stream
+ |<- event (no req_id) --------|  relay_inbound
+ |                              |
+ |-- send_message (req_3) ---->|
+ |<- ok (req_3) ---------------|
+ |                              |
+ |-- shutdown (req_4) -------->|
+ |<- ok (req_4) ---------------|
+ |                       [process exits]
+```
+
+Events flow independently of request/response pairs and can arrive at any time after the handshake.
+
+---
+
+## Error Codes
+
+| Code | Description | Retryable |
+|------|-------------|-----------|
+| `invalid_request` | Malformed or invalid request | No |
+| `agent_not_found` | Named agent does not exist | No |
+| `agent_already_exists` | Agent with that name already exists | No |
+| `spawn_failed` | Failed to spawn worker process | Yes |
+| `delivery_failed` | Failed to deliver message | Yes |
+| `internal_error` | Internal broker error | Yes |
+| `shutdown_in_progress` | Broker is shutting down | No |

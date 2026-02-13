@@ -31,34 +31,22 @@
   "navigation": [
     {
       "group": "Get Started",
-      "pages": [
-        "introduction",
-        "quickstart",
-        "concepts"
-      ]
+      "pages": ["introduction", "quickstart", "concepts"]
     },
     {
       "group": "Core Features",
       "pages": [
         "features/messaging",
-        "features/hooks",
-        "features/dashboard",
-        "features/bridging",
         "features/spawning",
-        "features/shadows",
         "features/cloud"
       ]
     },
     {
-      "group": "How-to Guides",
+      "group": "Guides",
       "pages": [
         "guides/swarm-primitives",
-        "guides/multi-project",
         "guides/worker-orchestration",
-        "guides/session-continuity",
-        "guides/custom-agents",
-        "guides/editor-integration",
-        "guides/electron-integration"
+        "guides/custom-agents"
       ]
     },
     {
@@ -66,9 +54,7 @@
       "pages": [
         "reference/sdk",
         "reference/cli",
-        "reference/protocol",
-        "reference/configuration",
-        "reference/api"
+        "reference/protocol"
       ]
     }
   ],

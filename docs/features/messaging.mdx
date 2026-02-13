@@ -1,255 +1,213 @@
 ---
-title: "Agent Messaging"
-description: "Real-time communication between AI agents using the relay protocol"
+title: "Messaging"
+description: "Send messages between agents using Relaycast channels, DMs, and threads"
 ---
 
-# Agent Messaging
+# Messaging
 
-Agent Relay provides real-time messaging between AI agents using a file-based protocol. Messages are delivered instantly through Unix domain sockets, enabling seamless coordination between agents.
+All messages in Agent Relay flow through **Relaycast**, the cloud transport layer. The SDK provides methods for sending messages, and the broker handles delivery to workers.
 
-## Quick Start
+## Sending Messages
 
-Agents communicate by writing messages to their outbox and outputting a trigger:
+### From the SDK
+
+Use `sendMessage` on the low-level client or `human().sendMessage()` on the facade:
+
+```typescript
+// Low-level client
+await client.sendMessage({
+  to: "Worker",
+  text: "Please implement the auth module",
+});
+
+// High-level facade — human source
+const human = relay.human({ name: "System" });
+await human.sendMessage({
+  to: worker.name,
+  text: "Start working on the database schema",
+});
+
+// High-level facade — agent-to-agent
+await agent.sendMessage({
+  to: "Reviewer",
+  text: "Code is ready for review",
+});
+```
+
+### From agents (file-based protocol)
+
+Agents running inside PTY workers use a file-based protocol. They write a message file to their outbox and output a trigger pattern:
 
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/msg << 'EOF'
-TO: WorkerAgent
+cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
+TO: Worker
 
 Please implement the user authentication module.
 EOF
 ```
 
-Then output the trigger in your response: `->relay-file:msg`
+Then the agent outputs `->relay-file:msg` in its response. The broker detects this pattern and routes the message through Relaycast.
 
-<Note>
-The trigger `->relay-file:msg` must appear in your actual output text, not inside a bash command. The relay system watches for this pattern to know when to send the message.
-</Note>
+## Message Types
 
-## Message Format
+<Tabs>
+  <Tab title="Direct Messages">
+    Send to a specific agent by name:
 
-Every message follows a simple header-body format:
+    ```typescript
+    await client.sendMessage({
+      to: "Backend",
+      text: "The API endpoints are ready for integration",
+    });
+    ```
 
-```
-TO: Target
-THREAD: optional-thread-id
+    Only the named agent receives the message.
+  </Tab>
 
-Message body starts after the blank line.
-Multiple lines are supported.
-```
+  <Tab title="Broadcasts">
+    Send to all agents by targeting `*`:
 
-### Required Headers
+    ```typescript
+    await client.sendMessage({
+      to: "*",
+      text: "Deployment complete. All services are live.",
+    });
+    ```
 
-| Header | Description |
-|--------|-------------|
-| `TO` | Target agent name, `*` for broadcast, or `#channel` for channels |
+    Every agent in the workspace receives the message.
+  </Tab>
 
-### Optional Headers
+  <Tab title="Channel Messages">
+    Target a channel with `#channel`:
 
-| Header | Description |
-|--------|-------------|
-| `THREAD` | Thread identifier for organizing conversations |
-| `KIND` | Message type: `message` (default), `spawn`, `release` |
+    ```typescript
+    await client.sendMessage({
+      to: "#frontend",
+      text: "New component ready for review",
+    });
+    ```
 
-## Direct Messages
+    Only agents subscribed to the `frontend` channel receive the message.
+  </Tab>
+</Tabs>
 
-Send a message to a specific agent by name:
+## Threads
 
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/task << 'EOF'
-TO: Designer
+Group related messages into threads using `threadId`:
 
-Please create the login page mockups.
-EOF
-```
-
-Then: `->relay-file:task`
-
-## Broadcast Messages
-
-Send to all connected agents using `*`:
-
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/announce << 'EOF'
-TO: *
-
-Deployment complete. All services are now live.
-EOF
-```
-
-Then: `->relay-file:announce`
-
-## Channel Messages
-
-Channels allow topic-based communication. Prefix the channel name with `#`:
-
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/general << 'EOF'
-TO: #frontend
-
-The API endpoints are ready for integration.
-EOF
+```typescript
+await client.sendMessage({
+  to: "Designer",
+  text: "The login form looks great. Can you add a password toggle?",
+  threadId: "feature-login",
+});
 ```
 
-Then: `->relay-file:general`
+Threads are tracked in Relaycast and help organize multi-turn conversations between agents.
 
-<Warning>
-When you receive a message from a channel (indicated by `[#channel]` in the message), reply to the channel, not to the sender directly.
-</Warning>
+## Message Delivery
 
-## Message Acknowledgments
+Messages flow through this pipeline:
 
-The relay protocol uses acknowledgments to ensure reliable delivery.
-
-### ACK Protocol
-
-When you receive a task, immediately acknowledge it:
-
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/ack << 'EOF'
-TO: Lead
-
-ACK: Starting work on authentication module
-EOF
+```
+SDK/Agent                Broker               Relaycast            Target Worker
+    |                      |                      |                      |
+    |-- send_message ----->|                      |                      |
+    |                      |-- publish ---------->|                      |
+    |                      |                      |-- ws event --------->|
+    |                      |<-- ws event ---------|                      |
+    |                      |-- deliver to PTY ----|--------------------->|
+    |<-- ok ---------------|                      |                      |
 ```
 
-Then: `->relay-file:ack`
+### Delivery guarantees
 
-### DONE Protocol
+| Property | Behavior |
+|----------|----------|
+| Ordering | Messages within a channel are ordered by Relaycast |
+| Delivery | At-least-once delivery from Relaycast to the broker |
+| Deduplication | The broker deduplicates messages using event IDs |
+| Retry | Failed deliveries to workers retry up to 10 times with 1s intervals |
+| Persistence | Messages persist in Relaycast and survive broker restarts |
 
-When you complete a task, report completion:
+### Delivery events
 
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/done << 'EOF'
-TO: Lead
+Monitor delivery through broker events:
 
-DONE: Authentication module implemented with JWT tokens
-EOF
+```typescript
+client.onEvent((event) => {
+  switch (event.kind) {
+    case "relay_inbound":
+      console.log(`Message from ${event.from}: ${event.body}`);
+      break;
+    case "delivery_retry":
+      console.log(`Retrying delivery to ${event.name} (attempt ${event.attempts})`);
+      break;
+    case "delivery_dropped":
+      console.log(`Dropped ${event.count} messages to ${event.name}: ${event.reason}`);
+      break;
+  }
+});
 ```
-
-Then: `->relay-file:done`
-
-## Threaded Conversations
-
-Use the `THREAD` header to organize related messages:
-
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/reply << 'EOF'
-TO: Designer
-THREAD: feature-login
-
-The login component looks great. Can you add password visibility toggle?
-EOF
-```
-
-Then: `->relay-file:reply`
 
 ## Receiving Messages
 
-Incoming messages appear in your context as:
+### In the SDK
 
-```
-Relay message from Alice [abc123]: Hello, can you help with the database schema?
-```
+Use event hooks to receive messages:
 
-The format is: `Relay message from [sender] [message-id]: [content]`
+```typescript
+// High-level
+relay.onMessageReceived = (msg) => {
+  console.log(`[${msg.from} -> ${msg.to}] ${msg.text}`);
+};
 
-### Channel Messages
-
-Channel messages include the channel name:
-
-```
-Relay message from Alice [abc123] [#backend]: The API is ready for testing.
-```
-
-### Retry Escalation
-
-If you do not acknowledge a message, it will be re-sent with increasing urgency:
-
-- First attempt: `Relay message from Alice [abc123]: ...`
-- Second attempt: `[RETRY] Relay message from Alice [abc123]: ...`
-- Third+ attempt: `[URGENT - PLEASE ACKNOWLEDGE] Relay message from Alice [abc123]: ...`
-
-<Tip>
-Always acknowledge messages promptly to prevent retry escalation. A simple ACK response is sufficient.
-</Tip>
-
-## Synchronous Messaging
-
-By default, messages are fire-and-forget. Add `[await]` to block until the recipient acknowledges:
-
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/sync << 'EOF'
-TO: Validator
-[await]
-
-Please validate the schema changes before I proceed.
-EOF
+// Low-level
+client.onEvent((event) => {
+  if (event.kind === "relay_inbound") {
+    console.log(`${event.from}: ${event.body}`);
+  }
+});
 ```
 
-Then: `->relay-file:sync`
+### In agent terminals
 
-### Custom Timeouts
+When a message is delivered to a PTY worker, it appears in the agent's terminal as:
 
-Specify a timeout for synchronous messages:
-
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/sync << 'EOF'
-TO: Builder
-[await:5m]
-
-Build the project and report any errors.
-EOF
+```
+Relay message from Alice [abc12345]: Hello! Can you help with the database schema?
 ```
 
-Timeout formats: `30s` (seconds), `5m` (minutes)
+The message is injected into the agent's stdin by the broker when the agent is idle.
 
-## Reading Truncated Messages
+## Human-to-Agent Messaging
 
-Long messages may be truncated in your context. Use the CLI to read the full message:
+Use `relay.human()` to send messages from non-agent sources:
 
-```bash
-agent-relay read <message-id>
+```typescript
+const human = relay.human({ name: "Admin" });
+
+await human.sendMessage({
+  to: "Worker",
+  text: "Please prioritize the authentication module",
+});
 ```
+
+Human messages are sent through the Relaycast API and delivered to agents like any other message. This is useful for injecting tasks, providing guidance, or building interactive UIs.
 
 ## Best Practices
 
 <CardGroup cols={2}>
-  <Card title="ACK Immediately" icon="check">
-    Always acknowledge tasks before starting work to prevent retry escalation.
-  </Card>
-  <Card title="Report to Lead" icon="arrow-up">
-    Send status updates to your lead agent, not broadcast.
+  <Card title="Use Channels" icon="hashtag">
+    Organize agents into channels by domain (frontend, backend, devops) for targeted communication.
   </Card>
   <Card title="Use Threads" icon="comments">
-    Organize related conversations with thread IDs for clarity.
+    Group related messages with thread IDs to keep conversations organized.
   </Card>
-  <Card title="Be Specific" icon="bullseye">
-    Use direct messages when possible instead of broadcasts.
+  <Card title="Prefer DMs" icon="bullseye">
+    Use direct messages when the target is known. Avoid unnecessary broadcasts.
+  </Card>
+  <Card title="Monitor Delivery" icon="chart-line">
+    Subscribe to delivery_retry and delivery_dropped events to catch problems early.
   </Card>
 </CardGroup>
-
-## CLI Commands
-
-| Command | Description |
-|---------|-------------|
-| `agent-relay status` | Check daemon status |
-| `agent-relay agents` | List connected agents |
-| `agent-relay read <id>` | Read full message by ID |
-
-## Troubleshooting
-
-<AccordionGroup>
-  <Accordion title="Messages not sending">
-    1. Check daemon status: `agent-relay status`
-    2. Verify outbox directory exists: `ls -la /tmp/relay-outbox/`
-    3. Ensure trigger appears in your output (not just in bash)
-  </Accordion>
-  <Accordion title="Agent not receiving messages">
-    1. Confirm agent is connected: `agent-relay agents`
-    2. Check the target agent name matches exactly (case-sensitive)
-    3. Verify the daemon socket exists: `ls -la /tmp/agent-relay.sock`
-  </Accordion>
-  <Accordion title="Truncated message content">
-    Use `agent-relay read <message-id>` to retrieve the full message text.
-  </Accordion>
-</AccordionGroup>
