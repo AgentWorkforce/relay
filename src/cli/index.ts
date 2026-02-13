@@ -44,6 +44,7 @@ import readline from 'node:readline';
 import { promisify } from 'node:util';
 import { exec, execSync, spawn as spawnProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { Client as SSH2Client } from 'ssh2';
 
 
 /**
@@ -4303,11 +4304,10 @@ program
     console.log(dim(`  Command: ${remoteCommand}`));
     console.log('');
 
-    const { Client } = await import('ssh2');
     const net = await import('node:net');
 
     const TUNNEL_PORT = 1455;
-    const sshClient = new Client();
+    const sshClient = new SSH2Client();
     let sshReady = false;
     const tunnel: { server: ReturnType<typeof net.createServer> | null } = { server: null };
 
@@ -4779,10 +4779,9 @@ async function runCliAuth(
   console.log(dim(`  Tunnel: localhost:${TUNNEL_PORT} → workspace:${tunnelInfo.tunnelPort}`));
   console.log('');
 
-  const { Client } = await import('ssh2');
   const net = await import('node:net');
 
-  const sshClient = new Client();
+  const sshClient = new SSH2Client();
   // Use object to hold server reference (avoids TypeScript narrowing issues)
   const tunnel: { server: ReturnType<typeof net.createServer> | null } = { server: null };
   let tunnelReady = false;
