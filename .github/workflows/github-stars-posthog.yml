@@ -1,0 +1,78 @@
+name: Track GitHub Stars in PostHog
+
+on:
+  schedule:
+    # Every 6 hours
+    - cron: "15 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-stars-posthog
+  cancel-in-progress: false
+
+jobs:
+  capture-stars:
+    name: Capture GitHub stars snapshot
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch repository metrics and send snapshot to PostHog
+        env:
+          GITHUB_REPOSITORY_NAME: ${{ github.repository }}
+          POSTHOG_PROJECT_API_KEY: ${{ secrets.POSTHOG_PROJECT_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${POSTHOG_PROJECT_API_KEY:-}" ]; then
+            echo "POSTHOG_PROJECT_API_KEY is not set. Add it as a repository secret."
+            exit 1
+          fi
+
+          posthog_api_key="${POSTHOG_PROJECT_API_KEY}"
+          posthog_host="https://us.i.posthog.com"
+          github_api_url="https://api.github.com/repos/${GITHUB_REPOSITORY_NAME}"
+
+          repo_json="$(curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "User-Agent: agent-relay-stars-tracker" \
+            "${github_api_url}")"
+
+          stars="$(echo "${repo_json}" | jq -r '.stargazers_count')"
+          forks="$(echo "${repo_json}" | jq -r '.forks_count')"
+          open_issues="$(echo "${repo_json}" | jq -r '.open_issues_count')"
+          subscribers="$(echo "${repo_json}" | jq -r '.subscribers_count')"
+          captured_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+          payload="$(jq -n \
+            --arg api_key "${posthog_api_key}" \
+            --arg event "github_repo_stars_snapshot" \
+            --arg distinct_id "github_repo:${GITHUB_REPOSITORY_NAME}" \
+            --arg repo "${GITHUB_REPOSITORY_NAME}" \
+            --arg captured_at "${captured_at}" \
+            --argjson star_count "${stars}" \
+            --argjson fork_count "${forks}" \
+            --argjson open_issue_count "${open_issues}" \
+            --argjson subscriber_count "${subscribers}" \
+            '{
+              api_key: $api_key,
+              event: $event,
+              distinct_id: $distinct_id,
+              timestamp: $captured_at,
+              properties: {
+                source: "github_actions",
+                repository: $repo,
+                star_count: $star_count,
+                fork_count: $fork_count,
+                open_issue_count: $open_issue_count,
+                subscriber_count: $subscriber_count
+              }
+            }'
+          )"
+
+          curl -fsSL -X POST "${posthog_host}/capture/" \
+            -H "Content-Type: application/json" \
+            -d "${payload}"
+
+          echo "Sent github_repo_stars_snapshot for ${GITHUB_REPOSITORY_NAME} (star_count=${stars})"

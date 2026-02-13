@@ -786,6 +786,12 @@ export class Daemon {
       to: msg.to,
     });
 
+    // Handle spawn commands from cloud
+    if (msg.to === '__spawner__' && msg.metadata?.type === 'spawn_command') {
+      this.handleCloudSpawnCommand(msg);
+      return;
+    }
+
     // Find local agent
     const targetConnection = Array.from(this.connections).find(
       c => c.agentName === msg.to
@@ -817,6 +823,61 @@ export class Daemon {
     };
 
     this.router.route(targetConnection, envelope);
+  }
+
+  /**
+   * Handle a spawn command received from the cloud (e.g., Slack orchestrator).
+   * Parses the spawn_agent command and uses SpawnManager to spawn the agent locally.
+   */
+  private async handleCloudSpawnCommand(msg: CrossMachineMessage): Promise<void> {
+    if (!this.spawnManager) {
+      log.warn('Cannot handle cloud spawn command: SpawnManager not enabled');
+      return;
+    }
+
+    try {
+      const command = JSON.parse(msg.content) as {
+        type: string;
+        agentName: string;
+        cli: string;
+        task?: string;
+        metadata?: Record<string, unknown>;
+      };
+
+      if (command.type !== 'spawn_agent') {
+        log.warn('Unknown cloud spawn command type', { type: command.type });
+        return;
+      }
+
+      log.info('Spawning agent from cloud command', {
+        name: command.agentName,
+        cli: command.cli,
+        source: msg.from.agent,
+      });
+
+      const spawner = this.spawnManager.getSpawner();
+      const result = await spawner.spawn({
+        name: command.agentName,
+        cli: command.cli,
+        task: command.task || 'You were spawned by the cloud orchestrator. Check your inbox for messages.',
+        spawnerName: msg.from.agent,
+      });
+
+      if (result.success) {
+        log.info('Cloud-spawned agent started', {
+          name: command.agentName,
+          pid: result.pid,
+        });
+      } else {
+        log.error('Cloud spawn failed', {
+          name: command.agentName,
+          error: result.error,
+        });
+      }
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err.message : String(err);
+      log.error('Failed to parse cloud spawn command', { error });
+    }
   }
 
   /**
