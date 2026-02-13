@@ -5,6 +5,10 @@ use std::{
 
 use crate::types::{InjectRequest, RelayPriority};
 
+/// Maximum coalesced message body size (32 KiB). When exceeded, the current
+/// group is flushed and the new message starts a fresh coalesce window.
+const MAX_COALESCED_BODY_SIZE: usize = 32 * 1024;
+
 #[derive(Debug, Clone)]
 struct CoalesceState {
     request: InjectRequest,
@@ -54,7 +58,9 @@ impl Scheduler {
         if let Some(state) = self.pending.get_mut(&key) {
             let within_window = now.duration_since(state.last_seen) <= self.coalesce_window;
             let within_hold = now.duration_since(state.first_seen) <= self.max_hold;
-            if within_window && within_hold {
+            let within_size =
+                state.request.body.len() + 1 + req.body.len() <= MAX_COALESCED_BODY_SIZE;
+            if within_window && within_hold && within_size {
                 state.request.body.push('\n');
                 state.request.body.push_str(&req.body);
                 state.last_seen = now;
