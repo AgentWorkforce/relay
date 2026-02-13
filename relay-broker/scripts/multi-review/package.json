@@ -1,0 +1,11 @@
+{
+  "name": "multi-review",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node review.mjs"
+  },
+  "dependencies": {
+    "@agent-relay/sdk-ts": "file:../../packages/sdk-ts"
+  }
+}
