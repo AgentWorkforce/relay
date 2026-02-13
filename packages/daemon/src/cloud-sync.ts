@@ -96,7 +96,8 @@ export interface CrossMachineMessage {
 export class CloudSyncService extends EventEmitter {
   private config: CloudSyncConfig;
   private heartbeatTimer?: NodeJS.Timeout;
-  private messagePollTimer?: NodeJS.Timeout;
+  private longPollActive = false;
+  private longPollController?: AbortController;
   private machineId: string;
   private localAgents: Map<string, { name: string; status: string; isHuman?: boolean; avatarUrl?: string }> = new Map();
   private remoteAgents: RemoteAgent[] = [];
@@ -210,17 +211,10 @@ export class CloudSyncService extends EventEmitter {
       this.config.heartbeatInterval
     );
 
-    // Start fast message polling (separate from heartbeat for low-latency delivery)
-    const pollInterval = this.config.messagePollInterval || 5000;
-    if (pollInterval < this.config.heartbeatInterval) {
-      this.messagePollTimer = setInterval(
-        () => this.fetchMessages().catch((err) => log.error('Message poll failed', { error: String(err) })),
-        pollInterval,
-      );
-      log.info('Fast message polling enabled', { intervalMs: pollInterval });
-    }
-
     this.connected = true;
+
+    // Start long-polling for messages (replaces interval-based polling)
+    this.startLongPoll();
     this.emit('connected');
   }
 
@@ -232,10 +226,8 @@ export class CloudSyncService extends EventEmitter {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = undefined;
     }
-    if (this.messagePollTimer) {
-      clearInterval(this.messagePollTimer);
-      this.messagePollTimer = undefined;
-    }
+    this.longPollActive = false;
+    this.longPollController?.abort();
 
     // Gracefully close sync queue (flushes pending messages)
     if (this.syncQueue) {
@@ -355,14 +347,14 @@ export class CloudSyncService extends EventEmitter {
         }
       }
 
-      // Fetch messages (skip if fast poll timer handles it), sync agents, sync local messages, and push metrics to cloud
+      // Fetch messages (skip if long polling handles it), sync agents, sync local messages, and push metrics to cloud
       const tasks: Promise<unknown>[] = [
         this.syncAgents(),
         this.syncMessagesToCloud(),
         this.pushAgentMetrics(),
       ];
-      // Only fetch messages in heartbeat if fast polling is not active
-      if (!this.messagePollTimer) {
+      // Only fetch messages in heartbeat if long polling is not active
+      if (!this.longPollActive) {
         tasks.push(this.fetchMessages());
       }
       await Promise.all(tasks);
@@ -452,6 +444,43 @@ export class CloudSyncService extends EventEmitter {
 
     for (const msg of data.messages) {
       this.emit('cross-machine-message', msg);
+    }
+  }
+
+  /**
+   * Start long-polling loop for cross-machine messages.
+   * Replaces the previous interval-based polling with a held HTTP connection
+   * that returns as soon as messages are available (or after 25s timeout).
+   */
+  private async startLongPoll(): Promise<void> {
+    this.longPollActive = true;
+    log.info('Long-poll message delivery started');
+
+    while (this.longPollActive && this.connected) {
+      try {
+        this.longPollController = new AbortController();
+        const timeoutId = setTimeout(() => this.longPollController?.abort(), 30000);
+
+        const response = await fetch(
+          `${this.config.cloudUrl}/api/daemons/messages?wait=25`,
+          {
+            headers: { Authorization: `Bearer ${this.config.apiKey}` },
+            signal: this.longPollController.signal,
+          }
+        ).finally(() => clearTimeout(timeoutId));
+
+        if (!response.ok) throw new Error(`Long poll failed: ${response.status}`);
+
+        const data = await response.json() as { messages: CrossMachineMessage[] };
+        for (const msg of data.messages) {
+          this.emit('cross-machine-message', msg);
+        }
+      } catch (err) {
+        if (!this.longPollActive) break;
+        if (err instanceof Error && err.name === 'AbortError') continue;
+        log.error('Long poll error', { error: String(err) });
+        await new Promise(r => setTimeout(r, 2000));
+      }
     }
   }
 
