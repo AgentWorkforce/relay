@@ -106,18 +106,29 @@ impl ConversationLog {
     }
 }
 
+/// Find the largest byte index <= `idx` that lies on a UTF-8 char boundary.
+fn floor_char_boundary(s: &str, idx: usize) -> usize {
+    let mut end = idx.min(s.len());
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    end
+}
+
 fn truncate(s: &str, max: usize) -> String {
     let trimmed = s.replace('\n', " ");
     if trimmed.len() <= max {
         trimmed
     } else {
-        format!("{}…", &trimmed[..max])
+        let end = floor_char_boundary(&trimmed, max);
+        format!("{}…", &trimmed[..end])
     }
 }
 
 fn pad_or_truncate(s: &str, width: usize) -> String {
     if s.len() > width {
-        format!("{}…", &s[..width - 1])
+        let end = floor_char_boundary(s, width - 1);
+        format!("{}…", &s[..end])
     } else {
         s.to_string()
     }
@@ -127,7 +138,8 @@ fn short_id(value: &str) -> String {
     if value.len() <= 8 {
         value.to_string()
     } else {
-        value[..8].to_string()
+        let end = floor_char_boundary(value, 8);
+        value[..end].to_string()
     }
 }
 
@@ -205,5 +217,25 @@ mod tests {
         assert!(body.contains("| bob"));
         assert!(body.contains("| #general"));
         assert!(body.contains("| hello team"));
+    }
+
+    #[test]
+    fn truncate_handles_multibyte_utf8() {
+        use super::{truncate, pad_or_truncate, short_id};
+
+        // Emoji are 4 bytes each; truncating at byte boundary mid-char must not panic
+        let emoji_str = "Hello 🌍🌎🌏 world";
+        let result = truncate(emoji_str, 10);
+        assert!(result.ends_with('…'));
+        assert!(!result.contains('\u{FFFD}')); // no replacement chars
+
+        // pad_or_truncate with multi-byte
+        let result = pad_or_truncate("café résumé", 6);
+        assert!(result.ends_with('…'));
+
+        // short_id with multi-byte prefix
+        let result = short_id("🎉🎊🎈party");
+        // Should not panic; 3 emoji = 12 bytes, truncate to 8 bytes = 2 emoji (8 bytes)
+        assert!(result.len() <= 12);
     }
 }
