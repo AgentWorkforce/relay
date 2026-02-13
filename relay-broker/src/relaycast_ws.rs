@@ -239,7 +239,7 @@ pub fn build_ws_stream_url(base_url: &str, token: &str) -> Result<String> {
 
     let final_path = if path.is_empty() {
         "/v1/stream".to_string()
-    } else if path.ends_with("/v1/stream") {
+    } else if path.ends_with("/v1/stream") || path.ends_with("/stream") {
         path
     } else if path.ends_with("/v1") {
         format!("{path}/stream")
@@ -305,7 +305,7 @@ mod tests {
             build_ws_stream_url("wss://rt.relaycast.dev/stream?client=broker", "tok_3").unwrap();
         assert_eq!(
             url,
-            "wss://rt.relaycast.dev/stream/v1/stream?client=broker&token=tok_3"
+            "wss://rt.relaycast.dev/stream?client=broker&token=tok_3"
         );
     }
 
