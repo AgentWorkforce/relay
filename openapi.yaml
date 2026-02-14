@@ -1,0 +1,455 @@
+openapi: 3.0.0
+info:
+  title: Agent Relay Daemon API
+  description: |
+    REST API for the Agent Relay daemon - agent management, message routing, and state inspection.
+  version: 1.0.0
+  contact:
+    name: Agent Relay
+    url: https://github.com/AgentWorkforce/relay
+  license:
+    name: Apache 2.0
+
+servers:
+  - url: http://localhost:8080
+    description: Local daemon (default port)
+  - url: http://localhost:7777
+    description: Alternative local daemon port
+
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: Bearer token or API key
+
+  schemas:
+    Agent:
+      type: object
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+          enum: [active, idle, offline, crashed]
+        model:
+          type: string
+        uptime:
+          type: integer
+          description: Uptime in seconds
+        lastSeen:
+          type: string
+          format: date-time
+        outputs:
+          type: array
+          items:
+            type: string
+
+    Message:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        from:
+          type: object
+          properties:
+            daemonId:
+              type: string
+            daemonName:
+              type: string
+            agent:
+              type: string
+        to:
+          type: string
+        content:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+
+    DaemonStatus:
+      type: object
+      properties:
+        daemonId:
+          type: string
+        name:
+          type: string
+        version:
+          type: string
+        uptime:
+          type: integer
+        connectedAgents:
+          type: integer
+        messageRate:
+          type: number
+        memory:
+          type: object
+          properties:
+            used:
+              type: integer
+            total:
+              type: integer
+        cpu:
+          type: number
+
+    SpawnRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        cli:
+          type: string
+          enum: [claude, codex, gemini, aider, goose]
+        task:
+          type: string
+        model:
+          type: string
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+        details:
+          type: object
+
+paths:
+  /health:
+    get:
+      summary: Daemon health check
+      description: Check daemon health and readiness
+      tags:
+        - System
+      responses:
+        '200':
+          description: Daemon is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DaemonStatus'
+        '503':
+          description: Daemon is unhealthy
+
+  /status:
+    get:
+      summary: Get daemon status
+      description: Get detailed daemon status including agents and message stats
+      tags:
+        - System
+      security:
+        - apiKey: []
+      responses:
+        '200':
+          description: Daemon status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DaemonStatus'
+        '401':
+          description: Unauthorized
+
+  /agents:
+    get:
+      summary: List connected agents
+      description: Get all connected agents and their status
+      tags:
+        - Agents
+      security:
+        - apiKey: []
+      responses:
+        '200':
+          description: List of agents
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Agent'
+        '401':
+          description: Unauthorized
+
+  /agents/{name}:
+    get:
+      summary: Get agent details
+      description: Retrieve details for a specific agent
+      tags:
+        - Agents
+      security:
+        - apiKey: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Agent details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Agent'
+        '404':
+          description: Agent not found
+
+  /agents/{name}/logs:
+    get:
+      summary: Get agent logs
+      description: Retrieve recent output logs from an agent
+      tags:
+        - Agents
+      security:
+        - apiKey: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: lines
+          in: query
+          schema:
+            type: integer
+            default: 50
+            description: Number of log lines to return
+      responses:
+        '200':
+          description: Agent logs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logs:
+                    type: array
+                    items:
+                      type: string
+                  totalLines:
+                    type: integer
+        '404':
+          description: Agent not found
+
+  /agents/{name}/kill:
+    post:
+      summary: Kill an agent
+      description: Force terminate a running agent
+      tags:
+        - Agents
+      security:
+        - apiKey: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Agent killed
+        '404':
+          description: Agent not found
+        '400':
+          description: Cannot kill agent
+
+  /spawn:
+    post:
+      summary: Spawn a new agent
+      description: Spawn a new agent with the specified task
+      tags:
+        - Agents
+      security:
+        - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpawnRequest'
+      responses:
+        '201':
+          description: Agent spawned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agentId:
+                    type: string
+                  name:
+                    type: string
+                  status:
+                    type: string
+        '400':
+          description: Invalid spawn request
+
+  /release:
+    post:
+      summary: Release an agent
+      description: Gracefully release a spawned agent
+      tags:
+        - Agents
+      security:
+        - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+      responses:
+        '200':
+          description: Agent released
+        '404':
+          description: Agent not found
+
+  /messages:
+    get:
+      summary: Get message history
+      description: Retrieve message history
+      tags:
+        - Messages
+      security:
+        - apiKey: []
+      parameters:
+        - name: from
+          in: query
+          schema:
+            type: string
+          description: Filter by sender agent
+        - name: to
+          in: query
+          schema:
+            type: string
+          description: Filter by recipient agent
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Message history
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Message'
+        '401':
+          description: Unauthorized
+
+    post:
+      summary: Send message to agent
+      description: Send a message to an agent or broadcast
+      tags:
+        - Messages
+      security:
+        - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                to:
+                  type: string
+                  description: Agent name or broadcast (*)
+                content:
+                  type: string
+      responses:
+        '202':
+          description: Message queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  messageId:
+                    type: string
+        '400':
+          description: Invalid message
+        '404':
+          description: Agent not found
+
+  /who:
+    get:
+      summary: List active agents
+      description: Get agents that were active in the last 30 seconds
+      tags:
+        - Agents
+      security:
+        - apiKey: []
+      responses:
+        '200':
+          description: Active agents
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                    lastSeen:
+                      type: string
+                      format: date-time
+
+  /metrics:
+    get:
+      summary: Get Prometheus metrics
+      description: Retrieve Prometheus-formatted metrics
+      tags:
+        - Monitoring
+      responses:
+        '200':
+          description: Prometheus metrics
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /consensus/status:
+    get:
+      summary: Get consensus status
+      description: Get current consensus and leader information
+      tags:
+        - Consensus
+      responses:
+        '200':
+          description: Consensus status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  leader:
+                    type: string
+                  term:
+                    type: integer
+                  members:
+                    type: array
+                    items:
+                      type: string
+
+tags:
+  - name: System
+    description: Daemon system status and health
+  - name: Agents
+    description: Agent lifecycle management
+  - name: Messages
+    description: Inter-agent messaging
+  - name: Monitoring
+    description: Monitoring and observability
+  - name: Consensus
+    description: Cluster consensus and coordination
