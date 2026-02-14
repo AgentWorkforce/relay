@@ -782,7 +782,7 @@ export class RelayClient {
    * @param options.shadowSpeakOn - Shadow speak-on triggers
    * @param options.waitForReady - Wait for the agent to be ready before resolving (default: false)
    * @param options.readyTimeoutMs - Timeout for agent to become ready (default: 60000ms)
-   * @param timeoutMs - Timeout for spawn operation (default: 30000ms)
+   * @param timeoutMs - Timeout for spawn operation (default: 60000ms)
    * @returns Spawn result. When waitForReady is true, includes `ready` and `readyInfo` fields.
    */
   async spawn(
@@ -811,7 +811,7 @@ export class RelayClient {
       /** Timeout for agent to become ready (default: 60000ms). Only used when waitForReady is true. */
       readyTimeoutMs?: number;
     },
-    timeoutMs = 30000
+    timeoutMs = 60000
   ): Promise<SpawnResult> {
     if (this._state !== 'READY') {
       throw new Error('Client not ready');
