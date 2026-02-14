@@ -99,6 +99,7 @@ export class CloudSyncService extends EventEmitter {
   private remoteAgents: RemoteAgent[] = [];
   private remoteUsers: RemoteAgent[] = [];
   private connected = false;
+  private useLegacyHeartbeat = false;
   private storage: StorageAdapter | null = null;
   private lastMessageSyncTs: number = 0;
   private messageSyncInProgress = false;
@@ -291,6 +292,11 @@ export class CloudSyncService extends EventEmitter {
    * Falls back to legacy individual endpoints if poll endpoint is not available.
    */
   private async sendHeartbeat(): Promise<void> {
+    // Skip batched poll if server doesn't support it (cached 404)
+    if (this.useLegacyHeartbeat) {
+      return this.sendHeartbeatLegacy();
+    }
+
     try {
       const agents = Array.from(this.localAgents.entries()).map(([name, info]) => ({
         name,
@@ -329,9 +335,10 @@ export class CloudSyncService extends EventEmitter {
           this.stop();
           return;
         }
-        // If poll endpoint doesn't exist (404), fall back to legacy
+        // If poll endpoint doesn't exist (404), cache and fall back to legacy
         if (response.status === 404) {
-          log.info('Poll endpoint not available, falling back to legacy endpoints');
+          log.info('Poll endpoint not available, switching to legacy endpoints permanently');
+          this.useLegacyHeartbeat = true;
           return this.sendHeartbeatLegacy();
         }
         throw new Error(`Poll failed: ${response.status}`);
