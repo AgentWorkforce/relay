@@ -24,8 +24,6 @@ export interface CloudSyncConfig {
   apiKey?: string;
   cloudUrl: string;
   heartbeatInterval: number; // ms
-  /** Interval for polling cloud messages, separate from heartbeat (default: 5000ms) */
-  messagePollInterval?: number;
   enabled: boolean;
   /** Enable message sync to cloud (default: true if connected) */
   messageSyncEnabled?: boolean;
@@ -96,13 +94,12 @@ export interface CrossMachineMessage {
 export class CloudSyncService extends EventEmitter {
   private config: CloudSyncConfig;
   private heartbeatTimer?: NodeJS.Timeout;
-  private longPollActive = false;
-  private longPollController?: AbortController;
   private machineId: string;
   private localAgents: Map<string, { name: string; status: string; isHuman?: boolean; avatarUrl?: string }> = new Map();
   private remoteAgents: RemoteAgent[] = [];
   private remoteUsers: RemoteAgent[] = [];
   private connected = false;
+  private useLegacyHeartbeat = false;
   private storage: StorageAdapter | null = null;
   private lastMessageSyncTs: number = 0;
   private messageSyncInProgress = false;
@@ -126,9 +123,6 @@ export class CloudSyncService extends EventEmitter {
       heartbeatInterval: config.heartbeatInterval
         || (process.env.AGENT_RELAY_HEARTBEAT_INTERVAL ? parseInt(process.env.AGENT_RELAY_HEARTBEAT_INTERVAL, 10) : 0)
         || 60000, // 60 seconds default; override via AGENT_RELAY_HEARTBEAT_INTERVAL env var
-      messagePollInterval: config.messagePollInterval
-        || (process.env.AGENT_RELAY_MESSAGE_POLL_INTERVAL ? parseInt(process.env.AGENT_RELAY_MESSAGE_POLL_INTERVAL, 10) : 0)
-        || 5000, // 5 seconds default for fast message delivery
       enabled: config.enabled ?? true,
       useOptimizedSync: config.useOptimizedSync ?? true,
       syncQueue: config.syncQueue,
@@ -212,9 +206,6 @@ export class CloudSyncService extends EventEmitter {
     );
 
     this.connected = true;
-
-    // Start long-polling for messages (replaces interval-based polling)
-    this.startLongPoll();
     this.emit('connected');
   }
 
@@ -226,8 +217,6 @@ export class CloudSyncService extends EventEmitter {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = undefined;
     }
-    this.longPollActive = false;
-    this.longPollController?.abort();
 
     // Gracefully close sync queue (flushes pending messages)
     if (this.syncQueue) {
@@ -298,9 +287,16 @@ export class CloudSyncService extends EventEmitter {
   }
 
   /**
-   * Send heartbeat to cloud
+   * Send heartbeat to cloud using the batched poll endpoint.
+   * Combines heartbeat, messages, agents, and message sync into a single request.
+   * Falls back to legacy individual endpoints if poll endpoint is not available.
    */
   private async sendHeartbeat(): Promise<void> {
+    // Skip batched poll if server doesn't support it (cached 404)
+    if (this.useLegacyHeartbeat) {
+      return this.sendHeartbeatLegacy();
+    }
+
     try {
       const agents = Array.from(this.localAgents.entries()).map(([name, info]) => ({
         name,
@@ -309,7 +305,198 @@ export class CloudSyncService extends EventEmitter {
         avatarUrl: info.avatarUrl,
       }));
 
-      // Use AbortController for timeout (10 second timeout for heartbeat)
+      // Prepare sync messages payload (if any)
+      const syncMessages = await this.getSyncMessagesPayload();
+
+      // Use AbortController for timeout (15 second timeout for batched poll)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+      const response = await fetch(`${this.config.cloudUrl}/api/daemons/poll`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.config.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          agents,
+          metrics: {
+            uptime: process.uptime(),
+            memoryUsage: process.memoryUsage(),
+          },
+          ...(syncMessages ? { syncMessages, repoFullName: this.repoFullName } : {}),
+        }),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeoutId));
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          log.error('Invalid API key. Run `agent-relay cloud link` to re-authenticate.');
+          this.stop();
+          return;
+        }
+        // If poll endpoint doesn't exist (404), cache and fall back to legacy
+        if (response.status === 404) {
+          log.info('Poll endpoint not available, switching to legacy endpoints permanently');
+          this.useLegacyHeartbeat = true;
+          return this.sendHeartbeatLegacy();
+        }
+        throw new Error(`Poll failed: ${response.status}`);
+      }
+
+      const data = await response.json() as {
+        commands?: Array<{ type: string; payload: unknown }>;
+        messages?: CrossMachineMessage[];
+        allAgents?: RemoteAgent[];
+        allUsers?: RemoteAgent[];
+        sync?: { synced: number; duplicates: number };
+        pollIntervalMs?: number;
+      };
+
+      // Process pending commands
+      if (data.commands && data.commands.length > 0) {
+        for (const cmd of data.commands) {
+          this.emit('command', cmd);
+        }
+      }
+
+      // Process queued cross-machine messages
+      if (data.messages) {
+        for (const msg of data.messages) {
+          this.emit('cross-machine-message', msg);
+        }
+      }
+
+      // Process agent discovery
+      if (data.allAgents) {
+        this.remoteAgents = data.allAgents.filter(
+          (a) => !this.localAgents.has(a.name)
+        );
+        if (this.remoteAgents.length > 0) {
+          this.emit('remote-agents-updated', this.remoteAgents);
+        }
+      }
+
+      // Process remote users
+      if (data.allUsers) {
+        this.remoteUsers = data.allUsers.filter(
+          (u) => !this.localAgents.has(u.name)
+        );
+        if (this.remoteUsers.length > 0) {
+          this.emit('remote-users-updated', this.remoteUsers);
+        }
+      }
+
+      // Process sync result
+      if (data.sync && data.sync.synced > 0) {
+        log.info(`Synced ${data.sync.synced} messages to cloud`, { duplicates: data.sync.duplicates });
+      }
+
+      // Update sync watermark if we synced messages
+      if (syncMessages && syncMessages.length > 0 && data.sync && data.sync.synced >= 0) {
+        this.lastMessageSyncTs = Math.max(...syncMessages.map((m) => m.ts));
+      }
+
+      // Respect server-recommended polling interval
+      if (data.pollIntervalMs && data.pollIntervalMs !== this.config.heartbeatInterval) {
+        const newInterval = Math.max(5000, data.pollIntervalMs); // Floor at 5s
+        if (newInterval !== this.config.heartbeatInterval) {
+          log.info(`Adjusting poll interval from ${this.config.heartbeatInterval}ms to ${newInterval}ms (server hint)`);
+          this.config.heartbeatInterval = newInterval;
+          // Restart the timer with new interval
+          if (this.heartbeatTimer) {
+            clearInterval(this.heartbeatTimer);
+            this.heartbeatTimer = setInterval(
+              () => this.sendHeartbeat().catch((err) => log.error('Heartbeat failed', { error: String(err) })),
+              this.config.heartbeatInterval
+            );
+          }
+        }
+      }
+
+      // Push agent metrics separately (not part of poll)
+      await this.pushAgentMetrics();
+    } catch (error) {
+      const errorMessage = String(error);
+      if (error instanceof Error && error.name === 'AbortError') {
+        log.error('Poll timeout (15s)', { url: this.config.cloudUrl });
+      } else if (errorMessage.includes('fetch failed') || errorMessage.includes('ECONNREFUSED')) {
+        log.error('Poll network error - cloud server unreachable', {
+          url: this.config.cloudUrl,
+          error: errorMessage,
+        });
+      } else if (errorMessage.includes('ENOTFOUND') || errorMessage.includes('getaddrinfo')) {
+        log.error('Poll DNS error - cannot resolve cloud server', {
+          url: this.config.cloudUrl,
+        });
+      } else {
+        log.error('Poll error', { error: errorMessage });
+      }
+      this.emit('error', error);
+    }
+  }
+
+  /**
+   * Get messages ready for sync, or null if none available.
+   */
+  private async getSyncMessagesPayload(): Promise<Array<{
+    id: string; ts: number; from: string; to: string; body: string;
+    kind?: string; topic?: string; thread?: string;
+    is_broadcast?: boolean; is_urgent?: boolean;
+    data?: Record<string, unknown>; payload_meta?: unknown;
+  }> | null> {
+    if (!this.storage || this.messageSyncInProgress || this.config.messageSyncEnabled === false) {
+      return null;
+    }
+
+    this.messageSyncInProgress = true;
+    try {
+      const batchSize = this.config.messageSyncBatchSize || 100;
+      const messages = await this.storage.getMessages({
+        sinceTs: this.lastMessageSyncTs > 0 ? this.lastMessageSyncTs : undefined,
+        limit: batchSize,
+        order: 'asc',
+      });
+
+      if (messages.length === 0) {
+        return null;
+      }
+
+      return messages.map((msg: StoredMessage) => ({
+        id: msg.id,
+        ts: msg.ts,
+        from: msg.from,
+        to: msg.to,
+        body: msg.body,
+        kind: msg.kind,
+        topic: msg.topic,
+        thread: msg.thread,
+        is_broadcast: msg.is_broadcast,
+        is_urgent: msg.is_urgent,
+        data: msg.data,
+        payload_meta: msg.payloadMeta,
+      }));
+    } catch (error) {
+      log.error('Failed to prepare sync messages', { error: String(error) });
+      return null;
+    } finally {
+      this.messageSyncInProgress = false;
+    }
+  }
+
+  /**
+   * Legacy heartbeat: individual endpoint calls.
+   * Used as fallback when the batched /api/daemons/poll endpoint is not available.
+   */
+  private async sendHeartbeatLegacy(): Promise<void> {
+    try {
+      const agents = Array.from(this.localAgents.entries()).map(([name, info]) => ({
+        name,
+        status: info.status,
+        isHuman: info.isHuman,
+        avatarUrl: info.avatarUrl,
+      }));
+
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
 
@@ -340,26 +527,19 @@ export class CloudSyncService extends EventEmitter {
 
       const data = await response.json() as { commands?: Array<{ type: string; payload: unknown }> };
 
-      // Process any pending commands from cloud
       if (data.commands && data.commands.length > 0) {
         for (const cmd of data.commands) {
           this.emit('command', cmd);
         }
       }
 
-      // Fetch messages (skip if long polling handles it), sync agents, sync local messages, and push metrics to cloud
-      const tasks: Promise<unknown>[] = [
+      await Promise.all([
+        this.fetchMessages(),
         this.syncAgents(),
         this.syncMessagesToCloud(),
         this.pushAgentMetrics(),
-      ];
-      // Only fetch messages in heartbeat if long polling is not active
-      if (!this.longPollActive) {
-        tasks.push(this.fetchMessages());
-      }
-      await Promise.all(tasks);
+      ]);
     } catch (error) {
-      // Provide more specific error messages for common issues
       const errorMessage = String(error);
       if (error instanceof Error && error.name === 'AbortError') {
         log.error('Heartbeat timeout (10s)', { url: this.config.cloudUrl });
@@ -444,43 +624,6 @@ export class CloudSyncService extends EventEmitter {
 
     for (const msg of data.messages) {
       this.emit('cross-machine-message', msg);
-    }
-  }
-
-  /**
-   * Start long-polling loop for cross-machine messages.
-   * Replaces the previous interval-based polling with a held HTTP connection
-   * that returns as soon as messages are available (or after 25s timeout).
-   */
-  private async startLongPoll(): Promise<void> {
-    this.longPollActive = true;
-    log.info('Long-poll message delivery started');
-
-    while (this.longPollActive && this.connected) {
-      try {
-        this.longPollController = new AbortController();
-        const timeoutId = setTimeout(() => this.longPollController?.abort(), 30000);
-
-        const response = await fetch(
-          `${this.config.cloudUrl}/api/daemons/messages?wait=25`,
-          {
-            headers: { Authorization: `Bearer ${this.config.apiKey}` },
-            signal: this.longPollController.signal,
-          }
-        ).finally(() => clearTimeout(timeoutId));
-
-        if (!response.ok) throw new Error(`Long poll failed: ${response.status}`);
-
-        const data = await response.json() as { messages: CrossMachineMessage[] };
-        for (const msg of data.messages) {
-          this.emit('cross-machine-message', msg);
-        }
-      } catch (err) {
-        if (!this.longPollActive) break;
-        if (err instanceof Error && err.name === 'AbortError') continue;
-        log.error('Long poll error', { error: String(err) });
-        await new Promise(r => setTimeout(r, 2000));
-      }
     }
   }
 

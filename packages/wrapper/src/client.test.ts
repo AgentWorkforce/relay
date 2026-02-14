@@ -290,7 +290,7 @@ describe('RelayClient', () => {
           model: 'opus',
           cwd: '/test/path',
         }),
-        30000
+        60000
       );
       expect(result.success).toBe(true);
     });
