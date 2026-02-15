@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "agent-relay": {
+      "command": "npx",
+      "args": [
+        "@agent-relay/mcp",
+        "serve"
+      ]
+    }
+  }
+}
