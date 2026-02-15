@@ -265,7 +265,7 @@ agent-relay history             # Show recent message history
 ```bash
 agent-relay status                    # Check daemon
 agent-relay agents                    # List connected agents
-ls -la /tmp/agent-relay.sock          # Verify socket
+ls -la .agent-relay/relay.sock        # Verify socket (project-local)
 ```
 
 | Mistake | Fix |
