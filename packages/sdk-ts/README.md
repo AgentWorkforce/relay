@@ -1,4 +1,4 @@
-# `@agent-relay/sdk-ts`
+# `@agent-relay/broker-sdk`
 
 TypeScript SDK for driving `agent-relay init` over stdio.
 
@@ -14,7 +14,7 @@ TypeScript SDK for driving `agent-relay init` over stdio.
 
 ## Quick example
 ```ts
-import { AgentRelayClient } from "@agent-relay/sdk-ts";
+import { AgentRelayClient } from "@agent-relay/broker-sdk";
 
 const client = await AgentRelayClient.start({
   binaryPath: "/absolute/path/to/agent-relay",

@@ -11,6 +11,19 @@ const COL_TIME: usize = 8;
 const COL_AGENT: usize = 16;
 const COL_TYPE: usize = 14;
 
+/// Find the largest valid UTF-8 character boundary at or before `index`.
+fn floor_char_boundary(s: &str, index: usize) -> usize {
+    if index >= s.len() {
+        s.len()
+    } else {
+        let mut i = index;
+        while i > 0 && !s.is_char_boundary(i) {
+            i -= 1;
+        }
+        i
+    }
+}
+
 pub struct ConversationLog {
     file: File,
     agent_name: String,
@@ -111,13 +124,15 @@ fn truncate(s: &str, max: usize) -> String {
     if trimmed.len() <= max {
         trimmed
     } else {
-        format!("{}…", &trimmed[..max])
+        let boundary = floor_char_boundary(&trimmed, max);
+        format!("{}…", &trimmed[..boundary])
     }
 }
 
 fn pad_or_truncate(s: &str, width: usize) -> String {
     if s.len() > width {
-        format!("{}…", &s[..width - 1])
+        let boundary = floor_char_boundary(s, width.saturating_sub(1));
+        format!("{}…", &s[..boundary])
     } else {
         s.to_string()
     }
@@ -127,7 +142,8 @@ fn short_id(value: &str) -> String {
     if value.len() <= 8 {
         value.to_string()
     } else {
-        value[..8].to_string()
+        let boundary = floor_char_boundary(value, 8);
+        value[..boundary].to_string()
     }
 }
 
