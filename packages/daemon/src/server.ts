@@ -916,9 +916,11 @@ export class Daemon {
         });
 
         // Store Slack context if this is a Slack-spawned agent
-        if (command.metadata?.slackReply && command.metadata?.channel && command.metadata?.threadTs && command.metadata?.workspaceId) {
+        // Accept both 'channel' and 'channelId' for compatibility with different cloud server formats
+        const slackChannel = command.metadata?.channelId || command.metadata?.channel;
+        if (command.metadata?.slackReply && slackChannel && command.metadata?.threadTs && command.metadata?.workspaceId) {
           this.slackContexts.set(command.agentName, {
-            channelId: command.metadata.channel as string,
+            channelId: slackChannel as string,
             threadTs: command.metadata.threadTs as string,
             workspaceId: command.metadata.workspaceId as string,
           });
