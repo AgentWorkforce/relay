@@ -742,9 +742,10 @@ export class Router {
           break;
         }
       }
-      // Update envelope.to if we found a fallback target
+      // Update envelope.to and to parameter if we found a fallback target
       if (agentTarget && actualTo !== to) {
         envelope = { ...envelope, to: actualTo };
+        to = actualTo; // Update to for downstream tracking (recordReceive, setProcessing, etc.)
       }
     }
 
@@ -765,6 +766,8 @@ export class Router {
         data: envelope.payload.data,
         status: 'read',
         is_urgent: false,
+      }).catch((err) => {
+        routerLog.error('Failed to persist cloud message', { error: String(err) });
       });
       return true;
     }

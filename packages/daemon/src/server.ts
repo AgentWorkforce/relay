@@ -282,6 +282,8 @@ export class Daemon {
   removeStaleAgent(agentName: string): boolean {
     const removed = this.router.forceRemoveAgent(agentName);
     if (removed) {
+      // Clean up Slack context to prevent memory leak
+      this.slackContexts.delete(agentName);
       // Notify cloud sync about agent removal
       this.notifyCloudSync();
       // Update connected-agents.json to reflect the removal
@@ -834,10 +836,11 @@ export class Daemon {
         kind: 'message',
         body: msg.content,
         data: {
+          // Spread metadata first, then set critical fields to prevent overwrites
+          ...msg.metadata,
           _crossMachine: true,
           _fromDaemon: msg.from.daemonId,
           _fromDaemonName: msg.from.daemonName,
-          ...msg.metadata,
         },
       },
     };
@@ -942,7 +945,19 @@ export class Daemon {
     body: string | Record<string, unknown>,
     data?: Record<string, unknown>,
   ): Promise<void> {
-    const slackContext = this.slackContexts.get(from);
+    // Try to get Slack context from stored map first
+    let slackContext = this.slackContexts.get(from);
+
+    // Fallback: extract from message data if not in map (handles routing fallback scenarios)
+    if (!slackContext && data?.channelId && data?.threadTs && data?.workspaceId) {
+      slackContext = {
+        channelId: data.channelId as string,
+        threadTs: data.threadTs as string,
+        workspaceId: data.workspaceId as string,
+      };
+      log.info('Using Slack context from message data (fallback routing)', { from });
+    }
+
     if (!slackContext) {
       log.warn('No Slack context found for cloud message sender', { from });
       return;
@@ -1142,6 +1157,9 @@ export class Daemon {
       this.processingStateInterval = undefined;
     }
 
+    // Clear Slack contexts to prevent memory leak
+    this.slackContexts.clear();
+
     // Close all active connections
     for (const connection of this.connections) {
       connection.close();
@@ -1324,6 +1342,10 @@ export class Daemon {
       this.connections.delete(connection);
       this.clearPendingAcksForConnection(connection.id);
       this.router.unregister(connection);
+      // Clean up Slack context to prevent memory leak
+      if (connection.agentName) {
+        this.slackContexts.delete(connection.agentName);
+      }
       // Registry handles persistence internally via touch() -> save()
       if (connection.agentName) {
         this.registry?.touch(connection.agentName);
@@ -1347,6 +1369,10 @@ export class Daemon {
       this.connections.delete(connection);
       this.clearPendingAcksForConnection(connection.id);
       this.router.unregister(connection);
+      // Clean up Slack context to prevent memory leak
+      if (connection.agentName) {
+        this.slackContexts.delete(connection.agentName);
+      }
       // Registry handles persistence internally via touch() -> save()
       if (connection.agentName) {
         this.registry?.touch(connection.agentName);
