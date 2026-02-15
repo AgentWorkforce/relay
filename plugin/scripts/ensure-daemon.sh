@@ -6,8 +6,8 @@
 RELAY_BIN=""
 if command -v agent-relay >/dev/null 2>&1; then
     RELAY_BIN="agent-relay"
-elif [ -x "$HOME/.agent-relay/bin/agent-relay" ]; then
-    RELAY_BIN="$HOME/.agent-relay/bin/agent-relay"
+elif [ -x "$HOME/.local/bin/agent-relay" ]; then
+    RELAY_BIN="$HOME/.local/bin/agent-relay"
 elif command -v npx >/dev/null 2>&1; then
     # Check if agent-relay is available via npx (installed as npm package)
     if npx --no-install agent-relay --version >/dev/null 2>&1; then
