@@ -1459,7 +1459,8 @@ async fn run_listen(cmd: ListenCommand, telemetry: TelemetryClient) -> Result<()
                                 mapped.from,
                                 mapped.target,
                                 if mapped.text.len() > 120 {
-                                    format!("{}…", &mapped.text[..120])
+                                    let boundary = floor_char_boundary(&mapped.text, 120);
+                                    format!("{}…", &mapped.text[..boundary])
                                 } else {
                                     mapped.text.clone()
                                 }
