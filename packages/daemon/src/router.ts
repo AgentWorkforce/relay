@@ -130,6 +130,9 @@ export class Router {
   /** Rate limiter for per-agent throttling */
   private rateLimiter: RateLimiter;
 
+  /** Callback for messages addressed to __cloud__ (forwarded to cloud server) */
+  private onCloudMessage?: (from: string, body: string | Record<string, unknown>, data?: Record<string, unknown>) => void;
+
   constructor(options: {
     storage?: StorageAdapter;
     delivery?: Partial<DeliveryReliabilityOptions>;
@@ -139,12 +142,15 @@ export class Router {
     /** Rate limit configuration. Set to null to disable rate limiting. */
     rateLimit?: Partial<RateLimitConfig> | null;
     channelMembershipStore?: ChannelMembershipStore;
+    /** Callback for messages addressed to __cloud__ */
+    onCloudMessage?: (from: string, body: string | Record<string, unknown>, data?: Record<string, unknown>) => void;
   } = {}) {
     this.storage = options.storage;
     this.channelMembershipStore = options.channelMembershipStore;
     this.registry = options.registry;
     this.onProcessingStateChange = options.onProcessingStateChange;
     this.crossMachineHandler = options.crossMachineHandler;
+    this.onCloudMessage = options.onCloudMessage;
     this.deliveryTracker = new DeliveryTracker({
       storage: this.storage,
       delivery: options.delivery,
@@ -201,6 +207,14 @@ export class Router {
    */
   setCrossMachineHandler(handler: CrossMachineHandler): void {
     this.crossMachineHandler = handler;
+  }
+
+  /**
+   * Set or update the cloud message handler.
+   * Called when an agent sends a message to __cloud__.
+   */
+  setOnCloudMessage(handler: (from: string, body: string | Record<string, unknown>, data?: Record<string, unknown>) => void): void {
+    this.onCloudMessage = handler;
   }
 
   /**
@@ -704,9 +718,59 @@ export class Router {
     envelope: SendEnvelope
   ): boolean {
     // Check for agent first, then user connections
-    const agentTarget = this.agents.get(to);
+    let agentTarget = this.agents.get(to);
     const userConnections = this.users.get(to);
+    let actualTo = to;
+
+    // Fallback chain for cross-machine messages when target not found:
+    // 1. Try exact match (above)
+    // 2. Try "Lead" agent
+    // 3. Try first available agent
+    const isCrossMachine = envelope.payload?.data?._crossMachine === true;
+    if (!agentTarget && !userConnections?.size && isCrossMachine) {
+      // Fallback 1: Try "Lead" agent
+      agentTarget = this.agents.get('Lead');
+      if (agentTarget) {
+        routerLog.info(`Target "${to}" not found, falling back to Lead`, { from });
+        actualTo = 'Lead';
+      } else {
+        // Fallback 2: Try first available agent (excluding human users)
+        for (const [name, agent] of this.agents) {
+          agentTarget = agent;
+          actualTo = name;
+          routerLog.info(`Lead not found, falling back to first available agent "${name}"`, { from, requestedTarget: to });
+          break;
+        }
+      }
+      // Update envelope.to and to parameter if we found a fallback target
+      if (agentTarget && actualTo !== to) {
+        envelope = { ...envelope, to: actualTo };
+        to = actualTo; // Update to for downstream tracking (recordReceive, setProcessing, etc.)
+      }
+    }
+
     const hasTarget = agentTarget || (userConnections && userConnections.size > 0);
+
+    // Intercept messages to __cloud__ - forward to cloud server
+    if (to === '__cloud__' && this.onCloudMessage) {
+      routerLog.info(`Routing message to cloud from ${from}`);
+      this.onCloudMessage(from, envelope.payload.body, envelope.payload.data);
+      // Also persist for local history
+      this.storage?.saveMessage({
+        id: envelope.id || `cloud-${Date.now()}`,
+        ts: Date.now(),
+        from,
+        to: '__cloud__',
+        body: typeof envelope.payload.body === 'string' ? envelope.payload.body : JSON.stringify(envelope.payload.body),
+        kind: envelope.payload.kind,
+        data: envelope.payload.data,
+        status: 'read',
+        is_urgent: false,
+      }).catch((err) => {
+        routerLog.error('Failed to persist cloud message', { error: String(err) });
+      });
+      return true;
+    }
 
     // If target not found locally, check remote
     if (!hasTarget) {

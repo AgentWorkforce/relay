@@ -61,6 +61,8 @@ export interface SpawnRequest {
   shadowSpeakOn?: Array<'SESSION_END' | 'CODE_WRITTEN' | 'REVIEW_REQUEST' | 'EXPLICIT_ASK' | 'ALL_MESSAGES'>;
   /** User ID for per-user credential storage in shared workspaces */
   userId?: string;
+  /** Extra environment variables to inject into the spawned agent */
+  extraEnv?: Record<string, string>;
   /** Include ACK/DONE workflow conventions in agent instructions (default: false) */
   includeWorkflowConventions?: boolean;
 }

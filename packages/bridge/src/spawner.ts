@@ -831,7 +831,7 @@ export class AgentSpawner {
    * Spawn a new worker agent using relay-pty
    */
   async spawn(request: SpawnRequest): Promise<SpawnResult> {
-    const { name, cli, task, team, spawnerName, userId, includeWorkflowConventions, interactive, model: modelOverride } = request;
+    const { name, cli, task, team, spawnerName, userId, includeWorkflowConventions, interactive, model: modelOverride, extraEnv } = request;
     const debug = process.env.DEBUG_SPAWN === '1';
 
     // Validate agent name to prevent path traversal attacks
@@ -1107,7 +1107,7 @@ export class AgentSpawner {
         }
       }
 
-      const mergedUserEnv = { ...(userEnv ?? {}) };
+      const mergedUserEnv = { ...(userEnv ?? {}), ...(extraEnv ?? {}) };
       if (!mergedUserEnv.GH_TOKEN) {
         const ghToken = await this.resolveGhToken(userEnv?.HOME);
         if (ghToken) {

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-02-13T03:18:21.324Z",
+  "lastUpdated": "2026-02-13T14:32:43.214Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -274,6 +274,41 @@
       "startedAt": "2026-02-13T03:18:03.210Z",
       "completedAt": "2026-02-13T03:18:21.245Z",
       "path": "/Users/will/Projects/relay/.trajectories/completed/2026-02/traj_xxcra8ywee78.json"
+    },
+    "traj_ck27rlvbs68d": {
+      "title": "Monitor relay messages",
+      "status": "completed",
+      "startedAt": "2026-02-13T12:50:22.009Z",
+      "completedAt": "2026-02-13T13:03:02.591Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-02/traj_ck27rlvbs68d.json"
+    },
+    "traj_8b47ezo0ic1t": {
+      "title": "Slack integration: merge unified-agent-auth, wire proxy, add agent routing",
+      "status": "completed",
+      "startedAt": "2026-02-13T13:45:36.061Z",
+      "completedAt": "2026-02-13T13:46:03.224Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-02/traj_8b47ezo0ic1t.json"
+    },
+    "traj_bccajln2wbiu": {
+      "title": "Replace 5-second message polling with long-poll endpoint in both relay-cloud and relay repos",
+      "status": "completed",
+      "startedAt": "2026-02-13T14:17:07.414Z",
+      "completedAt": "2026-02-13T14:19:28.268Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-02/traj_bccajln2wbiu.json"
+    },
+    "traj_wyidp4vpeahc": {
+      "title": "Update slack-orchestrator to use relay messaging instead of slack CLI",
+      "status": "completed",
+      "startedAt": "2026-02-13T14:29:10.996Z",
+      "completedAt": "2026-02-13T14:30:16.595Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-02/traj_wyidp4vpeahc.json"
+    },
+    "traj_qp7x33v2b4ab": {
+      "title": "Add __cloud__ message routing for Slack replies",
+      "status": "completed",
+      "startedAt": "2026-02-13T14:32:26.545Z",
+      "completedAt": "2026-02-13T14:32:43.129Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-02/traj_qp7x33v2b4ab.json"
     }
   }
 }

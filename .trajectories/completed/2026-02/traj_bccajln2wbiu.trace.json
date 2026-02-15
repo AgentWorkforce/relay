@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "id": "trace_hvf8wyck9i8f",
+  "timestamp": "2026-02-13T14:19:28.324Z",
+  "trajectory": "traj_bccajln2wbiu",
+  "files": [
+    {
+      "path": "packages/daemon/src/cloud-sync.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 96,
+              "end_line": 103,
+              "revision": "463b9924646d8e40cdfc8f7a177caea195346ed4"
+            },
+            {
+              "start_line": 211,
+              "end_line": 220,
+              "revision": "463b9924646d8e40cdfc8f7a177caea195346ed4"
+            },
+            {
+              "start_line": 226,
+              "end_line": 233,
+              "revision": "463b9924646d8e40cdfc8f7a177caea195346ed4"
+            },
+            {
+              "start_line": 347,
+              "end_line": 360,
+              "revision": "463b9924646d8e40cdfc8f7a177caea195346ed4"
+            },
+            {
+              "start_line": 447,
+              "end_line": 489,
+              "revision": "463b9924646d8e40cdfc8f7a177caea195346ed4"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
