@@ -821,17 +821,8 @@ export class Daemon {
       msg.content = `${msg.content}\n\nTo reply using the slack CLI:\n\`\`\`\n${slackCmd}\n\`\`\``;
     }
 
-    // Find local agent
-    const targetConnection = Array.from(this.connections).find(
-      c => c.agentName === msg.to
-    );
-
-    if (!targetConnection) {
-      log.warn('Target agent not found locally', { agent: msg.to });
-      return;
-    }
-
-    // Inject message to local agent
+    // Create envelope and let router handle delivery with fallback logic
+    // Router will: try exact match -> try "Lead" -> try first available -> queue if spawning
     const envelope: SendEnvelope = {
       v: 1,
       type: 'SEND',
@@ -851,7 +842,16 @@ export class Daemon {
       },
     };
 
-    this.router.route(targetConnection, envelope);
+    // For cross-machine messages, we need any connection to pass to route()
+    // The router uses envelope.from (not connection.agentName) for cross-machine messages
+    const anyConnection = Array.from(this.connections)[0];
+    if (!anyConnection) {
+      log.warn('No connections available to route cross-machine message', { to: msg.to });
+      // TODO: Queue message for delivery when a connection becomes available
+      return;
+    }
+
+    this.router.route(anyConnection, envelope);
   }
 
   /**

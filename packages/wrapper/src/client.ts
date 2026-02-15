@@ -750,7 +750,7 @@ export class RelayClient {
       const result = await this.requestResponse<SpawnResultPayload>(
         'SPAWN',
         payload as unknown as Record<string, unknown>,
-        30000 // 30 second timeout for spawn
+        60000 // 60 second timeout for spawn
       );
 
       return toSpawnResult(result);
