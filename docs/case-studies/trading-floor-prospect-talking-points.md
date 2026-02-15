@@ -25,11 +25,33 @@ Exchange WebSocket/REST APIs
 └──────────────────────────┘
 ```
 
-The prospect's three questions — "rate limits, order lifecycle handling, and effective depth under load" — are about the **exchange interface**, not Agent Relay's internal bus. Here's how the architecture addresses each.
+The prospect's three questions — "rate limits, order lifecycle handling, and effective depth under load" — are about the **exchange interface**, not Agent Relay's internal bus. Here's how Agent Relay specifically addresses each.
 
 ---
 
-## 1. Rate Limits (Exchange 429s, Not Internal)
+## What Agent Relay Does For Each Question
+
+### Rate Limits
+
+Agent Relay's role here is **connection multiplexing**. The Rust PTY layer maintains one persistent warm connection — agents don't each open their own socket to the exchange. They talk to the relay, the relay talks to the exchange. So instead of N agents burning N times the rate budget, you have a single controlled pipe. The agents read state locally through the relay's IPC (sub-millisecond Unix socket), and only actual order writes hit the exchange REST API through one serialized executor. The relay itself has no hard rate ceiling on internal messaging — you can disable its internal rate limiter entirely for latency-critical paths.
+
+### Order Lifecycle
+
+This is where Agent Relay's delivery guarantees matter most. Every message between agents gets a UUID, at-least-once delivery with 5 retries over 60 seconds, and a client-side dedup cache so a fill notification is never lost AND never double-counted. Sequence numbers per sender guarantee order updates arrive in the same order the exchange emitted them. `sendAndWait()` lets the executor block until risk confirms it processed a fill — no fire-and-forget gaps where state can drift. If any agent crashes mid-pipeline, messages persist to SQLite and replay in-order on reconnect. Anything that fails delivery entirely lands in a dead letter queue with a reason code — that's your compliance audit trail.
+
+### Depth Under Load
+
+During a volatility burst, the hot path is the Rust sidecar (tokio async, zero GC) writing to the local state cache. Agent Relay sits between that cache and the Python agents with two tiers of backpressure — 200-message queue in the PTY layer and 2,000-message queue in the daemon, both with high/low water marks that signal pressure smoothly rather than dropping messages at a cliff edge. The ring buffer frame parser has zero GC pressure during throughput spikes. Agents read the latest state, not a growing queue of stale intermediates. And `getHealth()` and `getMetrics()` give you per-agent monitoring with Prometheus-compatible exports — you see degradation on a dashboard before it touches execution quality.
+
+### Why Not Alternatives?
+
+If asked "why not just Redis Pub/Sub or Kafka for the coordination layer" — Redis Pub/Sub is fire-and-forget (subscriber down = messages gone), and Kafka is infrastructure overkill for agent coordination. Agent Relay gives you persistent at-least-once delivery, agent spawning/lifecycle, shadow monitoring, and consensus — all as SDK method calls, not new infrastructure to operate.
+
+---
+
+## Deep Dive: Full Architecture Analysis
+
+### 1. Rate Limits (Exchange 429s, Not Internal)
 
 **Their real concern:** How do you avoid hitting exchange REST rate limits (the dreaded 429 "Too Many Requests") when multiple agents need market data and order state?
 
@@ -61,7 +83,7 @@ Each agent opens its own connection to the exchange. 5 agents polling order stat
 
 ---
 
-## 2. Order Lifecycle Handling (Ghost Orders & State Integrity)
+### 2. Order Lifecycle Handling (Ghost Orders & State Integrity)
 
 **Their real concern:** How do you ensure the agent's internal model of open orders and positions matches the exchange's actual state? Ghost orders (agent thinks an order is live when it's been cancelled/filled on the exchange) are catastrophic in HFT.
 
@@ -119,7 +141,7 @@ PENDING_NEW → OPEN → PARTIALLY_FILLED → FILLED
 
 ---
 
-## 3. Effective Depth Under Load (Order Book Fidelity During Volatility)
+### 3. Effective Depth Under Load (Order Book Fidelity During Volatility)
 
 **Their real concern:** During a volatility spike (100ms burst of high throughput), how deep into the order book can the system maintain accurate state? Do updates get dropped or fall behind?
 
@@ -166,7 +188,7 @@ During a flash crash or news event, the exchange pushes **thousands of order boo
 
 ---
 
-## Bonus: Why This Architecture vs. Alternatives
+### Bonus: Why This Architecture vs. Alternatives
 
 If they ask "why not just use a raw WebSocket client in Python":
 
@@ -178,7 +200,7 @@ If they ask "why not just Redis Pub/Sub directly":
 
 ---
 
-## Quick Reference: Architecture Numbers
+### Quick Reference: Architecture Numbers
 
 | Layer | Metric | Value |
 |-------|--------|-------|
