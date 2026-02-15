@@ -67,6 +67,13 @@ if daemon_running "$SOCKET_PATH" || daemon_running "$HOME_SOCKET"; then
     exit 0
 fi
 
+# Clean up stale socket and PID files before starting
+for stale_sock in "$SOCKET_PATH" "$HOME_SOCKET"; do
+    if [ -S "$stale_sock" ]; then
+        rm -f "$stale_sock" "${stale_sock}.pid"
+    fi
+done
+
 # Start the daemon in the background
 # Use nohup to survive terminal close, redirect output to log file
 LOG_DIR="$PROJECT_ROOT/.agent-relay"
