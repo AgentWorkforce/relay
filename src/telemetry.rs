@@ -160,7 +160,12 @@ fn save_prefs(prefs: &TelemetryPrefs) {
 fn machine_id_path() -> Option<PathBuf> {
     // Use ~/.local/share regardless of platform (matches the spec and
     // the Node.js SDK convention).
-    dirs::home_dir().map(|h| h.join(".local").join("share").join("agent-relay").join("machine-id"))
+    dirs::home_dir().map(|h| {
+        h.join(".local")
+            .join("share")
+            .join("agent-relay")
+            .join("machine-id")
+    })
 }
 
 fn load_or_create_machine_id() -> Option<String> {
@@ -183,7 +188,9 @@ fn load_or_create_machine_id() -> Option<String> {
     let random_hex: String = {
         use rand::Rng;
         let mut rng = rand::thread_rng();
-        (0..16).map(|_| format!("{:02x}", rng.gen::<u8>())).collect()
+        (0..16)
+            .map(|_| format!("{:02x}", rng.gen::<u8>()))
+            .collect()
     };
 
     let id = format!("{}-{}", host, random_hex);

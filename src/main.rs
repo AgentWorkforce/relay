@@ -1664,7 +1664,11 @@ async fn listen_api_release(
 /// Interactive wrap mode: wraps a CLI in a PTY with terminal passthrough
 /// while connecting to Relaycast for relay message injection.
 /// Usage: `agent-relay codex --full-auto`
-async fn run_wrap(cli_name: String, cli_args: Vec<String>, telemetry: TelemetryClient) -> Result<()> {
+async fn run_wrap(
+    cli_name: String,
+    cli_args: Vec<String>,
+    telemetry: TelemetryClient,
+) -> Result<()> {
     let broker_start = Instant::now();
     let mut agent_spawn_count: u32 = 0;
     telemetry.track(TelemetryEvent::BrokerStart);
