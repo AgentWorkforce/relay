@@ -24,7 +24,6 @@ fi
 MSG_COUNT=$(echo "$CONTENT" | grep -c "## Message from")
 
 # Check if MCP is available (daemon must be running)
-# The daemon socket lives at <project>/.agent-relay/relay.sock
 PROJECT_ROOT="$(pwd)"
 RELAY_SOCKET="${RELAY_SOCKET:-$PROJECT_ROOT/.agent-relay/relay.sock}"
 MCP_AVAILABLE=0
