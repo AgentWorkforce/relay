@@ -11,7 +11,8 @@
     "package.json"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && npm run bundle:binary",
+    "build": "tsc -p tsconfig.json",
+    "build:full": "tsc -p tsconfig.json && npm run bundle:binary",
     "bundle:binary": "node ./scripts/bundle-agent-relay.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "tsc -p tsconfig.json && node --test dist/__tests__/integration.test.js",
