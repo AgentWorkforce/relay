@@ -718,8 +718,36 @@ export class Router {
     envelope: SendEnvelope
   ): boolean {
     // Check for agent first, then user connections
-    const agentTarget = this.agents.get(to);
+    let agentTarget = this.agents.get(to);
     const userConnections = this.users.get(to);
+    let actualTo = to;
+
+    // Fallback chain for cross-machine messages when target not found:
+    // 1. Try exact match (above)
+    // 2. Try "Lead" agent
+    // 3. Try first available agent
+    const isCrossMachine = envelope.payload?.data?._crossMachine === true;
+    if (!agentTarget && !userConnections?.size && isCrossMachine) {
+      // Fallback 1: Try "Lead" agent
+      agentTarget = this.agents.get('Lead');
+      if (agentTarget) {
+        routerLog.info(`Target "${to}" not found, falling back to Lead`, { from });
+        actualTo = 'Lead';
+      } else {
+        // Fallback 2: Try first available agent (excluding human users)
+        for (const [name, agent] of this.agents) {
+          agentTarget = agent;
+          actualTo = name;
+          routerLog.info(`Lead not found, falling back to first available agent "${name}"`, { from, requestedTarget: to });
+          break;
+        }
+      }
+      // Update envelope.to if we found a fallback target
+      if (agentTarget && actualTo !== to) {
+        envelope = { ...envelope, to: actualTo };
+      }
+    }
+
     const hasTarget = agentTarget || (userConnections && userConnections.size > 0);
 
     // Intercept messages to __cloud__ - forward to cloud server
