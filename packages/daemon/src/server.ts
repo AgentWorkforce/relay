@@ -282,6 +282,8 @@ export class Daemon {
   removeStaleAgent(agentName: string): boolean {
     const removed = this.router.forceRemoveAgent(agentName);
     if (removed) {
+      // Clean up Slack context for this agent
+      this.slackContexts.delete(agentName);
       // Notify cloud sync about agent removal
       this.notifyCloudSync();
       // Update connected-agents.json to reflect the removal
@@ -834,10 +836,11 @@ export class Daemon {
         kind: 'message',
         body: msg.content,
         data: {
+          // Spread metadata first, then set critical fields to prevent overwrites
+          ...msg.metadata,
           _crossMachine: true,
           _fromDaemon: msg.from.daemonId,
           _fromDaemonName: msg.from.daemonName,
-          ...msg.metadata,
         },
       },
     };
@@ -942,9 +945,19 @@ export class Daemon {
     body: string | Record<string, unknown>,
     data?: Record<string, unknown>,
   ): Promise<void> {
-    const slackContext = this.slackContexts.get(from);
+    // Try to get Slack context from map, falling back to message data
+    // This handles the case where router fallback delivered to a different agent
+    let slackContext = this.slackContexts.get(from);
+    if (!slackContext && data?.channelId && data?.threadTs && data?.workspaceId) {
+      slackContext = {
+        channelId: data.channelId as string,
+        threadTs: data.threadTs as string,
+        workspaceId: data.workspaceId as string,
+      };
+      log.info('Using Slack context from message data (fallback routing)', { from });
+    }
     if (!slackContext) {
-      log.warn('No Slack context found for cloud message sender', { from });
+      log.warn('No Slack context found for cloud message sender', { from, hasData: !!data });
       return;
     }
 
@@ -1148,6 +1161,9 @@ export class Daemon {
     }
     this.connections.clear();
 
+    // Clear Slack contexts
+    this.slackContexts.clear();
+
     return new Promise((resolve) => {
       this.server.close(() => {
         this.running = false;
@@ -1327,6 +1343,8 @@ export class Daemon {
       // Registry handles persistence internally via touch() -> save()
       if (connection.agentName) {
         this.registry?.touch(connection.agentName);
+        // Clean up Slack context for this agent
+        this.slackContexts.delete(connection.agentName);
       }
 
       // Record session end (disconnect - agent may still mark it closed explicitly)
@@ -1350,6 +1368,8 @@ export class Daemon {
       // Registry handles persistence internally via touch() -> save()
       if (connection.agentName) {
         this.registry?.touch(connection.agentName);
+        // Clean up Slack context for this agent
+        this.slackContexts.delete(connection.agentName);
       }
 
       // Record session end on error
