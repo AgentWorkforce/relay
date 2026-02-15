@@ -1,0 +1,33 @@
+{
+  "name": "@agent-relay/broker-sdk",
+  "version": "3.0.0-alpha.1",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "bin",
+    "README.md",
+    "package.json"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:full": "tsc -p tsconfig.json && npm run bundle:binary",
+    "bundle:binary": "node ./scripts/bundle-agent-relay.mjs",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p tsconfig.json && node --test dist/__tests__/integration.test.js",
+    "test:quickstart": "node --test dist/__tests__/quickstart.test.js",
+    "quickstart": "node dist/examples/quickstart.js",
+    "demo": "node dist/examples/demo.js",
+    "ralph": "node dist/examples/ralph-loop.js",
+    "example": "node dist/examples/example.js",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "typescript": "^5.7.3"
+  },
+  "dependencies": {
+    "@relaycast/sdk": "^0.2.1"
+  }
+}
