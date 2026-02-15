@@ -1,18 +1,18 @@
 {
   "hooks": {
-    "PostToolUse": [
+    "SessionStart": [
       {
-        "matcher": "Bash|Write|Edit|Read",
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/check-inbox.sh"
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ensure-daemon.sh"
           }
         ]
       }
     ],
-    "SessionStart": [
+    "PostToolUse": [
       {
+        "matcher": "Bash|Write|Edit|Read",
         "hooks": [
           {
             "type": "command",
