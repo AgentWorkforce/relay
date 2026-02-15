@@ -855,8 +855,8 @@ export class Daemon {
         this.storage.saveMessage({
           id: envelope.id,
           ts: Date.now(),
-          from: envelope.from,
-          to: envelope.to,
+          from: envelope.from ?? `${msg.from.daemonName}:${msg.from.agent}`,
+          to: envelope.to ?? msg.to,
           body: msg.content,
           kind: 'message',
           data: { ...envelope.payload.data, _offlineQueued: true, _queuedAt: Date.now() },
