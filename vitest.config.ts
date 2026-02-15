@@ -96,6 +96,11 @@ export default defineConfig({
       'packages/**/src/**/*.test.ts',
       'packages/**/tests/**/*.test.ts',
     ],
+    exclude: [
+      '**/node_modules/**',
+      '**/dist/**',
+      'packages/sdk-ts/**', // Uses Node.js test runner, not vitest
+    ],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov', 'html'],
