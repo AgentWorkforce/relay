@@ -849,8 +849,22 @@ export class Daemon {
     // The router uses envelope.from (not connection.agentName) for cross-machine messages
     const anyConnection = Array.from(this.connections)[0];
     if (!anyConnection) {
-      log.warn('No connections available to route cross-machine message', { to: msg.to });
-      // TODO: Queue message for delivery when a connection becomes available
+      log.warn('No connections available, persisting cross-machine message for later delivery', { to: msg.to });
+      // Persist message directly to storage for delivery when an agent connects
+      if (this.storage) {
+        this.storage.saveMessage({
+          id: envelope.id,
+          ts: Date.now(),
+          from: envelope.from,
+          to: envelope.to,
+          body: msg.content,
+          kind: 'message',
+          data: { ...envelope.payload.data, _offlineQueued: true, _queuedAt: Date.now() },
+          status: 'unread',
+          is_urgent: false,
+          is_broadcast: false,
+        }).catch(err => log.error('Failed to persist cross-machine message', { error: String(err) }));
+      }
       return;
     }
 
