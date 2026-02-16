@@ -446,8 +446,27 @@ impl WorkerRegistry {
                 command.arg("pty");
                 command.arg("--agent-name").arg(&spec.name);
                 command.arg(cli);
-                if !spec.args.is_empty() {
+
+                // Auto-add bypass flags for CLIs that need them to run non-interactively.
+                // Each CLI has its own flag; we only add it if the user didn't already.
+                let cli_lower = cli.to_lowercase();
+                let bypass_flag: Option<&str> = if (cli_lower == "claude" || cli_lower.starts_with("claude:"))
+                    && !spec.args.iter().any(|a| a.contains("dangerously-skip-permissions"))
+                {
+                    Some("--dangerously-skip-permissions")
+                } else if cli_lower == "codex"
+                    && !spec.args.iter().any(|a| a.contains("full-auto"))
+                {
+                    Some("--full-auto")
+                } else {
+                    None
+                };
+
+                if bypass_flag.is_some() || !spec.args.is_empty() {
                     command.arg("--");
+                    if let Some(flag) = bypass_flag {
+                        command.arg(flag);
+                    }
                     for arg in &spec.args {
                         command.arg(arg);
                     }
@@ -473,6 +492,9 @@ impl WorkerRegistry {
         for (key, value) in &self.worker_env {
             command.env(key, value);
         }
+        // Remove CLAUDECODE env var to prevent "nested session" detection
+        // when spawning Claude Code agents from within a Claude Code session.
+        command.env_remove("CLAUDECODE");
 
         let mut child = command.spawn().context("failed to spawn worker")?;
         let stdin = child.stdin.take().context("worker missing stdin pipe")?;
@@ -2867,5 +2889,116 @@ mod tests {
     fn extract_mcp_ids_handles_no_ids() {
         assert!(extract_mcp_message_ids("normal output with no JSON").is_empty());
         assert!(extract_mcp_message_ids("").is_empty());
+    }
+
+    // ==================== bypass flag selection logic tests ====================
+    // Tests for the bypass flag logic used in WorkerRegistry::spawn().
+    // The logic is: claude/claude:* → --dangerously-skip-permissions, codex → --full-auto
+
+    fn compute_bypass_flag(cli: &str, existing_args: &[String]) -> Option<&'static str> {
+        let cli_lower = cli.to_lowercase();
+        if (cli_lower == "claude" || cli_lower.starts_with("claude:"))
+            && !existing_args
+                .iter()
+                .any(|a| a.contains("dangerously-skip-permissions"))
+        {
+            Some("--dangerously-skip-permissions")
+        } else if cli_lower == "codex"
+            && !existing_args.iter().any(|a| a.contains("full-auto"))
+        {
+            Some("--full-auto")
+        } else {
+            None
+        }
+    }
+
+    #[test]
+    fn bypass_flag_claude_gets_skip_permissions() {
+        assert_eq!(
+            compute_bypass_flag("claude", &[]),
+            Some("--dangerously-skip-permissions")
+        );
+    }
+
+    #[test]
+    fn bypass_flag_claude_variant_gets_skip_permissions() {
+        assert_eq!(
+            compute_bypass_flag("claude:latest", &[]),
+            Some("--dangerously-skip-permissions")
+        );
+        assert_eq!(
+            compute_bypass_flag("Claude", &[]),
+            Some("--dangerously-skip-permissions")
+        );
+        assert_eq!(
+            compute_bypass_flag("CLAUDE:v2", &[]),
+            Some("--dangerously-skip-permissions")
+        );
+    }
+
+    #[test]
+    fn bypass_flag_codex_gets_full_auto() {
+        assert_eq!(compute_bypass_flag("codex", &[]), Some("--full-auto"));
+    }
+
+    #[test]
+    fn bypass_flag_gemini_gets_none() {
+        assert_eq!(compute_bypass_flag("gemini", &[]), None);
+    }
+
+    #[test]
+    fn bypass_flag_aider_gets_none() {
+        assert_eq!(compute_bypass_flag("aider", &[]), None);
+    }
+
+    #[test]
+    fn bypass_flag_goose_gets_none() {
+        assert_eq!(compute_bypass_flag("goose", &[]), None);
+    }
+
+    #[test]
+    fn bypass_flag_unknown_cli_gets_none() {
+        assert_eq!(compute_bypass_flag("mystery-cli", &[]), None);
+    }
+
+    #[test]
+    fn bypass_flag_claude_dedup_when_already_present() {
+        let args = vec!["--dangerously-skip-permissions".to_string()];
+        assert_eq!(
+            compute_bypass_flag("claude", &args),
+            None,
+            "should not duplicate flag"
+        );
+    }
+
+    #[test]
+    fn bypass_flag_codex_dedup_when_already_present() {
+        let args = vec!["--full-auto".to_string()];
+        assert_eq!(
+            compute_bypass_flag("codex", &args),
+            None,
+            "should not duplicate flag"
+        );
+    }
+
+    #[test]
+    fn bypass_flag_claude_dedup_partial_match() {
+        // If someone passes a different arg containing the substring, still dedup
+        let args = vec!["--my-dangerously-skip-permissions-flag".to_string()];
+        assert_eq!(
+            compute_bypass_flag("claude", &args),
+            None,
+            "substring match should prevent duplication"
+        );
+    }
+
+    #[test]
+    fn bypass_flag_codex_with_other_args() {
+        let args = vec!["--model".to_string(), "gpt-4".to_string()];
+        assert_eq!(
+            compute_bypass_flag("codex", &args),
+            Some("--full-auto"),
+            "unrelated args should not prevent bypass flag"
+        );
     }
 }

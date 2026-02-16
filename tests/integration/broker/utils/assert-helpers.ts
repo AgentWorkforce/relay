@@ -218,3 +218,20 @@ export function assertNoAclDenied(events: BrokerEvent[]): void {
     `Unexpected acl_denied events: ${JSON.stringify(denied)}`,
   );
 }
+
+/**
+ * Filter events by agent name and optional kind.
+ * Handles the BrokerEvent union type safely.
+ */
+export function eventsForAgent(
+  events: BrokerEvent[],
+  name: string,
+  kind?: string,
+): BrokerEvent[] {
+  return events.filter(
+    (e) =>
+      "name" in e &&
+      (e as BrokerEvent & { name: string }).name === name &&
+      (!kind || e.kind === kind),
+  );
+}

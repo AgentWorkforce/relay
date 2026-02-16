@@ -2,15 +2,15 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
-pub(crate) const VERIFICATION_WINDOW: Duration = Duration::from_secs(3);
 pub(crate) const ACTIVITY_WINDOW: Duration = Duration::from_secs(5);
 pub(crate) const ACTIVITY_BUFFER_MAX_BYTES: usize = 16_000;
 pub(crate) const ACTIVITY_BUFFER_KEEP_BYTES: usize = 12_000;
-pub(crate) const MAX_VERIFICATION_ATTEMPTS: u32 = 3;
+pub(crate) const CLI_READY_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum DeliveryOutcome {
     Success,
+    #[allow(dead_code)]
     Failed,
 }
 
@@ -61,21 +61,6 @@ impl ThrottleState {
             }
         }
     }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct PendingVerification {
-    pub delivery_id: String,
-    pub event_id: String,
-    pub expected_echo: String,
-    pub injected_at: Instant,
-    pub attempts: u32,
-    pub max_attempts: u32,
-    pub request_id: Option<String>,
-    // Original delivery data for retry
-    pub from: String,
-    pub body: String,
-    pub target: String,
 }
 
 #[derive(Debug, Clone)]
@@ -135,9 +120,52 @@ impl ActivityDetector {
 }
 
 /// Check if the expected echo string appears in PTY output (after stripping ANSI).
+#[cfg(test)]
 pub(crate) fn check_echo_in_output(output: &str, expected: &str) -> bool {
     let clean = strip_ansi(output);
     clean.contains(expected)
+}
+
+/// Detect whether a CLI has finished startup and is ready to receive input.
+/// Checks for known prompt patterns (from relay-pty parser) and a byte-count fallback.
+pub(crate) fn detect_cli_ready(cli: &str, output: &str, total_bytes: usize) -> bool {
+    let clean = strip_ansi(output);
+    let lower_cli = cli.to_lowercase();
+
+    // Explicit ready signal from relay protocol
+    if clean.contains("->pty:ready") {
+        return true;
+    }
+
+    // Prompt patterns (from relay-pty parser.rs)
+    let prompt_patterns: &[&str] = if lower_cli.contains("claude") {
+        &["> ", "$ ", ">>> "]
+    } else if lower_cli.contains("codex") {
+        &["> ", "$ ", "codex> ", ">>> "]
+    } else if lower_cli.contains("gemini") {
+        &["> ", "$ ", ">>> "]
+    } else if lower_cli.contains("aider") {
+        &["> ", "$ ", ">>> "]
+    } else {
+        &["> ", "$ ", ">>> "]
+    };
+
+    // Check last 500 chars of output for prompt patterns
+    let check_region = if clean.len() > 500 {
+        let start = floor_char_boundary(&clean, clean.len() - 500);
+        &clean[start..]
+    } else {
+        &clean
+    };
+
+    for pattern in prompt_patterns {
+        if check_region.contains(pattern) {
+            return true;
+        }
+    }
+
+    // Fallback: CLI produced substantial output (startup complete)
+    total_bytes > 500
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -149,6 +177,12 @@ pub(crate) enum TerminalQueryState {
     CsiQmark,
     Csi6,
     CsiQmark6,
+    /// CSI 0 — could be DA1 param (ESC [ 0 c)
+    Csi0,
+    /// CSI 5 — could be DSR (ESC [ 5 n)
+    Csi5,
+    /// CSI > — DA2 prefix (ESC [ > c)
+    CsiGt,
 }
 
 #[derive(Debug, Default)]
@@ -170,14 +204,38 @@ impl TerminalQueryParser {
                 (_, ESC) => TerminalQueryState::Esc,
                 (TerminalQueryState::Esc, CSI) => TerminalQueryState::Csi,
                 (TerminalQueryState::Csi, QMARK) => TerminalQueryState::CsiQmark,
+                (TerminalQueryState::Csi, b'>') => TerminalQueryState::CsiGt,
                 (TerminalQueryState::Csi, SIX) => TerminalQueryState::Csi6,
+                (TerminalQueryState::Csi, b'0') => TerminalQueryState::Csi0,
+                (TerminalQueryState::Csi, b'5') => TerminalQueryState::Csi5,
                 (TerminalQueryState::CsiQmark, SIX) => TerminalQueryState::CsiQmark6,
+                // CSI 6 n → Cursor Position Report (CPR)
                 (TerminalQueryState::Csi6, N) => {
                     out.push(b"\x1b[1;1R".as_slice());
                     TerminalQueryState::Idle
                 }
                 (TerminalQueryState::CsiQmark6, N) => {
                     out.push(b"\x1b[?1;1R".as_slice());
+                    TerminalQueryState::Idle
+                }
+                // CSI c → DA1 (Device Attributes primary, no params)
+                (TerminalQueryState::Csi, b'c') => {
+                    out.push(b"\x1b[?1;2c".as_slice()); // VT100 with AVO
+                    TerminalQueryState::Idle
+                }
+                // CSI 0 c → DA1 with explicit 0 param
+                (TerminalQueryState::Csi0, b'c') => {
+                    out.push(b"\x1b[?1;2c".as_slice());
+                    TerminalQueryState::Idle
+                }
+                // CSI > c → DA2 (Device Attributes secondary)
+                (TerminalQueryState::CsiGt, b'c') => {
+                    out.push(b"\x1b[>1;10;0c".as_slice()); // VT100, version 10
+                    TerminalQueryState::Idle
+                }
+                // CSI 5 n → DSR (Device Status Report)
+                (TerminalQueryState::Csi5, N) => {
+                    out.push(b"\x1b[0n".as_slice()); // terminal OK
                     TerminalQueryState::Idle
                 }
                 _ => TerminalQueryState::Idle,
@@ -590,5 +648,356 @@ mod tests {
         let expected_echo = "Relay message from Alice [evt_1]: Tool: Write(file)";
         let output = format!("{}", expected_echo);
         assert_eq!(detector.detect_activity(&output, expected_echo), None);
+    }
+
+    #[test]
+    fn detect_cli_ready_prompt_patterns() {
+        assert!(detect_cli_ready("claude", "Welcome to Claude\n> ", 100));
+        assert!(detect_cli_ready("codex", "Ready\ncodex> ", 100));
+        assert!(detect_cli_ready("claude", "some output $ ", 100));
+    }
+
+    #[test]
+    fn detect_cli_ready_byte_fallback() {
+        assert!(!detect_cli_ready("claude", "loading...", 200));
+        assert!(detect_cli_ready("claude", "loading...", 600));
+    }
+
+    #[test]
+    fn detect_cli_ready_explicit_signal() {
+        assert!(detect_cli_ready("claude", "->pty:ready", 0));
+    }
+
+    #[test]
+    fn terminal_query_da1_no_param() {
+        let mut parser = TerminalQueryParser::default();
+        let responses = parser.feed(b"\x1b[c");
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0], b"\x1b[?1;2c");
+    }
+
+    #[test]
+    fn terminal_query_da1_with_zero() {
+        let mut parser = TerminalQueryParser::default();
+        let responses = parser.feed(b"\x1b[0c");
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0], b"\x1b[?1;2c");
+    }
+
+    #[test]
+    fn terminal_query_da2() {
+        let mut parser = TerminalQueryParser::default();
+        let responses = parser.feed(b"\x1b[>c");
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0], b"\x1b[>1;10;0c");
+    }
+
+    #[test]
+    fn terminal_query_dsr() {
+        let mut parser = TerminalQueryParser::default();
+        let responses = parser.feed(b"\x1b[5n");
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0], b"\x1b[0n");
+    }
+
+    #[test]
+    fn terminal_query_cpr_still_works() {
+        let mut parser = TerminalQueryParser::default();
+        let responses = parser.feed(b"\x1b[6n");
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0], b"\x1b[1;1R");
+    }
+
+    // ==================== detect_codex_model_prompt tests ====================
+
+    #[test]
+    fn codex_model_prompt_upgrade_with_options() {
+        let output = "Codex just got an upgrade! A new model is available.\nTry the new model\nKeep existing";
+        let (has_upgrade, has_options) = detect_codex_model_prompt(output);
+        assert!(has_upgrade, "should detect upgrade reference");
+        assert!(has_options, "should detect try/existing options");
+    }
+
+    #[test]
+    fn codex_model_prompt_new_model_available() {
+        let output = "Codex has a new model ready.\nWould you like to try it or keep existing?";
+        let (has_upgrade, has_options) = detect_codex_model_prompt(output);
+        assert!(has_upgrade, "should detect 'codex' + 'new' + 'model'");
+        assert!(has_options, "should detect try/existing options");
+    }
+
+    #[test]
+    fn codex_model_prompt_no_match_normal_output() {
+        let output = "Running codex analysis...\nFile processed successfully.";
+        let (has_upgrade, has_options) = detect_codex_model_prompt(output);
+        assert!(!has_upgrade, "normal output should not match upgrade");
+        assert!(!has_options, "normal output should not match options");
+    }
+
+    #[test]
+    fn codex_model_prompt_upgrade_without_options() {
+        let output = "Codex just got an upgrade! Loading...";
+        let (has_upgrade, has_options) = detect_codex_model_prompt(output);
+        assert!(has_upgrade, "should detect upgrade reference");
+        assert!(!has_options, "no try/existing options present");
+    }
+
+    #[test]
+    fn codex_model_prompt_case_insensitive() {
+        let output = "CODEX JUST GOT AN UPGRADE!\nTRY the new model or keep EXISTING";
+        let (has_upgrade, has_options) = detect_codex_model_prompt(output);
+        assert!(has_upgrade);
+        assert!(has_options);
+    }
+
+    // ==================== detect_gemini_action_required tests ====================
+
+    #[test]
+    fn gemini_action_required_allow_once() {
+        let output = "⚠ Action Required\nThe tool wants to execute a command.\nAllow once\nDeny";
+        let (has_header, has_allow) = detect_gemini_action_required(output);
+        assert!(has_header, "should detect Action Required header");
+        assert!(has_allow, "should detect Allow once option");
+    }
+
+    #[test]
+    fn gemini_action_required_allow_session() {
+        let output = "Action Required\nAllow for this session\nDeny";
+        let (has_header, has_allow) = detect_gemini_action_required(output);
+        assert!(has_header);
+        assert!(has_allow);
+    }
+
+    #[test]
+    fn gemini_action_required_no_match() {
+        let output = "Generating response...\nAction: execute ls command";
+        let (has_header, has_allow) = detect_gemini_action_required(output);
+        assert!(!has_header, "normal output should not match");
+        assert!(!has_allow);
+    }
+
+    #[test]
+    fn gemini_action_required_header_only_no_options() {
+        let output = "Action Required\nPlease wait...";
+        let (has_header, has_allow) = detect_gemini_action_required(output);
+        assert!(has_header, "should detect header");
+        assert!(!has_allow, "no allow options present");
+    }
+
+    #[test]
+    fn gemini_action_required_case_sensitive_header() {
+        // "Action Required" is case-sensitive (exact match)
+        let output = "action required\nAllow once";
+        let (has_header, has_allow) = detect_gemini_action_required(output);
+        assert!(!has_header, "lowercase should not match");
+        assert!(has_allow, "Allow once should still match");
+    }
+
+    // ==================== detect_cli_ready edge cases ====================
+
+    #[test]
+    fn detect_cli_ready_ansi_in_prompt() {
+        // Prompt with ANSI codes should still be detected after stripping
+        assert!(detect_cli_ready("claude", "\x1b[32m> \x1b[0m", 100));
+    }
+
+    #[test]
+    fn detect_cli_ready_empty_output() {
+        assert!(!detect_cli_ready("claude", "", 0));
+    }
+
+    #[test]
+    fn detect_cli_ready_exact_500_bytes() {
+        // At exactly 500 bytes, should NOT trigger byte fallback (> 500 required)
+        assert!(!detect_cli_ready("claude", "loading...", 500));
+        // At 501 bytes, should trigger
+        assert!(detect_cli_ready("claude", "loading...", 501));
+    }
+
+    #[test]
+    fn detect_cli_ready_prompt_in_early_output_ignored() {
+        // If output is >500 chars, only last 500 chars are checked
+        let mut long_output = "x".repeat(600);
+        long_output.push_str("no prompt here");
+        // The "> " is at the start, outside the last 500 chars check region
+        let output_with_early_prompt = format!("> {}", "x".repeat(600));
+        assert!(!detect_cli_ready("claude", &output_with_early_prompt, 100));
+    }
+
+    #[test]
+    fn detect_cli_ready_aider_prompt() {
+        assert!(detect_cli_ready("aider", "aider v0.50.0\n> ", 100));
+    }
+
+    #[test]
+    fn detect_cli_ready_unknown_cli_fallback() {
+        // Unknown CLIs use the same default patterns
+        assert!(detect_cli_ready("mystery-cli", "$ ", 50));
+        assert!(detect_cli_ready("mystery-cli", "loading...", 600));
+    }
+
+    #[test]
+    fn detect_cli_ready_ready_signal_zero_bytes() {
+        // Explicit ready signal works even with zero bytes
+        assert!(detect_cli_ready("claude", "->pty:ready", 0));
+        assert!(detect_cli_ready("codex", "->pty:ready", 0));
+    }
+
+    // ==================== terminal query parser edge cases ====================
+
+    #[test]
+    fn terminal_query_multiple_queries_in_one_chunk() {
+        let mut parser = TerminalQueryParser::default();
+        // DA1 + CPR + DSR all in one chunk
+        let responses = parser.feed(b"\x1b[c\x1b[6n\x1b[5n");
+        assert_eq!(responses.len(), 3);
+        assert_eq!(responses[0], b"\x1b[?1;2c"); // DA1
+        assert_eq!(responses[1], b"\x1b[1;1R");   // CPR
+        assert_eq!(responses[2], b"\x1b[0n");     // DSR
+    }
+
+    #[test]
+    fn terminal_query_interleaved_with_text() {
+        let mut parser = TerminalQueryParser::default();
+        // Normal text + DA1 query + more text
+        let responses = parser.feed(b"Hello\x1b[cWorld");
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0], b"\x1b[?1;2c");
+    }
+
+    #[test]
+    fn terminal_query_split_across_chunks() {
+        let mut parser = TerminalQueryParser::default();
+        // ESC in first chunk, [6n in second
+        let r1 = parser.feed(b"\x1b");
+        assert_eq!(r1.len(), 0);
+        let r2 = parser.feed(b"[6n");
+        assert_eq!(r2.len(), 1);
+        assert_eq!(r2[0], b"\x1b[1;1R");
+    }
+
+    #[test]
+    fn terminal_query_incomplete_sequence_reset() {
+        let mut parser = TerminalQueryParser::default();
+        // ESC [ but then a regular char (not a query) — should reset
+        let responses = parser.feed(b"\x1b[A");
+        assert_eq!(responses.len(), 0, "cursor up should not generate response");
+    }
+
+    #[test]
+    fn terminal_query_qmark_cpr() {
+        let mut parser = TerminalQueryParser::default();
+        let responses = parser.feed(b"\x1b[?6n");
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0], b"\x1b[?1;1R");
+    }
+
+    // ==================== throttle edge cases ====================
+
+    #[test]
+    fn throttle_delay_floor_never_below_100ms() {
+        let mut throttle = ThrottleState::default();
+        // Many successes should not push delay below 100ms
+        for _ in 0..100 {
+            throttle.record(DeliveryOutcome::Success);
+        }
+        assert_eq!(throttle.delay(), Duration::from_millis(100));
+    }
+
+    #[test]
+    fn throttle_cap_at_5s() {
+        let mut throttle = ThrottleState::default();
+        // Many failures should cap at 5s
+        for _ in 0..20 {
+            throttle.record(DeliveryOutcome::Failed);
+        }
+        assert_eq!(throttle.delay(), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn throttle_recovery_after_mixed_outcomes() {
+        let mut throttle = ThrottleState::default();
+        // Fail 3 times → 500ms
+        for _ in 0..3 {
+            throttle.record(DeliveryOutcome::Failed);
+        }
+        assert_eq!(throttle.delay(), Duration::from_millis(500));
+        // One success resets failure count but doesn't halve yet
+        throttle.record(DeliveryOutcome::Success);
+        assert_eq!(throttle.delay(), Duration::from_millis(500));
+        // Two more successes → 3 consecutive → halve to 250ms
+        throttle.record(DeliveryOutcome::Success);
+        throttle.record(DeliveryOutcome::Success);
+        assert_eq!(throttle.delay(), Duration::from_millis(250));
+    }
+
+    #[test]
+    fn throttle_failure_resets_success_counter() {
+        let mut throttle = ThrottleState::default();
+        // 2 successes, then a failure, then 2 more successes
+        // should NOT trigger the 3-consecutive-success halving
+        throttle.record(DeliveryOutcome::Success);
+        throttle.record(DeliveryOutcome::Success);
+        throttle.record(DeliveryOutcome::Failed);
+        throttle.record(DeliveryOutcome::Success);
+        throttle.record(DeliveryOutcome::Success);
+        assert_eq!(throttle.delay(), Duration::from_millis(100));
+    }
+
+    // ==================== strip_ansi tests ====================
+
+    #[test]
+    fn strip_ansi_removes_csi_sequences() {
+        assert_eq!(strip_ansi("\x1b[32mgreen\x1b[0m"), "green");
+        assert_eq!(strip_ansi("\x1b[1;31mred bold\x1b[0m"), "red bold");
+    }
+
+    #[test]
+    fn strip_ansi_removes_osc_sequences() {
+        // OSC with BEL terminator
+        assert_eq!(strip_ansi("\x1b]0;title\x07text"), "text");
+        // OSC with ST terminator
+        assert_eq!(strip_ansi("\x1b]0;title\x1b\\text"), "text");
+    }
+
+    #[test]
+    fn strip_ansi_preserves_plain_text() {
+        let plain = "Hello, world! 123\nNew line";
+        assert_eq!(strip_ansi(plain), plain);
+    }
+
+    #[test]
+    fn strip_ansi_handles_charset_sequences() {
+        // ESC ( B — designate ASCII charset
+        assert_eq!(strip_ansi("\x1b(Btext"), "text");
+    }
+
+    // ==================== format_injection tests ====================
+
+    #[test]
+    fn format_injection_dm() {
+        let result = format_injection("Alice", "evt_1", "hello world", "Bob");
+        assert_eq!(result, "Relay message from Alice [evt_1]: hello world");
+    }
+
+    #[test]
+    fn format_injection_channel() {
+        let result = format_injection("Alice", "evt_1", "hello world", "#general");
+        assert_eq!(result, "Relay message from Alice in #general [evt_1]: hello world");
+    }
+
+    #[test]
+    fn format_injection_pre_formatted() {
+        let body = "Relay message from Bob [evt_0]: previous message";
+        let result = format_injection("Alice", "evt_1", body, "Charlie");
+        assert_eq!(result, body, "pre-formatted messages should pass through unchanged");
+    }
+
+    // ==================== is_auto_suggestion edge cases ====================
+
+    #[test]
+    fn auto_suggestion_no_false_positive_on_partial_ansi() {
+        // Has reverse video but not the dim pattern
+        assert!(!is_auto_suggestion("\x1b[7msome text\x1b[27m normal text"));
     }
 }
