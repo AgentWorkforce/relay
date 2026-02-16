@@ -150,6 +150,7 @@ struct PersistedAgent {
 struct RuntimePaths {
     creds: PathBuf,
     state: PathBuf,
+    pending: PathBuf,
     /// Held for process lifetime to prevent concurrent broker instances.
     #[allow(dead_code)]
     _lock: std::fs::File,
@@ -301,6 +302,62 @@ struct PendingDelivery {
     delivery: RelayDelivery,
     attempts: u32,
     next_retry_at: Instant,
+}
+
+/// Serializable snapshot of pending deliveries for crash recovery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedPendingDelivery {
+    worker_name: String,
+    delivery: RelayDelivery,
+    attempts: u32,
+}
+
+fn save_pending_deliveries(
+    path: &Path,
+    deliveries: &HashMap<String, PendingDelivery>,
+) -> Result<()> {
+    let persisted: Vec<PersistedPendingDelivery> = deliveries
+        .values()
+        .map(|pd| PersistedPendingDelivery {
+            worker_name: pd.worker_name.clone(),
+            delivery: pd.delivery.clone(),
+            attempts: pd.attempts,
+        })
+        .collect();
+    let json = serde_json::to_string_pretty(&persisted)?;
+    let dir = path.parent().unwrap_or(path);
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)
+        .with_context(|| format!("failed creating temp file in {}", dir.display()))?;
+    std::io::Write::write_all(&mut tmp, json.as_bytes())?;
+    tmp.persist(path)
+        .with_context(|| format!("failed persisting pending deliveries to {}", path.display()))?;
+    Ok(())
+}
+
+fn load_pending_deliveries(path: &Path) -> HashMap<String, PendingDelivery> {
+    let data = match std::fs::read_to_string(path) {
+        Ok(d) => d,
+        Err(_) => return HashMap::new(),
+    };
+    let persisted: Vec<PersistedPendingDelivery> = match serde_json::from_str(&data) {
+        Ok(v) => v,
+        Err(_) => return HashMap::new(),
+    };
+    persisted
+        .into_iter()
+        .map(|p| {
+            let id = p.delivery.delivery_id.clone();
+            (
+                id,
+                PendingDelivery {
+                    worker_name: p.worker_name,
+                    delivery: p.delivery,
+                    attempts: p.attempts,
+                    next_retry_at: Instant::now(), // retry immediately on restart
+                },
+            )
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -756,7 +813,14 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     reap_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut dedup = DedupCache::new(Duration::from_secs(300), 8192);
     let delivery_retry_interval = delivery_retry_interval();
-    let mut pending_deliveries: HashMap<String, PendingDelivery> = HashMap::new();
+    let mut pending_deliveries = load_pending_deliveries(&paths.pending);
+    if !pending_deliveries.is_empty() {
+        tracing::info!(
+            count = pending_deliveries.len(),
+            "loaded {} pending deliveries from previous session",
+            pending_deliveries.len()
+        );
+    }
 
     let mut shutdown = false;
 
@@ -1071,6 +1135,11 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state");
                     }
                 }
+
+                // Persist pending deliveries for crash recovery
+                if let Err(error) = save_pending_deliveries(&paths.pending, &pending_deliveries) {
+                    tracing::warn!(path = %paths.pending.display(), error = %error, "failed to persist pending deliveries");
+                }
             }
         }
     }
@@ -1085,6 +1154,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
         tracing::warn!(error = %error, "failed to send ws shutdown signal");
     }
     pending_deliveries.clear();
+    // Clean shutdown — remove pending file since nothing is pending
+    let _ = std::fs::remove_file(&paths.pending);
     workers.shutdown_all().await?;
 
     Ok(())
@@ -2288,6 +2359,7 @@ fn ensure_runtime_paths(cwd: &Path) -> Result<RuntimePaths> {
                         return Ok(RuntimePaths {
                             creds: root.join("relaycast.json"),
                             state: root.join("state.json"),
+                            pending: root.join("pending.json"),
                             _lock: lock_file,
                         });
                     }
@@ -2306,6 +2378,7 @@ fn ensure_runtime_paths(cwd: &Path) -> Result<RuntimePaths> {
     Ok(RuntimePaths {
         creds: root.join("relaycast.json"),
         state: root.join("state.json"),
+        pending: root.join("pending.json"),
         _lock: lock_file,
     })
 }

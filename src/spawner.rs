@@ -67,7 +67,7 @@ impl Spawner {
         #[cfg(unix)]
         unsafe {
             cmd.pre_exec(|| {
-                if libc::setsid() == -1 {
+                if nix::libc::setsid() == -1 {
                     Err(std::io::Error::last_os_error())
                 } else {
                     Ok(())

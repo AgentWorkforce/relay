@@ -2,6 +2,7 @@ import { once } from "node:events";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -253,7 +254,8 @@ export class AgentRelayClient {
   }
 
   private async startInternal(): Promise<void> {
-    if (isExplicitPath(this.options.binaryPath) && !fs.existsSync(this.options.binaryPath)) {
+    const resolvedBinary = expandTilde(this.options.binaryPath);
+    if (isExplicitPath(this.options.binaryPath) && !fs.existsSync(resolvedBinary)) {
       throw new AgentRelayProcessError(`broker binary not found: ${this.options.binaryPath}`);
     }
 
@@ -270,14 +272,14 @@ export class AgentRelayClient {
     // PATH so spawned workers can find relay_send without any user setup.
     const env = { ...this.options.env };
     if (isExplicitPath(this.options.binaryPath)) {
-      const binDir = path.dirname(path.resolve(this.options.binaryPath));
+      const binDir = path.dirname(path.resolve(resolvedBinary));
       const currentPath = env.PATH ?? env.Path ?? "";
       if (!currentPath.split(path.delimiter).includes(binDir)) {
         env.PATH = `${binDir}${path.delimiter}${currentPath}`;
       }
     }
 
-    const child = spawn(this.options.binaryPath, args, {
+    const child = spawn(resolvedBinary, args, {
       cwd: this.options.cwd,
       env,
       stdio: "pipe",
@@ -453,6 +455,14 @@ export class AgentRelayClient {
 
     return responsePromise;
   }
+}
+
+function expandTilde(p: string): string {
+  if (p === "~" || p.startsWith("~/") || p.startsWith("~\\")) {
+    const home = os.homedir();
+    return path.join(home, p.slice(2));
+  }
+  return p;
 }
 
 function isExplicitPath(binaryPath: string): boolean {
