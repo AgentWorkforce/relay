@@ -1755,6 +1755,7 @@ async fn handle_sdk_frame(
                         "delivered": true,
                         "to": payload.to,
                         "event_id": event_id,
+                        "targets": [payload.to],
                     }),
                 )
                 .await?;
@@ -1773,6 +1774,7 @@ async fn handle_sdk_frame(
                                 "relaycast_published": true,
                                 "to": to,
                                 "event_id": eid,
+                                "targets": [to],
                             }),
                         )
                         .await?;

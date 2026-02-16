@@ -268,12 +268,17 @@ export class AgentRelay {
     if (this.client) return this.client;
     if (this.startPromise) return this.startPromise;
 
-    this.startPromise = AgentRelayClient.start(this.clientOptions).then((c) => {
-      this.client = c;
-      this.startPromise = undefined;
-      this.wireEvents(c);
-      return c;
-    });
+    this.startPromise = AgentRelayClient.start(this.clientOptions)
+      .then((c) => {
+        this.client = c;
+        this.startPromise = undefined;
+        this.wireEvents(c);
+        return c;
+      })
+      .catch((err) => {
+        this.startPromise = undefined;
+        throw err;
+      });
 
     return this.startPromise;
   }
