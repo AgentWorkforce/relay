@@ -463,7 +463,10 @@ mod tests {
             Some("⠋".to_string())
         );
         assert_eq!(
-            detector.detect_activity("Tool: Write(file)", "Relay message from Alice [evt_1]: hello"),
+            detector.detect_activity(
+                "Tool: Write(file)",
+                "Relay message from Alice [evt_1]: hello"
+            ),
             Some("Tool:".to_string())
         );
     }
@@ -472,10 +475,7 @@ mod tests {
     fn detect_activity_removes_expected_echo_from_output() {
         let detector = ActivityDetector::for_cli("claude");
         let expected_echo = "Relay message from Alice [evt_1]: hello";
-        let output = format!(
-            "{}\nTool: Write(file)",
-            expected_echo
-        );
+        let output = format!("{}\nTool: Write(file)", expected_echo);
         assert_eq!(
             detector.detect_activity(&output, expected_echo),
             Some("Tool:".to_string())
@@ -486,7 +486,10 @@ mod tests {
     fn detect_activity_for_codex_patterns() {
         let detector = ActivityDetector::for_cli("codex");
         assert_eq!(
-            detector.detect_activity("Thinking... running tool", "Relay message from Alice [evt_1]: hello"),
+            detector.detect_activity(
+                "Thinking... running tool",
+                "Relay message from Alice [evt_1]: hello"
+            ),
             Some("Thinking...".to_string())
         );
     }
@@ -495,7 +498,10 @@ mod tests {
     fn detect_activity_for_gemini_patterns() {
         let detector = ActivityDetector::for_cli("gemini");
         assert_eq!(
-            detector.detect_activity("Action: execute task", "Relay message from Alice [evt_1]: hello"),
+            detector.detect_activity(
+                "Action: execute task",
+                "Relay message from Alice [evt_1]: hello"
+            ),
             Some("Action:".to_string())
         );
     }
@@ -504,7 +510,10 @@ mod tests {
     fn detect_activity_uses_default_when_any_output_present_for_unknown_cli() {
         let detector = ActivityDetector::for_cli("mystery-cli");
         assert_eq!(
-            detector.detect_activity("Output after echo", "Relay message from Alice [evt_1]: hello"),
+            detector.detect_activity(
+                "Output after echo",
+                "Relay message from Alice [evt_1]: hello"
+            ),
             Some("any_output".to_string())
         );
     }
@@ -513,11 +522,17 @@ mod tests {
     fn detect_activity_defaults_to_any_output() {
         let detector = ActivityDetector::for_cli("mystery-cli");
         assert_eq!(
-            detector.detect_activity("Agent output line", "Relay message from Alice [evt_1]: hello"),
+            detector.detect_activity(
+                "Agent output line",
+                "Relay message from Alice [evt_1]: hello"
+            ),
             Some("any_output".to_string())
         );
         assert_eq!(
-            detector.detect_activity("Relay message from Alice [evt_1]: hello", "Relay message from Alice [evt_1]: hello"),
+            detector.detect_activity(
+                "Relay message from Alice [evt_1]: hello",
+                "Relay message from Alice [evt_1]: hello"
+            ),
             None
         );
     }
@@ -526,10 +541,7 @@ mod tests {
     fn detect_activity_strips_ansi_before_matching_patterns() {
         let detector = ActivityDetector::for_cli("claude");
         let expected_echo = "Relay message from Alice [evt_1]: hello";
-        let output = format!(
-            "{}\n\x1b[32m⠙\x1b[0m writing output\n",
-            expected_echo
-        );
+        let output = format!("{}\n\x1b[32m⠙\x1b[0m writing output\n", expected_echo);
         assert_eq!(
             detector.detect_activity(&output, expected_echo),
             Some("⠙".to_string())
@@ -541,9 +553,6 @@ mod tests {
         let detector = ActivityDetector::for_cli("claude");
         let expected_echo = "Relay message from Alice [evt_1]: Tool: Write(file)";
         let output = format!("{}", expected_echo);
-        assert_eq!(
-            detector.detect_activity(&output, expected_echo),
-            None
-        );
+        assert_eq!(detector.detect_activity(&output, expected_echo), None);
     }
 }
