@@ -82,7 +82,6 @@ pub(crate) struct PendingVerification {
 pub(crate) struct PendingActivity {
     pub delivery_id: String,
     pub event_id: String,
-    pub request_id: Option<String>,
     pub expected_echo: String,
     pub verified_at: Instant,
     pub output_buffer: String,
@@ -298,30 +297,6 @@ pub(crate) fn delivery_injected_event_payload(
         "worker_name": worker_name,
         "timestamp": timestamp_ms,
     })
-}
-
-pub(crate) fn delivery_lifecycle_event_series(
-    delivery_id: &str,
-    event_id: &str,
-    worker_name: &str,
-    queued_timestamp_ms: u64,
-    injected_timestamp_ms: u64,
-) -> Vec<(&'static str, Value)> {
-    vec![
-        (
-            "delivery_queued",
-            delivery_queued_event_payload(delivery_id, event_id, worker_name, queued_timestamp_ms),
-        ),
-        (
-            "delivery_injected",
-            delivery_injected_event_payload(
-                delivery_id,
-                event_id,
-                worker_name,
-                injected_timestamp_ms,
-            ),
-        ),
-    ]
 }
 
 /// Detect Claude Code --dangerously-skip-permissions confirmation prompt.
@@ -617,14 +592,4 @@ mod tests {
         assert_eq!(detector.detect_activity(&output, expected_echo), None);
     }
 
-    #[test]
-    fn delivery_events_are_emitted_in_queue_then_inject_order() {
-        let events = delivery_lifecycle_event_series("del_1", "evt_1", "agent", 10, 20);
-        assert_eq!(events[0].0, "delivery_queued");
-        assert_eq!(events[1].0, "delivery_injected");
-        assert_eq!(events[0].1["delivery_id"], "del_1");
-        assert_eq!(events[1].1["delivery_id"], "del_1");
-        assert_eq!(events[0].1["timestamp"], 10u64);
-        assert_eq!(events[1].1["timestamp"], 20u64);
-    }
 }

@@ -14,6 +14,5 @@ pub mod redact;
 pub mod relaycast_ws;
 pub mod scheduler;
 pub mod snippets;
-pub mod spawner;
 pub mod telemetry;
 pub mod types;

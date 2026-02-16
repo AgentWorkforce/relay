@@ -37,10 +37,11 @@ use relay_broker::{
     pty::PtySession,
     relaycast_ws::{RelaycastHttpClient, RelaycastWsClient, WsControl},
     snippets::ensure_relaycast_mcp_config,
-    spawner::{terminate_child, Spawner},
     telemetry::{TelemetryClient, TelemetryEvent},
     types::{BrokerCommandEvent, BrokerCommandPayload, SenderKind},
 };
+
+use spawner::{terminate_child, Spawner};
 
 const DEFAULT_DELIVERY_RETRY_MS: u64 = 1_000;
 const MAX_DELIVERY_RETRIES: u32 = 10;

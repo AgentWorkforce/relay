@@ -242,7 +242,6 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 pending_activities.push_back(PendingActivity {
                                     delivery_id: delivery_id.clone(),
                                     event_id,
-                                    request_id: pv.request_id,
                                     expected_echo: pv.expected_echo,
                                     verified_at: Instant::now(),
                                     output_buffer: String::new(),

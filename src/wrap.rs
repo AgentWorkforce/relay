@@ -479,7 +479,6 @@ pub(crate) async fn run_wrap(
                                 pending_activities.push_back(PendingActivity {
                                     delivery_id: pv.delivery_id,
                                     event_id: pv.event_id,
-                                    request_id: pv.request_id,
                                     expected_echo: pv.expected_echo,
                                     verified_at: Instant::now(),
                                     output_buffer: String::new(),
