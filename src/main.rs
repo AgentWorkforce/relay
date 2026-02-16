@@ -676,6 +676,18 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     let runtime_cwd = std::env::current_dir()?;
     let paths = ensure_runtime_paths(&runtime_cwd)?;
     let mut state = BrokerState::load(&paths.state).unwrap_or_default();
+
+    // Clean up agents from previous sessions whose processes have died
+    let reaped = state.reap_dead_agents();
+    if !reaped.is_empty() {
+        tracing::info!(
+            agents = ?reaped,
+            "reaped {} dead agent(s) from previous session",
+            reaped.len()
+        );
+        state.save(&paths.state)?;
+    }
+
     if std::env::var("AGENT_RELAY_DISABLE_RELAYCAST").is_ok() {
         anyhow::bail!(
             "AGENT_RELAY_DISABLE_RELAYCAST is no longer supported; broker requires Relaycast"
