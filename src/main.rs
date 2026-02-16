@@ -5,6 +5,23 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod helpers;
+mod pty_worker;
+mod wrap;
+
+use helpers::{
+    detect_bypass_permissions_prompt,
+    detect_codex_model_prompt,
+    detect_gemini_action_required,
+    floor_char_boundary,
+    format_injection,
+    is_auto_suggestion,
+    is_bypass_selection_menu,
+    is_in_editor_mode,
+    strip_ansi,
+    TerminalQueryParser,
+};
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
@@ -34,14 +51,6 @@ use relay_broker::{
 const DEFAULT_DELIVERY_RETRY_MS: u64 = 1_000;
 const MAX_DELIVERY_RETRIES: u32 = 10;
 const DEFAULT_RELAYCAST_BASE_URL: &str = "https://api.relaycast.dev";
-
-// PTY auto-response constants (shared by run_wrap and run_pty_worker)
-const BYPASS_PERMS_COOLDOWN: Duration = Duration::from_secs(2);
-const BYPASS_PERMS_MAX_SENDS: u32 = 5;
-const AUTO_ENTER_TIMEOUT: Duration = Duration::from_secs(10);
-const AUTO_ENTER_COOLDOWN: Duration = Duration::from_secs(5);
-const MAX_AUTO_ENTER_RETRIES: u32 = 5;
-const AUTO_SUGGESTION_BLOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Parser)]
 #[command(name = "agent-relay")]
@@ -139,6 +148,9 @@ struct PersistedAgent {
 struct RuntimePaths {
     creds: PathBuf,
     state: PathBuf,
+    /// Held for process lifetime to prevent concurrent broker instances.
+    #[allow(dead_code)]
+    _lock: std::fs::File,
 }
 
 /// Shared Relaycast connection state used by run_init, run_listen, and run_wrap.
@@ -166,232 +178,6 @@ fn spawn_env_vars<'a>(
         ("RELAY_CHANNELS", channels),
         ("RELAY_STRICT_AGENT_NAME", "1"),
     ]
-}
-
-/// Shared PTY auto-response state used by run_wrap and run_pty_worker.
-struct PtyAutoState {
-    // MCP approval
-    mcp_approved: bool,
-    mcp_detection_buffer: String,
-    mcp_partial_match_since: Option<Instant>,
-    // Bypass permissions
-    bypass_perms_buffer: String,
-    last_bypass_perms_send: Option<Instant>,
-    bypass_perms_send_count: u32,
-    // Codex model upgrade prompt
-    codex_model_prompt_handled: bool,
-    codex_model_buffer: String,
-    // Gemini "Action Required" prompt
-    gemini_action_buffer: String,
-    last_gemini_action_approval: Option<Instant>,
-    // Auto-suggestion / injection state
-    auto_suggestion_visible: bool,
-    last_injection_time: Option<Instant>,
-    last_auto_enter_time: Option<Instant>,
-    auto_enter_retry_count: u32,
-    editor_mode_buffer: String,
-    last_output_time: Instant,
-}
-
-const MCP_APPROVAL_TIMEOUT: Duration = Duration::from_secs(5);
-const GEMINI_ACTION_COOLDOWN: Duration = Duration::from_secs(2);
-
-impl PtyAutoState {
-    fn new() -> Self {
-        Self {
-            mcp_approved: false,
-            mcp_detection_buffer: String::new(),
-            mcp_partial_match_since: None,
-            bypass_perms_buffer: String::new(),
-            last_bypass_perms_send: None,
-            bypass_perms_send_count: 0,
-            codex_model_prompt_handled: false,
-            codex_model_buffer: String::new(),
-            gemini_action_buffer: String::new(),
-            last_gemini_action_approval: None,
-            auto_suggestion_visible: false,
-            last_injection_time: None,
-            last_auto_enter_time: None,
-            auto_enter_retry_count: 0,
-            editor_mode_buffer: String::new(),
-            last_output_time: Instant::now(),
-        }
-    }
-
-    /// Append `text` to `buf`, keeping only the last `keep` bytes when `buf` exceeds `max`.
-    fn append_buf(buf: &mut String, text: &str, max: usize, keep: usize) {
-        buf.push_str(text);
-        if buf.len() > max {
-            let start = floor_char_boundary(buf, buf.len() - keep);
-            *buf = buf[start..].to_string();
-        }
-    }
-
-    /// Detect and approve MCP server prompts in PTY output.
-    /// Supports full match (header + option) and partial-match timeout (5s fallback).
-    async fn handle_mcp_approval(&mut self, text: &str, pty: &PtySession) {
-        if self.mcp_approved {
-            return;
-        }
-        Self::append_buf(&mut self.mcp_detection_buffer, text, 2500, 2000);
-        let clean = strip_ansi(&self.mcp_detection_buffer);
-        let has_header =
-            clean.contains("MCP Server Approval Required") || clean.contains("MCP server approval");
-        let has_approve = clean.contains("[a] Approve all servers")
-            || clean.contains("Approve all")
-            || clean.contains("[a]");
-
-        let full_match = has_header && has_approve;
-
-        // Timeout-based approval: if we have a partial match for 5+ seconds, approve anyway.
-        // Handles edge cases where prompt text fragments across reads.
-        let timeout_approval = if has_header || has_approve {
-            match self.mcp_partial_match_since {
-                None => {
-                    self.mcp_partial_match_since = Some(Instant::now());
-                    false
-                }
-                Some(since) => since.elapsed() >= MCP_APPROVAL_TIMEOUT,
-            }
-        } else {
-            self.mcp_partial_match_since = None;
-            false
-        };
-
-        if full_match || timeout_approval {
-            self.mcp_approved = true;
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            let _ = pty.write_all(b"a");
-            self.mcp_detection_buffer.clear();
-            self.mcp_partial_match_since = None;
-        }
-    }
-
-    /// Detect and approve bypass-permissions prompts in PTY output.
-    async fn handle_bypass_permissions(&mut self, text: &str, pty: &PtySession) {
-        let in_cooldown = self
-            .last_bypass_perms_send
-            .map(|t| t.elapsed() < BYPASS_PERMS_COOLDOWN)
-            .unwrap_or(false);
-        if !in_cooldown && self.bypass_perms_send_count < BYPASS_PERMS_MAX_SENDS {
-            Self::append_buf(&mut self.bypass_perms_buffer, text, 2500, 2000);
-            let clean = strip_ansi(&self.bypass_perms_buffer);
-            let (has_ref, has_confirm) = detect_bypass_permissions_prompt(&clean);
-            if has_ref && has_confirm {
-                self.bypass_perms_send_count += 1;
-                self.last_bypass_perms_send = Some(Instant::now());
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                if is_bypass_selection_menu(&clean) {
-                    let _ = pty.write_all(b"\x1b[B");
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                    let _ = pty.write_all(b"\r");
-                } else {
-                    let _ = pty.write_all(b"y\n");
-                }
-                self.bypass_perms_buffer.clear();
-            }
-        } else if in_cooldown {
-            self.bypass_perms_buffer.clear();
-        }
-    }
-
-    /// Detect and dismiss Codex model upgrade prompts by selecting "Use existing model".
-    async fn handle_codex_model_prompt(&mut self, text: &str, pty: &PtySession) {
-        if self.codex_model_prompt_handled {
-            return;
-        }
-        Self::append_buf(&mut self.codex_model_buffer, text, 2500, 2000);
-        let clean = strip_ansi(&self.codex_model_buffer);
-        let (has_upgrade_ref, has_model_options) = detect_codex_model_prompt(&clean);
-        if has_upgrade_ref && has_model_options {
-            tracing::info!("Detected Codex model upgrade prompt, selecting 'Use existing model'");
-            self.codex_model_prompt_handled = true;
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            let _ = pty.write_all(b"\x1b[B"); // Down arrow → option 2
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            let _ = pty.write_all(b"\r"); // Enter to confirm
-            self.codex_model_buffer.clear();
-        }
-    }
-
-    /// Detect and auto-approve Gemini "Action Required" permission prompts.
-    async fn handle_gemini_action(&mut self, text: &str, pty: &PtySession) {
-        let in_cooldown = self
-            .last_gemini_action_approval
-            .map(|t| t.elapsed() < GEMINI_ACTION_COOLDOWN)
-            .unwrap_or(false);
-        if !in_cooldown {
-            Self::append_buf(&mut self.gemini_action_buffer, text, 2500, 2000);
-            let clean = strip_ansi(&self.gemini_action_buffer);
-            let (has_header, has_allow_option) = detect_gemini_action_required(&clean);
-            if has_header && has_allow_option {
-                tracing::info!("Detected Gemini 'Action Required' prompt, auto-approving with '2'");
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                let _ = pty.write_all(b"2\n");
-                self.gemini_action_buffer.clear();
-                self.last_gemini_action_approval = Some(Instant::now());
-            }
-        } else {
-            self.gemini_action_buffer.clear();
-        }
-    }
-
-    /// Send an enter keystroke if the agent appears stuck after injection.
-    /// Uses exponential backoff: 10s → 15s → 25s → 40s → 60s.
-    fn try_auto_enter(&mut self, pty: &PtySession) {
-        if let Some(injection_time) = self.last_injection_time {
-            let backoff_multiplier = match self.auto_enter_retry_count {
-                0 => 1.0,
-                1 => 1.5,
-                2 => 2.5,
-                3 => 4.0,
-                _ => 6.0,
-            };
-            let required_silence =
-                Duration::from_secs_f64(AUTO_ENTER_TIMEOUT.as_secs_f64() * backoff_multiplier);
-            let since_injection = injection_time.elapsed();
-            let since_output = self.last_output_time.elapsed();
-            let cooldown_ok = self
-                .last_auto_enter_time
-                .map(|t| t.elapsed() >= AUTO_ENTER_COOLDOWN)
-                .unwrap_or(true);
-            let in_editor = is_in_editor_mode(&self.editor_mode_buffer);
-            if since_injection > required_silence
-                && since_output > required_silence
-                && cooldown_ok
-                && !in_editor
-                && !self.auto_suggestion_visible
-                && self.auto_enter_retry_count < MAX_AUTO_ENTER_RETRIES
-            {
-                let _ = pty.write_all(b"\r");
-                self.last_auto_enter_time = Some(Instant::now());
-                self.auto_enter_retry_count += 1;
-            }
-        }
-    }
-
-    fn update_auto_suggestion(&mut self, text: &str) {
-        if is_auto_suggestion(text) {
-            self.auto_suggestion_visible = true;
-        } else if !strip_ansi(text).trim().is_empty() {
-            self.auto_suggestion_visible = false;
-        }
-    }
-
-    fn update_editor_buffer(&mut self, text: &str) {
-        Self::append_buf(&mut self.editor_mode_buffer, text, 2000, 1500);
-    }
-
-    fn reset_auto_enter_on_output(&mut self, text: &str) {
-        let clean_text = strip_ansi(text);
-        let is_echo = clean_text.lines().all(|line| {
-            let trimmed = line.trim();
-            trimmed.is_empty() || trimmed.starts_with("Relay message from ")
-        });
-        if !is_echo && clean_text.len() > 10 && self.auto_enter_retry_count > 0 {
-            self.auto_enter_retry_count = 0;
-        }
-    }
 }
 
 struct RelaySessionOptions<'a> {
@@ -513,38 +299,6 @@ struct PendingDelivery {
     delivery: RelayDelivery,
     attempts: u32,
     next_retry_at: Instant,
-}
-
-#[derive(Debug, Clone)]
-struct PendingWrapInjection {
-    from: String,
-    event_id: String,
-    body: String,
-    target: String,
-    queued_at: Instant,
-}
-
-#[derive(Debug, Clone)]
-struct PendingWorkerInjection {
-    delivery: RelayDelivery,
-    request_id: Option<String>,
-    queued_at: Instant,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-enum TerminalQueryState {
-    #[default]
-    Idle,
-    Esc,
-    Csi,
-    CsiQmark,
-    Csi6,
-    CsiQmark6,
-}
-
-#[derive(Debug, Default)]
-struct TerminalQueryParser {
-    state: TerminalQueryState,
 }
 
 #[derive(Debug, Clone)]
@@ -906,10 +660,10 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init(cmd) => run_init(cmd, telemetry).await,
-        Commands::Pty(cmd) => run_pty_worker(cmd).await,
+        Commands::Pty(cmd) => pty_worker::run_pty_worker(cmd).await,
         Commands::Headless(cmd) => run_headless_worker(cmd).await,
         Commands::Listen(cmd) => run_listen(cmd, telemetry).await,
-        Commands::Wrap { cli, args } => run_wrap(cli, args, telemetry).await,
+        Commands::Wrap { cli, args } => wrap::run_wrap(cli, args, telemetry).await,
     }
 }
 
@@ -1662,395 +1416,6 @@ async fn listen_api_release(
     }
 }
 
-/// Interactive wrap mode: wraps a CLI in a PTY with terminal passthrough
-/// while connecting to Relaycast for relay message injection.
-/// Usage: `agent-relay codex --full-auto`
-async fn run_wrap(
-    cli_name: String,
-    cli_args: Vec<String>,
-    telemetry: TelemetryClient,
-) -> Result<()> {
-    let broker_start = Instant::now();
-    let mut agent_spawn_count: u32 = 0;
-    telemetry.track(TelemetryEvent::BrokerStart);
-    // Disable Claude Code auto-suggestions so relay message injection into the PTY
-    // cannot accidentally accept a ghost suggestion via the Enter keystroke.
-    #[allow(deprecated)]
-    std::env::set_var("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION", "false");
-
-    let requested_name = std::env::var("RELAY_AGENT_NAME").unwrap_or_else(|_| cli_name.clone());
-    let channels = std::env::var("RELAY_CHANNELS").unwrap_or_else(|_| "general".to_string());
-    let channel_list = channels_from_csv(&channels);
-
-    eprintln!(
-        "[agent-relay] wrapping {} (agent: {}, channels: {:?})",
-        cli_name, requested_name, channel_list
-    );
-    eprintln!("[agent-relay] use RUST_LOG=debug for verbose logging");
-
-    // --- Auth & Relaycast connection ---
-    let runtime_cwd = std::env::current_dir()?;
-    let paths = ensure_runtime_paths(&runtime_cwd)?;
-
-    let strict_name = env_flag_enabled("RELAY_STRICT_AGENT_NAME");
-    let relay = connect_relay(RelaySessionOptions {
-        paths: &paths,
-        requested_name: &requested_name,
-        channels: channel_list,
-        strict_name,
-        read_mcp_identity: true,
-        ensure_mcp_config: true,
-        runtime_cwd: &runtime_cwd,
-    })
-    .await?;
-
-    tracing::debug!("connected to relaycast");
-
-    let RelaySession {
-        http_base,
-        relay_workspace_key,
-        self_agent_id,
-        self_names,
-        self_agent_ids,
-        mut ws_inbound_rx,
-        ws_control_tx,
-    } = relay;
-
-    // Values for child agent env vars
-    let child_api_key = relay_workspace_key.clone();
-    let child_base_url = http_base.clone();
-
-    // Spawner for child agents
-    let mut spawner = Spawner::new();
-
-    // --- Spawn CLI in PTY ---
-    let (pty, mut pty_rx) = PtySession::spawn(
-        &cli_name,
-        &cli_args,
-        terminal_rows().unwrap_or(24),
-        terminal_cols().unwrap_or(80),
-    )?;
-    let mut terminal_query_parser = TerminalQueryParser::default();
-
-    eprintln!("[agent-relay] ready");
-
-    // Set terminal to raw mode for passthrough
-    #[cfg(unix)]
-    let saved_termios = {
-        use nix::sys::termios;
-        match termios::tcgetattr(std::io::stdin()) {
-            Ok(orig) => {
-                let mut raw = orig.clone();
-                termios::cfmakeraw(&mut raw);
-                let _ = termios::tcsetattr(std::io::stdin(), termios::SetArg::TCSANOW, &raw);
-                Some(orig)
-            }
-            Err(_) => None,
-        }
-    };
-
-    // Stdin reader thread
-    let (stdin_tx, mut stdin_rx) = mpsc::channel::<Vec<u8>>(64);
-    std::thread::spawn(move || {
-        use std::io::Read;
-        let mut stdin = std::io::stdin();
-        let mut buf = [0u8; 1024];
-        loop {
-            match stdin.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    if stdin_tx.blocking_send(buf[..n].to_vec()).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    });
-
-    // Dedup for WS events
-    let mut dedup = DedupCache::new(Duration::from_secs(300), 8192);
-
-    // Buffer for extracting message IDs from MCP tool responses in PTY output.
-    // When the agent sends messages via MCP, the response contains the message ID.
-    // Pre-seeding dedup with these IDs prevents self-echo when the same message
-    // arrives via WS — regardless of what identity the MCP server uses.
-    let mut mcp_response_buffer = String::new();
-
-    let mut pty_auto = PtyAutoState::new();
-    let mut auto_enter_interval = tokio::time::interval(Duration::from_secs(2));
-    auto_enter_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut pending_injection_interval = tokio::time::interval(Duration::from_millis(50));
-    pending_injection_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut pending_wrap_injections: VecDeque<PendingWrapInjection> = VecDeque::new();
-
-    let mut reap_tick = tokio::time::interval(Duration::from_secs(5));
-    reap_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-
-    // SIGWINCH (terminal resize)
-    let mut sigwinch =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())
-            .expect("failed to register SIGWINCH handler");
-
-    let mut running = true;
-    let mut stdout = tokio::io::stdout();
-
-    while running {
-        tokio::select! {
-            // Ctrl-C
-            _ = tokio::signal::ctrl_c() => {
-                running = false;
-            }
-
-            // Stdin → PTY (passthrough)
-            Some(data) = stdin_rx.recv() => {
-                let _ = pty.write_all(&data);
-            }
-
-            // PTY output → stdout (passthrough) + auto-responses
-            chunk = pty_rx.recv() => {
-                match chunk {
-                    Some(chunk) => {
-                        // Terminal query responses (CSI 6n)
-                        for response in terminal_query_parser.feed(&chunk) {
-                            let _ = pty.write_all(response);
-                        }
-
-                        // Passthrough to user's terminal
-                        use tokio::io::AsyncWriteExt;
-                        let _ = stdout.write_all(&chunk).await;
-                        let _ = stdout.flush().await;
-
-                        let text = String::from_utf8_lossy(&chunk).to_string();
-                        pty_auto.last_output_time = Instant::now();
-
-                        pty_auto.update_auto_suggestion(&text);
-                        pty_auto.update_editor_buffer(&text);
-                        pty_auto.reset_auto_enter_on_output(&text);
-
-                        // Extract message IDs from MCP tool responses to prevent self-echo.
-                        {
-                            let clean_text = strip_ansi(&text);
-                            mcp_response_buffer.push_str(&clean_text);
-                            if mcp_response_buffer.len() > 4000 {
-                                let start = floor_char_boundary(&mcp_response_buffer, mcp_response_buffer.len() - 3000);
-                                mcp_response_buffer = mcp_response_buffer[start..].to_string();
-                            }
-                            for msg_id in extract_mcp_message_ids(&mcp_response_buffer) {
-                                if dedup.insert_if_new(&msg_id, Instant::now()) {
-                                    tracing::debug!("pre-seeded dedup with outbound message id: {}", msg_id);
-                                }
-                            }
-                        }
-
-                        pty_auto.handle_mcp_approval(&text, &pty).await;
-                        pty_auto.handle_bypass_permissions(&text, &pty).await;
-                        pty_auto.handle_codex_model_prompt(&text, &pty).await;
-                        pty_auto.handle_gemini_action(&text, &pty).await;
-                    }
-                    None => {
-                        running = false;
-                    }
-                }
-            }
-
-            // Relay messages from WS → intercept broker commands or queue for PTY injection
-            ws_msg = ws_inbound_rx.recv() => {
-                if let Some(ws_msg) = ws_msg {
-                    // Check for command.invoked event first (spawn/release)
-                    if let Some(cmd_event) = map_ws_broker_command(&ws_msg) {
-                        if !command_targets_self(&cmd_event, &self_agent_id) {
-                            tracing::debug!(
-                                command = %cmd_event.command,
-                                handler_agent_id = ?cmd_event.handler_agent_id,
-                                self_agent_id = %self_agent_id,
-                                "ignoring command event for a different handler"
-                            );
-                            continue;
-                        }
-                        match cmd_event.payload {
-                            BrokerCommandPayload::Spawn(ref params) => {
-                                if params.name.is_empty() || params.cli.is_empty() {
-                                    tracing::error!("spawn command missing name or cli");
-                                    continue;
-                                }
-                                let env_vars = spawn_env_vars(&params.name, &child_api_key, &child_base_url, &channels);
-                                match spawner.spawn_wrap(
-                                    &params.name, &params.cli, &params.args, &env_vars, Some(&cmd_event.invoked_by),
-                                ).await {
-                                    Ok(pid) => {
-                                        agent_spawn_count += 1;
-                                        telemetry.track(TelemetryEvent::AgentSpawn {
-                                            cli: params.cli.clone(),
-                                            runtime: "pty".to_string(),
-                                        });
-                                        tracing::info!(child = %params.name, cli = %params.cli, pid = pid, invoked_by = %cmd_event.invoked_by, "spawned child agent");
-                                        eprintln!("\r\n[agent-relay] spawned child '{}' (pid {})\r", params.name, pid);
-                                    }
-                                    Err(error) => {
-                                        tracing::error!(child = %params.name, error = %error, "failed to spawn child agent");
-                                        eprintln!("\r\n[agent-relay] failed to spawn '{}': {}\r", params.name, error);
-                                    }
-                                }
-                            }
-                            BrokerCommandPayload::Release(ref params) => {
-                                // command.invoked doesn't carry sender_kind, so use Unknown
-                                let sender_is_human = is_human_sender(&cmd_event.invoked_by, SenderKind::Unknown);
-                                let owner = spawner.owner_of(&params.name);
-                                if can_release_child(owner, &cmd_event.invoked_by, sender_is_human) {
-                                    match spawner.release(&params.name, Duration::from_secs(2)).await {
-                                        Ok(()) => {
-                                            telemetry.track(TelemetryEvent::AgentRelease {
-                                                cli: String::new(),
-                                                release_reason: "ws_command".to_string(),
-                                                lifetime_seconds: 0,
-                                            });
-                                            tracing::info!(child = %params.name, released_by = %cmd_event.invoked_by, "released child agent");
-                                            eprintln!("\r\n[agent-relay] released child '{}'\r", params.name);
-                                        }
-                                        Err(error) => {
-                                            tracing::error!(child = %params.name, error = %error, "failed to release child agent");
-                                            eprintln!("\r\n[agent-relay] failed to release '{}': {}\r", params.name, error);
-                                        }
-                                    }
-                                } else {
-                                    tracing::warn!(child = %params.name, sender = %cmd_event.invoked_by, "release denied: sender is not owner or human");
-                                }
-                            }
-                        }
-                        continue;
-                    }
-
-                    // Regular relay message: map and queue for PTY injection
-                    if let Some(mapped) = map_ws_event(&ws_msg) {
-                        if !dedup.insert_if_new(&mapped.event_id, Instant::now()) {
-                            tracing::debug!("dedup: skipping {}", mapped.event_id);
-                            continue;
-                        }
-                        if self_names.contains(&mapped.from)
-                            || mapped.sender_agent_id.as_ref().is_some_and(|id| self_agent_ids.contains(id))
-                        {
-                            tracing::debug!(from = %mapped.from, sender_agent_id = ?mapped.sender_agent_id, "skipping self-echo in wrap mode");
-                            continue;
-                        }
-
-                        pending_wrap_injections.push_back(PendingWrapInjection {
-                            from: mapped.from,
-                            event_id: mapped.event_id,
-                            body: mapped.text,
-                            target: mapped.target,
-                            queued_at: Instant::now(),
-                        });
-                    } else {
-                        tracing::debug!("ws event not mapped: {}", serde_json::to_string(&ws_msg).unwrap_or_default());
-                    }
-                }
-            }
-
-            _ = pending_injection_interval.tick() => {
-                let should_block = pending_wrap_injections
-                    .front()
-                    .map(|pending| {
-                        pty_auto.auto_suggestion_visible && pending.queued_at.elapsed() < AUTO_SUGGESTION_BLOCK_TIMEOUT
-                    })
-                    .unwrap_or(false);
-                if should_block {
-                    continue;
-                }
-                if let Some(pending) = pending_wrap_injections.pop_front() {
-                    if pty_auto.auto_suggestion_visible {
-                        tracing::warn!(
-                            event_id = %pending.event_id,
-                            "auto-suggestion visible; sending Escape to dismiss before injection"
-                        );
-                        let _ = pty.write_all(b"\x1b");
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                        pty_auto.auto_suggestion_visible = false;
-                    }
-                    tracing::debug!("relay from {} → {}", pending.from, pending.target);
-                    let injection = format_injection(
-                        &pending.from,
-                        &pending.event_id,
-                        &pending.body,
-                        &pending.target,
-                    );
-                    if let Err(e) = pty.write_all(injection.as_bytes()) {
-                        tracing::warn!(event_id = %pending.event_id, error = %e, "PTY injection write failed, re-queuing");
-                        pending_wrap_injections.push_front(PendingWrapInjection {
-                            from: pending.from,
-                            event_id: pending.event_id,
-                            body: pending.body,
-                            target: pending.target,
-                            queued_at: pending.queued_at,
-                        });
-                        continue;
-                    }
-                    telemetry.track(TelemetryEvent::MessageSend {
-                        is_broadcast: pending.target.starts_with('#'),
-                        has_thread: false,
-                    });
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    let _ = pty.write_all(b"\r");
-                    pty_auto.last_injection_time = Some(Instant::now());
-                    pty_auto.auto_enter_retry_count = 0;
-                }
-            }
-
-            // Auto-enter for stuck agents
-            _ = auto_enter_interval.tick() => {
-                pty_auto.try_auto_enter(&pty);
-            }
-
-            // Reap child agents that have exited on their own
-            _ = reap_tick.tick() => {
-                if let Ok(exited) = spawner.reap_exited().await {
-                    for name in exited {
-                        telemetry.track(TelemetryEvent::AgentCrash {
-                            cli: String::new(),
-                            exit_code: None,
-                            lifetime_seconds: 0,
-                        });
-                        tracing::info!(child = %name, "child agent exited");
-                        eprintln!("\r\n[agent-relay] child '{}' exited\r", name);
-                    }
-                }
-            }
-
-            // SIGWINCH: forward terminal resize to PTY
-            _ = sigwinch.recv() => {
-                if let Some((rows, cols)) = get_terminal_size() {
-                    let _ = pty.resize(rows, cols);
-                }
-            }
-        }
-    }
-
-    telemetry.track(TelemetryEvent::BrokerStop {
-        uptime_seconds: broker_start.elapsed().as_secs(),
-        agent_spawn_count,
-    });
-    telemetry.shutdown();
-
-    // Cleanup
-    let _ = pty.shutdown();
-
-    // Terminate all child agents
-    spawner.shutdown_all(Duration::from_secs(2)).await;
-
-    if let Err(e) = ws_control_tx.send(WsControl::Shutdown).await {
-        tracing::warn!(error = %e, "failed to send WS shutdown in wrap cleanup");
-    }
-
-    // Restore terminal
-    #[cfg(unix)]
-    if let Some(orig) = saved_termios {
-        use nix::sys::termios;
-        let _ = termios::tcsetattr(std::io::stdin(), termios::SetArg::TCSANOW, &orig);
-    }
-
-    eprintln!("\r\n[agent-relay] session ended");
-    Ok(())
-}
 
 /// Get terminal rows from TIOCGWINSZ.
 #[cfg(unix)]
@@ -2405,240 +1770,6 @@ fn drop_pending_for_worker(
     before.saturating_sub(pending_deliveries.len())
 }
 
-async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
-    // Disable Claude Code auto-suggestions to prevent accidental acceptance during injection.
-    #[allow(deprecated)]
-    std::env::set_var("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION", "false");
-
-    #[cfg(unix)]
-    let (init_rows, init_cols) = get_terminal_size().unwrap_or((24, 80));
-    #[cfg(not(unix))]
-    let (init_rows, init_cols) = (24u16, 80u16);
-    let (pty, mut pty_rx) = PtySession::spawn(&cmd.cli, &cmd.args, init_rows, init_cols)?;
-    let mut terminal_query_parser = TerminalQueryParser::default();
-
-    let (out_tx, mut out_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(1024);
-    tokio::spawn(async move {
-        while let Some(frame) = out_rx.recv().await {
-            if let Ok(line) = serde_json::to_string(&frame) {
-                use std::io::Write;
-                let mut stdout = std::io::stdout().lock();
-                let _ = stdout.write_all(line.as_bytes());
-                let _ = stdout.write_all(b"\n");
-                let _ = stdout.flush();
-            }
-        }
-    });
-
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    let mut running = true;
-
-    let mut pty_auto = PtyAutoState::new();
-
-    // --- SIGWINCH (terminal resize) ---
-    let mut sigwinch =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())
-            .expect("failed to register SIGWINCH handler");
-
-    let mut auto_enter_interval = tokio::time::interval(Duration::from_secs(2));
-    auto_enter_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut pending_injection_interval = tokio::time::interval(Duration::from_millis(50));
-    pending_injection_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut pending_worker_injections: VecDeque<PendingWorkerInjection> = VecDeque::new();
-    let mut pending_worker_delivery_ids: HashSet<String> = HashSet::new();
-
-    while running {
-        tokio::select! {
-            line = lines.next_line() => {
-                match line {
-                    Ok(Some(line)) => {
-                        let frame: ProtocolEnvelope<Value> = match serde_json::from_str(&line) {
-                            Ok(frame) => frame,
-                            Err(error) => {
-                                let _ = send_frame(&out_tx, "worker_error", None, json!({
-                                    "code":"invalid_frame",
-                                    "message": error.to_string(),
-                                    "retryable": false
-                                })).await;
-                                continue;
-                            }
-                        };
-
-                        match frame.msg_type.as_str() {
-                            "init_worker" => {
-                                let inferred_name = cmd
-                                    .agent_name
-                                    .clone()
-                                    .or_else(|| {
-                                        frame.payload
-                                            .get("agent")
-                                            .and_then(|a| a.get("name"))
-                                            .and_then(Value::as_str)
-                                            .map(ToOwned::to_owned)
-                                    })
-                                    .unwrap_or_else(|| "pty-worker".to_string());
-
-                                let _ = send_frame(
-                                    &out_tx,
-                                    "worker_ready",
-                                    frame.request_id,
-                                    json!({"name": inferred_name, "runtime": "pty"}),
-                                )
-                                .await;
-                            }
-                            "deliver_relay" => {
-                                let delivery: RelayDelivery = match serde_json::from_value(frame.payload) {
-                                    Ok(d) => d,
-                                    Err(error) => {
-                                        let _ = send_frame(&out_tx, "worker_error", frame.request_id, json!({
-                                            "code":"invalid_delivery",
-                                            "message": error.to_string(),
-                                            "retryable": false
-                                        })).await;
-                                        continue;
-                                    }
-                                };
-                                if pending_worker_delivery_ids.insert(delivery.delivery_id.clone()) {
-                                    pending_worker_injections.push_back(PendingWorkerInjection {
-                                        delivery,
-                                        request_id: frame.request_id,
-                                        queued_at: Instant::now(),
-                                    });
-                                } else {
-                                    tracing::debug!(
-                                        delivery_id = %delivery.delivery_id,
-                                        "skipping duplicate pending delivery"
-                                    );
-                                }
-                            }
-                            "shutdown_worker" => {
-                                running = false;
-                            }
-                            "ping" => {
-                                let ts = frame.payload.get("ts_ms").and_then(Value::as_u64).unwrap_or_default();
-                                let _ = send_frame(&out_tx, "pong", frame.request_id, json!({"ts_ms": ts})).await;
-                            }
-                            other => {
-                                let _ = send_frame(&out_tx, "worker_error", frame.request_id, json!({
-                                    "code":"unknown_type",
-                                    "message": format!("unsupported message type '{}'", other),
-                                    "retryable": false
-                                })).await;
-                            }
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(_) => break,
-                }
-            }
-
-            pty_output = pty_rx.recv() => {
-                match pty_output {
-                    Some(chunk) => {
-                        for response in terminal_query_parser.feed(&chunk) {
-                            let _ = pty.write_all(response);
-                        }
-                        let text = String::from_utf8_lossy(&chunk).to_string();
-                        let _ = send_frame(&out_tx, "worker_stream", None, json!({
-                            "stream": "stdout",
-                            "chunk": text,
-                        })).await;
-
-                        pty_auto.update_auto_suggestion(&text);
-                        pty_auto.last_output_time = Instant::now();
-                        pty_auto.update_editor_buffer(&text);
-                        pty_auto.reset_auto_enter_on_output(&text);
-                        pty_auto.handle_mcp_approval(&text, &pty).await;
-                        pty_auto.handle_bypass_permissions(&text, &pty).await;
-                        pty_auto.handle_codex_model_prompt(&text, &pty).await;
-                        pty_auto.handle_gemini_action(&text, &pty).await;
-                    }
-                    None => {
-                        running = false;
-                    }
-                }
-            }
-
-            _ = pending_injection_interval.tick() => {
-                let should_block = pending_worker_injections
-                    .front()
-                    .map(|pending| {
-                        pty_auto.auto_suggestion_visible && pending.queued_at.elapsed() < AUTO_SUGGESTION_BLOCK_TIMEOUT
-                    })
-                    .unwrap_or(false);
-                if should_block {
-                    continue;
-                }
-                if let Some(pending) = pending_worker_injections.pop_front() {
-                    if pty_auto.auto_suggestion_visible {
-                        tracing::warn!(
-                            delivery_id = %pending.delivery.delivery_id,
-                            "auto-suggestion visible; sending Escape to dismiss before injection"
-                        );
-                        let _ = pty.write_all(b"\x1b");
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                        pty_auto.auto_suggestion_visible = false;
-                    }
-
-                    let injection = format_injection(
-                        &pending.delivery.from,
-                        &pending.delivery.event_id,
-                        &pending.delivery.body,
-                        &pending.delivery.target,
-                    );
-                    if let Err(e) = pty.write_all(injection.as_bytes()) {
-                        tracing::warn!(
-                            delivery_id = %pending.delivery.delivery_id,
-                            error = %e,
-                            "PTY injection write failed, re-queuing delivery"
-                        );
-                        pending_worker_injections.push_front(pending);
-                        continue;
-                    }
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    let _ = pty.write_all(b"\r");
-                    pty_auto.last_injection_time = Some(Instant::now());
-                    pty_auto.auto_enter_retry_count = 0;
-
-                    let _ = send_frame(
-                        &out_tx,
-                        "delivery_ack",
-                        pending.request_id,
-                        json!({
-                            "delivery_id": pending.delivery.delivery_id,
-                            "event_id": pending.delivery.event_id
-                        }),
-                    )
-                    .await;
-                    pending_worker_delivery_ids.remove(&pending.delivery.delivery_id);
-                }
-            }
-
-            // --- Auto-enter for stuck agents ---
-            _ = auto_enter_interval.tick() => {
-                pty_auto.try_auto_enter(&pty);
-            }
-
-            // --- SIGWINCH: forward terminal resize to PTY ---
-            _ = sigwinch.recv() => {
-                if let Some((rows, cols)) = get_terminal_size() {
-                    let _ = pty.resize(rows, cols);
-                }
-            }
-        }
-    }
-
-    let _ = pty.shutdown();
-    let _ = send_frame(
-        &out_tx,
-        "worker_exited",
-        None,
-        json!({"code": Value::Null, "signal": Value::Null}),
-    )
-    .await;
-
-    Ok(())
-}
 
 async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
     if !matches!(cmd.provider, HeadlessProvider::Claude) {
@@ -2880,189 +2011,7 @@ fn normalize_channel(raw: &str) -> String {
     }
 }
 
-impl TerminalQueryParser {
-    fn feed(&mut self, chunk: &[u8]) -> Vec<&'static [u8]> {
-        const ESC: u8 = 0x1b;
-        const CSI: u8 = b'[';
-        const QMARK: u8 = b'?';
-        const SIX: u8 = b'6';
-        const N: u8 = b'n';
-
-        let mut out = Vec::new();
-        for byte in chunk {
-            self.state = match (self.state, *byte) {
-                (_, ESC) => TerminalQueryState::Esc,
-                (TerminalQueryState::Esc, CSI) => TerminalQueryState::Csi,
-                (TerminalQueryState::Csi, QMARK) => TerminalQueryState::CsiQmark,
-                (TerminalQueryState::Csi, SIX) => TerminalQueryState::Csi6,
-                (TerminalQueryState::CsiQmark, SIX) => TerminalQueryState::CsiQmark6,
-                (TerminalQueryState::Csi6, N) => {
-                    out.push(b"\x1b[1;1R".as_slice());
-                    TerminalQueryState::Idle
-                }
-                (TerminalQueryState::CsiQmark6, N) => {
-                    out.push(b"\x1b[?1;1R".as_slice());
-                    TerminalQueryState::Idle
-                }
-                _ => TerminalQueryState::Idle,
-            };
-        }
-        out
-    }
-}
-
-#[cfg(test)]
-fn terminal_query_responses(chunk: &[u8]) -> Vec<&'static [u8]> {
-    let mut parser = TerminalQueryParser::default();
-    parser.feed(chunk)
-}
-
-fn format_injection(from: &str, event_id: &str, body: &str, target: &str) -> String {
-    // If body is already formatted (from orchestrator), don't double-wrap
-    if body.starts_with("Relay message from ") {
-        return body.to_string();
-    }
-    if target.starts_with('#') {
-        format!(
-            "Relay message from {} in {} [{}]: {}",
-            from, target, event_id, body
-        )
-    } else {
-        format!("Relay message from {} [{}]: {}", from, event_id, body)
-    }
-}
-
-/// Find the nearest character boundary at or before the given byte index.
-fn floor_char_boundary(s: &str, index: usize) -> usize {
-    if index >= s.len() {
-        return s.len();
-    }
-    let mut i = index;
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-/// Strip ANSI escape sequences from text for robust pattern matching.
-fn strip_ansi(text: &str) -> String {
-    let mut result = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            match chars.peek() {
-                Some('[') => {
-                    chars.next();
-                    while let Some(&nc) = chars.peek() {
-                        chars.next();
-                        if nc.is_ascii_alphabetic() || nc == '@' || nc == '`' {
-                            break;
-                        }
-                    }
-                }
-                Some(']') => {
-                    chars.next();
-                    while let Some(nc) = chars.next() {
-                        if nc == '\x07' {
-                            break;
-                        }
-                        if nc == '\x1b' && chars.peek() == Some(&'\\') {
-                            chars.next();
-                            break;
-                        }
-                    }
-                }
-                Some('(' | ')' | '*' | '+') => {
-                    chars.next();
-                    chars.next();
-                }
-                Some(c) if *c >= '0' && *c <= '~' => {
-                    chars.next();
-                }
-                _ => {}
-            }
-        } else {
-            result.push(c);
-        }
-    }
-    result
-}
-
-/// Detect Claude Code --dangerously-skip-permissions confirmation prompt.
-/// Returns (has_bypass_ref, has_confirmation).
-fn detect_bypass_permissions_prompt(clean_output: &str) -> (bool, bool) {
-    let lower = clean_output.to_lowercase();
-    let has_bypass_ref =
-        (lower.contains("bypass") && lower.contains("permission")) || lower.contains("dangerously");
-    let has_confirmation = lower.contains("(yes/no)")
-        || lower.contains("(y/n)")
-        || (lower.contains("proceed") && lower.contains("yes"))
-        || (lower.contains("accept") && lower.contains("risk"))
-        || (lower.contains("accept") && lower.contains("no,") && lower.contains("exit"));
-    (has_bypass_ref, has_confirmation)
-}
-
-/// Check if the bypass permissions prompt is in selection menu format.
-fn is_bypass_selection_menu(clean_output: &str) -> bool {
-    let lower = clean_output.to_lowercase();
-    let has_accept = lower.contains("accept");
-    let has_exit_option = lower.contains("exit");
-    let has_enter_confirm = lower.contains("enter") && lower.contains("confirm");
-    has_accept && has_exit_option && has_enter_confirm
-}
-
-/// Detect if the agent is in an editor mode (vim INSERT, nano, etc.).
-/// When in editor mode, auto-Enter should be suppressed.
-fn is_in_editor_mode(recent_output: &str) -> bool {
-    let clean = strip_ansi(recent_output);
-    let last_output = if clean.len() > 500 {
-        let start = floor_char_boundary(&clean, clean.len() - 500);
-        &clean[start..]
-    } else {
-        &clean
-    };
-
-    // Claude CLI status bar with mode indicator - NOT vim
-    let claude_ui_chars = ['⏵', '⏴', '►', '▶'];
-    let has_claude_ui = last_output.chars().any(|c| claude_ui_chars.contains(&c));
-    if has_claude_ui
-        && (last_output.contains("-- INSERT --")
-            || last_output.contains("-- NORMAL --")
-            || last_output.contains("-- VISUAL --"))
-    {
-        return false;
-    }
-
-    // Vim/Neovim mode indicators
-    let vim_patterns = [
-        "-- INSERT --",
-        "-- REPLACE --",
-        "-- VISUAL --",
-        "-- VISUAL LINE --",
-        "-- VISUAL BLOCK --",
-        "-- SELECT --",
-        "-- TERMINAL --",
-    ];
-    for pattern in vim_patterns {
-        if let Some(pos) = last_output.rfind(pattern) {
-            let after_pattern = &last_output[pos + pattern.len()..];
-            let trimmed = after_pattern.trim_start();
-            if trimmed.is_empty() || trimmed.starts_with('\n') {
-                return true;
-            }
-        }
-    }
-
-    // Nano / Emacs / pager indicators
-    if last_output.contains("GNU nano") || last_output.contains("^G Get Help") {
-        return true;
-    }
-    if last_output.contains("(END)") || last_output.contains("--More--") {
-        return true;
-    }
-
-    false
-}
+ 
 
 /// Get current terminal size via ioctl.
 #[cfg(unix)]
@@ -3086,43 +2035,10 @@ fn get_terminal_size() -> Option<(u16, u16)> {
     }
 }
 
-/// Detect Codex model upgrade/selection prompt in output.
-/// Returns (has_upgrade_ref, has_model_options) where:
-/// - has_upgrade_ref: output references a new model or upgrade
-/// - has_model_options: output contains "Try new model" and "Use existing model"
-///
-/// Note: Codex uses cursor-forward sequences instead of spaces in TUI output.
-/// After ANSI stripping, words may be concatenated without spaces.
-/// Detection uses individual keyword checks rather than exact phrase matching.
-fn detect_codex_model_prompt(clean_output: &str) -> (bool, bool) {
-    let lower = clean_output.to_lowercase();
-    let has_upgrade_ref = (lower.contains("codex") && lower.contains("upgrade"))
-        || (lower.contains("codex") && lower.contains("new") && lower.contains("model"))
-        || (lower.contains("just") && lower.contains("got") && lower.contains("upgrade"));
-    let has_model_options = lower.contains("try") && lower.contains("existing");
-    (has_upgrade_ref, has_model_options)
-}
-
-/// Detect Gemini "Action Required" permission prompt in output.
-/// Returns (has_header, has_allow_option).
-/// Gemini shows these even with --yolo for shell redirects, heredocs, etc.
-fn detect_gemini_action_required(clean_output: &str) -> (bool, bool) {
-    let has_header = clean_output.contains("Action Required");
-    let has_allow_option =
-        clean_output.contains("Allow once") || clean_output.contains("Allow for this session");
-    (has_header, has_allow_option)
-}
-
 /// Detect Claude Code auto-suggestion ghost text.
 ///
 /// Auto-suggestions are rendered with reverse-video cursor + dim ghost text,
 /// and often include the "↵ send" hint.
-fn is_auto_suggestion(output: &str) -> bool {
-    let has_cursor_ghost = output.contains("\x1b[7m") && output.contains("\x1b[27m\x1b[2m");
-    let has_send_hint = output.contains("↵ send");
-    has_cursor_ghost || has_send_hint
-}
-
 /// Extract Relaycast message IDs from MCP tool response output.
 ///
 /// When the agent sends a message via MCP (send_dm, send_message, etc.),
@@ -3171,9 +2087,27 @@ fn ensure_runtime_paths(cwd: &Path) -> Result<RuntimePaths> {
     std::fs::create_dir_all(&root)
         .with_context(|| format!("failed to create runtime dir {}", root.display()))?;
 
+    let lock_path = root.join("broker.lock");
+    let lock_file = std::fs::File::create(&lock_path)
+        .with_context(|| format!("failed to create lock file {}", lock_path.display()))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let fd = lock_file.as_raw_fd();
+        let rc = unsafe { nix::libc::flock(fd, nix::libc::LOCK_EX | nix::libc::LOCK_NB) };
+        if rc != 0 {
+            anyhow::bail!(
+                "another broker instance is already running in this directory ({})",
+                root.display()
+            );
+        }
+    }
+
     Ok(RuntimePaths {
         creds: root.join("relaycast.json"),
         state: root.join("state.json"),
+        _lock: lock_file,
     })
 }
 
@@ -3199,8 +2133,16 @@ impl BrokerState {
 
     fn save(&self, path: &Path) -> Result<()> {
         let body = serde_json::to_vec_pretty(self)?;
-        std::fs::write(path, body)
-            .with_context(|| format!("failed writing state file {}", path.display()))
+        let dir = path
+            .parent()
+            .with_context(|| format!("state path has no parent: {}", path.display()))?;
+        let mut tmp = tempfile::NamedTempFile::new_in(dir)
+            .with_context(|| format!("failed creating temp file in {}", dir.display()))?;
+        std::io::Write::write_all(&mut tmp, &body)
+            .with_context(|| "failed writing to temp state file")?;
+        tmp.persist(path)
+            .with_context(|| format!("failed persisting state file to {}", path.display()))?;
+        Ok(())
     }
 }
 
@@ -3209,13 +2151,13 @@ mod tests {
     use std::{collections::HashMap, time::Instant};
 
     use relay_broker::protocol::RelayDelivery;
+    use crate::helpers::terminal_query_responses;
 
     use super::{
         channels_from_csv, delivery_retry_interval, derive_ws_base_url_from_http,
         detect_bypass_permissions_prompt, drop_pending_for_worker, extract_mcp_message_ids,
         floor_char_boundary, format_injection, is_auto_suggestion, is_bypass_selection_menu,
-        is_in_editor_mode, normalize_channel, strip_ansi, terminal_query_responses,
-        PendingDelivery, TerminalQueryParser,
+        is_in_editor_mode, normalize_channel, strip_ansi, PendingDelivery, TerminalQueryParser,
     };
 
     #[test]

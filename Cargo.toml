@@ -33,10 +33,11 @@ tokio = { version = "1.44", features = ["full"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tempfile = "3.19"
 uuid = { version = "1.15", features = ["v4", "serde"] }
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.30", features = ["signal", "process", "term"] }
+nix = { version = "0.30", features = ["signal", "process", "term", "fs"] }
 
 [dev-dependencies]
 httpmock = "0.7"

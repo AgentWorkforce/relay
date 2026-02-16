@@ -147,6 +147,23 @@ function buildCoreContext(): string {
     "- Follow existing patterns: use anyhow::Result, tracing macros, tokio async.",
     "- Do NOT modify files outside your assigned scope without explicit approval.",
     "",
+    "## Communication Protocol",
+    "",
+    "You have a Relaycast MCP server available. Use it to communicate with other agents.",
+    "To send a message, use the MCP tool `relay_send_message` (or `send_message`):",
+    "",
+    "When you START work, send a status message:",
+    '  relay_send_message({ to: "#wave-0", text: "ACK: Starting on [task description]" })',
+    "",
+    "When you FINISH work, send a completion message:",
+    '  relay_send_message({ to: "#wave-0", text: "DONE: [summary of what you did, files changed]" })',
+    "",
+    "When you need to COMMUNICATE with another agent:",
+    '  relay_send_message({ to: "AgentName", text: "your message" })',
+    "",
+    "This is CRITICAL — the orchestrator monitors these messages to coordinate the wave.",
+    "If you do not post DONE, the orchestrator will not know you finished.",
+    "",
     "## Migration Plan (reference)",
     plan.slice(0, 3000), // truncate to keep context manageable
   ].join("\n");
@@ -1204,26 +1221,38 @@ async function executeWave(
     // ── Phase 3: Wait for workers to finish ────────────────────────────
     log("Waiting for workers to complete...");
     const deadline = Date.now() + WAVE_TIMEOUT_MS;
+    const exitedWorkers = new Set<string>();
 
     while (Date.now() < deadline) {
+      // Count DONE messages from workers
       const doneCount = channelLog.filter(
         (m) => m.text.includes("DONE") && wave.tasks.some((t) => t.role === "worker" && t.name === m.from),
       ).length;
 
-      if (doneCount >= workerTasks.length) {
-        log(`All ${workerTasks.length} workers reported DONE.`);
-        break;
-      }
-
-      // Check for early exits
-      for (const agent of agents) {
-        const status = await agent.waitForExit(0);
-        if (status === "exited") {
-          log(`Agent ${agent.name} exited early.`);
+      // Check for worker process exits (codex --full-auto exits when done)
+      for (const task of workerTasks) {
+        if (exitedWorkers.has(task.name)) continue;
+        const agent = agents.find((a) => a.name === task.name);
+        if (agent) {
+          const status = await agent.waitForExit(0);
+          if (status === "exited" || status === "released") {
+            exitedWorkers.add(task.name);
+            log(`  Worker ${task.name} exited (${status}).`);
+          }
         }
       }
 
-      await sleep(5_000);
+      const completedCount = Math.max(doneCount, exitedWorkers.size);
+      if (completedCount >= workerTasks.length) {
+        log(`All ${workerTasks.length} workers completed (${doneCount} DONE messages, ${exitedWorkers.size} exited).`);
+        break;
+      }
+
+      const remaining = workerTasks
+        .filter((t) => !exitedWorkers.has(t.name))
+        .map((t) => t.name);
+      log(`  Waiting... ${completedCount}/${workerTasks.length} done. Remaining: ${remaining.join(", ")}`);
+      await sleep(10_000);
     }
 
     // ── Phase 4: Spawn Reviewer ────────────────────────────────────────

@@ -55,6 +55,7 @@ coverage/
 .env.local
 .env
 .env.production
+codex.toml
 
 # Turborepo
 .turbo/
