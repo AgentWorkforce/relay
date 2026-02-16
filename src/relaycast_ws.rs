@@ -222,6 +222,146 @@ impl RelaycastWsClient {
     }
 }
 
+/// HTTP client for publishing messages to the Relaycast REST API.
+///
+/// Used by the broker to asynchronously forward messages to Relaycast when the
+/// target is not a local worker.
+#[derive(Clone)]
+pub struct RelaycastHttpClient {
+    http: reqwest::Client,
+    base_url: String,
+    api_key: String,
+    agent_token: Arc<Mutex<Option<String>>>,
+    agent_name: String,
+}
+
+impl RelaycastHttpClient {
+    pub fn new(
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+        agent_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            base_url: base_url.into(),
+            api_key: api_key.into(),
+            agent_token: Arc::new(Mutex::new(None)),
+            agent_name: agent_name.into(),
+        }
+    }
+
+    /// Register an agent and obtain a bearer token for subsequent API calls.
+    async fn ensure_token(&self) -> Result<String> {
+        {
+            let guard = self.agent_token.lock();
+            if let Some(ref tok) = *guard {
+                return Ok(tok.clone());
+            }
+        }
+
+        let url = format!("{}/v1/agents", self.base_url);
+        let res = self
+            .http
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .json(&serde_json::json!({
+                "name": self.agent_name,
+                "type": "agent"
+            }))
+            .send()
+            .await?;
+
+        let status = res.status();
+        let body: Value = res.json().await?;
+
+        // On 409 conflict, try with a suffixed name
+        let token = if status == reqwest::StatusCode::CONFLICT {
+            let suffix = rand::thread_rng().gen_range(1000..9999u32);
+            let fallback_name = format!("{}-{}", self.agent_name, suffix);
+            let res2 = self
+                .http
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .json(&serde_json::json!({
+                    "name": fallback_name,
+                    "type": "agent"
+                }))
+                .send()
+                .await?;
+            let body2: Value = res2.json().await?;
+            body2
+                .pointer("/data/token")
+                .or_else(|| body2.get("token"))
+                .and_then(Value::as_str)
+                .map(String::from)
+                .ok_or_else(|| anyhow::anyhow!("no token in register response"))?
+        } else if !status.is_success() {
+            anyhow::bail!(
+                "relaycast register failed ({}): {}",
+                status,
+                serde_json::to_string(&body).unwrap_or_default()
+            );
+        } else {
+            body.pointer("/data/token")
+                .or_else(|| body.get("token"))
+                .and_then(Value::as_str)
+                .map(String::from)
+                .ok_or_else(|| anyhow::anyhow!("no token in register response"))?
+        };
+
+        *self.agent_token.lock() = Some(token.clone());
+        Ok(token)
+    }
+
+    /// Send a direct message to a named agent via the Relaycast REST API.
+    pub async fn send_dm(&self, to: &str, text: &str) -> Result<()> {
+        let token = self.ensure_token().await?;
+        let url = format!("{}/v1/dm", self.base_url);
+        let res = self
+            .http
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&serde_json::json!({ "to": to, "text": text }))
+            .send()
+            .await?;
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            anyhow::bail!("relaycast send_dm failed ({}): {}", status, body);
+        }
+        Ok(())
+    }
+
+    /// Post a message to a channel via the Relaycast REST API.
+    pub async fn send_to_channel(&self, channel: &str, text: &str) -> Result<()> {
+        let token = self.ensure_token().await?;
+        let ch = channel.strip_prefix('#').unwrap_or(channel);
+        let url = format!("{}/v1/channels/{}/messages", self.base_url, ch);
+        let res = self
+            .http
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&serde_json::json!({ "text": text }))
+            .send()
+            .await?;
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            anyhow::bail!("relaycast send_to_channel failed ({}): {}", status, body);
+        }
+        Ok(())
+    }
+
+    /// Smart send: routes to channel or DM based on `#` prefix.
+    pub async fn send(&self, to: &str, text: &str) -> Result<()> {
+        if to.starts_with('#') {
+            self.send_to_channel(to, text).await
+        } else {
+            self.send_dm(to, text).await
+        }
+    }
+}
+
 pub fn build_ws_stream_url(base_url: &str, token: &str) -> Result<String> {
     let raw = base_url.trim();
     let normalized = if raw.starts_with("wss://") || raw.starts_with("ws://") {
@@ -275,7 +415,7 @@ pub fn reconnect_delay(attempt: u32) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_ws_stream_url, reconnect_delay};
+    use super::{build_ws_stream_url, reconnect_delay, RelaycastHttpClient};
 
     #[test]
     fn backoff_with_jitter_stays_bounded() {
@@ -307,6 +447,24 @@ mod tests {
             url,
             "wss://rt.relaycast.dev/stream?client=broker&token=tok_3"
         );
+    }
+
+    #[test]
+    fn http_client_constructs_with_correct_fields() {
+        let client =
+            RelaycastHttpClient::new("https://api.relaycast.dev", "rk_live_test", "my-broker");
+        assert_eq!(client.base_url, "https://api.relaycast.dev");
+        assert_eq!(client.api_key, "rk_live_test");
+        assert_eq!(client.agent_name, "my-broker");
+        assert!(client.agent_token.lock().is_none());
+    }
+
+    #[test]
+    fn http_client_clone_shares_token() {
+        let client = RelaycastHttpClient::new("https://api.relaycast.dev", "key", "agent");
+        let clone = client.clone();
+        *client.agent_token.lock() = Some("tok_123".to_string());
+        assert_eq!(clone.agent_token.lock().as_deref(), Some("tok_123"));
     }
 
     #[test]

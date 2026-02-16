@@ -150,6 +150,16 @@ pub enum BrokerEvent {
         sender: String,
         owner_chain: Vec<String>,
     },
+    RelaycastPublished {
+        event_id: String,
+        to: String,
+        target_type: String,
+    },
+    RelaycastPublishFailed {
+        event_id: String,
+        to: String,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -34,7 +34,7 @@ use relay_broker::{
     message_bridge::{map_ws_broker_command, map_ws_event},
     protocol::{AgentRuntime, AgentSpec, ProtocolEnvelope, RelayDelivery, PROTOCOL_VERSION},
     pty::PtySession,
-    relaycast_ws::{RelaycastWsClient, WsControl},
+    relaycast_ws::{RelaycastHttpClient, RelaycastWsClient, WsControl},
     snippets::ensure_relaycast_mcp_config,
     spawner::{terminate_child, Spawner},
     telemetry::{TelemetryClient, TelemetryEvent},
@@ -695,6 +695,16 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
         ws_control_tx,
     } = relay;
 
+    // Build HTTP client for forwarding messages to Relaycast REST API
+    let relaycast_http = {
+        let agent_name = self_names
+            .iter()
+            .next()
+            .cloned()
+            .unwrap_or_else(|| "broker".to_string());
+        RelaycastHttpClient::new(&http_base, &relay_workspace_key, agent_name)
+    };
+
     let worker_env = vec![
         ("RELAY_BASE_URL".to_string(), http_base.clone()),
         ("RELAY_API_KEY".to_string(), relay_workspace_key),
@@ -743,6 +753,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 &mut pending_deliveries,
                                 &telemetry,
                                 &mut agent_spawn_count,
+                                Some(&relaycast_http),
                             ).await {
                             Ok(should_shutdown) => {
                                 if should_shutdown {
@@ -1509,6 +1520,7 @@ async fn handle_sdk_frame(
     pending_deliveries: &mut HashMap<String, PendingDelivery>,
     telemetry: &TelemetryClient,
     agent_spawn_count: &mut u32,
+    relaycast_http: Option<&RelaycastHttpClient>,
 ) -> Result<bool> {
     let frame: ProtocolEnvelope<Value> =
         serde_json::from_str(line).context("request is not a valid protocol envelope")?;
@@ -1621,12 +1633,67 @@ async fn handle_sdk_frame(
                     }),
                 )
                 .await?;
+            } else if let Some(http) = relaycast_http {
+                // Target is not a local worker — forward via Relaycast REST API
+                let to = payload.to.clone();
+                let eid = event_id.clone();
+                match http.send(&to, &payload.text).await {
+                    Ok(()) => {
+                        tracing::info!(to = %to, event_id = %eid, "relaycast publish succeeded");
+                        send_ok(
+                            out_tx,
+                            frame.request_id,
+                            json!({
+                                "delivered": false,
+                                "relaycast_published": true,
+                                "to": to,
+                                "event_id": eid,
+                            }),
+                        )
+                        .await?;
+                        send_event(
+                            out_tx,
+                            json!({
+                                "kind": "relaycast_published",
+                                "event_id": eid,
+                                "to": to,
+                                "target_type": if to.starts_with('#') { "channel" } else { "dm" },
+                            }),
+                        )
+                        .await?;
+                    }
+                    Err(e) => {
+                        tracing::warn!(to = %to, event_id = %eid, err = %e, "relaycast publish failed");
+                        send_error(
+                            out_tx,
+                            frame.request_id,
+                            "relaycast_publish_failed",
+                            format!("failed to publish to Relaycast: {e}"),
+                            true,
+                            None,
+                        )
+                        .await?;
+                        send_event(
+                            out_tx,
+                            json!({
+                                "kind": "relaycast_publish_failed",
+                                "event_id": eid,
+                                "to": to,
+                                "reason": e.to_string(),
+                            }),
+                        )
+                        .await?;
+                    }
+                }
             } else {
                 send_error(
                     out_tx,
                     frame.request_id,
                     "agent_not_found",
-                    format!("no local worker named '{}'", payload.to),
+                    format!(
+                        "no local worker named '{}' and no Relaycast connection",
+                        payload.to
+                    ),
                     false,
                     None,
                 )
