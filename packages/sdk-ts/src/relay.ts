@@ -157,10 +157,14 @@ export class AgentRelay {
     return {
       name: opts.name,
       async sendMessage(input) {
-        await relay.ensureStarted();
-        const rc = relay.ensureRelaycast(opts.name);
-        const channel = relay.resolveChannel(input.to);
-        await rc.sendToChannel(channel, input.text);
+        const client = await relay.ensureStarted();
+        await client.sendMessage({
+          to: input.to,
+          text: input.text,
+          from: opts.name,
+          threadId: input.threadId,
+          priority: input.priority,
+        });
         const eventId = randomBytes(8).toString("hex");
         const msg: Message = {
           eventId,
@@ -324,10 +328,14 @@ export class AgentRelay {
         });
       },
       async sendMessage(input) {
-        await relay.ensureStarted();
-        const rc = relay.ensureRelaycast(name);
-        const channel = relay.resolveChannel(input.to);
-        await rc.sendToChannel(channel, input.text);
+        const client = await relay.ensureStarted();
+        await client.sendMessage({
+          to: input.to,
+          text: input.text,
+          from: name,
+          threadId: input.threadId,
+          priority: input.priority,
+        });
         const eventId = randomBytes(8).toString("hex");
         const msg: Message = {
           eventId,

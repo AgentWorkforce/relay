@@ -2192,27 +2192,48 @@ async fn handle_sdk_frame(
         "send_message" => {
             let payload: SendMessagePayload = serde_json::from_value(frame.payload)
                 .context("send_message payload must contain `to` and `text`")?;
-            let text_len = payload.text.len();
-            let has_thread_id = payload.thread_id.is_some();
-            let priority = payload.priority;
-            send_error(
-                out_tx,
-                frame.request_id,
-                "unsupported_operation",
-                format!(
-                    "send_message is not supported for broker-local injection (to='{}', from='{}', text_len={}, thread_id={}, priority={:?}); use Relaycast MCP/SDK to publish messages",
-                    payload.to,
-                    payload
-                        .from
-                        .unwrap_or_else(|| "human:orchestrator".to_string()),
-                    text_len,
-                    has_thread_id,
+            let from = payload
+                .from
+                .unwrap_or_else(|| "human:orchestrator".to_string());
+            let priority = payload.priority.unwrap_or(2);
+            let event_id = format!("sdk_{}", Uuid::new_v4().simple());
+
+            if workers.has_worker(&payload.to) {
+                queue_and_try_delivery_raw(
+                    workers,
+                    pending_deliveries,
+                    &payload.to,
+                    &event_id,
+                    &from,
+                    &payload.to,
+                    &payload.text,
+                    payload.thread_id,
                     priority,
-                ),
-                false,
-                None,
-            )
-            .await?;
+                    delivery_retry_interval(),
+                )
+                .await?;
+
+                send_ok(
+                    out_tx,
+                    frame.request_id,
+                    json!({
+                        "delivered": true,
+                        "to": payload.to,
+                        "event_id": event_id,
+                    }),
+                )
+                .await?;
+            } else {
+                send_error(
+                    out_tx,
+                    frame.request_id,
+                    "agent_not_found",
+                    format!("no local worker named '{}'", payload.to),
+                    false,
+                    None,
+                )
+                .await?;
+            }
             Ok(false)
         }
         "release_agent" => {

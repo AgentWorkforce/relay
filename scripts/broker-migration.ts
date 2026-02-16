@@ -75,6 +75,9 @@ const MAX_RETRIES = 2;
 const WAVE_TIMEOUT_MS = 15 * 60 * 1000; // 15 min per wave
 const LEAD_PLANNING_DELAY_MS = 10_000; // wait for lead to post plan
 const WORKER_STAGGER_MS = 5_000; // delay between sequential workers
+const BINARY_PATH =
+  process.env.AGENT_RELAY_BIN ??
+  path.join(ROOT, "target", "debug", "agent-relay");
 
 // ── CLI flags ──────────────────────────────────────────────────────────────
 
@@ -1337,6 +1340,7 @@ async function main(): Promise<void> {
   }
 
   const relay = new AgentRelay({
+    binaryPath: BINARY_PATH,
     channels: ["orchestrator"],
     env: process.env,
   });
