@@ -1214,24 +1214,46 @@ async function executeWave(
   const lastActivityTime = new Map<string, number>();
   const IDLE_TIMEOUT_MS = 2 * 60 * 1000; // 2 min of no PTY output = idle/done
 
+  // Track when we last injected a message into each agent's PTY.
+  // We suppress keyword matching for ECHO_GRACE_MS after injection to avoid
+  // false positives from the PTY echoing back the prompt text.
+  const lastInjectionTime = new Map<string, number>();
+  const ECHO_GRACE_MS = 30_000; // ignore keywords for 30s after injection
+
   relay.onWorkerOutput = (output) => {
     const prev = outputBuffers.get(output.name) ?? "";
     const buf = (prev + output.chunk).slice(-4000); // keep last 4k chars
     outputBuffers.set(output.name, buf);
     lastActivityTime.set(output.name, Date.now());
 
-    // Check for completion keywords in this chunk
-    const keywords = ["DONE:", "DONE.", "HANDOFF:", "REVIEW:PASS", "REVIEW:FAIL"];
-    if (keywords.some((kw) => output.chunk.includes(kw))) {
+    // Skip keyword detection during echo grace period after injection
+    const injectedAt = lastInjectionTime.get(output.name) ?? 0;
+    if (Date.now() - injectedAt < ECHO_GRACE_MS) return;
+
+    // Check for completion keywords — require line-start or standalone to avoid
+    // matching keywords embedded in prompt instructions like "Post DONE:"
+    const lines = output.chunk.split("\n");
+    const completionLine = lines.find((line) => {
+      const trimmed = line.trim();
+      return (
+        trimmed.startsWith("DONE:") ||
+        trimmed.startsWith("DONE.") ||
+        trimmed.startsWith("HANDOFF:") ||
+        trimmed.startsWith("REVIEW:PASS") ||
+        trimmed.startsWith("REVIEW:FAIL") ||
+        trimmed === "DONE"
+      );
+    });
+
+    if (completionLine) {
       const syntheticMsg: Message = {
         eventId: `pty_${Date.now()}`,
         from: output.name,
         to: "Orchestrator",
-        text: output.chunk.slice(0, 500),
+        text: completionLine.trim().slice(0, 500),
       };
       channelLog.push(syntheticMsg);
-      const preview = output.chunk.slice(0, 100).replace(/\n/g, "\\n");
-      log(`  [pty:${output.name}] ${preview}`);
+      log(`  [pty:${output.name}] ${completionLine.trim().slice(0, 100)}`);
     }
   };
 
@@ -1247,6 +1269,7 @@ async function executeWave(
     agents.push(lead);
 
     await orchestrator.sendMessage({ to: lead.name, text: leadTask.prompt });
+    lastInjectionTime.set(lead.name, Date.now());
     log(`Lead briefed. Waiting ${LEAD_PLANNING_DELAY_MS / 1000}s for planning...`);
     await sleep(LEAD_PLANNING_DELAY_MS);
 
@@ -1264,6 +1287,7 @@ async function executeWave(
       agents.push(worker);
 
       await orchestrator.sendMessage({ to: worker.name, text: task.prompt });
+      lastInjectionTime.set(task.name, Date.now());
       log(`Worker ${task.name} briefed.`);
 
       // Stagger workers to avoid file conflicts
@@ -1321,6 +1345,7 @@ async function executeWave(
             to: task.name,
             text: "Status check from Orchestrator: Are you still working? If you're done, please print 'DONE: [summary]'. If stuck, describe what's blocking you.",
           });
+          lastInjectionTime.set(task.name, Date.now());
         }
         // Also nudge the lead to check on workers
         if (leadTask) {
@@ -1328,6 +1353,7 @@ async function executeWave(
             to: leadTask.name,
             text: `Status check: ${remaining.map((t) => t.name).join(", ")} haven't reported DONE yet. Please ping them and drive completion.`,
           });
+          lastInjectionTime.set(leadTask.name, Date.now());
         }
       }
 
@@ -1350,6 +1376,7 @@ async function executeWave(
     agents.push(reviewer);
 
     await orchestrator.sendMessage({ to: reviewer.name, text: reviewerTask.prompt });
+    lastInjectionTime.set(reviewer.name, Date.now());
 
     // Wait for review verdict
     log("Waiting for Reviewer verdict...");
@@ -1379,6 +1406,7 @@ async function executeWave(
       to: leadTask.name,
       text: `Workers are done. Reviewer verdict: ${verdict?.slice(0, 200) ?? "no verdict"}. Please post your HANDOFF summary now.`,
     });
+    lastInjectionTime.set(leadTask.name, Date.now());
 
     await sleep(10_000);
     const handoffMsg = channelLog.find(
