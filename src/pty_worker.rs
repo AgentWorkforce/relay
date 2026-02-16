@@ -1,5 +1,5 @@
 use super::*;
-use crate::wrap::{AUTO_SUGGESTION_BLOCK_TIMEOUT, PtyAutoState};
+use crate::wrap::{PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
 
 #[derive(Debug, Clone)]
 struct PendingWorkerInjection {

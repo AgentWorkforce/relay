@@ -10,16 +10,9 @@ mod pty_worker;
 mod wrap;
 
 use helpers::{
-    detect_bypass_permissions_prompt,
-    detect_codex_model_prompt,
-    detect_gemini_action_required,
-    floor_char_boundary,
-    format_injection,
-    is_auto_suggestion,
-    is_bypass_selection_menu,
-    is_in_editor_mode,
-    strip_ansi,
-    TerminalQueryParser,
+    detect_bypass_permissions_prompt, detect_codex_model_prompt, detect_gemini_action_required,
+    floor_char_boundary, format_injection, is_auto_suggestion, is_bypass_selection_menu,
+    is_in_editor_mode, strip_ansi, TerminalQueryParser,
 };
 
 use anyhow::{Context, Result};
@@ -1416,7 +1409,6 @@ async fn listen_api_release(
     }
 }
 
-
 /// Get terminal rows from TIOCGWINSZ.
 #[cfg(unix)]
 fn terminal_rows() -> Option<u16> {
@@ -1770,7 +1762,6 @@ fn drop_pending_for_worker(
     before.saturating_sub(pending_deliveries.len())
 }
 
-
 async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
     if !matches!(cmd.provider, HeadlessProvider::Claude) {
         anyhow::bail!("unsupported headless provider");
@@ -2011,8 +2002,6 @@ fn normalize_channel(raw: &str) -> String {
     }
 }
 
- 
-
 /// Get current terminal size via ioctl.
 #[cfg(unix)]
 fn get_terminal_size() -> Option<(u16, u16)> {
@@ -2150,8 +2139,8 @@ impl BrokerState {
 mod tests {
     use std::{collections::HashMap, time::Instant};
 
-    use relay_broker::protocol::RelayDelivery;
     use crate::helpers::terminal_query_responses;
+    use relay_broker::protocol::RelayDelivery;
 
     use super::{
         channels_from_csv, delivery_retry_interval, derive_ws_base_url_from_http,

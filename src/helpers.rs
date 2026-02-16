@@ -57,7 +57,10 @@ pub(crate) fn format_injection(from: &str, event_id: &str, body: &str, target: &
         return body.to_string();
     }
     if target.starts_with('#') {
-        format!("Relay message from {} in {} [{}]: {}", from, target, event_id, body)
+        format!(
+            "Relay message from {} in {} [{}]: {}",
+            from, target, event_id, body
+        )
     } else {
         format!("Relay message from {} [{}]: {}", from, event_id, body)
     }
