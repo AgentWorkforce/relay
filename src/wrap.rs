@@ -487,7 +487,7 @@ pub(crate) async fn run_wrap(
                             }
                         }
 
-                        if let Some(_) = activity_detector.as_ref() {
+                        if activity_detector.as_ref().is_some() {
                             let mut active_indices = Vec::new();
                             for (i, pa) in pending_activities.iter_mut().enumerate() {
                                 if pa.verified_at.elapsed() >= ACTIVITY_WINDOW {

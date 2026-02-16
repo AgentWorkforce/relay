@@ -251,7 +251,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             pending_worker_delivery_ids.remove(&delivery_id);
                         }
 
-                        if let Some(_) = activity_detector.as_ref() {
+                        if activity_detector.as_ref().is_some() {
                             let mut active_indices = Vec::new();
                             for (i, pa) in pending_activities.iter_mut().enumerate() {
                                 if pa.verified_at.elapsed() >= ACTIVITY_WINDOW {
