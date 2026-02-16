@@ -2,6 +2,9 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use super::*;
+use crate::helpers::{
+    check_echo_in_output, PendingVerification, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+};
 
 // PTY auto-response constants (shared by wrap and pty workers)
 const BYPASS_PERMS_COOLDOWN: Duration = Duration::from_secs(2);
@@ -369,6 +372,12 @@ pub(crate) async fn run_wrap(
     pending_injection_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut pending_wrap_injections: VecDeque<PendingWrapInjection> = VecDeque::new();
 
+    // Echo verification state
+    let mut pending_verifications: VecDeque<PendingVerification> = VecDeque::new();
+    let mut echo_buffer = String::new();
+    let mut verification_tick = tokio::time::interval(Duration::from_millis(200));
+    verification_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
     let mut reap_tick = tokio::time::interval(Duration::from_secs(5));
     reap_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
@@ -432,6 +441,30 @@ pub(crate) async fn run_wrap(
                         pty_auto.handle_bypass_permissions(&text, &pty).await;
                         pty_auto.handle_codex_model_prompt(&text, &pty).await;
                         pty_auto.handle_gemini_action(&text, &pty).await;
+
+                        // Accumulate echo buffer for verification matching
+                        echo_buffer.push_str(&text);
+                        if echo_buffer.len() > 16_000 {
+                            let start = floor_char_boundary(&echo_buffer, echo_buffer.len() - 12_000);
+                            echo_buffer = echo_buffer[start..].to_string();
+                        }
+
+                        // Check pending verifications against new output
+                        let mut verified_indices = Vec::new();
+                        for (i, pv) in pending_verifications.iter().enumerate() {
+                            if check_echo_in_output(&echo_buffer, &pv.expected_echo) {
+                                verified_indices.push(i);
+                            }
+                        }
+                        for &i in verified_indices.iter().rev() {
+                            let pv = pending_verifications.remove(i).unwrap();
+                            tracing::debug!(
+                                event_id = %pv.event_id,
+                                delivery_id = %pv.delivery_id,
+                                attempts = pv.attempts,
+                                "wrap: delivery echo verified"
+                            );
+                        }
                     }
                     None => {
                         running = false;
@@ -637,6 +670,67 @@ pub(crate) async fn run_wrap(
                     let _ = pty.write_all(b"\r");
                     pty_auto.last_injection_time = Some(Instant::now());
                     pty_auto.auto_enter_retry_count = 0;
+
+                    // Push to pending verifications for echo verification
+                    pending_verifications.push_back(PendingVerification {
+                        delivery_id: format!("wrap_{}", pending.event_id),
+                        event_id: pending.event_id,
+                        expected_echo: injection,
+                        injected_at: Instant::now(),
+                        attempts: 1,
+                        max_attempts: MAX_VERIFICATION_ATTEMPTS,
+                        request_id: None,
+                        from: pending.from,
+                        body: pending.body,
+                        target: pending.target,
+                    });
+                }
+            }
+
+            // Verification tick: check for timed-out wrap verifications
+            _ = verification_tick.tick() => {
+                let mut retry_queue: Vec<PendingVerification> = Vec::new();
+                let mut i = 0;
+                while i < pending_verifications.len() {
+                    if pending_verifications[i].injected_at.elapsed() >= VERIFICATION_WINDOW {
+                        let mut pv = pending_verifications.remove(i).unwrap();
+                        if pv.attempts < pv.max_attempts {
+                            pv.attempts += 1;
+                            tracing::warn!(
+                                event_id = %pv.event_id,
+                                attempt = pv.attempts,
+                                max = pv.max_attempts,
+                                "wrap: echo verification timeout, retrying injection"
+                            );
+                            retry_queue.push(pv);
+                        } else {
+                            tracing::warn!(
+                                event_id = %pv.event_id,
+                                attempts = pv.attempts,
+                                "wrap: delivery verification failed after max retries"
+                            );
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+
+                // Re-inject retries
+                for mut pv in retry_queue {
+                    let injection = format_injection(&pv.from, &pv.event_id, &pv.body, &pv.target);
+                    if let Err(e) = pty.write_all(injection.as_bytes()) {
+                        tracing::warn!(
+                            event_id = %pv.event_id,
+                            error = %e,
+                            "wrap: retry PTY injection write failed"
+                        );
+                    } else {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        let _ = pty.write_all(b"\r");
+                    }
+                    pv.expected_echo = injection;
+                    pv.injected_at = Instant::now();
+                    pending_verifications.push_back(pv);
                 }
             }
 

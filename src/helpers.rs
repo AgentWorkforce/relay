@@ -1,3 +1,29 @@
+use std::time::{Duration, Instant};
+
+pub(crate) const VERIFICATION_WINDOW: Duration = Duration::from_secs(3);
+pub(crate) const MAX_VERIFICATION_ATTEMPTS: u32 = 3;
+
+#[derive(Debug, Clone)]
+pub(crate) struct PendingVerification {
+    pub delivery_id: String,
+    pub event_id: String,
+    pub expected_echo: String,
+    pub injected_at: Instant,
+    pub attempts: u32,
+    pub max_attempts: u32,
+    pub request_id: Option<String>,
+    // Original delivery data for retry
+    pub from: String,
+    pub body: String,
+    pub target: String,
+}
+
+/// Check if the expected echo string appears in PTY output (after stripping ANSI).
+pub(crate) fn check_echo_in_output(output: &str, expected: &str) -> bool {
+    let clean = strip_ansi(output);
+    clean.contains(expected)
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) enum TerminalQueryState {
     #[default]
@@ -221,4 +247,55 @@ pub(crate) fn is_auto_suggestion(output: &str) -> bool {
     let has_cursor_ghost = output.contains("\x1b[7m") && output.contains("\x1b[27m\x1b[2m");
     let has_send_hint = output.contains("↵ send");
     has_cursor_ghost || has_send_hint
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_echo_clean_text() {
+        let output = "some preamble\nRelay message from Alice [evt_1]: hello world\nmore output";
+        assert!(check_echo_in_output(
+            output,
+            "Relay message from Alice [evt_1]: hello world"
+        ));
+    }
+
+    #[test]
+    fn check_echo_with_ansi() {
+        let output =
+            "\x1b[32mRelay message from Alice [evt_1]: hello world\x1b[0m\nsome other text";
+        assert!(check_echo_in_output(
+            output,
+            "Relay message from Alice [evt_1]: hello world"
+        ));
+    }
+
+    #[test]
+    fn check_echo_no_match() {
+        let output = "some unrelated output\nprompt> ";
+        assert!(!check_echo_in_output(
+            output,
+            "Relay message from Alice [evt_1]: hello world"
+        ));
+    }
+
+    #[test]
+    fn check_echo_partial_match() {
+        let output = "Relay message from Alice [evt_1]: hell";
+        assert!(!check_echo_in_output(
+            output,
+            "Relay message from Alice [evt_1]: hello world"
+        ));
+    }
+
+    #[test]
+    fn check_echo_channel_format() {
+        let output = "Relay message from Bob in #general [evt_2]: status update";
+        assert!(check_echo_in_output(
+            output,
+            "Relay message from Bob in #general [evt_2]: status update"
+        ));
+    }
 }

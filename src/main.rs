@@ -856,6 +856,47 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             "delivery": payload,
                                         })).await;
                                     }
+                                } else if msg_type == "delivery_verified" {
+                                    if let Some(payload) = value.get("payload") {
+                                        let delivery_id = payload.get("delivery_id").and_then(Value::as_str).unwrap_or("");
+                                        let event_id = payload.get("event_id").and_then(Value::as_str).unwrap_or("");
+                                        tracing::debug!(
+                                            target = "agent_relay::broker",
+                                            worker = %name,
+                                            delivery_id = %delivery_id,
+                                            event_id = %event_id,
+                                            "delivery verified by echo detection"
+                                        );
+                                        pending_deliveries.remove(delivery_id);
+                                        let _ = send_event(&sdk_out_tx, json!({
+                                            "kind": "delivery_verified",
+                                            "name": name,
+                                            "delivery_id": delivery_id,
+                                            "event_id": event_id,
+                                        })).await;
+                                    }
+                                } else if msg_type == "delivery_failed" {
+                                    if let Some(payload) = value.get("payload") {
+                                        let delivery_id = payload.get("delivery_id").and_then(Value::as_str).unwrap_or("");
+                                        let event_id = payload.get("event_id").and_then(Value::as_str).unwrap_or("");
+                                        let reason = payload.get("reason").and_then(Value::as_str).unwrap_or("unknown");
+                                        tracing::warn!(
+                                            target = "agent_relay::broker",
+                                            worker = %name,
+                                            delivery_id = %delivery_id,
+                                            event_id = %event_id,
+                                            reason = %reason,
+                                            "delivery failed — echo not detected"
+                                        );
+                                        pending_deliveries.remove(delivery_id);
+                                        let _ = send_event(&sdk_out_tx, json!({
+                                            "kind": "delivery_failed",
+                                            "name": name,
+                                            "delivery_id": delivery_id,
+                                            "event_id": event_id,
+                                            "reason": reason,
+                                        })).await;
+                                    }
                                 } else if msg_type == "worker_error" {
                                     let _ = send_event(&sdk_out_tx, json!({
                                         "kind": "worker_error",

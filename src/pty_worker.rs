@@ -1,4 +1,7 @@
 use super::*;
+use crate::helpers::{
+    check_echo_in_output, PendingVerification, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+};
 use crate::wrap::{PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
 
 #[derive(Debug, Clone)]
@@ -49,6 +52,12 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     pending_injection_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut pending_worker_injections: VecDeque<PendingWorkerInjection> = VecDeque::new();
     let mut pending_worker_delivery_ids: HashSet<String> = HashSet::new();
+
+    // Echo verification state
+    let mut pending_verifications: VecDeque<PendingVerification> = VecDeque::new();
+    let mut echo_buffer = String::new();
+    let mut verification_tick = tokio::time::interval(Duration::from_millis(200));
+    verification_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     while running {
         tokio::select! {
@@ -155,6 +164,51 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         pty_auto.handle_bypass_permissions(&text, &pty).await;
                         pty_auto.handle_codex_model_prompt(&text, &pty).await;
                         pty_auto.handle_gemini_action(&text, &pty).await;
+
+                        // Accumulate echo buffer for verification matching
+                        echo_buffer.push_str(&text);
+                        if echo_buffer.len() > 16_000 {
+                            let start = floor_char_boundary(&echo_buffer, echo_buffer.len() - 12_000);
+                            echo_buffer = echo_buffer[start..].to_string();
+                        }
+
+                        // Check pending verifications against new output
+                        let mut verified_indices = Vec::new();
+                        for (i, pv) in pending_verifications.iter().enumerate() {
+                            if check_echo_in_output(&echo_buffer, &pv.expected_echo) {
+                                verified_indices.push(i);
+                            }
+                        }
+                        // Remove verified entries in reverse order to preserve indices
+                        for &i in verified_indices.iter().rev() {
+                            let pv = pending_verifications.remove(i).unwrap();
+                            tracing::debug!(
+                                delivery_id = %pv.delivery_id,
+                                attempts = pv.attempts,
+                                "delivery echo verified"
+                            );
+                            let _ = send_frame(
+                                &out_tx,
+                                "delivery_ack",
+                                pv.request_id.clone(),
+                                json!({
+                                    "delivery_id": pv.delivery_id,
+                                    "event_id": pv.event_id
+                                }),
+                            )
+                            .await;
+                            let _ = send_frame(
+                                &out_tx,
+                                "delivery_verified",
+                                None,
+                                json!({
+                                    "delivery_id": pv.delivery_id,
+                                    "event_id": pv.event_id
+                                }),
+                            )
+                            .await;
+                            pending_worker_delivery_ids.remove(&pv.delivery_id);
+                        }
                     }
                     None => {
                         running = false;
@@ -203,17 +257,84 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     pty_auto.last_injection_time = Some(Instant::now());
                     pty_auto.auto_enter_retry_count = 0;
 
-                    let _ = send_frame(
-                        &out_tx,
-                        "delivery_ack",
-                        pending.request_id,
-                        json!({
-                            "delivery_id": pending.delivery.delivery_id,
-                            "event_id": pending.delivery.event_id
-                        }),
-                    )
-                    .await;
-                    pending_worker_delivery_ids.remove(&pending.delivery.delivery_id);
+                    // Push to pending verifications instead of immediate ack
+                    pending_verifications.push_back(PendingVerification {
+                        delivery_id: pending.delivery.delivery_id.clone(),
+                        event_id: pending.delivery.event_id.clone(),
+                        expected_echo: injection,
+                        injected_at: Instant::now(),
+                        attempts: 1,
+                        max_attempts: MAX_VERIFICATION_ATTEMPTS,
+                        request_id: pending.request_id,
+                        from: pending.delivery.from,
+                        body: pending.delivery.body,
+                        target: pending.delivery.target,
+                    });
+                }
+            }
+
+            // --- Verification tick: check for timed-out verifications ---
+            _ = verification_tick.tick() => {
+                let mut retry_queue: Vec<PendingVerification> = Vec::new();
+                let mut i = 0;
+                while i < pending_verifications.len() {
+                    if pending_verifications[i].injected_at.elapsed() >= VERIFICATION_WINDOW {
+                        let mut pv = pending_verifications.remove(i).unwrap();
+                        if pv.attempts < pv.max_attempts {
+                            // Retry injection
+                            pv.attempts += 1;
+                            tracing::warn!(
+                                delivery_id = %pv.delivery_id,
+                                attempt = pv.attempts,
+                                max = pv.max_attempts,
+                                "echo verification timeout, retrying injection"
+                            );
+                            retry_queue.push(pv);
+                        } else {
+                            // Max retries exceeded — send delivery_failed
+                            tracing::error!(
+                                delivery_id = %pv.delivery_id,
+                                attempts = pv.attempts,
+                                "delivery verification failed after max retries"
+                            );
+                            let _ = send_frame(
+                                &out_tx,
+                                "delivery_failed",
+                                pv.request_id.clone(),
+                                json!({
+                                    "delivery_id": pv.delivery_id,
+                                    "event_id": pv.event_id,
+                                    "reason": format!(
+                                        "echo not detected after {} attempts within {}s window",
+                                        pv.max_attempts,
+                                        VERIFICATION_WINDOW.as_secs()
+                                    )
+                                }),
+                            )
+                            .await;
+                            pending_worker_delivery_ids.remove(&pv.delivery_id);
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+
+                // Re-inject retries
+                for mut pv in retry_queue {
+                    let injection = format_injection(&pv.from, &pv.event_id, &pv.body, &pv.target);
+                    if let Err(e) = pty.write_all(injection.as_bytes()) {
+                        tracing::warn!(
+                            delivery_id = %pv.delivery_id,
+                            error = %e,
+                            "retry PTY injection write failed"
+                        );
+                    } else {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        let _ = pty.write_all(b"\r");
+                    }
+                    pv.expected_echo = injection;
+                    pv.injected_at = Instant::now();
+                    pending_verifications.push_back(pv);
                 }
             }
 

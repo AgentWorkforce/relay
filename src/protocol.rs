@@ -134,6 +134,17 @@ pub enum BrokerEvent {
         count: usize,
         reason: String,
     },
+    DeliveryVerified {
+        name: String,
+        delivery_id: String,
+        event_id: String,
+    },
+    DeliveryFailed {
+        name: String,
+        delivery_id: String,
+        event_id: String,
+        reason: String,
+    },
     AclDenied {
         name: String,
         sender: String,
@@ -168,6 +179,15 @@ pub enum WorkerToBroker {
     DeliveryAck {
         delivery_id: String,
         event_id: String,
+    },
+    DeliveryVerified {
+        delivery_id: String,
+        event_id: String,
+    },
+    DeliveryFailed {
+        delivery_id: String,
+        event_id: String,
+        reason: String,
     },
     WorkerStream {
         stream: String,
@@ -250,6 +270,54 @@ mod tests {
             name: "Worker2".into(),
             runtime: AgentRuntime::HeadlessClaude,
             parent: Some("Lead".into()),
+        });
+        let encoded = serde_json::to_string(&event).unwrap();
+        let decoded: BrokerToSdk = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn worker_to_broker_delivery_verified_round_trip() {
+        let msg = WorkerToBroker::DeliveryVerified {
+            delivery_id: "del_v1".into(),
+            event_id: "evt_v1".into(),
+        };
+        let encoded = serde_json::to_string(&msg).unwrap();
+        let decoded: WorkerToBroker = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn worker_to_broker_delivery_failed_round_trip() {
+        let msg = WorkerToBroker::DeliveryFailed {
+            delivery_id: "del_f1".into(),
+            event_id: "evt_f1".into(),
+            reason: "echo timeout after 3 attempts".into(),
+        };
+        let encoded = serde_json::to_string(&msg).unwrap();
+        let decoded: WorkerToBroker = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn broker_event_delivery_verified_round_trip() {
+        let event = BrokerToSdk::Event(BrokerEvent::DeliveryVerified {
+            name: "Worker1".into(),
+            delivery_id: "del_v2".into(),
+            event_id: "evt_v2".into(),
+        });
+        let encoded = serde_json::to_string(&event).unwrap();
+        let decoded: BrokerToSdk = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn broker_event_delivery_failed_round_trip() {
+        let event = BrokerToSdk::Event(BrokerEvent::DeliveryFailed {
+            name: "Worker1".into(),
+            delivery_id: "del_f2".into(),
+            event_id: "evt_f2".into(),
+            reason: "max retries exceeded".into(),
         });
         let encoded = serde_json::to_string(&event).unwrap();
         let decoded: BrokerToSdk = serde_json::from_str(&encoded).unwrap();
