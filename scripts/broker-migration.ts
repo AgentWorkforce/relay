@@ -178,7 +178,7 @@ function runGate(gate: GateDefinition): { passed: boolean; output: string } {
   if (gate.cargoTest) {
     log("Gate: running cargo test...");
     try {
-      const result = run("cargo test 2>&1");
+      const result = run("$HOME/.cargo/bin/cargo test 2>&1");
       outputs.push("cargo test: PASS\n" + result.slice(-500));
     } catch (err: unknown) {
       allPassed = false;
@@ -187,17 +187,23 @@ function runGate(gate: GateDefinition): { passed: boolean; output: string } {
   }
 
   if (gate.integrationPhase !== undefined) {
-    log(`Gate: running broker integration phase ${gate.integrationPhase}...`);
-    try {
-      const result = run(
-        `npx tsx tests/integration/broker/run-phase.ts --phase=${gate.integrationPhase} 2>&1`,
-        { ignoreError: true },
-      );
-      const passed = !result.includes("FAIL");
-      if (!passed) allPassed = false;
-      outputs.push(`integration phase ${gate.integrationPhase}: ${passed ? "PASS" : "FAIL"}\n${result.slice(-500)}`);
-    } catch {
-      outputs.push(`integration phase ${gate.integrationPhase}: SKIPPED (harness not ready)`);
+    const runPhasePath = path.join(ROOT, "tests/integration/broker/run-phase.ts");
+    if (!fs.existsSync(runPhasePath)) {
+      log(`Gate: run-phase.ts not found — skipping integration phase ${gate.integrationPhase}`);
+      outputs.push(`integration phase ${gate.integrationPhase}: SKIPPED (run-phase.ts not created yet)`);
+    } else {
+      log(`Gate: running broker integration phase ${gate.integrationPhase}...`);
+      try {
+        const result = run(
+          `npx tsx tests/integration/broker/run-phase.ts --phase=${gate.integrationPhase} 2>&1`,
+          { ignoreError: true },
+        );
+        const passed = !result.includes("FAIL");
+        if (!passed) allPassed = false;
+        outputs.push(`integration phase ${gate.integrationPhase}: ${passed ? "PASS" : "FAIL"}\n${result.slice(-500)}`);
+      } catch {
+        outputs.push(`integration phase ${gate.integrationPhase}: SKIPPED (harness not ready)`);
+      }
     }
   }
 
