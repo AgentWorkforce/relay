@@ -125,6 +125,54 @@ export type BrokerEvent =
       timestamp?: unknown;
     }
   | {
+      kind: "delivery_verified";
+      name: string;
+      delivery_id: string;
+      event_id: string;
+    }
+  | {
+      kind: "delivery_failed";
+      name: string;
+      delivery_id: string;
+      event_id: string;
+      reason: string;
+    }
+  | {
+      kind: "delivery_active";
+      name: string;
+      delivery_id: string;
+      event_id: string;
+    }
+  | {
+      kind: "delivery_ack";
+      name: string;
+      delivery_id: string;
+      event_id: string;
+    }
+  | {
+      kind: "worker_ready";
+      name: string;
+      runtime: AgentRuntime;
+    }
+  | {
+      kind: "worker_error";
+      name: string;
+      code: string;
+      message: string;
+    }
+  | {
+      kind: "relaycast_published";
+      event_id: string;
+      to: string;
+      target_type: string;
+    }
+  | {
+      kind: "relaycast_publish_failed";
+      event_id: string;
+      to: string;
+      reason: string;
+    }
+  | {
       kind: "acl_denied";
       name: string;
       sender: string;

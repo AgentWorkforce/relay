@@ -237,6 +237,10 @@ export class AgentRelay {
       this.client = undefined;
     }
     this.knownAgents.clear();
+    for (const resolve of this.exitResolvers.values()) {
+      resolve("released");
+    }
+    this.exitResolvers.clear();
   }
 
   // ── Private helpers ─────────────────────────────────────────────────────

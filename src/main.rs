@@ -1108,7 +1108,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                     }
                 }
 
-                let exited = workers.reap_exited().await?;
+                let exited = match workers.reap_exited().await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(err = %e, "reap_exited failed, skipping this cycle");
+                        vec![]
+                    }
+                };
                 for (name, code, signal) in exited {
                     let dropped = drop_pending_for_worker(&mut pending_deliveries, &name);
                     if dropped > 0 {
