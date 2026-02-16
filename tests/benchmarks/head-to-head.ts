@@ -171,10 +171,17 @@ async function stopRelayPty(instance: RelayPtyInstance): Promise<void> {
 async function startBrokerWithAgent(
   name: string,
 ): Promise<{ client: AgentRelayClient; name: string }> {
+  const binaryPath = resolveBinaryPath();
+  console.log(`  [broker] binary: ${binaryPath}`);
   const client = await AgentRelayClient.start({
-    binaryPath: resolveBinaryPath(),
+    binaryPath,
     channels: ["general"],
     env: process.env,
+  });
+  client.onBrokerStderr((line: string) => {
+    if (line.includes("ERROR") || line.includes("error") || line.includes("panic")) {
+      console.error(`  [broker stderr] ${line}`);
+    }
   });
   await client.spawnPty({ name, cli: "cat", channels: ["general"] });
   // Wait for agent to be ready

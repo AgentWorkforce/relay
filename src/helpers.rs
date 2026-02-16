@@ -119,8 +119,28 @@ impl ActivityDetector {
     }
 }
 
+/// Maximum number of injection attempts before declaring delivery failed.
+pub(crate) const MAX_VERIFICATION_ATTEMPTS: usize = 3;
+
+/// Time window to wait for echo verification before retrying injection.
+pub(crate) const VERIFICATION_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// A pending delivery waiting for echo verification in PTY output.
+#[derive(Debug)]
+pub(crate) struct PendingVerification {
+    pub delivery_id: String,
+    pub event_id: String,
+    pub expected_echo: String,
+    pub injected_at: std::time::Instant,
+    pub attempts: usize,
+    pub max_attempts: usize,
+    pub request_id: Option<String>,
+    pub from: String,
+    pub body: String,
+    pub target: String,
+}
+
 /// Check if the expected echo string appears in PTY output (after stripping ANSI).
-#[cfg(test)]
 pub(crate) fn check_echo_in_output(output: &str, expected: &str) -> bool {
     let clean = strip_ansi(output);
     clean.contains(expected)
