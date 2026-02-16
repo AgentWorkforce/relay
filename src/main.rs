@@ -135,6 +135,10 @@ struct PersistedAgent {
     runtime: AgentRuntime,
     parent: Option<String>,
     channels: Vec<String>,
+    #[serde(default)]
+    pid: Option<u32>,
+    #[serde(default)]
+    started_at: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -359,6 +363,10 @@ impl WorkerRegistry {
 
     fn has_worker(&self, name: &str) -> bool {
         self.workers.contains_key(name)
+    }
+
+    fn worker_pid(&self, name: &str) -> Option<u32> {
+        self.workers.get(name).and_then(|h| h.child.id())
     }
 
     async fn spawn(&mut self, spec: AgentSpec, parent: Option<String>) -> Result<()> {
@@ -1562,12 +1570,20 @@ async fn handle_sdk_frame(
             let name = payload.agent.name.clone();
 
             workers.spawn(payload.agent.clone(), None).await?;
+            let worker_pid = workers.worker_pid(&name);
             state.agents.insert(
                 name.clone(),
                 PersistedAgent {
                     runtime: runtime.clone(),
                     parent: None,
                     channels: payload.agent.channels.clone(),
+                    pid: worker_pid,
+                    started_at: Some(
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                    ),
                 },
             );
             state.save(state_path)?;
@@ -2179,12 +2195,20 @@ fn extract_mcp_message_ids(buffer: &str) -> Vec<String> {
     ids
 }
 
+/// Check if a process with the given PID is alive.
+#[cfg(unix)]
+fn is_pid_alive(pid: u32) -> bool {
+    // kill(pid, 0) checks existence without sending a signal
+    unsafe { nix::libc::kill(pid as i32, 0) == 0 }
+}
+
 fn ensure_runtime_paths(cwd: &Path) -> Result<RuntimePaths> {
     let root = cwd.join(".agent-relay");
     std::fs::create_dir_all(&root)
         .with_context(|| format!("failed to create runtime dir {}", root.display()))?;
 
     let lock_path = root.join("broker.lock");
+    let pid_path = root.join("broker.pid");
     let lock_file = std::fs::File::create(&lock_path)
         .with_context(|| format!("failed to create lock file {}", lock_path.display()))?;
 
@@ -2194,6 +2218,44 @@ fn ensure_runtime_paths(cwd: &Path) -> Result<RuntimePaths> {
         let fd = lock_file.as_raw_fd();
         let rc = unsafe { nix::libc::flock(fd, nix::libc::LOCK_EX | nix::libc::LOCK_NB) };
         if rc != 0 {
+            // Lock acquisition failed — check if the holder is still alive
+            if let Ok(contents) = std::fs::read_to_string(&pid_path) {
+                if let Ok(old_pid) = contents.trim().parse::<u32>() {
+                    if !is_pid_alive(old_pid) {
+                        tracing::warn!(
+                            old_pid = old_pid,
+                            "stale broker lock detected (PID {} is dead), recovering",
+                            old_pid
+                        );
+                        // The old process is dead — remove stale PID file and retry lock.
+                        // We drop and re-create the lock file to clear the stale flock.
+                        drop(lock_file);
+                        let lock_file = std::fs::File::create(&lock_path).with_context(|| {
+                            format!(
+                                "failed to re-create lock file after stale recovery {}",
+                                lock_path.display()
+                            )
+                        })?;
+                        let fd = lock_file.as_raw_fd();
+                        let rc = unsafe {
+                            nix::libc::flock(fd, nix::libc::LOCK_EX | nix::libc::LOCK_NB)
+                        };
+                        if rc != 0 {
+                            anyhow::bail!(
+                                "another broker instance is already running in this directory ({})",
+                                root.display()
+                            );
+                        }
+                        // Successfully recovered — write our PID and return
+                        write_pid_file(&pid_path)?;
+                        return Ok(RuntimePaths {
+                            creds: root.join("relaycast.json"),
+                            state: root.join("state.json"),
+                            _lock: lock_file,
+                        });
+                    }
+                }
+            }
             anyhow::bail!(
                 "another broker instance is already running in this directory ({})",
                 root.display()
@@ -2201,11 +2263,30 @@ fn ensure_runtime_paths(cwd: &Path) -> Result<RuntimePaths> {
         }
     }
 
+    // Write our PID for crash recovery
+    write_pid_file(&pid_path)?;
+
     Ok(RuntimePaths {
         creds: root.join("relaycast.json"),
         state: root.join("state.json"),
         _lock: lock_file,
     })
+}
+
+/// Write the current process PID to the given path atomically.
+fn write_pid_file(path: &Path) -> Result<()> {
+    let pid = std::process::id();
+    let dir = path
+        .parent()
+        .with_context(|| format!("pid path has no parent: {}", path.display()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)
+        .with_context(|| format!("failed creating temp pid file in {}", dir.display()))?;
+    use std::io::Write;
+    write!(tmp, "{}", pid)?;
+    tmp.persist(path)
+        .with_context(|| format!("failed persisting pid file to {}", path.display()))?;
+    tracing::info!(pid = pid, path = %path.display(), "wrote broker PID file");
+    Ok(())
 }
 
 fn derive_ws_base_url_from_http(http_base: &str) -> String {
@@ -2240,6 +2321,45 @@ impl BrokerState {
         tmp.persist(path)
             .with_context(|| format!("failed persisting state file to {}", path.display()))?;
         Ok(())
+    }
+
+    /// Remove persisted agents whose PIDs are no longer alive.
+    /// Returns the names of agents that were cleaned up.
+    #[cfg(unix)]
+    fn reap_dead_agents(&mut self) -> Vec<String> {
+        let dead: Vec<String> = self
+            .agents
+            .iter()
+            .filter(|(_, agent)| {
+                if let Some(pid) = agent.pid {
+                    !is_pid_alive(pid)
+                } else {
+                    // No PID recorded — stale entry from before PID tracking, remove it
+                    true
+                }
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        for name in &dead {
+            self.agents.remove(name);
+        }
+        dead
+    }
+
+    #[cfg(not(unix))]
+    fn reap_dead_agents(&mut self) -> Vec<String> {
+        // On non-Unix platforms, clear all agents without PID info
+        let dead: Vec<String> = self
+            .agents
+            .iter()
+            .filter(|(_, agent)| agent.pid.is_none())
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in &dead {
+            self.agents.remove(name);
+        }
+        dead
     }
 }
 
