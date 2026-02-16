@@ -64,6 +64,17 @@ impl Spawner {
         // when relay messages are injected into the PTY.
         cmd.env("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION", "false");
 
+        #[cfg(unix)]
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+
         let child = cmd.spawn().context("failed to spawn wrap-mode child")?;
         let pid = child.id().context("spawned child missing pid")?;
 
@@ -171,6 +182,8 @@ pub async fn terminate_child(child: &mut Child, timeout_duration: Duration) -> R
 mod tests {
     use std::time::Duration;
 
+    #[cfg(unix)]
+    use nix::unistd::{getsid, Pid};
     use tokio::process::Command;
 
     use super::{terminate_child, Spawner};
@@ -238,5 +251,34 @@ mod tests {
             .await;
         assert!(result.is_err());
         spawner.shutdown_all(Duration::from_millis(200)).await;
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn spawn_wrap_workers_are_session_leaders() {
+        let mut spawner = Spawner::new();
+        let env_vars = [("RELAY_AGENT_NAME", "ReattachWorker")];
+        let pid = spawner
+            .spawn_wrap(
+                "ReattachWorker",
+                "sleep",
+                &["30".to_string()],
+                &env_vars,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let worker_sid = getsid(Some(Pid::from_raw(pid as i32))).unwrap();
+        let current_sid = getsid(None).unwrap();
+        let expected_sid = Pid::from_raw(pid as i32);
+
+        assert_eq!(worker_sid, expected_sid);
+        assert_ne!(worker_sid, current_sid);
+
+        spawner
+            .release("ReattachWorker", Duration::from_millis(200))
+            .await
+            .unwrap();
     }
 }

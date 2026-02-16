@@ -7,6 +7,7 @@ use std::{
 
 mod helpers;
 mod pty_worker;
+mod spawner;
 mod wrap;
 
 use helpers::{
