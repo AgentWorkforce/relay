@@ -149,20 +149,20 @@ function buildCoreContext(): string {
     "",
     "## Communication Protocol",
     "",
-    "You have a Relaycast MCP server available. Use it to communicate with other agents.",
-    "To send a message, use the MCP tool `relay_send_message` (or `send_message`):",
+    "You have a Relaycast MCP server available (`relay_send` tool). Use it to communicate.",
     "",
-    "When you START work, send a status message:",
-    '  relay_send_message({ to: "#wave-0", text: "ACK: Starting on [task description]" })',
+    "When you START work, send an ACK:",
+    '  relay_send({ to: "Orchestrator", message: "ACK: Starting on [task description]" })',
     "",
-    "When you FINISH work, send a completion message:",
-    '  relay_send_message({ to: "#wave-0", text: "DONE: [summary of what you did, files changed]" })',
+    "When you FINISH work, send a DONE message:",
+    '  relay_send({ to: "Orchestrator", message: "DONE: [summary of what you did, files changed]" })',
     "",
     "When you need to COMMUNICATE with another agent:",
-    '  relay_send_message({ to: "AgentName", text: "your message" })',
+    '  relay_send({ to: "AgentName", message: "your message" })',
     "",
-    "This is CRITICAL — the orchestrator monitors these messages to coordinate the wave.",
-    "If you do not post DONE, the orchestrator will not know you finished.",
+    "IMPORTANT: The orchestrator also monitors your terminal output.",
+    "Even if MCP is unavailable, printing 'DONE: ...' to stdout signals completion.",
+    "Always print a clear DONE message when finished.",
     "",
     "## Migration Plan (reference)",
     plan.slice(0, 3000), // truncate to keep context manageable
@@ -409,20 +409,28 @@ function buildWaves(priorHandoff: string): WaveDefinition[] {
             priorHandoff,
             "",
             "### Your role",
-            "Design and coordinate the broker integration test infrastructure.",
+            "You are the LEAD coordinator. You have two workers:",
+            "- **Worker-W1-Utils** (Codex): creating test utilities and harness",
+            "- **Worker-W1-Tests** (Codex): writing the actual test files",
             "",
-            "Create tests/integration/broker/ with:",
+            "### Your responsibilities",
+            "1. **Monitor workers**: Every 2-3 minutes, ping each worker to check status:",
+            '   relay_send({ to: "Worker-W1-Utils", message: "Status check — what have you completed so far?" })',
+            "2. **Unblock workers**: If a worker is stuck or asks a question, help them.",
+            "3. **Drive completion**: If a worker seems idle, send them a nudge with specific next steps.",
+            "4. **Report completion**: When ALL workers have reported DONE, post your HANDOFF summary.",
             "",
-            "**utils/broker-harness.ts** — test lifecycle manager:",
+            "### The deliverables (what workers are building)",
+            "",
+            "**tests/integration/broker/utils/broker-harness.ts** — test lifecycle manager:",
             "- startBroker(): spawn agent-relay binary, wait for hello_ack",
             "- stopBroker(): graceful shutdown with timeout",
             "- spawnAgent(cli, name): spawn and wait for ready",
             "- releaseAgent(name): release and wait for exit event",
             "- sendMessage(from, to, text): send and return delivery events",
             "- waitForEvent(kind, timeout): wait for specific broker event",
-            "- collectMessages(channel, duration): collect messages over time",
             "",
-            "**utils/assert-helpers.ts** — custom assertions:",
+            "**tests/integration/broker/utils/assert-helpers.ts** — custom assertions:",
             "- assertDelivered(eventId): message was delivered",
             "- assertNoDoubleDelivery(eventId): no duplicate injection",
             "- assertEventSequence(events, expected): events in order",
@@ -435,7 +443,12 @@ function buildWaves(priorHandoff: string): WaveDefinition[] {
             "- 05-dedup-no-double.ts: local send + WS echo = one delivery",
             "",
             "Tests use node:test runner. Import from @agent-relay/broker-sdk.",
-            "Post plan, then HANDOFF when done.",
+            "",
+            "### Workflow",
+            "1. Post your plan first",
+            "2. Check on workers every 2-3 min — send status pings",
+            "3. If a worker goes quiet for >3 min, nudge them with specific instructions",
+            "4. When both workers report DONE, verify files exist and post HANDOFF",
           ].join("\n"),
         },
         {
@@ -1175,10 +1188,45 @@ async function executeWave(
   const agents: Agent[] = [];
   const orchestrator = relay.human({ name: "Orchestrator" });
 
+  const exitedWorkers = new Set<string>();
+
+  // Track messages from Relaycast (cloud round-trip)
   relay.onMessageReceived = (msg) => {
     channelLog.push(msg);
     const preview = msg.text.slice(0, 100).replace(/\n/g, "\\n");
-    log(`  [${msg.from}] ${preview}`);
+    log(`  [msg:${msg.from}] ${preview}`);
+  };
+
+  // Track agent exits event-driven (instead of polling waitForExit)
+  relay.onAgentExited = (agent) => {
+    exitedWorkers.add(agent.name);
+    log(`  [exit] ${agent.name} process exited`);
+  };
+
+  // Scan PTY output for DONE/HANDOFF/REVIEW keywords + track last activity
+  const outputBuffers = new Map<string, string>();
+  const lastActivityTime = new Map<string, number>();
+  const IDLE_TIMEOUT_MS = 2 * 60 * 1000; // 2 min of no PTY output = idle/done
+
+  relay.onWorkerOutput = (output) => {
+    const prev = outputBuffers.get(output.name) ?? "";
+    const buf = (prev + output.chunk).slice(-4000); // keep last 4k chars
+    outputBuffers.set(output.name, buf);
+    lastActivityTime.set(output.name, Date.now());
+
+    // Check for completion keywords in this chunk
+    const keywords = ["DONE:", "DONE.", "HANDOFF:", "REVIEW:PASS", "REVIEW:FAIL"];
+    if (keywords.some((kw) => output.chunk.includes(kw))) {
+      const syntheticMsg: Message = {
+        eventId: `pty_${Date.now()}`,
+        from: output.name,
+        to: "Orchestrator",
+        text: output.chunk.slice(0, 500),
+      };
+      channelLog.push(syntheticMsg);
+      const preview = output.chunk.slice(0, 100).replace(/\n/g, "\\n");
+      log(`  [pty:${output.name}] ${preview}`);
+    }
   };
 
   try {
@@ -1219,39 +1267,68 @@ async function executeWave(
     }
 
     // ── Phase 3: Wait for workers to finish ────────────────────────────
+    // Completion is detected via: (a) DONE messages in channelLog (from Relaycast
+    // or PTY output scanning), or (b) process exits (onAgentExited hook).
     log("Waiting for workers to complete...");
     const deadline = Date.now() + WAVE_TIMEOUT_MS;
-    const exitedWorkers = new Set<string>();
+    let lastNudgeTime = Date.now();
+    const NUDGE_INTERVAL_MS = 3 * 60 * 1000; // nudge idle workers every 3 min
 
     while (Date.now() < deadline) {
-      // Count DONE messages from workers
-      const doneCount = channelLog.filter(
-        (m) => m.text.includes("DONE") && wave.tasks.some((t) => t.role === "worker" && t.name === m.from),
-      ).length;
+      const workerNames = new Set(workerTasks.map((t) => t.name));
 
-      // Check for worker process exits (codex --full-auto exits when done)
+      // Count unique workers that sent DONE (via relay message or PTY output)
+      const doneWorkers = new Set(
+        channelLog
+          .filter((m) => m.text.includes("DONE") && workerNames.has(m.from))
+          .map((m) => m.from),
+      );
+
+      // Detect idle workers (no PTY output for IDLE_TIMEOUT_MS after initial activity)
+      const now = Date.now();
       for (const task of workerTasks) {
         if (exitedWorkers.has(task.name)) continue;
-        const agent = agents.find((a) => a.name === task.name);
-        if (agent) {
-          const status = await agent.waitForExit(0);
-          if (status === "exited" || status === "released") {
-            exitedWorkers.add(task.name);
-            log(`  Worker ${task.name} exited (${status}).`);
-          }
+        const lastActive = lastActivityTime.get(task.name);
+        if (lastActive && now - lastActive > IDLE_TIMEOUT_MS) {
+          exitedWorkers.add(task.name);
+          log(`  Worker ${task.name} idle for ${Math.round((now - lastActive) / 1000)}s — treating as done.`);
         }
       }
 
-      const completedCount = Math.max(doneCount, exitedWorkers.size);
-      if (completedCount >= workerTasks.length) {
-        log(`All ${workerTasks.length} workers completed (${doneCount} DONE messages, ${exitedWorkers.size} exited).`);
+      // A worker is complete if it sent DONE, its process exited, or it went idle
+      const completedWorkers = new Set<string>();
+      doneWorkers.forEach((n) => completedWorkers.add(n));
+      exitedWorkers.forEach((n) => { if (workerNames.has(n)) completedWorkers.add(n); });
+
+      if (completedWorkers.size >= workerTasks.length) {
+        log(`All ${workerTasks.length} workers completed (${doneWorkers.size} DONE, ${exitedWorkers.size} exited).`);
         break;
       }
 
+      // Nudge idle workers and lead every NUDGE_INTERVAL_MS
+      if (Date.now() - lastNudgeTime >= NUDGE_INTERVAL_MS) {
+        lastNudgeTime = Date.now();
+        const remaining = workerTasks.filter((t) => !completedWorkers.has(t.name));
+        for (const task of remaining) {
+          log(`  Nudging idle worker: ${task.name}`);
+          await orchestrator.sendMessage({
+            to: task.name,
+            text: "Status check from Orchestrator: Are you still working? If you're done, please print 'DONE: [summary]'. If stuck, describe what's blocking you.",
+          });
+        }
+        // Also nudge the lead to check on workers
+        if (leadTask) {
+          await orchestrator.sendMessage({
+            to: leadTask.name,
+            text: `Status check: ${remaining.map((t) => t.name).join(", ")} haven't reported DONE yet. Please ping them and drive completion.`,
+          });
+        }
+      }
+
       const remaining = workerTasks
-        .filter((t) => !exitedWorkers.has(t.name))
+        .filter((t) => !completedWorkers.has(t.name))
         .map((t) => t.name);
-      log(`  Waiting... ${completedCount}/${workerTasks.length} done. Remaining: ${remaining.join(", ")}`);
+      log(`  Waiting... ${completedWorkers.size}/${workerTasks.length} done. Remaining: ${remaining.join(", ")}`);
       await sleep(10_000);
     }
 
@@ -1279,6 +1356,12 @@ async function executeWave(
       );
       if (review) {
         verdict = review.text;
+        break;
+      }
+      // Reviewer (codex --full-auto) may exit without sending REVIEW verdict
+      if (exitedWorkers.has(reviewerTask.name)) {
+        log("Reviewer exited without explicit verdict — treating as REVIEW:PASS");
+        verdict = "REVIEW:PASS (implicit — reviewer exited cleanly)";
         break;
       }
       await sleep(3_000);

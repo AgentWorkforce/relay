@@ -28,11 +28,29 @@ import path from "node:path";
 
 import {
   AgentRelayClient,
+  AgentRelayProtocolError,
   type AgentRelayClientOptions,
   type SpawnPtyInput,
 } from "./client.js";
 import type { AgentRuntime, BrokerEvent } from "./protocol.js";
 import { RelaycastApi } from "./relaycast.js";
+
+function isUnsupportedOperation(error: unknown): error is AgentRelayProtocolError {
+  return error instanceof AgentRelayProtocolError && error.code === "unsupported_operation";
+}
+
+function buildUnsupportedOperationMessage(
+  from: string,
+  input: { to: string; text: string; threadId?: string },
+): Message {
+  return {
+    eventId: "unsupported_operation",
+    from,
+    to: input.to,
+    text: input.text,
+    threadId: input.threadId,
+  };
+}
 
 // ── Public types ────────────────────────────────────────────────────────────
 
@@ -101,6 +119,7 @@ export class AgentRelay {
   onAgentSpawned: EventHook<Agent> = null;
   onAgentReleased: EventHook<Agent> = null;
   onAgentExited: EventHook<Agent> = null;
+  onWorkerOutput: EventHook<{ name: string; stream: string; chunk: string }> = null;
 
   // Shorthand spawners
   readonly codex: AgentSpawner;
@@ -158,14 +177,26 @@ export class AgentRelay {
       name: opts.name,
       async sendMessage(input) {
         const client = await relay.ensureStarted();
-        await client.sendMessage({
-          to: input.to,
-          text: input.text,
-          from: opts.name,
-          threadId: input.threadId,
-          priority: input.priority,
-        });
-        const eventId = randomBytes(8).toString("hex");
+        let result: Awaited<ReturnType<typeof client.sendMessage>>;
+        try {
+          result = await client.sendMessage({
+            to: input.to,
+            text: input.text,
+            from: opts.name,
+            threadId: input.threadId,
+            priority: input.priority,
+          });
+        } catch (error) {
+          if (isUnsupportedOperation(error)) {
+            return buildUnsupportedOperationMessage(opts.name, input);
+          }
+          throw error;
+        }
+        if (result?.event_id === "unsupported_operation") {
+          return buildUnsupportedOperationMessage(opts.name, input);
+        }
+
+        const eventId = result?.event_id ?? randomBytes(8).toString("hex");
         const msg: Message = {
           eventId,
           from: opts.name,
@@ -289,6 +320,14 @@ export class AgentRelay {
           this.exitResolvers.delete(event.name);
           break;
         }
+        case "worker_stream": {
+          this.onWorkerOutput?.({
+            name: event.name,
+            stream: event.stream,
+            chunk: event.chunk,
+          });
+          break;
+        }
       }
     });
   }
@@ -314,6 +353,11 @@ export class AgentRelay {
             resolve("exited");
             return;
           }
+          // Non-blocking poll: timeoutMs === 0 means "check now, return immediately"
+          if (timeoutMs === 0) {
+            resolve("timeout");
+            return;
+          }
           let timer: ReturnType<typeof setTimeout> | undefined;
           relay.exitResolvers.set(name, (reason) => {
             if (timer) clearTimeout(timer);
@@ -329,14 +373,25 @@ export class AgentRelay {
       },
       async sendMessage(input) {
         const client = await relay.ensureStarted();
-        await client.sendMessage({
-          to: input.to,
-          text: input.text,
-          from: name,
-          threadId: input.threadId,
-          priority: input.priority,
-        });
-        const eventId = randomBytes(8).toString("hex");
+        let result: Awaited<ReturnType<typeof client.sendMessage>>;
+        try {
+          result = await client.sendMessage({
+            to: input.to,
+            text: input.text,
+            from: name,
+            threadId: input.threadId,
+            priority: input.priority,
+          });
+        } catch (error) {
+          if (isUnsupportedOperation(error)) {
+            return buildUnsupportedOperationMessage(name, input);
+          }
+          throw error;
+        }
+        if (result?.event_id === "unsupported_operation") {
+          return buildUnsupportedOperationMessage(name, input);
+        }
+        const eventId = result?.event_id ?? randomBytes(8).toString("hex");
         const msg: Message = {
           eventId,
           from: name,

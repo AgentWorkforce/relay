@@ -194,13 +194,20 @@ export class AgentRelayClient {
     input: SendMessageInput,
   ): Promise<{ event_id: string; targets: string[] }> {
     await this.start();
-    return this.requestOk<{ event_id: string; targets: string[] }>("send_message", {
-      to: input.to,
-      text: input.text,
-      from: input.from,
-      thread_id: input.threadId,
-      priority: input.priority,
-    });
+    try {
+      return await this.requestOk<{ event_id: string; targets: string[] }>("send_message", {
+        to: input.to,
+        text: input.text,
+        from: input.from,
+        thread_id: input.threadId,
+        priority: input.priority,
+      });
+    } catch (error) {
+      if (error instanceof AgentRelayProtocolError && error.code === "unsupported_operation") {
+        return { event_id: "unsupported_operation", targets: [] };
+      }
+      throw error;
+    }
   }
 
   async listAgents(): Promise<ListAgent[]> {

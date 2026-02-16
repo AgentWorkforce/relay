@@ -221,7 +221,7 @@ async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
             opts.runtime_cwd,
             Some(relay_workspace_key.as_str()),
             Some(http_base.as_str()),
-            Some(agent_name.as_str()),
+            None, // Don't hardcode agent name — each child inherits RELAY_AGENT_NAME via env
         ) {
             tracing::warn!("failed to ensure .mcp.json: {error}");
         }
