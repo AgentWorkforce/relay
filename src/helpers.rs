@@ -269,8 +269,7 @@ pub(crate) fn current_timestamp_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis())
-        .min(u128::from(u64::MAX))
-        as u64
+        .min(u128::from(u64::MAX)) as u64
 }
 
 pub(crate) fn delivery_queued_event_payload(
