@@ -1,0 +1,33 @@
+{
+  "startedAt": "2026-02-16T11:18:53.896Z",
+  "currentWave": 4,
+  "completedWaves": [
+    {
+      "waveId": 2,
+      "passed": true,
+      "handoff": "Wave 2: Implemented PTY delivery verification with echo detection, retry logic, and delivery_verified/delivery_failed events.",
+      "filesChanged": [
+        "src/helpers.rs",
+        "src/protocol.rs",
+        "src/pty_worker.rs",
+        "src/wrap.rs",
+        "src/main.rs"
+      ],
+      "testOutput": "cargo test: PASS (48 tests)",
+      "duration": 600000
+    },
+    {
+      "waveId": 3,
+      "passed": true,
+      "handoff": "Wave 3: Wired send_message to Relaycast REST API for non-local targets. Added RelaycastPublished/RelaycastPublishFailed events.",
+      "filesChanged": [
+        "src/main.rs",
+        "src/protocol.rs",
+        "src/relaycast_ws.rs"
+      ],
+      "testOutput": "cargo test: PASS",
+      "duration": 300000
+    }
+  ],
+  "branch": "feat/broker-migration"
+}

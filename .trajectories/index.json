@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-02-16T12:13:46.755Z",
+  "lastUpdated": "2026-02-16T12:33:10.575Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -281,6 +281,12 @@
       "startedAt": "2026-02-16T11:56:41.415Z",
       "completedAt": "2026-02-16T12:13:46.649Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-02/traj_cwv6xnxwysms.json"
+    },
+    "traj_fok5l19hoqoy": {
+      "title": "Broker migration: fix completion detection + Wave 2-3 execution",
+      "status": "active",
+      "startedAt": "2026-02-16T12:33:10.507Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/active/traj_fok5l19hoqoy.json"
     }
   }
 }

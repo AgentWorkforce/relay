@@ -3,7 +3,9 @@ use std::time::{Duration, Instant};
 
 use super::*;
 use crate::helpers::{
-    check_echo_in_output, PendingVerification, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+    check_echo_in_output, floor_char_boundary, DeliveryOutcome, PendingActivity, PendingVerification,
+    ThrottleState, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
+    ActivityDetector, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
 };
 
 // PTY auto-response constants (shared by wrap and pty workers)
@@ -256,6 +258,7 @@ impl PtyAutoState {
 pub(crate) async fn run_wrap(
     cli_name: String,
     cli_args: Vec<String>,
+    progress: bool,
     telemetry: TelemetryClient,
 ) -> Result<()> {
     let broker_start = Instant::now();
@@ -374,6 +377,13 @@ pub(crate) async fn run_wrap(
 
     // Echo verification state
     let mut pending_verifications: VecDeque<PendingVerification> = VecDeque::new();
+    let mut pending_activities: VecDeque<PendingActivity> = VecDeque::new();
+    let activity_detector = if progress {
+        Some(ActivityDetector::for_cli(&cli_name))
+    } else {
+        None
+    };
+    let mut throttle = ThrottleState::default();
     let mut echo_buffer = String::new();
     let mut verification_tick = tokio::time::interval(Duration::from_millis(200));
     verification_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -416,6 +426,7 @@ pub(crate) async fn run_wrap(
                         let _ = stdout.flush().await;
 
                         let text = String::from_utf8_lossy(&chunk).to_string();
+                        let clean_text = strip_ansi(&text);
                         pty_auto.last_output_time = Instant::now();
 
                         pty_auto.update_auto_suggestion(&text);
@@ -424,7 +435,6 @@ pub(crate) async fn run_wrap(
 
                         // Extract message IDs from MCP tool responses to prevent self-echo.
                         {
-                            let clean_text = strip_ansi(&text);
                             mcp_response_buffer.push_str(&clean_text);
                             if mcp_response_buffer.len() > 4000 {
                                 let start = floor_char_boundary(&mcp_response_buffer, mcp_response_buffer.len() - 3000);
@@ -464,6 +474,61 @@ pub(crate) async fn run_wrap(
                                 attempts = pv.attempts,
                                 "wrap: delivery echo verified"
                             );
+                            throttle.record(DeliveryOutcome::Success);
+                            if let Some(detector) = activity_detector.as_ref() {
+                                pending_activities.push_back(PendingActivity {
+                                    delivery_id: pv.delivery_id,
+                                    event_id: pv.event_id,
+                                    request_id: pv.request_id,
+                                    expected_echo: pv.expected_echo,
+                                    verified_at: Instant::now(),
+                                    output_buffer: String::new(),
+                                    detector: detector.clone(),
+                                });
+                            }
+                        }
+
+                        if let Some(_) = activity_detector.as_ref() {
+                            let mut active_indices = Vec::new();
+                            for (i, pa) in pending_activities.iter_mut().enumerate() {
+                                if pa.verified_at.elapsed() >= ACTIVITY_WINDOW {
+                                    active_indices.push((i, None));
+                                    continue;
+                                }
+                                pa.output_buffer.push_str(&clean_text);
+                                if pa.output_buffer.len() > ACTIVITY_BUFFER_MAX_BYTES {
+                                    let start = floor_char_boundary(
+                                        &pa.output_buffer,
+                                        pa.output_buffer.len() - ACTIVITY_BUFFER_KEEP_BYTES,
+                                    );
+                                    pa.output_buffer = pa.output_buffer[start..].to_string();
+                                }
+                                if let Some(pattern) =
+                                    pa.detector.detect_activity(&pa.output_buffer, &pa.expected_echo)
+                                {
+                                    active_indices.push((i, Some(pattern)));
+                                }
+                            }
+
+                            for (i, matched) in active_indices.into_iter().rev() {
+                                let pa = pending_activities.remove(i).unwrap();
+                                if let Some(pattern) = matched {
+                                    tracing::info!(
+                                        target = "agent_relay::worker::wrap",
+                                        delivery_id = %pa.delivery_id,
+                                        event_id = %pa.event_id,
+                                        pattern = %pattern,
+                                        "delivery became active"
+                                    );
+                                } else {
+                                    tracing::debug!(
+                                        target = "agent_relay::worker::wrap",
+                                        delivery_id = %pa.delivery_id,
+                                        event_id = %pa.event_id,
+                                        "delivery activity window expired"
+                                    );
+                                }
+                            }
                         }
                     }
                     None => {
@@ -631,6 +696,7 @@ pub(crate) async fn run_wrap(
                     continue;
                 }
                 if let Some(pending) = pending_wrap_injections.pop_front() {
+                    tokio::time::sleep(throttle.delay()).await;
                     if pty_auto.auto_suggestion_visible {
                         tracing::warn!(
                             event_id = %pending.event_id,
@@ -709,14 +775,27 @@ pub(crate) async fn run_wrap(
                                 attempts = pv.attempts,
                                 "wrap: delivery verification failed after max retries"
                             );
+                            throttle.record(DeliveryOutcome::Failed);
                         }
                     } else {
                         i += 1;
                     }
                 }
 
+                if activity_detector.is_some() {
+                    let mut i = 0;
+                    while i < pending_activities.len() {
+                        if pending_activities[i].verified_at.elapsed() >= ACTIVITY_WINDOW {
+                            let _ = pending_activities.remove(i).unwrap();
+                        } else {
+                            i += 1;
+                        }
+                    }
+                }
+
                 // Re-inject retries
                 for mut pv in retry_queue {
+                    tokio::time::sleep(throttle.delay()).await;
                     let injection = format_injection(&pv.from, &pv.event_id, &pv.body, &pv.target);
                     if let Err(e) = pty.write_all(injection.as_bytes()) {
                         tracing::warn!(

@@ -1,6 +1,8 @@
 use super::*;
 use crate::helpers::{
-    check_echo_in_output, PendingVerification, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+    check_echo_in_output, floor_char_boundary, ActivityDetector, ACTIVITY_BUFFER_KEEP_BYTES,
+    ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW, DeliveryOutcome, PendingActivity, PendingVerification,
+    ThrottleState, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
 };
 use crate::wrap::{PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
 
@@ -55,6 +57,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 
     // Echo verification state
     let mut pending_verifications: VecDeque<PendingVerification> = VecDeque::new();
+    let mut pending_activities: VecDeque<PendingActivity> = VecDeque::new();
+    let activity_detector = if cmd.progress {
+        Some(ActivityDetector::for_cli(&cmd.cli))
+    } else {
+        None
+    };
+    let mut throttle = ThrottleState::default();
     let mut echo_buffer = String::new();
     let mut verification_tick = tokio::time::interval(Duration::from_millis(200));
     verification_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -151,6 +160,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             let _ = pty.write_all(response);
                         }
                         let text = String::from_utf8_lossy(&chunk).to_string();
+                        let clean_text = strip_ansi(&text);
                         let _ = send_frame(&out_tx, "worker_stream", None, json!({
                             "stream": "stdout",
                             "chunk": text,
@@ -182,8 +192,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         // Remove verified entries in reverse order to preserve indices
                         for &i in verified_indices.iter().rev() {
                             let pv = pending_verifications.remove(i).unwrap();
+                            let delivery_id = pv.delivery_id.clone();
+                            let event_id = pv.event_id.clone();
                             tracing::debug!(
-                                delivery_id = %pv.delivery_id,
+                                delivery_id = %delivery_id,
                                 attempts = pv.attempts,
                                 "delivery echo verified"
                             );
@@ -192,8 +204,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 "delivery_ack",
                                 pv.request_id.clone(),
                                 json!({
-                                    "delivery_id": pv.delivery_id,
-                                    "event_id": pv.event_id
+                                    "delivery_id": delivery_id,
+                                    "event_id": event_id
                                 }),
                             )
                             .await;
@@ -202,12 +214,79 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 "delivery_verified",
                                 None,
                                 json!({
-                                    "delivery_id": pv.delivery_id,
-                                    "event_id": pv.event_id
+                                    "delivery_id": delivery_id,
+                                    "event_id": event_id
                                 }),
                             )
                             .await;
-                            pending_worker_delivery_ids.remove(&pv.delivery_id);
+                            throttle.record(DeliveryOutcome::Success);
+                            if let Some(detector) = activity_detector.as_ref() {
+                                pending_activities.push_back(PendingActivity {
+                                    delivery_id: delivery_id.clone(),
+                                    event_id,
+                                    request_id: pv.request_id,
+                                    expected_echo: pv.expected_echo,
+                                    verified_at: Instant::now(),
+                                    output_buffer: String::new(),
+                                    detector: detector.clone(),
+                                });
+                            }
+                            pending_worker_delivery_ids.remove(&delivery_id);
+                        }
+
+                        if let Some(_) = activity_detector.as_ref() {
+                            let mut active_indices = Vec::new();
+                            for (i, pa) in pending_activities.iter_mut().enumerate() {
+                                if pa.verified_at.elapsed() >= ACTIVITY_WINDOW {
+                                    active_indices.push((i, None));
+                                    continue;
+                                }
+                                pa.output_buffer.push_str(&clean_text);
+                                if pa.output_buffer.len() > ACTIVITY_BUFFER_MAX_BYTES {
+                                    let start = floor_char_boundary(
+                                        &pa.output_buffer,
+                                        pa.output_buffer.len() - ACTIVITY_BUFFER_KEEP_BYTES,
+                                    );
+                                    pa.output_buffer = pa.output_buffer[start..].to_string();
+                                }
+
+                                if let Some(pattern) =
+                                    pa.detector.detect_activity(&pa.output_buffer, &pa.expected_echo)
+                                {
+                                    active_indices.push((i, Some(pattern)));
+                                }
+                            }
+
+                            for (i, matched) in active_indices.into_iter().rev() {
+                                let pa = pending_activities.remove(i).unwrap();
+                                if let Some(pattern) = matched {
+                                    tracing::debug!(
+                                        target = "agent_relay::worker::pty",
+                                        delivery_id = %pa.delivery_id,
+                                        event_id = %pa.event_id,
+                                        pattern = %pattern,
+                                        "delivery activity detected"
+                                    );
+                                    let _ = send_frame(
+                                        &out_tx,
+                                        "delivery_active",
+                                        None,
+                                        json!({
+                                            "delivery_id": pa.delivery_id,
+                                            "event_id": pa.event_id,
+                                            "pattern": pattern,
+                                        }),
+                                    )
+                                    .await;
+                                } else {
+                                    tracing::debug!(
+                                        target = "agent_relay::worker::pty",
+                                        delivery_id = %pa.delivery_id,
+                                        event_id = %pa.event_id,
+                                        "delivery activity window expired"
+                                    );
+                                }
+                            }
                         }
                     }
                     None => {
@@ -227,6 +306,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     continue;
                 }
                 if let Some(pending) = pending_worker_injections.pop_front() {
+                    tokio::time::sleep(throttle.delay()).await;
                     if pty_auto.auto_suggestion_visible {
                         tracing::warn!(
                             delivery_id = %pending.delivery.delivery_id,
@@ -312,6 +392,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 }),
                             )
                             .await;
+                            throttle.record(DeliveryOutcome::Failed);
                             pending_worker_delivery_ids.remove(&pv.delivery_id);
                         }
                     } else {
@@ -319,8 +400,20 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     }
                 }
 
+                if activity_detector.is_some() {
+                    let mut i = 0;
+                    while i < pending_activities.len() {
+                        if pending_activities[i].verified_at.elapsed() >= ACTIVITY_WINDOW {
+                            let _ = pending_activities.remove(i).unwrap();
+                        } else {
+                            i += 1;
+                        }
+                    }
+                }
+
                 // Re-inject retries
                 for mut pv in retry_queue {
+                    tokio::time::sleep(throttle.delay()).await;
                     let injection = format_injection(&pv.from, &pv.event_id, &pv.body, &pv.target);
                     if let Err(e) = pty.write_all(injection.as_bytes()) {
                         tracing::warn!(

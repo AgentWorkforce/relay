@@ -92,6 +92,10 @@ struct PtyCommand {
 
     #[arg(long)]
     agent_name: Option<String>,
+
+    /// Emit delivery_active events when output matches progress patterns.
+    #[arg(long)]
+    progress: bool,
 }
 
 #[derive(Debug, clap::Args, Clone)]
@@ -664,7 +668,7 @@ async fn main() -> Result<()> {
         Commands::Pty(cmd) => pty_worker::run_pty_worker(cmd).await,
         Commands::Headless(cmd) => run_headless_worker(cmd).await,
         Commands::Listen(cmd) => run_listen(cmd, telemetry).await,
-        Commands::Wrap { cli, args } => wrap::run_wrap(cli, args, telemetry).await,
+        Commands::Wrap { cli, args } => wrap::run_wrap(cli, args, false, telemetry).await,
     }
 }
 
@@ -904,6 +908,16 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             "name": name,
                                             "delivery_id": delivery_id,
                                             "event_id": event_id,
+                                        })).await;
+                                    }
+                                } else if msg_type == "delivery_active" {
+                                    if let Some(payload) = value.get("payload") {
+                                        let _ = send_event(&sdk_out_tx, json!({
+                                            "kind": "delivery_active",
+                                            "name": name,
+                                            "delivery_id": payload.get("delivery_id"),
+                                            "event_id": payload.get("event_id"),
+                                            "pattern": payload.get("pattern"),
                                         })).await;
                                     }
                                 } else if msg_type == "delivery_failed" {

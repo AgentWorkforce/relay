@@ -1,0 +1,46 @@
+{
+  "id": "traj_fok5l19hoqoy",
+  "version": 1,
+  "task": {
+    "title": "Broker migration: fix completion detection + Wave 2-3 execution"
+  },
+  "status": "active",
+  "startedAt": "2026-02-16T12:33:10.507Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-02-16T12:33:10.573Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_x687colqs282",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-02-16T12:33:10.573Z",
+      "events": [
+        {
+          "ts": 1771245190574,
+          "type": "decision",
+          "content": "Refined echo detection: compare against injected text instead of blanket suppression: Refined echo detection: compare against injected text instead of blanket suppression",
+          "raw": {
+            "question": "Refined echo detection: compare against injected text instead of blanket suppression",
+            "chosen": "Refined echo detection: compare against injected text instead of blanket suppression",
+            "alternatives": [],
+            "reasoning": "30s blanket grace period was too aggressive — suppressed real DONE signals from workers. Now only suppress keywords that match the injected prompt text."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "cf93556f6369d4d43d2113ada62ce4bf8b91e9b7",
+    "endRef": "cf93556f6369d4d43d2113ada62ce4bf8b91e9b7"
+  }
+}

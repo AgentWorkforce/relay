@@ -1,7 +1,65 @@
 use std::time::{Duration, Instant};
 
 pub(crate) const VERIFICATION_WINDOW: Duration = Duration::from_secs(3);
+pub(crate) const ACTIVITY_WINDOW: Duration = Duration::from_secs(5);
+pub(crate) const ACTIVITY_BUFFER_MAX_BYTES: usize = 16_000;
+pub(crate) const ACTIVITY_BUFFER_KEEP_BYTES: usize = 12_000;
 pub(crate) const MAX_VERIFICATION_ATTEMPTS: u32 = 3;
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum DeliveryOutcome {
+    Success,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ThrottleState {
+    delay: Duration,
+    consecutive_failures: u32,
+    consecutive_successes: u32,
+}
+
+impl Default for ThrottleState {
+    fn default() -> Self {
+        Self {
+            delay: Duration::from_millis(100),
+            consecutive_failures: 0,
+            consecutive_successes: 0,
+        }
+    }
+}
+
+impl ThrottleState {
+    pub(crate) fn delay(&self) -> Duration {
+        self.delay
+    }
+
+    pub(crate) fn record(&mut self, outcome: DeliveryOutcome) {
+        match outcome {
+            DeliveryOutcome::Success => {
+                self.consecutive_failures = 0;
+                self.consecutive_successes += 1;
+                if self.consecutive_successes >= 3 {
+                    self.consecutive_successes = 0;
+                    let halved = Duration::from_millis(self.delay.as_millis() as u64 / 2);
+                    self.delay = halved.max(Duration::from_millis(100));
+                }
+            }
+            DeliveryOutcome::Failed => {
+                self.consecutive_successes = 0;
+                self.consecutive_failures += 1;
+                self.delay = match self.consecutive_failures {
+                    1 => Duration::from_millis(100),
+                    2 => Duration::from_millis(200),
+                    3 => Duration::from_millis(500),
+                    4 => Duration::from_millis(1_000),
+                    5 => Duration::from_millis(2_000),
+                    _ => Duration::from_millis(5_000),
+                };
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct PendingVerification {
@@ -16,6 +74,63 @@ pub(crate) struct PendingVerification {
     pub from: String,
     pub body: String,
     pub target: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PendingActivity {
+    pub delivery_id: String,
+    pub event_id: String,
+    pub request_id: Option<String>,
+    pub expected_echo: String,
+    pub verified_at: Instant,
+    pub output_buffer: String,
+    pub detector: ActivityDetector,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ActivityDetector {
+    patterns: Vec<&'static str>,
+}
+
+impl ActivityDetector {
+    pub(crate) fn for_cli(cli: &str) -> Self {
+        let lower = cli.to_lowercase();
+        let patterns = if lower.contains("claude") {
+            vec!["⠋", "⠙", "⠹", "Tool:", "Read(", "Write(", "Edit("]
+        } else if lower.contains("codex") {
+            vec!["Thinking...", "Running:", "$ ", "function_call"]
+        } else if lower.contains("gemini") {
+            vec!["Generating", "Action:", "Executing"]
+        } else {
+            Vec::new()
+        };
+
+        Self { patterns }
+    }
+
+    pub(crate) fn detect_activity(&self, output: &str, expected_echo: &str) -> Option<String> {
+        let clean_output = strip_ansi(output);
+        let relevant_output = if let Some(pos) = clean_output.find(expected_echo) {
+            let before = &clean_output[..pos];
+            let after = &clean_output[pos + expected_echo.len()..];
+            format!("{before}{after}")
+        } else {
+            clean_output
+        };
+
+        if self.patterns.is_empty() {
+            if relevant_output.trim().is_empty() {
+                None
+            } else {
+                Some("any_output".to_string())
+            }
+        } else {
+            self.patterns
+                .iter()
+                .find(|pattern| relevant_output.contains(**pattern))
+                .map(|pattern| (*pattern).to_string())
+        }
+    }
 }
 
 /// Check if the expected echo string appears in PTY output (after stripping ANSI).
@@ -297,5 +412,138 @@ mod tests {
             output,
             "Relay message from Bob in #general [evt_2]: status update"
         ));
+    }
+
+    #[test]
+    fn test_throttle_healthy() {
+        let mut throttle = ThrottleState::default();
+        for _ in 0..10 {
+            throttle.record(DeliveryOutcome::Success);
+        }
+        assert_eq!(throttle.delay(), Duration::from_millis(100));
+    }
+
+    #[test]
+    fn test_throttle_backoff() {
+        let mut throttle = ThrottleState::default();
+        throttle.record(DeliveryOutcome::Failed);
+        assert_eq!(throttle.delay(), Duration::from_millis(100));
+        throttle.record(DeliveryOutcome::Failed);
+        assert_eq!(throttle.delay(), Duration::from_millis(200));
+        throttle.record(DeliveryOutcome::Failed);
+        assert_eq!(throttle.delay(), Duration::from_millis(500));
+        throttle.record(DeliveryOutcome::Failed);
+        assert_eq!(throttle.delay(), Duration::from_secs(1));
+        throttle.record(DeliveryOutcome::Failed);
+        assert_eq!(throttle.delay(), Duration::from_secs(2));
+        throttle.record(DeliveryOutcome::Failed);
+        assert_eq!(throttle.delay(), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn test_throttle_recovery() {
+        let mut throttle = ThrottleState::default();
+        for _ in 0..5 {
+            throttle.record(DeliveryOutcome::Failed);
+        }
+        let failed_delay = throttle.delay();
+        for _ in 0..3 {
+            throttle.record(DeliveryOutcome::Success);
+        }
+        let expected = Duration::from_millis(failed_delay.as_millis() as u64 / 2);
+        assert_eq!(throttle.delay(), expected);
+    }
+
+    #[test]
+    fn detect_activity_for_claude_patterns() {
+        let detector = ActivityDetector::for_cli("claude");
+        let output = "⠋ processing request\nRelay message from Alice [evt_1]: hello";
+        assert_eq!(
+            detector.detect_activity(output, "Relay message from Alice [evt_1]: hello"),
+            Some("⠋".to_string())
+        );
+        assert_eq!(
+            detector.detect_activity("Tool: Write(file)", "Relay message from Alice [evt_1]: hello"),
+            Some("Tool:".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_activity_removes_expected_echo_from_output() {
+        let detector = ActivityDetector::for_cli("claude");
+        let expected_echo = "Relay message from Alice [evt_1]: hello";
+        let output = format!(
+            "{}\nTool: Write(file)",
+            expected_echo
+        );
+        assert_eq!(
+            detector.detect_activity(&output, expected_echo),
+            Some("Tool:".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_activity_for_codex_patterns() {
+        let detector = ActivityDetector::for_cli("codex");
+        assert_eq!(
+            detector.detect_activity("Thinking... running tool", "Relay message from Alice [evt_1]: hello"),
+            Some("Thinking...".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_activity_for_gemini_patterns() {
+        let detector = ActivityDetector::for_cli("gemini");
+        assert_eq!(
+            detector.detect_activity("Action: execute task", "Relay message from Alice [evt_1]: hello"),
+            Some("Action:".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_activity_uses_default_when_any_output_present_for_unknown_cli() {
+        let detector = ActivityDetector::for_cli("mystery-cli");
+        assert_eq!(
+            detector.detect_activity("Output after echo", "Relay message from Alice [evt_1]: hello"),
+            Some("any_output".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_activity_defaults_to_any_output() {
+        let detector = ActivityDetector::for_cli("mystery-cli");
+        assert_eq!(
+            detector.detect_activity("Agent output line", "Relay message from Alice [evt_1]: hello"),
+            Some("any_output".to_string())
+        );
+        assert_eq!(
+            detector.detect_activity("Relay message from Alice [evt_1]: hello", "Relay message from Alice [evt_1]: hello"),
+            None
+        );
+    }
+
+    #[test]
+    fn detect_activity_strips_ansi_before_matching_patterns() {
+        let detector = ActivityDetector::for_cli("claude");
+        let expected_echo = "Relay message from Alice [evt_1]: hello";
+        let output = format!(
+            "{}\n\x1b[32m⠙\x1b[0m writing output\n",
+            expected_echo
+        );
+        assert_eq!(
+            detector.detect_activity(&output, expected_echo),
+            Some("⠙".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_activity_does_not_match_pattern_in_echo() {
+        let detector = ActivityDetector::for_cli("claude");
+        let expected_echo = "Relay message from Alice [evt_1]: Tool: Write(file)";
+        let output = format!("{}", expected_echo);
+        assert_eq!(
+            detector.detect_activity(&output, expected_echo),
+            None
+        );
     }
 }
