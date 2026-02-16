@@ -852,8 +852,8 @@ mod tests {
         let responses = parser.feed(b"\x1b[c\x1b[6n\x1b[5n");
         assert_eq!(responses.len(), 3);
         assert_eq!(responses[0], b"\x1b[?1;2c"); // DA1
-        assert_eq!(responses[1], b"\x1b[1;1R");   // CPR
-        assert_eq!(responses[2], b"\x1b[0n");     // DSR
+        assert_eq!(responses[1], b"\x1b[1;1R"); // CPR
+        assert_eq!(responses[2], b"\x1b[0n"); // DSR
     }
 
     #[test]
@@ -983,14 +983,20 @@ mod tests {
     #[test]
     fn format_injection_channel() {
         let result = format_injection("Alice", "evt_1", "hello world", "#general");
-        assert_eq!(result, "Relay message from Alice in #general [evt_1]: hello world");
+        assert_eq!(
+            result,
+            "Relay message from Alice in #general [evt_1]: hello world"
+        );
     }
 
     #[test]
     fn format_injection_pre_formatted() {
         let body = "Relay message from Bob [evt_0]: previous message";
         let result = format_injection("Alice", "evt_1", body, "Charlie");
-        assert_eq!(result, body, "pre-formatted messages should pass through unchanged");
+        assert_eq!(
+            result, body,
+            "pre-formatted messages should pass through unchanged"
+        );
     }
 
     // ==================== is_auto_suggestion edge cases ====================
