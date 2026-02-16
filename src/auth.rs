@@ -365,8 +365,20 @@ mod tests {
 
     use super::{AuthClient, CredentialCache, CredentialStore};
 
+    /// Remove RELAY_API_KEY from the environment so it doesn't interfere with
+    /// mock-server tests. Tests use httpmock and only set up specific auth
+    /// headers — the real env key causes 404s against the mock.
+    fn clear_relay_env() {
+        // SAFETY: test-only; Rust warns about remove_var in multi-threaded
+        // contexts but we accept the risk in test code.
+        unsafe {
+            std::env::remove_var("RELAY_API_KEY");
+        }
+    }
+
     #[tokio::test]
     async fn first_run_creates_workspace_and_agent_session() {
+        clear_relay_env();
         let server = MockServer::start();
         let workspace = server.mock(|when, then| {
             when.method(POST).path("/v1/workspaces");
@@ -400,6 +412,7 @@ mod tests {
 
     #[tokio::test]
     async fn uses_cached_workspace_key_without_creating_workspace() {
+        clear_relay_env();
         let server = MockServer::start();
         let register = server.mock(|when, then| {
             when.method(POST)
@@ -433,6 +446,7 @@ mod tests {
 
     #[tokio::test]
     async fn corrupt_cache_bootstraps_new_workspace() {
+        clear_relay_env();
         let server = MockServer::start();
         let workspace = server.mock(|when, then| {
             when.method(POST).path("/v1/workspaces");
@@ -466,6 +480,7 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_session_uses_cached_workspace_key() {
+        clear_relay_env();
         let server = MockServer::start();
         let register = server.mock(|when, then| {
             when.method(POST)
@@ -496,6 +511,7 @@ mod tests {
 
     #[tokio::test]
     async fn unauthorized_cached_key_bootstraps_fresh_workspace() {
+        clear_relay_env();
         let server = MockServer::start();
         let stale_register = server.mock(|when, then| {
             when.method(POST)
@@ -545,6 +561,7 @@ mod tests {
 
     #[tokio::test]
     async fn strict_name_returns_conflict_without_suffix_retry() {
+        clear_relay_env();
         let server = MockServer::start();
         let conflict = server.mock(|when, then| {
             when.method(POST)
@@ -583,6 +600,7 @@ mod tests {
 
     #[tokio::test]
     async fn default_name_conflict_retries_with_suffix_once() {
+        clear_relay_env();
         let server = MockServer::start();
         let first_conflict = server.mock(|when, then| {
             when.method(POST)
