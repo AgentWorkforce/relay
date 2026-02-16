@@ -1214,11 +1214,12 @@ async function executeWave(
   const lastActivityTime = new Map<string, number>();
   const IDLE_TIMEOUT_MS = 2 * 60 * 1000; // 2 min of no PTY output = idle/done
 
-  // Track when we last injected a message into each agent's PTY.
-  // We suppress keyword matching for ECHO_GRACE_MS after injection to avoid
-  // false positives from the PTY echoing back the prompt text.
+  // Track when we last injected a message into each agent's PTY, and the
+  // text we injected. We use this to distinguish real completion signals from
+  // echoes of the injected prompt.
   const lastInjectionTime = new Map<string, number>();
-  const ECHO_GRACE_MS = 30_000; // ignore keywords for 30s after injection
+  const lastInjectedText = new Map<string, string>();
+  const ECHO_GRACE_MS = 10_000; // ignore keywords for 10s after injection
 
   relay.onWorkerOutput = (output) => {
     const prev = outputBuffers.get(output.name) ?? "";
@@ -1226,26 +1227,30 @@ async function executeWave(
     outputBuffers.set(output.name, buf);
     lastActivityTime.set(output.name, Date.now());
 
-    // Skip keyword detection during echo grace period after injection
+    // During the echo grace period, check if this chunk is part of the
+    // injected prompt echoing back. Only suppress if the keywords appear
+    // in the original injected text.
     const injectedAt = lastInjectionTime.get(output.name) ?? 0;
-    if (Date.now() - injectedAt < ECHO_GRACE_MS) return;
+    const inGracePeriod = Date.now() - injectedAt < ECHO_GRACE_MS;
 
-    // Check for completion keywords — require line-start or standalone to avoid
-    // matching keywords embedded in prompt instructions like "Post DONE:"
+    // Check for completion keywords in each line
+    const keywords = ["DONE:", "DONE.", "HANDOFF:", "REVIEW:PASS", "REVIEW:FAIL"];
     const lines = output.chunk.split("\n");
     const completionLine = lines.find((line) => {
       const trimmed = line.trim();
-      return (
-        trimmed.startsWith("DONE:") ||
-        trimmed.startsWith("DONE.") ||
-        trimmed.startsWith("HANDOFF:") ||
-        trimmed.startsWith("REVIEW:PASS") ||
-        trimmed.startsWith("REVIEW:FAIL") ||
-        trimmed === "DONE"
-      );
+      return keywords.some((kw) => trimmed.includes(kw)) || trimmed === "DONE";
     });
 
     if (completionLine) {
+      // If in grace period, check if this keyword also appears in the injected text
+      if (inGracePeriod) {
+        const injectedText = lastInjectedText.get(output.name) ?? "";
+        if (injectedText.includes(completionLine.trim())) {
+          // This is an echo of the prompt — skip
+          return;
+        }
+      }
+
       const syntheticMsg: Message = {
         eventId: `pty_${Date.now()}`,
         from: output.name,
@@ -1270,6 +1275,7 @@ async function executeWave(
 
     await orchestrator.sendMessage({ to: lead.name, text: leadTask.prompt });
     lastInjectionTime.set(lead.name, Date.now());
+    lastInjectedText.set(lead.name, leadTask.prompt);
     log(`Lead briefed. Waiting ${LEAD_PLANNING_DELAY_MS / 1000}s for planning...`);
     await sleep(LEAD_PLANNING_DELAY_MS);
 
@@ -1288,6 +1294,7 @@ async function executeWave(
 
       await orchestrator.sendMessage({ to: worker.name, text: task.prompt });
       lastInjectionTime.set(task.name, Date.now());
+      lastInjectedText.set(task.name, task.prompt);
       log(`Worker ${task.name} briefed.`);
 
       // Stagger workers to avoid file conflicts
@@ -1341,19 +1348,17 @@ async function executeWave(
         const remaining = workerTasks.filter((t) => !completedWorkers.has(t.name));
         for (const task of remaining) {
           log(`  Nudging idle worker: ${task.name}`);
-          await orchestrator.sendMessage({
-            to: task.name,
-            text: "Status check from Orchestrator: Are you still working? If you're done, please print 'DONE: [summary]'. If stuck, describe what's blocking you.",
-          });
+          const nudgeText = "Status check from Orchestrator: Are you still working? If you're done, please print 'DONE: [summary]'. If stuck, describe what's blocking you.";
+          await orchestrator.sendMessage({ to: task.name, text: nudgeText });
           lastInjectionTime.set(task.name, Date.now());
+          lastInjectedText.set(task.name, nudgeText);
         }
         // Also nudge the lead to check on workers
         if (leadTask) {
-          await orchestrator.sendMessage({
-            to: leadTask.name,
-            text: `Status check: ${remaining.map((t) => t.name).join(", ")} haven't reported DONE yet. Please ping them and drive completion.`,
-          });
+          const leadNudge = `Status check: ${remaining.map((t) => t.name).join(", ")} haven't reported DONE yet. Please ping them and drive completion.`;
+          await orchestrator.sendMessage({ to: leadTask.name, text: leadNudge });
           lastInjectionTime.set(leadTask.name, Date.now());
+          lastInjectedText.set(leadTask.name, leadNudge);
         }
       }
 
@@ -1377,6 +1382,7 @@ async function executeWave(
 
     await orchestrator.sendMessage({ to: reviewer.name, text: reviewerTask.prompt });
     lastInjectionTime.set(reviewer.name, Date.now());
+    lastInjectedText.set(reviewer.name, reviewerTask.prompt);
 
     // Wait for review verdict
     log("Waiting for Reviewer verdict...");
@@ -1402,11 +1408,10 @@ async function executeWave(
 
     // ── Phase 5: Wait for Lead handoff ─────────────────────────────────
     log("Requesting Lead handoff...");
-    await orchestrator.sendMessage({
-      to: leadTask.name,
-      text: `Workers are done. Reviewer verdict: ${verdict?.slice(0, 200) ?? "no verdict"}. Please post your HANDOFF summary now.`,
-    });
+    const handoffRequest = `Workers are done. Reviewer verdict: ${verdict?.slice(0, 200) ?? "no verdict"}. Please post your HANDOFF summary now.`;
+    await orchestrator.sendMessage({ to: leadTask.name, text: handoffRequest });
     lastInjectionTime.set(leadTask.name, Date.now());
+    lastInjectedText.set(leadTask.name, handoffRequest);
 
     await sleep(10_000);
     const handoffMsg = channelLog.find(
