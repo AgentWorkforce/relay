@@ -891,6 +891,16 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             "delivery": payload,
                                         })).await;
                                     }
+                                } else if msg_type == "delivery_queued" || msg_type == "delivery_injected" {
+                                    if let Some(payload) = value.get("payload") {
+                                        let _ = send_event(&sdk_out_tx, json!({
+                                            "kind": msg_type,
+                                            "name": name,
+                                            "delivery_id": payload.get("delivery_id"),
+                                            "event_id": payload.get("event_id"),
+                                            "timestamp": payload.get("timestamp"),
+                                        })).await;
+                                    }
                                 } else if msg_type == "delivery_verified" {
                                     if let Some(payload) = value.get("payload") {
                                         let delivery_id = payload.get("delivery_id").and_then(Value::as_str).unwrap_or("");

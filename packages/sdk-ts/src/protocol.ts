@@ -111,6 +111,20 @@ export type BrokerEvent =
       reason: string;
     }
   | {
+      kind: "delivery_queued";
+      name: string;
+      delivery_id: string;
+      event_id: string;
+      timestamp?: unknown;
+    }
+  | {
+      kind: "delivery_injected";
+      name: string;
+      delivery_id: string;
+      event_id: string;
+      timestamp?: unknown;
+    }
+  | {
       kind: "acl_denied";
       name: string;
       sender: string;

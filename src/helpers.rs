@@ -1,4 +1,6 @@
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use serde_json::{json, Value};
 
 pub(crate) const VERIFICATION_WINDOW: Duration = Duration::from_secs(3);
 pub(crate) const ACTIVITY_WINDOW: Duration = Duration::from_secs(5);
@@ -261,6 +263,66 @@ pub(crate) fn strip_ansi(text: &str) -> String {
         }
     }
     result
+}
+
+pub(crate) fn current_timestamp_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis())
+        .min(u128::from(u64::MAX))
+        as u64
+}
+
+pub(crate) fn delivery_queued_event_payload(
+    delivery_id: &str,
+    event_id: &str,
+    worker_name: &str,
+    timestamp_ms: u64,
+) -> Value {
+    json!({
+        "delivery_id": delivery_id,
+        "event_id": event_id,
+        "worker_name": worker_name,
+        "timestamp": timestamp_ms,
+    })
+}
+
+pub(crate) fn delivery_injected_event_payload(
+    delivery_id: &str,
+    event_id: &str,
+    worker_name: &str,
+    timestamp_ms: u64,
+) -> Value {
+    json!({
+        "delivery_id": delivery_id,
+        "event_id": event_id,
+        "worker_name": worker_name,
+        "timestamp": timestamp_ms,
+    })
+}
+
+pub(crate) fn delivery_lifecycle_event_series(
+    delivery_id: &str,
+    event_id: &str,
+    worker_name: &str,
+    queued_timestamp_ms: u64,
+    injected_timestamp_ms: u64,
+) -> Vec<(&'static str, Value)> {
+    vec![
+        (
+            "delivery_queued",
+            delivery_queued_event_payload(delivery_id, event_id, worker_name, queued_timestamp_ms),
+        ),
+        (
+            "delivery_injected",
+            delivery_injected_event_payload(
+                delivery_id,
+                event_id,
+                worker_name,
+                injected_timestamp_ms,
+            ),
+        ),
+    ]
 }
 
 /// Detect Claude Code --dangerously-skip-permissions confirmation prompt.
@@ -554,5 +616,16 @@ mod tests {
         let expected_echo = "Relay message from Alice [evt_1]: Tool: Write(file)";
         let output = format!("{}", expected_echo);
         assert_eq!(detector.detect_activity(&output, expected_echo), None);
+    }
+
+    #[test]
+    fn delivery_events_are_emitted_in_queue_then_inject_order() {
+        let events = delivery_lifecycle_event_series("del_1", "evt_1", "agent", 10, 20);
+        assert_eq!(events[0].0, "delivery_queued");
+        assert_eq!(events[1].0, "delivery_injected");
+        assert_eq!(events[0].1["delivery_id"], "del_1");
+        assert_eq!(events[1].1["delivery_id"], "del_1");
+        assert_eq!(events[0].1["timestamp"], 10u64);
+        assert_eq!(events[1].1["timestamp"], 20u64);
     }
 }

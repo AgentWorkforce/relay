@@ -668,6 +668,13 @@ pub(crate) async fn run_wrap(
                             continue;
                         }
 
+                        let delivery_id = format!("wrap_{}", mapped.event_id);
+                        tracing::debug!(
+                            delivery_id = %delivery_id,
+                            event_id = %mapped.event_id,
+                            "wrap: delivery queued"
+                        );
+
                         pending_wrap_injections.push_back(PendingWrapInjection {
                             from: mapped.from,
                             event_id: mapped.event_id,
@@ -734,6 +741,10 @@ pub(crate) async fn run_wrap(
                     });
                     tokio::time::sleep(Duration::from_millis(50)).await;
                     let _ = pty.write_all(b"\r");
+                    tracing::debug!(
+                        event_id = %pending.event_id,
+                        "wrap: delivery injected"
+                    );
                     pty_auto.last_injection_time = Some(Instant::now());
                     pty_auto.auto_enter_retry_count = 0;
 
@@ -797,17 +808,22 @@ pub(crate) async fn run_wrap(
                 for mut pv in retry_queue {
                     tokio::time::sleep(throttle.delay()).await;
                     let injection = format_injection(&pv.from, &pv.event_id, &pv.body, &pv.target);
-                    if let Err(e) = pty.write_all(injection.as_bytes()) {
-                        tracing::warn!(
-                            event_id = %pv.event_id,
-                            error = %e,
-                            "wrap: retry PTY injection write failed"
+                if let Err(e) = pty.write_all(injection.as_bytes()) {
+                    tracing::warn!(
+                        event_id = %pv.event_id,
+                        error = %e,
+                        "wrap: retry PTY injection write failed"
                         );
-                    } else {
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                        let _ = pty.write_all(b"\r");
-                    }
-                    pv.expected_echo = injection;
+                } else {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    let _ = pty.write_all(b"\r");
+                    tracing::debug!(
+                        delivery_id = %pv.delivery_id,
+                        event_id = %pv.event_id,
+                        "wrap: delivery re-injected (retry)"
+                    );
+                }
+                pv.expected_echo = injection;
                     pv.injected_at = Instant::now();
                     pending_verifications.push_back(pv);
                 }

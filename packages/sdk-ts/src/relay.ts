@@ -120,6 +120,7 @@ export class AgentRelay {
   onAgentReleased: EventHook<Agent> = null;
   onAgentExited: EventHook<Agent> = null;
   onWorkerOutput: EventHook<{ name: string; stream: string; chunk: string }> = null;
+  onDeliveryUpdate: EventHook<BrokerEvent> = null;
 
   // Shorthand spawners
   readonly codex: AgentSpawner;
@@ -328,6 +329,9 @@ export class AgentRelay {
           });
           break;
         }
+      }
+      if (event.kind.startsWith("delivery_")) {
+        this.onDeliveryUpdate?.(event);
       }
     });
   }

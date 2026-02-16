@@ -3,6 +3,7 @@ use crate::helpers::{
     check_echo_in_output, floor_char_boundary, ActivityDetector, DeliveryOutcome, PendingActivity,
     PendingVerification, ThrottleState, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES,
     ACTIVITY_WINDOW, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+    current_timestamp_ms, delivery_injected_event_payload, delivery_queued_event_payload,
 };
 use crate::wrap::{PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
 
@@ -52,6 +53,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     auto_enter_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut pending_injection_interval = tokio::time::interval(Duration::from_millis(50));
     pending_injection_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut worker_name = cmd
+        .agent_name
+        .clone()
+        .unwrap_or_else(|| "pty-worker".to_string());
     let mut pending_worker_injections: VecDeque<PendingWorkerInjection> = VecDeque::new();
     let mut pending_worker_delivery_ids: HashSet<String> = HashSet::new();
 
@@ -98,6 +103,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                             .map(ToOwned::to_owned)
                                     })
                                     .unwrap_or_else(|| "pty-worker".to_string());
+                                worker_name = inferred_name.clone();
 
                                 let _ = send_frame(
                                     &out_tx,
@@ -120,6 +126,18 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     }
                                 };
                                 if pending_worker_delivery_ids.insert(delivery.delivery_id.clone()) {
+                                    let _ = send_frame(
+                                        &out_tx,
+                                        "delivery_queued",
+                                        None,
+                                        delivery_queued_event_payload(
+                                            &delivery.delivery_id,
+                                            &delivery.event_id,
+                                            &worker_name,
+                                            current_timestamp_ms(),
+                                        ),
+                                    )
+                                    .await;
                                     pending_worker_injections.push_back(PendingWorkerInjection {
                                         delivery,
                                         request_id: frame.request_id,
@@ -334,6 +352,18 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     }
                     tokio::time::sleep(Duration::from_millis(50)).await;
                     let _ = pty.write_all(b"\r");
+                    let _ = send_frame(
+                        &out_tx,
+                        "delivery_injected",
+                        None,
+                        delivery_injected_event_payload(
+                            &pending.delivery.delivery_id,
+                            &pending.delivery.event_id,
+                            &worker_name,
+                            current_timestamp_ms(),
+                        ),
+                    )
+                    .await;
                     pty_auto.last_injection_time = Some(Instant::now());
                     pty_auto.auto_enter_retry_count = 0;
 
@@ -424,6 +454,18 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     } else {
                         tokio::time::sleep(Duration::from_millis(50)).await;
                         let _ = pty.write_all(b"\r");
+                        let _ = send_frame(
+                            &out_tx,
+                            "delivery_injected",
+                            None,
+                            delivery_injected_event_payload(
+                                &pv.delivery_id,
+                                &pv.event_id,
+                                &worker_name,
+                                current_timestamp_ms(),
+                            ),
+                        )
+                        .await;
                     }
                     pv.expected_echo = injection;
                     pv.injected_at = Instant::now();
