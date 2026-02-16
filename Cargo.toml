@@ -38,6 +38,7 @@ uuid = { version = "1.15", features = ["v4", "serde"] }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.30", features = ["signal", "process", "term", "fs"] }
+libc = "0.2"
 
 [dev-dependencies]
 httpmock = "0.7"
