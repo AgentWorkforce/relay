@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 pub(crate) const ACTIVITY_WINDOW: Duration = Duration::from_secs(5);
 pub(crate) const ACTIVITY_BUFFER_MAX_BYTES: usize = 16_000;
 pub(crate) const ACTIVITY_BUFFER_KEEP_BYTES: usize = 12_000;
+#[cfg(test)]
 pub(crate) const CLI_READY_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, Copy)]
@@ -148,6 +149,7 @@ pub(crate) fn check_echo_in_output(output: &str, expected: &str) -> bool {
 
 /// Detect whether a CLI has finished startup and is ready to receive input.
 /// Checks for known prompt patterns (from relay-pty parser) and a byte-count fallback.
+#[cfg(test)]
 pub(crate) fn detect_cli_ready(cli: &str, output: &str, total_bytes: usize) -> bool {
     let clean = strip_ansi(output);
     let lower_cli = cli.to_lowercase();
@@ -158,15 +160,10 @@ pub(crate) fn detect_cli_ready(cli: &str, output: &str, total_bytes: usize) -> b
     }
 
     // Prompt patterns (from relay-pty parser.rs)
-    let prompt_patterns: &[&str] = if lower_cli.contains("claude") {
-        &["> ", "$ ", ">>> "]
-    } else if lower_cli.contains("codex") {
+    let prompt_patterns: &[&str] = if lower_cli.contains("codex") {
         &["> ", "$ ", "codex> ", ">>> "]
-    } else if lower_cli.contains("gemini") {
-        &["> ", "$ ", ">>> "]
-    } else if lower_cli.contains("aider") {
-        &["> ", "$ ", ">>> "]
     } else {
+        // claude, gemini, aider, and others all share the same patterns
         &["> ", "$ ", ">>> "]
     };
 
