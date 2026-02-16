@@ -591,5 +591,4 @@ mod tests {
         let output = format!("{}", expected_echo);
         assert_eq!(detector.detect_activity(&output, expected_echo), None);
     }
-
 }
