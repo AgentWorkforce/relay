@@ -1,0 +1,46 @@
+{
+  "id": "traj_ci9y9vd7tzxq",
+  "version": 1,
+  "task": {
+    "title": "Expose broker-sdk with logs, consensus, shadow, browser exports, and agent status query"
+  },
+  "status": "active",
+  "startedAt": "2026-02-17T09:40:00.984Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-02-17T09:40:07.491Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_cy7bhy3y6ty1",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-02-17T09:40:07.491Z",
+      "events": [
+        {
+          "ts": 1771321207492,
+          "type": "decision",
+          "content": "Split consensus into helpers (browser-safe) + engine (Node-only): Split consensus into helpers (browser-safe) + engine (Node-only)",
+          "raw": {
+            "question": "Split consensus into helpers (browser-safe) + engine (Node-only)",
+            "chosen": "Split consensus into helpers (browser-safe) + engine (Node-only)",
+            "alternatives": [],
+            "reasoning": "Browser export must avoid node:crypto and node:events at module load time"
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "a38e45c0493ae69dbb2d0788a53921bc8b9faeb5",
+    "endRef": "a38e45c0493ae69dbb2d0788a53921bc8b9faeb5"
+  }
+}

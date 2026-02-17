@@ -32,7 +32,7 @@ import {
   type AgentRelayClientOptions,
   type SpawnPtyInput,
 } from "./client.js";
-import type { AgentRuntime, BrokerEvent } from "./protocol.js";
+import type { AgentRuntime, BrokerEvent, BrokerStatus } from "./protocol.js";
 import { RelaycastApi } from "./relaycast.js";
 
 function isUnsupportedOperation(error: unknown): error is AgentRelayProtocolError {
@@ -223,6 +223,13 @@ export class AgentRelay {
       this.knownAgents.set(agent.name, agent);
       return agent;
     });
+  }
+
+  // ── Status ────────────────────────────────────────────────────────────
+
+  async getStatus(): Promise<BrokerStatus> {
+    const client = await this.ensureStarted();
+    return client.getStatus();
   }
 
   // ── Lifecycle ───────────────────────────────────────────────────────────

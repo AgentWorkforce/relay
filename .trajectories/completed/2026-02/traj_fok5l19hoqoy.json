@@ -4,7 +4,7 @@
   "task": {
     "title": "Broker migration: fix completion detection + Wave 2-3 execution"
   },
-  "status": "active",
+  "status": "abandoned",
   "startedAt": "2026-02-16T12:33:10.507Z",
   "agents": [
     {
@@ -31,8 +31,15 @@
             "reasoning": "30s blanket grace period was too aggressive — suppressed real DONE signals from workers. Now only suppress keywords that match the injected prompt text."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1771321200889,
+          "type": "note",
+          "content": "Abandoned: Stale trajectory from previous session",
+          "significance": "high"
         }
-      ]
+      ],
+      "endedAt": "2026-02-17T09:40:00.888Z"
     }
   ],
   "commits": [],
@@ -42,5 +49,6 @@
   "_trace": {
     "startRef": "cf93556f6369d4d43d2113ada62ce4bf8b91e9b7",
     "endRef": "cf93556f6369d4d43d2113ada62ce4bf8b91e9b7"
-  }
+  },
+  "completedAt": "2026-02-17T09:40:00.888Z"
 }
