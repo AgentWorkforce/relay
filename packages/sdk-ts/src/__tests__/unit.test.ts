@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { join, sep } from "node:path";
-import { mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import test from "node:test";
 
@@ -99,8 +99,7 @@ test("getLogs: rejects path traversal", async () => {
 });
 
 test("getLogs: returns not found for missing agent", async () => {
-  const dir = join(tmpdir(), `relay-test-logs-${Date.now()}`);
-  await mkdir(dir, { recursive: true });
+  const dir = await mkdtemp(join(tmpdir(), "relay-test-logs-"));
 
   try {
     const result = await getLogs("nonexistent", { logsDir: dir });
@@ -112,8 +111,7 @@ test("getLogs: returns not found for missing agent", async () => {
 });
 
 test("getLogs: reads content from log file", async () => {
-  const dir = join(tmpdir(), `relay-test-logs-${Date.now()}`);
-  await mkdir(dir, { recursive: true });
+  const dir = await mkdtemp(join(tmpdir(), "relay-test-logs-"));
 
   try {
     const logContent = "line1\nline2\nline3\n";
@@ -129,8 +127,7 @@ test("getLogs: reads content from log file", async () => {
 });
 
 test("listLoggedAgents: lists agent names from log files", async () => {
-  const dir = join(tmpdir(), `relay-test-logs-${Date.now()}`);
-  await mkdir(dir, { recursive: true });
+  const dir = await mkdtemp(join(tmpdir(), "relay-test-logs-"));
 
   try {
     await writeFile(join(dir, "Alice.log"), "hello\n");

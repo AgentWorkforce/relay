@@ -1080,9 +1080,14 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             tracing::warn!(worker = %name, error = %e, "failed to deliver initial_task");
                                         }
                                     }
+                                    let runtime = value.get("payload")
+                                        .and_then(|p| p.get("runtime"))
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("pty");
                                     let _ = send_event(&sdk_out_tx, json!({
                                         "kind": "worker_ready",
                                         "name": name,
+                                        "runtime": runtime,
                                     })).await;
                                 }
                             }
