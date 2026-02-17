@@ -336,7 +336,9 @@ export class ConsensusEngine extends EventEmitter {
           votedWeight > 0 &&
           result.rejectWeight / votedWeight > 1 - threshold
         ) {
-          return true;
+          return (
+            result.rejectWeight / (votedWeight + remainingWeight) > 1 - threshold
+          );
         }
         return false;
       }

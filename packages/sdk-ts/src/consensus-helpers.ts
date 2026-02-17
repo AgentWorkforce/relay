@@ -141,20 +141,26 @@ export function formatResultMessage(
 export function parseVoteCommand(
   message: string,
 ): { proposalId: string; value: VoteValue; reason?: string } | null {
-  const match = message.match(
-    /^VOTE[ \t]+(\S+)[ \t]+(approve|reject|abstain)(?:[ \t]+(.+))?$/i,
-  );
-  if (!match) return null;
-  return {
-    proposalId: match[1],
-    value: match[2].toLowerCase() as VoteValue,
-    reason: match[3]?.trim(),
-  };
+  const trimmed = message.trim();
+  if (!trimmed.toUpperCase().startsWith("VOTE ")) return null;
+
+  // Split into at most 4 parts: "VOTE", proposalId, value, reason...
+  const parts = trimmed.split(/\s+/);
+  if (parts.length < 3) return null;
+
+  const proposalId = parts[1];
+  const rawValue = parts[2].toLowerCase();
+  if (rawValue !== "approve" && rawValue !== "reject" && rawValue !== "abstain") {
+    return null;
+  }
+
+  const reason = parts.length > 3 ? parts.slice(3).join(" ") : undefined;
+  return { proposalId, value: rawValue, reason };
 }
 
 export function isConsensusCommand(message: string): boolean {
   const trimmed = message.trim();
-  return trimmed.startsWith("PROPOSE:") || /^VOTE\s+/i.test(trimmed);
+  return trimmed.startsWith("PROPOSE:") || trimmed.toUpperCase().startsWith("VOTE ");
 }
 
 /**
