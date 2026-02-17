@@ -3,37 +3,12 @@
  *
  * Lightweight SDK for agent-to-agent communication via Agent Relay.
  *
- * ## Quick Start (Standalone - No Setup Required)
- *
- * ```typescript
- * import { createRelay } from '@agent-relay/sdk';
- *
- * const relay = await createRelay();
- * const alice = await relay.client('Alice');
- * const bob = await relay.client('Bob');
- *
- * bob.onMessage = (from, { body }) => console.log(`${from}: ${body}`);
- * alice.sendMessage('Bob', 'Hello!');
- * ```
- *
- * ## With External Daemon
+ * ## Quick Start
  *
  * ```typescript
  * import { RelayClient } from '@agent-relay/sdk';
  *
  * const client = new RelayClient({ agentName: 'MyAgent' });
- * await client.connect();
- * ```
- *
- * ## Browser Usage (WebSocket)
- *
- * ```typescript
- * import { BrowserRelayClient } from '@agent-relay/sdk';
- *
- * const client = new BrowserRelayClient({
- *   agentName: 'BrowserAgent',
- *   transport: { wsUrl: 'wss://relay.example.com/ws' },
- * });
  * await client.connect();
  * ```
  */
@@ -48,49 +23,6 @@ export {
   type RequestResponse,
   type SpawnResult,
 } from './client.js';
-
-// Browser-compatible client (WebSocket)
-export {
-  BrowserRelayClient,
-  type BrowserClientState,
-  type BrowserClientConfig,
-  type BrowserRequestOptions,
-  type BrowserRequestResponse,
-} from './browser-client.js';
-
-// Transport abstractions
-export {
-  // Types
-  type Transport,
-  type TransportConfig,
-  type TransportEvents,
-  type TransportState,
-  type TransportFactory,
-  // Socket transport (Node.js)
-  SocketTransport,
-  createSocketTransport,
-  type SocketTransportConfig,
-  // WebSocket transport (Browser + Node.js)
-  WebSocketTransport,
-  createWebSocketTransport,
-  socketPathToWsUrl,
-  type WebSocketTransportConfig,
-  // Auto-detection
-  createAutoTransport,
-  type AutoTransportOptions,
-  detectEnvironment,
-  type EnvironmentInfo,
-  isBrowser,
-  isNode,
-} from './transports/index.js';
-
-// Standalone relay (in-process daemon for simple use cases)
-export {
-  createRelay,
-  createPair,
-  type Relay,
-  type RelayConfig,
-} from './standalone.js';
 
 // Protocol types (re-export for convenience)
 export {

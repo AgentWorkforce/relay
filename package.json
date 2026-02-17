@@ -121,7 +121,6 @@
     "build:spawner": "cd packages/spawner && npm run build",
     "build:broker-sdk": "cd packages/sdk-ts && npm run build",
     "build:telemetry": "cd packages/telemetry && npm run build",
-    "build:benchmark": "cd packages/benchmark && npm run build",
     "build:cjs": "node ./scripts/build-cjs.mjs",
     "postbuild": "chmod +x dist/src/cli/index.js && npm run build:cjs",
     "prepack": "if [ -d node_modules ]; then npm run build; else echo '⚠ node_modules not found, skipping prepack build'; fi",
