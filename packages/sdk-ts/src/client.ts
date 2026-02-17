@@ -11,6 +11,7 @@ import {
   type AgentRuntime,
   type AgentSpec,
   type BrokerEvent,
+  type BrokerStatus,
   type ProtocolEnvelope,
   type ProtocolError,
 } from "./protocol.js";
@@ -215,6 +216,11 @@ export class AgentRelayClient {
     await this.start();
     const result = await this.requestOk<{ agents: ListAgent[] }>("list_agents", {});
     return result.agents;
+  }
+
+  async getStatus(): Promise<BrokerStatus> {
+    await this.start();
+    return this.requestOk<BrokerStatus>("get_status", {});
   }
 
   async shutdown(): Promise<void> {

@@ -1894,6 +1894,32 @@ async fn handle_sdk_frame(
             send_ok(out_tx, frame.request_id, json!({"agents": workers.list()})).await?;
             Ok(false)
         }
+        "get_status" => {
+            let agents: Vec<Value> = workers.list();
+            let pending: Vec<Value> = pending_deliveries
+                .values()
+                .map(|pd| {
+                    json!({
+                        "delivery_id": pd.delivery.delivery_id,
+                        "worker_name": pd.worker_name,
+                        "event_id": pd.delivery.event_id,
+                        "attempts": pd.attempts,
+                    })
+                })
+                .collect();
+            send_ok(
+                out_tx,
+                frame.request_id,
+                json!({
+                    "agent_count": agents.len(),
+                    "agents": agents,
+                    "pending_delivery_count": pending.len(),
+                    "pending_deliveries": pending,
+                }),
+            )
+            .await?;
+            Ok(false)
+        }
         "shutdown" => {
             send_ok(out_tx, frame.request_id, json!({"status":"shutting_down"})).await?;
             Ok(true)

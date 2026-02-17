@@ -55,9 +55,33 @@ export type SdkToBroker =
       payload: Record<string, never>;
     }
   | {
+      type: "get_status";
+      payload: Record<string, never>;
+    }
+  | {
       type: "shutdown";
       payload: Record<string, never>;
     };
+
+export interface PendingDeliveryInfo {
+  delivery_id: string;
+  worker_name: string;
+  event_id: string;
+  attempts: number;
+}
+
+export interface BrokerStatus {
+  agent_count: number;
+  agents: Array<{
+    name: string;
+    runtime: AgentRuntime;
+    channels: string[];
+    parent?: string;
+    pid?: number;
+  }>;
+  pending_delivery_count: number;
+  pending_deliveries: PendingDeliveryInfo[];
+}
 
 export interface ProtocolError {
   code: string;

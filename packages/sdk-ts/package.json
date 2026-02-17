@@ -4,6 +4,48 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js",
+      "default": "./dist/client.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "import": "./dist/protocol.js",
+      "default": "./dist/protocol.js"
+    },
+    "./relay": {
+      "types": "./dist/relay.d.ts",
+      "import": "./dist/relay.js",
+      "default": "./dist/relay.js"
+    },
+    "./logs": {
+      "types": "./dist/logs.d.ts",
+      "import": "./dist/logs.js",
+      "default": "./dist/logs.js"
+    },
+    "./consensus": {
+      "types": "./dist/consensus.d.ts",
+      "import": "./dist/consensus.js",
+      "default": "./dist/consensus.js"
+    },
+    "./shadow": {
+      "types": "./dist/shadow.d.ts",
+      "import": "./dist/shadow.js",
+      "default": "./dist/shadow.js"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser.js",
+      "default": "./dist/browser.js"
+    }
+  },
   "files": [
     "dist",
     "bin",

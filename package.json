@@ -23,7 +23,47 @@
       "import": "./dist/src/index.js",
       "default": "./dist/index.cjs"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./broker": {
+      "types": "./packages/sdk-ts/dist/index.d.ts",
+      "import": "./packages/sdk-ts/dist/index.js",
+      "default": "./packages/sdk-ts/dist/index.js"
+    },
+    "./broker/client": {
+      "types": "./packages/sdk-ts/dist/client.d.ts",
+      "import": "./packages/sdk-ts/dist/client.js",
+      "default": "./packages/sdk-ts/dist/client.js"
+    },
+    "./broker/protocol": {
+      "types": "./packages/sdk-ts/dist/protocol.d.ts",
+      "import": "./packages/sdk-ts/dist/protocol.js",
+      "default": "./packages/sdk-ts/dist/protocol.js"
+    },
+    "./broker/relay": {
+      "types": "./packages/sdk-ts/dist/relay.d.ts",
+      "import": "./packages/sdk-ts/dist/relay.js",
+      "default": "./packages/sdk-ts/dist/relay.js"
+    },
+    "./broker/logs": {
+      "types": "./packages/sdk-ts/dist/logs.d.ts",
+      "import": "./packages/sdk-ts/dist/logs.js",
+      "default": "./packages/sdk-ts/dist/logs.js"
+    },
+    "./broker/consensus": {
+      "types": "./packages/sdk-ts/dist/consensus.d.ts",
+      "import": "./packages/sdk-ts/dist/consensus.js",
+      "default": "./packages/sdk-ts/dist/consensus.js"
+    },
+    "./broker/shadow": {
+      "types": "./packages/sdk-ts/dist/shadow.d.ts",
+      "import": "./packages/sdk-ts/dist/shadow.js",
+      "default": "./packages/sdk-ts/dist/shadow.js"
+    },
+    "./broker/browser": {
+      "types": "./packages/sdk-ts/dist/browser.d.ts",
+      "import": "./packages/sdk-ts/dist/browser.js",
+      "default": "./packages/sdk-ts/dist/browser.js"
+    }
   },
   "bin": {
     "agent-relay": "dist/src/cli/index.js"
@@ -56,8 +96,8 @@
   "scripts": {
     "postinstall": "node scripts/postinstall.js",
     "build": "npm run clean && npm run build:rust && turbo run build --filter='./packages/*' && tsc",
-    "build:sequential": "npm run clean && npm run build:rust && npm run build:protocol && npm run build:config && npm run build:storage && npm run build:state && npm run build:policy && npm run build:trajectory && npm run build:hooks && npm run build:memory && npm run build:utils && npm run build:continuity && npm run build:resiliency && npm run build:user-directory && npm run build:wrapper && npm run build:mcp && npm run build:bridge && npm run build:telemetry && npm run build:daemon && npm run build:sdk && npm run build:api-types && npm run build:spawner && tsc",
-    "build:workspace": "npm run clean && npm run build:rust && npm run build:protocol && npm run build:config && npm run build:storage && npm run build:state && npm run build:policy && npm run build:trajectory && npm run build:hooks && npm run build:memory && npm run build:utils && npm run build:continuity && npm run build:resiliency && npm run build:user-directory && npm run build:wrapper && npm run build:mcp && npm run build:bridge && npm run build:telemetry && npm run build:daemon && npm run build:sdk && npm run build:api-types && npm run build:spawner && tsc",
+    "build:sequential": "npm run clean && npm run build:rust && npm run build:protocol && npm run build:config && npm run build:storage && npm run build:state && npm run build:policy && npm run build:trajectory && npm run build:hooks && npm run build:memory && npm run build:utils && npm run build:continuity && npm run build:resiliency && npm run build:user-directory && npm run build:wrapper && npm run build:mcp && npm run build:bridge && npm run build:telemetry && npm run build:daemon && npm run build:sdk && npm run build:api-types && npm run build:spawner && npm run build:broker-sdk && tsc",
+    "build:workspace": "npm run clean && npm run build:rust && npm run build:protocol && npm run build:config && npm run build:storage && npm run build:state && npm run build:policy && npm run build:trajectory && npm run build:hooks && npm run build:memory && npm run build:utils && npm run build:continuity && npm run build:resiliency && npm run build:user-directory && npm run build:wrapper && npm run build:mcp && npm run build:bridge && npm run build:telemetry && npm run build:daemon && npm run build:sdk && npm run build:api-types && npm run build:spawner && npm run build:broker-sdk && tsc",
     "build:packages": "turbo run build --filter='./packages/*'",
     "build:packages:watch": "turbo run build --filter='./packages/*' --watch",
     "build:mcp": "cd packages/mcp && npm run build",
@@ -79,6 +119,7 @@
     "build:sdk": "cd packages/sdk && npm run build",
     "build:api-types": "cd packages/api-types && npm run build",
     "build:spawner": "cd packages/spawner && npm run build",
+    "build:broker-sdk": "cd packages/sdk-ts && npm run build",
     "build:telemetry": "cd packages/telemetry && npm run build",
     "build:benchmark": "cd packages/benchmark && npm run build",
     "build:cjs": "node ./scripts/build-cjs.mjs",
@@ -150,7 +191,9 @@
     "@agent-relay/trajectory": "2.2.24",
     "@agent-relay/user-directory": "2.2.24",
     "@agent-relay/utils": "2.2.24",
+    "@agent-relay/broker-sdk": "3.0.0-alpha.1",
     "@agent-relay/wrapper": "2.2.24",
+    "@relaycast/sdk": "^0.2.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "agent-trajectories": "^0.3.0",
     "chokidar": "^5.0.0",
