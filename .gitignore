@@ -62,3 +62,6 @@ codex.toml
 .build-standalone/
 bin/agent-relay-bundle
 bin/agent-relay-standalone
+
+# SDK bundled broker binary (built/downloaded at install time)
+packages/sdk-ts/bin/

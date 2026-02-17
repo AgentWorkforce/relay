@@ -358,7 +358,7 @@ async function installRelayPtyBinary() {
 }
 
 /**
- * Get the platform-specific binary name for the Rust broker binary.
+ * Get the platform-specific binary name for the broker binary.
  * The broker binary is needed by the SDK (packages/sdk-ts) for programmatic
  * agent orchestration via `new AgentRelay()`.
  * Returns null if platform is not supported.
@@ -377,11 +377,11 @@ function getBrokerBinaryName() {
     return null;
   }
 
-  return `agent-relay-broker-${targetPlatform}-${targetArch}`;
+  return `agent-relay-${targetPlatform}-${targetArch}`;
 }
 
 /**
- * Install the Rust broker binary into packages/sdk-ts/bin/.
+ * Install the broker binary into packages/sdk-ts/bin/.
  *
  * The SDK's AgentRelayClient spawns this binary as a subprocess
  * (`agent-relay init --name broker --channels general`). Without it,
@@ -389,8 +389,8 @@ function getBrokerBinaryName() {
  *
  * Resolution order:
  *   1. Already bundled at packages/sdk-ts/bin/agent-relay (e.g. from prepack)
- *   2. Download platform-specific binary from GitHub releases
- *   3. Fall back to the Rust debug binary at target/debug/agent-relay (dev only)
+ *   2. Download platform-specific standalone binary from GitHub releases
+ *   3. Fall back to the local Rust debug binary at target/debug/agent-relay (dev only)
  */
 async function installBrokerBinary() {
   const pkgRoot = getPackageRoot();
