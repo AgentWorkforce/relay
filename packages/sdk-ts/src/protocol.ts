@@ -34,7 +34,7 @@ export type SdkToBroker =
     }
   | {
       type: "spawn_agent";
-      payload: { agent: AgentSpec };
+      payload: { agent: AgentSpec; initial_task?: string };
     }
   | {
       type: "send_message";

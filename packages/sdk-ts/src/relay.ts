@@ -34,6 +34,7 @@ import {
 } from "./client.js";
 import type { AgentRuntime, BrokerEvent, BrokerStatus } from "./protocol.js";
 import { RelaycastApi } from "./relaycast.js";
+import { getLogs as getLogsFromFile, listLoggedAgents as listLoggedAgentsFromFile, type LogsResult, type GetLogsOptions } from "./logs.js";
 
 function isUnsupportedOperation(error: unknown): error is AgentRelayProtocolError {
   return error instanceof AgentRelayProtocolError && error.code === "unsupported_operation";
@@ -66,6 +67,10 @@ export interface Agent {
   readonly name: string;
   readonly runtime: AgentRuntime;
   readonly channels: string[];
+  /** Set when the agent exits. Available after `onAgentExited` fires. */
+  exitCode?: number;
+  /** Set when the agent exits via signal. Available after `onAgentExited` fires. */
+  exitSignal?: string;
   release(): Promise<void>;
   /** Wait for the agent process to exit on its own.
    *  @param timeoutMs — optional timeout in ms. Resolves with `"timeout"` if exceeded,
@@ -94,6 +99,7 @@ export interface AgentSpawner {
     name?: string;
     args?: string[];
     channels?: string[];
+    task?: string;
   }): Promise<Agent>;
 }
 
@@ -119,6 +125,7 @@ export class AgentRelay {
   onAgentSpawned: EventHook<Agent> = null;
   onAgentReleased: EventHook<Agent> = null;
   onAgentExited: EventHook<Agent> = null;
+  onAgentReady: EventHook<Agent> = null;
   onWorkerOutput: EventHook<{ name: string; stream: string; chunk: string }> = null;
   onDeliveryUpdate: EventHook<BrokerEvent> = null;
 
@@ -164,6 +171,7 @@ export class AgentRelay {
       cli: input.cli,
       args: input.args,
       channels,
+      task: input.task,
     });
     const agent = this.makeAgent(result.name, result.runtime, channels);
     this.knownAgents.set(agent.name, agent);
@@ -211,6 +219,21 @@ export class AgentRelay {
     };
   }
 
+  // ── Messaging ─────────────────────────────────────────────────────────
+
+  /**
+   * Broadcast a message to all connected agents.
+   * @param text — the message body
+   * @param options — optional sender name (defaults to "human:orchestrator")
+   */
+  async broadcast(
+    text: string,
+    options?: { from?: string },
+  ): Promise<Message> {
+    const from = options?.from ?? "human:orchestrator";
+    return this.human({ name: from }).sendMessage({ to: "*", text });
+  }
+
   // ── Listing ─────────────────────────────────────────────────────────────
 
   async listAgents(): Promise<Agent[]> {
@@ -230,6 +253,57 @@ export class AgentRelay {
   async getStatus(): Promise<BrokerStatus> {
     const client = await this.ensureStarted();
     return client.getStatus();
+  }
+
+  // ── Logs ──────────────────────────────────────────────────────────────
+
+  /**
+   * Read the last N lines of an agent's log file.
+   *
+   * @example
+   * ```ts
+   * const logs = await relay.getLogs("Worker1", { lines: 100 });
+   * if (logs.found) console.log(logs.content);
+   * ```
+   */
+  async getLogs(agentName: string, options?: { lines?: number }): Promise<LogsResult> {
+    const cwd = this.clientOptions.cwd ?? process.cwd();
+    const logsDir = path.join(cwd, ".agent-relay", "worker-logs");
+    return getLogsFromFile(agentName, { logsDir, lines: options?.lines });
+  }
+
+  /** List all agents that have log files. */
+  async listLoggedAgents(): Promise<string[]> {
+    const cwd = this.clientOptions.cwd ?? process.cwd();
+    const logsDir = path.join(cwd, ".agent-relay", "worker-logs");
+    return listLoggedAgentsFromFile(logsDir);
+  }
+
+  // ── Wait helpers ──────────────────────────────────────────────────────
+
+  /**
+   * Wait for any one of the given agents to exit. Returns the first agent
+   * that exits along with its exit reason.
+   *
+   * @example
+   * ```ts
+   * const { agent, result } = await AgentRelay.waitForAny([worker1, worker2], 60_000);
+   * console.log(`${agent.name} finished: ${result}`);
+   * ```
+   */
+  static async waitForAny(
+    agents: Agent[],
+    timeoutMs?: number,
+  ): Promise<{ agent: Agent; result: "exited" | "timeout" | "released" }> {
+    if (agents.length === 0) {
+      return { agent: null as unknown as Agent, result: "timeout" };
+    }
+    return Promise.race(
+      agents.map(async (agent) => {
+        const result = await agent.waitForExit(timeoutMs);
+        return { agent, result };
+      }),
+    );
   }
 
   // ── Lifecycle ───────────────────────────────────────────────────────────
@@ -331,10 +405,22 @@ export class AgentRelay {
           const agent =
             this.knownAgents.get(event.name) ??
             this.makeAgent(event.name, "pty", []);
+          // Populate exit info before firing the hook
+          (agent as { exitCode?: number }).exitCode = event.code;
+          (agent as { exitSignal?: string }).exitSignal = event.signal;
           this.onAgentExited?.(agent);
           this.knownAgents.delete(event.name);
           this.exitResolvers.get(event.name)?.("exited");
           this.exitResolvers.delete(event.name);
+          break;
+        }
+        case "worker_ready": {
+          let agent = this.knownAgents.get(event.name);
+          if (!agent) {
+            agent = this.makeAgent(event.name, event.runtime, []);
+            this.knownAgents.set(event.name, agent);
+          }
+          this.onAgentReady?.(agent);
           break;
         }
         case "worker_stream": {
@@ -362,6 +448,8 @@ export class AgentRelay {
       name,
       runtime,
       channels,
+      exitCode: undefined,
+      exitSignal: undefined,
       async release() {
         const client = await relay.ensureStarted();
         await client.release(name);
@@ -438,11 +526,12 @@ export class AgentRelay {
         const channels = options?.channels ?? ["general"];
         const args = options?.args ?? [];
 
+        const task = options?.task;
         let result: { name: string; runtime: AgentRuntime };
         if (runtime === "headless_claude") {
-          result = await client.spawnHeadlessClaude({ name, args, channels });
+          result = await client.spawnHeadlessClaude({ name, args, channels, task });
         } else {
-          result = await client.spawnPty({ name, cli, args, channels });
+          result = await client.spawnPty({ name, cli, args, channels, task });
         }
 
         const agent = relay.makeAgent(result.name, result.runtime, channels);
