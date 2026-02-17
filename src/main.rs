@@ -369,6 +369,8 @@ enum WorkerEvent {
 #[derive(Debug, Deserialize)]
 struct SpawnPayload {
     agent: AgentSpec,
+    #[serde(default)]
+    initial_task: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -398,6 +400,7 @@ struct WorkerRegistry {
     workers: HashMap<String, WorkerHandle>,
     event_tx: mpsc::Sender<WorkerEvent>,
     worker_env: Vec<(String, String)>,
+    initial_tasks: HashMap<String, String>,
 }
 
 impl WorkerRegistry {
@@ -406,6 +409,7 @@ impl WorkerRegistry {
             workers: HashMap::new(),
             event_tx,
             worker_env,
+            initial_tasks: HashMap::new(),
         }
     }
 
@@ -585,6 +589,7 @@ impl WorkerRegistry {
     }
 
     async fn release(&mut self, name: &str) -> Result<()> {
+        self.initial_tasks.remove(name);
         let mut handle = self
             .workers
             .remove(name)
@@ -633,6 +638,7 @@ impl WorkerRegistry {
                 #[cfg(not(unix))]
                 let signal: Option<String> = None;
                 self.workers.remove(&name);
+                self.initial_tasks.remove(&name);
                 exited.push((name, code, signal));
             }
         }
@@ -1057,9 +1063,31 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         "chunk": value.get("payload").and_then(|p| p.get("chunk")).cloned().unwrap_or(Value::String(String::new())),
                                     })).await;
                                 } else if msg_type == "worker_ready" {
+                                    if let Some(task_text) = workers.initial_tasks.remove(&name) {
+                                        let event_id = format!("init_{}", Uuid::new_v4().simple());
+                                        if let Err(e) = queue_and_try_delivery_raw(
+                                            &mut workers,
+                                            &mut pending_deliveries,
+                                            &name,
+                                            &event_id,
+                                            "broker",
+                                            &name,
+                                            &task_text,
+                                            None,
+                                            2,
+                                            delivery_retry_interval,
+                                        ).await {
+                                            tracing::warn!(worker = %name, error = %e, "failed to deliver initial_task");
+                                        }
+                                    }
+                                    let runtime = value.get("payload")
+                                        .and_then(|p| p.get("runtime"))
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("pty");
                                     let _ = send_event(&sdk_out_tx, json!({
                                         "kind": "worker_ready",
                                         "name": name,
+                                        "runtime": runtime,
                                     })).await;
                                 }
                             }
@@ -1390,6 +1418,50 @@ async fn run_listen(cmd: ListenCommand, telemetry: TelemetryClient) -> Result<()
                             continue;
                         }
 
+                        // Handle agent.spawn_requested / agent.release_requested from relaycast REST API
+                        if let Some(rc_event) = parse_relaycast_agent_event(&ws_msg) {
+                            match rc_event {
+                                RelaycastAgentEvent::Spawn { ref name, ref cli } => {
+                                    let env_vars = spawn_env_vars(name, &child_api_key, &child_base_url, &channels);
+                                    match spawner.spawn_wrap(
+                                        name, cli, &[], &env_vars, Some("relaycast"),
+                                    ).await {
+                                        Ok(pid) => {
+                                            agent_spawn_count += 1;
+                                            telemetry.track(TelemetryEvent::AgentSpawn {
+                                                cli: cli.clone(),
+                                                runtime: "pty".to_string(),
+                                            });
+                                            tracing::info!(child = %name, cli = %cli, pid = pid, "spawned child agent via relaycast");
+                                            eprintln!("[agent-relay] spawned child '{}' (pid {}) via relaycast", name, pid);
+                                        }
+                                        Err(error) => {
+                                            tracing::error!(child = %name, error = %error, "failed to spawn child agent via relaycast");
+                                            eprintln!("[agent-relay] failed to spawn '{}': {}", name, error);
+                                        }
+                                    }
+                                }
+                                RelaycastAgentEvent::Release { ref name } => {
+                                    match spawner.release(name, Duration::from_secs(2)).await {
+                                        Ok(()) => {
+                                            telemetry.track(TelemetryEvent::AgentRelease {
+                                                cli: String::new(),
+                                                release_reason: "relaycast_release".to_string(),
+                                                lifetime_seconds: 0,
+                                            });
+                                            tracing::info!(child = %name, "released child agent via relaycast");
+                                            eprintln!("[agent-relay] released child '{}' via relaycast", name);
+                                        }
+                                        Err(error) => {
+                                            tracing::error!(child = %name, error = %error, "failed to release child agent via relaycast");
+                                            eprintln!("[agent-relay] failed to release '{}': {}", name, error);
+                                        }
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+
                         // Log regular relay events
                         if let Some(mapped) = map_ws_event(&ws_msg) {
                             if !dedup.insert_if_new(&mapped.event_id, Instant::now()) {
@@ -1710,6 +1782,9 @@ async fn handle_sdk_frame(
             let name = payload.agent.name.clone();
 
             workers.spawn(payload.agent.clone(), None).await?;
+            if let Some(task) = payload.initial_task {
+                workers.initial_tasks.insert(name.clone(), task);
+            }
             let worker_pid = workers.worker_pid(&name);
             state.agents.insert(
                 name.clone(),
@@ -2256,6 +2331,38 @@ fn channels_from_csv(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// Parsed result from a relaycast `agent.spawn_requested` or `agent.release_requested` WS event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RelaycastAgentEvent {
+    Spawn { name: String, cli: String },
+    Release { name: String },
+}
+
+/// Parse a raw WS JSON value into a `RelaycastAgentEvent` if it matches
+/// `agent.spawn_requested` or `agent.release_requested`.
+fn parse_relaycast_agent_event(value: &serde_json::Value) -> Option<RelaycastAgentEvent> {
+    let event_type = value.get("type")?.as_str()?;
+    let agent = value.get("agent")?;
+
+    match event_type {
+        "agent.spawn_requested" => {
+            let name = agent.get("name")?.as_str().filter(|s| !s.is_empty())?;
+            let cli = agent.get("cli")?.as_str().filter(|s| !s.is_empty())?;
+            Some(RelaycastAgentEvent::Spawn {
+                name: name.to_string(),
+                cli: cli.to_string(),
+            })
+        }
+        "agent.release_requested" => {
+            let name = agent.get("name")?.as_str().filter(|s| !s.is_empty())?;
+            Some(RelaycastAgentEvent::Release {
+                name: name.to_string(),
+            })
+        }
+        _ => None,
+    }
+}
+
 fn command_targets_self(cmd_event: &BrokerCommandEvent, self_agent_id: &str) -> bool {
     match cmd_event.handler_agent_id.as_deref() {
         Some(handler_id) => handler_id == self_agent_id,
@@ -2544,7 +2651,8 @@ mod tests {
         channels_from_csv, delivery_retry_interval, derive_ws_base_url_from_http,
         detect_bypass_permissions_prompt, drop_pending_for_worker, extract_mcp_message_ids,
         floor_char_boundary, format_injection, is_auto_suggestion, is_bypass_selection_menu,
-        is_in_editor_mode, normalize_channel, strip_ansi, PendingDelivery, TerminalQueryParser,
+        is_in_editor_mode, normalize_channel, parse_relaycast_agent_event, strip_ansi,
+        PendingDelivery, RelaycastAgentEvent, TerminalQueryParser,
     };
 
     #[test]
@@ -3027,5 +3135,134 @@ mod tests {
             Some("--full-auto"),
             "unrelated args should not prevent bypass flag"
         );
+    }
+
+    // --- parse_relaycast_agent_event tests ---
+
+    #[test]
+    fn parses_agent_spawn_requested() {
+        let event = parse_relaycast_agent_event(&serde_json::json!({
+            "type": "agent.spawn_requested",
+            "agent": {
+                "name": "Worker1",
+                "cli": "claude",
+                "task": "Do some work",
+                "channel": "general",
+                "already_existed": false
+            }
+        }));
+        assert_eq!(
+            event,
+            Some(RelaycastAgentEvent::Spawn {
+                name: "Worker1".into(),
+                cli: "claude".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn parses_agent_spawn_requested_null_channel() {
+        let event = parse_relaycast_agent_event(&serde_json::json!({
+            "type": "agent.spawn_requested",
+            "agent": {
+                "name": "Worker2",
+                "cli": "codex",
+                "task": "Task text",
+                "channel": null,
+                "already_existed": true
+            }
+        }));
+        assert_eq!(
+            event,
+            Some(RelaycastAgentEvent::Spawn {
+                name: "Worker2".into(),
+                cli: "codex".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn parses_agent_release_requested() {
+        let event = parse_relaycast_agent_event(&serde_json::json!({
+            "type": "agent.release_requested",
+            "agent": { "name": "Worker1" },
+            "reason": "task complete",
+            "deleted": false
+        }));
+        assert_eq!(
+            event,
+            Some(RelaycastAgentEvent::Release {
+                name: "Worker1".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn spawn_requested_missing_name_returns_none() {
+        assert!(parse_relaycast_agent_event(&serde_json::json!({
+            "type": "agent.spawn_requested",
+            "agent": { "cli": "claude", "task": "work" }
+        }))
+        .is_none());
+    }
+
+    #[test]
+    fn spawn_requested_missing_cli_returns_none() {
+        assert!(parse_relaycast_agent_event(&serde_json::json!({
+            "type": "agent.spawn_requested",
+            "agent": { "name": "Worker1", "task": "work" }
+        }))
+        .is_none());
+    }
+
+    #[test]
+    fn spawn_requested_empty_name_returns_none() {
+        assert!(parse_relaycast_agent_event(&serde_json::json!({
+            "type": "agent.spawn_requested",
+            "agent": { "name": "", "cli": "claude", "task": "work" }
+        }))
+        .is_none());
+    }
+
+    #[test]
+    fn release_requested_empty_name_returns_none() {
+        assert!(parse_relaycast_agent_event(&serde_json::json!({
+            "type": "agent.release_requested",
+            "agent": { "name": "" },
+            "reason": null,
+            "deleted": false
+        }))
+        .is_none());
+    }
+
+    #[test]
+    fn release_requested_missing_agent_returns_none() {
+        assert!(parse_relaycast_agent_event(&serde_json::json!({
+            "type": "agent.release_requested",
+            "reason": "done",
+            "deleted": true
+        }))
+        .is_none());
+    }
+
+    #[test]
+    fn unrelated_event_type_returns_none() {
+        assert!(parse_relaycast_agent_event(&serde_json::json!({
+            "type": "message.created",
+            "agent": { "name": "Worker1", "cli": "claude" }
+        }))
+        .is_none());
+    }
+
+    #[test]
+    fn command_invoked_not_matched_by_relaycast_parser() {
+        assert!(parse_relaycast_agent_event(&serde_json::json!({
+            "type": "command.invoked",
+            "command": "/spawn",
+            "channel": "general",
+            "invoked_by": "123",
+            "parameters": { "name": "x", "cli": "y" }
+        }))
+        .is_none());
     }
 }

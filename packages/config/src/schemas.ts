@@ -152,7 +152,7 @@ export const CloudConfigSchema = z.object({
     masterKey: z.string(),
   }),
   compute: z.object({
-    provider: z.enum(['fly', 'railway', 'docker']),
+    provider: z.enum(['fly', 'railway', 'docker', 'daytona']),
     fly: z
       .object({
         apiToken: z.string(),

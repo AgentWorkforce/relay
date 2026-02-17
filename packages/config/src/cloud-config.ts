@@ -42,7 +42,7 @@ export interface CloudConfig {
 
   // Compute provisioner
   compute: {
-    provider: 'fly' | 'railway' | 'docker';
+    provider: 'fly' | 'railway' | 'docker' | 'daytona';
     fly?: {
       apiToken: string;
       org: string;
@@ -138,7 +138,7 @@ export function loadConfig(): CloudConfig {
     },
 
     compute: {
-      provider: (process.env.COMPUTE_PROVIDER as 'fly' | 'railway' | 'docker') || 'docker',
+      provider: (process.env.COMPUTE_PROVIDER as 'fly' | 'railway' | 'docker' | 'daytona') || 'docker',
       fly: optionalEnv('FLY_API_TOKEN')
         ? {
             apiToken: optionalEnv('FLY_API_TOKEN')!,
