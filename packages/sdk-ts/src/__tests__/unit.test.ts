@@ -83,9 +83,11 @@ test("waitForAny: handles released agent", async () => {
   assert.equal(result, "released");
 });
 
-test("waitForAny: handles empty agents array", async () => {
-  const { result } = await AgentRelay.waitForAny([]);
-  assert.equal(result, "timeout");
+test("waitForAny: throws on empty agents array", async () => {
+  await assert.rejects(
+    () => AgentRelay.waitForAny([]),
+    { message: "waitForAny requires at least one agent" },
+  );
 });
 
 // ── getLogs ──────────────────────────────────────────────────────────────────

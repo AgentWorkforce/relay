@@ -300,7 +300,7 @@ export class AgentRelay {
     timeoutMs?: number,
   ): Promise<{ agent: Agent; result: "exited" | "timeout" | "released" }> {
     if (agents.length === 0) {
-      return { agent: null as unknown as Agent, result: "timeout" };
+      throw new Error("waitForAny requires at least one agent");
     }
     return Promise.race(
       agents.map(async (agent) => {
