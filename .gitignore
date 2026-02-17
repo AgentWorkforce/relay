@@ -14,7 +14,8 @@ bin/relay-pty
 bin/relay-pty-*
 bin/agent-relay-test
 
-# Rust build artifacts (relay-pty)
+# Rust build artifacts
+target/
 relay-pty/target/
 
 # TypeScript build info (if enabled later)
@@ -54,6 +55,7 @@ coverage/
 .env.local
 .env
 .env.production
+codex.toml
 
 # Turborepo
 .turbo/
