@@ -140,7 +140,11 @@ export class AgentRelay {
   private startPromise?: Promise<AgentRelayClient>;
   private unsubEvent?: () => void;
   private readonly knownAgents = new Map<string, Agent>();
-  private readonly exitResolvers = new Map<string, (reason: "exited" | "released") => void>();
+  private readonly exitResolvers = new Map<
+    string,
+    { resolve: (reason: "exited" | "released") => void; token: number }
+  >();
+  private exitResolverSeq = 0;
   private readonly relaycastByName = new Map<string, RelaycastApi>();
 
   constructor(options: AgentRelayOptions = {}) {
@@ -318,8 +322,8 @@ export class AgentRelay {
       this.client = undefined;
     }
     this.knownAgents.clear();
-    for (const resolve of this.exitResolvers.values()) {
-      resolve("released");
+    for (const entry of this.exitResolvers.values()) {
+      entry.resolve("released");
     }
     this.exitResolvers.clear();
   }
@@ -397,7 +401,7 @@ export class AgentRelay {
             this.makeAgent(event.name, "pty", []);
           this.onAgentReleased?.(agent);
           this.knownAgents.delete(event.name);
-          this.exitResolvers.get(event.name)?.("released");
+          this.exitResolvers.get(event.name)?.resolve("released");
           this.exitResolvers.delete(event.name);
           break;
         }
@@ -410,7 +414,7 @@ export class AgentRelay {
           (agent as { exitSignal?: string }).exitSignal = event.signal;
           this.onAgentExited?.(agent);
           this.knownAgents.delete(event.name);
-          this.exitResolvers.get(event.name)?.("exited");
+          this.exitResolvers.get(event.name)?.resolve("exited");
           this.exitResolvers.delete(event.name);
           break;
         }
@@ -467,13 +471,21 @@ export class AgentRelay {
             return;
           }
           let timer: ReturnType<typeof setTimeout> | undefined;
-          relay.exitResolvers.set(name, (reason) => {
-            if (timer) clearTimeout(timer);
-            resolve(reason);
+          const token = ++relay.exitResolverSeq;
+          relay.exitResolvers.set(name, {
+            resolve(reason) {
+              if (timer) clearTimeout(timer);
+              resolve(reason);
+            },
+            token,
           });
           if (timeoutMs !== undefined) {
             timer = setTimeout(() => {
-              relay.exitResolvers.delete(name);
+              // Only delete if this is still our resolver (not one from a later call)
+              const current = relay.exitResolvers.get(name);
+              if (current?.token === token) {
+                relay.exitResolvers.delete(name);
+              }
               resolve("timeout");
             }, timeoutMs);
           }
