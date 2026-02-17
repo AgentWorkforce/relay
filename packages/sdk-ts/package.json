@@ -63,7 +63,7 @@
     "demo": "node dist/examples/demo.js",
     "ralph": "node dist/examples/ralph-loop.js",
     "example": "node dist/examples/example.js",
-    "prepack": "npm run build"
+    "prepack": "npm run build:full"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
