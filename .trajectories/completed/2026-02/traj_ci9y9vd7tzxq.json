@@ -4,7 +4,7 @@
   "task": {
     "title": "Expose broker-sdk with logs, consensus, shadow, browser exports, and agent status query"
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-02-17T09:40:00.984Z",
   "agents": [
     {
@@ -32,7 +32,8 @@
           },
           "significance": "high"
         }
-      ]
+      ],
+      "endedAt": "2026-02-17T09:46:45.258Z"
     }
   ],
   "commits": [],
@@ -41,6 +42,13 @@
   "tags": [],
   "_trace": {
     "startRef": "a38e45c0493ae69dbb2d0788a53921bc8b9faeb5",
-    "endRef": "a38e45c0493ae69dbb2d0788a53921bc8b9faeb5"
+    "endRef": "8b87887a279f01992377a422e78e61d5a071c1b8",
+    "traceId": "trace_euomgozgbgdn"
+  },
+  "completedAt": "2026-02-17T09:46:45.258Z",
+  "retrospective": {
+    "summary": "Exposed broker-sdk via subpath exports with new consensus, shadow, logs, browser modules and Rust get_status command",
+    "approach": "Standard approach",
+    "confidence": 0.75
   }
 }

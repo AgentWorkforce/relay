@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-02-17T09:40:07.492Z",
+  "lastUpdated": "2026-02-17T09:46:45.345Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -291,9 +291,10 @@
     },
     "traj_ci9y9vd7tzxq": {
       "title": "Expose broker-sdk with logs, consensus, shadow, browser exports, and agent status query",
-      "status": "active",
+      "status": "completed",
       "startedAt": "2026-02-17T09:40:00.984Z",
-      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/active/traj_ci9y9vd7tzxq.json"
+      "completedAt": "2026-02-17T09:46:45.258Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-02/traj_ci9y9vd7tzxq.json"
     }
   }
 }
