@@ -1,0 +1,758 @@
+# Workflows Module Spec — `packages/sdk-ts/src/workflows.ts`
+
+## Overview
+
+The workflows module provides **opinionated, high-level orchestration patterns** on top of the `AgentRelay` facade. Instead of manually spawning agents, wiring events, and managing lifecycle, users pick a workflow pattern and the SDK handles:
+
+1. **Agent spawning** with the right topology
+2. **Convention injection** — each agent's initial task gets augmented with lifecycle instructions (ACK, progress reporting, DONE protocol, coordination rules)
+3. **Coordination** — barriers, fan-in collection, pipeline sequencing
+4. **Cleanup** — automatic release of agents when the workflow completes or fails
+
+## Design Principles
+
+- **Composable over monolithic** — workflows are functions that return a `WorkflowRun`, not classes with deep inheritance
+- **Convention over configuration** — sensible defaults for every option; zero-config should work
+- **Transparent augmentation** — the injected instructions are visible (logged) so users can debug what agents receive
+- **Existing primitives** — builds on `AgentRelay`, `ConsensusEngine`, `ShadowManager` — no new broker protocol needed
+
+## Dependencies
+
+```
+workflows.ts
+  ├── relay.ts     (AgentRelay, Agent, Message, HumanHandle)
+  ├── consensus.ts (ConsensusEngine — for consensus workflow)
+  └── shadow.ts    (ShadowManager — for attaching reviewers)
+```
+
+No broker changes required. Workflows are purely SDK-side orchestration.
+
+---
+
+## Types
+
+```ts
+// ── CLI Runtime ─────────────────────────────────────────────────────────────
+
+type AgentCli = "claude" | "codex" | "gemini" | "aider" | "goose";
+
+// ── Task Definition ─────────────────────────────────────────────────────────
+
+interface TaskDefinition {
+  /** The task prompt sent to the agent. Convention instructions are appended automatically. */
+  task: string;
+  /** CLI to use for this agent. Defaults to workflow-level default. */
+  cli?: AgentCli;
+  /** Agent name. Auto-generated if omitted (e.g., "Worker-1", "Stage-auth"). */
+  name?: string;
+  /** Channels to join. Defaults to workflow channel. */
+  channels?: string[];
+  /** Extra CLI args passed to the agent process. */
+  args?: string[];
+}
+
+// ── Workflow Result ─────────────────────────────────────────────────────────
+
+interface AgentResult {
+  name: string;
+  exitReason: "exited" | "released" | "timeout";
+  /** Messages sent by this agent during the workflow. */
+  messages: Message[];
+  /** The DONE message text, if the agent followed protocol. */
+  summary?: string;
+}
+
+interface WorkflowResult {
+  pattern: string;
+  agents: AgentResult[];
+  /** Total wall-clock duration in ms. */
+  durationMs: number;
+  /** Whether all agents completed successfully (sent DONE). */
+  success: boolean;
+  /** For pipeline: ordered results per stage. For consensus: the decision. */
+  metadata?: Record<string, unknown>;
+}
+
+// ── Workflow Run (live handle) ──────────────────────────────────────────────
+
+interface WorkflowRun {
+  /** Resolves when all agents complete or the workflow times out. */
+  result: Promise<WorkflowResult>;
+  /** The AgentRelay instance managing this workflow. */
+  relay: AgentRelay;
+  /** Live agents (populated after spawn phase). */
+  agents: Agent[];
+  /** Cancel the workflow early — releases all agents. */
+  cancel(): Promise<void>;
+  /** Send a message to all workflow agents. */
+  broadcast(text: string): Promise<void>;
+}
+
+// ── Workflow Options (shared across all patterns) ───────────────────────────
+
+interface WorkflowOptions {
+  /** Default CLI for all agents. Default: "claude". */
+  cli?: AgentCli;
+  /** Workflow-wide timeout in ms. Default: 10 minutes. */
+  timeoutMs?: number;
+  /** Channel for workflow communication. Default: "workflow-{id}". */
+  channel?: string;
+  /** AgentRelay options (binary path, cwd, env, etc.). */
+  relayOptions?: AgentRelayOptions;
+  /** Use an existing AgentRelay instance instead of creating one. */
+  relay?: AgentRelay;
+  /** Attach a shadow/reviewer agent to all workers. */
+  shadow?: { cli?: AgentCli; task: string };
+  /** Hook: called when an agent sends a message. */
+  onMessage?: (agent: Agent, message: Message) => void;
+  /** Hook: called when an agent exits. */
+  onAgentDone?: (agent: Agent, summary: string | undefined) => void;
+  /** Hook: called with the full augmented task before spawning (for debugging). */
+  onTaskAugmented?: (agentName: string, augmentedTask: string) => void;
+}
+```
+
+---
+
+## Workflow Patterns
+
+### 1. `fanOut` — Parallel Workers
+
+**Swarm analogy:** Hub & Spoke. One orchestrator (the SDK process) spawns N workers in parallel, collects results, returns when all complete.
+
+**When to use:** Independent subtasks that can run simultaneously (e.g., "review 5 files", "run tests on 3 platforms", "research 4 topics").
+
+```ts
+function fanOut(
+  tasks: TaskDefinition[],
+  options?: WorkflowOptions,
+): WorkflowRun;
+```
+
+**Behavior:**
+1. Create/reuse `AgentRelay`
+2. Spawn all agents in parallel via `relay.spawnPty()`
+3. Each agent's task is augmented with fan-out conventions (see Convention Injection below)
+4. Wait for all agents to exit or timeout
+5. Collect DONE messages from each agent
+6. Release any remaining agents, shutdown relay (if we created it)
+
+**Convention injected into each agent's task:**
+```
+## Relay Workflow Protocol
+You are Worker-{N} in a fan-out workflow with {total} parallel workers.
+
+When you finish your task:
+1. Send a message to #workflow-{id}: "DONE: <one-line summary of what you accomplished>"
+2. Then call the relay_release MCP tool to release yourself, or simply exit.
+
+Do NOT wait for other workers. Work independently.
+```
+
+**Example:**
+```ts
+import { fanOut } from "@agent-relay/sdk-ts/workflows";
+
+const run = fanOut([
+  { task: "Review src/auth.ts for security issues", name: "AuthReviewer" },
+  { task: "Review src/db.ts for SQL injection", name: "DbReviewer" },
+  { task: "Review src/api.ts for input validation", name: "ApiReviewer" },
+], { cli: "claude", timeoutMs: 5 * 60_000 });
+
+const result = await run.result;
+console.log(result.agents.map(a => a.summary));
+// ["No security issues found in auth.ts", "Fixed 2 SQL injection...", "Added input validation..."]
+```
+
+---
+
+### 2. `pipeline` — Sequential Stages
+
+**Swarm analogy:** Hierarchical Tree (linear variant). Output of stage N is fed as context to stage N+1.
+
+**When to use:** Tasks with natural ordering where each step builds on the previous (e.g., "design → implement → test → deploy").
+
+```ts
+interface PipelineStage extends TaskDefinition {
+  /** If true, the agent receives the previous stage's DONE summary as context.
+   *  Default: true. */
+  receivesPreviousOutput?: boolean;
+}
+
+function pipeline(
+  stages: PipelineStage[],
+  options?: WorkflowOptions,
+): WorkflowRun;
+```
+
+**Behavior:**
+1. Spawn stage 0 agent
+2. Wait for it to exit (or timeout)
+3. Extract its DONE summary
+4. Spawn stage 1 agent with augmented task that includes stage 0's output
+5. Repeat until all stages complete
+6. If any stage fails/times out, the pipeline halts
+
+**Convention injected into each agent's task:**
+```
+## Relay Workflow Protocol
+You are Stage {N}/{total} ("{stage_name}") in a sequential pipeline.
+
+{if N > 0}
+### Context from previous stage
+The previous stage ("{prev_name}") completed with:
+{prev_summary}
+{endif}
+
+When you finish:
+1. Send a message to #workflow-{id}: "DONE: <detailed summary of your output>"
+   IMPORTANT: Your DONE summary will be passed to the next stage as context.
+   Include all relevant details, file paths, and decisions.
+2. Then release yourself.
+```
+
+**Example:**
+```ts
+import { pipeline } from "@agent-relay/sdk-ts/workflows";
+
+const run = pipeline([
+  { task: "Design the API schema for a todo app. Output the OpenAPI spec.", name: "Designer" },
+  { task: "Implement the API endpoints based on the provided design.", name: "Implementer" },
+  { task: "Write integration tests for the implemented API.", name: "Tester" },
+], { cli: "claude" });
+
+const result = await run.result;
+// result.metadata.stages = [
+//   { name: "Designer", summary: "Created OpenAPI spec with 5 endpoints..." },
+//   { name: "Implementer", summary: "Implemented all endpoints in src/routes/..." },
+//   { name: "Tester", summary: "Added 12 integration tests, all passing..." },
+// ]
+```
+
+---
+
+### 3. `hubAndSpoke` — Persistent Coordinator
+
+**Swarm analogy:** Hub & Spoke with a live hub agent that coordinates workers.
+
+**When to use:** Complex tasks where a lead agent needs to dynamically assign subtasks, review results, and make decisions. The hub agent stays alive and communicates with workers.
+
+```ts
+interface HubAndSpokeOptions extends WorkflowOptions {
+  /** The hub/lead agent's task. */
+  hub: TaskDefinition;
+  /** Initial worker tasks. The hub can spawn more workers via relay. */
+  workers: TaskDefinition[];
+  /** If true, the hub agent is told it can spawn additional workers. Default: true. */
+  hubCanSpawn?: boolean;
+}
+
+function hubAndSpoke(options: HubAndSpokeOptions): WorkflowRun;
+```
+
+**Behavior:**
+1. Spawn the hub agent first
+2. Wait for hub's `worker_ready` event
+3. Spawn all worker agents
+4. Hub receives messages from workers, can send tasks, review output
+5. Workflow completes when the hub sends DONE (hub decides when the team is finished)
+6. All remaining workers are released after hub exits
+
+**Convention injected into hub agent's task:**
+```
+## Relay Workflow Protocol — You are the Hub/Lead
+You are coordinating {N} worker agents: {worker_names}.
+Channel: #workflow-{id}
+
+Your workers will check in with you. Coordinate their work:
+- Workers will send "ACK: ..." when they start
+- Workers will send "DONE: ..." when they finish
+- You can send messages to individual workers or broadcast to #workflow-{id}
+{if hubCanSpawn}
+- You can spawn additional workers using the relay_spawn MCP tool
+{endif}
+
+When ALL work is complete and you're satisfied with the results:
+1. Send to #workflow-{id}: "DONE: <summary of what the team accomplished>"
+2. Then release yourself.
+```
+
+**Convention injected into each worker's task:**
+```
+## Relay Workflow Protocol — You are a Worker
+Your lead agent is "{hub_name}". Report to them.
+
+1. First, send to {hub_name}: "ACK: <brief description of your task>"
+2. Work on your task. Send progress updates to {hub_name} if the task is long.
+3. When done, send to {hub_name}: "DONE: <summary of what you accomplished>"
+4. Then release yourself.
+```
+
+**Example:**
+```ts
+import { hubAndSpoke } from "@agent-relay/sdk-ts/workflows";
+
+const run = hubAndSpoke({
+  hub: {
+    task: "You are the tech lead. Coordinate the team to build a REST API for a blog.",
+    name: "Lead",
+    cli: "claude",
+  },
+  workers: [
+    { task: "Implement the database models and migrations.", name: "DbWorker" },
+    { task: "Implement the API route handlers.", name: "ApiWorker" },
+    { task: "Write tests for all endpoints.", name: "TestWorker" },
+  ],
+});
+
+const result = await run.result;
+```
+
+---
+
+### 4. `consensus` — Decision Making
+
+**Swarm analogy:** Consensus Formation. Agents deliberate and vote on a proposal.
+
+**When to use:** Architectural decisions, code review approval, choosing between alternatives.
+
+```ts
+interface ConsensusOptions extends WorkflowOptions {
+  /** The question/proposal to decide on. */
+  proposal: string;
+  /** Agents who will deliberate and vote. */
+  voters: TaskDefinition[];
+  /** Consensus type. Default: "majority". */
+  consensusType?: "majority" | "supermajority" | "unanimous";
+  /** Supermajority threshold. Default: 0.67. */
+  threshold?: number;
+}
+
+function consensus(options: ConsensusOptions): WorkflowRun;
+```
+
+**Behavior:**
+1. Spawn all voter agents
+2. Each agent receives the proposal and is instructed to deliberate then vote
+3. Votes are collected from DONE messages (parsed for VOTE: approve/reject)
+4. ConsensusEngine (from `consensus.ts`) tallies results
+5. Result includes the decision and each agent's reasoning
+
+**Convention injected into each voter's task:**
+```
+## Relay Workflow Protocol — Consensus Vote
+You are one of {N} voters deliberating on:
+
+"{proposal}"
+
+1. Research and analyze the proposal.
+2. When ready, send to #workflow-{id}:
+   "VOTE: approve" or "VOTE: reject"
+   followed by your reasoning on the next line.
+3. Then send "DONE: <your vote and brief reasoning>"
+4. Release yourself.
+```
+
+**Example:**
+```ts
+import { consensus } from "@agent-relay/sdk-ts/workflows";
+
+const run = consensus({
+  proposal: "Should we migrate from Express to Fastify for the API layer?",
+  voters: [
+    { task: "Evaluate from a performance perspective", name: "PerfExpert" },
+    { task: "Evaluate from a developer experience perspective", name: "DxExpert" },
+    { task: "Evaluate from a maintenance/ecosystem perspective", name: "EcoExpert" },
+  ],
+  consensusType: "majority",
+});
+
+const result = await run.result;
+// result.metadata.decision = "approved"
+// result.metadata.votes = [
+//   { agent: "PerfExpert", vote: "approve", reason: "2x faster..." },
+//   { agent: "DxExpert", vote: "reject", reason: "Plugin ecosystem..." },
+//   { agent: "EcoExpert", vote: "approve", reason: "Active maintenance..." },
+// ]
+```
+
+---
+
+### 5. `mesh` — Peer Collaboration
+
+**Swarm analogy:** Mesh Network. All agents can communicate with all others. No hierarchy.
+
+**When to use:** Collaborative tasks where agents need to coordinate dynamically (e.g., pair programming, brainstorming, distributed debugging).
+
+```ts
+interface MeshOptions extends WorkflowOptions {
+  /** Agents in the mesh. All can message all others. */
+  agents: TaskDefinition[];
+  /** The shared goal that all agents work toward. */
+  goal: string;
+  /** Maximum rounds of communication before forcing completion. Default: 10. */
+  maxRounds?: number;
+}
+
+function mesh(options: MeshOptions): WorkflowRun;
+```
+
+**Behavior:**
+1. Spawn all agents on the same channel
+2. Each agent can message any other agent or the channel
+3. Workflow completes when all agents send DONE, or maxRounds is reached, or timeout
+4. The SDK monitors message count to detect "rounds" (a round = each agent has sent at least one message since the last round boundary)
+
+**Convention injected into each agent's task:**
+```
+## Relay Workflow Protocol — Mesh Collaboration
+You are part of a {N}-agent mesh working toward a shared goal:
+
+"{goal}"
+
+Your peers: {peer_names}
+Channel: #workflow-{id}
+
+Rules:
+- Communicate with peers via the channel or direct messages
+- Coordinate who does what — avoid duplicate work
+- When you believe the shared goal is met, send to #workflow-{id}: "DONE: <your contribution summary>"
+- You can reference other agents' work in your messages
+```
+
+**Example:**
+```ts
+import { mesh } from "@agent-relay/sdk-ts/workflows";
+
+const run = mesh({
+  goal: "Debug and fix the authentication flow. The login endpoint returns 500 for valid credentials.",
+  agents: [
+    { task: "Investigate the server logs and error stack traces.", name: "LogAnalyst" },
+    { task: "Review the auth middleware and JWT validation code.", name: "CodeReviewer" },
+    { task: "Write a reproduction test and verify the fix.", name: "Tester" },
+  ],
+});
+
+const result = await run.result;
+```
+
+---
+
+## Convention Injection
+
+Convention injection is the core mechanism. Each workflow pattern prepends a `## Relay Workflow Protocol` section to the agent's task. This section tells the agent:
+
+1. **What pattern it's in** (fan-out, pipeline, hub-spoke, etc.)
+2. **Who its peers are** (names, roles)
+3. **What channel to use** for coordination
+4. **How to signal completion** (DONE protocol)
+5. **Pattern-specific rules** (report to hub, pass output to next stage, vote, etc.)
+
+### Augmentation Function
+
+```ts
+function augmentTask(
+  task: string,
+  conventions: string,
+): string {
+  return `${conventions}\n\n---\n\n## Your Task\n\n${task}`;
+}
+```
+
+The conventions block is always prepended, so it appears in the agent's system context before their specific task. This ensures agents follow the protocol regardless of their task complexity.
+
+### DONE Message Parsing
+
+All workflows parse agent messages for protocol signals:
+
+```ts
+const DONE_REGEX = /^DONE:\s*(.+)/m;
+const ACK_REGEX = /^ACK:\s*(.+)/m;
+const VOTE_REGEX = /^VOTE:\s*(approve|reject)\b/mi;
+
+function parseDoneMessage(text: string): string | undefined {
+  const match = text.match(DONE_REGEX);
+  return match?.[1]?.trim();
+}
+```
+
+---
+
+## Implementation Structure
+
+```
+packages/sdk-ts/src/
+  workflows.ts          — Main module: types + all workflow functions
+  workflow-conventions.ts — Convention templates and augmentation logic
+```
+
+Two files total. `workflows.ts` is the public API; `workflow-conventions.ts` is internal.
+
+### `workflows.ts` — Public API Surface
+
+```ts
+// Workflow functions
+export function fanOut(tasks: TaskDefinition[], options?: WorkflowOptions): WorkflowRun;
+export function pipeline(stages: PipelineStage[], options?: WorkflowOptions): WorkflowRun;
+export function hubAndSpoke(options: HubAndSpokeOptions): WorkflowRun;
+export function consensus(options: ConsensusOptions): WorkflowRun;
+export function mesh(options: MeshOptions): WorkflowRun;
+
+// Types (re-exported)
+export type {
+  TaskDefinition,
+  AgentResult,
+  WorkflowResult,
+  WorkflowRun,
+  WorkflowOptions,
+  PipelineStage,
+  HubAndSpokeOptions,
+  ConsensusOptions,
+  MeshOptions,
+};
+```
+
+### Internal `WorkflowRun` Construction
+
+Each workflow function follows the same internal pattern:
+
+```ts
+function fanOut(tasks: TaskDefinition[], options?: WorkflowOptions): WorkflowRun {
+  const relay = options?.relay ?? new AgentRelay(options?.relayOptions);
+  const ownRelay = !options?.relay;
+  const channel = options?.channel ?? `workflow-${randomId()}`;
+  const agents: Agent[] = [];
+  const agentResults = new Map<string, AgentResult>();
+
+  // Track messages per agent
+  relay.onMessageReceived = (msg) => {
+    // Record messages, check for DONE/ACK/VOTE signals
+    // Call options.onMessage if set
+  };
+
+  relay.onAgentExited = (agent) => {
+    // Record exit, call options.onAgentDone
+  };
+
+  const resultPromise = (async () => {
+    const start = Date.now();
+
+    // 1. Spawn agents with augmented tasks
+    for (const task of tasks) {
+      const augmented = augmentTask(task.task, fanOutConvention({ ... }));
+      options?.onTaskAugmented?.(task.name ?? "Worker", augmented);
+      const agent = await relay.spawnPty({
+        name: task.name ?? `Worker-${i}`,
+        cli: task.cli ?? options?.cli ?? "claude",
+        args: [...(task.args ?? []), "--task", augmented],
+        channels: [channel],
+      });
+      agents.push(agent);
+    }
+
+    // 2. Wait for all agents
+    const timeout = options?.timeoutMs ?? 10 * 60_000;
+    await Promise.all(agents.map(a => a.waitForExit(timeout)));
+
+    // 3. Cleanup
+    if (ownRelay) await relay.shutdown();
+
+    return buildResult("fanOut", agentResults, start);
+  })();
+
+  return {
+    result: resultPromise,
+    relay,
+    agents,
+    async cancel() { /* release all agents, shutdown */ },
+    async broadcast(text) { /* send to #channel */ },
+  };
+}
+```
+
+---
+
+## Task Delivery Mechanism
+
+The workflows module passes tasks to agents via the `--task` CLI argument (for Claude Code) or equivalent mechanism per CLI. The broker already supports `initial_task` queuing (implemented in the broker's `main.rs`), which queues the task as the first message delivered to the agent once it sends `worker_ready`.
+
+For CLIs that don't support `--task`:
+- The task is sent as the first relay message to the agent after spawn
+- The convention instructions tell the agent to treat the first message as their task
+
+```ts
+function buildSpawnArgs(cli: AgentCli, task: string, extraArgs: string[]): string[] {
+  switch (cli) {
+    case "claude":
+      // Claude Code supports -p/--print for initial prompt
+      return [...extraArgs, "-p", task];
+    case "codex":
+      // Codex supports positional task argument
+      return [...extraArgs, task];
+    default:
+      // For other CLIs, task is sent via relay message after spawn
+      return extraArgs;
+  }
+}
+```
+
+---
+
+## Workflow Lifecycle
+
+```
+┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
+│  CREATE   │ ──▶ │  SPAWN   │ ──▶ │  ACTIVE  │ ──▶ │ COMPLETE │
+│           │     │ Agents   │     │ Monitor  │     │ Collect  │
+│ Augment   │     │ Wire     │     │ Messages │     │ Results  │
+│ tasks     │     │ events   │     │ Track    │     │ Cleanup  │
+│           │     │          │     │ DONE/ACK │     │          │
+└──────────┘     └──────────┘     └──────────┘     └──────────┘
+                                       │
+                                       ▼
+                                  ┌──────────┐
+                                  │ TIMEOUT  │
+                                  │ or ERROR │
+                                  │ Release  │
+                                  │ all      │
+                                  └──────────┘
+```
+
+---
+
+## Shadow Integration
+
+When `options.shadow` is set, a shadow agent is spawned for each worker:
+
+```ts
+if (options.shadow) {
+  const shadowMgr = new ShadowManager();
+  for (const agent of agents) {
+    const shadow = await relay.spawnPty({
+      name: `${agent.name}-Shadow`,
+      cli: options.shadow.cli ?? "claude",
+      args: buildSpawnArgs(options.shadow.cli ?? "claude", options.shadow.task, []),
+      channels: [channel],
+    });
+    shadowMgr.bind(shadow.name, agent.name, {
+      receiveIncoming: true,
+      receiveOutgoing: true,
+      speakOn: ["ALL_MESSAGES"],
+    });
+  }
+}
+```
+
+---
+
+## Exports Update
+
+**`packages/sdk-ts/src/index.ts`** — add:
+```ts
+export * from "./workflows.js";
+```
+
+---
+
+## Testing Strategy
+
+### Unit Tests (`__tests__/workflows.test.ts`)
+
+These mock `AgentRelay` to test workflow logic without a real broker:
+
+1. **Convention injection** — verify augmented task text contains correct protocol instructions for each pattern
+2. **DONE parsing** — verify regex extraction from various message formats
+3. **Pipeline sequencing** — verify stage N+1 receives stage N's summary
+4. **Fan-out completion** — verify workflow resolves when all agents exit
+5. **Timeout handling** — verify agents are released on timeout
+6. **Cancel** — verify `cancel()` releases all agents
+7. **Consensus vote parsing** — verify VOTE: approve/reject extraction
+8. **Mesh round tracking** — verify round counting logic
+
+### Integration Tests (`__tests__/workflows-integration.test.ts`)
+
+Require `RELAY_API_KEY` + broker binary:
+
+1. **Fan-out with 2 workers** — spawn, send tasks, verify DONE collection
+2. **Pipeline 2-stage** — verify stage 2 receives stage 1 output
+3. **Hub-and-spoke basic** — verify hub receives worker ACKs
+4. **Timeout enforcement** — verify agents released after timeout
+
+---
+
+## Example: Building This Module With Itself
+
+After implementation, the workflows module can be used to build features on itself — a meta-workflow:
+
+```ts
+import { pipeline } from "@agent-relay/sdk-ts/workflows";
+
+const run = pipeline([
+  {
+    task: `Design the workflow-conventions.ts module. Read WORKFLOWS_SPEC.md
+           and output the full TypeScript file with convention templates for
+           all 5 workflow patterns (fanOut, pipeline, hubAndSpoke, consensus, mesh).
+           Write the file to packages/sdk-ts/src/workflow-conventions.ts`,
+    name: "ConventionDesigner",
+  },
+  {
+    task: `Implement workflows.ts based on WORKFLOWS_SPEC.md and the convention
+           templates from the previous stage. Write to packages/sdk-ts/src/workflows.ts.
+           Implement all 5 workflow functions.`,
+    name: "Implementer",
+  },
+  {
+    task: `Write comprehensive unit tests in packages/sdk-ts/src/__tests__/workflows.test.ts.
+           Mock AgentRelay. Test convention injection, DONE parsing, pipeline sequencing,
+           timeout handling, and cancel behavior.`,
+    name: "TestWriter",
+  },
+  {
+    task: `Review all files written by previous stages. Check for type errors (run tsc --noEmit),
+           verify tests pass (npm test), fix any issues. Ensure exports are added to index.ts.`,
+    name: "Reviewer",
+  },
+], {
+  cli: "claude",
+  timeoutMs: 15 * 60_000,
+});
+
+const result = await run.result;
+console.log(result.success ? "Module built successfully!" : "Build failed");
+for (const agent of result.agents) {
+  console.log(`  ${agent.name}: ${agent.summary}`);
+}
+```
+
+---
+
+## Priority & Scope
+
+### Phase 1 (This PR)
+- `fanOut` workflow
+- `pipeline` workflow
+- Convention injection system
+- DONE/ACK parsing
+- Unit tests
+- Export from index.ts
+
+### Phase 2
+- `hubAndSpoke` workflow
+- `consensus` workflow (integrate ConsensusEngine)
+- Shadow integration
+
+### Phase 3
+- `mesh` workflow
+- Max rounds / round tracking
+- Workflow composition (nest workflows within workflows)
+- `WorkflowBuilder` fluent API for custom patterns
+
+---
+
+## Open Questions
+
+1. **Task delivery for non-Claude CLIs** — How do codex/gemini/aider receive the initial task? Need to verify each CLI's argument format. Fallback is always relay message.
+
+2. **Shared file context** — Should workflows support a `sharedFiles` option that makes certain files available to all agents? This maps to the "Shared Workspace Context" primitive from the swarm report.
+
+3. **Progress tracking** — Should there be a formal PROGRESS message protocol beyond DONE/ACK? E.g., `PROGRESS: 50% — finished auth module`. This would enable live progress bars in the SDK consumer.
