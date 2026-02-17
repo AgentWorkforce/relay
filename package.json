@@ -191,7 +191,6 @@
     "@agent-relay/trajectory": "2.2.24",
     "@agent-relay/user-directory": "2.2.24",
     "@agent-relay/utils": "2.2.24",
-    "@agent-relay/broker-sdk": "3.0.0-alpha.1",
     "@agent-relay/wrapper": "2.2.24",
     "@relaycast/sdk": "^0.2.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
