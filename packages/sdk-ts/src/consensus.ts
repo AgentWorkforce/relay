@@ -389,7 +389,7 @@ export class ConsensusEngine extends EventEmitter {
         ? "approved"
         : result.decision === "rejected"
           ? "rejected"
-          : "expired";
+          : "rejected"; // no_consensus maps to rejected (not expired — that's for timeouts)
     proposal.result = result;
     this.clearExpiryTimer(proposal.id);
     this.emit("proposal:resolved", proposal, result);

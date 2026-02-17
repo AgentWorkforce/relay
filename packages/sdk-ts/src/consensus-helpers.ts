@@ -142,7 +142,7 @@ export function parseVoteCommand(
   message: string,
 ): { proposalId: string; value: VoteValue; reason?: string } | null {
   const match = message.match(
-    /^VOTE\s+(\S+)\s+(approve|reject|abstain)(?:\s+(.+))?$/i,
+    /^VOTE[ \t]+(\S+)[ \t]+(approve|reject|abstain)(?:[ \t]+(.+))?$/i,
   );
   if (!match) return null;
   return {
