@@ -358,6 +358,101 @@ async function installRelayPtyBinary() {
 }
 
 /**
+ * Get the platform-specific binary name for the Rust broker binary.
+ * The broker binary is needed by the SDK (packages/sdk-ts) for programmatic
+ * agent orchestration via `new AgentRelay()`.
+ * Returns null if platform is not supported.
+ */
+function getBrokerBinaryName() {
+  const platform = os.platform();
+  const arch = os.arch();
+
+  const archMap = { 'arm64': 'arm64', 'x64': 'x64' };
+  const platformMap = { 'darwin': 'darwin', 'linux': 'linux' };
+
+  const targetPlatform = platformMap[platform];
+  const targetArch = archMap[arch];
+
+  if (!targetPlatform || !targetArch) {
+    return null;
+  }
+
+  return `agent-relay-broker-${targetPlatform}-${targetArch}`;
+}
+
+/**
+ * Install the Rust broker binary into packages/sdk-ts/bin/.
+ *
+ * The SDK's AgentRelayClient spawns this binary as a subprocess
+ * (`agent-relay init --name broker --channels general`). Without it,
+ * `new AgentRelay()` will fail with "broker exited (code=1)".
+ *
+ * Resolution order:
+ *   1. Already bundled at packages/sdk-ts/bin/agent-relay (e.g. from prepack)
+ *   2. Download platform-specific binary from GitHub releases
+ *   3. Fall back to the Rust debug binary at target/debug/agent-relay (dev only)
+ */
+async function installBrokerBinary() {
+  const pkgRoot = getPackageRoot();
+  const sdkBinDir = path.join(pkgRoot, 'packages', 'sdk-ts', 'bin');
+  const isWindows = process.platform === 'win32';
+  const binaryFilename = isWindows ? 'agent-relay.exe' : 'agent-relay';
+  const targetPath = path.join(sdkBinDir, binaryFilename);
+
+  // 1. Already installed?
+  if (fs.existsSync(targetPath)) {
+    try {
+      execSync(`"${targetPath}" init --help`, { stdio: 'pipe' });
+      info('Broker binary already installed in SDK');
+      return true;
+    } catch {
+      // Binary exists but doesn't work — reinstall
+    }
+  }
+
+  fs.mkdirSync(sdkBinDir, { recursive: true });
+
+  // 2. Try downloading from GitHub releases
+  const binaryName = getBrokerBinaryName();
+  if (binaryName) {
+    const version = getPackageVersion(pkgRoot);
+    if (version) {
+      const downloadUrl = `https://github.com/AgentWorkforce/relay/releases/download/v${version}/${binaryName}`;
+      info(`Downloading broker binary from ${downloadUrl} ...`);
+
+      try {
+        await downloadRelayPtyBinary(downloadUrl, targetPath);
+        fs.chmodSync(targetPath, 0o755);
+        resignBinaryForMacOS(targetPath);
+        success(`Downloaded broker binary for ${os.platform()}-${os.arch()}`);
+        return true;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        warn(`Failed to download broker binary: ${message}`);
+      }
+    }
+  }
+
+  // 3. Dev fallback — check for local Rust build
+  const debugBinary = path.join(pkgRoot, 'target', 'debug', binaryFilename);
+  if (fs.existsSync(debugBinary)) {
+    try {
+      fs.copyFileSync(debugBinary, targetPath);
+      fs.chmodSync(targetPath, 0o755);
+      resignBinaryForMacOS(targetPath);
+      success('Installed broker binary from local Rust debug build');
+      return true;
+    } catch (err) {
+      warn(`Failed to copy debug broker binary: ${err.message}`);
+    }
+  }
+
+  warn('Broker binary not available — SDK programmatic usage (AgentRelay) will not work');
+  info('To fix: cargo build --release --bin agent-relay (requires Rust toolchain)');
+  return false;
+}
+
+/**
  * Check if tmux is available on the system
  */
 function hasSystemTmux() {
@@ -578,7 +673,7 @@ function patchAgentTrajectories() {
   success('Patched agent-trajectories to record agent on trail start');
 }
 
-function logPostinstallDiagnostics(hasRelayPty, sqliteStatus, linkResult) {
+function logPostinstallDiagnostics(hasRelayPty, hasBrokerBinary, sqliteStatus, linkResult) {
   // Workspace packages status (for global installs)
   if (linkResult && linkResult.needed) {
     if (linkResult.success) {
@@ -592,6 +687,12 @@ function logPostinstallDiagnostics(hasRelayPty, sqliteStatus, linkResult) {
     console.log('✓ relay-pty binary installed');
   } else {
     console.log('⚠ relay-pty binary not installed - falling back to tmux mode if available');
+  }
+
+  if (hasBrokerBinary) {
+    console.log('✓ broker binary installed (SDK programmatic usage ready)');
+  } else {
+    console.log('⚠ broker binary not installed - AgentRelay programmatic API will not work');
   }
 
   if (sqliteStatus.ok && sqliteStatus.driver === 'better-sqlite3') {
@@ -626,6 +727,9 @@ async function main() {
   // Install relay-pty binary for current platform (primary mode)
   const hasRelayPty = await installRelayPtyBinary();
 
+  // Install broker binary for SDK programmatic usage (AgentRelay)
+  const hasBrokerBinary = await installBrokerBinary();
+
   // Ensure SQLite driver is available (better-sqlite3 or node:sqlite)
   const sqliteStatus = ensureSqliteDriver();
 
@@ -636,7 +740,7 @@ async function main() {
   installDashboardDeps();
 
   // Always print diagnostics (even in CI)
-  logPostinstallDiagnostics(hasRelayPty, sqliteStatus, linkResult);
+  logPostinstallDiagnostics(hasRelayPty, hasBrokerBinary, sqliteStatus, linkResult);
 
   // Skip tmux check in CI environments
   if (process.env.CI === 'true') {
