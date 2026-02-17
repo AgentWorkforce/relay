@@ -445,7 +445,6 @@ jobs:
           - hooks
           - resiliency
           - user-directory
-          - api-types
           - spawner
           - mcp
           - config
