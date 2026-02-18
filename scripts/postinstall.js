@@ -394,7 +394,7 @@ function getBrokerBinaryName() {
  */
 async function installBrokerBinary() {
   const pkgRoot = getPackageRoot();
-  const sdkBinDir = path.join(pkgRoot, 'packages', 'sdk-ts', 'bin');
+  const sdkBinDir = path.join(pkgRoot, 'packages', 'broker-sdk', 'bin');
   const isWindows = process.platform === 'win32';
   const binaryFilename = isWindows ? 'agent-relay.exe' : 'agent-relay';
   const targetPath = path.join(sdkBinDir, binaryFilename);
