@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/broker-sdk",
-  "version": "2.3.9",
+  "version": "2.3.10",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
