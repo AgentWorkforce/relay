@@ -65,3 +65,10 @@ bin/agent-relay-standalone
 
 # SDK bundled broker binary (built/downloaded at install time)
 packages/sdk-ts/bin/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/

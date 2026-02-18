@@ -194,7 +194,7 @@ agent-relay is a messaging layer, not a framework. It works with any CLI tool, a
 
 ## License
 
-Apache-2.0 — Copyright 2025 Agent Workforce Incorporated
+Apache-2.0 — Copyright 2026 Agent Workforce Incorporated
 
 ---
 

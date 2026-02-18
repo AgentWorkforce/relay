@@ -272,10 +272,59 @@ export class WorkflowRunner {
   }
 
   private interpolate(template: string, vars: VariableContext): string {
-    return template.replace(/\{\{(\w+)\}\}/g, (_match, key: string) => {
-      const value = vars[key];
+    return template.replace(/\{\{([\w][\w.\-]*)\}\}/g, (_match, key: string) => {
+      // Resolve dot-path variables like steps.plan.output
+      const value = this.resolveDotPath(key, vars);
       if (value === undefined) {
         throw new Error(`Unresolved variable: {{${key}}}`);
+      }
+      return String(value);
+    });
+  }
+
+  private resolveDotPath(key: string, vars: VariableContext): string | number | boolean | undefined {
+    // Simple key — direct lookup
+    if (!key.includes('.')) {
+      return vars[key];
+    }
+
+    // Dot-path — walk into nested context
+    const parts = key.split('.');
+    let current: unknown = vars;
+    for (const part of parts) {
+      if (current === null || current === undefined || typeof current !== 'object') {
+        return undefined;
+      }
+      current = (current as Record<string, unknown>)[part];
+    }
+
+    if (current === undefined || current === null) {
+      return undefined;
+    }
+    if (typeof current === 'string' || typeof current === 'number' || typeof current === 'boolean') {
+      return current;
+    }
+    return String(current);
+  }
+
+  /** Build a nested context from completed step outputs for {{steps.X.output}} resolution. */
+  private buildStepOutputContext(stepStates: Map<string, StepState>): VariableContext {
+    const steps: Record<string, { output: string }> = {};
+    for (const [name, state] of stepStates) {
+      if (state.row.status === 'completed' && state.row.output !== undefined) {
+        steps[name] = { output: state.row.output };
+      }
+    }
+    return { steps } as unknown as VariableContext;
+  }
+
+  /** Interpolate step-output variables, silently skipping unresolved ones (they may be user vars). */
+  private interpolateStepTask(template: string, context: VariableContext): string {
+    return template.replace(/\{\{(steps\.[\w\-]+\.output)\}\}/g, (_match, key: string) => {
+      const value = this.resolveDotPath(key, context);
+      if (value === undefined) {
+        // Leave unresolved — may not be an error if the template doesn't depend on prior steps
+        return _match;
       }
       return String(value);
     });
@@ -540,12 +589,12 @@ export class WorkflowRunner {
 
           if (strategy === 'fail-fast') {
             // Mark all pending downstream steps as skipped
-            this.markDownstreamSkipped(step.name, workflow.steps, stepStates, runId);
+            await this.markDownstreamSkipped(step.name, workflow.steps, stepStates, runId);
             throw new Error(`Step "${step.name}" failed: ${error}`);
           }
 
           if (strategy === 'continue') {
-            this.markDownstreamSkipped(step.name, workflow.steps, stepStates, runId);
+            await this.markDownstreamSkipped(step.name, workflow.steps, stepStates, runId);
           }
         }
       }
@@ -613,8 +662,13 @@ export class WorkflowRunner {
         });
         this.emit({ type: 'step:started', runId, stepName: step.name });
 
+        // Resolve step-output variables (e.g. {{steps.plan.output}}) at execution time
+        const stepOutputContext = this.buildStepOutputContext(stepStates);
+        const resolvedTask = this.interpolateStepTask(step.task, stepOutputContext);
+
         // Spawn agent via AgentRelay
-        const output = await this.spawnAndWait(agentDef, step, timeoutMs);
+        const resolvedStep = { ...step, task: resolvedTask };
+        const output = await this.spawnAndWait(agentDef, resolvedStep, timeoutMs);
 
         // Run verification if configured
         if (step.verification) {
@@ -742,12 +796,12 @@ export class WorkflowRunner {
     this.emit({ type: 'step:failed', runId, stepName: state.row.stepName, error });
   }
 
-  private markDownstreamSkipped(
+  private async markDownstreamSkipped(
     failedStepName: string,
     allSteps: WorkflowStep[],
     stepStates: Map<string, StepState>,
     runId: string,
-  ): void {
+  ): Promise<void> {
     const queue = [failedStepName];
     const visited = new Set<string>();
 
@@ -761,7 +815,7 @@ export class WorkflowRunner {
           const state = stepStates.get(step.name);
           if (state && state.row.status === 'pending') {
             state.row.status = 'skipped';
-            this.db.updateStep(state.row.id, {
+            await this.db.updateStep(state.row.id, {
               status: 'skipped',
               updatedAt: new Date().toISOString(),
             });
