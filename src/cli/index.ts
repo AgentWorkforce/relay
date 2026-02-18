@@ -4162,7 +4162,8 @@ program
   .option('--token <token>', 'One-time CLI token from dashboard (skips cloud config requirement)')
   .option('--cloud-url <url>', 'Cloud API URL (overrides linked config and AGENT_RELAY_CLOUD_URL)')
   .option('--timeout <seconds>', 'Timeout in seconds (default: 300)', '300')
-  .action(async (providerArg: string, options: { workspace?: string; token?: string; cloudUrl?: string; timeout: string }) => {
+  .option('--use-auth-broker', 'Use dedicated auth broker instead of workspace SSH (for Daytona/sandboxed environments)')
+  .action(async (providerArg: string, options: { workspace?: string; token?: string; cloudUrl?: string; timeout: string; useAuthBroker?: boolean }) => {
     const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`;
     const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
     const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
@@ -4199,6 +4200,7 @@ program
       console.log(`  ${cyan('npx agent-relay auth claude --workspace=<ID>')}`);
       console.log(`  ${cyan('npx agent-relay auth codex --workspace=<ID>')}`);
       console.log(`  ${cyan('npx agent-relay auth gemini --workspace=<ID>')}`);
+      console.log(`  ${cyan('npx agent-relay auth claude --use-auth-broker')}  ${dim('(for Daytona/sandboxed environments)')}`);
       console.log('');
       console.log('Supported provider ids:');
       console.log(`  ${known.join(', ')}`);
@@ -4258,13 +4260,19 @@ program
 
     const requestedWorkspaceId = options.workspace || process.env.WORKSPACE_ID;
 
+    const useAuthBroker = options.useAuthBroker ?? false;
+
     console.log('');
     console.log(cyan('═══════════════════════════════════════════════════'));
     console.log(cyan('        Provider Authentication (SSH)'));
     console.log(cyan('═══════════════════════════════════════════════════'));
     console.log('');
     console.log(`Provider: ${providerConfig.displayName} (${provider})`);
-    console.log(`Workspace: ${requestedWorkspaceId ? `${requestedWorkspaceId.slice(0, 8)}...` : '(default)'}`);
+    if (useAuthBroker) {
+      console.log(`Target: ${cyan('Auth Broker')} (dedicated authentication instance)`);
+    } else {
+      console.log(`Workspace: ${requestedWorkspaceId ? `${requestedWorkspaceId.slice(0, 8)}...` : '(default)'}`);
+    }
     console.log(dim(`Cloud: ${CLOUD_URL}`));
     console.log('');
 
@@ -4299,6 +4307,7 @@ program
           provider,
           workspaceId: requestedWorkspaceId,
           ...(cliToken && { token: cliToken }),
+          ...(useAuthBroker && { useAuthBroker: true }),
         }),
       });
 
@@ -4343,7 +4352,9 @@ program
       : `PATH=/home/workspace/.local/bin:$PATH ${baseCommand}`;
 
     console.log(green('✓ SSH session created'));
-    if (start.workspaceName) {
+    if (useAuthBroker) {
+      console.log(`Target: ${cyan('Auth Broker')}`);
+    } else if (start.workspaceName) {
       console.log(`Workspace: ${cyan(start.workspaceName)} (${start.workspaceId.slice(0, 8)}...)`);
     } else {
       console.log(`Workspace: ${start.workspaceId.slice(0, 8)}...`);
@@ -4354,9 +4365,10 @@ program
 
     const TUNNEL_PORT = 1455;
     const ssh2 = await loadSSH2();
+    const tunnelTarget = useAuthBroker ? 'auth-broker' : 'workspace';
 
     console.log(yellow('Connecting via SSH...'));
-    console.log(dim(`  Tunnel: localhost:${TUNNEL_PORT} → workspace:${TUNNEL_PORT}`));
+    console.log(dim(`  Tunnel: localhost:${TUNNEL_PORT} → ${tunnelTarget}:${TUNNEL_PORT}`));
     console.log(dim(`  Running: ${remoteCommand}`));
     console.log('');
 
@@ -4722,8 +4734,13 @@ program
       // Exit code 127 = command not found
       if (execResult?.exitCode === 127) {
         console.log('');
-        console.log(yellow(`The ${providerConfig.displayName} CLI ("${providerConfig.command}") is not installed on this workspace.`));
-        console.log(dim('Ask your workspace administrator to install it, or check the workspace Dockerfile.'));
+        if (useAuthBroker) {
+          console.log(yellow(`The ${providerConfig.displayName} CLI ("${providerConfig.command}") is not installed on the auth broker.`));
+          console.log(dim('This is unexpected. Please report this issue.'));
+        } else {
+          console.log(yellow(`The ${providerConfig.displayName} CLI ("${providerConfig.command}") is not installed on this workspace.`));
+          console.log(dim('Ask your workspace administrator to install it, or check the workspace Dockerfile.'));
+        }
       }
       process.exit(1);
     }
@@ -4733,7 +4750,12 @@ program
     console.log(green('          Authentication Complete!'));
     console.log(green('═══════════════════════════════════════════════════'));
     console.log('');
-    console.log(`${providerConfig.displayName} is now connected to workspace ${start.workspaceId.slice(0, 8)}...`);
+    if (useAuthBroker) {
+      console.log(`${providerConfig.displayName} credentials are now stored in your account.`);
+      console.log(dim('Your Daytona/sandboxed workspaces will use these credentials automatically.'));
+    } else {
+      console.log(`${providerConfig.displayName} is now connected to workspace ${start.workspaceId.slice(0, 8)}...`);
+    }
     console.log('');
   });
 
