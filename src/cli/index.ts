@@ -3,18 +3,18 @@
  * Agent Relay CLI
  *
  * Commands:
- *   relay up                       - Start daemon
- *   relay up --dashboard           - Start daemon with web dashboard
- *   relay create-agent <cmd>       - Wrap agent with real-time messaging
- *   relay create-agent -n Name cmd - Wrap with specific agent name
- *   relay spawn <name> <cli>       - Spawn a new agent
- *   relay release <name>           - Release an agent
- *   relay agents                   - List connected agents
- *   relay who                      - Show currently active agents
- *   relay read <id>                - Read full message by ID
- *   relay history                  - Show recent message history
- *   relay status                   - Check daemon status
- *   relay down                     - Stop daemon
+ *   agent-relay up                       - Start broker with web dashboard
+ *   agent-relay up --no-dashboard        - Start broker without dashboard
+ *   agent-relay create-agent <cmd>       - Wrap agent with real-time messaging
+ *   agent-relay create-agent -n Name cmd - Wrap with specific agent name
+ *   agent-relay spawn <name> <cli>       - Spawn a new agent
+ *   agent-relay release <name>           - Release an agent
+ *   agent-relay agents                   - List connected agents
+ *   agent-relay who                      - Show currently active agents
+ *   agent-relay read <id>                - Read full message by ID
+ *   agent-relay history                  - Show recent message history
+ *   agent-relay status                   - Check broker status
+ *   agent-relay down                     - Stop broker
  */
 
 import { Command } from 'commander';
@@ -716,22 +716,43 @@ program
     await new Promise(() => {});
   });
 
-// up - Start daemon (dashboard disabled by default)
+// up - Start broker with dashboard
 program
   .command('up')
-  .description('Start daemon (use --dashboard to enable web dashboard)')
-  .option('--dashboard', 'Enable web dashboard (disabled by default)')
-  .option('--port <port>', 'Dashboard port (requires --dashboard)', DEFAULT_DASHBOARD_PORT)
+  .description('Start broker with web dashboard')
+  .option('--no-dashboard', 'Disable web dashboard')
+  .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
   .option('--storage <type>', 'Storage type: jsonl (default), sqlite, sqlite-batched, memory', 'jsonl')
   .option('--spawn', 'Force spawn all agents from teams.json')
-  .option('--no-spawn', 'Do not auto-spawn agents (just start daemon)')
-  .option('--watch', 'Auto-restart daemon on crash (supervisor mode)')
+  .option('--no-spawn', 'Do not auto-spawn agents (just start broker)')
+  .option('--background', 'Run broker in the background (detached)')
+  .option('--watch', 'Auto-restart broker on crash (supervisor mode)')
   .option('--max-restarts <n>', 'Max restarts in 60s before giving up (default: 5)', '5')
   .option('--verbose', 'Enable verbose logging (show debug output in console)')
   .option('--zed', 'Add Agent Relay entry to Zed agent_servers for this workspace')
   .option('--zed-config <path>', 'Custom path to Zed settings.json (defaults to ~/.config/zed/settings.json)')
   .option('--zed-name <name>', 'Display name for the Zed agent server (default: Agent Relay)')
   .action(async (options) => {
+    // If --background is specified, fork into a detached child and exit
+    if (options.background) {
+      const args = process.argv.slice(2).filter(a => a !== '--background');
+      const logFile = path.join(
+        getProjectPaths().dataDir,
+        'broker.log',
+      );
+      const out = fs.openSync(logFile, 'a');
+      const child = spawnProcess(process.execPath, [process.argv[1], ...args], {
+        detached: true,
+        stdio: ['ignore', out, out],
+        env: process.env,
+      });
+      child.unref();
+      console.log(`Broker started in background (pid: ${child.pid})`);
+      console.log(`Logs: ${logFile}`);
+      console.log(`Stop with: agent-relay down`);
+      process.exit(0);
+    }
+
     // If --watch is specified, run in supervisor mode
     if (options.watch) {
       const maxRestarts = parseInt(options.maxRestarts, 10) || 5;
@@ -743,9 +764,10 @@ program
       const startDaemon = (): void => {
         // Build args without --watch to prevent infinite recursion
         const args = ['up'];
-        if (options.dashboard === true) {
-          args.push('--dashboard');
-          if (options.port) args.push('--port', options.port);
+        if (options.dashboard === false) {
+          args.push('--no-dashboard');
+        } else if (options.port) {
+          args.push('--port', options.port);
         }
         if (options.storage) args.push('--storage', options.storage);
         if (options.spawn === true) args.push('--spawn');
@@ -813,36 +835,6 @@ program
     const paths = ensureProjectDir();
     const socketPath = paths.socketPath;
 
-    // Auto-install relay protocol snippets if not already present
-    // Check if the snippet marker exists in any of the target files
-    const snippetTargets = ['CLAUDE.md', 'GEMINI.md', 'AGENTS.md'];
-    const snippetMarker = '<!-- prpm:snippet:start @agent-relay/agent-relay-snippet';
-
-    const hasSnippetInstalled = snippetTargets.some(file => {
-      const filePath = path.join(paths.projectRoot, file);
-      if (!fs.existsSync(filePath)) return false;
-      try {
-        const content = fs.readFileSync(filePath, 'utf-8');
-        return content.includes(snippetMarker);
-      } catch {
-        return false;
-      }
-    });
-
-    if (!hasSnippetInstalled) {
-      console.log('Installing relay protocol snippets...');
-      try {
-        const result = await installRelaySnippets({ silent: false });
-        if (result.success) {
-          console.log(`Installed snippets to: ${result.installed.join(', ')}`);
-        }
-      } catch (err: any) {
-        // Non-fatal - continue even if snippet install fails
-        console.log(`Note: Could not auto-install snippets: ${err.message}`);
-      }
-      console.log('');
-    }
-
     // Optionally configure Zed agent_servers with the ACP bridge
     if (options.zed) {
       try {
@@ -876,7 +868,7 @@ program
     }
 
     console.log(`Project: ${paths.projectRoot}`);
-    console.log(`Socket:  ${socketPath} (compatibility path)`);
+    console.log(`Mode:    broker (stdio → Rust binary → Relaycast WS)`);
 
     // Load teams.json if present
     const teamsConfig = loadTeamsConfig(paths.projectRoot);
@@ -895,27 +887,29 @@ program
       env: process.env,
     });
 
+    // Write PID file so `agent-relay down` can find and stop this process.
+    const pidFilePath = path.join(paths.dataDir, 'broker.pid');
+    fs.writeFileSync(pidFilePath, String(process.pid), 'utf-8');
+
     // Track if we're already shutting down to prevent double-cleanup
     let isShuttingDown = false;
 
-    const gracefulShutdown = async (reason: string): Promise<void> => {
+    const gracefulShutdown = async (): Promise<void> => {
       if (isShuttingDown) return;
       isShuttingDown = true;
-      console.log(`\n[broker] ${reason}, shutting down...`);
       try {
-        const agents = await relay.listAgents();
-        await Promise.all(agents.map((agent) => agent.release().catch(() => undefined)));
         await relay.shutdown();
-      } catch (err) {
-        console.error('[broker] Error during shutdown:', err);
+      } catch {
+        // Broker already exited — nothing to do.
       }
-      process.exit(1);
+      // Clean up PID file
+      try { fs.unlinkSync(pidFilePath); } catch { /* ignore */ }
     };
 
     // Handle uncaught exceptions - log and exit (supervisor will restart)
     process.on('uncaughtException', (err) => {
       console.error('[broker] Uncaught exception:', err);
-      gracefulShutdown('Uncaught exception');
+      gracefulShutdown().finally(() => process.exit(1));
     });
 
     // Handle unhandled promise rejections
@@ -927,12 +921,12 @@ program
 
     process.on('SIGINT', async () => {
       console.log('\nStopping...');
-      await gracefulShutdown('Received SIGINT');
+      await gracefulShutdown();
       process.exit(0);
     });
 
     process.on('SIGTERM', async () => {
-      await gracefulShutdown('Received SIGTERM');
+      await gracefulShutdown();
       process.exit(0);
     });
 
@@ -942,10 +936,9 @@ program
 
       let dashboardPort: number | undefined = undefined;
 
-      // Try to start dashboard if --dashboard flag is set OR if package is available (auto-detect)
-      // --no-dashboard explicitly disables dashboard
+      // Dashboard is enabled by default, opt out with --no-dashboard
       const wantsDashboard = options.dashboard !== false;
-      const dashboardRequested = options.dashboard === true;
+      const dashboardRequested = wantsDashboard;
 
       if (wantsDashboard) {
         const port = parseInt(options.port, 10);
@@ -1052,35 +1045,23 @@ program
     }
   });
 
-// down - Stop daemon
+// down - Stop broker
 program
   .command('down')
-  .description('Stop daemon')
+  .description('Stop broker')
   .option('--force', 'Force cleanup even if process is stuck')
   .option('--all', 'Kill all agent-relay processes system-wide')
   .option('--timeout <ms>', 'Timeout waiting for graceful shutdown', '5000')
   .action(async (options: { force?: boolean; all?: boolean; timeout?: string }) => {
     const paths = getProjectPaths();
-    const pidPath = pidFilePathForSocket(paths.socketPath);
+    const brokerPidPath = path.join(paths.dataDir, 'broker.pid');
+    const legacyPidPath = pidFilePathForSocket(paths.socketPath);
     const timeout = parseInt(options.timeout ?? '5000', 10);
-
-    // Prefer broker-sdk shutdown first.
-    const relay = new AgentRelay({
-      binaryPath: process.env.AGENT_RELAY_BIN,
-      channels: ['general'],
-      cwd: paths.projectRoot,
-      env: process.env,
-    });
-    try {
-      await relay.shutdown();
-    } catch {
-      // Continue with legacy cleanup path below.
-    }
 
     // Helper to check if process is running
     const isProcessRunning = (pid: number): boolean => {
       try {
-        process.kill(pid, 0); // Signal 0 just checks if process exists
+        process.kill(pid, 0);
         return true;
       } catch {
         return false;
@@ -1091,59 +1072,34 @@ program
     const waitForProcessExit = async (pid: number, timeoutMs: number): Promise<boolean> => {
       const start = Date.now();
       while (Date.now() - start < timeoutMs) {
-        if (!isProcessRunning(pid)) {
-          return true;
-        }
+        if (!isProcessRunning(pid)) return true;
         await new Promise(resolve => setTimeout(resolve, 100));
       }
       return false;
     };
 
-    // Helper to clean up stale files
+    // Clean up stale files from legacy daemon and current broker
     const cleanupStaleFiles = () => {
-      // Clean up socket file
-      if (fs.existsSync(paths.socketPath)) {
-        try {
-          fs.unlinkSync(paths.socketPath);
-          console.log('Cleaned up stale socket');
-        } catch { /* ignore */ }
+      for (const f of [brokerPidPath, legacyPidPath, paths.socketPath]) {
+        if (fs.existsSync(f)) {
+          try { fs.unlinkSync(f); } catch { /* ignore */ }
+        }
       }
-
-      // Clean up pid file
-      if (fs.existsSync(pidPath)) {
-        try {
-          fs.unlinkSync(pidPath);
-          console.log('Cleaned up stale pid file');
-        } catch { /* ignore */ }
-      }
-
-      // Clean up runtime.json
       const runtimePath = path.join(paths.dataDir, 'runtime.json');
       if (fs.existsSync(runtimePath)) {
-        try {
-          fs.unlinkSync(runtimePath);
-          console.log('Cleaned up runtime config');
-        } catch { /* ignore */ }
+        try { fs.unlinkSync(runtimePath); } catch { /* ignore */ }
       }
-
-      // Clean up stale mcp-identity-* files (but not mcp-identity)
+      // Clean up stale mcp-identity-* files
       try {
-        const files = fs.readdirSync(paths.dataDir);
-        for (const file of files) {
+        for (const file of fs.readdirSync(paths.dataDir)) {
           if (file.startsWith('mcp-identity-')) {
-            const identityPath = path.join(paths.dataDir, file);
-            // Check if the PID in the filename is still running
             const match = file.match(/mcp-identity-(\d+)/);
-            if (match) {
-              const identityPid = parseInt(match[1], 10);
-              if (!isProcessRunning(identityPid)) {
-                fs.unlinkSync(identityPath);
-                console.log(`Cleaned up stale identity file: ${file}`);
-              }
+            if (match && !isProcessRunning(parseInt(match[1], 10))) {
+              fs.unlinkSync(path.join(paths.dataDir, file));
             }
           }
         }
-      } catch { /* ignore errors reading directory */ }
+      } catch { /* ignore */ }
     };
 
     // Handle --all flag: kill all agent-relay processes system-wide
@@ -1152,19 +1108,14 @@ program
       const { execSync } = await import('node:child_process');
 
       try {
-        // Find all agent-relay processes
         const psOutput = execSync('ps aux', { encoding: 'utf-8' });
-        const lines = psOutput.split('\n');
         const agentRelayProcesses: { pid: number; cmd: string }[] = [];
 
-        for (const line of lines) {
-          // Match agent-relay daemon processes (not MCP servers or other commands)
-          // Look for "agent-relay up" or "agent-relay.*up" patterns
+        for (const line of psOutput.split('\n')) {
           if ((line.includes('agent-relay') && line.includes(' up')) &&
               !line.includes('grep') &&
               !line.includes('agent-relay-mcp')) {
             const parts = line.trim().split(/\s+/);
-            // ps aux format: USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND
             const pid = parseInt(parts[1], 10);
             if (!isNaN(pid) && pid !== process.pid && pid > 0) {
               agentRelayProcesses.push({ pid, cmd: parts.slice(10).join(' ') });
@@ -1176,22 +1127,15 @@ program
           console.log('No agent-relay processes found');
         } else {
           console.log(`Found ${agentRelayProcesses.length} agent-relay process(es)`);
-
           for (const proc of agentRelayProcesses) {
             try {
               console.log(`  Stopping PID ${proc.pid}...`);
               process.kill(proc.pid, 'SIGTERM');
             } catch (err: any) {
-              if (err.code !== 'ESRCH') {
-                console.log(`    Warning: ${err.message}`);
-              }
+              if (err.code !== 'ESRCH') console.log(`    Warning: ${err.message}`);
             }
           }
-
-          // Wait a bit for graceful shutdown
           await new Promise(resolve => setTimeout(resolve, 2000));
-
-          // Force kill any remaining
           if (options.force) {
             for (const proc of agentRelayProcesses) {
               if (isProcessRunning(proc.pid)) {
@@ -1202,17 +1146,18 @@ program
               }
             }
           }
-
           console.log('Done');
         }
       } catch (err: any) {
         console.error(`Error finding processes: ${err.message}`);
       }
+      cleanupStaleFiles();
       return;
     }
 
+    // Find the broker PID from broker.pid (new) or legacy socket PID file
+    const pidPath = fs.existsSync(brokerPidPath) ? brokerPidPath : legacyPidPath;
     if (!fs.existsSync(pidPath)) {
-      // No pid file, but might have stale files
       if (options.force) {
         cleanupStaleFiles();
         console.log('Cleaned up (was not running)');
@@ -1224,19 +1169,17 @@ program
 
     const pid = Number(fs.readFileSync(pidPath, 'utf-8').trim());
 
-    // Check if process is actually running
     if (!isProcessRunning(pid)) {
       cleanupStaleFiles();
       console.log('Cleaned up stale state (process was not running)');
       return;
     }
 
-    // Try graceful shutdown
+    // Send SIGTERM to the `up` process, which triggers its graceful shutdown handler
     try {
-      console.log(`Stopping daemon (pid: ${pid})...`);
+      console.log(`Stopping broker (pid: ${pid})...`);
       process.kill(pid, 'SIGTERM');
 
-      // Wait for graceful shutdown
       const exited = await waitForProcessExit(pid, timeout);
 
       if (!exited) {
@@ -1252,16 +1195,14 @@ program
         }
       }
 
-      // Clean up any remaining stale files
       cleanupStaleFiles();
       console.log('Stopped');
     } catch (err: any) {
       if (err.code === 'ESRCH') {
-        // Process doesn't exist
         cleanupStaleFiles();
         console.log('Cleaned up stale state');
       } else {
-        console.error(`Error stopping daemon: ${err.message}`);
+        console.error(`Error stopping broker: ${err.message}`);
       }
     }
   });
@@ -1288,13 +1229,13 @@ program
     const hasProjectData = fs.existsSync(paths.dataDir);
 
     if (hasProjectData) {
-      // Stop daemon if running
+      // Stop broker if running
       const pidPath = pidFilePathForSocket(paths.socketPath);
       if (fs.existsSync(pidPath)) {
         const pid = Number(fs.readFileSync(pidPath, 'utf-8').trim());
         try {
           process.kill(pid, 0); // Check if running
-          actions.push(`Stop daemon (pid: ${pid})`);
+          actions.push(`Stop broker (pid: ${pid})`);
           if (!options.dryRun) {
             try {
               process.kill(pid, 'SIGTERM');
@@ -1592,31 +1533,55 @@ program
 
 program
   .command('status')
-  .description('Check daemon status')
+  .description('Check broker status')
   .action(async () => {
     const paths = getProjectPaths();
     const relaySessions = await discoverRelaySessions();
-    const relay = new AgentRelay({
-      binaryPath: process.env.AGENT_RELAY_BIN,
-      channels: ['general'],
-      cwd: paths.projectRoot,
-      env: process.env,
-    });
+    const brokerPidPath = path.join(paths.dataDir, 'broker.pid');
 
-    try {
-      const status = await relay.getStatus();
-      console.log('Status: RUNNING');
-      console.log(`Socket: ${paths.socketPath}`);
-      console.log(`Agents: ${status.agent_count}`);
-      if (status.pending_delivery_count > 0) {
-        console.log(`Pending deliveries: ${status.pending_delivery_count}`);
+    // Check if broker is running via PID file written by `up`
+    let running = false;
+    let brokerPid: number | undefined;
+
+    if (fs.existsSync(brokerPidPath)) {
+      brokerPid = Number(fs.readFileSync(brokerPidPath, 'utf-8').trim());
+      try {
+        process.kill(brokerPid, 0); // Signal 0 = check if alive
+        running = true;
+      } catch {
+        // Stale PID file — process is dead
+        try { fs.unlinkSync(brokerPidPath); } catch { /* ignore */ }
       }
-    } catch {
-      console.log('Status: STOPPED');
-    } finally {
-      await relay.shutdown().catch(() => undefined);
-      logRelaySessions(relaySessions);
     }
+
+    if (running) {
+      console.log('Status: RUNNING');
+      console.log(`Mode: broker (stdio)`);
+      console.log(`PID: ${brokerPid}`);
+      console.log(`Project: ${paths.projectRoot}`);
+
+      // Try to get agent count from a transient broker query
+      try {
+        const relay = new AgentRelay({
+          binaryPath: process.env.AGENT_RELAY_BIN,
+          channels: ['general'],
+          cwd: paths.projectRoot,
+          env: process.env,
+        });
+        const status = await relay.getStatus();
+        console.log(`Agents: ${status.agent_count}`);
+        if (status.pending_delivery_count > 0) {
+          console.log(`Pending deliveries: ${status.pending_delivery_count}`);
+        }
+        await relay.shutdown().catch(() => undefined);
+      } catch {
+        // Could not query — just show PID-based status
+      }
+    } else {
+      console.log('Status: STOPPED');
+    }
+
+    logRelaySessions(relaySessions);
   });
 
 // agents - List connected agents (from registry file) and spawned workers
@@ -1783,7 +1748,7 @@ program
 
     if (!combined.length) {
       const hint = options.all ? '' : ' (use --all to include internal/cli agents)';
-      console.log(`No agents found. Ensure the daemon is running and agents are connected${hint}.`);
+      console.log(`No agents found. Ensure the broker is running and agents are connected${hint}.`);
       return;
     }
 
@@ -2647,7 +2612,7 @@ program
 // Use this for programmatic spawning from scripts, detached processes, or containers
 program
   .command('spawn')
-  .description('Spawn an agent via daemon (recommended for programmatic use, no TTY or dashboard required)')
+  .description('Spawn an agent via broker (recommended for programmatic use, no TTY or dashboard required)')
   .argument('<name>', 'Agent name')
   .argument('<cli>', 'CLI to use (claude, codex, gemini, etc.)')
   .argument('[task]', 'Task description (can also be piped via stdin)')
@@ -2811,7 +2776,7 @@ program
     }
   });
 
-// send - Send a message to an agent via the local daemon
+// send - Send a message to an agent via the local broker
 program
   .command('send')
   .description('Send a message to an agent')
@@ -3039,7 +3004,7 @@ cloudCommand
       console.log('');
       console.log('✓ Machine linked successfully!');
       console.log('');
-      console.log('Your daemon will now sync with Agent Relay Cloud.');
+      console.log('Your broker will now sync with Agent Relay Cloud.');
       console.log('Run `agent-relay up` to start with cloud sync enabled.');
       console.log('');
     } catch (err: any) {
@@ -3110,11 +3075,11 @@ cloudCommand
     console.log(`  Linked: ${new Date(config.linkedAt).toLocaleString()}`);
     console.log('');
 
-    // Check if daemon is running and connected
+    // Check if broker is running and connected
     const paths = getProjectPaths();
 
     if (fs.existsSync(paths.socketPath)) {
-      console.log('  Daemon: Running');
+      console.log('  Broker: Running');
 
       // Try to get cloud sync status from daemon
       try {
@@ -3136,8 +3101,8 @@ cloudCommand
         console.log(`  Cloud connection: Offline (${err.message})`);
       }
     } else {
-      console.log('  Daemon: Not running');
-      console.log('  Cloud connection: Offline (daemon not started)');
+      console.log('  Broker: Not running');
+      console.log('  Cloud connection: Offline (broker not started)');
     }
 
     console.log('');
@@ -3314,7 +3279,7 @@ cloudCommand
 
       if (!data.allAgents.length) {
         console.log('No agents found across linked machines.');
-        console.log('Make sure daemons are running on linked machines.');
+        console.log('Make sure brokers are running on linked machines.');
         return;
       }
 
@@ -3443,7 +3408,7 @@ cloudCommand
 
 cloudCommand
   .command('daemons')
-  .description('List all linked daemon instances')
+  .description('List all linked broker instances')
   .option('--json', 'Output as JSON')
   .action(async (_options) => {
     const os = await import('node:os');
@@ -3461,16 +3426,16 @@ cloudCommand
 
     try {
       // Get daemons list (requires browser auth, so we use a workaround)
-      // For now, just show what we know about our own daemon
+      // For now, just show what we know about our own broker
       console.log('');
-      console.log('Linked Daemon:');
+      console.log('Linked Broker:');
       console.log('');
       console.log(`  Machine: ${config.machineName}`);
       console.log(`  ID: ${config.machineId}`);
       console.log(`  Cloud: ${config.cloudUrl}`);
       console.log(`  Linked: ${new Date(config.linkedAt).toLocaleString()}`);
       console.log('');
-      console.log('Note: To see all linked daemons, visit your cloud dashboard.');
+      console.log('Note: To see all linked brokers, visit your cloud dashboard.');
       console.log('');
     } catch (err: any) {
       console.error(`Failed: ${err.message}`);
@@ -3732,8 +3697,8 @@ program
 
     } catch (err: any) {
       if (err.code === 'ECONNREFUSED') {
-        console.error(`Cannot connect to dashboard at port ${port}. Is the daemon running?`);
-        console.log(`Run 'agent-relay up' to start the daemon.`);
+        console.error(`Cannot connect to dashboard at port ${port}. Is the broker running?`);
+        console.log(`Run 'agent-relay up' to start the broker.`);
       } else {
         console.error(`Failed to fetch health data: ${err.message}`);
       }
@@ -4997,7 +4962,7 @@ async function runInit(options: { yes?: boolean; skipDaemon?: boolean; skipMcp?:
   console.log('  ℹ  Detected: Local environment');
   console.log('');
 
-  // Step 2: Check daemon status
+  // Step 2: Check broker status
   let daemonRunning = false;
   const socketPath = process.env.RELAY_SOCKET;
   if (socketPath && fs.existsSync(socketPath)) {
@@ -5021,9 +4986,9 @@ async function runInit(options: { yes?: boolean; skipDaemon?: boolean; skipMcp?:
   }
 
   if (daemonRunning) {
-    console.log('  ✓  Daemon is already running');
+    console.log('  ✓  Broker is already running');
   } else {
-    console.log('  ○  Daemon is not running');
+    console.log('  ○  Broker is not running');
   }
   console.log('');
 
@@ -5067,23 +5032,23 @@ async function runInit(options: { yes?: boolean; skipDaemon?: boolean; skipMcp?:
     }
   }
 
-  // Start daemon
+  // Start broker
   if (!daemonRunning && !options.skipDaemon) {
-    console.log('  ┌─ Start the Relay Daemon ──────────────────────────────────┐');
+    console.log('  ┌─ Start the Relay Broker ──────────────────────────────────┐');
     console.log('  │                                                          │');
-    console.log('  │  The daemon manages agent connections and message        │');
+    console.log('  │  The broker manages agent connections and message        │');
     console.log('  │  routing. It runs in the background.                     │');
     console.log('  │                                                          │');
     console.log('  └──────────────────────────────────────────────────────────┘');
     console.log('');
 
-    const shouldStartDaemon = await prompt('  Start the relay daemon now?');
+    const shouldStartDaemon = await prompt('  Start the relay broker now?');
 
     if (shouldStartDaemon) {
       console.log('');
-      console.log('  Starting daemon...');
+      console.log('  Starting broker...');
 
-      // Start daemon in background
+      // Start broker in background
       const daemonProcess = spawnProcess(process.execPath, [process.argv[1], 'up', '--background'], {
         detached: true,
         stdio: 'ignore',
@@ -5093,7 +5058,7 @@ async function runInit(options: { yes?: boolean; skipDaemon?: boolean; skipMcp?:
       // Wait a moment for it to start
       await new Promise((resolve) => setTimeout(resolve, 2000));
 
-      console.log('  ✓  Daemon started in background');
+      console.log('  ✓  Broker started in background');
       console.log('');
       daemonRunning = true;
     }
@@ -5108,7 +5073,7 @@ async function runInit(options: { yes?: boolean; skipDaemon?: boolean; skipMcp?:
   if (mcpInstalled || daemonRunning) {
     console.log('  Status:');
     if (mcpInstalled) console.log('    ✓  MCP server configured for editors');
-    if (daemonRunning) console.log('    ✓  Daemon running');
+    if (daemonRunning) console.log('    ✓  Broker running');
     console.log('');
   }
 
@@ -5124,20 +5089,20 @@ async function runInit(options: { yes?: boolean; skipDaemon?: boolean; skipMcp?:
   console.log('');
 
   console.log('  Commands:');
-  console.log('    agent-relay up        Start daemon with dashboard');
-  console.log('    agent-relay status    Check daemon status');
+  console.log('    agent-relay up        Start broker with dashboard');
+  console.log('    agent-relay status    Check broker status');
   console.log('    agent-relay who       List online agents');
   console.log('');
 
-  console.log('  Dashboard: http://localhost:3888 (when daemon is running)');
+  console.log('  Dashboard: http://localhost:3888 (when broker is running)');
   console.log('');
 }
 
 program
   .command('init')
-  .description('First-time setup wizard - install MCP and start daemon')
+  .description('First-time setup wizard - install MCP and start broker')
   .option('-y, --yes', 'Accept all defaults (non-interactive)')
-  .option('--skip-daemon', 'Skip daemon startup prompt')
+  .option('--skip-daemon', 'Skip broker startup prompt')
   .option('--skip-mcp', 'Skip MCP installation prompt')
   .action(runInit);
 
@@ -5146,7 +5111,7 @@ program
   .command('setup')
   .description('Alias for "init" - first-time setup wizard')
   .option('-y, --yes', 'Accept all defaults')
-  .option('--skip-daemon', 'Skip daemon startup')
+  .option('--skip-daemon', 'Skip broker startup')
   .option('--skip-mcp', 'Skip MCP installation')
   .action(runInit);
 

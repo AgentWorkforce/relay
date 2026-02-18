@@ -10,3 +10,4 @@ export * from "./relay.js";
 export * from "./logs.js";
 export * from "./consensus.js";
 export * from "./shadow.js";
+export * from "./relay-adapter.js";
