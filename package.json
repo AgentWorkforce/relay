@@ -88,6 +88,7 @@
     "@agent-relay/trajectory",
     "@agent-relay/user-directory",
     "@agent-relay/utils",
+    "@agent-relay/broker-sdk",
     "@agent-relay/wrapper"
   ],
   "publishConfig": {
@@ -185,6 +186,7 @@
     "@agent-relay/trajectory": "2.3.5",
     "@agent-relay/user-directory": "2.3.5",
     "@agent-relay/utils": "2.3.5",
+    "@agent-relay/broker-sdk": "2.3.5",
     "@agent-relay/wrapper": "2.3.5",
     "@relaycast/sdk": "^0.2.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
@@ -252,6 +254,7 @@
     "@agent-relay/trajectory",
     "@agent-relay/user-directory",
     "@agent-relay/utils",
+    "@agent-relay/broker-sdk",
     "@agent-relay/wrapper"
   ]
 }
