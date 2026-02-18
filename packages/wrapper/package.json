@@ -30,7 +30,6 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@agent-relay/api-types": "2.3.4",
     "@agent-relay/protocol": "2.3.4",
     "@agent-relay/config": "2.3.4",
     "@agent-relay/continuity": "2.3.4",
