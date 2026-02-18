@@ -273,6 +273,11 @@ export class WorkflowRunner {
 
   private interpolate(template: string, vars: VariableContext): string {
     return template.replace(/\{\{([\w][\w.\-]*)\}\}/g, (_match, key: string) => {
+      // Skip step-output placeholders — they are resolved at execution time by interpolateStepTask()
+      if (key.startsWith('steps.')) {
+        return _match;
+      }
+
       // Resolve dot-path variables like steps.plan.output
       const value = this.resolveDotPath(key, vars);
       if (value === undefined) {
@@ -545,6 +550,9 @@ export class WorkflowRunner {
 
   /** Abort the current run. Running agents are released. */
   abort(): void {
+    // Unblock waitIfPaused() so the run loop can exit
+    this.pauseResolver?.();
+    this.pauseResolver = undefined;
     this.abortController?.abort();
   }
 
@@ -557,7 +565,11 @@ export class WorkflowRunner {
     errorHandling: ErrorHandlingConfig | undefined,
     runId: string,
   ): Promise<void> {
-    const strategy = errorHandling?.strategy ?? workflow.onError ?? 'fail-fast';
+    const rawStrategy = errorHandling?.strategy ?? workflow.onError ?? 'fail-fast';
+    // Map shorthand onError values to canonical strategy names
+    const strategy = rawStrategy === 'fail' ? 'fail-fast'
+      : rawStrategy === 'skip' ? 'continue'
+      : rawStrategy;
 
     // DAG-based execution: repeatedly find ready steps and run them in parallel
     while (true) {

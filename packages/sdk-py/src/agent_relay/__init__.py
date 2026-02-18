@@ -1,6 +1,6 @@
 """Agent Relay Python SDK — workflow builder and runner."""
 
-from .builder import workflow, WorkflowBuilder
+from .builder import workflow, WorkflowBuilder, run_yaml
 from .types import (
     AgentOptions,
     StepOptions,
@@ -15,6 +15,7 @@ from .types import (
 __all__ = [
     "workflow",
     "WorkflowBuilder",
+    "run_yaml",
     "AgentOptions",
     "StepOptions",
     "ErrorOptions",

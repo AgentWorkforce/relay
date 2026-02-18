@@ -233,8 +233,8 @@ class WorkflowBuilder:
         """
         opts = options or RunOptions()
 
-        binary = _find_agent_relay()
-        if binary is None:
+        cmd_prefix = _find_agent_relay()
+        if cmd_prefix is None:
             raise RuntimeError(
                 "agent-relay CLI not found. Install it with: npm install -g agent-relay"
             )
@@ -248,7 +248,7 @@ class WorkflowBuilder:
             yaml_path = f.name
 
         try:
-            cmd = [binary, "run", yaml_path]
+            cmd = [*cmd_prefix, "run", yaml_path]
             if opts.workflow:
                 cmd.extend(["--workflow", opts.workflow])
 
@@ -294,13 +294,13 @@ def run_yaml(yaml_path: str, options: RunOptions | None = None) -> WorkflowResul
     """
     opts = options or RunOptions()
 
-    binary = _find_agent_relay()
-    if binary is None:
+    cmd_prefix = _find_agent_relay()
+    if cmd_prefix is None:
         raise RuntimeError(
             "agent-relay CLI not found. Install it with: npm install -g agent-relay"
         )
 
-    cmd = [binary, "run", yaml_path]
+    cmd = [*cmd_prefix, "run", yaml_path]
     if opts.workflow:
         cmd.extend(["--workflow", opts.workflow])
 
@@ -317,16 +317,16 @@ def run_yaml(yaml_path: str, options: RunOptions | None = None) -> WorkflowResul
 # ── Internal helpers ─────────────────────────────────────────────────────────
 
 
-def _find_agent_relay() -> str | None:
-    """Find the agent-relay binary on PATH or via npx."""
-    path = shutil.which("agent-relay")
-    if path:
-        return path
+def _find_agent_relay() -> list[str] | None:
+    """Find the agent-relay binary on PATH or via npx. Returns the command prefix."""
+    binary = shutil.which("agent-relay")
+    if binary:
+        return [binary]
 
     # Check if npx is available as fallback
     npx = shutil.which("npx")
     if npx:
-        return npx  # caller will prepend args
+        return [npx, "agent-relay"]
 
     return None
 
