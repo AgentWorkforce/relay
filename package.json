@@ -73,6 +73,7 @@
   ],
   "bundledDependencies": [
     "@agent-relay/bridge",
+    "@agent-relay/broker-sdk",
     "@agent-relay/config",
     "@agent-relay/continuity",
     "@agent-relay/daemon",
@@ -88,7 +89,6 @@
     "@agent-relay/trajectory",
     "@agent-relay/user-directory",
     "@agent-relay/utils",
-    "@agent-relay/broker-sdk",
     "@agent-relay/wrapper"
   ],
   "publishConfig": {
@@ -204,6 +204,7 @@
     "ssh2": "^1.17.0",
     "uuid": "^10.0.0",
     "ws": "^8.18.3",
+    "yaml": "^2.7.0",
     "zod": "^3.23.8",
     "zod-to-json-schema": "^3.23.1"
   },
@@ -239,6 +240,7 @@
   },
   "bundleDependencies": [
     "@agent-relay/bridge",
+    "@agent-relay/broker-sdk",
     "@agent-relay/config",
     "@agent-relay/continuity",
     "@agent-relay/daemon",
@@ -254,7 +256,6 @@
     "@agent-relay/trajectory",
     "@agent-relay/user-directory",
     "@agent-relay/utils",
-    "@agent-relay/broker-sdk",
     "@agent-relay/wrapper"
   ]
 }
