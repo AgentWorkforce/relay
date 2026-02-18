@@ -2,12 +2,12 @@
 /**
  * DAG Workflow Executor for the relay-cloud PR #94 implementation plan.
  *
- * Uses the @agent-relay/broker-sdk (MCP-compatible relay_spawn/relay_send/relay_release)
- * to coordinate 9 work nodes with dependency-aware parallel execution.
+ * Uses @agent-relay/broker-sdk (AgentRelayClient) to coordinate 9 work nodes
+ * with dependency-aware parallel execution.
  *
  * Prerequisites:
- *   - agent-relay daemon running (agent-relay start)
- *   - @agent-relay/broker-sdk installed
+ *   - agent-relay daemon running (agent-relay up)
+ *   - SDK built: ./node_modules/.bin/tsc -p packages/sdk-ts/tsconfig.json
  *
  * Usage:
  *   npx tsx scripts/run-swarm-implementation.ts --dry-run
@@ -17,7 +17,9 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { AgentRelayClient } from "../packages/sdk-ts/dist/client.js";
+import { getLogs } from "../packages/sdk-ts/dist/logs.js";
+import type { BrokerEvent } from "../packages/sdk-ts/dist/protocol.js";
 
 // ── Configuration ──────────────────────────────────────────────────────────
 
@@ -87,81 +89,23 @@ function loadState(): PersistedState | null {
   }
 }
 
-// ── MCP Relay Helpers ──────────────────────────────────────────────────────
-// These shell out to the agent-relay CLI which provides the same operations
-// as the MCP tools (relay_spawn, relay_send, relay_release, relay_logs, relay_who).
+// ── Broker SDK Client ────────────────────────────────────────────────────
 
-function mcpSpawn(name: string, cli: string, task: string): string {
-  try {
-    const result = execSync(
-      `agent-relay spawn ${JSON.stringify(name)} ${JSON.stringify(cli)} ${JSON.stringify(task)}`,
-      { encoding: "utf-8", timeout: 60_000, stdio: ["pipe", "pipe", "pipe"] },
-    );
-    return result.trim();
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`Failed to spawn ${name}: ${msg}`);
-  }
-}
+let client: AgentRelayClient;
 
-function mcpSend(to: string, message: string): void {
-  try {
-    execSync(
-      `agent-relay send ${JSON.stringify(to)} ${JSON.stringify(message)}`,
-      { encoding: "utf-8", timeout: 10_000, stdio: ["pipe", "pipe", "pipe"] },
-    );
-  } catch {
-    console.warn(`  ⚠ Failed to send message to ${to}`);
-  }
-}
-
-function mcpRelease(name: string): void {
-  try {
-    execSync(
-      `agent-relay release ${JSON.stringify(name)}`,
-      { encoding: "utf-8", timeout: 10_000, stdio: ["pipe", "pipe", "pipe"] },
-    );
-  } catch {
-    // Agent may already be gone
-  }
-}
-
-function mcpLogs(agent: string, lines: number = 100): string {
-  try {
-    return execSync(
-      `agent-relay agents:logs ${JSON.stringify(agent)} -n ${lines}`,
-      { encoding: "utf-8", timeout: 10_000, stdio: ["pipe", "pipe", "pipe"] },
-    ).trim();
-  } catch {
-    return "";
-  }
-}
-
-function mcpWho(): string[] {
-  try {
-    const result = execSync("agent-relay who", {
-      encoding: "utf-8",
-      timeout: 10_000,
-      stdio: ["pipe", "pipe", "pipe"],
+async function ensureClient(): Promise<AgentRelayClient> {
+  if (!client) {
+    client = await AgentRelayClient.start({
+      channels: [WORKFLOW_CHANNEL],
+      clientName: "swarm-dag-executor",
     });
-    // Parse agent names from output
-    return result
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-      .map((line) => {
-        const match = line.match(/^(\S+)/);
-        return match?.[1] ?? "";
-      })
-      .filter(Boolean);
-  } catch {
-    return [];
   }
+  return client;
 }
 
 /**
- * Watch agent logs for DONE or ERROR messages.
- * Polls agent-relay logs periodically.
+ * Watch for DONE or ERROR in agent logs + broker events.
+ * Uses both event listener (real-time) and log polling (fallback).
  */
 function watchForDone(
   agentName: string,
@@ -169,51 +113,61 @@ function watchForDone(
 ): Promise<{ status: "completed" | "failed"; output: string }> {
   return new Promise((resolve) => {
     let resolved = false;
-    const startTime = Date.now();
-
-    const check = setInterval(() => {
+    const finish = (status: "completed" | "failed", output: string) => {
       if (resolved) return;
+      resolved = true;
+      clearInterval(pollInterval);
+      clearTimeout(timeoutHandle);
+      if (unsubscribe) unsubscribe();
+      resolve({ status, output });
+    };
 
-      // Check agent logs for DONE/ERROR
-      const logs = mcpLogs(agentName, 200);
-      if (logs) {
-        const doneMatch = logs.match(/^DONE:\s*(.+)/ms);
+    // Listen for broker events (agent_exited, message with DONE/ERROR)
+    const unsubscribe = client.onEvent((event: BrokerEvent) => {
+      if (resolved) return;
+      if (event.kind === "agent_exited" && event.agent === agentName) {
+        finish("failed", "Agent exited without sending DONE");
+      }
+      if (event.kind === "message_sent" && event.from === agentName) {
+        const text = (event as unknown as { text: string }).text ?? "";
+        const doneMatch = text.match(/^DONE:\s*(.+)/ms);
         if (doneMatch) {
-          resolved = true;
-          clearInterval(check);
-          clearTimeout(timeout);
-          resolve({ status: "completed", output: doneMatch[1].trim() });
+          finish("completed", doneMatch[1].trim());
           return;
         }
-
-        const errorMatch = logs.match(/^ERROR:\s*(.+)/ms);
+        const errorMatch = text.match(/^ERROR:\s*(.+)/ms);
         if (errorMatch) {
-          resolved = true;
-          clearInterval(check);
-          clearTimeout(timeout);
-          resolve({ status: "failed", output: errorMatch[1].trim() });
-          return;
+          finish("failed", errorMatch[1].trim());
         }
       }
+    });
 
-      // Check if agent is still alive
-      const elapsed = Date.now() - startTime;
-      if (elapsed > 60_000) {
-        const online = mcpWho();
-        if (!online.includes(agentName)) {
-          resolved = true;
-          clearInterval(check);
-          clearTimeout(timeout);
-          resolve({ status: "failed", output: "Agent exited without sending DONE" });
-        }
+    // Poll logs as fallback (events may not contain full message text)
+    const pollInterval = setInterval(async () => {
+      if (resolved) return;
+      const result = await getLogs(agentName, { lines: 200 });
+      if (!result.found || !result.content) return;
+
+      const doneMatch = result.content.match(/^DONE:\s*(.+)/ms);
+      if (doneMatch) {
+        finish("completed", doneMatch[1].trim());
+        return;
+      }
+      const errorMatch = result.content.match(/^ERROR:\s*(.+)/ms);
+      if (errorMatch) {
+        finish("failed", errorMatch[1].trim());
+        return;
+      }
+
+      // Check if agent disappeared (after initial grace period)
+      const agents = await client.listAgents();
+      if (!agents.some((a) => a.name === agentName)) {
+        finish("failed", "Agent exited without sending DONE");
       }
     }, 5000);
 
-    const timeout = setTimeout(() => {
-      if (resolved) return;
-      resolved = true;
-      clearInterval(check);
-      resolve({ status: "failed", output: `Timed out after ${timeoutMs / 60_000}m` });
+    const timeoutHandle = setTimeout(() => {
+      finish("failed", `Timed out after ${timeoutMs / 60_000}m`);
     }, timeoutMs);
   });
 }
@@ -479,6 +433,11 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Initialize broker SDK client
+  console.log("Connecting to broker...");
+  await ensureClient();
+  console.log("Connected.\n");
+
   const completed = new Set<string>();
   const running = new Set<string>();
   const failed = new Set<string>();
@@ -508,7 +467,12 @@ async function main(): Promise<void> {
     const fullTask = conventions + node.task;
 
     try {
-      mcpSpawn(node.agent.name, node.agent.cli, fullTask);
+      await client.spawnPty({
+        name: node.agent.name,
+        cli: node.agent.cli,
+        args: [fullTask],
+        channels: [WORKFLOW_CHANNEL],
+      });
       console.log(`  ↑ Spawned: ${node.agent.name}`);
     } catch (err) {
       return {
@@ -522,7 +486,11 @@ async function main(): Promise<void> {
 
     const { status, output } = await watchForDone(node.agent.name, AGENT_TIMEOUT_MS);
 
-    mcpRelease(node.agent.name);
+    try {
+      await client.release(node.agent.name);
+    } catch {
+      // Agent may already be gone
+    }
     console.log(`  ${status === "completed" ? "✓" : "✗"} ${node.agent.name}: ${output.slice(0, 100)}`);
 
     return { nodeId: node.id, agentName: node.agent.name, output, status, durationMs: Date.now() - nodeStart };
@@ -563,6 +531,9 @@ async function main(): Promise<void> {
 
     await Promise.allSettled(promises);
   }
+
+  // Shutdown client
+  await client.shutdown();
 
   // Summary
   const totalMs = Date.now() - startTime;
