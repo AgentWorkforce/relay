@@ -107,12 +107,15 @@ async function ensureClient(): Promise<AgentRelayClient> {
 }
 
 /**
- * Watch for DONE or ERROR via broker events.
+ * Wait for an agent to finish its work.
  *
- * Listens for:
- * - worker_stream: PTY output from the agent (accumulates chunks, scans for DONE/ERROR)
- * - relay_inbound: Relay messages from the agent
- * - agent_exited: Agent process terminated
+ * The agent does its work and exits naturally. We listen for:
+ * - relay_inbound: DONE/ERROR relay messages sent by the agent before exiting
+ * - agent_exited: Agent process terminated (code 0 = success, else failure)
+ *
+ * The agent is instructed to send a relay message with its summary before
+ * exiting, so downstream agents get dependency context. If it exits without
+ * sending one, we treat exit code 0 as success with no summary.
  */
 function watchForDone(
   agentName: string,
@@ -120,8 +123,7 @@ function watchForDone(
 ): Promise<{ status: "completed" | "failed"; output: string }> {
   return new Promise((resolve) => {
     let resolved = false;
-    // Accumulate worker_stream chunks to detect DONE/ERROR across chunk boundaries
-    let streamBuffer = "";
+    let relaySummary = "";
 
     const finish = (status: "completed" | "failed", output: string) => {
       if (resolved) return;
@@ -131,44 +133,36 @@ function watchForDone(
       resolve({ status, output });
     };
 
-    const checkForSignal = (text: string) => {
-      const doneMatch = text.match(/DONE:\s*(.+)/ms);
-      if (doneMatch) {
-        finish("completed", doneMatch[1].trim());
-        return true;
-      }
-      const errorMatch = text.match(/ERROR:\s*(.+)/ms);
-      if (errorMatch) {
-        finish("failed", errorMatch[1].trim());
-        return true;
-      }
-      return false;
-    };
-
     const unsubscribe = client.onEvent((event: BrokerEvent) => {
       if (resolved) return;
 
-      // Agent process exited
-      if (event.kind === "agent_exited" && event.name === agentName) {
-        // Check buffer one last time before declaring failure
-        if (!checkForSignal(streamBuffer)) {
-          finish("failed", "Agent exited without sending DONE");
-        }
-        return;
-      }
-
-      // PTY output stream — accumulate and scan
-      if (event.kind === "worker_stream" && event.name === agentName) {
-        streamBuffer += event.chunk;
-        // Only scan last portion to avoid re-scanning entire buffer
-        const tail = streamBuffer.slice(-5000);
-        checkForSignal(tail);
-        return;
-      }
-
-      // Relay message from this agent
+      // Relay message from this agent — capture DONE/ERROR summary
       if (event.kind === "relay_inbound" && event.from === agentName) {
-        checkForSignal(event.body);
+        const doneMatch = event.body.match(/DONE:\s*(.+)/ms);
+        if (doneMatch) {
+          relaySummary = doneMatch[1].trim();
+          // Don't finish yet — wait for agent_exited to confirm clean exit
+          return;
+        }
+        const errorMatch = event.body.match(/ERROR:\s*(.+)/ms);
+        if (errorMatch) {
+          finish("failed", errorMatch[1].trim());
+          return;
+        }
+      }
+
+      // Agent process exited — the definitive completion signal
+      if (event.kind === "agent_exited" && event.name === agentName) {
+        const code = event.code ?? 1;
+        if (relaySummary) {
+          // Agent sent a DONE relay message before exiting
+          finish("completed", relaySummary);
+        } else if (code === 0) {
+          // Clean exit but no relay summary — still success
+          finish("completed", "(agent exited cleanly, no summary sent)");
+        } else {
+          finish("failed", `Agent exited with code ${code}`);
+        }
       }
     });
 
@@ -205,10 +199,11 @@ You are agent **${node.agent.name}** in a DAG workflow implementing relay-cloud 
 **Dependencies:** ${node.dependsOn.length > 0 ? node.dependsOn.join(", ") : "none (root node)"}
 
 ### Protocol
-- When you finish, send a relay message starting with: DONE: <detailed summary>
-- Your DONE message is critical — downstream agents depend on it. Include key type signatures, file paths, method names.
-- If blocked, send: ERROR: <description>
-- Work only on your assigned task.
+- Do your assigned task, then send a relay message with your summary.
+- Use the relay send tool: send a message to "#${WORKFLOW_CHANNEL}" starting with "DONE: " followed by a detailed summary of what you created (file paths, type/class names, method signatures).
+- Downstream agents depend on your summary — be specific about interfaces, file paths, and key exports.
+- If you are blocked and cannot complete, send a message starting with "ERROR: " followed by the description.
+- Work only on your assigned task. When done, exit.
 
 ${readFirstSection}
 ${depContext ? `### Context from Dependencies\n\n${depContext}` : ""}
@@ -308,9 +303,7 @@ Define these types: RelayYamlConfig, SwarmConfig, AgentDefinition, WorkflowDefin
 
 Also extend packages/cloud/src/config/relay-yaml-schema.json with the JSON Schema for relay.yaml validation.
 
-Your DONE message MUST include the key type names, their fields, and file paths created.
-
-DONE: <detailed summary including type signatures>`,
+Your relay summary MUST include the key type names, their fields, and file paths created.`,
   },
   {
     id: "db-migration",
@@ -321,9 +314,7 @@ DONE: <detailed summary including type signatures>`,
 
 Tables: workflow_runs, workflow_steps, swarm_state, workflow_barriers (see dependency context for exact column types).
 
-Your DONE message MUST include the table names, column names, and FK relationships.
-
-DONE: <detailed summary including table schemas>`,
+Your relay summary MUST include the table names, column names, and FK relationships.`,
   },
   {
     id: "workflow-runner",
@@ -334,9 +325,7 @@ DONE: <detailed summary including table schemas>`,
 
 WorkflowRunner class: parse relay.yaml, validate, resolve templates, resolve {{variables}}, execute steps (sequential/parallel/dag), run verification checks, persist state to DB, support pause/resume/abort, handle retries + escalation. Use AgentRelay from @agent-relay/broker-sdk for spawning.
 
-Your DONE message MUST include class name, key method signatures, and AgentRelay integration points.
-
-DONE: <detailed summary>`,
+Your relay summary MUST include class name, key method signatures, and AgentRelay integration points.`,
   },
   {
     id: "swarm-coordinator",
@@ -348,9 +337,7 @@ DONE: <detailed summary>`,
 2. packages/cloud/src/services/barrier-manager.ts — barrier tracking with all/any/majority support
 3. packages/cloud/src/services/state-store.ts — CRUD on swarm_state with consensus-gated writes
 
-Your DONE message MUST include class names, key methods, and pattern auto-selection mapping.
-
-DONE: <detailed summary>`,
+Your relay summary MUST include class names, key methods, and pattern auto-selection mapping.`,
   },
   {
     id: "templates",
@@ -358,9 +345,7 @@ DONE: <detailed summary>`,
     dependsOn: ["shared-types"],
     task: `Create 6 YAML templates in packages/cloud/src/templates/ (feature-dev, bug-fix, code-review, security-audit, refactor, documentation) and a TemplateRegistry class in packages/cloud/src/services/template-registry.ts.
 
-Your DONE message MUST include template names and TemplateRegistry method signatures.
-
-DONE: <detailed summary>`,
+Your relay summary MUST include template names and TemplateRegistry method signatures.`,
   },
   {
     id: "cloud-api",
@@ -374,9 +359,7 @@ DONE: <detailed summary>`,
 
 Plus WebSocket events for swarm lifecycle.
 
-Your DONE message MUST include all endpoint paths and response shapes.
-
-DONE: <detailed summary>`,
+Your relay summary MUST include all endpoint paths and response shapes.`,
   },
   {
     id: "cli-commands",
@@ -385,25 +368,19 @@ DONE: <detailed summary>`,
     readFirst: ["src/commands/"],
     task: `Implement "agent-relay swarm" CLI command group: run, list, status, stop, logs, history, plus shorthand aliases (feature, fix, review, audit, refactor, docs), template management, and relay.yaml config resolution.
 
-Your DONE message MUST include all command names and flag options.
-
-DONE: <detailed summary>`,
+Your relay summary MUST include all command names and flag options.`,
   },
   {
     id: "dashboard-panel",
     agent: { name: "DashboardWorker", cli: "claude" },
     dependsOn: ["cloud-api"],
-    task: `Build React components: SwarmPanel.tsx, TopologyView.tsx, StepProgress.tsx, AgentOutputStream.tsx. Use Tailwind CSS, SSE for live output, WebSocket for topology updates.
-
-DONE: <detailed summary>`,
+    task: `Build React components: SwarmPanel.tsx, TopologyView.tsx, StepProgress.tsx, AgentOutputStream.tsx. Use Tailwind CSS, SSE for live output, WebSocket for topology updates.`,
   },
   {
     id: "integration-tests",
     agent: { name: "TestWorker", cli: "claude" },
     dependsOn: ["cloud-api", "cli-commands"],
-    task: `Write integration tests: workflow-runner.test.ts, swarm-coordinator.test.ts, api-endpoints.test.ts, swarm-commands.test.ts, error-scenarios.test.ts. Mock the broker SDK for unit tests.
-
-DONE: <detailed summary>`,
+    task: `Write integration tests: workflow-runner.test.ts, swarm-coordinator.test.ts, api-endpoints.test.ts, swarm-commands.test.ts, error-scenarios.test.ts. Mock the broker SDK for unit tests.`,
   },
 ];
 
