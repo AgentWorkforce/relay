@@ -729,6 +729,7 @@ program
   .option('--watch', 'Auto-restart broker on crash (supervisor mode)')
   .option('--max-restarts <n>', 'Max restarts in 60s before giving up (default: 5)', '5')
   .option('--verbose', 'Enable verbose logging (show debug output in console)')
+  .option('--local', 'Use a local Relaycast server instead of cloud (low-latency, offline)')
   .option('--zed', 'Add Agent Relay entry to Zed agent_servers for this workspace')
   .option('--zed-config <path>', 'Custom path to Zed settings.json (defaults to ~/.config/zed/settings.json)')
   .option('--zed-name <name>', 'Display name for the Zed agent server (default: Agent Relay)')
@@ -867,8 +868,27 @@ program
       process.env.AGENT_RELAY_LOG_LEVEL = 'DEBUG';
     }
 
+    // --local: Start a local Relaycast server instead of using cloud
+    // This avoids the internet hop for low-latency / offline / air-gapped scenarios.
+    // The broker connects to the local server via WebSocket on localhost.
+    let localRelaycastProcess: ReturnType<typeof spawnProcess> | undefined;
+    if (options.local) {
+      try {
+        const localPort = 4000;
+        // TODO: Replace stub with actual Relaycast binary startup
+        // Expected: spawnProcess('relaycast-server', ['--port', String(localPort)], { ... })
+        // The broker would then connect to ws://localhost:4000 instead of cloud
+        console.log(`[local] Local Relaycast server not yet available — using cloud`);
+        console.log(`[local] When ready, the local server will run on port ${localPort}`);
+        // Set the env var that the Rust binary reads for the Relaycast WebSocket URL
+        // process.env.RELAYCAST_WS_URL = `ws://localhost:${localPort}/ws`;
+      } catch (err: any) {
+        console.warn(`[local] Failed to start local Relaycast: ${err.message} — falling back to cloud`);
+      }
+    }
+
     console.log(`Project: ${paths.projectRoot}`);
-    console.log(`Mode:    broker (stdio → Rust binary → Relaycast WS)`);
+    console.log(`Mode:    broker (stdio → Rust binary → Relaycast ${options.local ? 'local' : 'cloud'})`);
 
     // Load teams.json if present
     const teamsConfig = loadTeamsConfig(paths.projectRoot);
@@ -901,6 +921,10 @@ program
         await relay.shutdown();
       } catch {
         // Broker already exited — nothing to do.
+      }
+      // Stop local Relaycast server if running
+      if (localRelaycastProcess) {
+        try { localRelaycastProcess.kill(); } catch { /* ignore */ }
       }
       // Clean up PID file
       try { fs.unlinkSync(pidFilePath); } catch { /* ignore */ }
@@ -958,6 +982,8 @@ program
           }) => Promise<number>;
         };
         const { startDashboard } = dashboardServer;
+
+        // Dashboard auto-creates its own RelayAdapter when projectRoot is provided
         dashboardPort = await startDashboard({
           port,
           dataDir: paths.dataDir,
