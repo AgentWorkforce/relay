@@ -2143,7 +2143,9 @@ async fn handle_sdk_frame(
                 "releasing worker from sdk request"
             );
 
-            let lifetime_seconds = workers.workers.get(&payload.name)
+            let lifetime_seconds = workers
+                .workers
+                .get(&payload.name)
                 .map(|h| h.spawned_at.elapsed().as_secs())
                 .unwrap_or(0);
 
