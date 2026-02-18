@@ -165,6 +165,10 @@ export class TemplateRegistry {
       );
     }
 
+    if (templateName.includes('/') || templateName.includes('\\') || templateName.includes('..') || path.isAbsolute(templateName)) {
+      throw new Error(`Invalid template name: "${templateName}" contains path separators or traversal sequences`);
+    }
+
     this.validateRelayConfig(parsed, url);
 
     await fs.mkdir(this.customTemplatesDir, { recursive: true });

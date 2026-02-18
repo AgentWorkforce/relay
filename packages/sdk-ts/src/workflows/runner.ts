@@ -566,9 +566,11 @@ export class WorkflowRunner {
     runId: string,
   ): Promise<void> {
     const rawStrategy = errorHandling?.strategy ?? workflow.onError ?? 'fail-fast';
-    // Map shorthand onError values to canonical strategy names
+    // Map shorthand onError values to canonical strategy names.
+    // 'retry' maps to 'fail-fast' so downstream steps are properly skipped after retries exhaust.
     const strategy = rawStrategy === 'fail' ? 'fail-fast'
       : rawStrategy === 'skip' ? 'continue'
+      : rawStrategy === 'retry' ? 'fail-fast'
       : rawStrategy;
 
     // DAG-based execution: repeatedly find ready steps and run them in parallel
