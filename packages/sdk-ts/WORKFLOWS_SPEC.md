@@ -509,6 +509,478 @@ const result = await run.result;
 
 ---
 
+### 6. `handoff` — Dynamic Routing
+
+**Swarm analogy:** Triage desk. One active agent at a time; control transfers dynamically to the right specialist based on task assessment.
+
+**When to use:** Tasks where the right specialist isn't known upfront and emerges during processing (e.g., customer support routing, intent dispatch, multi-domain queries).
+
+**Key difference from hub-spoke:** No persistent coordinator. The active agent itself decides who handles the task next. Each agent either handles the task or hands off to someone better suited.
+
+```ts
+interface HandoffRoute {
+  /** Agent definition for this route. */
+  agent: TaskDefinition;
+  /** When should this agent receive a handoff? Described in natural language
+   *  for the routing agent, or as a function for programmatic routing. */
+  condition: string | ((message: Message) => boolean);
+}
+
+interface HandoffOptions extends WorkflowOptions {
+  /** The initial agent that receives the task. */
+  entryPoint: TaskDefinition;
+  /** Available specialist agents that can receive handoffs. */
+  routes: HandoffRoute[];
+  /** Maximum number of handoffs before forcing completion. Prevents loops. Default: 5. */
+  maxHandoffs?: number;
+  /** Fallback agent if no route matches. Default: returns to entryPoint. */
+  fallback?: TaskDefinition;
+}
+
+function handoff(options: HandoffOptions): WorkflowRun;
+```
+
+**Behavior:**
+1. Spawn the entry point agent with the task
+2. Agent works on the task or decides to hand off
+3. On `HANDOFF: <agent-id> <reason>`, the SDK transfers context to the target agent
+4. The receiving agent gets the full conversation history + handoff reason
+5. Repeat until an agent sends DONE or `maxHandoffs` is reached
+6. Circuit breaker: if max handoffs exceeded, force the last agent to complete
+
+**Convention injected into each agent's task:**
+```
+## Relay Workflow Protocol — Handoff Routing
+You are a specialist agent. You have access to these peer specialists:
+{route_descriptions}
+
+If this task is better handled by another specialist:
+1. Send to #workflow-{id}: "HANDOFF: <agent-id> <reason>"
+2. The task will be transferred with full context.
+
+If you can handle it yourself:
+1. Complete the work
+2. Send "DONE: <summary>"
+
+Maximum handoffs remaining: {remaining}
+If this is the last allowed handoff, you MUST complete the task yourself.
+```
+
+**Example:**
+```ts
+import { handoff } from "@agent-relay/sdk-ts/workflows";
+
+const run = handoff({
+  entryPoint: { task: "Help the user with their request", name: "Triage", cli: "claude" },
+  routes: [
+    { agent: { task: "Handle billing and payment issues", name: "Billing" }, condition: "billing, payment, invoice, subscription" },
+    { agent: { task: "Handle technical debugging and errors", name: "TechSupport" }, condition: "error, bug, crash, not working" },
+    { agent: { task: "Handle account and access issues", name: "AccountMgr" }, condition: "login, password, access, permissions" },
+  ],
+  maxHandoffs: 3,
+});
+```
+
+---
+
+### 7. `cascade` — Cost-Aware Escalation
+
+**Swarm analogy:** Tiered support. Start with the cheapest/fastest model; escalate to more capable (and expensive) models only when needed.
+
+**When to use:** Production workloads where most tasks are simple but some require heavy reasoning. Optimizes cost while maintaining quality.
+
+```ts
+interface CascadeTier {
+  /** Agent definition for this tier. */
+  agent: TaskDefinition;
+  /** Confidence threshold — if the agent's confidence is below this, escalate. Default: 0.7. */
+  confidenceThreshold?: number;
+  /** Cost weight for tracking (relative units). */
+  costWeight?: number;
+}
+
+interface CascadeOptions extends WorkflowOptions {
+  /** Tiers ordered from cheapest to most capable. */
+  tiers: CascadeTier[];
+  /** Maximum tiers to attempt. Default: all tiers. */
+  maxEscalations?: number;
+}
+
+function cascade(options: CascadeOptions): WorkflowRun;
+```
+
+**Behavior:**
+1. Spawn tier 0 (cheapest) agent
+2. Agent works on the task and reports confidence in its DONE message
+3. Parse confidence: `DONE [confidence=0.4]: <summary>`
+4. If confidence < threshold, spawn next tier with previous tier's output as context
+5. Repeat until confidence is sufficient or all tiers exhausted
+6. Track cost across tiers in `WorkflowResult.metadata`
+
+**Convention injected into each agent's task:**
+```
+## Relay Workflow Protocol — Cascade Tier {N}/{total}
+You are tier {N} in a cascade. {if N > 0}A less capable model attempted this
+and was not confident in its answer:{prev_summary}{endif}
+
+When you finish:
+1. Assess your confidence in the solution (0.0 to 1.0)
+2. Send: "DONE [confidence=X.X]: <your answer>"
+   - confidence >= {threshold}: Your answer is accepted
+   - confidence < {threshold}: The task escalates to a more capable model
+
+Be honest about confidence. It's better to escalate than to give a wrong answer.
+```
+
+**Example:**
+```ts
+import { cascade } from "@agent-relay/sdk-ts/workflows";
+
+const run = cascade({
+  tiers: [
+    { agent: { task: "Answer this question", name: "Fast", cli: "claude" }, confidenceThreshold: 0.7, costWeight: 1 },
+    { agent: { task: "Answer this question", name: "Strong", cli: "claude" }, confidenceThreshold: 0.85, costWeight: 5 },
+    { agent: { task: "Answer this question", name: "Expert", cli: "claude" }, costWeight: 20 },
+  ],
+});
+
+const result = await run.result;
+// result.metadata.tiersUsed = 2
+// result.metadata.totalCostWeight = 6
+// result.metadata.finalConfidence = 0.92
+```
+
+---
+
+### 8. `dag` — Directed Acyclic Graph
+
+**Swarm analogy:** Project plan with dependencies. Tasks execute in parallel where possible, respecting dependency edges.
+
+**When to use:** Complex workflows where some tasks depend on others but many can run in parallel. More flexible than pipeline (which is strictly linear).
+
+```ts
+interface DagNode extends TaskDefinition {
+  /** Unique node ID. */
+  id: string;
+  /** IDs of nodes this node depends on. Empty = ready immediately. */
+  dependsOn?: string[];
+  /** Post-step verification commands. */
+  verify?: { command: string; expectExit: number; timeout?: string }[];
+  /** Signal that marks this step as done. Default: "DONE". */
+  expects?: string;
+}
+
+interface DagOptions extends WorkflowOptions {
+  /** Nodes in the DAG. */
+  nodes: DagNode[];
+  /** Maximum concurrent agents. Default: unlimited. */
+  maxConcurrency?: number;
+}
+
+function dag(options: DagOptions): WorkflowRun;
+```
+
+**Behavior:**
+1. Build dependency graph, validate it's acyclic (topological sort)
+2. Spawn all nodes with no dependencies (root nodes) in parallel
+3. As each node completes (DONE), check which downstream nodes are now unblocked
+4. Spawn newly unblocked nodes, passing upstream outputs as context
+5. Respect `maxConcurrency` — queue excess nodes
+6. Workflow completes when all nodes have finished
+7. If any node fails, halt its downstream dependents (other branches continue)
+
+**Convention injected into each agent's task:**
+```
+## Relay Workflow Protocol — DAG Step "{node_id}"
+You are step "{node_id}" in a workflow graph.
+{if dependsOn.length > 0}
+### Upstream context
+{for each dep in dependsOn}
+Step "{dep.id}" completed with: {dep.summary}
+{endfor}
+{endif}
+
+When you finish:
+1. Send to #workflow-{id}: "DONE: <detailed summary>"
+   {if hasDownstream}Your output will be passed to: {downstream_ids}{endif}
+2. Then release yourself.
+```
+
+**Example:**
+```ts
+import { dag } from "@agent-relay/sdk-ts/workflows";
+
+const run = dag({
+  nodes: [
+    { id: "scaffold", task: "Create project scaffold", name: "Scaffolder" },
+    { id: "frontend", task: "Build React components", name: "FrontendDev", dependsOn: ["scaffold"] },
+    { id: "backend", task: "Build API endpoints", name: "BackendDev", dependsOn: ["scaffold"] },
+    { id: "database", task: "Create schema and migrations", name: "DbDev", dependsOn: ["scaffold"] },
+    { id: "integrate", task: "Wire frontend to API", name: "Integrator", dependsOn: ["frontend", "backend"] },
+    { id: "e2e-tests", task: "Write end-to-end tests", name: "Tester", dependsOn: ["integrate", "database"] },
+  ],
+  maxConcurrency: 3,
+});
+
+// Execution order:
+// 1. scaffold (alone)
+// 2. frontend + backend + database (parallel, max 3)
+// 3. integrate (after frontend + backend)
+// 4. e2e-tests (after integrate + database)
+```
+
+---
+
+### 9. `debate` — Adversarial Refinement
+
+**Swarm analogy:** Structured debate. Agents take opposing positions through rounds of argumentation until convergence or a judge decides.
+
+**When to use:** Decisions requiring rigorous examination from multiple angles. Different from consensus: debate is adversarial (agents defend positions), consensus is cooperative (agents independently evaluate).
+
+```ts
+interface DebateOptions extends WorkflowOptions {
+  /** The question or topic to debate. */
+  topic: string;
+  /** Agents assigned to argue different positions. */
+  debaters: (TaskDefinition & { position?: string })[];
+  /** Optional judge agent that decides the winner. If omitted, debaters self-converge. */
+  judge?: TaskDefinition;
+  /** Maximum debate rounds. Default: 3. */
+  maxRounds?: number;
+  /** End early if debaters converge on same position. Default: true. */
+  earlyConvergence?: boolean;
+}
+
+function debate(options: DebateOptions): WorkflowRun;
+```
+
+**Behavior:**
+1. Spawn all debater agents on the same channel
+2. **Round 1:** Each debater presents their initial argument
+3. **Round N:** Each debater reads opponents' arguments and responds with counterarguments
+4. After `maxRounds` or convergence, the judge (if present) reviews all arguments and decides
+5. If no judge, the SDK detects convergence (both debaters agree) or reports the split
+
+**Convention injected into debaters:**
+```
+## Relay Workflow Protocol — Structured Debate
+Topic: "{topic}"
+Your position: {position}
+Opponents: {opponent_names}
+Round: {current_round}/{max_rounds}
+
+Rules:
+1. Present your strongest argument for your position
+2. Address your opponents' points directly — don't ignore them
+3. Format: "ARGUMENT: <your argument this round>"
+4. If you're convinced by the other side: "CONCEDE: <why you changed your mind>"
+5. After the final round: "DONE: <your final position and reasoning>"
+```
+
+**Convention injected into judge:**
+```
+## Relay Workflow Protocol — Debate Judge
+Topic: "{topic}"
+You will review arguments from {debater_count} debaters.
+
+After all rounds complete, you'll receive the full debate transcript.
+Evaluate:
+1. Strength of evidence
+2. Quality of reasoning
+3. How well each side addressed counterarguments
+
+Send: "VERDICT: <winning position>"
+Then: "DONE: <detailed reasoning for your decision>"
+```
+
+**Example:**
+```ts
+import { debate } from "@agent-relay/sdk-ts/workflows";
+
+const run = debate({
+  topic: "Should we use a monorepo or polyrepo for the new platform?",
+  debaters: [
+    { task: "Argue for monorepo", name: "MonorepoAdvocate", position: "monorepo" },
+    { task: "Argue for polyrepo", name: "PolyrepoAdvocate", position: "polyrepo" },
+  ],
+  judge: { task: "Judge the debate and decide", name: "ArchJudge" },
+  maxRounds: 3,
+});
+
+const result = await run.result;
+// result.metadata.verdict = "monorepo"
+// result.metadata.rounds = [{ round: 1, arguments: [...] }, ...]
+// result.metadata.judgeReasoning = "Monorepo wins because..."
+```
+
+---
+
+### 10. `hierarchical` — Multi-Level Delegation
+
+**Swarm analogy:** Corporate org chart. Lead delegates to coordinators, who delegate to workers. Multiple levels of management.
+
+**When to use:** Large projects requiring domain separation where a single hub can't effectively manage all workers. Each coordinator manages a sub-team.
+
+```ts
+interface HierarchicalAgent extends TaskDefinition {
+  /** Unique agent ID for reference in the tree. */
+  id: string;
+  /** Role in the hierarchy. */
+  role: "lead" | "coordinator" | "worker";
+  /** ID of the agent this one reports to. Omit for the root lead. */
+  reportsTo?: string;
+}
+
+interface HierarchicalOptions extends WorkflowOptions {
+  /** All agents in the hierarchy. Must form a valid tree with one root. */
+  agents: HierarchicalAgent[];
+}
+
+function hierarchical(options: HierarchicalOptions): WorkflowRun;
+```
+
+**Behavior:**
+1. Validate the agent tree (one root, no cycles, every non-root has a parent)
+2. Spawn the root lead agent
+3. Spawn coordinator agents, each told who their workers are
+4. Spawn worker agents, each told who their coordinator is
+5. Workers report to coordinators; coordinators synthesize and report to lead
+6. Workflow completes when the root lead sends DONE
+
+**Convention injected into lead:**
+```
+## Relay Workflow Protocol — Hierarchical Lead
+You are the top-level lead coordinating {N} sub-teams:
+{for each coordinator}
+- {coordinator.name}: managing {worker_count} workers ({worker_names})
+{endfor}
+
+Coordinators will synthesize their team's work and report to you.
+Send directives to coordinators, not directly to workers.
+
+When ALL teams are done: "DONE: <overall summary>"
+```
+
+**Convention injected into coordinators:**
+```
+## Relay Workflow Protocol — Team Coordinator
+You manage a sub-team for "{lead_name}":
+Workers: {worker_names}
+Your domain: {task_summary}
+
+1. Receive tasks from {lead_name}
+2. Coordinate your workers
+3. Synthesize their outputs
+4. Report progress and results to {lead_name}
+5. When your team is done: send to {lead_name}: "TEAM_DONE: <synthesis>"
+```
+
+**Convention injected into workers:**
+```
+## Relay Workflow Protocol — Worker
+Your coordinator is "{coordinator_name}". Report to them (not the lead).
+
+1. ACK your task to {coordinator_name}
+2. Do your work
+3. Send results to {coordinator_name}: "DONE: <summary>"
+```
+
+**Example:**
+```ts
+import { hierarchical } from "@agent-relay/sdk-ts/workflows";
+
+const run = hierarchical({
+  agents: [
+    { id: "lead", task: "Coordinate building a full-stack app", name: "Lead", role: "lead" },
+    { id: "fe-coord", task: "Manage frontend development", name: "FrontendCoord", role: "coordinator", reportsTo: "lead" },
+    { id: "be-coord", task: "Manage backend development", name: "BackendCoord", role: "coordinator", reportsTo: "lead" },
+    { id: "fe-dev-1", task: "Build React components", name: "ReactDev", role: "worker", reportsTo: "fe-coord" },
+    { id: "fe-dev-2", task: "Build CSS and animations", name: "StyleDev", role: "worker", reportsTo: "fe-coord" },
+    { id: "be-dev-1", task: "Build API endpoints", name: "ApiDev", role: "worker", reportsTo: "be-coord" },
+    { id: "be-dev-2", task: "Build database layer", name: "DbDev", role: "worker", reportsTo: "be-coord" },
+  ],
+});
+```
+
+---
+
+## Primitives Audit
+
+Every workflow pattern is built from a set of core primitives. This section documents what exists, what's new, and what each pattern requires.
+
+### Existing Primitives (already in SDK)
+
+| Primitive | Module | What It Does |
+|-----------|--------|-------------|
+| **AgentRelay** | `relay.ts` | Spawn agents (PTY/headless), send messages, release agents, event hooks |
+| **Agent** | `relay.ts` | `sendMessage()`, `release()`, `waitForExit()`, channel membership |
+| **Message** | `relay.ts` | `from`, `to`, `text`, `threadId`, `eventId` |
+| **HumanHandle** | `relay.ts` | Human-in-the-loop message sending |
+| **ConsensusEngine** | `consensus.ts` | Proposals, voting (majority/supermajority/unanimous/weighted/quorum), timeouts |
+| **ShadowManager** | `shadow.ts` | Bind shadow agents to workers, mirror message streams |
+| **Convention Injection** | `workflow-conventions.ts` | Prepend protocol instructions to agent tasks |
+| **Message Parsing** | `workflow-conventions.ts` | Regex extraction: DONE, ACK, VOTE |
+
+### New Primitives (needed for new patterns)
+
+| Primitive | Module | What It Does | Required By |
+|-----------|--------|-------------|-------------|
+| **ReflectionEngine** | `workflow-reflection.ts` | Importance scoring, focal points, synthesis, course correction | All patterns |
+| **TrajectoryRecorder** | `workflow-trajectory.ts` | Session management, event recording, auto-retrospective | All patterns |
+| **YAML Loader** | `workflow-yaml.ts` | Parse, validate, resolve templates, map to SDK calls | YAML workflows |
+| **DAG Scheduler** | `workflow-dag.ts` | Topological sort, parallel dispatch, join tracking, concurrency limits | `dag`, YAML `dependsOn` |
+| **Handoff Controller** | `workflow-handoff.ts` | Active agent tracking, context transfer, circuit breaker (max hops) | `handoff` |
+| **Round Manager** | `workflow-rounds.ts` | Track debate/discussion rounds, enforce turn order, detect convergence | `debate`, `mesh` |
+| **Confidence Parser** | `workflow-conventions.ts` | Extract `[confidence=X.X]` from DONE messages | `cascade` |
+| **Tree Validator** | `workflow-hierarchy.ts` | Validate agent tree (one root, no cycles), compute sub-teams | `hierarchical` |
+
+### New Message Protocol Signals
+
+```ts
+const DONE_REGEX = /^DONE:\s*(.+)/m;                          // existing
+const ACK_REGEX = /^ACK:\s*(.+)/m;                             // existing
+const VOTE_REGEX = /^VOTE:\s*(approve|reject)\b/mi;            // existing
+const REFLECT_REGEX = /^REFLECT:\s*(.+)/m;                     // new (reflection)
+const HANDOFF_REGEX = /^HANDOFF:\s*(\S+)\s*(.*)/m;             // new (handoff)
+const CONFIDENCE_REGEX = /\[confidence=(\d+\.?\d*)\]/;         // new (cascade)
+const ARGUMENT_REGEX = /^ARGUMENT:\s*(.+)/m;                   // new (debate)
+const CONCEDE_REGEX = /^CONCEDE:\s*(.+)/m;                     // new (debate)
+const VERDICT_REGEX = /^VERDICT:\s*(.+)/m;                     // new (debate)
+const TEAM_DONE_REGEX = /^TEAM_DONE:\s*(.+)/m;                // new (hierarchical)
+```
+
+### Pattern × Primitive Matrix
+
+| Pattern | AgentRelay | Convention Injection | Message Parsing | ConsensusEngine | ReflectionEngine | DAG Scheduler | Handoff Controller | Round Manager | Confidence Parser | Tree Validator | Trajectory |
+|---------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| `fanOut` | x | x | DONE, ACK | | x | | | | | | x |
+| `pipeline` | x | x | DONE | | x | | | | | | x |
+| `hubAndSpoke` | x | x | DONE, ACK | | x | | | | | | x |
+| `consensus` | x | x | DONE, VOTE | x | x | | | | | | x |
+| `mesh` | x | x | DONE | | x | | | x | | | x |
+| `handoff` | x | x | DONE, HANDOFF | | x | | x | | | | x |
+| `cascade` | x | x | DONE | | x | | | | x | | x |
+| `dag` | x | x | DONE | | x | x | | | | | x |
+| `debate` | x | x | DONE, ARGUMENT, CONCEDE, VERDICT | | x | | | x | | | x |
+| `hierarchical` | x | x | DONE, ACK, TEAM_DONE | | x | | | | | x | x |
+
+### Updated Implementation Structure
+
+```
+packages/sdk-ts/src/
+  workflows.ts              — Main module: types + all 10 workflow functions
+  workflow-conventions.ts   — Convention templates, augmentation, ALL message parsing
+  workflow-reflection.ts    — ReflectionEngine: importance scoring, focal points, synthesis
+  workflow-trajectory.ts    — Trajectory integration: session management, event recording
+  workflow-yaml.ts          — YAML loader, validator, template resolver, SDK mapper
+  workflow-dag.ts           — DAG scheduler: topological sort, parallel dispatch, join tracking
+  workflow-handoff.ts       — Handoff controller: active agent tracking, context transfer, circuit breaker
+  workflow-rounds.ts        — Round manager: debate rounds, turn order, convergence detection
+  workflow-hierarchy.ts     — Tree validator: structural validation, sub-team computation
+```
+
+---
+
 ## Convention Injection
 
 Convention injection is the core mechanism. Each workflow pattern prepends a `## Relay Workflow Protocol` section to the agent's task. This section tells the agent:
@@ -565,12 +1037,17 @@ Five files. `workflows.ts` is the public API; the rest are internal modules.
 ### `workflows.ts` — Public API Surface
 
 ```ts
-// Workflow functions
+// Workflow functions (10 patterns)
 export function fanOut(tasks: TaskDefinition[], options?: WorkflowOptions): WorkflowRun;
 export function pipeline(stages: PipelineStage[], options?: WorkflowOptions): WorkflowRun;
 export function hubAndSpoke(options: HubAndSpokeOptions): WorkflowRun;
 export function consensus(options: ConsensusOptions): WorkflowRun;
 export function mesh(options: MeshOptions): WorkflowRun;
+export function handoff(options: HandoffOptions): WorkflowRun;
+export function cascade(options: CascadeOptions): WorkflowRun;
+export function dag(options: DagOptions): WorkflowRun;
+export function debate(options: DebateOptions): WorkflowRun;
+export function hierarchical(options: HierarchicalOptions): WorkflowRun;
 
 // YAML workflow loading
 export function loadWorkflow(path: string): Promise<YamlWorkflow>;
@@ -587,6 +1064,15 @@ export type {
   HubAndSpokeOptions,
   ConsensusOptions,
   MeshOptions,
+  HandoffOptions,
+  HandoffRoute,
+  CascadeOptions,
+  CascadeTier,
+  DagOptions,
+  DagNode,
+  DebateOptions,
+  HierarchicalOptions,
+  HierarchicalAgent,
   ReflectionContext,
   ReflectionEvent,
   ReflectionAdjustment,
@@ -1161,7 +1647,7 @@ tags: [feature, development]
 
 # ── Pattern Selection ─────────────────────────────────────────────────────────
 # Which orchestration pattern to use.
-# Options: fan-out, pipeline, hub-spoke, consensus, mesh
+# Options: fan-out, pipeline, hub-spoke, consensus, mesh, handoff, cascade, dag, debate, hierarchical
 pattern: hub-spoke
 
 # ── Agent Definitions ─────────────────────────────────────────────────────────
@@ -1385,7 +1871,7 @@ interface YamlWorkflow {
   /** Override specific template settings (dot-notation paths). */
   overrides?: Record<string, unknown>;
 
-  pattern: "fan-out" | "pipeline" | "hub-spoke" | "consensus" | "mesh";
+  pattern: "fan-out" | "pipeline" | "hub-spoke" | "consensus" | "mesh" | "handoff" | "cascade" | "dag" | "debate" | "hierarchical";
 
   agents: YamlAgent[];
   steps: YamlStep[];
@@ -1548,32 +2034,37 @@ The SDK's `loadWorkflow` function resolves both standalone files and relay.yaml-
 
 ## Priority & Scope
 
-### Phase 1 (This PR)
+### Phase 1 — Core Patterns
 - `fanOut` workflow
 - `pipeline` workflow
+- `dag` workflow (DAG scheduler primitive)
 - Convention injection system
-- DONE/ACK parsing
+- DONE/ACK parsing + new signal regexes (HANDOFF, CONFIDENCE, etc.)
 - Unit tests
 - Export from index.ts
 
-### Phase 2
+### Phase 2 — Coordination Patterns
 - `hubAndSpoke` workflow
 - `consensus` workflow (integrate ConsensusEngine)
+- `handoff` workflow (Handoff Controller primitive)
+- `cascade` workflow (Confidence Parser primitive)
 - Shadow integration
 - YAML workflow loader (`loadWorkflow`, `runWorkflow`)
 - YAML schema validation
 - Built-in templates (feature-dev, bug-fix, code-review)
 
-### Phase 3
+### Phase 3 — Advanced Patterns
 - `mesh` workflow
-- Max rounds / round tracking
+- `debate` workflow (Round Manager primitive)
+- `hierarchical` workflow (Tree Validator primitive)
+- Max rounds / round tracking / convergence detection
 - `ReflectionEngine` — importance scoring, focal points, synthesis
 - REFLECT message protocol
 - Reflection convention injection for hub agents
 - `onReflect` hook
 
-### Phase 4
-- `agent-trajectories` integration
+### Phase 4 — Intelligence Layer
+- `agent-trajectories` integration (TrajectoryRecorder primitive)
 - Auto-recording of messages, reflections, decisions to trajectory
 - Auto-generated retrospective on workflow completion
 - Trajectory convention injection (trail commands for agents)
