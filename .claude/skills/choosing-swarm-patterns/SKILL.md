@@ -229,6 +229,19 @@ Reflection is event-driven (importance-weighted accumulation), not timer-based. 
 | Cascade without confidence parsing | Agents don't report confidence | Convention injection handles this |
 | Hierarchical for 3 agents | Management overhead exceeds benefit | Use hub-spoke for small teams |
 
+## DAG Executor Pitfalls
+
+These apply specifically to implementing DAG-based workflows with the broker SDK:
+
+| Pitfall | Why It Matters | Fix |
+|---------|---------------|-----|
+| **Thin DONE messages** | Downstream agents only get the DONE summary, not actual code. A "Created types" message is useless for the DB migration agent. | Require DONE messages to include key signatures, file paths, and interface definitions. Use convention injection to enforce this. |
+| **Promise.race in batch execution** | If one node in a batch completes but others later fail, errors aren't caught until the next loop iteration. | Use `Promise.allSettled` for each batch. Process all results before dispatching new nodes. |
+| **No --resume support** | If the orchestrator crashes mid-DAG, all progress is lost. Agents re-run from scratch. | Persist `completed` set and `depsOutput` to a JSON file after each node. On restart, skip completed nodes. |
+| **No downstream failure propagation** | When a node fails, its dependents stay in "ready" limbo. The DAG loop detects deadlock but doesn't explain why. | Immediately mark all transitive dependents as "blocked" when a node fails. Report them in the summary. |
+| **Agents don't read existing code** | Agents write code that doesn't match project conventions (wrong import style, different error handling patterns). | Add `readFirst` to each DAG node specifying 2-3 files the agent must read before writing. Include in convention injection. |
+| **No resolved guard in polling** | The DONE message check interval and timeout can both fire, resolving the promise twice. | Add a `resolved` boolean flag. Check it in both the interval callback and timeout callback before resolving. |
+
 ## YAML Workflow Definition
 
 Any pattern can be defined in YAML for portability:

@@ -9,20 +9,24 @@
  *   npx tsx scripts/run-swarm-implementation.ts
  *   npx tsx scripts/run-swarm-implementation.ts --dry-run
  *   npx tsx scripts/run-swarm-implementation.ts --max-concurrency 3
+ *   npx tsx scripts/run-swarm-implementation.ts --resume
  */
 
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { AgentRelay } from "@agent-relay/sdk-ts";
 import type { Agent, Message } from "@agent-relay/sdk-ts";
 
 // ── Configuration ──────────────────────────────────────────────────────────
 
 const DRY_RUN = process.argv.includes("--dry-run");
+const RESUME = process.argv.includes("--resume");
 const MAX_CONCURRENCY = (() => {
   const idx = process.argv.indexOf("--max-concurrency");
   return idx !== -1 ? parseInt(process.argv[idx + 1], 10) : 4;
 })();
 const WORKFLOW_CHANNEL = "swarm-impl";
 const AGENT_TIMEOUT_MS = 30 * 60_000; // 30 minutes per agent
+const STATE_FILE = ".relay/swarm-impl-state.json";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -31,6 +35,8 @@ interface DagNode {
   agent: AgentSpec;
   task: string;
   dependsOn: string[];
+  /** Files the agent should read before starting to understand existing patterns */
+  readFirst?: string[];
 }
 
 interface AgentSpec {
@@ -42,8 +48,41 @@ interface NodeResult {
   nodeId: string;
   agentName: string;
   output: string;
-  status: "completed" | "failed";
+  status: "completed" | "failed" | "blocked";
   durationMs: number;
+}
+
+interface PersistedState {
+  completed: string[];
+  depsOutput: Record<string, string>;
+  results: Record<string, NodeResult>;
+  startedAt: string;
+}
+
+// ── State Persistence (--resume support) ───────────────────────────────────
+
+function saveState(
+  completed: Set<string>,
+  depsOutput: Map<string, string>,
+  results: Map<string, NodeResult>,
+  startedAt: number,
+): void {
+  const state: PersistedState = {
+    completed: [...completed],
+    depsOutput: Object.fromEntries(depsOutput),
+    results: Object.fromEntries(results),
+    startedAt: new Date(startedAt).toISOString(),
+  };
+  writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+}
+
+function loadState(): PersistedState | null {
+  if (!existsSync(STATE_FILE)) return null;
+  try {
+    return JSON.parse(readFileSync(STATE_FILE, "utf-8"));
+  } catch {
+    return null;
+  }
 }
 
 // ── DAG Definition ─────────────────────────────────────────────────────────
@@ -53,7 +92,14 @@ const nodes: DagNode[] = [
     id: "shared-types",
     agent: { name: "TypesWorker", cli: "claude" },
     dependsOn: [],
+    readFirst: [
+      "packages/sdk-ts/src/protocol.ts",
+      "packages/sdk-ts/src/relay.ts",
+    ],
     task: `You are implementing the shared TypeScript types for the relay-cloud swarm patterns system (PR #94).
+
+## Before You Start
+Read the existing protocol types and relay facade to understand naming conventions, existing patterns, and how types are structured in this project.
 
 ## Context
 We are building a YAML-based workflow configuration system for Agent Relay that enables pre-built multi-agent coordination patterns via relay.yaml.
@@ -79,16 +125,27 @@ Also extend packages/cloud/src/config/relay-yaml-schema.json with the JSON Schem
 
 Export all types. Follow the existing TypeScript conventions in the project.
 
-DONE: <summary of what you created>`,
+When you finish, your DONE message MUST include:
+1. The key type names and their fields
+2. The file paths created
+3. Key interface signatures that downstream agents will need
+
+DONE: <detailed summary including type signatures>`,
   },
   {
     id: "db-migration",
     agent: { name: "DbWorker", cli: "claude" },
     dependsOn: ["shared-types"],
+    readFirst: [
+      "packages/cloud/src/db/migrations/",
+    ],
     task: `You are creating the database migration for the swarm patterns system.
 
+## Before You Start
+Read existing migrations in packages/cloud/src/db/migrations/ to understand the naming convention, SQL style, and how existing tables are structured.
+
 ## Context
-The shared types have been defined (see TypesWorker's output for the schema). Now create the SQL migration.
+The shared types have been defined. See the dependency output below for the exact type signatures.
 
 ## Your Task
 Create: packages/cloud/src/db/migrations/0023_workflows.sql
@@ -105,18 +162,25 @@ Add indexes:
 - idx_workflow_steps_run ON workflow_steps(run_id)
 - idx_workflow_barriers_run ON workflow_barriers(run_id)
 
-Follow existing migration patterns in the project.
+When you finish, your DONE message MUST include the table names, column names, and any FK relationships so downstream agents can write queries correctly.
 
-DONE: <summary>`,
+DONE: <detailed summary including table schemas>`,
   },
   {
     id: "workflow-runner",
     agent: { name: "RunnerWorker", cli: "claude" },
     dependsOn: ["shared-types", "db-migration"],
+    readFirst: [
+      "packages/sdk-ts/src/relay.ts",
+      "packages/sdk-ts/src/client.ts",
+    ],
     task: `You are implementing the core WorkflowRunner service.
 
+## Before You Start
+Read the AgentRelay class and client to understand how agents are spawned and messaged. Pay attention to spawnPty(), sendMessage(), and event hooks.
+
 ## Context
-Shared types and DB migration are complete. You can import types from packages/cloud/src/types/workflow.ts.
+Shared types and DB migration are complete. See dependency output below for the exact types and table schemas.
 
 ## Your Task
 Create: packages/cloud/src/services/workflow-runner.ts
@@ -143,16 +207,25 @@ Integration with broker SDK:
 - Listen for DONE messages to determine step completion
 - Parse output from DONE messages
 
-DONE: <summary>`,
+When you finish, your DONE message MUST include the class name, key method signatures, and how it integrates with AgentRelay.
+
+DONE: <detailed summary>`,
   },
   {
     id: "swarm-coordinator",
     agent: { name: "CoordinatorWorker", cli: "claude" },
     dependsOn: ["shared-types", "db-migration"],
+    readFirst: [
+      "packages/sdk-ts/src/consensus.ts",
+      "packages/sdk-ts/src/shadow.ts",
+    ],
     task: `You are implementing the SwarmCoordinator, BarrierManager, and StateStore services.
 
+## Before You Start
+Read the ConsensusEngine and ShadowManager to understand existing coordination primitives you can reuse.
+
 ## Context
-Shared types and DB migration are complete.
+Shared types and DB migration are complete. See dependency output for details.
 
 ## Your Task
 Create three files:
@@ -180,7 +253,9 @@ StateStore class:
 - Optimistic locking via updated_at timestamp
 - Get/set/delete operations
 
-DONE: <summary>`,
+When you finish, your DONE message MUST include class names, key method signatures, and how pattern auto-selection works.
+
+DONE: <detailed summary>`,
   },
   {
     id: "templates",
@@ -208,16 +283,24 @@ Create: packages/cloud/src/services/template-registry.ts
 - Apply overrides (dot-notation paths like "steps.plan.maxRetries")
 - List available templates
 
-DONE: <summary>`,
+When you finish, your DONE message MUST include the template names and the TemplateRegistry method signatures.
+
+DONE: <detailed summary>`,
   },
   {
     id: "cloud-api",
     agent: { name: "ApiWorker", cli: "claude" },
     dependsOn: ["workflow-runner", "swarm-coordinator"],
+    readFirst: [
+      "packages/cloud/src/api/",
+    ],
     task: `You are implementing the REST API endpoints for workflows, swarm state, and dashboard.
 
+## Before You Start
+Read existing API route files in packages/cloud/src/api/ to understand routing patterns, middleware, error handling, and response format conventions.
+
 ## Context
-WorkflowRunner and SwarmCoordinator are complete. Import and use them.
+WorkflowRunner and SwarmCoordinator are complete. See dependency output for their class signatures and methods.
 
 ## Your Task
 Create three route files:
@@ -255,13 +338,19 @@ Add WebSocket event emissions for: swarm:started, swarm:step:started, swarm:step
 
 Follow existing API patterns in the project. Add proper auth middleware and workspace scoping.
 
-DONE: <summary>`,
+DONE: <detailed summary>`,
   },
   {
     id: "cli-commands",
     agent: { name: "CliWorker", cli: "claude" },
     dependsOn: ["shared-types", "templates"],
+    readFirst: [
+      "src/commands/",
+    ],
     task: `You are implementing the CLI subcommands for agent-relay swarm.
+
+## Before You Start
+Read existing CLI command files in src/commands/ to understand argument parsing patterns, output formatting, and how commands are registered.
 
 ## Your Task
 Create: packages/cli/src/commands/workflow.ts (or in the relay repo if that's where CLI lives)
@@ -308,7 +397,7 @@ Use the relay.yaml config resolution order:
 
 Show progress in real-time: step name, agent status, duration.
 
-DONE: <summary>`,
+DONE: <detailed summary>`,
   },
   {
     id: "dashboard-panel",
@@ -317,7 +406,7 @@ DONE: <summary>`,
     task: `You are building the swarm panel UI for the relay dashboard.
 
 ## Context
-API endpoints are complete. You can fetch from /api/dashboard/swarms/*.
+API endpoints are complete. See dependency output for exact endpoint paths and response shapes.
 
 ## Your Task
 Create React components in the relay-dashboard repo (or packages/dashboard if it exists):
@@ -351,7 +440,7 @@ Create React components in the relay-dashboard repo (or packages/dashboard if it
 
 Follow existing dashboard design patterns. Use Tailwind CSS.
 
-DONE: <summary>`,
+DONE: <detailed summary>`,
   },
   {
     id: "integration-tests",
@@ -360,7 +449,7 @@ DONE: <summary>`,
     task: `You are writing integration tests for the swarm patterns system.
 
 ## Context
-All API endpoints and CLI commands are implemented.
+All API endpoints and CLI commands are implemented. See dependency output for details.
 
 ## Your Task
 Create test files:
@@ -404,7 +493,7 @@ Create test files:
 
 Use the project's existing test framework. Mock the broker SDK for unit tests.
 
-DONE: <summary>`,
+DONE: <detailed summary>`,
   },
 ];
 
@@ -419,6 +508,13 @@ function buildConventions(node: DagNode, depsOutput: Map<string, string>): strin
     .filter(Boolean)
     .join("\n\n");
 
+  const readFirstSection = node.readFirst?.length
+    ? `### Files to Read First
+Before writing any code, read these files to understand existing patterns and conventions:
+${node.readFirst.map((f) => `- \`${f}\``).join("\n")}
+`
+    : "";
+
   return `## Relay Workflow Protocol
 
 You are agent **${node.agent.name}** in a DAG workflow implementing relay-cloud PR #94.
@@ -428,10 +524,12 @@ You are agent **${node.agent.name}** in a DAG workflow implementing relay-cloud 
 **Dependencies:** ${node.dependsOn.length > 0 ? node.dependsOn.join(", ") : "none (root node)"}
 
 ### Protocol
-- When you finish, send a message starting with: DONE: <brief summary of what you accomplished>
+- When you finish, send a message starting with: DONE: <detailed summary>
+- Your DONE message is critical — downstream agents depend on it for context. Include key type signatures, file paths created, method names, and anything a dependent agent needs to write correct code.
 - If you encounter a blocking error, send: ERROR: <description>
 - Work only on your assigned task. Do not modify files outside your scope.
 
+${readFirstSection}
 ${depContext ? `### Context from Dependencies\n\n${depContext}` : ""}
 
 ---
@@ -441,11 +539,11 @@ ${depContext ? `### Context from Dependencies\n\n${depContext}` : ""}
 
 // ── DAG Scheduler ──────────────────────────────────────────────────────────
 
-function topologicalSort(nodes: DagNode[]): string[] {
+function topologicalSort(dagNodes: DagNode[]): string[] {
   const sorted: string[] = [];
   const visited = new Set<string>();
   const visiting = new Set<string>();
-  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+  const nodeMap = new Map(dagNodes.map((n) => [n.id, n]));
 
   function visit(id: string): void {
     if (visited.has(id)) return;
@@ -459,38 +557,74 @@ function topologicalSort(nodes: DagNode[]): string[] {
     sorted.push(id);
   }
 
-  for (const node of nodes) visit(node.id);
+  for (const node of dagNodes) visit(node.id);
   return sorted;
 }
 
-function getRootNodes(nodes: DagNode[]): DagNode[] {
-  return nodes.filter((n) => n.dependsOn.length === 0);
+function getRootNodes(dagNodes: DagNode[]): DagNode[] {
+  return dagNodes.filter((n) => n.dependsOn.length === 0);
 }
 
 function getReadyNodes(
-  nodes: DagNode[],
-  completed: Set<string>,
-  running: Set<string>,
+  dagNodes: DagNode[],
+  completedSet: Set<string>,
+  runningSet: Set<string>,
+  failedSet: Set<string>,
 ): DagNode[] {
-  return nodes.filter(
+  return dagNodes.filter(
     (n) =>
-      !completed.has(n.id) &&
-      !running.has(n.id) &&
-      n.dependsOn.every((dep) => completed.has(dep)),
+      !completedSet.has(n.id) &&
+      !runningSet.has(n.id) &&
+      !failedSet.has(n.id) &&
+      n.dependsOn.every((dep) => completedSet.has(dep)),
   );
+}
+
+/** Mark all downstream nodes as blocked when a dependency fails */
+function markBlockedDownstream(
+  failedNodeId: string,
+  dagNodes: DagNode[],
+  failedSet: Set<string>,
+  completedSet: Set<string>,
+  results: Map<string, NodeResult>,
+): void {
+  const queue = [failedNodeId];
+  while (queue.length > 0) {
+    const currentId = queue.shift()!;
+    for (const node of dagNodes) {
+      if (
+        node.dependsOn.includes(currentId) &&
+        !failedSet.has(node.id) &&
+        !completedSet.has(node.id)
+      ) {
+        failedSet.add(node.id);
+        results.set(node.id, {
+          nodeId: node.id,
+          agentName: node.agent.name,
+          output: `Blocked: dependency "${currentId}" failed`,
+          status: "blocked",
+          durationMs: 0,
+        });
+        console.log(`  ⊘ ${node.id}: blocked by failed dependency "${currentId}"`);
+        queue.push(node.id);
+      }
+    }
+  }
 }
 
 // ── DONE Message Parser ────────────────────────────────────────────────────
 
-const DONE_REGEX = /^DONE:\s*(.+)/m;
-const ERROR_REGEX = /^ERROR:\s*(.+)/m;
+const DONE_REGEX = /^DONE:\s*(.+)/ms;
+const ERROR_REGEX = /^ERROR:\s*(.+)/ms;
 
 function parseDone(text: string): string | undefined {
-  return text.match(DONE_REGEX)?.[1]?.trim();
+  const match = text.match(DONE_REGEX);
+  return match?.[1]?.trim();
 }
 
 function parseError(text: string): string | undefined {
-  return text.match(ERROR_REGEX)?.[1]?.trim();
+  const match = text.match(ERROR_REGEX);
+  return match?.[1]?.trim();
 }
 
 // ── Main Execution ─────────────────────────────────────────────────────────
@@ -512,20 +646,20 @@ async function main(): Promise<void> {
     console.log("── DRY RUN MODE ──");
     console.log();
     console.log("Execution plan:");
-    const roots = getRootNodes(nodes);
-    console.log(`  Wave 1 (parallel): ${roots.map((n) => n.id).join(", ")}`);
 
     const simCompleted = new Set<string>();
+    const simFailed = new Set<string>();
     let wave = 1;
-    const simRunning = new Set<string>();
 
-    // Simulate execution waves
-    let ready = roots;
+    let ready = getRootNodes(nodes);
     while (ready.length > 0) {
       console.log(`  Wave ${wave}: ${ready.map((n) => `${n.id} (${n.agent.name}/${n.agent.cli})`).join(", ")}`);
+      if (ready[0]?.readFirst?.length) {
+        console.log(`    reads: ${ready[0].readFirst.join(", ")}`);
+      }
       for (const n of ready) simCompleted.add(n.id);
       wave++;
-      ready = getReadyNodes(nodes, simCompleted, simRunning);
+      ready = getReadyNodes(nodes, simCompleted, new Set(), simFailed);
     }
 
     console.log();
@@ -539,9 +673,27 @@ async function main(): Promise<void> {
   const agents = new Map<string, Agent>();
   const completed = new Set<string>();
   const running = new Set<string>();
+  const failed = new Set<string>();
   const results = new Map<string, NodeResult>();
   const depsOutput = new Map<string, string>();
-  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+  let startTime = Date.now();
+
+  // Resume from persisted state if --resume flag
+  if (RESUME) {
+    const state = loadState();
+    if (state) {
+      for (const id of state.completed) completed.add(id);
+      for (const [k, v] of Object.entries(state.depsOutput)) depsOutput.set(k, v);
+      for (const [k, v] of Object.entries(state.results)) results.set(k, v);
+      startTime = new Date(state.startedAt).getTime();
+      console.log(`Resumed from ${STATE_FILE}: ${completed.size} nodes already completed`);
+      console.log(`  Completed: ${[...completed].join(", ")}`);
+      console.log();
+    } else {
+      console.log("No state file found, starting fresh.");
+      console.log();
+    }
+  }
 
   // Track messages per agent for DONE detection
   const agentMessages = new Map<string, string[]>();
@@ -556,7 +708,7 @@ async function main(): Promise<void> {
     const error = parseError(message.text);
     if (done || error) {
       console.log(
-        `  ${done ? "✓" : "✗"} ${message.from}: ${done ?? error}`,
+        `  ${done ? "✓" : "✗"} ${message.from}: ${(done ?? error ?? "").slice(0, 120)}`,
       );
     }
   };
@@ -570,7 +722,6 @@ async function main(): Promise<void> {
   };
 
   console.log("Starting workflow...\n");
-  const startTime = Date.now();
 
   // ── Execute DAG ────────────────────────────────────────────────────────
 
@@ -600,11 +751,15 @@ async function main(): Promise<void> {
 
     // Wait for DONE message or timeout
     const result = await new Promise<NodeResult>((resolve) => {
+      let resolved = false;
+
       const checkInterval = setInterval(() => {
+        if (resolved) return;
         const msgs = agentMessages.get(agent.name) ?? [];
         for (const msg of msgs) {
           const done = parseDone(msg);
           if (done) {
+            resolved = true;
             clearInterval(checkInterval);
             clearTimeout(timeout);
             resolve({
@@ -618,6 +773,7 @@ async function main(): Promise<void> {
           }
           const error = parseError(msg);
           if (error) {
+            resolved = true;
             clearInterval(checkInterval);
             clearTimeout(timeout);
             resolve({
@@ -633,11 +789,13 @@ async function main(): Promise<void> {
       }, 2000);
 
       const timeout = setTimeout(() => {
+        if (resolved) return;
+        resolved = true;
         clearInterval(checkInterval);
         resolve({
           nodeId: node.id,
           agentName: agent.name,
-          output: "Agent timed out",
+          output: "Agent timed out after " + (AGENT_TIMEOUT_MS / 60_000) + " minutes",
           status: "failed",
           durationMs: Date.now() - nodeStart,
         });
@@ -656,57 +814,63 @@ async function main(): Promise<void> {
 
   // ── DAG Loop ───────────────────────────────────────────────────────────
 
+  const totalNodes = nodes.length;
+
   try {
-    while (completed.size < nodes.length) {
-      const ready = getReadyNodes(nodes, completed, running);
+    while (completed.size + failed.size < totalNodes) {
+      const ready = getReadyNodes(nodes, completed, running, failed);
 
       if (ready.length === 0 && running.size === 0) {
-        console.error("\nDeadlock detected! No nodes ready and none running.");
+        // Check if remaining nodes are all blocked
+        const remaining = nodes.filter(
+          (n) => !completed.has(n.id) && !failed.has(n.id),
+        );
+        if (remaining.length > 0) {
+          console.error(
+            `\nDeadlock: ${remaining.length} nodes unreachable: ${remaining.map((n) => n.id).join(", ")}`,
+          );
+        }
         break;
       }
 
       if (ready.length === 0) {
-        // Wait for running nodes to complete
         await new Promise((r) => setTimeout(r, 1000));
         continue;
       }
 
       // Respect max concurrency
-      const toRun = ready.slice(0, MAX_CONCURRENCY - running.size);
-      if (toRun.length === 0) {
+      const slots = MAX_CONCURRENCY - running.size;
+      if (slots <= 0) {
         await new Promise((r) => setTimeout(r, 1000));
         continue;
       }
 
-      // Execute ready nodes in parallel
+      const toRun = ready.slice(0, slots);
+
+      // Execute batch with Promise.allSettled for proper error handling
       const promises = toRun.map(async (node) => {
         const result = await executeNode(node);
         running.delete(node.id);
-        completed.add(node.id);
+
+        if (result.status === "completed") {
+          completed.add(node.id);
+          depsOutput.set(node.id, result.output);
+        } else {
+          failed.add(node.id);
+          // Immediately mark all downstream nodes as blocked
+          markBlockedDownstream(node.id, nodes, failed, completed, results);
+        }
+
         results.set(node.id, result);
 
-        // Store output for downstream dependencies
-        if (result.status === "completed") {
-          depsOutput.set(node.id, result.output);
-        }
+        // Persist state after each node completion
+        saveState(completed, depsOutput, results, startTime);
 
         return result;
       });
 
-      // Wait for at least one to complete before checking for new ready nodes
-      await Promise.race(promises);
-
-      // Check if any failed nodes block downstream
-      for (const [nodeId, result] of results) {
-        if (result.status === "failed") {
-          const blocked = nodes.filter((n) => n.dependsOn.includes(nodeId));
-          if (blocked.length > 0) {
-            console.warn(
-              `\n⚠ ${nodeId} failed — blocking: ${blocked.map((b) => b.id).join(", ")}`,
-            );
-          }
-        }
-      }
+      // Wait for all in this batch to complete
+      await Promise.allSettled(promises);
     }
   } finally {
     // Cleanup: release all remaining agents
@@ -718,6 +882,9 @@ async function main(): Promise<void> {
       }
     }
     await relay.shutdown();
+
+    // Final state save
+    saveState(completed, depsOutput, results, startTime);
   }
 
   // ── Summary ────────────────────────────────────────────────────────────
@@ -725,30 +892,41 @@ async function main(): Promise<void> {
   const totalMs = Date.now() - startTime;
   const completedNodes = [...results.values()].filter((r) => r.status === "completed");
   const failedNodes = [...results.values()].filter((r) => r.status === "failed");
+  const blockedNodes = [...results.values()].filter((r) => r.status === "blocked");
 
   console.log("\n╔══════════════════════════════════════════════════════════════╗");
   console.log("║  Workflow Complete                                          ║");
   console.log("╚══════════════════════════════════════════════════════════════╝");
   console.log();
   console.log(`Total time: ${(totalMs / 60_000).toFixed(1)} minutes`);
-  console.log(`Completed: ${completedNodes.length}/${nodes.length}`);
-  console.log(`Failed: ${failedNodes.length}/${nodes.length}`);
+  console.log(`Completed: ${completedNodes.length}/${totalNodes}`);
+  console.log(`Failed:    ${failedNodes.length}/${totalNodes}`);
+  console.log(`Blocked:   ${blockedNodes.length}/${totalNodes}`);
   console.log();
 
   console.log("Node Results:");
-  console.log("─".repeat(70));
-  for (const [nodeId, result] of results) {
-    const status = result.status === "completed" ? "✓" : "✗";
-    const duration = (result.durationMs / 60_000).toFixed(1);
-    console.log(`  ${status} ${nodeId.padEnd(20)} ${duration}m  ${result.output.slice(0, 60)}`);
+  console.log("─".repeat(80));
+  for (const node of nodes) {
+    const result = results.get(node.id);
+    if (!result) {
+      console.log(`  ? ${node.id.padEnd(20)} not reached`);
+      continue;
+    }
+    const icon = result.status === "completed" ? "✓" : result.status === "blocked" ? "⊘" : "✗";
+    const duration = result.durationMs > 0 ? `${(result.durationMs / 60_000).toFixed(1)}m` : "  -";
+    console.log(`  ${icon} ${node.id.padEnd(20)} ${duration.padEnd(6)} ${result.output.slice(0, 50)}`);
   }
 
-  if (failedNodes.length > 0) {
-    console.log("\nFailed nodes:");
-    for (const node of failedNodes) {
-      console.log(`  ✗ ${node.nodeId}: ${node.output}`);
-    }
+  if (failedNodes.length > 0 || blockedNodes.length > 0) {
+    console.log("\nTo retry, fix the issues and run with --resume to skip completed nodes.");
     process.exit(1);
+  }
+
+  // Clean up state file on success
+  if (existsSync(STATE_FILE)) {
+    console.log(`\nCleaning up ${STATE_FILE}`);
+    writeFileSync(STATE_FILE + ".done", readFileSync(STATE_FILE));
+    // Don't delete — rename to .done for audit trail
   }
 }
 
