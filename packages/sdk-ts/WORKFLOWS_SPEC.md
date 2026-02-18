@@ -934,6 +934,180 @@ Every workflow pattern is built from a set of core primitives. This section docu
 | **Confidence Parser** | `workflow-conventions.ts` | Extract `[confidence=X.X]` from DONE messages | `cascade` |
 | **Tree Validator** | `workflow-hierarchy.ts` | Validate agent tree (one root, no cycles), compute sub-teams | `hierarchical` |
 
+### Extended Primitives (for full 42-technique coverage)
+
+These 5 additional primitives enable coverage of 37 of 42 swarm techniques from the literature (88% coverage). The remaining 5 (Graph of Thoughts cyclic graphs, MARL, Population-Based Training) are fundamentally different execution paradigms and are out of scope for a messaging-based orchestration system.
+
+| Primitive | Module | What It Does | Enables |
+|-----------|--------|-------------|---------|
+| **Stigmergic State Store** | `workflow-stigmergy.ts` | Shared state with time-based decay (evaporation), importance weighting, and trail reinforcement. Agents modify environment state; other agents read and react. | ACO (pheromone trails), PSO (global best), Social Spider (vibrations), Termite Building, Slime Mold |
+| **Agent Pool Manager** | `workflow-pool.ts` | Population-based agent lifecycle: spawn pool of N agents, evaluate fitness, cull lowest performers, clone/mutate top performers. Supports generational iterations. | Artificial Immune (clonal selection), Bacterial Foraging (reproduction/elimination), Evolutionary Swarm (crossover/mutation/selection) |
+| **Auction Engine** | `workflow-auction.ts` | Task announcement → bid collection (with timeout) → award to best bidder. Supports sealed-bid, open-bid, and multi-round auctions. Integrates with Agent messaging for bid/award protocol. | Auction/Market-Based Allocation, Contract Net Protocol (CNP) |
+| **Branch Pruner** | `workflow-dag.ts` (extension) | Evaluate in-progress DAG branches against fitness criteria. Terminate low-quality branches early and reallocate resources to promising ones. Supports beam search (keep top-K branches). | Tree of Thoughts (pruning), beam search exploration |
+| **Gossip Disseminator** | `workflow-gossip.ts` | Random neighbor selection for information spread. Each round, each agent shares state with K random peers (epidemic dissemination). Converges in O(log N) rounds. | Gossip Protocol, epidemic information spread, decentralized consensus |
+
+#### Stigmergic State Store
+
+Extends the shared state store (from relay-cloud PR #94) with decay/evaporation:
+
+```ts
+interface StigmergicStateOptions {
+  /** Key namespace for this state domain */
+  namespace: string;
+  /** Decay rate per second (0-1). 0 = no decay, 1 = instant evaporation */
+  decayRate: number;
+  /** Minimum value before key is garbage-collected */
+  minThreshold: number;
+  /** How values combine when multiple agents reinforce the same key */
+  reinforcement: "additive" | "multiplicative" | "max";
+}
+
+interface StigmergicState {
+  /** Deposit a value (like pheromone) at a key */
+  deposit(key: string, value: number, agent: string): Promise<void>;
+  /** Read current value (after decay applied) */
+  read(key: string): Promise<number>;
+  /** Read all keys above threshold, sorted by value descending */
+  readAll(): Promise<Array<{ key: string; value: number; lastUpdatedBy: string }>>;
+  /** Manually evaporate (called automatically on timer) */
+  evaporate(): Promise<void>;
+}
+```
+
+#### Agent Pool Manager
+
+Manages a population of agents with evolutionary lifecycle:
+
+```ts
+interface PoolOptions {
+  /** Initial population size */
+  populationSize: number;
+  /** How to evaluate agent fitness (parse from DONE message) */
+  fitnessExtractor: (output: string) => number;
+  /** Fraction of population to cull each generation (0-1) */
+  cullRate: number;
+  /** Maximum generations before terminating */
+  maxGenerations: number;
+  /** Minimum fitness to accept solution */
+  targetFitness?: number;
+  /** How to create variant tasks for new agents */
+  mutateTask: (parentTask: string, generation: number) => string;
+}
+
+interface AgentPool {
+  /** Run evolutionary loop: spawn → evaluate → cull → reproduce → repeat */
+  evolve(): Promise<{ bestAgent: string; bestFitness: number; generations: number }>;
+  /** Get current population with fitness scores */
+  getPopulation(): Array<{ name: string; fitness: number; generation: number }>;
+  /** Manually inject a new agent into the pool */
+  inject(task: string): Promise<void>;
+  /** Stop evolution early */
+  halt(): Promise<void>;
+}
+```
+
+#### Auction Engine
+
+Task allocation via competitive bidding:
+
+```ts
+interface AuctionOptions {
+  /** Task description to be auctioned */
+  task: string;
+  /** Agents eligible to bid */
+  bidders: TaskDefinition[];
+  /** Auction type */
+  type: "sealed" | "open" | "dutch" | "vickrey";
+  /** How long bidders have to submit (ms) */
+  biddingTimeout: number;
+  /** Minimum bid required */
+  reservePrice?: number;
+  /** How to evaluate bids (default: highest confidence) */
+  evaluator?: (bids: Bid[]) => Bid;
+}
+
+interface Bid {
+  agent: string;
+  confidence: number;
+  estimatedCost: number;
+  estimatedTime: string;
+  approach: string;
+}
+
+interface AuctionResult {
+  winner: Bid;
+  allBids: Bid[];
+  awardedAt: string;
+}
+
+// Convention injection adds:
+// BID: [confidence=0.85] [cost=3] [time=10m] I'll implement using...
+const BID_REGEX = /^BID:\s*\[confidence=(\d+\.?\d*)\]\s*\[cost=(\d+\.?\d*)\]\s*\[time=(\S+)\]\s*(.+)/m;
+// AWARD: <agent-name>
+const AWARD_REGEX = /^AWARD:\s*(\S+)/m;
+```
+
+#### Branch Pruner (DAG extension)
+
+```ts
+interface BranchPrunerOptions {
+  /** Evaluate branch quality from agent's in-progress messages */
+  evaluator: (messages: Message[], branch: DagNode) => number;
+  /** Kill branches scoring below this threshold */
+  pruneThreshold: number;
+  /** Maximum concurrent branches (beam width) */
+  beamWidth?: number;
+  /** How often to evaluate (ms) */
+  evaluationInterval: number;
+}
+```
+
+#### Gossip Disseminator
+
+```ts
+interface GossipOptions {
+  /** Number of random peers to share with each round */
+  fanout: number;
+  /** Time between gossip rounds (ms) */
+  roundInterval: number;
+  /** Maximum rounds before termination */
+  maxRounds: number;
+  /** What state each agent shares (extracted from messages) */
+  stateExtractor: (messages: Message[]) => string;
+  /** How to merge received state with local state */
+  stateMerger: (local: string, received: string) => string;
+  /** Convergence test: stop when all agents agree */
+  convergenceTest?: (states: Map<string, string>) => boolean;
+}
+```
+
+### New Message Protocol Signals (Extended)
+
+```ts
+// Extended primitives add these signals:
+const BID_REGEX = /^BID:\s*\[confidence=(\d+\.?\d*)\]\s*\[cost=(\d+\.?\d*)\]\s*\[time=(\S+)\]\s*(.+)/m;
+const AWARD_REGEX = /^AWARD:\s*(\S+)/m;
+const DEPOSIT_REGEX = /^DEPOSIT:\s*(\S+)\s+(\d+\.?\d*)/m;           // stigmergy
+const FITNESS_REGEX = /^FITNESS:\s*(\d+\.?\d*)/m;                    // pool evaluation
+const GOSSIP_REGEX = /^GOSSIP:\s*(.+)/m;                             // gossip state share
+```
+
+### Extended Coverage Matrix (42 Techniques)
+
+| Technique Category | Count | Covered | Partially | Gap | Coverage |
+|--------------------|-------|---------|-----------|-----|----------|
+| Bio-Inspired | 22 | 17 | 3 | 2 | 91% |
+| LLM-Specific | 8 | 7 | 1 | 0 | 94% |
+| Decision-Making | 6 | 4 | 0 | 2 | 67% → 100% with Auction Engine |
+| Distributed Architecture | 3 | 2 | 0 | 1 | 67% → 100% with Gossip |
+| Hybrid/Advanced | 3 | 0 | 1 | 2 | 33% with Agent Pool |
+| **Total** | **42** | **30** | **5** | **7** | **67% → 88% with 5 new primitives** |
+
+Techniques **not covered** (fundamentally different paradigms):
+- Graph of Thoughts (requires cyclic execution graphs — conflicts with DAG model)
+- Multi-Agent Reinforcement Learning (requires reward signals + policy gradient)
+- Population-Based Training (requires hyperparameter evolution framework)
+
 ### New Message Protocol Signals
 
 ```ts
@@ -973,10 +1147,14 @@ packages/sdk-ts/src/
   workflow-reflection.ts    — ReflectionEngine: importance scoring, focal points, synthesis
   workflow-trajectory.ts    — Trajectory integration: session management, event recording
   workflow-yaml.ts          — YAML loader, validator, template resolver, SDK mapper
-  workflow-dag.ts           — DAG scheduler: topological sort, parallel dispatch, join tracking
+  workflow-dag.ts           — DAG scheduler: topological sort, parallel dispatch, join + branch pruning
   workflow-handoff.ts       — Handoff controller: active agent tracking, context transfer, circuit breaker
   workflow-rounds.ts        — Round manager: debate rounds, turn order, convergence detection
   workflow-hierarchy.ts     — Tree validator: structural validation, sub-team computation
+  workflow-stigmergy.ts     — Stigmergic state: decay/evaporation, reinforcement, pheromone trails
+  workflow-pool.ts          — Agent pool: population lifecycle, fitness eval, cull/reproduce
+  workflow-auction.ts       — Auction engine: bid collection, evaluation, award cycle
+  workflow-gossip.ts        — Gossip disseminator: random peer selection, epidemic spread
 ```
 
 ---
@@ -2071,6 +2249,16 @@ The SDK's `loadWorkflow` function resolves both standalone files and relay.yaml-
 - Workflow composition (nest workflows within workflows)
 - `WorkflowBuilder` fluent API for custom patterns
 - Cross-workflow learning (query past trajectories before planning)
+
+### Phase 5 — Extended Primitives (42-technique coverage)
+- Stigmergic State Store (`workflow-stigmergy.ts`) — decay, reinforcement, pheromone trails
+- Agent Pool Manager (`workflow-pool.ts`) — population lifecycle, fitness evaluation, cull/reproduce
+- Auction Engine (`workflow-auction.ts`) — bid collection, evaluation, award cycle
+- Branch Pruner (extend `workflow-dag.ts`) — beam search, fitness-based pruning
+- Gossip Disseminator (`workflow-gossip.ts`) — random peer selection, epidemic spread
+- New message signals: BID, AWARD, DEPOSIT, FITNESS, GOSSIP
+- Convention injection for all new signals
+- Integration tests for ACO, evolutionary, auction, and gossip workflows
 
 ---
 
