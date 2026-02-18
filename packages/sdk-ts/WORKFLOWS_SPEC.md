@@ -20,10 +20,16 @@ The workflows module provides **opinionated, high-level orchestration patterns**
 
 ```
 workflows.ts
-  ├── relay.ts     (AgentRelay, Agent, Message, HumanHandle)
-  ├── consensus.ts (ConsensusEngine — for consensus workflow)
-  └── shadow.ts    (ShadowManager — for attaching reviewers)
+  ├── relay.ts          (AgentRelay, Agent, Message, HumanHandle)
+  ├── consensus.ts      (ConsensusEngine — for consensus workflow)
+  ├── shadow.ts         (ShadowManager — for attaching reviewers)
+  ├── trajectories.ts   (agent-trajectories SDK — reflection & trajectory tracking)
+  └── workflow-yaml.ts  (YAML workflow loader & validator)
 ```
+
+External dependencies:
+- `agent-trajectories` — trajectory recording, reflection events, retrospectives
+- `yaml` — YAML parsing for workflow definitions
 
 No broker changes required. Workflows are purely SDK-side orchestration.
 
@@ -88,6 +94,58 @@ interface WorkflowRun {
   broadcast(text: string): Promise<void>;
 }
 
+// ── Reflection ──────────────────────────────────────────────────────────────
+
+interface ReflectionContext {
+  /** All messages received since the last reflection. */
+  recentMessages: Message[];
+  /** Current status of each agent. */
+  agentStatuses: Map<string, "active" | "done" | "stuck" | "idle">;
+  /** Wall-clock time elapsed since workflow start. */
+  elapsedMs: number;
+  /** Previous reflection summaries from this workflow. */
+  priorReflections: ReflectionEvent[];
+  /** The trajectory session, if trajectory tracking is enabled. */
+  trajectory?: TrajectorySession;
+}
+
+interface ReflectionEvent {
+  /** ISO timestamp of the reflection. */
+  ts: string;
+  /** High-level synthesis of recent activity. */
+  synthesis: string;
+  /** Focal points — the key questions that prompted this reflection. */
+  focalPoints: string[];
+  /** Course corrections triggered by this reflection. */
+  adjustments?: ReflectionAdjustment[];
+  /** Confidence in the current trajectory (0-1). */
+  confidence: number;
+}
+
+interface ReflectionAdjustment {
+  agent: string;
+  action: "reassign" | "release" | "message" | "spawn";
+  /** New task or message content, depending on action. */
+  content?: string;
+}
+
+// ── Trajectory Integration ──────────────────────────────────────────────────
+
+interface TrajectoryOptions {
+  /** Enable trajectory tracking for this workflow. Default: false. */
+  enabled: boolean;
+  /** Agent name recorded as the trajectory owner. Default: "workflow-orchestrator". */
+  agentName?: string;
+  /** External task reference (e.g., beads ID, GitHub issue). */
+  taskSource?: { system: string; id: string; url?: string };
+  /** Base directory for trajectory storage. Default: ".trajectories". */
+  dataDir?: string;
+  /** Auto-record agent messages as trajectory events. Default: true. */
+  autoRecordMessages?: boolean;
+  /** Auto-record reflections as trajectory events. Default: true. */
+  autoRecordReflections?: boolean;
+}
+
 // ── Workflow Options (shared across all patterns) ───────────────────────────
 
 interface WorkflowOptions {
@@ -109,6 +167,19 @@ interface WorkflowOptions {
   onAgentDone?: (agent: Agent, summary: string | undefined) => void;
   /** Hook: called with the full augmented task before spawning (for debugging). */
   onTaskAugmented?: (agentName: string, augmentedTask: string) => void;
+
+  // ── Reflection options ──────────────────────────────────────────────────
+  /** Trigger reflection after this many agent messages. Default: 10.
+   *  Set to 0 to disable automatic reflection. */
+  reflectionThreshold?: number;
+  /** Hook: called when a reflection is triggered. Return adjustments or null. */
+  onReflect?: (context: ReflectionContext) => Promise<ReflectionAdjustment[] | null>;
+  /** Hook: called after a reflection completes (for logging/display). */
+  onReflectionComplete?: (event: ReflectionEvent) => void;
+
+  // ── Trajectory options ──────────────────────────────────────────────────
+  /** Enable trajectory tracking via agent-trajectories SDK. */
+  trajectory?: TrajectoryOptions;
 }
 ```
 
@@ -482,11 +553,14 @@ function parseDoneMessage(text: string): string | undefined {
 
 ```
 packages/sdk-ts/src/
-  workflows.ts          — Main module: types + all workflow functions
-  workflow-conventions.ts — Convention templates and augmentation logic
+  workflows.ts              — Main module: types + all workflow functions
+  workflow-conventions.ts   — Convention templates and augmentation logic
+  workflow-reflection.ts    — ReflectionEngine: importance scoring, focal points, synthesis
+  workflow-trajectory.ts    — Trajectory integration: session management, event recording
+  workflow-yaml.ts          — YAML loader, validator, template resolver, SDK mapper
 ```
 
-Two files total. `workflows.ts` is the public API; `workflow-conventions.ts` is internal.
+Five files. `workflows.ts` is the public API; the rest are internal modules.
 
 ### `workflows.ts` — Public API Surface
 
@@ -497,6 +571,10 @@ export function pipeline(stages: PipelineStage[], options?: WorkflowOptions): Wo
 export function hubAndSpoke(options: HubAndSpokeOptions): WorkflowRun;
 export function consensus(options: ConsensusOptions): WorkflowRun;
 export function mesh(options: MeshOptions): WorkflowRun;
+
+// YAML workflow loading
+export function loadWorkflow(path: string): Promise<YamlWorkflow>;
+export function runWorkflow(workflow: YamlWorkflow, task: string, overrides?: Partial<WorkflowOptions>): WorkflowRun;
 
 // Types (re-exported)
 export type {
@@ -509,6 +587,13 @@ export type {
   HubAndSpokeOptions,
   ConsensusOptions,
   MeshOptions,
+  ReflectionContext,
+  ReflectionEvent,
+  ReflectionAdjustment,
+  TrajectoryOptions,
+  YamlWorkflow,
+  YamlAgent,
+  YamlStep,
 };
 ```
 
@@ -601,20 +686,33 @@ function buildSpawnArgs(cli: AgentCli, task: string, extraArgs: string[]): strin
 ## Workflow Lifecycle
 
 ```
-┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
-│  CREATE   │ ──▶ │  SPAWN   │ ──▶ │  ACTIVE  │ ──▶ │ COMPLETE │
-│           │     │ Agents   │     │ Monitor  │     │ Collect  │
-│ Augment   │     │ Wire     │     │ Messages │     │ Results  │
-│ tasks     │     │ events   │     │ Track    │     │ Cleanup  │
-│           │     │          │     │ DONE/ACK │     │          │
-└──────────┘     └──────────┘     └──────────┘     └──────────┘
+┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
+│  CREATE   │ ──▶ │  SPAWN   │ ──▶ │  ACTIVE  │ ──▶ │ COMPLETE │ ──▶ │ RECORD   │
+│           │     │ Agents   │     │ Monitor  │     │ Collect  │     │          │
+│ Load YAML │     │ Wire     │     │ Messages │     │ Results  │     │ Finish   │
+│ Augment   │     │ events   │     │ Track    │     │ Cleanup  │     │ traj     │
+│ tasks     │     │ Start    │     │ DONE/ACK │     │          │     │ Retro-   │
+│           │     │ traj     │     │ Reflect  │     │          │     │ spective │
+└──────────┘     └──────────┘     └──────────┘     └──────────┘     └──────────┘
+                                       │  ▲
+                                       │  │
+                                       ▼  │
+                                  ┌──────────┐
+                                  │ REFLECT  │
+                                  │          │
+                                  │ Focal    │
+                                  │ points   │
+                                  │ Synth    │──── course correct ────▶ adjust agents
+                                  │ Record   │
+                                  └──────────┘
                                        │
                                        ▼
                                   ┌──────────┐
                                   │ TIMEOUT  │
                                   │ or ERROR │
                                   │ Release  │
-                                  │ all      │
+                                  │ Abandon  │
+                                  │ traj     │
                                   └──────────┘
 ```
 
@@ -726,6 +824,728 @@ for (const agent of result.agents) {
 
 ---
 
+## Reflection Protocol
+
+Inspired by the reflection mechanism in [Generative Agents](https://arxiv.org/abs/2304.03442) (Park et al., 2023). Their ablation study showed that removing reflection dropped agent believability by **4.27 standard deviations**. The key insight: agents that periodically synthesize what's happening — not just react to individual events — make dramatically better decisions.
+
+### How It Works
+
+Reflection is **event-driven, not time-driven**. The SDK tracks an importance accumulator for incoming agent messages. When the accumulator crosses a threshold, a reflection cycle fires.
+
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│  OBSERVE     │ ──▶ │  ACCUMULATE  │ ──▶ │  REFLECT     │ ──▶ │  ADJUST      │
+│              │     │              │     │              │     │              │
+│ Agent msgs   │     │ Score each   │     │ Focal points │     │ Reassign     │
+│ come in      │     │ msg by       │     │ Synthesize   │     │ Spawn more   │
+│              │     │ importance   │     │ Insights     │     │ Message      │
+│              │     │              │     │ Record       │     │ Release      │
+└──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
+                            │                    │                     │
+                            ▼                    ▼                     ▼
+                     threshold hit?       trajectory event      course correction
+```
+
+### Message Importance Scoring
+
+Each incoming agent message is scored 1-10 for importance:
+
+| Score | Category | Examples |
+|-------|----------|----------|
+| 1-2 | Routine | ACK messages, heartbeats, "starting work" |
+| 3-4 | Progress | "Completed file X", incremental updates |
+| 5-6 | Significant | Decisions made, blockers encountered |
+| 7-8 | Critical | Errors, conflicting approaches, scope changes |
+| 9-10 | Urgent | Agent failures, security findings, architecture conflicts |
+
+The SDK uses a lightweight heuristic to score messages (keyword matching + message type). The `onReflect` hook allows users to override with custom scoring.
+
+Default threshold: **accumulated importance >= 50** (roughly 10 significant messages or 5 critical ones). Configurable via `reflectionThreshold` on `WorkflowOptions`.
+
+### The Reflection Cycle
+
+When the threshold fires, three steps execute (mirroring the Generative Agents algorithm):
+
+**Step 1: Focal Point Generation**
+
+The SDK examines recent messages and generates 2-3 high-level questions:
+- "Are workers converging on the same solution or diverging?"
+- "Is any agent blocked or spinning without progress?"
+- "Have the original requirements been misunderstood?"
+
+**Step 2: Synthesis**
+
+Recent messages + prior reflections are synthesized into a `ReflectionEvent`:
+
+```ts
+{
+  ts: "2026-02-18T14:30:00Z",
+  synthesis: "AuthWorker and ApiWorker are both implementing middleware — duplicated effort. AuthWorker is further along. TestWorker is idle waiting for implementation.",
+  focalPoints: [
+    "Are workers duplicating effort?",
+    "Is the test worker blocked?"
+  ],
+  adjustments: [
+    { agent: "ApiWorker", action: "message", content: "Stop middleware work — AuthWorker owns it. Focus on route handlers only." },
+    { agent: "TestWorker", action: "message", content: "Start writing test scaffolding now, AuthWorker will have middleware ready soon." }
+  ],
+  confidence: 0.75
+}
+```
+
+**Step 3: Course Correction**
+
+If `onReflect` returns adjustments, the SDK executes them:
+- `reassign` — sends a new task to the agent
+- `release` — terminates the agent
+- `message` — sends a coordination message
+- `spawn` — creates a new agent
+
+### REFLECT Message Protocol
+
+Alongside DONE, ACK, and VOTE, reflection adds a new message type:
+
+```ts
+const REFLECT_REGEX = /^REFLECT:\s*(.+)/m;
+```
+
+Convention injection for hub agents includes:
+
+```
+## Reflection Protocol
+After receiving several worker updates, periodically pause and reflect:
+1. Send to #workflow-{id}: "REFLECT: <your synthesis of overall progress>"
+2. Consider: Are workers aligned? Is anyone stuck? Should strategy change?
+3. If adjustments needed, message affected workers directly.
+4. Record key decisions: trail decision "<what you changed and why>"
+```
+
+### Reflection in Each Pattern
+
+| Pattern | Who Reflects | Trigger | What Changes |
+|---------|-------------|---------|--------------|
+| `fanOut` | SDK orchestrator | N worker messages | Can cancel stuck workers, spawn replacements |
+| `pipeline` | SDK between stages | After each stage DONE | Adjusts next stage's task based on synthesis |
+| `hubAndSpoke` | Hub agent + SDK | Hub: continuous; SDK: threshold | Hub adjusts worker tasks; SDK monitors hub health |
+| `consensus` | SDK after discussion phase | Before voting round | Can extend discussion, add context to voters |
+| `mesh` | Each peer + SDK | Per-round | Peers self-coordinate; SDK detects stalls |
+
+### Implementation
+
+```ts
+class ReflectionEngine {
+  private importanceAccumulator = 0;
+  private recentMessages: Message[] = [];
+  private reflections: ReflectionEvent[] = [];
+
+  constructor(
+    private threshold: number,
+    private onReflect?: (ctx: ReflectionContext) => Promise<ReflectionAdjustment[] | null>,
+    private trajectory?: TrajectorySession,
+  ) {}
+
+  /** Called for every incoming agent message. */
+  async observe(agent: Agent, message: Message): Promise<ReflectionEvent | null> {
+    const importance = this.scoreImportance(message);
+    this.importanceAccumulator += importance;
+    this.recentMessages.push(message);
+
+    if (this.importanceAccumulator < this.threshold) return null;
+
+    // Threshold crossed — trigger reflection
+    this.importanceAccumulator = 0;
+    const event = await this.reflect();
+    this.recentMessages = []; // Reset window
+    return event;
+  }
+
+  private async reflect(): Promise<ReflectionEvent> {
+    const context: ReflectionContext = {
+      recentMessages: this.recentMessages,
+      agentStatuses: this.getAgentStatuses(),
+      elapsedMs: Date.now() - this.startTime,
+      priorReflections: this.reflections,
+      trajectory: this.trajectory,
+    };
+
+    const adjustments = await this.onReflect?.(context) ?? null;
+
+    const event: ReflectionEvent = {
+      ts: new Date().toISOString(),
+      synthesis: this.buildSynthesis(context),
+      focalPoints: this.generateFocalPoints(context),
+      adjustments: adjustments ?? undefined,
+      confidence: this.estimateConfidence(context),
+    };
+
+    this.reflections.push(event);
+
+    // Record to trajectory if enabled
+    if (this.trajectory) {
+      await this.trajectory.event("reflection", event.synthesis, {
+        significance: "high",
+        raw: event,
+      });
+    }
+
+    return event;
+  }
+
+  private scoreImportance(message: Message): number {
+    // Heuristic scoring based on message content
+    const text = message.text.toLowerCase();
+    if (/error|fail|crash|panic/.test(text)) return 8;
+    if (/blocked|stuck|waiting|conflict/.test(text)) return 6;
+    if (/done:|complete|finished/.test(text)) return 5;
+    if (/decision|chose|decided/.test(text)) return 5;
+    if (/progress|update|working on/.test(text)) return 3;
+    if (/ack:|starting/.test(text)) return 2;
+    return 3; // Default: moderate importance
+  }
+}
+```
+
+---
+
+## Trajectory Integration
+
+The `agent-trajectories` SDK (`agent-trajectories` package, v0.4.0) provides persistent recording of agent work — decisions, events, retrospectives, and (with this integration) reflections. Workflows use it to create a complete audit trail of multi-agent work.
+
+### Why Trajectories in Workflows
+
+Without trajectory tracking, a workflow produces a `WorkflowResult` — a snapshot of what happened. With trajectories, you get a **persistent, searchable narrative** of the entire workflow execution: which agents did what, what decisions were made, what reflections occurred, and what the final retrospective concluded.
+
+This enables:
+1. **Post-workflow analysis** — "Why did the auth worker take 8 minutes?"
+2. **Cross-workflow learning** — "Last 3 feature workflows had review rejections — why?"
+3. **Compliance & attribution** — Agent Trace integration for code attribution
+4. **Reflection memory** — Past reflections feed into future workflow planning
+
+### Architecture
+
+```
+Workflow Orchestrator
+    │
+    ├── AgentRelay (messaging)
+    │
+    ├── ReflectionEngine (synthesis)
+    │       │
+    │       └──► TrajectorySession.event("reflection", ...)
+    │
+    └── TrajectorySession (from agent-trajectories SDK)
+            │
+            ├── chapter("spawn-phase", "orchestrator")
+            ├── event("message_received", "AuthWorker: ACK")
+            ├── event("reflection", "Workers aligned, on track")
+            ├── decision({ question: "...", chosen: "...", ... })
+            └── complete({ summary: "...", confidence: 0.85 })
+```
+
+### Lifecycle Mapping
+
+| Workflow Phase | Trajectory Action |
+|----------------|-------------------|
+| Workflow starts | `client.start(workflowName, { source: taskSource })` |
+| Agents spawn | `session.chapter("spawn-phase")` + events per agent |
+| Agent ACK | `session.event("message_received", "AgentX: ACK: ...")` |
+| Agent progress | `session.event("message_received", ...)` |
+| Reflection fires | `session.event("reflection", synthesis, { significance: "high" })` |
+| Course correction | `session.decision({ question, chosen, reasoning, alternatives })` |
+| Agent DONE | `session.event("message_received", "AgentX: DONE: ...")` |
+| Stage transition (pipeline) | `session.chapter("stage-N-name")` |
+| Workflow completes | `session.complete({ summary, confidence, learnings, challenges })` |
+| Workflow fails/times out | `session.abandon(reason)` |
+
+### Usage
+
+```ts
+import { hubAndSpoke } from "@agent-relay/sdk-ts/workflows";
+
+const run = hubAndSpoke({
+  hub: { task: "Coordinate building a REST API", name: "Lead" },
+  workers: [
+    { task: "Implement database models", name: "DbWorker" },
+    { task: "Implement route handlers", name: "ApiWorker" },
+  ],
+  trajectory: {
+    enabled: true,
+    agentName: "workflow-orchestrator",
+    taskSource: { system: "beads", id: "beads-abc123" },
+  },
+  reflectionThreshold: 8,
+  onReflect: async (ctx) => {
+    // Custom reflection logic — examine worker progress
+    const stuckAgents = [...ctx.agentStatuses.entries()]
+      .filter(([, status]) => status === "stuck");
+
+    if (stuckAgents.length > 0) {
+      return stuckAgents.map(([name]) => ({
+        agent: name,
+        action: "message" as const,
+        content: "You appear stuck. Please report your current status and blockers.",
+      }));
+    }
+    return null;
+  },
+});
+
+const result = await run.result;
+// Trajectory is automatically saved to .trajectories/completed/YYYY-MM/
+// Export: trail show traj_xxx --decisions
+// Export: trail export traj_xxx --format markdown
+```
+
+### Auto-Generated Retrospective
+
+When a workflow completes, the SDK auto-generates a trajectory retrospective from workflow data:
+
+```ts
+await session.complete({
+  summary: buildWorkflowSummary(result),
+  approach: `${result.pattern} workflow with ${result.agents.length} agents`,
+  decisions: reflectionEngine.getDecisions(),
+  challenges: reflectionEngine.getChallenges(),
+  learnings: reflectionEngine.getLearnings(),
+  confidence: result.success ? 0.85 : 0.4,
+});
+```
+
+### Trajectory as Convention Injection
+
+When trajectories are enabled, agents receive additional convention instructions:
+
+```
+## Trajectory Protocol
+This workflow records a trajectory for future reference.
+- Record key decisions: trail decision "<choice>" --reasoning "<why>"
+- Record discoveries: trail finding "<what you found>"
+- Your work will be attributed via Agent Trace.
+```
+
+---
+
+## YAML Workflow Definitions
+
+Workflows can be defined in YAML for easy sharing, version control, and consumption by non-TypeScript tools. This aligns with the `relay.yaml` configuration system defined in [relay-cloud swarm-patterns-spec](https://github.com/AgentWorkforce/relay-cloud/pull/94).
+
+### Design Goals
+
+1. **Portable** — YAML files can be shared across projects, teams, and registries
+2. **Human-readable** — Non-developers can understand and modify workflows
+3. **Compatible with relay.yaml** — YAML workflows can be embedded in `.relay/relay.yaml` or standalone in `.relay/workflows/`
+4. **SDK parity** — Anything expressible in the TypeScript API is expressible in YAML, and vice versa
+
+### Directory Convention
+
+```
+.relay/
+├── relay.yaml                # Main config (can embed swarm.workflow inline)
+└── workflows/                # Standalone workflow definitions
+    ├── feature-dev.yaml
+    ├── code-review.yaml
+    └── my-custom-workflow.yaml
+```
+
+### Schema
+
+```yaml
+# ── Workflow Definition Schema ────────────────────────────────────────────────
+# File: .relay/workflows/<name>.yaml
+
+version: "1.0"
+
+# ── Metadata ──────────────────────────────────────────────────────────────────
+name: feature-dev                       # Unique workflow identifier
+description: "Plan, implement, review, and finalize a feature"
+tags: [feature, development]
+
+# ── Pattern Selection ─────────────────────────────────────────────────────────
+# Which orchestration pattern to use.
+# Options: fan-out, pipeline, hub-spoke, consensus, mesh
+pattern: hub-spoke
+
+# ── Agent Definitions ─────────────────────────────────────────────────────────
+agents:
+  - id: lead
+    name: "Tech Lead"
+    role: lead                          # lead | worker | reviewer | voter | peer
+    cli: claude                         # claude | codex | gemini | aider | goose
+    model: claude-sonnet-4-6            # Optional model override
+
+  - id: developer
+    name: "Developer"
+    role: worker
+    cli: claude
+    reportsTo: lead                     # For hub-spoke / hierarchical
+    constraints:                        # Optional file/execution constraints
+      fileScope:
+        include: ["src/**"]
+        exclude: ["**/*.test.ts"]
+      readOnly: ["package.json", "tsconfig.json"]
+
+  - id: reviewer
+    name: "Code Reviewer"
+    role: reviewer
+    cli: claude
+    reportsTo: lead
+
+# ── Steps (Ordered Workflow Stages) ───────────────────────────────────────────
+# Steps define the execution flow. Supports sequential, parallel (via dependsOn),
+# and DAG-based scheduling.
+steps:
+  - id: plan
+    agent: lead
+    prompt: |
+      Analyze this feature request and create a development plan:
+      {{task}}
+
+      Output:
+      - Acceptance criteria
+      - Files to modify
+      - Test requirements
+    expects: "PLAN_COMPLETE"            # Signal that marks step as done
+    maxRetries: 2
+
+  - id: implement
+    agent: developer
+    dependsOn: [plan]                   # Runs after plan completes
+    prompt: |
+      Implement the following plan:
+      {{steps.plan.output}}
+    expects: "IMPLEMENTATION_COMPLETE"
+    verify:                             # Post-step verification commands
+      - command: "npm run build"
+        expectExit: 0
+      - command: "npm test"
+        expectExit: 0
+
+  - id: review
+    agent: reviewer
+    dependsOn: [implement]
+    prompt: |
+      Review the implementation:
+      {{steps.implement.output}}
+
+      Check for: code quality, security issues, test coverage.
+    expects: "REVIEW_COMPLETE"
+
+  - id: finalize
+    agent: lead
+    dependsOn: [review]
+    prompt: |
+      Finalize based on review feedback:
+      {{steps.review.output}}
+    expects: "DONE"
+
+# ── Reflection Configuration ──────────────────────────────────────────────────
+reflection:
+  enabled: true
+  threshold: 10                         # Messages before reflection triggers
+  reflector: lead                       # Which agent reflects (default: lead or SDK)
+  # Convention injected into the reflector's prompt:
+  prompt: |
+    Pause and reflect on worker progress:
+    1. Are workers aligned with the plan?
+    2. Is anyone stuck or duplicating effort?
+    3. Should the strategy change?
+    Send "REFLECT: <your synthesis>" to the workflow channel.
+
+# ── Trajectory Configuration ──────────────────────────────────────────────────
+trajectory:
+  enabled: true
+  agentName: "workflow-orchestrator"
+  autoRecordMessages: true
+  autoRecordReflections: true
+
+# ── Coordination ──────────────────────────────────────────────────────────────
+coordination:
+  mode: dag                             # sequential | parallel | dag
+  barriers:
+    - id: implementation-done
+      waitFor: [developer]
+      signal: "IMPLEMENTATION_COMPLETE"
+      timeout: "10m"
+
+# ── Options ───────────────────────────────────────────────────────────────────
+options:
+  timeout: "15m"                        # Workflow-wide timeout
+  channel: "workflow-{{id}}"            # Channel template
+  shadow:                               # Optional shadow/reviewer for all agents
+    cli: claude
+    task: "Review all code changes for security issues"
+
+# ── Error Handling ────────────────────────────────────────────────────────────
+errorHandling:
+  maxRetries: 3
+  retryDelay: "5s"
+  escalateTo: lead
+  onFailure: pause                      # pause | abort | continue
+```
+
+### Template Variables
+
+YAML workflows support template interpolation:
+
+| Variable | Description | Available In |
+|----------|-------------|-------------|
+| `{{task}}` | The task string passed at runtime | All step prompts |
+| `{{id}}` | Auto-generated workflow run ID | channel, names |
+| `{{steps.<id>.output}}` | DONE summary from a previous step | Steps with `dependsOn` |
+| `{{git.diff}}` | Current git diff | Any step prompt |
+| `{{git.branch}}` | Current git branch | Any step prompt |
+| `{{agents.<id>.name}}` | Agent display name | Any step prompt |
+
+### Parallel Steps via DAG
+
+Steps without `dependsOn` pointing to each other run in parallel:
+
+```yaml
+steps:
+  - id: setup
+    agent: lead
+    prompt: "Create the project scaffold"
+    expects: "SCAFFOLD_READY"
+
+  # These two run in parallel after setup:
+  - id: frontend
+    agent: fe-dev
+    dependsOn: [setup]
+    prompt: "Build the frontend: {{steps.setup.output}}"
+    expects: "FRONTEND_DONE"
+
+  - id: backend
+    agent: be-dev
+    dependsOn: [setup]
+    prompt: "Build the backend: {{steps.setup.output}}"
+    expects: "BACKEND_DONE"
+
+  # This waits for both:
+  - id: integration
+    agent: lead
+    dependsOn: [frontend, backend]
+    prompt: "Integrate frontend and backend: {{steps.frontend.output}} + {{steps.backend.output}}"
+    expects: "DONE"
+```
+
+### Built-In Templates
+
+Users can reference built-in templates with minimal config:
+
+```yaml
+# Minimal — just reference the template
+version: "1.0"
+name: my-feature
+template: feature-dev
+
+# Override specific settings
+overrides:
+  agents.developer.cli: codex
+  steps.plan.maxRetries: 5
+  options.timeout: "30m"
+```
+
+| Template | Pattern | Agents | Steps |
+|----------|---------|--------|-------|
+| `feature-dev` | hub-spoke | lead, developer, reviewer | plan → implement → review → finalize |
+| `bug-fix` | hub-spoke | lead, investigator, fixer | investigate → fix → verify |
+| `code-review` | fan-out | reviewer x N | analyze (parallel) → report |
+| `security-audit` | pipeline | scanner, analyst, fixer, verifier | scan → prioritize → fix → verify |
+| `refactor` | pipeline | analyst, planner, implementer | analyze → plan → execute |
+| `brainstorm` | mesh | peer x N | open-ended exploration |
+
+### Loading YAML Workflows
+
+```ts
+import { loadWorkflow, runWorkflow } from "@agent-relay/sdk-ts/workflows";
+
+// Load from file
+const workflow = await loadWorkflow(".relay/workflows/feature-dev.yaml");
+
+// Run with a task
+const run = runWorkflow(workflow, "Add user authentication with OAuth2", {
+  // Runtime overrides (merged with YAML config)
+  timeoutMs: 20 * 60_000,
+  onReflect: async (ctx) => { /* custom reflection logic */ },
+});
+
+const result = await run.result;
+```
+
+### TypeScript Types for YAML Schema
+
+```ts
+interface YamlWorkflow {
+  version: "1.0";
+  name: string;
+  description?: string;
+  tags?: string[];
+
+  /** Use a built-in template as the base. */
+  template?: string;
+  /** Override specific template settings (dot-notation paths). */
+  overrides?: Record<string, unknown>;
+
+  pattern: "fan-out" | "pipeline" | "hub-spoke" | "consensus" | "mesh";
+
+  agents: YamlAgent[];
+  steps: YamlStep[];
+
+  reflection?: {
+    enabled: boolean;
+    threshold?: number;
+    reflector?: string;
+    prompt?: string;
+  };
+
+  trajectory?: {
+    enabled: boolean;
+    agentName?: string;
+    autoRecordMessages?: boolean;
+    autoRecordReflections?: boolean;
+  };
+
+  coordination?: {
+    mode?: "sequential" | "parallel" | "dag";
+    barriers?: YamlBarrier[];
+  };
+
+  options?: {
+    timeout?: string;
+    channel?: string;
+    shadow?: { cli: AgentCli; task: string };
+  };
+
+  errorHandling?: {
+    maxRetries?: number;
+    retryDelay?: string;
+    escalateTo?: string;
+    onFailure?: "pause" | "abort" | "continue";
+  };
+}
+
+interface YamlAgent {
+  id: string;
+  name?: string;
+  role: "lead" | "worker" | "reviewer" | "voter" | "peer" | "coordinator";
+  cli?: AgentCli;
+  model?: string;
+  reportsTo?: string;
+  constraints?: {
+    fileScope?: { include?: string[]; exclude?: string[] };
+    readOnly?: string[];
+    maxTokens?: number;
+    maxDuration?: string;
+  };
+}
+
+interface YamlStep {
+  id: string;
+  agent: string;
+  prompt: string;
+  dependsOn?: string[];
+  expects?: string;
+  maxRetries?: number;
+  verify?: YamlVerification[];
+}
+
+interface YamlVerification {
+  command: string;
+  expectExit: number;
+  timeout?: string;
+}
+
+interface YamlBarrier {
+  id: string;
+  waitFor: string[];
+  signal?: string;
+  type?: "all" | "any" | "majority";
+  timeout?: string;
+}
+```
+
+### YAML ↔ TypeScript SDK Mapping
+
+The YAML loader converts workflow definitions into SDK calls:
+
+```ts
+async function runWorkflow(
+  workflow: YamlWorkflow,
+  task: string,
+  overrides?: Partial<WorkflowOptions>,
+): WorkflowRun {
+  const options = mergeOptions(workflow, overrides);
+
+  // Pattern mapping
+  switch (workflow.pattern) {
+    case "fan-out":
+      return fanOut(stepsToTasks(workflow, task), options);
+    case "pipeline":
+      return pipeline(stepsToStages(workflow, task), options);
+    case "hub-spoke":
+      return hubAndSpoke({
+        hub: agentToTask(getHub(workflow), task),
+        workers: getWorkers(workflow).map(a => agentToTask(a, task)),
+        ...options,
+      });
+    case "consensus":
+      return consensus({
+        proposal: task,
+        voters: getVoters(workflow).map(a => agentToTask(a, task)),
+        ...options,
+      });
+    case "mesh":
+      return mesh({
+        goal: task,
+        agents: workflow.agents.map(a => agentToTask(a, task)),
+        ...options,
+      });
+  }
+}
+```
+
+### Compatibility with relay.yaml
+
+YAML workflows are designed to work with the relay-cloud `relay.yaml` schema. A workflow defined in `.relay/workflows/feature-dev.yaml` can be referenced from `relay.yaml`:
+
+```yaml
+# .relay/relay.yaml
+swarm:
+  workflow: feature-dev              # References .relay/workflows/feature-dev.yaml
+  agents:
+    developer: codex                 # Override: use Codex for the developer role
+```
+
+Or embedded inline:
+
+```yaml
+# .relay/relay.yaml
+swarm:
+  pattern: hub-spoke
+  agents:
+    - id: lead
+      role: lead
+      cli: claude
+    - id: developer
+      role: worker
+      cli: codex
+      reportsTo: lead
+  workflow:
+    steps:
+      - id: plan
+        agent: lead
+        prompt: "..."
+        expects: "PLAN_COMPLETE"
+  reflection:
+    enabled: true
+    threshold: 10
+  trajectory:
+    enabled: true
+```
+
+The SDK's `loadWorkflow` function resolves both standalone files and relay.yaml-embedded workflows.
+
+---
+
 ## Priority & Scope
 
 ### Phase 1 (This PR)
@@ -740,12 +1560,26 @@ for (const agent of result.agents) {
 - `hubAndSpoke` workflow
 - `consensus` workflow (integrate ConsensusEngine)
 - Shadow integration
+- YAML workflow loader (`loadWorkflow`, `runWorkflow`)
+- YAML schema validation
+- Built-in templates (feature-dev, bug-fix, code-review)
 
 ### Phase 3
 - `mesh` workflow
 - Max rounds / round tracking
+- `ReflectionEngine` — importance scoring, focal points, synthesis
+- REFLECT message protocol
+- Reflection convention injection for hub agents
+- `onReflect` hook
+
+### Phase 4
+- `agent-trajectories` integration
+- Auto-recording of messages, reflections, decisions to trajectory
+- Auto-generated retrospective on workflow completion
+- Trajectory convention injection (trail commands for agents)
 - Workflow composition (nest workflows within workflows)
 - `WorkflowBuilder` fluent API for custom patterns
+- Cross-workflow learning (query past trajectories before planning)
 
 ---
 
@@ -756,3 +1590,21 @@ for (const agent of result.agents) {
 2. **Shared file context** — Should workflows support a `sharedFiles` option that makes certain files available to all agents? This maps to the "Shared Workspace Context" primitive from the swarm report.
 
 3. **Progress tracking** — Should there be a formal PROGRESS message protocol beyond DONE/ACK? E.g., `PROGRESS: 50% — finished auth module`. This would enable live progress bars in the SDK consumer.
+
+4. **Reflection intelligence** — The current `scoreImportance` is heuristic-based (keyword matching). Should we offer an LLM-powered scoring option where an LLM rates message importance 1-10 (matching the Generative Agents approach)? Trade-off: latency + cost vs. accuracy.
+
+5. **`trail reflect` CLI command** — The `agent-trajectories` CLI currently has no `reflect` command. Should we add a `trail reflect "<synthesis>"` command to the trajectories repo so agents can record reflections from the CLI, or is the SDK programmatic API sufficient?
+
+6. **YAML workflow registry** — Should there be a central registry (like npm) for sharing workflow templates? Or is git + `.relay/workflows/` sufficient for now?
+
+7. **relay.yaml convergence** — The relay-cloud [swarm-patterns-spec PR #94](https://github.com/AgentWorkforce/relay-cloud/pull/94) defines a relay.yaml schema. This SDK spec should be the canonical consumer of that schema. Need to ensure the YAML types here stay in sync with relay-cloud's schema definition.
+
+---
+
+## References
+
+- [Generative Agents: Interactive Simulacra of Human Behavior](https://arxiv.org/abs/2304.03442) — Park et al., 2023. Source of the reflection mechanism design.
+- [relay-cloud swarm-patterns-spec PR #94](https://github.com/AgentWorkforce/relay-cloud/pull/94) — YAML schema for relay.yaml swarm configuration.
+- [agent-trajectories](https://github.com/AgentWorkforce/trajectories) — SDK for trajectory recording, v0.4.0.
+- [Antfarm](https://github.com/snarktank/antfarm) — Inspiration for deterministic YAML-based workflow definitions.
+- [swarm-patterns experiment](https://github.com/AgentWorkforce/swarm-patterns) — Prior art on multi-agent coordination patterns.
