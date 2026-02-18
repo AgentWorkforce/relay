@@ -173,6 +173,8 @@ verification:
 
 The `swarm.pattern` field controls how agents are coordinated:
 
+### Core Patterns
+
 | Pattern | Description |
 |---------|-------------|
 | `dag` | Directed acyclic graph — steps run based on dependency edges (default) |
@@ -185,6 +187,43 @@ The `swarm.pattern` field controls how agents are coordinated:
 | `cascade` | Waterfall with phase gates |
 | `debate` | Agents propose and counter-argue |
 | `hierarchical` | Multi-level reporting structure |
+
+### Data Processing Patterns
+
+| Pattern | Description |
+|---------|-------------|
+| `map-reduce` | Split work into chunks (mappers), process in parallel, aggregate results (reducers) |
+| `scatter-gather` | Fan out requests to workers, collect and synthesize responses |
+
+### Supervision & Quality Patterns
+
+| Pattern | Description |
+|---------|-------------|
+| `supervisor` | Monitor agent monitors workers, restarts on failure, manages health |
+| `reflection` | Agent produces output, critic reviews and provides feedback for iteration |
+| `verifier` | Producer agents submit work to verifier agents for validation |
+
+### Adversarial & Validation Patterns
+
+| Pattern | Description |
+|---------|-------------|
+| `red-team` | Attacker agents probe for weaknesses, defender agents respond |
+| `auction` | Auctioneer broadcasts tasks, agents bid based on capability/cost |
+
+### Resilience Patterns
+
+| Pattern | Description |
+|---------|-------------|
+| `escalation` | Start with fast/cheap agents, escalate to more capable on failure |
+| `saga` | Distributed transactions with compensating actions on failure |
+| `circuit-breaker` | Primary agent with fallback chain, fail fast and recover |
+
+### Collaborative Patterns
+
+| Pattern | Description |
+|---------|-------------|
+| `blackboard` | Shared workspace where agents contribute incrementally to a solution |
+| `swarm` | Emergent behavior from simple agent rules (neighbor communication) |
 
 ## Error Handling
 

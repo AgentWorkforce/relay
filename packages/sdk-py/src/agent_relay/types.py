@@ -16,6 +16,19 @@ SwarmPattern = Literal[
     "dag",
     "debate",
     "hierarchical",
+    # Additional patterns
+    "map-reduce",
+    "scatter-gather",
+    "supervisor",
+    "reflection",
+    "red-team",
+    "verifier",
+    "auction",
+    "escalation",
+    "saga",
+    "circuit-breaker",
+    "blackboard",
+    "swarm",
 ]
 
 AgentCli = Literal["claude", "codex", "gemini", "aider", "goose"]
