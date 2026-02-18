@@ -1,0 +1,70 @@
+version: "1.0"
+name: documentation
+description: "Documentation production workflow from research through publication summary."
+swarm:
+  pattern: handoff
+  maxConcurrency: 1
+  timeoutMs: 3000000
+  channel: swarm-documentation
+agents:
+  - name: lead
+    cli: claude
+    role: "Owns final editorial sign-off"
+  - name: researcher
+    cli: codex
+    role: "Collects technical context and source details"
+  - name: writer
+    cli: codex
+    role: "Drafts user-facing documentation"
+  - name: editor
+    cli: claude
+    role: "Edits for accuracy, clarity, and structure"
+workflows:
+  - name: docs-production
+    description: "Gather context, draft docs, edit, and publish summary."
+    onError: skip
+    steps:
+      - name: gather-context
+        agent: researcher
+        task: |
+          Collect source context and required updates:
+          {{task}}
+        verification:
+          type: output_contains
+          value: CONTEXT_COMPLETE
+      - name: draft
+        agent: writer
+        dependsOn: [gather-context]
+        task: |
+          Draft documentation updates based on gathered context.
+        verification:
+          type: output_contains
+          value: DRAFT_COMPLETE
+      - name: edit
+        agent: editor
+        dependsOn: [draft]
+        task: |
+          Edit the draft for technical accuracy and readability.
+        verification:
+          type: output_contains
+          value: EDIT_COMPLETE
+      - name: publish-summary
+        agent: lead
+        dependsOn: [edit]
+        task: |
+          Publish a final summary of documentation changes and open items.
+        verification:
+          type: output_contains
+          value: DONE
+coordination:
+  barriers:
+    - name: docs-ready
+      waitFor: [gather-context, draft, edit]
+      timeoutMs: 600000
+state:
+  backend: memory
+  ttlMs: 259200000
+  namespace: documentation
+errorHandling:
+  strategy: continue
+  notifyChannel: swarm-documentation

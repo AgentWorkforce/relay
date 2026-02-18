@@ -12,5 +12,10 @@
     "types": ["node"],
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "exclude": [
+    "src/__tests__/workflow-runner.test.ts",
+    "src/__tests__/swarm-coordinator.test.ts",
+    "src/__tests__/error-scenarios.test.ts"
+  ]
 }

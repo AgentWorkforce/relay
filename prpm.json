@@ -9,6 +9,24 @@
   "homepage": "https://agent-relay.com",
   "packages": [
     {
+      "name": "choosing-swarm-patterns",
+      "version": "1.0.0",
+      "description": "Use when coordinating multiple AI agents and need to pick the right orchestration pattern - covers 10 patterns (fan-out, pipeline, hub-spoke, consensus, mesh, handoff, cascade, dag, debate, hierarchical) with decision framework and reflection protocol",
+      "format": "claude",
+      "subtype": "skill",
+      "tags": [
+        "multi-agent",
+        "orchestration",
+        "swarm-patterns",
+        "workflow",
+        "coordination",
+        "agent-management"
+      ],
+      "files": [
+        ".claude/skills/choosing-swarm-patterns/SKILL.md"
+      ]
+    },
+    {
       "name": "using-agent-relay",
       "version": "1.1.2",
       "description": "Skill for coordinating multiple AI agents - enables real-time inter-agent messaging via PTY wrapper or file-based inbox system",
