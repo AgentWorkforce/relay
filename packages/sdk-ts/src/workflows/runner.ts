@@ -706,8 +706,9 @@ export class WorkflowRunner {
       }
     }
 
-    // All retries exhausted
+    // All retries exhausted — mark failed and throw so callers can apply error strategy
     await this.markStepFailed(state, lastError ?? 'Unknown error', runId);
+    throw new Error(`Step "${step.name}" failed after ${maxRetries} retries: ${lastError ?? 'Unknown error'}`);
   }
 
   private async spawnAndWait(

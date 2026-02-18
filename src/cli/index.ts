@@ -5485,8 +5485,12 @@ function runScriptFile(filePath: string): void {
       try {
         execFileSync(runner, [resolved], { stdio: 'inherit' });
         return;
-      } catch {
-        // Runner not found, try next
+      } catch (err: any) {
+        // Only try next runner if this one isn't found (ENOENT)
+        // Re-throw if the runner exists but the script failed
+        if (err?.code !== 'ENOENT') {
+          throw err;
+        }
       }
     }
     // Fallback to npx tsx
@@ -5498,8 +5502,12 @@ function runScriptFile(filePath: string): void {
       try {
         execFileSync(runner, [resolved], { stdio: 'inherit' });
         return;
-      } catch {
-        // Runner not found, try next
+      } catch (err: any) {
+        // Only try next runner if this one isn't found (ENOENT)
+        // Re-throw if the runner exists but the script failed
+        if (err?.code !== 'ENOENT') {
+          throw err;
+        }
       }
     }
     throw new Error('Python not found. Install Python 3.10+ to run .py workflow files.');
