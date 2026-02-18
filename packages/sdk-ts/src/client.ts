@@ -34,12 +34,14 @@ export interface SpawnPtyInput {
   cli: string;
   args?: string[];
   channels?: string[];
+  task?: string;
 }
 
 export interface SpawnHeadlessClaudeInput {
   name: string;
   args?: string[];
   channels?: string[];
+  task?: string;
 }
 
 export interface SendMessageInput {
@@ -167,6 +169,7 @@ export class AgentRelayClient {
     };
     const result = await this.requestOk<{ name: string; runtime: AgentRuntime }>("spawn_agent", {
       agent,
+      ...(input.task != null ? { initial_task: input.task } : {}),
     });
     return result;
   }
@@ -183,6 +186,7 @@ export class AgentRelayClient {
     };
     const result = await this.requestOk<{ name: string; runtime: AgentRuntime }>("spawn_agent", {
       agent,
+      ...(input.task != null ? { initial_task: input.task } : {}),
     });
     return result;
   }

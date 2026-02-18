@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { Relay, RelayError, type AgentClient } from "@relaycast/sdk";
+import { RelayCast, RelayError, type AgentClient } from "@relaycast/sdk";
 
 export interface RelaycastCredentials {
   workspace_id: string;
@@ -85,7 +85,7 @@ export class RelaycastApi {
     if (this.agentClient) return this.agentClient;
 
     const apiKey = await this.resolveApiKey();
-    const relay = new Relay({ apiKey, baseUrl: this.baseUrl });
+    const relay = new RelayCast({ apiKey, baseUrl: this.baseUrl });
 
     // Register — retry with a suffixed name on 409 conflict.
     let name = this.agentName;

@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/broker-sdk",
-  "version": "2.3.2",
+  "version": "2.3.4",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -75,7 +75,7 @@
     "typescript": "^5.7.3"
   },
   "dependencies": {
-    "@relaycast/sdk": "^0.2.1",
+    "@relaycast/sdk": "^0.2.5",
     "yaml": "^2.7.0"
   }
 }
