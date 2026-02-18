@@ -359,7 +359,8 @@ async function installRelayPtyBinary() {
 
 /**
  * Get the platform-specific binary name for the broker binary.
- * The broker binary is needed by the SDK (packages/broker-sdk) for programmatic
+ * The broker binary is the Rust-compiled broker (not the Bun-compiled CLI).
+ * It is needed by the SDK (packages/broker-sdk) for programmatic
  * agent orchestration via `new AgentRelay()`.
  * Returns null if platform is not supported.
  */
@@ -377,7 +378,8 @@ function getBrokerBinaryName() {
     return null;
   }
 
-  return `agent-relay-${targetPlatform}-${targetArch}`;
+  // Use the broker-specific release asset name (Rust binary, not Bun CLI)
+  return `agent-relay-broker-${targetPlatform}-${targetArch}`;
 }
 
 /**
@@ -399,12 +401,18 @@ async function installBrokerBinary() {
   const binaryFilename = isWindows ? 'agent-relay.exe' : 'agent-relay';
   const targetPath = path.join(sdkBinDir, binaryFilename);
 
-  // 1. Already installed?
+  // 1. Already installed? Verify it's the Rust broker (supports --name flag)
   if (fs.existsSync(targetPath)) {
     try {
-      execSync(`"${targetPath}" init --help`, { stdio: 'pipe' });
-      info('Broker binary already installed in SDK');
-      return true;
+      const helpOutput = execSync(`"${targetPath}" init --help`, { stdio: 'pipe' }).toString();
+      // The Rust broker shows "--name <NAME>" in init --help
+      // The Bun-compiled Node.js CLI shows "First-time setup wizard"
+      if (helpOutput.includes('--name')) {
+        info('Broker binary already installed in SDK (Rust broker verified)');
+        return true;
+      }
+      // Wrong binary (Bun CLI instead of Rust broker) — reinstall
+      warn('Broker binary exists but is the CLI, not the Rust broker — reinstalling');
     } catch {
       // Binary exists but doesn't work — reinstall
     }
@@ -433,17 +441,19 @@ async function installBrokerBinary() {
     }
   }
 
-  // 3. Dev fallback — check for local Rust build
-  const debugBinary = path.join(pkgRoot, 'target', 'debug', binaryFilename);
-  if (fs.existsSync(debugBinary)) {
-    try {
-      fs.copyFileSync(debugBinary, targetPath);
-      fs.chmodSync(targetPath, 0o755);
-      resignBinaryForMacOS(targetPath);
-      success('Installed broker binary from local Rust debug build');
-      return true;
-    } catch (err) {
-      warn(`Failed to copy debug broker binary: ${err.message}`);
+  // 3. Dev fallback — check for local Rust build (release first, then debug)
+  for (const profile of ['release', 'debug']) {
+    const localBinary = path.join(pkgRoot, 'target', profile, binaryFilename);
+    if (fs.existsSync(localBinary)) {
+      try {
+        fs.copyFileSync(localBinary, targetPath);
+        fs.chmodSync(targetPath, 0o755);
+        resignBinaryForMacOS(targetPath);
+        success(`Installed broker binary from local Rust ${profile} build`);
+        return true;
+      } catch (err) {
+        warn(`Failed to copy ${profile} broker binary: ${err.message}`);
+      }
     }
   }
 

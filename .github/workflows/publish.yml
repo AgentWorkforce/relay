@@ -127,6 +127,64 @@ jobs:
           path: bin/${{ matrix.binary_name }}
           retention-days: 1
 
+  # Build Rust broker binary for all platforms (needed by SDK's AgentRelayClient)
+  build-broker:
+    name: Build broker (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main'
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary_name: agent-relay-broker-darwin-arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            binary_name: agent-relay-broker-darwin-x64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_name: agent-relay-broker-linux-x64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            binary_name: agent-relay-broker-linux-arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools (Linux ARM64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: broker-${{ matrix.target }}
+
+      - name: Build broker binary
+        run: cargo build --release --bin agent-relay --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+      - name: Copy binary with platform name
+        run: |
+          mkdir -p release-binaries
+          cp target/${{ matrix.target }}/release/agent-relay release-binaries/${{ matrix.binary_name }}
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.binary_name }}
+          path: release-binaries/${{ matrix.binary_name }}
+          retention-days: 1
+
   # Build standalone binaries using bun compile (cross-platform, no Node.js required)
   build-standalone:
     name: Build standalone (${{ matrix.target }})
@@ -899,7 +957,7 @@ jobs:
   # Create git tag and release
   create-release:
     name: Create Release
-    needs: [build, build-binaries, build-standalone, build-acp-standalone, verify-binaries, publish-main]
+    needs: [build, build-binaries, build-broker, build-standalone, build-acp-standalone, verify-binaries, publish-main]
     runs-on: ubuntu-latest
     if: |
       always() &&
@@ -938,6 +996,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: relay-acp-*
+          path: release-binaries/
+          merge-multiple: true
+
+      - name: Download broker binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: agent-relay-broker-*
           path: release-binaries/
           merge-multiple: true
 
@@ -1066,6 +1131,13 @@ jobs:
             - `relay-pty-darwin-x64` - macOS Intel
             - `relay-pty-darwin-arm64` - macOS Apple Silicon
 
+            ### Broker binaries (SDK programmatic usage)
+            Rust broker binary for `new AgentRelay()` / workflow orchestration:
+            - `agent-relay-broker-linux-x64` - Linux x86_64
+            - `agent-relay-broker-linux-arm64` - Linux ARM64
+            - `agent-relay-broker-darwin-x64` - macOS Intel
+            - `agent-relay-broker-darwin-arm64` - macOS Apple Silicon
+
             ### relay-acp binaries (Zed editor integration)
             ACP bridge for Zed editor:
             - `relay-acp-linux-x64` - Linux x86_64
@@ -1138,7 +1210,7 @@ jobs:
 
   summary:
     name: Summary
-    needs: [build, build-binaries, build-standalone, build-acp-standalone, verify-binaries, verify-standalone-linux, verify-standalone-macos, verify-acp-linux, verify-acp-macos, publish-packages, publish-main, verify-publish]
+    needs: [build, build-binaries, build-broker, build-standalone, build-acp-standalone, verify-binaries, verify-standalone-linux, verify-standalone-macos, verify-acp-linux, verify-acp-macos, publish-packages, publish-main, verify-publish]
     runs-on: ubuntu-latest
     if: always()
 
