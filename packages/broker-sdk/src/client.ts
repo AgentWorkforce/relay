@@ -117,7 +117,7 @@ export class AgentRelayClient {
       env: options.env ?? process.env,
       requestTimeoutMs: options.requestTimeoutMs ?? 10_000,
       shutdownTimeoutMs: options.shutdownTimeoutMs ?? 3_000,
-      clientName: options.clientName ?? "@agent-relay/sdk-ts",
+      clientName: options.clientName ?? "@agent-relay/broker-sdk",
       clientVersion: options.clientVersion ?? "0.1.0",
     };
   }

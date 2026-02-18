@@ -535,7 +535,7 @@ describe('WorkflowRunner error scenarios', () => {
     release: vi.fn(),
   };
 
-  vi.mock('@agent-relay/sdk-ts/relay', () => ({
+  vi.mock('@agent-relay/broker-sdk/relay', () => ({
     AgentRelay: vi.fn().mockImplementation(() => ({
       spawnPty: vi.fn().mockResolvedValue(mockAgent),
       human: vi.fn().mockReturnValue({ sendMessage: vi.fn() }),

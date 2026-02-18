@@ -436,7 +436,7 @@ state:
 
 ## Schema Validation
 
-A JSON Schema is available at `packages/sdk-ts/src/workflows/schema.json` for editor autocompletion and validation of `relay.yaml` files.
+A JSON Schema is available at `packages/broker-sdk/src/workflows/schema.json` for editor autocompletion and validation of `relay.yaml` files.
 
 ## Requirements
 

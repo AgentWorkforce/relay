@@ -6,7 +6,7 @@
  *
  * @example
  * ```ts
- * import { AgentRelay } from "@agent-relay/sdk-ts";
+ * import { AgentRelay } from "@agent-relay/broker-sdk";
  *
  * const relay = new AgentRelay();
  *

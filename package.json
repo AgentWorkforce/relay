@@ -25,44 +25,44 @@
     },
     "./package.json": "./package.json",
     "./broker": {
-      "types": "./packages/sdk-ts/dist/index.d.ts",
-      "import": "./packages/sdk-ts/dist/index.js",
-      "default": "./packages/sdk-ts/dist/index.js"
+      "types": "./packages/broker-sdk/dist/index.d.ts",
+      "import": "./packages/broker-sdk/dist/index.js",
+      "default": "./packages/broker-sdk/dist/index.js"
     },
     "./broker/client": {
-      "types": "./packages/sdk-ts/dist/client.d.ts",
-      "import": "./packages/sdk-ts/dist/client.js",
-      "default": "./packages/sdk-ts/dist/client.js"
+      "types": "./packages/broker-sdk/dist/client.d.ts",
+      "import": "./packages/broker-sdk/dist/client.js",
+      "default": "./packages/broker-sdk/dist/client.js"
     },
     "./broker/protocol": {
-      "types": "./packages/sdk-ts/dist/protocol.d.ts",
-      "import": "./packages/sdk-ts/dist/protocol.js",
-      "default": "./packages/sdk-ts/dist/protocol.js"
+      "types": "./packages/broker-sdk/dist/protocol.d.ts",
+      "import": "./packages/broker-sdk/dist/protocol.js",
+      "default": "./packages/broker-sdk/dist/protocol.js"
     },
     "./broker/relay": {
-      "types": "./packages/sdk-ts/dist/relay.d.ts",
-      "import": "./packages/sdk-ts/dist/relay.js",
-      "default": "./packages/sdk-ts/dist/relay.js"
+      "types": "./packages/broker-sdk/dist/relay.d.ts",
+      "import": "./packages/broker-sdk/dist/relay.js",
+      "default": "./packages/broker-sdk/dist/relay.js"
     },
     "./broker/logs": {
-      "types": "./packages/sdk-ts/dist/logs.d.ts",
-      "import": "./packages/sdk-ts/dist/logs.js",
-      "default": "./packages/sdk-ts/dist/logs.js"
+      "types": "./packages/broker-sdk/dist/logs.d.ts",
+      "import": "./packages/broker-sdk/dist/logs.js",
+      "default": "./packages/broker-sdk/dist/logs.js"
     },
     "./broker/consensus": {
-      "types": "./packages/sdk-ts/dist/consensus.d.ts",
-      "import": "./packages/sdk-ts/dist/consensus.js",
-      "default": "./packages/sdk-ts/dist/consensus.js"
+      "types": "./packages/broker-sdk/dist/consensus.d.ts",
+      "import": "./packages/broker-sdk/dist/consensus.js",
+      "default": "./packages/broker-sdk/dist/consensus.js"
     },
     "./broker/shadow": {
-      "types": "./packages/sdk-ts/dist/shadow.d.ts",
-      "import": "./packages/sdk-ts/dist/shadow.js",
-      "default": "./packages/sdk-ts/dist/shadow.js"
+      "types": "./packages/broker-sdk/dist/shadow.d.ts",
+      "import": "./packages/broker-sdk/dist/shadow.js",
+      "default": "./packages/broker-sdk/dist/shadow.js"
     },
     "./broker/browser": {
-      "types": "./packages/sdk-ts/dist/browser.d.ts",
-      "import": "./packages/sdk-ts/dist/browser.js",
-      "default": "./packages/sdk-ts/dist/browser.js"
+      "types": "./packages/broker-sdk/dist/browser.d.ts",
+      "import": "./packages/broker-sdk/dist/browser.js",
+      "default": "./packages/broker-sdk/dist/browser.js"
     }
   },
   "bin": {
@@ -119,7 +119,7 @@
     "build:daemon": "cd packages/daemon && npm run build",
     "build:sdk": "cd packages/sdk && npm run build",
     "build:spawner": "cd packages/spawner && npm run build",
-    "build:broker-sdk": "cd packages/sdk-ts && npm run build",
+    "build:broker-sdk": "cd packages/broker-sdk && npm run build",
     "build:telemetry": "cd packages/telemetry && npm run build",
     "build:cjs": "node ./scripts/build-cjs.mjs",
     "postbuild": "chmod +x dist/src/cli/index.js && npm run build:cjs",
