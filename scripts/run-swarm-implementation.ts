@@ -18,7 +18,6 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { AgentRelayClient } from "../packages/sdk-ts/dist/client.js";
-import { getLogs } from "../packages/sdk-ts/dist/logs.js";
 import type { BrokerEvent } from "../packages/sdk-ts/dist/protocol.js";
 
 // ── Configuration ──────────────────────────────────────────────────────────
@@ -108,8 +107,12 @@ async function ensureClient(): Promise<AgentRelayClient> {
 }
 
 /**
- * Watch for DONE or ERROR in agent logs + broker events.
- * Uses both event listener (real-time) and log polling (fallback).
+ * Watch for DONE or ERROR via broker events.
+ *
+ * Listens for:
+ * - worker_stream: PTY output from the agent (accumulates chunks, scans for DONE/ERROR)
+ * - relay_inbound: Relay messages from the agent
+ * - agent_exited: Agent process terminated
  */
 function watchForDone(
   agentName: string,
@@ -117,58 +120,57 @@ function watchForDone(
 ): Promise<{ status: "completed" | "failed"; output: string }> {
   return new Promise((resolve) => {
     let resolved = false;
+    // Accumulate worker_stream chunks to detect DONE/ERROR across chunk boundaries
+    let streamBuffer = "";
+
     const finish = (status: "completed" | "failed", output: string) => {
       if (resolved) return;
       resolved = true;
-      clearInterval(pollInterval);
       clearTimeout(timeoutHandle);
       if (unsubscribe) unsubscribe();
       resolve({ status, output });
     };
 
-    // Listen for broker events (agent_exited, message with DONE/ERROR)
-    const unsubscribe = client.onEvent((event: BrokerEvent) => {
-      if (resolved) return;
-      if (event.kind === "agent_exited" && event.agent === agentName) {
-        finish("failed", "Agent exited without sending DONE");
-      }
-      if (event.kind === "message_sent" && event.from === agentName) {
-        const text = (event as unknown as { text: string }).text ?? "";
-        const doneMatch = text.match(/^DONE:\s*(.+)/ms);
-        if (doneMatch) {
-          finish("completed", doneMatch[1].trim());
-          return;
-        }
-        const errorMatch = text.match(/^ERROR:\s*(.+)/ms);
-        if (errorMatch) {
-          finish("failed", errorMatch[1].trim());
-        }
-      }
-    });
-
-    // Poll logs as fallback (events may not contain full message text)
-    const pollInterval = setInterval(async () => {
-      if (resolved) return;
-      const result = await getLogs(agentName, { lines: 200 });
-      if (!result.found || !result.content) return;
-
-      const doneMatch = result.content.match(/^DONE:\s*(.+)/ms);
+    const checkForSignal = (text: string) => {
+      const doneMatch = text.match(/DONE:\s*(.+)/ms);
       if (doneMatch) {
         finish("completed", doneMatch[1].trim());
-        return;
+        return true;
       }
-      const errorMatch = result.content.match(/^ERROR:\s*(.+)/ms);
+      const errorMatch = text.match(/ERROR:\s*(.+)/ms);
       if (errorMatch) {
         finish("failed", errorMatch[1].trim());
+        return true;
+      }
+      return false;
+    };
+
+    const unsubscribe = client.onEvent((event: BrokerEvent) => {
+      if (resolved) return;
+
+      // Agent process exited
+      if (event.kind === "agent_exited" && event.name === agentName) {
+        // Check buffer one last time before declaring failure
+        if (!checkForSignal(streamBuffer)) {
+          finish("failed", "Agent exited without sending DONE");
+        }
         return;
       }
 
-      // Check if agent disappeared (after initial grace period)
-      const agents = await client.listAgents();
-      if (!agents.some((a) => a.name === agentName)) {
-        finish("failed", "Agent exited without sending DONE");
+      // PTY output stream — accumulate and scan
+      if (event.kind === "worker_stream" && event.name === agentName) {
+        streamBuffer += event.chunk;
+        // Only scan last portion to avoid re-scanning entire buffer
+        const tail = streamBuffer.slice(-5000);
+        checkForSignal(tail);
+        return;
       }
-    }, 5000);
+
+      // Relay message from this agent
+      if (event.kind === "relay_inbound" && event.from === agentName) {
+        checkForSignal(event.body);
+      }
+    });
 
     const timeoutHandle = setTimeout(() => {
       finish("failed", `Timed out after ${timeoutMs / 60_000}m`);
