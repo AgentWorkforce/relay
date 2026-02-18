@@ -5459,4 +5459,38 @@ program
     }
   });
 
+// run - Execute a relay.yaml workflow
+import { runWorkflow } from '@agent-relay/broker-sdk/workflows';
+import type { WorkflowEvent } from '@agent-relay/broker-sdk/workflows';
+
+program
+  .command('run')
+  .description('Run a relay.yaml workflow file')
+  .argument('<yaml-path>', 'Path to the relay.yaml workflow file')
+  .option('-w, --workflow <name>', 'Run a specific workflow by name (default: first)')
+  .action(async (yamlPath: string, options: { workflow?: string }) => {
+    try {
+      console.log(`Running workflow from ${yamlPath}...`);
+      const result = await runWorkflow(yamlPath, {
+        workflow: options.workflow,
+        onEvent(event: WorkflowEvent) {
+          const prefix = event.type.startsWith('run:') ? '[run]' : '[step]';
+          const name = 'stepName' in event ? `${event.stepName} ` : '';
+          const status = event.type.split(':')[1];
+          const detail = 'error' in event ? `: ${event.error}` : '';
+          console.log(`${prefix} ${name}${status}${detail}`);
+        },
+      });
+      if (result.status === 'completed') {
+        console.log('\nWorkflow completed successfully.');
+      } else {
+        console.error(`\nWorkflow ${result.status}${result.error ? `: ${result.error}` : ''}`);
+        process.exit(1);
+      }
+    } catch (err: any) {
+      console.error(`Error: ${err.message}`);
+      process.exit(1);
+    }
+  });
+
 program.parse();

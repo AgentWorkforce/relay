@@ -11,6 +11,7 @@ import path from 'node:path';
 
 import { parse as parseYaml } from 'yaml';
 
+import { InMemoryWorkflowDb } from './memory-db.js';
 import type {
   AgentCli,
   AgentDefinition,
@@ -63,8 +64,8 @@ export type WorkflowEventListener = (event: WorkflowEvent) => void;
 // ── Runner options ──────────────────────────────────────────────────────────
 
 export interface WorkflowRunnerOptions {
-  db: WorkflowDb;
-  workspaceId: string;
+  db?: WorkflowDb;
+  workspaceId?: string;
   relay?: AgentRelayOptions;
   cwd?: string;
   summaryDir?: string;
@@ -98,9 +99,9 @@ export class WorkflowRunner {
   private pauseResolver?: () => void;
   private listeners: WorkflowEventListener[] = [];
 
-  constructor(options: WorkflowRunnerOptions) {
-    this.db = options.db;
-    this.workspaceId = options.workspaceId;
+  constructor(options: WorkflowRunnerOptions = {}) {
+    this.db = options.db ?? new InMemoryWorkflowDb();
+    this.workspaceId = options.workspaceId ?? 'local';
     this.relayOptions = options.relay ?? {};
     this.cwd = options.cwd ?? process.cwd();
     this.summaryDir = options.summaryDir ?? path.join(this.cwd, '.relay', 'summaries');

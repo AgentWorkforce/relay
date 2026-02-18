@@ -1,5 +1,7 @@
 export * from "./types.js";
 export * from "./runner.js";
+export * from "./memory-db.js";
+export * from "./run.js";
 export * from "./coordinator.js";
 export * from "./barrier.js";
 export * from "./state.js";
