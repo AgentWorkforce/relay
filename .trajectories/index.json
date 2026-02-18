@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-02-17T09:46:45.345Z",
+  "lastUpdated": "2026-02-18T13:05:09.384Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -295,6 +295,19 @@
       "startedAt": "2026-02-17T09:40:00.984Z",
       "completedAt": "2026-02-17T09:46:45.258Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-02/traj_ci9y9vd7tzxq.json"
+    },
+    "traj_4blqophly998": {
+      "title": "templates node: add workflow YAML templates and TemplateRegistry for relay-cloud PR #94",
+      "status": "completed",
+      "startedAt": "2026-02-18T12:32:50.772Z",
+      "completedAt": "2026-02-18T12:40:57.139Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-sdk-workflows/.trajectories/completed/2026-02/traj_4blqophly998.json"
+    },
+    "traj_cg4ihv6ph68u": {
+      "title": "Implement templates node for relay-cloud PR #94",
+      "status": "active",
+      "startedAt": "2026-02-18T13:05:09.363Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-sdk-workflows/.trajectories/active/traj_cg4ihv6ph68u.json"
     }
   }
 }

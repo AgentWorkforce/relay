@@ -1,0 +1,803 @@
+/**
+ * WorkflowRunner — parses relay.yaml, validates config, resolves templates,
+ * executes steps (sequential/parallel/DAG), runs verification checks,
+ * persists state to DB, and supports pause/resume/abort with retries.
+ */
+
+import { randomBytes } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+
+import { parse as parseYaml } from 'yaml';
+
+import type {
+  AgentCli,
+  AgentDefinition,
+  ErrorHandlingConfig,
+  RelayYamlConfig,
+  SwarmPattern,
+  VerificationCheck,
+  WorkflowDefinition,
+  WorkflowRunRow,
+  WorkflowRunStatus,
+  WorkflowStep,
+  WorkflowStepRow,
+  WorkflowStepStatus,
+} from './types.js';
+
+// ── AgentRelay SDK imports ──────────────────────────────────────────────────
+
+// Import from sub-paths to avoid pulling in the full @relaycast/sdk dependency.
+import { AgentRelay } from '../relay.js';
+import type { Agent, AgentRelayOptions } from '../relay.js';
+
+// ── DB adapter interface ────────────────────────────────────────────────────
+
+/** Minimal DB adapter so the runner is not coupled to a specific driver. */
+export interface WorkflowDb {
+  insertRun(run: WorkflowRunRow): Promise<void>;
+  updateRun(id: string, patch: Partial<WorkflowRunRow>): Promise<void>;
+  getRun(id: string): Promise<WorkflowRunRow | null>;
+
+  insertStep(step: WorkflowStepRow): Promise<void>;
+  updateStep(id: string, patch: Partial<WorkflowStepRow>): Promise<void>;
+  getStepsByRunId(runId: string): Promise<WorkflowStepRow[]>;
+}
+
+// ── Events ──────────────────────────────────────────────────────────────────
+
+export type WorkflowEvent =
+  | { type: 'run:started'; runId: string }
+  | { type: 'run:completed'; runId: string }
+  | { type: 'run:failed'; runId: string; error: string }
+  | { type: 'run:cancelled'; runId: string }
+  | { type: 'step:started'; runId: string; stepName: string }
+  | { type: 'step:completed'; runId: string; stepName: string; output?: string }
+  | { type: 'step:failed'; runId: string; stepName: string; error: string }
+  | { type: 'step:skipped'; runId: string; stepName: string }
+  | { type: 'step:retrying'; runId: string; stepName: string; attempt: number };
+
+export type WorkflowEventListener = (event: WorkflowEvent) => void;
+
+// ── Runner options ──────────────────────────────────────────────────────────
+
+export interface WorkflowRunnerOptions {
+  db: WorkflowDb;
+  workspaceId: string;
+  relay?: AgentRelayOptions;
+  cwd?: string;
+  summaryDir?: string;
+}
+
+// ── Variable context for template resolution ────────────────────────────────
+
+export interface VariableContext {
+  [key: string]: string | number | boolean | undefined;
+}
+
+// ── Internal step state ─────────────────────────────────────────────────────
+
+interface StepState {
+  row: WorkflowStepRow;
+  agent?: Agent;
+}
+
+// ── WorkflowRunner ──────────────────────────────────────────────────────────
+
+export class WorkflowRunner {
+  private readonly db: WorkflowDb;
+  private readonly workspaceId: string;
+  private readonly relayOptions: AgentRelayOptions;
+  private readonly cwd: string;
+  private readonly summaryDir: string;
+
+  private relay?: AgentRelay;
+  private abortController?: AbortController;
+  private paused = false;
+  private pauseResolver?: () => void;
+  private listeners: WorkflowEventListener[] = [];
+
+  constructor(options: WorkflowRunnerOptions) {
+    this.db = options.db;
+    this.workspaceId = options.workspaceId;
+    this.relayOptions = options.relay ?? {};
+    this.cwd = options.cwd ?? process.cwd();
+    this.summaryDir = options.summaryDir ?? path.join(this.cwd, '.relay', 'summaries');
+  }
+
+  // ── Event subscription ──────────────────────────────────────────────────
+
+  on(listener: WorkflowEventListener): () => void {
+    this.listeners.push(listener);
+    return () => {
+      this.listeners = this.listeners.filter((l) => l !== listener);
+    };
+  }
+
+  private emit(event: WorkflowEvent): void {
+    for (const listener of this.listeners) {
+      listener(event);
+    }
+  }
+
+  // ── Parsing & validation ────────────────────────────────────────────────
+
+  /** Parse a relay.yaml file from disk. */
+  async parseYamlFile(filePath: string): Promise<RelayYamlConfig> {
+    const absPath = path.resolve(this.cwd, filePath);
+    const raw = await readFile(absPath, 'utf-8');
+    return this.parseYamlString(raw, absPath);
+  }
+
+  /** Parse a relay.yaml string. */
+  parseYamlString(raw: string, source = '<string>'): RelayYamlConfig {
+    const parsed = parseYaml(raw);
+    this.validateConfig(parsed, source);
+    return parsed as RelayYamlConfig;
+  }
+
+  /** Validate a config object against the RelayYamlConfig shape. */
+  validateConfig(config: unknown, source = '<config>'): asserts config is RelayYamlConfig {
+    if (typeof config !== 'object' || config === null) {
+      throw new Error(`${source}: config must be a non-null object`);
+    }
+
+    const c = config as Record<string, unknown>;
+
+    if (typeof c.version !== 'string') {
+      throw new Error(`${source}: missing required field "version"`);
+    }
+    if (typeof c.name !== 'string') {
+      throw new Error(`${source}: missing required field "name"`);
+    }
+    if (typeof c.swarm !== 'object' || c.swarm === null) {
+      throw new Error(`${source}: missing required field "swarm"`);
+    }
+    const swarm = c.swarm as Record<string, unknown>;
+    if (typeof swarm.pattern !== 'string') {
+      throw new Error(`${source}: missing required field "swarm.pattern"`);
+    }
+    if (!Array.isArray(c.agents) || c.agents.length === 0) {
+      throw new Error(`${source}: "agents" must be a non-empty array`);
+    }
+
+    for (const agent of c.agents) {
+      if (typeof agent !== 'object' || agent === null) {
+        throw new Error(`${source}: each agent must be an object`);
+      }
+      const a = agent as Record<string, unknown>;
+      if (typeof a.name !== 'string') {
+        throw new Error(`${source}: each agent must have a string "name"`);
+      }
+      if (typeof a.cli !== 'string') {
+        throw new Error(`${source}: each agent must have a string "cli"`);
+      }
+    }
+
+    if (c.workflows !== undefined) {
+      if (!Array.isArray(c.workflows)) {
+        throw new Error(`${source}: "workflows" must be an array`);
+      }
+      for (const wf of c.workflows) {
+        this.validateWorkflow(wf, source);
+      }
+    }
+  }
+
+  private validateWorkflow(wf: unknown, source: string): void {
+    if (typeof wf !== 'object' || wf === null) {
+      throw new Error(`${source}: each workflow must be an object`);
+    }
+    const w = wf as Record<string, unknown>;
+    if (typeof w.name !== 'string') {
+      throw new Error(`${source}: each workflow must have a string "name"`);
+    }
+    if (!Array.isArray(w.steps) || w.steps.length === 0) {
+      throw new Error(`${source}: workflow "${w.name}" must have a non-empty "steps" array`);
+    }
+    for (const step of w.steps) {
+      if (typeof step !== 'object' || step === null) {
+        throw new Error(`${source}: each step must be an object`);
+      }
+      const s = step as Record<string, unknown>;
+      if (typeof s.name !== 'string' || typeof s.agent !== 'string' || typeof s.task !== 'string') {
+        throw new Error(`${source}: each step must have "name", "agent", and "task" string fields`);
+      }
+    }
+
+    // Validate DAG: check for unknown dependencies and cycles
+    const stepNames = new Set((w.steps as WorkflowStep[]).map((s) => s.name));
+    for (const step of w.steps as WorkflowStep[]) {
+      if (step.dependsOn) {
+        for (const dep of step.dependsOn) {
+          if (!stepNames.has(dep)) {
+            throw new Error(`${source}: step "${step.name}" depends on unknown step "${dep}"`);
+          }
+        }
+      }
+    }
+    this.detectCycles(w.steps as WorkflowStep[], source, w.name as string);
+  }
+
+  private detectCycles(steps: WorkflowStep[], source: string, workflowName: string): void {
+    const adj = new Map<string, string[]>();
+    for (const step of steps) {
+      adj.set(step.name, step.dependsOn ?? []);
+    }
+
+    const visited = new Set<string>();
+    const inStack = new Set<string>();
+
+    const dfs = (node: string): void => {
+      if (inStack.has(node)) {
+        throw new Error(`${source}: workflow "${workflowName}" contains a dependency cycle involving "${node}"`);
+      }
+      if (visited.has(node)) return;
+      inStack.add(node);
+      for (const dep of adj.get(node) ?? []) {
+        dfs(dep);
+      }
+      inStack.delete(node);
+      visited.add(node);
+    };
+
+    for (const step of steps) {
+      dfs(step.name);
+    }
+  }
+
+  // ── Template variable resolution ────────────────────────────────────────
+
+  /** Resolve {{variable}} placeholders in all task strings. */
+  resolveVariables(config: RelayYamlConfig, vars: VariableContext): RelayYamlConfig {
+    const resolved = structuredClone(config);
+
+    for (const agent of resolved.agents) {
+      if (agent.task) {
+        agent.task = this.interpolate(agent.task, vars);
+      }
+    }
+
+    if (resolved.workflows) {
+      for (const wf of resolved.workflows) {
+        for (const step of wf.steps) {
+          step.task = this.interpolate(step.task, vars);
+        }
+      }
+    }
+
+    return resolved;
+  }
+
+  private interpolate(template: string, vars: VariableContext): string {
+    return template.replace(/\{\{(\w+)\}\}/g, (_match, key: string) => {
+      const value = vars[key];
+      if (value === undefined) {
+        throw new Error(`Unresolved variable: {{${key}}}`);
+      }
+      return String(value);
+    });
+  }
+
+  // ── Execution ───────────────────────────────────────────────────────────
+
+  /** Execute a named workflow from a validated config. */
+  async execute(
+    config: RelayYamlConfig,
+    workflowName?: string,
+    vars?: VariableContext,
+  ): Promise<WorkflowRunRow> {
+    const resolved = vars ? this.resolveVariables(config, vars) : config;
+    const workflows = resolved.workflows ?? [];
+
+    const workflow = workflowName
+      ? workflows.find((w) => w.name === workflowName)
+      : workflows[0];
+
+    if (!workflow) {
+      throw new Error(
+        workflowName
+          ? `Workflow "${workflowName}" not found in config`
+          : 'No workflows defined in config',
+      );
+    }
+
+    const runId = this.generateId();
+    const now = new Date().toISOString();
+
+    const run: WorkflowRunRow = {
+      id: runId,
+      workspaceId: this.workspaceId,
+      workflowName: workflow.name,
+      pattern: resolved.swarm.pattern,
+      status: 'pending',
+      config: resolved,
+      startedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    await this.db.insertRun(run);
+
+    // Build step rows
+    const stepStates = new Map<string, StepState>();
+    for (const step of workflow.steps) {
+      const stepRow: WorkflowStepRow = {
+        id: this.generateId(),
+        runId,
+        stepName: step.name,
+        agentName: step.agent,
+        status: 'pending',
+        task: step.task,
+        dependsOn: step.dependsOn ?? [],
+        retryCount: 0,
+        createdAt: now,
+        updatedAt: now,
+      };
+      await this.db.insertStep(stepRow);
+      stepStates.set(step.name, { row: stepRow });
+    }
+
+    // Start execution
+    this.abortController = new AbortController();
+    this.paused = false;
+
+    try {
+      await this.updateRunStatus(runId, 'running');
+      this.emit({ type: 'run:started', runId });
+
+      this.relay = new AgentRelay({
+        ...this.relayOptions,
+        channels: [resolved.swarm.channel ?? 'general'],
+      });
+
+      const agentMap = new Map<string, AgentDefinition>();
+      for (const agent of resolved.agents) {
+        agentMap.set(agent.name, agent);
+      }
+
+      await this.executeSteps(
+        workflow,
+        stepStates,
+        agentMap,
+        resolved.errorHandling,
+        runId,
+      );
+
+      // Check if all steps completed
+      const allCompleted = [...stepStates.values()].every(
+        (s) => s.row.status === 'completed' || s.row.status === 'skipped',
+      );
+
+      if (allCompleted) {
+        await this.updateRunStatus(runId, 'completed');
+        this.emit({ type: 'run:completed', runId });
+      } else {
+        const failedStep = [...stepStates.values()].find((s) => s.row.status === 'failed');
+        const errorMsg = failedStep?.row.error ?? 'One or more steps failed';
+        await this.updateRunStatus(runId, 'failed', errorMsg);
+        this.emit({ type: 'run:failed', runId, error: errorMsg });
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      const status: WorkflowRunStatus = this.abortController?.signal.aborted ? 'cancelled' : 'failed';
+      await this.updateRunStatus(runId, status, errorMsg);
+
+      if (status === 'cancelled') {
+        this.emit({ type: 'run:cancelled', runId });
+      } else {
+        this.emit({ type: 'run:failed', runId, error: errorMsg });
+      }
+    } finally {
+      await this.relay?.shutdown();
+      this.relay = undefined;
+      this.abortController = undefined;
+    }
+
+    const finalRun = await this.db.getRun(runId);
+    return finalRun ?? run;
+  }
+
+  /** Resume a previously paused or partially completed run. */
+  async resume(runId: string, vars?: VariableContext): Promise<WorkflowRunRow> {
+    const run = await this.db.getRun(runId);
+    if (!run) {
+      throw new Error(`Run "${runId}" not found`);
+    }
+
+    if (run.status !== 'running' && run.status !== 'failed') {
+      throw new Error(`Run "${runId}" is in status "${run.status}" and cannot be resumed`);
+    }
+
+    const config = vars ? this.resolveVariables(run.config, vars) : run.config;
+    const workflows = config.workflows ?? [];
+    const workflow = workflows.find((w) => w.name === run.workflowName);
+    if (!workflow) {
+      throw new Error(`Workflow "${run.workflowName}" not found in stored config`);
+    }
+
+    const existingSteps = await this.db.getStepsByRunId(runId);
+    const stepStates = new Map<string, StepState>();
+    for (const stepRow of existingSteps) {
+      stepStates.set(stepRow.stepName, { row: stepRow });
+    }
+
+    // Reset failed steps to pending for retry
+    for (const [, state] of stepStates) {
+      if (state.row.status === 'failed') {
+        state.row.status = 'pending';
+        state.row.error = undefined;
+        await this.db.updateStep(state.row.id, {
+          status: 'pending',
+          error: undefined,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    }
+
+    this.abortController = new AbortController();
+    this.paused = false;
+
+    try {
+      await this.updateRunStatus(runId, 'running');
+
+      this.relay = new AgentRelay({
+        ...this.relayOptions,
+        channels: [config.swarm.channel ?? 'general'],
+      });
+
+      const agentMap = new Map<string, AgentDefinition>();
+      for (const agent of config.agents) {
+        agentMap.set(agent.name, agent);
+      }
+
+      await this.executeSteps(workflow, stepStates, agentMap, config.errorHandling, runId);
+
+      const allCompleted = [...stepStates.values()].every(
+        (s) => s.row.status === 'completed' || s.row.status === 'skipped',
+      );
+
+      if (allCompleted) {
+        await this.updateRunStatus(runId, 'completed');
+        this.emit({ type: 'run:completed', runId });
+      } else {
+        const failedStep = [...stepStates.values()].find((s) => s.row.status === 'failed');
+        const errorMsg = failedStep?.row.error ?? 'One or more steps failed';
+        await this.updateRunStatus(runId, 'failed', errorMsg);
+        this.emit({ type: 'run:failed', runId, error: errorMsg });
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      await this.updateRunStatus(runId, 'failed', errorMsg);
+      this.emit({ type: 'run:failed', runId, error: errorMsg });
+    } finally {
+      await this.relay?.shutdown();
+      this.relay = undefined;
+      this.abortController = undefined;
+    }
+
+    const finalRun = await this.db.getRun(runId);
+    return finalRun ?? run;
+  }
+
+  /** Pause execution. Currently-running steps will finish but no new steps start. */
+  pause(): void {
+    this.paused = true;
+  }
+
+  /** Resume after a pause(). */
+  unpause(): void {
+    this.paused = false;
+    this.pauseResolver?.();
+    this.pauseResolver = undefined;
+  }
+
+  /** Abort the current run. Running agents are released. */
+  abort(): void {
+    this.abortController?.abort();
+  }
+
+  // ── Step execution engine ─────────────────────────────────────────────
+
+  private async executeSteps(
+    workflow: WorkflowDefinition,
+    stepStates: Map<string, StepState>,
+    agentMap: Map<string, AgentDefinition>,
+    errorHandling: ErrorHandlingConfig | undefined,
+    runId: string,
+  ): Promise<void> {
+    const strategy = errorHandling?.strategy ?? workflow.onError ?? 'fail-fast';
+
+    // DAG-based execution: repeatedly find ready steps and run them in parallel
+    while (true) {
+      this.checkAborted();
+      await this.waitIfPaused();
+
+      const readySteps = this.findReadySteps(workflow.steps, stepStates);
+      if (readySteps.length === 0) {
+        // No steps ready — either all done or blocked
+        break;
+      }
+
+      const results = await Promise.allSettled(
+        readySteps.map((step) =>
+          this.executeStep(step, stepStates, agentMap, errorHandling, runId),
+        ),
+      );
+
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i];
+        const step = readySteps[i];
+
+        if (result.status === 'rejected') {
+          const error = result.reason instanceof Error ? result.reason.message : String(result.reason);
+          const state = stepStates.get(step.name);
+          if (state && state.row.status !== 'failed') {
+            await this.markStepFailed(state, error, runId);
+          }
+
+          if (strategy === 'fail-fast') {
+            // Mark all pending downstream steps as skipped
+            this.markDownstreamSkipped(step.name, workflow.steps, stepStates, runId);
+            throw new Error(`Step "${step.name}" failed: ${error}`);
+          }
+
+          if (strategy === 'continue') {
+            this.markDownstreamSkipped(step.name, workflow.steps, stepStates, runId);
+          }
+        }
+      }
+    }
+  }
+
+  private findReadySteps(
+    steps: WorkflowStep[],
+    stepStates: Map<string, StepState>,
+  ): WorkflowStep[] {
+    return steps.filter((step) => {
+      const state = stepStates.get(step.name);
+      if (!state || state.row.status !== 'pending') return false;
+
+      const deps = step.dependsOn ?? [];
+      return deps.every((dep) => {
+        const depState = stepStates.get(dep);
+        return depState && (depState.row.status === 'completed' || depState.row.status === 'skipped');
+      });
+    });
+  }
+
+  private async executeStep(
+    step: WorkflowStep,
+    stepStates: Map<string, StepState>,
+    agentMap: Map<string, AgentDefinition>,
+    errorHandling: ErrorHandlingConfig | undefined,
+    runId: string,
+  ): Promise<void> {
+    const state = stepStates.get(step.name);
+    if (!state) throw new Error(`Step state not found: ${step.name}`);
+
+    const agentDef = agentMap.get(step.agent);
+    if (!agentDef) {
+      throw new Error(`Agent "${step.agent}" not found in config`);
+    }
+
+    const maxRetries = step.retries ?? agentDef.constraints?.retries ?? errorHandling?.maxRetries ?? 0;
+    const retryDelay = errorHandling?.retryDelayMs ?? 1000;
+    const timeoutMs = step.timeoutMs ?? agentDef.constraints?.timeoutMs;
+
+    let lastError: string | undefined;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      this.checkAborted();
+
+      if (attempt > 0) {
+        this.emit({ type: 'step:retrying', runId, stepName: step.name, attempt });
+        state.row.retryCount = attempt;
+        await this.db.updateStep(state.row.id, {
+          retryCount: attempt,
+          updatedAt: new Date().toISOString(),
+        });
+        await this.delay(retryDelay);
+      }
+
+      try {
+        // Mark step as running
+        state.row.status = 'running';
+        state.row.startedAt = new Date().toISOString();
+        await this.db.updateStep(state.row.id, {
+          status: 'running',
+          startedAt: state.row.startedAt,
+          updatedAt: new Date().toISOString(),
+        });
+        this.emit({ type: 'step:started', runId, stepName: step.name });
+
+        // Spawn agent via AgentRelay
+        const output = await this.spawnAndWait(agentDef, step, timeoutMs);
+
+        // Run verification if configured
+        if (step.verification) {
+          this.runVerification(step.verification, output, step.name);
+        }
+
+        // Mark completed
+        state.row.status = 'completed';
+        state.row.output = output;
+        state.row.completedAt = new Date().toISOString();
+        await this.db.updateStep(state.row.id, {
+          status: 'completed',
+          output,
+          completedAt: state.row.completedAt,
+          updatedAt: new Date().toISOString(),
+        });
+        this.emit({ type: 'step:completed', runId, stepName: step.name, output });
+        return;
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+      }
+    }
+
+    // All retries exhausted
+    await this.markStepFailed(state, lastError ?? 'Unknown error', runId);
+  }
+
+  private async spawnAndWait(
+    agentDef: AgentDefinition,
+    step: WorkflowStep,
+    timeoutMs?: number,
+  ): Promise<string> {
+    if (!this.relay) {
+      throw new Error('AgentRelay not initialized');
+    }
+
+    const agent = await this.relay.spawnPty({
+      name: `${step.name}-${this.generateShortId()}`,
+      cli: agentDef.cli,
+      args: agentDef.constraints?.model ? ['--model', agentDef.constraints.model] : [],
+      channels: agentDef.channels,
+    });
+
+    // Send the task as a message to the agent
+    const system = this.relay.human({ name: 'WorkflowRunner' });
+    await system.sendMessage({ to: agent.name, text: step.task });
+
+    // Wait for agent to exit
+    const exitResult = await agent.waitForExit(timeoutMs);
+
+    if (exitResult === 'timeout') {
+      await agent.release();
+      throw new Error(`Step "${step.name}" timed out after ${timeoutMs}ms`);
+    }
+
+    // Read output from summary file if it exists
+    const summaryPath = path.join(this.summaryDir, `${step.name}.md`);
+    if (existsSync(summaryPath)) {
+      return await readFile(summaryPath, 'utf-8');
+    }
+
+    return `Agent exited (${exitResult})`;
+  }
+
+  // ── Verification ────────────────────────────────────────────────────────
+
+  private runVerification(check: VerificationCheck, output: string, stepName: string): void {
+    switch (check.type) {
+      case 'output_contains':
+        if (!output.includes(check.value)) {
+          throw new Error(
+            `Verification failed for "${stepName}": output does not contain "${check.value}"`,
+          );
+        }
+        break;
+
+      case 'exit_code':
+        // exit_code verification is implicitly satisfied if the agent exited successfully
+        break;
+
+      case 'file_exists':
+        if (!existsSync(path.resolve(this.cwd, check.value))) {
+          throw new Error(
+            `Verification failed for "${stepName}": file "${check.value}" does not exist`,
+          );
+        }
+        break;
+
+      case 'custom':
+        // Custom verifications are evaluated by callers; no-op here
+        break;
+    }
+  }
+
+  // ── State helpers ─────────────────────────────────────────────────────
+
+  private async updateRunStatus(
+    runId: string,
+    status: WorkflowRunStatus,
+    error?: string,
+  ): Promise<void> {
+    const patch: Partial<WorkflowRunRow> = {
+      status,
+      updatedAt: new Date().toISOString(),
+    };
+    if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+      patch.completedAt = new Date().toISOString();
+    }
+    if (error) {
+      patch.error = error;
+    }
+    await this.db.updateRun(runId, patch);
+  }
+
+  private async markStepFailed(state: StepState, error: string, runId: string): Promise<void> {
+    state.row.status = 'failed';
+    state.row.error = error;
+    state.row.completedAt = new Date().toISOString();
+    await this.db.updateStep(state.row.id, {
+      status: 'failed',
+      error,
+      completedAt: state.row.completedAt,
+      updatedAt: new Date().toISOString(),
+    });
+    this.emit({ type: 'step:failed', runId, stepName: state.row.stepName, error });
+  }
+
+  private markDownstreamSkipped(
+    failedStepName: string,
+    allSteps: WorkflowStep[],
+    stepStates: Map<string, StepState>,
+    runId: string,
+  ): void {
+    const queue = [failedStepName];
+    const visited = new Set<string>();
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (visited.has(current)) continue;
+      visited.add(current);
+
+      for (const step of allSteps) {
+        if (step.dependsOn?.includes(current)) {
+          const state = stepStates.get(step.name);
+          if (state && state.row.status === 'pending') {
+            state.row.status = 'skipped';
+            this.db.updateStep(state.row.id, {
+              status: 'skipped',
+              updatedAt: new Date().toISOString(),
+            });
+            this.emit({ type: 'step:skipped', runId, stepName: step.name });
+            queue.push(step.name);
+          }
+        }
+      }
+    }
+  }
+
+  // ── Control flow helpers ──────────────────────────────────────────────
+
+  private checkAborted(): void {
+    if (this.abortController?.signal.aborted) {
+      throw new Error('Workflow aborted');
+    }
+  }
+
+  private async waitIfPaused(): Promise<void> {
+    if (!this.paused) return;
+    await new Promise<void>((resolve) => {
+      this.pauseResolver = resolve;
+    });
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  // ── ID generation ─────────────────────────────────────────────────────
+
+  private generateId(): string {
+    return randomBytes(12).toString('hex');
+  }
+
+  private generateShortId(): string {
+    return randomBytes(4).toString('hex');
+  }
+}

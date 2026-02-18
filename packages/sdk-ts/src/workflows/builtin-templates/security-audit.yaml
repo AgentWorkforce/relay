@@ -1,0 +1,84 @@
+version: "1.0"
+name: security-audit
+description: "Structured security assessment pipeline from scan through verification."
+swarm:
+  pattern: pipeline
+  maxConcurrency: 1
+  timeoutMs: 5400000
+  channel: swarm-security-audit
+agents:
+  - name: lead
+    cli: claude
+    role: "Owns final risk sign-off and recommendations"
+  - name: scanner
+    cli: codex
+    role: "Performs static and dependency security scanning"
+  - name: analyst
+    cli: claude
+    role: "Prioritizes findings and recommends mitigations"
+  - name: remediator
+    cli: codex
+    role: "Implements approved remediations"
+  - name: verifier
+    cli: gemini
+    role: "Verifies fixes and residual exposure"
+workflows:
+  - name: audit-pipeline
+    description: "Scan, triage, remediate, verify, and report security posture."
+    onError: fail
+    steps:
+      - name: scan
+        agent: scanner
+        task: |
+          Execute security scan and summarize high-confidence findings:
+          {{task}}
+        verification:
+          type: output_contains
+          value: SCAN_COMPLETE
+      - name: triage
+        agent: analyst
+        dependsOn: [scan]
+        task: |
+          Prioritize findings by severity and exploitability:
+          {{steps.scan.output}}
+        verification:
+          type: output_contains
+          value: TRIAGE_COMPLETE
+      - name: remediate
+        agent: remediator
+        dependsOn: [triage]
+        task: |
+          Implement mitigations for approved findings:
+          {{steps.triage.output}}
+        retries: 1
+        verification:
+          type: output_contains
+          value: REMEDIATION_COMPLETE
+      - name: verify
+        agent: verifier
+        dependsOn: [remediate]
+        task: |
+          Re-test security posture and confirm mitigations hold.
+        verification:
+          type: output_contains
+          value: VERIFICATION_COMPLETE
+      - name: report
+        agent: lead
+        dependsOn: [verify]
+        task: |
+          Produce final audit report with residual risk and next actions.
+        verification:
+          type: output_contains
+          value: DONE
+coordination:
+  barriers:
+    - name: audit-complete
+      waitFor: [scan, triage, remediate, verify]
+      timeoutMs: 1200000
+state:
+  backend: memory
+  ttlMs: 86400000
+  namespace: security-audit
+errorHandling:
+  strategy: fail-fast
+  notifyChannel: swarm-security-audit

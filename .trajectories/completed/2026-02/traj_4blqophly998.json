@@ -1,0 +1,65 @@
+{
+  "id": "traj_4blqophly998",
+  "version": 1,
+  "task": {
+    "title": "templates node: add workflow YAML templates and TemplateRegistry for relay-cloud PR #94"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-18T12:32:50.772Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-02-18T12:40:57.055Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_8z47qffhcyxf",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-02-18T12:40:57.055Z",
+      "events": [
+        {
+          "ts": 1771418457058,
+          "type": "decision",
+          "content": "Modeled built-in templates using RelayYamlConfig schema: Modeled built-in templates using RelayYamlConfig schema",
+          "raw": {
+            "question": "Modeled built-in templates using RelayYamlConfig schema",
+            "chosen": "Modeled built-in templates using RelayYamlConfig schema",
+            "alternatives": [],
+            "reasoning": "shared-types defines the canonical cloud relay.yaml structure and keeps templates schema-compatible"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1771418457096,
+          "type": "decision",
+          "content": "Implemented TemplateRegistry overrides with dot-path traversal + array lookup by name/id: Implemented TemplateRegistry overrides with dot-path traversal + array lookup by name/id",
+          "raw": {
+            "question": "Implemented TemplateRegistry overrides with dot-path traversal + array lookup by name/id",
+            "chosen": "Implemented TemplateRegistry overrides with dot-path traversal + array lookup by name/id",
+            "alternatives": [],
+            "reasoning": "supports practical overrides like agents.developer.cli and steps.plan.retries across template styles"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-18T12:40:57.139Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay-sdk-workflows",
+  "tags": [],
+  "_trace": {
+    "startRef": "7937eb9e8407e1b2c0e55b631c835a6664c2f373",
+    "endRef": "7937eb9e8407e1b2c0e55b631c835a6664c2f373"
+  },
+  "completedAt": "2026-02-18T12:40:57.139Z",
+  "retrospective": {
+    "summary": "Added six built-in YAML templates plus TemplateRegistry with built-in/custom loading, shorthand resolution, overrides, and external template install. Wrote .relay/summaries/templates.md and sent summary to #swarm-impl.",
+    "approach": "Standard approach",
+    "confidence": 0.88
+  }
+}

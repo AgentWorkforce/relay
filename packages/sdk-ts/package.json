@@ -44,6 +44,11 @@
       "types": "./dist/browser.d.ts",
       "import": "./dist/browser.js",
       "default": "./dist/browser.js"
+    },
+    "./workflows": {
+      "types": "./dist/workflows/index.d.ts",
+      "import": "./dist/workflows/index.js",
+      "default": "./dist/workflows/index.js"
     }
   },
   "files": [

@@ -229,22 +229,74 @@ Reflection is event-driven (importance-weighted accumulation), not timer-based. 
 | Cascade without confidence parsing | Agents don't report confidence | Convention injection handles this |
 | Hierarchical for 3 agents | Management overhead exceeds benefit | Use hub-spoke for small teams |
 
-## DAG Executor Pitfalls
+## DAG Executor — Proven Pattern
 
-These apply specifically to implementing DAG-based workflows with the broker SDK:
+The recommended architecture for DAG workflow execution, validated on a 9-node / 5-wave production run.
 
-| Pitfall | Why It Matters | Fix |
-|---------|---------------|-----|
-| **Thin DONE messages** | Downstream agents only get the DONE summary, not actual code. A "Created types" message is useless for the DB migration agent. | Require DONE messages to include key signatures, file paths, and interface definitions. Use convention injection to enforce this. |
-| **Promise.race in batch execution** | If one node in a batch completes but others later fail, errors aren't caught until the next loop iteration. | Use `Promise.allSettled` for each batch. Process all results before dispatching new nodes. |
-| **No --resume support** | If the orchestrator crashes mid-DAG, all progress is lost. Agents re-run from scratch. | Persist `completed` set and `depsOutput` to a JSON file after each node. On restart, skip completed nodes. |
-| **No downstream failure propagation** | When a node fails, its dependents stay in "ready" limbo. The DAG loop detects deadlock but doesn't explain why. | Immediately mark all transitive dependents as "blocked" when a node fails. Report them in the summary. |
-| **Agents don't read existing code** | Agents write code that doesn't match project conventions (wrong import style, different error handling patterns). | Add `readFirst` to each DAG node specifying 2-3 files the agent must read before writing. Include in convention injection. |
-| **No resolved guard in polling** | The DONE message check interval and timeout can both fire, resolving the promise twice. | Add a `resolved` boolean flag. Check it in both the interval callback and timeout callback before resolving. |
-| **PTY prompt echo matches signals** | Task prompts containing `DONE:` or `ERROR:` get rendered in the PTY stream. Regex scanning matches the template text before the agent does any work, causing instant false "completion". | Never put signal keywords in task prompts. Use `agent_exited` as the completion signal. Have agents write summary files instead of relying on output parsing. |
-| **Assuming agent capabilities** | Convention injection told agents to "use the relay send tool" but spawned PTY agents are standalone processes without MCP tools. Agent gets stuck trying to do something it can't. | Only instruct agents to use capabilities they actually have: file I/O and CLI tools. Use summary files (`.relay/summaries/{nodeId}.md`) for structured output, not relay messages. |
-| **Rust broker vs Node.js CLI confusion** | `AgentRelayClient` expects the Rust broker binary (`init --name --channels`), but `agent-relay` on PATH is the Node.js CLI with a different `init` command. Same binary name, different behavior. | Always specify `binaryPath` pointing to `target/debug/agent-relay` (Rust). Build with `cargo build` first. Use unique broker names to avoid Relaycast 409 conflicts. |
-| **Log polling assumes Node.js daemon** | `getLogs()` reads `.agent-relay/worker-logs/` which the Node.js CLI writes. The Rust broker doesn't write these files. Polling finds nothing forever. | Use broker events (`agent_exited`, `worker_stream`) instead of log file polling when using `AgentRelayClient` directly. Or use summary files. |
+### Agent Completion: Detect → Release → Collect
+
+**This is the critical pattern.** Claude Code agents don't auto-exit — the orchestrator must detect completion and release them.
+
+```
+Agent writes summary file → Orchestrator polls (5s) → Detects new mtime →
+  Reads summary → Calls client.release(agent) → agent_exited fires → Node marked complete
+```
+
+**Implementation:**
+```ts
+// Track initial mtime to distinguish new writes from stale files
+let initialMtime = 0;
+try { initialMtime = statSync(summaryPath).mtimeMs; } catch {}
+
+// Poll for summary file every 5s
+const poll = setInterval(() => {
+  const stat = statSync(summaryPath);
+  if (stat.mtimeMs > initialMtime) {
+    const content = readFileSync(summaryPath, "utf-8").trim();
+    await client.release(agentName); // triggers agent_exited
+    finish("completed", content);
+  }
+}, 5_000);
+```
+
+**Convention injection tells agents to:**
+1. Send summary via **Relaycast MCP** (`mcp__relaycast__send` to channel) for inter-agent communication
+2. Write summary to `.relay/summaries/{nodeId}.md` as the completion signal
+3. Include file paths, type names, method signatures — downstream agents depend on this
+
+### Communication: Relaycast MCP
+
+Agents communicate through the Relaycast MCP, not file-based protocols:
+- **Channel messages:** `mcp__relaycast__send` with channel name
+- **Direct messages:** `mcp__relaycast__dm` with agent name
+- Claude Code agents inherit `.mcp.json` config and have full MCP access
+- Other CLIs (codex, aider) may not have MCP — use summary files as fallback
+
+### State & Resume
+
+Persist state after every node completion for crash recovery:
+```ts
+saveState(completed, depsOutput, results, startTime);
+// Restart with --resume to skip completed nodes
+```
+
+**Pitfall:** When resuming, only load `completed` nodes — never load `failed` entries, or downstream will be permanently blocked.
+
+### Pitfalls Reference
+
+| Category | Pitfall | Fix |
+|----------|---------|-----|
+| **Completion** | Waiting for `agent_exited` without releasing — agents idle until timeout | Poll for summary file, release agent when detected |
+| **Completion** | No resolved guard — poll interval and timeout both fire, double-resolve | `resolved` boolean flag checked before every resolve |
+| **Signals** | PTY prompt echo matches signal keywords (`DONE:`, `ERROR:`) causing false completion | Never put signal keywords in task prompts; use file-based signals |
+| **Summaries** | Thin summaries ("Created types") useless for downstream agents | Convention injection requires file paths, signatures, key exports |
+| **Execution** | `Promise.race` in batch — one success masks later failures | `Promise.allSettled` for each batch |
+| **Resilience** | No `--resume` — orchestrator crash loses all progress | Persist completed set + depsOutput after each node |
+| **Resilience** | No downstream failure propagation — dependents stuck in limbo | Mark all transitive dependents as "blocked" on failure |
+| **Convention** | Agents don't read existing code — output doesn't match project patterns | `readFirst` field per node, included in convention injection |
+| **Capabilities** | Assuming all CLIs have MCP tools — codex/aider may not | Check CLI capabilities; use summary files as fallback for non-Claude CLIs |
+| **Infrastructure** | Rust broker vs Node.js CLI binary confusion (same name, different behavior) | Always set explicit `binaryPath`; use unique broker names to avoid 409 conflicts |
+| **Infrastructure** | `getLogs()` assumes Node.js daemon log files — Rust broker doesn't write them | Use broker events or summary files, not log file polling |
 
 ## YAML Workflow Definition
 
