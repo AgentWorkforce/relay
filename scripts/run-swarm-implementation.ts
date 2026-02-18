@@ -96,6 +96,7 @@ let client: AgentRelayClient;
 async function ensureClient(): Promise<AgentRelayClient> {
   if (!client) {
     client = await AgentRelayClient.start({
+      binaryPath: new URL("../target/debug/agent-relay", import.meta.url).pathname,
       channels: [WORKFLOW_CHANNEL],
       clientName: "swarm-dag-executor",
     });
