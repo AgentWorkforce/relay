@@ -42,7 +42,7 @@ import path from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import readline from 'node:readline';
 import { promisify } from 'node:util';
-import { exec, execSync, spawn as spawnProcess } from 'node:child_process';
+import { exec, execFileSync, execSync, spawn as spawnProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 
@@ -5459,32 +5459,81 @@ program
     }
   });
 
-// run - Execute a relay.yaml workflow
+// run - Execute a workflow file (YAML, TypeScript, or Python)
 import { runWorkflow } from '@agent-relay/broker-sdk/workflows';
 import type { WorkflowEvent } from '@agent-relay/broker-sdk/workflows';
+function logWorkflowEvent(event: WorkflowEvent): void {
+  const prefix = event.type.startsWith('run:') ? '[run]' : '[step]';
+  const name = 'stepName' in event ? `${event.stepName} ` : '';
+  const status = event.type.split(':')[1];
+  const detail = 'error' in event ? `: ${event.error}` : '';
+  console.log(`${prefix} ${name}${status}${detail}`);
+}
+
+function runScriptFile(filePath: string): void {
+  const resolved = path.resolve(filePath);
+  if (!fs.existsSync(resolved)) {
+    throw new Error(`File not found: ${resolved}`);
+  }
+
+  const ext = path.extname(resolved).toLowerCase();
+
+  if (ext === '.ts' || ext === '.tsx') {
+    // Try tsx first, then ts-node, then npx tsx
+    const runners = ['tsx', 'ts-node'];
+    for (const runner of runners) {
+      try {
+        execFileSync(runner, [resolved], { stdio: 'inherit' });
+        return;
+      } catch {
+        // Runner not found, try next
+      }
+    }
+    // Fallback to npx tsx
+    execFileSync('npx', ['tsx', resolved], { stdio: 'inherit' });
+  } else if (ext === '.py') {
+    // Try python3 first, then python
+    const runners = ['python3', 'python'];
+    for (const runner of runners) {
+      try {
+        execFileSync(runner, [resolved], { stdio: 'inherit' });
+        return;
+      } catch {
+        // Runner not found, try next
+      }
+    }
+    throw new Error('Python not found. Install Python 3.10+ to run .py workflow files.');
+  } else {
+    throw new Error(`Unsupported file type: ${ext}. Use .yaml, .yml, .ts, or .py`);
+  }
+}
 
 program
   .command('run')
-  .description('Run a relay.yaml workflow file')
-  .argument('<yaml-path>', 'Path to the relay.yaml workflow file')
-  .option('-w, --workflow <name>', 'Run a specific workflow by name (default: first)')
-  .action(async (yamlPath: string, options: { workflow?: string }) => {
+  .description('Run a workflow file (YAML, TypeScript, or Python)')
+  .argument('<file>', 'Path to workflow file (.yaml, .yml, .ts, or .py)')
+  .option('-w, --workflow <name>', 'Run a specific workflow by name (default: first, YAML only)')
+  .action(async (filePath: string, options: { workflow?: string }) => {
     try {
-      console.log(`Running workflow from ${yamlPath}...`);
-      const result = await runWorkflow(yamlPath, {
-        workflow: options.workflow,
-        onEvent(event: WorkflowEvent) {
-          const prefix = event.type.startsWith('run:') ? '[run]' : '[step]';
-          const name = 'stepName' in event ? `${event.stepName} ` : '';
-          const status = event.type.split(':')[1];
-          const detail = 'error' in event ? `: ${event.error}` : '';
-          console.log(`${prefix} ${name}${status}${detail}`);
-        },
-      });
-      if (result.status === 'completed') {
-        console.log('\nWorkflow completed successfully.');
+      const ext = path.extname(filePath).toLowerCase();
+
+      if (ext === '.yaml' || ext === '.yml') {
+        console.log(`Running workflow from ${filePath}...`);
+        const result = await runWorkflow(filePath, {
+          workflow: options.workflow,
+          onEvent: logWorkflowEvent,
+        });
+        if (result.status === 'completed') {
+          console.log('\nWorkflow completed successfully.');
+        } else {
+          console.error(`\nWorkflow ${result.status}${result.error ? `: ${result.error}` : ''}`);
+          process.exit(1);
+        }
+      } else if (ext === '.ts' || ext === '.tsx' || ext === '.py') {
+        console.log(`Running workflow script ${filePath}...`);
+        runScriptFile(filePath);
       } else {
-        console.error(`\nWorkflow ${result.status}${result.error ? `: ${result.error}` : ''}`);
+        console.error(`Unsupported file type: ${ext}. Use .yaml, .yml, .ts, or .py`);
         process.exit(1);
       }
     } catch (err: any) {
