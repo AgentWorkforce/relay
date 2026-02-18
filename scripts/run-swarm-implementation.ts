@@ -95,8 +95,11 @@ let client: AgentRelayClient;
 
 async function ensureClient(): Promise<AgentRelayClient> {
   if (!client) {
+    // Use a unique broker name to avoid 409 workspace conflict on Relaycast API
+    const brokerName = `swarm-dag-${Date.now().toString(36)}`;
     client = await AgentRelayClient.start({
       binaryPath: new URL("../target/debug/agent-relay", import.meta.url).pathname,
+      brokerName,
       channels: [WORKFLOW_CHANNEL],
       clientName: "swarm-dag-executor",
     });
