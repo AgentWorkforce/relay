@@ -107,23 +107,18 @@ async function ensureClient(): Promise<AgentRelayClient> {
 }
 
 /**
- * Wait for an agent to finish its work.
+ * Wait for an agent to exit, then read its summary file.
  *
- * The agent does its work and exits naturally. We listen for:
- * - relay_inbound: DONE/ERROR relay messages sent by the agent before exiting
- * - agent_exited: Agent process terminated (code 0 = success, else failure)
- *
- * The agent is instructed to send a relay message with its summary before
- * exiting, so downstream agents get dependency context. If it exits without
- * sending one, we treat exit code 0 as success with no summary.
+ * Agents write their summary to .relay/summaries/{nodeId}.md before exiting.
+ * We wait for the agent_exited broker event, then read the file.
  */
 function watchForDone(
   agentName: string,
+  nodeId: string,
   timeoutMs: number,
 ): Promise<{ status: "completed" | "failed"; output: string }> {
   return new Promise((resolve) => {
     let resolved = false;
-    let relaySummary = "";
 
     const finish = (status: "completed" | "failed", output: string) => {
       if (resolved) return;
@@ -136,30 +131,19 @@ function watchForDone(
     const unsubscribe = client.onEvent((event: BrokerEvent) => {
       if (resolved) return;
 
-      // Relay message from this agent — capture DONE/ERROR summary
-      if (event.kind === "relay_inbound" && event.from === agentName) {
-        const doneMatch = event.body.match(/DONE:\s*(.+)/ms);
-        if (doneMatch) {
-          relaySummary = doneMatch[1].trim();
-          // Don't finish yet — wait for agent_exited to confirm clean exit
-          return;
-        }
-        const errorMatch = event.body.match(/ERROR:\s*(.+)/ms);
-        if (errorMatch) {
-          finish("failed", errorMatch[1].trim());
-          return;
-        }
-      }
-
-      // Agent process exited — the definitive completion signal
       if (event.kind === "agent_exited" && event.name === agentName) {
         const code = event.code ?? 1;
-        if (relaySummary) {
-          // Agent sent a DONE relay message before exiting
-          finish("completed", relaySummary);
-        } else if (code === 0) {
-          // Clean exit but no relay summary — still success
-          finish("completed", "(agent exited cleanly, no summary sent)");
+        // Read the summary file the agent should have written
+        const summaryPath = `.relay/summaries/${nodeId}.md`;
+        let summary = "";
+        try {
+          summary = readFileSync(summaryPath, "utf-8").trim();
+        } catch {
+          // No summary file
+        }
+
+        if (code === 0 || summary) {
+          finish("completed", summary || "(completed, no summary file)");
         } else {
           finish("failed", `Agent exited with code ${code}`);
         }
@@ -199,10 +183,9 @@ You are agent **${node.agent.name}** in a DAG workflow implementing relay-cloud 
 **Dependencies:** ${node.dependsOn.length > 0 ? node.dependsOn.join(", ") : "none (root node)"}
 
 ### Protocol
-- Do your assigned task, then send a relay message with your summary.
-- Use the relay send tool: send a message to "#${WORKFLOW_CHANNEL}" starting with "DONE: " followed by a detailed summary of what you created (file paths, type/class names, method signatures).
-- Downstream agents depend on your summary — be specific about interfaces, file paths, and key exports.
-- If you are blocked and cannot complete, send a message starting with "ERROR: " followed by the description.
+- Do your assigned task.
+- When finished, write a summary file to \`.relay/summaries/${node.id}.md\` containing what you created: file paths, type/class names, method signatures, key exports.
+- Downstream agents depend on your summary — be specific.
 - Work only on your assigned task. When done, exit.
 
 ${readFirstSection}
@@ -467,7 +450,7 @@ async function main(): Promise<void> {
       };
     }
 
-    const { status, output } = await watchForDone(node.agent.name, AGENT_TIMEOUT_MS);
+    const { status, output } = await watchForDone(node.agent.name, node.id, AGENT_TIMEOUT_MS);
 
     try {
       await client.release(node.agent.name);
