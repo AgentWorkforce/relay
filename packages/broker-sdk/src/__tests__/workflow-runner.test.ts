@@ -22,7 +22,7 @@ const mockHuman = {
   sendMessage: vi.fn().mockResolvedValue(undefined),
 };
 
-vi.mock('@agent-relay/sdk-ts/relay', () => ({
+vi.mock('@agent-relay/broker-sdk/relay', () => ({
   AgentRelay: vi.fn().mockImplementation(() => ({
     spawnPty: vi.fn().mockResolvedValue(mockAgent),
     human: vi.fn().mockReturnValue(mockHuman),

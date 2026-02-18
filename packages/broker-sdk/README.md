@@ -38,7 +38,7 @@ await client.shutdown();
 ## Tic-tac-toe demo script
 After build, run:
 ```bash
-npm --prefix packages/sdk-ts run example
+npm --prefix packages/broker-sdk run example
 ```
 
 Optional env:
@@ -51,15 +51,15 @@ Optional env:
 ## Integration test
 ```bash
 cargo build
-npm --prefix packages/sdk-ts install
-npm --prefix packages/sdk-ts run build
-AGENT_RELAY_BIN="$(pwd)/target/debug/agent-relay" npm --prefix packages/sdk-ts run test:integration
+npm --prefix packages/broker-sdk install
+npm --prefix packages/broker-sdk run build
+AGENT_RELAY_BIN="$(pwd)/target/debug/agent-relay" npm --prefix packages/broker-sdk run test:integration
 ```
 
 Integration tests require Relaycast credentials in environment (`RELAY_API_KEY`).
 
 ## Package tarball
 ```bash
-npm --prefix packages/sdk-ts pack
+npm --prefix packages/broker-sdk pack
 ```
 The generated tarball includes `dist/` and `bin/agent-relay` (or `bin/agent-relay.exe` on Windows).
