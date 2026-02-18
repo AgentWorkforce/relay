@@ -6,7 +6,8 @@
 
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import path from 'node:path';
 
 import { parse as parseYaml } from 'yaml';
@@ -105,6 +106,75 @@ export class WorkflowRunner {
     this.relayOptions = options.relay ?? {};
     this.cwd = options.cwd ?? process.cwd();
     this.summaryDir = options.summaryDir ?? path.join(this.cwd, '.relay', 'summaries');
+  }
+
+  // ── Relaycast auto-provisioning ────────────────────────────────────────
+
+  /**
+   * Ensure a Relaycast workspace API key is available for the broker.
+   * Resolution order:
+   *   1. RELAY_API_KEY environment variable
+   *   2. Cached credentials at ~/.agent-relay/relaycast.json
+   *   3. Auto-create a new workspace via the Relaycast API
+   */
+  private async ensureRelaycastApiKey(channel: string): Promise<void> {
+    if (process.env.RELAY_API_KEY) return;
+
+    // Check cached credentials
+    const cachePath = path.join(homedir(), '.agent-relay', 'relaycast.json');
+    if (existsSync(cachePath)) {
+      try {
+        const raw = await readFile(cachePath, 'utf-8');
+        const creds = JSON.parse(raw);
+        if (creds.api_key) {
+          process.env.RELAY_API_KEY = creds.api_key;
+          return;
+        }
+      } catch {
+        // Cache corrupt — fall through to auto-create
+      }
+    }
+
+    // Auto-create a Relaycast workspace with a unique name
+    const workspaceName = `relay-${channel}-${randomBytes(4).toString('hex')}`;
+    const baseUrl = process.env.RELAYCAST_BASE_URL ?? 'https://api.relaycast.dev';
+    const res = await fetch(`${baseUrl}/v1/workspaces`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: workspaceName }),
+    });
+
+    if (!res.ok) {
+      throw new Error(
+        `Failed to auto-create Relaycast workspace: ${res.status} ${await res.text()}`,
+      );
+    }
+
+    const body = (await res.json()) as Record<string, any>;
+    const data = (body.data ?? body) as Record<string, any>;
+    const apiKey = data.api_key as string;
+    const workspaceId = (data.workspace_id ?? data.id) as string;
+
+    if (!apiKey) {
+      throw new Error('Relaycast workspace response missing api_key');
+    }
+
+    // Cache credentials for future runs
+    const cacheDir = path.dirname(cachePath);
+    await mkdir(cacheDir, { recursive: true, mode: 0o700 });
+    await writeFile(
+      cachePath,
+      JSON.stringify({
+        workspace_id: workspaceId,
+        api_key: apiKey,
+        agent_id: '',
+        agent_name: null,
+        updated_at: new Date().toISOString(),
+      }),
+      { mode: 0o600 },
+    );
+
+    process.env.RELAY_API_KEY = apiKey;
   }
 
   // ── Event subscription ──────────────────────────────────────────────────
@@ -402,9 +472,12 @@ export class WorkflowRunner {
       await this.updateRunStatus(runId, 'running');
       this.emit({ type: 'run:started', runId });
 
+      const channel = resolved.swarm.channel ?? 'general';
+      await this.ensureRelaycastApiKey(channel);
+
       this.relay = new AgentRelay({
         ...this.relayOptions,
-        channels: [resolved.swarm.channel ?? 'general'],
+        channels: [channel],
       });
 
       const agentMap = new Map<string, AgentDefinition>();
@@ -497,9 +570,12 @@ export class WorkflowRunner {
     try {
       await this.updateRunStatus(runId, 'running');
 
+      const resumeChannel = config.swarm.channel ?? 'general';
+      await this.ensureRelaycastApiKey(resumeChannel);
+
       this.relay = new AgentRelay({
         ...this.relayOptions,
-        channels: [config.swarm.channel ?? 'general'],
+        channels: [resumeChannel],
       });
 
       const agentMap = new Map<string, AgentDefinition>();
