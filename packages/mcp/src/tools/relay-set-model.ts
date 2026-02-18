@@ -49,7 +49,7 @@ export async function handleRelaySetModel(
 ): Promise<string> {
   const { name, model, timeout_ms } = input;
 
-  const result = await client.setWorkerModel(name, model, {
+  const result = await client.setModel(name, model, {
     timeoutMs: timeout_ms,
   });
 

@@ -16,6 +16,16 @@ pub struct AgentSpec {
     pub runtime: AgentRuntime,
     #[serde(default)]
     pub cli: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shadow_of: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shadow_mode: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default)]
@@ -341,6 +351,11 @@ mod tests {
         assert_eq!(spec.name, "Worker3");
         assert_eq!(spec.runtime, AgentRuntime::Pty);
         assert_eq!(spec.cli, None);
+        assert_eq!(spec.model, None);
+        assert_eq!(spec.cwd, None);
+        assert_eq!(spec.team, None);
+        assert_eq!(spec.shadow_of, None);
+        assert_eq!(spec.shadow_mode, None);
         assert!(spec.args.is_empty());
         assert!(spec.channels.is_empty());
     }

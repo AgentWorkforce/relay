@@ -113,7 +113,6 @@
   },
   "dependencies": {
     "@agent-relay/config": "2.3.4",
-    "@agent-relay/protocol": "2.3.4",
     "compare-versions": "^6.1.1"
   },
   "publishConfig": {

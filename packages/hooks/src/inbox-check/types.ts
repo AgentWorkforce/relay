@@ -22,8 +22,8 @@ export interface HookOutput {
 
 /**
  * Parsed message from inbox file.
- * Note: This is different from @agent-relay/protocol's InboxMessage
- * which is for daemon communication.
+ * Note: This is different from the legacy wire-protocol InboxMessage,
+ * which was used for daemon communication.
  */
 export interface ParsedInboxMessage {
   from: string;

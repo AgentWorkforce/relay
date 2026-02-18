@@ -34,6 +34,7 @@ async function runCli(args: string): Promise<{ stdout: string; stderr: string; c
         DOTENV_CONFIG_QUIET: 'true',
         AGENT_RELAY_SKIP_TMUX: '1', // Skip tmux discovery to avoid hangs in CI
         AGENT_RELAY_SKIP_UPDATE_CHECK: '1', // Skip update check in tests
+        AGENT_RELAY_TELEMETRY_DISABLED: '1', // Suppress telemetry notice to keep stdout clean
       },
     });
     return { stdout, stderr, code: 0 };

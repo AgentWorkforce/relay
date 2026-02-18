@@ -11,8 +11,7 @@
 
 import { parseArgs } from 'node:util';
 import { runInstall, validateEditor, getValidEditors } from './install-cli.js';
-import { RelayClient } from '@agent-relay/sdk';
-import { createRelayClientAdapter } from './client-adapter.js';
+import { createRelayClient } from './client-adapter.js';
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
@@ -159,20 +158,12 @@ switch (command) {
           process.exit(1);
         }
 
-        const client = new RelayClient({
-          agentName,
-          socketPath: socketPath || discovery?.socketPath,
-          quiet: values.quiet,
-          reconnect: true,
-        });
-
-        await client.connect();
-
-        const mcpClient = createRelayClientAdapter(client, {
+        const mcpClient = createRelayClient({
           agentName,
           project: discovery?.project,
           projectRoot,
           socketPath: socketPath || discovery?.socketPath,
+          quiet: values.quiet,
         });
 
         await runMCPServer(mcpClient, {

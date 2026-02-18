@@ -6,10 +6,6 @@ export default defineConfig({
     alias: [
       // Use array format with find/replace for better subpath matching
       {
-        find: /^@agent-relay\/protocol\/(.+)$/,
-        replacement: path.resolve(__dirname, './packages/protocol/dist/$1.js'),
-      },
-      {
         find: /^@agent-relay\/config\/(.+)$/,
         replacement: path.resolve(__dirname, './packages/config/dist/$1.js'),
       },
@@ -23,10 +19,6 @@ export default defineConfig({
       },
       // Main package entries (must come after subpath patterns)
       {
-        find: '@agent-relay/protocol',
-        replacement: path.resolve(__dirname, './packages/protocol/dist/index.js'),
-      },
-      {
         find: '@agent-relay/config',
         replacement: path.resolve(__dirname, './packages/config/dist/index.js'),
       },
@@ -35,24 +27,12 @@ export default defineConfig({
         replacement: path.resolve(__dirname, './packages/storage/dist/index.js'),
       },
       {
-        find: '@agent-relay/bridge',
-        replacement: path.resolve(__dirname, './packages/bridge/dist/index.js'),
-      },
-      {
-        find: '@agent-relay/continuity',
-        replacement: path.resolve(__dirname, './packages/continuity/dist/index.js'),
-      },
-      {
         find: '@agent-relay/trajectory',
         replacement: path.resolve(__dirname, './packages/trajectory/dist/index.js'),
       },
       {
         find: '@agent-relay/hooks',
         replacement: path.resolve(__dirname, './packages/hooks/dist/index.js'),
-      },
-      {
-        find: '@agent-relay/state',
-        replacement: path.resolve(__dirname, './packages/state/dist/index.js'),
       },
       {
         find: '@agent-relay/policy',
@@ -67,20 +47,8 @@ export default defineConfig({
         replacement: path.resolve(__dirname, './packages/utils/dist/index.js'),
       },
       {
-        find: '@agent-relay/resiliency',
-        replacement: path.resolve(__dirname, './packages/resiliency/dist/index.js'),
-      },
-      {
         find: '@agent-relay/user-directory',
         replacement: path.resolve(__dirname, './packages/user-directory/dist/index.js'),
-      },
-      {
-        find: '@agent-relay/daemon',
-        replacement: path.resolve(__dirname, './packages/daemon/dist/index.js'),
-      },
-      {
-        find: '@agent-relay/wrapper',
-        replacement: path.resolve(__dirname, './packages/wrapper/dist/index.js'),
       },
     ],
   },

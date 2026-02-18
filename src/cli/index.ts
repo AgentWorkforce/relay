@@ -19,11 +19,8 @@
 
 import { Command } from 'commander';
 import { config as dotenvConfig } from 'dotenv';
-import { Daemon } from '@agent-relay/daemon';
-import { RelayClient } from '@agent-relay/sdk';
-import { RelayPtyOrchestrator, getTmuxPath } from '@agent-relay/wrapper';
-import { AgentSpawner, readWorkersMetadata, getWorkerLogsDir, selectShadowCli, ensureMcpPermissions } from '@agent-relay/bridge';
-import type { SpawnRequest, SpawnResult } from '@agent-relay/bridge';
+import { AgentRelay, AgentRelayClient, createRelaycastClient } from '@agent-relay/broker-sdk';
+
 import { generateAgentName, checkForUpdatesInBackground, checkForUpdates } from '@agent-relay/utils';
 import { getShadowForAgent, getProjectPaths, loadRuntimeConfig } from '@agent-relay/config';
 import { CLI_AUTH_CONFIG, stripAnsiCodes, findMatchingError } from '@agent-relay/config/cli-auth-config';
@@ -473,6 +470,66 @@ function pidFilePathForSocket(socketPath: string): string {
   return `${socketPath}.pid`;
 }
 
+function getTmuxPath(): string {
+  if (process.env.TMUX_PATH && process.env.TMUX_PATH.trim()) {
+    return process.env.TMUX_PATH.trim();
+  }
+  return 'tmux';
+}
+
+function getWorkerLogsDir(projectRoot: string): string {
+  return path.join(projectRoot, '.agent-relay', 'worker-logs');
+}
+
+function ensureMcpPermissions(projectRoot: string, cliType: string, debug = false): void {
+  const normalized = cliType.toLowerCase();
+  const home = process.env.HOME || '';
+  const target = normalized.startsWith('claude')
+    ? path.join(home, '.claude', 'settings.local.json')
+    : normalized.startsWith('cursor') || normalized.startsWith('agent')
+      ? path.join(projectRoot, '.cursor', 'settings.json')
+      : normalized.startsWith('gemini')
+        ? path.join(projectRoot, '.gemini', 'settings.json')
+        : normalized.startsWith('windsurf')
+          ? path.join(projectRoot, '.windsurf', 'settings.json')
+          : null;
+
+  if (!target) {
+    return;
+  }
+
+  try {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    let settings: Record<string, unknown> = {};
+    if (fs.existsSync(target)) {
+      settings = JSON.parse(fs.readFileSync(target, 'utf-8'));
+    }
+
+    if (normalized.startsWith('claude')) {
+      settings.enableAllProjectMcpServers = true;
+    }
+    if (!settings.permissions || typeof settings.permissions !== 'object') {
+      settings.permissions = {};
+    }
+    const permissions = settings.permissions as { allow?: string[] };
+    if (!Array.isArray(permissions.allow)) {
+      permissions.allow = [];
+    }
+    if (!permissions.allow.includes('mcp__agent-relay__*')) {
+      permissions.allow.push('mcp__agent-relay__*');
+    }
+
+    fs.writeFileSync(target, `${JSON.stringify(settings, null, 2)}\n`);
+    if (debug) {
+      console.error(`MCP permissions configured: ${target}`);
+    }
+  } catch (err) {
+    if (debug) {
+      console.error(`Failed to configure MCP permissions: ${(err as Error).message}`);
+    }
+  }
+}
+
 program
   .name('agent-relay')
   .description('Agent-to-agent messaging')
@@ -515,7 +572,7 @@ program
       try {
         const result = installMcpConfig(projectMcpConfigPath, {
           configKey: 'mcpServers',
-          // Set RELAY_SOCKET so MCP server finds daemon regardless of CWD
+          // Keep RELAY_SOCKET compatibility for local tooling.
           env: { RELAY_SOCKET: socketPath },
         });
         if (result.success) {
@@ -546,91 +603,42 @@ program
       }
     }
 
-    // Determine dashboard port for spawn/release API
-    // Priority: CLI flag > env var > auto-detect default port
-    let dashboardPort: number | undefined;
+    const relay = new AgentRelay({
+      binaryPath: process.env.AGENT_RELAY_BIN,
+      channels: ['general'],
+      cwd: paths.projectRoot,
+      env: process.env,
+    });
+
     if (options.dashboardPort) {
-      dashboardPort = parseInt(options.dashboardPort, 10);
-    } else {
-      // Try to detect if dashboard is running at common ports
-      const portsToTry = [
-        parseInt(DEFAULT_DASHBOARD_PORT, 10),
-        3889, 3890, 3891, // Common fallback ports when default is in use
-      ];
-      for (const port of portsToTry) {
-        try {
-          const response = await fetch(`http://localhost:${port}/api/health`, {
-            method: 'GET',
-            signal: AbortSignal.timeout(300), // Quick timeout for detection
-          });
-          if (response.ok) {
-            const health = await response.json() as { status: string };
-            if (health.status === 'healthy') {
-              dashboardPort = port;
-              console.error(`Dashboard detected: http://localhost:${dashboardPort}`);
-              break;
-            }
-          }
-        } catch {
-          // Try next port
-        }
-      }
+      console.error(`Dashboard port hint: ${options.dashboardPort}`);
+    }
+    if (options.prefix) {
+      console.error(`Relay prefix: ${options.prefix}`);
+    }
+    if (options.skipInstructions) {
+      console.error('Instruction injection disabled for create-agent.');
     }
 
-    // Create spawner as fallback for direct spawn (if dashboard API not available)
-    const spawner = new AgentSpawner(paths.projectRoot, undefined, dashboardPort);
-
-    const wrapper = new RelayPtyOrchestrator({
-      name: agentName,
-      command: mainCommand,
-      args: finalArgs,
-      socketPath: paths.socketPath,
-      cwd: paths.projectRoot,
-      relayPrefix: options.prefix,
-      skipInstructions: options.skipInstructions,
-      streamLogs: true,
-      // Use dashboard API for spawn/release when available (preferred - works from any context)
-      dashboardPort,
-      // Wire up spawn/release callbacks as fallback (if no dashboardPort)
-      onSpawn: async (workerName: string, workerCli: string, task: string) => {
-        console.error(`[${agentName}] Spawning ${workerName} (${workerCli})...`);
-        const result = await spawner.spawn({
-          name: workerName,
-          cli: workerCli,
-          task,
-          // No team by default - agents are flat unless team is specified
-        });
-        if (result.success) {
-          console.error(`[${agentName}] ✓ Spawned ${workerName} [pid: ${result.pid}]`);
-        } else {
-          console.error(`[${agentName}] ✗ Failed to spawn ${workerName}: ${result.error}`);
-        }
-      },
-      onRelease: async (workerName: string) => {
-        console.error(`[${agentName}] Releasing ${workerName}...`);
-        const released = await spawner.release(workerName);
-        if (released) {
-          console.error(`[${agentName}] ✓ Released ${workerName}`);
-        } else {
-          console.error(`[${agentName}] ✗ Worker ${workerName} not found`);
-        }
-      },
-    });
-
-    process.on('SIGINT', async () => {
-      await spawner.releaseAll();
-      await wrapper.stop();
-      process.exit(0);
-    });
-
-    await wrapper.start();
+    try {
+      const spawned = await relay.spawnPty({
+        name: agentName,
+        cli: mainCommand,
+        args: finalArgs,
+        channels: ['general'],
+      });
+      console.error(`Primary agent started: ${spawned.name}`);
+    } catch (err: any) {
+      console.error(`Failed to start ${agentName}: ${err?.message || String(err)}`);
+      process.exit(1);
+    }
 
     // Determine shadow configuration - CLI flags take precedence over config file
     type SpeakOnTrigger = 'SESSION_END' | 'CODE_WRITTEN' | 'REVIEW_REQUEST' | 'EXPLICIT_ASK' | 'ALL_MESSAGES';
     let shadowName: string | undefined;
     let shadowRole: string | undefined;
     let speakOn: SpeakOnTrigger[] | undefined;
-    let shadowCli: string | undefined;
+    let configuredShadowCli: string | undefined;
     let shadowPrompt: string | undefined;
 
     const rolePresets: Record<string, SpeakOnTrigger[]> = {
@@ -657,7 +665,7 @@ program
         shadowName = shadowConfig.shadowName;
         shadowRole = shadowConfig.roleName;
         speakOn = shadowConfig.speakOn;
-        shadowCli = shadowConfig.cli;
+        configuredShadowCli = shadowConfig.cli;
         shadowPrompt = shadowConfig.prompt;
         console.error(`Shadow config: ${shadowName} (from .agent-relay.json)`);
       }
@@ -665,48 +673,47 @@ program
 
     // Spawn shadow if configured
     if (shadowName && speakOn) {
-      // Decide how to run the shadow (subagent for Claude/OpenCode primaries)
-      let shadowSelection: Awaited<ReturnType<typeof selectShadowCli>> | null = null;
-      try {
-        shadowSelection = await selectShadowCli(mainCommand, { preferredShadowCli: shadowCli });
-        console.error(
-          `[shadow] Mode: ${shadowSelection.mode} via ${shadowSelection.command || shadowSelection.cli} (primary: ${mainCommand})`
-        );
-      } catch (err: any) {
-        console.error(`[shadow] Shadow CLI selection failed: ${err.message}`);
-      }
-
-      // Subagent mode: do not spawn a separate shadow process
-      if (shadowSelection?.mode === 'subagent') {
-        console.error(
-          `[shadow] ${shadowName} will run as ${shadowSelection.cli} subagent inside ${agentName}; no separate process spawned`
-        );
-        return;
-      }
-
       console.error(`Shadow: ${shadowName} (shadowing ${agentName}, speakOn: ${speakOn.join(',')})`);
-
-      // Wait for primary to register before spawning shadow
-      await new Promise(r => setTimeout(r, 3000));
 
       // Build shadow task prompt
       const defaultPrompt = `You are a shadow agent monitoring "${agentName}". You receive copies of their messages. Your role: ${shadowRole || 'observer'}. Stay passive unless your triggers activate.`;
       const shadowTask = shadowPrompt || defaultPrompt;
-
-      const result = await spawner.spawn({
-        name: shadowName,
-        cli: shadowSelection?.command || shadowCli || mainCommand,
-        task: shadowTask,
-        shadowOf: agentName,
-        shadowSpeakOn: speakOn,
-      });
-
-      if (result.success) {
-        console.error(`Shadow ${shadowName} started [pid: ${result.pid}]`);
-      } else {
-        console.error(`Failed to spawn shadow ${shadowName}: ${result.error}`);
+      try {
+        await relay.spawnPty({
+          name: shadowName,
+          cli: configuredShadowCli || mainCommand,
+          channels: ['general'],
+          task: shadowTask,
+          shadowOf: agentName,
+          shadowMode: 'process',
+        });
+        console.error(`Shadow ${shadowName} started`);
+      } catch (err: any) {
+        console.error(`Failed to spawn shadow ${shadowName}: ${err?.message || String(err)}`);
       }
     }
+
+    const shutdown = async () => {
+      try {
+        const agents = await relay.listAgents();
+        await Promise.all(agents.map((agent) => agent.release().catch(() => undefined)));
+      } catch {
+        // Best effort shutdown.
+      }
+      await relay.shutdown().catch(() => undefined);
+    };
+
+    process.on('SIGINT', async () => {
+      await shutdown();
+      process.exit(0);
+    });
+
+    process.on('SIGTERM', async () => {
+      await shutdown();
+      process.exit(0);
+    });
+
+    await new Promise(() => {});
   });
 
 // up - Start daemon (dashboard disabled by default)
@@ -748,7 +755,7 @@ program
         if (options.zedConfig) args.push('--zed-config', options.zedConfig);
         if (options.zedName) args.push('--zed-name', options.zedName);
 
-        console.log(`[supervisor] Starting daemon...`);
+        console.log(`[supervisor] Starting broker...`);
         child = spawnProcess(process.execPath, [process.argv[1], ...args], {
           stdio: 'inherit',
           env: { ...process.env, AGENT_RELAY_SUPERVISED: '1' },
@@ -769,12 +776,12 @@ program
           }
 
           if (restartTimes.length >= maxRestarts) {
-            console.error(`[supervisor] Daemon crashed ${maxRestarts} times in ${restartWindow / 1000}s, giving up`);
+            console.error(`[supervisor] Broker crashed ${maxRestarts} times in ${restartWindow / 1000}s, giving up`);
             process.exit(1);
           }
 
           const exitReason = signal ? `signal ${signal}` : `code ${code}`;
-          console.log(`[supervisor] Daemon exited (${exitReason}), restarting in 2s... (${restartTimes.length}/${maxRestarts} restarts)`);
+          console.log(`[supervisor] Broker exited (${exitReason}), restarting in 2s... (${restartTimes.length}/${maxRestarts} restarts)`);
           setTimeout(startDaemon, 2000);
         });
       };
@@ -805,8 +812,6 @@ program
 
     const paths = ensureProjectDir();
     const socketPath = paths.socketPath;
-    const dbPath = paths.dbPath;
-    const pidFilePath = pidFilePathForSocket(socketPath);
 
     // Auto-install relay protocol snippets if not already present
     // Check if the snippet marker exists in any of the target files
@@ -871,7 +876,7 @@ program
     }
 
     console.log(`Project: ${paths.projectRoot}`);
-    console.log(`Socket:  ${socketPath}`);
+    console.log(`Socket:  ${socketPath} (compatibility path)`);
 
     // Load teams.json if present
     const teamsConfig = loadTeamsConfig(paths.projectRoot);
@@ -883,21 +888,12 @@ program
     const storageType = options.storage || 'jsonl';
     console.log(`Storage: ${storageType}`);
 
-    const daemon = new Daemon({
-      socketPath,
-      pidFilePath,
-      storagePath: dbPath,
-      storageConfig: { type: storageType },
-      teamDir: paths.teamDir,
-      // Enable protocol-based spawning via SPAWN/RELEASE messages
-      spawnManager: {
-        projectRoot: paths.projectRoot,
-        socketPath,
-      },
+    const relay = new AgentRelay({
+      binaryPath: process.env.AGENT_RELAY_BIN,
+      channels: ['general'],
+      cwd: paths.projectRoot,
+      env: process.env,
     });
-
-    // Create spawner for auto-spawn (will be initialized after dashboard starts)
-    let spawner: InstanceType<typeof AgentSpawner> | null = null;
 
     // Track if we're already shutting down to prevent double-cleanup
     let isShuttingDown = false;
@@ -905,49 +901,44 @@ program
     const gracefulShutdown = async (reason: string): Promise<void> => {
       if (isShuttingDown) return;
       isShuttingDown = true;
-      console.log(`\n[daemon] ${reason}, shutting down...`);
+      console.log(`\n[broker] ${reason}, shutting down...`);
       try {
-        if (spawner) await spawner.releaseAll();
-        await daemon.stop();
+        const agents = await relay.listAgents();
+        await Promise.all(agents.map((agent) => agent.release().catch(() => undefined)));
+        await relay.shutdown();
       } catch (err) {
-        console.error('[daemon] Error during shutdown:', err);
+        console.error('[broker] Error during shutdown:', err);
       }
       process.exit(1);
     };
 
     // Handle uncaught exceptions - log and exit (supervisor will restart)
     process.on('uncaughtException', (err) => {
-      console.error('[daemon] Uncaught exception:', err);
+      console.error('[broker] Uncaught exception:', err);
       gracefulShutdown('Uncaught exception');
     });
 
     // Handle unhandled promise rejections
     process.on('unhandledRejection', (reason, promise) => {
-      console.error('[daemon] Unhandled rejection at:', promise, 'reason:', reason);
+      console.error('[broker] Unhandled rejection at:', promise, 'reason:', reason);
       // Don't exit on unhandled rejections - just log them
       // Most are recoverable (e.g., failed message delivery)
     });
 
     process.on('SIGINT', async () => {
       console.log('\nStopping...');
-      if (spawner) {
-        await spawner.releaseAll();
-      }
-      await daemon.stop();
+      await gracefulShutdown('Received SIGINT');
       process.exit(0);
     });
 
     process.on('SIGTERM', async () => {
-      if (spawner) {
-        await spawner.releaseAll();
-      }
-      await daemon.stop();
+      await gracefulShutdown('Received SIGTERM');
       process.exit(0);
     });
 
     try {
-      await daemon.start();
-      console.log('Daemon started.');
+      await relay.getStatus();
+      console.log('Broker started.');
 
       let dashboardPort: number | undefined = undefined;
 
@@ -965,46 +956,29 @@ program
           const dashboardServer = await import(/* webpackIgnore: true */ moduleName) as {
             startDashboard: (opts: {
               port: number;
-              dataDir: string;
-              teamDir: string;
-              projectRoot: string;
-              dbPath?: string;
-              enableSpawner?: boolean;
-              onMarkSpawning?: (name: string) => void;
-              onClearSpawning?: (name: string) => void;
-              verbose?: boolean;
-              spawnManager?: unknown;
-            }) => Promise<number>;
-          };
-          const { startDashboard } = dashboardServer;
-          dashboardPort = await startDashboard({
-            port,
-            dataDir: paths.dataDir,
-            teamDir: paths.teamDir,
-            projectRoot: paths.projectRoot,
-            // Use the same database as the daemon for message persistence
-            dbPath: paths.dbPath,
-            enableSpawner: true,
-            onMarkSpawning: (name: string) => daemon.markSpawning(name),
-            onClearSpawning: (name: string) => daemon.clearSpawning(name),
-            verbose: options.verbose,
-            // Pass daemon's SpawnManager for read operations (logs, worker listing)
-            // Spawn/release go through SDK → daemon socket instead of local AgentSpawner
-            spawnManager: daemon.getSpawnManager(),
-          });
-          console.log(`Dashboard: http://localhost:${dashboardPort}`);
-
-          // Hook daemon log output to dashboard WebSocket broadcast
-          daemon.onLogOutput = (agentName: string, data: string) => {
-            const broadcast = (global as any).__broadcastLogOutput;
-            if (broadcast) {
-              broadcast(agentName, data);
-            }
-          };
-        } catch (err: any) {
-          if (err.code === 'ERR_MODULE_NOT_FOUND' || err.code === 'MODULE_NOT_FOUND') {
-            // Dashboard package not installed as a dependency - use binary or npx fallback
-            if (dashboardRequested) {
+            dataDir: string;
+            teamDir: string;
+            projectRoot: string;
+            dbPath?: string;
+            enableSpawner?: boolean;
+            verbose?: boolean;
+          }) => Promise<number>;
+        };
+        const { startDashboard } = dashboardServer;
+        dashboardPort = await startDashboard({
+          port,
+          dataDir: paths.dataDir,
+          teamDir: paths.teamDir,
+          projectRoot: paths.projectRoot,
+          dbPath: paths.dbPath,
+          enableSpawner: true,
+          verbose: options.verbose,
+        });
+        console.log(`Dashboard: http://localhost:${dashboardPort}`);
+      } catch (err: any) {
+        if (err.code === 'ERR_MODULE_NOT_FOUND' || err.code === 'MODULE_NOT_FOUND') {
+          // Dashboard package not installed as a dependency - use binary or npx fallback
+          if (dashboardRequested) {
               // User explicitly asked for dashboard - start via binary or npx
               const { process: dashboardProcess, port: npxPort, ready } = startDashboardViaNpx({
                 port,
@@ -1050,26 +1024,19 @@ program
         console.log('');
         console.log('Auto-spawning agents from teams.json...');
 
-        spawner = new AgentSpawner({
-          projectRoot: paths.projectRoot,
-          dashboardPort,
-          onMarkSpawning: (name) => daemon.markSpawning(name),
-          onClearSpawning: (name) => daemon.clearSpawning(name),
-        });
-
         for (const agent of teamsConfig.agents) {
           console.log(`  Spawning ${agent.name} (${agent.cli})...`);
-          const result = await spawner.spawn({
-            name: agent.name,
-            cli: agent.cli,
-            task: agent.task ?? '',
-            team: teamsConfig.team,
-          });
-
-          if (result.success) {
-            console.log(`  ✓ ${agent.name} started [pid: ${result.pid}]`);
-          } else {
-            console.error(`  ✗ ${agent.name} failed: ${result.error}`);
+          try {
+            await relay.spawnPty({
+              name: agent.name,
+              cli: agent.cli,
+              channels: ['general'],
+              task: agent.task ?? '',
+              team: teamsConfig.team,
+            });
+            console.log(`  ✓ ${agent.name} started`);
+          } catch (err: any) {
+            console.error(`  ✗ ${agent.name} failed: ${err?.message || String(err)}`);
           }
         }
         console.log('');
@@ -1096,6 +1063,19 @@ program
     const paths = getProjectPaths();
     const pidPath = pidFilePathForSocket(paths.socketPath);
     const timeout = parseInt(options.timeout ?? '5000', 10);
+
+    // Prefer broker-sdk shutdown first.
+    const relay = new AgentRelay({
+      binaryPath: process.env.AGENT_RELAY_BIN,
+      channels: ['general'],
+      cwd: paths.projectRoot,
+      env: process.env,
+    });
+    try {
+      await relay.shutdown();
+    } catch {
+      // Continue with legacy cleanup path below.
+    }
 
     // Helper to check if process is running
     const isProcessRunning = (pid: number): boolean => {
@@ -1616,47 +1596,25 @@ program
   .action(async () => {
     const paths = getProjectPaths();
     const relaySessions = await discoverRelaySessions();
-
-    if (!fs.existsSync(paths.socketPath)) {
-      console.log('Status: STOPPED');
-      logRelaySessions(relaySessions);
-      return;
-    }
-
-    const client = new RelayClient({
-      agentName: '__status__',
-      socketPath: paths.socketPath,
-      reconnect: false,
+    const relay = new AgentRelay({
+      binaryPath: process.env.AGENT_RELAY_BIN,
+      channels: ['general'],
+      cwd: paths.projectRoot,
+      env: process.env,
     });
 
     try {
-      await client.connect();
+      const status = await relay.getStatus();
       console.log('Status: RUNNING');
       console.log(`Socket: ${paths.socketPath}`);
-      try {
-        const status = await client.getStatus();
-        if (status.storage) {
-          const storage = status.storage;
-          const healthPrefix = storage.persistent ? '✅ Persistent' : '⚠️  Non-persistent';
-          const driver = storage.driver || 'unknown';
-          console.log(`Storage: ${healthPrefix} (${driver})`);
-          if (!storage.persistent) {
-            const fix = driver === 'memory'
-              ? 'npm rebuild better-sqlite3'
-              : 'Check storage configuration';
-            console.log(`         To fix: ${fix}`);
-          }
-          if (storage.error) {
-            console.log(`         Note: ${storage.error}`);
-          }
-        }
-      } catch (err) {
-        console.warn(`Warning: failed to read storage health: ${(err as Error).message}`);
+      console.log(`Agents: ${status.agent_count}`);
+      if (status.pending_delivery_count > 0) {
+        console.log(`Pending deliveries: ${status.pending_delivery_count}`);
       }
-      logRelaySessions(relaySessions);
-      client.disconnect();
     } catch {
       console.log('Status: STOPPED');
+    } finally {
+      await relay.shutdown().catch(() => undefined);
       logRelaySessions(relaySessions);
     }
   });
@@ -1680,8 +1638,22 @@ program
       ? allAgents
       : allAgents.filter(isVisibleAgent);
 
-    // Load spawned workers
-    const workers = readWorkersMetadata(paths.projectRoot);
+    // Load active workers from the local broker.
+    const client = new AgentRelayClient({
+      binaryPath: process.env.AGENT_RELAY_BIN,
+      channels: ['general'],
+      cwd: paths.projectRoot,
+      env: process.env,
+    });
+    const workers = await client.listAgents()
+      .then((list) => list.map((entry) => ({
+        name: entry.name,
+        cli: entry.runtime,
+        pid: entry.pid,
+        team: undefined as string | undefined,
+      })))
+      .catch(() => []);
+    await client.shutdown().catch(() => undefined);
 
     // Load currently connected agents (agents with active socket connections)
     let connectedAgentNames: Set<string> = new Set();
@@ -1859,17 +1831,54 @@ program
   .option('--json', 'Output as JSON')
   .action(async (options) => {
     const paths = getProjectPaths();
-    const agentsPath = path.join(paths.teamDir, 'agents.json');
+    type WhoEntry = {
+      name?: string;
+      cli?: string;
+      lastSeen?: string;
+      status: string;
+      id?: string;
+      workingDirectory?: string;
+      firstSeen?: string;
+      messagesSent?: number;
+      messagesReceived?: number;
+    };
+    const relay = new AgentRelay({
+      binaryPath: process.env.AGENT_RELAY_BIN,
+      channels: ['general'],
+      cwd: paths.projectRoot,
+      env: process.env,
+    });
 
-    const allAgents = loadAgents(agentsPath);
-    const visibleAgents = options.all
-      ? allAgents
-      : allAgents.filter(a => !isInternalAgent(a.name));
+    let onlineAgents: WhoEntry[] = await relay.listAgents()
+      .then((list) => list
+        .filter((agent) => options.all ? true : !isInternalAgent(agent.name))
+        .map((agent) => ({
+          name: agent.name,
+          cli: agent.runtime,
+          lastSeen: new Date().toISOString(),
+          status: 'ONLINE' as const,
+        })))
+      .catch(() => []);
 
-    const onlineAgents = visibleAgents.filter(isAgentOnline);
+    await relay.shutdown().catch(() => undefined);
+
+    // Fallback to local registry if broker is unavailable.
+    if (onlineAgents.length === 0) {
+      const agentsPath = path.join(paths.teamDir, 'agents.json');
+      const allAgents = loadAgents(agentsPath);
+      const visibleAgents = options.all
+        ? allAgents
+        : allAgents.filter(a => !isInternalAgent(a.name));
+      onlineAgents = visibleAgents
+        .filter(isAgentOnline)
+        .map((agent) => ({
+          ...agent,
+          status: getAgentStatus(agent),
+        }));
+    }
 
     if (options.json) {
-      console.log(JSON.stringify(onlineAgents.map(a => ({ ...a, status: getAgentStatus(a) })), null, 2));
+      console.log(JSON.stringify(onlineAgents, null, 2));
       return;
     }
 
@@ -1883,7 +1892,7 @@ program
     console.log('---------------------------------------------');
     onlineAgents.forEach((agent) => {
       const name = (agent.name ?? 'unknown').padEnd(15);
-      const status = getAgentStatus(agent).padEnd(8);
+      const status = (agent.status ?? getAgentStatus(agent)).padEnd(8);
       const cli = (agent.cli ?? '-').padEnd(8);
       const lastSeen = formatRelativeTime(agent.lastSeen);
       console.log(`${name} ${status} ${cli} ${lastSeen}`);
@@ -1897,29 +1906,44 @@ program
   .argument('<id>', 'Message ID')
   .option('--storage <type>', 'Storage type override (jsonl, sqlite, memory)')
   .action(async (messageId, options: { storage?: string }) => {
+    try {
+      const relaycast = await createRelaycastClient({ agentName: '__cli_read__' });
+      const msg = await relaycast.message(messageId);
+      console.log(`From: ${msg.agent_name}`);
+      console.log('To: #channel');
+      console.log(`Time: ${new Date(msg.created_at).toISOString()}`);
+      console.log('---');
+      console.log(msg.text);
+      return;
+    } catch {
+      // Fall back to local storage when relaycast credentials are unavailable.
+    }
+
     const paths = getProjectPaths();
-    // Use runtime config to match daemon's storage type, CLI option overrides
     const runtimeConfig = loadRuntimeConfig();
     const storageType = options.storage ?? runtimeConfig?.storageType;
     const adapter = await createStorageAdapter(paths.dbPath, storageType ? { type: storageType } : undefined);
 
-    if (!adapter.getMessageById) {
-      console.error('Storage does not support message lookup');
-      process.exit(1);
-    }
+    try {
+      if (!adapter.getMessageById) {
+        console.error('Storage does not support message lookup');
+        process.exit(1);
+      }
 
-    const msg = await adapter.getMessageById(messageId);
-    if (!msg) {
-      console.error(`Message not found: ${messageId}`);
-      process.exit(1);
-    }
+      const msg = await adapter.getMessageById(messageId);
+      if (!msg) {
+        console.error(`Message not found: ${messageId}`);
+        process.exit(1);
+      }
 
-    console.log(`From: ${msg.from}`);
-    console.log(`To: ${msg.to}`);
-    console.log(`Time: ${new Date(msg.ts).toISOString()}`);
-    console.log('---');
-    console.log(msg.body);
-    await adapter.close?.();
+      console.log(`From: ${msg.from}`);
+      console.log(`To: ${msg.to}`);
+      console.log(`Time: ${new Date(msg.ts).toISOString()}`);
+      console.log('---');
+      console.log(msg.body);
+    } finally {
+      await adapter.close?.();
+    }
   });
 
 // history - Show recent message history
@@ -1934,13 +1958,60 @@ program
   .option('--json', 'Output as JSON')
   .option('--storage <type>', 'Storage type override (jsonl, sqlite, memory)')
   .action(async (options: { limit?: string; from?: string; to?: string; thread?: string; since?: string; json?: boolean; storage?: string }) => {
+    const limit = Number.parseInt(options.limit ?? '50', 10) || 50;
+    const sinceTs = parseSince(options.since);
+
+    // Prefer relaycast history when credentials are available.
+    try {
+      const relaycast = await createRelaycastClient({ agentName: '__cli_history__' });
+      const channel = options.to?.startsWith('#') ? options.to.slice(1) : 'general';
+      const rawMessages = await relaycast.messages(channel, {
+        limit: Math.max(limit * 2, 100),
+      });
+
+      let messages = rawMessages.filter((msg) => {
+        if (options.from && msg.agent_name !== options.from) return false;
+        if (sinceTs && Date.parse(msg.created_at) < sinceTs) return false;
+        return true;
+      });
+
+      messages = messages.slice(0, limit);
+
+      if (options.json) {
+        const payload = messages.map((msg) => ({
+          id: msg.id,
+          ts: Date.parse(msg.created_at),
+          timestamp: new Date(msg.created_at).toISOString(),
+          from: msg.agent_name,
+          to: `#${channel}`,
+          thread: null,
+          kind: 'message',
+          body: msg.text,
+          status: undefined,
+        }));
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      if (!messages.length) {
+        console.log('No messages found.');
+        return;
+      }
+
+      messages.forEach((msg) => {
+        const ts = new Date(msg.created_at).toISOString();
+        const body = msg.text.length > 200 ? `${msg.text.slice(0, 197)}...` : msg.text;
+        console.log(`[${ts}] ${msg.agent_name} -> #${channel}: ${body}`);
+      });
+      return;
+    } catch {
+      // Fall through to local storage fallback.
+    }
+
     const paths = getProjectPaths();
-    // Use runtime config to match daemon's storage type, CLI option overrides
     const runtimeConfig = loadRuntimeConfig();
     const storageType = options.storage ?? runtimeConfig?.storageType;
     const adapter = await createStorageAdapter(paths.dbPath, storageType ? { type: storageType } : undefined);
-    const limit = Number.parseInt(options.limit ?? '50', 10) || 50;
-    const sinceTs = parseSince(options.since);
 
     try {
       const messages = await adapter.getMessages({
@@ -1986,6 +2057,66 @@ program
       });
     } finally {
       await adapter.close?.();
+    }
+  });
+
+// inbox - Show unread messages and mentions
+program
+  .command('inbox')
+  .description('Show unread inbox summary')
+  .option('--json', 'Output as JSON')
+  .action(async (options: { json?: boolean }) => {
+    let relaycast: Awaited<ReturnType<typeof createRelaycastClient>>;
+    try {
+      relaycast = await createRelaycastClient({ agentName: '__cli_inbox__' });
+    } catch (err: any) {
+      console.error(`Failed to initialize relaycast client: ${err?.message || String(err)}`);
+      process.exit(1);
+    }
+
+    try {
+      const inbox = await relaycast.inbox();
+      if (options.json) {
+        console.log(JSON.stringify(inbox, null, 2));
+        return;
+      }
+
+      const hasContent =
+        inbox.unread_channels.length > 0 ||
+        inbox.mentions.length > 0 ||
+        inbox.unread_dms.length > 0;
+
+      if (!hasContent) {
+        console.log('Inbox is clear.');
+        return;
+      }
+
+      if (inbox.unread_channels.length > 0) {
+        console.log('Unread Channels:');
+        for (const item of inbox.unread_channels) {
+          console.log(`  #${item.channel_name}: ${item.unread_count}`);
+        }
+        console.log('');
+      }
+
+      if (inbox.mentions.length > 0) {
+        console.log('Mentions:');
+        for (const mention of inbox.mentions) {
+          const preview = mention.text.length > 120 ? `${mention.text.slice(0, 117)}...` : mention.text;
+          console.log(`  [${mention.created_at}] #${mention.channel_name} @${mention.agent_name}: ${preview}`);
+        }
+        console.log('');
+      }
+
+      if (inbox.unread_dms.length > 0) {
+        console.log('Unread DMs:');
+        for (const dm of inbox.unread_dms) {
+          console.log(`  ${dm.from}: ${dm.unread_count}`);
+        }
+      }
+    } catch (err: any) {
+      console.error(`Failed to fetch inbox: ${err?.message || String(err)}`);
+      process.exit(1);
     }
   });
 
@@ -2043,10 +2174,20 @@ program
   .command('check-tmux', { hidden: true })
   .description('Check tmux availability and version')
   .action(async () => {
-    const { resolveTmux, checkTmuxVersion } = await import('@agent-relay/wrapper');
-
-    const info = resolveTmux();
-    if (!info) {
+    const tmuxPath = getTmuxPath();
+    try {
+      const { stdout } = await execAsync(`"${tmuxPath}" -V`);
+      const versionOutput = stdout.trim();
+      if (!versionOutput) {
+        throw new Error('tmux version unavailable');
+      }
+      const match = versionOutput.match(/(\d+(?:\.\d+)?)/);
+      const version = match?.[1] || 'unknown';
+      console.log(`tmux: ${tmuxPath}`);
+      console.log(`Version: ${version}`);
+      console.log('Source: system');
+      return;
+    } catch {
       console.log('tmux: NOT FOUND');
       console.log('');
       console.log('Install tmux, then reinstall agent-relay:');
@@ -2054,15 +2195,6 @@ program
       console.log('  apt install tmux           # Ubuntu/Debian');
       console.log('  npm install agent-relay    # Reinstall to bundle tmux');
       process.exit(1);
-    }
-
-    console.log(`tmux: ${info.path}`);
-    console.log(`Version: ${info.version}`);
-    console.log(`Source: ${info.isBundled ? 'bundled' : 'system'}`);
-
-    const versionCheck = checkTmuxVersion();
-    if (!versionCheck.ok) {
-      console.log(`Warning: tmux ${versionCheck.minimum}+ recommended`);
     }
   });
 
@@ -2075,9 +2207,6 @@ program
   .option('--architect [cli]', 'Spawn an architect agent to coordinate all projects (default: claude)')
   .action(async (projectPaths: string[], options) => {
     const { resolveProjects, validateDaemons, getAgentOutboxTemplate } = await import('@agent-relay/config');
-    const { MultiProjectClient } = await import('@agent-relay/bridge');
-
-    // Resolve projects from args or config
     const projects = resolveProjects(projectPaths, options.cli);
 
     if (projects.length === 0) {
@@ -2090,11 +2219,9 @@ program
     console.log('Bridge Mode - Multi-Project Orchestration');
     console.log('─'.repeat(40));
 
-    // Check which daemons are running
     const { valid, missing } = validateDaemons(projects);
-
     if (missing.length > 0) {
-      console.error('\nMissing daemons for:');
+      console.error('\nMissing brokers for:');
       for (const p of missing) {
         console.error(`  - ${p.path}`);
         console.error(`    Run: cd "${p.path}" && agent-relay up`);
@@ -2103,285 +2230,76 @@ program
     }
 
     if (valid.length === 0) {
-      console.error('No projects have running daemons. Start them first.');
+      console.error('No projects have running brokers. Start them first.');
       process.exit(1);
     }
 
-    console.log('\nConnecting to projects:');
-    for (const p of valid) {
-      console.log(`  - ${p.id} (${p.path})`);
-      console.log(`    Lead: ${p.leadName}, CLI: ${p.cli}`);
-    }
-    console.log('');
-
-    // Get data directories for ALL bridged projects (so each project's dashboard can show bridge state)
-    const bridgeStatePaths: string[] = valid.map(p => {
-      const projectPaths = getProjectPaths(p.path);
-      // Ensure directory exists
-      if (!fs.existsSync(projectPaths.dataDir)) {
-        fs.mkdirSync(projectPaths.dataDir, { recursive: true });
-      }
-      return path.join(projectPaths.dataDir, 'bridge-state.json');
-    });
-
-    // Bridge state tracking
-    interface BridgeProject {
-      id: string;
-      name: string;
-      path: string;
-      connected: boolean;
-      reconnecting?: boolean;
-      lead?: { name: string; connected: boolean };
-      agents: Array<{ name: string; status: string; task?: string }>;
-    }
-    interface BridgeMessage {
-      id: string;
-      from: string;
-      to: string;
-      body: string;
-      sourceProject: string;
-      targetProject?: string;
-      timestamp: string;
-    }
-    interface BridgeState {
-      projects: BridgeProject[];
-      messages: BridgeMessage[];
-      connected: boolean;
-      startedAt: string;
-    }
-
-    const bridgeState: BridgeState = {
-      projects: valid.map(p => ({
-        id: p.id,
-        name: path.basename(p.path),
-        path: p.path,
-        connected: false,
-        lead: { name: p.leadName, connected: false },
-        agents: [],
-      })),
-      messages: [],
-      connected: false,
-      startedAt: new Date().toISOString(),
-    };
-
-    // Write bridge state to ALL project data directories
-    const writeBridgeState = (): void => {
-      const stateJson = JSON.stringify(bridgeState, null, 2);
-      for (const statePath of bridgeStatePaths) {
-        try {
-          fs.writeFileSync(statePath, stateJson);
-        } catch (err) {
-          console.error(`[bridge] Failed to write state to ${statePath}:`, err);
-        }
-      }
-    };
-
-    // Initial state write
-    writeBridgeState();
-    console.log(`Bridge state written to ${bridgeStatePaths.length} project(s)`);
-
-    // Connect to all project daemons
-    const client = new MultiProjectClient(valid);
-
-    // Track connection state changes (daemon connection, not agent registration)
-    // Also track "reconnecting" state for UI feedback
-    const wasConnected = new Map<string, boolean>();
-
-    client.onProjectStateChange = (projectId, connected) => {
-      const project = bridgeState.projects.find(p => p.id === projectId);
-      if (project) {
-        const hadConnection = wasConnected.get(projectId) || false;
-        project.connected = connected;
-        // Set reconnecting if we lost connection (had it before, now disconnected)
-        project.reconnecting = !connected && hadConnection;
-        wasConnected.set(projectId, connected);
-        // Note: lead.connected should only be true when an actual lead agent registers
-        // The bridge connecting to daemon doesn't mean a lead agent is active
-      }
-      bridgeState.connected = bridgeState.projects.some(p => p.connected);
-      writeBridgeState();
-    };
-
-    try {
-      await client.connect();
-    } catch (_err) {
-      console.error('Failed to connect to all projects');
-      writeBridgeState(); // Write final state before exit
-      process.exit(1);
-    }
-
-    bridgeState.connected = true;
-    writeBridgeState();
-
-    console.log('Connected to all projects.');
-    console.log('');
-    console.log('Cross-project messaging:');
-    console.log('  ->relay:projectId:agent Message');
-    console.log('  ->relay:*:lead Broadcast to all leads');
-    console.log('');
-
-    // Spawn architect agent if --architect flag is set
-    let architectWrapper: any = null;
-    if (options.architect !== undefined) {
-      // Determine CLI to use (default to claude)
-      const architectCli = typeof options.architect === 'string' ? options.architect : 'claude';
-
-      // Use first project as the base for the architect
-      const baseProject = valid[0];
-      const basePaths = getProjectPaths(baseProject.path);
-
-      // Build project context for the architect
-      const projectContext = valid.map(p => `- ${p.id}: ${p.path} (Lead: ${p.leadName})`).join('\n');
-
-      // Get outbox path template for agent instructions (escaped for template literal)
-      const outboxPath = getAgentOutboxTemplate().replace(/\$/g, '\\$');
-
-      // Create architect system prompt
-      const architectPrompt = `You are the Architect, a cross-project coordinator overseeing multiple codebases.
-
-## Connected Projects
-${projectContext}
-
-## Your Role
-- Coordinate high-level work across all projects
-- Assign tasks to project leads
-- Ensure consistency and resolve cross-project dependencies
-- Review overall architecture decisions
-
-## Cross-Project Messaging
-
-Write a file to your outbox, then output the trigger. Use project:AgentName syntax:
-
-\`\`\`bash
-# Message specific project lead
-cat > ${outboxPath}/msg << 'EOF'
-TO: ${valid[0].id}:${valid[0].leadName}
-
-Your message to this project's lead.
-EOF
-\`\`\`
-Then output: \`->relay-file:msg\`
-
-\`\`\`bash
-# Broadcast to all agents in a project
-cat > ${outboxPath}/broadcast << 'EOF'
-TO: ${valid.length > 1 ? valid[1].id : valid[0].id}:*
-
-Broadcast to all agents in a project.
-EOF
-\`\`\`
-Then output: \`->relay-file:broadcast\`
-
-\`\`\`bash
-# Broadcast to ALL agents in ALL projects
-cat > ${outboxPath}/all << 'EOF'
-TO: *:*
-
-Broadcast to ALL agents in ALL projects.
-EOF
-\`\`\`
-Then output: \`->relay-file:all\`
-
-## Getting Started
-1. Check in with each project lead to understand current status
-2. Identify cross-project dependencies
-3. Coordinate work across teams
-
-Start by greeting the project leads and asking for status updates.`;
-
-      console.log('Spawning Architect agent...');
-      console.log(`  CLI: ${architectCli}`);
-      console.log(`  Base project: ${baseProject.path}`);
-      console.log('');
-
-      // Determine command and args based on CLI
-      let command: string;
-      let args: string[] = [];
-
-      if (architectCli === 'claude' || architectCli.startsWith('claude:')) {
-        command = 'claude';
-        args = ['--dangerously-skip-permissions'];
-        // Add model if specified (e.g., claude:opus)
-        if (architectCli.includes(':')) {
-          const model = architectCli.split(':')[1];
-          args.push('--model', model);
-        }
-      } else if (architectCli === 'codex') {
-        command = 'codex';
-        args = ['--dangerously-skip-permissions'];
-      } else {
-        command = architectCli;
-      }
-
+    const relays = new Map<string, AgentRelay>();
+    for (const project of valid) {
+      const relay = new AgentRelay({
+        binaryPath: process.env.AGENT_RELAY_BIN,
+        channels: ['general'],
+        cwd: project.path,
+        env: process.env,
+      });
       try {
-        architectWrapper = new RelayPtyOrchestrator({
-          name: 'Architect',
-          command,
-          args,
-          socketPath: basePaths.socketPath,
-          cwd: baseProject.path,
-          streamLogs: true,
-        });
-
-        await architectWrapper.start();
-
-        // Wait for agent to be ready, then inject the prompt
-        setTimeout(async () => {
-          try {
-            await architectWrapper.injectMessage(architectPrompt);
-            console.log('Architect agent started and initialized.');
-            console.log('');
-          } catch (err) {
-            console.error('Failed to inject architect prompt:', err);
-          }
-        }, 3000);
-
-      } catch (err) {
-        console.error('Failed to spawn Architect agent:', err);
+        await relay.getStatus();
+        relays.set(project.id, relay);
+        console.log(`Connected: ${project.id} (${project.path})`);
+      } catch (err: any) {
+        console.error(`Failed to connect to ${project.id}: ${err?.message || String(err)}`);
       }
     }
 
-    // Handle messages from projects
-    client.onMessage = (projectId, from, payload, messageId) => {
-      console.log(`[${projectId}] ${from}: ${payload.body.substring(0, 80)}...`);
+    if (relays.size === 0) {
+      console.error('Failed to connect to all projects.');
+      process.exit(1);
+    }
 
-      // Track message in bridge state
-      bridgeState.messages.push({
-        id: messageId,
-        from,
-        to: '*', // Incoming messages are from agents
-        body: payload.body,
-        sourceProject: projectId,
-        timestamp: new Date().toISOString(),
-      });
-
-      // Keep last 100 messages
-      if (bridgeState.messages.length > 100) {
-        bridgeState.messages = bridgeState.messages.slice(-100);
+    if (options.architect !== undefined) {
+      const architectCli = typeof options.architect === 'string' ? options.architect : 'claude';
+      const baseProject = valid[0];
+      const projectContext = valid.map(p => `- ${p.id}: ${p.path} (Lead: ${p.leadName})`).join('\n');
+      const outboxPath = getAgentOutboxTemplate().replace(/\$/g, '\\$');
+      const architectPrompt = `You are the Architect, a cross-project coordinator.\n\nConnected Projects:\n${projectContext}\n\nUse relay protocol with outbox path ${outboxPath}. Start by asking each lead for status.`;
+      const relay = relays.get(baseProject.id);
+      if (relay) {
+        try {
+          await relay.spawnPty({
+            name: 'Architect',
+            cli: architectCli.includes(':') ? architectCli.split(':')[0] : architectCli,
+            args: architectCli.includes(':') ? ['--model', architectCli.split(':')[1]] : [],
+            channels: ['general'],
+            task: architectPrompt,
+          });
+          console.log('Architect agent started.');
+        } catch (err: any) {
+          console.error(`Failed to spawn Architect agent: ${err?.message || String(err)}`);
+        }
       }
+    }
 
-      writeBridgeState();
+    const sendToProject = async (projectId: string, to: string, body: string): Promise<boolean> => {
+      const relay = relays.get(projectId);
+      if (!relay) return false;
+      try {
+        await relay.human({ name: '__BridgeClient' }).sendMessage({ to, text: body });
+        return true;
+      } catch {
+        return false;
+      }
     };
 
-    // Clean up on exit
-    const cleanup = (): void => {
-      bridgeState.connected = false;
-      bridgeState.projects.forEach(p => {
-        p.connected = false;
-        if (p.lead) p.lead.connected = false;
-      });
-      writeBridgeState();
+    const cleanup = async (): Promise<void> => {
+      await Promise.all(Array.from(relays.values()).map((relay) => relay.shutdown().catch(() => undefined)));
     };
 
-    // Keep running
-    process.on('SIGINT', () => {
+    process.on('SIGINT', async () => {
       console.log('\nDisconnecting...');
-      cleanup();
-      client.disconnect();
+      await cleanup();
       process.exit(0);
     });
 
-    // Start a simple REPL for sending messages
     const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
@@ -2392,31 +2310,34 @@ Start by greeting the project leads and asking for status updates.`;
     console.log('Type "quit" to exit.\n');
 
     const promptForInput = (): void => {
-      rl.question('> ', (input) => {
+      rl.question('> ', async (input) => {
         if (input.toLowerCase() === 'quit') {
-          client.disconnect();
+          await cleanup();
           rl.close();
           process.exit(0);
         }
 
-        // Parse input: projectId:agent message
         const match = input.match(/^(\S+):(\S+)\s+(.+)$/);
-        if (match) {
-          const [, projectId, agent, message] = match;
-          if (projectId === '*' && agent === 'lead') {
-            client.broadcastToLeads(message);
-            console.log('→ Broadcast to all leads');
-          } else if (projectId === '*') {
-            client.broadcastAll(message);
-            console.log('→ Broadcast to all');
-          } else {
-            const sent = client.sendToProject(projectId, agent, message);
-            if (sent) {
-              console.log(`→ ${projectId}:${agent}`);
-            }
-          }
-        } else {
+        if (!match) {
           console.log('Format: projectId:agent message');
+          promptForInput();
+          return;
+        }
+
+        const [, projectId, agent, message] = match;
+        if (projectId === '*' && agent === 'lead') {
+          await Promise.all(valid.map((project) => sendToProject(project.id, project.leadName, message)));
+          console.log('→ Broadcast to all leads');
+        } else if (projectId === '*') {
+          await Promise.all(valid.map((project) => sendToProject(project.id, '*', message)));
+          console.log('→ Broadcast to all');
+        } else {
+          const sent = await sendToProject(projectId, agent, message);
+          if (sent) {
+            console.log(`→ ${projectId}:${agent}`);
+          } else {
+            console.log(`Failed to send to ${projectId}:${agent}`);
+          }
         }
 
         promptForInput();
@@ -2754,8 +2675,6 @@ program
     shadowTriggers?: string;
     shadowSpeakOn?: string;
   }) => {
-    const port = options.port || DEFAULT_DASHBOARD_PORT;
-
     // Read task from stdin if not provided as argument
     let finalTask = task;
     if (!finalTask && !process.stdin.isTTY) {
@@ -2791,110 +2710,42 @@ program
       return triggers as Array<'SESSION_END' | 'CODE_WRITTEN' | 'REVIEW_REQUEST' | 'EXPLICIT_ASK' | 'ALL_MESSAGES'>;
     };
 
-    // Build spawn request using the SpawnRequest type for consistency
-    const spawnRequest: SpawnRequest = {
-      name,
-      cli,
-      task: finalTask,
-      team: options.team,
-      model: options.model,
-      spawnerName: options.spawner,
-      interactive: options.interactive,
-      cwd: options.cwd,
-      shadowMode: options.shadowMode as 'subagent' | 'process' | undefined,
-      shadowOf: options.shadowOf,
-      shadowAgent: options.shadowAgent,
-      shadowTriggers: parseTriggers(options.shadowTriggers),
-      shadowSpeakOn: parseTriggers(options.shadowSpeakOn),
-    };
-
-    // Try daemon socket first (preferred - no dashboard required)
     const paths = getProjectPaths();
-    let daemonSpawnSucceeded = false;
+    parseTriggers(options.shadowTriggers);
+    parseTriggers(options.shadowSpeakOn);
+
+    const client = new AgentRelayClient({
+      binaryPath: process.env.AGENT_RELAY_BIN,
+      channels: ['general'],
+      cwd: options.cwd || paths.projectRoot,
+      env: process.env,
+    });
 
     try {
-      const client = new RelayClient({
-        socketPath: paths.socketPath,
-        agentName: options.spawner || '__cli_spawner__',
-        quiet: true,
-        reconnect: false,
-        maxReconnectAttempts: 0,
-        reconnectDelayMs: 0,
-        reconnectMaxDelayMs: 0,
+      await client.spawnPty({
+        name,
+        cli,
+        channels: ['general'],
+        task: finalTask,
+        team: options.team,
+        model: options.model,
+        cwd: options.cwd,
+        shadowOf: options.shadowOf,
+        shadowMode: options.shadowMode as 'subagent' | 'process' | undefined,
       });
-
-      await client.connect();
-
-      const result = await client.spawn({
-        name: spawnRequest.name,
-        cli: spawnRequest.cli,
-        task: spawnRequest.task,
-        team: spawnRequest.team,
-        model: spawnRequest.model,
-        interactive: spawnRequest.interactive,
-        cwd: spawnRequest.cwd,
-        shadowMode: spawnRequest.shadowMode,
-        shadowOf: spawnRequest.shadowOf,
-        shadowAgent: spawnRequest.shadowAgent,
-        shadowTriggers: spawnRequest.shadowTriggers,
-        shadowSpeakOn: spawnRequest.shadowSpeakOn,
-      }, 30000);
-
-      // Set success flag BEFORE disconnect - disconnect errors shouldn't mask spawn success
-      daemonSpawnSucceeded = true;
-      await client.disconnect();
-
-      if (result.success) {
-        console.log(`Spawned agent: ${name} (pid: ${result.pid})`);
-        process.exit(0);
+      const agents = await client.listAgents().catch(() => []);
+      const spawned = agents.find((agent) => agent.name === name);
+      if (spawned?.pid) {
+        console.log(`Spawned agent: ${name} (pid: ${spawned.pid})`);
       } else {
-        if (result.policyDecision) {
-          console.error(`Policy denied spawn: ${result.policyDecision.reason || 'Policy rejected'}`);
-        } else {
-          console.error(`Failed to spawn ${name}: ${result.error || 'Unknown error'}`);
-        }
-        process.exit(1);
+        console.log(`Spawned agent: ${name}`);
       }
-    } catch (daemonErr: any) {
-      // If daemon connection failed, try HTTP API as fallback
-      if (daemonErr.message?.includes('ENOENT') || daemonErr.message?.includes('ECONNREFUSED') || daemonErr.code === 'ENOENT') {
-        // Socket doesn't exist or daemon not running - try HTTP API
-      } else if (!daemonSpawnSucceeded) {
-        // Other error during spawn - report it
-        console.error(`Failed to spawn ${name}: ${daemonErr.message}`);
-        process.exit(1);
-      }
-    }
-
-    // Fall back to HTTP API (dashboard) if daemon not available
-    try {
-      const response = await fetch(`http://localhost:${port}/api/spawn`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(spawnRequest),
-      });
-
-      const result = await response.json() as SpawnResult;
-
-      if (result.success) {
-        console.log(`Spawned agent: ${name} (pid: ${result.pid})`);
-        process.exit(0);
-      } else {
-        if (result.policyDecision) {
-          console.error(`Policy denied spawn: ${result.policyDecision.reason || 'Policy rejected'}`);
-        } else {
-          console.error(`Failed to spawn ${name}: ${result.error || 'Unknown error'}`);
-        }
-        process.exit(1);
-      }
+      process.exit(0);
     } catch (err: any) {
-      if (err.code === 'ECONNREFUSED') {
-        console.error(`Cannot connect to daemon. Is it running?`);
-        console.log(`Run 'agent-relay up' to start the daemon.`);
-      } else {
-        console.error(`Failed to spawn ${name}: ${err.message}`);
-      }
+      console.error(`Failed to spawn ${name}: ${err?.message || String(err)}`);
       process.exit(1);
+    } finally {
+      await client.shutdown().catch(() => undefined);
     }
   });
 
@@ -2905,73 +2756,22 @@ program
   .argument('<name>', 'Agent name to release')
   .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
   .action(async (name: string, options: { port?: string }) => {
-    const port = options.port || DEFAULT_DASHBOARD_PORT;
-
-    // Try daemon socket first (preferred - no dashboard required)
     const paths = getProjectPaths();
-    let daemonReleaseSucceeded = false;
-
+    const client = new AgentRelayClient({
+      binaryPath: process.env.AGENT_RELAY_BIN,
+      channels: ['general'],
+      cwd: paths.projectRoot,
+      env: process.env,
+    });
     try {
-      const client = new RelayClient({
-        socketPath: paths.socketPath,
-        agentName: '__cli_releaser__',
-        quiet: true,
-        reconnect: false,
-        maxReconnectAttempts: 0,
-        reconnectDelayMs: 0,
-        reconnectMaxDelayMs: 0,
-      });
-
-      await client.connect();
-
-      const result = await client.release(name);
-
-      // Set success flag BEFORE disconnect - disconnect errors shouldn't mask release success
-      daemonReleaseSucceeded = true;
-      await client.disconnect();
-
-      if (result.success) {
-        console.log(`Released agent: ${name}`);
-        process.exit(0);
-      } else {
-        console.error(`Failed to release ${name}: ${result.error || 'Unknown error'}`);
-        process.exit(1);
-      }
-    } catch (daemonErr: any) {
-      // If daemon connection failed, try HTTP API as fallback
-      if (daemonErr.message?.includes('ENOENT') || daemonErr.message?.includes('ECONNREFUSED') || daemonErr.code === 'ENOENT') {
-        // Socket doesn't exist or daemon not running - try HTTP API
-      } else if (!daemonReleaseSucceeded) {
-        // Other error during release - report it
-        console.error(`Failed to release ${name}: ${daemonErr.message}`);
-        process.exit(1);
-      }
-    }
-
-    // Fall back to HTTP API (dashboard) if daemon not available
-    try {
-      const response = await fetch(`http://localhost:${port}/api/spawned/${encodeURIComponent(name)}`, {
-        method: 'DELETE',
-      });
-
-      const result = await response.json() as { success: boolean; error?: string };
-
-      if (result.success) {
-        console.log(`Released agent: ${name}`);
-        process.exit(0);
-      } else {
-        console.error(`Failed to release ${name}: ${result.error || 'Unknown error'}`);
-        process.exit(1);
-      }
+      await client.release(name, 'released via cli');
+      console.log(`Released agent: ${name}`);
+      process.exit(0);
     } catch (err: any) {
-      // If API call fails, try to provide helpful error message
-      if (err.code === 'ECONNREFUSED') {
-        console.error(`Cannot connect to daemon. Is it running?`);
-        console.log(`Run 'agent-relay up' to start the daemon.`);
-      } else {
-        console.error(`Failed to release ${name}: ${err.message}`);
-      }
+      console.error(`Failed to release ${name}: ${err?.message || String(err)}`);
       process.exit(1);
+    } finally {
+      await client.shutdown().catch(() => undefined);
     }
   });
 
@@ -2985,40 +2785,29 @@ program
   .action(async (name: string, model: string, options: { timeout?: string }) => {
     const paths = getProjectPaths();
     const timeoutMs = parseInt(options.timeout || '30000', 10);
+    const client = new AgentRelayClient({
+      binaryPath: process.env.AGENT_RELAY_BIN,
+      channels: ['general'],
+      cwd: paths.projectRoot,
+      env: process.env,
+    });
 
     try {
-      const client = new RelayClient({
-        socketPath: paths.socketPath,
-        agentName: '__cli_set_model__',
-        quiet: true,
-        reconnect: false,
-        maxReconnectAttempts: 0,
-        reconnectDelayMs: 0,
-        reconnectMaxDelayMs: 0,
-      });
-
-      await client.connect();
-
-      const result = await client.setWorkerModel(name, model, { timeoutMs }, timeoutMs + 15000);
-
-      await client.disconnect();
+      const result = await client.setModel(name, model, { timeoutMs });
 
       if (result.success) {
-        console.log(`Model switched for ${name}: ${result.previousModel || 'unknown'} → ${result.model || model}`);
+        console.log(`Model switched for ${name}: ${result.model || model}`);
         process.exit(0);
       } else {
-        console.error(`Failed to switch model for ${name}: ${result.error}`);
+        console.error(`Failed to switch model for ${name}`);
         process.exit(1);
       }
     } catch (err: unknown) {
       const errObj = err as { code?: string; message?: string };
-      if (errObj.code === 'ENOENT' || errObj.message?.includes('ECONNREFUSED')) {
-        console.error('Cannot connect to daemon. Is it running?');
-        console.log("Run 'agent-relay up' to start the daemon.");
-      } else {
-        console.error(`Failed to switch model for ${name}: ${errObj.message ?? String(err)}`);
-      }
+      console.error(`Failed to switch model for ${name}: ${errObj.message ?? String(err)}`);
       process.exit(1);
+    } finally {
+      await client.shutdown().catch(() => undefined);
     }
   });
 
@@ -3032,38 +2821,26 @@ program
   .option('--thread <id>', 'Thread identifier')
   .action(async (agent: string, message: string, options: { from: string; thread?: string }) => {
     const paths = getProjectPaths();
-
-    const client = new RelayClient({
-      socketPath: paths.socketPath,
-      agentName: options.from,
-      entityType: 'user',
-      quiet: true,
-      reconnect: false,
-      maxReconnectAttempts: 0,
-      reconnectDelayMs: 0,
-      reconnectMaxDelayMs: 0,
+    const relay = new AgentRelay({
+      binaryPath: process.env.AGENT_RELAY_BIN,
+      channels: ['general'],
+      cwd: paths.projectRoot,
+      env: process.env,
     });
 
     try {
-      await client.connect();
-
-      const sent = client.sendMessage(agent, message, 'message', undefined, options.thread);
-      if (sent) {
-        console.log(`Message sent to ${agent}`);
-      } else {
-        console.error('Failed to send message');
-        process.exit(1);
-      }
-
-      client.disconnect();
+      const human = relay.human({ name: options.from });
+      await human.sendMessage({
+        to: agent,
+        text: message,
+        threadId: options.thread,
+      });
+      console.log(`Message sent to ${agent}`);
     } catch (err: any) {
-      if (err.code === 'ECONNREFUSED' || err.code === 'ENOENT' || err.message?.includes('Cannot connect')) {
-        console.error(`Cannot connect to daemon. Is it running?`);
-        console.log(`Run 'agent-relay up' to start the daemon.`);
-      } else {
-        console.error(`Failed to send message: ${err.message}`);
-      }
+      console.error(`Failed to send message: ${err?.message || String(err)}`);
       process.exit(1);
+    } finally {
+      await relay.shutdown().catch(() => undefined);
     }
   });
 
@@ -3075,8 +2852,15 @@ program
   .option('--force', 'Skip graceful shutdown, kill immediately')
   .action(async (name: string, options: { force?: boolean }) => {
     const paths = getProjectPaths();
-    const workers = readWorkersMetadata(paths.projectRoot);
-    const worker = workers.find(w => w.name === name);
+    const client = new AgentRelayClient({
+      binaryPath: process.env.AGENT_RELAY_BIN,
+      channels: ['general'],
+      cwd: paths.projectRoot,
+      env: process.env,
+    });
+    const workers = await client.listAgents().catch(() => []);
+    await client.shutdown().catch(() => undefined);
+    const worker = workers.find((w) => w.name === name);
 
     if (!worker) {
       console.error(`Spawned agent "${name}" not found`);
@@ -3708,40 +3492,21 @@ program
   .option('--watch', 'Continuously update metrics')
   .option('--interval <ms>', 'Update interval for watch mode', '5000')
   .action(async (options: { agent?: string; port?: string; json?: boolean; watch?: boolean; interval?: string }) => {
-    const port = options.port || DEFAULT_DASHBOARD_PORT;
-
     const fetchMetrics = async () => {
+      const paths = getProjectPaths();
+      const client = new AgentRelayClient({
+        binaryPath: process.env.AGENT_RELAY_BIN,
+        channels: ['general'],
+        cwd: paths.projectRoot,
+        env: process.env,
+      });
       try {
-        const response = await fetch(`http://localhost:${port}/api/metrics/agents`);
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-        return await response.json() as {
-          agents: Array<{
-            name: string;
-            pid?: number;
-            status: string;
-            rssBytes?: number;
-            cpuPercent?: number;
-            trend?: string;
-            alertLevel?: string;
-            highWatermark?: number;
-            uptimeMs?: number;
-          }>;
-          system: {
-            totalMemory: number;
-            freeMemory: number;
-            heapUsed: number;
-          };
-        };
+        return await client.getMetrics(options.agent);
       } catch (err: any) {
-        if (err.code === 'ECONNREFUSED') {
-          console.error(`Cannot connect to dashboard at port ${port}. Is the daemon running?`);
-          console.log(`Run 'agent-relay up' to start the daemon.`);
-        } else {
-          console.error(`Failed to fetch metrics: ${err.message}`);
-        }
+        console.error(`Failed to fetch metrics: ${err?.message || String(err)}`);
         process.exit(1);
+      } finally {
+        await client.shutdown().catch(() => undefined);
       }
     };
 
@@ -3753,7 +3518,8 @@ program
       return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
     };
 
-    const formatUptime = (ms: number): string => {
+    const formatUptime = (secs: number): string => {
+      const ms = secs * 1000;
       if (ms < 60000) return `${Math.floor(ms / 1000)}s`;
       if (ms < 3600000) return `${Math.floor(ms / 60000)}m`;
       return `${Math.floor(ms / 3600000)}h ${Math.floor((ms % 3600000) / 60000)}m`;
@@ -3771,7 +3537,7 @@ program
       }
 
       if (options.json) {
-        console.log(JSON.stringify({ agents, system: data.system }, null, 2));
+        console.log(JSON.stringify({ agents }, null, 2));
         return;
       }
 
@@ -3779,44 +3545,29 @@ program
         // Clear screen for watch mode
         console.clear();
         console.log(`Agent Metrics (updating every ${options.interval}ms)  [Ctrl+C to stop]`);
-        console.log(`System: ${formatBytes(data.system.heapUsed)} heap / ${formatBytes(data.system.freeMemory)} free`);
         console.log('');
       }
 
       if (agents.length === 0) {
         console.log('No agents with memory metrics.');
-        console.log('Ensure agents are running and memory monitoring is enabled.');
+        console.log('Ensure agents are running.');
         return;
       }
 
-      console.log('AGENT           PID      MEMORY      CPU    TREND       ALERT     UPTIME');
-      console.log('─'.repeat(75));
+      console.log('AGENT           PID      MEMORY      UPTIME');
+      console.log('─'.repeat(55));
 
       for (const agent of agents) {
         const name = agent.name.padEnd(15);
         const pid = (agent.pid?.toString() || '-').padEnd(8);
-        const memory = formatBytes(agent.rssBytes || 0).padEnd(11);
-        const cpu = ((agent.cpuPercent?.toFixed(1) || '0') + '%').padEnd(6);
-        const trend = (agent.trend || 'unknown').padEnd(11);
-        const alertColors: Record<string, string> = {
-          normal: 'normal',
-          warning: '\x1b[33mwarning\x1b[0m',
-          critical: '\x1b[31mcritical\x1b[0m',
-          oom_imminent: '\x1b[31;1mOOM!\x1b[0m',
-        };
-        const alert = (alertColors[agent.alertLevel || 'normal'] || agent.alertLevel || '-').padEnd(9);
-        const uptime = formatUptime(agent.uptimeMs || 0);
-
-        console.log(`${name} ${pid} ${memory} ${cpu} ${trend} ${alert} ${uptime}`);
+        const memory = formatBytes(agent.memory_bytes || 0).padEnd(11);
+        const uptime = formatUptime(agent.uptime_secs || 0);
+        console.log(`${name} ${pid} ${memory} ${uptime}`);
       }
 
       if (!options.watch) {
         console.log('');
         console.log(`Total: ${agents.length} agent(s)`);
-        if (agents.some(a => a.alertLevel && a.alertLevel !== 'normal')) {
-          console.log('');
-          console.log('⚠️  Some agents have elevated memory usage. Run `agent-relay health` for details.');
-        }
       }
     };
 
@@ -4054,15 +3805,11 @@ program
 
     // Use the regular wrapper but with profiling environment
     const paths = getProjectPaths();
-
-    const wrapper = new RelayPtyOrchestrator({
-      name: agentName,
-      command: cmd,
-      args,
-      socketPath: paths.socketPath,
+    const relay = new AgentRelay({
+      binaryPath: process.env.AGENT_RELAY_BIN,
+      channels: ['general'],
       cwd: paths.projectRoot,
       env: profileEnv,
-      streamLogs: true,
     });
 
     // Start memory sampling
@@ -4094,12 +3841,33 @@ program
       console.log(`  1. Open chrome://inspect in Chrome`);
       console.log(`  2. Load CPU/heap profiles from ${outputDir}/`);
       console.log('');
-      wrapper.stop();
+      try {
+        const agents = await relay.listAgents();
+        const target = agents.find((agent) => agent.name === agentName);
+        if (target) {
+          await target.release();
+        }
+      } catch {
+        // Best effort shutdown.
+      }
+      await relay.shutdown().catch(() => undefined);
       process.exit(0);
     });
 
-    await wrapper.start();
-    console.log(`Profiling ${agentName}... Press Ctrl+C to stop.`);
+    try {
+      await relay.spawnPty({
+        name: agentName,
+        cli: cmd,
+        args,
+        channels: ['general'],
+      });
+      console.log(`Profiling ${agentName}... Press Ctrl+C to stop.`);
+    } catch (err: any) {
+      clearInterval(sampleInterval);
+      console.error(`Failed to start profiled agent: ${err?.message || String(err)}`);
+      await relay.shutdown().catch(() => undefined);
+      process.exit(1);
+    }
   });
 
 // ============================================================================

@@ -79,6 +79,6 @@ export async function handleRelaySend(
     return `Response from ${to}: ${responseText}`;
   }
 
-  await client.send(to, message, { thread });
+  await client.sendMessage({ to, text: message, threadId: thread });
   return `Message sent to ${to}`;
 }

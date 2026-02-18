@@ -5,8 +5,16 @@
  * and modify behavior at various points in the agent lifecycle.
  */
 
-import type { SendPayload } from '@agent-relay/protocol/types';
-import { PROTOCOL_VERSION } from '@agent-relay/protocol';
+import { PROTOCOL_VERSION } from '@agent-relay/broker-sdk/protocol';
+
+export type PayloadKind = 'message' | 'action' | 'state' | 'thinking';
+
+export interface SendPayload {
+  kind: PayloadKind;
+  body: string;
+  data?: Record<string, unknown>;
+  thread?: string;
+}
 
 /**
  * A message in the conversation history

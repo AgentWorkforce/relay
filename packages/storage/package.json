@@ -55,13 +55,11 @@
       "optional": true
     }
   },
-  "dependencies": {
-    "@agent-relay/protocol": "2.3.4"
-  },
   "devDependencies": {
     "@types/node": "^22.19.3",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "@types/pg": "^8.15.6"
   },
   "publishConfig": {
     "access": "public"

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { RelayClient } from '../src/client.js';
+import type { RelayClient } from '../src/client-adapter.js';
 import {
   handleRelaySend,
   relaySendSchema,
@@ -72,6 +72,11 @@ function createMockClient(overrides: Partial<Record<keyof RelayClient, ReturnTyp
     queryMessages: vi.fn(),
     sendLog: vi.fn(),
     setWorkerModel: vi.fn(),
+    sendMessage: vi.fn().mockResolvedValue({ event_id: 'e1', targets: [] }),
+    spawnPty: vi.fn().mockResolvedValue({ name: 'Agent', runtime: 'pty' }),
+    setModel: vi.fn().mockResolvedValue({ success: true, name: '', model: '' }),
+    getLogs: vi.fn().mockResolvedValue({ found: false, content: '', lines: 0 }),
+    shutdown: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -85,7 +90,7 @@ describe('relay_send', () => {
   });
 
   it('sends a direct message', async () => {
-    vi.mocked(mockClient.send).mockResolvedValue(undefined);
+    vi.mocked(mockClient.sendMessage).mockResolvedValue({ event_id: 'e1', targets: ['Alice'] });
 
     const input = relaySendSchema.parse({
       to: 'Alice',
@@ -94,11 +99,11 @@ describe('relay_send', () => {
     const result = await handleRelaySend(mockClient, input);
 
     expect(result).toBe('Message sent to Alice');
-    expect(mockClient.send).toHaveBeenCalledWith('Alice', 'Hello', { thread: undefined });
+    expect(mockClient.sendMessage).toHaveBeenCalledWith({ to: 'Alice', text: 'Hello', threadId: undefined });
   });
 
   it('sends to a channel', async () => {
-    vi.mocked(mockClient.send).mockResolvedValue(undefined);
+    vi.mocked(mockClient.sendMessage).mockResolvedValue({ event_id: 'e1', targets: ['#general'] });
 
     const input = relaySendSchema.parse({
       to: '#general',
@@ -107,7 +112,7 @@ describe('relay_send', () => {
     const result = await handleRelaySend(mockClient, input);
 
     expect(result).toBe('Message sent to #general');
-    expect(mockClient.send).toHaveBeenCalledWith('#general', 'Team update', { thread: undefined });
+    expect(mockClient.sendMessage).toHaveBeenCalledWith({ to: '#general', text: 'Team update', threadId: undefined });
   });
 
   it('awaits response when requested', async () => {
@@ -374,7 +379,7 @@ describe('relay_spawn', () => {
   });
 
   it('returns success message when worker spawns', async () => {
-    vi.mocked(mockClient.spawn).mockResolvedValue({ success: true });
+    vi.mocked(mockClient.spawnPty).mockResolvedValue({ name: 'TestRunner', runtime: 'pty' as any });
 
     const result = await handleRelaySpawn(mockClient, {
       name: 'TestRunner',
@@ -385,17 +390,18 @@ describe('relay_spawn', () => {
     });
 
     expect(result).toContain('spawned successfully');
-    expect(mockClient.spawn).toHaveBeenCalledWith({
+    expect(mockClient.spawnPty).toHaveBeenCalledWith({
       name: 'TestRunner',
       cli: 'claude',
       task: 'Run tests',
       model: 'claude-3',
       cwd: '/tmp',
+      channels: ['general'],
     });
   });
 
   it('returns failure message when spawn fails', async () => {
-    vi.mocked(mockClient.spawn).mockResolvedValue({ success: false, error: 'Busy' });
+    vi.mocked(mockClient.spawnPty).mockRejectedValue(new Error('Busy'));
 
     const result = await handleRelaySpawn(mockClient, {
       name: 'Worker',
@@ -494,7 +500,7 @@ describe('multi-agent scenarios', () => {
   });
 
   it('spawns multiple workers sequentially', async () => {
-    vi.mocked(mockClient.spawn).mockResolvedValue({ success: true });
+    vi.mocked(mockClient.spawnPty).mockResolvedValue({ name: 'Worker', runtime: 'pty' as any });
 
     // Spawn Worker1
     const result1 = await handleRelaySpawn(mockClient, {
@@ -520,7 +526,7 @@ describe('multi-agent scenarios', () => {
     });
     expect(result3).toContain('spawned successfully');
 
-    expect(mockClient.spawn).toHaveBeenCalledTimes(3);
+    expect(mockClient.spawnPty).toHaveBeenCalledTimes(3);
   });
 
   it('lists multiple agents with different statuses', async () => {
@@ -586,7 +592,7 @@ describe('message threading', () => {
   });
 
   it('sends message with thread ID', async () => {
-    vi.mocked(mockClient.send).mockResolvedValue(undefined);
+    vi.mocked(mockClient.sendMessage).mockResolvedValue({ event_id: 'e1', targets: [] });
 
     const input = relaySendSchema.parse({
       to: 'Worker',
@@ -595,8 +601,10 @@ describe('message threading', () => {
     });
     await handleRelaySend(mockClient, input);
 
-    expect(mockClient.send).toHaveBeenCalledWith('Worker', 'Continue task', {
-      thread: 'task-thread-123',
+    expect(mockClient.sendMessage).toHaveBeenCalledWith({
+      to: 'Worker',
+      text: 'Continue task',
+      threadId: 'task-thread-123',
     });
   });
 
@@ -627,7 +635,7 @@ describe('broadcast scenarios', () => {
   });
 
   it('sends messages to multiple agents', async () => {
-    vi.mocked(mockClient.send).mockResolvedValue(undefined);
+    vi.mocked(mockClient.sendMessage).mockResolvedValue({ event_id: 'e1', targets: [] });
     const agents = ['Alice', 'Bob', 'Charlie'];
 
     for (const agent of agents) {
@@ -638,10 +646,10 @@ describe('broadcast scenarios', () => {
       await handleRelaySend(mockClient, input);
     }
 
-    expect(mockClient.send).toHaveBeenCalledTimes(3);
-    expect(mockClient.send).toHaveBeenCalledWith('Alice', 'Broadcast message to all', { thread: undefined });
-    expect(mockClient.send).toHaveBeenCalledWith('Bob', 'Broadcast message to all', { thread: undefined });
-    expect(mockClient.send).toHaveBeenCalledWith('Charlie', 'Broadcast message to all', { thread: undefined });
+    expect(mockClient.sendMessage).toHaveBeenCalledTimes(3);
+    expect(mockClient.sendMessage).toHaveBeenCalledWith({ to: 'Alice', text: 'Broadcast message to all', threadId: undefined });
+    expect(mockClient.sendMessage).toHaveBeenCalledWith({ to: 'Bob', text: 'Broadcast message to all', threadId: undefined });
+    expect(mockClient.sendMessage).toHaveBeenCalledWith({ to: 'Charlie', text: 'Broadcast message to all', threadId: undefined });
   });
 
   it('receives messages from multiple senders', async () => {
@@ -674,12 +682,12 @@ describe('negotiation workflow', () => {
   });
 
   it('coordinates multi-round communication', async () => {
-    vi.mocked(mockClient.spawn).mockResolvedValue({ success: true });
-    vi.mocked(mockClient.send).mockResolvedValue(undefined);
+    vi.mocked(mockClient.spawnPty).mockResolvedValue({ name: 'Worker', runtime: 'pty' as any });
+    vi.mocked(mockClient.sendMessage).mockResolvedValue({ event_id: 'e1', targets: [] });
     vi.mocked(mockClient.sendAndWait)
-      .mockResolvedValueOnce({ from: 'Frontend', content: 'Frontend priorities: Design System, Accessibility' })
-      .mockResolvedValueOnce({ from: 'Backend', content: 'Backend priorities: Microservices, Caching' })
-      .mockResolvedValueOnce({ from: 'Infra', content: 'Infra priorities: Kubernetes, Multi-Region' });
+      .mockResolvedValueOnce({ from: 'Frontend', content: 'Frontend priorities: Design System, Accessibility' } as any)
+      .mockResolvedValueOnce({ from: 'Backend', content: 'Backend priorities: Microservices, Caching' } as any)
+      .mockResolvedValueOnce({ from: 'Infra', content: 'Infra priorities: Kubernetes, Multi-Region' } as any);
 
     // Spawn agents
     const teams = ['Frontend', 'Backend', 'Infra'];
@@ -690,7 +698,7 @@ describe('negotiation workflow', () => {
         task: `You are the ${team} team lead`,
       });
     }
-    expect(mockClient.spawn).toHaveBeenCalledTimes(3);
+    expect(mockClient.spawnPty).toHaveBeenCalledTimes(3);
 
     // Request introductions (with await_response)
     for (const team of teams) {
@@ -1254,7 +1262,7 @@ describe('SDK/MCP parity scenarios', () => {
 
   it('full orchestration workflow with all tool types', async () => {
     // Setup mocks
-    vi.mocked(mockClient.spawn).mockResolvedValue({ success: true });
+    vi.mocked(mockClient.spawnPty).mockResolvedValue({ name: 'Worker', runtime: 'pty' as any });
     vi.mocked(mockClient.joinChannel).mockResolvedValue({ success: true });
     vi.mocked(mockClient.sendChannelMessage).mockResolvedValue(undefined);
     vi.mocked(mockClient.broadcast).mockResolvedValue(undefined);
@@ -1266,7 +1274,7 @@ describe('SDK/MCP parity scenarios', () => {
     // 1. Spawn workers
     await handleRelaySpawn(mockClient, { name: 'Worker1', cli: 'claude', task: 'Frontend' });
     await handleRelaySpawn(mockClient, { name: 'Worker2', cli: 'claude', task: 'Backend' });
-    expect(mockClient.spawn).toHaveBeenCalledTimes(2);
+    expect(mockClient.spawnPty).toHaveBeenCalledTimes(2);
 
     // 2. Join a coordination channel
     await handleRelayChannelJoin(mockClient, { channel: '#coordination' });
@@ -1300,9 +1308,9 @@ describe('SDK/MCP parity scenarios', () => {
   });
 
   it('shadow agent monitoring workflow', async () => {
-    vi.mocked(mockClient.spawn).mockResolvedValue({ success: true });
+    vi.mocked(mockClient.spawnPty).mockResolvedValue({ name: 'Worker', runtime: 'pty' as any });
     vi.mocked(mockClient.bindAsShadow).mockResolvedValue({ success: true });
-    vi.mocked(mockClient.send).mockResolvedValue(undefined);
+    vi.mocked(mockClient.sendMessage).mockResolvedValue({ event_id: 'e1', targets: [] });
     vi.mocked(mockClient.unbindAsShadow).mockResolvedValue({ success: true });
     vi.mocked(mockClient.release).mockResolvedValue({ success: true });
 
@@ -1335,7 +1343,7 @@ describe('SDK/MCP parity scenarios', () => {
   });
 
   it('pub/sub topic workflow', async () => {
-    vi.mocked(mockClient.spawn).mockResolvedValue({ success: true });
+    vi.mocked(mockClient.spawnPty).mockResolvedValue({ name: 'Worker', runtime: 'pty' as any });
     vi.mocked(mockClient.subscribe).mockResolvedValue({ success: true });
     vi.mocked(mockClient.broadcast).mockResolvedValue(undefined);
     vi.mocked(mockClient.unsubscribe).mockResolvedValue({ success: true });
@@ -1346,7 +1354,7 @@ describe('SDK/MCP parity scenarios', () => {
     for (const name of workers) {
       await handleRelaySpawn(mockClient, { name, cli: 'claude', task: 'Subscribe test' });
     }
-    expect(mockClient.spawn).toHaveBeenCalledTimes(3);
+    expect(mockClient.spawnPty).toHaveBeenCalledTimes(3);
 
     // 2. Subscribe all workers to a topic
     for (const _ of workers) {
@@ -1411,7 +1419,7 @@ describe('relay_set_model', () => {
   });
 
   it('should return success message with previous model when switch succeeds', async () => {
-    vi.mocked(mockClient.setWorkerModel).mockResolvedValue({
+    vi.mocked(mockClient.setModel).mockResolvedValue({
       success: true,
       name: 'Worker1',
       model: 'opus',
@@ -1425,13 +1433,13 @@ describe('relay_set_model', () => {
     const result = await handleRelaySetModel(mockClient, input);
 
     expect(result).toBe('Model for "Worker1" switched to "opus" (was: sonnet).');
-    expect(mockClient.setWorkerModel).toHaveBeenCalledWith('Worker1', 'opus', {
+    expect(mockClient.setModel).toHaveBeenCalledWith('Worker1', 'opus', {
       timeoutMs: undefined,
     });
   });
 
   it('should return success message without previous model when not provided', async () => {
-    vi.mocked(mockClient.setWorkerModel).mockResolvedValue({
+    vi.mocked(mockClient.setModel).mockResolvedValue({
       success: true,
       name: 'Worker1',
       model: 'haiku',
@@ -1447,7 +1455,7 @@ describe('relay_set_model', () => {
   });
 
   it('should pass timeout_ms as timeoutMs option when provided', async () => {
-    vi.mocked(mockClient.setWorkerModel).mockResolvedValue({
+    vi.mocked(mockClient.setModel).mockResolvedValue({
       success: true,
       name: 'Worker1',
       model: 'opus',
@@ -1461,13 +1469,13 @@ describe('relay_set_model', () => {
     });
     await handleRelaySetModel(mockClient, input);
 
-    expect(mockClient.setWorkerModel).toHaveBeenCalledWith('Worker1', 'opus', {
+    expect(mockClient.setModel).toHaveBeenCalledWith('Worker1', 'opus', {
       timeoutMs: 60000,
     });
   });
 
   it('should return error message when model switch fails', async () => {
-    vi.mocked(mockClient.setWorkerModel).mockResolvedValue({
+    vi.mocked(mockClient.setModel).mockResolvedValue({
       success: false,
       name: 'Worker1',
       model: 'opus',
@@ -1481,7 +1489,7 @@ describe('relay_set_model', () => {
     const result = await handleRelaySetModel(mockClient, input);
 
     expect(result).toBe('Failed to switch model for "Worker1": Agent not found');
-    expect(mockClient.setWorkerModel).toHaveBeenCalledWith('Worker1', 'opus', {
+    expect(mockClient.setModel).toHaveBeenCalledWith('Worker1', 'opus', {
       timeoutMs: undefined,
     });
   });

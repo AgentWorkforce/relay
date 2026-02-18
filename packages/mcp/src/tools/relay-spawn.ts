@@ -71,17 +71,18 @@ export async function handleRelaySpawn(
 ): Promise<string> {
   const { name, cli, task, model, cwd } = input;
 
-  const result = await client.spawn({
-    name,
-    cli,
-    task,
-    model,
-    cwd,
-  });
-
-  if (result.success) {
+  try {
+    await client.spawnPty({
+      name,
+      cli,
+      task,
+      model,
+      cwd,
+      channels: ['general'],
+    });
     return `Worker "${name}" spawned successfully. It will message you when ready.`;
-  } else {
-    return `Failed to spawn worker: ${result.error}`;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return `Failed to spawn worker: ${message}`;
   }
 }

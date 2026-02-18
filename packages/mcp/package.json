@@ -47,24 +47,24 @@
     "prepublishOnly": "npm run clean && npm run build && npm test"
   },
   "dependencies": {
+    "@agent-relay/broker-sdk": "2.3.4",
     "@agent-relay/config": "2.3.4",
-    "@agent-relay/protocol": "2.3.4",
     "@agent-relay/utils": "2.3.4",
+    "@relaycast/sdk": "^0.2.5",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "smol-toml": "^1.6.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@agent-relay/sdk": "2.3.4",
     "@types/node": "^22.19.3",
     "typescript": "^5.9.3",
     "vitest": "^2.1.9"
   },
   "peerDependencies": {
-    "@agent-relay/sdk": ">=2.0.0"
+    "@agent-relay/broker-sdk": ">=2.0.0"
   },
   "peerDependenciesMeta": {
-    "@agent-relay/sdk": {
+    "@agent-relay/broker-sdk": {
       "optional": true
     }
   },

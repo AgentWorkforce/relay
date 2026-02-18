@@ -487,8 +487,8 @@ function setupWorkspacePackageLinks() {
     return { needed: false };
   }
 
-  // Check if node_modules/@agent-relay/daemon exists
-  const testPackage = path.join(scopeDir, 'daemon');
+  // Check if node_modules/@agent-relay/config exists
+  const testPackage = path.join(scopeDir, 'config');
   if (fs.existsSync(testPackage)) {
     // Already set up (either normal npm install or previously linked)
     info('Workspace packages already available in node_modules');

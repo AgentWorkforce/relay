@@ -35,6 +35,11 @@ export interface SpawnPtyInput {
   args?: string[];
   channels?: string[];
   task?: string;
+  model?: string;
+  cwd?: string;
+  team?: string;
+  shadowOf?: string;
+  shadowMode?: string;
 }
 
 export interface SpawnHeadlessClaudeInput {
@@ -166,6 +171,11 @@ export class AgentRelayClient {
       cli: input.cli,
       args: input.args ?? [],
       channels: input.channels ?? [],
+      model: input.model,
+      cwd: input.cwd,
+      team: input.team,
+      shadow_of: input.shadowOf,
+      shadow_mode: input.shadowMode,
     };
     const result = await this.requestOk<{ name: string; runtime: AgentRuntime }>("spawn_agent", {
       agent,
@@ -191,9 +201,36 @@ export class AgentRelayClient {
     return result;
   }
 
-  async release(name: string): Promise<{ name: string }> {
+  async release(name: string, reason?: string): Promise<{ name: string }> {
     await this.start();
-    return this.requestOk<{ name: string }>("release_agent", { name });
+    return this.requestOk<{ name: string }>("release_agent", { name, reason });
+  }
+
+  async sendInput(name: string, data: string): Promise<{ name: string; bytes_written: number }> {
+    await this.start();
+    return this.requestOk<{ name: string; bytes_written: number }>("send_input", { name, data });
+  }
+
+  async setModel(
+    name: string,
+    model: string,
+    opts?: { timeoutMs?: number },
+  ): Promise<{ name: string; model: string; success: boolean }> {
+    await this.start();
+    return this.requestOk<{ name: string; model: string; success: boolean }>("set_model", {
+      name,
+      model,
+      timeout_ms: opts?.timeoutMs,
+    });
+  }
+
+  async getMetrics(agent?: string): Promise<{
+    agents: Array<{ name: string; pid: number; memory_bytes: number; uptime_secs: number }>;
+  }> {
+    await this.start();
+    return this.requestOk<{
+      agents: Array<{ name: string; pid: number; memory_bytes: number; uptime_secs: number }>;
+    }>("get_metrics", { agent });
   }
 
   async sendMessage(

@@ -1,60 +1,55 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// Mock createRelaycastClient before importing the adapter
+vi.mock('@agent-relay/broker-sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@agent-relay/broker-sdk')>();
+  return {
+    ...actual,
+    createRelaycastClient: vi.fn(),
+  };
+});
+
 import { createRelayClientAdapter, type RelayClient } from '../src/client-adapter.js';
+import { createRelaycastClient } from '@agent-relay/broker-sdk';
+
+const mockCreateRelaycastClient = vi.mocked(createRelaycastClient);
 
 /**
- * Mock SDK RelayClient for testing the adapter layer.
- * The adapter wraps SDK methods and translates between MCP and SDK interfaces.
+ * Mock AgentRelayClient (broker-sdk) for testing the adapter layer.
+ * The adapter wraps broker-sdk methods and translates between MCP and broker-sdk interfaces.
  */
-function createMockSdkClient() {
+function createMockBrokerClient() {
   return {
-    state: 'READY',
-    connect: vi.fn().mockResolvedValue(undefined),
-    destroy: vi.fn(),
-    // SDK sendMessage signature: (to, message, kind, data, thread)
-    sendMessage: vi.fn().mockReturnValue(true),
-    sendAndWait: vi.fn().mockResolvedValue({ success: true }),
-    // SDK broadcast signature: (message, kind, data)
-    broadcast: vi.fn().mockReturnValue(true),
-    spawn: vi.fn().mockResolvedValue({ success: true, name: 'Worker', pid: 12345 }),
-    // SDK release signature: (name, reason)
-    release: vi.fn().mockResolvedValue({ success: true }),
-    getInbox: vi.fn().mockResolvedValue([]),
+    sendMessage: vi.fn().mockResolvedValue({ event_id: 'evt-1', targets: ['target'] }),
+    spawnPty: vi.fn().mockResolvedValue({ name: 'Worker', runtime: 'pty' }),
+    release: vi.fn().mockResolvedValue({ name: 'Worker' }),
     listAgents: vi.fn().mockResolvedValue([]),
-    listConnectedAgents: vi.fn().mockResolvedValue([]),
-    getStatus: vi.fn().mockResolvedValue({ version: '1.0.0', uptime: 3600000 }),
-    getHealth: vi.fn().mockResolvedValue({ healthy: true }),
+    getStatus: vi.fn().mockResolvedValue({ agents: 0, pending: 0 }),
     getMetrics: vi.fn().mockResolvedValue({ agents: [] }),
-    queryMessages: vi.fn().mockResolvedValue([]),
-    sendLog: vi.fn().mockResolvedValue(undefined),
-    subscribe: vi.fn().mockReturnValue(true),
-    unsubscribe: vi.fn().mockReturnValue(true),
-    joinChannel: vi.fn().mockReturnValue(true),
-    leaveChannel: vi.fn().mockReturnValue(true),
-    // SDK sendChannelMessage signature: (channel, message, options)
-    sendChannelMessage: vi.fn().mockReturnValue(true),
-    adminJoinChannel: vi.fn().mockReturnValue(true),
-    adminRemoveMember: vi.fn().mockReturnValue(true),
-    // SDK bindAsShadow signature: (primaryAgent, options)
-    bindAsShadow: vi.fn().mockReturnValue(true),
-    unbindAsShadow: vi.fn().mockReturnValue(true),
-    createProposal: vi.fn().mockReturnValue(true),
-    vote: vi.fn().mockReturnValue(true),
-    removeAgent: vi.fn().mockResolvedValue({ success: true, removed: true }),
-    // Event emitter methods
-    on: vi.fn(),
-    off: vi.fn(),
-    once: vi.fn(),
-    emit: vi.fn(),
+    setModel: vi.fn().mockResolvedValue({ success: true, name: 'Worker', model: 'opus' }),
+    shutdown: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+function createMockRelaycastAgent() {
+  return {
+    inbox: vi.fn().mockResolvedValue({ mentions: [], unread_dms: [], unread_channels: [] }),
+    client: {
+      get: vi.fn().mockResolvedValue({}),
+    },
   };
 }
 
 describe('RelayClient Adapter', () => {
-  let mockSdkClient: ReturnType<typeof createMockSdkClient>;
+  let mockBrokerClient: ReturnType<typeof createMockBrokerClient>;
+  let mockRelaycastAgent: ReturnType<typeof createMockRelaycastAgent>;
   let client: RelayClient;
 
   beforeEach(() => {
-    mockSdkClient = createMockSdkClient();
-    client = createRelayClientAdapter(mockSdkClient as any, {
+    mockBrokerClient = createMockBrokerClient();
+    mockRelaycastAgent = createMockRelaycastAgent();
+    mockCreateRelaycastClient.mockResolvedValue(mockRelaycastAgent as any);
+    client = createRelayClientAdapter(mockBrokerClient as any, {
       agentName: 'test-agent',
       socketPath: '/tmp/test.sock',
     });
@@ -68,20 +63,37 @@ describe('RelayClient Adapter', () => {
     it('sends a message to target', async () => {
       await client.send('Alice', 'Hello');
 
-      // SDK signature: sendMessage(to, message, kind, data, thread)
-      expect(mockSdkClient.sendMessage).toHaveBeenCalledWith('Alice', 'Hello', 'message', undefined, undefined);
+      // Adapter calls broker sendMessage with object
+      expect(mockBrokerClient.sendMessage).toHaveBeenCalledWith({
+        to: 'Alice',
+        text: 'Hello',
+        from: 'test-agent',
+        threadId: undefined,
+      });
     });
 
     it('sends a message with thread', async () => {
       await client.send('Worker', 'Continue', { thread: 'task-123' });
 
-      expect(mockSdkClient.sendMessage).toHaveBeenCalledWith('Worker', 'Continue', 'message', undefined, 'task-123');
+      expect(mockBrokerClient.sendMessage).toHaveBeenCalledWith({
+        to: 'Worker',
+        text: 'Continue',
+        from: 'test-agent',
+        threadId: 'task-123',
+      });
     });
 
     it('sends a message with custom kind and data', async () => {
+      // Note: broker-sdk sendMessage doesn't support kind/data, but the adapter
+      // accepts the options for interface compatibility and sends the text
       await client.send('Bob', 'Status update', { kind: 'status', data: { progress: 50 } });
 
-      expect(mockSdkClient.sendMessage).toHaveBeenCalledWith('Bob', 'Status update', 'status', { progress: 50 }, undefined);
+      expect(mockBrokerClient.sendMessage).toHaveBeenCalledWith({
+        to: 'Bob',
+        text: 'Status update',
+        from: 'test-agent',
+        threadId: undefined,
+      });
     });
   });
 
@@ -89,20 +101,28 @@ describe('RelayClient Adapter', () => {
     it('broadcasts to all agents', async () => {
       await client.broadcast('Hello everyone');
 
-      // SDK signature: broadcast(message, kind, data)
-      expect(mockSdkClient.broadcast).toHaveBeenCalledWith('Hello everyone', 'message', undefined);
+      // Adapter sends to '*' via sendMessage
+      expect(mockBrokerClient.sendMessage).toHaveBeenCalledWith({
+        to: '*',
+        text: 'Hello everyone',
+        from: 'test-agent',
+      });
     });
 
     it('broadcasts with custom kind', async () => {
       await client.broadcast('System notice', { kind: 'alert' });
 
-      expect(mockSdkClient.broadcast).toHaveBeenCalledWith('System notice', 'alert', undefined);
+      expect(mockBrokerClient.sendMessage).toHaveBeenCalledWith({
+        to: '*',
+        text: 'System notice',
+        from: 'test-agent',
+      });
     });
   });
 
   describe('spawn', () => {
     it('spawns a worker with basic options', async () => {
-      mockSdkClient.spawn.mockResolvedValue({ success: true, name: 'Worker1', pid: 12345 });
+      mockBrokerClient.spawnPty.mockResolvedValue({ name: 'Worker1', runtime: 'pty' });
 
       const result = await client.spawn({
         name: 'Worker1',
@@ -112,16 +132,18 @@ describe('RelayClient Adapter', () => {
 
       expect(result.success).toBe(true);
       expect(result.name).toBe('Worker1');
-      expect(result.pid).toBe(12345);
-      expect(mockSdkClient.spawn).toHaveBeenCalledWith({
+      expect(mockBrokerClient.spawnPty).toHaveBeenCalledWith({
         name: 'Worker1',
         cli: 'claude',
         task: 'Test task',
+        model: undefined,
+        cwd: undefined,
+        channels: ['general'],
       });
     });
 
     it('spawns a worker with all options', async () => {
-      mockSdkClient.spawn.mockResolvedValue({ success: true, name: 'TestWorker', pid: 54321 });
+      mockBrokerClient.spawnPty.mockResolvedValue({ name: 'TestWorker', runtime: 'pty' });
 
       const result = await client.spawn({
         name: 'TestWorker',
@@ -132,17 +154,18 @@ describe('RelayClient Adapter', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(mockSdkClient.spawn).toHaveBeenCalledWith({
+      expect(mockBrokerClient.spawnPty).toHaveBeenCalledWith({
         name: 'TestWorker',
         cli: 'codex',
         task: 'Complex task',
         model: 'gpt-4',
         cwd: '/tmp/project',
+        channels: ['general'],
       });
     });
 
     it('handles spawn failure', async () => {
-      mockSdkClient.spawn.mockResolvedValue({ success: false, name: 'FailWorker', error: 'Out of resources' });
+      mockBrokerClient.spawnPty.mockRejectedValue(new Error('Out of resources'));
 
       const result = await client.spawn({
         name: 'FailWorker',
@@ -157,26 +180,25 @@ describe('RelayClient Adapter', () => {
 
   describe('release', () => {
     it('releases a worker', async () => {
-      mockSdkClient.release.mockResolvedValue({ success: true });
+      mockBrokerClient.release.mockResolvedValue({ name: 'Worker1' });
 
       const result = await client.release('Worker1');
 
       expect(result.success).toBe(true);
-      // SDK signature: release(name, reason)
-      expect(mockSdkClient.release).toHaveBeenCalledWith('Worker1', undefined);
+      expect(mockBrokerClient.release).toHaveBeenCalledWith('Worker1', undefined);
     });
 
     it('releases a worker with reason', async () => {
-      mockSdkClient.release.mockResolvedValue({ success: true });
+      mockBrokerClient.release.mockResolvedValue({ name: 'Worker1' });
 
       const result = await client.release('Worker1', 'task completed');
 
       expect(result.success).toBe(true);
-      expect(mockSdkClient.release).toHaveBeenCalledWith('Worker1', 'task completed');
+      expect(mockBrokerClient.release).toHaveBeenCalledWith('Worker1', 'task completed');
     });
 
     it('handles release failure', async () => {
-      mockSdkClient.release.mockResolvedValue({ success: false, error: 'Agent not found' });
+      mockBrokerClient.release.mockRejectedValue(new Error('Agent not found'));
 
       const result = await client.release('NonExistent');
 
@@ -187,19 +209,27 @@ describe('RelayClient Adapter', () => {
 
   describe('getInbox', () => {
     it('returns empty inbox', async () => {
-      mockSdkClient.getInbox.mockResolvedValue([]);
+      mockRelaycastAgent.inbox.mockResolvedValue({
+        mentions: [],
+        unread_dms: [],
+        unread_channels: [],
+      });
 
       const inbox = await client.getInbox();
 
       expect(inbox).toEqual([]);
-      expect(mockSdkClient.getInbox).toHaveBeenCalled();
     });
 
     it('maps inbox messages correctly', async () => {
-      mockSdkClient.getInbox.mockResolvedValue([
-        { id: '1', from: 'Alice', body: 'Hi there', channel: '#team', thread: 'thr-1' },
-        { id: '2', from: 'Bob', body: 'Hello' },
-      ]);
+      mockRelaycastAgent.inbox.mockResolvedValue({
+        mentions: [
+          { id: '1', channel_name: '#team', agent_name: 'Alice', text: 'Hi there', created_at: '2024-01-01T00:00:00Z' },
+        ],
+        unread_dms: [
+          { conversation_id: 'conv-2', from: 'Bob', unread_count: 1, last_message: 'Hello' },
+        ],
+        unread_channels: [],
+      });
 
       const inbox = await client.getInbox();
 
@@ -209,10 +239,10 @@ describe('RelayClient Adapter', () => {
         from: 'Alice',
         content: 'Hi there',
         channel: '#team',
-        thread: 'thr-1',
+        thread: undefined,
       });
       expect(inbox[1]).toEqual({
-        id: '2',
+        id: expect.stringContaining('dm:conv-2'),
         from: 'Bob',
         content: 'Hello',
         channel: undefined,
@@ -221,65 +251,63 @@ describe('RelayClient Adapter', () => {
     });
 
     it('passes filter options', async () => {
-      mockSdkClient.getInbox.mockResolvedValue([]);
-
-      await client.getInbox({ limit: 10, unread_only: true, from: 'Alice' });
-
-      expect(mockSdkClient.getInbox).toHaveBeenCalledWith({
-        limit: 10,
-        unreadOnly: true,
-        from: 'Alice',
-        channel: undefined,
+      mockRelaycastAgent.inbox.mockResolvedValue({
+        mentions: [
+          { id: '1', channel_name: '#team', agent_name: 'Alice', text: 'Msg 1', created_at: '2024-01-01T00:00:00Z' },
+          { id: '2', channel_name: '#team', agent_name: 'Bob', text: 'Msg 2', created_at: '2024-01-01T00:00:01Z' },
+        ],
+        unread_dms: [],
+        unread_channels: [],
       });
+
+      const inbox = await client.getInbox({ limit: 10, unread_only: true, from: 'Alice' });
+
+      // Adapter filters by from client-side
+      expect(inbox).toHaveLength(1);
+      expect(inbox[0].from).toBe('Alice');
     });
   });
 
   describe('listAgents', () => {
     it('returns list of agents', async () => {
-      const mockAgents = [
-        { name: 'Orchestrator', cli: 'sdk', idle: false },
-        { name: 'Worker1', cli: 'claude', idle: false, parent: 'Orchestrator' },
-        { name: 'Worker2', cli: 'claude', idle: true, parent: 'Orchestrator' },
-      ];
-      mockSdkClient.listAgents.mockResolvedValue(mockAgents);
+      mockBrokerClient.listAgents.mockResolvedValue([
+        { name: 'Orchestrator', runtime: 'headless_claude', parent: undefined, pid: 100 },
+        { name: 'Worker1', runtime: 'pty', parent: 'Orchestrator', pid: 101 },
+        { name: 'Worker2', runtime: 'pty', parent: 'Orchestrator', pid: 102 },
+      ]);
 
       const agents = await client.listAgents({ include_idle: true });
 
       expect(agents).toHaveLength(3);
       expect(agents[0].name).toBe('Orchestrator');
+      expect(agents[0].cli).toBe('claude'); // headless_claude maps to 'claude'
       expect(agents[1].parent).toBe('Orchestrator');
-      expect(agents[2].idle).toBe(true);
+      expect(agents[1].cli).toBe('pty'); // pty maps to 'pty'
     });
 
     it('passes options correctly', async () => {
-      mockSdkClient.listAgents.mockResolvedValue([]);
+      mockBrokerClient.listAgents.mockResolvedValue([]);
 
       await client.listAgents({ include_idle: false, project: 'myproject' });
 
-      expect(mockSdkClient.listAgents).toHaveBeenCalledWith({
-        includeIdle: false,
-        project: 'myproject',
-      });
+      // Adapter calls listAgents with no args (broker-sdk doesn't support filtering)
+      expect(mockBrokerClient.listAgents).toHaveBeenCalled();
     });
   });
 
   describe('getStatus', () => {
     it('returns connection status', async () => {
-      mockSdkClient.getStatus.mockResolvedValue({ version: '2.0.0', uptime: 7200000 });
-      mockSdkClient.state = 'READY';
+      mockBrokerClient.getStatus.mockResolvedValue({ agents: 2, pending: 0 });
 
       const status = await client.getStatus();
 
       expect(status.connected).toBe(true);
       expect(status.agentName).toBe('test-agent');
-      expect(status.daemonVersion).toBe('2.0.0');
-      expect(status.uptime).toBe('7200s');
+      expect(status.daemonVersion).toBe('broker-sdk');
     });
 
     it('handles error state by returning disconnected', async () => {
-      // The adapter catches errors from getStatus and returns disconnected status
-      // Need to make getStatus throw (not connect) since ensureReady won't call connect if state is READY
-      mockSdkClient.getStatus.mockRejectedValue(new Error('Connection failed'));
+      mockBrokerClient.getStatus.mockRejectedValue(new Error('Connection failed'));
 
       const status = await client.getStatus();
 
@@ -289,20 +317,7 @@ describe('RelayClient Adapter', () => {
   });
 
   describe('queryMessages', () => {
-    it('returns queried messages', async () => {
-      const mockMessages = [
-        {
-          id: 'm1',
-          from: 'Alice',
-          to: 'Bob',
-          body: 'Hi',
-          channel: '#team',
-          thread: 'thr-1',
-          timestamp: 1700000000000,
-        },
-      ];
-      mockSdkClient.queryMessages.mockResolvedValue(mockMessages);
-
+    it('returns empty array (unsupported in broker-sdk)', async () => {
       const result = await client.queryMessages({
         limit: 5,
         from: 'Alice',
@@ -311,75 +326,73 @@ describe('RelayClient Adapter', () => {
         order: 'asc',
       });
 
-      expect(result).toEqual(mockMessages);
-      expect(mockSdkClient.queryMessages).toHaveBeenCalledWith({
-        limit: 5,
-        from: 'Alice',
-        to: 'Bob',
-        thread: 'thr-1',
-        order: 'asc',
-      });
+      expect(result).toEqual([]);
     });
   });
 
   describe('sendLog', () => {
-    it('sends log data', async () => {
+    it('sends log data via sendMessage to #logs channel', async () => {
       await client.sendLog('hello world');
 
-      expect(mockSdkClient.sendLog).toHaveBeenCalledWith('hello world');
+      expect(mockBrokerClient.sendMessage).toHaveBeenCalledWith({
+        to: '#logs',
+        text: 'hello world',
+        from: 'test-agent',
+      });
     });
   });
 
   describe('channels', () => {
-    it('joins a channel', async () => {
-      mockSdkClient.joinChannel.mockReturnValue(true);
-
+    it('joins a channel (unsupported)', async () => {
       const result = await client.joinChannel('#general', 'TestAgent');
 
-      expect(result.success).toBe(true);
-      expect(mockSdkClient.joinChannel).toHaveBeenCalledWith('#general', 'TestAgent');
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('not supported');
     });
 
-    it('leaves a channel', async () => {
-      mockSdkClient.leaveChannel.mockReturnValue(true);
-
+    it('leaves a channel (unsupported)', async () => {
       const result = await client.leaveChannel('#general', 'done with project');
 
-      expect(result.success).toBe(true);
-      expect(mockSdkClient.leaveChannel).toHaveBeenCalledWith('#general', 'done with project');
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('not supported');
     });
 
     it('sends channel message', async () => {
       await client.sendChannelMessage('#team', 'Hello team');
 
-      // SDK signature: sendChannelMessage(channel, message, { thread })
-      expect(mockSdkClient.sendChannelMessage).toHaveBeenCalledWith('#team', 'Hello team', { thread: undefined });
+      expect(mockBrokerClient.sendMessage).toHaveBeenCalledWith({
+        to: '#team',
+        text: 'Hello team',
+        from: 'test-agent',
+        threadId: undefined,
+      });
     });
 
     it('sends channel message with thread', async () => {
       await client.sendChannelMessage('#team', 'Reply', { thread: 'topic-1' });
 
-      expect(mockSdkClient.sendChannelMessage).toHaveBeenCalledWith('#team', 'Reply', { thread: 'topic-1' });
+      expect(mockBrokerClient.sendMessage).toHaveBeenCalledWith({
+        to: '#team',
+        text: 'Reply',
+        from: 'test-agent',
+        threadId: 'topic-1',
+      });
     });
   });
 
   describe('shadow binding', () => {
     it('binds as shadow', async () => {
-      mockSdkClient.bindAsShadow.mockReturnValue(true);
-
       const result = await client.bindAsShadow('PrimaryAgent', { speakOn: ['CODE_WRITTEN'] });
 
       expect(result.success).toBe(true);
-      expect(mockSdkClient.bindAsShadow).toHaveBeenCalledWith('PrimaryAgent', { speakOn: ['CODE_WRITTEN'] });
     });
 
     it('unbinds as shadow', async () => {
-      mockSdkClient.unbindAsShadow.mockReturnValue(true);
-
+      // First bind, then unbind
+      await client.bindAsShadow('PrimaryAgent');
       const result = await client.unbindAsShadow('PrimaryAgent');
 
       expect(result.success).toBe(true);
-      expect(mockSdkClient.unbindAsShadow).toHaveBeenCalledWith('PrimaryAgent');
     });
   });
 });
@@ -389,12 +402,13 @@ describe('RelayClient Adapter', () => {
 // ============================================================================
 
 describe('RelayClient multi-agent scenarios', () => {
-  let mockSdkClient: ReturnType<typeof createMockSdkClient>;
+  let mockBrokerClient: ReturnType<typeof createMockBrokerClient>;
   let client: RelayClient;
 
   beforeEach(() => {
-    mockSdkClient = createMockSdkClient();
-    client = createRelayClientAdapter(mockSdkClient as any, {
+    mockBrokerClient = createMockBrokerClient();
+    mockCreateRelaycastClient.mockResolvedValue(createMockRelaycastAgent() as any);
+    client = createRelayClientAdapter(mockBrokerClient as any, {
       agentName: 'orchestrator',
       socketPath: '/tmp/test.sock',
     });
@@ -406,9 +420,9 @@ describe('RelayClient multi-agent scenarios', () => {
 
   it('spawns multiple workers from same orchestrator', async () => {
     let spawnCount = 0;
-    mockSdkClient.spawn.mockImplementation(async (opts: any) => {
+    mockBrokerClient.spawnPty.mockImplementation(async (opts: any) => {
       spawnCount++;
-      return { success: true, name: opts.name, pid: 10000 + spawnCount };
+      return { name: opts.name, runtime: 'pty' };
     });
 
     const results = await Promise.all([
@@ -419,7 +433,7 @@ describe('RelayClient multi-agent scenarios', () => {
 
     expect(results).toHaveLength(3);
     expect(results.every(r => r.success)).toBe(true);
-    expect(mockSdkClient.spawn).toHaveBeenCalledTimes(3);
+    expect(mockBrokerClient.spawnPty).toHaveBeenCalledTimes(3);
   });
 
   it('sends messages to multiple agents', async () => {
@@ -429,21 +443,38 @@ describe('RelayClient multi-agent scenarios', () => {
       targets.map(target => client.send(target, `Hello ${target}`))
     );
 
-    expect(mockSdkClient.sendMessage).toHaveBeenCalledTimes(3);
-    // SDK signature: sendMessage(to, message, kind, data, thread)
-    expect(mockSdkClient.sendMessage).toHaveBeenCalledWith('Alice', 'Hello Alice', 'message', undefined, undefined);
-    expect(mockSdkClient.sendMessage).toHaveBeenCalledWith('Bob', 'Hello Bob', 'message', undefined, undefined);
-    expect(mockSdkClient.sendMessage).toHaveBeenCalledWith('Charlie', 'Hello Charlie', 'message', undefined, undefined);
+    expect(mockBrokerClient.sendMessage).toHaveBeenCalledTimes(3);
+    expect(mockBrokerClient.sendMessage).toHaveBeenCalledWith({
+      to: 'Alice', text: 'Hello Alice', from: 'orchestrator', threadId: undefined,
+    });
+    expect(mockBrokerClient.sendMessage).toHaveBeenCalledWith({
+      to: 'Bob', text: 'Hello Bob', from: 'orchestrator', threadId: undefined,
+    });
+    expect(mockBrokerClient.sendMessage).toHaveBeenCalledWith({
+      to: 'Charlie', text: 'Hello Charlie', from: 'orchestrator', threadId: undefined,
+    });
   });
 
   it('handles inbox with multiple senders', async () => {
-    mockSdkClient.getInbox.mockResolvedValue([
-      { id: '1', from: 'Alice', body: 'Hello from Alice' },
-      { id: '2', from: 'Bob', body: 'Hello from Bob' },
-      { id: '3', from: 'Charlie', body: 'Hello from Charlie' },
-    ]);
+    const mockRelaycastAgent = createMockRelaycastAgent();
+    mockRelaycastAgent.inbox.mockResolvedValue({
+      mentions: [],
+      unread_dms: [
+        { conversation_id: 'c1', from: 'Alice', unread_count: 1, last_message: 'Hello from Alice' },
+        { conversation_id: 'c2', from: 'Bob', unread_count: 1, last_message: 'Hello from Bob' },
+        { conversation_id: 'c3', from: 'Charlie', unread_count: 1, last_message: 'Hello from Charlie' },
+      ],
+      unread_channels: [],
+    });
+    mockCreateRelaycastClient.mockResolvedValue(mockRelaycastAgent as any);
 
-    const inbox = await client.getInbox();
+    // Create a fresh adapter so it uses the new mock
+    const freshClient = createRelayClientAdapter(mockBrokerClient as any, {
+      agentName: 'orchestrator',
+      socketPath: '/tmp/test.sock',
+    });
+
+    const inbox = await freshClient.getInbox();
 
     expect(inbox).toHaveLength(3);
     expect(inbox.map(m => m.from)).toEqual(['Alice', 'Bob', 'Charlie']);

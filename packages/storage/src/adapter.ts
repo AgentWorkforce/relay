@@ -1,7 +1,20 @@
-import type { PayloadKind, SendMeta } from '@agent-relay/protocol/types';
 import path from 'node:path';
 
 export type MessageStatus = 'unread' | 'read' | 'acked' | 'failed';
+
+export type PayloadKind = 'message' | 'action' | 'state' | 'thinking';
+
+export interface SendMeta {
+  requires_ack?: boolean;
+  ttl_ms?: number;
+  importance?: number;
+  replyTo?: string;
+  sync?: {
+    correlationId: string;
+    timeoutMs?: number;
+    blocking: boolean;
+  };
+}
 
 /**
  * Lightweight storage health report for the daemon/CLI.

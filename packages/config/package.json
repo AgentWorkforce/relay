@@ -83,9 +83,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agent-relay/protocol": "2.3.4",
     "zod": "^3.23.8",
-    "zod-to-json-schema": "^3.23.1"
+    "zod-to-json-schema": "^3.23.1",
+    "@agent-relay/broker-sdk": "2.3.4"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",

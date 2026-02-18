@@ -33,8 +33,11 @@ import {
   type SpawnPtyInput,
 } from "./client.js";
 import type { AgentRuntime, BrokerEvent, BrokerStatus } from "./protocol.js";
-import { RelaycastApi } from "./relaycast.js";
-import { getLogs as getLogsFromFile, listLoggedAgents as listLoggedAgentsFromFile, type LogsResult, type GetLogsOptions } from "./logs.js";
+import {
+  getLogs as getLogsFromFile,
+  listLoggedAgents as listLoggedAgentsFromFile,
+  type LogsResult,
+} from "./logs.js";
 
 function isUnsupportedOperation(error: unknown): error is AgentRelayProtocolError {
   return error instanceof AgentRelayProtocolError && error.code === "unsupported_operation";
@@ -140,12 +143,12 @@ export class AgentRelay {
   private startPromise?: Promise<AgentRelayClient>;
   private unsubEvent?: () => void;
   private readonly knownAgents = new Map<string, Agent>();
+  private readonly readyAgents = new Set<string>();
   private readonly exitResolvers = new Map<
     string,
     { resolve: (reason: "exited" | "released") => void; token: number }
   >();
   private exitResolverSeq = 0;
-  private readonly relaycastByName = new Map<string, RelaycastApi>();
 
   constructor(options: AgentRelayOptions = {}) {
     this.defaultChannels = options.channels ?? ["general"];
@@ -176,6 +179,11 @@ export class AgentRelay {
       args: input.args,
       channels,
       task: input.task,
+      model: input.model,
+      cwd: input.cwd,
+      team: input.team,
+      shadowOf: input.shadowOf,
+      shadowMode: input.shadowMode,
     });
     const agent = this.makeAgent(result.name, result.runtime, channels);
     this.knownAgents.set(agent.name, agent);
@@ -310,6 +318,63 @@ export class AgentRelay {
     );
   }
 
+  async waitForAgentReady(name: string, timeoutMs = 60_000): Promise<Agent> {
+    const client = await this.ensureStarted();
+    const existing = this.knownAgents.get(name);
+    if (existing && this.readyAgents.has(name)) {
+      return existing;
+    }
+
+    return new Promise<Agent>((resolve, reject) => {
+      let settled = false;
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+
+      const cleanup = () => {
+        unsubscribe();
+        if (timeout) {
+          clearTimeout(timeout);
+          timeout = undefined;
+        }
+      };
+
+      const resolveWith = (agent: Agent) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(agent);
+      };
+
+      const rejectWith = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+
+      const unsubscribe = client.onEvent((event) => {
+        if (event.kind !== "worker_ready" || event.name !== name) {
+          return;
+        }
+        let agent = this.knownAgents.get(event.name);
+        if (!agent) {
+          agent = this.makeAgent(event.name, event.runtime, []);
+          this.knownAgents.set(event.name, agent);
+        }
+        this.readyAgents.add(event.name);
+        resolveWith(agent);
+      });
+
+      timeout = setTimeout(() => {
+        rejectWith(new Error(`Timed out waiting for worker_ready for '${name}' after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      const known = this.knownAgents.get(name);
+      if (known && this.readyAgents.has(name)) {
+        resolveWith(known);
+      }
+    });
+  }
+
   // ── Lifecycle ───────────────────────────────────────────────────────────
 
   async shutdown(): Promise<void> {
@@ -322,6 +387,7 @@ export class AgentRelay {
       this.client = undefined;
     }
     this.knownAgents.clear();
+    this.readyAgents.clear();
     for (const entry of this.exitResolvers.values()) {
       entry.resolve("released");
     }
@@ -338,19 +404,6 @@ export class AgentRelay {
     const agent = this.knownAgents.get(to);
     if (agent && agent.channels.length > 0) return agent.channels[0];
     return this.defaultChannels[0];
-  }
-
-  private ensureRelaycast(agentName: string): RelaycastApi {
-    let rc = this.relaycastByName.get(agentName);
-    if (!rc) {
-      const cwd = this.clientOptions.cwd ?? process.cwd();
-      rc = new RelaycastApi({
-        agentName,
-        cachePath: path.join(cwd, ".agent-relay", "relaycast.json"),
-      });
-      this.relaycastByName.set(agentName, rc);
-    }
-    return rc;
   }
 
   private async ensureStarted(): Promise<AgentRelayClient> {
@@ -401,6 +454,7 @@ export class AgentRelay {
             this.makeAgent(event.name, "pty", []);
           this.onAgentReleased?.(agent);
           this.knownAgents.delete(event.name);
+          this.readyAgents.delete(event.name);
           this.exitResolvers.get(event.name)?.resolve("released");
           this.exitResolvers.delete(event.name);
           break;
@@ -414,6 +468,7 @@ export class AgentRelay {
           (agent as { exitSignal?: string }).exitSignal = event.signal;
           this.onAgentExited?.(agent);
           this.knownAgents.delete(event.name);
+          this.readyAgents.delete(event.name);
           this.exitResolvers.get(event.name)?.resolve("exited");
           this.exitResolvers.delete(event.name);
           break;
@@ -424,6 +479,7 @@ export class AgentRelay {
             agent = this.makeAgent(event.name, event.runtime, []);
             this.knownAgents.set(event.name, agent);
           }
+          this.readyAgents.add(event.name);
           this.onAgentReady?.(agent);
           break;
         }

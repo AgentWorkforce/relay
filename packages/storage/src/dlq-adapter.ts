@@ -626,7 +626,7 @@ export class PostgresDLQAdapter implements DLQStorageAdapter {
     `;
 
     const result = await this.pool.query(sql, params);
-    return result.rows.map(row => this.rowToDeadLetter(row));
+    return result.rows.map((row: Record<string, unknown>) => this.rowToDeadLetter(row));
   }
 
   async acknowledge(id: string, acknowledgedBy: string = 'system'): Promise<boolean> {
@@ -720,7 +720,7 @@ export class PostgresDLQAdapter implements DLQStorageAdapter {
       WHERE acknowledged = FALSE AND dlq_retry_count < $1
       ORDER BY dlq_ts ASC LIMIT $2
     `, [maxRetries, limit]);
-    return result.rows.map(row => this.rowToDeadLetter(row));
+    return result.rows.map((row: Record<string, unknown>) => this.rowToDeadLetter(row));
   }
 
   async close(): Promise<void> {

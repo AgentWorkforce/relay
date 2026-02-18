@@ -295,6 +295,7 @@ struct WorkerHandle {
     parent: Option<String>,
     child: Child,
     stdin: ChildStdin,
+    spawned_at: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -376,6 +377,8 @@ struct SpawnPayload {
 #[derive(Debug, Deserialize)]
 struct ReleasePayload {
     name: String,
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -388,6 +391,34 @@ struct SendMessagePayload {
     thread_id: Option<String>,
     #[serde(default)]
     priority: Option<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SendInputPayload {
+    name: String,
+    data: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetModelPayload {
+    name: String,
+    model: String,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GetMetricsPayload {
+    #[serde(default)]
+    agent: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentMetrics {
+    name: String,
+    pid: u32,
+    memory_bytes: u64,
+    uptime_secs: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -502,6 +533,9 @@ impl WorkerRegistry {
         // Remove CLAUDECODE env var to prevent "nested session" detection
         // when spawning Claude Code agents from within a Claude Code session.
         command.env_remove("CLAUDECODE");
+        if let Some(cwd) = spec.cwd.as_ref() {
+            command.current_dir(cwd);
+        }
 
         let mut child = command.spawn().context("failed to spawn worker")?;
         let stdin = child.stdin.take().context("worker missing stdin pipe")?;
@@ -528,6 +562,7 @@ impl WorkerRegistry {
             parent,
             child,
             stdin,
+            spawned_at: Instant::now(),
         };
         self.workers.insert(spec.name.clone(), handle);
 
@@ -1730,6 +1765,50 @@ fn terminal_cols() -> Option<u16> {
     None
 }
 
+#[cfg(target_os = "linux")]
+fn memory_bytes_for_pid(pid: u32) -> u64 {
+    let statm_path = format!("/proc/{pid}/statm");
+    let statm = match std::fs::read_to_string(statm_path) {
+        Ok(contents) => contents,
+        Err(_) => return 0,
+    };
+
+    let rss_pages = match statm
+        .split_whitespace()
+        .nth(1)
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        Some(value) => value,
+        None => return 0,
+    };
+
+    let page_size = unsafe { nix::libc::sysconf(nix::libc::_SC_PAGESIZE) };
+    if page_size <= 0 {
+        return 0;
+    }
+
+    rss_pages.saturating_mul(page_size as u64)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn memory_bytes_for_pid(_pid: u32) -> u64 {
+    0
+}
+
+fn build_agent_metrics(handle: &WorkerHandle) -> AgentMetrics {
+    let pid = handle.child.id().unwrap_or_default();
+    AgentMetrics {
+        name: handle.spec.name.clone(),
+        pid,
+        memory_bytes: if pid == 0 {
+            0
+        } else {
+            memory_bytes_for_pid(pid)
+        },
+        uptime_secs: handle.spawned_at.elapsed().as_secs(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_sdk_frame(
     line: &str,
@@ -1934,9 +2013,139 @@ async fn handle_sdk_frame(
             }
             Ok(false)
         }
+        "send_input" => {
+            let payload: SendInputPayload = serde_json::from_value(frame.payload)
+                .context("send_input payload must contain `name` and `data`")?;
+
+            let Some(handle) = workers.workers.get_mut(&payload.name) else {
+                send_error(
+                    out_tx,
+                    frame.request_id,
+                    "agent_not_found",
+                    format!("unknown worker '{}'", payload.name),
+                    false,
+                    None,
+                )
+                .await?;
+                return Ok(false);
+            };
+
+            let bytes = payload.data.as_bytes();
+            handle
+                .stdin
+                .write_all(bytes)
+                .await
+                .with_context(|| format!("failed writing input to worker '{}'", payload.name))?;
+            handle
+                .stdin
+                .flush()
+                .await
+                .with_context(|| format!("failed flushing worker '{}' stdin", payload.name))?;
+
+            send_ok(
+                out_tx,
+                frame.request_id,
+                json!({
+                    "name": payload.name,
+                    "bytes_written": bytes.len(),
+                }),
+            )
+            .await?;
+            Ok(false)
+        }
+        "set_model" => {
+            let payload: SetModelPayload = serde_json::from_value(frame.payload)
+                .context("set_model payload must contain `name` and `model`")?;
+            let timeout_ms = payload.timeout_ms;
+
+            let Some(handle) = workers.workers.get_mut(&payload.name) else {
+                send_error(
+                    out_tx,
+                    frame.request_id,
+                    "agent_not_found",
+                    format!("unknown worker '{}'", payload.name),
+                    false,
+                    None,
+                )
+                .await?;
+                return Ok(false);
+            };
+
+            let model_command = format!("/model {}\n", payload.model);
+            handle
+                .stdin
+                .write_all(model_command.as_bytes())
+                .await
+                .with_context(|| {
+                    format!("failed writing model command to worker '{}'", payload.name)
+                })?;
+            handle
+                .stdin
+                .flush()
+                .await
+                .with_context(|| format!("failed flushing worker '{}' stdin", payload.name))?;
+            if let Some(timeout_ms) = timeout_ms {
+                tracing::info!(
+                    name = %payload.name,
+                    timeout_ms,
+                    "set_model timeout_ms is currently advisory only"
+                );
+            }
+
+            send_ok(
+                out_tx,
+                frame.request_id,
+                json!({
+                    "name": payload.name,
+                    "model": payload.model,
+                    "success": true,
+                }),
+            )
+            .await?;
+            Ok(false)
+        }
+        "get_metrics" => {
+            let payload: GetMetricsPayload = serde_json::from_value(frame.payload)
+                .context("get_metrics payload must be an object")?;
+
+            let mut agents: Vec<AgentMetrics> = if let Some(agent_name) = payload.agent {
+                let Some(handle) = workers.workers.get(&agent_name) else {
+                    send_error(
+                        out_tx,
+                        frame.request_id,
+                        "agent_not_found",
+                        format!("unknown worker '{}'", agent_name),
+                        false,
+                        None,
+                    )
+                    .await?;
+                    return Ok(false);
+                };
+                vec![build_agent_metrics(handle)]
+            } else {
+                workers
+                    .workers
+                    .values()
+                    .map(build_agent_metrics)
+                    .collect::<Vec<_>>()
+            };
+            agents.sort_by(|a, b| a.name.cmp(&b.name));
+
+            send_ok(out_tx, frame.request_id, json!({ "agents": agents })).await?;
+            Ok(false)
+        }
         "release_agent" => {
             let payload: ReleasePayload = serde_json::from_value(frame.payload)
                 .context("release_agent payload must contain `name`")?;
+            tracing::info!(
+                name = %payload.name,
+                reason = ?payload.reason,
+                "releasing worker from sdk request"
+            );
+
+            let lifetime_seconds = workers.workers.get(&payload.name)
+                .map(|h| h.spawned_at.elapsed().as_secs())
+                .unwrap_or(0);
 
             workers.release(&payload.name).await?;
             let dropped = drop_pending_for_worker(pending_deliveries, &payload.name);
@@ -1945,8 +2154,8 @@ async fn handle_sdk_frame(
 
             telemetry.track(TelemetryEvent::AgentRelease {
                 cli: String::new(),
-                release_reason: "sdk_request".to_string(),
-                lifetime_seconds: 0,
+                release_reason: payload.reason.unwrap_or_else(|| "sdk_request".to_string()),
+                lifetime_seconds,
             });
 
             send_ok(out_tx, frame.request_id, json!({"name": payload.name})).await?;

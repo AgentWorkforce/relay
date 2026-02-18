@@ -37,9 +37,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agent-relay/protocol": "2.3.4",
     "@agent-relay/config": "2.3.4",
-    "@agent-relay/trajectory": "2.3.4"
+    "@agent-relay/trajectory": "2.3.4",
+    "@agent-relay/broker-sdk": "2.3.4"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",

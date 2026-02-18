@@ -8,6 +8,11 @@ export interface AgentSpec {
   cli?: string;
   args?: string[];
   channels?: string[];
+  model?: string;
+  cwd?: string;
+  team?: string;
+  shadow_of?: string;
+  shadow_mode?: string;
 }
 
 export interface RelayDelivery {
@@ -48,7 +53,19 @@ export type SdkToBroker =
     }
   | {
       type: "release_agent";
-      payload: { name: string };
+      payload: { name: string; reason?: string };
+    }
+  | {
+      type: "send_input";
+      payload: { name: string; data: string };
+    }
+  | {
+      type: "set_model";
+      payload: { name: string; model: string; timeout_ms?: number };
+    }
+  | {
+      type: "get_metrics";
+      payload: { agent?: string };
     }
   | {
       type: "list_agents";

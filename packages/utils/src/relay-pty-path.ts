@@ -108,7 +108,7 @@ export function findRelayPtyBinary(callerDirname: string): string | null {
   const packageRoots: string[] = [];
 
   // Find node_modules root from caller path
-  // Matches: /path/to/node_modules/@agent-relay/bridge/dist/
+  // Matches: /path/to/node_modules/@agent-relay/broker-sdk/dist/
   // Or: /path/to/node_modules/agent-relay/dist/src/cli/
   const scopedMatch = normalizedCaller.match(/^(.+?\/node_modules)\/@agent-relay\//);
   const directMatch = normalizedCaller.match(/^(.+?\/node_modules\/agent-relay)/);
