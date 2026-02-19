@@ -1,6 +1,6 @@
 {
   "name": "agent-relay",
-  "version": "2.3.4",
+  "version": "2.3.14",
   "description": "Real-time agent-to-agent communication system",
   "type": "module",
   "main": "dist/index.cjs",
@@ -25,44 +25,44 @@
     },
     "./package.json": "./package.json",
     "./broker": {
-      "types": "./packages/sdk-ts/dist/index.d.ts",
-      "import": "./packages/sdk-ts/dist/index.js",
-      "default": "./packages/sdk-ts/dist/index.js"
+      "types": "./packages/broker-sdk/dist/index.d.ts",
+      "import": "./packages/broker-sdk/dist/index.js",
+      "default": "./packages/broker-sdk/dist/index.js"
     },
     "./broker/client": {
-      "types": "./packages/sdk-ts/dist/client.d.ts",
-      "import": "./packages/sdk-ts/dist/client.js",
-      "default": "./packages/sdk-ts/dist/client.js"
+      "types": "./packages/broker-sdk/dist/client.d.ts",
+      "import": "./packages/broker-sdk/dist/client.js",
+      "default": "./packages/broker-sdk/dist/client.js"
     },
     "./broker/protocol": {
-      "types": "./packages/sdk-ts/dist/protocol.d.ts",
-      "import": "./packages/sdk-ts/dist/protocol.js",
-      "default": "./packages/sdk-ts/dist/protocol.js"
+      "types": "./packages/broker-sdk/dist/protocol.d.ts",
+      "import": "./packages/broker-sdk/dist/protocol.js",
+      "default": "./packages/broker-sdk/dist/protocol.js"
     },
     "./broker/relay": {
-      "types": "./packages/sdk-ts/dist/relay.d.ts",
-      "import": "./packages/sdk-ts/dist/relay.js",
-      "default": "./packages/sdk-ts/dist/relay.js"
+      "types": "./packages/broker-sdk/dist/relay.d.ts",
+      "import": "./packages/broker-sdk/dist/relay.js",
+      "default": "./packages/broker-sdk/dist/relay.js"
     },
     "./broker/logs": {
-      "types": "./packages/sdk-ts/dist/logs.d.ts",
-      "import": "./packages/sdk-ts/dist/logs.js",
-      "default": "./packages/sdk-ts/dist/logs.js"
+      "types": "./packages/broker-sdk/dist/logs.d.ts",
+      "import": "./packages/broker-sdk/dist/logs.js",
+      "default": "./packages/broker-sdk/dist/logs.js"
     },
     "./broker/consensus": {
-      "types": "./packages/sdk-ts/dist/consensus.d.ts",
-      "import": "./packages/sdk-ts/dist/consensus.js",
-      "default": "./packages/sdk-ts/dist/consensus.js"
+      "types": "./packages/broker-sdk/dist/consensus.d.ts",
+      "import": "./packages/broker-sdk/dist/consensus.js",
+      "default": "./packages/broker-sdk/dist/consensus.js"
     },
     "./broker/shadow": {
-      "types": "./packages/sdk-ts/dist/shadow.d.ts",
-      "import": "./packages/sdk-ts/dist/shadow.js",
-      "default": "./packages/sdk-ts/dist/shadow.js"
+      "types": "./packages/broker-sdk/dist/shadow.d.ts",
+      "import": "./packages/broker-sdk/dist/shadow.js",
+      "default": "./packages/broker-sdk/dist/shadow.js"
     },
     "./broker/browser": {
-      "types": "./packages/sdk-ts/dist/browser.d.ts",
-      "import": "./packages/sdk-ts/dist/browser.js",
-      "default": "./packages/sdk-ts/dist/browser.js"
+      "types": "./packages/broker-sdk/dist/browser.d.ts",
+      "import": "./packages/broker-sdk/dist/browser.js",
+      "default": "./packages/broker-sdk/dist/browser.js"
     }
   },
   "bin": {
@@ -151,18 +151,17 @@
   },
   "homepage": "https://github.com/AgentWorkforce/relay#readme",
   "dependencies": {
-    "@agent-relay/broker-sdk": "2.3.4",
-    "@agent-relay/config": "2.3.4",
-    "@agent-relay/hooks": "2.3.4",
-    "@agent-relay/mcp": "2.3.4",
-    "@agent-relay/storage": "2.3.4",
-    "@agent-relay/telemetry": "2.3.4",
-    "@agent-relay/trajectory": "2.3.4",
-    "@agent-relay/user-directory": "2.3.4",
-    "@agent-relay/utils": "2.3.4",
-    "@relaycast/sdk": "^0.2.1",
+    "@agent-relay/broker-sdk": "2.3.14",
+    "@agent-relay/config": "2.3.14",
+    "@agent-relay/hooks": "2.3.14",
+    "@agent-relay/mcp": "2.3.14",
+    "@agent-relay/storage": "2.3.14",
+    "@agent-relay/telemetry": "2.3.14",
+    "@agent-relay/trajectory": "2.3.14",
+    "@agent-relay/user-directory": "2.3.14",
+    "@agent-relay/utils": "2.3.14",
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "agent-trajectories": "^0.3.0",
+    "@relaycast/sdk": "^0.3.1",
     "chokidar": "^5.0.0",
     "commander": "^12.1.0",
     "compare-versions": "^6.1.1",
@@ -176,6 +175,7 @@
     "ssh2": "^1.17.0",
     "uuid": "^10.0.0",
     "ws": "^8.18.3",
+    "yaml": "^2.7.0",
     "zod": "^3.23.8",
     "zod-to-json-schema": "^3.23.1"
   },
@@ -193,6 +193,7 @@
     "@typescript-eslint/eslint-plugin": "^8.18.2",
     "@typescript-eslint/parser": "^8.18.2",
     "@vitest/coverage-v8": "^2.1.8",
+    "agent-trajectories": "^0.4.1",
     "concurrently": "^9.2.1",
     "esbuild": "^0.27.2",
     "eslint": "^8.57.1",

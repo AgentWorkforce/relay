@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-02-18T09:34:54.424Z",
+  "lastUpdated": "2026-02-19T07:42:35.142Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -296,61 +296,19 @@
       "completedAt": "2026-02-17T09:46:45.258Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-02/traj_ci9y9vd7tzxq.json"
     },
-    "traj_2hacryut6cnm": {
-      "title": "Extend sdk-ts broker client methods and relaycast utility",
+    "traj_4blqophly998": {
+      "title": "templates node: add workflow YAML templates and TemplateRegistry for relay-cloud PR #94",
       "status": "completed",
-      "startedAt": "2026-02-18T08:43:21.846Z",
-      "completedAt": "2026-02-18T08:46:31.725Z",
-      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-02/traj_2hacryut6cnm.json"
+      "startedAt": "2026-02-18T12:32:50.772Z",
+      "completedAt": "2026-02-18T12:40:57.139Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-sdk-workflows/.trajectories/completed/2026-02/traj_4blqophly998.json"
     },
-    "traj_mn7t1gi1yl62": {
-      "title": "Extend sdk-ts broker methods and relaycast utility",
+    "traj_cg4ihv6ph68u": {
+      "title": "Implement templates node for relay-cloud PR #94",
       "status": "completed",
-      "startedAt": "2026-02-18T08:47:37.895Z",
-      "completedAt": "2026-02-18T08:47:46.583Z",
-      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-02/traj_mn7t1gi1yl62.json"
-    },
-    "traj_ld93dbo097nv": {
-      "title": "Fresh-eyes review of RustWorker protocol extensions",
-      "status": "completed",
-      "startedAt": "2026-02-18T08:52:44.062Z",
-      "completedAt": "2026-02-18T08:55:00.216Z",
-      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-02/traj_ld93dbo097nv.json"
-    },
-    "traj_v2ibbtt7kmsl": {
-      "title": "Wave 1 review: RustWorker + SDKWorker migration verification",
-      "status": "completed",
-      "startedAt": "2026-02-18T08:58:17.101Z",
-      "completedAt": "2026-02-18T09:01:06.833Z",
-      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-02/traj_v2ibbtt7kmsl.json"
-    },
-    "traj_xxlsceaai3ga": {
-      "title": "Migrate ACP bridge from @agent-relay/sdk to @agent-relay/broker-sdk",
-      "status": "completed",
-      "startedAt": "2026-02-18T09:03:24.263Z",
-      "completedAt": "2026-02-18T09:07:37.259Z",
-      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-02/traj_xxlsceaai3ga.json"
-    },
-    "traj_hy0xrwqauiye": {
-      "title": "Fresh-eyes review of MCPWorker MCP migration",
-      "status": "completed",
-      "startedAt": "2026-02-18T09:13:00.379Z",
-      "completedAt": "2026-02-18T09:17:28.216Z",
-      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-02/traj_hy0xrwqauiye.json"
-    },
-    "traj_jm1njxs1o0th": {
-      "title": "Review Wave 2 migration output",
-      "status": "completed",
-      "startedAt": "2026-02-18T09:18:02.517Z",
-      "completedAt": "2026-02-18T09:22:44.629Z",
-      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-02/traj_jm1njxs1o0th.json"
-    },
-    "traj_dc3uiqhsxjnd": {
-      "title": "Delete unused legacy packages after broker SDK migration",
-      "status": "completed",
-      "startedAt": "2026-02-18T09:23:19.221Z",
-      "completedAt": "2026-02-18T09:34:54.361Z",
-      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-02/traj_dc3uiqhsxjnd.json"
+      "startedAt": "2026-02-18T13:05:09.363Z",
+      "completedAt": "2026-02-19T07:42:34.942Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-02/traj_cg4ihv6ph68u.json"
     }
   }
 }

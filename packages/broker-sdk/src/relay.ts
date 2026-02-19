@@ -6,7 +6,7 @@
  *
  * @example
  * ```ts
- * import { AgentRelay } from "@agent-relay/sdk-ts";
+ * import { AgentRelay } from "@agent-relay/broker-sdk";
  *
  * const relay = new AgentRelay();
  *
@@ -74,11 +74,17 @@ export interface Agent {
   exitCode?: number;
   /** Set when the agent exits via signal. Available after `onAgentExited` fires. */
   exitSignal?: string;
+  /** Set when the agent requests exit via /exit. Available after `onAgentExitRequested` fires. */
+  exitReason?: string;
   release(): Promise<void>;
   /** Wait for the agent process to exit on its own.
    *  @param timeoutMs — optional timeout in ms. Resolves with `"timeout"` if exceeded,
    *  `"exited"` if the agent exited naturally, or `"released"` if released externally. */
   waitForExit(timeoutMs?: number): Promise<"exited" | "timeout" | "released">;
+  /** Wait for the agent to go idle (no PTY output for the configured threshold).
+   *  @param timeoutMs — optional timeout in ms. Resolves with `"idle"` when first idle event fires,
+   *  `"timeout"` if timeoutMs elapses first, or `"exited"` if the agent exits. */
+  waitForIdle(timeoutMs?: number): Promise<"idle" | "timeout" | "exited">;
   sendMessage(input: {
     to: string;
     text: string;
@@ -131,6 +137,8 @@ export class AgentRelay {
   onAgentReady: EventHook<Agent> = null;
   onWorkerOutput: EventHook<{ name: string; stream: string; chunk: string }> = null;
   onDeliveryUpdate: EventHook<BrokerEvent> = null;
+  onAgentExitRequested: EventHook<{ name: string; reason: string }> = null;
+  onAgentIdle: EventHook<{ name: string; idleSecs: number }> = null;
 
   // Shorthand spawners
   readonly codex: AgentSpawner;
@@ -149,6 +157,11 @@ export class AgentRelay {
     { resolve: (reason: "exited" | "released") => void; token: number }
   >();
   private exitResolverSeq = 0;
+  private readonly idleResolvers = new Map<
+    string,
+    { resolve: (reason: "idle" | "timeout" | "exited") => void; token: number }
+  >();
+  private idleResolverSeq = 0;
 
   constructor(options: AgentRelayOptions = {}) {
     this.defaultChannels = options.channels ?? ["general"];
@@ -184,6 +197,7 @@ export class AgentRelay {
       team: input.team,
       shadowOf: input.shadowOf,
       shadowMode: input.shadowMode,
+      idleThresholdSecs: input.idleThresholdSecs,
     });
     const agent = this.makeAgent(result.name, result.runtime, channels);
     this.knownAgents.set(agent.name, agent);
@@ -392,6 +406,10 @@ export class AgentRelay {
       entry.resolve("released");
     }
     this.exitResolvers.clear();
+    for (const entry of this.idleResolvers.values()) {
+      entry.resolve("exited");
+    }
+    this.idleResolvers.clear();
   }
 
   // ── Private helpers ─────────────────────────────────────────────────────
@@ -457,6 +475,8 @@ export class AgentRelay {
           this.readyAgents.delete(event.name);
           this.exitResolvers.get(event.name)?.resolve("released");
           this.exitResolvers.delete(event.name);
+          this.idleResolvers.get(event.name)?.resolve("exited");
+          this.idleResolvers.delete(event.name);
           break;
         }
         case "agent_exited": {
@@ -471,6 +491,16 @@ export class AgentRelay {
           this.readyAgents.delete(event.name);
           this.exitResolvers.get(event.name)?.resolve("exited");
           this.exitResolvers.delete(event.name);
+          this.idleResolvers.get(event.name)?.resolve("exited");
+          this.idleResolvers.delete(event.name);
+          break;
+        }
+        case "agent_exit": {
+          const agent =
+            this.knownAgents.get(event.name) ??
+            this.makeAgent(event.name, "pty", []);
+          (agent as { exitReason?: string }).exitReason = event.reason;
+          this.onAgentExitRequested?.({ name: event.name, reason: event.reason });
           break;
         }
         case "worker_ready": {
@@ -489,6 +519,16 @@ export class AgentRelay {
             stream: event.stream,
             chunk: event.chunk,
           });
+          break;
+        }
+        case "agent_idle": {
+          this.onAgentIdle?.({
+            name: event.name,
+            idleSecs: event.idle_secs,
+          });
+          // Resolve idle waiters
+          this.idleResolvers.get(event.name)?.resolve("idle");
+          this.idleResolvers.delete(event.name);
           break;
         }
       }
@@ -541,6 +581,36 @@ export class AgentRelay {
               const current = relay.exitResolvers.get(name);
               if (current?.token === token) {
                 relay.exitResolvers.delete(name);
+              }
+              resolve("timeout");
+            }, timeoutMs);
+          }
+        });
+      },
+      waitForIdle(timeoutMs?: number) {
+        return new Promise<"idle" | "timeout" | "exited">((resolve) => {
+          if (!relay.knownAgents.has(name)) {
+            resolve("exited");
+            return;
+          }
+          if (timeoutMs === 0) {
+            resolve("timeout");
+            return;
+          }
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const token = ++relay.idleResolverSeq;
+          relay.idleResolvers.set(name, {
+            resolve(reason) {
+              if (timer) clearTimeout(timer);
+              resolve(reason);
+            },
+            token,
+          });
+          if (timeoutMs !== undefined) {
+            timer = setTimeout(() => {
+              const current = relay.idleResolvers.get(name);
+              if (current?.token === token) {
+                relay.idleResolvers.delete(name);
               }
               resolve("timeout");
             }, timeoutMs);

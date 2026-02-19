@@ -60,9 +60,14 @@ jobs:
           echo "=== Validating packages ==="
           ERRORS=0
 
-          # Check dist files exist
+          # Check dist files exist (skip non-Node packages)
+          SKIP_PACKAGES="sdk-py build-plans"
           for pkg_dir in packages/*/; do
             pkg_name=$(basename "$pkg_dir")
+            if echo "$SKIP_PACKAGES" | grep -qw "$pkg_name"; then
+              echo "⊘ $pkg_name - skipped (non-Node package)"
+              continue
+            fi
             if [ ! -f "$pkg_dir/dist/index.js" ] || [ ! -f "$pkg_dir/dist/index.d.ts" ]; then
               echo "✗ $pkg_name - missing dist files"
               ERRORS=$((ERRORS + 1))

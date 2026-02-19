@@ -40,6 +40,8 @@ export interface SpawnPtyInput {
   team?: string;
   shadowOf?: string;
   shadowMode?: string;
+  /** Silence duration in seconds before emitting agent_idle (0 = disabled, default: 30). */
+  idleThresholdSecs?: number;
 }
 
 export interface SpawnHeadlessClaudeInput {
@@ -122,7 +124,7 @@ export class AgentRelayClient {
       env: options.env ?? process.env,
       requestTimeoutMs: options.requestTimeoutMs ?? 10_000,
       shutdownTimeoutMs: options.shutdownTimeoutMs ?? 3_000,
-      clientName: options.clientName ?? "@agent-relay/sdk-ts",
+      clientName: options.clientName ?? "@agent-relay/broker-sdk",
       clientVersion: options.clientVersion ?? "0.1.0",
     };
   }
@@ -180,6 +182,7 @@ export class AgentRelayClient {
     const result = await this.requestOk<{ name: string; runtime: AgentRuntime }>("spawn_agent", {
       agent,
       ...(input.task != null ? { initial_task: input.task } : {}),
+      ...(input.idleThresholdSecs != null ? { idle_threshold_secs: input.idleThresholdSecs } : {}),
     });
     return result;
   }
@@ -523,10 +526,22 @@ function isExplicitPath(binaryPath: string): boolean {
 
 function resolveDefaultBinaryPath(): string {
   const exe = process.platform === "win32" ? "agent-relay.exe" : "agent-relay";
+  const brokerExe = process.platform === "win32" ? "agent-relay-broker.exe" : "agent-relay-broker";
+
+  // 1. Check for bundled broker binary in SDK package (npm install)
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   const bundled = path.resolve(moduleDir, "..", "bin", exe);
   if (fs.existsSync(bundled)) {
     return bundled;
   }
+
+  // 2. Check for standalone broker binary in ~/.agent-relay/bin/ (install.sh)
+  const homeDir = process.env.HOME || process.env.USERPROFILE || "";
+  const standaloneBroker = path.join(homeDir, ".agent-relay", "bin", brokerExe);
+  if (fs.existsSync(standaloneBroker)) {
+    return standaloneBroker;
+  }
+
+  // 3. Fall back to agent-relay on PATH (may be Node CLI — will fail for broker ops)
   return "agent-relay";
 }

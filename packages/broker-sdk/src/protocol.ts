@@ -119,6 +119,11 @@ export type BrokerEvent =
       name: string;
     }
   | {
+      kind: "agent_exit";
+      name: string;
+      reason: string;
+    }
+  | {
       kind: "agent_exited";
       name: string;
       code?: number;
@@ -218,6 +223,11 @@ export type BrokerEvent =
       name: string;
       sender: string;
       owner_chain: string[];
+    }
+  | {
+      kind: "agent_idle";
+      name: string;
+      idle_secs: number;
     };
 
 export type BrokerToSdk =

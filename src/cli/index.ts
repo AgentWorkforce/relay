@@ -39,7 +39,7 @@ import path from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import readline from 'node:readline';
 import { promisify } from 'node:util';
-import { exec, execSync, spawn as spawnProcess } from 'node:child_process';
+import { exec, execFileSync, execSync, spawn as spawnProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 
@@ -3921,7 +3921,8 @@ program
   .option('--token <token>', 'One-time CLI token from dashboard (skips cloud config requirement)')
   .option('--cloud-url <url>', 'Cloud API URL (overrides linked config and AGENT_RELAY_CLOUD_URL)')
   .option('--timeout <seconds>', 'Timeout in seconds (default: 300)', '300')
-  .action(async (providerArg: string, options: { workspace?: string; token?: string; cloudUrl?: string; timeout: string }) => {
+  .option('--use-auth-broker', 'Use dedicated auth broker instead of workspace SSH (for Daytona/sandboxed environments)')
+  .action(async (providerArg: string, options: { workspace?: string; token?: string; cloudUrl?: string; timeout: string; useAuthBroker?: boolean }) => {
     const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`;
     const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
     const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
@@ -3958,6 +3959,7 @@ program
       console.log(`  ${cyan('npx agent-relay auth claude --workspace=<ID>')}`);
       console.log(`  ${cyan('npx agent-relay auth codex --workspace=<ID>')}`);
       console.log(`  ${cyan('npx agent-relay auth gemini --workspace=<ID>')}`);
+      console.log(`  ${cyan('npx agent-relay auth claude --use-auth-broker')}  ${dim('(for Daytona/sandboxed environments)')}`);
       console.log('');
       console.log('Supported provider ids:');
       console.log(`  ${known.join(', ')}`);
@@ -4017,13 +4019,19 @@ program
 
     const requestedWorkspaceId = options.workspace || process.env.WORKSPACE_ID;
 
+    const useAuthBroker = options.useAuthBroker ?? false;
+
     console.log('');
     console.log(cyan('═══════════════════════════════════════════════════'));
     console.log(cyan('        Provider Authentication (SSH)'));
     console.log(cyan('═══════════════════════════════════════════════════'));
     console.log('');
     console.log(`Provider: ${providerConfig.displayName} (${provider})`);
-    console.log(`Workspace: ${requestedWorkspaceId ? `${requestedWorkspaceId.slice(0, 8)}...` : '(default)'}`);
+    if (useAuthBroker) {
+      console.log(`Target: ${cyan('Auth Broker')} (dedicated authentication instance)`);
+    } else {
+      console.log(`Workspace: ${requestedWorkspaceId ? `${requestedWorkspaceId.slice(0, 8)}...` : '(default)'}`);
+    }
     console.log(dim(`Cloud: ${CLOUD_URL}`));
     console.log('');
 
@@ -4058,6 +4066,7 @@ program
           provider,
           workspaceId: requestedWorkspaceId,
           ...(cliToken && { token: cliToken }),
+          ...(useAuthBroker && { useAuthBroker: true }),
         }),
       });
 
@@ -4102,7 +4111,9 @@ program
       : `PATH=/home/workspace/.local/bin:$PATH ${baseCommand}`;
 
     console.log(green('✓ SSH session created'));
-    if (start.workspaceName) {
+    if (useAuthBroker) {
+      console.log(`Target: ${cyan('Auth Broker')}`);
+    } else if (start.workspaceName) {
       console.log(`Workspace: ${cyan(start.workspaceName)} (${start.workspaceId.slice(0, 8)}...)`);
     } else {
       console.log(`Workspace: ${start.workspaceId.slice(0, 8)}...`);
@@ -4113,9 +4124,10 @@ program
 
     const TUNNEL_PORT = 1455;
     const ssh2 = await loadSSH2();
+    const tunnelTarget = useAuthBroker ? 'auth-broker' : 'workspace';
 
     console.log(yellow('Connecting via SSH...'));
-    console.log(dim(`  Tunnel: localhost:${TUNNEL_PORT} → workspace:${TUNNEL_PORT}`));
+    console.log(dim(`  Tunnel: localhost:${TUNNEL_PORT} → ${tunnelTarget}:${TUNNEL_PORT}`));
     console.log(dim(`  Running: ${remoteCommand}`));
     console.log('');
 
@@ -4481,8 +4493,13 @@ program
       // Exit code 127 = command not found
       if (execResult?.exitCode === 127) {
         console.log('');
-        console.log(yellow(`The ${providerConfig.displayName} CLI ("${providerConfig.command}") is not installed on this workspace.`));
-        console.log(dim('Ask your workspace administrator to install it, or check the workspace Dockerfile.'));
+        if (useAuthBroker) {
+          console.log(yellow(`The ${providerConfig.displayName} CLI ("${providerConfig.command}") is not installed on the auth broker.`));
+          console.log(dim('This is unexpected. Please report this issue.'));
+        } else {
+          console.log(yellow(`The ${providerConfig.displayName} CLI ("${providerConfig.command}") is not installed on this workspace.`));
+          console.log(dim('Ask your workspace administrator to install it, or check the workspace Dockerfile.'));
+        }
       }
       process.exit(1);
     }
@@ -4492,7 +4509,12 @@ program
     console.log(green('          Authentication Complete!'));
     console.log(green('═══════════════════════════════════════════════════'));
     console.log('');
-    console.log(`${providerConfig.displayName} is now connected to workspace ${start.workspaceId.slice(0, 8)}...`);
+    if (useAuthBroker) {
+      console.log(`${providerConfig.displayName} credentials are now stored in your account.`);
+      console.log(dim('Your Daytona/sandboxed workspaces will use these credentials automatically.'));
+    } else {
+      console.log(`${providerConfig.displayName} is now connected to workspace ${start.workspaceId.slice(0, 8)}...`);
+    }
     console.log('');
   });
 
@@ -5214,6 +5236,97 @@ program
       } else {
         console.error('Error running MCP command:', err);
       }
+      process.exit(1);
+    }
+  });
+
+// run - Execute a workflow file (YAML, TypeScript, or Python)
+import { runWorkflow } from '@agent-relay/broker-sdk/workflows';
+import type { WorkflowEvent } from '@agent-relay/broker-sdk/workflows';
+function logWorkflowEvent(event: WorkflowEvent): void {
+  const prefix = event.type.startsWith('run:') ? '[run]' : '[step]';
+  const name = 'stepName' in event ? `${event.stepName} ` : '';
+  const status = event.type.split(':')[1];
+  const detail = 'error' in event ? `: ${event.error}` : '';
+  console.log(`${prefix} ${name}${status}${detail}`);
+}
+
+function runScriptFile(filePath: string): void {
+  const resolved = path.resolve(filePath);
+  if (!fs.existsSync(resolved)) {
+    throw new Error(`File not found: ${resolved}`);
+  }
+
+  const ext = path.extname(resolved).toLowerCase();
+
+  if (ext === '.ts' || ext === '.tsx') {
+    // Try tsx first, then ts-node, then npx tsx
+    const runners = ['tsx', 'ts-node'];
+    for (const runner of runners) {
+      try {
+        execFileSync(runner, [resolved], { stdio: 'inherit' });
+        return;
+      } catch (err: any) {
+        // Only try next runner if this one isn't found (ENOENT)
+        // Re-throw if the runner exists but the script failed
+        if (err?.code !== 'ENOENT') {
+          throw err;
+        }
+      }
+    }
+    // Fallback to npx tsx
+    execFileSync('npx', ['tsx', resolved], { stdio: 'inherit' });
+  } else if (ext === '.py') {
+    // Try python3 first, then python
+    const runners = ['python3', 'python'];
+    for (const runner of runners) {
+      try {
+        execFileSync(runner, [resolved], { stdio: 'inherit' });
+        return;
+      } catch (err: any) {
+        // Only try next runner if this one isn't found (ENOENT)
+        // Re-throw if the runner exists but the script failed
+        if (err?.code !== 'ENOENT') {
+          throw err;
+        }
+      }
+    }
+    throw new Error('Python not found. Install Python 3.10+ to run .py workflow files.');
+  } else {
+    throw new Error(`Unsupported file type: ${ext}. Use .yaml, .yml, .ts, or .py`);
+  }
+}
+
+program
+  .command('run')
+  .description('Run a workflow file (YAML, TypeScript, or Python)')
+  .argument('<file>', 'Path to workflow file (.yaml, .yml, .ts, or .py)')
+  .option('-w, --workflow <name>', 'Run a specific workflow by name (default: first, YAML only)')
+  .action(async (filePath: string, options: { workflow?: string }) => {
+    try {
+      const ext = path.extname(filePath).toLowerCase();
+
+      if (ext === '.yaml' || ext === '.yml') {
+        console.log(`Running workflow from ${filePath}...`);
+        const result = await runWorkflow(filePath, {
+          workflow: options.workflow,
+          onEvent: logWorkflowEvent,
+        });
+        if (result.status === 'completed') {
+          console.log('\nWorkflow completed successfully.');
+        } else {
+          console.error(`\nWorkflow ${result.status}${result.error ? `: ${result.error}` : ''}`);
+          process.exit(1);
+        }
+      } else if (ext === '.ts' || ext === '.tsx' || ext === '.py') {
+        console.log(`Running workflow script ${filePath}...`);
+        runScriptFile(filePath);
+      } else {
+        console.error(`Unsupported file type: ${ext}. Use .yaml, .yml, .ts, or .py`);
+        process.exit(1);
+      }
+    } catch (err: any) {
+      console.error(`Error: ${err.message}`);
       process.exit(1);
     }
   });

@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/broker-sdk",
-  "version": "2.3.4",
+  "version": "2.3.14",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -44,6 +44,11 @@
       "types": "./dist/browser.d.ts",
       "import": "./dist/browser.js",
       "default": "./dist/browser.js"
+    },
+    "./workflows": {
+      "types": "./dist/workflows/index.d.ts",
+      "import": "./dist/workflows/index.js",
+      "default": "./dist/workflows/index.js"
     }
   },
   "files": [
@@ -70,6 +75,7 @@
     "typescript": "^5.7.3"
   },
   "dependencies": {
-    "@relaycast/sdk": "^0.2.5"
+    "@relaycast/sdk": "^0.3.1",
+    "yaml": "^2.7.0"
   }
 }

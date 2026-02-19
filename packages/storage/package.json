@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/storage",
-  "version": "2.3.4",
+  "version": "2.3.14",
   "description": "Storage adapters and interfaces for Relay message/session persistence",
   "type": "module",
   "main": "dist/index.js",
