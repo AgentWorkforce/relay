@@ -173,6 +173,8 @@ verification:
 
 The `swarm.pattern` field controls how agents are coordinated:
 
+### Core Patterns
+
 | Pattern | Description |
 |---------|-------------|
 | `dag` | Directed acyclic graph — steps run based on dependency edges (default) |
@@ -185,6 +187,68 @@ The `swarm.pattern` field controls how agents are coordinated:
 | `cascade` | Waterfall with phase gates |
 | `debate` | Agents propose and counter-argue |
 | `hierarchical` | Multi-level reporting structure |
+
+### Data Processing Patterns
+
+| Pattern | Description |
+|---------|-------------|
+| `map-reduce` | Split work into chunks (mappers), process in parallel, aggregate results (reducers) |
+| `scatter-gather` | Fan out requests to workers, collect and synthesize responses |
+
+### Supervision & Quality Patterns
+
+| Pattern | Description |
+|---------|-------------|
+| `supervisor` | Monitor agent monitors workers, restarts on failure, manages health |
+| `reflection` | Agent produces output, critic reviews and provides feedback for iteration |
+| `verifier` | Producer agents submit work to verifier agents for validation |
+
+### Adversarial & Validation Patterns
+
+| Pattern | Description |
+|---------|-------------|
+| `red-team` | Attacker agents probe for weaknesses, defender agents respond |
+| `auction` | Auctioneer broadcasts tasks, agents bid based on capability/cost |
+
+### Resilience Patterns
+
+| Pattern | Description |
+|---------|-------------|
+| `escalation` | Start with fast/cheap agents, escalate to more capable on failure |
+| `saga` | Distributed transactions with compensating actions on failure |
+| `circuit-breaker` | Primary agent with fallback chain, fail fast and recover |
+
+### Collaborative Patterns
+
+| Pattern | Description |
+|---------|-------------|
+| `blackboard` | Shared workspace where agents contribute incrementally to a solution |
+| `swarm` | Emergent behavior from simple agent rules (neighbor communication) |
+
+### Auto-Selection by Role
+
+When `swarm.pattern` is omitted, the coordinator auto-selects based on agent roles.
+Patterns are checked in priority order below (first match wins):
+
+| Priority | Pattern | Required Roles/Config |
+|----------|---------|----------------------|
+| 1 | `dag` | Steps with `dependsOn` |
+| 2 | `consensus` | Uses `coordination.consensusStrategy` config |
+| 3 | `map-reduce` | `mapper` + `reducer` |
+| 4 | `red-team` | (`attacker` OR `red-team`) + (`defender` OR `blue-team`) |
+| 5 | `reflection` | `critic` |
+| 6 | `escalation` | `tier-1`, `tier-2`, etc. |
+| 7 | `auction` | `auctioneer` |
+| 8 | `saga` | `saga-orchestrator` OR `compensate-handler` |
+| 9 | `circuit-breaker` | `fallback`, `backup`, OR `primary` |
+| 10 | `blackboard` | `blackboard` OR `shared-workspace` |
+| 11 | `swarm` | `hive-mind` OR `swarm-agent` |
+| 12 | `verifier` | `verifier` |
+| 13 | `supervisor` | `supervisor` |
+| 14 | `hierarchical` | `lead` (with 4+ agents) |
+| 15 | `hub-spoke` | `hub` OR `coordinator` |
+| 16 | `pipeline` | Unique agents per step, 3+ steps |
+| 17 | `fan-out` | Default fallback |
 
 ## Error Handling
 

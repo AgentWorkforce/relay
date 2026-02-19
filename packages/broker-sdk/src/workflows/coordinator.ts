@@ -52,6 +52,7 @@ const PATTERN_HEURISTICS: Array<{
   test: (config: RelayYamlConfig) => boolean;
   pattern: SwarmPattern;
 }> = [
+  // ── Dependency-based patterns (highest priority) ──────────────────────
   {
     test: (c) =>
       Array.isArray(c.workflows) &&
@@ -62,6 +63,76 @@ const PATTERN_HEURISTICS: Array<{
     test: (c) => c.coordination?.consensusStrategy !== undefined,
     pattern: 'consensus',
   },
+
+  // ── Specific role-based patterns (check before generic hub patterns) ──
+  {
+    // Map-reduce: requires BOTH mapper AND reducer roles
+    test: (c) => c.agents.some((a) => a.role === 'mapper') && c.agents.some((a) => a.role === 'reducer'),
+    pattern: 'map-reduce',
+  },
+  {
+    // Red-team: requires BOTH attacker/red-team AND defender/blue-team
+    test: (c) => c.agents.some((a) => a.role === 'attacker' || a.role === 'red-team') &&
+                 c.agents.some((a) => a.role === 'defender' || a.role === 'blue-team'),
+    pattern: 'red-team',
+  },
+  {
+    // Reflection: requires critic role (not just reviewer, which is too common)
+    test: (c) => c.agents.some((a) => a.role === 'critic'),
+    pattern: 'reflection',
+  },
+  {
+    // Escalation: has tier-N roles
+    test: (c) => c.agents.some((a) => a.role?.startsWith('tier-')),
+    pattern: 'escalation',
+  },
+  {
+    // Auction: has auctioneer role
+    test: (c) => c.agents.some((a) => a.role === 'auctioneer'),
+    pattern: 'auction',
+  },
+  {
+    // Saga: has saga-orchestrator or compensate-handler roles
+    test: (c) => c.agents.some((a) => a.role === 'saga-orchestrator' || a.role === 'compensate-handler'),
+    pattern: 'saga',
+  },
+  {
+    // Circuit-breaker: has fallback or backup roles
+    test: (c) => c.agents.some((a) => a.role === 'fallback' || a.role === 'backup' || a.role === 'primary'),
+    pattern: 'circuit-breaker',
+  },
+  {
+    // Blackboard: has blackboard or shared-workspace role
+    test: (c) => c.agents.some((a) => a.role === 'blackboard' || a.role === 'shared-workspace'),
+    pattern: 'blackboard',
+  },
+  {
+    // Swarm: has hive-mind or swarm-agent roles
+    test: (c) => c.agents.some((a) => a.role === 'hive-mind' || a.role === 'swarm-agent'),
+    pattern: 'swarm',
+  },
+  {
+    // Verifier: has verifier role
+    test: (c) => c.agents.some((a) => a.role === 'verifier'),
+    pattern: 'verifier',
+  },
+  {
+    // Supervisor: has supervisor role
+    test: (c) => c.agents.some((a) => a.role === 'supervisor'),
+    pattern: 'supervisor',
+  },
+
+  // ── Generic hub-based patterns ────────────────────────────────────────
+  {
+    test: (c) => c.agents.length > 3 && c.agents.some((a) => a.role === 'lead'),
+    pattern: 'hierarchical',
+  },
+  {
+    test: (c) => c.agents.some((a) => a.role === 'hub' || a.role === 'coordinator'),
+    pattern: 'hub-spoke',
+  },
+
+  // ── Structural patterns ───────────────────────────────────────────────
   {
     test: (c) =>
       Array.isArray(c.workflows) &&
@@ -71,16 +142,9 @@ const PATTERN_HEURISTICS: Array<{
       }),
     pattern: 'pipeline',
   },
+
+  // ── Default fallback ──────────────────────────────────────────────────
   {
-    test: (c) => c.agents.length > 3 && c.agents.some((a) => a.role === 'lead'),
-    pattern: 'hierarchical',
-  },
-  {
-    test: (c) => c.agents.some((a) => a.role === 'hub' || a.role === 'coordinator'),
-    pattern: 'hub-spoke',
-  },
-  {
-    // Default: many independent agents → fan-out
     test: () => true,
     pattern: 'fan-out',
   },
@@ -205,6 +269,164 @@ export class SwarmCoordinator extends EventEmitter {
         edges.set(hub, subordinates);
         for (const s of subordinates) edges.set(s, [hub]);
         return { pattern: p, agents, edges, hub };
+      }
+
+      // ── Additional patterns ────────────────────────────────────────────
+
+      case 'map-reduce': {
+        // Mappers fan out from coordinator, all feed into reducer(s)
+        const coordinator = this.pickHub(agents);
+        const mappers = agents.filter((a) => a.role === 'mapper').map((a) => a.name);
+        const reducers = agents.filter((a) => a.role === 'reducer').map((a) => a.name);
+        const others = names.filter((n) => n !== coordinator && !mappers.includes(n) && !reducers.includes(n));
+
+        // Coordinator → mappers (excluding self if coordinator is also a mapper)
+        edges.set(coordinator, [...mappers.filter((m) => m !== coordinator), ...others]);
+        // Mappers → reducers (skip coordinator to avoid overwriting its edges)
+        for (const m of mappers) {
+          if (m === coordinator) continue;
+          edges.set(m, reducers.length > 0 ? reducers : [coordinator]);
+        }
+        // Reducers → coordinator
+        for (const r of reducers) edges.set(r, [coordinator]);
+        // Others → coordinator
+        for (const o of others) edges.set(o, [coordinator]);
+
+        return { pattern: p, agents, edges, hub: coordinator };
+      }
+
+      case 'scatter-gather': {
+        // Hub scatters to all workers, gathers responses back
+        const hub = this.pickHub(agents);
+        const workers = names.filter((n) => n !== hub);
+        edges.set(hub, workers);
+        for (const w of workers) edges.set(w, [hub]);
+        return { pattern: p, agents, edges, hub };
+      }
+
+      case 'supervisor': {
+        // Supervisor monitors all workers; workers report to supervisor
+        const supervisor = agents.find((a) => a.role === 'supervisor')?.name ?? this.pickHub(agents);
+        const workers = names.filter((n) => n !== supervisor);
+        edges.set(supervisor, workers);
+        for (const w of workers) edges.set(w, [supervisor]);
+        return { pattern: p, agents, edges, hub: supervisor };
+      }
+
+      case 'reflection': {
+        // Agent produces output, critic reviews and sends feedback
+        // Linear: producer → critic → producer (loop-capable)
+        const critic = agents.find((a) => a.role === 'critic' || a.role === 'reviewer')?.name;
+        const producers = names.filter((n) => n !== critic);
+        if (critic) {
+          for (const prod of producers) {
+            edges.set(prod, [critic]);
+          }
+          edges.set(critic, producers);
+        } else {
+          // Fallback: self-reflection via mesh
+          for (const n of names) edges.set(n, names.filter((o) => o !== n));
+        }
+        return { pattern: p, agents, edges };
+      }
+
+      case 'red-team': {
+        // Attacker ↔ Defender adversarial communication
+        const attackers = agents.filter((a) => a.role === 'attacker' || a.role === 'red-team').map((a) => a.name);
+        const defenders = agents.filter((a) => a.role === 'defender' || a.role === 'blue-team').map((a) => a.name);
+        const judges = names.filter((n) => !attackers.includes(n) && !defenders.includes(n));
+
+        // Attackers → defenders and judges
+        for (const a of attackers) edges.set(a, [...defenders, ...judges]);
+        // Defenders → attackers and judges
+        for (const d of defenders) edges.set(d, [...attackers, ...judges]);
+        // Judges receive from both, can communicate with all
+        for (const j of judges) edges.set(j, [...attackers, ...defenders]);
+
+        return { pattern: p, agents, edges };
+      }
+
+      case 'verifier': {
+        // Producer → Verifier chain; verifier can reject back to producer
+        const verifiers = agents.filter((a) => a.role === 'verifier').map((a) => a.name);
+        const producers = names.filter((n) => !verifiers.includes(n));
+
+        for (const prod of producers) edges.set(prod, verifiers.length > 0 ? verifiers : []);
+        for (const v of verifiers) edges.set(v, producers); // Can send rejections back
+
+        return { pattern: p, agents, edges };
+      }
+
+      case 'auction': {
+        // Auctioneer broadcasts tasks; bidders respond to auctioneer only
+        const auctioneer = agents.find((a) => a.role === 'auctioneer')?.name ?? this.pickHub(agents);
+        const bidders = names.filter((n) => n !== auctioneer);
+        edges.set(auctioneer, bidders);
+        for (const b of bidders) edges.set(b, [auctioneer]);
+        return { pattern: p, agents, edges, hub: auctioneer };
+      }
+
+      case 'escalation': {
+        // Tiered chain: each level can escalate to the next
+        // Uses agent order or tier role numbers
+        const order = this.resolveEscalationOrder(agents);
+        for (let i = 0; i < order.length; i++) {
+          // Each tier can escalate up and report down
+          const canEscalateTo = i < order.length - 1 ? [order[i + 1]] : [];
+          const canReportTo = i > 0 ? [order[i - 1]] : [];
+          edges.set(order[i], [...canEscalateTo, ...canReportTo]);
+        }
+        // Ensure non-tiered agents still have edge entries (prevents undefined)
+        for (const n of names) {
+          if (!edges.has(n)) edges.set(n, []);
+        }
+        return { pattern: p, agents, edges, pipelineOrder: order };
+      }
+
+      case 'saga': {
+        // Orchestrator coordinates saga steps; each step can trigger compensate
+        const orchestrator = agents.find((a) => a.role === 'saga-orchestrator')?.name ?? this.pickHub(agents);
+        const participants = names.filter((n) => n !== orchestrator);
+        // Orchestrator → all participants (for commands)
+        edges.set(orchestrator, participants);
+        // Participants → orchestrator (for completion/failure signals)
+        for (const part of participants) edges.set(part, [orchestrator]);
+        return { pattern: p, agents, edges, hub: orchestrator };
+      }
+
+      case 'circuit-breaker': {
+        // Primary agent with fallback chain
+        const order = names; // First agent is primary, rest are fallbacks
+        for (let i = 0; i < order.length; i++) {
+          // Each can trigger next fallback
+          edges.set(order[i], i < order.length - 1 ? [order[i + 1]] : []);
+        }
+        return { pattern: p, agents, edges, pipelineOrder: order };
+      }
+
+      case 'blackboard': {
+        // All agents can read/write to shared blackboard (full mesh)
+        // Plus optional moderator
+        const moderator = agents.find((a) => a.role === 'moderator')?.name;
+        for (const n of names) {
+          edges.set(n, names.filter((o) => o !== n));
+        }
+        return { pattern: p, agents, edges, hub: moderator };
+      }
+
+      case 'swarm': {
+        // Emergent swarm: agents communicate with nearest neighbors
+        // For simplicity, partial mesh based on agent index proximity
+        const hiveMind = agents.find((a) => a.role === 'hive-mind')?.name;
+        for (let i = 0; i < names.length; i++) {
+          const neighbors: string[] = [];
+          if (i > 0) neighbors.push(names[i - 1]);
+          if (i < names.length - 1) neighbors.push(names[i + 1]);
+          // Also connect to hive mind if present (avoid duplicates if already adjacent)
+          if (hiveMind && hiveMind !== names[i] && !neighbors.includes(hiveMind)) neighbors.push(hiveMind);
+          edges.set(names[i], neighbors);
+        }
+        return { pattern: p, agents, edges, hub: hiveMind };
       }
 
       default: {
@@ -488,6 +710,22 @@ export class SwarmCoordinator extends EventEmitter {
       }
     }
     return order.length > 0 ? order : fallback;
+  }
+
+  private resolveEscalationOrder(agents: AgentDefinition[]): string[] {
+    // Sort by tier role (e.g., "tier-1", "tier-2") or by agent order
+    const tiered = agents.filter((a) => a.role?.startsWith('tier-'));
+    if (tiered.length > 0) {
+      return tiered
+        .sort((a, b) => {
+          const tierA = parseInt(a.role?.replace('tier-', '') ?? '0', 10);
+          const tierB = parseInt(b.role?.replace('tier-', '') ?? '0', 10);
+          return tierA - tierB;
+        })
+        .map((a) => a.name);
+    }
+    // Fallback: use agent order
+    return agents.map((a) => a.name);
   }
 
   private resolveDAGEdges(config: RelayYamlConfig): Map<string, string[]> {

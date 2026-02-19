@@ -40,7 +40,20 @@ export type SwarmPattern =
   | "cascade"
   | "dag"
   | "debate"
-  | "hierarchical";
+  | "hierarchical"
+  // Additional patterns
+  | "map-reduce"
+  | "scatter-gather"
+  | "supervisor"
+  | "reflection"
+  | "red-team"
+  | "verifier"
+  | "auction"
+  | "escalation"
+  | "saga"
+  | "circuit-breaker"
+  | "blackboard"
+  | "swarm";
 
 // ── Agent definitions ───────────────────────────────────────────────────────
 

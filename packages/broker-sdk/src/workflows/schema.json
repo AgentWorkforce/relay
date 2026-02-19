@@ -82,7 +82,19 @@
         "cascade",
         "dag",
         "debate",
-        "hierarchical"
+        "hierarchical",
+        "map-reduce",
+        "scatter-gather",
+        "supervisor",
+        "reflection",
+        "red-team",
+        "verifier",
+        "auction",
+        "escalation",
+        "saga",
+        "circuit-breaker",
+        "blackboard",
+        "swarm"
       ]
     },
     "AgentDefinition": {
