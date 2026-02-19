@@ -177,7 +177,7 @@ export class RelaycastApi {
 
   /** Register an external agent in the workspace (e.g., a spawned workflow agent).
    *  Uses the workspace API key to register, not an agent token.
-   *  No-op if the agent already exists (returns existing token).
+   *  No-op if the agent already exists (returns null).
    *  Returns an AgentClient that can send heartbeats. */
   async registerExternalAgent(name: string, persona?: string): Promise<AgentClient | null> {
     const apiKey = await this.resolveApiKey();
