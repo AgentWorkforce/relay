@@ -1087,8 +1087,8 @@ jobs:
             exit 0
           fi
 
-          # Get last stable tag (exclude current HEAD)
-          LAST_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          # Get last stable tag (semver only, excluding prerelease tags like v2.1.0-beta.1)
+          LAST_TAG=$(git tag -l --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
           if [ -z "$LAST_TAG" ]; then
             echo "No previous tag found, skipping changelog generation"
             exit 0
@@ -1206,6 +1206,9 @@ jobs:
             }
           }
 
+          if (!hasTech) {
+            lines.push('### Technical Perspective');
+          }
           lines.push('#### Releases');
           lines.push(`- v${newVersion}`);
           lines.push('');
