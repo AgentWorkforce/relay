@@ -126,6 +126,48 @@ export class RelaycastApi {
     }
   }
 
+  /** Create a channel. No-op if it already exists. */
+  async createChannel(name: string, topic?: string): Promise<void> {
+    const agent = await this.ensure();
+    try {
+      await agent.channels.create({ name, ...(topic ? { topic } : {}) });
+    } catch (err) {
+      // Ignore "already exists" errors
+      if (err instanceof RelayError && err.code === "channel_already_exists") {
+        return;
+      }
+      throw err;
+    }
+  }
+
+  /** Join a channel. Idempotent. */
+  async joinChannel(name: string): Promise<void> {
+    const agent = await this.ensure();
+    await agent.channels.join(name);
+  }
+
+  /** Invite another agent to a channel. */
+  async inviteToChannel(channel: string, agentName: string): Promise<void> {
+    const agent = await this.ensure();
+    await agent.channels.invite(channel, agentName);
+  }
+
+  /** Register an external agent in the workspace (e.g., a spawned workflow agent).
+   *  Uses the workspace API key to register, not an agent token.
+   *  No-op if the agent already exists. */
+  async registerExternalAgent(name: string, persona?: string): Promise<void> {
+    const apiKey = await this.resolveApiKey();
+    const relay = new RelayCast({ apiKey, baseUrl: this.baseUrl });
+    try {
+      await relay.agents.register({ name, type: "agent", ...(persona ? { persona } : {}) });
+    } catch (err) {
+      if (err instanceof RelayError && err.code === "agent_already_exists") {
+        return;
+      }
+      throw err;
+    }
+  }
+
   /** Fetch message history from a channel. */
   async getMessages(
     channel: string,
