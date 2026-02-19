@@ -111,6 +111,107 @@ describe('SwarmCoordinator', () => {
       });
       expect(coordinator.selectPattern(config)).toBe('consensus');
     });
+
+    // ── Auto-selection heuristic tests ──────────────────────────────────
+
+    it('should auto-select map-reduce when mapper and reducer roles present', () => {
+      const config = makeConfig({
+        swarm: { pattern: '' as any },
+        agents: [
+          { name: 'mapper', cli: 'claude', role: 'mapper' },
+          { name: 'reducer', cli: 'claude', role: 'reducer' },
+        ],
+      });
+      expect(coordinator.selectPattern(config)).toBe('map-reduce');
+    });
+
+    it('should auto-select red-team when attacker and defender roles present', () => {
+      const config = makeConfig({
+        swarm: { pattern: '' as any },
+        agents: [
+          { name: 'attacker', cli: 'claude', role: 'attacker' },
+          { name: 'defender', cli: 'claude', role: 'defender' },
+        ],
+      });
+      expect(coordinator.selectPattern(config)).toBe('red-team');
+    });
+
+    it('should auto-select reflection when critic role present', () => {
+      const config = makeConfig({
+        swarm: { pattern: '' as any },
+        agents: [
+          { name: 'producer', cli: 'claude' },
+          { name: 'critic', cli: 'claude', role: 'critic' },
+        ],
+      });
+      expect(coordinator.selectPattern(config)).toBe('reflection');
+    });
+
+    it('should auto-select escalation when tier-N roles present', () => {
+      const config = makeConfig({
+        swarm: { pattern: '' as any },
+        agents: [
+          { name: 't1', cli: 'claude', role: 'tier-1' },
+          { name: 't2', cli: 'claude', role: 'tier-2' },
+        ],
+      });
+      expect(coordinator.selectPattern(config)).toBe('escalation');
+    });
+
+    it('should auto-select auction when auctioneer role present', () => {
+      const config = makeConfig({
+        swarm: { pattern: '' as any },
+        agents: [
+          { name: 'auctioneer', cli: 'claude', role: 'auctioneer' },
+          { name: 'bidder', cli: 'claude' },
+        ],
+      });
+      expect(coordinator.selectPattern(config)).toBe('auction');
+    });
+
+    it('should auto-select supervisor when supervisor role present', () => {
+      const config = makeConfig({
+        swarm: { pattern: '' as any },
+        agents: [
+          { name: 'supervisor', cli: 'claude', role: 'supervisor' },
+          { name: 'worker', cli: 'claude' },
+        ],
+      });
+      expect(coordinator.selectPattern(config)).toBe('supervisor');
+    });
+
+    it('should auto-select verifier when verifier role present', () => {
+      const config = makeConfig({
+        swarm: { pattern: '' as any },
+        agents: [
+          { name: 'producer', cli: 'claude' },
+          { name: 'verifier', cli: 'claude', role: 'verifier' },
+        ],
+      });
+      expect(coordinator.selectPattern(config)).toBe('verifier');
+    });
+
+    it('should auto-select swarm when hive-mind role present', () => {
+      const config = makeConfig({
+        swarm: { pattern: '' as any },
+        agents: [
+          { name: 'hive', cli: 'claude', role: 'hive-mind' },
+          { name: 'drone', cli: 'claude' },
+        ],
+      });
+      expect(coordinator.selectPattern(config)).toBe('swarm');
+    });
+
+    it('should auto-select circuit-breaker when fallback role present', () => {
+      const config = makeConfig({
+        swarm: { pattern: '' as any },
+        agents: [
+          { name: 'primary', cli: 'claude', role: 'primary' },
+          { name: 'fallback', cli: 'claude', role: 'fallback' },
+        ],
+      });
+      expect(coordinator.selectPattern(config)).toBe('circuit-breaker');
+    });
   });
 
   // ── Topology resolution ────────────────────────────────────────────────
@@ -347,6 +448,104 @@ describe('SwarmCoordinator', () => {
       // Middle agent should have two neighbors
       expect(topology.edges.get('worker-1')).toContain('leader');
       expect(topology.edges.get('worker-1')).toContain('worker-2');
+    });
+
+    // ── Edge case tests ─────────────────────────────────────────────────
+
+    it('should handle map-reduce with no reducers (fallback to coordinator)', () => {
+      const config = makeConfig({
+        swarm: { pattern: 'map-reduce' },
+        agents: [
+          { name: 'coordinator', cli: 'claude', role: 'lead' },
+          { name: 'mapper-1', cli: 'claude', role: 'mapper' },
+          { name: 'mapper-2', cli: 'claude', role: 'mapper' },
+        ],
+      });
+      const topology = coordinator.resolveTopology(config);
+      expect(topology.pattern).toBe('map-reduce');
+      // Mappers should fallback to coordinator when no reducers
+      expect(topology.edges.get('mapper-1')).toContain('coordinator');
+    });
+
+    it('should handle verifier with no verifiers (empty edges)', () => {
+      const config = makeConfig({
+        swarm: { pattern: 'verifier' },
+        agents: [
+          { name: 'producer-1', cli: 'claude' },
+          { name: 'producer-2', cli: 'claude' },
+        ],
+      });
+      const topology = coordinator.resolveTopology(config);
+      expect(topology.pattern).toBe('verifier');
+      // Producers have no one to send to
+      expect(topology.edges.get('producer-1')).toEqual([]);
+    });
+
+    it('should handle escalation with no tier roles (use agent order)', () => {
+      const config = makeConfig({
+        swarm: { pattern: 'escalation' },
+        agents: [
+          { name: 'agent-1', cli: 'claude' },
+          { name: 'agent-2', cli: 'claude' },
+          { name: 'agent-3', cli: 'claude' },
+        ],
+      });
+      const topology = coordinator.resolveTopology(config);
+      expect(topology.pattern).toBe('escalation');
+      expect(topology.pipelineOrder).toEqual(['agent-1', 'agent-2', 'agent-3']);
+    });
+
+    it('should handle reflection with no critic (fallback to mesh)', () => {
+      const config = makeConfig({
+        swarm: { pattern: 'reflection' },
+        agents: [
+          { name: 'agent-1', cli: 'claude' },
+          { name: 'agent-2', cli: 'claude' },
+        ],
+      });
+      const topology = coordinator.resolveTopology(config);
+      expect(topology.pattern).toBe('reflection');
+      // Falls back to full mesh when no critic
+      expect(topology.edges.get('agent-1')).toContain('agent-2');
+      expect(topology.edges.get('agent-2')).toContain('agent-1');
+    });
+
+    it('should handle swarm with hive-mind role', () => {
+      const config = makeConfig({
+        swarm: { pattern: 'swarm' },
+        agents: [
+          { name: 'hive', cli: 'claude', role: 'hive-mind' },
+          { name: 'drone-1', cli: 'claude' },
+          { name: 'drone-2', cli: 'claude' },
+          { name: 'drone-3', cli: 'claude' },
+        ],
+      });
+      const topology = coordinator.resolveTopology(config);
+      expect(topology.pattern).toBe('swarm');
+      expect(topology.hub).toBe('hive');
+      // All drones should connect to hive mind
+      expect(topology.edges.get('drone-1')).toContain('hive');
+      expect(topology.edges.get('drone-2')).toContain('hive');
+    });
+
+    it('should handle red-team with multiple attackers and defenders', () => {
+      const config = makeConfig({
+        swarm: { pattern: 'red-team' },
+        agents: [
+          { name: 'attacker-1', cli: 'claude', role: 'attacker' },
+          { name: 'attacker-2', cli: 'claude', role: 'attacker' },
+          { name: 'defender-1', cli: 'claude', role: 'defender' },
+          { name: 'defender-2', cli: 'claude', role: 'defender' },
+        ],
+      });
+      const topology = coordinator.resolveTopology(config);
+      expect(topology.pattern).toBe('red-team');
+      // Attackers should reach all defenders
+      expect(topology.edges.get('attacker-1')).toContain('defender-1');
+      expect(topology.edges.get('attacker-1')).toContain('defender-2');
+      // Defenders should reach all attackers
+      expect(topology.edges.get('defender-1')).toContain('attacker-1');
+      expect(topology.edges.get('defender-1')).toContain('attacker-2');
     });
   });
 

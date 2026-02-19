@@ -52,6 +52,7 @@ const PATTERN_HEURISTICS: Array<{
   test: (config: RelayYamlConfig) => boolean;
   pattern: SwarmPattern;
 }> = [
+  // ── Dependency-based patterns (highest priority) ──────────────────────
   {
     test: (c) =>
       Array.isArray(c.workflows) &&
@@ -62,6 +63,76 @@ const PATTERN_HEURISTICS: Array<{
     test: (c) => c.coordination?.consensusStrategy !== undefined,
     pattern: 'consensus',
   },
+
+  // ── Specific role-based patterns (check before generic hub patterns) ──
+  {
+    // Map-reduce: requires BOTH mapper AND reducer roles
+    test: (c) => c.agents.some((a) => a.role === 'mapper') && c.agents.some((a) => a.role === 'reducer'),
+    pattern: 'map-reduce',
+  },
+  {
+    // Red-team: requires BOTH attacker/red-team AND defender/blue-team
+    test: (c) => c.agents.some((a) => a.role === 'attacker' || a.role === 'red-team') &&
+                 c.agents.some((a) => a.role === 'defender' || a.role === 'blue-team'),
+    pattern: 'red-team',
+  },
+  {
+    // Reflection: requires critic role (not just reviewer, which is too common)
+    test: (c) => c.agents.some((a) => a.role === 'critic'),
+    pattern: 'reflection',
+  },
+  {
+    // Escalation: has tier-N roles
+    test: (c) => c.agents.some((a) => a.role?.startsWith('tier-')),
+    pattern: 'escalation',
+  },
+  {
+    // Auction: has auctioneer role
+    test: (c) => c.agents.some((a) => a.role === 'auctioneer'),
+    pattern: 'auction',
+  },
+  {
+    // Saga: has saga-orchestrator or compensate-handler roles
+    test: (c) => c.agents.some((a) => a.role === 'saga-orchestrator' || a.role === 'compensate-handler'),
+    pattern: 'saga',
+  },
+  {
+    // Circuit-breaker: has fallback or backup roles
+    test: (c) => c.agents.some((a) => a.role === 'fallback' || a.role === 'backup' || a.role === 'primary'),
+    pattern: 'circuit-breaker',
+  },
+  {
+    // Blackboard: has blackboard or shared-workspace role
+    test: (c) => c.agents.some((a) => a.role === 'blackboard' || a.role === 'shared-workspace'),
+    pattern: 'blackboard',
+  },
+  {
+    // Swarm: has hive-mind or swarm-agent roles
+    test: (c) => c.agents.some((a) => a.role === 'hive-mind' || a.role === 'swarm-agent'),
+    pattern: 'swarm',
+  },
+  {
+    // Verifier: has verifier role
+    test: (c) => c.agents.some((a) => a.role === 'verifier'),
+    pattern: 'verifier',
+  },
+  {
+    // Supervisor: has supervisor role
+    test: (c) => c.agents.some((a) => a.role === 'supervisor'),
+    pattern: 'supervisor',
+  },
+
+  // ── Generic hub-based patterns ────────────────────────────────────────
+  {
+    test: (c) => c.agents.length > 3 && c.agents.some((a) => a.role === 'lead'),
+    pattern: 'hierarchical',
+  },
+  {
+    test: (c) => c.agents.some((a) => a.role === 'hub' || a.role === 'coordinator'),
+    pattern: 'hub-spoke',
+  },
+
+  // ── Structural patterns ───────────────────────────────────────────────
   {
     test: (c) =>
       Array.isArray(c.workflows) &&
@@ -71,42 +142,9 @@ const PATTERN_HEURISTICS: Array<{
       }),
     pattern: 'pipeline',
   },
+
+  // ── Default fallback ──────────────────────────────────────────────────
   {
-    test: (c) => c.agents.length > 3 && c.agents.some((a) => a.role === 'lead'),
-    pattern: 'hierarchical',
-  },
-  {
-    test: (c) => c.agents.some((a) => a.role === 'hub' || a.role === 'coordinator'),
-    pattern: 'hub-spoke',
-  },
-  {
-    // Map-reduce: has mapper and reducer roles
-    test: (c) => c.agents.some((a) => a.role === 'mapper') && c.agents.some((a) => a.role === 'reducer'),
-    pattern: 'map-reduce',
-  },
-  {
-    // Supervisor: has supervisor role
-    test: (c) => c.agents.some((a) => a.role === 'supervisor'),
-    pattern: 'supervisor',
-  },
-  {
-    // Reflection: has reviewer/critic role that reviews own work
-    test: (c) => c.agents.some((a) => a.role === 'critic' || a.role === 'reviewer'),
-    pattern: 'reflection',
-  },
-  {
-    // Red-team: has attacker/defender roles
-    test: (c) => c.agents.some((a) => a.role === 'attacker' || a.role === 'red-team') &&
-                 c.agents.some((a) => a.role === 'defender' || a.role === 'blue-team'),
-    pattern: 'red-team',
-  },
-  {
-    // Verifier: has verifier role
-    test: (c) => c.agents.some((a) => a.role === 'verifier'),
-    pattern: 'verifier',
-  },
-  {
-    // Default: many independent agents → fan-out
     test: () => true,
     pattern: 'fan-out',
   },
@@ -372,16 +410,16 @@ export class SwarmCoordinator extends EventEmitter {
       case 'swarm': {
         // Emergent swarm: agents communicate with nearest neighbors
         // For simplicity, partial mesh based on agent index proximity
+        const hiveMind = agents.find((a) => a.role === 'hive-mind')?.name;
         for (let i = 0; i < names.length; i++) {
           const neighbors: string[] = [];
           if (i > 0) neighbors.push(names[i - 1]);
           if (i < names.length - 1) neighbors.push(names[i + 1]);
-          // Also connect to a "hive mind" if present
-          const hiveMind = agents.find((a) => a.role === 'hive-mind')?.name;
+          // Also connect to hive mind if present
           if (hiveMind && hiveMind !== names[i]) neighbors.push(hiveMind);
           edges.set(names[i], neighbors);
         }
-        return { pattern: p, agents, edges };
+        return { pattern: p, agents, edges, hub: hiveMind };
       }
 
       default: {

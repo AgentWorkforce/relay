@@ -225,6 +225,31 @@ The `swarm.pattern` field controls how agents are coordinated:
 | `blackboard` | Shared workspace where agents contribute incrementally to a solution |
 | `swarm` | Emergent behavior from simple agent rules (neighbor communication) |
 
+### Auto-Selection by Role
+
+When `swarm.pattern` is omitted, the coordinator auto-selects based on agent roles:
+
+| Pattern | Required Roles |
+|---------|----------------|
+| `map-reduce` | `mapper` + `reducer` |
+| `red-team` | (`attacker` OR `red-team`) + (`defender` OR `blue-team`) |
+| `reflection` | `critic` |
+| `escalation` | `tier-1`, `tier-2`, etc. |
+| `auction` | `auctioneer` |
+| `saga` | `saga-orchestrator` OR `compensate-handler` |
+| `circuit-breaker` | `fallback`, `backup`, OR `primary` |
+| `blackboard` | `blackboard` OR `shared-workspace` |
+| `swarm` | `hive-mind` OR `swarm-agent` |
+| `verifier` | `verifier` |
+| `supervisor` | `supervisor` |
+| `hierarchical` | `lead` (with 4+ agents) |
+| `hub-spoke` | `hub` OR `coordinator` |
+| `consensus` | Uses `coordination.consensusStrategy` config |
+| `dag` | Steps with `dependsOn` |
+| `pipeline` | Unique agents per step, 3+ steps |
+
+Priority: Patterns are checked in order above. First match wins.
+
 ## Error Handling
 
 ### Step-Level
