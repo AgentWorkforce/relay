@@ -45,33 +45,9 @@ const COORDINATOR   = `${WORKFLOW_ROOT}/coordinator.ts`;
 const BARRIER_FILE  = `${WORKFLOW_ROOT}/barrier.ts`;
 const TEMPLATES     = `${WORKFLOW_ROOT}/templates.ts`;
 
-// ── Task wrapper ─────────────────────────────────────────────────────────────
-
-/**
- * Appends a mandatory exit instruction to every agent task.
- *
- * Without this, spawned agents stay alive indefinitely after completing their
- * task and `waitForExit()` in the WorkflowRunner never resolves.
- *
- * The correct exit mechanism is to call the `relay_remove_agent` MCP tool
- * with the agent's own name (available as $AGENT_RELAY_NAME). This removes
- * the agent from the relay registry, which fires the `agent_released` event
- * and resolves `waitForExit()` with "released" — signalling the runner that
- * the step is complete and the next step can begin.
- */
-function withExit(task: string): string {
-  return (
-    task.trim() +
-    '\n\n---\n' +
-    'IMPORTANT: When you have completed ALL the work described above and ' +
-    'have output your completion marker, you MUST call the relay_remove_agent ' +
-    'MCP tool with your own agent name to signal completion:\n' +
-    '  relay_remove_agent({ name: process.env.AGENT_RELAY_NAME })\n' +
-    'Your agent name is in the $AGENT_RELAY_NAME environment variable. ' +
-    'Calling this tool removes you from the relay registry and allows the ' +
-    'workflow runner to proceed to the next step. Do NOT skip this step.'
-  );
-}
+// NOTE: No withExit() wrapper needed — the WorkflowRunner automatically
+// appends self-termination instructions in spawnAndWait() with the agent's
+// actual runtime name. Adding a second exit instruction wastes tokens.
 
 // ── Event handler ─────────────────────────────────────────────────────────────
 
@@ -114,6 +90,7 @@ const result = await workflow('broker-sdk-superiority')
     'Claude reviews after every phase.'
   )
   .pattern('dag')
+  .channel('wf-broker-sdk-superiority')
   .maxConcurrency(3)
   .timeout(28_800_000) // 8 hours — this is a large implementation campaign
 
@@ -125,7 +102,7 @@ const result = await workflow('broker-sdk-superiority')
           'trajectories, and resolves architectural conflicts. Has final say on ' +
           'all design decisions.',
     retries: 2,
-    timeoutMs: 600_000,
+
   })
 
   .agent('code-reviewer', {
@@ -134,7 +111,7 @@ const result = await workflow('broker-sdk-superiority')
           'TypeScript type safety, test coverage, and integration coherence after ' +
           'every phase. Catches issues the lead may have missed.',
     retries: 2,
-    timeoutMs: 300_000,
+
   })
 
   .agent('spec-analyst', {
@@ -142,7 +119,7 @@ const result = await workflow('broker-sdk-superiority')
     role: 'Codebase analyst. Reads the existing workflow source files and produces ' +
           'a precise, file-by-file implementation plan for all five improvement tiers.',
     retries: 2,
-    timeoutMs: 300_000,
+
   })
 
   .agent('schema-implementer', {
@@ -150,7 +127,7 @@ const result = await workflow('broker-sdk-superiority')
     role: 'Type system specialist. Extends TypeScript interfaces and JSON Schema ' +
           'definitions to support new workflow primitives.',
     retries: 2,
-    timeoutMs: 300_000,
+
   })
 
   .agent('engine-implementer', {
@@ -158,7 +135,7 @@ const result = await workflow('broker-sdk-superiority')
     role: 'Execution engine specialist. Implements new step-type execution logic ' +
           'inside WorkflowRunner, adds session concept, and expands the event system.',
     retries: 3,
-    timeoutMs: 300_000,
+
   })
 
   .agent('meta-implementer', {
@@ -166,7 +143,7 @@ const result = await workflow('broker-sdk-superiority')
     role: 'Meta-orchestration specialist. Implements sub-workflow composition, ' +
           'AutoWorkflowBuilder, and semantic pattern selection.',
     retries: 2,
-    timeoutMs: 300_000,
+
   })
 
   .agent('storage-implementer', {
@@ -174,7 +151,7 @@ const result = await workflow('broker-sdk-superiority')
     role: 'Storage backend specialist. Implements PostgresWorkflowDb, ' +
           'SqliteWorkflowDb, and RedisWorkflowDb adapters.',
     retries: 2,
-    timeoutMs: 300_000,
+
   })
 
   .agent('deploy-implementer', {
@@ -182,7 +159,7 @@ const result = await workflow('broker-sdk-superiority')
     role: 'Deployment and observability specialist. Implements relay workflow serve ' +
           'HTTP server, OTel tracing integration, and CLI improvements.',
     retries: 2,
-    timeoutMs: 300_000,
+
   })
 
   .agent('test-validator', {
@@ -190,14 +167,14 @@ const result = await workflow('broker-sdk-superiority')
     role: 'Integration test specialist. Validates all phases compile, tests pass, ' +
           'and exports are correct.',
     retries: 2,
-    timeoutMs: 300_000,
+
   })
 
   // ── Phase 0: Codebase Analysis ────────────────────────────────────────────
 
   .step('codebase-analysis', {
     agent: 'spec-analyst',
-    task: withExit(`
+    task: `
 You are the first step in a large improvement campaign for the relay broker-sdk
 workflow system. Your job is to read the existing source files and produce a
 concrete, file-by-file implementation plan.
@@ -288,14 +265,14 @@ For each tier, specify:
 
 Output a structured plan with clear section headers.
 End your output with: ANALYSIS_COMPLETE
-    `),
+    `,
     retries: 2,
     verification: { type: 'output_contains', value: 'ANALYSIS_COMPLETE' },
   })
 
   .step('spec-approval', {
     agent: 'lead',
-    task: withExit(`
+    task: `
 Review the codebase analysis produced by the spec-analyst:
 
 {{steps.codebase-analysis.output}}
@@ -319,7 +296,7 @@ Key architectural decisions to make explicit:
     or webhook?) Choose the simplest that works without requiring a server.
 
 Output a concise approved plan with your decisions. End with: SPEC_APPROVED
-    `),
+    `,
     dependsOn: ['codebase-analysis'],
     retries: 2,
     verification: { type: 'output_contains', value: 'SPEC_APPROVED' },
@@ -329,7 +306,7 @@ Output a concise approved plan with your decisions. End with: SPEC_APPROVED
 
   .step('p1-type-system', {
     agent: 'schema-implementer',
-    task: withExit(`
+    task: `
 Phase 1a: Extend the TypeScript type system for new workflow primitives.
 
 Approved spec context:
@@ -452,7 +429,7 @@ SPECIFIC CHANGES:
 
 Make ALL changes. Run: npx tsc --noEmit to verify no type errors.
 End your output with: TYPES_COMPLETE
-    `),
+    `,
     dependsOn: ['spec-approval'],
     retries: 2,
     verification: { type: 'output_contains', value: 'TYPES_COMPLETE' },
@@ -460,7 +437,7 @@ End your output with: TYPES_COMPLETE
 
   .step('p1-json-schema', {
     agent: 'schema-implementer',
-    task: withExit(`
+    task: `
 Phase 1b: Update the JSON Schema to match the new TypeScript types.
 
 Prior type changes:
@@ -490,7 +467,7 @@ Also update packages/broker-sdk/src/workflows/builder.ts:
 
 Verify with: cat ${SCHEMA_FILE} | python3 -m json.tool (or equivalent JSON lint)
 End your output with: SCHEMA_COMPLETE
-    `),
+    `,
     dependsOn: ['p1-type-system'],
     retries: 2,
     verification: { type: 'output_contains', value: 'SCHEMA_COMPLETE' },
@@ -498,7 +475,7 @@ End your output with: SCHEMA_COMPLETE
 
   .step('p1-lead-review', {
     agent: 'lead',
-    task: withExit(`
+    task: `
 Phase 1 Lead Review: Validate the type system and schema changes.
 
 Type system changes:
@@ -521,7 +498,7 @@ If you find issues, describe them specifically with file:line references.
 If the phase is acceptable, state what should be fixed in the engine phase.
 End with: PHASE_1_APPROVED (even if you request minor fixes — fixes go to
 the code-reviewer, who will direct the implementer if needed)
-    `),
+    `,
     dependsOn: ['p1-json-schema'],
     retries: 1,
     verification: { type: 'output_contains', value: 'PHASE_1_APPROVED' },
@@ -529,11 +506,12 @@ the code-reviewer, who will direct the implementer if needed)
 
   .step('p1-code-review', {
     agent: 'code-reviewer',
-    task: withExit(`
+    task: `
 Phase 1 Independent Code Review: TypeScript type system extension.
+(Running in parallel with lead review — review the code independently.)
 
-Lead's review notes:
-{{steps.p1-lead-review.output}}
+JSON Schema changes:
+{{steps.p1-json-schema.output}}
 
 YOUR INDEPENDENT REVIEW of ${TYPES_FILE}, ${SCHEMA_FILE}, ${BUILDER_FILE}:
 
@@ -551,8 +529,8 @@ Check:
 List any issues found. For each: file, line (if known), problem, fix required.
 If zero issues: explicitly state "No issues found."
 End with: CODE_REVIEW_1_COMPLETE
-    `),
-    dependsOn: ['p1-lead-review'],
+    `,
+    dependsOn: ['p1-json-schema'],
     retries: 1,
     verification: { type: 'output_contains', value: 'CODE_REVIEW_1_COMPLETE' },
   })
@@ -561,7 +539,7 @@ End with: CODE_REVIEW_1_COMPLETE
 
   .step('p2-condition-loop', {
     agent: 'engine-implementer',
-    task: withExit(`
+    task: `
 Phase 2a: Implement condition + loop execution in the WorkflowRunner.
 
 Phase 1 review context:
@@ -607,7 +585,7 @@ is a LoopStepGroup and route it to executeLoopGroup.
 
 Run: npx tsc --noEmit to verify.
 End your output with: CONDITION_LOOP_COMPLETE
-    `),
+    `,
     dependsOn: ['p1-code-review'],
     retries: 2,
     verification: { type: 'output_contains', value: 'CONDITION_LOOP_COMPLETE' },
@@ -615,7 +593,7 @@ End your output with: CONDITION_LOOP_COMPLETE
 
   .step('p2-input-validation', {
     agent: 'schema-implementer',
-    task: withExit(`
+    task: `
 Phase 2b: Implement input schema validation (runs in parallel with p2-condition-loop).
 
 Phase 1 review context:
@@ -653,7 +631,7 @@ In ${RUNNER_FILE}, in the execute() method, BEFORE the first findReadySteps call
 
 Run: npx tsc --noEmit to verify.
 End your output with: INPUT_VALIDATION_COMPLETE
-    `),
+    `,
     dependsOn: ['p1-code-review'],
     retries: 2,
     verification: { type: 'output_contains', value: 'INPUT_VALIDATION_COMPLETE' },
@@ -661,7 +639,7 @@ End your output with: INPUT_VALIDATION_COMPLETE
 
   .step('p2-router-hitl', {
     agent: 'engine-implementer',
-    task: withExit(`
+    task: `
 Phase 2c: Implement router + HITL step execution.
 
 Condition/loop implementation:
@@ -705,7 +683,7 @@ Add to WorkflowEvent:
 
 Run: npx tsc --noEmit
 End your output with: ROUTER_HITL_COMPLETE
-    `),
+    `,
     dependsOn: ['p2-condition-loop'],
     retries: 2,
     verification: { type: 'output_contains', value: 'ROUTER_HITL_COMPLETE' },
@@ -713,7 +691,7 @@ End your output with: ROUTER_HITL_COMPLETE
 
   .step('p2-session-fallback', {
     agent: 'engine-implementer',
-    task: withExit(`
+    task: `
 Phase 2d: Implement session concept and fallback agent switching.
 
 Router/HITL implementation:
@@ -764,7 +742,7 @@ Also implement the flow shorthand parser (if RelayYamlConfig.flow is set):
 
 Run: npx tsc --noEmit
 End your output with: SESSION_FALLBACK_COMPLETE
-    `),
+    `,
     dependsOn: ['p2-router-hitl'],
     retries: 2,
     verification: { type: 'output_contains', value: 'SESSION_FALLBACK_COMPLETE' },
@@ -772,7 +750,7 @@ End your output with: SESSION_FALLBACK_COMPLETE
 
   .step('p2-lead-review', {
     agent: 'lead',
-    task: withExit(`
+    task: `
 Phase 2 Lead Review: Execution engine implementation.
 
 Input validation:
@@ -796,7 +774,7 @@ REVIEW:
 
 Note any critical fixes needed before Phase 3 begins.
 End with: PHASE_2_APPROVED
-    `),
+    `,
     dependsOn: ['p2-session-fallback', 'p2-input-validation'],
     retries: 1,
     verification: { type: 'output_contains', value: 'PHASE_2_APPROVED' },
@@ -804,7 +782,7 @@ End with: PHASE_2_APPROVED
 
   .step('p2-code-review', {
     agent: 'code-reviewer',
-    task: withExit(`
+    task: `
 Phase 2 Independent Code Review: Execution engine.
 
 Lead's review:
@@ -827,7 +805,7 @@ INDEPENDENT REVIEW of ${RUNNER_FILE}:
 
 List all issues with specific fixes. State "No issues" for clean sections.
 End with: CODE_REVIEW_2_COMPLETE
-    `),
+    `,
     dependsOn: ['p2-lead-review'],
     retries: 1,
     verification: { type: 'output_contains', value: 'CODE_REVIEW_2_COMPLETE' },
@@ -837,7 +815,7 @@ End with: CODE_REVIEW_2_COMPLETE
 
   .step('p3-sub-workflow', {
     agent: 'meta-implementer',
-    task: withExit(`
+    task: `
 Phase 3a: Implement sub-workflow step execution.
 
 Phase 2 review context:
@@ -888,7 +866,7 @@ Export WorkflowRegistry from ${INDEX_FILE}.
 
 Run: npx tsc --noEmit
 End with: SUB_WORKFLOW_COMPLETE
-    `),
+    `,
     dependsOn: ['p2-code-review'],
     retries: 2,
     verification: { type: 'output_contains', value: 'SUB_WORKFLOW_COMPLETE' },
@@ -896,7 +874,7 @@ End with: SUB_WORKFLOW_COMPLETE
 
   .step('p3-auto-builder', {
     agent: 'meta-implementer',
-    task: withExit(`
+    task: `
 Phase 3b: Implement AutoWorkflowBuilder.
 
 Sub-workflow implementation:
@@ -962,7 +940,7 @@ Also add the meta-workflow type to types.ts if not already done:
 
 Run: npx tsc --noEmit
 End with: AUTO_BUILDER_COMPLETE
-    `),
+    `,
     dependsOn: ['p3-sub-workflow'],
     retries: 2,
     verification: { type: 'output_contains', value: 'AUTO_BUILDER_COMPLETE' },
@@ -972,7 +950,7 @@ End with: AUTO_BUILDER_COMPLETE
 
   .step('p4-db-adapters', {
     agent: 'storage-implementer',
-    task: withExit(`
+    task: `
 Phase 4: Implement production-ready WorkflowDb adapters.
 (Runs in parallel with Phase 3 — no dependency between them.)
 
@@ -1035,7 +1013,7 @@ the adapter they use.
 Run: npx tsc --noEmit (adapters will have type errors only if packages are absent;
 mark them as type-only imports with // @ts-expect-error if needed with clear comment)
 End with: DB_ADAPTERS_COMPLETE
-    `),
+    `,
     dependsOn: ['p2-code-review'],
     retries: 2,
     verification: { type: 'output_contains', value: 'DB_ADAPTERS_COMPLETE' },
@@ -1045,7 +1023,7 @@ End with: DB_ADAPTERS_COMPLETE
 
   .step('p34-lead-review', {
     agent: 'lead',
-    task: withExit(`
+    task: `
 Phase 3+4 Lead Review: Meta-orchestration and storage backends.
 
 Phase 3 — AutoBuilder:
@@ -1075,7 +1053,7 @@ DB ADAPTERS:
 
 State fixes needed for the code reviewer to validate.
 End with: PHASE_34_APPROVED
-    `),
+    `,
     dependsOn: ['p3-auto-builder', 'p4-db-adapters'],
     retries: 1,
     verification: { type: 'output_contains', value: 'PHASE_34_APPROVED' },
@@ -1083,7 +1061,7 @@ End with: PHASE_34_APPROVED
 
   .step('p34-code-review', {
     agent: 'code-reviewer',
-    task: withExit(`
+    task: `
 Phase 3+4 Independent Code Review.
 
 Lead's notes:
@@ -1108,7 +1086,7 @@ REVIEW packages/broker-sdk/src/workflows/registry.ts,
 
 List issues with specific file + line references.
 End with: CODE_REVIEW_34_COMPLETE
-    `),
+    `,
     dependsOn: ['p34-lead-review'],
     retries: 1,
     verification: { type: 'output_contains', value: 'CODE_REVIEW_34_COMPLETE' },
@@ -1118,7 +1096,7 @@ End with: CODE_REVIEW_34_COMPLETE
 
   .step('p5-serve-command', {
     agent: 'deploy-implementer',
-    task: withExit(`
+    task: `
 Phase 5a: Implement "relay workflow serve" HTTP server.
 
 Phase 3+4 review context:
@@ -1168,7 +1146,7 @@ The serve command will be integrated into the relay CLI in the next step.
 
 Run: npx tsc --noEmit
 End with: SERVE_COMMAND_COMPLETE
-    `),
+    `,
     dependsOn: ['p34-code-review'],
     retries: 2,
     verification: { type: 'output_contains', value: 'SERVE_COMMAND_COMPLETE' },
@@ -1176,11 +1154,12 @@ End with: SERVE_COMMAND_COMPLETE
 
   .step('p5-otel-tracing', {
     agent: 'deploy-implementer',
-    task: withExit(`
+    task: `
 Phase 5b: Implement OpenTelemetry tracing integration.
+(Running in parallel with p5-serve-command — these are independent.)
 
-Serve command implementation:
-{{steps.p5-serve-command.output}}
+Phase 3+4 review context:
+{{steps.p34-code-review.output}}
 
 YOUR TASK: Add optional OTel tracing to WorkflowRunner.
 
@@ -1242,15 +1221,15 @@ Export WorkflowTracer from ${INDEX_FILE}.
 
 Run: npx tsc --noEmit
 End with: OTEL_TRACING_COMPLETE
-    `),
-    dependsOn: ['p5-serve-command'],
+    `,
+    dependsOn: ['p34-code-review'],
     retries: 2,
     verification: { type: 'output_contains', value: 'OTEL_TRACING_COMPLETE' },
   })
 
   .step('p5-cli-improvements', {
     agent: 'deploy-implementer',
-    task: withExit(`
+    task: `
 Phase 5c: Implement CLI improvements.
 
 OTel tracing implementation:
@@ -1292,15 +1271,15 @@ all new CLI commands with usage examples.
 
 Run: npx tsc --noEmit
 End with: CLI_IMPROVEMENTS_COMPLETE
-    `),
-    dependsOn: ['p5-otel-tracing'],
+    `,
+    dependsOn: ['p5-serve-command', 'p5-otel-tracing'],
     retries: 2,
     verification: { type: 'output_contains', value: 'CLI_IMPROVEMENTS_COMPLETE' },
   })
 
   .step('p5-lead-review', {
     agent: 'lead',
-    task: withExit(`
+    task: `
 Phase 5 Lead Review: Deployment and observability.
 
 Serve command:
@@ -1325,7 +1304,7 @@ REVIEW:
 7. Is the README updated with accurate examples?
 
 Note critical fixes. End with: PHASE_5_APPROVED
-    `),
+    `,
     dependsOn: ['p5-cli-improvements'],
     retries: 1,
     verification: { type: 'output_contains', value: 'PHASE_5_APPROVED' },
@@ -1333,11 +1312,12 @@ Note critical fixes. End with: PHASE_5_APPROVED
 
   .step('p5-code-review', {
     agent: 'code-reviewer',
-    task: withExit(`
+    task: `
 Phase 5 Independent Code Review: Deployment and observability.
+(Running in parallel with lead review — review the code independently.)
 
-Lead's review:
-{{steps.p5-lead-review.output}}
+CLI improvements:
+{{steps.p5-cli-improvements.output}}
 
 REVIEW packages/broker-sdk/src/workflows/server.ts,
        packages/broker-sdk/src/workflows/tracing.ts,
@@ -1356,8 +1336,8 @@ REVIEW packages/broker-sdk/src/workflows/server.ts,
 7. Run npx tsc --noEmit and report results
 
 End with: CODE_REVIEW_5_COMPLETE
-    `),
-    dependsOn: ['p5-lead-review'],
+    `,
+    dependsOn: ['p5-cli-improvements'],
     retries: 1,
     verification: { type: 'output_contains', value: 'CODE_REVIEW_5_COMPLETE' },
   })
@@ -1366,7 +1346,7 @@ End with: CODE_REVIEW_5_COMPLETE
 
   .step('integration-validation', {
     agent: 'test-validator',
-    task: withExit(`
+    task: `
 Phase 6: Integration validation across all five tiers.
 
 Phase 5 review:
@@ -1424,15 +1404,15 @@ YOUR TASK: Run comprehensive validation of the full implementation.
      ParallelStepGroup, HitlStep, SubWorkflowStep, SessionConfig
 
 Report full results. End with: INTEGRATION_VALIDATED
-    `),
-    dependsOn: ['p5-code-review'],
+    `,
+    dependsOn: ['p5-code-review', 'p5-lead-review'],
     retries: 2,
     verification: { type: 'output_contains', value: 'INTEGRATION_VALIDATED' },
   })
 
   .step('final-lead-review', {
     agent: 'lead',
-    task: withExit(`
+    task: `
 FINAL LEAD REVIEW: Complete broker-sdk workflow superiority implementation.
 
 Integration validation results:
@@ -1478,7 +1458,7 @@ This is the culmination of a five-phase implementation campaign. Your job:
 
 Produce a final capability report with the checklist above filled in.
 End with: IMPLEMENTATION_COMPLETE
-    `),
+    `,
     dependsOn: ['integration-validation'],
     retries: 1,
     verification: { type: 'output_contains', value: 'IMPLEMENTATION_COMPLETE' },

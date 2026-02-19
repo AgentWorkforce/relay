@@ -222,9 +222,10 @@ fn relaycast_server_config(
     );
 
     let mut env = Map::new();
-    if let Some(api_key) = relay_api_key.map(str::trim).filter(|s| !s.is_empty()) {
-        env.insert("RELAY_API_KEY".into(), Value::String(api_key.to_string()));
-    }
+    // NOTE: RELAY_API_KEY is intentionally omitted from .mcp.json — the Relaycast
+    // MCP server reads credentials from .agent-relay/relaycast.json at startup.
+    // Some CLI tools (e.g. codex) filter API keys from .mcp.json env vars.
+    let _ = relay_api_key; // suppress unused warning
     if let Some(base_url) = relay_base_url.map(str::trim).filter(|s| !s.is_empty()) {
         env.insert("RELAY_BASE_URL".into(), Value::String(base_url.to_string()));
     }

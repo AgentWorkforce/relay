@@ -25,7 +25,7 @@ export interface LogsResult {
 }
 
 function getDefaultLogsDir(): string {
-  return join(process.cwd(), ".agent-relay", "worker-logs");
+  return join(process.cwd(), ".agent-relay", "team", "worker-logs");
 }
 
 /**

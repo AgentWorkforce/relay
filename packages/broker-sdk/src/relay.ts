@@ -182,6 +182,12 @@ export class AgentRelay {
 
   async spawnPty(input: SpawnPtyInput): Promise<Agent> {
     const client = await this.ensureStarted();
+    if (!input.channels || input.channels.length === 0) {
+      console.warn(
+        `[AgentRelay] spawnPty("${input.name}"): no channels specified, defaulting to "general". ` +
+        'Set explicit channels for workflow isolation.',
+      );
+    }
     const channels = input.channels ?? ["general"];
     const result = await client.spawnPty({
       name: input.name,
@@ -266,6 +272,12 @@ export class AgentRelay {
     });
   }
 
+  /** List agents with PIDs from the broker (for worker registration). */
+  async listAgentsRaw(): Promise<Array<{ name: string; pid?: number }>> {
+    const client = await this.ensureStarted();
+    return client.listAgents();
+  }
+
   // ── Status ────────────────────────────────────────────────────────────
 
   async getStatus(): Promise<BrokerStatus> {
@@ -286,14 +298,14 @@ export class AgentRelay {
    */
   async getLogs(agentName: string, options?: { lines?: number }): Promise<LogsResult> {
     const cwd = this.clientOptions.cwd ?? process.cwd();
-    const logsDir = path.join(cwd, ".agent-relay", "worker-logs");
+    const logsDir = path.join(cwd, ".agent-relay", "team", "worker-logs");
     return getLogsFromFile(agentName, { logsDir, lines: options?.lines });
   }
 
   /** List all agents that have log files. */
   async listLoggedAgents(): Promise<string[]> {
     const cwd = this.clientOptions.cwd ?? process.cwd();
-    const logsDir = path.join(cwd, ".agent-relay", "worker-logs");
+    const logsDir = path.join(cwd, ".agent-relay", "team", "worker-logs");
     return listLoggedAgentsFromFile(logsDir);
   }
 
