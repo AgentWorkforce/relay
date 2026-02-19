@@ -82,11 +82,13 @@ export class RelaycastApi {
     if (this.apiKeyOverride) return this.apiKeyOverride;
     if (process.env.RELAY_API_KEY) return process.env.RELAY_API_KEY;
 
-    // Try per-project cache first
+    // Try per-project cache first, then fall back to global (deduplicated)
     const globalPath = join(homedir(), ".agent-relay", "relaycast.json");
-    for (const cachePath of [this.cachePath, globalPath]) {
+    const candidates = this.cachePath === globalPath
+      ? [this.cachePath]
+      : [this.cachePath, globalPath];
+    for (const cachePath of candidates) {
       if (!existsSync(cachePath)) continue;
-      if (cachePath === globalPath && cachePath === this.cachePath) continue;
       try {
         const raw = await readFile(cachePath, "utf-8");
         const creds: RelaycastCredentials = JSON.parse(raw);
