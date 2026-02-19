@@ -1,9 +1,13 @@
 use std::{
     fs, io,
     path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
 };
 
+use anyhow::{Context, Result};
 use serde_json::{Map, Value};
+use tokio::process::Command;
 
 const TARGET_FILES: [&str; 3] = ["AGENTS.md", "CLAUDE.md", "GEMINI.md"];
 const MARKER_START: &str = "<!-- prpm:snippet:start @agent-relay/agent-relay-snippet@1.2.0 -->";
@@ -206,6 +210,21 @@ fn snippet_block(root: &Path, target_file: &str, home: Option<&Path>) -> String 
     )
 }
 
+/// Build the full MCP config JSON string for the relaycast server.
+/// Suitable for passing to `--mcp-config` CLI flags.
+pub fn relaycast_mcp_config_json(
+    relay_api_key: Option<&str>,
+    relay_base_url: Option<&str>,
+    relay_agent_name: Option<&str>,
+) -> String {
+    let server = relaycast_server_config(relay_api_key, relay_base_url, relay_agent_name);
+    let mut servers = Map::new();
+    servers.insert(RELAYCAST_SERVER.to_string(), server);
+    let mut top = Map::new();
+    top.insert("mcpServers".to_string(), Value::Object(servers));
+    serde_json::to_string(&Value::Object(top)).expect("MCP config serialization cannot fail")
+}
+
 fn relaycast_server_config(
     relay_api_key: Option<&str>,
     relay_base_url: Option<&str>,
@@ -236,6 +255,250 @@ fn relaycast_server_config(
     }
 
     Value::Object(server)
+}
+
+const OPENCODE_CONFIG: &str = "opencode.json";
+const OPENCODE_AGENT_NAME: &str = "relaycast";
+
+/// Ensure an `opencode.json` config exists with the relaycast MCP server and
+/// a custom `relaycast` agent that has those tools enabled.
+/// Returns `true` if the config was created or updated.
+pub fn ensure_opencode_config(
+    root: &Path,
+    relay_api_key: Option<&str>,
+    relay_base_url: Option<&str>,
+    relay_agent_name: Option<&str>,
+) -> io::Result<bool> {
+    let path = root.join(OPENCODE_CONFIG);
+
+    // Build the relaycast MCP entry in opencode format.
+    let mut mcp_server = Map::new();
+    mcp_server.insert("type".into(), Value::String("local".into()));
+    mcp_server.insert(
+        "command".into(),
+        Value::Array(vec![
+            Value::String("npx".into()),
+            Value::String("-y".into()),
+            Value::String("@relaycast/mcp".into()),
+        ]),
+    );
+    let mut env = Map::new();
+    if let Some(v) = relay_api_key.map(str::trim).filter(|s| !s.is_empty()) {
+        env.insert("RELAY_API_KEY".into(), Value::String(v.to_string()));
+    }
+    if let Some(v) = relay_base_url.map(str::trim).filter(|s| !s.is_empty()) {
+        env.insert("RELAY_BASE_URL".into(), Value::String(v.to_string()));
+    }
+    if let Some(v) = relay_agent_name.map(str::trim).filter(|s| !s.is_empty()) {
+        env.insert("RELAY_AGENT_NAME".into(), Value::String(v.to_string()));
+    }
+    if !env.is_empty() {
+        mcp_server.insert("environment".into(), Value::Object(env));
+    }
+
+    // Build the custom agent entry.
+    let mut agent = Map::new();
+    agent.insert(
+        "description".into(),
+        Value::String("Agent with Relaycast MCP enabled".into()),
+    );
+    let mut tools = Map::new();
+    tools.insert("relaycast_*".into(), Value::Bool(true));
+    agent.insert("tools".into(), Value::Object(tools));
+
+    if !path.exists() {
+        let mut top = Map::new();
+        let mut mcp = Map::new();
+        mcp.insert(OPENCODE_AGENT_NAME.into(), Value::Object(mcp_server));
+        top.insert("mcp".into(), Value::Object(mcp));
+        let mut agents = Map::new();
+        agents.insert(OPENCODE_AGENT_NAME.into(), Value::Object(agent));
+        top.insert("agent".into(), Value::Object(agents));
+        write_pretty_json(&path, &Value::Object(top))?;
+        return Ok(true);
+    }
+
+    let existing = fs::read_to_string(&path)?;
+    let mut parsed: Value = serde_json::from_str(&existing).map_err(|e| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("failed to parse {}: {e}", path.display()))
+    })?;
+
+    let top = parsed.as_object_mut().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "opencode.json must be an object")
+    })?;
+
+    let mut changed = false;
+
+    // Upsert mcp.relaycast
+    let mcp = top
+        .entry("mcp")
+        .or_insert_with(|| Value::Object(Map::new()));
+    if let Some(mcp_obj) = mcp.as_object_mut() {
+        mcp_obj.insert(OPENCODE_AGENT_NAME.into(), Value::Object(mcp_server));
+        changed = true;
+    }
+
+    // Upsert agent.relaycast
+    let agents = top
+        .entry("agent")
+        .or_insert_with(|| Value::Object(Map::new()));
+    if let Some(agents_obj) = agents.as_object_mut() {
+        if !agents_obj.contains_key(OPENCODE_AGENT_NAME) {
+            agents_obj.insert(OPENCODE_AGENT_NAME.into(), Value::Object(agent));
+            changed = true;
+        }
+    }
+
+    if changed {
+        write_pretty_json(&path, &parsed)?;
+    }
+    Ok(changed)
+}
+
+/// Configure the relaycast MCP server for any supported CLI tool.
+///
+/// Returns extra CLI arguments to append when spawning the agent.
+/// For Gemini/Droid this runs a pre-spawn `mcp add` command (removing first
+/// for idempotency). For Opencode this writes `opencode.json` on disk.
+///
+/// # Parameters
+/// - `cli`: CLI tool name (e.g. "claude", "codex", "gemini", "droid", "opencode")
+/// - `agent_name`: the name of the agent being spawned
+/// - `api_key`: optional relay API key (empty or `None` means omit)
+/// - `base_url`: optional relay base URL (empty or `None` means omit)
+/// - `existing_args`: args already provided by the user (used to detect opt-outs)
+/// - `cwd`: working directory for the agent (used by opencode config)
+pub async fn configure_relaycast_mcp(
+    cli: &str,
+    agent_name: &str,
+    api_key: Option<&str>,
+    base_url: Option<&str>,
+    existing_args: &[String],
+    cwd: &Path,
+) -> Result<Vec<String>> {
+    let cli_lower = cli.to_lowercase();
+    let is_claude = cli_lower == "claude" || cli_lower.starts_with("claude:");
+    let is_codex = cli_lower == "codex";
+    let is_gemini = cli_lower == "gemini";
+    let is_droid = cli_lower == "droid";
+    let is_opencode = cli_lower == "opencode";
+
+    let api_key = api_key.map(str::trim).filter(|s| !s.is_empty());
+    let base_url = base_url.map(str::trim).filter(|s| !s.is_empty());
+
+    let mut args: Vec<String> = Vec::new();
+
+    if is_claude && !existing_args.iter().any(|a| a.contains("mcp-config")) {
+        let mcp_json = relaycast_mcp_config_json(api_key, base_url, Some(agent_name));
+        args.push("--mcp-config".to_string());
+        args.push(mcp_json);
+    } else if is_codex && !existing_args.iter().any(|a| a.contains("mcp_servers.relaycast")) {
+        args.extend([
+            "--config".to_string(),
+            "mcp_servers.relaycast.command=npx".to_string(),
+            "--config".to_string(),
+            format!("mcp_servers.relaycast.args=[\"-y\", \"@relaycast/mcp\"]"),
+        ]);
+        if let Some(key) = api_key {
+            args.extend([
+                "--config".to_string(),
+                format!("mcp_servers.relaycast.env.RELAY_API_KEY={key}"),
+            ]);
+        }
+        if let Some(url) = base_url {
+            args.extend([
+                "--config".to_string(),
+                format!("mcp_servers.relaycast.env.RELAY_BASE_URL={url}"),
+            ]);
+        }
+        args.extend([
+            "--config".to_string(),
+            format!("mcp_servers.relaycast.env.RELAY_AGENT_NAME={agent_name}"),
+        ]);
+    } else if is_gemini || is_droid {
+        configure_gemini_droid_mcp(cli, api_key, base_url, is_gemini).await?;
+    } else if is_opencode && !existing_args.iter().any(|a| a == "--agent") {
+        ensure_opencode_config(cwd, api_key, base_url, Some(agent_name)).with_context(|| {
+            "failed to write opencode.json for relaycast MCP. \
+             Please configure the relaycast MCP server manually in opencode.json"
+        })?;
+        args.push("--agent".to_string());
+        args.push("relaycast".to_string());
+    }
+
+    Ok(args)
+}
+
+/// Run `<cli> mcp remove relaycast` then `<cli> mcp add` for Gemini or Droid.
+async fn configure_gemini_droid_mcp(
+    cli: &str,
+    api_key: Option<&str>,
+    base_url: Option<&str>,
+    is_gemini: bool,
+) -> Result<()> {
+    let env_flag = if is_gemini { "-e" } else { "--env" };
+    let manual_cmd = format!(
+        "{cli} mcp add {env_flag} RELAY_API_KEY=<key> {env_flag} RELAY_BASE_URL=<url> relaycast npx -y @relaycast/mcp"
+    );
+
+    // Remove first for idempotency (ignore errors — may not exist yet).
+    let _ = std::process::Command::new(cli)
+        .args(["mcp", "remove", "relaycast"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .and_then(|mut c| c.wait());
+
+    let mut mcp_cmd = Command::new(cli);
+    mcp_cmd.args(["mcp", "add"]);
+    if let Some(key) = api_key {
+        mcp_cmd.arg(env_flag).arg(format!("RELAY_API_KEY={key}"));
+    }
+    if let Some(url) = base_url {
+        mcp_cmd.arg(env_flag).arg(format!("RELAY_BASE_URL={url}"));
+    }
+    mcp_cmd.args(["relaycast", "npx", "-y", "@relaycast/mcp"]);
+    mcp_cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+
+    match mcp_cmd.spawn() {
+        Ok(mut child) => {
+            match tokio::time::timeout(Duration::from_secs(15), child.wait()).await {
+                Ok(Ok(status)) if !status.success() => {
+                    anyhow::bail!(
+                        "failed to configure relaycast MCP for {cli}: `{cli} mcp add` exited with code {:?}. \
+                         Please configure the relaycast MCP server manually:\n  {manual_cmd}",
+                        status.code()
+                    );
+                }
+                Ok(Err(error)) => {
+                    anyhow::bail!(
+                        "failed to configure relaycast MCP for {cli}: {error}. \
+                         Please configure the relaycast MCP server manually:\n  {manual_cmd}"
+                    );
+                }
+                Err(_) => {
+                    let _ = child.kill().await;
+                    anyhow::bail!(
+                        "failed to configure relaycast MCP for {cli}: `{cli} mcp add` timed out after 15s. \
+                         Please configure the relaycast MCP server manually:\n  {manual_cmd}"
+                    );
+                }
+                _ => {}
+            }
+        }
+        Err(error) => {
+            anyhow::bail!(
+                "failed to configure relaycast MCP for {cli}: could not run `{cli} mcp add`: {error}. \
+                 Please configure the relaycast MCP server manually:\n  {manual_cmd}"
+            );
+        }
+    }
+
+    Ok(())
 }
 
 fn write_pretty_json(path: &Path, value: &Value) -> io::Result<()> {

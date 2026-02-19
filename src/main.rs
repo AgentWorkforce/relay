@@ -36,7 +36,7 @@ use relay_broker::{
     protocol::{AgentRuntime, AgentSpec, ProtocolEnvelope, RelayDelivery, PROTOCOL_VERSION},
     pty::PtySession,
     relaycast_ws::{RelaycastHttpClient, RelaycastWsClient, WsControl},
-    snippets::ensure_relaycast_mcp_config,
+    snippets::{configure_relaycast_mcp, ensure_relaycast_mcp_config},
     telemetry::{TelemetryClient, TelemetryEvent},
     types::{BrokerCommandEvent, BrokerCommandPayload, SenderKind},
 };
@@ -466,6 +466,14 @@ impl WorkerRegistry {
             .collect()
     }
 
+    /// Look up an env-var value from the worker env list.
+    fn env_value(&self, key: &str) -> Option<&str> {
+        self.worker_env
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    }
+
     fn has_worker(&self, name: &str) -> bool {
         self.workers.contains_key(name)
     }
@@ -500,25 +508,46 @@ impl WorkerRegistry {
                 // Auto-add bypass flags for CLIs that need them to run non-interactively.
                 // Each CLI has its own flag; we only add it if the user didn't already.
                 let cli_lower = cli.to_lowercase();
-                let bypass_flag: Option<&str> = if (cli_lower == "claude"
-                    || cli_lower.starts_with("claude:"))
+                let is_claude =
+                    cli_lower == "claude" || cli_lower.starts_with("claude:");
+                let is_codex = cli_lower == "codex";
+
+                let bypass_flag: Option<&str> = if is_claude
                     && !spec
                         .args
                         .iter()
                         .any(|a| a.contains("dangerously-skip-permissions"))
                 {
                     Some("--dangerously-skip-permissions")
-                } else if cli_lower == "codex" && !spec.args.iter().any(|a| a.contains("full-auto"))
+                } else if is_codex && !spec.args.iter().any(|a| a.contains("full-auto"))
                 {
                     Some("--full-auto")
                 } else {
                     None
                 };
 
-                if bypass_flag.is_some() || !spec.args.is_empty() {
+                // Build MCP config args for CLIs that support dynamic MCP configuration.
+                let cwd = spec.cwd.as_deref().unwrap_or(".");
+                let mcp_args = configure_relaycast_mcp(
+                    cli,
+                    &spec.name,
+                    self.env_value("RELAY_API_KEY"),
+                    self.env_value("RELAY_BASE_URL"),
+                    &spec.args,
+                    Path::new(cwd),
+                )
+                .await?;
+
+                let has_extra = bypass_flag.is_some()
+                    || !spec.args.is_empty()
+                    || !mcp_args.is_empty();
+                if has_extra {
                     command.arg("--");
                     if let Some(flag) = bypass_flag {
                         command.arg(flag);
+                    }
+                    for arg in &mcp_args {
+                        command.arg(arg);
                     }
                     for arg in &spec.args {
                         command.arg(arg);
@@ -529,8 +558,23 @@ impl WorkerRegistry {
                 command.arg("headless");
                 command.arg("--agent-name").arg(&spec.name);
                 command.arg("claude");
-                if !spec.args.is_empty() {
+
+                // Build MCP config for headless Claude agents.
+                let mcp_args = configure_relaycast_mcp(
+                    "claude",
+                    &spec.name,
+                    self.env_value("RELAY_API_KEY"),
+                    self.env_value("RELAY_BASE_URL"),
+                    &spec.args,
+                    Path::new(spec.cwd.as_deref().unwrap_or(".")),
+                )
+                .await?;
+
+                if !spec.args.is_empty() || !mcp_args.is_empty() {
                     command.arg("--");
+                    for arg in &mcp_args {
+                        command.arg(arg);
+                    }
                     for arg in &spec.args {
                         command.arg(arg);
                     }

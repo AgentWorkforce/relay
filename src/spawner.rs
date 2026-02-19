@@ -1,6 +1,7 @@
 use std::{collections::HashMap, process::Stdio, time::Duration};
 
 use anyhow::{Context, Result};
+use relay_broker::snippets::configure_relaycast_mcp;
 use tokio::{
     process::{Child, Command},
     time::timeout,
@@ -49,6 +50,24 @@ impl Spawner {
 
         // Wrap mode: `agent-relay wrap <cli> <args...>`
         cmd.arg("wrap").arg(cli);
+
+        // Inject MCP config for CLIs that support dynamic MCP configuration.
+        let api_key = env_vars.iter().find(|(k, _)| *k == "RELAY_API_KEY").map(|(_, v)| *v);
+        let base_url = env_vars.iter().find(|(k, _)| *k == "RELAY_BASE_URL").map(|(_, v)| *v);
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let mcp_args = configure_relaycast_mcp(
+            cli,
+            child_name,
+            api_key,
+            base_url,
+            extra_args,
+            &cwd,
+        )
+        .await?;
+        for arg in &mcp_args {
+            cmd.arg(arg);
+        }
+
         for arg in extra_args {
             cmd.arg(arg);
         }
