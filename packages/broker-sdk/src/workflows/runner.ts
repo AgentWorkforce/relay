@@ -495,12 +495,8 @@ export class WorkflowRunner {
 
       // Create the dedicated workflow channel and join it
       this.relaycastApi = new RelaycastApi({ agentName: 'WorkflowRunner' });
-      try {
-        await this.relaycastApi.createChannel(channel, workflow.description);
-        await this.relaycastApi.joinChannel(channel);
-      } catch {
-        // Non-critical — don't break workflow execution if Relaycast is unavailable
-      }
+      await this.relaycastApi.createChannel(channel, workflow.description);
+      await this.relaycastApi.joinChannel(channel);
       this.postToChannel(
         `Workflow **${workflow.name}** started — ${workflow.steps.length} steps, pattern: ${resolved.swarm.pattern}`,
       );
@@ -637,12 +633,8 @@ export class WorkflowRunner {
 
       // Ensure channel exists and join it for resumed runs
       this.relaycastApi = new RelaycastApi({ agentName: 'WorkflowRunner' });
-      try {
-        await this.relaycastApi.createChannel(resumeChannel);
-        await this.relaycastApi.joinChannel(resumeChannel);
-      } catch {
-        // Non-critical — don't break workflow execution if Relaycast is unavailable
-      }
+      await this.relaycastApi.createChannel(resumeChannel);
+      await this.relaycastApi.joinChannel(resumeChannel);
       this.postToChannel(
         `Workflow **${workflow.name}** resumed — ${pendingCount} pending steps`,
       );
