@@ -378,7 +378,7 @@ export class SwarmCoordinator extends EventEmitter {
 
       case 'saga': {
         // Orchestrator coordinates saga steps; each step can trigger compensate
-        const orchestrator = this.pickHub(agents);
+        const orchestrator = agents.find((a) => a.role === 'saga-orchestrator')?.name ?? this.pickHub(agents);
         const participants = names.filter((n) => n !== orchestrator);
         // Orchestrator → all participants (for commands)
         edges.set(orchestrator, participants);
@@ -415,8 +415,8 @@ export class SwarmCoordinator extends EventEmitter {
           const neighbors: string[] = [];
           if (i > 0) neighbors.push(names[i - 1]);
           if (i < names.length - 1) neighbors.push(names[i + 1]);
-          // Also connect to hive mind if present
-          if (hiveMind && hiveMind !== names[i]) neighbors.push(hiveMind);
+          // Also connect to hive mind if present (avoid duplicates if already adjacent)
+          if (hiveMind && hiveMind !== names[i] && !neighbors.includes(hiveMind)) neighbors.push(hiveMind);
           edges.set(names[i], neighbors);
         }
         return { pattern: p, agents, edges, hub: hiveMind };
