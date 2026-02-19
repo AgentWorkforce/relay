@@ -947,7 +947,7 @@ export class WorkflowRunner {
     const agentName = `${step.name}-${this.generateShortId()}`;
     const taskWithExit = step.task + '\n\n---\n' +
       'IMPORTANT: When you have fully completed this task, you MUST self-terminate by calling ' +
-      `the MCP tool: relay_release(name="${agentName}", reason="Task completed"). ` +
+      `the MCP tool: remove_agent(name="${agentName}", reason="Task completed"). ` +
       'Do not wait for further input — release yourself immediately after finishing.';
 
     const agentChannels = this.channel ? [this.channel] : agentDef.channels;
