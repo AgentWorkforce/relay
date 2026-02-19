@@ -62,4 +62,4 @@ await runner.execute(config, undefined, {
 
 ## Creating Custom Workflows
 
-See the [Workflow YAML Reference](../broker-sdk/src/workflows/README.md) for full configuration options.
+See the [Workflow YAML Reference](../../packages/broker-sdk/src/workflows/README.md) for full configuration options.

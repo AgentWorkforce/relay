@@ -49,7 +49,8 @@ await runner.execute(config, undefined, {
 ## Configuration
 
 - **maxConcurrency:** 1 (strict sequential execution)
-- **onError:** fail-fast (security audits should not skip steps)
+- **onError:** fail (security audits should not skip steps)
+- **errorStrategy:** fail-fast
 - **Barrier:** audit-complete (waits for all phases)
 
 ## Verification Markers
