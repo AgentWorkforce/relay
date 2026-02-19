@@ -71,6 +71,8 @@ export interface Agent {
   exitCode?: number;
   /** Set when the agent exits via signal. Available after `onAgentExited` fires. */
   exitSignal?: string;
+  /** Set when the agent requests exit via /exit. Available after `onAgentExitRequested` fires. */
+  exitReason?: string;
   release(): Promise<void>;
   /** Wait for the agent process to exit on its own.
    *  @param timeoutMs — optional timeout in ms. Resolves with `"timeout"` if exceeded,
@@ -132,6 +134,7 @@ export class AgentRelay {
   onAgentReady: EventHook<Agent> = null;
   onWorkerOutput: EventHook<{ name: string; stream: string; chunk: string }> = null;
   onDeliveryUpdate: EventHook<BrokerEvent> = null;
+  onAgentExitRequested: EventHook<{ name: string; reason: string }> = null;
   onAgentIdle: EventHook<{ name: string; idleSecs: number }> = null;
 
   // Shorthand spawners
@@ -435,6 +438,14 @@ export class AgentRelay {
           this.exitResolvers.delete(event.name);
           this.idleResolvers.get(event.name)?.resolve("exited");
           this.idleResolvers.delete(event.name);
+          break;
+        }
+        case "agent_exit": {
+          const agent =
+            this.knownAgents.get(event.name) ??
+            this.makeAgent(event.name, "pty", []);
+          (agent as { exitReason?: string }).exitReason = event.reason;
+          this.onAgentExitRequested?.({ name: event.name, reason: event.reason });
           break;
         }
         case "worker_ready": {
