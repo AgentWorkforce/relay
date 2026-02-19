@@ -102,6 +102,11 @@ export type BrokerEvent =
       name: string;
     }
   | {
+      kind: "agent_exit";
+      name: string;
+      reason: string;
+    }
+  | {
       kind: "agent_exited";
       name: string;
       code?: number;

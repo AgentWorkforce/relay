@@ -1114,6 +1114,17 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         "name": name,
                                         "idle_secs": idle_secs,
                                     })).await;
+                                } else if msg_type == "agent_exit" {
+                                    let reason = value.get("payload")
+                                        .and_then(|p| p.get("reason"))
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("unknown");
+                                    tracing::info!(agent = %name, reason = %reason, "agent requested exit");
+                                    let _ = send_event(&sdk_out_tx, json!({
+                                        "kind": "agent_exit",
+                                        "name": name,
+                                        "reason": reason,
+                                    })).await;
                                 }
                             }
                         }
