@@ -1214,6 +1214,7 @@ jobs:
           lines.push('');
           lines.push('---');
           lines.push('');
+          lines.push('');
 
           const newEntry = lines.join('\n');
           const changelog = readFileSync('CHANGELOG.md', 'utf-8');
