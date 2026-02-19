@@ -1,0 +1,66 @@
+{
+  "id": "traj_1771506823242_f7462087",
+  "version": 1,
+  "task": {
+    "title": "broker-sdk-superiority-workflow run #9de0e8ba",
+    "source": {
+      "system": "workflow-runner",
+      "id": "9de0e8babf38c5a4e17102c6"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-02-19T13:13:43.242Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-19T13:13:43.242Z"
+    },
+    {
+      "name": "spec-analyst",
+      "role": "spec-analyst",
+      "joinedAt": "2026-02-19T13:13:46.503Z"
+    },
+    {
+      "name": "lead",
+      "role": "lead",
+      "joinedAt": "2026-02-19T14:14:13.012Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_a47e7717",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-19T13:13:43.242Z",
+      "events": [
+        {
+          "ts": 1771506823242,
+          "type": "note",
+          "content": "Workflow \"broker-sdk-superiority-workflow\" started with 24 steps"
+        },
+        {
+          "ts": 1771506823242,
+          "type": "note",
+          "content": "Parsed 24 steps, 23 dependent steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1771506826503,
+          "type": "note",
+          "content": "Step \"codebase-analysis\" assigned to agent \"spec-analyst\""
+        },
+        {
+          "ts": 1771510453009,
+          "type": "finding",
+          "content": "Step \"codebase-analysis\" completed: \u001b[?2004h\u001b[>7u\u001b[?1004h\u001b[?u\u001b]10;?\u001b\\\u001b[?2026h\r\n╭─────────────────────────────────────────────────╮\r\n│ ✨ Update available! 0.101.0 -> 0.104.0         │\r\n│ Run npm install -g @openai/codex to update.     │\r...",
+          "significance": "medium"
+        },
+        {
+          "ts": 1771510453012,
+          "type": "note",
+          "content": "Step \"spec-approval\" assigned to agent \"lead\""
+        }
+      ]
+    }
+  ]
+}
