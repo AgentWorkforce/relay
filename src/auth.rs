@@ -141,6 +141,62 @@ impl AuthClient {
             .await
     }
 
+    /// Rotate the token for an existing agent without re-registering.
+    ///
+    /// Calls `POST /v1/agents/:name/rotate-token` which generates a new bearer
+    /// token while keeping the same agent identity and name. Falls back to full
+    /// `refresh_session` if the agent no longer exists (404).
+    pub async fn rotate_token(&self, cached: &CredentialCache) -> Result<AuthSession> {
+        let agent_name = cached
+            .agent_name
+            .as_deref()
+            .context("cannot rotate token without agent name")?;
+        let api_key = normalize_workspace_key(&cached.api_key)
+            .context("cached api_key is not a valid workspace key")?;
+
+        let response = self
+            .http
+            .post(format!(
+                "{}/v1/agents/{}/rotate-token",
+                self.base_url, agent_name
+            ))
+            .bearer_auth(&api_key)
+            .send()
+            .await?;
+
+        if response.status() == StatusCode::NOT_FOUND {
+            tracing::info!(
+                target = "relay_broker::auth",
+                agent_name = %agent_name,
+                "agent not found during token rotation, falling back to re-registration"
+            );
+            return self.refresh_session(cached).await;
+        }
+
+        let response = response.error_for_status()?;
+        let body: Value = response.json().await?;
+        let data = body.get("data").unwrap_or(&body);
+        let token = data
+            .get("token")
+            .and_then(Value::as_str)
+            .context("rotate-token response missing token")?
+            .to_string();
+
+        let creds = CredentialCache {
+            workspace_id: cached.workspace_id.clone(),
+            agent_id: cached.agent_id.clone(),
+            api_key: cached.api_key.clone(),
+            agent_name: Some(agent_name.to_string()),
+            updated_at: Utc::now(),
+        };
+        self.store.save(&creds)?;
+
+        Ok(AuthSession {
+            credentials: creds,
+            token,
+        })
+    }
+
     async fn startup_from_sources(
         &self,
         requested_name: Option<&str>,
@@ -645,6 +701,79 @@ mod tests {
         );
         first_conflict.assert_hits(1);
         second_success.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn rotate_token_calls_rotate_endpoint_and_preserves_name() {
+        clear_relay_env();
+        let server = MockServer::start();
+        let rotate = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/lead/rotate-token")
+                .header("authorization", "Bearer rk_live_cached");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"token":"at_live_rotated"}}"#);
+        });
+
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("relaycast.json"));
+        let client = AuthClient::new(server.base_url(), store);
+
+        let cached = CredentialCache {
+            workspace_id: "ws_cached".into(),
+            agent_id: "a_old".into(),
+            api_key: "rk_live_cached".into(),
+            agent_name: Some("lead".into()),
+            updated_at: chrono::Utc::now(),
+        };
+
+        let session = client.rotate_token(&cached).await.unwrap();
+        assert_eq!(session.token, "at_live_rotated");
+        assert_eq!(session.credentials.agent_name.as_deref(), Some("lead"));
+        assert_eq!(session.credentials.agent_id, "a_old");
+        assert_eq!(session.credentials.workspace_id, "ws_cached");
+        rotate.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn rotate_token_falls_back_to_reregister_on_404() {
+        clear_relay_env();
+        let server = MockServer::start();
+        let rotate_404 = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/lead/rotate-token")
+                .header("authorization", "Bearer rk_live_cached");
+            then.status(404)
+                .header("content-type", "application/json")
+                .body(r#"{"error":"not_found"}"#);
+        });
+        let register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_cached");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"id":"a_new","name":"lead","token":"at_live_reregistered","workspace_id":"ws_cached"}}"#);
+        });
+
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("relaycast.json"));
+        let client = AuthClient::new(server.base_url(), store);
+
+        let cached = CredentialCache {
+            workspace_id: "ws_cached".into(),
+            agent_id: "a_old".into(),
+            api_key: "rk_live_cached".into(),
+            agent_name: Some("lead".into()),
+            updated_at: chrono::Utc::now(),
+        };
+
+        let session = client.rotate_token(&cached).await.unwrap();
+        assert_eq!(session.token, "at_live_reregistered");
+        assert_eq!(session.credentials.agent_name.as_deref(), Some("lead"));
+        rotate_404.assert_hits(1);
+        register.assert_hits(1);
     }
 
     #[test]

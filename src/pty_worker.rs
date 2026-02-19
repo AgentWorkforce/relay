@@ -44,6 +44,12 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 
     let mut pty_auto = PtyAutoState::new();
 
+    let idle_threshold = if cmd.idle_threshold_secs == 0 {
+        None
+    } else {
+        Some(Duration::from_secs(cmd.idle_threshold_secs))
+    };
+
     // --- SIGWINCH (terminal resize) ---
     let mut sigwinch =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())
@@ -186,6 +192,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 
                         pty_auto.update_auto_suggestion(&text);
                         pty_auto.last_output_time = Instant::now();
+                        pty_auto.reset_idle_on_output();
                         pty_auto.update_editor_buffer(&text);
                         pty_auto.reset_auto_enter_on_output(&text);
                         pty_auto.handle_mcp_approval(&text, &pty).await;
@@ -475,6 +482,16 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
             // --- Auto-enter for stuck agents ---
             _ = auto_enter_interval.tick() => {
                 pty_auto.try_auto_enter(&pty);
+
+                // Idle detection: emit agent_idle once when silence exceeds threshold.
+                // Granularity depends on auto_enter_interval tick rate (2s).
+                if let Some(threshold) = idle_threshold {
+                    if let Some(idle_secs) = pty_auto.check_idle_transition(threshold) {
+                        let _ = send_frame(&out_tx, "agent_idle", None, json!({
+                            "idle_secs": idle_secs,
+                        })).await;
+                    }
+                }
             }
 
             // --- SIGWINCH: forward terminal resize to PTY ---

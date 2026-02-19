@@ -98,6 +98,10 @@ struct PtyCommand {
     /// Emit delivery_active events when output matches progress patterns.
     #[arg(long)]
     progress: bool,
+
+    /// Silence duration in seconds before emitting agent_idle (0 = disabled).
+    #[arg(long, default_value = "30")]
+    idle_threshold_secs: u64,
 }
 
 #[derive(Debug, clap::Args, Clone)]
@@ -371,6 +375,9 @@ struct SpawnPayload {
     agent: AgentSpec,
     #[serde(default)]
     initial_task: Option<String>,
+    /// Silence duration in seconds before emitting agent_idle (0 = disabled).
+    #[serde(default)]
+    idle_threshold_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -436,7 +443,12 @@ impl WorkerRegistry {
         self.workers.get(name).and_then(|h| h.child.id())
     }
 
-    async fn spawn(&mut self, spec: AgentSpec, parent: Option<String>) -> Result<()> {
+    async fn spawn(
+        &mut self,
+        spec: AgentSpec,
+        parent: Option<String>,
+        idle_threshold_secs: Option<u64>,
+    ) -> Result<()> {
         if self.workers.contains_key(&spec.name) {
             anyhow::bail!("agent '{}' already exists", spec.name);
         }
@@ -449,6 +461,9 @@ impl WorkerRegistry {
                 let cli = spec.cli.as_deref().context("pty runtime requires `cli`")?;
                 command.arg("pty");
                 command.arg("--agent-name").arg(&spec.name);
+                if let Some(secs) = idle_threshold_secs {
+                    command.arg("--idle-threshold-secs").arg(secs.to_string());
+                }
                 command.arg(cli);
 
                 // Auto-add bypass flags for CLIs that need them to run non-interactively.
@@ -1088,6 +1103,16 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         "kind": "worker_ready",
                                         "name": name,
                                         "runtime": runtime,
+                                    })).await;
+                                } else if msg_type == "agent_idle" {
+                                    let idle_secs = value.get("payload")
+                                        .and_then(|p| p.get("idle_secs"))
+                                        .and_then(Value::as_u64)
+                                        .unwrap_or(0);
+                                    let _ = send_event(&sdk_out_tx, json!({
+                                        "kind": "agent_idle",
+                                        "name": name,
+                                        "idle_secs": idle_secs,
                                     })).await;
                                 }
                             }
@@ -1781,7 +1806,9 @@ async fn handle_sdk_frame(
             let runtime = payload.agent.runtime.clone();
             let name = payload.agent.name.clone();
 
-            workers.spawn(payload.agent.clone(), None).await?;
+            workers
+                .spawn(payload.agent.clone(), None, payload.idle_threshold_secs)
+                .await?;
             if let Some(task) = payload.initial_task {
                 workers.initial_tasks.insert(name.clone(), task);
             }

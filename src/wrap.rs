@@ -51,6 +51,8 @@ pub(crate) struct PtyAutoState {
     pub(crate) auto_enter_retry_count: u32,
     pub(crate) editor_mode_buffer: String,
     pub(crate) last_output_time: Instant,
+    // Idle detection (edge-triggered)
+    pub(crate) is_idle: bool,
 }
 
 impl PtyAutoState {
@@ -72,6 +74,7 @@ impl PtyAutoState {
             auto_enter_retry_count: 0,
             editor_mode_buffer: String::new(),
             last_output_time: Instant::now(),
+            is_idle: false,
         }
     }
 
@@ -249,6 +252,87 @@ impl PtyAutoState {
         if !is_echo && clean_text.len() > 10 && self.auto_enter_retry_count > 0 {
             self.auto_enter_retry_count = 0;
         }
+    }
+
+    /// Reset idle state when PTY produces output, re-arming the next idle transition.
+    pub(crate) fn reset_idle_on_output(&mut self) {
+        self.is_idle = false;
+    }
+
+    /// Check whether the worker has crossed the idle threshold.
+    /// Returns `Some(idle_secs)` exactly once when transitioning from active to idle.
+    /// Returns `None` when already idle or not yet idle.
+    pub(crate) fn check_idle_transition(&mut self, threshold: Duration) -> Option<u64> {
+        let since_output = self.last_output_time.elapsed();
+        if since_output >= threshold && !self.is_idle {
+            self.is_idle = true;
+            Some(since_output.as_secs())
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod idle_tests {
+    use super::*;
+
+    #[test]
+    fn emits_once_on_transition_to_idle() {
+        let mut state = PtyAutoState::new();
+        // Simulate output happening 2 seconds ago
+        state.last_output_time = Instant::now() - Duration::from_secs(2);
+        let threshold = Duration::from_secs(1);
+
+        // First check: should emit (active -> idle)
+        let result = state.check_idle_transition(threshold);
+        assert!(result.is_some());
+        assert!(result.unwrap() >= 1);
+
+        // Second check: should NOT emit (already idle)
+        let result = state.check_idle_transition(threshold);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn does_not_emit_before_threshold() {
+        let mut state = PtyAutoState::new();
+        // Output just happened
+        state.last_output_time = Instant::now();
+        let threshold = Duration::from_secs(30);
+
+        let result = state.check_idle_transition(threshold);
+        assert!(result.is_none());
+        assert!(!state.is_idle);
+    }
+
+    #[test]
+    fn reset_rearms_idle_detection() {
+        let mut state = PtyAutoState::new();
+        state.last_output_time = Instant::now() - Duration::from_secs(2);
+        let threshold = Duration::from_secs(1);
+
+        // Transition to idle
+        assert!(state.check_idle_transition(threshold).is_some());
+        assert!(state.is_idle);
+
+        // Simulate new output: resets idle state
+        state.reset_idle_on_output();
+        assert!(!state.is_idle);
+
+        // Need to also update last_output_time (as pty_worker does)
+        state.last_output_time = Instant::now() - Duration::from_secs(2);
+
+        // Should emit again after re-arming
+        assert!(state.check_idle_transition(threshold).is_some());
+    }
+
+    #[test]
+    fn reset_without_idle_is_noop() {
+        let mut state = PtyAutoState::new();
+        assert!(!state.is_idle);
+        state.reset_idle_on_output();
+        assert!(!state.is_idle);
     }
 }
 

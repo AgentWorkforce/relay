@@ -57,6 +57,8 @@ class AgentOptions:
     max_tokens: int | None = None
     timeout_ms: int | None = None
     retries: int | None = None
+    idle_threshold_secs: int | None = None
+    """Silence duration in seconds before the agent is considered idle (0 = disabled, default: 30)."""
 
 
 @dataclass

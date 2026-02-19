@@ -90,6 +90,7 @@ class WorkflowBuilder:
         max_tokens: int | None = None,
         timeout_ms: int | None = None,
         retries: int | None = None,
+        idle_threshold_secs: int | None = None,
     ) -> WorkflowBuilder:
         """Add an agent definition."""
         opts = AgentOptions(
@@ -101,6 +102,7 @@ class WorkflowBuilder:
             max_tokens=max_tokens,
             timeout_ms=timeout_ms,
             retries=retries,
+            idle_threshold_secs=idle_threshold_secs,
         )
         agent_def: dict[str, Any] = {"name": name, "cli": opts.cli}
 
@@ -120,6 +122,8 @@ class WorkflowBuilder:
             constraints["timeoutMs"] = opts.timeout_ms
         if opts.retries is not None:
             constraints["retries"] = opts.retries
+        if opts.idle_threshold_secs is not None:
+            constraints["idleThresholdSecs"] = opts.idle_threshold_secs
         if constraints:
             agent_def["constraints"] = constraints
 
