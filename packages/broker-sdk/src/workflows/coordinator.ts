@@ -376,6 +376,10 @@ export class SwarmCoordinator extends EventEmitter {
           const canReportTo = i > 0 ? [order[i - 1]] : [];
           edges.set(order[i], [...canEscalateTo, ...canReportTo]);
         }
+        // Ensure non-tiered agents still have edge entries (prevents undefined)
+        for (const n of names) {
+          if (!edges.has(n)) edges.set(n, []);
+        }
         return { pattern: p, agents, edges, pipelineOrder: order };
       }
 
