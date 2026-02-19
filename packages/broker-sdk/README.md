@@ -60,6 +60,8 @@ if (result === "idle") {
   console.log("Agent finished work");
 } else if (result === "exited") {
   console.log("Agent exited");
+} else {
+  console.log("Timed out waiting for idle");
 }
 
 await relay.shutdown();

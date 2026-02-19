@@ -483,7 +483,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
             _ = auto_enter_interval.tick() => {
                 pty_auto.try_auto_enter(&pty);
 
-                // Idle detection: emit agent_idle once when silence exceeds threshold
+                // Idle detection: emit agent_idle once when silence exceeds threshold.
+                // Granularity depends on auto_enter_interval tick rate (2s).
                 if let Some(threshold) = idle_threshold {
                     if let Some(idle_secs) = pty_auto.check_idle_transition(threshold) {
                         let _ = send_frame(&out_tx, "agent_idle", None, json!({

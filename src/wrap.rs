@@ -17,8 +17,6 @@ const MAX_AUTO_ENTER_RETRIES: u32 = 5;
 pub(crate) const AUTO_SUGGESTION_BLOCK_TIMEOUT: Duration = Duration::from_secs(10);
 const MCP_APPROVAL_TIMEOUT: Duration = Duration::from_secs(5);
 const GEMINI_ACTION_COOLDOWN: Duration = Duration::from_secs(2);
-#[allow(dead_code)]
-pub(crate) const DEFAULT_AGENT_IDLE_THRESHOLD: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub(crate) struct PendingWrapInjection {
@@ -272,6 +270,69 @@ impl PtyAutoState {
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod idle_tests {
+    use super::*;
+
+    #[test]
+    fn emits_once_on_transition_to_idle() {
+        let mut state = PtyAutoState::new();
+        // Simulate output happening 2 seconds ago
+        state.last_output_time = Instant::now() - Duration::from_secs(2);
+        let threshold = Duration::from_secs(1);
+
+        // First check: should emit (active -> idle)
+        let result = state.check_idle_transition(threshold);
+        assert!(result.is_some());
+        assert!(result.unwrap() >= 1);
+
+        // Second check: should NOT emit (already idle)
+        let result = state.check_idle_transition(threshold);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn does_not_emit_before_threshold() {
+        let mut state = PtyAutoState::new();
+        // Output just happened
+        state.last_output_time = Instant::now();
+        let threshold = Duration::from_secs(30);
+
+        let result = state.check_idle_transition(threshold);
+        assert!(result.is_none());
+        assert!(!state.is_idle);
+    }
+
+    #[test]
+    fn reset_rearms_idle_detection() {
+        let mut state = PtyAutoState::new();
+        state.last_output_time = Instant::now() - Duration::from_secs(2);
+        let threshold = Duration::from_secs(1);
+
+        // Transition to idle
+        assert!(state.check_idle_transition(threshold).is_some());
+        assert!(state.is_idle);
+
+        // Simulate new output: resets idle state
+        state.reset_idle_on_output();
+        assert!(!state.is_idle);
+
+        // Need to also update last_output_time (as pty_worker does)
+        state.last_output_time = Instant::now() - Duration::from_secs(2);
+
+        // Should emit again after re-arming
+        assert!(state.check_idle_transition(threshold).is_some());
+    }
+
+    #[test]
+    fn reset_without_idle_is_noop() {
+        let mut state = PtyAutoState::new();
+        assert!(!state.is_idle);
+        state.reset_idle_on_output();
+        assert!(!state.is_idle);
     }
 }
 
