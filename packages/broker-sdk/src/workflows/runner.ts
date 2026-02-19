@@ -532,7 +532,6 @@ export class WorkflowRunner {
       if (allCompleted) {
         await this.updateRunStatus(runId, 'completed');
         this.emit({ type: 'run:completed', runId });
-        this.postToChannel(`Workflow **${workflow.name}** completed — all steps passed`);
 
         // Complete trajectory with summary
         const outcomes = this.collectOutcomes(stepStates, workflow.steps);
@@ -542,12 +541,17 @@ export class WorkflowRunner {
           learnings: this.trajectory.extractLearnings(outcomes),
           challenges: this.trajectory.extractChallenges(outcomes),
         });
+
+        // Post rich completion report to channel
+        this.postCompletionReport(workflow.name, outcomes, summary, confidence);
       } else {
         const failedStep = [...stepStates.values()].find((s) => s.row.status === 'failed');
         const errorMsg = failedStep?.row.error ?? 'One or more steps failed';
         await this.updateRunStatus(runId, 'failed', errorMsg);
         this.emit({ type: 'run:failed', runId, error: errorMsg });
-        this.postToChannel(`Workflow **${workflow.name}** failed: ${errorMsg}`);
+
+        const outcomes = this.collectOutcomes(stepStates, workflow.steps);
+        this.postFailureReport(workflow.name, outcomes, errorMsg);
 
         // Abandon trajectory on failure
         await this.trajectory.abandon(errorMsg);
@@ -559,7 +563,7 @@ export class WorkflowRunner {
 
       if (status === 'cancelled') {
         this.emit({ type: 'run:cancelled', runId });
-        this.postToChannel(`Workflow cancelled`);
+        this.postToChannel(`Workflow **${workflow.name}** cancelled`);
         await this.trajectory.abandon('Cancelled by user');
       } else {
         this.emit({ type: 'run:failed', runId, error: errorMsg });
@@ -666,7 +670,6 @@ export class WorkflowRunner {
       if (allCompleted) {
         await this.updateRunStatus(runId, 'completed');
         this.emit({ type: 'run:completed', runId });
-        this.postToChannel(`Workflow **${workflow.name}** completed — all steps passed`);
 
         const outcomes = this.collectOutcomes(stepStates, workflow.steps);
         const summary = this.trajectory.buildRunSummary(outcomes);
@@ -675,12 +678,16 @@ export class WorkflowRunner {
           learnings: this.trajectory.extractLearnings(outcomes),
           challenges: this.trajectory.extractChallenges(outcomes),
         });
+
+        this.postCompletionReport(workflow.name, outcomes, summary, confidence);
       } else {
         const failedStep = [...stepStates.values()].find((s) => s.row.status === 'failed');
         const errorMsg = failedStep?.row.error ?? 'One or more steps failed';
         await this.updateRunStatus(runId, 'failed', errorMsg);
         this.emit({ type: 'run:failed', runId, error: errorMsg });
-        this.postToChannel(`Workflow **${workflow.name}** failed: ${errorMsg}`);
+
+        const outcomes = this.collectOutcomes(stepStates, workflow.steps);
+        this.postFailureReport(workflow.name, outcomes, errorMsg);
         await this.trajectory.abandon(errorMsg);
       }
     } catch (err) {
@@ -947,7 +954,7 @@ export class WorkflowRunner {
     const agentName = `${step.name}-${this.generateShortId()}`;
     const taskWithExit = step.task + '\n\n---\n' +
       'IMPORTANT: When you have fully completed this task, you MUST self-terminate by calling ' +
-      `the MCP tool: relay_release(name="${agentName}", reason="Task completed"). ` +
+      `the MCP tool: remove_agent(name="${agentName}", reason="Task completed"). ` +
       'Do not wait for further input — release yourself immediately after finishing.';
 
     const agentChannels = this.channel ? [this.channel] : agentDef.channels;
@@ -961,12 +968,18 @@ export class WorkflowRunner {
       idleThresholdSecs: agentDef.constraints?.idleThresholdSecs,
     });
 
-    // Register the spawned agent in Relaycast for observability
+    // Register the spawned agent in Relaycast for observability + start heartbeat
+    let stopHeartbeat: (() => void) | undefined;
     if (this.relaycastApi) {
-      await this.relaycastApi.registerExternalAgent(
+      const agentClient = await this.relaycastApi.registerExternalAgent(
         agent.name,
         `Workflow agent for step "${step.name}" (${agentDef.cli})`,
-      ).catch(() => {});
+      ).catch(() => null);
+
+      // Keep the agent online in the dashboard while it's working
+      if (agentClient) {
+        stopHeartbeat = this.relaycastApi.startHeartbeat(agentClient);
+      }
     }
 
     // Invite the spawned agent to the workflow channel
@@ -982,6 +995,9 @@ export class WorkflowRunner {
 
     // Wait for agent to exit (self-termination via /exit)
     const exitResult = await agent.waitForExit(timeoutMs);
+
+    // Stop heartbeat now that agent has exited
+    stopHeartbeat?.();
 
     if (exitResult === 'timeout') {
       // Safety net: check if the verification file exists before giving up.
@@ -1143,6 +1159,64 @@ export class WorkflowRunner {
     this.relaycastApi.sendToChannel(this.channel, text).catch(() => {
       // Non-critical — don't break workflow execution
     });
+  }
+
+  /** Post a rich completion report to the channel. */
+  private postCompletionReport(
+    workflowName: string,
+    outcomes: StepOutcome[],
+    summary: string,
+    confidence: number,
+  ): void {
+    const completed = outcomes.filter((o) => o.status === 'completed');
+    const skipped = outcomes.filter((o) => o.status === 'skipped');
+    const retried = outcomes.filter((o) => o.attempts > 1);
+
+    const lines: string[] = [
+      `## Workflow **${workflowName}** — Complete`,
+      '',
+      summary,
+      `Confidence: ${Math.round(confidence * 100)}%`,
+      '',
+      '### Steps',
+      ...completed.map((o) =>
+        `- **${o.name}** (${o.agent}) — passed${o.verificationPassed ? ' (verified)' : ''}${o.attempts > 1 ? ` after ${o.attempts} attempts` : ''}`,
+      ),
+      ...skipped.map((o) => `- **${o.name}** — skipped`),
+    ];
+
+    if (retried.length > 0) {
+      lines.push('', '### Retries');
+      for (const o of retried) {
+        lines.push(`- ${o.name}: ${o.attempts} attempts`);
+      }
+    }
+
+    this.postToChannel(lines.join('\n'));
+  }
+
+  /** Post a failure report to the channel. */
+  private postFailureReport(
+    workflowName: string,
+    outcomes: StepOutcome[],
+    errorMsg: string,
+  ): void {
+    const completed = outcomes.filter((o) => o.status === 'completed');
+    const failed = outcomes.filter((o) => o.status === 'failed');
+    const skipped = outcomes.filter((o) => o.status === 'skipped');
+
+    const lines: string[] = [
+      `## Workflow **${workflowName}** — Failed`,
+      '',
+      `${completed.length}/${outcomes.length} steps passed. Error: ${errorMsg}`,
+      '',
+      '### Steps',
+      ...completed.map((o) => `- **${o.name}** (${o.agent}) — passed`),
+      ...failed.map((o) => `- **${o.name}** (${o.agent}) — FAILED: ${o.error ?? 'unknown'}`),
+      ...skipped.map((o) => `- **${o.name}** — skipped`),
+    ];
+
+    this.postToChannel(lines.join('\n'));
   }
 
   // ── Trajectory helpers ────────────────────────────────────────────────
