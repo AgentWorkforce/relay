@@ -280,10 +280,13 @@ export class SwarmCoordinator extends EventEmitter {
         const reducers = agents.filter((a) => a.role === 'reducer').map((a) => a.name);
         const others = names.filter((n) => n !== coordinator && !mappers.includes(n) && !reducers.includes(n));
 
-        // Coordinator → mappers
-        edges.set(coordinator, [...mappers, ...others]);
-        // Mappers → reducers
-        for (const m of mappers) edges.set(m, reducers.length > 0 ? reducers : [coordinator]);
+        // Coordinator → mappers (excluding self if coordinator is also a mapper)
+        edges.set(coordinator, [...mappers.filter((m) => m !== coordinator), ...others]);
+        // Mappers → reducers (skip coordinator to avoid overwriting its edges)
+        for (const m of mappers) {
+          if (m === coordinator) continue;
+          edges.set(m, reducers.length > 0 ? reducers : [coordinator]);
+        }
         // Reducers → coordinator
         for (const r of reducers) edges.set(r, [coordinator]);
         // Others → coordinator

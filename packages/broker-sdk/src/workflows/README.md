@@ -227,28 +227,28 @@ The `swarm.pattern` field controls how agents are coordinated:
 
 ### Auto-Selection by Role
 
-When `swarm.pattern` is omitted, the coordinator auto-selects based on agent roles:
+When `swarm.pattern` is omitted, the coordinator auto-selects based on agent roles.
+Patterns are checked in priority order below (first match wins):
 
-| Pattern | Required Roles |
-|---------|----------------|
-| `map-reduce` | `mapper` + `reducer` |
-| `red-team` | (`attacker` OR `red-team`) + (`defender` OR `blue-team`) |
-| `reflection` | `critic` |
-| `escalation` | `tier-1`, `tier-2`, etc. |
-| `auction` | `auctioneer` |
-| `saga` | `saga-orchestrator` OR `compensate-handler` |
-| `circuit-breaker` | `fallback`, `backup`, OR `primary` |
-| `blackboard` | `blackboard` OR `shared-workspace` |
-| `swarm` | `hive-mind` OR `swarm-agent` |
-| `verifier` | `verifier` |
-| `supervisor` | `supervisor` |
-| `hierarchical` | `lead` (with 4+ agents) |
-| `hub-spoke` | `hub` OR `coordinator` |
-| `consensus` | Uses `coordination.consensusStrategy` config |
-| `dag` | Steps with `dependsOn` |
-| `pipeline` | Unique agents per step, 3+ steps |
-
-Priority: Patterns are checked in order above. First match wins.
+| Priority | Pattern | Required Roles/Config |
+|----------|---------|----------------------|
+| 1 | `dag` | Steps with `dependsOn` |
+| 2 | `consensus` | Uses `coordination.consensusStrategy` config |
+| 3 | `map-reduce` | `mapper` + `reducer` |
+| 4 | `red-team` | (`attacker` OR `red-team`) + (`defender` OR `blue-team`) |
+| 5 | `reflection` | `critic` |
+| 6 | `escalation` | `tier-1`, `tier-2`, etc. |
+| 7 | `auction` | `auctioneer` |
+| 8 | `saga` | `saga-orchestrator` OR `compensate-handler` |
+| 9 | `circuit-breaker` | `fallback`, `backup`, OR `primary` |
+| 10 | `blackboard` | `blackboard` OR `shared-workspace` |
+| 11 | `swarm` | `hive-mind` OR `swarm-agent` |
+| 12 | `verifier` | `verifier` |
+| 13 | `supervisor` | `supervisor` |
+| 14 | `hierarchical` | `lead` (with 4+ agents) |
+| 15 | `hub-spoke` | `hub` OR `coordinator` |
+| 16 | `pipeline` | Unique agents per step, 3+ steps |
+| 17 | `fan-out` | Default fallback |
 
 ## Error Handling
 
