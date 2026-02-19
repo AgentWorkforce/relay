@@ -1070,6 +1070,164 @@ jobs:
           echo ""
           echo "All required binaries present."
 
+      - name: Setup Node.js for changelog
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Generate changelog entry
+        run: |
+          NEW_VERSION="${{ needs.build.outputs.new_version }}"
+          IS_PRERELEASE="${{ needs.build.outputs.is_prerelease }}"
+          TODAY=$(date -u +%Y-%m-%d)
+
+          # Skip changelog generation for prereleases
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            echo "Skipping changelog generation for prerelease v${NEW_VERSION}"
+            exit 0
+          fi
+
+          # Get last stable tag (exclude current HEAD)
+          LAST_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -z "$LAST_TAG" ]; then
+            echo "No previous tag found, skipping changelog generation"
+            exit 0
+          fi
+
+          echo "Generating changelog from ${LAST_TAG} to HEAD for v${NEW_VERSION}"
+
+          cat > /tmp/gen-changelog.mjs << 'GENEOF'
+          import { execSync } from 'node:child_process';
+          import { readFileSync, writeFileSync } from 'node:fs';
+
+          const [,, lastTag, newVersion, today] = process.argv;
+
+          const log = execSync(
+            `git log ${lastTag}..HEAD --pretty=format:"%H|%s|%b" --no-merges`,
+            { encoding: 'utf-8' }
+          ).trim();
+
+          if (!log) {
+            console.log('No commits since last tag, skipping changelog');
+            process.exit(0);
+          }
+
+          const commits = log.split('\n').map(line => {
+            const idx = line.indexOf('|');
+            const idx2 = line.indexOf('|', idx + 1);
+            return {
+              hash: line.slice(0, 8),
+              subject: line.slice(idx + 1, idx2).trim(),
+              body: line.slice(idx2 + 1).trim(),
+            };
+          });
+
+          function extractPR(subject, body) {
+            const m = (subject + ' ' + body).match(/#(\d+)/);
+            return m ? `(#${m[1]})` : '';
+          }
+
+          function formatTitle(subject) {
+            const cleaned = subject.replace(
+              /^(feat|fix|refactor|perf|chore|test|ci|docs|build|style)(\([^)]+\))?!?:\s*/i,
+              ''
+            );
+            return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+          }
+
+          function getType(subject) {
+            const m = subject.match(/^(feat|fix|refactor|perf|chore|test|ci|docs|build|style)(\([^)]+\))?(!)?:/i);
+            if (!m) return 'other';
+            const type = m[1].toLowerCase();
+            const scope = (m[2] || '').replace(/[()]/g, '');
+            const breaking = m[3] === '!';
+            if (breaking) return 'breaking';
+            if (type === 'feat') return 'feat';
+            if (type === 'fix') return 'fix';
+            if (type === 'refactor' || type === 'perf' || type === 'build') return 'arch';
+            if (type === 'test' || type === 'ci') return 'reliability';
+            if (type === 'chore' && scope === 'deps') return 'deps';
+            if (type === 'chore' && scope === 'release') return 'release';
+            if (type === 'chore') return 'deps';
+            return 'other';
+          }
+
+          const cats = { breaking: [], feat: [], fix: [], arch: [], reliability: [], deps: [], release: [] };
+
+          for (const c of commits) {
+            const type = getType(c.subject);
+            const title = formatTitle(c.subject);
+            const pr = extractPR(c.subject, c.body);
+            if (cats[type]) cats[type].push({ title, pr });
+          }
+
+          const lines = [];
+          lines.push(`## [${newVersion}] - ${today}`);
+          lines.push('');
+
+          const hasProd = cats.breaking.length + cats.feat.length + cats.fix.length > 0;
+          const hasTech = cats.arch.length + cats.reliability.length + cats.deps.length > 0;
+
+          if (hasProd) {
+            lines.push('### Product Perspective');
+            if (cats.breaking.length > 0) {
+              lines.push('#### Breaking Changes');
+              for (const c of cats.breaking) lines.push(`- **${c.title}** ${c.pr}`.trimEnd());
+              lines.push('');
+            }
+            if (cats.feat.length > 0) {
+              lines.push('#### User-Facing Features & Improvements');
+              for (const c of cats.feat) lines.push(`- **${c.title}** ${c.pr}`.trimEnd());
+              lines.push('');
+            }
+            if (cats.fix.length > 0) {
+              lines.push('#### User-Impacting Fixes');
+              for (const c of cats.fix) lines.push(`- ${c.title} ${c.pr}`.trimEnd());
+              lines.push('');
+            }
+          }
+
+          if (hasTech) {
+            lines.push('### Technical Perspective');
+            if (cats.arch.length > 0) {
+              lines.push('#### Architecture & API Changes');
+              for (const c of cats.arch) lines.push(`- ${c.title} ${c.pr}`.trimEnd());
+              lines.push('');
+            }
+            if (cats.reliability.length > 0) {
+              lines.push('#### Performance & Reliability');
+              for (const c of cats.reliability) lines.push(`- ${c.title} ${c.pr}`.trimEnd());
+              lines.push('');
+            }
+            if (cats.deps.length > 0) {
+              lines.push('#### Dependencies & Tooling');
+              for (const c of cats.deps) lines.push(`- ${c.title} ${c.pr}`.trimEnd());
+              lines.push('');
+            }
+          }
+
+          lines.push('#### Releases');
+          lines.push(`- v${newVersion}`);
+          lines.push('');
+          lines.push('---');
+          lines.push('');
+
+          const newEntry = lines.join('\n');
+          const changelog = readFileSync('CHANGELOG.md', 'utf-8');
+
+          // Insert after the [Unreleased] block, before the first versioned entry
+          const insertAt = changelog.indexOf('\n## [');
+          if (insertAt === -1) {
+            writeFileSync('CHANGELOG.md', changelog.trimEnd() + '\n\n' + newEntry);
+          } else {
+            writeFileSync('CHANGELOG.md', changelog.slice(0, insertAt + 1) + newEntry + changelog.slice(insertAt + 1));
+          }
+
+          console.log(`Changelog updated for v${newVersion}`);
+          GENEOF
+
+          node /tmp/gen-changelog.mjs "$LAST_TAG" "$NEW_VERSION" "$TODAY"
+
       - name: Commit and tag
         run: |
           git config user.name "GitHub Actions"
@@ -1078,7 +1236,7 @@ jobs:
           NEW_VERSION="${{ needs.build.outputs.new_version }}"
           IS_PRERELEASE="${{ needs.build.outputs.is_prerelease }}"
 
-          git add package.json package-lock.json packages/*/package.json
+          git add package.json package-lock.json packages/*/package.json CHANGELOG.md
           if ! git diff --staged --quiet; then
             if [ "$IS_PRERELEASE" = "true" ]; then
               git commit -m "chore(prerelease): v${NEW_VERSION}"
