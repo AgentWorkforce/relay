@@ -126,6 +126,32 @@ export class RelaycastApi {
     }
   }
 
+  /** Create a channel. No-op if it already exists. */
+  async createChannel(name: string, topic?: string): Promise<void> {
+    const agent = await this.ensure();
+    try {
+      await agent.channels.create({ name, ...(topic ? { topic } : {}) });
+    } catch (err) {
+      // Ignore "already exists" errors
+      if (err instanceof RelayError && err.code === "channel_already_exists") {
+        return;
+      }
+      throw err;
+    }
+  }
+
+  /** Join a channel. Idempotent. */
+  async joinChannel(name: string): Promise<void> {
+    const agent = await this.ensure();
+    await agent.channels.join(name);
+  }
+
+  /** Invite another agent to a channel. */
+  async inviteToChannel(channel: string, agentName: string): Promise<void> {
+    const agent = await this.ensure();
+    await agent.channels.invite(channel, agentName);
+  }
+
   /** Fetch message history from a channel. */
   async getMessages(
     channel: string,

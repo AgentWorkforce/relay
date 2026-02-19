@@ -75,7 +75,7 @@
     "typescript": "^5.7.3"
   },
   "dependencies": {
-    "@relaycast/sdk": "^0.2.5",
+    "@relaycast/sdk": "^0.3.0",
     "yaml": "^2.7.0"
   }
 }

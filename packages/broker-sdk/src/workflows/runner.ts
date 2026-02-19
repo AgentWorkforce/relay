@@ -34,6 +34,7 @@ import { WorkflowTrajectory, type StepOutcome } from './trajectory.js';
 // Import from sub-paths to avoid pulling in the full @relaycast/sdk dependency.
 import { AgentRelay } from '../relay.js';
 import type { Agent, AgentRelayOptions } from '../relay.js';
+import { RelaycastApi } from '../relaycast.js';
 
 // ── DB adapter interface ────────────────────────────────────────────────────
 
@@ -96,6 +97,8 @@ export class WorkflowRunner {
   private readonly summaryDir: string;
 
   private relay?: AgentRelay;
+  private relaycastApi?: RelaycastApi;
+  private channel?: string;
   private trajectory?: WorkflowTrajectory;
   private abortController?: AbortController;
   private paused = false;
@@ -482,12 +485,21 @@ export class WorkflowRunner {
       await this.trajectory.start(workflow.name, workflow.steps.length, dagInfo);
 
       const channel = resolved.swarm.channel ?? 'general';
+      this.channel = channel;
       await this.ensureRelaycastApiKey(channel);
 
       this.relay = new AgentRelay({
         ...this.relayOptions,
         channels: [channel],
       });
+
+      // Create the dedicated workflow channel and join it
+      this.relaycastApi = new RelaycastApi({ agentName: 'WorkflowRunner' });
+      await this.relaycastApi.createChannel(channel, workflow.description);
+      await this.relaycastApi.joinChannel(channel);
+      await this.postToChannel(
+        `Workflow **${workflow.name}** started — ${workflow.steps.length} steps, pattern: ${resolved.swarm.pattern}`,
+      );
 
       const agentMap = new Map<string, AgentDefinition>();
       for (const agent of resolved.agents) {
@@ -510,6 +522,7 @@ export class WorkflowRunner {
       if (allCompleted) {
         await this.updateRunStatus(runId, 'completed');
         this.emit({ type: 'run:completed', runId });
+        await this.postToChannel(`Workflow **${workflow.name}** completed — all steps passed`);
 
         // Complete trajectory with summary
         const outcomes = this.collectOutcomes(stepStates, workflow.steps);
@@ -524,6 +537,7 @@ export class WorkflowRunner {
         const errorMsg = failedStep?.row.error ?? 'One or more steps failed';
         await this.updateRunStatus(runId, 'failed', errorMsg);
         this.emit({ type: 'run:failed', runId, error: errorMsg });
+        await this.postToChannel(`Workflow **${workflow.name}** failed: ${errorMsg}`);
 
         // Abandon trajectory on failure
         await this.trajectory.abandon(errorMsg);
@@ -535,14 +549,18 @@ export class WorkflowRunner {
 
       if (status === 'cancelled') {
         this.emit({ type: 'run:cancelled', runId });
+        await this.postToChannel(`Workflow cancelled`);
         await this.trajectory.abandon('Cancelled by user');
       } else {
         this.emit({ type: 'run:failed', runId, error: errorMsg });
+        await this.postToChannel(`Workflow failed: ${errorMsg}`);
         await this.trajectory.abandon(errorMsg);
       }
     } finally {
       await this.relay?.shutdown();
       this.relay = undefined;
+      this.relaycastApi = undefined;
+      this.channel = undefined;
       this.trajectory = undefined;
       this.abortController = undefined;
     }
@@ -605,12 +623,21 @@ export class WorkflowRunner {
       );
 
       const resumeChannel = config.swarm.channel ?? 'general';
+      this.channel = resumeChannel;
       await this.ensureRelaycastApiKey(resumeChannel);
 
       this.relay = new AgentRelay({
         ...this.relayOptions,
         channels: [resumeChannel],
       });
+
+      // Ensure channel exists and join it for resumed runs
+      this.relaycastApi = new RelaycastApi({ agentName: 'WorkflowRunner' });
+      await this.relaycastApi.createChannel(resumeChannel);
+      await this.relaycastApi.joinChannel(resumeChannel);
+      await this.postToChannel(
+        `Workflow **${workflow.name}** resumed — ${pendingCount} pending steps`,
+      );
 
       const agentMap = new Map<string, AgentDefinition>();
       for (const agent of config.agents) {
@@ -626,6 +653,7 @@ export class WorkflowRunner {
       if (allCompleted) {
         await this.updateRunStatus(runId, 'completed');
         this.emit({ type: 'run:completed', runId });
+        await this.postToChannel(`Workflow **${workflow.name}** completed — all steps passed`);
 
         const outcomes = this.collectOutcomes(stepStates, workflow.steps);
         const summary = this.trajectory.buildRunSummary(outcomes);
@@ -639,16 +667,20 @@ export class WorkflowRunner {
         const errorMsg = failedStep?.row.error ?? 'One or more steps failed';
         await this.updateRunStatus(runId, 'failed', errorMsg);
         this.emit({ type: 'run:failed', runId, error: errorMsg });
+        await this.postToChannel(`Workflow **${workflow.name}** failed: ${errorMsg}`);
         await this.trajectory.abandon(errorMsg);
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       await this.updateRunStatus(runId, 'failed', errorMsg);
       this.emit({ type: 'run:failed', runId, error: errorMsg });
+      await this.postToChannel(`Workflow failed: ${errorMsg}`);
       await this.trajectory.abandon(errorMsg);
     } finally {
       await this.relay?.shutdown();
       this.relay = undefined;
+      this.relaycastApi = undefined;
+      this.channel = undefined;
       this.trajectory = undefined;
       this.abortController = undefined;
     }
@@ -820,6 +852,7 @@ export class WorkflowRunner {
 
       if (attempt > 0) {
         this.emit({ type: 'step:retrying', runId, stepName: step.name, attempt });
+        await this.postToChannel(`**[${step.name}]** Retrying (attempt ${attempt + 1}/${maxRetries + 1})`);
         state.row.retryCount = attempt;
         await this.db.updateStep(state.row.id, {
           retryCount: attempt,
@@ -839,6 +872,7 @@ export class WorkflowRunner {
           updatedAt: new Date().toISOString(),
         });
         this.emit({ type: 'step:started', runId, stepName: step.name });
+        await this.postToChannel(`**[${step.name}]** Started (agent: ${agentDef.name})`);
         await this.trajectory?.stepStarted(step, agentDef.name);
 
         // Resolve step-output variables (e.g. {{steps.plan.output}}) at execution time
@@ -865,6 +899,9 @@ export class WorkflowRunner {
           updatedAt: new Date().toISOString(),
         });
         this.emit({ type: 'step:completed', runId, stepName: step.name, output });
+        await this.postToChannel(
+          `**[${step.name}]** Completed\n${output.slice(0, 500)}${output.length > 500 ? '\n...(truncated)' : ''}`,
+        );
         await this.trajectory?.stepCompleted(step, output, attempt + 1);
         return;
       } catch (err) {
@@ -879,6 +916,7 @@ export class WorkflowRunner {
       'exhausted',
       `All ${maxRetries + 1} attempts failed: ${lastError ?? 'Unknown error'}`,
     );
+    await this.postToChannel(`**[${step.name}]** Failed: ${lastError ?? 'Unknown error'}`);
     await this.markStepFailed(state, lastError ?? 'Unknown error', runId);
     throw new Error(`Step "${step.name}" failed after ${maxRetries} retries: ${lastError ?? 'Unknown error'}`);
   }
@@ -900,7 +938,16 @@ export class WorkflowRunner {
       idleThresholdSecs: agentDef.constraints?.idleThresholdSecs,
     });
 
-    // Send the task as a message to the agent
+    // Invite the spawned agent to the workflow channel
+    if (this.channel && this.relaycastApi) {
+      await this.relaycastApi.inviteToChannel(this.channel, agent.name).catch(() => {});
+    }
+
+    // Post task assignment to channel for observability
+    const taskPreview = step.task.slice(0, 500) + (step.task.length > 500 ? '...' : '');
+    await this.postToChannel(`**[${step.name}]** Assigned to \`${agent.name}\`:\n${taskPreview}`);
+
+    // Send the task as a message to the agent via broker protocol
     const system = this.relay.human({ name: 'WorkflowRunner' });
     await system.sendMessage({ to: agent.name, text: step.task });
 
@@ -914,11 +961,11 @@ export class WorkflowRunner {
 
     // Read output from summary file if it exists
     const summaryPath = path.join(this.summaryDir, `${step.name}.md`);
-    if (existsSync(summaryPath)) {
-      return await readFile(summaryPath, 'utf-8');
-    }
+    const output = existsSync(summaryPath)
+      ? await readFile(summaryPath, 'utf-8')
+      : `Agent exited (${exitResult})`;
 
-    return `Agent exited (${exitResult})`;
+    return output;
   }
 
   // ── Verification ────────────────────────────────────────────────────────
@@ -1008,6 +1055,7 @@ export class WorkflowRunner {
               updatedAt: new Date().toISOString(),
             });
             this.emit({ type: 'step:skipped', runId, stepName: step.name });
+            await this.postToChannel(`**[${step.name}]** Skipped — upstream dependency "${current}" failed`);
             await this.trajectory?.stepSkipped(step, `Upstream dependency "${current}" failed`);
             await this.trajectory?.decide(
               `Whether to skip ${step.name}`,
@@ -1038,6 +1086,18 @@ export class WorkflowRunner {
 
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  // ── Channel messaging ──────────────────────────────────────────────────
+
+  /** Post a message to the workflow channel. Fire-and-forget — never throws. */
+  private async postToChannel(text: string): Promise<void> {
+    if (!this.relaycastApi || !this.channel) return;
+    try {
+      await this.relaycastApi.sendToChannel(this.channel, text);
+    } catch {
+      // Non-critical — don't break workflow execution
+    }
   }
 
   // ── Trajectory helpers ────────────────────────────────────────────────
