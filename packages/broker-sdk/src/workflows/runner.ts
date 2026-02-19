@@ -512,7 +512,7 @@ export class WorkflowRunner {
         this.emit({ type: 'run:completed', runId });
 
         // Complete trajectory with summary
-        const outcomes = this.collectOutcomes(stepStates);
+        const outcomes = this.collectOutcomes(stepStates, workflow.steps);
         const summary = this.trajectory.buildRunSummary(outcomes);
         const confidence = this.trajectory.computeConfidence(outcomes);
         await this.trajectory.complete(summary, confidence, {
@@ -627,7 +627,7 @@ export class WorkflowRunner {
         await this.updateRunStatus(runId, 'completed');
         this.emit({ type: 'run:completed', runId });
 
-        const outcomes = this.collectOutcomes(stepStates);
+        const outcomes = this.collectOutcomes(stepStates, workflow.steps);
         const summary = this.trajectory.buildRunSummary(outcomes);
         const confidence = this.trajectory.computeConfidence(outcomes);
         await this.trajectory.complete(summary, confidence, {
@@ -1059,7 +1059,10 @@ export class WorkflowRunner {
   }
 
   /** Collect step outcomes for trajectory synthesis. */
-  private collectOutcomes(stepStates: Map<string, StepState>): StepOutcome[] {
+  private collectOutcomes(stepStates: Map<string, StepState>, steps?: WorkflowStep[]): StepOutcome[] {
+    const stepsWithVerification = new Set(
+      steps?.filter((s) => s.verification).map((s) => s.name) ?? [],
+    );
     const outcomes: StepOutcome[] = [];
     for (const [name, state] of stepStates) {
       outcomes.push({
@@ -1071,6 +1074,7 @@ export class WorkflowRunner {
         attempts: state.row.retryCount + 1,
         output: state.row.output,
         error: state.row.error,
+        verificationPassed: state.row.status === 'completed' && stepsWithVerification.has(name),
       });
     }
     return outcomes;
