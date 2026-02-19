@@ -12,3 +12,4 @@ export * from "./consensus.js";
 export * from "./shadow.js";
 export * from "./relay-adapter.js";
 export * from "./workflows/index.js";
+export * from "./spawn-from-env.js";

@@ -2740,6 +2740,33 @@ program
     }
   });
 
+// broker-spawn - Spawn agent from environment variables (canonical cloud/sandbox entry point)
+program
+  .command('broker-spawn')
+  .description(
+    'Spawn an agent from environment variables. Canonical entry point for cloud/sandbox spawning. ' +
+    'Reads AGENT_NAME, AGENT_CLI, RELAY_API_KEY from env. Applies SDK-owned bypass flags automatically.',
+  )
+  .option('--from-env', 'Read all configuration from environment variables (required)')
+  .action(async (options: { fromEnv?: boolean }) => {
+    if (!options.fromEnv) {
+      console.error('[broker-spawn] Usage: agent-relay broker-spawn --from-env');
+      console.error('[broker-spawn] All configuration is read from environment variables.');
+      process.exit(1);
+    }
+
+    try {
+      const { spawnFromEnv } = await import('@agent-relay/broker-sdk');
+      const result = await spawnFromEnv({
+        binaryPath: process.env.AGENT_RELAY_BIN,
+      });
+      process.exit(result.exitCode ?? 0);
+    } catch (err: any) {
+      console.error(`[broker-spawn] ${err?.message || String(err)}`);
+      process.exit(1);
+    }
+  });
+
 // release - Release a spawned agent via API (works from any context, no terminal required)
 program
   .command('release')
