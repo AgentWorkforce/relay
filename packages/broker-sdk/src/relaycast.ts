@@ -83,18 +83,17 @@ export class RelaycastApi {
     if (process.env.RELAY_API_KEY) return process.env.RELAY_API_KEY;
 
     // Try per-project cache first
-    if (existsSync(this.cachePath)) {
-      const raw = await readFile(this.cachePath, "utf-8");
-      const creds: RelaycastCredentials = JSON.parse(raw);
-      if (creds.api_key) return creds.api_key;
-    }
-
-    // Fall back to legacy global cache
     const globalPath = join(homedir(), ".agent-relay", "relaycast.json");
-    if (globalPath !== this.cachePath && existsSync(globalPath)) {
-      const raw = await readFile(globalPath, "utf-8");
-      const creds: RelaycastCredentials = JSON.parse(raw);
-      if (creds.api_key) return creds.api_key;
+    for (const cachePath of [this.cachePath, globalPath]) {
+      if (!existsSync(cachePath)) continue;
+      if (cachePath === globalPath && cachePath === this.cachePath) continue;
+      try {
+        const raw = await readFile(cachePath, "utf-8");
+        const creds: RelaycastCredentials = JSON.parse(raw);
+        if (creds.api_key) return creds.api_key;
+      } catch {
+        // Cache corrupt — try next path
+      }
     }
 
     throw new Error(
