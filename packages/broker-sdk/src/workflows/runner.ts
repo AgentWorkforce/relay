@@ -801,6 +801,7 @@ export class WorkflowRunner {
       cli: agentDef.cli,
       args: agentDef.constraints?.model ? ['--model', agentDef.constraints.model] : [],
       channels: agentDef.channels,
+      idleThresholdSecs: agentDef.constraints?.idleThresholdSecs,
     });
 
     // Send the task as a message to the agent

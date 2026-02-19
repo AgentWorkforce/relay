@@ -62,6 +62,8 @@ export interface AgentConstraints {
   timeoutMs?: number;
   retries?: number;
   model?: string;
+  /** Silence duration in seconds before the agent is considered idle (0 = disabled, default: 30). */
+  idleThresholdSecs?: number;
 }
 
 // ── Workflow definitions ────────────────────────────────────────────────────

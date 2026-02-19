@@ -17,6 +17,8 @@ const MAX_AUTO_ENTER_RETRIES: u32 = 5;
 pub(crate) const AUTO_SUGGESTION_BLOCK_TIMEOUT: Duration = Duration::from_secs(10);
 const MCP_APPROVAL_TIMEOUT: Duration = Duration::from_secs(5);
 const GEMINI_ACTION_COOLDOWN: Duration = Duration::from_secs(2);
+#[allow(dead_code)]
+pub(crate) const DEFAULT_AGENT_IDLE_THRESHOLD: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub(crate) struct PendingWrapInjection {
@@ -51,6 +53,8 @@ pub(crate) struct PtyAutoState {
     pub(crate) auto_enter_retry_count: u32,
     pub(crate) editor_mode_buffer: String,
     pub(crate) last_output_time: Instant,
+    // Idle detection (edge-triggered)
+    pub(crate) is_idle: bool,
 }
 
 impl PtyAutoState {
@@ -72,6 +76,7 @@ impl PtyAutoState {
             auto_enter_retry_count: 0,
             editor_mode_buffer: String::new(),
             last_output_time: Instant::now(),
+            is_idle: false,
         }
     }
 
@@ -248,6 +253,24 @@ impl PtyAutoState {
         });
         if !is_echo && clean_text.len() > 10 && self.auto_enter_retry_count > 0 {
             self.auto_enter_retry_count = 0;
+        }
+    }
+
+    /// Reset idle state when PTY produces output, re-arming the next idle transition.
+    pub(crate) fn reset_idle_on_output(&mut self) {
+        self.is_idle = false;
+    }
+
+    /// Check whether the worker has crossed the idle threshold.
+    /// Returns `Some(idle_secs)` exactly once when transitioning from active to idle.
+    /// Returns `None` when already idle or not yet idle.
+    pub(crate) fn check_idle_transition(&mut self, threshold: Duration) -> Option<u64> {
+        let since_output = self.last_output_time.elapsed();
+        if since_output >= threshold && !self.is_idle {
+            self.is_idle = true;
+            Some(since_output.as_secs())
+        } else {
+            None
         }
     }
 }

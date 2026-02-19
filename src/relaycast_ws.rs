@@ -215,7 +215,7 @@ impl RelaycastWsClient {
 
     async fn refresh_token(&self) -> Result<()> {
         let creds = self.creds.lock().clone();
-        let refreshed = self.auth.refresh_session(&creds).await?;
+        let refreshed = self.auth.rotate_token(&creds).await?;
         *self.token.lock() = refreshed.token;
         *self.creds.lock() = refreshed.credentials;
         Ok(())

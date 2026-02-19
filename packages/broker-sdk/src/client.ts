@@ -35,6 +35,8 @@ export interface SpawnPtyInput {
   args?: string[];
   channels?: string[];
   task?: string;
+  /** Silence duration in seconds before emitting agent_idle (0 = disabled, default: 30). */
+  idleThresholdSecs?: number;
 }
 
 export interface SpawnHeadlessClaudeInput {
@@ -170,6 +172,7 @@ export class AgentRelayClient {
     const result = await this.requestOk<{ name: string; runtime: AgentRuntime }>("spawn_agent", {
       agent,
       ...(input.task != null ? { initial_task: input.task } : {}),
+      ...(input.idleThresholdSecs != null ? { idle_threshold_secs: input.idleThresholdSecs } : {}),
     });
     return result;
   }

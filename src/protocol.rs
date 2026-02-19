@@ -160,6 +160,10 @@ pub enum BrokerEvent {
         to: String,
         reason: String,
     },
+    AgentIdle {
+        name: String,
+        idle_secs: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

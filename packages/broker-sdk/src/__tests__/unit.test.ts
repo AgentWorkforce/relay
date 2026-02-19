@@ -49,6 +49,9 @@ function makeFakeAgent(
       }
       return exitPromise;
     },
+    waitForIdle(_timeoutMs?: number) {
+      return Promise.resolve("idle" as const);
+    },
     async sendMessage() {
       return { eventId: "fake", from: name, to: "", text: "" };
     },
