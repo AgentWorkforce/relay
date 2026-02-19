@@ -486,10 +486,22 @@ function isExplicitPath(binaryPath: string): boolean {
 
 function resolveDefaultBinaryPath(): string {
   const exe = process.platform === "win32" ? "agent-relay.exe" : "agent-relay";
+  const brokerExe = process.platform === "win32" ? "agent-relay-broker.exe" : "agent-relay-broker";
+
+  // 1. Check for bundled broker binary in SDK package (npm install)
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   const bundled = path.resolve(moduleDir, "..", "bin", exe);
   if (fs.existsSync(bundled)) {
     return bundled;
   }
+
+  // 2. Check for standalone broker binary in ~/.agent-relay/bin/ (install.sh)
+  const homeDir = process.env.HOME || process.env.USERPROFILE || "";
+  const standaloneBroker = path.join(homeDir, ".agent-relay", "bin", brokerExe);
+  if (fs.existsSync(standaloneBroker)) {
+    return standaloneBroker;
+  }
+
+  // 3. Fall back to agent-relay on PATH (may be Node CLI — will fail for broker ops)
   return "agent-relay";
 }
