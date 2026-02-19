@@ -125,18 +125,24 @@ export class WorkflowRunner {
   private async ensureRelaycastApiKey(channel: string): Promise<void> {
     if (process.env.RELAY_API_KEY) return;
 
-    // Check cached credentials
-    const cachePath = path.join(homedir(), '.agent-relay', 'relaycast.json');
-    if (existsSync(cachePath)) {
-      try {
-        const raw = await readFile(cachePath, 'utf-8');
-        const creds = JSON.parse(raw);
-        if (creds.api_key) {
-          process.env.RELAY_API_KEY = creds.api_key;
-          return;
+    // Check cached credentials — prefer per-project cache (written by the local
+    // relay daemon) over the legacy global cache so concurrent workflows from
+    // different repos never stomp each other's credentials.
+    const projectCachePath = path.join(this.cwd, '.agent-relay', 'relaycast.json');
+    const globalCachePath = path.join(homedir(), '.agent-relay', 'relaycast.json');
+
+    for (const cachePath of [projectCachePath, globalCachePath]) {
+      if (existsSync(cachePath)) {
+        try {
+          const raw = await readFile(cachePath, 'utf-8');
+          const creds = JSON.parse(raw);
+          if (creds.api_key) {
+            process.env.RELAY_API_KEY = creds.api_key;
+            return;
+          }
+        } catch {
+          // Cache corrupt — try next path
         }
-      } catch {
-        // Cache corrupt — fall through to auto-create
       }
     }
 
@@ -164,11 +170,12 @@ export class WorkflowRunner {
       throw new Error('Relaycast workspace response missing api_key');
     }
 
-    // Cache credentials for future runs
-    const cacheDir = path.dirname(cachePath);
+    // Cache credentials in the per-project directory so concurrent workflows
+    // from different repos each get their own workspace credentials.
+    const cacheDir = path.dirname(projectCachePath);
     await mkdir(cacheDir, { recursive: true, mode: 0o700 });
     await writeFile(
-      cachePath,
+      projectCachePath,
       JSON.stringify({
         workspace_id: workspaceId,
         api_key: apiKey,
@@ -494,7 +501,10 @@ export class WorkflowRunner {
       });
 
       // Create the dedicated workflow channel and join it
-      this.relaycastApi = new RelaycastApi({ agentName: 'WorkflowRunner' });
+      this.relaycastApi = new RelaycastApi({
+        agentName: 'WorkflowRunner',
+        cachePath: path.join(this.cwd, '.agent-relay', 'relaycast.json'),
+      });
       await this.relaycastApi.createChannel(channel, workflow.description);
       await this.relaycastApi.joinChannel(channel);
       this.postToChannel(
@@ -632,7 +642,10 @@ export class WorkflowRunner {
       });
 
       // Ensure channel exists and join it for resumed runs
-      this.relaycastApi = new RelaycastApi({ agentName: 'WorkflowRunner' });
+      this.relaycastApi = new RelaycastApi({
+        agentName: 'WorkflowRunner',
+        cachePath: path.join(this.cwd, '.agent-relay', 'relaycast.json'),
+      });
       await this.relaycastApi.createChannel(resumeChannel);
       await this.relaycastApi.joinChannel(resumeChannel);
       this.postToChannel(
