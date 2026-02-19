@@ -443,7 +443,12 @@ impl WorkerRegistry {
         self.workers.get(name).and_then(|h| h.child.id())
     }
 
-    async fn spawn(&mut self, spec: AgentSpec, parent: Option<String>, idle_threshold_secs: Option<u64>) -> Result<()> {
+    async fn spawn(
+        &mut self,
+        spec: AgentSpec,
+        parent: Option<String>,
+        idle_threshold_secs: Option<u64>,
+    ) -> Result<()> {
         if self.workers.contains_key(&spec.name) {
             anyhow::bail!("agent '{}' already exists", spec.name);
         }
@@ -1801,7 +1806,9 @@ async fn handle_sdk_frame(
             let runtime = payload.agent.runtime.clone();
             let name = payload.agent.name.clone();
 
-            workers.spawn(payload.agent.clone(), None, payload.idle_threshold_secs).await?;
+            workers
+                .spawn(payload.agent.clone(), None, payload.idle_threshold_secs)
+                .await?;
             if let Some(task) = payload.initial_task {
                 workers.initial_tasks.insert(name.clone(), task);
             }
