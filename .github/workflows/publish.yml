@@ -1103,7 +1103,7 @@ jobs:
           const [,, lastTag, newVersion, today] = process.argv;
 
           const log = execSync(
-            `git log ${lastTag}..HEAD --pretty=format:"%H|%s|%b" --no-merges`,
+            `git log ${lastTag}..HEAD --pretty=format:"%H|%s|%b%x00" --no-merges`,
             { encoding: 'utf-8' }
           ).trim();
 
@@ -1112,13 +1112,13 @@ jobs:
             process.exit(0);
           }
 
-          const commits = log.split('\n').map(line => {
-            const idx = line.indexOf('|');
-            const idx2 = line.indexOf('|', idx + 1);
+          const commits = log.split('\0').filter(Boolean).map(record => {
+            const idx = record.indexOf('|');
+            const idx2 = record.indexOf('|', idx + 1);
             return {
-              hash: line.slice(0, 8),
-              subject: line.slice(idx + 1, idx2).trim(),
-              body: line.slice(idx2 + 1).trim(),
+              hash: record.slice(0, 8),
+              subject: record.slice(idx + 1, idx2).trim(),
+              body: record.slice(idx2 + 1).trim(),
             };
           });
 
@@ -1216,7 +1216,9 @@ jobs:
           const changelog = readFileSync('CHANGELOG.md', 'utf-8');
 
           // Insert after the [Unreleased] block, before the first versioned entry
-          const insertAt = changelog.indexOf('\n## [');
+          // Use \d to match versioned headings (e.g. ## [2.1.5]) and skip ## [Unreleased]
+          const match = changelog.match(/\n## \[\d/);
+          const insertAt = match ? match.index : -1;
           if (insertAt === -1) {
             writeFileSync('CHANGELOG.md', changelog.trimEnd() + '\n\n' + newEntry);
           } else {
