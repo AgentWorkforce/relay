@@ -508,8 +508,7 @@ impl WorkerRegistry {
                 // Auto-add bypass flags for CLIs that need them to run non-interactively.
                 // Each CLI has its own flag; we only add it if the user didn't already.
                 let cli_lower = cli.to_lowercase();
-                let is_claude =
-                    cli_lower == "claude" || cli_lower.starts_with("claude:");
+                let is_claude = cli_lower == "claude" || cli_lower.starts_with("claude:");
                 let is_codex = cli_lower == "codex";
 
                 let bypass_flag: Option<&str> = if is_claude
@@ -519,8 +518,7 @@ impl WorkerRegistry {
                         .any(|a| a.contains("dangerously-skip-permissions"))
                 {
                     Some("--dangerously-skip-permissions")
-                } else if is_codex && !spec.args.iter().any(|a| a.contains("full-auto"))
-                {
+                } else if is_codex && !spec.args.iter().any(|a| a.contains("full-auto")) {
                     Some("--full-auto")
                 } else {
                     None
@@ -538,9 +536,8 @@ impl WorkerRegistry {
                 )
                 .await?;
 
-                let has_extra = bypass_flag.is_some()
-                    || !spec.args.is_empty()
-                    || !mcp_args.is_empty();
+                let has_extra =
+                    bypass_flag.is_some() || !spec.args.is_empty() || !mcp_args.is_empty();
                 if has_extra {
                     command.arg("--");
                     if let Some(flag) = bypass_flag {

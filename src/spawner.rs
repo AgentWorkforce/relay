@@ -52,18 +52,17 @@ impl Spawner {
         cmd.arg("wrap").arg(cli);
 
         // Inject MCP config for CLIs that support dynamic MCP configuration.
-        let api_key = env_vars.iter().find(|(k, _)| *k == "RELAY_API_KEY").map(|(_, v)| *v);
-        let base_url = env_vars.iter().find(|(k, _)| *k == "RELAY_BASE_URL").map(|(_, v)| *v);
+        let api_key = env_vars
+            .iter()
+            .find(|(k, _)| *k == "RELAY_API_KEY")
+            .map(|(_, v)| *v);
+        let base_url = env_vars
+            .iter()
+            .find(|(k, _)| *k == "RELAY_BASE_URL")
+            .map(|(_, v)| *v);
         let cwd = std::env::current_dir().unwrap_or_default();
-        let mcp_args = configure_relaycast_mcp(
-            cli,
-            child_name,
-            api_key,
-            base_url,
-            extra_args,
-            &cwd,
-        )
-        .await?;
+        let mcp_args =
+            configure_relaycast_mcp(cli, child_name, api_key, base_url, extra_args, &cwd).await?;
         for arg in &mcp_args {
             cmd.arg(arg);
         }
