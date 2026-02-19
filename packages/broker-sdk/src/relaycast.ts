@@ -198,6 +198,7 @@ export class RelaycastApi {
     const timer = setInterval(() => {
       agentClient.heartbeat().catch(() => {});
     }, intervalMs);
+    timer.unref();
     // Send first heartbeat immediately
     agentClient.heartbeat().catch(() => {});
     return () => clearInterval(timer);
