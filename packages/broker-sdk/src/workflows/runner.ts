@@ -27,6 +27,7 @@ import type {
   WorkflowStepRow,
   WorkflowStepStatus,
 } from './types.js';
+import { WorkflowTrajectory, type StepOutcome } from './trajectory.js';
 
 // ── AgentRelay SDK imports ──────────────────────────────────────────────────
 
@@ -95,6 +96,7 @@ export class WorkflowRunner {
   private readonly summaryDir: string;
 
   private relay?: AgentRelay;
+  private trajectory?: WorkflowTrajectory;
   private abortController?: AbortController;
   private paused = false;
   private pauseResolver?: () => void;
@@ -468,9 +470,16 @@ export class WorkflowRunner {
     this.abortController = new AbortController();
     this.paused = false;
 
+    // Initialize trajectory recording
+    this.trajectory = new WorkflowTrajectory(resolved.trajectories, runId, this.cwd);
+
     try {
       await this.updateRunStatus(runId, 'running');
       this.emit({ type: 'run:started', runId });
+
+      // Analyze DAG for trajectory context
+      const dagInfo = this.analyzeDAG(workflow.steps);
+      await this.trajectory.start(workflow.name, workflow.steps.length, dagInfo);
 
       const channel = resolved.swarm.channel ?? 'general';
       await this.ensureRelaycastApiKey(channel);
@@ -501,11 +510,23 @@ export class WorkflowRunner {
       if (allCompleted) {
         await this.updateRunStatus(runId, 'completed');
         this.emit({ type: 'run:completed', runId });
+
+        // Complete trajectory with summary
+        const outcomes = this.collectOutcomes(stepStates, workflow.steps);
+        const summary = this.trajectory.buildRunSummary(outcomes);
+        const confidence = this.trajectory.computeConfidence(outcomes);
+        await this.trajectory.complete(summary, confidence, {
+          learnings: this.trajectory.extractLearnings(outcomes),
+          challenges: this.trajectory.extractChallenges(outcomes),
+        });
       } else {
         const failedStep = [...stepStates.values()].find((s) => s.row.status === 'failed');
         const errorMsg = failedStep?.row.error ?? 'One or more steps failed';
         await this.updateRunStatus(runId, 'failed', errorMsg);
         this.emit({ type: 'run:failed', runId, error: errorMsg });
+
+        // Abandon trajectory on failure
+        await this.trajectory.abandon(errorMsg);
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -514,12 +535,15 @@ export class WorkflowRunner {
 
       if (status === 'cancelled') {
         this.emit({ type: 'run:cancelled', runId });
+        await this.trajectory.abandon('Cancelled by user');
       } else {
         this.emit({ type: 'run:failed', runId, error: errorMsg });
+        await this.trajectory.abandon(errorMsg);
       }
     } finally {
       await this.relay?.shutdown();
       this.relay = undefined;
+      this.trajectory = undefined;
       this.abortController = undefined;
     }
 
@@ -567,8 +591,18 @@ export class WorkflowRunner {
     this.abortController = new AbortController();
     this.paused = false;
 
+    // Initialize trajectory for resumed run
+    this.trajectory = new WorkflowTrajectory(config.trajectories, runId, this.cwd);
+
     try {
       await this.updateRunStatus(runId, 'running');
+
+      const pendingCount = [...stepStates.values()].filter((s) => s.row.status === 'pending').length;
+      await this.trajectory.start(
+        workflow.name,
+        workflow.steps.length,
+        `Resumed run: ${pendingCount} pending steps of ${workflow.steps.length} total`,
+      );
 
       const resumeChannel = config.swarm.channel ?? 'general';
       await this.ensureRelaycastApiKey(resumeChannel);
@@ -592,19 +626,30 @@ export class WorkflowRunner {
       if (allCompleted) {
         await this.updateRunStatus(runId, 'completed');
         this.emit({ type: 'run:completed', runId });
+
+        const outcomes = this.collectOutcomes(stepStates, workflow.steps);
+        const summary = this.trajectory.buildRunSummary(outcomes);
+        const confidence = this.trajectory.computeConfidence(outcomes);
+        await this.trajectory.complete(summary, confidence, {
+          learnings: this.trajectory.extractLearnings(outcomes),
+          challenges: this.trajectory.extractChallenges(outcomes),
+        });
       } else {
         const failedStep = [...stepStates.values()].find((s) => s.row.status === 'failed');
         const errorMsg = failedStep?.row.error ?? 'One or more steps failed';
         await this.updateRunStatus(runId, 'failed', errorMsg);
         this.emit({ type: 'run:failed', runId, error: errorMsg });
+        await this.trajectory.abandon(errorMsg);
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       await this.updateRunStatus(runId, 'failed', errorMsg);
       this.emit({ type: 'run:failed', runId, error: errorMsg });
+      await this.trajectory.abandon(errorMsg);
     } finally {
       await this.relay?.shutdown();
       this.relay = undefined;
+      this.trajectory = undefined;
       this.abortController = undefined;
     }
 
@@ -660,22 +705,39 @@ export class WorkflowRunner {
         break;
       }
 
+      // Begin a track chapter if multiple parallel steps are starting
+      if (readySteps.length > 1 && this.trajectory) {
+        const trackNames = readySteps.map((s) => s.name).join(', ');
+        await this.trajectory.beginTrack(trackNames);
+      }
+
       const results = await Promise.allSettled(
         readySteps.map((step) =>
           this.executeStep(step, stepStates, agentMap, errorHandling, runId),
         ),
       );
 
+      // Collect outcomes from this batch for convergence reflection
+      const batchOutcomes: StepOutcome[] = [];
+
       for (let i = 0; i < results.length; i++) {
         const result = results[i];
         const step = readySteps[i];
+        const state = stepStates.get(step.name);
 
         if (result.status === 'rejected') {
           const error = result.reason instanceof Error ? result.reason.message : String(result.reason);
-          const state = stepStates.get(step.name);
           if (state && state.row.status !== 'failed') {
             await this.markStepFailed(state, error, runId);
           }
+
+          batchOutcomes.push({
+            name: step.name,
+            agent: step.agent,
+            status: 'failed',
+            attempts: (state?.row.retryCount ?? 0) + 1,
+            error,
+          });
 
           if (strategy === 'fail-fast') {
             // Mark all pending downstream steps as skipped
@@ -686,7 +748,32 @@ export class WorkflowRunner {
           if (strategy === 'continue') {
             await this.markDownstreamSkipped(step.name, workflow.steps, stepStates, runId);
           }
+        } else {
+          batchOutcomes.push({
+            name: step.name,
+            agent: step.agent,
+            status: state?.row.status === 'completed' ? 'completed' : 'failed',
+            attempts: (state?.row.retryCount ?? 0) + 1,
+            output: state?.row.output,
+            verificationPassed: state?.row.status === 'completed' && step.verification !== undefined,
+          });
         }
+      }
+
+      // Reflect at convergence when a parallel batch completes
+      if (readySteps.length > 1 && this.trajectory?.shouldReflectOnConverge()) {
+        const label = readySteps.map((s) => s.name).join(' + ');
+        // Find steps that this batch unblocks
+        const completedNames = new Set(batchOutcomes.filter((o) => o.status === 'completed').map((o) => o.name));
+        const unblocked = workflow.steps
+          .filter((s) => s.dependsOn?.some((dep) => completedNames.has(dep)))
+          .filter((s) => {
+            const st = stepStates.get(s.name);
+            return st && st.row.status === 'pending';
+          })
+          .map((s) => s.name);
+
+        await this.trajectory.synthesizeAndReflect(label, batchOutcomes, unblocked.length > 0 ? unblocked : undefined);
       }
     }
   }
@@ -738,6 +825,7 @@ export class WorkflowRunner {
           retryCount: attempt,
           updatedAt: new Date().toISOString(),
         });
+        await this.trajectory?.stepRetrying(step, attempt, maxRetries);
         await this.delay(retryDelay);
       }
 
@@ -751,6 +839,7 @@ export class WorkflowRunner {
           updatedAt: new Date().toISOString(),
         });
         this.emit({ type: 'step:started', runId, stepName: step.name });
+        await this.trajectory?.stepStarted(step, agentDef.name);
 
         // Resolve step-output variables (e.g. {{steps.plan.output}}) at execution time
         const stepOutputContext = this.buildStepOutputContext(stepStates);
@@ -776,13 +865,20 @@ export class WorkflowRunner {
           updatedAt: new Date().toISOString(),
         });
         this.emit({ type: 'step:completed', runId, stepName: step.name, output });
+        await this.trajectory?.stepCompleted(step, output, attempt + 1);
         return;
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
       }
     }
 
-    // All retries exhausted — mark failed and throw so callers can apply error strategy
+    // All retries exhausted — record decision and mark failed
+    await this.trajectory?.stepFailed(step, lastError ?? 'Unknown error', maxRetries + 1, maxRetries);
+    await this.trajectory?.decide(
+      `How to handle ${step.name} failure`,
+      'exhausted',
+      `All ${maxRetries + 1} attempts failed: ${lastError ?? 'Unknown error'}`,
+    );
     await this.markStepFailed(state, lastError ?? 'Unknown error', runId);
     throw new Error(`Step "${step.name}" failed after ${maxRetries} retries: ${lastError ?? 'Unknown error'}`);
   }
@@ -912,6 +1008,12 @@ export class WorkflowRunner {
               updatedAt: new Date().toISOString(),
             });
             this.emit({ type: 'step:skipped', runId, stepName: step.name });
+            await this.trajectory?.stepSkipped(step, `Upstream dependency "${current}" failed`);
+            await this.trajectory?.decide(
+              `Whether to skip ${step.name}`,
+              'skip',
+              `Upstream dependency "${current}" failed`,
+            );
             queue.push(step.name);
           }
         }
@@ -936,6 +1038,46 @@ export class WorkflowRunner {
 
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  // ── Trajectory helpers ────────────────────────────────────────────────
+
+  /** Analyze DAG structure for trajectory context. */
+  private analyzeDAG(steps: WorkflowStep[]): string {
+    const roots = steps.filter((s) => !s.dependsOn?.length);
+    const withDeps = steps.filter((s) => s.dependsOn?.length);
+
+    const parts = [`Parsed ${steps.length} steps`];
+    if (roots.length > 1) {
+      parts.push(`${roots.length} parallel tracks`);
+    }
+    if (withDeps.length > 0) {
+      parts.push(`${withDeps.length} dependent steps`);
+    }
+    parts.push('DAG validated, no cycles');
+    return parts.join(', ');
+  }
+
+  /** Collect step outcomes for trajectory synthesis. */
+  private collectOutcomes(stepStates: Map<string, StepState>, steps?: WorkflowStep[]): StepOutcome[] {
+    const stepsWithVerification = new Set(
+      steps?.filter((s) => s.verification).map((s) => s.name) ?? [],
+    );
+    const outcomes: StepOutcome[] = [];
+    for (const [name, state] of stepStates) {
+      outcomes.push({
+        name,
+        agent: state.row.agentName,
+        status: state.row.status === 'completed' ? 'completed'
+          : state.row.status === 'skipped' ? 'skipped'
+          : 'failed',
+        attempts: state.row.retryCount + 1,
+        output: state.row.output,
+        error: state.row.error,
+        verificationPassed: state.row.status === 'completed' && stepsWithVerification.has(name),
+      });
+    }
+    return outcomes;
   }
 
   // ── ID generation ─────────────────────────────────────────────────────
