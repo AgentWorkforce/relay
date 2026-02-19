@@ -177,18 +177,30 @@ export class RelaycastApi {
 
   /** Register an external agent in the workspace (e.g., a spawned workflow agent).
    *  Uses the workspace API key to register, not an agent token.
-   *  No-op if the agent already exists. */
-  async registerExternalAgent(name: string, persona?: string): Promise<void> {
+   *  No-op if the agent already exists (returns existing token).
+   *  Returns an AgentClient that can send heartbeats. */
+  async registerExternalAgent(name: string, persona?: string): Promise<AgentClient | null> {
     const apiKey = await this.resolveApiKey();
     const relay = new RelayCast({ apiKey, baseUrl: this.baseUrl });
     try {
-      await relay.agents.register({ name, type: "agent", ...(persona ? { persona } : {}) });
+      const reg = await relay.agents.register({ name, type: "agent", ...(persona ? { persona } : {}) });
+      return relay.as(reg.token);
     } catch (err) {
       if (err instanceof RelayError && err.code === "agent_already_exists") {
-        return;
+        return null;
       }
       throw err;
     }
+  }
+
+  /** Start a heartbeat loop for an external agent. Returns a cleanup function. */
+  startHeartbeat(agentClient: AgentClient, intervalMs = 30_000): () => void {
+    const timer = setInterval(() => {
+      agentClient.heartbeat().catch(() => {});
+    }, intervalMs);
+    // Send first heartbeat immediately
+    agentClient.heartbeat().catch(() => {});
+    return () => clearInterval(timer);
   }
 
   /** Fetch message history from a channel. */

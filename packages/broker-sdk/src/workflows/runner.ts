@@ -961,12 +961,18 @@ export class WorkflowRunner {
       idleThresholdSecs: agentDef.constraints?.idleThresholdSecs,
     });
 
-    // Register the spawned agent in Relaycast for observability
+    // Register the spawned agent in Relaycast for observability + start heartbeat
+    let stopHeartbeat: (() => void) | undefined;
     if (this.relaycastApi) {
-      await this.relaycastApi.registerExternalAgent(
+      const agentClient = await this.relaycastApi.registerExternalAgent(
         agent.name,
         `Workflow agent for step "${step.name}" (${agentDef.cli})`,
-      ).catch(() => {});
+      ).catch(() => null);
+
+      // Keep the agent online in the dashboard while it's working
+      if (agentClient) {
+        stopHeartbeat = this.relaycastApi.startHeartbeat(agentClient);
+      }
     }
 
     // Invite the spawned agent to the workflow channel
@@ -982,6 +988,9 @@ export class WorkflowRunner {
 
     // Wait for agent to exit (self-termination via /exit)
     const exitResult = await agent.waitForExit(timeoutMs);
+
+    // Stop heartbeat now that agent has exited
+    stopHeartbeat?.();
 
     if (exitResult === 'timeout') {
       // Safety net: check if the verification file exists before giving up.
