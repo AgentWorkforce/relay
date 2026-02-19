@@ -498,6 +498,36 @@ state:
 | `aider` | Aider coding assistant |
 | `goose` | Goose AI assistant |
 
+## Agent Slash Commands
+
+Agents running inside a workflow can output slash commands to signal the broker. These are detected in the agent's PTY output at the broker level — the agent simply prints the command on its own line.
+
+### `/exit`
+
+Signals that the agent has completed its current step and is ready to be released.
+
+```
+/exit
+```
+
+The workflow runner waits for each agent to `/exit` after delivering a step task. When the broker detects `/exit` in the agent's output (exact line match after ANSI stripping), it:
+
+1. Emits an `agent_exit` frame with `reason: "agent_requested"`
+2. Triggers graceful PTY shutdown
+
+If an agent does not `/exit` within the step's `timeoutMs`, the runner treats the step as timed out. As a safety net, steps with `file_exists` verification will still pass if the expected file is present despite the timeout.
+
+**Best practice:** Instruct agents to output `/exit` when done in your step task descriptions:
+
+```yaml
+steps:
+  - name: build-api
+    agent: backend
+    task: |
+      Build the REST API endpoints for user management.
+      When finished, output /exit.
+```
+
 ## Schema Validation
 
 A JSON Schema is available at `packages/broker-sdk/src/workflows/schema.json` for editor autocompletion and validation of `relay.yaml` files.
