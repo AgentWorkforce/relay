@@ -1,5 +1,5 @@
 import type { AgentRelayOptions } from '../relay.js';
-import type { WorkflowRunRow } from './types.js';
+import type { TrajectoryConfig, WorkflowRunRow } from './types.js';
 import { WorkflowRunner, type WorkflowEventListener, type VariableContext } from './runner.js';
 
 /**
@@ -16,6 +16,8 @@ export interface RunWorkflowOptions {
   relay?: AgentRelayOptions;
   /** Progress callback for workflow events. */
   onEvent?: WorkflowEventListener;
+  /** Override trajectory config. Set to false to disable trajectory recording. */
+  trajectories?: TrajectoryConfig | false;
 }
 
 /**
@@ -43,5 +45,11 @@ export async function runWorkflow(
   }
 
   const config = await runner.parseYamlFile(yamlPath);
+
+  // Allow programmatic trajectory override
+  if (options.trajectories !== undefined) {
+    config.trajectories = options.trajectories;
+  }
+
   return runner.execute(config, options.workflow, options.vars);
 }

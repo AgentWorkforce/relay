@@ -18,6 +18,21 @@ export interface RelayYamlConfig {
   coordination?: CoordinationConfig;
   state?: StateConfig;
   errorHandling?: ErrorHandlingConfig;
+  trajectories?: TrajectoryConfig | false;
+}
+
+// ── Trajectory configuration ─────────────────────────────────────────────────
+
+/** Configuration for workflow trajectory recording. */
+export interface TrajectoryConfig {
+  /** Enable trajectory recording (default: true). */
+  enabled?: boolean;
+  /** Auto-reflect when barriers resolve (default: true). */
+  reflectOnBarriers?: boolean;
+  /** Auto-reflect when parallel tracks converge (default: true). */
+  reflectOnConverge?: boolean;
+  /** Record retry/skip/fail decisions automatically (default: true). */
+  autoDecisions?: boolean;
 }
 
 // ── Swarm configuration ─────────────────────────────────────────────────────

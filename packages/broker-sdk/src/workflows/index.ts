@@ -7,3 +7,4 @@ export * from "./coordinator.js";
 export * from "./barrier.js";
 export * from "./state.js";
 export * from "./templates.js";
+export { WorkflowTrajectory, type StepOutcome } from "./trajectory.js";
