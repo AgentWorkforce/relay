@@ -42,7 +42,16 @@ pub struct CredentialStore {
 }
 
 impl CredentialStore {
+    /// Returns the per-project credential cache path based on CWD.
+    /// Each project gets its own credentials so concurrent workflows from
+    /// different repos never conflict.
     pub fn default_path() -> Result<PathBuf> {
+        let cwd = std::env::current_dir().context("failed to determine current directory")?;
+        Ok(cwd.join(".agent-relay").join("relaycast.json"))
+    }
+
+    /// Returns the legacy global credential cache path (~/.agent-relay/relaycast.json).
+    pub fn global_path() -> Result<PathBuf> {
         let home = dirs::home_dir().context("failed to determine home directory")?;
         Ok(home.join(".agent-relay").join("relaycast.json"))
     }

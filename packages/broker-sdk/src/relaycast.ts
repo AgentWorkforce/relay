@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -40,7 +41,10 @@ export class RelaycastApi {
 
   constructor(options: RelaycastApiOptions = {}) {
     this.baseUrl = options.baseUrl ?? process.env.RELAYCAST_BASE_URL ?? DEFAULT_BASE_URL;
-    this.cachePath = options.cachePath ?? join(homedir(), ".agent-relay", "relaycast.json");
+    // Default to per-project cache (matches the relay daemon's storage) so
+    // concurrent workflows from different repos never share credentials.
+    // Falls back to the legacy global path when no project-local cache exists.
+    this.cachePath = options.cachePath ?? join(process.cwd(), ".agent-relay", "relaycast.json");
     this.agentName = options.agentName ?? `sdk-${randomBytes(4).toString("hex")}`;
     this.apiKeyOverride = options.apiKey;
   }
@@ -71,13 +75,32 @@ export class RelaycastApi {
     return { workspaceId, apiKey };
   }
 
-  /** Resolve the workspace API key from explicit option, env, or cache file. */
+  /** Resolve the workspace API key from explicit option, env, or cache file.
+   *  Tries the configured (per-project) cache first, then falls back to the
+   *  legacy global cache at ~/.agent-relay/relaycast.json. */
   private async resolveApiKey(): Promise<string> {
     if (this.apiKeyOverride) return this.apiKeyOverride;
     if (process.env.RELAY_API_KEY) return process.env.RELAY_API_KEY;
-    const raw = await readFile(this.cachePath, "utf-8");
-    const creds: RelaycastCredentials = JSON.parse(raw);
-    return creds.api_key;
+
+    // Try per-project cache first, then fall back to global (deduplicated)
+    const globalPath = join(homedir(), ".agent-relay", "relaycast.json");
+    const candidates = this.cachePath === globalPath
+      ? [this.cachePath]
+      : [this.cachePath, globalPath];
+    for (const cachePath of candidates) {
+      if (!existsSync(cachePath)) continue;
+      try {
+        const raw = await readFile(cachePath, "utf-8");
+        const creds: RelaycastCredentials = JSON.parse(raw);
+        if (creds.api_key) return creds.api_key;
+      } catch {
+        // Cache corrupt — try next path
+      }
+    }
+
+    throw new Error(
+      `No Relaycast API key found (checked ${this.cachePath} and ${globalPath})`,
+    );
   }
 
   /** Lazily register and return an authenticated AgentClient. */
