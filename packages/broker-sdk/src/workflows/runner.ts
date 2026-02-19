@@ -930,13 +930,31 @@ export class WorkflowRunner {
       throw new Error('AgentRelay not initialized');
     }
 
+    // Append self-termination instructions to the task
+    const agentName = `${step.name}-${this.generateShortId()}`;
+    const taskWithExit = step.task + '\n\n---\n' +
+      'IMPORTANT: When you have fully completed this task, you MUST self-terminate by calling ' +
+      `the MCP tool: relay_release(name="${agentName}", reason="Task completed"). ` +
+      'Do not wait for further input — release yourself immediately after finishing.';
+
+    const agentChannels = this.channel ? [this.channel] : agentDef.channels;
+
     const agent = await this.relay.spawnPty({
-      name: `${step.name}-${this.generateShortId()}`,
+      name: agentName,
       cli: agentDef.cli,
       args: agentDef.constraints?.model ? ['--model', agentDef.constraints.model] : [],
-      channels: agentDef.channels,
+      channels: agentChannels,
+      task: taskWithExit,
       idleThresholdSecs: agentDef.constraints?.idleThresholdSecs,
     });
+
+    // Register the spawned agent in Relaycast for observability
+    if (this.relaycastApi) {
+      await this.relaycastApi.registerExternalAgent(
+        agent.name,
+        `Workflow agent for step "${step.name}" (${agentDef.cli})`,
+      ).catch(() => {});
+    }
 
     // Invite the spawned agent to the workflow channel
     if (this.channel && this.relaycastApi) {
@@ -947,16 +965,32 @@ export class WorkflowRunner {
     const taskPreview = step.task.slice(0, 500) + (step.task.length > 500 ? '...' : '');
     await this.postToChannel(`**[${step.name}]** Assigned to \`${agent.name}\`:\n${taskPreview}`);
 
-    // Send the task as a message to the agent via broker protocol
+    // Also send via broker protocol for agents that need DM delivery
     const system = this.relay.human({ name: 'WorkflowRunner' });
-    await system.sendMessage({ to: agent.name, text: step.task });
+    await system.sendMessage({ to: agent.name, text: taskWithExit });
 
-    // Wait for agent to exit
+    // Wait for agent to exit (self-termination via /exit)
     const exitResult = await agent.waitForExit(timeoutMs);
 
     if (exitResult === 'timeout') {
-      await agent.release();
-      throw new Error(`Step "${step.name}" timed out after ${timeoutMs}ms`);
+      // Safety net: check if the verification file exists before giving up.
+      // The agent may have completed work but failed to /exit.
+      if (step.verification?.type === 'file_exists') {
+        const verifyPath = path.resolve(this.cwd, step.verification.value);
+        if (existsSync(verifyPath)) {
+          await this.postToChannel(
+            `**[${step.name}]** Agent idle after completing work — releasing`,
+          );
+          await agent.release();
+          // Fall through to read output below
+        } else {
+          await agent.release();
+          throw new Error(`Step "${step.name}" timed out after ${timeoutMs}ms`);
+        }
+      } else {
+        await agent.release();
+        throw new Error(`Step "${step.name}" timed out after ${timeoutMs}ms`);
+      }
     }
 
     // Read output from summary file if it exists

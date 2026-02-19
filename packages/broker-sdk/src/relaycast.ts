@@ -152,6 +152,22 @@ export class RelaycastApi {
     await agent.channels.invite(channel, agentName);
   }
 
+  /** Register an external agent in the workspace (e.g., a spawned workflow agent).
+   *  Uses the workspace API key to register, not an agent token.
+   *  No-op if the agent already exists. */
+  async registerExternalAgent(name: string, persona?: string): Promise<void> {
+    const apiKey = await this.resolveApiKey();
+    const relay = new RelayCast({ apiKey, baseUrl: this.baseUrl });
+    try {
+      await relay.agents.register({ name, type: "agent", ...(persona ? { persona } : {}) });
+    } catch (err) {
+      if (err instanceof RelayError && err.code === "agent_already_exists") {
+        return;
+      }
+      throw err;
+    }
+  }
+
   /** Fetch message history from a channel. */
   async getMessages(
     channel: string,
