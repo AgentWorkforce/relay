@@ -594,9 +594,10 @@ Use AGENT_RELAY_OUTBOX and ->relay-file:spawn.
             json["mcpServers"]["relaycast"]["command"].as_str(),
             Some("node")
         );
+        // RELAY_API_KEY is intentionally omitted — MCP server reads from relaycast.json
         assert_eq!(
             json["mcpServers"]["relaycast"]["env"]["RELAY_API_KEY"].as_str(),
-            Some("rk_new")
+            None
         );
         assert_eq!(
             json["mcpServers"]["relaycast"]["env"]["RELAY_AGENT_NAME"].as_str(),

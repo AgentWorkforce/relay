@@ -12,6 +12,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 
 import { parse as parseYaml } from 'yaml';
+import { stripAnsi as stripAnsiFn } from '../pty.js';
 
 import { InMemoryWorkflowDb } from './memory-db.js';
 import type {
@@ -623,6 +624,12 @@ export class WorkflowRunner {
         await this.trajectory.abandon(errorMsg);
       }
     } finally {
+      // Close any leaked PTY log streams (e.g. if executeSteps threw mid-step)
+      for (const stream of this.ptyLogStreams.values()) stream.end();
+      this.ptyLogStreams.clear();
+      this.ptyOutputBuffers.clear();
+      this.ptyListeners.clear();
+
       await this.relay?.shutdown();
       this.relay = undefined;
       this.relaycastApi = undefined;
@@ -755,6 +762,11 @@ export class WorkflowRunner {
       this.postToChannel(`Workflow failed: ${errorMsg}`);
       await this.trajectory.abandon(errorMsg);
     } finally {
+      for (const stream of this.ptyLogStreams.values()) stream.end();
+      this.ptyLogStreams.clear();
+      this.ptyOutputBuffers.clear();
+      this.ptyListeners.clear();
+
       await this.relay?.shutdown();
       this.relay = undefined;
       this.relaycastApi = undefined;
@@ -1013,7 +1025,7 @@ export class WorkflowRunner {
     }
 
     // Append self-termination instructions to the task
-    const agentName = `${step.name}-${this.generateShortId()}`;
+    let agentName = `${step.name}-${this.generateShortId()}`;
     const taskWithExit = step.task + '\n\n---\n' +
       'IMPORTANT: When you have fully completed this task, you MUST self-terminate by outputting ' +
       'the exact text "/exit" on its own line. Do not call any MCP tools to exit — just print /exit. ' +
@@ -1037,94 +1049,114 @@ export class WorkflowRunner {
 
     const agentChannels = this.channel ? [this.channel] : agentDef.channels;
 
-    const agent = await this.relay.spawnPty({
-      name: agentName,
-      cli: agentDef.cli,
-      args: agentDef.constraints?.model ? ['--model', agentDef.constraints.model] : [],
-      channels: agentChannels,
-      task: taskWithExit,
-      idleThresholdSecs: agentDef.constraints?.idleThresholdSecs,
-    });
-
-    // Register in workers.json so `agents:kill` can find this agent
-    let workerPid: number | undefined;
-    try {
-      const rawAgents = await this.relay!.listAgentsRaw();
-      workerPid = rawAgents.find(a => a.name === agentName)?.pid ?? undefined;
-    } catch {
-      // Best-effort PID lookup
-    }
-    this.registerWorker(agentName, agentDef.cli, step.task, workerPid);
-
-    // Register the spawned agent in Relaycast for observability + start heartbeat
+    let agent: Awaited<ReturnType<typeof this.relay.spawnPty>>;
+    let exitResult: string = 'unknown';
     let stopHeartbeat: (() => void) | undefined;
-    if (this.relaycastApi) {
-      const agentClient = await this.relaycastApi.registerExternalAgent(
-        agent.name,
-        `Workflow agent for step "${step.name}" (${agentDef.cli})`,
-      ).catch((err) => {
-        console.warn(`[WorkflowRunner] Failed to register ${agent.name} in Relaycast:`, err?.message ?? err);
-        return null;
+    let ptyChunks: string[] = [];
+
+    try {
+      agent = await this.relay.spawnPty({
+        name: agentName,
+        cli: agentDef.cli,
+        args: agentDef.constraints?.model ? ['--model', agentDef.constraints.model] : [],
+        channels: agentChannels,
+        task: taskWithExit,
+        idleThresholdSecs: agentDef.constraints?.idleThresholdSecs,
       });
 
-      // Keep the agent online in the dashboard while it's working
-      if (agentClient) {
-        stopHeartbeat = this.relaycastApi.startHeartbeat(agentClient);
+      // Re-key PTY maps if broker assigned a different name than requested
+      if (agent.name !== agentName) {
+        this.ptyOutputBuffers.set(agent.name, this.ptyOutputBuffers.get(agentName) ?? []);
+        this.ptyOutputBuffers.delete(agentName);
+        const listener = this.ptyListeners.get(agentName);
+        if (listener) {
+          this.ptyListeners.set(agent.name, listener);
+          this.ptyListeners.delete(agentName);
+        }
+        const ls = this.ptyLogStreams.get(agentName);
+        if (ls) {
+          this.ptyLogStreams.set(agent.name, ls);
+          this.ptyLogStreams.delete(agentName);
+        }
+        agentName = agent.name;
       }
-    }
 
-    // Invite the spawned agent to the workflow channel
-    if (this.channel && this.relaycastApi) {
-      await this.relaycastApi.inviteToChannel(this.channel, agent.name).catch(() => {});
-    }
+      // Register in workers.json so `agents:kill` can find this agent
+      let workerPid: number | undefined;
+      try {
+        const rawAgents = await this.relay!.listAgentsRaw();
+        workerPid = rawAgents.find(a => a.name === agentName)?.pid ?? undefined;
+      } catch {
+        // Best-effort PID lookup
+      }
+      this.registerWorker(agentName, agentDef.cli, step.task, workerPid);
 
-    // Post task assignment to channel for observability
-    const taskPreview = step.task.slice(0, 500) + (step.task.length > 500 ? '...' : '');
-    this.postToChannel(`**[${step.name}]** Assigned to \`${agent.name}\`:\n${taskPreview}`);
+      // Register the spawned agent in Relaycast for observability + start heartbeat
+      if (this.relaycastApi) {
+        const agentClient = await this.relaycastApi.registerExternalAgent(
+          agent.name,
+          `Workflow agent for step "${step.name}" (${agentDef.cli})`,
+        ).catch((err) => {
+          console.warn(`[WorkflowRunner] Failed to register ${agent.name} in Relaycast:`, err?.message ?? err);
+          return null;
+        });
 
-    // Task was already delivered as initial_task via spawnPty above.
+        // Keep the agent online in the dashboard while it's working
+        if (agentClient) {
+          stopHeartbeat = this.relaycastApi.startHeartbeat(agentClient);
+        }
+      }
 
-    // Wait for agent to exit (self-termination via /exit)
-    const exitResult = await agent.waitForExit(timeoutMs);
+      // Invite the spawned agent to the workflow channel
+      if (this.channel && this.relaycastApi) {
+        await this.relaycastApi.inviteToChannel(this.channel, agent.name).catch(() => {});
+      }
 
-    // Stop heartbeat now that agent has exited
-    stopHeartbeat?.();
+      // Post task assignment to channel for observability
+      const taskPreview = step.task.slice(0, 500) + (step.task.length > 500 ? '...' : '');
+      this.postToChannel(`**[${step.name}]** Assigned to \`${agent.name}\`:\n${taskPreview}`);
 
-    if (exitResult === 'timeout') {
-      // Safety net: check if the verification file exists before giving up.
-      // The agent may have completed work but failed to /exit.
-      if (step.verification?.type === 'file_exists') {
-        const verifyPath = path.resolve(this.cwd, step.verification.value);
-        if (existsSync(verifyPath)) {
-          this.postToChannel(
-            `**[${step.name}]** Agent idle after completing work — releasing`,
-          );
-          await agent.release();
-          // Fall through to read output below
+      // Wait for agent to exit (self-termination via /exit)
+      exitResult = await agent.waitForExit(timeoutMs);
+
+      // Stop heartbeat now that agent has exited
+      stopHeartbeat?.();
+
+      if (exitResult === 'timeout') {
+        // Safety net: check if the verification file exists before giving up.
+        // The agent may have completed work but failed to /exit.
+        if (step.verification?.type === 'file_exists') {
+          const verifyPath = path.resolve(this.cwd, step.verification.value);
+          if (existsSync(verifyPath)) {
+            this.postToChannel(
+              `**[${step.name}]** Agent idle after completing work — releasing`,
+            );
+            await agent.release();
+            // Fall through to read output below
+          } else {
+            await agent.release();
+            throw new Error(`Step "${step.name}" timed out after ${timeoutMs}ms`);
+          }
         } else {
           await agent.release();
           throw new Error(`Step "${step.name}" timed out after ${timeoutMs}ms`);
         }
-      } else {
-        await agent.release();
-        throw new Error(`Step "${step.name}" timed out after ${timeoutMs}ms`);
       }
+    } finally {
+      // Snapshot PTY chunks before cleanup — we need them for output reading below
+      ptyChunks = this.ptyOutputBuffers.get(agentName) ?? [];
+
+      // Always clean up PTY resources — prevents fd leaks if spawnPty or waitForExit throws
+      stopHeartbeat?.();
+      this.ptyOutputBuffers.delete(agentName);
+      this.ptyListeners.delete(agentName);
+      const stream = this.ptyLogStreams.get(agentName);
+      if (stream) {
+        stream.end();
+        this.ptyLogStreams.delete(agentName);
+      }
+      this.unregisterWorker(agentName);
     }
-
-    // Read output from PTY buffer (primary), fall back to summary file
-    const ptyChunks = this.ptyOutputBuffers.get(agentName) ?? [];
-    this.ptyOutputBuffers.delete(agentName);
-    this.ptyListeners.delete(agentName);
-
-    // Close the log file stream
-    const stream = this.ptyLogStreams.get(agentName);
-    if (stream) {
-      stream.end();
-      this.ptyLogStreams.delete(agentName);
-    }
-
-    // Remove from workers.json now that agent has exited
-    this.unregisterWorker(agentName);
 
     let output: string;
     if (ptyChunks.length > 0) {
@@ -1380,10 +1412,9 @@ export class WorkflowRunner {
     return randomBytes(4).toString('hex');
   }
 
-  /** Strip ANSI escape codes from terminal output. */
+  /** Strip ANSI escape codes from terminal output — delegates to pty.ts canonical regex. */
   private static stripAnsi(text: string): string {
-    // eslint-disable-next-line no-control-regex
-    return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
+    return stripAnsiFn(text);
   }
 
   /** Sanitize a workflow name into a valid channel name. */
