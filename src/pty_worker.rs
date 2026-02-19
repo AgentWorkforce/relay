@@ -186,8 +186,12 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         let text = String::from_utf8_lossy(&chunk).to_string();
                         let clean_text = strip_ansi(&text);
 
-                        // Detect /exit command in agent output and trigger graceful shutdown
-                        if clean_text.lines().any(|line| line.trim() == "/exit") {
+                        // Detect /exit command in agent output and trigger graceful shutdown.
+                        // Skip detection while echo verifications are pending to avoid
+                        // false-positives from injected relay messages containing "/exit".
+                        if pending_verifications.is_empty()
+                            && clean_text.lines().any(|line| line.trim() == "/exit")
+                        {
                             tracing::info!(
                                 target = "agent_relay::worker::pty",
                                 "agent issued /exit — shutting down"
