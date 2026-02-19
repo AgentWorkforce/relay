@@ -965,9 +965,7 @@ export class WorkflowRunner {
     const taskPreview = step.task.slice(0, 500) + (step.task.length > 500 ? '...' : '');
     this.postToChannel(`**[${step.name}]** Assigned to \`${agent.name}\`:\n${taskPreview}`);
 
-    // Also send via broker protocol for agents that need DM delivery
-    const system = this.relay.human({ name: 'WorkflowRunner' });
-    await system.sendMessage({ to: agent.name, text: taskWithExit });
+    // Task was already delivered as initial_task via spawnPty above.
 
     // Wait for agent to exit (self-termination via /exit)
     const exitResult = await agent.waitForExit(timeoutMs);
@@ -997,7 +995,9 @@ export class WorkflowRunner {
     const summaryPath = path.join(this.summaryDir, `${step.name}.md`);
     const output = existsSync(summaryPath)
       ? await readFile(summaryPath, 'utf-8')
-      : `Agent exited (${exitResult})`;
+      : exitResult === 'timeout'
+        ? 'Agent completed (released after idle timeout)'
+        : `Agent exited (${exitResult})`;
 
     return output;
   }
