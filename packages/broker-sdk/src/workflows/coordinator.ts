@@ -193,13 +193,46 @@ export class SwarmCoordinator extends EventEmitter {
 
   /**
    * Build the agent communication topology for a given config and pattern.
+   * Non-interactive agents are excluded from message edges — they only communicate
+   * through step output chaining ({{steps.X.output}}).
    */
   resolveTopology(config: RelayYamlConfig, pattern?: SwarmPattern): AgentTopology {
     const p = pattern ?? this.selectPattern(config);
     const agents = config.agents;
     const edges = new Map<string, string[]>();
-    const names = agents.map((a) => a.name);
 
+    // Non-interactive agents have no inbound or outbound message edges
+    const nonInteractiveNames = new Set(
+      agents.filter((a) => a.interactive === false).map((a) => a.name),
+    );
+    const names = agents.map((a) => a.name).filter((n) => !nonInteractiveNames.has(n));
+
+    const topology = this.resolveInteractiveTopology(p, config, agents, edges, names);
+
+    // Apply non-interactive filtering to the actual topology edges (not the local
+    // `edges` variable, which may not be the same map — e.g., DAG creates its own).
+    const topologyEdges = topology.edges;
+
+    // Ensure non-interactive agents have empty edge entries (no messaging)
+    for (const name of nonInteractiveNames) {
+      topologyEdges.set(name, []);
+    }
+    // Also filter out non-interactive agents from any edge targets
+    for (const [agent, targets] of topologyEdges) {
+      topologyEdges.set(agent, targets.filter((t) => !nonInteractiveNames.has(t)));
+    }
+
+    return topology;
+  }
+
+  /** Internal: resolve topology edges for interactive agents only. */
+  private resolveInteractiveTopology(
+    p: SwarmPattern,
+    config: RelayYamlConfig,
+    agents: AgentDefinition[],
+    edges: Map<string, string[]>,
+    names: string[],
+  ): AgentTopology {
     switch (p) {
       case 'fan-out': {
         // Hub (first agent or role=lead) fans out to all others; no inter-worker edges.
@@ -687,10 +720,13 @@ export class SwarmCoordinator extends EventEmitter {
   }
 
   private pickHub(agents: AgentDefinition[]): string {
-    const lead = agents.find(
+    // Prefer interactive agents as hub — non-interactive agents cannot receive messages
+    const interactiveAgents = agents.filter((a) => a.interactive !== false);
+    const pool = interactiveAgents.length > 0 ? interactiveAgents : agents;
+    const lead = pool.find(
       (a) => a.role === 'lead' || a.role === 'hub' || a.role === 'coordinator',
     );
-    return lead?.name ?? agents[0].name;
+    return lead?.name ?? pool[0].name;
   }
 
   private resolvePipelineOrder(

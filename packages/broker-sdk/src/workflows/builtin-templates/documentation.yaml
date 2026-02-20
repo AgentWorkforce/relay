@@ -6,6 +6,10 @@ swarm:
   maxConcurrency: 1
   timeoutMs: 3000000
   channel: swarm-documentation
+  idleNudge:
+    nudgeAfterMs: 120000
+    escalateAfterMs: 120000
+    maxNudges: 1
 agents:
   - name: lead
     cli: claude
@@ -13,9 +17,11 @@ agents:
   - name: researcher
     cli: codex
     role: "Collects technical context and source details"
+    interactive: false
   - name: writer
     cli: codex
     role: "Drafts user-facing documentation"
+    interactive: false
   - name: editor
     cli: claude
     role: "Edits for accuracy, clarity, and structure"
@@ -36,7 +42,8 @@ workflows:
         agent: writer
         dependsOn: [gather-context]
         task: |
-          Draft documentation updates based on gathered context.
+          Draft documentation updates based on gathered context:
+          {{steps.gather-context.output}}
         verification:
           type: output_contains
           value: DRAFT_COMPLETE
@@ -44,7 +51,8 @@ workflows:
         agent: editor
         dependsOn: [draft]
         task: |
-          Edit the draft for technical accuracy and readability.
+          Edit the draft for technical accuracy and readability:
+          {{steps.draft.output}}
         verification:
           type: output_contains
           value: EDIT_COMPLETE

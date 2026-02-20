@@ -6,6 +6,10 @@ swarm:
   maxConcurrency: 2
   timeoutMs: 2700000
   channel: swarm-bug-fix
+  idleNudge:
+    nudgeAfterMs: 120000
+    escalateAfterMs: 120000
+    maxNudges: 1
 agents:
   - name: lead
     cli: claude
@@ -13,9 +17,11 @@ agents:
   - name: investigator
     cli: codex
     role: "Reproduces and scopes the defect"
+    interactive: false
   - name: fixer
     cli: codex
     role: "Implements and tests the fix"
+    interactive: false
   - name: verifier
     cli: claude
     role: "Validates risk, regressions, and completion"

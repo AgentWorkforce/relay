@@ -1,0 +1,70 @@
+{
+  "id": "traj_1771504511924_803e907a",
+  "version": 1,
+  "task": {
+    "title": "broker-sdk-superiority-workflow run #e252e60a",
+    "source": {
+      "system": "workflow-runner",
+      "id": "e252e60a178ab630ba860cb0"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-02-19T12:35:11.924Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-02-19T12:35:11.924Z"
+    },
+    {
+      "name": "spec-analyst",
+      "role": "spec-analyst",
+      "joinedAt": "2026-02-19T12:35:15.610Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_cd8adc08",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-02-19T12:35:11.924Z",
+      "events": [
+        {
+          "ts": 1771504511924,
+          "type": "note",
+          "content": "Workflow \"broker-sdk-superiority-workflow\" started with 24 steps"
+        },
+        {
+          "ts": 1771504511924,
+          "type": "note",
+          "content": "Parsed 24 steps, 23 dependent steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1771504515610,
+          "type": "note",
+          "content": "Step \"codebase-analysis\" assigned to agent \"spec-analyst\""
+        },
+        {
+          "ts": 1771504818907,
+          "type": "note",
+          "content": "Retrying step \"codebase-analysis\" (attempt 1/3)"
+        },
+        {
+          "ts": 1771504828910,
+          "type": "note",
+          "content": "Step \"codebase-analysis\" assigned to agent \"spec-analyst\""
+        },
+        {
+          "ts": 1771505130616,
+          "type": "note",
+          "content": "Retrying step \"codebase-analysis\" (attempt 2/3)"
+        },
+        {
+          "ts": 1771505140621,
+          "type": "note",
+          "content": "Step \"codebase-analysis\" assigned to agent \"spec-analyst\""
+        }
+      ]
+    }
+  ]
+}

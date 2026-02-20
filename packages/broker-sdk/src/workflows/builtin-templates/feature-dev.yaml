@@ -6,6 +6,10 @@ swarm:
   maxConcurrency: 2
   timeoutMs: 3600000
   channel: swarm-feature-dev
+  idleNudge:
+    nudgeAfterMs: 120000
+    escalateAfterMs: 120000
+    maxNudges: 1
 agents:
   - name: lead
     cli: claude
@@ -13,9 +17,11 @@ agents:
   - name: planner
     cli: codex
     role: "Plans implementation and acceptance criteria"
+    interactive: false
   - name: developer
     cli: codex
     role: "Implements planned changes"
+    interactive: false
   - name: reviewer
     cli: claude
     role: "Reviews code quality and release risk"

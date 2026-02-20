@@ -6,6 +6,10 @@ swarm:
   maxConcurrency: 1
   timeoutMs: 5400000
   channel: swarm-security-audit
+  idleNudge:
+    nudgeAfterMs: 120000
+    escalateAfterMs: 120000
+    maxNudges: 1
 agents:
   - name: lead
     cli: claude
@@ -13,12 +17,14 @@ agents:
   - name: scanner
     cli: codex
     role: "Performs static and dependency security scanning"
+    interactive: false
   - name: analyst
     cli: claude
     role: "Prioritizes findings and recommends mitigations"
   - name: remediator
     cli: codex
     role: "Implements approved remediations"
+    interactive: false
   - name: verifier
     cli: gemini
     role: "Verifies fixes and residual exposure"
@@ -58,7 +64,8 @@ workflows:
         agent: verifier
         dependsOn: [remediate]
         task: |
-          Re-test security posture and confirm mitigations hold.
+          Re-test security posture and confirm mitigations hold:
+          {{steps.remediate.output}}
         verification:
           type: output_contains
           value: VERIFICATION_COMPLETE

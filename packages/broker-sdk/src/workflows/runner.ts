@@ -4,19 +4,23 @@
  * persists state to DB, and supports pause/resume/abort with retries.
  */
 
+import { spawn as cpSpawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import type { WriteStream } from 'node:fs';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
 import { parse as parseYaml } from 'yaml';
+import { stripAnsi as stripAnsiFn } from '../pty.js';
 
 import { InMemoryWorkflowDb } from './memory-db.js';
 import type {
   AgentCli,
   AgentDefinition,
   ErrorHandlingConfig,
+  IdleNudgeConfig,
   RelayYamlConfig,
   SwarmPattern,
   VerificationCheck,
@@ -60,7 +64,9 @@ export type WorkflowEvent =
   | { type: 'step:completed'; runId: string; stepName: string; output?: string }
   | { type: 'step:failed'; runId: string; stepName: string; error: string }
   | { type: 'step:skipped'; runId: string; stepName: string }
-  | { type: 'step:retrying'; runId: string; stepName: string; attempt: number };
+  | { type: 'step:retrying'; runId: string; stepName: string; attempt: number }
+  | { type: 'step:nudged'; runId: string; stepName: string; nudgeCount: number }
+  | { type: 'step:force-released'; runId: string; stepName: string };
 
 export type WorkflowEventListener = (event: WorkflowEvent) => void;
 
@@ -105,12 +111,31 @@ export class WorkflowRunner {
   private pauseResolver?: () => void;
   private listeners: WorkflowEventListener[] = [];
 
+  /** Current config for the active run, so spawnAndWait can access swarm config. */
+  private currentConfig?: RelayYamlConfig;
+  /** Current run ID for event emission from spawnAndWait context. */
+  private currentRunId?: string;
+  /** Live Agent handles keyed by name, for hub-mediated nudging. */
+  private readonly activeAgentHandles = new Map<string, Agent>();
+
+  // PTY-based output capture: accumulate terminal output per-agent
+  private readonly ptyOutputBuffers = new Map<string, string[]>();
+  private readonly ptyListeners = new Map<string, (chunk: string) => void>();
+  private readonly ptyLogStreams = new Map<string, WriteStream>();
+  /** Path to workers.json so `agents:kill` can find workflow-spawned agents */
+  private readonly workersPath: string;
+  /** In-memory tracking of active workers to avoid race conditions on workers.json */
+  private readonly activeWorkers = new Map<string, { cli: string; task: string; spawnedAt: number; pid?: number; logFile: string }>();
+  /** Mutex for serializing workers.json file access */
+  private workersFileLock: Promise<void> = Promise.resolve();
+
   constructor(options: WorkflowRunnerOptions = {}) {
     this.db = options.db ?? new InMemoryWorkflowDb();
     this.workspaceId = options.workspaceId ?? 'local';
     this.relayOptions = options.relay ?? {};
     this.cwd = options.cwd ?? process.cwd();
     this.summaryDir = options.summaryDir ?? path.join(this.cwd, '.relay', 'summaries');
+    this.workersPath = path.join(this.cwd, '.agent-relay', 'team', 'workers.json');
   }
 
   // ── Relaycast auto-provisioning ────────────────────────────────────────
@@ -122,8 +147,35 @@ export class WorkflowRunner {
    *   2. Cached credentials at ~/.agent-relay/relaycast.json
    *   3. Auto-create a new workspace via the Relaycast API
    */
+  /**
+   * Validate a Relaycast API key by making a lightweight API call.
+   * Returns true if the key is valid, false otherwise.
+   */
+  private async validateRelaycastApiKey(apiKey: string): Promise<boolean> {
+    const baseUrl = process.env.RELAYCAST_BASE_URL ?? 'https://api.relaycast.dev';
+    try {
+      const res = await fetch(`${baseUrl}/v1/channels`, {
+        method: 'GET',
+        headers: {
+          authorization: `Bearer ${apiKey}`,
+          'content-type': 'application/json',
+        },
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
   private async ensureRelaycastApiKey(channel: string): Promise<void> {
-    if (process.env.RELAY_API_KEY) return;
+    // If env var is set, validate it before trusting it
+    if (process.env.RELAY_API_KEY) {
+      if (await this.validateRelaycastApiKey(process.env.RELAY_API_KEY)) {
+        return;
+      }
+      // Key is invalid — clear it and fall through to re-provision
+      delete process.env.RELAY_API_KEY;
+    }
 
     // Check cached credentials — prefer per-project cache (written by the local
     // relay daemon) over the legacy global cache so concurrent workflows from
@@ -137,8 +189,11 @@ export class WorkflowRunner {
           const raw = await readFile(cachePath, 'utf-8');
           const creds = JSON.parse(raw);
           if (creds.api_key) {
-            process.env.RELAY_API_KEY = creds.api_key;
-            return;
+            if (await this.validateRelaycastApiKey(creds.api_key)) {
+              process.env.RELAY_API_KEY = creds.api_key;
+              return;
+            }
+            // Cached key is stale — continue to next path or auto-provision
           }
         } catch {
           // Cache corrupt — try next path
@@ -395,11 +450,18 @@ export class WorkflowRunner {
   }
 
   /** Build a nested context from completed step outputs for {{steps.X.output}} resolution. */
-  private buildStepOutputContext(stepStates: Map<string, StepState>): VariableContext {
+  private buildStepOutputContext(stepStates: Map<string, StepState>, runId?: string): VariableContext {
     const steps: Record<string, { output: string }> = {};
     for (const [name, state] of stepStates) {
       if (state.row.status === 'completed' && state.row.output !== undefined) {
         steps[name] = { output: state.row.output };
+      } else if (state.row.status === 'completed' && runId) {
+        // Recover from persisted output on disk (e.g., after restart)
+        const persisted = this.loadStepOutput(runId, name);
+        if (persisted) {
+          state.row.output = persisted;
+          steps[name] = { output: persisted };
+        }
       }
     }
     return { steps } as unknown as VariableContext;
@@ -483,6 +545,9 @@ export class WorkflowRunner {
     // Initialize trajectory recording
     this.trajectory = new WorkflowTrajectory(resolved.trajectories, runId, this.cwd);
 
+    this.currentConfig = resolved;
+    this.currentRunId = runId;
+
     try {
       await this.updateRunStatus(runId, 'running');
       this.emit({ type: 'run:started', runId });
@@ -491,14 +556,25 @@ export class WorkflowRunner {
       const dagInfo = this.analyzeDAG(workflow.steps);
       await this.trajectory.start(workflow.name, workflow.steps.length, dagInfo);
 
-      const channel = resolved.swarm.channel ?? 'general';
+      const channel = resolved.swarm.channel ?? `wf-${this.sanitizeChannelName(resolved.name)}-${this.generateShortId()}`;
       this.channel = channel;
+      // Persist the auto-generated channel back to config so resume() can reuse it
+      if (!resolved.swarm.channel) {
+        resolved.swarm.channel = channel;
+        await this.db.updateRun(runId, { config: resolved });
+      }
       await this.ensureRelaycastApiKey(channel);
 
       this.relay = new AgentRelay({
         ...this.relayOptions,
         channels: [channel],
       });
+
+      // Wire PTY output dispatcher — routes chunks to per-agent listeners
+      this.relay.onWorkerOutput = ({ name, chunk }) => {
+        const listener = this.ptyListeners.get(name);
+        if (listener) listener(chunk);
+      };
 
       // Create the dedicated workflow channel and join it
       this.relaycastApi = new RelaycastApi({
@@ -571,12 +647,21 @@ export class WorkflowRunner {
         await this.trajectory.abandon(errorMsg);
       }
     } finally {
+      // Close any leaked PTY log streams (e.g. if executeSteps threw mid-step)
+      for (const stream of this.ptyLogStreams.values()) stream.end();
+      this.ptyLogStreams.clear();
+      this.ptyOutputBuffers.clear();
+      this.ptyListeners.clear();
+
       await this.relay?.shutdown();
       this.relay = undefined;
       this.relaycastApi = undefined;
       this.channel = undefined;
       this.trajectory = undefined;
       this.abortController = undefined;
+      this.currentConfig = undefined;
+      this.currentRunId = undefined;
+      this.activeAgentHandles.clear();
     }
 
     const finalRun = await this.db.getRun(runId);
@@ -622,6 +707,8 @@ export class WorkflowRunner {
 
     this.abortController = new AbortController();
     this.paused = false;
+    this.currentConfig = config;
+    this.currentRunId = runId;
 
     // Initialize trajectory for resumed run
     this.trajectory = new WorkflowTrajectory(config.trajectories, runId, this.cwd);
@@ -636,7 +723,7 @@ export class WorkflowRunner {
         `Resumed run: ${pendingCount} pending steps of ${workflow.steps.length} total`,
       );
 
-      const resumeChannel = config.swarm.channel ?? 'general';
+      const resumeChannel = config.swarm.channel ?? `wf-${this.sanitizeChannelName(run.workflowName)}-${this.generateShortId()}`;
       this.channel = resumeChannel;
       await this.ensureRelaycastApiKey(resumeChannel);
 
@@ -644,6 +731,12 @@ export class WorkflowRunner {
         ...this.relayOptions,
         channels: [resumeChannel],
       });
+
+      // Wire PTY output dispatcher — routes chunks to per-agent listeners
+      this.relay.onWorkerOutput = ({ name, chunk }) => {
+        const listener = this.ptyListeners.get(name);
+        if (listener) listener(chunk);
+      };
 
       // Ensure channel exists and join it for resumed runs
       this.relaycastApi = new RelaycastApi({
@@ -697,12 +790,20 @@ export class WorkflowRunner {
       this.postToChannel(`Workflow failed: ${errorMsg}`);
       await this.trajectory.abandon(errorMsg);
     } finally {
+      for (const stream of this.ptyLogStreams.values()) stream.end();
+      this.ptyLogStreams.clear();
+      this.ptyOutputBuffers.clear();
+      this.ptyListeners.clear();
+
       await this.relay?.shutdown();
       this.relay = undefined;
       this.relaycastApi = undefined;
       this.channel = undefined;
       this.trajectory = undefined;
       this.abortController = undefined;
+      this.currentConfig = undefined;
+      this.currentRunId = undefined;
+      this.activeAgentHandles.clear();
     }
 
     const finalRun = await this.db.getRun(runId);
@@ -896,8 +997,17 @@ export class WorkflowRunner {
         await this.trajectory?.stepStarted(step, agentDef.name);
 
         // Resolve step-output variables (e.g. {{steps.plan.output}}) at execution time
-        const stepOutputContext = this.buildStepOutputContext(stepStates);
-        const resolvedTask = this.interpolateStepTask(step.task, stepOutputContext);
+        const stepOutputContext = this.buildStepOutputContext(stepStates, runId);
+        let resolvedTask = this.interpolateStepTask(step.task, stepOutputContext);
+
+        // If this is an interactive agent, append awareness of non-interactive workers
+        // so the lead knows not to message them and to use step output chaining instead
+        if (agentDef.interactive !== false) {
+          const nonInteractiveInfo = this.buildNonInteractiveAwareness(agentMap, stepStates);
+          if (nonInteractiveInfo) {
+            resolvedTask += nonInteractiveInfo;
+          }
+        }
 
         // Spawn agent via AgentRelay
         const resolvedStep = { ...step, task: resolvedTask };
@@ -918,6 +1028,10 @@ export class WorkflowRunner {
           completedAt: state.row.completedAt,
           updatedAt: new Date().toISOString(),
         });
+
+        // Persist step output to disk so it survives restarts and is inspectable
+        await this.persistStepOutput(runId, step.name, output);
+
         this.emit({ type: 'step:completed', runId, stepName: step.name, output });
         this.postToChannel(
           `**[${step.name}]** Completed\n${output.slice(0, 500)}${output.length > 500 ? '\n...(truncated)' : ''}`,
@@ -941,94 +1055,539 @@ export class WorkflowRunner {
     throw new Error(`Step "${step.name}" failed after ${maxRetries} retries: ${lastError ?? 'Unknown error'}`);
   }
 
-  private async spawnAndWait(
+  /**
+   * Build the CLI command and arguments for a non-interactive agent execution.
+   * Each CLI has a specific flag for one-shot prompt mode.
+   */
+  static buildNonInteractiveCommand(
+    cli: AgentCli,
+    task: string,
+    extraArgs: string[] = [],
+  ): { cmd: string; args: string[] } {
+    switch (cli) {
+      case 'claude':
+        return { cmd: 'claude', args: ['-p', task, ...extraArgs] };
+      case 'codex':
+        return { cmd: 'codex', args: ['exec', task, ...extraArgs] };
+      case 'gemini':
+        return { cmd: 'gemini', args: ['-p', task, ...extraArgs] };
+      case 'opencode':
+        return { cmd: 'opencode', args: ['--prompt', task, ...extraArgs] };
+      case 'droid':
+        return { cmd: 'droid', args: ['exec', task, ...extraArgs] };
+      case 'aider':
+        return { cmd: 'aider', args: ['--message', task, '--yes-always', '--no-git', ...extraArgs] };
+      case 'goose':
+        return { cmd: 'goose', args: ['run', '--text', task, '--no-session', ...extraArgs] };
+    }
+  }
+
+  /**
+   * Execute an agent as a non-interactive subprocess.
+   * No PTY, no relay messaging, no /exit injection. The process receives its task
+   * as a CLI argument and stdout is captured as the step output.
+   */
+  private async execNonInteractive(
     agentDef: AgentDefinition,
     step: WorkflowStep,
     timeoutMs?: number,
   ): Promise<string> {
-    if (!this.relay) {
-      throw new Error('AgentRelay not initialized');
-    }
-
-    // Append self-termination instructions to the task
     const agentName = `${step.name}-${this.generateShortId()}`;
-    const taskWithExit = step.task + '\n\n---\n' +
-      'IMPORTANT: When you have fully completed this task, you MUST self-terminate by calling ' +
-      `the MCP tool: remove_agent(name="${agentName}", reason="Task completed"). ` +
-      'Do not wait for further input — release yourself immediately after finishing.';
+    const modelArgs = agentDef.constraints?.model ? ['--model', agentDef.constraints.model] : [];
 
-    const agentChannels = this.channel ? [this.channel] : agentDef.channels;
+    // Append strict deliverable enforcement — non-interactive agents MUST produce
+    // clear, structured output since there's no opportunity for follow-up or clarification.
+    const taskWithDeliverable = step.task + '\n\n---\n' +
+      'CRITICAL REQUIREMENT — YOU MUST FOLLOW THIS EXACTLY:\n' +
+      'You are running in non-interactive mode. There is NO opportunity for follow-up, ' +
+      'clarification, or additional input. Your stdout output is your ONLY deliverable.\n\n' +
+      'You MUST:\n' +
+      '1. Complete the ENTIRE task in a single pass — no partial work, no "I\'ll continue later"\n' +
+      '2. Print your COMPLETE deliverable to stdout — this is the ONLY output that will be captured\n' +
+      '3. Be thorough and self-contained — another agent will consume your output with zero context about your process\n' +
+      '4. End with a clear summary of what was accomplished and any artifacts produced\n\n' +
+      'DO NOT:\n' +
+      '- Ask questions or request clarification (there is no one to answer)\n' +
+      '- Output partial results expecting a follow-up (there will be none)\n' +
+      '- Skip steps or leave work incomplete\n' +
+      '- Output only status messages without the actual deliverable content';
 
-    const agent = await this.relay.spawnPty({
-      name: agentName,
-      cli: agentDef.cli,
-      args: agentDef.constraints?.model ? ['--model', agentDef.constraints.model] : [],
-      channels: agentChannels,
-      task: taskWithExit,
-      idleThresholdSecs: agentDef.constraints?.idleThresholdSecs,
-    });
+    const { cmd, args } = WorkflowRunner.buildNonInteractiveCommand(agentDef.cli, taskWithDeliverable, modelArgs);
 
-    // Register the spawned agent in Relaycast for observability + start heartbeat
+    // Open a log file for dashboard observability
+    const logsDir = this.getWorkerLogsDir();
+    const logPath = path.join(logsDir, `${agentName}.log`);
+    const logStream = createWriteStream(logPath, { flags: 'a' });
+
+    // Register in workers.json with interactive: false metadata
+    this.registerWorker(agentName, agentDef.cli, step.task, undefined, false);
+
+    // Register agent in Relaycast for observability
     let stopHeartbeat: (() => void) | undefined;
     if (this.relaycastApi) {
       const agentClient = await this.relaycastApi.registerExternalAgent(
-        agent.name,
-        `Workflow agent for step "${step.name}" (${agentDef.cli})`,
-      ).catch(() => null);
-
-      // Keep the agent online in the dashboard while it's working
+        agentName,
+        `Non-interactive workflow agent for step "${step.name}" (${agentDef.cli})`,
+      ).catch((err) => {
+        console.warn(`[WorkflowRunner] Failed to register ${agentName} in Relaycast:`, err?.message ?? err);
+        return null;
+      });
       if (agentClient) {
         stopHeartbeat = this.relaycastApi.startHeartbeat(agentClient);
       }
     }
 
-    // Invite the spawned agent to the workflow channel
-    if (this.channel && this.relaycastApi) {
-      await this.relaycastApi.inviteToChannel(this.channel, agent.name).catch(() => {});
-    }
-
     // Post task assignment to channel for observability
     const taskPreview = step.task.slice(0, 500) + (step.task.length > 500 ? '...' : '');
-    this.postToChannel(`**[${step.name}]** Assigned to \`${agent.name}\`:\n${taskPreview}`);
+    this.postToChannel(`**[${step.name}]** Assigned to \`${agentName}\` (non-interactive):\n${taskPreview}`);
 
-    // Task was already delivered as initial_task via spawnPty above.
+    const stdoutChunks: string[] = [];
+    const stderrChunks: string[] = [];
 
-    // Wait for agent to exit (self-termination via /exit)
-    const exitResult = await agent.waitForExit(timeoutMs);
+    try {
+      const output = await new Promise<string>((resolve, reject) => {
+        const child = cpSpawn(cmd, args, {
+          stdio: 'pipe',
+          cwd: this.cwd,
+          env: { ...process.env },
+        });
 
-    // Stop heartbeat now that agent has exited
-    stopHeartbeat?.();
+        // Update workers.json with PID now that we have it
+        this.registerWorker(agentName, agentDef.cli, step.task, child.pid, false);
 
-    if (exitResult === 'timeout') {
-      // Safety net: check if the verification file exists before giving up.
-      // The agent may have completed work but failed to /exit.
-      if (step.verification?.type === 'file_exists') {
-        const verifyPath = path.resolve(this.cwd, step.verification.value);
-        if (existsSync(verifyPath)) {
-          this.postToChannel(
-            `**[${step.name}]** Agent idle after completing work — releasing`,
-          );
-          await agent.release();
-          // Fall through to read output below
+        // Wire abort signal so runner.abort() kills the child process
+        const abortSignal = this.abortController?.signal;
+        let abortHandler: (() => void) | undefined;
+        if (abortSignal && !abortSignal.aborted) {
+          abortHandler = () => {
+            child.kill('SIGTERM');
+            setTimeout(() => child.kill('SIGKILL'), 5000);
+          };
+          abortSignal.addEventListener('abort', abortHandler, { once: true });
+        }
+
+        child.stdout?.on('data', (chunk: Buffer) => {
+          const text = chunk.toString();
+          stdoutChunks.push(text);
+          logStream.write(text);
+        });
+
+        child.stderr?.on('data', (chunk: Buffer) => {
+          const text = chunk.toString();
+          stderrChunks.push(text);
+          logStream.write(`[stderr] ${text}`);
+        });
+
+        // Handle timeout
+        let timedOut = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        if (timeoutMs) {
+          timer = setTimeout(() => {
+            timedOut = true;
+            child.kill('SIGTERM');
+            // Give process time to clean up, then force kill
+            setTimeout(() => child.kill('SIGKILL'), 5000);
+          }, timeoutMs);
+        }
+
+        child.on('close', (code) => {
+          if (timer) clearTimeout(timer);
+          if (abortHandler && abortSignal) {
+            abortSignal.removeEventListener('abort', abortHandler);
+          }
+          const stdout = stdoutChunks.join('');
+
+          if (abortSignal?.aborted) {
+            reject(new Error(`Step "${step.name}" aborted`));
+            return;
+          }
+
+          if (timedOut) {
+            reject(new Error(`Step "${step.name}" timed out after ${timeoutMs}ms`));
+            return;
+          }
+
+          if (code !== 0 && code !== null) {
+            const stderr = stderrChunks.join('');
+            reject(new Error(
+              `Step "${step.name}" exited with code ${code}${stderr ? `: ${stderr.slice(0, 500)}` : ''}`,
+            ));
+            return;
+          }
+
+          resolve(stdout);
+        });
+
+        child.on('error', (err) => {
+          if (timer) clearTimeout(timer);
+          if (abortHandler && abortSignal) {
+            abortSignal.removeEventListener('abort', abortHandler);
+          }
+          reject(new Error(`Failed to spawn ${cmd}: ${err.message}`));
+        });
+      });
+
+      return output;
+    } finally {
+      stopHeartbeat?.();
+      logStream.end();
+      this.unregisterWorker(agentName);
+    }
+  }
+
+  private async spawnAndWait(
+    agentDef: AgentDefinition,
+    step: WorkflowStep,
+    timeoutMs?: number,
+  ): Promise<string> {
+    // Branch: non-interactive agents run as simple subprocesses
+    if (agentDef.interactive === false) {
+      return this.execNonInteractive(agentDef, step, timeoutMs);
+    }
+
+    if (!this.relay) {
+      throw new Error('AgentRelay not initialized');
+    }
+
+    // Append self-termination instructions to the task
+    let agentName = `${step.name}-${this.generateShortId()}`;
+    const taskWithExit = step.task + '\n\n---\n' +
+      'IMPORTANT: When you have fully completed this task, you MUST self-terminate by outputting ' +
+      'the exact text "/exit" on its own line. Do not call any MCP tools to exit — just print /exit. ' +
+      'Do not wait for further input — output /exit immediately after finishing.';
+
+    // Register PTY output listener before spawning so we capture everything
+    this.ptyOutputBuffers.set(agentName, []);
+
+    // Open a log file so `agents:logs <name>` works for workflow-spawned agents
+    const logsDir = this.getWorkerLogsDir();
+    const logStream = createWriteStream(path.join(logsDir, `${agentName}.log`), { flags: 'a' });
+    this.ptyLogStreams.set(agentName, logStream);
+
+    this.ptyListeners.set(agentName, (chunk: string) => {
+      const stripped = WorkflowRunner.stripAnsi(chunk);
+      this.ptyOutputBuffers.get(agentName)?.push(stripped);
+      // Write raw output (with ANSI codes) to log file so dashboard's
+      // XTermLogViewer can render colors/formatting natively via xterm.js
+      logStream.write(chunk);
+    });
+
+    const agentChannels = this.channel ? [this.channel] : agentDef.channels;
+
+    let agent: Awaited<ReturnType<typeof this.relay.spawnPty>>;
+    let exitResult: string = 'unknown';
+    let stopHeartbeat: (() => void) | undefined;
+    let ptyChunks: string[] = [];
+
+    try {
+      agent = await this.relay.spawnPty({
+        name: agentName,
+        cli: agentDef.cli,
+        args: agentDef.constraints?.model ? ['--model', agentDef.constraints.model] : [],
+        channels: agentChannels,
+        task: taskWithExit,
+        idleThresholdSecs: agentDef.constraints?.idleThresholdSecs,
+      });
+
+      // Re-key PTY maps if broker assigned a different name than requested
+      if (agent.name !== agentName) {
+        const oldName = agentName;
+        this.ptyOutputBuffers.set(agent.name, this.ptyOutputBuffers.get(oldName) ?? []);
+        this.ptyOutputBuffers.delete(oldName);
+
+        // Close old log stream and rename the file to match the new agent name
+        const oldLogPath = path.join(logsDir, `${oldName}.log`);
+        const newLogPath = path.join(logsDir, `${agent.name}.log`);
+        const oldLogStream = this.ptyLogStreams.get(oldName);
+        if (oldLogStream) {
+          oldLogStream.end();
+          this.ptyLogStreams.delete(oldName);
+          try {
+            renameSync(oldLogPath, newLogPath);
+          } catch {
+            // File may not exist yet if no output was written
+          }
+        }
+
+        // Open new log stream with the correct name
+        const newLogStream = createWriteStream(newLogPath, { flags: 'a' });
+        this.ptyLogStreams.set(agent.name, newLogStream);
+
+        // Update listener to use the new log stream
+        const oldListener = this.ptyListeners.get(oldName);
+        if (oldListener) {
+          this.ptyListeners.delete(oldName);
+          this.ptyListeners.set(agent.name, (chunk: string) => {
+            const stripped = WorkflowRunner.stripAnsi(chunk);
+            this.ptyOutputBuffers.get(agent.name)?.push(stripped);
+            newLogStream.write(chunk);
+          });
+        }
+
+        agentName = agent.name;
+      }
+
+      // Register in workers.json so `agents:kill` can find this agent
+      let workerPid: number | undefined;
+      try {
+        const rawAgents = await this.relay!.listAgentsRaw();
+        workerPid = rawAgents.find(a => a.name === agentName)?.pid ?? undefined;
+      } catch {
+        // Best-effort PID lookup
+      }
+      this.registerWorker(agentName, agentDef.cli, step.task, workerPid);
+
+      // Register the spawned agent in Relaycast for observability + start heartbeat
+      if (this.relaycastApi) {
+        const agentClient = await this.relaycastApi.registerExternalAgent(
+          agent.name,
+          `Workflow agent for step "${step.name}" (${agentDef.cli})`,
+        ).catch((err) => {
+          console.warn(`[WorkflowRunner] Failed to register ${agent.name} in Relaycast:`, err?.message ?? err);
+          return null;
+        });
+
+        // Keep the agent online in the dashboard while it's working
+        if (agentClient) {
+          stopHeartbeat = this.relaycastApi.startHeartbeat(agentClient);
+        }
+      }
+
+      // Invite the spawned agent to the workflow channel
+      if (this.channel && this.relaycastApi) {
+        await this.relaycastApi.inviteToChannel(this.channel, agent.name).catch(() => {});
+      }
+
+      // Post task assignment to channel for observability
+      const taskPreview = step.task.slice(0, 500) + (step.task.length > 500 ? '...' : '');
+      this.postToChannel(`**[${step.name}]** Assigned to \`${agent.name}\`:\n${taskPreview}`);
+
+      // Register agent handle for hub-mediated nudging
+      this.activeAgentHandles.set(agentName, agent);
+
+      // Wait for agent to exit, with idle nudging if configured
+      exitResult = await this.waitForExitWithIdleNudging(agent, agentDef, step, timeoutMs);
+
+      // Stop heartbeat now that agent has exited
+      stopHeartbeat?.();
+
+      if (exitResult === 'timeout') {
+        // Safety net: check if the verification file exists before giving up.
+        // The agent may have completed work but failed to /exit.
+        if (step.verification?.type === 'file_exists') {
+          const verifyPath = path.resolve(this.cwd, step.verification.value);
+          if (existsSync(verifyPath)) {
+            this.postToChannel(
+              `**[${step.name}]** Agent idle after completing work — releasing`,
+            );
+            await agent.release();
+            // Fall through to read output below
+          } else {
+            await agent.release();
+            throw new Error(`Step "${step.name}" timed out after ${timeoutMs}ms`);
+          }
         } else {
           await agent.release();
           throw new Error(`Step "${step.name}" timed out after ${timeoutMs}ms`);
         }
-      } else {
-        await agent.release();
-        throw new Error(`Step "${step.name}" timed out after ${timeoutMs}ms`);
+      }
+    } finally {
+      // Snapshot PTY chunks before cleanup — we need them for output reading below
+      ptyChunks = this.ptyOutputBuffers.get(agentName) ?? [];
+
+      // Always clean up PTY resources — prevents fd leaks if spawnPty or waitForExit throws
+      stopHeartbeat?.();
+      this.activeAgentHandles.delete(agentName);
+      this.ptyOutputBuffers.delete(agentName);
+      this.ptyListeners.delete(agentName);
+      const stream = this.ptyLogStreams.get(agentName);
+      if (stream) {
+        stream.end();
+        this.ptyLogStreams.delete(agentName);
+      }
+      this.unregisterWorker(agentName);
+    }
+
+    let output: string;
+    if (ptyChunks.length > 0) {
+      output = ptyChunks.join('');
+    } else {
+      // Legacy fallback: summary file
+      const summaryPath = path.join(this.summaryDir, `${step.name}.md`);
+      output = existsSync(summaryPath)
+        ? await readFile(summaryPath, 'utf-8')
+        : exitResult === 'timeout'
+          ? 'Agent completed (released after idle timeout)'
+          : exitResult === 'released'
+            ? 'Agent completed (force-released after idle nudging)'
+            : `Agent exited (${exitResult})`;
+    }
+
+    return output;
+  }
+
+  // ── Idle nudging ────────────────────────────────────────────────────────
+
+  /** Patterns where a hub agent coordinates spoke agents. */
+  private static readonly HUB_PATTERNS = new Set<string>([
+    'fan-out', 'hub-spoke', 'hierarchical', 'map-reduce',
+    'scatter-gather', 'supervisor', 'saga', 'auction',
+  ]);
+
+  /**
+   * Wait for agent exit with idle detection and nudging.
+   * If no idle nudge config is set, falls through to simple waitForExit.
+   */
+  private async waitForExitWithIdleNudging(
+    agent: Agent,
+    agentDef: AgentDefinition,
+    step: WorkflowStep,
+    timeoutMs?: number,
+  ): Promise<'exited' | 'timeout' | 'released'> {
+    const nudgeConfig = this.currentConfig?.swarm.idleNudge;
+    if (!nudgeConfig) {
+      // No nudge config — backward compatible simple wait
+      return agent.waitForExit(timeoutMs);
+    }
+
+    const nudgeAfterMs = nudgeConfig.nudgeAfterMs ?? 120_000;
+    const escalateAfterMs = nudgeConfig.escalateAfterMs ?? 120_000;
+    const maxNudges = nudgeConfig.maxNudges ?? 1;
+
+    let nudgeCount = 0;
+    const startTime = Date.now();
+
+    while (true) {
+      // Calculate remaining time from overall timeout
+      const elapsed = Date.now() - startTime;
+      const remaining = timeoutMs ? timeoutMs - elapsed : undefined;
+      if (remaining !== undefined && remaining <= 0) {
+        return 'timeout';
+      }
+
+      // Determine how long to wait for idle: first time use nudgeAfterMs, after nudge use escalateAfterMs
+      const idleWaitMs = nudgeCount === 0 ? nudgeAfterMs : escalateAfterMs;
+      // Cap at remaining overall timeout
+      const waitMs = remaining !== undefined ? Math.min(idleWaitMs, remaining) : idleWaitMs;
+
+      // Race: exit vs idle
+      const exitPromise = agent.waitForExit(waitMs);
+      const idlePromise = agent.waitForIdle(waitMs);
+
+      const result = await Promise.race([
+        exitPromise.then((r) => ({ source: 'exit' as const, result: r })),
+        idlePromise.then((r) => ({ source: 'idle' as const, result: r })),
+      ]);
+
+      if (result.source === 'exit') {
+        // Agent exited, released, or timed out naturally
+        return result.result;
+      }
+
+      // Idle detected
+      if (result.result === 'exited') {
+        // Agent exited while we were waiting for idle
+        return 'exited';
+      }
+
+      if (result.result === 'timeout') {
+        // Our wait timed out — check overall timeout
+        if (remaining !== undefined && (Date.now() - startTime) >= timeoutMs!) {
+          return 'timeout';
+        }
+        // The idle event didn't fire within our wait window, loop again
+        continue;
+      }
+
+      // result.result === 'idle' — agent went idle
+      if (nudgeCount < maxNudges) {
+        // Send nudge
+        await this.nudgeIdleAgent(agent, agentDef, step);
+        nudgeCount++;
+        this.postToChannel(
+          `**[${step.name}]** Agent \`${agent.name}\` idle — nudge #${nudgeCount} sent`,
+        );
+        this.emit({ type: 'step:nudged', runId: this.currentRunId ?? '', stepName: step.name, nudgeCount });
+        // Continue loop — wait for next idle or exit
+        continue;
+      }
+
+      // Exhausted nudges — force-release
+      this.postToChannel(
+        `**[${step.name}]** Agent \`${agent.name}\` still idle after ${nudgeCount} nudge(s) — force-releasing`,
+      );
+      this.emit({ type: 'step:force-released', runId: this.currentRunId ?? '', stepName: step.name });
+      await agent.release();
+      return 'released';
+    }
+  }
+
+  /**
+   * Send a nudge to an idle agent. Uses hub-mediated nudge for hub patterns,
+   * or direct system injection otherwise.
+   */
+  private async nudgeIdleAgent(
+    agent: Agent,
+    agentDef: AgentDefinition,
+    step: WorkflowStep,
+  ): Promise<void> {
+    const hubAgent = this.resolveHubForNudge(agentDef);
+
+    if (hubAgent) {
+      // Hub-mediated: tell the hub to check on the idle agent
+      try {
+        await hubAgent.sendMessage({
+          to: agent.name,
+          text: `Agent ${agent.name} appears idle on step "${step.name}". Check on them and remind them to /exit when done.`,
+        });
+        return; // Hub nudge succeeded
+      } catch {
+        // Fall through to direct nudge
       }
     }
 
-    // Read output from summary file if it exists
-    const summaryPath = path.join(this.summaryDir, `${step.name}.md`);
-    const output = existsSync(summaryPath)
-      ? await readFile(summaryPath, 'utf-8')
-      : exitResult === 'timeout'
-        ? 'Agent completed (released after idle timeout)'
-        : `Agent exited (${exitResult})`;
+    // Direct system injection via human handle
+    if (this.relay) {
+      const human = this.relay.human({ name: 'workflow-runner' });
+      await human.sendMessage({
+        to: agent.name,
+        text: "You appear idle. If you've completed your task, output /exit. If still working, continue.",
+      }).catch(() => {
+        // Non-critical — don't break workflow
+      });
+    }
+  }
 
-    return output;
+  /**
+   * Find the hub agent for hub-mediated nudging.
+   * Returns the hub's live Agent handle if this is a hub pattern and the idle agent is not the hub.
+   */
+  private resolveHubForNudge(idleAgentDef: AgentDefinition): Agent | undefined {
+    const pattern = this.currentConfig?.swarm.pattern;
+    if (!pattern || !WorkflowRunner.HUB_PATTERNS.has(pattern)) {
+      return undefined;
+    }
+
+    // Find an interactive agent with a hub-like role
+    const hubRoles = new Set(['lead', 'hub', 'coordinator', 'supervisor', 'orchestrator', 'auctioneer']);
+    const agents = this.currentConfig?.agents ?? [];
+
+    for (const agentDef of agents) {
+      // Skip non-interactive and the idle agent itself
+      if (agentDef.interactive === false) continue;
+      if (agentDef.name === idleAgentDef.name) continue;
+
+      const role = agentDef.role?.toLowerCase() ?? '';
+      const nameLC = agentDef.name.toLowerCase();
+
+      if (hubRoles.has(nameLC) || [...hubRoles].some((r) => role.includes(r))) {
+        // Found a hub candidate — check if we have a live handle
+        const handle = this.activeAgentHandles.get(agentDef.name);
+        if (handle) return handle;
+      }
+    }
+
+    return undefined;
   }
 
   // ── Verification ────────────────────────────────────────────────────────
@@ -1153,6 +1712,36 @@ export class WorkflowRunner {
 
   // ── Channel messaging ──────────────────────────────────────────────────
 
+  /**
+   * Build a metadata note about non-interactive workers for inclusion in interactive agent tasks.
+   * Returns undefined if there are no non-interactive agents.
+   */
+  private buildNonInteractiveAwareness(
+    agentMap: Map<string, AgentDefinition>,
+    stepStates: Map<string, StepState>,
+  ): string | undefined {
+    const nonInteractive = [...agentMap.values()].filter((a) => a.interactive === false);
+    if (nonInteractive.length === 0) return undefined;
+
+    // Map agent names to their step names so the lead knows exact {{steps.X.output}} references
+    const agentToSteps = new Map<string, string[]>();
+    for (const [stepName, state] of stepStates) {
+      const agentName = state.row.agentName;
+      if (!agentToSteps.has(agentName)) agentToSteps.set(agentName, []);
+      agentToSteps.get(agentName)!.push(stepName);
+    }
+
+    const lines = nonInteractive.map((a) => {
+      const steps = agentToSteps.get(a.name) ?? [];
+      const stepRefs = steps.map((s) => `{{steps.${s}.output}}`).join(', ');
+      return `- ${a.name} (${a.cli}) — will return output when complete${stepRefs ? `. Access via: ${stepRefs}` : ''}`;
+    });
+    return '\n\n---\n' +
+      'Note: The following agents are non-interactive workers and cannot receive messages:\n' +
+      lines.join('\n') + '\n' +
+      'Do NOT attempt to message these agents. Use the {{steps.<name>.output}} references above to access their results.';
+  }
+
   /** Post a message to the workflow channel. Fire-and-forget — never throws or blocks. */
   private postToChannel(text: string): void {
     if (!this.relaycastApi || !this.channel) return;
@@ -1267,5 +1856,125 @@ export class WorkflowRunner {
 
   private generateShortId(): string {
     return randomBytes(4).toString('hex');
+  }
+
+  /** Strip ANSI escape codes from terminal output — delegates to pty.ts canonical regex. */
+  private static stripAnsi(text: string): string {
+    return stripAnsiFn(text);
+  }
+
+  /** Sanitize a workflow name into a valid channel name. */
+  private sanitizeChannelName(name: string): string {
+    return name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').slice(0, 32);
+  }
+
+  /** Directory for persisted step outputs: .agent-relay/step-outputs/{runId}/ */
+  private getStepOutputDir(runId: string): string {
+    return path.join(this.cwd, '.agent-relay', 'step-outputs', runId);
+  }
+
+  /** Persist step output to disk and post full output as a channel message. */
+  private async persistStepOutput(runId: string, stepName: string, output: string): Promise<void> {
+    // 1. Write to disk
+    try {
+      const dir = this.getStepOutputDir(runId);
+      mkdirSync(dir, { recursive: true });
+      const cleaned = WorkflowRunner.stripAnsi(output);
+      await writeFile(path.join(dir, `${stepName}.md`), cleaned);
+    } catch {
+      // Non-critical
+    }
+
+    // 2. Post full output as a threaded channel message for retrieval via Relaycast
+    const cleaned = WorkflowRunner.stripAnsi(output);
+    const maxMsg = 4000; // Relaycast message size limit
+    if (cleaned.length <= maxMsg) {
+      this.postToChannel(`**[${stepName}] Output:**\n\`\`\`\n${cleaned}\n\`\`\``);
+    } else {
+      // Split into chunks for large outputs
+      const chunks = Math.ceil(cleaned.length / maxMsg);
+      for (let i = 0; i < chunks; i++) {
+        const slice = cleaned.slice(i * maxMsg, (i + 1) * maxMsg);
+        this.postToChannel(
+          `**[${stepName}] Output (${i + 1}/${chunks}):**\n\`\`\`\n${slice}\n\`\`\``,
+        );
+      }
+    }
+  }
+
+  /** Load persisted step output from disk. */
+  private loadStepOutput(runId: string, stepName: string): string | undefined {
+    try {
+      const filePath = path.join(this.getStepOutputDir(runId), `${stepName}.md`);
+      if (!existsSync(filePath)) return undefined;
+      return readFileSync(filePath, 'utf-8');
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Get or create the worker logs directory (.agent-relay/team/worker-logs) */
+  private getWorkerLogsDir(): string {
+    const logsDir = path.join(this.cwd, '.agent-relay', 'team', 'worker-logs');
+    mkdirSync(logsDir, { recursive: true });
+    return logsDir;
+  }
+
+  /** Register a spawned agent in workers.json so `agents:kill` can find it. */
+  private registerWorker(agentName: string, cli: string, task: string, pid?: number, interactive = true): void {
+    // Track in memory first (no race condition)
+    const workerEntry = {
+      cli,
+      task: task.slice(0, 500),
+      spawnedAt: Date.now(),
+      pid,
+      interactive,
+      logFile: path.join(this.getWorkerLogsDir(), `${agentName}.log`),
+    };
+    this.activeWorkers.set(agentName, workerEntry);
+
+    // Serialize file writes with mutex to prevent race conditions
+    this.workersFileLock = this.workersFileLock.then(() => {
+      try {
+        mkdirSync(path.dirname(this.workersPath), { recursive: true });
+        // Filter out any existing entry with the same name before adding
+        const existing = this.readWorkers().filter((w) => w.name !== agentName);
+        existing.push({ name: agentName, ...workerEntry });
+        this.writeWorkers(existing);
+      } catch {
+        // Non-critical — don't fail the workflow if workers.json can't be written
+      }
+    });
+  }
+
+  /** Remove a spawned agent from workers.json after it exits. */
+  private unregisterWorker(agentName: string): void {
+    // Remove from in-memory tracking first
+    this.activeWorkers.delete(agentName);
+
+    // Serialize file writes with mutex to prevent race conditions
+    this.workersFileLock = this.workersFileLock.then(() => {
+      try {
+        const existing = this.readWorkers();
+        const filtered = existing.filter((w) => w.name !== agentName);
+        this.writeWorkers(filtered);
+      } catch {
+        // Non-critical
+      }
+    });
+  }
+
+  private readWorkers(): Array<Record<string, unknown>> {
+    try {
+      if (!existsSync(this.workersPath)) return [];
+      const raw = JSON.parse(readFileSync(this.workersPath, 'utf-8'));
+      return Array.isArray(raw?.workers) ? raw.workers : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private writeWorkers(workers: Array<Record<string, unknown>>): void {
+    writeFileSync(this.workersPath, JSON.stringify({ workers }, null, 2));
   }
 }
