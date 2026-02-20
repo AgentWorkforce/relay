@@ -290,11 +290,11 @@ Six pre-built workflow templates are included:
 | Template | Pattern | Description |
 |----------|---------|-------------|
 | `feature-dev` | hub-spoke | Plan, implement, review, and finalize a feature |
-| `bug-fix` | dag | Investigate, patch, validate, and document a bug fix |
+| `bug-fix` | hub-spoke | Investigate, patch, validate, and document a bug fix |
 | `code-review` | fan-out | Parallel multi-reviewer assessment with consolidated findings |
 | `security-audit` | pipeline | Scan, triage, remediate, and verify security issues |
 | `refactor` | hierarchical | Analyze, plan, execute, and validate a refactor |
-| `documentation` | dag | Research, draft, review, and publish documentation |
+| `documentation` | handoff | Research, draft, review, and publish documentation |
 
 ### Using Templates
 

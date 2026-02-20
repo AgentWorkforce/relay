@@ -98,6 +98,7 @@ export class WorkflowRunner {
 
   private relay?: AgentRelay;
   private relaycastApi?: RelaycastApi;
+  private relayApiKey?: string;
   private channel?: string;
   private trajectory?: WorkflowTrajectory;
   private abortController?: AbortController;
@@ -123,7 +124,17 @@ export class WorkflowRunner {
    *   3. Auto-create a new workspace via the Relaycast API
    */
   private async ensureRelaycastApiKey(channel: string): Promise<void> {
-    if (process.env.RELAY_API_KEY) return;
+    if (this.relayApiKey) return;
+
+    if (this.relayOptions.env?.RELAY_API_KEY) {
+      this.relayApiKey = this.relayOptions.env.RELAY_API_KEY;
+      return;
+    }
+
+    if (process.env.RELAY_API_KEY) {
+      this.relayApiKey = process.env.RELAY_API_KEY;
+      return;
+    }
 
     // Check cached credentials — prefer per-project cache (written by the local
     // relay daemon) over the legacy global cache so concurrent workflows from
@@ -137,7 +148,7 @@ export class WorkflowRunner {
           const raw = await readFile(cachePath, 'utf-8');
           const creds = JSON.parse(raw);
           if (creds.api_key) {
-            process.env.RELAY_API_KEY = creds.api_key;
+            this.relayApiKey = creds.api_key;
             return;
           }
         } catch {
@@ -186,7 +197,18 @@ export class WorkflowRunner {
       { mode: 0o600 },
     );
 
-    process.env.RELAY_API_KEY = apiKey;
+    this.relayApiKey = apiKey;
+  }
+
+  private getRelayEnv(): NodeJS.ProcessEnv | undefined {
+    if (!this.relayApiKey) {
+      return this.relayOptions.env;
+    }
+
+    return {
+      ...(this.relayOptions.env ?? process.env),
+      RELAY_API_KEY: this.relayApiKey,
+    };
   }
 
   // ── Event subscription ──────────────────────────────────────────────────
@@ -476,111 +498,13 @@ export class WorkflowRunner {
       stepStates.set(step.name, { row: stepRow });
     }
 
-    // Start execution
-    this.abortController = new AbortController();
-    this.paused = false;
-
-    // Initialize trajectory recording
-    this.trajectory = new WorkflowTrajectory(resolved.trajectories, runId, this.cwd);
-
-    try {
-      await this.updateRunStatus(runId, 'running');
-      this.emit({ type: 'run:started', runId });
-
-      // Analyze DAG for trajectory context
-      const dagInfo = this.analyzeDAG(workflow.steps);
-      await this.trajectory.start(workflow.name, workflow.steps.length, dagInfo);
-
-      const channel = resolved.swarm.channel ?? 'general';
-      this.channel = channel;
-      await this.ensureRelaycastApiKey(channel);
-
-      this.relay = new AgentRelay({
-        ...this.relayOptions,
-        channels: [channel],
-      });
-
-      // Create the dedicated workflow channel and join it
-      this.relaycastApi = new RelaycastApi({
-        agentName: 'WorkflowRunner',
-        cachePath: path.join(this.cwd, '.agent-relay', 'relaycast.json'),
-      });
-      await this.relaycastApi.createChannel(channel, workflow.description);
-      await this.relaycastApi.joinChannel(channel);
-      this.postToChannel(
-        `Workflow **${workflow.name}** started — ${workflow.steps.length} steps, pattern: ${resolved.swarm.pattern}`,
-      );
-
-      const agentMap = new Map<string, AgentDefinition>();
-      for (const agent of resolved.agents) {
-        agentMap.set(agent.name, agent);
-      }
-
-      await this.executeSteps(
-        workflow,
-        stepStates,
-        agentMap,
-        resolved.errorHandling,
-        runId,
-      );
-
-      // Check if all steps completed
-      const allCompleted = [...stepStates.values()].every(
-        (s) => s.row.status === 'completed' || s.row.status === 'skipped',
-      );
-
-      if (allCompleted) {
-        await this.updateRunStatus(runId, 'completed');
-        this.emit({ type: 'run:completed', runId });
-
-        // Complete trajectory with summary
-        const outcomes = this.collectOutcomes(stepStates, workflow.steps);
-        const summary = this.trajectory.buildRunSummary(outcomes);
-        const confidence = this.trajectory.computeConfidence(outcomes);
-        await this.trajectory.complete(summary, confidence, {
-          learnings: this.trajectory.extractLearnings(outcomes),
-          challenges: this.trajectory.extractChallenges(outcomes),
-        });
-
-        // Post rich completion report to channel
-        this.postCompletionReport(workflow.name, outcomes, summary, confidence);
-      } else {
-        const failedStep = [...stepStates.values()].find((s) => s.row.status === 'failed');
-        const errorMsg = failedStep?.row.error ?? 'One or more steps failed';
-        await this.updateRunStatus(runId, 'failed', errorMsg);
-        this.emit({ type: 'run:failed', runId, error: errorMsg });
-
-        const outcomes = this.collectOutcomes(stepStates, workflow.steps);
-        this.postFailureReport(workflow.name, outcomes, errorMsg);
-
-        // Abandon trajectory on failure
-        await this.trajectory.abandon(errorMsg);
-      }
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      const status: WorkflowRunStatus = this.abortController?.signal.aborted ? 'cancelled' : 'failed';
-      await this.updateRunStatus(runId, status, errorMsg);
-
-      if (status === 'cancelled') {
-        this.emit({ type: 'run:cancelled', runId });
-        this.postToChannel(`Workflow **${workflow.name}** cancelled`);
-        await this.trajectory.abandon('Cancelled by user');
-      } else {
-        this.emit({ type: 'run:failed', runId, error: errorMsg });
-        this.postToChannel(`Workflow failed: ${errorMsg}`);
-        await this.trajectory.abandon(errorMsg);
-      }
-    } finally {
-      await this.relay?.shutdown();
-      this.relay = undefined;
-      this.relaycastApi = undefined;
-      this.channel = undefined;
-      this.trajectory = undefined;
-      this.abortController = undefined;
-    }
-
-    const finalRun = await this.db.getRun(runId);
-    return finalRun ?? run;
+    return this.runWorkflowCore({
+      run,
+      workflow,
+      config: resolved,
+      stepStates,
+      isResume: false,
+    });
   }
 
   /** Resume a previously paused or partially completed run. */
@@ -620,41 +544,80 @@ export class WorkflowRunner {
       }
     }
 
+    return this.runWorkflowCore({
+      run,
+      workflow,
+      config,
+      stepStates,
+      isResume: true,
+    });
+  }
+
+  private async runWorkflowCore(input: {
+    run: WorkflowRunRow;
+    workflow: WorkflowDefinition;
+    config: RelayYamlConfig;
+    stepStates: Map<string, StepState>;
+    isResume: boolean;
+  }): Promise<WorkflowRunRow> {
+    const { run, workflow, config, stepStates, isResume } = input;
+    const runId = run.id;
+
+    // Start execution
     this.abortController = new AbortController();
     this.paused = false;
 
-    // Initialize trajectory for resumed run
+    // Initialize trajectory recording
     this.trajectory = new WorkflowTrajectory(config.trajectories, runId, this.cwd);
 
     try {
       await this.updateRunStatus(runId, 'running');
+      if (!isResume) {
+        this.emit({ type: 'run:started', runId });
+      }
 
       const pendingCount = [...stepStates.values()].filter((s) => s.row.status === 'pending').length;
-      await this.trajectory.start(
-        workflow.name,
-        workflow.steps.length,
-        `Resumed run: ${pendingCount} pending steps of ${workflow.steps.length} total`,
-      );
+      if (isResume) {
+        await this.trajectory.start(
+          workflow.name,
+          workflow.steps.length,
+          `Resumed run: ${pendingCount} pending steps of ${workflow.steps.length} total`,
+        );
+      } else {
+        // Analyze DAG for trajectory context on first run
+        const dagInfo = this.analyzeDAG(workflow.steps);
+        await this.trajectory.start(workflow.name, workflow.steps.length, dagInfo);
+      }
 
-      const resumeChannel = config.swarm.channel ?? 'general';
-      this.channel = resumeChannel;
-      await this.ensureRelaycastApiKey(resumeChannel);
+      const channel = config.swarm.channel ?? 'general';
+      this.channel = channel;
+      await this.ensureRelaycastApiKey(channel);
 
       this.relay = new AgentRelay({
         ...this.relayOptions,
-        channels: [resumeChannel],
+        channels: [channel],
+        env: this.getRelayEnv(),
       });
 
-      // Ensure channel exists and join it for resumed runs
       this.relaycastApi = new RelaycastApi({
         agentName: 'WorkflowRunner',
+        apiKey: this.relayApiKey,
         cachePath: path.join(this.cwd, '.agent-relay', 'relaycast.json'),
       });
-      await this.relaycastApi.createChannel(resumeChannel);
-      await this.relaycastApi.joinChannel(resumeChannel);
-      this.postToChannel(
-        `Workflow **${workflow.name}** resumed — ${pendingCount} pending steps`,
-      );
+      if (isResume) {
+        await this.relaycastApi.createChannel(channel);
+      } else {
+        await this.relaycastApi.createChannel(channel, workflow.description);
+      }
+      await this.relaycastApi.joinChannel(channel);
+
+      if (isResume) {
+        this.postToChannel(`Workflow **${workflow.name}** resumed — ${pendingCount} pending steps`);
+      } else {
+        this.postToChannel(
+          `Workflow **${workflow.name}** started — ${workflow.steps.length} steps, pattern: ${config.swarm.pattern}`,
+        );
+      }
 
       const agentMap = new Map<string, AgentDefinition>();
       for (const agent of config.agents) {
@@ -692,10 +655,20 @@ export class WorkflowRunner {
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      await this.updateRunStatus(runId, 'failed', errorMsg);
-      this.emit({ type: 'run:failed', runId, error: errorMsg });
-      this.postToChannel(`Workflow failed: ${errorMsg}`);
-      await this.trajectory.abandon(errorMsg);
+      const status: WorkflowRunStatus = !isResume && this.abortController?.signal.aborted
+        ? 'cancelled'
+        : 'failed';
+      await this.updateRunStatus(runId, status, errorMsg);
+
+      if (status === 'cancelled') {
+        this.emit({ type: 'run:cancelled', runId });
+        this.postToChannel(`Workflow **${workflow.name}** cancelled`);
+        await this.trajectory.abandon('Cancelled by user');
+      } else {
+        this.emit({ type: 'run:failed', runId, error: errorMsg });
+        this.postToChannel(`Workflow failed: ${errorMsg}`);
+        await this.trajectory.abandon(errorMsg);
+      }
     } finally {
       await this.relay?.shutdown();
       this.relay = undefined;

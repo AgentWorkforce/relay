@@ -7,7 +7,7 @@
  *
  * Requires:
  *   RELAY_API_KEY — Relaycast workspace key
- *   AGENT_RELAY_BIN (optional) — path to agent-relay binary
+ *   AGENT_RELAY_BIN (optional) — path to agent-relay-broker binary
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -22,7 +22,7 @@ function resolveBinaryPath(): string {
   if (process.env.AGENT_RELAY_BIN) {
     return process.env.AGENT_RELAY_BIN;
   }
-  return path.resolve(process.cwd(), "../../target/debug/agent-relay");
+  return path.resolve(process.cwd(), "../../target/debug/agent-relay-broker");
 }
 
 function requireRelaycast(t: TestContext): boolean {
@@ -36,7 +36,7 @@ function requireRelaycast(t: TestContext): boolean {
 function requireBinary(t: TestContext): string | null {
   const bin = resolveBinaryPath();
   if (!fs.existsSync(bin)) {
-    t.skip(`agent-relay binary not found at ${bin}`);
+    t.skip(`agent-relay-broker binary not found at ${bin}`);
     return null;
   }
   return bin;

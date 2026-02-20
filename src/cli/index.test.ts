@@ -29,13 +29,11 @@ async function runCli(args: string): Promise<{ stdout: string; stderr: string; c
   try {
     const { stdout, stderr } = await execAsync(`node ${CLI_PATH} ${args}`, {
       cwd: testProjectRoot, // Run in isolated temp directory
-      timeout: 10_000, // Prevent hangs if broker connection stalls in CI
       env: {
         ...process.env,
         DOTENV_CONFIG_QUIET: 'true',
         AGENT_RELAY_SKIP_TMUX: '1', // Skip tmux discovery to avoid hangs in CI
         AGENT_RELAY_SKIP_UPDATE_CHECK: '1', // Skip update check in tests
-        AGENT_RELAY_TELEMETRY_DISABLED: '1', // Suppress telemetry notice to keep stdout clean
       },
     });
     return { stdout, stderr, code: 0 };
@@ -126,26 +124,15 @@ describeCli('CLI', () => {
 
   describe('agents', () => {
     it('should handle no agents file gracefully', async () => {
-      const { stdout, stderr, code } = await runCli('agents');
-      // Either shows "No agents" message, a table with NAME/STATUS headers,
-      // or exits with error when broker connection fails in CI
-      if (code === 0) {
-        expect(stdout).toMatch(/(No agents|NAME.*STATUS)/i);
-      } else {
-        // In CI, broker connection may fail causing non-zero exit
-        expect(code).not.toBe(0);
-      }
+      const { stdout } = await runCli('agents');
+      // Either shows "No agents" message OR a table with NAME/STATUS headers
+      expect(stdout).toMatch(/(No agents|NAME.*STATUS)/i);
     });
 
     it('should support --json flag', async () => {
-      const { stdout, code } = await runCli('agents --json');
-      // Should be valid JSON (empty array or agent list) when successful
-      if (code === 0 && stdout.trim()) {
-        expect(() => JSON.parse(stdout)).not.toThrow();
-      } else {
-        // In CI, broker connection may fail causing empty or error output
-        expect(code !== 0 || stdout.trim() === '').toBe(true);
-      }
+      const { stdout } = await runCli('agents --json');
+      // Should be valid JSON (empty array or agent list)
+      expect(() => JSON.parse(stdout)).not.toThrow();
     });
   });
 

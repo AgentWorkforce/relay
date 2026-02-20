@@ -49,6 +49,7 @@ export type SdkToBroker =
         from?: string;
         thread_id?: string;
         priority?: number;
+        data?: Record<string, unknown>;
       };
     }
   | {

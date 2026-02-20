@@ -1,5 +1,5 @@
 [package]
-name = "agent-relay"
+name = "agent-relay-broker"
 version = "3.0.0"
 edition = "2021"
 autobins = false
@@ -9,7 +9,7 @@ name = "relay_broker"
 path = "src/lib.rs"
 
 [[bin]]
-name = "agent-relay"
+name = "agent-relay-broker"
 path = "src/main.rs"
 
 [dependencies]

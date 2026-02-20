@@ -57,6 +57,7 @@ export interface SendMessageInput {
   from?: string;
   threadId?: string;
   priority?: number;
+  data?: Record<string, unknown>;
 }
 
 export interface ListAgent {
@@ -167,14 +168,15 @@ export class AgentRelayClient {
 
   async spawnPty(input: SpawnPtyInput): Promise<{ name: string; runtime: AgentRuntime }> {
     await this.start();
+    const args = buildPtyArgsWithModel(input.cli, input.args ?? [], input.model);
     const agent: AgentSpec = {
       name: input.name,
       runtime: "pty",
       cli: input.cli,
-      args: input.args ?? [],
+      args,
       channels: input.channels ?? [],
       model: input.model,
-      cwd: input.cwd,
+      cwd: input.cwd ?? this.options.cwd,
       team: input.team,
       shadow_of: input.shadowOf,
       shadow_mode: input.shadowMode,
@@ -247,6 +249,7 @@ export class AgentRelayClient {
         from: input.from,
         thread_id: input.threadId,
         priority: input.priority,
+        data: input.data,
       });
     } catch (error) {
       if (error instanceof AgentRelayProtocolError && error.code === "unsupported_operation") {
@@ -318,7 +321,7 @@ export class AgentRelayClient {
       this.options.channels.join(","),
     ];
 
-    // Ensure the SDK bin directory (containing agent-relay + relay_send) is on
+    // Ensure the SDK bin directory (containing agent-relay-broker + relay_send) is on
     // PATH so spawned workers can find relay_send without any user setup.
     const env = { ...this.options.env };
     if (isExplicitPath(this.options.binaryPath)) {
@@ -507,6 +510,36 @@ export class AgentRelayClient {
   }
 }
 
+const CLI_MODEL_FLAG_CLIS = new Set(["claude", "codex", "gemini", "goose", "aider"]);
+
+function buildPtyArgsWithModel(cli: string, args: string[], model?: string): string[] {
+  const baseArgs = [...args];
+  if (!model) {
+    return baseArgs;
+  }
+  const cliName = cli.split(":")[0].trim().toLowerCase();
+  if (!CLI_MODEL_FLAG_CLIS.has(cliName)) {
+    return baseArgs;
+  }
+  if (hasModelArg(baseArgs)) {
+    return baseArgs;
+  }
+  return ["--model", model, ...baseArgs];
+}
+
+function hasModelArg(args: string[]): boolean {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--model") {
+      return true;
+    }
+    if (arg.startsWith("--model=")) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function expandTilde(p: string): string {
   if (p === "~" || p.startsWith("~/") || p.startsWith("~\\")) {
     const home = os.homedir();
@@ -525,12 +558,11 @@ function isExplicitPath(binaryPath: string): boolean {
 }
 
 function resolveDefaultBinaryPath(): string {
-  const exe = process.platform === "win32" ? "agent-relay.exe" : "agent-relay";
   const brokerExe = process.platform === "win32" ? "agent-relay-broker.exe" : "agent-relay-broker";
 
   // 1. Check for bundled broker binary in SDK package (npm install)
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-  const bundled = path.resolve(moduleDir, "..", "bin", exe);
+  const bundled = path.resolve(moduleDir, "..", "bin", brokerExe);
   if (fs.existsSync(bundled)) {
     return bundled;
   }

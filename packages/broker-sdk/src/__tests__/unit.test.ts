@@ -59,6 +59,14 @@ function makeFakeAgentWithControls(
     async release() {
       resolveExit?.("released");
     },
+    waitForReady(timeoutMs?: number) {
+      if (timeoutMs === 0) {
+        return Promise.reject(
+          new Error(`Timed out waiting for worker_ready for '${name}' after 0ms`),
+        );
+      }
+      return Promise.resolve();
+    },
     waitForExit(timeoutMs?: number) {
       if (timeoutMs === 0) return Promise.resolve("timeout" as const);
       if (timeoutMs !== undefined) {
@@ -240,4 +248,3 @@ test("waitForIdle: idle resolves before timeout", async () => {
   const result = await promise;
   assert.equal(result, "idle");
 });
-

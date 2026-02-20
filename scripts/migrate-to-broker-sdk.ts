@@ -987,7 +987,7 @@ async function main() {
   console.log("Plan: .claude/plans/binary-watching-waffle.md\n");
 
   const relay = new AgentRelay({
-    binaryPath: "./target/debug/agent-relay",
+    binaryPath: "./target/debug/agent-relay-broker",
     channels: ["general"],
   });
 

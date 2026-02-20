@@ -43,6 +43,18 @@
     },
     "errorHandling": {
       "$ref": "#/definitions/ErrorHandlingConfig"
+    },
+    "trajectories": {
+      "description": "Trajectory recording config, or false to disable trajectory output",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TrajectoryConfig"
+        },
+        {
+          "type": "boolean",
+          "enum": [false]
+        }
+      ]
     }
   },
   "definitions": {
@@ -153,6 +165,33 @@
         "model": {
           "type": "string",
           "description": "Model override for the agent"
+        },
+        "idleThresholdSecs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Seconds of inactivity before agent is considered idle (0 = disabled)"
+        }
+      }
+    },
+    "TrajectoryConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable trajectory recording"
+        },
+        "reflectOnBarriers": {
+          "type": "boolean",
+          "description": "Auto-reflect when barriers resolve"
+        },
+        "reflectOnConverge": {
+          "type": "boolean",
+          "description": "Auto-reflect when parallel tracks converge"
+        },
+        "autoDecisions": {
+          "type": "boolean",
+          "description": "Auto-record retry/skip/fail decisions"
         }
       }
     },

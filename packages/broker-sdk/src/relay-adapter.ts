@@ -150,10 +150,10 @@ export class RelayAdapter {
   }
 
   /** Release (stop) a spawned agent. */
-  async release(name: string): Promise<RelayReleaseResult> {
+  async release(name: string, reason?: string): Promise<RelayReleaseResult> {
     await this.start();
     try {
-      await this.client.release(name);
+      await this.client.release(name, reason);
       return { success: true, name };
     } catch (err: any) {
       return { success: false, name, error: err?.message ?? String(err) };

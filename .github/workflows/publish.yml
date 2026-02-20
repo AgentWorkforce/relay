@@ -169,14 +169,14 @@ jobs:
           key: broker-${{ matrix.target }}
 
       - name: Build broker binary
-        run: cargo build --release --bin agent-relay --target ${{ matrix.target }}
+        run: cargo build --release --bin agent-relay-broker --target ${{ matrix.target }}
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
       - name: Copy binary with platform name
         run: |
           mkdir -p release-binaries
-          cp target/${{ matrix.target }}/release/agent-relay release-binaries/${{ matrix.binary_name }}
+          cp target/${{ matrix.target }}/release/agent-relay-broker release-binaries/${{ matrix.binary_name }}
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
@@ -1234,6 +1234,20 @@ jobs:
 
           node /tmp/gen-changelog.mjs "$LAST_TAG" "$NEW_VERSION" "$TODAY"
 
+      - name: Compact trajectories
+        run: |
+          if command -v npx &>/dev/null && [ -d ".trajectories" ]; then
+            LAST_TAG=$(git tag -l --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
+            if [ -n "$LAST_TAG" ]; then
+              RELEASE_COMMITS=$(git log "${LAST_TAG}..HEAD" --format=%H | paste -sd, -)
+              if [ -n "$RELEASE_COMMITS" ]; then
+                npx agent-trajectories compact \
+                  --commits "$RELEASE_COMMITS" \
+                  --output ".trajectories/compacted/release-${{ needs.build.outputs.new_version }}.json" || true
+              fi
+            fi
+          fi
+
       - name: Commit and tag
         run: |
           git config user.name "GitHub Actions"
@@ -1242,7 +1256,7 @@ jobs:
           NEW_VERSION="${{ needs.build.outputs.new_version }}"
           IS_PRERELEASE="${{ needs.build.outputs.is_prerelease }}"
 
-          git add package.json package-lock.json packages/*/package.json CHANGELOG.md
+          git add package.json package-lock.json packages/*/package.json CHANGELOG.md .trajectories/compacted/ 2>/dev/null || true
           if ! git diff --staged --quiet; then
             if [ "$IS_PRERELEASE" = "true" ]; then
               git commit -m "chore(prerelease): v${NEW_VERSION}"

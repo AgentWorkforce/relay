@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "agent-relay"
+name = "agent-relay-broker"
 version = "3.0.0"
 dependencies = [
  "anyhow",

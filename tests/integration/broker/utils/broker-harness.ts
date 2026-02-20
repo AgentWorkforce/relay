@@ -1,5 +1,5 @@
 /**
- * Broker test harness — manages lifecycle of the agent-relay broker
+ * Broker test harness — manages lifecycle of the agent-relay-broker binary
  * for integration tests.
  *
  * Provides helpers to start/stop the broker, spawn/release agents,
@@ -23,7 +23,7 @@ import {
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface BrokerHarnessOptions {
-  /** Path to the agent-relay binary. Auto-resolved if not set. */
+  /** Path to the agent-relay-broker binary. Auto-resolved if not set. */
   binaryPath?: string;
   /** Channels for the broker to subscribe to. Default: ["general"] */
   channels?: string[];
@@ -300,12 +300,12 @@ function resolveBinaryPath(): string {
   if (process.env.AGENT_RELAY_BIN) {
     return process.env.AGENT_RELAY_BIN;
   }
-  // Resolve relative to this file → repo root/target/debug/agent-relay
+  // Resolve relative to this file → repo root/target/debug/agent-relay-broker
   const repoRoot = path.resolve(
     path.dirname(new URL(import.meta.url).pathname),
     "../../../..",
   );
-  return path.resolve(repoRoot, "target/debug/agent-relay");
+  return path.resolve(repoRoot, "target/debug/agent-relay-broker");
 }
 
 /**
@@ -315,7 +315,7 @@ function resolveBinaryPath(): string {
 export function checkPrerequisites(): string | null {
   const bin = process.env.AGENT_RELAY_BIN ?? resolveBinaryPath();
   if (!fs.existsSync(bin)) {
-    return `agent-relay binary not found at ${bin}`;
+    return `agent-relay-broker binary not found at ${bin}`;
   }
   if (!process.env.RELAY_API_KEY?.trim()) {
     return "RELAY_API_KEY is required for broker integration tests";

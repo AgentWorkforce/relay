@@ -59,19 +59,19 @@ jobs:
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc
             export CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc
           fi
-          RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target ${{ matrix.target }} --bin agent-relay
-          strip target/${{ matrix.target }}/release/agent-relay 2>/dev/null || \
-            aarch64-linux-musl-strip target/${{ matrix.target }}/release/agent-relay 2>/dev/null || true
+          RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target ${{ matrix.target }} --bin agent-relay-broker
+          strip target/${{ matrix.target }}/release/agent-relay-broker 2>/dev/null || \
+            aarch64-linux-musl-strip target/${{ matrix.target }}/release/agent-relay-broker 2>/dev/null || true
 
       - name: Verify static linking
         run: |
-          file target/${{ matrix.target }}/release/agent-relay
+          file target/${{ matrix.target }}/release/agent-relay-broker
           # Ensure no dynamic glibc dependency
-          ldd target/${{ matrix.target }}/release/agent-relay 2>&1 | grep -q "not a dynamic" || \
+          ldd target/${{ matrix.target }}/release/agent-relay-broker 2>&1 | grep -q "not a dynamic" || \
             echo "Warning: binary may have dynamic dependencies"
 
       - name: Rename artifact
-        run: cp target/${{ matrix.target }}/release/agent-relay ${{ matrix.artifact }}
+        run: cp target/${{ matrix.target }}/release/agent-relay-broker ${{ matrix.artifact }}
 
       - uses: actions/upload-artifact@v4
         with:

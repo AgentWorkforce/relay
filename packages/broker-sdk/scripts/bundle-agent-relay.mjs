@@ -7,17 +7,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(__dirname, "..");
 const repoRoot = path.resolve(packageRoot, "..", "..");
 const isWindows = process.platform === "win32";
-const binaryName = isWindows ? "agent-relay.exe" : "agent-relay";
+const binaryName = isWindows ? "agent-relay-broker.exe" : "agent-relay-broker";
 const outDir = path.resolve(packageRoot, "bin");
 const outPath = path.resolve(outDir, binaryName);
 
 function buildReleaseBinary() {
-  const result = spawnSync("cargo", ["build", "--release", "--bin", "agent-relay"], {
+  const result = spawnSync("cargo", ["build", "--release", "--bin", "agent-relay-broker"], {
     cwd: repoRoot,
     stdio: "inherit",
   });
   if (result.status !== 0) {
-    throw new Error("failed to build release agent-relay binary");
+    throw new Error("failed to build release agent-relay-broker binary");
   }
 }
 
@@ -40,7 +40,7 @@ function main() {
   }
 
   if (!source || !fs.existsSync(source)) {
-    throw new Error("agent-relay binary not found after build");
+    throw new Error("agent-relay-broker binary not found after build");
   }
 
   fs.mkdirSync(outDir, { recursive: true });

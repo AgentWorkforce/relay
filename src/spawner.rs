@@ -31,7 +31,7 @@ impl Spawner {
         }
     }
 
-    /// Spawn a wrap-mode child: `agent-relay wrap <cli> <args>`.
+    /// Spawn a wrap-mode child: `agent-relay-broker wrap <cli> <args>`.
     /// Identity and connection info are passed via env vars rather than CLI flags.
     pub async fn spawn_wrap(
         &mut self,
@@ -45,10 +45,10 @@ impl Spawner {
             anyhow::bail!("child {child_name} already exists");
         }
 
-        let exe = std::env::current_exe().unwrap_or_else(|_| "agent-relay".into());
+        let exe = std::env::current_exe().unwrap_or_else(|_| "agent-relay-broker".into());
         let mut cmd = Command::new(exe);
 
-        // Wrap mode: `agent-relay wrap <cli> <args...>`
+        // Wrap mode: `agent-relay-broker wrap <cli> <args...>`
         cmd.arg("wrap").arg(cli);
 
         // Inject MCP config for CLIs that support dynamic MCP configuration.

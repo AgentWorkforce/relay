@@ -66,7 +66,7 @@
     }
   },
   "bin": {
-    "agent-relay": "dist/src/cli/index.js"
+    "agent-relay": "dist/src/cli/bootstrap.js"
   },
   "workspaces": [
     "packages/*"
@@ -104,16 +104,16 @@
     "build:broker-sdk": "cd packages/sdk-ts && npm run build",
     "build:telemetry": "cd packages/telemetry && npm run build",
     "build:cjs": "node ./scripts/build-cjs.mjs",
-    "postbuild": "chmod +x dist/src/cli/index.js && npm run build:cjs",
+    "postbuild": "chmod +x dist/src/cli/bootstrap.js && npm run build:cjs",
     "prepack": "if [ -d node_modules ]; then npm run build; else echo '⚠ node_modules not found, skipping prepack build'; fi",
     "dev:watch": "tsc -w",
-    "predev": "npm run clean && npm run build:packages && tsc && chmod +x dist/src/cli/index.js",
-    "dev": "node dist/src/cli/index.js up --dashboard --port 3888",
+    "predev": "npm run clean && npm run build:packages && tsc && chmod +x dist/src/cli/bootstrap.js",
+    "dev": "node dist/src/cli/bootstrap.js up --dashboard --port 3888",
     "dev:local": "npm run build && npm link && echo '✓ agent-relay linked globally'",
     "dev:unlink": "npm unlink -g agent-relay && echo '✓ agent-relay unlinked'",
     "dev:rebuild": "npm run build && echo '✓ Rebuilt (linked version updated)'",
-    "build:rust": "if command -v ~/.cargo/bin/cargo >/dev/null 2>&1; then cd relay-pty && ~/.cargo/bin/cargo build --release && cp target/release/relay-pty ../bin/relay-pty && node -e \"const os=require('os'); const fs=require('fs'); const p=os.platform(); const a=os.arch(); const name='relay-pty-'+p+'-'+a; fs.copyFileSync('target/release/relay-pty', '../bin/'+name); console.log('✓ relay-pty binary built and copied to bin/ and bin/'+name)\" && cd .. && ~/.cargo/bin/cargo build --release && mkdir -p packages/sdk-ts/bin && cp target/release/agent-relay packages/sdk-ts/bin/agent-relay && echo '✓ broker binary (agent-relay) built and copied to packages/sdk-ts/bin/'; else echo '⚠ Rust not installed, using prebuilt binaries from bin/'; fi",
-    "start": "node dist/src/cli/index.js",
+    "build:rust": "if command -v ~/.cargo/bin/cargo >/dev/null 2>&1; then cd relay-pty && ~/.cargo/bin/cargo build --release && cp target/release/relay-pty ../bin/relay-pty && node -e \"const os=require('os'); const fs=require('fs'); const p=os.platform(); const a=os.arch(); const name='relay-pty-'+p+'-'+a; fs.copyFileSync('target/release/relay-pty', '../bin/'+name); console.log('✓ relay-pty binary built and copied to bin/ and bin/'+name)\" && cd .. && ~/.cargo/bin/cargo build --release --bin agent-relay-broker && mkdir -p packages/sdk-ts/bin && cp target/release/agent-relay-broker packages/sdk-ts/bin/agent-relay-broker && echo '✓ broker binary (agent-relay-broker) built and copied to packages/sdk-ts/bin/'; else echo '⚠ Rust not installed, using prebuilt binaries from bin/'; fi",
+    "start": "node dist/src/cli/bootstrap.js",
     "pretest": "npm run build",
     "test": "vitest run",
     "pretest:coverage": "npm run build",

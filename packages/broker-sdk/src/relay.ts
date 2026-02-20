@@ -45,7 +45,7 @@ function isUnsupportedOperation(error: unknown): error is AgentRelayProtocolErro
 
 function buildUnsupportedOperationMessage(
   from: string,
-  input: { to: string; text: string; threadId?: string },
+  input: { to: string; text: string; threadId?: string; data?: Record<string, unknown> },
 ): Message {
   return {
     eventId: "unsupported_operation",
@@ -53,6 +53,7 @@ function buildUnsupportedOperationMessage(
     to: input.to,
     text: input.text,
     threadId: input.threadId,
+    data: input.data,
   };
 }
 
@@ -64,19 +65,23 @@ export interface Message {
   to: string;
   text: string;
   threadId?: string;
+  data?: Record<string, unknown>;
 }
 
 export interface Agent {
   readonly name: string;
   readonly runtime: AgentRuntime;
   readonly channels: string[];
+  /** Computed status reflecting the agent's current lifecycle state. */
+  readonly status: 'spawning' | 'ready' | 'idle' | 'exited';
   /** Set when the agent exits. Available after `onAgentExited` fires. */
   exitCode?: number;
   /** Set when the agent exits via signal. Available after `onAgentExited` fires. */
   exitSignal?: string;
   /** Set when the agent requests exit via /exit. Available after `onAgentExitRequested` fires. */
   exitReason?: string;
-  release(): Promise<void>;
+  release(reason?: string): Promise<void>;
+  waitForReady(timeoutMs?: number): Promise<void>;
   /** Wait for the agent process to exit on its own.
    *  @param timeoutMs — optional timeout in ms. Resolves with `"timeout"` if exceeded,
    *  `"exited"` if the agent exited naturally, or `"released"` if released externally. */
@@ -90,7 +95,12 @@ export interface Agent {
     text: string;
     threadId?: string;
     priority?: number;
+    data?: Record<string, unknown>;
   }): Promise<Message>;
+  /** Subscribe to PTY output for this agent.
+   *  @param callback — called with each output chunk
+   *  @returns an unsubscribe function */
+  onOutput(callback: (chunk: string) => void): () => void;
 }
 
 export interface HumanHandle {
@@ -100,6 +110,7 @@ export interface HumanHandle {
     text: string;
     threadId?: string;
     priority?: number;
+    data?: Record<string, unknown>;
   }): Promise<Message>;
 }
 
@@ -109,6 +120,8 @@ export interface AgentSpawner {
     args?: string[];
     channels?: string[];
     task?: string;
+    model?: string;
+    cwd?: string;
   }): Promise<Agent>;
 }
 
@@ -152,6 +165,9 @@ export class AgentRelay {
   private unsubEvent?: () => void;
   private readonly knownAgents = new Map<string, Agent>();
   private readonly readyAgents = new Set<string>();
+  private readonly exitedAgents = new Set<string>();
+  private readonly idleAgents = new Set<string>();
+  private readonly outputListeners = new Map<string, Set<(chunk: string) => void>>();
   private readonly exitResolvers = new Map<
     string,
     { resolve: (reason: "exited" | "released") => void; token: number }
@@ -220,6 +236,7 @@ export class AgentRelay {
             from: opts.name,
             threadId: input.threadId,
             priority: input.priority,
+            data: input.data,
           });
         } catch (error) {
           if (isUnsupportedOperation(error)) {
@@ -238,11 +255,16 @@ export class AgentRelay {
           to: input.to,
           text: input.text,
           threadId: input.threadId,
+          data: input.data,
         };
         relay.onMessageSent?.(msg);
         return msg;
       },
     };
+  }
+
+  system(): HumanHandle {
+    return this.human({ name: "system" });
   }
 
   // ── Messaging ─────────────────────────────────────────────────────────
@@ -332,7 +354,7 @@ export class AgentRelay {
     );
   }
 
-  async waitForAgentReady(name: string, timeoutMs = 60_000): Promise<Agent> {
+  async waitForAgentReady(name: string, timeoutMs = 30_000): Promise<Agent> {
     const client = await this.ensureStarted();
     const existing = this.knownAgents.get(name);
     if (existing && this.readyAgents.has(name)) {
@@ -402,6 +424,9 @@ export class AgentRelay {
     }
     this.knownAgents.clear();
     this.readyAgents.clear();
+    this.exitedAgents.clear();
+    this.idleAgents.clear();
+    this.outputListeners.clear();
     for (const entry of this.exitResolvers.values()) {
       entry.resolve("released");
     }
@@ -470,9 +495,12 @@ export class AgentRelay {
           const agent =
             this.knownAgents.get(event.name) ??
             this.makeAgent(event.name, "pty", []);
+          this.exitedAgents.add(event.name);
           this.onAgentReleased?.(agent);
           this.knownAgents.delete(event.name);
           this.readyAgents.delete(event.name);
+          this.idleAgents.delete(event.name);
+          this.outputListeners.delete(event.name);
           this.exitResolvers.get(event.name)?.resolve("released");
           this.exitResolvers.delete(event.name);
           this.idleResolvers.get(event.name)?.resolve("exited");
@@ -483,12 +511,15 @@ export class AgentRelay {
           const agent =
             this.knownAgents.get(event.name) ??
             this.makeAgent(event.name, "pty", []);
+          this.exitedAgents.add(event.name);
           // Populate exit info before firing the hook
           (agent as { exitCode?: number }).exitCode = event.code;
           (agent as { exitSignal?: string }).exitSignal = event.signal;
           this.onAgentExited?.(agent);
           this.knownAgents.delete(event.name);
           this.readyAgents.delete(event.name);
+          this.idleAgents.delete(event.name);
+          this.outputListeners.delete(event.name);
           this.exitResolvers.get(event.name)?.resolve("exited");
           this.exitResolvers.delete(event.name);
           this.idleResolvers.get(event.name)?.resolve("exited");
@@ -514,14 +545,24 @@ export class AgentRelay {
           break;
         }
         case "worker_stream": {
+          // Agent producing output is no longer idle
+          this.idleAgents.delete(event.name);
           this.onWorkerOutput?.({
             name: event.name,
             stream: event.stream,
             chunk: event.chunk,
           });
+          // Dispatch to per-agent output listeners
+          const listeners = this.outputListeners.get(event.name);
+          if (listeners) {
+            for (const cb of listeners) {
+              cb(event.chunk);
+            }
+          }
           break;
         }
         case "agent_idle": {
+          this.idleAgents.add(event.name);
           this.onAgentIdle?.({
             name: event.name,
             idleSecs: event.idle_secs,
@@ -548,11 +589,20 @@ export class AgentRelay {
       name,
       runtime,
       channels,
+      get status(): 'spawning' | 'ready' | 'idle' | 'exited' {
+        if (relay.exitedAgents.has(name)) return 'exited';
+        if (relay.idleAgents.has(name)) return 'idle';
+        if (relay.readyAgents.has(name)) return 'ready';
+        return 'spawning';
+      },
       exitCode: undefined,
       exitSignal: undefined,
-      async release() {
+      async release(reason?: string) {
         const client = await relay.ensureStarted();
-        await client.release(name);
+        await client.release(name, reason);
+      },
+      async waitForReady(timeoutMs = 30_000) {
+        await relay.waitForAgentReady(name, timeoutMs);
       },
       waitForExit(timeoutMs?: number) {
         return new Promise<"exited" | "timeout" | "released">((resolve) => {
@@ -627,6 +677,7 @@ export class AgentRelay {
             from: name,
             threadId: input.threadId,
             priority: input.priority,
+            data: input.data,
           });
         } catch (error) {
           if (isUnsupportedOperation(error)) {
@@ -644,9 +695,24 @@ export class AgentRelay {
           to: input.to,
           text: input.text,
           threadId: input.threadId,
+          data: input.data,
         };
         relay.onMessageSent?.(msg);
         return msg;
+      },
+      onOutput(callback: (chunk: string) => void): () => void {
+        let listeners = relay.outputListeners.get(name);
+        if (!listeners) {
+          listeners = new Set();
+          relay.outputListeners.set(name, listeners);
+        }
+        listeners.add(callback);
+        return () => {
+          listeners!.delete(callback);
+          if (listeners!.size === 0) {
+            relay.outputListeners.delete(name);
+          }
+        };
       },
     };
   }
@@ -669,7 +735,15 @@ export class AgentRelay {
         if (runtime === "headless_claude") {
           result = await client.spawnHeadlessClaude({ name, args, channels, task });
         } else {
-          result = await client.spawnPty({ name, cli, args, channels, task });
+          result = await client.spawnPty({
+            name,
+            cli,
+            args,
+            channels,
+            task,
+            model: options?.model,
+            cwd: options?.cwd,
+          });
         }
 
         const agent = relay.makeAgent(result.name, result.runtime, channels);

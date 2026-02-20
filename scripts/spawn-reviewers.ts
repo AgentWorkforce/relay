@@ -1,12 +1,12 @@
 /**
- * Spawn Claude + Codex agents via agent-relay for code review.
+ * Spawn Claude + Codex agents via agent-relay-broker for code review.
  * Run: npx tsx scripts/spawn-reviewers.ts
  */
 import { AgentRelay, type Agent } from "@agent-relay/broker-sdk";
 
 async function main() {
   const relay = new AgentRelay({
-    binaryPath: "./target/debug/agent-relay",
+    binaryPath: "./target/debug/agent-relay-broker",
     channels: ["general"],
   });
 

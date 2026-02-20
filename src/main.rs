@@ -48,7 +48,7 @@ const MAX_DELIVERY_RETRIES: u32 = 10;
 const DEFAULT_RELAYCAST_BASE_URL: &str = "https://api.relaycast.dev";
 
 #[derive(Debug, Parser)]
-#[command(name = "agent-relay")]
+#[command(name = "agent-relay-broker")]
 #[command(about = "Agent relay broker and worker runtime")]
 struct Cli {
     #[command(subcommand)]
@@ -65,7 +65,7 @@ enum Commands {
     Listen(ListenCommand),
     /// Internal: wraps a CLI in a PTY with interactive passthrough.
     /// Used by the SDK — not for direct user invocation.
-    /// Usage: agent-relay wrap codex -- --full-auto
+    /// Usage: agent-relay-broker wrap codex -- --full-auto
     #[command(hide = true)]
     Wrap {
         /// The CLI to wrap (e.g. "codex", "claude")
@@ -1339,7 +1339,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 /// Listen mode: connect to Relaycast WS and log events without wrapping a CLI.
 /// Handles spawn/release commands from both WS events and an HTTP API.
 /// The HTTP API (default port 3889) accepts spawn/release/list requests.
-/// Usage: `agent-relay listen --agent-name hub --channels general,ops --port 3889`
+/// Usage: `agent-relay-broker listen --agent-name hub --channels general,ops --port 3889`
 async fn run_listen(cmd: ListenCommand, telemetry: TelemetryClient) -> Result<()> {
     let broker_start = Instant::now();
     let mut agent_spawn_count: u32 = 0;

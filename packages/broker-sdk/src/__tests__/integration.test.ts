@@ -9,11 +9,11 @@ function resolveBinaryPath(): string {
   if (process.env.AGENT_RELAY_BIN) {
     return process.env.AGENT_RELAY_BIN;
   }
-  return path.resolve(process.cwd(), "../../target/debug/agent-relay");
+  return path.resolve(process.cwd(), "../../target/debug/agent-relay-broker");
 }
 
 function resolveBundledBinaryPath(): string {
-  const exe = process.platform === "win32" ? "agent-relay.exe" : "agent-relay";
+  const exe = process.platform === "win32" ? "agent-relay-broker.exe" : "agent-relay-broker";
   return path.resolve(process.cwd(), "bin", exe);
 }
 
@@ -54,7 +54,7 @@ test("sdk can start broker and manage agent lifecycle", async (t) => {
   }
   const binaryPath = resolveBinaryPath();
   if (!fs.existsSync(binaryPath)) {
-    t.skip(`agent-relay binary not found at ${binaryPath}`);
+    t.skip(`agent-relay-broker binary not found at ${binaryPath}`);
     return;
   }
 
@@ -109,7 +109,7 @@ test("sdk can spawn and release headless claude worker", async (t) => {
   }
   const binaryPath = resolveBinaryPath();
   if (!fs.existsSync(binaryPath)) {
-    t.skip(`agent-relay binary not found at ${binaryPath}`);
+    t.skip(`agent-relay-broker binary not found at ${binaryPath}`);
     return;
   }
 
@@ -160,7 +160,7 @@ test("sdk can spawn and release headless claude worker", async (t) => {
 test("sdk surfaces process error when binary is missing", async () => {
   await assert.rejects(
     AgentRelayClient.start({
-      binaryPath: "/definitely/missing/agent-relay",
+      binaryPath: "/definitely/missing/agent-relay-broker",
       requestTimeoutMs: 1_000,
     }),
     (error: unknown) => {

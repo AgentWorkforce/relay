@@ -1,6 +1,6 @@
 # `@agent-relay/broker-sdk`
 
-TypeScript SDK for driving `agent-relay init` over stdio.
+TypeScript SDK for driving `agent-relay-broker init` over stdio.
 
 ## Status
 - Broker lifecycle + request/response protocol client implemented.
@@ -9,7 +9,7 @@ TypeScript SDK for driving `agent-relay init` over stdio.
 - Agent idle detection — configurable silence threshold with `onAgentIdle` hook and `waitForIdle()`.
 
 ## Bundled binary
-- The SDK package bundles `agent-relay` inside `bin/` during `npm run build` and `npm pack`.
+- The SDK package bundles `agent-relay-broker` inside `bin/` during `npm run build` and `npm pack`.
 - By default, `AgentRelayClient` uses the bundled binary path when present.
 - You can still override with `binaryPath` in `AgentRelayClient.start(...)`.
 
@@ -18,7 +18,7 @@ TypeScript SDK for driving `agent-relay init` over stdio.
 import { AgentRelayClient } from "@agent-relay/broker-sdk";
 
 const client = await AgentRelayClient.start({
-  binaryPath: "/absolute/path/to/agent-relay",
+  binaryPath: "/absolute/path/to/agent-relay-broker",
   env: process.env,
 });
 
@@ -85,7 +85,7 @@ Optional env:
 cargo build
 npm --prefix packages/broker-sdk install
 npm --prefix packages/broker-sdk run build
-AGENT_RELAY_BIN="$(pwd)/target/debug/agent-relay" npm --prefix packages/broker-sdk run test:integration
+AGENT_RELAY_BIN="$(pwd)/target/debug/agent-relay-broker" npm --prefix packages/broker-sdk run test:integration
 ```
 
 Integration tests require Relaycast credentials in environment (`RELAY_API_KEY`).
@@ -94,4 +94,4 @@ Integration tests require Relaycast credentials in environment (`RELAY_API_KEY`)
 ```bash
 npm --prefix packages/broker-sdk pack
 ```
-The generated tarball includes `dist/` and `bin/agent-relay` (or `bin/agent-relay.exe` on Windows).
+The generated tarball includes `dist/` and `bin/agent-relay-broker` (or `bin/agent-relay-broker.exe` on Windows).

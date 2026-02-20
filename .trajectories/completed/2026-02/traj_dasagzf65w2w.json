@@ -1,0 +1,77 @@
+{
+  "id": "traj_dasagzf65w2w",
+  "version": 1,
+  "task": {
+    "title": "Rename Rust binary to agent-relay-broker and clean up TS CLI legacy patterns"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-20T07:58:55.411Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-02-20T07:59:03.806Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_de60ufrepro4",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-02-20T07:59:03.806Z",
+      "events": [
+        {
+          "ts": 1771574343806,
+          "type": "decision",
+          "content": "Keep TS CLI as user-facing agent-relay, rename Rust binary to agent-relay-broker: Keep TS CLI as user-facing agent-relay, rename Rust binary to agent-relay-broker",
+          "raw": {
+            "question": "Keep TS CLI as user-facing agent-relay, rename Rust binary to agent-relay-broker",
+            "chosen": "Keep TS CLI as user-facing agent-relay, rename Rust binary to agent-relay-broker",
+            "alternatives": [],
+            "reasoning": "Rust binary is an internal engine (5 commands, JSON-over-stdio protocol), not user-facing. TS CLI has 35+ commands with deep Node.js dependencies (dashboard, npm, MCP, OAuth). Renaming Rust binary eliminates naming confusion shown in relay-cloud/TOMORROW.md without massive reimplementation effort."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1771574803194,
+          "type": "decision",
+          "content": "Updated plan with 7 missed items from review: Updated plan with 7 missed items from review",
+          "raw": {
+            "question": "Updated plan with 7 missed items from review",
+            "chosen": "Updated plan with 7 missed items from review",
+            "alternatives": [],
+            "reasoning": "Review found: (1) src/spawner.rs hardcoded fallback, (2) clap command(name) in config.rs and main.rs, (3) client.ts exe vs brokerExe cleanup, (4) relay.sock in create-agent MCP config, (5) stale binary cleanup needed, (6) --remote flag must be preserved, (7) read/history offline trade-off acknowledged"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1771575962202,
+          "type": "decision",
+          "content": "Kept client.ts PATH fallback at agent-relay: Kept client.ts PATH fallback at agent-relay",
+          "raw": {
+            "question": "Kept client.ts PATH fallback at agent-relay",
+            "chosen": "Kept client.ts PATH fallback at agent-relay",
+            "alternatives": [],
+            "reasoning": "Spec DO NOT CHANGE list requires PATH fallback to TS CLI name while bundled/standalone binary uses agent-relay-broker"
+          },
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-02-20T08:26:07.381Z"
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker",
+  "tags": [],
+  "_trace": {
+    "startRef": "21ec7a4e4778a5d0549d18c0b5f200352aebd0ac",
+    "endRef": "21ec7a4e4778a5d0549d18c0b5f200352aebd0ac"
+  },
+  "completedAt": "2026-02-20T08:26:07.381Z",
+  "retrospective": {
+    "summary": "Completed Workstream A binary rename: Rust broker binary now agent-relay-broker across Cargo, Rust command names, SDK resolution, scripts, CI, tests, and docs; removed stale bin artifacts; verified cargo build --release --bin agent-relay-broker",
+    "approach": "Standard approach",
+    "confidence": 0.91
+  }
+}
