@@ -6,7 +6,7 @@
 
 import { spawn as cpSpawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import type { WriteStream } from 'node:fs';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -114,6 +114,10 @@ export class WorkflowRunner {
   private readonly ptyLogStreams = new Map<string, WriteStream>();
   /** Path to workers.json so `agents:kill` can find workflow-spawned agents */
   private readonly workersPath: string;
+  /** In-memory tracking of active workers to avoid race conditions on workers.json */
+  private readonly activeWorkers = new Map<string, { cli: string; task: string; spawnedAt: number; pid?: number; logFile: string }>();
+  /** Mutex for serializing workers.json file access */
+  private workersFileLock: Promise<void> = Promise.resolve();
 
   constructor(options: WorkflowRunnerOptions = {}) {
     this.db = options.db ?? new InMemoryWorkflowDb();
@@ -541,6 +545,11 @@ export class WorkflowRunner {
 
       const channel = resolved.swarm.channel ?? `wf-${this.sanitizeChannelName(resolved.name)}-${this.generateShortId()}`;
       this.channel = channel;
+      // Persist the auto-generated channel back to config so resume() can reuse it
+      if (!resolved.swarm.channel) {
+        resolved.swarm.channel = channel;
+        await this.db.updateRun(runId, { config: resolved });
+      }
       await this.ensureRelaycastApiKey(channel);
 
       this.relay = new AgentRelay({
@@ -1221,18 +1230,39 @@ export class WorkflowRunner {
 
       // Re-key PTY maps if broker assigned a different name than requested
       if (agent.name !== agentName) {
-        this.ptyOutputBuffers.set(agent.name, this.ptyOutputBuffers.get(agentName) ?? []);
-        this.ptyOutputBuffers.delete(agentName);
-        const listener = this.ptyListeners.get(agentName);
-        if (listener) {
-          this.ptyListeners.set(agent.name, listener);
-          this.ptyListeners.delete(agentName);
+        const oldName = agentName;
+        this.ptyOutputBuffers.set(agent.name, this.ptyOutputBuffers.get(oldName) ?? []);
+        this.ptyOutputBuffers.delete(oldName);
+
+        // Close old log stream and rename the file to match the new agent name
+        const oldLogPath = path.join(logsDir, `${oldName}.log`);
+        const newLogPath = path.join(logsDir, `${agent.name}.log`);
+        const oldLogStream = this.ptyLogStreams.get(oldName);
+        if (oldLogStream) {
+          oldLogStream.end();
+          this.ptyLogStreams.delete(oldName);
+          try {
+            renameSync(oldLogPath, newLogPath);
+          } catch {
+            // File may not exist yet if no output was written
+          }
         }
-        const ls = this.ptyLogStreams.get(agentName);
-        if (ls) {
-          this.ptyLogStreams.set(agent.name, ls);
-          this.ptyLogStreams.delete(agentName);
+
+        // Open new log stream with the correct name
+        const newLogStream = createWriteStream(newLogPath, { flags: 'a' });
+        this.ptyLogStreams.set(agent.name, newLogStream);
+
+        // Update listener to use the new log stream
+        const oldListener = this.ptyListeners.get(oldName);
+        if (oldListener) {
+          this.ptyListeners.delete(oldName);
+          this.ptyListeners.set(agent.name, (chunk: string) => {
+            const stripped = WorkflowRunner.stripAnsi(chunk);
+            this.ptyOutputBuffers.get(agent.name)?.push(stripped);
+            newLogStream.write(chunk);
+          });
         }
+
         agentName = agent.name;
       }
 
@@ -1648,33 +1678,46 @@ export class WorkflowRunner {
 
   /** Register a spawned agent in workers.json so `agents:kill` can find it. */
   private registerWorker(agentName: string, cli: string, task: string, pid?: number, interactive = true): void {
-    try {
-      mkdirSync(path.dirname(this.workersPath), { recursive: true });
-      const existing = this.readWorkers().filter((w) => w.name !== agentName);
-      existing.push({
-        name: agentName,
-        cli,
-        task: task.slice(0, 500),
-        spawnedAt: Date.now(),
-        pid,
-        interactive,
-        logFile: path.join(this.getWorkerLogsDir(), `${agentName}.log`),
-      });
-      this.writeWorkers(existing);
-    } catch {
-      // Non-critical — don't fail the workflow if workers.json can't be written
-    }
+    // Track in memory first (no race condition)
+    const workerEntry = {
+      cli,
+      task: task.slice(0, 500),
+      spawnedAt: Date.now(),
+      pid,
+      interactive,
+      logFile: path.join(this.getWorkerLogsDir(), `${agentName}.log`),
+    };
+    this.activeWorkers.set(agentName, workerEntry);
+
+    // Serialize file writes with mutex to prevent race conditions
+    this.workersFileLock = this.workersFileLock.then(() => {
+      try {
+        mkdirSync(path.dirname(this.workersPath), { recursive: true });
+        // Filter out any existing entry with the same name before adding
+        const existing = this.readWorkers().filter((w) => w.name !== agentName);
+        existing.push({ name: agentName, ...workerEntry });
+        this.writeWorkers(existing);
+      } catch {
+        // Non-critical — don't fail the workflow if workers.json can't be written
+      }
+    });
   }
 
   /** Remove a spawned agent from workers.json after it exits. */
   private unregisterWorker(agentName: string): void {
-    try {
-      const existing = this.readWorkers();
-      const filtered = existing.filter((w) => w.name !== agentName);
-      this.writeWorkers(filtered);
-    } catch {
-      // Non-critical
-    }
+    // Remove from in-memory tracking first
+    this.activeWorkers.delete(agentName);
+
+    // Serialize file writes with mutex to prevent race conditions
+    this.workersFileLock = this.workersFileLock.then(() => {
+      try {
+        const existing = this.readWorkers();
+        const filtered = existing.filter((w) => w.name !== agentName);
+        this.writeWorkers(filtered);
+      } catch {
+        // Non-critical
+      }
+    });
   }
 
   private readWorkers(): Array<Record<string, unknown>> {
