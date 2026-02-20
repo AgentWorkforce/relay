@@ -34,6 +34,7 @@ export interface AgentManagementClient {
     cwd?: string;
     shadowOf?: string;
     shadowMode?: ShadowMode;
+    continueFrom?: string;
   }): Promise<unknown>;
   listAgents(): Promise<WorkerInfo[]>;
   release(name: string, reason: string): Promise<unknown>;
