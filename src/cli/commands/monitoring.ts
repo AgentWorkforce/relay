@@ -9,7 +9,6 @@ import {
   formatTableRow,
   spawnAgentWithClient,
 } from '../lib/index.js';
-import { runDoctor as runDoctorDefault } from '../lib/doctor.js';
 import type { HealthPayload } from '../lib/monitoring-health.js';
 
 type ExitFn = (code: number) => never;
@@ -56,7 +55,6 @@ export interface MonitoringDependencies {
   createMetricsClient: (cwd: string) => MonitoringMetricsClient;
   createProfilerRelay: (options: ProfileRelayOptions) => MonitoringProfilerRelay;
   generateAgentName: () => string;
-  runDoctor: () => Promise<void>;
   fetch: (url: string) => Promise<Response>;
   pathExists: (target: string) => boolean;
   mkdir: (target: string, options: { recursive: true }) => void;
@@ -107,7 +105,6 @@ function withDefaults(
     createMetricsClient: createDefaultMetricsClient,
     createProfilerRelay: createDefaultProfilerRelay,
     generateAgentName,
-    runDoctor: runDoctorDefault,
     fetch: (url: string) => fetch(url),
     pathExists: (target: string) => fs.existsSync(target),
     mkdir: (target: string, options: { recursive: true }) => fs.mkdirSync(target, options),
@@ -247,13 +244,6 @@ export function registerMonitoringCommands(
 
       const data = await fetchMetrics();
       displayMetrics(data);
-    });
-
-  program
-    .command('doctor')
-    .description('Diagnose storage issues and provide remediation steps')
-    .action(async () => {
-      await deps.runDoctor();
     });
 
   program

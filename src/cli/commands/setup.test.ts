@@ -17,7 +17,6 @@ function createHarness(overrides: Partial<SetupDependencies> = {}) {
   const deps: SetupDependencies = {
     runInit: vi.fn(async () => undefined),
     runTelemetry: vi.fn(async () => undefined),
-    runMcpCommand: vi.fn(async () => undefined),
     runYamlWorkflow: vi.fn(async () => ({ status: 'completed' })),
     runScriptWorkflow: vi.fn(() => undefined),
     runTrailCommand: vi.fn(async () => undefined),
@@ -50,24 +49,22 @@ describe('registerSetupCommands', () => {
     const { program } = createHarness();
     const commandNames = program.commands.map((cmd) => cmd.name());
 
-    expect(commandNames).toEqual(expect.arrayContaining(['init', 'setup', 'telemetry', 'mcp', 'run', 'trail']));
+    expect(commandNames).toEqual(expect.arrayContaining(['init', 'setup', 'telemetry', 'run', 'trail']));
   });
 
   it('routes both init and setup alias to runInit', async () => {
     const { program, deps } = createHarness();
 
     await runCommand(program, ['init', '--yes', '--skip-daemon']);
-    await runCommand(program, ['setup', '--yes', '--skip-mcp']);
+    await runCommand(program, ['setup', '--yes']);
 
     expect(deps.runInit).toHaveBeenNthCalledWith(1, {
       yes: true,
       skipDaemon: true,
-      skipMcp: undefined,
     });
     expect(deps.runInit).toHaveBeenNthCalledWith(2, {
       yes: true,
       skipDaemon: undefined,
-      skipMcp: true,
     });
   });
 
@@ -78,18 +75,6 @@ describe('registerSetupCommands', () => {
 
     expect(exitCode).toBeUndefined();
     expect(deps.runTelemetry).toHaveBeenCalledWith('enable');
-  });
-
-  it('routes mcp command with options', async () => {
-    const { program, deps } = createHarness();
-
-    const exitCode = await runCommand(program, ['mcp', 'install', '--editor', 'cursor', '--global']);
-
-    expect(exitCode).toBeUndefined();
-    expect(deps.runMcpCommand).toHaveBeenCalledWith('install', {
-      editor: 'cursor',
-      global: true,
-    });
   });
 
   it('routes run command based on file extension', async () => {

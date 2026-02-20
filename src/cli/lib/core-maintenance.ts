@@ -64,7 +64,6 @@ export async function runUninstallCommand(
   const paths = deps.getProjectPaths();
   const brokerPidPath = path.join(paths.dataDir, 'broker.pid');
   const runtimePath = path.join(paths.dataDir, 'runtime.json');
-  const relaySockPath = path.join(paths.dataDir, 'relay.sock');
 
   if (deps.fs.existsSync(brokerPidPath)) {
     const pidRaw = deps.fs.readFileSync(brokerPidPath, 'utf-8').trim();
@@ -82,7 +81,6 @@ export async function runUninstallCommand(
     if (options.keepData) {
       deps.log(`[dry-run] Would remove: ${brokerPidPath}`);
       deps.log(`[dry-run] Would remove: ${runtimePath}`);
-      deps.log(`[dry-run] Would remove: ${relaySockPath}`);
     } else {
       deps.log(`[dry-run] Would remove directory: ${paths.dataDir}`);
     }
@@ -91,7 +89,7 @@ export async function runUninstallCommand(
   }
 
   if (options.keepData) {
-    for (const filePath of [brokerPidPath, runtimePath, relaySockPath]) {
+    for (const filePath of [brokerPidPath, runtimePath]) {
       if (!deps.fs.existsSync(filePath)) {
         continue;
       }

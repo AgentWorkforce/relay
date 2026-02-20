@@ -16,11 +16,6 @@ type ExitFn = (code: number) => never;
 type RunInitOptions = {
   yes?: boolean;
   skipDaemon?: boolean;
-  skipMcp?: boolean;
-};
-type McpCommandOptions = {
-  editor?: string;
-  global?: boolean;
 };
 type RunWorkflowOptions = {
   workflow?: string;
@@ -32,7 +27,6 @@ type WorkflowRunResult = {
 export interface SetupDependencies {
   runInit: (options: RunInitOptions) => Promise<void>;
   runTelemetry: (action?: string) => Promise<void> | void;
-  runMcpCommand: (command: string, options: McpCommandOptions) => Promise<void>;
   runYamlWorkflow: (
     filePath: string,
     options: { workflow?: string; onEvent: (event: WorkflowEvent) => void }
@@ -61,9 +55,6 @@ function withDefaults(
   return {
     runInit: overrides.runInit ?? ((options: RunInitOptions) => runInitDefault(options, io)),
     runTelemetry: overrides.runTelemetry ?? ((action?: string) => runTelemetryDefault(action, io)),
-    runMcpCommand:
-      overrides.runMcpCommand ??
-      ((command: string, options: McpCommandOptions) => runMcpCommandDefault(command, options, io)),
     runYamlWorkflow: runYamlWorkflowDefault,
     runScriptWorkflow: runScriptFile,
     runTrailCommand: overrides.runTrailCommand ?? ((args: string[]) => runTrailCommandDefault(args, io)),
@@ -217,42 +208,6 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
     io.log('  ○  Broker is not running');
   }
   io.log('');
-  let mcpInstalled = false;
-  const mcpAutoInstallEnabled = process.env.RELAY_MCP_AUTO_INSTALL === '1';
-  if (!options.skipMcp && mcpAutoInstallEnabled) {
-    io.log('  ┌─ MCP Server for AI Editors ───────────────────────────────┐');
-    io.log('  │                                                          │');
-    io.log('  │  MCP (Model Context Protocol) gives AI editors native    │');
-    io.log('  │  tools for agent communication:                          │');
-    io.log('  │                                                          │');
-    io.log('  │    • relay_send    - Send messages to agents/channels    │');
-    io.log('  │    • relay_spawn   - Create worker agents                │');
-    io.log('  │    • relay_inbox   - Check for messages                  │');
-    io.log('  │    • relay_who     - List online agents                  │');
-    io.log('  │                                                          │');
-    io.log('  │  Supported editors: Claude Code, Cursor, VS Code         │');
-    io.log('  │                                                          │');
-    io.log('  └──────────────────────────────────────────────────────────┘');
-    io.log('');
-    const shouldInstallMcp = await prompt('  Install MCP server for your AI editors?');
-    if (shouldInstallMcp) {
-      io.log('');
-      io.log('  Installing MCP server...');
-      try {
-        const { runInstall } = await import('@agent-relay/mcp/install');
-        runInstall({ editor: undefined });
-        mcpInstalled = true;
-      } catch (err: any) {
-        if (err.code === 'ERR_MODULE_NOT_FOUND') {
-          io.log('  ⚠  MCP package not bundled. Install separately:');
-          io.log('     npm install -g @agent-relay/mcp');
-        } else {
-          io.error('  ✗  Error:', err.message);
-        }
-      }
-      io.log('');
-    }
-  }
   if (!daemonRunning && !options.skipDaemon) {
     io.log('  ┌─ Start the Relay Broker ──────────────────────────────────┐');
     io.log('  │                                                          │');
@@ -280,10 +235,9 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
   io.log('  │                    Setup Complete!                      │');
   io.log('  ╰─────────────────────────────────────────────────────────╯');
   io.log('');
-  if (mcpInstalled || daemonRunning) {
+  if (daemonRunning) {
     io.log('  Status:');
-    if (mcpInstalled) io.log('    ✓  MCP server configured for editors');
-    if (daemonRunning) io.log('    ✓  Broker running');
+    io.log('    ✓  Broker running');
     io.log('');
   }
   io.log('  Quick Start:');
@@ -340,43 +294,6 @@ function runTelemetryDefault(action: string | undefined, io: SetupIo): void {
   io.log('');
   io.log('Learn more: https://agent-relay.com/telemetry');
 }
-async function runMcpCommandDefault(cmd: string, options: McpCommandOptions, io: SetupIo): Promise<void> {
-  try {
-    if (cmd === 'install') {
-      const { runInstall } = await import('@agent-relay/mcp/install');
-      runInstall(options);
-      return;
-    }
-    if (cmd === 'serve') {
-      const { createRelayClient, runMCPServer } = await import('@agent-relay/mcp');
-      const paths = getProjectPaths();
-      const brokerPidPath = path.join(paths.dataDir, 'broker.pid');
-      if (!fs.existsSync(brokerPidPath)) {
-        io.error('Broker is not running. Start it with `agent-relay up` and try again.');
-        io.exit(1);
-        return;
-      }
-
-      const client = createRelayClient({
-        agentName: process.env.RELAY_AGENT_NAME || `mcp-${process.pid}`,
-        project: paths.projectRoot,
-        projectRoot: paths.projectRoot,
-      });
-      await runMCPServer(client);
-      return;
-    }
-    io.error(`Unknown mcp command: ${cmd}`);
-    io.exit(1);
-  } catch (err: any) {
-    if (err.code === 'ERR_MODULE_NOT_FOUND') {
-      io.error('Error: @agent-relay/mcp package not found.');
-      io.error('This command requires the MCP package to be installed.');
-    } else {
-      io.error('Error running MCP command:', err);
-    }
-    io.exit(1);
-  }
-}
 export function registerSetupCommands(
   program: Command,
   overrides: Partial<SetupDependencies> = {}
@@ -384,10 +301,9 @@ export function registerSetupCommands(
   const deps = withDefaults(overrides);
   program
     .command('init')
-    .description('First-time setup wizard - install MCP and start broker')
+    .description('First-time setup wizard - start broker')
     .option('-y, --yes', 'Accept all defaults (non-interactive)')
     .option('--skip-daemon', 'Skip broker startup prompt')
-    .option('--skip-mcp', 'Skip MCP installation prompt')
     .action(async (options: RunInitOptions) => {
       await deps.runInit(options);
     });
@@ -396,7 +312,6 @@ export function registerSetupCommands(
     .description('Alias for "init" - first-time setup wizard')
     .option('-y, --yes', 'Accept all defaults')
     .option('--skip-daemon', 'Skip broker startup')
-    .option('--skip-mcp', 'Skip MCP installation')
     .action(async (options: RunInitOptions) => {
       await deps.runInit(options);
     });
@@ -406,15 +321,6 @@ export function registerSetupCommands(
     .argument('[action]', 'Action: enable, disable, or status (default: status)')
     .action(async (action?: string) => {
       await deps.runTelemetry(action);
-    });
-  program
-    .command('mcp')
-    .description('Manage MCP server for AI editors')
-    .argument('<command>', 'Command to run (install, serve)')
-    .option('-e, --editor <name>', 'Editor to configure')
-    .option('-g, --global', 'Install globally')
-    .action(async (cmd: string, options: McpCommandOptions) => {
-      await deps.runMcpCommand(cmd, options);
     });
   program
     .command('run')

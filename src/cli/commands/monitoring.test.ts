@@ -39,7 +39,6 @@ function createProfilerRelayMock(
 function createHarness(options?: {
   metricsClient?: MonitoringMetricsClient;
   profilerRelay?: MonitoringProfilerRelay;
-  doctorImpl?: () => Promise<void>;
   fetchImpl?: MonitoringDependencies['fetch'];
 }) {
   const metricsClient = options?.metricsClient ?? createMetricsClientMock();
@@ -54,9 +53,6 @@ function createHarness(options?: {
     createMetricsClient: vi.fn(() => metricsClient),
     createProfilerRelay: vi.fn(() => profilerRelay),
     generateAgentName: vi.fn(() => 'GeneratedAgent'),
-    runDoctor: vi.fn(async () => {
-      await options?.doctorImpl?.();
-    }),
     fetch:
       options?.fetchImpl ??
       (vi.fn(async () =>
@@ -115,7 +111,7 @@ describe('registerMonitoringCommands', () => {
     const { program } = createHarness();
     const commandNames = program.commands.map((cmd) => cmd.name());
 
-    expect(commandNames).toEqual(expect.arrayContaining(['metrics', 'doctor', 'health', 'profile']));
+    expect(commandNames).toEqual(expect.arrayContaining(['metrics', 'health', 'profile']));
   });
 
   it('runs metrics command and prints JSON output', async () => {
@@ -133,15 +129,6 @@ describe('registerMonitoringCommands', () => {
     expect(deps.log).toHaveBeenCalledWith(
       JSON.stringify({ agents: [{ name: 'A1', pid: 101, memory_bytes: 2048, uptime_secs: 60 }] }, null, 2)
     );
-  });
-
-  it('invokes runDoctor for doctor command', async () => {
-    const { program, deps } = createHarness();
-
-    const exitCode = await runCommand(program, ['doctor']);
-
-    expect(exitCode).toBeUndefined();
-    expect(deps.runDoctor).toHaveBeenCalledTimes(1);
   });
 
   it('fetches and prints health JSON payload', async () => {

@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { getProjectPaths } from '@agent-relay/config';
-import { getStorageConfigFromEnv } from '@agent-relay/storage/adapter';
 
 type SqliteDriver = 'better-sqlite3' | 'node';
 
@@ -522,9 +521,8 @@ function printInstallationStatus(status: InstallationStatus): void {
 // Hook point: extend with StorageHealthCheck once the shared interface is available.
 export async function runDoctor(): Promise<void> {
   const paths = getProjectPaths();
-  const storageEnv = getStorageConfigFromEnv();
-  const storageType = storageEnv.type?.toLowerCase() ?? 'sqlite';
-  const dbPath = storageEnv.path ?? paths.dbPath;
+  const storageType = (process.env.AGENT_RELAY_STORAGE_TYPE ?? 'sqlite').toLowerCase();
+  const dbPath = process.env.AGENT_RELAY_STORAGE_PATH ?? paths.dbPath;
   const dataDir = path.dirname(dbPath);
   const installationStatus = readInstallationStatus(paths.dataDir);
 

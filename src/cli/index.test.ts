@@ -4,7 +4,6 @@ import { promisify } from 'node:util';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
-import { execSync } from 'node:child_process';
 
 const execAsync = promisify(exec);
 
@@ -75,25 +74,6 @@ describeCli('CLI', () => {
       // Commander outputs help to stderr when no command is provided
       const output = stdout + stderr;
       expect(output).toContain('Usage:');
-    });
-  });
-
-  describe('doctor', () => {
-    it('should run doctor command via CLI', async () => {
-      const env = {
-        ...process.env,
-        DOTENV_CONFIG_QUIET: 'true',
-        AGENT_RELAY_SKIP_UPDATE_CHECK: '1',
-      };
-
-      const output = execSync(`node ${CLI_PATH} doctor`, {
-        cwd: testProjectRoot,
-        encoding: 'utf-8',
-        env,
-      });
-
-      expect(output).toContain('Storage Diagnostics');
-      expect(output).toMatch(/better-sqlite3|node:sqlite|memory/i);
     });
   });
 
@@ -178,4 +158,3 @@ describe('CLI Helper Functions', () => {
     });
   });
 });
-

@@ -65,7 +65,6 @@ const interactiveCommands = new Set([
   '--help',
   '-h',
   'telemetry',
-  'doctor',
 ]);
 
 function maybeInitUpdateAndTelemetry(version: string, argv: string[]): void {

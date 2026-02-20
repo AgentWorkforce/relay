@@ -24,7 +24,6 @@ const expectedLeafCommands = [
   'history',
   'inbox',
   'metrics',
-  'doctor',
   'health',
   'profile',
   'auth',
@@ -35,7 +34,6 @@ const expectedLeafCommands = [
   'init',
   'setup',
   'telemetry',
-  'mcp',
   'run',
   'trail',
   'cloud link',
@@ -98,7 +96,6 @@ describe('bootstrap CLI', () => {
         'inbox',
         'cloud',
         'metrics',
-        'doctor',
         'health',
         'profile',
         'auth',
@@ -109,7 +106,6 @@ describe('bootstrap CLI', () => {
         'init',
         'setup',
         'telemetry',
-        'mcp',
         'run',
         'trail',
       ])
@@ -121,7 +117,7 @@ describe('bootstrap CLI', () => {
     const program = createProgram();
     const leafCommandPaths = collectLeafCommandPaths(program);
 
-    expect(leafCommandPaths).toHaveLength(41);
+    expect(leafCommandPaths).toHaveLength(39);
     expect(leafCommandPaths).toEqual(expect.arrayContaining(expectedLeafCommands));
     expect(leafCommandPaths).not.toContain('create-agent');
   });
