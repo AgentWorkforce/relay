@@ -2185,10 +2185,14 @@ async fn handle_sdk_frame(
                                     .map(|msgs| {
                                         msgs.iter()
                                             .filter_map(|m| {
-                                                let from =
-                                                    m.get("from").and_then(Value::as_str).unwrap_or("?");
-                                                let text =
-                                                    m.get("text").and_then(Value::as_str).unwrap_or("");
+                                                let from = m
+                                                    .get("from")
+                                                    .and_then(Value::as_str)
+                                                    .unwrap_or("?");
+                                                let text = m
+                                                    .get("text")
+                                                    .and_then(Value::as_str)
+                                                    .unwrap_or("");
                                                 if text.is_empty() {
                                                     None
                                                 } else {
@@ -2216,7 +2220,10 @@ async fn handle_sdk_frame(
 
                                 effective_task = Some(match effective_task {
                                     Some(new_task) => {
-                                        format!("{}\n\n## Current Task\n{}", continuity_block, new_task)
+                                        format!(
+                                            "{}\n\n## Current Task\n{}",
+                                            continuity_block, new_task
+                                        )
                                     }
                                     None => continuity_block,
                                 });
@@ -2639,8 +2646,7 @@ async fn handle_sdk_frame(
                         "summary": reason_str,
                     });
 
-                    let continuity_file =
-                        continuity_dir.join(format!("{}.json", payload.name));
+                    let continuity_file = continuity_dir.join(format!("{}.json", payload.name));
                     match std::fs::write(
                         &continuity_file,
                         serde_json::to_string_pretty(&continuity).unwrap_or_default(),
@@ -4070,10 +4076,7 @@ mod tests {
         child.wait().expect("failed to wait on child");
         // After the child exits, its PID should not be alive
         // (the PID may be recycled, but on macOS/Linux it won't be immediately)
-        assert!(
-            !super::is_pid_alive(pid),
-            "exited child PID should be dead"
-        );
+        assert!(!super::is_pid_alive(pid), "exited child PID should be dead");
     }
 
     #[test]
@@ -4113,7 +4116,10 @@ mod tests {
         let pid_path = dir.path().join("broker.pid");
         super::write_pid_file(&pid_path).expect("write_pid_file failed");
         let contents = std::fs::read_to_string(&pid_path).expect("failed to read pid file");
-        let pid: u32 = contents.trim().parse().expect("pid file should contain a number");
+        let pid: u32 = contents
+            .trim()
+            .parse()
+            .expect("pid file should contain a number");
         assert_eq!(pid, std::process::id());
     }
 
@@ -4143,9 +4149,6 @@ mod tests {
     fn continuity_dir_preserves_relative_paths() {
         let state_path = std::path::Path::new(".agent-relay/state.json");
         let result = continuity_dir(state_path);
-        assert_eq!(
-            result,
-            std::path::PathBuf::from(".agent-relay/continuity")
-        );
+        assert_eq!(result, std::path::PathBuf::from(".agent-relay/continuity"));
     }
 }
