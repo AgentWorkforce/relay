@@ -238,7 +238,7 @@ Waiting for:
 
 When spawning a worker with a task, the system:
 
-1. **Attempts delivery** of the task to the CLI via socket (or stdin fallback)
+1. **Attempts delivery** of the task to the CLI via PTY (or stdin fallback)
 2. **Retries delivery** up to 3 times (with 2s delays) if the write fails
 3. **Returns result** - succeeds if delivery was confirmed by relay-pty
 
@@ -247,14 +247,14 @@ A periodic sweep monitors for stuck injections as an additional safety net.
 ### Why injection can fail
 
 **Delivery failures** (retried automatically):
-- Socket disconnected
+- PTY disconnected
 - Write error to stdin
 - relay-pty process issue
 
 ### Automatic retry behavior
 
 ```
-Delivery attempt 1 → Failed (socket error)
+Delivery attempt 1 → Failed (delivery error)
   ↓ (2s delay)
 Delivery attempt 2 → Failed (write error)
   ↓ (2s delay)

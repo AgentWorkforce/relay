@@ -10,7 +10,7 @@ Agent Relay enables AI coding assistants running in separate terminal sessions t
     Keep your existing Claude Code, Codex, or Gemini setup. No prompts, flags, or harness changes required.
   </Card>
   <Card title="Sub-5ms Local Routing" icon="bolt">
-    Messages move over local Unix domain sockets for near-instant agent-to-agent communication.
+    Messages route locally for near-instant agent-to-agent communication.
   </Card>
   <Card title="Provider-Agnostic" icon="terminal">
     Relay sits outside the model. Mix and match agents across providers and CLIs without coupling.
@@ -74,37 +74,37 @@ Monitor agent communication through the real-time dashboard. Intervene when need
 Agent Relay consists of three main components:
 
 ```
-+---------------------------------------------------------------------+
-|                         Your Terminal                                |
-|                                                                      |
-|  +---------------+  +---------------+  +---------------+            |
-|  | agent-relay   |  | agent-relay   |  | agent-relay   |            |
-|  | -n Alice      |  | -n Bob        |  | -n Carol      |            |
-|  | claude        |  | codex         |  | gemini        |            |
-|  +-------+-------+  +-------+-------+  +-------+-------+            |
-|          |                  |                  |                     |
-|          +------------------+------------------+                     |
-|                             |                                        |
-|                    Unix Domain Socket                                |
-|                             |                                        |
-|                   +---------+---------+                              |
-|                   |   Relay Daemon    |                              |
-|                   |  (Message Router) |                              |
-|                   +---------+---------+                              |
-|                             |                                        |
-|            +----------------+----------------+                       |
-|            |                                 |                       |
-|   +--------+--------+               +--------+--------+              |
-|   | JSONL Storage   |               |    Dashboard    |              |
-|   | (Message        |               |   localhost:    |              |
-|   |  History)       |               |      3888       |              |
-|   +-----------------+               +-----------------+              |
-+---------------------------------------------------------------------+
++-------------------------------------------------------------------------+
+|                            Your Terminal                                 |
+|                                                                         |
+|  +--------------------+ +--------------------+ +--------------------+   |
+|  | agent-relay | | agent-relay | | agent-relay |   |
+|  | -n Alice           | | -n Bob             | | -n Carol           |   |
+|  | claude             | | codex              | | gemini             |   |
+|  +---------+----------+ +---------+----------+ +---------+----------+   |
+|            |                      |                      |              |
+|            +----------------------+----------------------+              |
+|                                   |                                     |
+|                          Relay Protocol                                 |
+|                                   |                                     |
+|                         +---------+---------+                           |
+|                         |   Relay Daemon    |                           |
+|                         |  (Message Router) |                           |
+|                         +---------+---------+                           |
+|                                   |                                     |
+|                  +----------------+----------------+                    |
+|                  |                                 |                    |
+|         +--------+--------+               +--------+--------+          |
+|         | JSONL Storage   |               |    Dashboard    |          |
+|         | (Message        |               |   localhost:    |          |
+|         |  History)       |               |      3888       |          |
+|         +-----------------+               +-----------------+          |
++-------------------------------------------------------------------------+
 ```
 
-**Daemon** - Central message broker that routes messages between agents via Unix domain sockets.
+**Daemon** - Central message broker that routes messages between agents.
 
-**Wrapper** - Wraps each agent CLI in a tmux session, parses output for relay commands, and injects incoming messages.
+**Wrapper** - Wraps each agent CLI in a PTY session, parses output for relay commands, and injects incoming messages.
 
 **Dashboard** - Web UI for monitoring agent activity, message flow, and system health in real-time.
 
@@ -137,7 +137,7 @@ Agent Relay consists of three main components:
 |----------|--------|-------|
 | Linux | Full support | Primary development platform |
 | macOS | Full support | Well tested |
-| Windows | Partial | Requires WSL for tmux |
+| Windows | Partial | Requires WSL |
 
 ## Next Steps
 

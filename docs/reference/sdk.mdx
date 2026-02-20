@@ -32,7 +32,7 @@ alice.sendMessage('Bob', 'Hello!');
 
 ### With External Daemon (Node.js)
 
-Connect to a running daemon via Unix socket:
+Connect to a running daemon:
 
 ```typescript
 import { RelayClient } from '@agent-relay/sdk';
@@ -67,7 +67,7 @@ client.sendMessage('ServerAgent', 'Hello from browser!');
 
 ## RelayClient
 
-The primary client for Node.js environments using Unix sockets.
+The primary client for Node.js environments.
 
 ```typescript
 import { RelayClient, type ClientConfig } from '@agent-relay/sdk';

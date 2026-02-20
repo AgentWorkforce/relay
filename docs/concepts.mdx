@@ -176,7 +176,7 @@ The daemon is the central message broker that routes all communication between a
 
 ### Connection Management
 
-The daemon maintains persistent connections with each agent via Unix domain sockets. Key features:
+The daemon maintains persistent connections with each agent. Key features:
 
 - **Heartbeat** - PING/PONG every 5 seconds to detect dead connections
 - **Reconnection** - Automatic reconnect with exponential backoff (100ms to 30s)
@@ -195,14 +195,13 @@ agent-relay status
 agent-relay down
 ```
 
-The daemon creates these files in `/tmp/agent-relay/`:
+The daemon creates these files in the `.agent-relay/` project directory:
 
 | File | Purpose |
 |------|---------|
-| `relay.sock` | Unix domain socket for agent connections |
-| `relay.sock.pid` | Process ID file |
+| `broker.pid` | Process ID file |
 | `messages.sqlite` | Message history database |
-| `agents.json` | Current agent registry |
+| `state.json` | Current agent registry |
 
 ## Projects and Namespaces
 
@@ -221,7 +220,7 @@ Projects are identified by looking for markers in the directory tree:
 
 Each project gets its own:
 
-- Unix socket
+- Daemon instance
 - Storage (JSONL files or SQLite database)
 - Message history
 - Agent registry
@@ -305,7 +304,7 @@ ACTION: load
 
 ## Protocol
 
-Agent Relay uses a custom protocol over Unix domain sockets.
+Agent Relay uses a file-based protocol for agent-to-daemon communication.
 
 ### Wire Format
 

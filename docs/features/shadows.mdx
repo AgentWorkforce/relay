@@ -58,7 +58,7 @@ Shadows use predefined roles that determine when they speak:
 Spawn a primary agent with a shadow using CLI flags:
 
 ```bash
-agent-relay create-agent claude \
+agent-relay spawn claude \
   --name Lead \
   --shadow Auditor \
   --shadow-role reviewer
@@ -76,7 +76,7 @@ agent-relay create-agent claude \
 Specify individual triggers instead of a role:
 
 ```bash
-agent-relay create-agent claude \
+agent-relay spawn claude \
   --name Lead \
   --shadow SecurityAuditor \
   --shadow-role "CODE_WRITTEN,SESSION_END"

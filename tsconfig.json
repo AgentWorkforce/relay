@@ -27,12 +27,6 @@
       "@agent-relay/config/*": [
         "packages/config/dist/*"
       ],
-      "@agent-relay/storage": [
-        "packages/storage/dist/index.d.ts"
-      ],
-      "@agent-relay/storage/*": [
-        "packages/storage/dist/*"
-      ],
       "@agent-relay/trajectory": [
         "packages/trajectory/dist/index.d.ts"
       ],

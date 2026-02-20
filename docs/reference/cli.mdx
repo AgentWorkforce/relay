@@ -21,7 +21,6 @@ npm install -g agent-relay
 | `agent-relay down` | Stop the daemon |
 | `agent-relay status` | Check daemon status |
 | `agent-relay spawn` | Spawn a new agent (or use dashboard at localhost:3888) |
-| `agent-relay create-agent` | Wrap an agent with real-time messaging (advanced) |
 | `agent-relay release` | Release an agent |
 | `agent-relay agents` | List connected agents |
 | `agent-relay who` | Show active agents |
@@ -74,7 +73,6 @@ agent-relay up --spawn
 **Output:**
 ```
 Project: /Users/you/myproject
-Socket:  /tmp/relay/abc123/agent-relay.sock
 Daemon started.
 Dashboard: http://localhost:3888
 Press Ctrl+C to stop.
@@ -105,7 +103,7 @@ agent-relay down
 
 ### agent-relay status
 
-Check the daemon status and list relay tmux sessions.
+Check the daemon status and list active agents.
 
 ```bash
 agent-relay status
@@ -115,24 +113,23 @@ agent-relay status
 
 ```
 Status: RUNNING
-Socket: /tmp/relay/abc123/agent-relay.sock
-Relay tmux sessions:
-- relay-Dashboard (agent: Dashboard, cwd: /Users/you/myproject)
-- relay-Worker1 (agent: Worker1, cwd: /Users/you/myproject)
+Active agents:
+- Dashboard (cli: claude, cwd: /Users/you/myproject)
+- Worker1 (cli: claude, cwd: /Users/you/myproject)
 ```
 
 ---
 
-### agent-relay create-agent
+### agent-relay spawn
 
-Wrap an AI CLI agent with real-time messaging capabilities in a tmux session.
+Wrap an AI CLI agent with real-time messaging capabilities.
 
 <Note>
-For most use cases, we recommend using the **dashboard** at http://localhost:3888 or the simpler `agent-relay spawn` command. Use `create-agent` when you need advanced options like shadow agents or custom prefixes.
+For most use cases, we recommend using the **dashboard** at http://localhost:3888 or `agent-relay spawn`. Use `spawn` with advanced options for shadow agents or custom prefixes.
 </Note>
 
 ```bash
-agent-relay create-agent [options] <command...>
+agent-relay spawn [options] <command...>
 ```
 
 **Arguments:**
@@ -165,19 +162,19 @@ agent-relay create-agent [options] <command...>
 
 ```bash
 # Basic usage with Claude
-agent-relay create-agent claude
+agent-relay spawn claude
 
 # With custom name
-agent-relay create-agent -n MyAgent claude
+agent-relay spawn -n MyAgent claude
 
 # With shadow agent for code review
-agent-relay create-agent -n Lead --shadow Reviewer --shadow-role reviewer claude
+agent-relay spawn -n Lead --shadow Reviewer --shadow-role reviewer claude
 
 # With explicit triggers
-agent-relay create-agent --shadow Auditor --shadow-role "SESSION_END,CODE_WRITTEN" claude
+agent-relay spawn --shadow Auditor --shadow-role "SESSION_END,CODE_WRITTEN" claude
 
 # Debug mode
-agent-relay create-agent -d codex
+agent-relay spawn -d codex
 ```
 
 ---
@@ -492,8 +489,7 @@ These commands are available but hidden from `--help` (for internal/agent use):
 | `agent-relay history` | Show recent messages |
 | `agent-relay spawn` | Spawn agent via dashboard API |
 | `agent-relay release` | Release agent via dashboard API |
-| `agent-relay gc` | Clean up orphaned tmux sessions |
-| `agent-relay check-tmux` | Check tmux availability |
+| `agent-relay gc` | Clean up orphaned agent processes |
 | `agent-relay trail` | Trajectory tracking (proxy to trail CLI) |
 
 ---

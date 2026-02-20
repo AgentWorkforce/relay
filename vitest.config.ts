@@ -13,18 +13,10 @@ export default defineConfig({
         find: /^@agent-relay\/utils\/(.+)$/,
         replacement: path.resolve(__dirname, './packages/utils/dist/$1.js'),
       },
-      {
-        find: /^@agent-relay\/storage\/(.+)$/,
-        replacement: path.resolve(__dirname, './packages/storage/dist/$1.js'),
-      },
       // Main package entries (must come after subpath patterns)
       {
         find: '@agent-relay/config',
         replacement: path.resolve(__dirname, './packages/config/dist/index.js'),
-      },
-      {
-        find: '@agent-relay/storage',
-        replacement: path.resolve(__dirname, './packages/storage/dist/index.js'),
       },
       {
         find: '@agent-relay/trajectory',

@@ -16,7 +16,7 @@ npm install agent-relay
 ## Quick Start
 
 ```typescript
-import { Daemon, RelayClient, getProjectPaths } from 'agent-relay';
+import { Daemon, RelayClient, getProjectPaths } from '@agent-relay/sdk';
 
 // Start a daemon
 const paths = getProjectPaths();
@@ -46,7 +46,7 @@ client.sendMessage('OtherAgent', 'Hello!');
 The daemon manages agent connections and routes messages.
 
 ```typescript
-import { Daemon, type DaemonConfig } from 'agent-relay';
+import { Daemon, type DaemonConfig } from '@agent-relay/sdk';
 
 const daemon = new Daemon(config);
 ```
@@ -99,8 +99,8 @@ daemon.onLogOutput = (agentName: string, data: string, timestamp: number) => {
 #### Example
 
 ```typescript
-import { Daemon } from 'agent-relay';
-import { getProjectPaths, ensureProjectDir } from 'agent-relay';
+import { Daemon } from '@agent-relay/sdk';
+import { getProjectPaths, ensureProjectDir } from '@agent-relay/sdk';
 
 async function startDaemon() {
   const paths = ensureProjectDir();
@@ -133,7 +133,7 @@ async function startDaemon() {
 The client connects to the daemon and handles messaging.
 
 ```typescript
-import { RelayClient, type ClientConfig } from 'agent-relay';
+import { RelayClient, type ClientConfig } from '@agent-relay/sdk';
 
 const client = new RelayClient(config);
 ```
@@ -312,8 +312,8 @@ client.onError = (error: Error) => void
 #### Example
 
 ```typescript
-import { RelayClient } from 'agent-relay';
-import { getProjectPaths } from 'agent-relay';
+import { RelayClient } from '@agent-relay/sdk';
+import { getProjectPaths } from '@agent-relay/sdk';
 
 async function connectAsClient() {
   const paths = getProjectPaths();
@@ -366,7 +366,7 @@ async function connectAsClient() {
 ### Project Paths
 
 ```typescript
-import { getProjectPaths, ensureProjectDir } from 'agent-relay';
+import { getProjectPaths, ensureProjectDir } from '@agent-relay/sdk';
 
 // Get paths for current directory
 const paths = getProjectPaths();
@@ -418,7 +418,7 @@ interface StorageAdapter {
 ### Creating Storage Adapters
 
 ```typescript
-import { createStorageAdapter, type StorageConfig } from 'agent-relay';
+import { createStorageAdapter, type StorageConfig } from '@agent-relay/sdk';
 
 // Default SQLite
 const adapter = await createStorageAdapter('/path/to/db.sqlite');
@@ -443,7 +443,7 @@ import {
   MemoryStorageAdapter,
   SqliteStorageAdapter,
   BatchedSqliteAdapter,
-} from 'agent-relay';
+} from '@agent-relay/sdk';
 
 // In-memory (testing)
 const memory = new MemoryStorageAdapter();
@@ -461,7 +461,7 @@ await sqlite.init();
 ### Envelope
 
 ```typescript
-import type { Envelope, MessageType, PayloadKind } from 'agent-relay';
+import type { Envelope, MessageType, PayloadKind } from '@agent-relay/sdk';
 
 interface Envelope<T = unknown> {
   v: number;          // Protocol version
@@ -478,7 +478,7 @@ interface Envelope<T = unknown> {
 ### Framing
 
 ```typescript
-import { encodeFrame, encodeFrameLegacy, FrameParser } from 'agent-relay';
+import { encodeFrame, encodeFrameLegacy, FrameParser } from '@agent-relay/sdk';
 
 // Encode with modern format
 const frame = encodeFrame(envelope, 'json');
@@ -499,7 +499,7 @@ for (const envelope of envelopes) {
 ### MessagePack Support
 
 ```typescript
-import { initMessagePack, hasMessagePack, encodeFrame } from 'agent-relay';
+import { initMessagePack, hasMessagePack, encodeFrame } from '@agent-relay/sdk';
 
 // Initialize (requires @msgpack/msgpack)
 const supported = await initMessagePack();
@@ -520,7 +520,7 @@ import {
   createMemoryAdapter,
   createMemoryService,
   type MemoryConfig,
-} from 'agent-relay';
+} from '@agent-relay/sdk';
 
 // In-memory adapter
 const adapter = await createMemoryAdapter({ type: 'memory' });
@@ -549,7 +549,7 @@ import {
   createDLQAdapter,
   type DLQConfig,
   type DeadLetter,
-} from 'agent-relay';
+} from '@agent-relay/sdk';
 
 // Create DLQ adapter
 const dlq = createDLQAdapter({ type: 'sqlite', path: '/path/to/dlq.sqlite' });
@@ -615,7 +615,7 @@ import type {
   ClientConfig,
   DaemonConfig,
   StorageConfig,
-} from 'agent-relay';
+} from '@agent-relay/sdk';
 ```
 
 ---
@@ -623,7 +623,7 @@ import type {
 ## Error Handling
 
 ```typescript
-import { RelayClient } from 'agent-relay';
+import { RelayClient } from '@agent-relay/sdk';
 
 const client = new RelayClient({ agentName: 'MyAgent' });
 
@@ -652,7 +652,7 @@ if (client.state === 'READY') {
 ## Complete Example
 
 ```typescript
-import { Daemon, RelayClient, getProjectPaths, ensureProjectDir } from 'agent-relay';
+import { Daemon, RelayClient, getProjectPaths, ensureProjectDir } from '@agent-relay/sdk';
 
 async function main() {
   // Ensure project directories exist

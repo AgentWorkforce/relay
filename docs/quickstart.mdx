@@ -22,7 +22,6 @@ This guide will have you running your first multi-agent network in under 5 minut
 Before you begin, ensure you have:
 
 - **Node.js** 18 or higher
-- **tmux** installed on your system
 - At least one AI CLI installed (Claude, Codex, Cursor, or Gemini)
 
 ## Installation
@@ -51,7 +50,7 @@ agent-relay --version
 
     You should see:
     ```
-    Daemon started on /tmp/agent-relay.sock
+    Daemon started.
     Dashboard available at http://localhost:3888
     ```
   </Step>
@@ -223,29 +222,16 @@ agent-relay spawn Bob claude "Send a greeting to Alice"
     ```
   </Accordion>
 
-  <Accordion title="tmux not found">
-    Install tmux for your platform:
-
-    ```bash
-    # macOS
-    brew install tmux
-
-    # Linux
-    sudo apt-get install tmux
-    ```
-  </Accordion>
-
   <Accordion title="Messages not delivering">
     1. Verify both agents are connected: `agent-relay agents`
     2. Check agent names match exactly (case-insensitive)
     3. Ensure the message format is correct: `->relay:Name message`
   </Accordion>
 
-  <Accordion title="Permission denied on socket">
-    Remove stale socket file and restart:
+  <Accordion title="Daemon won't start">
+    Stop any existing daemon and restart:
 
     ```bash
-    rm /tmp/agent-relay.sock
     agent-relay down
     agent-relay up
     ```

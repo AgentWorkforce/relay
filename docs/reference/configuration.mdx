@@ -235,7 +235,7 @@ Agent-specific configuration for automatic CLI arguments.
 }
 ```
 
-When the specified agent is created with `create-agent`, these settings are automatically applied to the CLI.
+When the specified agent is created with `spawn`, these settings are automatically applied to the CLI.
 
 ---
 
@@ -364,7 +364,7 @@ interface WrapperConfig {
   pollInterval?: number;     // Output polling interval
   idleBeforeInjectMs?: number;  // Wait before injection
   debug?: boolean;           // Debug logging
-  mouseMode?: boolean;       // Enable tmux mouse mode
+  mouseMode?: boolean;       // Enable mouse mode
   streamLogs?: boolean;      // Stream logs to daemon
   relayPrefix?: string;      // Custom relay prefix
   skipInstructions?: boolean;  // Skip initial instructions
@@ -427,7 +427,6 @@ Project: /Users/me/myproject
 Hash: abc123
 
 Data directory: ~/.local/share/agent-relay/abc123/
-Socket: /tmp/relay/abc123/agent-relay.sock
 Database: ~/.local/share/agent-relay/abc123/agent-relay.sqlite
 ```
 

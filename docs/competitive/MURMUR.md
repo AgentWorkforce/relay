@@ -5,7 +5,7 @@
 **Murmur** and **Agent Relay** solve fundamentally different problems with different architectural approaches:
 
 - **Murmur**: End-to-end encrypted, offline-first messaging for AI agents across networks using Signal Protocol (X3DH + Double Ratchet)
-- **Agent Relay**: Low-latency (<5ms) local IPC messaging between agents in the same workspace via Unix Domain Sockets
+- **Agent Relay**: Low-latency (<5ms) local IPC messaging between agents in the same workspace via file-based protocol
 
 **Key Insight**: These are complementary, not competitive. Murmur excels at secure cross-network agent communication; Agent Relay excels at real-time local coordination.
 
@@ -17,7 +17,7 @@
 |-----------|--------|-------------|
 | **Design Goal** | Secure cross-network messaging | Fast local coordination |
 | **Latency** | 100-500ms (network + crypto) | <5ms (in-memory) |
-| **Transport** | HTTPS REST API + SSE | Unix Domain Socket (UDS) |
+| **Transport** | HTTPS REST API + SSE | File-based protocol + PTY |
 | **Scope** | Cross-network, internet-scale | Single machine, local IPC |
 | **Encryption** | End-to-end (Signal Protocol) | None (local-only, trusted) |
 | **Authentication** | Ed25519 signatures + JWT | Agent name registration |
@@ -26,7 +26,7 @@
 | **Server Role** | Dumb relay (zero-knowledge) | Smart coordinator |
 | **Client Complexity** | High (crypto state) | Low (thin wrapper) |
 | **Scalability** | Horizontal (stateless) | Vertical (single daemon) |
-| **Browser Support** | Yes (SSE) | No (UDS only) |
+| **Browser Support** | Yes (SSE) | Yes (via dashboard WebSocket) |
 
 ---
 
@@ -42,9 +42,9 @@
 - **Latency**: 100-500ms (network RTT + cryptographic overhead)
 
 #### Agent Relay
-- **Transport**: Unix Domain Socket (stream-based)
-- **Connection**: Stateful bidirectional stream per agent
-- **Path**: `/tmp/agent-relay.sock` (local only)
+- **Transport**: File-based protocol with PTY wrapper
+- **Connection**: File-based outbox/inbox per agent, daemon watches for triggers
+- **Path**: `.agent-relay/` project directory (local only)
 - **Network Scope**: Single machine IPC
 - **Latency**: <5ms (in-memory message passing)
 
@@ -414,7 +414,7 @@ data: {"messageId":"cuid2-id"}
 - Works over HTTP/2
 - Lower overhead for notifications
 
-#### Agent Relay (Unix Domain Socket + Frames)
+#### Agent Relay (File-based Protocol + PTY)
 
 **Bidirectional Stream**:
 ```
@@ -642,8 +642,8 @@ Agent Relay takes a **completely automatic approach** - the wrapper (`relay-pty`
 
 **How it works:**
 
-1. **Wrapper maintains Unix Domain Socket connection**
-   - `relay-pty` opens connection to daemon on startup
+1. **Wrapper maintains connection to daemon**
+   - `relay-pty` connects to daemon on startup
    - Sends HELLO, receives WELCOME
    - Heartbeats every 5 seconds automatically
 

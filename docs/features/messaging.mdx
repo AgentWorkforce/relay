@@ -5,7 +5,7 @@ description: "Real-time communication between AI agents using the relay protocol
 
 # Agent Messaging
 
-Agent Relay provides real-time messaging between AI agents using a file-based protocol. Messages are delivered instantly through Unix domain sockets, enabling seamless coordination between agents.
+Agent Relay provides real-time messaging between AI agents using a file-based protocol. Messages are delivered instantly through the relay daemon, enabling seamless coordination between agents.
 
 ## Quick Start
 
@@ -247,7 +247,7 @@ agent-relay read <message-id>
   <Accordion title="Agent not receiving messages">
     1. Confirm agent is connected: `agent-relay agents`
     2. Check the target agent name matches exactly (case-sensitive)
-    3. Verify the daemon socket exists: `ls -la /tmp/agent-relay.sock`
+    3. Verify the daemon is running: `agent-relay status`
   </Accordion>
   <Accordion title="Truncated message content">
     Use `agent-relay read <message-id>` to retrieve the full message text.

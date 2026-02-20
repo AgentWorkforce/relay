@@ -398,14 +398,11 @@ agent-relay down --all --force
 pkill -f "agent-relay up"
 ```
 
-**Orphan socket files:**
-The `down` command automatically cleans up stale files including sockets, pid files, runtime config, and identity files. Manual cleanup is rarely needed, but if required:
+**Orphan files:**
+The `down` command automatically cleans up stale files including pid files, runtime config, and identity files. Manual cleanup is rarely needed, but if required:
 ```bash
-# Remove socket and pid files
-rm -f .agent-relay/relay.sock .agent-relay/relay.sock.pid
-
-# Remove runtime config
-rm -f .agent-relay/runtime.json
+# Remove pid and runtime files
+rm -f .agent-relay/broker.pid .agent-relay/runtime.json
 
 # Remove stale identity files (keeps mcp-identity)
 rm -f .agent-relay/mcp-identity-*
@@ -425,8 +422,7 @@ Each project has its own daemon. Running `agent-relay up` in different directori
 ### What Gets Cleaned Up
 
 When the daemon stops (gracefully or via `down --force`):
-- `relay.sock` - Unix socket file
-- `relay.sock.pid` - PID file
+- `broker.pid` - Process ID file
 - `runtime.json` - Runtime configuration
 - `mcp-identity-*` - Per-process identity files
 

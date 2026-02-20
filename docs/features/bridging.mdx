@@ -239,8 +239,8 @@ Bridge logs show reconnection status:
 <AccordionGroup>
   <Accordion title="Bridge fails to connect">
     1. Verify daemons are running in each project: `agent-relay status`
-    2. Check socket files exist: `ls /tmp/agent-relay-*.sock`
-    3. Ensure no firewall blocking local sockets
+    2. Check that `.agent-relay/` directories exist in each project
+    3. Ensure both projects have been initialized with `agent-relay up`
   </Accordion>
   <Accordion title="Messages not delivered cross-project">
     1. Confirm bridge is connected to both projects
@@ -267,7 +267,7 @@ Bridge logs show reconnection status:
     +-------v------+  +------v-------+  +----v---------+
     |  Frontend    |  |  Backend     |  |  Shared      |
     |  Daemon      |  |  Daemon      |  |  Libs Daemon |
-    |  (socket)    |  |  (socket)    |  |  (socket)    |
+    |  (relay)     |  |  (relay)     |  |  (relay)     |
     +-------+------+  +------+-------+  +------+-------+
             |                |                 |
     +-------v------+  +------v-------+  +------v-------+
@@ -276,4 +276,4 @@ Bridge logs show reconnection status:
     +--------------+  +--------------+  +--------------+
 ```
 
-The bridge client connects to each project's daemon via Unix sockets and routes messages between them based on the project prefix in the address.
+The bridge client connects to each project's daemon and routes messages between them based on the project prefix in the address.

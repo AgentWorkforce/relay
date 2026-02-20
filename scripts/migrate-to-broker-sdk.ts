@@ -387,7 +387,6 @@ Add these deps:
 - Preserve all existing flags and options
 - Keep telemetry (initTelemetry, track calls), update checks (checkForUpdatesInBackground)
 - Keep config loading (loadRuntimeConfig, getProjectPaths, getShadowForAgent from @agent-relay/config)
-- Keep storage (createStorageAdapter from @agent-relay/storage)
 - Keep MCP install (installMcpConfig from @agent-relay/mcp)
 - The file is very large — work methodically through each command
 

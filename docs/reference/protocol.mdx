@@ -495,7 +495,7 @@ Clients should pause sending until receiving a RESUME message or waiting the spe
 The protocol uses a ring buffer-based parser for efficient streaming:
 
 ```typescript
-import { FrameParser, encodeFrame } from 'agent-relay';
+import { FrameParser, encodeFrame } from '@agent-relay/sdk';
 
 // Create parser
 const parser = new FrameParser();
@@ -527,7 +527,7 @@ socket.write(frame);
 For improved performance, MessagePack encoding can be enabled:
 
 ```typescript
-import { initMessagePack, hasMessagePack, encodeFrame } from 'agent-relay';
+import { initMessagePack, hasMessagePack, encodeFrame } from '@agent-relay/sdk';
 
 // Initialize MessagePack (requires @msgpack/msgpack)
 await initMessagePack();
