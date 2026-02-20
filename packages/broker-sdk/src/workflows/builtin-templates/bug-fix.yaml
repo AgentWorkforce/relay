@@ -13,9 +13,11 @@ agents:
   - name: investigator
     cli: codex
     role: "Reproduces and scopes the defect"
+    interactive: false
   - name: fixer
     cli: codex
     role: "Implements and tests the fix"
+    interactive: false
   - name: verifier
     cli: claude
     role: "Validates risk, regressions, and completion"

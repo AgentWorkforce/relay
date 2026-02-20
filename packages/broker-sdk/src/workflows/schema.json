@@ -124,12 +124,17 @@
         },
         "constraints": {
           "$ref": "#/definitions/AgentConstraints"
+        },
+        "interactive": {
+          "type": "boolean",
+          "default": true,
+          "description": "When false, the agent runs as a non-interactive subprocess (no PTY, no relay messaging). It receives its task as a CLI prompt argument and returns stdout as output. Default: true."
         }
       }
     },
     "AgentCli": {
       "type": "string",
-      "enum": ["claude", "codex", "gemini", "aider", "goose"]
+      "enum": ["claude", "codex", "gemini", "aider", "goose", "opencode", "droid"]
     },
     "AgentConstraints": {
       "type": "object",

@@ -1073,7 +1073,25 @@ export class WorkflowRunner {
   ): Promise<string> {
     const agentName = `${step.name}-${this.generateShortId()}`;
     const modelArgs = agentDef.constraints?.model ? ['--model', agentDef.constraints.model] : [];
-    const { cmd, args } = WorkflowRunner.buildNonInteractiveCommand(agentDef.cli, step.task, modelArgs);
+
+    // Append strict deliverable enforcement — non-interactive agents MUST produce
+    // clear, structured output since there's no opportunity for follow-up or clarification.
+    const taskWithDeliverable = step.task + '\n\n---\n' +
+      'CRITICAL REQUIREMENT — YOU MUST FOLLOW THIS EXACTLY:\n' +
+      'You are running in non-interactive mode. There is NO opportunity for follow-up, ' +
+      'clarification, or additional input. Your stdout output is your ONLY deliverable.\n\n' +
+      'You MUST:\n' +
+      '1. Complete the ENTIRE task in a single pass — no partial work, no "I\'ll continue later"\n' +
+      '2. Print your COMPLETE deliverable to stdout — this is the ONLY output that will be captured\n' +
+      '3. Be thorough and self-contained — another agent will consume your output with zero context about your process\n' +
+      '4. End with a clear summary of what was accomplished and any artifacts produced\n\n' +
+      'DO NOT:\n' +
+      '- Ask questions or request clarification (there is no one to answer)\n' +
+      '- Output partial results expecting a follow-up (there will be none)\n' +
+      '- Skip steps or leave work incomplete\n' +
+      '- Output only status messages without the actual deliverable content';
+
+    const { cmd, args } = WorkflowRunner.buildNonInteractiveCommand(agentDef.cli, taskWithDeliverable, modelArgs);
 
     // Open a log file for dashboard observability
     const logsDir = this.getWorkerLogsDir();

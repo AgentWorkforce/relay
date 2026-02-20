@@ -209,13 +209,17 @@ export class SwarmCoordinator extends EventEmitter {
 
     const topology = this.resolveInteractiveTopology(p, config, agents, edges, names);
 
+    // Apply non-interactive filtering to the actual topology edges (not the local
+    // `edges` variable, which may not be the same map — e.g., DAG creates its own).
+    const topologyEdges = topology.edges;
+
     // Ensure non-interactive agents have empty edge entries (no messaging)
     for (const name of nonInteractiveNames) {
-      edges.set(name, []);
+      topologyEdges.set(name, []);
     }
     // Also filter out non-interactive agents from any edge targets
-    for (const [agent, targets] of edges) {
-      edges.set(agent, targets.filter((t) => !nonInteractiveNames.has(t)));
+    for (const [agent, targets] of topologyEdges) {
+      topologyEdges.set(agent, targets.filter((t) => !nonInteractiveNames.has(t)));
     }
 
     return topology;

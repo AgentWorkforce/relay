@@ -13,9 +13,11 @@ agents:
   - name: planner
     cli: codex
     role: "Plans implementation and acceptance criteria"
+    interactive: false
   - name: developer
     cli: codex
     role: "Implements planned changes"
+    interactive: false
   - name: reviewer
     cli: claude
     role: "Reviews code quality and release risk"

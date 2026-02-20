@@ -13,12 +13,15 @@ agents:
   - name: reviewer-architecture
     cli: codex
     role: "Assesses architecture and maintainability"
+    interactive: false
   - name: reviewer-correctness
     cli: claude
     role: "Assesses correctness and testing"
+    interactive: false
   - name: reviewer-security
     cli: gemini
     role: "Assesses security posture and abuse resistance"
+    interactive: false
 workflows:
   - name: parallel-review
     description: "Run focused reviews in parallel and synthesize final guidance."

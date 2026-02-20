@@ -13,12 +13,14 @@ agents:
   - name: scanner
     cli: codex
     role: "Performs static and dependency security scanning"
+    interactive: false
   - name: analyst
     cli: claude
     role: "Prioritizes findings and recommends mitigations"
   - name: remediator
     cli: codex
     role: "Implements approved remediations"
+    interactive: false
   - name: verifier
     cli: gemini
     role: "Verifies fixes and residual exposure"

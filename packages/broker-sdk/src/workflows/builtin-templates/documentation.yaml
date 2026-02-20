@@ -13,9 +13,11 @@ agents:
   - name: researcher
     cli: codex
     role: "Collects technical context and source details"
+    interactive: false
   - name: writer
     cli: codex
     role: "Drafts user-facing documentation"
+    interactive: false
   - name: editor
     cli: claude
     role: "Edits for accuracy, clarity, and structure"

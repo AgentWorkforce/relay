@@ -13,9 +13,11 @@ agents:
   - name: architect
     cli: codex
     role: "Designs target architecture and migration plan"
+    interactive: false
   - name: refactorer
     cli: codex
     role: "Executes scoped refactor changes"
+    interactive: false
   - name: tester
     cli: claude
     role: "Validates behavior parity and risk"
