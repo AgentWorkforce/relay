@@ -4,6 +4,7 @@
  * persists state to DB, and supports pause/resume/abort with retries.
  */
 
+import { spawn as cpSpawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import type { WriteStream } from 'node:fs';
@@ -967,7 +968,16 @@ export class WorkflowRunner {
 
         // Resolve step-output variables (e.g. {{steps.plan.output}}) at execution time
         const stepOutputContext = this.buildStepOutputContext(stepStates, runId);
-        const resolvedTask = this.interpolateStepTask(step.task, stepOutputContext);
+        let resolvedTask = this.interpolateStepTask(step.task, stepOutputContext);
+
+        // If this is an interactive agent, append awareness of non-interactive workers
+        // so the lead knows not to message them and to use step output chaining instead
+        if (agentDef.interactive !== false) {
+          const nonInteractiveInfo = this.buildNonInteractiveAwareness(agentMap);
+          if (nonInteractiveInfo) {
+            resolvedTask += nonInteractiveInfo;
+          }
+        }
 
         // Spawn agent via AgentRelay
         const resolvedStep = { ...step, task: resolvedTask };
@@ -1015,11 +1025,156 @@ export class WorkflowRunner {
     throw new Error(`Step "${step.name}" failed after ${maxRetries} retries: ${lastError ?? 'Unknown error'}`);
   }
 
+  /**
+   * Build the CLI command and arguments for a non-interactive agent execution.
+   * Each CLI has a specific flag for one-shot prompt mode.
+   */
+  static buildNonInteractiveCommand(
+    cli: AgentCli,
+    task: string,
+    extraArgs: string[] = [],
+  ): { cmd: string; args: string[] } {
+    switch (cli) {
+      case 'claude':
+        return { cmd: 'claude', args: ['-p', task, ...extraArgs] };
+      case 'codex':
+        return { cmd: 'codex', args: ['exec', task, ...extraArgs] };
+      case 'gemini':
+        return { cmd: 'gemini', args: ['-p', task, ...extraArgs] };
+      case 'opencode':
+        return { cmd: 'opencode', args: ['--prompt', task, ...extraArgs] };
+      case 'droid':
+        return { cmd: 'droid', args: ['exec', task, ...extraArgs] };
+      case 'aider':
+        return { cmd: 'aider', args: ['--message', task, '--yes-always', '--no-git', ...extraArgs] };
+      case 'goose':
+        return { cmd: 'goose', args: ['run', '--text', task, '--no-session', ...extraArgs] };
+    }
+  }
+
+  /**
+   * Execute an agent as a non-interactive subprocess.
+   * No PTY, no relay messaging, no /exit injection. The process receives its task
+   * as a CLI argument and stdout is captured as the step output.
+   */
+  private async execNonInteractive(
+    agentDef: AgentDefinition,
+    step: WorkflowStep,
+    timeoutMs?: number,
+  ): Promise<string> {
+    const agentName = `${step.name}-${this.generateShortId()}`;
+    const modelArgs = agentDef.constraints?.model ? ['--model', agentDef.constraints.model] : [];
+    const { cmd, args } = WorkflowRunner.buildNonInteractiveCommand(agentDef.cli, step.task, modelArgs);
+
+    // Open a log file for dashboard observability
+    const logsDir = this.getWorkerLogsDir();
+    const logPath = path.join(logsDir, `${agentName}.log`);
+    const logStream = createWriteStream(logPath, { flags: 'a' });
+
+    // Register in workers.json with interactive: false metadata
+    this.registerWorker(agentName, agentDef.cli, step.task, undefined, false);
+
+    // Register agent in Relaycast for observability
+    let stopHeartbeat: (() => void) | undefined;
+    if (this.relaycastApi) {
+      const agentClient = await this.relaycastApi.registerExternalAgent(
+        agentName,
+        `Non-interactive workflow agent for step "${step.name}" (${agentDef.cli})`,
+      ).catch((err) => {
+        console.warn(`[WorkflowRunner] Failed to register ${agentName} in Relaycast:`, err?.message ?? err);
+        return null;
+      });
+      if (agentClient) {
+        stopHeartbeat = this.relaycastApi.startHeartbeat(agentClient);
+      }
+    }
+
+    // Post task assignment to channel for observability
+    const taskPreview = step.task.slice(0, 500) + (step.task.length > 500 ? '...' : '');
+    this.postToChannel(`**[${step.name}]** Assigned to \`${agentName}\` (non-interactive):\n${taskPreview}`);
+
+    const stdoutChunks: string[] = [];
+    const stderrChunks: string[] = [];
+
+    try {
+      const output = await new Promise<string>((resolve, reject) => {
+        const child = cpSpawn(cmd, args, {
+          stdio: 'pipe',
+          cwd: this.cwd,
+          env: { ...process.env },
+        });
+
+        // Update workers.json with PID now that we have it
+        this.registerWorker(agentName, agentDef.cli, step.task, child.pid, false);
+
+        child.stdout?.on('data', (chunk: Buffer) => {
+          const text = chunk.toString();
+          stdoutChunks.push(text);
+          logStream.write(text);
+        });
+
+        child.stderr?.on('data', (chunk: Buffer) => {
+          const text = chunk.toString();
+          stderrChunks.push(text);
+          logStream.write(`[stderr] ${text}`);
+        });
+
+        // Handle timeout
+        let timedOut = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        if (timeoutMs) {
+          timer = setTimeout(() => {
+            timedOut = true;
+            child.kill('SIGTERM');
+            // Give process time to clean up, then force kill
+            setTimeout(() => child.kill('SIGKILL'), 5000);
+          }, timeoutMs);
+        }
+
+        child.on('close', (code) => {
+          if (timer) clearTimeout(timer);
+          const stdout = stdoutChunks.join('');
+
+          if (timedOut) {
+            reject(new Error(`Step "${step.name}" timed out after ${timeoutMs}ms`));
+            return;
+          }
+
+          if (code !== 0 && code !== null) {
+            const stderr = stderrChunks.join('');
+            reject(new Error(
+              `Step "${step.name}" exited with code ${code}${stderr ? `: ${stderr.slice(0, 500)}` : ''}`,
+            ));
+            return;
+          }
+
+          resolve(stdout);
+        });
+
+        child.on('error', (err) => {
+          if (timer) clearTimeout(timer);
+          reject(new Error(`Failed to spawn ${cmd}: ${err.message}`));
+        });
+      });
+
+      return output;
+    } finally {
+      stopHeartbeat?.();
+      logStream.end();
+      this.unregisterWorker(agentName);
+    }
+  }
+
   private async spawnAndWait(
     agentDef: AgentDefinition,
     step: WorkflowStep,
     timeoutMs?: number,
   ): Promise<string> {
+    // Branch: non-interactive agents run as simple subprocesses
+    if (agentDef.interactive === false) {
+      return this.execNonInteractive(agentDef, step, timeoutMs);
+    }
+
     if (!this.relay) {
       throw new Error('AgentRelay not initialized');
     }
@@ -1296,6 +1451,23 @@ export class WorkflowRunner {
 
   // ── Channel messaging ──────────────────────────────────────────────────
 
+  /**
+   * Build a metadata note about non-interactive workers for inclusion in interactive agent tasks.
+   * Returns undefined if there are no non-interactive agents.
+   */
+  private buildNonInteractiveAwareness(agentMap: Map<string, AgentDefinition>): string | undefined {
+    const nonInteractive = [...agentMap.values()].filter((a) => a.interactive === false);
+    if (nonInteractive.length === 0) return undefined;
+
+    const lines = nonInteractive.map(
+      (a) => `- ${a.name} (${a.cli}) — will return output when complete`,
+    );
+    return '\n\n---\n' +
+      'Note: The following agents are non-interactive workers and cannot receive messages:\n' +
+      lines.join('\n') + '\n' +
+      'Use {{steps.step-name.output}} to access their results.';
+  }
+
   /** Post a message to the workflow channel. Fire-and-forget — never throws or blocks. */
   private postToChannel(text: string): void {
     if (!this.relaycastApi || !this.channel) return;
@@ -1475,16 +1647,17 @@ export class WorkflowRunner {
   }
 
   /** Register a spawned agent in workers.json so `agents:kill` can find it. */
-  private registerWorker(agentName: string, cli: string, task: string, pid?: number): void {
+  private registerWorker(agentName: string, cli: string, task: string, pid?: number, interactive = true): void {
     try {
       mkdirSync(path.dirname(this.workersPath), { recursive: true });
-      const existing = this.readWorkers();
+      const existing = this.readWorkers().filter((w) => w.name !== agentName);
       existing.push({
         name: agentName,
         cli,
         task: task.slice(0, 500),
         spawnedAt: Date.now(),
         pid,
+        interactive,
         logFile: path.join(this.getWorkerLogsDir(), `${agentName}.log`),
       });
       this.writeWorkers(existing);

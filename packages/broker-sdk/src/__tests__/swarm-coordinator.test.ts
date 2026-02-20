@@ -528,6 +528,43 @@ describe('SwarmCoordinator', () => {
       expect(topology.edges.get('drone-2')).toContain('hive');
     });
 
+    it('should exclude non-interactive agents from message edges', () => {
+      const config = makeConfig({
+        swarm: { pattern: 'fan-out' },
+        agents: [
+          { name: 'leader', cli: 'claude', role: 'lead' },
+          { name: 'worker-1', cli: 'codex', interactive: false },
+          { name: 'worker-2', cli: 'claude' },
+        ],
+      });
+      const topology = coordinator.resolveTopology(config);
+      expect(topology.pattern).toBe('fan-out');
+      // leader should only message worker-2 (not worker-1 which is non-interactive)
+      expect(topology.edges.get('leader')).toEqual(['worker-2']);
+      // worker-1 should have empty edges (non-interactive)
+      expect(topology.edges.get('worker-1')).toEqual([]);
+      // worker-2 should only message leader
+      expect(topology.edges.get('worker-2')).toEqual(['leader']);
+      // All agents should still be in the topology
+      expect(topology.agents).toHaveLength(3);
+    });
+
+    it('should handle all non-interactive agents gracefully', () => {
+      const config = makeConfig({
+        swarm: { pattern: 'fan-out' },
+        agents: [
+          { name: 'leader', cli: 'claude', role: 'lead' },
+          { name: 'worker-1', cli: 'codex', interactive: false },
+          { name: 'worker-2', cli: 'codex', interactive: false },
+        ],
+      });
+      const topology = coordinator.resolveTopology(config);
+      // leader is the only interactive agent, so it fans out to no one
+      expect(topology.edges.get('leader')).toEqual([]);
+      expect(topology.edges.get('worker-1')).toEqual([]);
+      expect(topology.edges.get('worker-2')).toEqual([]);
+    });
+
     it('should handle red-team with multiple attackers and defenders', () => {
       const config = makeConfig({
         swarm: { pattern: 'red-team' },

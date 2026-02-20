@@ -80,9 +80,13 @@ export interface AgentDefinition {
   task?: string;
   channels?: string[];
   constraints?: AgentConstraints;
+  /** When false, the agent runs as a non-interactive subprocess (no PTY, no relay messaging).
+   *  It receives its task as a CLI prompt argument and returns stdout as output.
+   *  Default: true (interactive PTY mode). */
+  interactive?: boolean;
 }
 
-export type AgentCli = "claude" | "codex" | "gemini" | "aider" | "goose";
+export type AgentCli = "claude" | "codex" | "gemini" | "aider" | "goose" | "opencode" | "droid";
 
 /** Resource and behavioral constraints for an agent. */
 export interface AgentConstraints {

@@ -82,10 +82,11 @@ Avoid `timeoutMs` on agents/steps unless you have a specific reason. The global 
 
 ```typescript
 .agent('name', {
-  cli: 'claude' | 'codex' | 'gemini' | 'aider' | 'goose',
+  cli: 'claude' | 'codex' | 'gemini' | 'aider' | 'goose' | 'opencode' | 'droid',
   role?: string,        // describes agent's purpose (used by pattern auto-selection)
   retries?: number,     // default retry count for steps using this agent
   model?: string,       // model override
+  interactive?: boolean, // default: true. Set false for non-interactive subprocess mode
 })
 ```
 
@@ -137,6 +138,36 @@ Avoid `timeoutMs` on agents/steps unless you have a specific reason. The global 
 .onError('continue')    // skip failed branches, continue others
 .onError('retry', { maxRetries: 3, retryDelayMs: 5000 })
 ```
+
+## Non-Interactive Agents
+
+For swarm patterns like fan-out and map-reduce, workers that just need to execute a task and return output don't need full PTY/relay messaging overhead. Set `interactive: false` to run them as simple subprocesses:
+
+```typescript
+.agent('worker', {
+  cli: 'codex',
+  interactive: false,  // runs "codex exec <task>", no PTY, no relay messaging
+  role: 'Backend engineer',
+})
+```
+
+**What changes with `interactive: false`:**
+- Agent runs via CLI one-shot mode (e.g., `claude -p`, `codex exec`, `gemini -p`)
+- No PTY wrapping, no stdin passthrough, no `/exit` self-termination
+- No relay messaging — the agent cannot send or receive messages
+- Output is captured from stdout and available via `{{steps.X.output}}`
+- Lead agents are automatically informed which workers are non-interactive
+- Faster startup and lower overhead than interactive mode
+
+**When to use:**
+- Fan-out workers that just process a task and return results
+- Map-reduce mappers that don't need mid-task communication
+- Any agent that doesn't need turn-by-turn relay messaging
+
+**When NOT to use:**
+- Lead/coordinator agents that need to communicate with others
+- Agents that need to receive messages or participate in channels
+- Agents involved in debate, consensus, or reflection patterns
 
 ## Common Mistakes
 
