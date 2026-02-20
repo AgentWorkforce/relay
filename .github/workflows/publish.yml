@@ -504,7 +504,6 @@ jobs:
           - resiliency
           - user-directory
           - spawner
-          - mcp
           - config
           - bridge
           - wrapper

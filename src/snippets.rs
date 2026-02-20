@@ -686,7 +686,7 @@ mod tests {
 
         fs::write(
             root.join(".mcp.json"),
-            r#"{"mcpServers":{"agent-relay":{"command":"npx","args":["@agent-relay/mcp","serve"]}}}"#,
+            r#"{"mcpServers":{"relaycast":{"command":"npx","args":["-y","@relaycast/mcp"]}}}"#,
         )
         .expect("write .mcp.json");
 
@@ -718,7 +718,7 @@ mod tests {
         // Now add MCP config
         fs::write(
             root.join(".mcp.json"),
-            r#"{"mcpServers":{"agent-relay":{"command":"npx","args":["@agent-relay/mcp","serve"]}}}"#,
+            r#"{"mcpServers":{"relaycast":{"command":"npx","args":["-y","@relaycast/mcp"]}}}"#,
         )
         .expect("write .mcp.json");
 
