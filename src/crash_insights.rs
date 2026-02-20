@@ -86,10 +86,7 @@ impl CrashInsights {
                     format!("Killed by signal {} (possible OOM)", sig),
                 );
             }
-            return (
-                CrashCategory::Signal,
-                format!("Killed by signal {}", sig),
-            );
+            return (CrashCategory::Signal, format!("Killed by signal {}", sig));
         }
 
         // Check exit code
@@ -102,10 +99,7 @@ impl CrashInsights {
                 CrashCategory::Segfault,
                 "Exit code 139 (segmentation fault)".to_string(),
             ),
-            Some(code) if code != 0 => (
-                CrashCategory::Error,
-                format!("Exited with code {}", code),
-            ),
+            Some(code) if code != 0 => (CrashCategory::Error, format!("Exited with code {}", code)),
             Some(code) => (
                 CrashCategory::Unknown,
                 format!("Exited with unexpected code {}", code),

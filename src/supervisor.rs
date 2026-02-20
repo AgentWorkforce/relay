@@ -142,10 +142,7 @@ impl Supervisor {
 
         if state.total_restarts >= state.policy.max_restarts {
             return Some(RestartDecision::PermanentlyDead {
-                reason: format!(
-                    "exceeded max restarts ({})",
-                    state.policy.max_restarts
-                ),
+                reason: format!("exceeded max restarts ({})", state.policy.max_restarts),
             });
         }
 
@@ -201,10 +198,7 @@ impl Supervisor {
 
     /// Get the current restart count for an agent.
     pub fn restart_count(&self, name: &str) -> u32 {
-        self.states
-            .get(name)
-            .map(|s| s.total_restarts)
-            .unwrap_or(0)
+        self.states.get(name).map(|s| s.total_restarts).unwrap_or(0)
     }
 
     /// Check if an agent is registered with the supervisor.
@@ -262,13 +256,7 @@ mod tests {
     #[test]
     fn register_and_unregister() {
         let mut sup = Supervisor::new();
-        sup.register(
-            "w1",
-            test_spec("w1"),
-            None,
-            None,
-            RestartPolicy::default(),
-        );
+        sup.register("w1", test_spec("w1"), None, None, RestartPolicy::default());
         assert!(sup.is_supervised("w1"));
 
         sup.unregister("w1");
@@ -327,10 +315,7 @@ mod tests {
 
         // Third crash -> permanently dead (hit max_restarts=2)
         let decision = sup.on_exit("w1", Some(1), None).unwrap();
-        assert!(matches!(
-            decision,
-            RestartDecision::PermanentlyDead { .. }
-        ));
+        assert!(matches!(decision, RestartDecision::PermanentlyDead { .. }));
     }
 
     #[test]
@@ -358,10 +343,7 @@ mod tests {
 
         // Crash 3 -> consecutive=3, exceeds max_consecutive_failures=2
         let decision = sup.on_exit("w1", Some(1), None).unwrap();
-        assert!(matches!(
-            decision,
-            RestartDecision::PermanentlyDead { .. }
-        ));
+        assert!(matches!(decision, RestartDecision::PermanentlyDead { .. }));
     }
 
     #[test]
@@ -398,22 +380,13 @@ mod tests {
         sup.register("w1", test_spec("w1"), None, None, policy);
 
         let decision = sup.on_exit("w1", Some(1), None).unwrap();
-        assert!(matches!(
-            decision,
-            RestartDecision::PermanentlyDead { .. }
-        ));
+        assert!(matches!(decision, RestartDecision::PermanentlyDead { .. }));
     }
 
     #[test]
     fn released_agent_not_restarted() {
         let mut sup = Supervisor::new();
-        sup.register(
-            "w1",
-            test_spec("w1"),
-            None,
-            None,
-            RestartPolicy::default(),
-        );
+        sup.register("w1", test_spec("w1"), None, None, RestartPolicy::default());
         sup.unregister("w1");
 
         // Should return None — not supervised
@@ -465,13 +438,7 @@ mod tests {
     #[test]
     fn restart_count_tracks_total() {
         let mut sup = Supervisor::new();
-        sup.register(
-            "w1",
-            test_spec("w1"),
-            None,
-            None,
-            RestartPolicy::default(),
-        );
+        sup.register("w1", test_spec("w1"), None, None, RestartPolicy::default());
 
         assert_eq!(sup.restart_count("w1"), 0);
 
