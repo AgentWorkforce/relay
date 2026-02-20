@@ -80,7 +80,8 @@ export type SwarmPattern =
   | "saga"
   | "circuit-breaker"
   | "blackboard"
-  | "swarm";
+  | "swarm"
+  | "competitive";
 
 // ── Agent definitions ───────────────────────────────────────────────────────
 

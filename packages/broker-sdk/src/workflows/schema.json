@@ -119,7 +119,8 @@
         "saga",
         "circuit-breaker",
         "blackboard",
-        "swarm"
+        "swarm",
+        "competitive"
       ]
     },
     "AgentDefinition": {
