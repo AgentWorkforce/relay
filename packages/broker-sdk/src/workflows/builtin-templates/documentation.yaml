@@ -38,7 +38,8 @@ workflows:
         agent: writer
         dependsOn: [gather-context]
         task: |
-          Draft documentation updates based on gathered context.
+          Draft documentation updates based on gathered context:
+          {{steps.gather-context.output}}
         verification:
           type: output_contains
           value: DRAFT_COMPLETE
@@ -46,7 +47,8 @@ workflows:
         agent: editor
         dependsOn: [draft]
         task: |
-          Edit the draft for technical accuracy and readability.
+          Edit the draft for technical accuracy and readability:
+          {{steps.draft.output}}
         verification:
           type: output_contains
           value: EDIT_COMPLETE

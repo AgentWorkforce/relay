@@ -720,10 +720,13 @@ export class SwarmCoordinator extends EventEmitter {
   }
 
   private pickHub(agents: AgentDefinition[]): string {
-    const lead = agents.find(
+    // Prefer interactive agents as hub — non-interactive agents cannot receive messages
+    const interactiveAgents = agents.filter((a) => a.interactive !== false);
+    const pool = interactiveAgents.length > 0 ? interactiveAgents : agents;
+    const lead = pool.find(
       (a) => a.role === 'lead' || a.role === 'hub' || a.role === 'coordinator',
     );
-    return lead?.name ?? agents[0].name;
+    return lead?.name ?? pool[0].name;
   }
 
   private resolvePipelineOrder(

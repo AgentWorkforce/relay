@@ -982,7 +982,7 @@ export class WorkflowRunner {
         // If this is an interactive agent, append awareness of non-interactive workers
         // so the lead knows not to message them and to use step output chaining instead
         if (agentDef.interactive !== false) {
-          const nonInteractiveInfo = this.buildNonInteractiveAwareness(agentMap);
+          const nonInteractiveInfo = this.buildNonInteractiveAwareness(agentMap, stepStates);
           if (nonInteractiveInfo) {
             resolvedTask += nonInteractiveInfo;
           }
@@ -1134,6 +1134,17 @@ export class WorkflowRunner {
         // Update workers.json with PID now that we have it
         this.registerWorker(agentName, agentDef.cli, step.task, child.pid, false);
 
+        // Wire abort signal so runner.abort() kills the child process
+        const abortSignal = this.abortController?.signal;
+        let abortHandler: (() => void) | undefined;
+        if (abortSignal && !abortSignal.aborted) {
+          abortHandler = () => {
+            child.kill('SIGTERM');
+            setTimeout(() => child.kill('SIGKILL'), 5000);
+          };
+          abortSignal.addEventListener('abort', abortHandler, { once: true });
+        }
+
         child.stdout?.on('data', (chunk: Buffer) => {
           const text = chunk.toString();
           stdoutChunks.push(text);
@@ -1160,7 +1171,15 @@ export class WorkflowRunner {
 
         child.on('close', (code) => {
           if (timer) clearTimeout(timer);
+          if (abortHandler && abortSignal) {
+            abortSignal.removeEventListener('abort', abortHandler);
+          }
           const stdout = stdoutChunks.join('');
+
+          if (abortSignal?.aborted) {
+            reject(new Error(`Step "${step.name}" aborted`));
+            return;
+          }
 
           if (timedOut) {
             reject(new Error(`Step "${step.name}" timed out after ${timeoutMs}ms`));
@@ -1180,6 +1199,9 @@ export class WorkflowRunner {
 
         child.on('error', (err) => {
           if (timer) clearTimeout(timer);
+          if (abortHandler && abortSignal) {
+            abortSignal.removeEventListener('abort', abortHandler);
+          }
           reject(new Error(`Failed to spawn ${cmd}: ${err.message}`));
         });
       });
@@ -1503,17 +1525,30 @@ export class WorkflowRunner {
    * Build a metadata note about non-interactive workers for inclusion in interactive agent tasks.
    * Returns undefined if there are no non-interactive agents.
    */
-  private buildNonInteractiveAwareness(agentMap: Map<string, AgentDefinition>): string | undefined {
+  private buildNonInteractiveAwareness(
+    agentMap: Map<string, AgentDefinition>,
+    stepStates: Map<string, StepState>,
+  ): string | undefined {
     const nonInteractive = [...agentMap.values()].filter((a) => a.interactive === false);
     if (nonInteractive.length === 0) return undefined;
 
-    const lines = nonInteractive.map(
-      (a) => `- ${a.name} (${a.cli}) — will return output when complete`,
-    );
+    // Map agent names to their step names so the lead knows exact {{steps.X.output}} references
+    const agentToSteps = new Map<string, string[]>();
+    for (const [stepName, state] of stepStates) {
+      const agentName = state.row.agentName;
+      if (!agentToSteps.has(agentName)) agentToSteps.set(agentName, []);
+      agentToSteps.get(agentName)!.push(stepName);
+    }
+
+    const lines = nonInteractive.map((a) => {
+      const steps = agentToSteps.get(a.name) ?? [];
+      const stepRefs = steps.map((s) => `{{steps.${s}.output}}`).join(', ');
+      return `- ${a.name} (${a.cli}) — will return output when complete${stepRefs ? `. Access via: ${stepRefs}` : ''}`;
+    });
     return '\n\n---\n' +
       'Note: The following agents are non-interactive workers and cannot receive messages:\n' +
       lines.join('\n') + '\n' +
-      'Use {{steps.step-name.output}} to access their results.';
+      'Do NOT attempt to message these agents. Use the {{steps.<name>.output}} references above to access their results.';
   }
 
   /** Post a message to the workflow channel. Fire-and-forget — never throws or blocks. */

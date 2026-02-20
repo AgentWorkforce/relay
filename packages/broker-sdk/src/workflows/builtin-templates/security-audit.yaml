@@ -60,7 +60,8 @@ workflows:
         agent: verifier
         dependsOn: [remediate]
         task: |
-          Re-test security posture and confirm mitigations hold.
+          Re-test security posture and confirm mitigations hold:
+          {{steps.remediate.output}}
         verification:
           type: output_contains
           value: VERIFICATION_COMPLETE

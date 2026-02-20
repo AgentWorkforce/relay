@@ -47,7 +47,8 @@ workflows:
         agent: refactorer
         dependsOn: [design]
         task: |
-          Execute the refactor plan while preserving behavior.
+          Execute the refactor plan while preserving behavior:
+          {{steps.design.output}}
         retries: 2
         verification:
           type: output_contains
@@ -56,7 +57,8 @@ workflows:
         agent: tester
         dependsOn: [refactor-code]
         task: |
-          Validate no regressions and ensure tests/quality checks pass.
+          Validate no regressions and ensure tests/quality checks pass:
+          {{steps.refactor-code.output}}
         verification:
           type: output_contains
           value: VALIDATION_COMPLETE

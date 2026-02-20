@@ -67,6 +67,9 @@ workflows:
         dependsOn: [architecture-pass, correctness-pass, security-pass]
         task: |
           Produce merged findings, severity levels, and final recommendation.
+          Architecture review: {{steps.architecture-pass.output}}
+          Correctness review: {{steps.correctness-pass.output}}
+          Security review: {{steps.security-pass.output}}
         verification:
           type: output_contains
           value: DONE
