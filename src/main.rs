@@ -949,7 +949,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
     // Load crash insights from previous session
     let crash_insights_path = paths.state.parent().unwrap().join("crash-insights.json");
-    let mut crash_insights = relay_broker::crash_insights::CrashInsights::load(&crash_insights_path);
+    let mut crash_insights =
+        relay_broker::crash_insights::CrashInsights::load(&crash_insights_path);
 
     let mut sdk_lines = BufReader::new(tokio::io::stdin()).lines();
     let mut reap_tick = tokio::time::interval(Duration::from_millis(500));
@@ -2153,8 +2154,7 @@ async fn handle_sdk_frame(
             state.save(state_path)?;
 
             // Register with supervisor for auto-restart
-            let restart_policy = payload.agent.restart_policy.clone()
-                .unwrap_or_default();
+            let restart_policy = payload.agent.restart_policy.clone().unwrap_or_default();
             let initial_task_for_supervisor = workers.initial_tasks.get(&name).cloned();
             workers.supervisor.register(
                 &name,
@@ -2415,10 +2415,15 @@ async fn handle_sdk_frame(
             agents.sort_by(|a, b| a.name.cmp(&b.name));
 
             let broker_stats = workers.metrics.snapshot(workers.workers.len());
-            send_ok(out_tx, frame.request_id, json!({
-                "agents": agents,
-                "broker": broker_stats,
-            })).await?;
+            send_ok(
+                out_tx,
+                frame.request_id,
+                json!({
+                    "agents": agents,
+                    "broker": broker_stats,
+                }),
+            )
+            .await?;
             Ok(false)
         }
         "get_crash_insights" => {

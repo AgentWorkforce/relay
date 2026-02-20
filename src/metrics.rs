@@ -65,10 +65,7 @@ impl AgentRecord {
     }
 
     fn to_stats(&self) -> AgentStats {
-        let uptime = self
-            .last_spawn
-            .map(|t| t.elapsed().as_secs())
-            .unwrap_or(0);
+        let uptime = self.last_spawn.map(|t| t.elapsed().as_secs()).unwrap_or(0);
         AgentStats {
             spawns: self.spawns,
             crashes: self.crashes,
