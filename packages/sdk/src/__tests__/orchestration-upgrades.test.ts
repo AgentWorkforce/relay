@@ -357,7 +357,7 @@ describe('Agent.onOutput', () => {
       });
 
       const chunks: string[] = [];
-      agent.onOutput((chunk) => chunks.push(chunk));
+      agent.onOutput((chunk: string) => chunks.push(chunk));
 
       emit({ kind: 'worker_stream', name: 'output-agent', stream: 'stdout', chunk: 'hello' });
       emit({ kind: 'worker_stream', name: 'output-agent', stream: 'stdout', chunk: ' world' });
@@ -381,7 +381,7 @@ describe('Agent.onOutput', () => {
       });
 
       const chunks: string[] = [];
-      agent.onOutput((chunk) => chunks.push(chunk));
+      agent.onOutput((chunk: string) => chunks.push(chunk));
 
       emit({ kind: 'worker_stream', name: 'other-agent', stream: 'stdout', chunk: 'not mine' });
       emit({ kind: 'worker_stream', name: 'my-agent', stream: 'stdout', chunk: 'mine' });
@@ -405,7 +405,7 @@ describe('Agent.onOutput', () => {
       });
 
       const chunks: string[] = [];
-      const unsub = agent.onOutput((chunk) => chunks.push(chunk));
+      const unsub = agent.onOutput((chunk: string) => chunks.push(chunk));
 
       emit({ kind: 'worker_stream', name: 'unsub-agent', stream: 'stdout', chunk: 'before' });
       unsub();

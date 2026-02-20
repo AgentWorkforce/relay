@@ -69,10 +69,10 @@ export interface Message {
 }
 
 export type AgentStatus = "spawning" | "ready" | "idle" | "exited";
-export type AgentOutput = { stream: string; chunk: string };
-export type AgentOutputCallback =
+type AgentOutputPayload = { stream: string; chunk: string };
+type AgentOutputCallback =
   | ((chunk: string) => void)
-  | ((data: AgentOutput) => void);
+  | ((data: AgentOutputPayload) => void);
 
 export interface Agent {
   readonly name: string;
@@ -487,7 +487,7 @@ export class AgentRelay {
     if (!listeners) return;
     for (const listener of listeners) {
       if (listener.mode === "structured") {
-        (listener.callback as (data: AgentOutput) => void)({ stream, chunk });
+        (listener.callback as (data: AgentOutputPayload) => void)({ stream, chunk });
       } else {
         (listener.callback as (chunk: string) => void)(chunk);
       }

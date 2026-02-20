@@ -96,7 +96,6 @@ function makeFakeAgentWithControls(
     async sendMessage() {
       return { eventId: "fake", from: name, to: "", text: "" };
     },
-    status: "ready" as const,
     onOutput(
       _callback: ((chunk: string) => void) | ((data: { stream: string; chunk: string }) => void),
     ) {
@@ -267,7 +266,7 @@ test("agent.status: mock agent has ready status", () => {
 test("agent.onOutput: mock returns unsubscribe function", () => {
   const { agent } = makeFakeAgentWithControls("worker");
   const chunks: string[] = [];
-  const unsub = agent.onOutput(({ chunk }) => chunks.push(chunk));
+  const unsub = agent.onOutput(({ chunk }: { stream: string; chunk: string }) => chunks.push(chunk));
   assert.equal(typeof unsub, "function");
   unsub();
 });
