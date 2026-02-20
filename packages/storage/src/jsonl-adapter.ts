@@ -173,14 +173,22 @@ export class JsonlStorageAdapter implements StorageAdapter {
     const msgs = Array.from(this.messages.values()).filter(msg => !this.deletedMessages.has(msg.id));
 
     let filtered = msgs;
+    const hasBidirectionalPairFilter = Boolean(query.bidirectional && query.from && query.to);
     if (query.sinceTs !== undefined) {
       filtered = filtered.filter(m => m.ts >= query.sinceTs!);
     }
-    if (query.from) {
-      filtered = filtered.filter(m => m.from === query.from);
-    }
-    if (query.to) {
-      filtered = filtered.filter(m => m.to === query.to);
+    if (hasBidirectionalPairFilter) {
+      filtered = filtered.filter(m =>
+        (m.from === query.from && m.to === query.to) ||
+        (m.from === query.to && m.to === query.from)
+      );
+    } else {
+      if (query.from) {
+        filtered = filtered.filter(m => m.from === query.from);
+      }
+      if (query.to) {
+        filtered = filtered.filter(m => m.to === query.to);
+      }
     }
     if (query.topic) {
       filtered = filtered.filter(m => m.topic === query.topic);

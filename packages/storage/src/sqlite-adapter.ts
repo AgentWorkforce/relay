@@ -440,18 +440,26 @@ export class SqliteStorageAdapter implements StorageAdapter {
 
     const clauses: string[] = [];
     const params: unknown[] = [];
+    const hasBidirectionalPairFilter = Boolean(query.bidirectional && query.from && query.to);
 
     if (query.sinceTs) {
       clauses.push('m.ts >= ?');
       params.push(query.sinceTs);
     }
-    if (query.from) {
-      clauses.push('m.sender = ?');
-      params.push(query.from);
-    }
-    if (query.to) {
-      clauses.push('m.recipient = ?');
-      params.push(query.to);
+    if (hasBidirectionalPairFilter) {
+      // When both from/to are provided, return the full DM conversation by matching
+      // either direction: from->to OR to->from.
+      clauses.push('((m.sender = ? AND m.recipient = ?) OR (m.sender = ? AND m.recipient = ?))');
+      params.push(query.from, query.to, query.to, query.from);
+    } else {
+      if (query.from) {
+        clauses.push('m.sender = ?');
+        params.push(query.from);
+      }
+      if (query.to) {
+        clauses.push('m.recipient = ?');
+        params.push(query.to);
+      }
     }
     if (query.topic) {
       clauses.push('m.topic = ?');

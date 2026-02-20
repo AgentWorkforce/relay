@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Router, type RoutableConnection } from './router.js';
+import type { StorageAdapter, StorageHealth } from '@agent-relay/storage/adapter';
 
 /**
  * Mock connection that implements RoutableConnection interface
@@ -18,6 +19,20 @@ function createMockConnection(agentName: string): RoutableConnection {
       seqNumbers.set(key, seq);
       return seq;
     },
+  };
+}
+
+function createMockStorage(saveMessage: ReturnType<typeof vi.fn>): StorageAdapter {
+  return {
+    init: vi.fn(async () => undefined),
+    healthCheck: vi.fn(async (): Promise<StorageHealth> => ({
+      persistent: true,
+      driver: 'memory',
+      canRead: true,
+      canWrite: true,
+    })),
+    saveMessage,
+    getMessages: vi.fn(async () => []),
   };
 }
 
@@ -176,6 +191,53 @@ describe('Router', () => {
       expect(deliveredEnvelope.from).toBe('TestAgent');
       expect(deliveredEnvelope.to).toBe('Dashboard');
       expect(deliveredEnvelope.payload.body).toBe('Hello Dashboard!');
+    });
+  });
+
+  describe('DM channel persistence', () => {
+    it('persists channel message plus per-participant direct copies', async () => {
+      const saveMessage = vi.fn(async () => undefined);
+      const dmRouter = new Router({ storage: createMockStorage(saveMessage), rateLimit: null });
+      const alice = createMockConnection('Alice');
+      const bob = createMockConnection('Bob');
+      dmRouter.register(alice);
+      dmRouter.register(bob);
+      dmRouter.autoJoinChannel('Alice', 'dm:Alice:Bob', { persist: false });
+      dmRouter.autoJoinChannel('Bob', 'dm:Alice:Bob', { persist: false });
+
+      dmRouter.routeChannelMessage(alice, {
+        v: 1,
+        type: 'CHANNEL_MESSAGE',
+        id: 'dm-msg-1',
+        ts: 123456,
+        from: 'Alice',
+        payload: {
+          channel: 'dm:Alice:Bob',
+          body: 'hello',
+        },
+      });
+
+      expect(saveMessage).toHaveBeenCalledTimes(3);
+
+      const saved = saveMessage.mock.calls.map(([arg]) => arg as { id: string; from: string; to: string; is_broadcast?: boolean });
+      expect(saved).toContainEqual(expect.objectContaining({
+        id: 'dm-msg-1',
+        from: 'Alice',
+        to: 'dm:Alice:Bob',
+        is_broadcast: true,
+      }));
+      expect(saved).toContainEqual(expect.objectContaining({
+        id: 'dm-msg-1:dm:0',
+        from: 'Alice',
+        to: 'Alice',
+        is_broadcast: false,
+      }));
+      expect(saved).toContainEqual(expect.objectContaining({
+        id: 'dm-msg-1:dm:1',
+        from: 'Alice',
+        to: 'Bob',
+        is_broadcast: false,
+      }));
     });
   });
 });
