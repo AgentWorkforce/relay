@@ -37,7 +37,6 @@ Open **http://localhost:3888** to spawn agents, view real-time status, and strea
 | `agent-relay down`                      | Stop broker              |
 | `agent-relay spawn <name> <cli> "task"` | Spawn a worker agent     |
 | `agent-relay status`                    | Check broker status      |
-| `agent-relay bridge <projects...>`      | Bridge multiple projects |
 
 ---
 
@@ -56,12 +55,19 @@ import { AgentRelay } from '@agent-relay/sdk';
 
 const relay = new AgentRelay();
 
-// Spawn two agents
-const worker1 = await relay.claude.spawn({ name: 'Worker1' });
-const worker2 = await relay.claude.spawn({ name: 'Worker2' });
+// Spawn agents with different CLIs and models
+const claude = await relay.claude.spawn({
+  name: 'Planner',
+  model: 'claude-sonnet-4-20250514'
+});
 
-// Send a message from Worker1 to Worker2
-await worker1.sendMessage({ to: 'Worker2', text: 'Hello from Worker1!' });
+const codex = await relay.codex.spawn({
+  name: 'Coder',
+  model: 'o3'
+});
+
+// Send messages between agents
+await claude.sendMessage({ to: 'Coder', text: 'Implement the auth module' });
 
 // Listen for messages
 relay.onMessageReceived = (msg) => {
@@ -80,8 +86,8 @@ Run multi-agent workflows with dependency management:
 import { workflow } from '@agent-relay/sdk/workflows';
 
 const result = await workflow('feature-dev')
-  .agent('architect', { cli: 'claude', role: 'System architect' })
-  .agent('developer', { cli: 'claude', role: 'Developer' })
+  .agent('architect', { cli: 'claude', role: 'System architect', model: 'claude-sonnet-4-20250514' })
+  .agent('developer', { cli: 'codex', role: 'Developer', model: 'o3' })
   .agent('reviewer', { cli: 'claude', role: 'Code reviewer' })
   .step('design', { agent: 'architect', task: 'Design the API' })
   .step('implement', { agent: 'developer', task: 'Implement the design', dependsOn: ['design'] })
@@ -90,22 +96,6 @@ const result = await workflow('feature-dev')
 ```
 
 Built-in workflow templates: `feature-dev`, `bug-fix`, `code-review`, `security-audit`, `refactor`, `documentation`
-
----
-
-## Multi-Project Bridge
-
-Orchestrate agents across repositories:
-
-```bash
-agent-relay bridge ~/auth ~/frontend ~/api
-```
-
-Cross-project messaging uses `project:agent` format:
-
-```typescript
-await relay.sendMessage({ to: 'auth:Lead', text: 'Please review the token refresh logic' });
-```
 
 ---
 
