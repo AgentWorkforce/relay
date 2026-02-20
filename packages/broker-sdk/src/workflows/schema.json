@@ -67,6 +67,31 @@
         "channel": {
           "type": "string",
           "description": "Default relay channel for agent communication"
+        },
+        "idleNudge": {
+          "$ref": "#/definitions/IdleNudgeConfig"
+        }
+      }
+    },
+    "IdleNudgeConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Configuration for idle agent detection and nudging",
+      "properties": {
+        "nudgeAfterMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Milliseconds after idle detection before first nudge (default: 120000)"
+        },
+        "escalateAfterMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Milliseconds after nudge before force-release (default: 120000)"
+        },
+        "maxNudges": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum nudges before escalation (default: 1)"
         }
       }
     },

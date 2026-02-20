@@ -6,6 +6,10 @@ swarm:
   maxConcurrency: 1
   timeoutMs: 5400000
   channel: swarm-security-audit
+  idleNudge:
+    nudgeAfterMs: 120000
+    escalateAfterMs: 120000
+    maxNudges: 1
 agents:
   - name: lead
     cli: claude

@@ -605,6 +605,41 @@ steps:
       When finished, output /exit.
 ```
 
+## Idle Agent Detection and Nudging
+
+Interactive agents sometimes finish their task but forget to `/exit`, sitting idle and blocking downstream steps. The runner can detect idle agents and take action automatically.
+
+### Configuration
+
+Add `idleNudge` to your swarm config:
+
+```yaml
+swarm:
+  pattern: hub-spoke
+  idleNudge:
+    nudgeAfterMs: 120000      # 2 min before first nudge (default)
+    escalateAfterMs: 120000   # 2 min after nudge before force-release (default)
+    maxNudges: 1              # Nudges before escalation (default)
+```
+
+All built-in templates include idle nudging with these defaults.
+
+### How It Works
+
+1. **Detection**: The broker tracks agent output timestamps and emits `agent_idle` events when an agent goes silent for the configured threshold
+2. **Nudge**: For hub patterns (hub-spoke, fan-out, hierarchical, etc.), the runner tells the hub agent to check on the idle agent. For non-hub patterns, a system message is injected directly into the agent's PTY
+3. **Escalation**: If the agent remains idle after `maxNudges` attempts, the runner force-releases it and captures whatever output was produced
+4. **No config**: When `idleNudge` is omitted, the runner uses simple `waitForExit` (backward compatible)
+
+### Events
+
+The runner emits two new events for idle nudging:
+
+| Event | Description |
+|-------|-------------|
+| `step:nudged` | Fired when a nudge message is sent to an idle agent |
+| `step:force-released` | Fired when an agent is force-released after exhausting nudges |
+
 ## Schema Validation
 
 A JSON Schema is available at `packages/broker-sdk/src/workflows/schema.json` for editor autocompletion and validation of `relay.yaml` files.

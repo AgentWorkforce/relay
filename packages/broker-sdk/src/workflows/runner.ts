@@ -20,6 +20,7 @@ import type {
   AgentCli,
   AgentDefinition,
   ErrorHandlingConfig,
+  IdleNudgeConfig,
   RelayYamlConfig,
   SwarmPattern,
   VerificationCheck,
@@ -63,7 +64,9 @@ export type WorkflowEvent =
   | { type: 'step:completed'; runId: string; stepName: string; output?: string }
   | { type: 'step:failed'; runId: string; stepName: string; error: string }
   | { type: 'step:skipped'; runId: string; stepName: string }
-  | { type: 'step:retrying'; runId: string; stepName: string; attempt: number };
+  | { type: 'step:retrying'; runId: string; stepName: string; attempt: number }
+  | { type: 'step:nudged'; runId: string; stepName: string; nudgeCount: number }
+  | { type: 'step:force-released'; runId: string; stepName: string };
 
 export type WorkflowEventListener = (event: WorkflowEvent) => void;
 
@@ -107,6 +110,13 @@ export class WorkflowRunner {
   private paused = false;
   private pauseResolver?: () => void;
   private listeners: WorkflowEventListener[] = [];
+
+  /** Current config for the active run, so spawnAndWait can access swarm config. */
+  private currentConfig?: RelayYamlConfig;
+  /** Current run ID for event emission from spawnAndWait context. */
+  private currentRunId?: string;
+  /** Live Agent handles keyed by name, for hub-mediated nudging. */
+  private readonly activeAgentHandles = new Map<string, Agent>();
 
   // PTY-based output capture: accumulate terminal output per-agent
   private readonly ptyOutputBuffers = new Map<string, string[]>();
@@ -535,6 +545,9 @@ export class WorkflowRunner {
     // Initialize trajectory recording
     this.trajectory = new WorkflowTrajectory(resolved.trajectories, runId, this.cwd);
 
+    this.currentConfig = resolved;
+    this.currentRunId = runId;
+
     try {
       await this.updateRunStatus(runId, 'running');
       this.emit({ type: 'run:started', runId });
@@ -646,6 +659,9 @@ export class WorkflowRunner {
       this.channel = undefined;
       this.trajectory = undefined;
       this.abortController = undefined;
+      this.currentConfig = undefined;
+      this.currentRunId = undefined;
+      this.activeAgentHandles.clear();
     }
 
     const finalRun = await this.db.getRun(runId);
@@ -691,6 +707,8 @@ export class WorkflowRunner {
 
     this.abortController = new AbortController();
     this.paused = false;
+    this.currentConfig = config;
+    this.currentRunId = runId;
 
     // Initialize trajectory for resumed run
     this.trajectory = new WorkflowTrajectory(config.trajectories, runId, this.cwd);
@@ -783,6 +801,9 @@ export class WorkflowRunner {
       this.channel = undefined;
       this.trajectory = undefined;
       this.abortController = undefined;
+      this.currentConfig = undefined;
+      this.currentRunId = undefined;
+      this.activeAgentHandles.clear();
     }
 
     const finalRun = await this.db.getRun(runId);
@@ -1341,8 +1362,11 @@ export class WorkflowRunner {
       const taskPreview = step.task.slice(0, 500) + (step.task.length > 500 ? '...' : '');
       this.postToChannel(`**[${step.name}]** Assigned to \`${agent.name}\`:\n${taskPreview}`);
 
-      // Wait for agent to exit (self-termination via /exit)
-      exitResult = await agent.waitForExit(timeoutMs);
+      // Register agent handle for hub-mediated nudging
+      this.activeAgentHandles.set(agentName, agent);
+
+      // Wait for agent to exit, with idle nudging if configured
+      exitResult = await this.waitForExitWithIdleNudging(agent, agentDef, step, timeoutMs);
 
       // Stop heartbeat now that agent has exited
       stopHeartbeat?.();
@@ -1373,6 +1397,7 @@ export class WorkflowRunner {
 
       // Always clean up PTY resources — prevents fd leaks if spawnPty or waitForExit throws
       stopHeartbeat?.();
+      this.activeAgentHandles.delete(agentName);
       this.ptyOutputBuffers.delete(agentName);
       this.ptyListeners.delete(agentName);
       const stream = this.ptyLogStreams.get(agentName);
@@ -1393,10 +1418,173 @@ export class WorkflowRunner {
         ? await readFile(summaryPath, 'utf-8')
         : exitResult === 'timeout'
           ? 'Agent completed (released after idle timeout)'
-          : `Agent exited (${exitResult})`;
+          : exitResult === 'released'
+            ? 'Agent completed (force-released after idle nudging)'
+            : `Agent exited (${exitResult})`;
     }
 
     return output;
+  }
+
+  // ── Idle nudging ────────────────────────────────────────────────────────
+
+  /** Patterns where a hub agent coordinates spoke agents. */
+  private static readonly HUB_PATTERNS = new Set<string>([
+    'fan-out', 'hub-spoke', 'hierarchical', 'map-reduce',
+    'scatter-gather', 'supervisor', 'saga', 'auction',
+  ]);
+
+  /**
+   * Wait for agent exit with idle detection and nudging.
+   * If no idle nudge config is set, falls through to simple waitForExit.
+   */
+  private async waitForExitWithIdleNudging(
+    agent: Agent,
+    agentDef: AgentDefinition,
+    step: WorkflowStep,
+    timeoutMs?: number,
+  ): Promise<'exited' | 'timeout' | 'released'> {
+    const nudgeConfig = this.currentConfig?.swarm.idleNudge;
+    if (!nudgeConfig) {
+      // No nudge config — backward compatible simple wait
+      return agent.waitForExit(timeoutMs);
+    }
+
+    const nudgeAfterMs = nudgeConfig.nudgeAfterMs ?? 120_000;
+    const escalateAfterMs = nudgeConfig.escalateAfterMs ?? 120_000;
+    const maxNudges = nudgeConfig.maxNudges ?? 1;
+
+    let nudgeCount = 0;
+    const startTime = Date.now();
+
+    while (true) {
+      // Calculate remaining time from overall timeout
+      const elapsed = Date.now() - startTime;
+      const remaining = timeoutMs ? timeoutMs - elapsed : undefined;
+      if (remaining !== undefined && remaining <= 0) {
+        return 'timeout';
+      }
+
+      // Determine how long to wait for idle: first time use nudgeAfterMs, after nudge use escalateAfterMs
+      const idleWaitMs = nudgeCount === 0 ? nudgeAfterMs : escalateAfterMs;
+      // Cap at remaining overall timeout
+      const waitMs = remaining !== undefined ? Math.min(idleWaitMs, remaining) : idleWaitMs;
+
+      // Race: exit vs idle
+      const exitPromise = agent.waitForExit(waitMs);
+      const idlePromise = agent.waitForIdle(waitMs);
+
+      const result = await Promise.race([
+        exitPromise.then((r) => ({ source: 'exit' as const, result: r })),
+        idlePromise.then((r) => ({ source: 'idle' as const, result: r })),
+      ]);
+
+      if (result.source === 'exit') {
+        // Agent exited, released, or timed out naturally
+        return result.result;
+      }
+
+      // Idle detected
+      if (result.result === 'exited') {
+        // Agent exited while we were waiting for idle
+        return 'exited';
+      }
+
+      if (result.result === 'timeout') {
+        // Our wait timed out — check overall timeout
+        if (remaining !== undefined && (Date.now() - startTime) >= timeoutMs!) {
+          return 'timeout';
+        }
+        // The idle event didn't fire within our wait window, loop again
+        continue;
+      }
+
+      // result.result === 'idle' — agent went idle
+      if (nudgeCount < maxNudges) {
+        // Send nudge
+        await this.nudgeIdleAgent(agent, agentDef, step);
+        nudgeCount++;
+        this.postToChannel(
+          `**[${step.name}]** Agent \`${agent.name}\` idle — nudge #${nudgeCount} sent`,
+        );
+        this.emit({ type: 'step:nudged', runId: this.currentRunId ?? '', stepName: step.name, nudgeCount });
+        // Continue loop — wait for next idle or exit
+        continue;
+      }
+
+      // Exhausted nudges — force-release
+      this.postToChannel(
+        `**[${step.name}]** Agent \`${agent.name}\` still idle after ${nudgeCount} nudge(s) — force-releasing`,
+      );
+      this.emit({ type: 'step:force-released', runId: this.currentRunId ?? '', stepName: step.name });
+      await agent.release();
+      return 'released';
+    }
+  }
+
+  /**
+   * Send a nudge to an idle agent. Uses hub-mediated nudge for hub patterns,
+   * or direct system injection otherwise.
+   */
+  private async nudgeIdleAgent(
+    agent: Agent,
+    agentDef: AgentDefinition,
+    step: WorkflowStep,
+  ): Promise<void> {
+    const hubAgent = this.resolveHubForNudge(agentDef);
+
+    if (hubAgent) {
+      // Hub-mediated: tell the hub to check on the idle agent
+      await hubAgent.sendMessage({
+        to: agent.name,
+        text: `Agent ${agent.name} appears idle on step "${step.name}". Check on them and remind them to /exit when done.`,
+      }).catch(() => {
+        // Fall back to direct nudge on failure
+      });
+    } else {
+      // Direct system injection via human handle
+      if (this.relay) {
+        const human = this.relay.human({ name: 'workflow-runner' });
+        await human.sendMessage({
+          to: agent.name,
+          text: 'You appear idle. If you\'ve completed your task, output /exit. If still working, continue.',
+        }).catch(() => {
+          // Non-critical — don't break workflow
+        });
+      }
+    }
+  }
+
+  /**
+   * Find the hub agent for hub-mediated nudging.
+   * Returns the hub's live Agent handle if this is a hub pattern and the idle agent is not the hub.
+   */
+  private resolveHubForNudge(idleAgentDef: AgentDefinition): Agent | undefined {
+    const pattern = this.currentConfig?.swarm.pattern;
+    if (!pattern || !WorkflowRunner.HUB_PATTERNS.has(pattern)) {
+      return undefined;
+    }
+
+    // Find an interactive agent with a hub-like role
+    const hubRoles = new Set(['lead', 'hub', 'coordinator', 'supervisor', 'orchestrator', 'auctioneer']);
+    const agents = this.currentConfig?.agents ?? [];
+
+    for (const agentDef of agents) {
+      // Skip non-interactive and the idle agent itself
+      if (agentDef.interactive === false) continue;
+      if (agentDef.name === idleAgentDef.name) continue;
+
+      const role = agentDef.role?.toLowerCase() ?? '';
+      const nameLC = agentDef.name.toLowerCase();
+
+      if (hubRoles.has(nameLC) || [...hubRoles].some((r) => role.includes(r))) {
+        // Found a hub candidate — check if we have a live handle
+        const handle = this.activeAgentHandles.get(agentDef.name);
+        if (handle) return handle;
+      }
+    }
+
+    return undefined;
   }
 
   // ── Verification ────────────────────────────────────────────────────────

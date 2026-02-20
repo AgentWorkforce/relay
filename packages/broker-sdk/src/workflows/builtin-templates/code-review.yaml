@@ -6,6 +6,10 @@ swarm:
   maxConcurrency: 4
   timeoutMs: 2400000
   channel: swarm-code-review
+  idleNudge:
+    nudgeAfterMs: 120000
+    escalateAfterMs: 120000
+    maxNudges: 1
 agents:
   - name: lead
     cli: claude
