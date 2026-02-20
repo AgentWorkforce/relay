@@ -26,7 +26,7 @@ import {
   type SendMessageInput,
   type ListAgent,
 } from "./client.js";
-import type { BrokerEvent, BrokerStatus } from "./protocol.js";
+import type { BrokerEvent, BrokerStats, BrokerStatus, CrashInsightsResponse } from "./protocol.js";
 
 // ── Public types ────────────────────────────────────────────────────
 
@@ -234,12 +234,19 @@ export class RelayAdapter {
 
   // ── Metrics ─────────────────────────────────────────────────────
 
-  /** Get resource metrics for agents (memory, uptime). */
+  /** Get resource metrics for agents (memory, uptime) and broker stats. */
   async getMetrics(agent?: string): Promise<{
     agents: Array<{ name: string; pid: number; memory_bytes: number; uptime_secs: number }>;
+    broker?: BrokerStats;
   }> {
     await this.start();
     return this.client.getMetrics(agent);
+  }
+
+  /** Get crash insights: recent crashes, patterns, and health score. */
+  async getCrashInsights(): Promise<CrashInsightsResponse> {
+    await this.start();
+    return this.client.getCrashInsights();
   }
 
   // ── Events ──────────────────────────────────────────────────────

@@ -11,9 +11,12 @@ import {
   type AgentRuntime,
   type AgentSpec,
   type BrokerEvent,
+  type BrokerStats,
   type BrokerStatus,
+  type CrashInsightsResponse,
   type ProtocolEnvelope,
   type ProtocolError,
+  type RestartPolicy,
 } from "./protocol.js";
 
 export interface AgentRelayClientOptions {
@@ -42,6 +45,8 @@ export interface SpawnPtyInput {
   shadowMode?: string;
   /** Silence duration in seconds before emitting agent_idle (0 = disabled, default: 30). */
   idleThresholdSecs?: number;
+  /** Auto-restart policy for crashed agents. */
+  restartPolicy?: RestartPolicy;
 }
 
 export interface SpawnHeadlessClaudeInput {
@@ -180,6 +185,7 @@ export class AgentRelayClient {
       team: input.team,
       shadow_of: input.shadowOf,
       shadow_mode: input.shadowMode,
+      restart_policy: input.restartPolicy,
     };
     const result = await this.requestOk<{ name: string; runtime: AgentRuntime }>("spawn_agent", {
       agent,
@@ -231,11 +237,18 @@ export class AgentRelayClient {
 
   async getMetrics(agent?: string): Promise<{
     agents: Array<{ name: string; pid: number; memory_bytes: number; uptime_secs: number }>;
+    broker?: BrokerStats;
   }> {
     await this.start();
     return this.requestOk<{
       agents: Array<{ name: string; pid: number; memory_bytes: number; uptime_secs: number }>;
+      broker?: BrokerStats;
     }>("get_metrics", { agent });
+  }
+
+  async getCrashInsights(): Promise<CrashInsightsResponse> {
+    await this.start();
+    return this.requestOk<CrashInsightsResponse>("get_crash_insights", {});
   }
 
   async sendMessage(

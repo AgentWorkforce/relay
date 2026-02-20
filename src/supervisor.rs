@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::AgentSpec;
 
 /// Configurable restart policy attached to an agent at spawn time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RestartPolicy {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -77,6 +77,12 @@ pub struct PendingRestart {
 /// Manages restart state for all supervised agents.
 pub struct Supervisor {
     states: HashMap<String, RestartState>,
+}
+
+impl Default for Supervisor {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Supervisor {
@@ -224,6 +230,7 @@ mod tests {
             shadow_mode: None,
             args: vec![],
             channels: vec!["general".to_string()],
+            restart_policy: None,
         }
     }
 

@@ -84,7 +84,6 @@ jobs:
             const packages = [
               '@agent-relay/sdk',
               '@agent-relay/config',
-              '@agent-relay/storage',
               '@agent-relay/hooks',
               '@agent-relay/utils',
               '@agent-relay/user-directory',

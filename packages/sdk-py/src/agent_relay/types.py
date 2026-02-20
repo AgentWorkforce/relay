@@ -32,6 +32,8 @@ SwarmPattern = Literal[
 ]
 
 AgentCli = Literal["claude", "codex", "gemini", "aider", "goose", "opencode", "droid"]
+AgentStatus = Literal["healthy", "restarting", "dead", "released"]
+CrashCategory = Literal["oom", "segfault", "error", "signal", "unknown"]
 WorkflowOnError = Literal["fail", "skip", "retry"]
 ConsensusStrategy = Literal["majority", "unanimous", "quorum"]
 ErrorStrategy = Literal["fail-fast", "continue", "retry"]
@@ -311,6 +313,80 @@ class RelayYamlConfig:
         elif isinstance(self.trajectories, TrajectoryConfig):
             result["trajectories"] = self.trajectories.to_dict()
         return result
+
+
+@dataclass
+class RestartPolicy:
+    """Auto-restart policy for crashed agents."""
+
+    enabled: bool = True
+    max_restarts: int = 5
+    cooldown_ms: int = 2000
+    max_consecutive_failures: int = 3
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "max_restarts": self.max_restarts,
+            "cooldown_ms": self.cooldown_ms,
+            "max_consecutive_failures": self.max_consecutive_failures,
+        }
+
+
+@dataclass
+class AgentStats:
+    """Per-agent statistics from the broker."""
+
+    spawns: int = 0
+    crashes: int = 0
+    restarts: int = 0
+    releases: int = 0
+    status: AgentStatus = "healthy"
+    current_uptime_secs: int = 0
+    memory_bytes: int = 0
+
+
+@dataclass
+class BrokerStats:
+    """Broker-wide statistics snapshot."""
+
+    uptime_secs: int = 0
+    total_agents_spawned: int = 0
+    total_crashes: int = 0
+    total_restarts: int = 0
+    active_agents: int = 0
+
+
+@dataclass
+class CrashRecord:
+    """A single crash record."""
+
+    agent_name: str = ""
+    exit_code: int | None = None
+    signal: str | None = None
+    timestamp: int = 0
+    uptime_secs: int = 0
+    category: CrashCategory = "unknown"
+    description: str = ""
+
+
+@dataclass
+class CrashPattern:
+    """A detected crash pattern grouping."""
+
+    category: CrashCategory = "unknown"
+    count: int = 0
+    agents: list[str] = field(default_factory=list)
+
+
+@dataclass
+class CrashInsightsResponse:
+    """Response from the crash insights API."""
+
+    total_crashes: int = 0
+    recent: list[CrashRecord] = field(default_factory=list)
+    patterns: list[CrashPattern] = field(default_factory=list)
+    health_score: int = 100
 
 
 @dataclass

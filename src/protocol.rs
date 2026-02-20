@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::supervisor::RestartPolicy;
+
 pub const PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +32,8 @@ pub struct AgentSpec {
     pub args: Vec<String>,
     #[serde(default)]
     pub channels: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_policy: Option<RestartPolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,6 +177,21 @@ pub enum BrokerEvent {
     AgentIdle {
         name: String,
         idle_secs: u64,
+    },
+    AgentRestarting {
+        name: String,
+        exit_code: Option<i32>,
+        signal: Option<String>,
+        restart_count: u32,
+        delay_ms: u64,
+    },
+    AgentRestarted {
+        name: String,
+        restart_count: u32,
+    },
+    AgentPermanentlyDead {
+        name: String,
+        reason: String,
     },
 }
 

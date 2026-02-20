@@ -153,6 +153,10 @@ struct PersistedAgent {
     pid: Option<u32>,
     #[serde(default)]
     started_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    spec: Option<AgentSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    restart_policy: Option<relay_broker::supervisor::RestartPolicy>,
 }
 
 #[derive(Debug)]
@@ -443,15 +447,23 @@ struct WorkerRegistry {
     event_tx: mpsc::Sender<WorkerEvent>,
     worker_env: Vec<(String, String)>,
     initial_tasks: HashMap<String, String>,
+    supervisor: relay_broker::supervisor::Supervisor,
+    metrics: relay_broker::metrics::MetricsCollector,
 }
 
 impl WorkerRegistry {
-    fn new(event_tx: mpsc::Sender<WorkerEvent>, worker_env: Vec<(String, String)>) -> Self {
+    fn new(
+        event_tx: mpsc::Sender<WorkerEvent>,
+        worker_env: Vec<(String, String)>,
+        broker_start: Instant,
+    ) -> Self {
         Self {
             workers: HashMap::new(),
             event_tx,
             worker_env,
             initial_tasks: HashMap::new(),
+            supervisor: relay_broker::supervisor::Supervisor::new(),
+            metrics: relay_broker::metrics::MetricsCollector::new(broker_start),
         }
     }
 
@@ -933,7 +945,11 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     });
 
     let (worker_event_tx, mut worker_event_rx) = mpsc::channel::<WorkerEvent>(1024);
-    let mut workers = WorkerRegistry::new(worker_event_tx, worker_env);
+    let mut workers = WorkerRegistry::new(worker_event_tx, worker_env, broker_start);
+
+    // Load crash insights from previous session
+    let crash_insights_path = paths.state.parent().unwrap().join("crash-insights.json");
+    let mut crash_insights = relay_broker::crash_insights::CrashInsights::load(&crash_insights_path);
 
     let mut sdk_lines = BufReader::new(tokio::io::stdin()).lines();
     let mut reap_tick = tokio::time::interval(Duration::from_millis(500));
@@ -970,6 +986,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 &telemetry,
                                 &mut agent_spawn_count,
                                 Some(&relaycast_http),
+                                &crash_insights,
                             ).await {
                             Ok(should_shutdown) => {
                                 if should_shutdown {
@@ -997,6 +1014,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                     if let Some(rc_event) = parse_relaycast_agent_event(&ws_msg) {
                         match rc_event {
                             RelaycastAgentEvent::Release { ref name } => {
+                                workers.supervisor.unregister(name);
+                                workers.metrics.on_release(name);
                                 match workers.release(name).await {
                                     Ok(()) => {
                                         let dropped = drop_pending_for_worker(&mut pending_deliveries, name);
@@ -1328,31 +1347,129 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         vec![]
                     }
                 };
-                for (name, code, signal) in exited {
-                    let dropped = drop_pending_for_worker(&mut pending_deliveries, &name);
-                    if dropped > 0 {
-                        let _ = send_event(
-                            &sdk_out_tx,
-                            json!({
-                                "kind":"delivery_dropped",
-                                "name": name,
-                                "count": dropped,
-                                "reason":"worker_exited",
-                            }),
-                        ).await;
-                    }
+                for (name, code, signal) in &exited {
+                    // Record crash in insights
+                    let (category, description) = relay_broker::crash_insights::CrashInsights::analyze(*code, signal.as_deref());
+                    crash_insights.record(relay_broker::crash_insights::CrashRecord {
+                        agent_name: name.clone(),
+                        exit_code: *code,
+                        signal: signal.clone(),
+                        timestamp: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                        uptime_secs: 0,
+                        category,
+                        description,
+                    });
+
                     telemetry.track(TelemetryEvent::AgentCrash {
                         cli: String::new(),
-                        exit_code: code,
+                        exit_code: *code,
                         lifetime_seconds: 0,
                     });
-                    let _ = send_event(
-                        &sdk_out_tx,
-                        json!({"kind":"agent_exited","name":name,"code":code,"signal":signal}),
-                    ).await;
-                    state.agents.remove(&name);
-                    if let Err(error) = state.save(&paths.state) {
-                        tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state");
+
+                    // Check supervisor for restart decision
+                    use relay_broker::supervisor::RestartDecision;
+                    match workers.supervisor.on_exit(name, *code, signal.as_deref()) {
+                        Some(RestartDecision::Restart { delay }) => {
+                            // Keep pending deliveries — we'll redeliver after restart
+                            workers.metrics.on_crash(name);
+                            let restart_count = workers.supervisor.restart_count(name) + 1;
+                            tracing::info!(
+                                name = %name,
+                                exit_code = ?code,
+                                signal = ?signal,
+                                restart_count,
+                                delay_ms = delay.as_millis() as u64,
+                                "agent will be restarted"
+                            );
+                            let _ = send_event(
+                                &sdk_out_tx,
+                                json!({
+                                    "kind": "agent_restarting",
+                                    "name": name,
+                                    "code": code,
+                                    "signal": signal,
+                                    "restart_count": restart_count,
+                                    "delay_ms": delay.as_millis() as u64,
+                                }),
+                            ).await;
+                        }
+                        Some(RestartDecision::PermanentlyDead { reason }) => {
+                            workers.metrics.on_permanent_death(name);
+                            let dropped = drop_pending_for_worker(&mut pending_deliveries, name);
+                            if dropped > 0 {
+                                let _ = send_event(
+                                    &sdk_out_tx,
+                                    json!({
+                                        "kind":"delivery_dropped",
+                                        "name": name,
+                                        "count": dropped,
+                                        "reason":"worker_permanently_dead",
+                                    }),
+                                ).await;
+                            }
+                            let _ = send_event(
+                                &sdk_out_tx,
+                                json!({"kind":"agent_permanently_dead","name":name,"reason":reason}),
+                            ).await;
+                            state.agents.remove(name);
+                            if let Err(error) = state.save(&paths.state) {
+                                tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state");
+                            }
+                        }
+                        None => {
+                            // Not supervised — original behavior
+                            let dropped = drop_pending_for_worker(&mut pending_deliveries, name);
+                            if dropped > 0 {
+                                let _ = send_event(
+                                    &sdk_out_tx,
+                                    json!({
+                                        "kind":"delivery_dropped",
+                                        "name": name,
+                                        "count": dropped,
+                                        "reason":"worker_exited",
+                                    }),
+                                ).await;
+                            }
+                            let _ = send_event(
+                                &sdk_out_tx,
+                                json!({"kind":"agent_exited","name":name,"code":code,"signal":signal}),
+                            ).await;
+                            state.agents.remove(name);
+                            if let Err(error) = state.save(&paths.state) {
+                                tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state");
+                            }
+                        }
+                    }
+                }
+
+                // Check for agents ready to restart (past cooldown)
+                if !shutdown {
+                    let pending_restarts = workers.supervisor.pending_restarts();
+                    for (name, rst) in pending_restarts {
+                        match workers.spawn(rst.spec.clone(), rst.parent.clone(), None).await {
+                            Ok(()) => {
+                                workers.supervisor.on_restarted(&name);
+                                workers.metrics.on_restart(&name);
+                                if let Some(task) = rst.initial_task {
+                                    workers.initial_tasks.insert(name.clone(), task);
+                                }
+                                tracing::info!(name = %name, restart_count = rst.restart_count, "agent restarted");
+                                let _ = send_event(
+                                    &sdk_out_tx,
+                                    json!({
+                                        "kind": "agent_restarted",
+                                        "name": name,
+                                        "restart_count": rst.restart_count,
+                                    }),
+                                ).await;
+                            }
+                            Err(e) => {
+                                tracing::error!(name = %name, error = %e, "restart failed");
+                            }
+                        }
                     }
                 }
 
@@ -1362,6 +1479,11 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                 }
             }
         }
+    }
+
+    // Save crash insights before shutdown
+    if let Err(error) = crash_insights.save(&crash_insights_path) {
+        tracing::warn!(error = %error, "failed to save crash insights");
     }
 
     telemetry.track(TelemetryEvent::BrokerStop {
@@ -1743,7 +1865,6 @@ async fn listen_api_health() -> axum::Json<Value> {
     axum::Json(json!({
         "status": "ok",
         "service": "agent-relay-listen",
-        "uptime": 0,
     }))
 }
 
@@ -1964,6 +2085,7 @@ async fn handle_sdk_frame(
     telemetry: &TelemetryClient,
     agent_spawn_count: &mut u32,
     relaycast_http: Option<&RelaycastHttpClient>,
+    crash_insights: &relay_broker::crash_insights::CrashInsights,
 ) -> Result<bool> {
     let frame: ProtocolEnvelope<Value> =
         serde_json::from_str(line).context("request is not a valid protocol envelope")?;
@@ -2024,9 +2146,24 @@ async fn handle_sdk_frame(
                             .unwrap_or_default()
                             .as_secs(),
                     ),
+                    spec: Some(payload.agent.clone()),
+                    restart_policy: payload.agent.restart_policy.clone(),
                 },
             );
             state.save(state_path)?;
+
+            // Register with supervisor for auto-restart
+            let restart_policy = payload.agent.restart_policy.clone()
+                .unwrap_or_default();
+            let initial_task_for_supervisor = workers.initial_tasks.get(&name).cloned();
+            workers.supervisor.register(
+                &name,
+                payload.agent.clone(),
+                None,
+                initial_task_for_supervisor,
+                restart_policy,
+            );
+            workers.metrics.on_spawn(&name);
 
             *agent_spawn_count += 1;
             telemetry.track(TelemetryEvent::AgentSpawn {
@@ -2277,7 +2414,15 @@ async fn handle_sdk_frame(
             };
             agents.sort_by(|a, b| a.name.cmp(&b.name));
 
-            send_ok(out_tx, frame.request_id, json!({ "agents": agents })).await?;
+            let broker_stats = workers.metrics.snapshot(workers.workers.len());
+            send_ok(out_tx, frame.request_id, json!({
+                "agents": agents,
+                "broker": broker_stats,
+            })).await?;
+            Ok(false)
+        }
+        "get_crash_insights" => {
+            send_ok(out_tx, frame.request_id, crash_insights.to_json()).await?;
             Ok(false)
         }
         "release_agent" => {
@@ -2294,6 +2439,10 @@ async fn handle_sdk_frame(
                 .get(&payload.name)
                 .map(|h| h.spawned_at.elapsed().as_secs())
                 .unwrap_or(0);
+
+            // Unregister from supervisor (intentional release — no restart)
+            workers.supervisor.unregister(&payload.name);
+            workers.metrics.on_release(&payload.name);
 
             workers.release(&payload.name).await?;
             let dropped = drop_pending_for_worker(pending_deliveries, &payload.name);

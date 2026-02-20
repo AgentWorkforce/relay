@@ -493,7 +493,6 @@ jobs:
         package:
           # All packages - published in parallel
           - protocol
-          - storage
           - state
           - policy
           - memory

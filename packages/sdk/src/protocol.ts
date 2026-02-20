@@ -2,6 +2,13 @@ export const PROTOCOL_VERSION = 1 as const;
 
 export type AgentRuntime = "pty" | "headless_claude";
 
+export interface RestartPolicy {
+  enabled?: boolean;
+  max_restarts?: number;
+  cooldown_ms?: number;
+  max_consecutive_failures?: number;
+}
+
 export interface AgentSpec {
   name: string;
   runtime: AgentRuntime;
@@ -13,6 +20,7 @@ export interface AgentSpec {
   team?: string;
   shadow_of?: string;
   shadow_mode?: string;
+  restart_policy?: RestartPolicy;
 }
 
 export interface RelayDelivery {
@@ -77,6 +85,10 @@ export type SdkToBroker =
       payload: Record<string, never>;
     }
   | {
+      type: "get_crash_insights";
+      payload: Record<string, never>;
+    }
+  | {
       type: "shutdown";
       payload: Record<string, never>;
     };
@@ -99,6 +111,51 @@ export interface BrokerStatus {
   }>;
   pending_delivery_count: number;
   pending_deliveries: PendingDeliveryInfo[];
+}
+
+export type BrokerAgentStatus = "healthy" | "restarting" | "dead" | "released";
+
+export interface AgentStats {
+  spawns: number;
+  crashes: number;
+  restarts: number;
+  releases: number;
+  status: BrokerAgentStatus;
+  current_uptime_secs: number;
+  memory_bytes: number;
+}
+
+export interface BrokerStats {
+  uptime_secs: number;
+  total_agents_spawned: number;
+  total_crashes: number;
+  total_restarts: number;
+  active_agents: number;
+}
+
+export type CrashCategory = "oom" | "segfault" | "error" | "signal" | "unknown";
+
+export interface CrashRecord {
+  agent_name: string;
+  exit_code?: number;
+  signal?: string;
+  timestamp: number;
+  uptime_secs: number;
+  category: CrashCategory;
+  description: string;
+}
+
+export interface CrashPattern {
+  category: CrashCategory;
+  count: number;
+  agents: string[];
+}
+
+export interface CrashInsightsResponse {
+  total_crashes: number;
+  recent: CrashRecord[];
+  patterns: CrashPattern[];
+  health_score: number;
 }
 
 export interface ProtocolError {
@@ -229,6 +286,24 @@ export type BrokerEvent =
       kind: "agent_idle";
       name: string;
       idle_secs: number;
+    }
+  | {
+      kind: "agent_restarting";
+      name: string;
+      code?: number;
+      signal?: string;
+      restart_count: number;
+      delay_ms: number;
+    }
+  | {
+      kind: "agent_restarted";
+      name: string;
+      restart_count: number;
+    }
+  | {
+      kind: "agent_permanently_dead";
+      name: string;
+      reason: string;
     };
 
 export type BrokerToSdk =
