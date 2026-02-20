@@ -47,6 +47,8 @@ export interface SpawnPtyInput {
   idleThresholdSecs?: number;
   /** Auto-restart policy for crashed agents. */
   restartPolicy?: RestartPolicy;
+  /** Name of a previously released agent whose continuity context should be injected. */
+  continueFrom?: string;
 }
 
 export interface SpawnHeadlessClaudeInput {
@@ -224,6 +226,7 @@ export class AgentRelayClient {
       agent,
       ...(input.task != null ? { initial_task: input.task } : {}),
       ...(input.idleThresholdSecs != null ? { idle_threshold_secs: input.idleThresholdSecs } : {}),
+      ...(input.continueFrom != null ? { continue_from: input.continueFrom } : {}),
     });
     return result;
   }

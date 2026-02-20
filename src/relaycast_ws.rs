@@ -352,6 +352,79 @@ impl RelaycastHttpClient {
         Ok(())
     }
 
+    /// Fetch recent DM history for an agent via the Relaycast REST API.
+    pub async fn get_dms(&self, agent: &str, limit: usize) -> Result<Vec<Value>> {
+        let token = self.ensure_token().await?;
+        let url = format!("{}/v1/dm/{}?limit={}", self.base_url, agent, limit);
+        let res = self
+            .http
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            tracing::warn!(status = %status, "relaycast get_dms failed: {}", body);
+            return Ok(vec![]);
+        }
+        let body: Value = res.json().await?;
+        // Try common response shapes: { data: { messages: [...] } } or { messages: [...] } or [...]
+        let messages = body
+            .pointer("/data/messages")
+            .or_else(|| body.get("messages"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_else(|| {
+                if body.is_array() {
+                    body.as_array().cloned().unwrap_or_default()
+                } else {
+                    vec![]
+                }
+            });
+        Ok(messages)
+    }
+
+    /// Fetch recent message history from a channel via the Relaycast REST API.
+    pub async fn get_channel_messages(
+        &self,
+        channel: &str,
+        limit: usize,
+    ) -> Result<Vec<Value>> {
+        let token = self.ensure_token().await?;
+        let ch = channel.strip_prefix('#').unwrap_or(channel);
+        let url = format!(
+            "{}/v1/channels/{}/messages?limit={}",
+            self.base_url, ch, limit
+        );
+        let res = self
+            .http
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            tracing::warn!(status = %status, "relaycast get_channel_messages failed: {}", body);
+            return Ok(vec![]);
+        }
+        let body: Value = res.json().await?;
+        let messages = body
+            .pointer("/data/messages")
+            .or_else(|| body.get("messages"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_else(|| {
+                if body.is_array() {
+                    body.as_array().cloned().unwrap_or_default()
+                } else {
+                    vec![]
+                }
+            });
+        Ok(messages)
+    }
+
     /// Smart send: routes to channel or DM based on `#` prefix.
     pub async fn send(&self, to: &str, text: &str) -> Result<()> {
         if to.starts_with('#') {

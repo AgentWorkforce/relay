@@ -164,12 +164,15 @@ export class BrokerHarness {
   async spawnAgent(
     name: string,
     cli = 'cat',
-    channels?: string[]
+    channels?: string[],
+    options?: { task?: string; continueFrom?: string }
   ): Promise<{ name: string; runtime: string }> {
     return this.client.spawnPty({
       name,
       cli,
       channels: channels ?? ['general'],
+      task: options?.task,
+      continueFrom: options?.continueFrom,
     });
   }
 

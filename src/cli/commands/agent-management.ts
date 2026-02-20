@@ -155,6 +155,8 @@ export function registerAgentManagementCommands(
       'When shadow should speak (comma-separated, same values as --shadow-triggers)'
     )
     .option('--model <model>', 'Model override (e.g., opus, sonnet, haiku, o3, gemini-2.5-pro)')
+    .option('--continue', 'Continue from a previously released agent with the same name')
+    .option('--continue-from <name>', 'Continue from a specific previously released agent')
     .action(
       async (
         name: string,
@@ -172,6 +174,8 @@ export function registerAgentManagementCommands(
           shadowAgent?: string;
           shadowTriggers?: string;
           shadowSpeakOn?: string;
+          continue?: boolean;
+          continueFrom?: string;
         }
       ) => {
         let finalTask = task;
@@ -198,6 +202,9 @@ export function registerAgentManagementCommands(
 
         const taskToSpawn = finalTask;
 
+        // Resolve --continue / --continue-from into continueFrom
+        const continueFrom = options.continueFrom ?? (options.continue ? name : undefined);
+
         try {
           await client.spawnPty({
             name,
@@ -209,6 +216,7 @@ export function registerAgentManagementCommands(
             cwd: options.cwd,
             shadowOf: options.shadowOf,
             shadowMode: options.shadowMode as ShadowMode | undefined,
+            continueFrom,
           });
           const agents = await client.listAgents().catch(() => []);
           const spawned = agents.find((agent) => agent.name === name);
