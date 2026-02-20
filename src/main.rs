@@ -157,6 +157,8 @@ struct PersistedAgent {
     spec: Option<AgentSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     restart_policy: Option<relay_broker::supervisor::RestartPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    initial_task: Option<String>,
 }
 
 #[derive(Debug)]
@@ -164,6 +166,7 @@ struct RuntimePaths {
     creds: PathBuf,
     state: PathBuf,
     pending: PathBuf,
+    pid: PathBuf,
     /// Held for process lifetime to prevent concurrent broker instances.
     #[allow(dead_code)]
     _lock: std::fs::File,
@@ -387,6 +390,9 @@ struct SpawnPayload {
     /// Silence duration in seconds before emitting agent_idle (0 = disabled).
     #[serde(default)]
     idle_threshold_secs: Option<u64>,
+    /// Name of a previously released agent whose continuity context should be injected.
+    #[serde(default)]
+    continue_from: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -972,9 +978,16 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
     let mut shutdown = false;
 
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+
     while !shutdown {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
+                shutdown = true;
+            }
+
+            _ = sigterm.recv() => {
+                tracing::info!("received SIGTERM, shutting down");
                 shutdown = true;
             }
 
@@ -1507,6 +1520,9 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     let _ = std::fs::remove_file(&paths.pending);
     workers.shutdown_all().await?;
 
+    // Clean up PID file on graceful shutdown
+    let _ = std::fs::remove_file(&paths.pid);
+
     Ok(())
 }
 
@@ -1609,9 +1625,16 @@ async fn run_listen(cmd: ListenCommand, telemetry: TelemetryClient) -> Result<()
     reap_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     let mut running = true;
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+
     while running {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
+                running = false;
+            }
+
+            _ = sigterm.recv() => {
+                tracing::info!("received SIGTERM, shutting down");
                 running = false;
             }
 
@@ -1827,6 +1850,12 @@ async fn run_listen(cmd: ListenCommand, telemetry: TelemetryClient) -> Result<()
     if let Err(e) = ws_control_tx.send(WsControl::Shutdown).await {
         tracing::warn!(error = %e, "failed to send WS shutdown in listen cleanup");
     }
+
+    // Clean up PID file on graceful shutdown
+    let _ = std::fs::remove_file(&paths.pid);
+
+    // Ensure lock is held until after all cleanup is complete
+    drop(paths);
 
     eprintln!("[agent-relay] listen session ended");
     Ok(())
@@ -2133,10 +2162,94 @@ async fn handle_sdk_frame(
             let runtime = payload.agent.runtime.clone();
             let name = payload.agent.name.clone();
 
+            // Build the effective initial_task, injecting continuity context if continue_from is set.
+            let mut effective_task = payload.initial_task.clone();
+            if let Some(ref continue_from) = payload.continue_from {
+                let continuity_dir = continuity_dir(state_path);
+                let continuity_file = continuity_dir.join(format!("{}.json", continue_from));
+                if continuity_file.exists() {
+                    match std::fs::read_to_string(&continuity_file) {
+                        Ok(contents) => {
+                            if let Ok(ctx) = serde_json::from_str::<Value>(&contents) {
+                                let prev_task = ctx
+                                    .get("initial_task")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("unknown");
+                                let summary = ctx
+                                    .get("summary")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("no summary available");
+                                let messages = ctx
+                                    .get("message_history")
+                                    .and_then(Value::as_array)
+                                    .map(|msgs| {
+                                        msgs.iter()
+                                            .filter_map(|m| {
+                                                let from =
+                                                    m.get("from").and_then(Value::as_str).unwrap_or("?");
+                                                let text =
+                                                    m.get("text").and_then(Value::as_str).unwrap_or("");
+                                                if text.is_empty() {
+                                                    None
+                                                } else {
+                                                    Some(format!("  {}: {}", from, text))
+                                                }
+                                            })
+                                            .collect::<Vec<_>>()
+                                            .join("\n")
+                                    })
+                                    .unwrap_or_default();
+
+                                let continuity_block = format!(
+                                    "## Continuity Context (from previous session as '{}')\n\
+                                     Previous task: {}\n\
+                                     Session summary: {}\n{}",
+                                    continue_from,
+                                    prev_task,
+                                    summary,
+                                    if messages.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!("Recent messages:\n{}\n", messages)
+                                    }
+                                );
+
+                                effective_task = Some(match effective_task {
+                                    Some(new_task) => {
+                                        format!("{}\n\n## Current Task\n{}", continuity_block, new_task)
+                                    }
+                                    None => continuity_block,
+                                });
+                                tracing::info!(
+                                    agent = %name,
+                                    continue_from = %continue_from,
+                                    "injected continuity context from previous session"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                agent = %name,
+                                continue_from = %continue_from,
+                                error = %e,
+                                "failed to read continuity file"
+                            );
+                        }
+                    }
+                } else {
+                    tracing::warn!(
+                        agent = %name,
+                        continue_from = %continue_from,
+                        "no continuity file found at {}",
+                        continuity_file.display()
+                    );
+                }
+            }
+
             workers
                 .spawn(payload.agent.clone(), None, payload.idle_threshold_secs)
                 .await?;
-            if let Some(task) = payload.initial_task {
+            if let Some(task) = effective_task.clone() {
                 workers.initial_tasks.insert(name.clone(), task);
             }
             let worker_pid = workers.worker_pid(&name);
@@ -2155,6 +2268,7 @@ async fn handle_sdk_frame(
                     ),
                     spec: Some(payload.agent.clone()),
                     restart_policy: payload.agent.restart_policy.clone(),
+                    initial_task: payload.initial_task.clone(),
                 },
             );
             state.save(state_path)?;
@@ -2477,6 +2591,76 @@ async fn handle_sdk_frame(
                 .get(&payload.name)
                 .map(|h| h.spawned_at.elapsed().as_secs())
                 .unwrap_or(0);
+
+            // Capture continuity data before releasing the agent.
+            let persisted = state.agents.get(&payload.name).cloned();
+            if let Some(ref agent_data) = persisted {
+                let continuity_dir = continuity_dir(state_path);
+                if let Err(e) = std::fs::create_dir_all(&continuity_dir) {
+                    tracing::warn!(error = %e, "failed to create continuity dir");
+                } else {
+                    // Fetch recent DMs from relaycast if available.
+                    let message_history = if let Some(http) = relaycast_http {
+                        match http.get_dms(&payload.name, 50).await {
+                            Ok(msgs) => msgs,
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "failed to fetch DMs for continuity"
+                                );
+                                vec![]
+                            }
+                        }
+                    } else {
+                        vec![]
+                    };
+
+                    let released_at = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+
+                    let reason_str = payload
+                        .reason
+                        .as_deref()
+                        .unwrap_or("released via SDK request");
+
+                    let cli = agent_data.spec.as_ref().and_then(|s| s.cli.clone());
+                    let cwd = agent_data.spec.as_ref().and_then(|s| s.cwd.clone());
+
+                    let continuity = json!({
+                        "agent_name": payload.name,
+                        "cli": cli,
+                        "initial_task": agent_data.initial_task,
+                        "cwd": cwd,
+                        "released_at": released_at,
+                        "lifetime_seconds": lifetime_seconds,
+                        "message_history": message_history,
+                        "summary": reason_str,
+                    });
+
+                    let continuity_file =
+                        continuity_dir.join(format!("{}.json", payload.name));
+                    match std::fs::write(
+                        &continuity_file,
+                        serde_json::to_string_pretty(&continuity).unwrap_or_default(),
+                    ) {
+                        Ok(()) => {
+                            tracing::info!(
+                                agent = %payload.name,
+                                path = %continuity_file.display(),
+                                "saved continuity data"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "failed to write continuity file"
+                            );
+                        }
+                    }
+                }
+            }
 
             // Unregister from supervisor (intentional release — no restart)
             workers.supervisor.unregister(&payload.name);
@@ -3054,7 +3238,22 @@ fn extract_mcp_message_ids(buffer: &str) -> Vec<String> {
 #[cfg(unix)]
 fn is_pid_alive(pid: u32) -> bool {
     // kill(pid, 0) checks existence without sending a signal
-    unsafe { nix::libc::kill(pid as i32, 0) == 0 }
+    let rc = unsafe { nix::libc::kill(pid as i32, 0) };
+    if rc == 0 {
+        return true;
+    }
+    // EPERM means the process exists but we can't signal it (different user)
+    let err = std::io::Error::last_os_error();
+    err.raw_os_error() == Some(nix::libc::EPERM)
+}
+
+/// Returns the continuity directory path derived from the state file path.
+/// State path is always `{cwd}/.agent-relay/state.json`, so parent is `{cwd}/.agent-relay/`.
+fn continuity_dir(state_path: &Path) -> PathBuf {
+    state_path
+        .parent()
+        .expect("state_path always has a parent (.agent-relay/)")
+        .join("continuity")
 }
 
 fn ensure_runtime_paths(cwd: &Path) -> Result<RuntimePaths> {
@@ -3107,6 +3306,7 @@ fn ensure_runtime_paths(cwd: &Path) -> Result<RuntimePaths> {
                             creds: root.join("relaycast.json"),
                             state: root.join("state.json"),
                             pending: root.join("pending.json"),
+                            pid: pid_path,
                             _lock: lock_file,
                         });
                     }
@@ -3126,6 +3326,7 @@ fn ensure_runtime_paths(cwd: &Path) -> Result<RuntimePaths> {
         creds: root.join("relaycast.json"),
         state: root.join("state.json"),
         pending: root.join("pending.json"),
+        pid: pid_path,
         _lock: lock_file,
     })
 }
@@ -3228,7 +3429,7 @@ mod tests {
     use relay_broker::protocol::RelayDelivery;
 
     use super::{
-        channels_from_csv, delivery_retry_interval, derive_ws_base_url_from_http,
+        channels_from_csv, continuity_dir, delivery_retry_interval, derive_ws_base_url_from_http,
         detect_bypass_permissions_prompt, drop_pending_for_worker, extract_mcp_message_ids,
         floor_char_boundary, format_injection, is_auto_suggestion, is_bypass_selection_menu,
         is_in_editor_mode, normalize_channel, parse_relaycast_agent_event, strip_ansi,
@@ -3845,5 +4046,106 @@ mod tests {
             "parameters": { "name": "x", "cli": "y" }
         }))
         .is_none());
+    }
+
+    // ==================== is_pid_alive ====================
+
+    #[test]
+    fn is_pid_alive_returns_true_for_self() {
+        let pid = std::process::id();
+        assert!(
+            super::is_pid_alive(pid),
+            "current process PID should be alive"
+        );
+    }
+
+    #[test]
+    fn is_pid_alive_returns_false_for_dead_pid() {
+        // Spawn a short-lived child, wait for it to exit, then verify it's dead
+        let child = std::process::Command::new("true")
+            .spawn()
+            .expect("failed to spawn 'true'");
+        let pid = child.id();
+        let mut child = child;
+        child.wait().expect("failed to wait on child");
+        // After the child exits, its PID should not be alive
+        // (the PID may be recycled, but on macOS/Linux it won't be immediately)
+        assert!(
+            !super::is_pid_alive(pid),
+            "exited child PID should be dead"
+        );
+    }
+
+    #[test]
+    fn is_pid_alive_returns_false_for_bogus_pid() {
+        // PID 0 is the kernel scheduler — kill(0, 0) signals the entire process group,
+        // not a real target. Use a very high PID that almost certainly doesn't exist.
+        // On macOS pid_max is ~99999; on Linux it's typically 32768 or 4194304.
+        // 4_000_000 is unlikely to be in use.
+        assert!(
+            !super::is_pid_alive(4_000_000),
+            "bogus PID 4_000_000 should not be alive (ESRCH)"
+        );
+    }
+
+    #[test]
+    fn is_pid_alive_eperm_means_alive() {
+        // PID 1 (launchd/init) is owned by root. When run as a normal user,
+        // kill(1, 0) returns EPERM — the process exists but we can't signal it.
+        // This is exactly the EPERM case our fix handles.
+        // Skip if running as root (e.g., in some CI containers) since root can
+        // signal any process and would get rc=0 instead of EPERM.
+        if unsafe { nix::libc::getuid() } == 0 {
+            eprintln!("skipping EPERM test: running as root");
+            return;
+        }
+        assert!(
+            super::is_pid_alive(1),
+            "PID 1 (init/launchd) should report alive via EPERM"
+        );
+    }
+
+    // ==================== write_pid_file ====================
+
+    #[test]
+    fn write_pid_file_is_atomic() {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let pid_path = dir.path().join("broker.pid");
+        super::write_pid_file(&pid_path).expect("write_pid_file failed");
+        let contents = std::fs::read_to_string(&pid_path).expect("failed to read pid file");
+        let pid: u32 = contents.trim().parse().expect("pid file should contain a number");
+        assert_eq!(pid, std::process::id());
+    }
+
+    // ==================== continuity_dir ====================
+
+    #[test]
+    fn continuity_dir_derives_correct_path_from_state_json() {
+        let state_path = std::path::Path::new("/project/.agent-relay/state.json");
+        let result = continuity_dir(state_path);
+        assert_eq!(
+            result,
+            std::path::PathBuf::from("/project/.agent-relay/continuity")
+        );
+    }
+
+    #[test]
+    fn continuity_dir_works_with_nested_project_path() {
+        let state_path = std::path::Path::new("/home/user/projects/my-app/.agent-relay/state.json");
+        let result = continuity_dir(state_path);
+        assert_eq!(
+            result,
+            std::path::PathBuf::from("/home/user/projects/my-app/.agent-relay/continuity")
+        );
+    }
+
+    #[test]
+    fn continuity_dir_preserves_relative_paths() {
+        let state_path = std::path::Path::new(".agent-relay/state.json");
+        let result = continuity_dir(state_path);
+        assert_eq!(
+            result,
+            std::path::PathBuf::from(".agent-relay/continuity")
+        );
     }
 }
