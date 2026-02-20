@@ -360,7 +360,7 @@ async function installRelayPtyBinary() {
 /**
  * Get the platform-specific binary name for the broker binary.
  * The broker binary is the Rust-compiled broker (not the Bun-compiled CLI).
- * It is needed by the SDK (packages/broker-sdk) for programmatic
+ * It is needed by the SDK (packages/sdk) for programmatic
  * agent orchestration via `new AgentRelay()`.
  * Returns null if platform is not supported.
  */
@@ -383,20 +383,20 @@ function getBrokerBinaryName() {
 }
 
 /**
- * Install the broker binary into packages/broker-sdk/bin/.
+ * Install the broker binary into packages/sdk/bin/.
  *
  * The SDK's AgentRelayClient spawns this binary as a subprocess
  * (`agent-relay-broker init --name broker --channels general`). Without it,
  * `new AgentRelay()` will fail with "broker exited (code=1)".
  *
  * Resolution order:
- *   1. Already bundled at packages/broker-sdk/bin/agent-relay-broker (e.g. from prepack)
+ *   1. Already bundled at packages/sdk/bin/agent-relay-broker (e.g. from prepack)
  *   2. Download platform-specific standalone binary from GitHub releases
  *   3. Fall back to the local Rust debug binary at target/debug/agent-relay-broker (dev only)
  */
 async function installBrokerBinary() {
   const pkgRoot = getPackageRoot();
-  const sdkBinDir = path.join(pkgRoot, 'packages', 'broker-sdk', 'bin');
+  const sdkBinDir = path.join(pkgRoot, 'packages', 'sdk', 'bin');
   const isWindows = process.platform === 'win32';
   const binaryFilename = isWindows ? 'agent-relay-broker.exe' : 'agent-relay-broker';
   const targetPath = path.join(sdkBinDir, binaryFilename);

@@ -2,7 +2,7 @@
  * Spawn Claude + Codex agents via agent-relay-broker for code review.
  * Run: npx tsx scripts/spawn-reviewers.ts
  */
-import { AgentRelay, type Agent } from "@agent-relay/broker-sdk";
+import { AgentRelay, type Agent } from "@agent-relay/sdk";
 
 async function main() {
   const relay = new AgentRelay({
@@ -40,7 +40,7 @@ async function main() {
   // Send review task
   const msg = await human.sendMessage({
     to: reviewer.name,
-    text: "Do a thorough code review of this relay broker codebase. Check src/*.rs for any stubs, TODOs, unwrap() in production code, missing error handling, dead code, or incomplete implementations. Also check packages/broker-sdk/src/*.ts for type safety issues and API consistency. Report your findings concisely.",
+    text: "Do a thorough code review of this relay broker codebase. Check src/*.rs for any stubs, TODOs, unwrap() in production code, missing error handling, dead code, or incomplete implementations. Also check packages/sdk/src/*.ts for type safety issues and API consistency. Report your findings concisely.",
   });
   console.log("Sent review task, eventId:", msg.eventId);
 
@@ -56,7 +56,7 @@ async function main() {
 
   const msg2 = await human.sendMessage({
     to: codexReviewer.name,
-    text: "Review the agent-relay broker codebase for quality. Check: 1) Rust code in src/ for correctness and error handling. 2) TypeScript SDK in packages/broker-sdk/src/ for type safety. 3) Tests in tests/ for coverage gaps. Report findings concisely.",
+    text: "Review the agent-relay broker codebase for quality. Check: 1) Rust code in src/ for correctness and error handling. 2) TypeScript SDK in packages/sdk/src/ for type safety. 3) Tests in tests/ for coverage gaps. Report findings concisely.",
   });
   console.log("Sent review task, eventId:", msg2.eventId);
 

@@ -15,7 +15,7 @@
  * Run: npx tsx scripts/migrate-to-broker-sdk.ts
  * Plan: .claude/plans/binary-watching-waffle.md
  */
-import { AgentRelay, type Agent } from "@agent-relay/broker-sdk";
+import { AgentRelay, type Agent } from "@agent-relay/sdk";
 
 // ── Self-release suffix appended to every task spec ─────────────────────────
 // Codex --full-auto doesn't auto-exit. Workers must self-release via relay
@@ -284,8 +284,8 @@ It currently uses:
 - SpawnRequest, SpawnResult types from @agent-relay/bridge
 
 We're replacing ALL of these with:
-- AgentRelay / AgentRelayClient from @agent-relay/broker-sdk (stdio to Rust binary)
-- createRelaycastClient from @agent-relay/broker-sdk (for cloud operations)
+- AgentRelay / AgentRelayClient from @agent-relay/sdk (stdio to Rust binary)
+- createRelaycastClient from @agent-relay/sdk (for cloud operations)
 - @relaycast/sdk AgentClient for inbox, history, channels, search
 
 ## File to modify
@@ -303,7 +303,7 @@ import type { SpawnRequest, SpawnResult } from '@agent-relay/bridge';
 
 ## Imports to ADD
 \`\`\`typescript
-import { AgentRelay, AgentRelayClient, createRelaycastClient } from '@agent-relay/broker-sdk';
+import { AgentRelay, AgentRelayClient, createRelaycastClient } from '@agent-relay/sdk';
 import type { AgentClient } from '@relaycast/sdk';
 \`\`\`
 
@@ -379,7 +379,7 @@ In whatever package.json governs the CLI, remove these deps:
 - @agent-relay/bridge
 
 Add these deps:
-- @agent-relay/broker-sdk (should already be in the monorepo)
+- @agent-relay/sdk (should already be in the monorepo)
 - @relaycast/sdk (for cloud operations)
 
 ## Important
@@ -414,7 +414,7 @@ You are migrating the ACP bridge from the old SDK to the broker SDK.
 The ACP bridge at packages/acp-bridge/src/acp-agent.ts bridges agent-relay to ACP editors (Zed).
 It currently uses RelayClient from @agent-relay/sdk (Unix socket to daemon).
 
-We're replacing with AgentRelay from @agent-relay/broker-sdk (stdio to Rust binary).
+We're replacing with AgentRelay from @agent-relay/sdk (stdio to Rust binary).
 
 ## Files to modify
 - packages/acp-bridge/src/acp-agent.ts
@@ -427,7 +427,7 @@ We're replacing with AgentRelay from @agent-relay/broker-sdk (stdio to Rust bina
 1. Import: Replace
    \`import { RelayClient, type ClientConfig } from '@agent-relay/sdk'\`
    with
-   \`import { AgentRelay, type Agent, type Message } from '@agent-relay/broker-sdk'\`
+   \`import { AgentRelay, type Agent, type Message } from '@agent-relay/sdk'\`
 
 2. Constructor: Replace
    \`this.relayClient = new RelayClient(relayConfig)\`
@@ -503,7 +503,7 @@ We're replacing with AgentRelay from @agent-relay/broker-sdk (stdio to Rust bina
 ### Update package.json
 In packages/acp-bridge/package.json:
 - Remove dependency: @agent-relay/sdk
-- Add dependency: @agent-relay/broker-sdk
+- Add dependency: @agent-relay/sdk
 - Keep @agentclientprotocol/sdk (this is the ACP SDK, not relay)
 
 ## Important
@@ -545,13 +545,13 @@ It uses RelayClient from @agent-relay/sdk in its client adapter.
 
 ### 1. Read client-adapter.ts first
 Understand how it wraps RelayClient. Then replace:
-- RelayClient usage → AgentRelay or AgentRelayClient from @agent-relay/broker-sdk
+- RelayClient usage → AgentRelay or AgentRelayClient from @agent-relay/sdk
 - Old SDK types → broker SDK types
 - Socket-based connect/disconnect → broker SDK auto-start/shutdown
 
 ### 2. Update tool implementations
 Check each tool file in packages/mcp/src/tools/ for imports from @agent-relay/sdk.
-Replace with @agent-relay/broker-sdk equivalents:
+Replace with @agent-relay/sdk equivalents:
 - relay-send.ts — sendMessage
 - relay-spawn.ts — spawnPty
 - relay-release.ts — release
@@ -566,12 +566,12 @@ Replace with @agent-relay/broker-sdk equivalents:
 
 ### 3. Update package.json
 - Remove: @agent-relay/sdk from dependencies/peerDependencies/devDependencies
-- Add: @agent-relay/broker-sdk
+- Add: @agent-relay/sdk
 - Add: @relaycast/sdk if any tools need cloud operations
 
 ### 4. Check for @agent-relay/protocol imports
 The old MCP package may import types from @agent-relay/protocol. These types now live
-in @agent-relay/broker-sdk (packages/sdk-ts/src/protocol.ts). Update accordingly.
+in @agent-relay/sdk (packages/sdk-ts/src/protocol.ts). Update accordingly.
 
 ## Verification
 1. Run: npx tsc --noEmit in packages/mcp
@@ -611,7 +611,7 @@ Delete these directories entirely:
 ### 1. BEFORE deleting, verify no remaining imports
 Search the ENTIRE codebase (excluding node_modules) for these import patterns:
 - @agent-relay/daemon
-- @agent-relay/sdk (but NOT @agent-relay/sdk-ts or @agent-relay/broker-sdk)
+- @agent-relay/sdk (but NOT @agent-relay/sdk-ts or @agent-relay/sdk)
 - @agent-relay/wrapper
 - @agent-relay/bridge
 - @agent-relay/spawner
@@ -642,7 +642,7 @@ Run the build command (check package.json scripts for "build"):
 - npm run build OR turbo build OR equivalent
 
 ## Do NOT delete
-- packages/sdk-ts (this is the NEW SDK, @agent-relay/broker-sdk)
+- packages/sdk-ts (this is the NEW SDK, @agent-relay/sdk)
 - packages/config, utils, telemetry, storage, mcp, hooks
 - packages/memory, policy, acp-bridge, user-directory, trajectory
 
@@ -669,7 +669,7 @@ You are a code reviewer verifying the output of Wave "${waveName}".
 ## Context
 The following Codex workers just completed their tasks: ${workers.join(', ')}.
 They were part of a migration from the old @agent-relay/sdk (Unix socket daemon model)
-to @agent-relay/broker-sdk (stdio to Rust binary).
+to @agent-relay/sdk (stdio to Rust binary).
 
 ## Your job
 Review the changes made by these workers. Check for:
@@ -740,7 +740,7 @@ const WAVE2_REVIEW_CHECKS = `
 ### CLI (CLIWorker)
 - src/cli/index.ts has NO imports from: @agent-relay/sdk, @agent-relay/daemon,
   @agent-relay/wrapper, @agent-relay/bridge
-- src/cli/index.ts imports AgentRelay/AgentRelayClient from @agent-relay/broker-sdk
+- src/cli/index.ts imports AgentRelay/AgentRelayClient from @agent-relay/sdk
 - All CLI commands still exist: up, down, spawn, release, send, agents, who, status,
   history, read, set-model, inbox, metrics, create-agent, doctor
 - Telemetry, update checks, config loading preserved
@@ -748,7 +748,7 @@ const WAVE2_REVIEW_CHECKS = `
 
 ### ACP Bridge (ACPWorker)
 - packages/acp-bridge/src/acp-agent.ts has NO imports from @agent-relay/sdk
-- Uses AgentRelay from @agent-relay/broker-sdk
+- Uses AgentRelay from @agent-relay/sdk
 - All ACP commands work: spawn, release, agents, status, help
 - @mention messaging preserved
 - Session/buffer management intact

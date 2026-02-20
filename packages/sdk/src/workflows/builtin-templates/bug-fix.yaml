@@ -1,0 +1,75 @@
+version: "1.0"
+name: bug-fix
+description: "Fast bug investigation and remediation workflow with validation gates."
+swarm:
+  pattern: hub-spoke
+  maxConcurrency: 2
+  timeoutMs: 2700000
+  channel: swarm-bug-fix
+agents:
+  - name: lead
+    cli: claude
+    role: "Coordinates debugging and release decisions"
+  - name: investigator
+    cli: codex
+    role: "Reproduces and scopes the defect"
+  - name: fixer
+    cli: codex
+    role: "Implements and tests the fix"
+  - name: verifier
+    cli: claude
+    role: "Validates risk, regressions, and completion"
+workflows:
+  - name: bug-remediation
+    description: "Investigate root cause, patch safely, and verify no regressions."
+    onError: retry
+    steps:
+      - name: investigate
+        agent: investigator
+        task: |
+          Reproduce the issue, identify root cause, and provide a fix strategy:
+          {{task}}
+        verification:
+          type: output_contains
+          value: ROOT_CAUSE_IDENTIFIED
+      - name: patch
+        agent: fixer
+        dependsOn: [investigate]
+        task: |
+          Implement the fix based on the investigation report:
+          {{steps.investigate.output}}
+        retries: 2
+        verification:
+          type: output_contains
+          value: PATCH_APPLIED
+      - name: regression-check
+        agent: verifier
+        dependsOn: [patch]
+        task: |
+          Validate the patch for correctness and regression risk:
+          {{steps.patch.output}}
+        verification:
+          type: output_contains
+          value: VERIFICATION_COMPLETE
+      - name: closeout
+        agent: lead
+        dependsOn: [regression-check]
+        task: |
+          Prepare final incident summary, residual risk, and deployment notes.
+        verification:
+          type: output_contains
+          value: DONE
+coordination:
+  barriers:
+    - name: fix-ready
+      waitFor: [investigate, patch, regression-check]
+      timeoutMs: 600000
+state:
+  backend: memory
+  ttlMs: 43200000
+  namespace: bug-fix
+errorHandling:
+  strategy: retry
+  maxRetries: 3
+  retryDelayMs: 3000
+  notifyChannel: swarm-bug-fix

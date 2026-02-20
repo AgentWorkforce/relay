@@ -6,7 +6,7 @@
 
 import { randomUUID } from 'node:crypto';
 import * as acp from '@agentclientprotocol/sdk';
-import { AgentRelay, type Agent, type Message } from '@agent-relay/broker-sdk';
+import { AgentRelay, type Agent, type Message } from '@agent-relay/sdk';
 import type {
   ACPBridgeConfig,
   SessionState,

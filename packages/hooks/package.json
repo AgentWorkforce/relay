@@ -39,7 +39,7 @@
   "dependencies": {
     "@agent-relay/config": "2.3.14",
     "@agent-relay/trajectory": "2.3.14",
-    "@agent-relay/broker-sdk": "2.3.14"
+    "@agent-relay/sdk": "2.3.14"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",

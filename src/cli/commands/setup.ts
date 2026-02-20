@@ -10,8 +10,8 @@ import {
   getStatus,
   isDisabledByEnv,
 } from '@agent-relay/telemetry';
-import { runWorkflow } from '@agent-relay/broker-sdk/workflows';
-import type { WorkflowEvent } from '@agent-relay/broker-sdk/workflows';
+import { runWorkflow } from '@agent-relay/sdk/workflows';
+import type { WorkflowEvent } from '@agent-relay/sdk/workflows';
 type ExitFn = (code: number) => never;
 type RunInitOptions = {
   yes?: boolean;

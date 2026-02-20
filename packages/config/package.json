@@ -85,7 +85,7 @@
   "dependencies": {
     "zod": "^3.23.8",
     "zod-to-json-schema": "^3.23.1",
-    "@agent-relay/broker-sdk": "2.3.14"
+    "@agent-relay/sdk": "2.3.14"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",

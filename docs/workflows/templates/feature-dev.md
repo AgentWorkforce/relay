@@ -33,7 +33,7 @@ agent-relay run --template feature-dev --task "Add user authentication with OAut
 ```
 
 ```typescript
-import { TemplateRegistry, WorkflowRunner } from "@agent-relay/broker-sdk/workflows";
+import { TemplateRegistry, WorkflowRunner } from "@agent-relay/sdk/workflows";
 
 const registry = new TemplateRegistry();
 const config = await registry.loadTemplate("feature-dev");

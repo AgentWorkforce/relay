@@ -20,7 +20,7 @@ import { dirname, resolve } from "node:path";
 import {
   AgentRelayClient,
   type BrokerEvent,
-} from "@agent-relay/broker-sdk";
+} from "@agent-relay/sdk";
 import {
   QUICK,
   resolveBinaryPath,

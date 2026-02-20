@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { createRelaycastClient as createRelaycastClientSdk } from '@agent-relay/broker-sdk';
+import { createRelaycastClient as createRelaycastClientSdk } from '@agent-relay/sdk';
 import { getProjectPaths } from '@agent-relay/config';
 
 import { createAgentRelayClient } from '../lib/client-factory.js';

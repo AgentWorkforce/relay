@@ -47,7 +47,7 @@
     "prepublishOnly": "npm run clean && npm run build && npm test"
   },
   "dependencies": {
-    "@agent-relay/broker-sdk": "2.3.14",
+    "@agent-relay/sdk": "2.3.14",
     "@agent-relay/config": "2.3.14",
     "@agent-relay/utils": "2.3.14",
     "@modelcontextprotocol/sdk": "^1.0.0",
@@ -60,10 +60,10 @@
     "vitest": "^2.1.9"
   },
   "peerDependencies": {
-    "@agent-relay/broker-sdk": ">=2.0.0"
+    "@agent-relay/sdk": ">=2.0.0"
   },
   "peerDependenciesMeta": {
-    "@agent-relay/broker-sdk": {
+    "@agent-relay/sdk": {
       "optional": true
     }
   },

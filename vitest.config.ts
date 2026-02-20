@@ -67,7 +67,7 @@ export default defineConfig({
     exclude: [
       '**/node_modules/**',
       '**/dist/**',
-      'packages/broker-sdk/**', // Uses Node.js test runner, not vitest
+      'packages/sdk/**', // Uses Node.js test runner, not vitest
     ],
     coverage: {
       provider: 'v8',

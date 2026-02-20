@@ -1288,7 +1288,7 @@ jobs:
             ### npm install
             ```bash
             npm install -g agent-relay@${{ needs.build.outputs.new_version }}
-            npm install @agent-relay/broker-sdk@${{ needs.build.outputs.new_version }}
+            npm install @agent-relay/sdk@${{ needs.build.outputs.new_version }}
             ```
 
             ### Standalone binaries
@@ -1344,7 +1344,7 @@ jobs:
             ### Install this prerelease
             ```bash
             npm install -g agent-relay@${{ needs.build.outputs.new_version }}
-            npm install @agent-relay/broker-sdk@${{ needs.build.outputs.new_version }}
+            npm install @agent-relay/sdk@${{ needs.build.outputs.new_version }}
             ```
 
             Or by dist-tag:

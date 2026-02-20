@@ -3,7 +3,7 @@
  * Real-time agent-to-agent communication system.
  */
 
-export * from '@agent-relay/broker-sdk';
+export * from '@agent-relay/sdk';
 export * from './utils/index.js';
 export * from './hooks/index.js';
 

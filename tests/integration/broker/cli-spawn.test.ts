@@ -21,7 +21,7 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 
-import type { BrokerEvent } from "@agent-relay/broker-sdk";
+import type { BrokerEvent } from "@agent-relay/sdk";
 import {
   BrokerHarness,
   checkPrerequisites,

@@ -255,7 +255,7 @@ export function registerAgentManagementCommands(
 
       let exitCode = 0;
       try {
-        const { spawnFromEnv } = await import('@agent-relay/broker-sdk');
+        const { spawnFromEnv } = await import('@agent-relay/sdk');
         const result = await spawnFromEnv({
           binaryPath: process.env.AGENT_RELAY_BIN,
         });

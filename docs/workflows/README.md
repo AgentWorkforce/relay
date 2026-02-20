@@ -45,7 +45,7 @@ Pre-configured workflows for common development tasks. Each template defines age
 ## Using Templates
 
 ```typescript
-import { TemplateRegistry } from "@agent-relay/broker-sdk/workflows";
+import { TemplateRegistry } from "@agent-relay/sdk/workflows";
 
 const registry = new TemplateRegistry();
 
@@ -62,4 +62,4 @@ await runner.execute(config, undefined, {
 
 ## Creating Custom Workflows
 
-See the [Workflow YAML Reference](../../packages/broker-sdk/src/workflows/README.md) for full configuration options.
+See the [Workflow YAML Reference](../../packages/sdk/src/workflows/README.md) for full configuration options.

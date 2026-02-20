@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock createRelaycastClient before importing the adapter
-vi.mock('@agent-relay/broker-sdk', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@agent-relay/broker-sdk')>();
+vi.mock('@agent-relay/sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@agent-relay/sdk')>();
   return {
     ...actual,
     createRelaycastClient: vi.fn(),
@@ -10,13 +10,13 @@ vi.mock('@agent-relay/broker-sdk', async (importOriginal) => {
 });
 
 import { createRelayClientAdapter, type RelayClient } from '../src/client-adapter.js';
-import { createRelaycastClient } from '@agent-relay/broker-sdk';
+import { createRelaycastClient } from '@agent-relay/sdk';
 
 const mockCreateRelaycastClient = vi.mocked(createRelaycastClient);
 
 /**
- * Mock AgentRelayClient (broker-sdk) for testing the adapter layer.
- * The adapter wraps broker-sdk methods and translates between MCP and broker-sdk interfaces.
+ * Mock AgentRelayClient (sdk) for testing the adapter layer.
+ * The adapter wraps sdk methods and translates between MCP and sdk interfaces.
  */
 function createMockBrokerClient() {
   return {
@@ -84,7 +84,7 @@ describe('RelayClient Adapter', () => {
     });
 
     it('sends a message with custom kind and data', async () => {
-      // Note: broker-sdk sendMessage doesn't support kind/data, but the adapter
+      // Note: sdk sendMessage doesn't support kind/data, but the adapter
       // accepts the options for interface compatibility and sends the text
       await client.send('Bob', 'Status update', { kind: 'status', data: { progress: 50 } });
 
@@ -290,7 +290,7 @@ describe('RelayClient Adapter', () => {
 
       await client.listAgents({ include_idle: false, project: 'myproject' });
 
-      // Adapter calls listAgents with no args (broker-sdk doesn't support filtering)
+      // Adapter calls listAgents with no args (sdk doesn't support filtering)
       expect(mockBrokerClient.listAgents).toHaveBeenCalled();
     });
   });
@@ -303,7 +303,7 @@ describe('RelayClient Adapter', () => {
 
       expect(status.connected).toBe(true);
       expect(status.agentName).toBe('test-agent');
-      expect(status.daemonVersion).toBe('broker-sdk');
+      expect(status.daemonVersion).toBe('sdk');
     });
 
     it('handles error state by returning disconnected', async () => {
@@ -317,7 +317,7 @@ describe('RelayClient Adapter', () => {
   });
 
   describe('queryMessages', () => {
-    it('returns empty array (unsupported in broker-sdk)', async () => {
+    it('returns empty array (unsupported in sdk)', async () => {
       const result = await client.queryMessages({
         limit: 5,
         from: 'Alice',

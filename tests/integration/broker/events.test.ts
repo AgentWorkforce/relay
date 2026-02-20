@@ -27,7 +27,7 @@ import {
   assertAgentReleasedEvent,
   assertNoAclDenied,
 } from "./utils/assert-helpers.js";
-import type { BrokerEvent } from "@agent-relay/broker-sdk";
+import type { BrokerEvent } from "@agent-relay/sdk";
 
 function skipIfMissing(t: TestContext): boolean {
   const reason = checkPrerequisites();

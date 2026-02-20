@@ -5,7 +5,7 @@
  * and modify behavior at various points in the agent lifecycle.
  */
 
-import { PROTOCOL_VERSION } from '@agent-relay/broker-sdk/protocol';
+import { PROTOCOL_VERSION } from '@agent-relay/sdk/protocol';
 
 export type PayloadKind = 'message' | 'action' | 'state' | 'thinking';
 

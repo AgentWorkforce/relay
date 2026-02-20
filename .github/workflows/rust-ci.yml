@@ -83,7 +83,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: packages/broker-sdk
+        working-directory: packages/sdk
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

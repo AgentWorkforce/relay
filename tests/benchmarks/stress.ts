@@ -9,7 +9,7 @@
 import {
   AgentRelayClient,
   type BrokerEvent,
-} from "@agent-relay/broker-sdk";
+} from "@agent-relay/sdk";
 import { performance } from "node:perf_hooks";
 import { resolveBinaryPath, randomName } from "./harness.js";
 

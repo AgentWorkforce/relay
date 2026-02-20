@@ -82,7 +82,7 @@ jobs:
           echo "=== Testing key imports ==="
           node --eval "
             const packages = [
-              '@agent-relay/broker-sdk',
+              '@agent-relay/sdk',
               '@agent-relay/config',
               '@agent-relay/storage',
               '@agent-relay/hooks',

@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { RelayClient } from '../client-adapter.js';
 import path from 'node:path';
-import { getLogs, listLoggedAgents } from '@agent-relay/broker-sdk';
+import { getLogs, listLoggedAgents } from '@agent-relay/sdk';
 
 export const relayLogsSchema = z.object({
   agent: z.string().describe('Name of the agent to get logs for'),

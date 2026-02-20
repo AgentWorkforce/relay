@@ -36,12 +36,12 @@ describe('findRelayPtyBinary - search path verification', () => {
 
   describe('npx installation (scoped @agent-relay/* package)', () => {
     // When running via npx, the code runs from:
-    // ~/.npm/_npx/{hash}/node_modules/@agent-relay/broker-sdk/dist/
+    // ~/.npm/_npx/{hash}/node_modules/@agent-relay/sdk/dist/
     // Binary should be searched at:
     // ~/.npm/_npx/{hash}/node_modules/agent-relay/bin/relay-pty-darwin-arm64
 
     it('should include correct npx cache path for scoped package', () => {
-      const callerDirname = '/Users/testuser/.npm/_npx/abc123/node_modules/@agent-relay/broker-sdk/dist';
+      const callerDirname = '/Users/testuser/.npm/_npx/abc123/node_modules/@agent-relay/sdk/dist';
 
       findRelayPtyBinary(callerDirname);
       const paths = getLastSearchPaths();
@@ -52,7 +52,7 @@ describe('findRelayPtyBinary - search path verification', () => {
     });
 
     it('should check platform-specific binary BEFORE generic binary', () => {
-      const callerDirname = '/Users/testuser/.npm/_npx/abc123/node_modules/@agent-relay/broker-sdk/dist';
+      const callerDirname = '/Users/testuser/.npm/_npx/abc123/node_modules/@agent-relay/sdk/dist';
 
       findRelayPtyBinary(callerDirname);
       const paths = getLastSearchPaths();
@@ -89,7 +89,7 @@ describe('findRelayPtyBinary - search path verification', () => {
 
     it('should include nvm global install path', () => {
       const callerDirname =
-        '/Users/testuser/.nvm/versions/node/v20.0.0/lib/node_modules/@agent-relay/broker-sdk/dist';
+        '/Users/testuser/.nvm/versions/node/v20.0.0/lib/node_modules/@agent-relay/sdk/dist';
 
       findRelayPtyBinary(callerDirname);
       const paths = getLastSearchPaths();
@@ -105,7 +105,7 @@ describe('findRelayPtyBinary - search path verification', () => {
     // /opt/homebrew/lib/node_modules/agent-relay/ (Apple Silicon)
 
     it('should include Homebrew Intel location', () => {
-      const callerDirname = '/usr/local/lib/node_modules/@agent-relay/broker-sdk/dist';
+      const callerDirname = '/usr/local/lib/node_modules/@agent-relay/sdk/dist';
 
       findRelayPtyBinary(callerDirname);
       const paths = getLastSearchPaths();
@@ -116,7 +116,7 @@ describe('findRelayPtyBinary - search path verification', () => {
     });
 
     it('should include Homebrew Apple Silicon location', () => {
-      const callerDirname = '/opt/homebrew/lib/node_modules/@agent-relay/broker-sdk/dist';
+      const callerDirname = '/opt/homebrew/lib/node_modules/@agent-relay/sdk/dist';
 
       findRelayPtyBinary(callerDirname);
       const paths = getLastSearchPaths();
@@ -131,7 +131,7 @@ describe('findRelayPtyBinary - search path verification', () => {
     // /path/to/project/node_modules/agent-relay/
 
     it('should include local node_modules path from scoped package', () => {
-      const callerDirname = '/path/to/myproject/node_modules/@agent-relay/broker-sdk/dist';
+      const callerDirname = '/path/to/myproject/node_modules/@agent-relay/sdk/dist';
 
       findRelayPtyBinary(callerDirname);
       const paths = getLastSearchPaths();
@@ -156,7 +156,7 @@ describe('findRelayPtyBinary - search path verification', () => {
 
     it('should include pnpm global location', () => {
       const callerDirname =
-        '/Users/testuser/.local/share/pnpm/global/node_modules/@agent-relay/broker-sdk/dist';
+        '/Users/testuser/.local/share/pnpm/global/node_modules/@agent-relay/sdk/dist';
 
       findRelayPtyBinary(callerDirname);
       const paths = getLastSearchPaths();
@@ -203,7 +203,7 @@ describe('findRelayPtyBinary - search path verification', () => {
 
   describe('Docker container', () => {
     it('should include /app/bin/relay-pty path', () => {
-      const callerDirname = '/app/node_modules/@agent-relay/broker-sdk/dist';
+      const callerDirname = '/app/node_modules/@agent-relay/sdk/dist';
 
       findRelayPtyBinary(callerDirname);
       const paths = getLastSearchPaths();
@@ -225,7 +225,7 @@ describe('findRelayPtyBinary - search path verification', () => {
 
   describe('Platform-specific binary naming', () => {
     it('should include platform-specific binary name in search paths', () => {
-      const callerDirname = '/path/node_modules/@agent-relay/broker-sdk/dist';
+      const callerDirname = '/path/node_modules/@agent-relay/sdk/dist';
 
       findRelayPtyBinary(callerDirname);
       const paths = getLastSearchPaths();
@@ -253,7 +253,7 @@ describe('findRelayPtyBinary - search path verification', () => {
 
   describe('Search path order priority', () => {
     it('should have platform-specific binaries before generic binaries for same location', () => {
-      const callerDirname = '/Users/testuser/.npm/_npx/abc123/node_modules/@agent-relay/broker-sdk/dist';
+      const callerDirname = '/Users/testuser/.npm/_npx/abc123/node_modules/@agent-relay/sdk/dist';
 
       findRelayPtyBinary(callerDirname);
       const paths = getLastSearchPaths();

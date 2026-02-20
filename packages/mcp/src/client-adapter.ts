@@ -11,7 +11,7 @@ import {
   type SendMessageInput,
   type SpeakOnTrigger,
   type SpawnPtyInput,
-} from '@agent-relay/broker-sdk';
+} from '@agent-relay/sdk';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -272,7 +272,7 @@ function boolResult(ok: boolean, action: string): { success: boolean; error?: st
 }
 
 function unsupported(action: string): { success: boolean; error?: string } {
-  return { success: false, error: `${action} is not supported by @agent-relay/broker-sdk` };
+  return { success: false, error: `${action} is not supported by @agent-relay/sdk` };
 }
 
 function toAgentInfo(agent: ListAgent): AgentInfo {
@@ -622,7 +622,7 @@ export function createRelayClientAdapter(client: AgentRelayClient, ctx: RelayCli
           agentName: ctx.agentName,
           project: projectRoot,
           socketPath,
-          daemonVersion: 'broker-sdk',
+          daemonVersion: 'sdk',
         };
       } catch {
         return {
@@ -671,7 +671,7 @@ export function createRelayClientAdapter(client: AgentRelayClient, ctx: RelayCli
       return {
         success: false,
         removed: false,
-        message: 'removeAgent is not supported by @agent-relay/broker-sdk',
+        message: 'removeAgent is not supported by @agent-relay/sdk',
       };
     },
 

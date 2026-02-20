@@ -10,7 +10,7 @@
 import {
   AgentRelayClient,
   type BrokerEvent,
-} from "@agent-relay/broker-sdk";
+} from "@agent-relay/sdk";
 import { resolveBinaryPath, randomName } from "../benchmarks/harness.js";
 
 async function main(): Promise<void> {

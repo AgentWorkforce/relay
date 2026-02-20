@@ -18,7 +18,7 @@ import {
   type Agent,
   type Message,
   type AgentRelayOptions,
-} from "@agent-relay/broker-sdk";
+} from "@agent-relay/sdk";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 

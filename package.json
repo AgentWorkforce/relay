@@ -25,44 +25,44 @@
     },
     "./package.json": "./package.json",
     "./broker": {
-      "types": "./packages/broker-sdk/dist/index.d.ts",
-      "import": "./packages/broker-sdk/dist/index.js",
-      "default": "./packages/broker-sdk/dist/index.js"
+      "types": "./packages/sdk/dist/index.d.ts",
+      "import": "./packages/sdk/dist/index.js",
+      "default": "./packages/sdk/dist/index.js"
     },
     "./broker/client": {
-      "types": "./packages/broker-sdk/dist/client.d.ts",
-      "import": "./packages/broker-sdk/dist/client.js",
-      "default": "./packages/broker-sdk/dist/client.js"
+      "types": "./packages/sdk/dist/client.d.ts",
+      "import": "./packages/sdk/dist/client.js",
+      "default": "./packages/sdk/dist/client.js"
     },
     "./broker/protocol": {
-      "types": "./packages/broker-sdk/dist/protocol.d.ts",
-      "import": "./packages/broker-sdk/dist/protocol.js",
-      "default": "./packages/broker-sdk/dist/protocol.js"
+      "types": "./packages/sdk/dist/protocol.d.ts",
+      "import": "./packages/sdk/dist/protocol.js",
+      "default": "./packages/sdk/dist/protocol.js"
     },
     "./broker/relay": {
-      "types": "./packages/broker-sdk/dist/relay.d.ts",
-      "import": "./packages/broker-sdk/dist/relay.js",
-      "default": "./packages/broker-sdk/dist/relay.js"
+      "types": "./packages/sdk/dist/relay.d.ts",
+      "import": "./packages/sdk/dist/relay.js",
+      "default": "./packages/sdk/dist/relay.js"
     },
     "./broker/logs": {
-      "types": "./packages/broker-sdk/dist/logs.d.ts",
-      "import": "./packages/broker-sdk/dist/logs.js",
-      "default": "./packages/broker-sdk/dist/logs.js"
+      "types": "./packages/sdk/dist/logs.d.ts",
+      "import": "./packages/sdk/dist/logs.js",
+      "default": "./packages/sdk/dist/logs.js"
     },
     "./broker/consensus": {
-      "types": "./packages/broker-sdk/dist/consensus.d.ts",
-      "import": "./packages/broker-sdk/dist/consensus.js",
-      "default": "./packages/broker-sdk/dist/consensus.js"
+      "types": "./packages/sdk/dist/consensus.d.ts",
+      "import": "./packages/sdk/dist/consensus.js",
+      "default": "./packages/sdk/dist/consensus.js"
     },
     "./broker/shadow": {
-      "types": "./packages/broker-sdk/dist/shadow.d.ts",
-      "import": "./packages/broker-sdk/dist/shadow.js",
-      "default": "./packages/broker-sdk/dist/shadow.js"
+      "types": "./packages/sdk/dist/shadow.d.ts",
+      "import": "./packages/sdk/dist/shadow.js",
+      "default": "./packages/sdk/dist/shadow.js"
     },
     "./broker/browser": {
-      "types": "./packages/broker-sdk/dist/browser.d.ts",
-      "import": "./packages/broker-sdk/dist/browser.js",
-      "default": "./packages/broker-sdk/dist/browser.js"
+      "types": "./packages/sdk/dist/browser.d.ts",
+      "import": "./packages/sdk/dist/browser.js",
+      "default": "./packages/sdk/dist/browser.js"
     }
   },
   "bin": {
@@ -72,7 +72,7 @@
     "packages/*"
   ],
   "bundledDependencies": [
-    "@agent-relay/broker-sdk",
+    "@agent-relay/sdk",
     "@agent-relay/config",
     "@agent-relay/hooks",
     "@agent-relay/mcp",
@@ -101,7 +101,7 @@
     "build:trajectory": "cd packages/trajectory && npm run build",
     "build:hooks": "cd packages/hooks && npm run build",
     "build:user-directory": "cd packages/user-directory && npm run build",
-    "build:broker-sdk": "cd packages/sdk-ts && npm run build",
+    "build:sdk": "cd packages/sdk && npm run build",
     "build:telemetry": "cd packages/telemetry && npm run build",
     "build:cjs": "node ./scripts/build-cjs.mjs",
     "postbuild": "chmod +x dist/src/cli/bootstrap.js && npm run build:cjs",
@@ -112,7 +112,7 @@
     "dev:local": "npm run build && npm link && echo '✓ agent-relay linked globally'",
     "dev:unlink": "npm unlink -g agent-relay && echo '✓ agent-relay unlinked'",
     "dev:rebuild": "npm run build && echo '✓ Rebuilt (linked version updated)'",
-    "build:rust": "if command -v ~/.cargo/bin/cargo >/dev/null 2>&1; then cd relay-pty && ~/.cargo/bin/cargo build --release && cp target/release/relay-pty ../bin/relay-pty && node -e \"const os=require('os'); const fs=require('fs'); const p=os.platform(); const a=os.arch(); const name='relay-pty-'+p+'-'+a; fs.copyFileSync('target/release/relay-pty', '../bin/'+name); console.log('✓ relay-pty binary built and copied to bin/ and bin/'+name)\" && cd .. && ~/.cargo/bin/cargo build --release --bin agent-relay-broker && mkdir -p packages/sdk-ts/bin && cp target/release/agent-relay-broker packages/sdk-ts/bin/agent-relay-broker && echo '✓ broker binary (agent-relay-broker) built and copied to packages/sdk-ts/bin/'; else echo '⚠ Rust not installed, using prebuilt binaries from bin/'; fi",
+    "build:rust": "if command -v ~/.cargo/bin/cargo >/dev/null 2>&1; then cd relay-pty && ~/.cargo/bin/cargo build --release && cp target/release/relay-pty ../bin/relay-pty && node -e \"const os=require('os'); const fs=require('fs'); const p=os.platform(); const a=os.arch(); const name='relay-pty-'+p+'-'+a; fs.copyFileSync('target/release/relay-pty', '../bin/'+name); console.log('✓ relay-pty binary built and copied to bin/ and bin/'+name)\" && cd .. && ~/.cargo/bin/cargo build --release --bin agent-relay-broker && mkdir -p packages/sdk/bin && cp target/release/agent-relay-broker packages/sdk/bin/agent-relay-broker && echo '✓ broker binary (agent-relay-broker) built and copied to packages/sdk/bin/'; else echo '⚠ Rust not installed, using prebuilt binaries from bin/'; fi",
     "start": "node dist/src/cli/bootstrap.js",
     "pretest": "npm run build",
     "test": "vitest run",
@@ -151,7 +151,7 @@
   },
   "homepage": "https://github.com/AgentWorkforce/relay#readme",
   "dependencies": {
-    "@agent-relay/broker-sdk": "2.3.14",
+    "@agent-relay/sdk": "2.3.14",
     "@agent-relay/config": "2.3.14",
     "@agent-relay/hooks": "2.3.14",
     "@agent-relay/mcp": "2.3.14",
@@ -211,7 +211,7 @@
     "react-dom": "^18.3.1"
   },
   "bundleDependencies": [
-    "@agent-relay/broker-sdk",
+    "@agent-relay/sdk",
     "@agent-relay/config",
     "@agent-relay/hooks",
     "@agent-relay/mcp",

@@ -19,8 +19,8 @@
  */
 
 export { RelayACPAgent } from './acp-agent.js';
-export { AgentRelayClient as RelayClient } from '@agent-relay/broker-sdk/client';
-export type { AgentRelayClientOptions as RelayClientConfig } from '@agent-relay/broker-sdk/client';
+export { AgentRelayClient as RelayClient } from '@agent-relay/sdk/client';
+export type { AgentRelayClientOptions as RelayClientConfig } from '@agent-relay/sdk/client';
 export type {
   ACPBridgeConfig,
   AgentCapabilities,

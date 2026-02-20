@@ -1,4 +1,4 @@
-import { AgentRelayClient } from '@agent-relay/broker-sdk';
+import { AgentRelayClient } from '@agent-relay/sdk';
 
 export interface CreateAgentRelayClientOptions {
   cwd: string;
