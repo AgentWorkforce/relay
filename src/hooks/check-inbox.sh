@@ -47,7 +47,7 @@ EOF
 if [ "$MCP_AVAILABLE" -eq 1 ]; then
     cat << 'EOF'
 --- MCP TOOLS AVAILABLE ---
-Primary API for agent coordination. Use instead of file protocol.
+Primary API for agent coordination.
 
 Quick Reference:
   relay_send(to, message)      → Send message to agent/channel
@@ -57,8 +57,7 @@ Quick Reference:
   relay_release(name)          → Stop a worker agent
   relay_status()               → Check connection status
 
-When in doubt: prefer MCP tools over file protocol.
-Fallback: use ->relay-file: if MCP unavailable or daemon not running.
+Use MCP tools for all agent communication.
 
 EOF
 fi

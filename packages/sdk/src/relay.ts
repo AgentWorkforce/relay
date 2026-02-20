@@ -23,32 +23,33 @@
  * ```
  */
 
-import { randomBytes } from "node:crypto";
-import path from "node:path";
+import { randomBytes } from 'node:crypto';
+import path from 'node:path';
 
 import {
   AgentRelayClient,
   AgentRelayProtocolError,
   type AgentRelayClientOptions,
+  type SendMessageInput,
   type SpawnPtyInput,
-} from "./client.js";
-import type { AgentRuntime, BrokerEvent, BrokerStatus } from "./protocol.js";
+} from './client.js';
+import type { AgentRuntime, BrokerEvent, BrokerStatus, RestartPolicy } from './protocol.js';
 import {
   getLogs as getLogsFromFile,
   listLoggedAgents as listLoggedAgentsFromFile,
   type LogsResult,
-} from "./logs.js";
+} from './logs.js';
 
 function isUnsupportedOperation(error: unknown): error is AgentRelayProtocolError {
-  return error instanceof AgentRelayProtocolError && error.code === "unsupported_operation";
+  return error instanceof AgentRelayProtocolError && error.code === 'unsupported_operation';
 }
 
 function buildUnsupportedOperationMessage(
   from: string,
-  input: { to: string; text: string; threadId?: string; data?: Record<string, unknown> },
+  input: { to: string; text: string; threadId?: string; data?: Record<string, unknown> }
 ): Message {
   return {
-    eventId: "unsupported_operation",
+    eventId: 'unsupported_operation',
     from,
     to: input.to,
     text: input.text,
@@ -68,11 +69,40 @@ export interface Message {
   data?: Record<string, unknown>;
 }
 
-export type AgentStatus = "spawning" | "ready" | "idle" | "exited";
+export type AgentStatus = 'spawning' | 'ready' | 'idle' | 'exited';
+export type DeliveryWaitStatus = 'ack' | 'failed' | 'timeout';
+export type DeliveryStateStatus = 'queued' | 'injected' | 'active' | 'verified' | 'failed';
+export interface DeliveryWaitResult {
+  eventId: string;
+  status: DeliveryWaitStatus;
+  targets: string[];
+}
+export interface DeliveryState {
+  eventId: string;
+  to: string;
+  status: DeliveryStateStatus;
+  updatedAt: number;
+}
+
+export interface SpawnOptions {
+  args?: string[];
+  channels?: string[];
+  model?: string;
+  cwd?: string;
+  team?: string;
+  shadowOf?: string;
+  shadowMode?: string;
+  idleThresholdSecs?: number;
+  restartPolicy?: RestartPolicy;
+}
+
+export interface SpawnAndWaitOptions extends SpawnOptions {
+  timeoutMs?: number;
+  waitForMessage?: boolean;
+}
+
 type AgentOutputPayload = { stream: string; chunk: string };
-type AgentOutputCallback =
-  | ((chunk: string) => void)
-  | ((data: AgentOutputPayload) => void);
+type AgentOutputCallback = ((chunk: string) => void) | ((data: AgentOutputPayload) => void);
 
 export interface Agent {
   readonly name: string;
@@ -91,11 +121,11 @@ export interface Agent {
   /** Wait for the agent process to exit on its own.
    *  @param timeoutMs — optional timeout in ms. Resolves with `"timeout"` if exceeded,
    *  `"exited"` if the agent exited naturally, or `"released"` if released externally. */
-  waitForExit(timeoutMs?: number): Promise<"exited" | "timeout" | "released">;
+  waitForExit(timeoutMs?: number): Promise<'exited' | 'timeout' | 'released'>;
   /** Wait for the agent to go idle (no PTY output for the configured threshold).
    *  @param timeoutMs — optional timeout in ms. Resolves with `"idle"` when first idle event fires,
    *  `"timeout"` if timeoutMs elapses first, or `"exited"` if the agent exits. */
-  waitForIdle(timeoutMs?: number): Promise<"idle" | "timeout" | "exited">;
+  waitForIdle(timeoutMs?: number): Promise<'idle' | 'timeout' | 'exited'>;
   sendMessage(input: {
     to: string;
     text: string;
@@ -144,7 +174,7 @@ export interface AgentRelayOptions {
 
 type OutputListener = {
   callback: AgentOutputCallback;
-  mode: "chunk" | "structured";
+  mode: 'chunk' | 'structured';
 };
 
 // ── AgentRelay facade ───────────────────────────────────────────────────────
@@ -174,22 +204,24 @@ export class AgentRelay {
   private unsubEvent?: () => void;
   private readonly knownAgents = new Map<string, Agent>();
   private readonly readyAgents = new Set<string>();
+  private readonly messageReadyAgents = new Set<string>();
   private readonly exitedAgents = new Set<string>();
   private readonly idleAgents = new Set<string>();
+  private readonly deliveryStates = new Map<string, DeliveryState>();
   private readonly outputListeners = new Map<string, Set<OutputListener>>();
   private readonly exitResolvers = new Map<
     string,
-    { resolve: (reason: "exited" | "released") => void; token: number }
+    { resolve: (reason: 'exited' | 'released') => void; token: number }
   >();
   private exitResolverSeq = 0;
   private readonly idleResolvers = new Map<
     string,
-    { resolve: (reason: "idle" | "timeout" | "exited") => void; token: number }
+    { resolve: (reason: 'idle' | 'timeout' | 'exited') => void; token: number }
   >();
   private idleResolverSeq = 0;
 
   constructor(options: AgentRelayOptions = {}) {
-    this.defaultChannels = options.channels ?? ["general"];
+    this.defaultChannels = options.channels ?? ['general'];
     this.clientOptions = {
       binaryPath: options.binaryPath,
       binaryArgs: options.binaryArgs,
@@ -201,9 +233,9 @@ export class AgentRelay {
       shutdownTimeoutMs: options.shutdownTimeoutMs,
     };
 
-    this.codex = this.createSpawner("codex", "Codex", "pty");
-    this.claude = this.createSpawner("claude", "Claude", "pty");
-    this.gemini = this.createSpawner("gemini", "Gemini", "pty");
+    this.codex = this.createSpawner('codex', 'Codex', 'pty');
+    this.claude = this.createSpawner('claude', 'Claude', 'pty');
+    this.gemini = this.createSpawner('gemini', 'Gemini', 'pty');
   }
 
   // ── Spawning ────────────────────────────────────────────────────────────
@@ -213,10 +245,10 @@ export class AgentRelay {
     if (!input.channels || input.channels.length === 0) {
       console.warn(
         `[AgentRelay] spawnPty("${input.name}"): no channels specified, defaulting to "general". ` +
-        'Set explicit channels for workflow isolation.',
+          'Set explicit channels for workflow isolation.'
       );
     }
-    const channels = input.channels ?? ["general"];
+    const channels = input.channels ?? ['general'];
     const result = await client.spawnPty({
       name: input.name,
       cli: input.cli,
@@ -229,20 +261,50 @@ export class AgentRelay {
       shadowOf: input.shadowOf,
       shadowMode: input.shadowMode,
       idleThresholdSecs: input.idleThresholdSecs,
+      restartPolicy: input.restartPolicy,
     });
+    this.readyAgents.delete(result.name);
+    this.messageReadyAgents.delete(result.name);
+    this.exitedAgents.delete(result.name);
+    this.idleAgents.delete(result.name);
     const agent = this.makeAgent(result.name, result.runtime, channels);
     this.knownAgents.set(agent.name, agent);
     return agent;
   }
 
+  async spawn(name: string, cli: string, task?: string, options?: SpawnOptions): Promise<Agent> {
+    return this.spawnPty({
+      name,
+      cli,
+      task,
+      args: options?.args,
+      channels: options?.channels,
+      model: options?.model,
+      cwd: options?.cwd,
+      team: options?.team,
+      shadowOf: options?.shadowOf,
+      shadowMode: options?.shadowMode,
+      idleThresholdSecs: options?.idleThresholdSecs,
+      restartPolicy: options?.restartPolicy,
+    });
+  }
+
+  async spawnAndWait(name: string, cli: string, task: string, options?: SpawnAndWaitOptions): Promise<Agent> {
+    const { timeoutMs, waitForMessage, ...spawnOptions } = options ?? {};
+    await this.spawn(name, cli, task, spawnOptions);
+    if (waitForMessage) {
+      return this.waitForAgentMessage(name, timeoutMs ?? 60_000);
+    }
+    return this.waitForAgentReady(name, timeoutMs ?? 30_000);
+  }
+
   // ── Human source ────────────────────────────────────────────────────────
 
   human(opts: { name: string }): HumanHandle {
-    const relay = this;
     return {
       name: opts.name,
-      async sendMessage(input) {
-        const client = await relay.ensureStarted();
+      sendMessage: async (input) => {
+        const client = await this.ensureStarted();
         let result: Awaited<ReturnType<typeof client.sendMessage>>;
         try {
           result = await client.sendMessage({
@@ -259,11 +321,11 @@ export class AgentRelay {
           }
           throw error;
         }
-        if (result?.event_id === "unsupported_operation") {
+        if (result?.event_id === 'unsupported_operation') {
           return buildUnsupportedOperationMessage(opts.name, input);
         }
 
-        const eventId = result?.event_id ?? randomBytes(8).toString("hex");
+        const eventId = result?.event_id ?? randomBytes(8).toString('hex');
         const msg: Message = {
           eventId,
           from: opts.name,
@@ -272,14 +334,14 @@ export class AgentRelay {
           threadId: input.threadId,
           data: input.data,
         };
-        relay.onMessageSent?.(msg);
+        this.onMessageSent?.(msg);
         return msg;
       },
     };
   }
 
   system(): HumanHandle {
-    return this.human({ name: "system" });
+    return this.human({ name: 'system' });
   }
 
   // ── Messaging ─────────────────────────────────────────────────────────
@@ -289,12 +351,62 @@ export class AgentRelay {
    * @param text — the message body
    * @param options — optional sender name (defaults to "human:orchestrator")
    */
-  async broadcast(
-    text: string,
-    options?: { from?: string },
-  ): Promise<Message> {
-    const from = options?.from ?? "human:orchestrator";
-    return this.human({ name: from }).sendMessage({ to: "*", text });
+  async broadcast(text: string, options?: { from?: string }): Promise<Message> {
+    const from = options?.from ?? 'human:orchestrator';
+    return this.human({ name: from }).sendMessage({ to: '*', text });
+  }
+
+  async sendAndWaitForDelivery(input: SendMessageInput, timeoutMs = 30_000): Promise<DeliveryWaitResult> {
+    const client = await this.ensureStarted();
+    const result = await client.sendMessage(input);
+
+    if (!result.targets.length) {
+      return { eventId: result.event_id, status: 'failed', targets: [] };
+    }
+
+    return new Promise<DeliveryWaitResult>((resolve) => {
+      let resolved = false;
+      const ackedTargets = new Set<string>();
+      // eslint-disable-next-line prefer-const
+      let unsubscribe: (() => void) | undefined;
+
+      const timer = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          unsubscribe?.();
+          resolve({ eventId: result.event_id, status: 'timeout', targets: result.targets });
+        }
+      }, timeoutMs);
+
+      unsubscribe = client.onEvent((event) => {
+        if (resolved) return;
+
+        if (
+          event.kind === 'delivery_ack' &&
+          event.event_id === result.event_id &&
+          result.targets.includes(event.name)
+        ) {
+          ackedTargets.add(event.name);
+          if (ackedTargets.size >= result.targets.length) {
+            resolved = true;
+            clearTimeout(timer);
+            unsubscribe?.();
+            resolve({ eventId: result.event_id, status: 'ack', targets: result.targets });
+          }
+        }
+
+        if (
+          event.kind === 'delivery_failed' &&
+          event.event_id === result.event_id &&
+          result.targets.includes(event.name)
+        ) {
+          resolved = true;
+          clearTimeout(timer);
+          unsubscribe?.();
+          resolve({ eventId: result.event_id, status: 'failed', targets: result.targets });
+        }
+      });
+    });
   }
 
   // ── Listing ─────────────────────────────────────────────────────────────
@@ -324,6 +436,10 @@ export class AgentRelay {
     return client.getStatus();
   }
 
+  getDeliveryState(eventId: string): DeliveryState | undefined {
+    return this.deliveryStates.get(eventId);
+  }
+
   // ── Logs ──────────────────────────────────────────────────────────────
 
   /**
@@ -337,14 +453,14 @@ export class AgentRelay {
    */
   async getLogs(agentName: string, options?: { lines?: number }): Promise<LogsResult> {
     const cwd = this.clientOptions.cwd ?? process.cwd();
-    const logsDir = path.join(cwd, ".agent-relay", "team", "worker-logs");
+    const logsDir = path.join(cwd, '.agent-relay', 'team', 'worker-logs');
     return getLogsFromFile(agentName, { logsDir, lines: options?.lines });
   }
 
   /** List all agents that have log files. */
   async listLoggedAgents(): Promise<string[]> {
     const cwd = this.clientOptions.cwd ?? process.cwd();
-    const logsDir = path.join(cwd, ".agent-relay", "team", "worker-logs");
+    const logsDir = path.join(cwd, '.agent-relay', 'team', 'worker-logs');
     return listLoggedAgentsFromFile(logsDir);
   }
 
@@ -362,19 +478,24 @@ export class AgentRelay {
    */
   static async waitForAny(
     agents: Agent[],
-    timeoutMs?: number,
-  ): Promise<{ agent: Agent; result: "exited" | "timeout" | "released" }> {
+    timeoutMs?: number
+  ): Promise<{ agent: Agent; result: 'exited' | 'timeout' | 'released' }> {
     if (agents.length === 0) {
-      throw new Error("waitForAny requires at least one agent");
+      throw new Error('waitForAny requires at least one agent');
     }
     return Promise.race(
       agents.map(async (agent) => {
         const result = await agent.waitForExit(timeoutMs);
         return { agent, result };
-      }),
+      })
     );
   }
 
+  /**
+   * Resolves when the agent process has started and connected to the broker.
+   * The agent's CLI may not yet be ready to receive messages.
+   * Use `waitForAgentMessage()` for full readiness.
+   */
   async waitForAgentReady(name: string, timeoutMs = 30_000): Promise<Agent> {
     const client = await this.ensureStarted();
     const existing = this.knownAgents.get(name);
@@ -409,15 +530,12 @@ export class AgentRelay {
       };
 
       const unsubscribe = client.onEvent((event) => {
-        if (event.kind !== "worker_ready" || event.name !== name) {
+        if (event.kind !== 'worker_ready' || event.name !== name) {
           return;
         }
-        let agent = this.knownAgents.get(event.name);
-        if (!agent) {
-          agent = this.makeAgent(event.name, event.runtime, []);
-          this.knownAgents.set(event.name, agent);
-        }
+        const agent = this.ensureAgentHandle(event.name, event.runtime);
         this.readyAgents.add(event.name);
+        this.exitedAgents.delete(event.name);
         resolveWith(agent);
       });
 
@@ -427,6 +545,68 @@ export class AgentRelay {
 
       const known = this.knownAgents.get(name);
       if (known && this.readyAgents.has(name)) {
+        resolveWith(known);
+      }
+    });
+  }
+
+  async waitForAgentMessage(name: string, timeoutMs = 60_000): Promise<Agent> {
+    const client = await this.ensureStarted();
+    const existing = this.knownAgents.get(name);
+    if (existing && this.messageReadyAgents.has(name)) {
+      return existing;
+    }
+
+    return new Promise<Agent>((resolve, reject) => {
+      let settled = false;
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+
+      const cleanup = () => {
+        unsubscribe();
+        if (timeout) {
+          clearTimeout(timeout);
+          timeout = undefined;
+        }
+      };
+
+      const resolveWith = (agent: Agent) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(agent);
+      };
+
+      const rejectWith = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+
+      const unsubscribe = client.onEvent((event) => {
+        if (event.kind === 'relay_inbound' && event.from === name) {
+          this.messageReadyAgents.add(name);
+          this.exitedAgents.delete(name);
+          resolveWith(this.ensureAgentHandle(name));
+          return;
+        }
+        if (event.kind === 'agent_exited' && event.name === name) {
+          rejectWith(new Error(`Agent '${name}' exited before sending its first relay message`));
+          return;
+        }
+        if (event.kind === 'agent_released' && event.name === name) {
+          rejectWith(new Error(`Agent '${name}' was released before sending its first relay message`));
+        }
+      });
+
+      timeout = setTimeout(() => {
+        rejectWith(
+          new Error(`Timed out waiting for first relay message from '${name}' after ${timeoutMs}ms`)
+        );
+      }, timeoutMs);
+
+      const known = this.knownAgents.get(name);
+      if (known && this.messageReadyAgents.has(name)) {
         resolveWith(known);
       }
     });
@@ -445,48 +625,69 @@ export class AgentRelay {
     }
     this.knownAgents.clear();
     this.readyAgents.clear();
+    this.messageReadyAgents.clear();
     this.exitedAgents.clear();
     this.idleAgents.clear();
+    this.deliveryStates.clear();
     this.outputListeners.clear();
     for (const entry of this.exitResolvers.values()) {
-      entry.resolve("released");
+      entry.resolve('released');
     }
     this.exitResolvers.clear();
     for (const entry of this.idleResolvers.values()) {
-      entry.resolve("exited");
+      entry.resolve('exited');
     }
     this.idleResolvers.clear();
   }
 
   // ── Private helpers ─────────────────────────────────────────────────────
 
+  private ensureAgentHandle(name: string, runtime: AgentRuntime = 'pty', channels: string[] = []): Agent {
+    const existing = this.knownAgents.get(name);
+    if (existing) {
+      return existing;
+    }
+    const agent = this.makeAgent(name, runtime, channels);
+    this.knownAgents.set(name, agent);
+    return agent;
+  }
+
+  private updateDeliveryState(
+    eventId: string,
+    to: string,
+    status: DeliveryStateStatus,
+    updatedAt: number
+  ): void {
+    this.deliveryStates.set(eventId, { eventId, to, status, updatedAt });
+  }
+
+  private resolveEventTimestamp(candidate?: unknown): number {
+    return typeof candidate === 'number' ? candidate : Date.now();
+  }
+
   /** Resolve a target to a channel name. If `to` is `#channel`, use that
    *  channel. If it's a known agent name, use the agent's first channel.
    *  Otherwise fall back to the relay's default channel. */
   private resolveChannel(to: string): string {
-    if (to.startsWith("#")) return to.slice(1);
+    if (to.startsWith('#')) return to.slice(1);
     const agent = this.knownAgents.get(to);
     if (agent && agent.channels.length > 0) return agent.channels[0];
     return this.defaultChannels[0];
   }
 
-  private inferOutputMode(callback: AgentOutputCallback): "chunk" | "structured" {
-    const source = callback.toString().trim().replace(/\s+/g, " ");
-    if (
-      source.startsWith("({") ||
-      source.startsWith("async ({") ||
-      source.startsWith("function ({")
-    ) {
-      return "structured";
+  private inferOutputMode(callback: AgentOutputCallback): 'chunk' | 'structured' {
+    const source = callback.toString().trim().replace(/\s+/g, ' ');
+    if (source.startsWith('({') || source.startsWith('async ({') || source.startsWith('function ({')) {
+      return 'structured';
     }
-    return "chunk";
+    return 'chunk';
   }
 
   private dispatchOutput(name: string, stream: string, chunk: string): void {
     const listeners = this.outputListeners.get(name);
     if (!listeners) return;
     for (const listener of listeners) {
-      if (listener.mode === "structured") {
+      if (listener.mode === 'structured') {
         (listener.callback as (data: AgentOutputPayload) => void)({ stream, chunk });
       } else {
         (listener.callback as (chunk: string) => void)(chunk);
@@ -514,9 +715,14 @@ export class AgentRelay {
   }
 
   private wireEvents(client: AgentRelayClient): void {
+    // eslint-disable-next-line complexity
     this.unsubEvent = client.onEvent((event: BrokerEvent) => {
       switch (event.kind) {
-        case "relay_inbound": {
+        case 'relay_inbound': {
+          if (this.knownAgents.has(event.from)) {
+            this.messageReadyAgents.add(event.from);
+            this.exitedAgents.delete(event.from);
+          }
           const msg: Message = {
             eventId: event.event_id,
             from: event.from,
@@ -527,37 +733,35 @@ export class AgentRelay {
           this.onMessageReceived?.(msg);
           break;
         }
-        case "agent_spawned": {
-          let agent = this.knownAgents.get(event.name);
-          if (!agent) {
-            agent = this.makeAgent(event.name, event.runtime, []);
-            this.knownAgents.set(event.name, agent);
-          }
+        case 'agent_spawned': {
+          const agent = this.ensureAgentHandle(event.name, event.runtime);
+          this.readyAgents.delete(event.name);
+          this.messageReadyAgents.delete(event.name);
+          this.exitedAgents.delete(event.name);
+          this.idleAgents.delete(event.name);
           this.onAgentSpawned?.(agent);
           break;
         }
-        case "agent_released": {
-          const agent =
-            this.knownAgents.get(event.name) ??
-            this.makeAgent(event.name, "pty", []);
+        case 'agent_released': {
+          const agent = this.knownAgents.get(event.name) ?? this.ensureAgentHandle(event.name, 'pty', []);
           this.exitedAgents.add(event.name);
           this.readyAgents.delete(event.name);
+          this.messageReadyAgents.delete(event.name);
           this.idleAgents.delete(event.name);
           this.onAgentReleased?.(agent);
           this.knownAgents.delete(event.name);
           this.outputListeners.delete(event.name);
-          this.exitResolvers.get(event.name)?.resolve("released");
+          this.exitResolvers.get(event.name)?.resolve('released');
           this.exitResolvers.delete(event.name);
-          this.idleResolvers.get(event.name)?.resolve("exited");
+          this.idleResolvers.get(event.name)?.resolve('exited');
           this.idleResolvers.delete(event.name);
           break;
         }
-        case "agent_exited": {
-          const agent =
-            this.knownAgents.get(event.name) ??
-            this.makeAgent(event.name, "pty", []);
+        case 'agent_exited': {
+          const agent = this.knownAgents.get(event.name) ?? this.ensureAgentHandle(event.name, 'pty', []);
           this.exitedAgents.add(event.name);
           this.readyAgents.delete(event.name);
+          this.messageReadyAgents.delete(event.name);
           this.idleAgents.delete(event.name);
           // Populate exit info before firing the hook
           (agent as { exitCode?: number }).exitCode = event.code;
@@ -565,32 +769,57 @@ export class AgentRelay {
           this.onAgentExited?.(agent);
           this.knownAgents.delete(event.name);
           this.outputListeners.delete(event.name);
-          this.exitResolvers.get(event.name)?.resolve("exited");
+          this.exitResolvers.get(event.name)?.resolve('exited');
           this.exitResolvers.delete(event.name);
-          this.idleResolvers.get(event.name)?.resolve("exited");
+          this.idleResolvers.get(event.name)?.resolve('exited');
           this.idleResolvers.delete(event.name);
           break;
         }
-        case "agent_exit": {
-          const agent =
-            this.knownAgents.get(event.name) ??
-            this.makeAgent(event.name, "pty", []);
+        case 'agent_exit': {
+          const agent = this.knownAgents.get(event.name) ?? this.ensureAgentHandle(event.name, 'pty', []);
           (agent as { exitReason?: string }).exitReason = event.reason;
           this.onAgentExitRequested?.({ name: event.name, reason: event.reason });
           break;
         }
-        case "worker_ready": {
-          let agent = this.knownAgents.get(event.name);
-          if (!agent) {
-            agent = this.makeAgent(event.name, event.runtime, []);
-            this.knownAgents.set(event.name, agent);
-          }
+        case 'worker_ready': {
+          const agent = this.ensureAgentHandle(event.name, event.runtime);
           this.readyAgents.add(event.name);
+          this.exitedAgents.delete(event.name);
           this.idleAgents.delete(event.name);
           this.onAgentReady?.(agent);
           break;
         }
-        case "worker_stream": {
+        case 'delivery_queued': {
+          this.updateDeliveryState(
+            event.event_id,
+            event.name,
+            'queued',
+            this.resolveEventTimestamp(event.timestamp)
+          );
+          break;
+        }
+        case 'delivery_injected': {
+          this.updateDeliveryState(
+            event.event_id,
+            event.name,
+            'injected',
+            this.resolveEventTimestamp(event.timestamp)
+          );
+          break;
+        }
+        case 'delivery_active': {
+          this.updateDeliveryState(event.event_id, event.name, 'active', this.resolveEventTimestamp());
+          break;
+        }
+        case 'delivery_verified': {
+          this.updateDeliveryState(event.event_id, event.name, 'verified', this.resolveEventTimestamp());
+          break;
+        }
+        case 'delivery_failed': {
+          this.updateDeliveryState(event.event_id, event.name, 'failed', this.resolveEventTimestamp());
+          break;
+        }
+        case 'worker_stream': {
           // Agent producing output is no longer idle
           this.idleAgents.delete(event.name);
           this.onWorkerOutput?.({
@@ -602,39 +831,36 @@ export class AgentRelay {
           this.dispatchOutput(event.name, event.stream, event.chunk);
           break;
         }
-        case "agent_idle": {
+        case 'agent_idle': {
           this.idleAgents.add(event.name);
           this.onAgentIdle?.({
             name: event.name,
             idleSecs: event.idle_secs,
           });
           // Resolve idle waiters
-          this.idleResolvers.get(event.name)?.resolve("idle");
+          this.idleResolvers.get(event.name)?.resolve('idle');
           this.idleResolvers.delete(event.name);
           break;
         }
       }
-      if (event.kind.startsWith("delivery_")) {
+      if (event.kind.startsWith('delivery_')) {
         this.onDeliveryUpdate?.(event);
       }
     });
   }
 
-  private makeAgent(
-    name: string,
-    runtime: AgentRuntime,
-    channels: string[],
-  ): Agent {
+  private makeAgent(name: string, runtime: AgentRuntime, channels: string[]): Agent {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
     const relay = this;
     return {
       name,
       runtime,
       channels,
       get status(): AgentStatus {
-        if (relay.exitedAgents.has(name)) return "exited";
-        if (relay.idleAgents.has(name)) return "idle";
-        if (relay.readyAgents.has(name)) return "ready";
-        return "spawning";
+        if (relay.exitedAgents.has(name)) return 'exited';
+        if (relay.idleAgents.has(name)) return 'idle';
+        if (relay.readyAgents.has(name)) return 'ready';
+        return 'spawning';
       },
       exitCode: undefined,
       exitSignal: undefined,
@@ -646,15 +872,15 @@ export class AgentRelay {
         await relay.waitForAgentReady(name, timeoutMs);
       },
       waitForExit(timeoutMs?: number) {
-        return new Promise<"exited" | "timeout" | "released">((resolve) => {
+        return new Promise<'exited' | 'timeout' | 'released'>((resolve) => {
           // If already gone, resolve immediately
           if (!relay.knownAgents.has(name)) {
-            resolve("exited");
+            resolve('exited');
             return;
           }
           // Non-blocking poll: timeoutMs === 0 means "check now, return immediately"
           if (timeoutMs === 0) {
-            resolve("timeout");
+            resolve('timeout');
             return;
           }
           let timer: ReturnType<typeof setTimeout> | undefined;
@@ -673,19 +899,19 @@ export class AgentRelay {
               if (current?.token === token) {
                 relay.exitResolvers.delete(name);
               }
-              resolve("timeout");
+              resolve('timeout');
             }, timeoutMs);
           }
         });
       },
       waitForIdle(timeoutMs?: number) {
-        return new Promise<"idle" | "timeout" | "exited">((resolve) => {
+        return new Promise<'idle' | 'timeout' | 'exited'>((resolve) => {
           if (!relay.knownAgents.has(name)) {
-            resolve("exited");
+            resolve('exited');
             return;
           }
           if (timeoutMs === 0) {
-            resolve("timeout");
+            resolve('timeout');
             return;
           }
           let timer: ReturnType<typeof setTimeout> | undefined;
@@ -703,7 +929,7 @@ export class AgentRelay {
               if (current?.token === token) {
                 relay.idleResolvers.delete(name);
               }
-              resolve("timeout");
+              resolve('timeout');
             }, timeoutMs);
           }
         });
@@ -726,10 +952,10 @@ export class AgentRelay {
           }
           throw error;
         }
-        if (result?.event_id === "unsupported_operation") {
+        if (result?.event_id === 'unsupported_operation') {
           return buildUnsupportedOperationMessage(name, input);
         }
-        const eventId = result?.event_id ?? randomBytes(8).toString("hex");
+        const eventId = result?.event_id ?? randomBytes(8).toString('hex');
         const msg: Message = {
           eventId,
           from: name,
@@ -762,22 +988,17 @@ export class AgentRelay {
     };
   }
 
-  private createSpawner(
-    cli: string,
-    defaultName: string,
-    runtime: AgentRuntime,
-  ): AgentSpawner {
-    const relay = this;
+  private createSpawner(cli: string, defaultName: string, runtime: AgentRuntime): AgentSpawner {
     return {
-      async spawn(options?) {
-        const client = await relay.ensureStarted();
+      spawn: async (options?) => {
+        const client = await this.ensureStarted();
         const name = options?.name ?? defaultName;
-        const channels = options?.channels ?? ["general"];
+        const channels = options?.channels ?? ['general'];
         const args = options?.args ?? [];
 
         const task = options?.task;
         let result: { name: string; runtime: AgentRuntime };
-        if (runtime === "headless_claude") {
+        if (runtime === 'headless_claude') {
           result = await client.spawnHeadlessClaude({ name, args, channels, task });
         } else {
           result = await client.spawnPty({
@@ -791,8 +1012,8 @@ export class AgentRelay {
           });
         }
 
-        const agent = relay.makeAgent(result.name, result.runtime, channels);
-        relay.knownAgents.set(agent.name, agent);
+        const agent = this.makeAgent(result.name, result.runtime, channels);
+        this.knownAgents.set(agent.name, agent);
         return agent;
       },
     };

@@ -1,10 +1,10 @@
-import { once } from "node:events";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createInterface, type Interface as ReadlineInterface } from "node:readline";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { once } from 'node:events';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { createInterface, type Interface as ReadlineInterface } from 'node:readline';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   PROTOCOL_VERSION,
@@ -17,7 +17,7 @@ import {
   type ProtocolEnvelope,
   type ProtocolError,
   type RestartPolicy,
-} from "./protocol.js";
+} from './protocol.js';
 
 export interface AgentRelayClientOptions {
   binaryPath?: string;
@@ -74,7 +74,7 @@ export interface ListAgent {
 }
 
 interface PendingRequest {
-  expectedType: "ok" | "hello_ack";
+  expectedType: 'ok' | 'hello_ack';
   resolve: (value: ProtocolEnvelope<unknown>) => void;
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
@@ -94,7 +94,7 @@ export class AgentRelayProtocolError extends Error {
 
   constructor(payload: ProtocolError) {
     super(payload.message);
-    this.name = "AgentRelayProtocolError";
+    this.name = 'AgentRelayProtocolError';
     this.code = payload.code;
     this.retryable = payload.retryable;
     this.data = payload.data;
@@ -104,7 +104,7 @@ export class AgentRelayProtocolError extends Error {
 export class AgentRelayProcessError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = "AgentRelayProcessError";
+    this.name = 'AgentRelayProcessError';
   }
 }
 
@@ -118,20 +118,22 @@ export class AgentRelayClient {
   private startingPromise?: Promise<void>;
   private eventListeners = new Set<(event: BrokerEvent) => void>();
   private stderrListeners = new Set<(line: string) => void>();
+  private eventBuffer: BrokerEvent[] = [];
+  private maxBufferSize = 1000;
   private exitPromise?: Promise<void>;
 
   constructor(options: AgentRelayClientOptions = {}) {
     this.options = {
       binaryPath: options.binaryPath ?? resolveDefaultBinaryPath(),
       binaryArgs: options.binaryArgs ?? [],
-      brokerName: options.brokerName ?? "broker",
-      channels: options.channels ?? ["general"],
+      brokerName: options.brokerName ?? 'broker',
+      channels: options.channels ?? ['general'],
       cwd: options.cwd ?? process.cwd(),
       env: options.env ?? process.env,
       requestTimeoutMs: options.requestTimeoutMs ?? 10_000,
       shutdownTimeoutMs: options.shutdownTimeoutMs ?? 3_000,
-      clientName: options.clientName ?? "@agent-relay/sdk",
-      clientVersion: options.clientVersion ?? "0.1.0",
+      clientName: options.clientName ?? '@agent-relay/sdk',
+      clientVersion: options.clientVersion ?? '0.1.0',
     };
   }
 
@@ -146,6 +148,37 @@ export class AgentRelayClient {
     return () => {
       this.eventListeners.delete(listener);
     };
+  }
+
+  queryEvents(filter?: { kind?: string; name?: string; since?: number; limit?: number }): BrokerEvent[] {
+    let events = [...this.eventBuffer];
+    if (filter?.kind) {
+      events = events.filter((event) => event.kind === filter.kind);
+    }
+    if (filter?.name) {
+      events = events.filter((event) => 'name' in event && event.name === filter.name);
+    }
+    const since = filter?.since;
+    if (since !== undefined) {
+      events = events.filter(
+        (event) => 'timestamp' in event && typeof event.timestamp === 'number' && event.timestamp >= since
+      );
+    }
+    const limit = filter?.limit;
+    if (limit !== undefined) {
+      events = events.slice(-limit);
+    }
+    return events;
+  }
+
+  getLastEvent(kind: string, name?: string): BrokerEvent | undefined {
+    for (let i = this.eventBuffer.length - 1; i >= 0; i -= 1) {
+      const event = this.eventBuffer[i];
+      if (event.kind === kind && (!name || ('name' in event && event.name === name))) {
+        return event;
+      }
+    }
+    return undefined;
   }
 
   onBrokerStderr(listener: (line: string) => void): () => void {
@@ -176,7 +209,7 @@ export class AgentRelayClient {
     const args = buildPtyArgsWithModel(input.cli, input.args ?? [], input.model);
     const agent: AgentSpec = {
       name: input.name,
-      runtime: "pty",
+      runtime: 'pty',
       cli: input.cli,
       args,
       channels: input.channels ?? [],
@@ -187,7 +220,7 @@ export class AgentRelayClient {
       shadow_mode: input.shadowMode,
       restart_policy: input.restartPolicy,
     };
-    const result = await this.requestOk<{ name: string; runtime: AgentRuntime }>("spawn_agent", {
+    const result = await this.requestOk<{ name: string; runtime: AgentRuntime }>('spawn_agent', {
       agent,
       ...(input.task != null ? { initial_task: input.task } : {}),
       ...(input.idleThresholdSecs != null ? { idle_threshold_secs: input.idleThresholdSecs } : {}),
@@ -196,16 +229,16 @@ export class AgentRelayClient {
   }
 
   async spawnHeadlessClaude(
-    input: SpawnHeadlessClaudeInput,
+    input: SpawnHeadlessClaudeInput
   ): Promise<{ name: string; runtime: AgentRuntime }> {
     await this.start();
     const agent: AgentSpec = {
       name: input.name,
-      runtime: "headless_claude",
+      runtime: 'headless_claude',
       args: input.args ?? [],
       channels: input.channels ?? [],
     };
-    const result = await this.requestOk<{ name: string; runtime: AgentRuntime }>("spawn_agent", {
+    const result = await this.requestOk<{ name: string; runtime: AgentRuntime }>('spawn_agent', {
       agent,
       ...(input.task != null ? { initial_task: input.task } : {}),
     });
@@ -214,21 +247,21 @@ export class AgentRelayClient {
 
   async release(name: string, reason?: string): Promise<{ name: string }> {
     await this.start();
-    return this.requestOk<{ name: string }>("release_agent", { name, reason });
+    return this.requestOk<{ name: string }>('release_agent', { name, reason });
   }
 
   async sendInput(name: string, data: string): Promise<{ name: string; bytes_written: number }> {
     await this.start();
-    return this.requestOk<{ name: string; bytes_written: number }>("send_input", { name, data });
+    return this.requestOk<{ name: string; bytes_written: number }>('send_input', { name, data });
   }
 
   async setModel(
     name: string,
     model: string,
-    opts?: { timeoutMs?: number },
+    opts?: { timeoutMs?: number }
   ): Promise<{ name: string; model: string; success: boolean }> {
     await this.start();
-    return this.requestOk<{ name: string; model: string; success: boolean }>("set_model", {
+    return this.requestOk<{ name: string; model: string; success: boolean }>('set_model', {
       name,
       model,
       timeout_ms: opts?.timeoutMs,
@@ -243,20 +276,18 @@ export class AgentRelayClient {
     return this.requestOk<{
       agents: Array<{ name: string; pid: number; memory_bytes: number; uptime_secs: number }>;
       broker?: BrokerStats;
-    }>("get_metrics", { agent });
+    }>('get_metrics', { agent });
   }
 
   async getCrashInsights(): Promise<CrashInsightsResponse> {
     await this.start();
-    return this.requestOk<CrashInsightsResponse>("get_crash_insights", {});
+    return this.requestOk<CrashInsightsResponse>('get_crash_insights', {});
   }
 
-  async sendMessage(
-    input: SendMessageInput,
-  ): Promise<{ event_id: string; targets: string[] }> {
+  async sendMessage(input: SendMessageInput): Promise<{ event_id: string; targets: string[] }> {
     await this.start();
     try {
-      return await this.requestOk<{ event_id: string; targets: string[] }>("send_message", {
+      return await this.requestOk<{ event_id: string; targets: string[] }>('send_message', {
         to: input.to,
         text: input.text,
         from: input.from,
@@ -265,8 +296,8 @@ export class AgentRelayClient {
         data: input.data,
       });
     } catch (error) {
-      if (error instanceof AgentRelayProtocolError && error.code === "unsupported_operation") {
-        return { event_id: "unsupported_operation", targets: [] };
+      if (error instanceof AgentRelayProtocolError && error.code === 'unsupported_operation') {
+        return { event_id: 'unsupported_operation', targets: [] };
       }
       throw error;
     }
@@ -274,13 +305,13 @@ export class AgentRelayClient {
 
   async listAgents(): Promise<ListAgent[]> {
     await this.start();
-    const result = await this.requestOk<{ agents: ListAgent[] }>("list_agents", {});
+    const result = await this.requestOk<{ agents: ListAgent[] }>('list_agents', {});
     return result.agents;
   }
 
   async getStatus(): Promise<BrokerStatus> {
     await this.start();
-    return this.requestOk<BrokerStatus>("get_status", {});
+    return this.requestOk<BrokerStatus>('get_status', {});
   }
 
   async shutdown(): Promise<void> {
@@ -289,7 +320,7 @@ export class AgentRelayClient {
     }
 
     try {
-      await this.requestOk("shutdown", {});
+      await this.requestOk('shutdown', {});
     } catch {
       // Continue shutdown path if broker is already unhealthy.
     }
@@ -298,7 +329,7 @@ export class AgentRelayClient {
     const wait = this.exitPromise ?? Promise.resolve();
     const timeout = setTimeout(() => {
       if (!child.killed) {
-        child.kill("SIGTERM");
+        child.kill('SIGTERM');
       }
     }, this.options.shutdownTimeoutMs);
 
@@ -307,7 +338,7 @@ export class AgentRelayClient {
     } finally {
       clearTimeout(timeout);
       if (this.child) {
-        this.child.kill("SIGKILL");
+        this.child.kill('SIGKILL');
       }
     }
   }
@@ -327,11 +358,11 @@ export class AgentRelayClient {
 
     const args = [
       ...this.options.binaryArgs,
-      "init",
-      "--name",
+      'init',
+      '--name',
       this.options.brokerName,
-      "--channels",
-      this.options.channels.join(","),
+      '--channels',
+      this.options.channels.join(','),
     ];
 
     // Ensure the SDK bin directory (containing agent-relay-broker + relay_send) is on
@@ -339,7 +370,7 @@ export class AgentRelayClient {
     const env = { ...this.options.env };
     if (isExplicitPath(this.options.binaryPath)) {
       const binDir = path.dirname(path.resolve(resolvedBinary));
-      const currentPath = env.PATH ?? env.Path ?? "";
+      const currentPath = env.PATH ?? env.Path ?? '';
       if (!currentPath.split(path.delimiter).includes(binDir)) {
         env.PATH = `${binDir}${path.delimiter}${currentPath}`;
       }
@@ -348,33 +379,33 @@ export class AgentRelayClient {
     const child = spawn(resolvedBinary, args, {
       cwd: this.options.cwd,
       env,
-      stdio: "pipe",
+      stdio: 'pipe',
     });
 
     this.child = child;
     this.stdoutRl = createInterface({ input: child.stdout, crlfDelay: Infinity });
     this.stderrRl = createInterface({ input: child.stderr, crlfDelay: Infinity });
 
-    this.stdoutRl.on("line", (line) => {
+    this.stdoutRl.on('line', (line) => {
       this.handleStdoutLine(line);
     });
 
-    this.stderrRl.on("line", (line) => {
+    this.stderrRl.on('line', (line) => {
       for (const listener of this.stderrListeners) {
         listener(line);
       }
     });
 
     this.exitPromise = new Promise<void>((resolve) => {
-      child.once("exit", (code, signal) => {
+      child.once('exit', (code, signal) => {
         const error = new AgentRelayProcessError(
-          `broker exited (code=${code ?? "null"}, signal=${signal ?? "null"})`,
+          `broker exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`
         );
         this.failAllPending(error);
         this.disposeProcessHandles();
         resolve();
       });
-      child.once("error", (error) => {
+      child.once('error', (error) => {
         this.failAllPending(error);
         this.disposeProcessHandles();
         resolve();
@@ -410,10 +441,10 @@ export class AgentRelayClient {
       return;
     }
 
-    if (!parsed || typeof parsed !== "object") {
+    if (!parsed || typeof parsed !== 'object') {
       return;
     }
-    if (parsed.v !== PROTOCOL_VERSION || typeof parsed.type !== "string") {
+    if (parsed.v !== PROTOCOL_VERSION || typeof parsed.type !== 'string') {
       return;
     }
 
@@ -424,8 +455,12 @@ export class AgentRelayClient {
       payload: parsed.payload,
     };
 
-    if (envelope.type === "event") {
+    if (envelope.type === 'event') {
       const payload = envelope.payload as BrokerEvent;
+      this.eventBuffer.push(payload);
+      if (this.eventBuffer.length > this.maxBufferSize) {
+        this.eventBuffer.shift();
+      }
       for (const listener of this.eventListeners) {
         listener(payload);
       }
@@ -441,7 +476,7 @@ export class AgentRelayClient {
       return;
     }
 
-    if (envelope.type === "error") {
+    if (envelope.type === 'error') {
       clearTimeout(pending.timeout);
       this.pending.delete(envelope.request_id);
       pending.reject(new AgentRelayProtocolError(envelope.payload as ProtocolError));
@@ -453,8 +488,8 @@ export class AgentRelayClient {
       this.pending.delete(envelope.request_id);
       pending.reject(
         new AgentRelayProcessError(
-          `unexpected response type '${envelope.type}' for request '${envelope.request_id}' (expected '${pending.expectedType}')`,
-        ),
+          `unexpected response type '${envelope.type}' for request '${envelope.request_id}' (expected '${pending.expectedType}')`
+        )
       );
       return;
     }
@@ -469,12 +504,12 @@ export class AgentRelayClient {
       client_name: this.options.clientName,
       client_version: this.options.clientVersion,
     };
-    const frame = await this.sendRequest("hello", payload, "hello_ack");
+    const frame = await this.sendRequest('hello', payload, 'hello_ack');
     return frame.payload as { broker_version: string; protocol_version: number };
   }
 
   private async requestOk<T = unknown>(type: string, payload: unknown): Promise<T> {
-    const frame = await this.sendRequest(type, payload, "ok");
+    const frame = await this.sendRequest(type, payload, 'ok');
     const result = frame.payload as { result: T };
     return result.result;
   }
@@ -482,31 +517,31 @@ export class AgentRelayClient {
   private async sendRequest(
     type: string,
     payload: unknown,
-    expectedType: "ok" | "hello_ack",
+    expectedType: 'ok' | 'hello_ack'
   ): Promise<ProtocolEnvelope<unknown>> {
     if (!this.child) {
-      throw new AgentRelayProcessError("broker is not running");
+      throw new AgentRelayProcessError('broker is not running');
     }
 
-    const request_id = `req_${++this.requestSeq}`;
+    const requestId = `req_${++this.requestSeq}`;
     const message: ProtocolEnvelope<unknown> = {
       v: PROTOCOL_VERSION,
       type,
-      request_id,
+      request_id: requestId,
       payload,
     };
 
     const responsePromise = new Promise<ProtocolEnvelope<unknown>>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.pending.delete(request_id);
+        this.pending.delete(requestId);
         reject(
           new AgentRelayProcessError(
-            `request timed out after ${this.options.requestTimeoutMs}ms (type='${type}', request_id='${request_id}')`,
-          ),
+            `request timed out after ${this.options.requestTimeoutMs}ms (type='${type}', request_id='${requestId}')`
+          )
         );
       }, this.options.requestTimeoutMs);
 
-      this.pending.set(request_id, {
+      this.pending.set(requestId, {
         expectedType,
         resolve,
         reject,
@@ -516,37 +551,37 @@ export class AgentRelayClient {
 
     const line = `${JSON.stringify(message)}\n`;
     if (!this.child.stdin.write(line)) {
-      await once(this.child.stdin, "drain");
+      await once(this.child.stdin, 'drain');
     }
 
     return responsePromise;
   }
 }
 
-const CLI_MODEL_FLAG_CLIS = new Set(["claude", "codex", "gemini", "goose", "aider"]);
+const CLI_MODEL_FLAG_CLIS = new Set(['claude', 'codex', 'gemini', 'goose', 'aider']);
 
 function buildPtyArgsWithModel(cli: string, args: string[], model?: string): string[] {
   const baseArgs = [...args];
   if (!model) {
     return baseArgs;
   }
-  const cliName = cli.split(":")[0].trim().toLowerCase();
+  const cliName = cli.split(':')[0].trim().toLowerCase();
   if (!CLI_MODEL_FLAG_CLIS.has(cliName)) {
     return baseArgs;
   }
   if (hasModelArg(baseArgs)) {
     return baseArgs;
   }
-  return ["--model", model, ...baseArgs];
+  return ['--model', model, ...baseArgs];
 }
 
 function hasModelArg(args: string[]): boolean {
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
-    if (arg === "--model") {
+    if (arg === '--model') {
       return true;
     }
-    if (arg.startsWith("--model=")) {
+    if (arg.startsWith('--model=')) {
       return true;
     }
   }
@@ -554,7 +589,7 @@ function hasModelArg(args: string[]): boolean {
 }
 
 function expandTilde(p: string): string {
-  if (p === "~" || p.startsWith("~/") || p.startsWith("~\\")) {
+  if (p === '~' || p.startsWith('~/') || p.startsWith('~\\')) {
     const home = os.homedir();
     return path.join(home, p.slice(2));
   }
@@ -563,30 +598,30 @@ function expandTilde(p: string): string {
 
 function isExplicitPath(binaryPath: string): boolean {
   return (
-    binaryPath.includes("/") ||
-    binaryPath.includes("\\") ||
-    binaryPath.startsWith(".") ||
-    binaryPath.startsWith("~")
+    binaryPath.includes('/') ||
+    binaryPath.includes('\\') ||
+    binaryPath.startsWith('.') ||
+    binaryPath.startsWith('~')
   );
 }
 
 function resolveDefaultBinaryPath(): string {
-  const brokerExe = process.platform === "win32" ? "agent-relay-broker.exe" : "agent-relay-broker";
+  const brokerExe = process.platform === 'win32' ? 'agent-relay-broker.exe' : 'agent-relay-broker';
 
   // 1. Check for bundled broker binary in SDK package (npm install)
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-  const bundled = path.resolve(moduleDir, "..", "bin", brokerExe);
+  const bundled = path.resolve(moduleDir, '..', 'bin', brokerExe);
   if (fs.existsSync(bundled)) {
     return bundled;
   }
 
   // 2. Check for standalone broker binary in ~/.agent-relay/bin/ (install.sh)
-  const homeDir = process.env.HOME || process.env.USERPROFILE || "";
-  const standaloneBroker = path.join(homeDir, ".agent-relay", "bin", brokerExe);
+  const homeDir = process.env.HOME || process.env.USERPROFILE || '';
+  const standaloneBroker = path.join(homeDir, '.agent-relay', 'bin', brokerExe);
   if (fs.existsSync(standaloneBroker)) {
     return standaloneBroker;
   }
 
   // 3. Fall back to agent-relay on PATH (may be Node CLI — will fail for broker ops)
-  return "agent-relay";
+  return 'agent-relay';
 }

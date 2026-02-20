@@ -1,6 +1,6 @@
 ---
-title: "Web Dashboard"
-description: "Monitor and manage your agent network through the browser-based dashboard"
+title: 'Web Dashboard'
+description: 'Monitor and manage your agent network through the browser-based dashboard'
 ---
 
 # Web Dashboard
@@ -9,13 +9,13 @@ The web dashboard provides a real-time interface for monitoring your agent netwo
 
 ## Starting the Dashboard
 
-Start the daemon with the `--dashboard` flag:
+Start the broker with the `--dashboard` flag:
 
 ```bash
 agent-relay up --dashboard
 ```
 
-This starts both the relay daemon and the dashboard. By default, the dashboard runs on port **3888**:
+This starts both the relay broker and the dashboard. By default, the dashboard runs on port **3888**:
 
 ```
 Dashboard: http://localhost:3888
@@ -123,6 +123,7 @@ curl http://localhost:3888/api/health
 ```
 
 Response:
+
 ```json
 {
   "status": "healthy"
@@ -136,6 +137,7 @@ curl http://localhost:3888/api/agents
 ```
 
 Response:
+
 ```json
 {
   "agents": [
@@ -204,10 +206,10 @@ See [Multi-Project Bridging](/features/bridging) for details.
 
 ### Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `AGENT_RELAY_DASHBOARD_PORT` | Dashboard port | `3888` |
-| `AGENT_RELAY_DATA_DIR` | Data directory | `~/.local/share/agent-relay` |
+| Variable                     | Description    | Default                      |
+| ---------------------------- | -------------- | ---------------------------- |
+| `AGENT_RELAY_DASHBOARD_PORT` | Dashboard port | `3888`                       |
+| `AGENT_RELAY_DATA_DIR`       | Data directory | `~/.local/share/agent-relay` |
 
 ### Data Storage
 
@@ -223,7 +225,7 @@ Dashboard data is stored in the project data directory:
 
 ## Supervisor Mode
 
-Run the daemon with automatic restart on crash:
+Run the broker with automatic restart on crash:
 
 ```bash
 agent-relay up --watch
@@ -233,25 +235,22 @@ Options:
 
 - `--max-restarts <n>` - Maximum restarts in 60 seconds (default: 5)
 
-The supervisor will restart the daemon automatically if it crashes, up to the maximum restart limit within the time window.
+The supervisor will restart the broker automatically if it crashes, up to the maximum restart limit within the time window.
 
 ## Troubleshooting
 
 <AccordionGroup>
   <Accordion title="Dashboard not loading">
-    1. Check if the daemon is running: `agent-relay status`
-    2. Verify the port is not in use: `lsof -i :3888`
-    3. Try a different port: `relay-dashboard --port 3890`
-    4. Ensure relay-dashboard is installed: `npm list -g relay-dashboard`
+    1. Check if the broker is running: `agent-relay status` 2. Verify the port is not in use: `lsof -i :3888`
+    3. Try a different port: `relay-dashboard --port 3890` 4. Ensure relay-dashboard is installed: `npm list
+    -g relay-dashboard`
   </Accordion>
   <Accordion title="Agents not appearing">
-    1. Agents must send a HELLO message to register
-    2. Check agent logs for connection errors
-    3. Verify the daemon is running: `agent-relay status`
+    1. Agents must send a HELLO message to register 2. Check agent logs for connection errors 3. Verify the
+    socket path matches between broker and agents
   </Accordion>
   <Accordion title="WebSocket disconnections">
-    1. Check for network issues or firewalls
-    2. The dashboard auto-reconnects on disconnection
-    3. Refresh the page if state becomes stale
+    1. Check for network issues or firewalls 2. The dashboard auto-reconnects on disconnection 3. Refresh the
+    page if state becomes stale
   </Accordion>
 </AccordionGroup>

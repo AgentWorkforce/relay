@@ -12,14 +12,10 @@
  *   RELAY_API_KEY — Relaycast workspace key
  *   AGENT_RELAY_BIN (optional) — path to agent-relay binary
  */
-import assert from "node:assert/strict";
-import test, { type TestContext } from "node:test";
+import assert from 'node:assert/strict';
+import test, { type TestContext } from 'node:test';
 
-import {
-  BrokerHarness,
-  checkPrerequisites,
-  uniqueSuffix,
-} from "./utils/broker-harness.js";
+import { BrokerHarness, checkPrerequisites, uniqueSuffix } from './utils/broker-harness.js';
 import {
   assertAgentCount,
   assertAgentExists,
@@ -28,7 +24,8 @@ import {
   assertAgentReleasedEvent,
   assertEventOrder,
   assertNoAclDenied,
-} from "./utils/assert-helpers.js";
+} from './utils/assert-helpers.js';
+import { AgentRelayProtocolError } from '@agent-relay/sdk';
 
 function skipIfMissing(t: TestContext): boolean {
   const reason = checkPrerequisites();
@@ -41,7 +38,7 @@ function skipIfMissing(t: TestContext): boolean {
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-test("broker: start and stop cleanly", async (t) => {
+test('broker: start and stop cleanly', async (t) => {
   if (skipIfMissing(t)) return;
 
   const harness = new BrokerHarness();
@@ -49,12 +46,12 @@ test("broker: start and stop cleanly", async (t) => {
 
   // Broker should respond to listAgents (hello_ack already confirmed by start)
   const agents = await harness.listAgents();
-  assert.ok(Array.isArray(agents), "listAgents should return an array");
+  assert.ok(Array.isArray(agents), 'listAgents should return an array');
 
   await harness.stop();
 });
 
-test("broker: spawn and release a single agent", async (t) => {
+test('broker: spawn and release a single agent', async (t) => {
   if (skipIfMissing(t)) return;
 
   const harness = new BrokerHarness();
@@ -66,40 +63,38 @@ test("broker: spawn and release a single agent", async (t) => {
     // Spawn
     const spawned = await harness.spawnAgent(name);
     assert.equal(spawned.name, name);
-    assert.equal(spawned.runtime, "pty");
+    assert.equal(spawned.runtime, 'pty');
 
     // Verify agent exists
     await assertAgentExists(harness, name);
 
     // Wait for spawned event
-    const spawnEvent = await harness.waitForEvent("agent_spawned", 5_000, (e) =>
-      e.kind === "agent_spawned" && e.name === name,
+    const spawnEvent = await harness.waitForEvent(
+      'agent_spawned',
+      5_000,
+      (e) => e.kind === 'agent_spawned' && e.name === name
     ).promise;
-    assert.ok(spawnEvent, "should receive agent_spawned event");
+    assert.ok(spawnEvent, 'should receive agent_spawned event');
 
     // Release
     const released = await harness.releaseAgent(name);
     assert.equal(released.name, name);
 
     // Wait for released event
-    await harness.waitForEvent("agent_released", 5_000, (e) =>
-      e.kind === "agent_released" && e.name === name,
-    ).promise;
+    await harness.waitForEvent('agent_released', 5_000, (e) => e.kind === 'agent_released' && e.name === name)
+      .promise;
 
     // Verify agent is gone
     await assertAgentNotExists(harness, name);
 
     // Verify event order
-    assertEventOrder(harness.getEvents(), [
-      "agent_spawned",
-      "agent_released",
-    ]);
+    assertEventOrder(harness.getEvents(), ['agent_spawned', 'agent_released']);
   } finally {
     await harness.stop();
   }
 });
 
-test("broker: spawn multiple agents in sequence", async (t) => {
+test('broker: spawn multiple agents in sequence', async (t) => {
   if (skipIfMissing(t)) return;
 
   const harness = new BrokerHarness();
@@ -118,7 +113,7 @@ test("broker: spawn multiple agents in sequence", async (t) => {
     for (const name of names) {
       assert.ok(
         agents.some((a) => a.name === name),
-        `agent "${name}" should be in listAgents`,
+        `agent "${name}" should be in listAgents`
       );
     }
     assert.ok(agents.length >= names.length);
@@ -136,7 +131,7 @@ test("broker: spawn multiple agents in sequence", async (t) => {
     for (const name of names) {
       assert.ok(
         !remaining.some((a) => a.name === name),
-        `agent "${name}" should not be in listAgents after release`,
+        `agent "${name}" should not be in listAgents after release`
       );
     }
 
@@ -151,7 +146,7 @@ test("broker: spawn multiple agents in sequence", async (t) => {
   }
 });
 
-test("broker: spawn, list, release — agent count tracking", async (t) => {
+test('broker: spawn, list, release — agent count tracking', async (t) => {
   if (skipIfMissing(t)) return;
 
   const harness = new BrokerHarness();
@@ -183,7 +178,7 @@ test("broker: spawn, list, release — agent count tracking", async (t) => {
   }
 });
 
-test("broker: releasing a nonexistent agent returns error", async (t) => {
+test('broker: releasing a nonexistent agent returns error', async (t) => {
   if (skipIfMissing(t)) return;
 
   const harness = new BrokerHarness();
@@ -193,17 +188,16 @@ test("broker: releasing a nonexistent agent returns error", async (t) => {
     await assert.rejects(
       harness.releaseAgent(`nonexistent-${uniqueSuffix()}`),
       (err: Error) => {
-        // Should be a protocol error (agent_not_found)
-        return err.message.includes("not_found") || err.name.includes("Protocol");
+        return err instanceof AgentRelayProtocolError && err.code === 'agent_not_found';
       },
-      "releasing a nonexistent agent should throw",
+      'releasing a nonexistent agent should throw'
     );
   } finally {
     await harness.stop();
   }
 });
 
-test("broker: agent_exited event when cat process is killed", async (t) => {
+test('broker: agent_exited event when cat process is killed', async (t) => {
   if (skipIfMissing(t)) return;
 
   const harness = new BrokerHarness();
@@ -215,17 +209,15 @@ test("broker: agent_exited event when cat process is killed", async (t) => {
     await harness.spawnAgent(name);
 
     // Wait for spawn event
-    await harness.waitForEvent("agent_spawned", 5_000, (e) =>
-      e.kind === "agent_spawned" && e.name === name,
-    ).promise;
+    await harness.waitForEvent('agent_spawned', 5_000, (e) => e.kind === 'agent_spawned' && e.name === name)
+      .promise;
 
     // Release the agent (which kills the cat process)
     await harness.releaseAgent(name);
 
     // Should see either agent_released or agent_exited
-    await harness.waitForEvent("agent_released", 5_000, (e) =>
-      e.kind === "agent_released" && e.name === name,
-    ).promise;
+    await harness.waitForEvent('agent_released', 5_000, (e) => e.kind === 'agent_released' && e.name === name)
+      .promise;
 
     // No ACL denials
     assertNoAclDenied(harness.getEvents());
@@ -234,7 +226,7 @@ test("broker: agent_exited event when cat process is killed", async (t) => {
   }
 });
 
-test("broker: events are captured in order", async (t) => {
+test('broker: events are captured in order', async (t) => {
   if (skipIfMissing(t)) return;
 
   const harness = new BrokerHarness();
@@ -246,20 +238,15 @@ test("broker: events are captured in order", async (t) => {
     harness.clearEvents();
 
     await harness.spawnAgent(name);
-    await harness.waitForEvent("agent_spawned", 5_000, (e) =>
-      e.kind === "agent_spawned" && e.name === name,
-    ).promise;
+    await harness.waitForEvent('agent_spawned', 5_000, (e) => e.kind === 'agent_spawned' && e.name === name)
+      .promise;
 
     await harness.releaseAgent(name);
-    await harness.waitForEvent("agent_released", 5_000, (e) =>
-      e.kind === "agent_released" && e.name === name,
-    ).promise;
+    await harness.waitForEvent('agent_released', 5_000, (e) => e.kind === 'agent_released' && e.name === name)
+      .promise;
 
     // Spawn must come before release in the event stream
-    assertEventOrder(harness.getEvents(), [
-      "agent_spawned",
-      "agent_released",
-    ]);
+    assertEventOrder(harness.getEvents(), ['agent_spawned', 'agent_released']);
   } finally {
     await harness.stop();
   }

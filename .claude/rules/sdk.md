@@ -41,8 +41,7 @@ Located in `packages/sdk/src/workflows/`:
 ## Communication Protocol
 
 - **Primary**: MCP tools (relay_send, relay_inbox, relay_who, relay_spawn, relay_release)
-- **Fallback**: File-based protocol (`$AGENT_RELAY_OUTBOX`)
-- **Removed**: Direct socket connections, `->relay:` inline pattern
+- **Removed**: File-based protocol, direct socket connections, inline trigger patterns
 
 ## Exports
 

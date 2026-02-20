@@ -10,6 +10,7 @@
 ## Install
 
 **Quick install (recommended - no Node.js required!):**
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
 ```
@@ -17,11 +18,12 @@ curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.s
 This downloads a standalone binary that works without any dependencies.
 
 **Or via npm:**
+
 ```bash
 npm install -g agent-relay
 ```
 
-*The npm method requires Node.js 18+*
+_The npm method requires Node.js 18+_
 
 ## Getting Started
 
@@ -30,6 +32,7 @@ agent-relay up --dashboard
 ```
 
 Navigate to **http://localhost:3888** to:
+
 - 🤖 Spawn and chat with agents using your locally installed CLI tools
 - 👀 View real-time agent presence and status
 - 💬 Message history and threading
@@ -39,15 +42,15 @@ Navigate to **http://localhost:3888** to:
 
 ## CLI Reference
 
-| Command | Description |
-|---------|-------------|
-| `agent-relay <cli>` | Start daemon + coordinator (claude, codex, gemini, etc.) |
-| `agent-relay up` | Start daemon + dashboard |
-| `agent-relay down` | Stop daemon |
-| `agent-relay status` | Check daemon status |
-| `agent-relay spawn <name> <cli> "task"` | Spawn a worker agent |
-| `agent-relay bridge <projects...>` | Bridge multiple projects |
-| `agent-relay doctor` | Diagnose issues |
+| Command                                 | Description                                              |
+| --------------------------------------- | -------------------------------------------------------- |
+| `agent-relay <cli>`                     | Start broker + coordinator (claude, codex, gemini, etc.) |
+| `agent-relay up`                        | Start broker + dashboard                                 |
+| `agent-relay down`                      | Stop broker                                              |
+| `agent-relay status`                    | Check broker status                                      |
+| `agent-relay spawn <name> <cli> "task"` | Spawn a worker agent                                     |
+| `agent-relay bridge <projects...>`      | Bridge multiple projects                                 |
+| `agent-relay doctor`                    | Diagnose issues                                          |
 
 ---
 
@@ -66,28 +69,18 @@ Define roles by adding markdown files to your project:
 Names automatically match roles (case-insensitive). Create agents using either method:
 
 **Option A: Dashboard (recommended for interactive use)**
+
 1. Open http://localhost:3888
 2. Click "Spawn Agent"
 3. Enter name "Lead" and select CLI "claude"
 
 **Option B: CLI (for scripting/automation)**
+
 ```bash
 agent-relay spawn Lead claude "Your task instructions"
 ```
 
 Agents with matching names automatically assume the corresponding role from your `.claude/agents/` directory.
-
-## MCP Server
-
-Give AI agents native relay tools via [Model Context Protocol](https://modelcontextprotocol.io):
-
-```bash
-npx @agent-relay/mcp install
-```
-
-Supports Claude Desktop, Claude Code, Cursor, VS Code, Windsurf, Zed, OpenCode, Gemini CLI, and Droid.
-
-Once configured, agents get access to: `relay_send`, `relay_inbox`, `relay_who`, `relay_spawn`, `relay_release`, and `relay_status`.
 
 ## Multi-Project Bridge
 
@@ -102,15 +95,11 @@ cd ~/frontend && agent-relay up
 agent-relay bridge ~/auth ~/frontend ~/api
 ```
 
-Cross-project messaging uses `project:agent` format:
-```bash
-cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
-TO: auth:Lead
+Cross-project messaging uses `project:agent` format via MCP tools:
 
-Please review the token refresh logic
-EOF
 ```
-Then output: `->relay-file:msg`
+relay_send(to: "auth:Lead", message: "Please review the token refresh logic")
+```
 
 ## Cloud
 
@@ -139,6 +128,7 @@ npx prpm install @agent-relay/agent-relay-snippet --location CLAUDE.md
 ```
 
 Prefer skills?
+
 ```bash
 npx prpm install @agent-relay/using-agent-relay
 ```
@@ -150,6 +140,7 @@ View all packages on our [prpm organization page](https://prpm.dev/orgs?name=Age
 ## For Agents
 
 Paste this into your LLM agent session:
+
 ```bash
 curl -s https://raw.githubusercontent.com/AgentWorkforce/relay/main/docs/guide/agent-setup.md
 ```
@@ -161,25 +152,29 @@ Or read the full [Agent Setup Guide](./docs/guide/agent-setup.md).
 The easiest way to develop against relay:
 
 ```bash
-# Install globally and start daemon
+# Install globally and start broker
 npm install -g agent-relay
 agent-relay up
 
 # In your project
-npm install agent-relay
+npm install @agent-relay/sdk
 ```
 
 ```typescript
-import { RelayClient } from 'agent-relay';
+import { AgentRelayClient } from '@agent-relay/sdk';
 
-const client = new RelayClient({ name: 'MyApp' });
-await client.connect();
+const client = await AgentRelayClient.start({ env: process.env });
 
 // Spawn a worker agent
-await client.spawn({ name: 'Worker', cli: 'claude', task: 'Wait for instructions' });
+await client.spawnPty({ name: 'Worker', cli: 'claude', channels: ['general'] });
 
-// Send it a message
-await client.send('Worker', 'Hello from my app');
+// List connected agents
+const agents = await client.listAgents();
+console.log(agents);
+
+// Release and shut down
+await client.release('Worker');
+await client.shutdown();
 ```
 
 ---

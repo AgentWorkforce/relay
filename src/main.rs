@@ -442,6 +442,10 @@ struct DeliveryAckPayload {
     event_id: String,
 }
 
+fn is_system_sender(sender: &str) -> bool {
+    sender == "system" || sender == "human:orchestrator" || sender.starts_with("human:")
+}
+
 struct WorkerRegistry {
     workers: HashMap<String, WorkerHandle>,
     event_tx: mpsc::Sender<WorkerEvent>,
@@ -1144,7 +1148,9 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         let _ = send_event(&sdk_out_tx, json!({
                                             "kind": "delivery_ack",
                                             "name": name,
-                                            "delivery": payload,
+                                            "delivery_id": payload.get("delivery_id"),
+                                            "event_id": payload.get("event_id"),
+                                            "timestamp": payload.get("timestamp"),
                                         })).await;
                                     }
                                 } else if msg_type == "delivery_queued" || msg_type == "delivery_injected" {
@@ -2198,6 +2204,18 @@ async fn handle_sdk_frame(
             let from = payload
                 .from
                 .unwrap_or_else(|| "human:orchestrator".to_string());
+            if !is_system_sender(&from) && !workers.has_worker(&from) {
+                send_error(
+                    out_tx,
+                    frame.request_id,
+                    "sender_not_found",
+                    format!("Sender '{}' is not a registered agent", from),
+                    false,
+                    None,
+                )
+                .await?;
+                return Ok(false);
+            }
             let priority = payload.priority.unwrap_or(2);
             let event_id = format!("sdk_{}", Uuid::new_v4().simple());
 
@@ -2433,6 +2451,21 @@ async fn handle_sdk_frame(
         "release_agent" => {
             let payload: ReleasePayload = serde_json::from_value(frame.payload)
                 .context("release_agent payload must contain `name`")?;
+
+            // Check agent exists before attempting release
+            if !workers.workers.contains_key(&payload.name) {
+                send_error(
+                    out_tx,
+                    frame.request_id,
+                    "agent_not_found",
+                    format!("unknown worker '{}'", payload.name),
+                    false,
+                    None,
+                )
+                .await?;
+                return Ok(false);
+            }
+
             tracing::info!(
                 name = %payload.name,
                 reason = ?payload.reason,
@@ -3353,9 +3386,10 @@ mod tests {
     #[test]
     fn strip_ansi_handles_cursor_forward_sequences() {
         // Claude Code uses \x1b[1C (cursor forward) instead of spaces
+        // These should be replaced with spaces so echo detection works
         let input = "\x1b[1CYes,\x1b[1CI\x1b[1Caccept";
         let clean = strip_ansi(input);
-        assert_eq!(clean, "Yes,Iaccept");
+        assert_eq!(clean, " Yes, I accept");
     }
 
     // ==================== floor_char_boundary tests ====================

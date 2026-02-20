@@ -5,7 +5,7 @@ description: Complete reference for all agent-relay CLI commands and options
 
 # CLI Reference
 
-The `agent-relay` CLI provides commands for managing the relay daemon, agents, and multi-project orchestration.
+The `agent-relay` CLI provides commands for managing the relay broker, agents, and multi-project orchestration.
 
 ## Installation
 
@@ -15,18 +15,19 @@ npm install -g agent-relay
 
 ## Quick Reference
 
-| Command | Description |
-|---------|-------------|
-| `agent-relay up` | Start daemon (add `--dashboard` for web UI) |
-| `agent-relay down` | Stop the daemon |
-| `agent-relay status` | Check daemon status |
-| `agent-relay spawn` | Spawn a new agent (or use dashboard at localhost:3888) |
-| `agent-relay release` | Release an agent |
-| `agent-relay agents` | List connected agents |
-| `agent-relay who` | Show active agents |
-| `agent-relay read` | Read full message by ID |
-| `agent-relay bridge` | Multi-project orchestration |
-| `agent-relay cloud` | Cloud account commands |
+| Command                    | Description                                            |
+| -------------------------- | ------------------------------------------------------ |
+| `agent-relay up`           | Start broker (add `--dashboard` for web UI)            |
+| `agent-relay down`         | Stop the broker                                        |
+| `agent-relay status`       | Check broker status                                    |
+| `agent-relay spawn`        | Spawn a new agent (or use dashboard at localhost:3888) |
+| `agent-relay create-agent` | Wrap an agent with real-time messaging (advanced)      |
+| `agent-relay release`      | Release an agent                                       |
+| `agent-relay agents`       | List connected agents                                  |
+| `agent-relay who`          | Show active agents                                     |
+| `agent-relay read`         | Read full message by ID                                |
+| `agent-relay bridge`       | Multi-project orchestration                            |
+| `agent-relay cloud`        | Cloud account commands                                 |
 
 ---
 
@@ -34,7 +35,7 @@ npm install -g agent-relay
 
 ### agent-relay up
 
-Start the relay daemon and web dashboard.
+Start the relay broker and web dashboard.
 
 ```bash
 agent-relay up [options]
@@ -42,14 +43,14 @@ agent-relay up [options]
 
 **Options:**
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--no-dashboard` | Disable the web dashboard | Dashboard enabled |
-| `--port <port>` | Dashboard port number | `3888` |
-| `--spawn` | Force spawn all agents from `teams.json` | Auto-detect |
-| `--no-spawn` | Do not auto-spawn agents | Auto-detect |
-| `--watch` | Auto-restart daemon on crash (supervisor mode) | Disabled |
-| `--max-restarts <n>` | Max restarts in 60s before giving up | `5` |
+| Option               | Description                                    | Default           |
+| -------------------- | ---------------------------------------------- | ----------------- |
+| `--no-dashboard`     | Disable the web dashboard                      | Dashboard enabled |
+| `--port <port>`      | Dashboard port number                          | `3888`            |
+| `--spawn`            | Force spawn all agents from `teams.json`       | Auto-detect       |
+| `--no-spawn`         | Do not auto-spawn agents                       | Auto-detect       |
+| `--watch`            | Auto-restart broker on crash (supervisor mode) | Disabled          |
+| `--max-restarts <n>` | Max restarts in 60s before giving up           | `5`               |
 
 **Examples:**
 
@@ -71,9 +72,11 @@ agent-relay up --spawn
 ```
 
 **Output:**
+
 ```
 Project: /Users/you/myproject
-Daemon started.
+Socket:  /tmp/relay/abc123/agent-relay.sock
+Broker started.
 Dashboard: http://localhost:3888
 Press Ctrl+C to stop.
 ```
@@ -82,7 +85,7 @@ Press Ctrl+C to stop.
 
 ### agent-relay down
 
-Stop the running daemon.
+Stop the running broker.
 
 ```bash
 agent-relay down
@@ -103,7 +106,7 @@ agent-relay down
 
 ### agent-relay status
 
-Check the daemon status and list active agents.
+Check the broker status and list relay tmux sessions.
 
 ```bash
 agent-relay status
@@ -113,68 +116,71 @@ agent-relay status
 
 ```
 Status: RUNNING
-Active agents:
-- Dashboard (cli: claude, cwd: /Users/you/myproject)
-- Worker1 (cli: claude, cwd: /Users/you/myproject)
+Socket: /tmp/relay/abc123/agent-relay.sock
+Relay tmux sessions:
+- relay-Dashboard (agent: Dashboard, cwd: /Users/you/myproject)
+- relay-Worker1 (agent: Worker1, cwd: /Users/you/myproject)
 ```
 
 ---
 
-### agent-relay spawn
+### agent-relay create-agent
 
-Wrap an AI CLI agent with real-time messaging capabilities.
+Wrap an AI CLI agent with real-time messaging capabilities in a tmux session.
 
 <Note>
-For most use cases, we recommend using the **dashboard** at http://localhost:3888 or `agent-relay spawn`. Use `spawn` with advanced options for shadow agents or custom prefixes.
+  For most use cases, we recommend using the **dashboard** at http://localhost:3888 or the simpler
+  `agent-relay spawn` command. Use `create-agent` when you need advanced options like shadow agents or custom
+  prefixes.
 </Note>
 
 ```bash
-agent-relay spawn [options] <command...>
+agent-relay create-agent [options] <command...>
 ```
 
 **Arguments:**
 
-| Argument | Description |
-|----------|-------------|
+| Argument     | Description                                         |
+| ------------ | --------------------------------------------------- |
 | `command...` | Command to wrap (e.g., `claude`, `codex`, `gemini`) |
 
 **Options:**
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `-n, --name <name>` | Agent name | Auto-generated |
-| `-d, --debug` | Enable debug output | Disabled |
-| `--prefix <pattern>` | Relay prefix pattern | `->relay:` |
-| `--dashboard-port <port>` | Dashboard port for spawn/release API | Auto-detected |
-| `--shadow <name>` | Spawn a shadow agent with this name | None |
-| `--shadow-role <role>` | Shadow role: `reviewer`, `auditor`, or trigger list | `EXPLICIT_ASK` |
-| `--skip-instructions` | Skip initial instruction injection | Disabled |
+| Option                    | Description                                         | Default        |
+| ------------------------- | --------------------------------------------------- | -------------- |
+| `-n, --name <name>`       | Agent name                                          | Auto-generated |
+| `-d, --debug`             | Enable debug output                                 | Disabled       |
+| `--prefix <pattern>`      | Relay prefix pattern                                | `->relay:`     |
+| `--dashboard-port <port>` | Dashboard port for spawn/release API                | Auto-detected  |
+| `--shadow <name>`         | Spawn a shadow agent with this name                 | None           |
+| `--shadow-role <role>`    | Shadow role: `reviewer`, `auditor`, or trigger list | `EXPLICIT_ASK` |
+| `--skip-instructions`     | Skip initial instruction injection                  | Disabled       |
 
 **Shadow Roles:**
 
-| Role | Triggers |
-|------|----------|
+| Role       | Triggers                                         |
+| ---------- | ------------------------------------------------ |
 | `reviewer` | `CODE_WRITTEN`, `REVIEW_REQUEST`, `EXPLICIT_ASK` |
-| `auditor` | `SESSION_END`, `EXPLICIT_ASK` |
-| `active` | `ALL_MESSAGES` |
+| `auditor`  | `SESSION_END`, `EXPLICIT_ASK`                    |
+| `active`   | `ALL_MESSAGES`                                   |
 
 **Examples:**
 
 ```bash
 # Basic usage with Claude
-agent-relay spawn claude
+agent-relay create-agent claude
 
 # With custom name
-agent-relay spawn -n MyAgent claude
+agent-relay create-agent -n MyAgent claude
 
 # With shadow agent for code review
-agent-relay spawn -n Lead --shadow Reviewer --shadow-role reviewer claude
+agent-relay create-agent -n Lead --shadow Reviewer --shadow-role reviewer claude
 
 # With explicit triggers
-agent-relay spawn --shadow Auditor --shadow-role "SESSION_END,CODE_WRITTEN" claude
+agent-relay create-agent --shadow Auditor --shadow-role "SESSION_END,CODE_WRITTEN" claude
 
 # Debug mode
-agent-relay spawn -d codex
+agent-relay create-agent -d codex
 ```
 
 ---
@@ -191,11 +197,11 @@ agent-relay agents [options]
 
 **Options:**
 
-| Option | Description |
-|--------|-------------|
-| `--all` | Include internal/CLI agents |
+| Option     | Description                         |
+| ---------- | ----------------------------------- |
+| `--all`    | Include internal/CLI agents         |
 | `--remote` | Include agents from linked machines |
-| `--json` | Output as JSON |
+| `--json`   | Output as JSON                      |
 
 **Example Output:**
 
@@ -223,10 +229,10 @@ agent-relay who [options]
 
 **Options:**
 
-| Option | Description |
-|--------|-------------|
-| `--all` | Include internal/CLI agents |
-| `--json` | Output as JSON |
+| Option   | Description                 |
+| -------- | --------------------------- |
+| `--all`  | Include internal/CLI agents |
+| `--json` | Output as JSON              |
 
 **Example Output:**
 
@@ -250,15 +256,15 @@ agent-relay agents:logs <name> [options]
 **Arguments:**
 
 | Argument | Description |
-|----------|-------------|
-| `name` | Agent name |
+| -------- | ----------- |
+| `name`   | Agent name  |
 
 **Options:**
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `-n, --lines <n>` | Number of lines to show | `50` |
-| `-f, --follow` | Follow output (like `tail -f`) | Disabled |
+| Option            | Description                    | Default  |
+| ----------------- | ------------------------------ | -------- |
+| `-n, --lines <n>` | Number of lines to show        | `50`     |
+| `-f, --follow`    | Follow output (like `tail -f`) | Disabled |
 
 **Examples:**
 
@@ -285,8 +291,8 @@ agent-relay agents:kill <name> [options]
 
 **Options:**
 
-| Option | Description |
-|--------|-------------|
+| Option    | Description                              |
+| --------- | ---------------------------------------- |
 | `--force` | Skip graceful shutdown, kill immediately |
 
 **Examples:**
@@ -336,16 +342,16 @@ agent-relay bridge [projects...] [options]
 
 **Arguments:**
 
-| Argument | Description |
-|----------|-------------|
+| Argument      | Description             |
+| ------------- | ----------------------- |
 | `projects...` | Project paths to bridge |
 
 **Options:**
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--cli <tool>` | CLI tool override for all projects | Per-project config |
-| `--architect [cli]` | Spawn an architect agent to coordinate | None |
+| Option              | Description                            | Default            |
+| ------------------- | -------------------------------------- | ------------------ |
+| `--cli <tool>`      | CLI tool override for all projects     | Per-project config |
+| `--architect [cli]` | Spawn an architect agent to coordinate | None               |
 
 **Examples:**
 
@@ -387,12 +393,13 @@ agent-relay cloud link [options]
 
 **Options:**
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--name <name>` | Name for this machine | Hostname |
-| `--cloud-url <url>` | Cloud API URL | `https://agent-relay.com` |
+| Option              | Description           | Default                   |
+| ------------------- | --------------------- | ------------------------- |
+| `--name <name>`     | Name for this machine | Hostname                  |
+| `--cloud-url <url>` | Cloud API URL         | `https://agent-relay.com` |
 
 **Flow:**
+
 1. Opens browser for authentication
 2. Prompts for API key after authentication
 3. Saves configuration locally
@@ -427,7 +434,7 @@ Cloud sync: Enabled
   Cloud URL: https://agent-relay.com
   Linked: 1/15/2024, 10:30:00 AM
 
-  Daemon: Running
+  Broker: Running
   Cloud connection: Online
 ```
 
@@ -464,8 +471,8 @@ agent-relay update [options]
 
 **Options:**
 
-| Option | Description |
-|--------|-------------|
+| Option    | Description                            |
+| --------- | -------------------------------------- |
 | `--check` | Only check for updates, do not install |
 
 **Examples:**
@@ -484,36 +491,37 @@ agent-relay update --check
 
 These commands are available but hidden from `--help` (for internal/agent use):
 
-| Command | Description |
-|---------|-------------|
-| `agent-relay history` | Show recent messages |
-| `agent-relay spawn` | Spawn agent via dashboard API |
-| `agent-relay release` | Release agent via dashboard API |
-| `agent-relay gc` | Clean up orphaned agent processes |
-| `agent-relay trail` | Trajectory tracking (proxy to trail CLI) |
+| Command                  | Description                              |
+| ------------------------ | ---------------------------------------- |
+| `agent-relay history`    | Show recent messages                     |
+| `agent-relay spawn`      | Spawn agent via broker API               |
+| `agent-relay release`    | Release agent via broker API             |
+| `agent-relay gc`         | Clean up orphaned tmux sessions          |
+| `agent-relay check-tmux` | Check tmux availability                  |
+| `agent-relay trail`      | Trajectory tracking (proxy to trail CLI) |
 
 ---
 
 ## Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `AGENT_RELAY_DASHBOARD_PORT` | Default dashboard port | `3888` |
-| `AGENT_RELAY_DATA_DIR` | Data directory for relay files | `~/.local/share/agent-relay` |
-| `AGENT_RELAY_STORAGE_TYPE` | Storage type: `sqlite`, `memory`, `none` | `sqlite` |
-| `AGENT_RELAY_STORAGE_PATH` | Path for SQLite database | Auto |
-| `AGENT_RELAY_STORAGE_URL` | Connection URL for database | None |
-| `AGENT_RELAY_CLOUD_URL` | Cloud API URL | `https://agent-relay.com` |
-| `AGENT_RELAY_SUPERVISED` | Set by supervisor mode | Not set |
+| Variable                     | Description                              | Default                      |
+| ---------------------------- | ---------------------------------------- | ---------------------------- |
+| `AGENT_RELAY_DASHBOARD_PORT` | Default dashboard port                   | `3888`                       |
+| `AGENT_RELAY_DATA_DIR`       | Data directory for relay files           | `~/.local/share/agent-relay` |
+| `AGENT_RELAY_STORAGE_TYPE`   | Storage type: `sqlite`, `memory`, `none` | `sqlite`                     |
+| `AGENT_RELAY_STORAGE_PATH`   | Path for SQLite database                 | Auto                         |
+| `AGENT_RELAY_STORAGE_URL`    | Connection URL for database              | None                         |
+| `AGENT_RELAY_CLOUD_URL`      | Cloud API URL                            | `https://agent-relay.com`    |
+| `AGENT_RELAY_SUPERVISED`     | Set by supervisor mode                   | Not set                      |
 
 ---
 
 ## Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| `0` | Success |
-| `1` | General error |
+| Code | Meaning       |
+| ---- | ------------- |
+| `0`  | Success       |
+| `1`  | General error |
 
 ---
 

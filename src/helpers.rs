@@ -296,6 +296,10 @@ pub(crate) fn floor_char_boundary(s: &str, index: usize) -> usize {
 }
 
 /// Strip ANSI escape sequences from text for robust pattern matching.
+///
+/// Cursor-forward (`ESC[<n>C`) sequences are replaced with spaces so that
+/// CLIs which render injected text using cursor movement (e.g. Claude Code
+/// v2.1.49+) still produce readable output for echo detection.
 pub(crate) fn strip_ansi(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -304,11 +308,21 @@ pub(crate) fn strip_ansi(text: &str) -> String {
             match chars.peek() {
                 Some('[') => {
                     chars.next();
+                    // Collect parameter bytes (digits, ';', '?')
+                    let mut param_buf = String::new();
                     while let Some(&nc) = chars.peek() {
                         chars.next();
                         if nc.is_ascii_alphabetic() || nc == '@' || nc == '`' {
+                            // Cursor-forward: replace with spaces
+                            if nc == 'C' {
+                                let count = param_buf.parse::<usize>().unwrap_or(1);
+                                for _ in 0..count {
+                                    result.push(' ');
+                                }
+                            }
                             break;
                         }
+                        param_buf.push(nc);
                     }
                 }
                 Some(']') => {

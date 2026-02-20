@@ -12,25 +12,25 @@ Learn how to use a lead agent to spawn, coordinate, and manage worker agents for
 A lead agent acts as the coordinator, spawning specialized workers to handle subtasks in parallel:
 
 ```
-┌───────────────────────────────────────────────────────────────────┐
-│                    COORDINATOR PATTERN                             │
-│                                                                    │
-│                        ┌────────┐                                  │
-│                        │  Lead  │                                  │
-│                        │(coord) │                                  │
-│                        └───┬────┘                                  │
-│                            │                                       │
-│              ┌─────────────┼─────────────┐                        │
-│              │             │             │                        │
-│              ▼             ▼             ▼                        │
-│         ┌────────┐   ┌────────┐   ┌────────┐                     │
-│         │Worker-1│   │Worker-2│   │Worker-3│                     │
-│         │(tests) │   │(backend│   │(docs)  │                     │
-│         └────────┘   └────────┘   └────────┘                     │
-│                                                                    │
-│  Lead: Decomposes tasks, delegates, collects results              │
-│  Workers: Execute specific tasks, report completion               │
-└───────────────────────────────────────────────────────────────────┘
++-----------------------------------------------------------------+
+|                    COORDINATOR PATTERN                             |
+|                                                                    |
+|                        +--------+                                  |
+|                        |  Lead  |                                  |
+|                        |(coord) |                                  |
+|                        +---+----+                                  |
+|                            |                                       |
+|              +-------------+-------------+                        |
+|              |             |             |                        |
+|              v             v             v                        |
+|         +--------+   +--------+   +--------+                     |
+|         |Worker-1|   |Worker-2|   |Worker-3|                     |
+|         |(tests) |   |(backend|   |(docs)  |                     |
+|         +--------+   +--------+   +--------+                     |
+|                                                                    |
+|  Lead: Decomposes tasks, delegates, collects results              |
+|  Workers: Execute specific tasks, report completion               |
++-----------------------------------------------------------------+
 ```
 
 ## Spawning Workers
@@ -43,57 +43,37 @@ A lead agent acts as the coordinator, spawning specialized workers to handle sub
   </Step>
 
   <Step title="Spawn workers from the lead">
-    Write a spawn file and output the trigger:
+    Use the `relay_spawn()` MCP tool:
 
-    ```bash
-    cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
-    KIND: spawn
-    NAME: TestRunner
-    CLI: claude --agent tester
-
-    Run the test suite for the auth module.
-    Focus on:
-    - Unit tests for JWT validation
-    - Integration tests for login/logout flows
-    - Edge cases: expired tokens, invalid signatures
-    EOF
+    ```typescript
+    relay_spawn(
+      name: "TestRunner",
+      cli: "claude",
+      task: "Run the test suite for the auth module.\nFocus on:\n- Unit tests for JWT validation\n- Integration tests for login/logout flows\n- Edge cases: expired tokens, invalid signatures"
+    )
     ```
 
-    Then output: `->relay-file:spawn`
   </Step>
 
   <Step title="Spawn multiple workers for parallel execution">
-    ```bash
-    # Spawn backend worker
-    cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
-    KIND: spawn
-    NAME: Backend
-    CLI: claude --agent backend
-
-    Implement the password reset endpoint:
-    - POST /api/auth/reset-password
-    - Validate token, update password hash
-    - Send confirmation email
-    EOF
+    ```typescript
+    // Spawn backend worker
+    relay_spawn(
+      name: "Backend",
+      cli: "claude",
+      task: "Implement the password reset endpoint:\n- POST /api/auth/reset-password\n- Validate token, update password hash\n- Send confirmation email"
+    )
     ```
 
-    Then: `->relay-file:spawn`
-
-    ```bash
-    # Spawn frontend worker
-    cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
-    KIND: spawn
-    NAME: Frontend
-    CLI: claude --agent frontend
-
-    Create the password reset form:
-    - ResetPasswordForm component
-    - Token validation on mount
-    - Success/error states
-    EOF
+    ```typescript
+    // Spawn frontend worker
+    relay_spawn(
+      name: "Frontend",
+      cli: "claude",
+      task: "Create the password reset form:\n- ResetPasswordForm component\n- Token validation on mount\n- Success/error states"
+    )
     ```
 
-    Then: `->relay-file:spawn`
   </Step>
 </Steps>
 
@@ -103,79 +83,47 @@ A lead agent acts as the coordinator, spawning specialized workers to handle sub
 
 The lead breaks down a complex task and assigns pieces to specialists:
 
-```bash
-# Lead receives: "Implement user authentication"
+```typescript
+// Lead receives: "Implement user authentication"
+// Lead decomposes and spawns workers:
 
-# Lead decomposes and spawns workers:
+// 1. Database schema
+relay_spawn(
+  name: "Database",
+  cli: "claude",
+  task: "Create users table with:\n- id, email, password_hash, created_at\n- Unique constraint on email\n- Use Drizzle ORM"
+)
 
-# 1. Database schema
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
-KIND: spawn
-NAME: Database
-CLI: claude --agent database
+// 2. API endpoints
+relay_spawn(
+  name: "API",
+  cli: "claude",
+  task: "Implement auth endpoints:\n- POST /auth/register\n- POST /auth/login\n- POST /auth/logout\nWait for Database agent to complete schema first."
+)
 
-Create users table with:
-- id, email, password_hash, created_at
-- Unique constraint on email
-- Use Drizzle ORM
-EOF
+// 3. Frontend components
+relay_spawn(
+  name: "UI",
+  cli: "claude",
+  task: "Create auth UI:\n- LoginForm, RegisterForm components\n- useAuth hook for state management\n- Protected route wrapper"
+)
 ```
-
-Then: `->relay-file:spawn`
-
-```bash
-# 2. API endpoints
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
-KIND: spawn
-NAME: API
-CLI: claude --agent backend
-
-Implement auth endpoints:
-- POST /auth/register
-- POST /auth/login
-- POST /auth/logout
-Wait for Database agent to complete schema first.
-EOF
-```
-
-Then: `->relay-file:spawn`
-
-```bash
-# 3. Frontend components
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
-KIND: spawn
-NAME: UI
-CLI: claude --agent frontend
-
-Create auth UI:
-- LoginForm, RegisterForm components
-- useAuth hook for state management
-- Protected route wrapper
-EOF
-```
-
-Then: `->relay-file:spawn`
 
 ### Pattern 2: Map-Reduce
 
 Distribute identical tasks across workers, then combine results:
 
-```bash
-# Lead spawns test runners for different modules
-for module in auth users billing; do
-  cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/spawn << EOF
-KIND: spawn
-NAME: Test-${module}
-CLI: claude --agent tester
-
-Run tests for src/${module}/ module.
-Report: pass count, fail count, coverage percentage.
-EOF
-  # Output trigger after each spawn
-done
+```typescript
+// Lead spawns test runners for different modules
+const modules = ["auth", "users", "billing"];
+for (const module of modules) {
+  relay_spawn(
+    name: `Test-${module}`,
+    cli: "claude",
+    task: `Run tests for src/${module}/ module.\nReport: pass count, fail count, coverage percentage.`
+  )
+}
 ```
-
-Then output triggers: `->relay-file:spawn` (for each)
 
 ### Pattern 3: Pipeline
 
@@ -183,14 +131,14 @@ Chain workers where each depends on the previous:
 
 ```
 Lead spawns Worker-A
-    │
-    └─► Worker-A completes, notifies Lead
-            │
-            └─► Lead spawns Worker-B with A's output
-                    │
-                    └─► Worker-B completes, notifies Lead
-                            │
-                            └─► Lead spawns Worker-C...
+    |
+    +-> Worker-A completes, notifies Lead
+            |
+            +-> Lead spawns Worker-B with A's output
+                    |
+                    +-> Worker-B completes, notifies Lead
+                            |
+                            +-> Lead spawns Worker-C...
 ```
 
 ## Collecting Results
@@ -199,28 +147,12 @@ Workers report completion to the lead using the ACK/DONE protocol:
 
 ### Worker sends completion
 
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/done << 'EOF'
-TO: Lead
-
-DONE: Test suite completed
-
-Results:
-- 47 tests passed
-- 2 tests failed (see below)
-- Coverage: 87%
-
-Failed tests:
-1. auth.test.ts:45 - Token refresh edge case
-2. auth.test.ts:89 - Concurrent session handling
-
-Files modified:
-- src/auth/__tests__/auth.test.ts
-- src/auth/__tests__/fixtures.ts
-EOF
+```typescript
+relay_send(
+  to: "Lead",
+  message: "DONE: Test suite completed\n\nResults:\n- 47 tests passed\n- 2 tests failed (see below)\n- Coverage: 87%\n\nFailed tests:\n1. auth.test.ts:45 - Token refresh edge case\n2. auth.test.ts:89 - Concurrent session handling\n\nFiles modified:\n- src/auth/__tests__/auth.test.ts\n- src/auth/__tests__/fixtures.ts"
+)
 ```
-
-Then: `->relay-file:done`
 
 ### Lead tracks progress
 
@@ -238,7 +170,7 @@ Waiting for:
 
 When spawning a worker with a task, the system:
 
-1. **Attempts delivery** of the task to the CLI via PTY (or stdin fallback)
+1. **Attempts delivery** of the task to the CLI via socket (or stdin fallback)
 2. **Retries delivery** up to 3 times (with 2s delays) if the write fails
 3. **Returns result** - succeeds if delivery was confirmed by relay-pty
 
@@ -247,19 +179,20 @@ A periodic sweep monitors for stuck injections as an additional safety net.
 ### Why injection can fail
 
 **Delivery failures** (retried automatically):
-- PTY disconnected
+
+- Socket disconnected
 - Write error to stdin
 - relay-pty process issue
 
 ### Automatic retry behavior
 
 ```
-Delivery attempt 1 → Failed (delivery error)
-  ↓ (2s delay)
-Delivery attempt 2 → Failed (write error)
-  ↓ (2s delay)
-Delivery attempt 3 → Success ✓
-  ↓
+Delivery attempt 1 -> Failed (socket error)
+  | (2s delay)
+Delivery attempt 2 -> Failed (write error)
+  | (2s delay)
+Delivery attempt 3 -> Success
+  |
 Return true
 ```
 
@@ -287,19 +220,19 @@ if (!result.success) {
 <CardGroup cols={2}>
 
 <Card title="Exponential backoff" icon="clock-rotate-left">
-Wait longer between each caller-level retry: 5s, 10s, 20s...
+  Wait longer between each caller-level retry: 5s, 10s, 20s...
 </Card>
 
 <Card title="Max retries" icon="rotate">
-Limit total retries (e.g., 2 caller-level attempts) before escalating.
+  Limit total retries (e.g., 2 caller-level attempts) before escalating.
 </Card>
 
 <Card title="Health check first" icon="heart-pulse">
-Verify relay daemon is healthy before retry.
+  Verify relay broker is healthy before retry.
 </Card>
 
 <Card title="Alternative CLI" icon="arrows-rotate">
-Try a different CLI variant if one keeps failing.
+  Try a different CLI variant if one keeps failing.
 </Card>
 
 </CardGroup>
@@ -328,24 +261,12 @@ await relay.sendMessage('Worker', 'Your task here...');
 
 ### Worker reports failure
 
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/error << 'EOF'
-TO: Lead
-
-ERROR: Database migration failed
-
-Issue: Column type mismatch in users table
-Error: "cannot cast varchar to uuid"
-
-Attempted:
-1. Checked existing schema
-2. Verified migration order
-
-Blocked: Need guidance on migration strategy
-EOF
+```typescript
+relay_send(
+  to: "Lead",
+  message: "ERROR: Database migration failed\n\nIssue: Column type mismatch in users table\nError: \"cannot cast varchar to uuid\"\n\nAttempted:\n1. Checked existing schema\n2. Verified migration order\n\nBlocked: Need guidance on migration strategy"
+)
 ```
-
-Then: `->relay-file:error`
 
 ### Lead handles the error
 
@@ -356,24 +277,12 @@ Options for the lead:
 3. **Escalate to human** (via dashboard notification)
 4. **Retry with different approach**
 
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/guidance << 'EOF'
-TO: Database
-
-Guidance for migration error:
-
-The existing users table uses varchar for id.
-Create a migration that:
-1. Adds new uuid column 'new_id'
-2. Populates from existing ids (or generates new)
-3. Drops old 'id' column
-4. Renames 'new_id' to 'id'
-
-Run migrations in a transaction.
-EOF
+```typescript
+relay_send(
+  to: "Database",
+  message: "Guidance for migration error:\n\nThe existing users table uses varchar for id.\nCreate a migration that:\n1. Adds new uuid column 'new_id'\n2. Populates from existing ids (or generates new)\n3. Drops old 'id' column\n4. Renames 'new_id' to 'id'\n\nRun migrations in a transaction."
+)
 ```
-
-Then: `->relay-file:guidance`
 
 ### Timeouts and stuck workers
 
@@ -394,14 +303,9 @@ agent-relay agents:kill TestRunner
 
 When a worker completes its task, release it to free resources:
 
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/release << 'EOF'
-KIND: release
-NAME: TestRunner
-EOF
+```typescript
+relay_release(name: "TestRunner")
 ```
-
-Then: `->relay-file:release`
 
 ## Example: Parallel Test Runners
 
@@ -409,63 +313,40 @@ A complete example of using workers to run tests in parallel:
 
 <Steps>
   <Step title="Lead spawns test runners">
-    ```bash
-    # Lead agent spawns 3 test runners
-    cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
-    KIND: spawn
-    NAME: TestUnit
-    CLI: claude --agent tester
+    ```typescript
+    // Lead agent spawns 3 test runners
+    relay_spawn(
+      name: "TestUnit",
+      cli: "claude",
+      task: "Run unit tests: npm run test:unit\nReport results when complete."
+    )
 
-    Run unit tests: npm run test:unit
-    Report results when complete.
-    EOF
+    relay_spawn(
+      name: "TestIntegration",
+      cli: "claude",
+      task: "Run integration tests: npm run test:integration\nReport results when complete."
+    )
+
+    relay_spawn(
+      name: "TestE2E",
+      cli: "claude",
+      task: "Run E2E tests: npm run test:e2e\nReport results when complete."
+    )
     ```
 
-    Then: `->relay-file:spawn`
-
-    ```bash
-    cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
-    KIND: spawn
-    NAME: TestIntegration
-    CLI: claude --agent tester
-
-    Run integration tests: npm run test:integration
-    Report results when complete.
-    EOF
-    ```
-
-    Then: `->relay-file:spawn`
-
-    ```bash
-    cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
-    KIND: spawn
-    NAME: TestE2E
-    CLI: claude --agent tester
-
-    Run E2E tests: npm run test:e2e
-    Report results when complete.
-    EOF
-    ```
-
-    Then: `->relay-file:spawn`
   </Step>
 
   <Step title="Workers execute and report">
     Each worker runs its tests and sends results:
 
-    ```bash
-    # TestUnit reports
-    cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/done << 'EOF'
-    TO: Lead
-
-    DONE: Unit tests completed
-    - 156 passed, 0 failed
-    - Coverage: 92%
-    - Duration: 45s
-    EOF
+    ```typescript
+    // TestUnit reports
+    relay_send(
+      to: "Lead",
+      message: "DONE: Unit tests completed\n- 156 passed, 0 failed\n- Coverage: 92%\n- Duration: 45s"
+    )
     ```
 
-    Then: `->relay-file:done`
   </Step>
 
   <Step title="Lead aggregates results">
@@ -480,19 +361,15 @@ A complete example of using workers to run tests in parallel:
     Overall: 216 passed, 2 failed
     Action: Investigating integration failures...
     ```
+
   </Step>
 
   <Step title="Lead releases workers">
-    ```bash
-    cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/release << 'EOF'
-    KIND: release
-    NAME: TestUnit
-    EOF
+    ```typescript
+    relay_release(name: "TestUnit")
+    relay_release(name: "TestIntegration")
+    relay_release(name: "TestE2E")
     ```
-
-    Then: `->relay-file:release`
-
-    (Repeat for each worker)
   </Step>
 </Steps>
 
@@ -501,14 +378,15 @@ A complete example of using workers to run tests in parallel:
 ### Agent limits by plan
 
 | Plan | Max Concurrent Agents |
-|------|----------------------|
-| Free | 3 |
-| Pro | 20 |
-| Team | 50 per user |
+| ---- | --------------------- |
+| Free | 3                     |
+| Pro  | 20                    |
+| Team | 50 per user           |
 
 ### Resource considerations
 
 Each worker consumes:
+
 - ~50MB memory for the wrapper
 - One PTY session
 - API quota for the underlying CLI
@@ -522,15 +400,15 @@ Spawn workers for substantial tasks (> 5 minutes of work), not trivial ones.
 </Card>
 
 <Card title="Release promptly" icon="clock">
-Release workers as soon as they complete to free resources.
+  Release workers as soon as they complete to free resources.
 </Card>
 
 <Card title="Batch similar work" icon="layer-group">
-Combine related small tasks into a single worker assignment.
+  Combine related small tasks into a single worker assignment.
 </Card>
 
 <Card title="Monitor active count" icon="gauge">
-Use `agent-relay agents` to track active workers and stay within limits.
+  Use `agent-relay agents` to track active workers and stay within limits.
 </Card>
 
 </CardGroup>
@@ -544,6 +422,7 @@ agent-relay agents
 ```
 
 Output:
+
 ```
 NAME           CLI     STATUS    UPTIME
 Lead           claude  active    2h 15m
@@ -565,6 +444,7 @@ agent-relay agents:logs Backend --tail 100
 ### Dashboard view
 
 The web dashboard provides a visual overview of all agents:
+
 - Status indicators (active, idle, error)
 - Recent messages
 - Resource usage
@@ -572,19 +452,23 @@ The web dashboard provides a visual overview of all agents:
 
 ## Advanced: Shadow Workers
 
-Pair workers with shadow agents for oversight:
+Pair workers with shadow agents for oversight. Configure shadows via `.agent-relay.json` or CLI flags:
 
 ```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
-KIND: spawn
-NAME: Backend
-CLI: claude --agent backend
-SHADOW: Reviewer
-SHADOW_ROLE: reviewer
-SHADOW_SPEAK_ON: CODE_WRITTEN
+agent-relay create-agent claude \
+  --name Backend \
+  --shadow Reviewer \
+  --shadow-role reviewer
+```
 
-Implement the password reset endpoint.
-EOF
+Or spawn the primary and configure shadows in `.agent-relay.json`:
+
+```typescript
+relay_spawn(
+  name: "Backend",
+  cli: "claude",
+  task: "Implement the password reset endpoint."
+)
 ```
 
 The shadow agent (Reviewer) monitors Backend's work and provides feedback when code is written.

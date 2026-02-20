@@ -1,7 +1,7 @@
 ---
-title: "Editor Integration (ACP)"
-description: "Integrate Agent Relay with code editors using the Agent Client Protocol"
-icon: "code"
+title: 'Editor Integration (ACP)'
+description: 'Integrate Agent Relay with code editors using the Agent Client Protocol'
+icon: 'code'
 ---
 
 # Editor Integration with ACP
@@ -13,6 +13,7 @@ Agent Relay can be integrated with code editors like [Zed](https://zed.dev), [VS
 The **Agent Client Protocol** is an open standard (created by Zed Industries) that enables AI agents to integrate with code editors. Think of it as LSP (Language Server Protocol), but for AI coding agents.
 
 ACP provides:
+
 - Standardized communication between editors and AI agents
 - Session management for conversations
 - Tool permissions and file operations
@@ -31,7 +32,7 @@ The ACP bridge connects your editor to all your relay agents:
                                        Relay Protocol
                                                 │
                                        ┌────────▼────────┐
-                                       │  Relay Daemon   │
+                                       │  Relay Broker   │
                                        └────────┬────────┘
                                                 │
                         ┌───────────────────────┼───────────────────────┐
@@ -44,26 +45,22 @@ When you send a prompt from your editor:
 
 1. The editor sends the prompt via ACP to the bridge
 2. The bridge broadcasts to all connected relay agents
-3. Agents respond through the relay daemon
+3. Agents respond through the relay broker
 4. The bridge streams responses back to the editor
 
 ## Quick Start (Zed)
 
-<video
-  controls
-  className="w-full aspect-video rounded-xl"
-  src="/videos/zed-acp-agent-relay.mp4"
->
+<video controls className="w-full aspect-video rounded-xl" src="/videos/zed-acp-agent-relay.mp4">
   Your browser does not support the video tag.
 </video>
 
-### 1. Start the Daemon and Configure Zed
+### 1. Start the Broker and Configure Zed
 
 ```bash
 agent-relay up --zed
 ```
 
-This starts the relay daemon and auto-configures Zed's `~/.config/zed/settings.json` with the correct paths for your workspace.
+This starts the relay broker and auto-configures Zed's `~/.config/zed/settings.json` with the correct paths for your workspace.
 
 ### 2. Spawn Some Agents
 
@@ -80,6 +77,7 @@ agent-relay spawn Architect claude "Help with system design and architecture dec
 ### 3. Start Chatting
 
 Open Zed's Agent Panel with `Cmd+?` (macOS) or `Ctrl+?` (Windows/Linux), select **"Agent Relay"**, and start typing. You can:
+
 - **Broadcast to all agents**: Just type your message
 - **Target specific agents**: Use `@AgentName` (e.g., `@Reviewer check this code`)
 
@@ -91,13 +89,13 @@ From the Zed Agent Panel you can issue relay CLI-style commands directly (the br
 - `agent-relay release Reviewer`
 - `agent-relay agents` (lists connected agents)
 
-Currently supported commands: spawn, release, agents/who. All other messages are still broadcast to your connected agents. A quick help block is shown when a new conversation starts; type `agent-relay help` to see it again.
+Currently supported commands: spawn/create-agent, release, agents/who. All other messages are still broadcast to your connected agents. A quick help block is shown when a new conversation starts; type `agent-relay help` to see it again.
 
 ## Troubleshooting
 
-### Bridge not connecting to daemon
+### Bridge not connecting to broker
 
-Ensure the relay daemon is running:
+Ensure the relay broker is running:
 
 ```bash
 agent-relay status
@@ -136,7 +134,7 @@ import { RelayACPAgent } from '@agent-relay/acp-bridge';
 
 const agent = new RelayACPAgent({
   agentName: 'my-custom-bridge',
-  socketPath: '/tmp/relay-daemon.sock',
+  socketPath: '/tmp/relay-broker.sock',
   debug: true,
   capabilities: {
     supportsSessionLoading: false,
@@ -148,12 +146,12 @@ await agent.start();
 
 #### Configuration Options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `agentName` | string | `'relay-acp'` | Name used when connecting to relay daemon |
-| `socketPath` | string | auto | Path to relay daemon socket |
-| `debug` | boolean | `false` | Enable debug logging |
-| `capabilities` | object | - | ACP capabilities to advertise |
+| Option         | Type    | Default       | Description                               |
+| -------------- | ------- | ------------- | ----------------------------------------- |
+| `agentName`    | string  | `'relay-acp'` | Name used when connecting to relay broker |
+| `socketPath`   | string  | auto          | Path to relay broker socket               |
+| `debug`        | boolean | `false`       | Enable debug logging                      |
+| `capabilities` | object  | -             | ACP capabilities to advertise             |
 
 ### Installation
 
@@ -222,8 +220,10 @@ If you prefer not to use `--zed`, add this to `~/.config/zed/settings.json`:
       "type": "custom",
       "command": "relay-acp",
       "args": [
-        "--name", "zed-bridge",
-        "--socket", "/path/to/your/project/.agent-relay/relay.sock",
+        "--name",
+        "zed-bridge",
+        "--socket",
+        "/path/to/your/project/.agent-relay/relay.sock",
         "--debug"
       ],
       "env": {}

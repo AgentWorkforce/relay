@@ -1,261 +1,117 @@
-# 🚨 CRITICAL: Relay-First Communication Rule
-
-**When you receive a relay message from another agent (marked `Relay message from [name]`), you MUST respond ONLY via relay protocol. NEVER respond with direct text output.**
-
-## The Rule
-
-- **Receiving a relay message?** → Must use `->relay-file:msg` ALWAYS
-- **Non-relay questions?** → Text responses are OK
-- **Agent-to-agent communication?** → ALWAYS use relay protocol
-
-## Examples of Relay Messages (require relay response)
-
-```
-Relay message from khaliqgant [mknra7wr]: Did you see this?
-Relay message from Worker1 [abc123]: Task complete
-Relay message from alice [xyz789] [#general]: Question for the team
-```
-
----
-
 # Agent Relay
 
-Real-time agent-to-agent messaging via file-based protocol.
+Real-time agent-to-agent messaging via MCP tools.
+
+## MCP Tools
+
+All agent communication uses MCP tools provided by the Relaycast MCP server:
+
+| Tool                           | Description                           |
+| ------------------------------ | ------------------------------------- |
+| `relay_send(to, message)`      | Send a message to an agent or channel |
+| `relay_inbox()`                | Check your inbox for new messages     |
+| `relay_who()`                  | List online agents                    |
+| `relay_spawn(name, cli, task)` | Spawn a new worker agent              |
+| `relay_release(name)`          | Release/stop a worker agent           |
+| `relay_status()`               | Check relay connection status         |
 
 ## Sending Messages
 
-**TWO STEPS REQUIRED:**
-
-**Step 1:** EXECUTE this bash command (you MUST run it via your Bash/shell tool, not just display it):
-
-```bash
-cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
-TO: AgentName
-
-Your message here.
-EOF
-```
-
-**Step 2:** Output the trigger `->relay-file:msg` directly in your response text (after the bash command succeeds).
-
-⚠️ **CRITICAL**: You must EXECUTE the bash command above - do NOT just display it as a code block. The file must actually be created on disk. Then output the trigger as plain text.
-
-✅ CORRECT: Run Bash tool → then output `->relay-file:msg`
-❌ WRONG: Display the bash code without executing it
-
-> **Note**: `$AGENT_RELAY_OUTBOX` is automatically set by agent-relay when spawning agents. Data is stored in `.agent-relay/` within your project directory.
-
-### Here-Document Tips
-
-- Single quotes in `<< 'EOF'` prevent shell variable expansion inside the message body
-- The closing `EOF` must be on its own line with **no** leading/trailing whitespace
-- **Fallback** if heredocs fail in your shell:
-  ```bash
-  echo "TO: AgentName" > $AGENT_RELAY_OUTBOX/msg && echo "" >> $AGENT_RELAY_OUTBOX/msg && echo "Your message." >> $AGENT_RELAY_OUTBOX/msg
-  ```
-
-## Synchronous Messaging
-
-By default, messages are fire-and-forget. Add `[await]` to block until the recipient ACKs:
+Use the `relay_send` MCP tool:
 
 ```
-->relay:AgentB [await] Please confirm
+relay_send(to: "AgentName", message: "Your message here")
 ```
 
-Custom timeout (seconds or minutes):
+### Direct Messages
 
 ```
-->relay:AgentB [await:30s] Please confirm
-->relay:AgentB [await:5m] Please confirm
+relay_send(to: "Bob", message: "Can you review my code changes?")
 ```
 
-Recipients auto-ACK after processing when a correlation ID is present.
-
-## Message Format
+### Broadcast to All
 
 ```
-TO: Target
-THREAD: optional-thread
-
-Message body (everything after blank line)
+relay_send(to: "*", message: "I've finished the auth module")
 ```
 
-| TO Value | Behavior |
-|----------|----------|
-| `AgentName` | Direct message |
-| `*` | Broadcast to all |
-| `#channel` | Channel message |
+### Channel Messages
 
-## Agent Naming (Local vs Bridge)
-
-**Local communication** uses plain agent names. The `project:` prefix is **ONLY** for cross-project bridge mode.
-
-| Context | Correct | Incorrect |
-|---------|---------|-----------|
-| Local (same project) | `TO: Lead` | `TO: project:lead` |
-| Local (same project) | `TO: Worker1` | `TO: myproject:Worker1` |
-| Bridge (cross-project) | `TO: frontend:Designer` | N/A |
-| Bridge (to another lead) | `TO: otherproject:lead` | N/A |
-
-**Common mistake**: Using `project:lead` when communicating locally. This will fail because the relay looks for an agent literally named "project:lead".
-
-```bash
-# CORRECT - local communication to Lead agent
-cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
-TO: Lead
-
-Status update here.
-EOF
+```
+relay_send(to: "#frontend", message: "The API endpoints are ready")
 ```
 
-```bash
-# WRONG - project: prefix is only for bridge mode
-cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
-TO: project:lead
+## Spawning & Releasing Agents
 
-This will fail locally!
-EOF
+### Spawn a Worker
+
 ```
-
-## Spawning & Releasing
-
-**IMPORTANT**: The filename is always `spawn` (not `spawn-agentname`) and the trigger is always `->relay-file:spawn`. Spawn agents one at a time sequentially.
+relay_spawn(name: "WorkerName", cli: "claude", task: "Task description here")
+```
 
 ### CLI Options
 
-The `CLI` header specifies which AI CLI to use. Valid values:
+| CLI Value | Description             |
+| --------- | ----------------------- |
+| `claude`  | Claude Code (Anthropic) |
+| `codex`   | Codex CLI (OpenAI)      |
+| `gemini`  | Gemini CLI (Google)     |
+| `aider`   | Aider coding assistant  |
+| `goose`   | Goose AI assistant      |
 
-| CLI Value | Description |
-|-----------|-------------|
-| `claude` | Claude Code (Anthropic) |
-| `codex` | Codex CLI (OpenAI) |
-| `gemini` | Gemini CLI (Google) |
-| `aider` | Aider coding assistant |
-| `goose` | Goose AI assistant |
+### Release a Worker
 
-**Step 1:** EXECUTE this bash command (run it, don't just display it):
-```bash
-# Spawn a Claude agent
-cat > $AGENT_RELAY_OUTBOX/spawn << 'EOF'
-KIND: spawn
-NAME: WorkerName
-CLI: claude
-
-Task description here.
-EOF
 ```
-**Step 2:** Output: `->relay-file:spawn`
-
-```bash
-# Spawn an agent in a specific directory (e.g., a specific repo in a multi-repo workspace)
-cat > $AGENT_RELAY_OUTBOX/spawn << 'EOF'
-KIND: spawn
-NAME: RepoWorker
-CLI: claude
-CWD: relay
-
-Work on the relay repository.
-EOF
+relay_release(name: "WorkerName")
 ```
-**Step 2:** Output: `->relay-file:spawn`
-
-```bash
-# Spawn a Codex agent
-cat > $AGENT_RELAY_OUTBOX/spawn << 'EOF'
-KIND: spawn
-NAME: CodexWorker
-CLI: codex
-
-Task description here.
-EOF
-```
-
-**Step 1:** EXECUTE this bash command (run it, don't just display it):
-```bash
-# Release
-cat > $AGENT_RELAY_OUTBOX/release << 'EOF'
-KIND: release
-NAME: WorkerName
-EOF
-```
-**Step 2:** Output: `->relay-file:release`
-
-## When You Are Spawned
-
-If you were spawned by another agent:
-
-1. **Check who spawned you**: `echo $AGENT_RELAY_SPAWNER`
-2. **Your first message** is your task from your spawner - reply to THEM, not "spawner"
-3. **Report status** to your spawner (your lead), not broadcast
-
-```bash
-# Check your spawner
-echo "I was spawned by: $AGENT_RELAY_SPAWNER"
-```
-
-**Step 1:** EXECUTE this bash command:
-```bash
-# Reply to your spawner
-cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
-TO: $AGENT_RELAY_SPAWNER
-
-ACK: Starting on the task.
-EOF
-```
-**Step 2:** Output: `->relay-file:msg`
 
 ## Receiving Messages
 
 Messages appear as:
+
 ```
 Relay message from Alice [abc123]: Content here
 ```
 
 Channel messages include `[#channel]`:
+
 ```
 Relay message from Alice [abc123] [#general]: Hello!
 ```
+
 Reply to the channel shown, not the sender.
+
+## When You Are Spawned
+
+If you were spawned by another agent:
+
+1. Your first message is your task from your spawner
+2. Use `relay_send` to reply to your spawner
+3. Report status to your spawner (your lead), not broadcast
+
+```
+relay_send(to: "Lead", message: "ACK: Starting on the task.")
+```
 
 ## Protocol
 
-- **ACK** when you receive a task: `ACK: Brief description of task received`
+- **ACK** when you receive a task: `ACK: Brief description`
 - **DONE** when complete: `DONE: What was accomplished`
-- Send status to your **lead** (the agent in `$AGENT_RELAY_SPAWNER`), not broadcast
+- Send status to your **lead**, not broadcast
 
-Example messages:
+## Agent Naming (Local vs Bridge)
+
+**Local communication** uses plain agent names. The `project:` prefix is **ONLY** for cross-project bridge mode.
+
+| Context                | Correct                                    | Incorrect                             |
+| ---------------------- | ------------------------------------------ | ------------------------------------- |
+| Local (same project)   | `relay_send(to: "Lead", ...)`              | `relay_send(to: "project:lead", ...)` |
+| Bridge (cross-project) | `relay_send(to: "frontend:Designer", ...)` | N/A                                   |
+
+## Checking Status
+
 ```
-TO: Lead
-
-ACK: Starting work on authentication module.
+relay_who()      # List online agents
+relay_inbox()    # Check for unread messages
+relay_status()   # Check connection status
 ```
-```
-TO: Lead
-
-DONE: Authentication module implemented with JWT support.
-```
-
-## Viewing Message History
-
-Use `agent-relay history` to view previous messages:
-
-```bash
-agent-relay history                    # Last 50 messages
-agent-relay history -n 20              # Last 20 messages
-agent-relay history -f Lead            # Messages from Lead
-agent-relay history -t Worker1         # Messages to Worker1
-agent-relay history --thread task-123  # Messages in a thread
-agent-relay history --since 1h         # Messages from the last hour
-agent-relay history --json             # JSON output for parsing
-```
-
-## Headers Reference
-
-| Header | Required | Description |
-|--------|----------|-------------|
-| TO | Yes (messages) | Target agent/channel |
-| KIND | No | `message` (default), `spawn`, `release` |
-| NAME | Yes (spawn/release) | Agent name |
-| CLI | Yes (spawn) | CLI to use: `claude`, `codex`, `gemini`, `aider`, `goose` |
-| CWD | No | Working directory for spawned agent (e.g., repo name in multi-repo workspace) |
-| THREAD | No | Thread identifier |

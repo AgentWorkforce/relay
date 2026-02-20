@@ -1,6 +1,6 @@
 ---
-title: "Quickstart"
-description: "Get up and running with Agent Relay in 5 minutes"
+title: 'Quickstart'
+description: 'Get up and running with Agent Relay in 5 minutes'
 ---
 
 This guide will have you running your first multi-agent network in under 5 minutes.
@@ -8,11 +8,7 @@ This guide will have you running your first multi-agent network in under 5 minut
 <Tip>Prefer to watch? See the demo below.</Tip>
 
 <Frame>
-  <video
-    controls
-    className="w-full aspect-video rounded-xl"
-    src="/videos/agent-relay-cli.mp4"
-  >
+  <video controls className="w-full aspect-video rounded-xl" src="/videos/agent-relay-cli.mp4">
     Your browser does not support the video tag.
   </video>
 </Frame>
@@ -22,6 +18,7 @@ This guide will have you running your first multi-agent network in under 5 minut
 Before you begin, ensure you have:
 
 - **Node.js** 18 or higher
+- **tmux** installed on your system
 - At least one AI CLI installed (Claude, Codex, Cursor, or Gemini)
 
 ## Installation
@@ -41,8 +38,8 @@ agent-relay --version
 ## Step-by-Step Setup
 
 <Steps>
-  <Step title="Start the Daemon">
-    The daemon is the central message broker. Start it first:
+  <Step title="Start the Broker">
+    The broker is the central message router. Start it first:
 
     ```bash
     agent-relay up --dashboard
@@ -50,9 +47,10 @@ agent-relay --version
 
     You should see:
     ```
-    Daemon started.
+    Broker started on /tmp/agent-relay.sock
     Dashboard available at http://localhost:3888
     ```
+
   </Step>
 
   <Step title="Create Your First Agent">
@@ -74,6 +72,7 @@ agent-relay --version
     <Note>
       Replace `claude` with `codex` or `gemini` if you prefer a different AI provider.
     </Note>
+
   </Step>
 
   <Step title="Create a Second Agent">
@@ -87,6 +86,7 @@ agent-relay --version
     ```
 
     You now have two agents connected to the same relay network.
+
   </Step>
 
   <Step title="Send Your First Message">
@@ -96,17 +96,13 @@ agent-relay --version
     Send a message to Bob saying hello
     ```
 
-    Alice will write a message file and output a trigger:
-    ```bash
-    cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
-    TO: Bob
-
-    Hello! Nice to meet you.
-    EOF
+    Alice will use the relay MCP tool to send the message:
+    ```typescript
+    relay_send(to: "Bob", message: "Hello! Nice to meet you.")
     ```
-    Then output: `->relay-file:msg`
 
-    The relay daemon watches for this trigger, reads the message file, and routes it to Bob in real-time.
+    The relay broker routes the message to Bob in real-time.
+
   </Step>
 
   <Step title="View the Dashboard">
@@ -116,41 +112,27 @@ agent-relay --version
     - Connected agents (Alice and Bob)
     - Message flow between agents
     - System health and metrics
+
   </Step>
 </Steps>
 
 ## Message Formats
 
-Agents communicate using a file-based protocol. Write a message file to `$AGENT_RELAY_OUTBOX/msg`, then output the trigger `->relay-file:msg`:
+Agents communicate using MCP tools provided by the relay:
 
 <CodeGroup>
-  ```bash Direct Message
-  cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
-  TO: Bob
-
-  Can you review my code changes?
-  EOF
+  ```typescript Direct Message
+  relay_send(to: "Bob", message: "Can you review my code changes?")
   ```
-  Then output: `->relay-file:msg`
 
-  ```bash Broadcast to All
-  cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
-  TO: *
+```typescript Broadcast to All
+relay_send(to: "*", message: "I've finished the auth module")
+```
 
-  I've finished the auth module
-  EOF
-  ```
-  Then output: `->relay-file:msg`
+```typescript With Thread Context
+relay_send(to: "Alice", message: "[THREAD: code-review] LGTM, merging now")
+```
 
-  ```bash With Thread Context
-  cat > $AGENT_RELAY_OUTBOX/msg << 'EOF'
-  TO: Alice
-  THREAD: code-review
-
-  LGTM, merging now
-  EOF
-  ```
-  Then output: `->relay-file:msg`
 </CodeGroup>
 
 ## Receiving Messages
@@ -169,22 +151,23 @@ agent-relay read abc12345
 
 ## Common Commands
 
-| Command | Description |
-|---------|-------------|
-| `agent-relay up --dashboard` | Start the daemon and dashboard |
-| `agent-relay down` | Stop the daemon |
-| `agent-relay status` | Check daemon and agent status |
-| `agent-relay spawn <name> <cli> "task"` | Spawn a new agent |
-| `agent-relay agents` | List connected agents |
-| `agent-relay read <id>` | Read full message content |
+| Command                                 | Description                    |
+| --------------------------------------- | ------------------------------ |
+| `agent-relay up --dashboard`            | Start the broker and dashboard |
+| `agent-relay down`                      | Stop the broker                |
+| `agent-relay status`                    | Check broker and agent status  |
+| `agent-relay spawn <name> <cli> "task"` | Spawn a new agent              |
+| `agent-relay agents`                    | List connected agents          |
+| `agent-relay read <id>`                 | Read full message content      |
 
 ## Quick Test Script
 
 Want to see it all work together? Run this quick test:
 
 **Option A: Dashboard (recommended)**
+
 ```bash
-# Start the daemon with dashboard
+# Start the broker with dashboard
 agent-relay up --dashboard
 
 # Open http://localhost:3888 in your browser
@@ -194,8 +177,9 @@ agent-relay up --dashboard
 ```
 
 **Option B: Terminal**
+
 ```bash
-# Terminal 1: Start the daemon
+# Terminal 1: Start the broker
 agent-relay up --dashboard
 
 # Terminal 2: Spawn Alice
@@ -210,16 +194,30 @@ agent-relay spawn Bob claude "Send a greeting to Alice"
 ## Troubleshooting
 
 <AccordionGroup>
-  <Accordion title="Daemon not running">
-    If you see "Daemon not running" errors:
+  <Accordion title="Broker not running">
+    If you see "Broker not running" errors:
 
     ```bash
     # Check status
     agent-relay status
 
-    # Start the daemon
+    # Start the broker
     agent-relay up
     ```
+
+  </Accordion>
+
+  <Accordion title="tmux not found">
+    Install tmux for your platform:
+
+    ```bash
+    # macOS
+    brew install tmux
+
+    # Linux
+    sudo apt-get install tmux
+    ```
+
   </Accordion>
 
   <Accordion title="Messages not delivering">
@@ -228,13 +226,15 @@ agent-relay spawn Bob claude "Send a greeting to Alice"
     3. Ensure the message format is correct: `->relay:Name message`
   </Accordion>
 
-  <Accordion title="Daemon won't start">
-    Stop any existing daemon and restart:
+  <Accordion title="Permission denied on socket">
+    Remove stale socket file and restart:
 
     ```bash
+    rm /tmp/agent-relay.sock
     agent-relay down
     agent-relay up
     ```
+
   </Accordion>
 </AccordionGroup>
 
