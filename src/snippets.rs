@@ -408,7 +408,7 @@ pub async fn configure_relaycast_mcp(
             "--config".to_string(),
             "mcp_servers.relaycast.command=npx".to_string(),
             "--config".to_string(),
-            format!("mcp_servers.relaycast.args=[\"-y\", \"@relaycast/mcp\"]"),
+            "mcp_servers.relaycast.args=[\"-y\", \"@relaycast/mcp\"]".to_string(),
         ]);
         if let Some(key) = api_key {
             args.extend([

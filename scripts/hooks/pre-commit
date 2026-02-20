@@ -22,6 +22,23 @@ if [ -n "$RUST_STAGED" ]; then
         echo "Warning: rustfmt not found, skipping Rust formatting" >&2
         echo "Install with: rustup component add rustfmt" >&2
     fi
+
+    # Run clippy on staged Rust files (deny warnings to match CI)
+    if command -v cargo >/dev/null 2>&1; then
+        echo "Running clippy..."
+        if ! cargo clippy --lib --bins --quiet -- -D warnings 2>&1; then
+            echo "Error: clippy found warnings (treated as errors)" >&2
+            echo "Fix the warnings above before committing." >&2
+            exit 1
+        fi
+    elif command -v "$HOME/.cargo/bin/cargo" >/dev/null 2>&1; then
+        echo "Running clippy..."
+        if ! "$HOME/.cargo/bin/cargo" clippy --lib --bins --quiet -- -D warnings 2>&1; then
+            echo "Error: clippy found warnings (treated as errors)" >&2
+            echo "Fix the warnings above before committing." >&2
+            exit 1
+        fi
+    fi
 fi
 
 # ============================================================

@@ -19,7 +19,6 @@ function createHarness(overrides: Partial<SetupDependencies> = {}) {
     runTelemetry: vi.fn(async () => undefined),
     runYamlWorkflow: vi.fn(async () => ({ status: 'completed' })),
     runScriptWorkflow: vi.fn(() => undefined),
-    runTrailCommand: vi.fn(async () => undefined),
     log: vi.fn(() => undefined),
     error: vi.fn(() => undefined),
     exit,
@@ -49,7 +48,7 @@ describe('registerSetupCommands', () => {
     const { program } = createHarness();
     const commandNames = program.commands.map((cmd) => cmd.name());
 
-    expect(commandNames).toEqual(expect.arrayContaining(['init', 'setup', 'telemetry', 'run', 'trail']));
+    expect(commandNames).toEqual(expect.arrayContaining(['init', 'setup', 'telemetry', 'run']));
   });
 
   it('routes both init and setup alias to runInit', async () => {
@@ -88,15 +87,6 @@ describe('registerSetupCommands', () => {
       onEvent: expect.any(Function),
     });
     expect(deps.runScriptWorkflow).toHaveBeenCalledWith('workflow.py');
-  });
-
-  it('routes trail command arguments', async () => {
-    const { program, deps } = createHarness();
-
-    const exitCode = await runCommand(program, ['trail', 'status']);
-
-    expect(exitCode).toBeUndefined();
-    expect(deps.runTrailCommand).toHaveBeenCalledWith(['status']);
   });
 
   it('exits with code 1 for unsupported run file extension', async () => {

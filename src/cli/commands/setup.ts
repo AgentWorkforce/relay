@@ -32,7 +32,6 @@ export interface SetupDependencies {
     options: { workflow?: string; onEvent: (event: WorkflowEvent) => void }
   ) => Promise<WorkflowRunResult>;
   runScriptWorkflow: (filePath: string) => void;
-  runTrailCommand: (args: string[]) => Promise<void>;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
@@ -57,7 +56,6 @@ function withDefaults(
     runTelemetry: overrides.runTelemetry ?? ((action?: string) => runTelemetryDefault(action, io)),
     runYamlWorkflow: runYamlWorkflowDefault,
     runScriptWorkflow: runScriptFile,
-    runTrailCommand: overrides.runTrailCommand ?? ((args: string[]) => runTrailCommandDefault(args, io)),
     log,
     error,
     exit,
@@ -113,47 +111,6 @@ function runScriptFile(filePath: string): void {
     throw new Error('Python not found. Install Python 3.10+ to run .py workflow files.');
   }
   throw new Error(`Unsupported file type: ${ext}. Use .yaml, .yml, .ts, or .py`);
-}
-async function runTrailCommandDefault(args: string[], io: SetupIo): Promise<void> {
-  const { getPrimaryTrajectoriesDir, ensureTrajectoriesDir } = await import('@agent-relay/config/trajectory-config');
-  const paths = getProjectPaths();
-  const trailCheck = spawnProcess('which', ['trail'], { stdio: 'pipe' });
-  const trailExists = await new Promise<boolean>((resolve) => {
-    trailCheck.on('close', (code) => resolve(code === 0));
-    trailCheck.on('error', () => resolve(false));
-  });
-  if (!trailExists) {
-    io.error('trail CLI not found. Install with: npm install -g agent-trajectories');
-    io.log('');
-    io.log('The trail CLI provides trajectory tracking for agent work:');
-    io.log('  trail start "<task>"         Start tracking a new trajectory');
-    io.log('  trail status                 Show current trajectory status');
-    io.log('  trail phase <phase>          Transition to PDERO phase');
-    io.log('  trail decision "<choice>"    Record a decision');
-    io.log('  trail complete               Complete the trajectory');
-    io.log('  trail list                   List all trajectories');
-    io.log('');
-    io.log('PDERO phases: plan, design, execute, review, observe');
-    io.exit(1);
-  }
-  const trajectoriesDir = getPrimaryTrajectoriesDir(paths.projectRoot);
-  ensureTrajectoriesDir(paths.projectRoot);
-  const trailProc = spawnProcess('trail', args, {
-    cwd: paths.projectRoot,
-    stdio: 'inherit',
-    env: {
-      ...process.env,
-      TRAJECTORIES_PROJECT: paths.projectId,
-      TRAJECTORIES_DATA_DIR: trajectoriesDir,
-    },
-  });
-  trailProc.on('close', (code) => {
-    io.exit(code ?? 0);
-  });
-  trailProc.on('error', (err) => {
-    io.error(`Failed to run trail: ${err.message}`);
-    io.exit(1);
-  });
 }
 async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<void> {
   const prompt = async (question: string, defaultYes = true): Promise<boolean> => {
@@ -355,13 +312,5 @@ export function registerSetupCommands(
         deps.error(`Error: ${err.message}`);
         deps.exit(1);
       }
-    });
-  program
-    .command('trail')
-    .description('Trajectory tracking commands (proxies to trail CLI)')
-    .argument('[args...]', 'Arguments to pass to trail CLI')
-    .allowUnknownOption()
-    .action(async (args: string[] = []) => {
-      await deps.runTrailCommand(args);
     });
 }

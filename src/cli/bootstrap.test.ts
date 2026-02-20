@@ -35,7 +35,6 @@ const expectedLeafCommands = [
   'setup',
   'telemetry',
   'run',
-  'trail',
   'cloud link',
   'cloud unlink',
   'cloud status',
@@ -107,7 +106,6 @@ describe('bootstrap CLI', () => {
         'setup',
         'telemetry',
         'run',
-        'trail',
       ])
     );
     expect(topLevelCommands).not.toContain('create-agent');
@@ -117,7 +115,7 @@ describe('bootstrap CLI', () => {
     const program = createProgram();
     const leafCommandPaths = collectLeafCommandPaths(program);
 
-    expect(leafCommandPaths).toHaveLength(39);
+    expect(leafCommandPaths).toHaveLength(38);
     expect(leafCommandPaths).toEqual(expect.arrayContaining(expectedLeafCommands));
     expect(leafCommandPaths).not.toContain('create-agent');
   });
