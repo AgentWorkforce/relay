@@ -1535,12 +1535,17 @@ export class WorkflowRunner {
 
     if (hubAgent) {
       // Hub-mediated: tell the hub to check on the idle agent
-      await hubAgent.sendMessage({
-        to: agent.name,
-        text: `Agent ${agent.name} appears idle on step "${step.name}". Check on them and remind them to /exit when done.`,
-      }).catch(() => {
-        // Fall back to direct nudge on failure
-      });
+      try {
+        await hubAgent.sendMessage({
+          to: agent.name,
+          text: `Agent ${agent.name} appears idle on step "${step.name}". Check on them and remind them to /exit when done.`,
+        });
+        return; // Hub nudge succeeded
+      } catch {
+        // Fall through to direct nudge
+      }
+    }
+
     } else {
       // Direct system injection via human handle
       if (this.relay) {
