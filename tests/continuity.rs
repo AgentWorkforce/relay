@@ -137,9 +137,12 @@ fn continuity_file_named_by_agent() {
     // All files should exist and be independently readable
     for name in &names {
         let file_path = continuity_dir.join(format!("{}.json", name));
-        assert!(file_path.exists(), "continuity file for {} should exist", name);
-        let parsed: Value =
-            serde_json::from_str(&fs::read_to_string(&file_path).unwrap()).unwrap();
+        assert!(
+            file_path.exists(),
+            "continuity file for {} should exist",
+            name
+        );
+        let parsed: Value = serde_json::from_str(&fs::read_to_string(&file_path).unwrap()).unwrap();
         assert_eq!(parsed["agent_name"], *name);
     }
 }
@@ -148,11 +151,7 @@ fn continuity_file_named_by_agent() {
 
 /// Replicates the context injection logic from main.rs spawn_agent to verify
 /// the format independently.
-fn build_continuity_context(
-    agent_name: &str,
-    ctx: &Value,
-    new_task: Option<&str>,
-) -> String {
+fn build_continuity_context(agent_name: &str, ctx: &Value, new_task: Option<&str>) -> String {
     let prev_task = ctx
         .get("initial_task")
         .and_then(|v| v.as_str())
@@ -331,10 +330,7 @@ fn continuity_file_with_malformed_json_fails_parse() {
     let contents = fs::read_to_string(&file_path).expect("read");
     let result: Result<Value, _> = serde_json::from_str(&contents);
 
-    assert!(
-        result.is_err(),
-        "malformed JSON should fail to parse"
-    );
+    assert!(result.is_err(), "malformed JSON should fail to parse");
 }
 
 #[test]
@@ -347,22 +343,13 @@ fn continuity_overwrites_existing_file_on_re_release() {
 
     // First release
     let first = json!({ "agent_name": "Worker1", "summary": "first session" });
-    fs::write(
-        &file_path,
-        serde_json::to_string_pretty(&first).unwrap(),
-    )
-    .unwrap();
+    fs::write(&file_path, serde_json::to_string_pretty(&first).unwrap()).unwrap();
 
     // Second release overwrites
     let second = json!({ "agent_name": "Worker1", "summary": "second session" });
-    fs::write(
-        &file_path,
-        serde_json::to_string_pretty(&second).unwrap(),
-    )
-    .unwrap();
+    fs::write(&file_path, serde_json::to_string_pretty(&second).unwrap()).unwrap();
 
-    let parsed: Value =
-        serde_json::from_str(&fs::read_to_string(&file_path).unwrap()).unwrap();
+    let parsed: Value = serde_json::from_str(&fs::read_to_string(&file_path).unwrap()).unwrap();
     assert_eq!(
         parsed["summary"], "second session",
         "latest release should overwrite previous continuity data"

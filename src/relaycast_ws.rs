@@ -386,11 +386,7 @@ impl RelaycastHttpClient {
     }
 
     /// Fetch recent message history from a channel via the Relaycast REST API.
-    pub async fn get_channel_messages(
-        &self,
-        channel: &str,
-        limit: usize,
-    ) -> Result<Vec<Value>> {
+    pub async fn get_channel_messages(&self, channel: &str, limit: usize) -> Result<Vec<Value>> {
         let token = self.ensure_token().await?;
         let ch = channel.strip_prefix('#').unwrap_or(channel);
         let url = format!(
