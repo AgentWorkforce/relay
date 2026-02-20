@@ -321,11 +321,17 @@ pub fn ensure_opencode_config(
 
     let existing = fs::read_to_string(&path)?;
     let mut parsed: Value = serde_json::from_str(&existing).map_err(|e| {
-        io::Error::new(io::ErrorKind::InvalidData, format!("failed to parse {}: {e}", path.display()))
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to parse {}: {e}", path.display()),
+        )
     })?;
 
     let top = parsed.as_object_mut().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "opencode.json must be an object")
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "opencode.json must be an object",
+        )
     })?;
 
     let mut changed = false;
@@ -393,7 +399,11 @@ pub async fn configure_relaycast_mcp(
         let mcp_json = relaycast_mcp_config_json(api_key, base_url, Some(agent_name));
         args.push("--mcp-config".to_string());
         args.push(mcp_json);
-    } else if is_codex && !existing_args.iter().any(|a| a.contains("mcp_servers.relaycast")) {
+    } else if is_codex
+        && !existing_args
+            .iter()
+            .any(|a| a.contains("mcp_servers.relaycast"))
+    {
         args.extend([
             "--config".to_string(),
             "mcp_servers.relaycast.command=npx".to_string(),
@@ -466,31 +476,29 @@ async fn configure_gemini_droid_mcp(
         .stderr(Stdio::piped());
 
     match mcp_cmd.spawn() {
-        Ok(mut child) => {
-            match tokio::time::timeout(Duration::from_secs(15), child.wait()).await {
-                Ok(Ok(status)) if !status.success() => {
-                    anyhow::bail!(
+        Ok(mut child) => match tokio::time::timeout(Duration::from_secs(15), child.wait()).await {
+            Ok(Ok(status)) if !status.success() => {
+                anyhow::bail!(
                         "failed to configure relaycast MCP for {cli}: `{cli} mcp add` exited with code {:?}. \
                          Please configure the relaycast MCP server manually:\n  {manual_cmd}",
                         status.code()
                     );
-                }
-                Ok(Err(error)) => {
-                    anyhow::bail!(
-                        "failed to configure relaycast MCP for {cli}: {error}. \
+            }
+            Ok(Err(error)) => {
+                anyhow::bail!(
+                    "failed to configure relaycast MCP for {cli}: {error}. \
                          Please configure the relaycast MCP server manually:\n  {manual_cmd}"
-                    );
-                }
-                Err(_) => {
-                    let _ = child.kill().await;
-                    anyhow::bail!(
+                );
+            }
+            Err(_) => {
+                let _ = child.kill().await;
+                anyhow::bail!(
                         "failed to configure relaycast MCP for {cli}: `{cli} mcp add` timed out after 15s. \
                          Please configure the relaycast MCP server manually:\n  {manual_cmd}"
                     );
-                }
-                _ => {}
             }
-        }
+            _ => {}
+        },
         Err(error) => {
             anyhow::bail!(
                 "failed to configure relaycast MCP for {cli}: could not run `{cli} mcp add`: {error}. \
