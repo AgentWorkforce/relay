@@ -5,19 +5,10 @@ import path from 'node:path';
 import { getProjectPaths } from '@agent-relay/config';
 
 import { createAgentRelayClient } from '../lib/client-factory.js';
-import {
-  runAgentsCommand,
-  runAgentsLogsCommand,
-  runWhoCommand,
-} from '../lib/agent-management-listing.js';
+import { runAgentsCommand, runAgentsLogsCommand, runWhoCommand } from '../lib/agent-management-listing.js';
 
 type ShadowMode = 'subagent' | 'process';
-type ShadowTrigger =
-  | 'SESSION_END'
-  | 'CODE_WRITTEN'
-  | 'REVIEW_REQUEST'
-  | 'EXPLICIT_ASK'
-  | 'ALL_MESSAGES';
+type ShadowTrigger = 'SESSION_END' | 'CODE_WRITTEN' | 'REVIEW_REQUEST' | 'EXPLICIT_ASK' | 'ALL_MESSAGES';
 
 type ExitFn = (code: number) => never;
 
@@ -98,9 +89,7 @@ function createDefaultClient(cwd: string): AgentManagementClient {
   return createAgentRelayClient({ cwd }) as unknown as AgentManagementClient;
 }
 
-function withDefaults(
-  overrides: Partial<AgentManagementDependencies> = {}
-): AgentManagementDependencies {
+function withDefaults(overrides: Partial<AgentManagementDependencies> = {}): AgentManagementDependencies {
   return {
     getProjectRoot: () => getProjectPaths().projectRoot,
     getDataDir: () =>
@@ -292,7 +281,8 @@ export function registerAgentManagementCommands(
     .description('Show recent output from a spawned agent')
     .argument('<name>', 'Agent name')
     .option('-n, --lines <n>', 'Number of lines to show', '50')
-    .action(async (name: string, options: { lines?: string }) => {
+    .option('-f, --follow', 'Follow log output (like tail -f)')
+    .action(async (name: string, options: { lines?: string; follow?: boolean }) => {
       await runAgentsLogsCommand(name, options, deps);
     });
 

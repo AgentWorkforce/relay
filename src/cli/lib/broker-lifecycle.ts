@@ -1,16 +1,10 @@
 import path from 'node:path';
 
-import type {
-  CoreDependencies,
-  CoreProjectPaths,
-  CoreRelay,
-  SpawnedProcess,
-} from '../commands/core.js';
+import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
 
 type UpOptions = {
   dashboard?: boolean;
   port?: string;
-  storage?: string;
   spawn?: boolean;
   background?: boolean;
   verbose?: boolean;
@@ -97,11 +91,7 @@ function getDashboardSpawnArgs(paths: CoreProjectPaths, port: number): string[] 
   ];
 }
 
-function startDashboard(
-  paths: CoreProjectPaths,
-  port: number,
-  deps: CoreDependencies
-): SpawnedProcess {
+function startDashboard(paths: CoreProjectPaths, port: number, deps: CoreDependencies): SpawnedProcess {
   const dashboardBinary = deps.findDashboardBinary();
   const args = getDashboardSpawnArgs(paths, port);
 
@@ -112,14 +102,10 @@ function startDashboard(
     });
   }
 
-  return deps.spawnProcess(
-    'npx',
-    ['--yes', '@agent-relay/dashboard-server', ...args],
-    {
-      stdio: 'ignore',
-      env: deps.env,
-    }
-  );
+  return deps.spawnProcess('npx', ['--yes', '@agent-relay/dashboard-server', ...args], {
+    stdio: 'ignore',
+    env: deps.env,
+  });
 }
 
 async function shutdownUpResources(
@@ -140,6 +126,7 @@ async function shutdownUpResources(
   safeUnlink(brokerPidPath, deps);
 }
 
+// eslint-disable-next-line complexity
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
   if (options.background) {
     const args = deps.argv.slice(2).filter((arg) => arg !== '--background');
@@ -158,7 +145,6 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   const paths = deps.getProjectPaths();
   const relay = deps.createRelay(paths.projectRoot);
   const brokerPidPath = path.join(paths.dataDir, 'broker.pid');
-  const storage = options.storage ?? 'jsonl';
   const wantsDashboard = options.dashboard !== false;
   const dashboardPort = Number.parseInt(options.port ?? '3888', 10) || 3888;
 
@@ -170,7 +156,6 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     await relay.getStatus();
     deps.log(`Project: ${paths.projectRoot}`);
     deps.log('Mode: broker (stdio)');
-    deps.log(`Storage: ${storage}`);
     deps.log('Broker started.');
 
     if (wantsDashboard) {
@@ -179,11 +164,8 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     }
 
     const teamsConfig = deps.loadTeamsConfig(paths.projectRoot);
-    const shouldSpawn = options.spawn === true
-      ? true
-      : options.spawn === false
-        ? false
-        : Boolean(teamsConfig?.autoSpawn);
+    const shouldSpawn =
+      options.spawn === true ? true : options.spawn === false ? false : Boolean(teamsConfig?.autoSpawn);
 
     if (shouldSpawn && teamsConfig && teamsConfig.agents.length > 0) {
       for (const agent of teamsConfig.agents) {
@@ -226,6 +208,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   }
 }
 
+// eslint-disable-next-line complexity, max-depth
 export async function runDownCommand(options: DownOptions, deps: CoreDependencies): Promise<void> {
   const paths = deps.getProjectPaths();
   const brokerPidPath = path.join(paths.dataDir, 'broker.pid');
@@ -260,7 +243,9 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
       if (options.force) {
         await deps.sleep(2000);
         for (const pid of pids) {
+          // eslint-disable-next-line max-depth
           if (isProcessRunning(pid, deps)) {
+            // eslint-disable-next-line max-depth
             try {
               deps.killProcess(pid, 'SIGKILL');
             } catch {
@@ -308,8 +293,10 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
 
     const exited = await waitForProcessExit(pid, timeout, deps);
     if (!exited) {
+      // eslint-disable-next-line max-depth
       if (options.force) {
         deps.log('Graceful shutdown timed out, forcing...');
+        // eslint-disable-next-line max-depth
         try {
           deps.killProcess(pid, 'SIGKILL');
           await waitForProcessExit(pid, 2000, deps);

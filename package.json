@@ -118,11 +118,25 @@
     "test:integration": "node tests/integration/run-all-tests.js",
     "test:integration:full": "node tests/integration/run-all-tests.js --cli=both",
     "lint": "eslint src --ext .ts",
+    "knip": "knip",
+    "syncpack": "syncpack list-mismatches",
     "audit:deps": "node scripts/audit-bundled-deps.mjs",
     "clean": "rm -rf dist && find packages -maxdepth 2 -name dist -type d -exec rm -rf {} + 2>/dev/null || true",
     "docs:dev": "cd docs && npm run dev",
     "hooks:install": "./scripts/hooks/install.sh",
-    "fmt:rust": "cd relay-pty && cargo fmt"
+    "fmt:rust": "cd relay-pty && cargo fmt",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "todo:scan": "bash scripts/todo-scan.sh",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "eslint --fix"
+    ],
+    "*.{ts,tsx,json,md,mdx,yml,yaml}": [
+      "prettier --write"
+    ]
   },
   "keywords": [
     "agent",
@@ -145,9 +159,9 @@
   },
   "homepage": "https://github.com/AgentWorkforce/relay#readme",
   "dependencies": {
-    "@agent-relay/sdk": "2.3.14",
     "@agent-relay/config": "2.3.14",
     "@agent-relay/hooks": "2.3.14",
+    "@agent-relay/sdk": "2.3.14",
     "@agent-relay/telemetry": "2.3.14",
     "@agent-relay/trajectory": "2.3.14",
     "@agent-relay/user-directory": "2.3.14",
@@ -190,6 +204,8 @@
     "esbuild": "^0.27.2",
     "eslint": "^8.57.1",
     "jsdom": "^25.0.1",
+    "knip": "^5.84.1",
+    "syncpack": "^14.0.0",
     "turbo": "^2.3.0",
     "typescript": "^5.9.3",
     "vitest": "^2.1.9"

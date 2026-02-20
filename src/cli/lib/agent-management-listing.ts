@@ -59,9 +59,7 @@ function shouldHideLocalAgentByDefault(name: string | undefined): boolean {
   return HIDDEN_LOCAL_AGENT_NAMES.has(name);
 }
 
-function readCloudConfig(
-  deps: AgentManagementListingDependencies
-): CloudConfig | undefined {
+function readCloudConfig(deps: AgentManagementListingDependencies): CloudConfig | undefined {
   const configPath = path.join(deps.getDataDir(), 'cloud-config.json');
   if (!deps.fileExists(configPath)) {
     return undefined;
@@ -129,7 +127,9 @@ export async function runAgentsCommand(
         const data = await fetchRemoteAgents(deps, config);
         if (data) {
           const localNames = new Set(combined.map((entry) => entry.name));
+          // eslint-disable-next-line max-depth
           for (const agent of data.allAgents) {
+            // eslint-disable-next-line max-depth
             if (localNames.has(agent.name)) {
               continue;
             }
@@ -250,7 +250,7 @@ export async function runWhoCommand(
 
 export async function runAgentsLogsCommand(
   name: string,
-  options: { lines?: string },
+  options: { lines?: string; follow?: boolean },
   deps: AgentManagementListingDependencies
 ): Promise<void> {
   const logsDir = getWorkerLogsDir(deps.getProjectRoot());
@@ -276,6 +276,47 @@ export async function runAgentsLogsCommand(
     deps.log(`Logs for ${name} (last ${lineCount} lines):`);
     deps.log('─'.repeat(50));
     deps.log(tail || '(empty)');
+
+    if (options.follow) {
+      let lastSize = text.length;
+      let remainder = '';
+
+      // Poll the log file for new content every 500ms
+      await new Promise<void>(() => {
+        const interval = setInterval(() => {
+          try {
+            if (!deps.fileExists(logFile)) {
+              return;
+            }
+            const currentText = deps.readFile(logFile, 'utf-8');
+            if (currentText.length > lastSize) {
+              const newContent = remainder + currentText.slice(lastSize);
+              lastSize = currentText.length;
+              const newLines = newContent.split('\n');
+              // Keep the last element as remainder (may be incomplete line)
+              remainder = newLines.pop() ?? '';
+              for (const line of newLines) {
+                deps.log(line);
+              }
+            } else if (currentText.length < lastSize) {
+              // File was truncated/rotated, reset
+              lastSize = 0;
+              remainder = '';
+            }
+          } catch {
+            // Ignore read errors during follow, file may be temporarily unavailable
+          }
+        }, 500);
+
+        // Keep the interval reference so cleanup can happen on process exit
+        if (typeof process !== 'undefined') {
+          process.on('SIGINT', () => {
+            clearInterval(interval);
+            process.exit(0);
+          });
+        }
+      });
+    }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     deps.error(`Failed to read logs: ${message}`);

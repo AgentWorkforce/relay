@@ -5,8 +5,8 @@
  * Provides helpers to start/stop the broker, spawn/release agents,
  * send messages, and wait for specific broker events.
  */
-import fs from "node:fs";
-import path from "node:path";
+import fs from 'node:fs';
+import path from 'node:path';
 
 import {
   AgentRelayClient,
@@ -15,10 +15,28 @@ import {
   type SendMessageInput,
   type BrokerEvent,
   AgentRelay,
-  type Agent,
-  type Message,
-  type AgentRelayOptions,
-} from "@agent-relay/sdk";
+  RelaycastApi,
+} from '@agent-relay/sdk';
+
+// ── Dynamic API key provisioning ─────────────────────────────────────────────
+
+let _cachedApiKey: string | undefined;
+
+/**
+ * Ensure RELAY_API_KEY is available, creating an ephemeral workspace if needed.
+ * Caches the key for the lifetime of the process.
+ */
+export async function ensureApiKey(): Promise<string> {
+  if (_cachedApiKey) return _cachedApiKey;
+  if (process.env.RELAY_API_KEY?.trim()) {
+    _cachedApiKey = process.env.RELAY_API_KEY.trim();
+    return _cachedApiKey;
+  }
+  const ws = await RelaycastApi.createWorkspace(`test-${Date.now().toString(36)}`);
+  _cachedApiKey = ws.apiKey;
+  process.env.RELAY_API_KEY = ws.apiKey;
+  return _cachedApiKey;
+}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -59,7 +77,7 @@ export class BrokerHarness {
   constructor(options: BrokerHarnessOptions = {}) {
     this.opts = {
       binaryPath: options.binaryPath ?? resolveBinaryPath(),
-      channels: options.channels ?? ["general"],
+      channels: options.channels ?? ['general'],
       requestTimeoutMs: options.requestTimeoutMs ?? 10_000,
       shutdownTimeoutMs: options.shutdownTimeoutMs ?? 3_000,
       env: options.env ?? process.env,
@@ -74,6 +92,10 @@ export class BrokerHarness {
    */
   async start(): Promise<void> {
     if (this.started) return;
+
+    // Ensure we have an API key (creates ephemeral workspace if needed)
+    const apiKey = await ensureApiKey();
+    this.opts.env = { ...this.opts.env, RELAY_API_KEY: apiKey };
 
     const clientOpts: AgentRelayClientOptions = {
       binaryPath: this.opts.binaryPath,
@@ -141,13 +163,13 @@ export class BrokerHarness {
    */
   async spawnAgent(
     name: string,
-    cli = "cat",
-    channels?: string[],
+    cli = 'cat',
+    channels?: string[]
   ): Promise<{ name: string; runtime: string }> {
     return this.client.spawnPty({
       name,
       cli,
-      channels: channels ?? ["general"],
+      channels: channels ?? ['general'],
     });
   }
 
@@ -170,9 +192,7 @@ export class BrokerHarness {
   /**
    * Send a message between agents via the low-level client.
    */
-  async sendMessage(
-    input: SendMessageInput,
-  ): Promise<{ event_id: string; targets: string[] }> {
+  async sendMessage(input: SendMessageInput): Promise<{ event_id: string; targets: string[] }> {
     return this.client.sendMessage(input);
   }
 
@@ -205,23 +225,18 @@ export class BrokerHarness {
    * If a matching event is already in the buffer, resolves immediately.
    * Otherwise listens for new events.
    */
-  waitForEvent(
-    kind: string,
-    timeoutMs = 5_000,
-    predicate?: (event: BrokerEvent) => boolean,
-  ): EventWaiter {
+  waitForEvent(kind: string, timeoutMs = 5_000, predicate?: (event: BrokerEvent) => boolean): EventWaiter {
     let cancel: () => void = () => {};
 
     const promise = new Promise<BrokerEvent>((resolve, reject) => {
       // Check buffer first
-      const existing = this.events.find(
-        (e) => e.kind === kind && (!predicate || predicate(e)),
-      );
+      const existing = this.events.find((e) => e.kind === kind && (!predicate || predicate(e)));
       if (existing) {
         resolve(existing);
         return;
       }
 
+      // eslint-disable-next-line prefer-const
       let timer: ReturnType<typeof setTimeout>;
       let settled = false;
 
@@ -246,11 +261,7 @@ export class BrokerHarness {
         if (settled) return;
         settled = true;
         removeListener();
-        reject(
-          new Error(
-            `Timed out waiting for event "${kind}" after ${timeoutMs}ms`,
-          ),
-        );
+        reject(new Error(`Timed out waiting for event "${kind}" after ${timeoutMs}ms`));
       }, timeoutMs);
 
       cancel = () => {
@@ -259,7 +270,7 @@ export class BrokerHarness {
         clearTimeout(timer);
         removeListener();
         // Resolve with a synthetic "cancelled" — callers should use .promise
-        reject(new Error("Waiter cancelled"));
+        reject(new Error('Waiter cancelled'));
       };
     });
 
@@ -301,24 +312,20 @@ function resolveBinaryPath(): string {
     return process.env.AGENT_RELAY_BIN;
   }
   // Resolve relative to this file → repo root/target/debug/agent-relay-broker
-  const repoRoot = path.resolve(
-    path.dirname(new URL(import.meta.url).pathname),
-    "../../../..",
-  );
-  return path.resolve(repoRoot, "target/debug/agent-relay-broker");
+  const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../../..');
+  return path.resolve(repoRoot, 'target/debug/agent-relay-broker');
 }
 
 /**
- * Check if the relay binary exists and RELAY_API_KEY is set.
+ * Check if the relay binary exists.
  * Returns a skip reason string if prerequisites are missing, or null if OK.
+ * Note: RELAY_API_KEY is no longer checked here — ensureApiKey() creates one
+ * dynamically if not set.
  */
 export function checkPrerequisites(): string | null {
   const bin = process.env.AGENT_RELAY_BIN ?? resolveBinaryPath();
   if (!fs.existsSync(bin)) {
     return `agent-relay-broker binary not found at ${bin}`;
-  }
-  if (!process.env.RELAY_API_KEY?.trim()) {
-    return "RELAY_API_KEY is required for broker integration tests";
   }
   return null;
 }

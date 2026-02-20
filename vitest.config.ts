@@ -47,6 +47,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    threads: true,
     setupFiles: ['./test/vitest.setup.ts'],
     include: [
       'src/**/*.test.ts',
@@ -66,6 +67,12 @@ export default defineConfig({
       reporter: ['text', 'lcov', 'html'],
       include: ['src/**/*.ts'],
       exclude: ['src/**/*.test.ts', 'src/cli/**'],
+      thresholds: {
+        lines: 60,
+        functions: 60,
+        branches: 50,
+        statements: 60,
+      },
     },
   },
 });

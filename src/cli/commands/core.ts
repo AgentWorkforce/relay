@@ -15,19 +15,9 @@ import {
 import { checkForUpdates, generateAgentName } from '@agent-relay/utils';
 
 import { runBridgeCommand } from '../lib/bridge.js';
-import {
-  runDownCommand,
-  runStatusCommand,
-  runUpCommand,
-} from '../lib/broker-lifecycle.js';
-import {
-  runUninstallCommand,
-  runUpdateCommand,
-} from '../lib/core-maintenance.js';
-import {
-  createAgentRelayClient,
-  spawnAgentWithClient,
-} from '../lib/client-factory.js';
+import { runDownCommand, runStatusCommand, runUpCommand } from '../lib/broker-lifecycle.js';
+import { runUninstallCommand, runUpdateCommand } from '../lib/core-maintenance.js';
+import { createAgentRelayClient, spawnAgentWithClient } from '../lib/client-factory.js';
 
 const execAsync = promisify(exec);
 const DEFAULT_DASHBOARD_PORT = process.env.AGENT_RELAY_DASHBOARD_PORT || '3888';
@@ -112,11 +102,7 @@ export interface CoreDependencies {
   getAgentOutboxTemplate: () => string;
   createRelay: (cwd: string) => CoreRelay;
   findDashboardBinary: () => string | null;
-  spawnProcess: (
-    command: string,
-    args: string[],
-    options?: Record<string, unknown>
-  ) => SpawnedProcess;
+  spawnProcess: (command: string, args: string[], options?: Record<string, unknown>) => SpawnedProcess;
   execCommand: (command: string) => Promise<{ stdout: string; stderr: string }>;
   killProcess: (pid: number, signal?: NodeJS.Signals | number) => void;
   fs: CoreFileSystem;
@@ -221,9 +207,7 @@ function createDefaultRelay(cwd: string): CoreRelay {
   };
 }
 
-function withDefaults(
-  overrides: Partial<CoreDependencies> = {}
-): CoreDependencies {
+function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependencies {
   const fileSystem: CoreFileSystem = overrides.fs ?? {
     existsSync: fs.existsSync,
     readFileSync: (filePath, encoding) => fs.readFileSync(filePath, encoding),
@@ -286,10 +270,7 @@ function withDefaults(
   };
 }
 
-export function registerCoreCommands(
-  program: Command,
-  overrides: Partial<CoreDependencies> = {}
-): void {
+export function registerCoreCommands(program: Command, overrides: Partial<CoreDependencies> = {}): void {
   const deps = withDefaults(overrides);
 
   program
@@ -297,21 +278,21 @@ export function registerCoreCommands(
     .description('Start broker with web dashboard')
     .option('--no-dashboard', 'Disable web dashboard')
     .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
-    .option('--storage <type>', 'Storage type: jsonl (default), sqlite, sqlite-batched, memory', 'jsonl')
     .option('--spawn', 'Force spawn all agents from teams.json')
     .option('--no-spawn', 'Do not auto-spawn agents (just start broker)')
     .option('--background', 'Run broker in the background (detached)')
     .option('--verbose', 'Enable verbose logging')
-    .action(async (options: {
-      dashboard?: boolean;
-      port?: string;
-      storage?: string;
-      spawn?: boolean;
-      background?: boolean;
-      verbose?: boolean;
-    }) => {
-      await runUpCommand(options, deps);
-    });
+    .action(
+      async (options: {
+        dashboard?: boolean;
+        port?: string;
+        spawn?: boolean;
+        background?: boolean;
+        verbose?: boolean;
+      }) => {
+        await runUpCommand(options, deps);
+      }
+    );
 
   program
     .command('down')
@@ -339,16 +320,18 @@ export function registerCoreCommands(
     .option('--snippets', 'Also remove agent-relay snippets from CLAUDE.md, GEMINI.md, AGENTS.md')
     .option('--force', 'Skip confirmation prompt')
     .option('--dry-run', 'Show what would be removed without actually removing')
-    .action(async (options: {
-      keepData?: boolean;
-      zed?: boolean;
-      zedName?: string;
-      snippets?: boolean;
-      force?: boolean;
-      dryRun?: boolean;
-    }) => {
-      await runUninstallCommand(options, deps);
-    });
+    .action(
+      async (options: {
+        keepData?: boolean;
+        zed?: boolean;
+        zedName?: string;
+        snippets?: boolean;
+        force?: boolean;
+        dryRun?: boolean;
+      }) => {
+        await runUninstallCommand(options, deps);
+      }
+    );
 
   program
     .command('version')
