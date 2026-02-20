@@ -32,7 +32,6 @@ async function runCli(args: string): Promise<{ stdout: string; stderr: string; c
       env: {
         ...process.env,
         DOTENV_CONFIG_QUIET: 'true',
-        AGENT_RELAY_SKIP_TMUX: '1', // Skip tmux discovery to avoid hangs in CI
         AGENT_RELAY_SKIP_UPDATE_CHECK: '1', // Skip update check in tests
       },
     });
@@ -84,7 +83,6 @@ describeCli('CLI', () => {
       const env = {
         ...process.env,
         DOTENV_CONFIG_QUIET: 'true',
-        AGENT_RELAY_SKIP_TMUX: '1',
         AGENT_RELAY_SKIP_UPDATE_CHECK: '1',
       };
 
@@ -104,21 +102,6 @@ describeCli('CLI', () => {
       // This test assumes daemon isn't running on a test socket
       const { stdout } = await runCli('status');
       expect(stdout).toMatch(/Status:/i);
-    });
-  });
-
-  describe('gc', () => {
-    it('should show help for gc command', async () => {
-      const { stdout } = await runCli('gc --help');
-      expect(stdout).toContain('orphaned');
-      expect(stdout).toContain('--dry-run');
-      expect(stdout).toContain('--force');
-    });
-
-    it('should handle gc with no sessions', async () => {
-      // In test environment, likely no relay sessions
-      const { stdout } = await runCli('gc --dry-run');
-      expect(stdout).toMatch(/(No relay tmux sessions|orphaned|session)/i);
     });
   });
 
@@ -172,14 +155,6 @@ describeCli('CLI', () => {
 });
 
 describe('CLI Helper Functions', () => {
-  describe('discoverRelaySessions', () => {
-    // These are integration tests that would need tmux running
-    // Skipping in CI but useful for local development
-    it.skip('should discover relay-* tmux sessions', async () => {
-      // Would need to mock tmux or have it running
-    });
-  });
-
   describe('formatRelativeTime', () => {
     // Test the time formatting logic indirectly through agents command
     it('should format relative times in agents output', async () => {
