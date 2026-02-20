@@ -1330,7 +1330,10 @@ async fn run_listen(cmd: ListenCommand, telemetry: TelemetryClient) -> Result<()
             eprintln!("[agent-relay] --all: no channels found, falling back to 'general'");
             vec!["general".to_string()]
         } else {
-            eprintln!("[agent-relay] --all: subscribing to {} channels", fetched.len());
+            eprintln!(
+                "[agent-relay] --all: subscribing to {} channels",
+                fetched.len()
+            );
             fetched
         }
     } else {
@@ -2432,7 +2435,9 @@ async fn fetch_all_channels(paths: &RuntimePaths) -> Result<Vec<String>> {
         .or_else(|| std::env::var("RELAY_BASE_URL").ok())
         .unwrap_or_else(|| DEFAULT_RELAYCAST_BASE_URL.to_string());
     let store = CredentialStore::new(paths.creds.clone());
-    let cached = store.load().map_err(|_| anyhow::anyhow!("no cached credentials"))?;
+    let cached = store
+        .load()
+        .map_err(|_| anyhow::anyhow!("no cached credentials"))?;
     let api_key = &cached.api_key;
 
     let client = reqwest::Client::new();
