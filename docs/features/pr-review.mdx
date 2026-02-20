@@ -1,0 +1,283 @@
+---
+title: "Automated PR Review"
+description: "Spawn multi-agent teams to review pull requests with context-aware collaborative feedback"
+---
+
+# Automated PR Review
+
+Agent Relay Cloud can automatically spawn reviewer agents when pull requests are opened. Multiple agents collaborate via agent-relay to provide comprehensive, context-aware code reviews.
+
+## Overview
+
+<CardGroup cols={2}>
+  <Card title="Multi-Agent Collaboration" icon="users">
+    Codex, Claude, and Peer reviewers collaborate to cover code quality, architecture, and strategy.
+  </Card>
+  <Card title="Context-Aware" icon="brain">
+    Reviews check trajectories, specs, and agent message history for informed feedback.
+  </Card>
+  <Card title="Configurable Filters" icon="filter">
+    Filter by labels, authors, and file count to control which PRs get reviewed.
+  </Card>
+  <Card title="Opt-In by Default" icon="toggle-off">
+    Must be explicitly enabled via workspace settings or relay.yaml.
+  </Card>
+</CardGroup>
+
+## How It Works
+
+When a PR is opened on a connected repository:
+
+<Steps>
+  <Step title="Webhook received">
+    GitHub sends a `pull_request.opened` webhook to Agent Relay Cloud.
+  </Step>
+  <Step title="Configuration loaded">
+    The system loads PR review config from workspace settings and/or relay.yaml.
+  </Step>
+  <Step title="Filters evaluated">
+    PR is checked against label, author, and file count filters.
+  </Step>
+  <Step title="Agents spawned">
+    Configured reviewer agents (Codex, Claude, Peer) are spawned via the linked daemon.
+  </Step>
+  <Step title="Collaborative review">
+    Agents review the PR, discuss findings via agent-relay, and post a unified review.
+  </Step>
+</Steps>
+
+## Reviewer Agents
+
+### Codex Reviewer
+
+Focuses on code-level concerns:
+- Code quality and best practices
+- Potential bugs and edge cases
+- Performance considerations
+- Security vulnerabilities
+- Test coverage
+
+### Claude Reviewer
+
+Focuses on architecture and design:
+- Architectural patterns and design
+- Maintainability and readability
+- Documentation quality
+- API design and interfaces
+- Error handling
+
+### Peer Reviewer
+
+Focuses on strategic concerns:
+- System-wide architecture fit
+- Long-term maintainability
+- Scalability considerations
+- Technical debt impact
+- Alternative approaches
+
+## Configuration
+
+PR review can be configured at two levels, with workspace settings taking precedence:
+
+### Workspace Settings (Cloud API)
+
+Update via the API:
+
+```bash
+curl -X PATCH https://cloud.agent-relay.com/api/workspaces/:id/config \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prReview": {
+      "enabled": true,
+      "reviewers": ["claude", "codex", "peer"],
+      "autoPost": true,
+      "maxConcurrentReviews": 3,
+      "excludeLabels": ["wip", "do-not-review", "draft"],
+      "excludeAuthors": ["dependabot[bot]", "renovate[bot]"],
+      "minFilesChanged": 1,
+      "maxFilesChanged": 50
+    }
+  }'
+```
+
+### Repository relay.yaml
+
+Add to your repository root:
+
+```yaml
+version: "1.0"
+prReview:
+  enabled: true
+  reviewers:
+    - claude
+    - codex
+    - peer
+  autoPost: true
+  maxConcurrentReviews: 3
+  excludeLabels:
+    - wip
+    - do-not-review
+    - draft
+  excludeAuthors:
+    - dependabot[bot]
+    - renovate[bot]
+  minFilesChanged: 1
+  maxFilesChanged: 50
+```
+
+### Configuration Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enabled` | boolean | `false` | Enable automated PR reviews |
+| `reviewers` | array | `["claude", "codex"]` | Which reviewer agents to spawn |
+| `autoPost` | boolean | `true` | Automatically post review (vs manual approval) |
+| `maxConcurrentReviews` | number | `3` | Max concurrent reviews per repository |
+| `includeLabels` | array | `[]` | Only review PRs with these labels (empty = all) |
+| `excludeLabels` | array | `["wip", "do-not-review"]` | Skip PRs with these labels |
+| `includeAuthors` | array | `[]` | Only review PRs from these authors (empty = all) |
+| `excludeAuthors` | array | `["dependabot[bot]"]` | Skip PRs from these authors |
+| `minFilesChanged` | number | `1` | Minimum files to trigger review |
+| `maxFilesChanged` | number | `100` | Maximum files (skip large PRs) |
+
+### Configuration Precedence
+
+1. **Workspace settings** (highest priority)
+2. **relay.yaml in repository**
+3. **Disabled** (default)
+
+If workspace settings explicitly enable or disable PR review, that takes precedence over relay.yaml.
+
+## Context-Aware Reviews
+
+Reviewer agents check multiple sources for context:
+
+### Trajectories
+
+Agents read `.trajectories/` to understand:
+- Recent work on related code
+- Decisions made by previous agents
+- Patterns established in the codebase
+
+### Specs and Documentation
+
+Agents check `docs/` for:
+- Architectural documentation
+- Design decisions
+- API specifications
+
+### Agent Message History
+
+Agents use `agent-relay history` to find:
+- Previous discussions about the code
+- Design decisions made by other agents
+- Context from related features
+
+## Review Coordination
+
+To prevent duplicate reviews, the system designates a **review leader**:
+
+1. First spawned reviewer becomes the leader
+2. Leader is responsible for posting the final review
+3. Non-leaders provide findings to the leader via agent-relay
+4. Only the leader posts the unified review comment
+
+## Example Review Output
+
+```markdown
+## Automated PR Review
+
+**Reviewers:** Collaborative review by Codex, Claude, and Peer agents
+
+### Summary
+This PR adds user authentication with JWT tokens. The implementation
+follows established patterns from the auth trajectory.
+
+### Code Quality (Codex)
+- Token validation is thorough
+- Consider adding rate limiting to login endpoint
+- Test coverage looks good
+
+### Architecture (Claude)
+- JWT approach aligns with documented auth spec
+- Refresh token rotation implemented correctly
+- Consider extracting token utils to shared module
+
+### Strategic (Peer)
+- Fits well with existing session management
+- No new technical debt introduced
+- Scalability: stateless JWT approach is appropriate
+
+### Recommendations
+1. Add rate limiting to prevent brute force (High)
+2. Extract token utilities for reuse (Medium)
+3. Add integration tests for refresh flow (Medium)
+
+---
+_Automated collaborative review by Agent Relay_
+```
+
+## Requirements
+
+To use automated PR review:
+
+<AccordionGroup>
+  <Accordion title="GitHub App installed">
+    The Agent Relay GitHub App must be installed on your repository with PR access.
+  </Accordion>
+  <Accordion title="Repository linked to workspace">
+    The repository must be added to an Agent Relay Cloud workspace.
+  </Accordion>
+  <Accordion title="Daemon linked and online">
+    A daemon must be linked to your account and running to spawn reviewer agents.
+  </Accordion>
+  <Accordion title="PR review enabled">
+    PR review must be explicitly enabled via workspace settings or relay.yaml.
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="PR review not triggering">
+    1. Verify PR review is enabled in workspace settings or relay.yaml
+    2. Check if PR matches filter criteria (labels, author, file count)
+    3. Ensure daemon is online: `agent-relay cloud status`
+    4. Check webhook delivery in GitHub repository settings
+  </Accordion>
+  <Accordion title="Multiple reviews posted">
+    This shouldn't happen with the review leader system. If it does:
+    1. Check if multiple webhook deliveries occurred
+    2. Verify only one daemon is linked
+    3. Report the issue with webhook delivery IDs
+  </Accordion>
+  <Accordion title="Review missing context">
+    1. Ensure `.trajectories/` directory exists with index.json
+    2. Verify agents have access to the repository
+    3. Check if docs/ contains relevant specs
+  </Accordion>
+  <Accordion title="Agents not spawning">
+    1. Verify daemon is online and linked
+    2. Check daemon logs for spawn errors
+    3. Ensure repository has Nango connection configured
+  </Accordion>
+</AccordionGroup>
+
+## Security
+
+### Token Usage
+
+- All GitHub API calls use the **GitHub App installation token** via Nango proxy
+- User tokens are never stored or used for PR operations
+- Tokens are short-lived and automatically refreshed
+
+### Webhook Verification
+
+- All webhooks are verified using HMAC-SHA256 signatures
+- Duplicate webhook deliveries are detected and ignored (idempotency)
+
+### Access Control
+
+- Only workspace owners can enable/configure PR review
+- Reviewers only have access to repositories in the workspace
