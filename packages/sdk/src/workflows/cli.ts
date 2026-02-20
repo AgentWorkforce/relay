@@ -50,6 +50,10 @@ function formatEvent(event: WorkflowEvent): string {
       return `[step] ${event.stepName} skipped`;
     case 'step:retrying':
       return `[step] ${event.stepName} retrying (attempt ${event.attempt})`;
+    case 'step:nudged':
+      return `[step] ${event.stepName} nudged (nudge #${event.nudgeCount})`;
+    case 'step:force-released':
+      return `[step] ${event.stepName} force-released`;
   }
 }
 

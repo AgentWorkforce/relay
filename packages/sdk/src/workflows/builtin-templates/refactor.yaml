@@ -6,6 +6,10 @@ swarm:
   maxConcurrency: 2
   timeoutMs: 4500000
   channel: swarm-refactor
+  idleNudge:
+    nudgeAfterMs: 120000
+    escalateAfterMs: 120000
+    maxNudges: 1
 agents:
   - name: lead
     cli: claude
@@ -13,9 +17,11 @@ agents:
   - name: architect
     cli: codex
     role: "Designs target architecture and migration plan"
+    interactive: false
   - name: refactorer
     cli: codex
     role: "Executes scoped refactor changes"
+    interactive: false
   - name: tester
     cli: claude
     role: "Validates behavior parity and risk"
@@ -45,7 +51,8 @@ workflows:
         agent: refactorer
         dependsOn: [design]
         task: |
-          Execute the refactor plan while preserving behavior.
+          Execute the refactor plan while preserving behavior:
+          {{steps.design.output}}
         retries: 2
         verification:
           type: output_contains
@@ -54,7 +61,8 @@ workflows:
         agent: tester
         dependsOn: [refactor-code]
         task: |
-          Validate no regressions and ensure tests/quality checks pass.
+          Validate no regressions and ensure tests/quality checks pass:
+          {{steps.refactor-code.output}}
         verification:
           type: output_contains
           value: VALIDATION_COMPLETE

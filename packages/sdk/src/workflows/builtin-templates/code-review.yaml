@@ -6,6 +6,10 @@ swarm:
   maxConcurrency: 4
   timeoutMs: 2400000
   channel: swarm-code-review
+  idleNudge:
+    nudgeAfterMs: 120000
+    escalateAfterMs: 120000
+    maxNudges: 1
 agents:
   - name: lead
     cli: claude
@@ -13,12 +17,15 @@ agents:
   - name: reviewer-architecture
     cli: codex
     role: "Assesses architecture and maintainability"
+    interactive: false
   - name: reviewer-correctness
     cli: claude
     role: "Assesses correctness and testing"
+    interactive: false
   - name: reviewer-security
     cli: gemini
     role: "Assesses security posture and abuse resistance"
+    interactive: false
 workflows:
   - name: parallel-review
     description: "Run focused reviews in parallel and synthesize final guidance."
@@ -64,6 +71,9 @@ workflows:
         dependsOn: [architecture-pass, correctness-pass, security-pass]
         task: |
           Produce merged findings, severity levels, and final recommendation.
+          Architecture review: {{steps.architecture-pass.output}}
+          Correctness review: {{steps.correctness-pass.output}}
+          Security review: {{steps.security-pass.output}}
         verification:
           type: output_contains
           value: DONE

@@ -84,7 +84,7 @@ swarm:
 
 agents:
   - name: backend
-    cli: claude            # claude | codex | gemini | aider | goose
+    cli: claude            # claude | codex | gemini | aider | goose | opencode | droid
     role: "Backend engineer"
     constraints:
       model: opus
@@ -94,6 +94,7 @@ agents:
   - name: tester
     cli: codex
     role: "Test engineer"
+    interactive: false     # Non-interactive: runs as subprocess, no PTY/messaging
 
 workflows:
   - name: build-and-test
@@ -342,6 +343,7 @@ const result = await workflow("my-workflow")
   .agent("frontend", {
     cli: "codex",
     role: "Frontend engineer",
+    interactive: false,       // Non-interactive subprocess mode
   })
   .step("api", {
     agent: "backend",
@@ -497,6 +499,81 @@ state:
 | `gemini` | Gemini CLI (Google) |
 | `aider` | Aider coding assistant |
 | `goose` | Goose AI assistant |
+| `opencode` | OpenCode CLI |
+| `droid` | Droid CLI |
+
+## Non-Interactive Agents
+
+By default, agents run in interactive PTY mode with full relay messaging. For workers that just need to execute a task and return output — common in fan-out, map-reduce, and pipeline patterns — set `interactive: false` to run them as lightweight subprocesses.
+
+### YAML
+
+```yaml
+agents:
+  - name: lead
+    cli: claude
+    role: "Coordinates work"
+    # interactive: true (default) — full PTY, relay messaging, /exit detection
+
+  - name: worker
+    cli: codex
+    role: "Executes tasks"
+    interactive: false    # Runs "codex exec <task>", captures stdout
+```
+
+### TypeScript
+
+```typescript
+workflow("fan-out-analysis")
+  .pattern("fan-out")
+  .agent("lead", { cli: "claude", role: "Coordinator" })
+  .agent("worker-1", { cli: "codex", interactive: false, role: "Analyst" })
+  .agent("worker-2", { cli: "codex", interactive: false, role: "Analyst" })
+  .step("analyze-1", { agent: "worker-1", task: "Analyze module A" })
+  .step("analyze-2", { agent: "worker-2", task: "Analyze module B" })
+  .step("synthesize", {
+    agent: "lead",
+    task: "Combine: {{steps.analyze-1.output}} + {{steps.analyze-2.output}}",
+    dependsOn: ["analyze-1", "analyze-2"],
+  })
+  .run();
+```
+
+### How It Works
+
+| Aspect | Interactive (default) | Non-Interactive |
+|--------|----------------------|-----------------|
+| Execution | Full PTY with stdin/stdout | `child_process.spawn()` with piped stdio |
+| CLI invocation | Standard interactive session | One-shot mode (`claude -p`, `codex exec`, etc.) |
+| Relay messaging | Can send/receive messages | No messaging — excluded from topology edges |
+| Self-termination | Must output `/exit` | Process exits naturally when done |
+| Output capture | PTY output buffer | stdout capture |
+| Overhead | Higher (PTY, echo verification, SIGWINCH) | Lower (simple subprocess) |
+
+### Non-Interactive CLI Commands
+
+| CLI | Command | Notes |
+|-----|---------|-------|
+| `claude` | `claude -p "<task>"` | Print mode, exits after response |
+| `codex` | `codex exec "<task>"` | One-shot execution |
+| `gemini` | `gemini -p "<task>"` | Prompt mode |
+| `opencode` | `opencode --prompt "<task>"` | One-shot prompt |
+| `droid` | `droid exec "<task>"` | One-shot execution |
+| `aider` | `aider --message "<task>" --yes-always --no-git` | Auto-approve, skip git |
+| `goose` | `goose run --text "<task>" --no-session` | Text mode, no session file |
+
+### When to Use
+
+- Fan-out workers that process a task and return results
+- Map-reduce mappers that don't need mid-task communication
+- Pipeline stages that transform input to output
+- Any agent that doesn't need turn-by-turn relay messaging
+
+### When NOT to Use
+
+- Lead/coordinator agents that communicate with others
+- Agents in debate, consensus, or reflection patterns
+- Agents that need to receive messages during execution
 
 ## Agent Slash Commands
 
@@ -527,6 +604,41 @@ steps:
       Build the REST API endpoints for user management.
       When finished, output /exit.
 ```
+
+## Idle Agent Detection and Nudging
+
+Interactive agents sometimes finish their task but forget to `/exit`, sitting idle and blocking downstream steps. The runner can detect idle agents and take action automatically.
+
+### Configuration
+
+Add `idleNudge` to your swarm config:
+
+```yaml
+swarm:
+  pattern: hub-spoke
+  idleNudge:
+    nudgeAfterMs: 120000      # 2 min before first nudge (default)
+    escalateAfterMs: 120000   # 2 min after nudge before force-release (default)
+    maxNudges: 1              # Nudges before escalation (default)
+```
+
+All built-in templates include idle nudging with these defaults.
+
+### How It Works
+
+1. **Detection**: The broker tracks agent output timestamps and emits `agent_idle` events when an agent goes silent for the configured threshold
+2. **Nudge**: For hub patterns (hub-spoke, fan-out, hierarchical, etc.), the runner tells the hub agent to check on the idle agent. For non-hub patterns, a system message is injected directly into the agent's PTY
+3. **Escalation**: If the agent remains idle after `maxNudges` attempts, the runner force-releases it and captures whatever output was produced
+4. **No config**: When `idleNudge` is omitted, the runner uses simple `waitForExit` (backward compatible)
+
+### Events
+
+The runner emits two new events for idle nudging:
+
+| Event | Description |
+|-------|-------------|
+| `step:nudged` | Fired when a nudge message is sent to an idle agent |
+| `step:force-released` | Fired when an agent is force-released after exhausting nudges |
 
 ## Schema Validation
 

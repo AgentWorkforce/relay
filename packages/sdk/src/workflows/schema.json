@@ -79,6 +79,31 @@
         "channel": {
           "type": "string",
           "description": "Default relay channel for agent communication"
+        },
+        "idleNudge": {
+          "$ref": "#/definitions/IdleNudgeConfig"
+        }
+      }
+    },
+    "IdleNudgeConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Configuration for idle agent detection and nudging",
+      "properties": {
+        "nudgeAfterMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Milliseconds after idle detection before first nudge (default: 120000)"
+        },
+        "escalateAfterMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Milliseconds after nudge before force-release (default: 120000)"
+        },
+        "maxNudges": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum nudges before escalation (default: 1)"
         }
       }
     },
@@ -106,7 +131,8 @@
         "saga",
         "circuit-breaker",
         "blackboard",
-        "swarm"
+        "swarm",
+        "competitive"
       ]
     },
     "AgentDefinition": {
@@ -136,12 +162,17 @@
         },
         "constraints": {
           "$ref": "#/definitions/AgentConstraints"
+        },
+        "interactive": {
+          "type": "boolean",
+          "default": true,
+          "description": "When false, the agent runs as a non-interactive subprocess (no PTY, no relay messaging). It receives its task as a CLI prompt argument and returns stdout as output. Default: true."
         }
       }
     },
     "AgentCli": {
       "type": "string",
-      "enum": ["claude", "codex", "gemini", "aider", "goose"]
+      "enum": ["claude", "codex", "gemini", "aider", "goose", "opencode", "droid"]
     },
     "AgentConstraints": {
       "type": "object",

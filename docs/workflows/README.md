@@ -28,6 +28,7 @@ Swarm patterns define how agents coordinate and execute tasks. Choose the patter
 | [cascade](patterns/cascade.md) | Waterfall with phase gates | Gated release processes |
 | [debate](patterns/debate.md) | Agents propose and counter-argue | Design exploration, trade-off analysis |
 | [hierarchical](patterns/hierarchical.md) | Multi-level reporting structure | Large refactors, organizational workflows |
+| [competitive](patterns/competitive.md) | Independent parallel builds, then compare | Solution exploration, architecture spikes |
 
 ## Built-in Templates
 
@@ -41,6 +42,7 @@ Pre-configured workflows for common development tasks. Each template defines age
 | [security-audit](templates/security-audit.md) | pipeline | Scan, triage, remediate, and verify security issues |
 | [refactor](templates/refactor.md) | hierarchical | Analyze, plan, execute, and validate a refactor |
 | [documentation](templates/documentation.md) | handoff | Research, draft, review, and publish documentation |
+| [competitive](templates/competitive.md) | competitive | Independent implementations, compare, select winner |
 
 ## Using Templates
 

@@ -330,4 +330,56 @@ agents:
       await expect(runner.resume('nonexistent')).rejects.toThrow('Run "nonexistent" not found');
     });
   });
+
+  // ── Non-interactive command builder ────────────────────────────────────
+
+  describe('buildNonInteractiveCommand', () => {
+    it('should build claude command with -p flag', () => {
+      const { cmd, args } = WorkflowRunner.buildNonInteractiveCommand('claude', 'Do the thing');
+      expect(cmd).toBe('claude');
+      expect(args).toEqual(['-p', 'Do the thing']);
+    });
+
+    it('should build codex command with exec subcommand', () => {
+      const { cmd, args } = WorkflowRunner.buildNonInteractiveCommand('codex', 'Build it');
+      expect(cmd).toBe('codex');
+      expect(args).toEqual(['exec', 'Build it']);
+    });
+
+    it('should build gemini command with -p flag', () => {
+      const { cmd, args } = WorkflowRunner.buildNonInteractiveCommand('gemini', 'Analyze');
+      expect(cmd).toBe('gemini');
+      expect(args).toEqual(['-p', 'Analyze']);
+    });
+
+    it('should build opencode command with --prompt flag', () => {
+      const { cmd, args } = WorkflowRunner.buildNonInteractiveCommand('opencode', 'Fix bug');
+      expect(cmd).toBe('opencode');
+      expect(args).toEqual(['--prompt', 'Fix bug']);
+    });
+
+    it('should build droid command with exec subcommand', () => {
+      const { cmd, args } = WorkflowRunner.buildNonInteractiveCommand('droid', 'Deploy');
+      expect(cmd).toBe('droid');
+      expect(args).toEqual(['exec', 'Deploy']);
+    });
+
+    it('should build aider command with --message and safety flags', () => {
+      const { cmd, args } = WorkflowRunner.buildNonInteractiveCommand('aider', 'Refactor');
+      expect(cmd).toBe('aider');
+      expect(args).toEqual(['--message', 'Refactor', '--yes-always', '--no-git']);
+    });
+
+    it('should build goose command with run subcommand', () => {
+      const { cmd, args } = WorkflowRunner.buildNonInteractiveCommand('goose', 'Test it');
+      expect(cmd).toBe('goose');
+      expect(args).toEqual(['run', '--text', 'Test it', '--no-session']);
+    });
+
+    it('should append extra args after CLI-specific args', () => {
+      const { cmd, args } = WorkflowRunner.buildNonInteractiveCommand('claude', 'Task', ['--model', 'opus']);
+      expect(cmd).toBe('claude');
+      expect(args).toEqual(['-p', 'Task', '--model', 'opus']);
+    });
+  });
 });

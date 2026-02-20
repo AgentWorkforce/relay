@@ -251,12 +251,13 @@ export class RelaycastApi {
 
   /** Start a heartbeat loop for an external agent. Returns a cleanup function. */
   startHeartbeat(agentClient: AgentClient, intervalMs = 30_000): () => void {
-    const timer = setInterval(() => {
-      agentClient.heartbeat().catch(() => {});
-    }, intervalMs);
+    const sendHeartbeat = () => {
+      agentClient.client.post('/v1/agents/heartbeat', {}).catch(() => {});
+    };
+    const timer = setInterval(sendHeartbeat, intervalMs);
     timer.unref();
     // Send first heartbeat immediately
-    agentClient.heartbeat().catch(() => {});
+    sendHeartbeat();
     return () => clearInterval(timer);
   }
 

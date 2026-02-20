@@ -37,12 +37,24 @@ export interface TrajectoryConfig {
 
 // ── Swarm configuration ─────────────────────────────────────────────────────
 
+/** Configuration for idle agent detection and nudging. */
+export interface IdleNudgeConfig {
+  /** ms after idle detection before first nudge (default: 120_000 = 2 min). */
+  nudgeAfterMs?: number;
+  /** ms after nudge before force-release (default: 120_000 = 2 min). */
+  escalateAfterMs?: number;
+  /** Max nudges before escalation (default: 1). */
+  maxNudges?: number;
+}
+
 /** Swarm-level settings controlling the overall pattern. */
 export interface SwarmConfig {
   pattern: SwarmPattern;
   maxConcurrency?: number;
   timeoutMs?: number;
   channel?: string;
+  /** Idle agent detection and nudging configuration for interactive agents. */
+  idleNudge?: IdleNudgeConfig;
 }
 
 export type SwarmPattern =
@@ -68,7 +80,8 @@ export type SwarmPattern =
   | "saga"
   | "circuit-breaker"
   | "blackboard"
-  | "swarm";
+  | "swarm"
+  | "competitive";
 
 // ── Agent definitions ───────────────────────────────────────────────────────
 
@@ -80,9 +93,13 @@ export interface AgentDefinition {
   task?: string;
   channels?: string[];
   constraints?: AgentConstraints;
+  /** When false, the agent runs as a non-interactive subprocess (no PTY, no relay messaging).
+   *  It receives its task as a CLI prompt argument and returns stdout as output.
+   *  Default: true (interactive PTY mode). */
+  interactive?: boolean;
 }
 
-export type AgentCli = "claude" | "codex" | "gemini" | "aider" | "goose";
+export type AgentCli = "claude" | "codex" | "gemini" | "aider" | "goose" | "opencode" | "droid";
 
 /** Resource and behavioral constraints for an agent. */
 export interface AgentConstraints {

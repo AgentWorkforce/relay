@@ -96,7 +96,10 @@ function makeFakeAgentWithControls(
     async sendMessage() {
       return { eventId: "fake", from: name, to: "", text: "" };
     },
-    onOutput() {
+    status: "ready" as const,
+    onOutput(
+      _callback: ((chunk: string) => void) | ((data: { stream: string; chunk: string }) => void),
+    ) {
       return () => {};
     },
   };
@@ -251,4 +254,20 @@ test("waitForIdle: idle resolves before timeout", async () => {
   setTimeout(() => triggerIdle(), 10);
   const result = await promise;
   assert.equal(result, "idle");
+});
+// ── agent.status ────────────────────────────────────────────────────────────
+
+test("agent.status: mock agent has ready status", () => {
+  const { agent } = makeFakeAgentWithControls("worker");
+  assert.equal(agent.status, "ready");
+});
+
+// ── agent.onOutput ──────────────────────────────────────────────────────────
+
+test("agent.onOutput: mock returns unsubscribe function", () => {
+  const { agent } = makeFakeAgentWithControls("worker");
+  const chunks: string[] = [];
+  const unsub = agent.onOutput(({ chunk }) => chunks.push(chunk));
+  assert.equal(typeof unsub, "function");
+  unsub();
 });

@@ -125,6 +125,10 @@ struct ListenCommand {
     #[arg(long)]
     channels: Option<String>,
 
+    /// Subscribe to all channels in the workspace (fetches from Relaycast API at startup)
+    #[arg(long, default_value = "false")]
+    all: bool,
+
     /// Port for the HTTP API (default: 3889)
     #[arg(long, default_value = "3889")]
     port: u16,
@@ -992,6 +996,50 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
             ws_msg = ws_inbound_rx.recv() => {
                 if let Some(ws_msg) = ws_msg {
+                    // Handle agent.release_requested from Relaycast (e.g. agent self-termination via remove_agent MCP)
+                    if let Some(rc_event) = parse_relaycast_agent_event(&ws_msg) {
+                        match rc_event {
+                            RelaycastAgentEvent::Release { ref name } => {
+                                match workers.release(name).await {
+                                    Ok(()) => {
+                                        let dropped = drop_pending_for_worker(&mut pending_deliveries, name);
+                                        if dropped > 0 {
+                                            let _ = send_event(
+                                                &sdk_out_tx,
+                                                json!({"kind":"delivery_dropped","name":name,"count":dropped,"reason":"agent_released"}),
+                                            ).await;
+                                        }
+                                        telemetry.track(TelemetryEvent::AgentRelease {
+                                            cli: String::new(),
+                                            release_reason: "relaycast_release".to_string(),
+                                            lifetime_seconds: 0,
+                                        });
+                                        state.agents.remove(name);
+                                        if let Err(error) = state.save(&paths.state) {
+                                            tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state");
+                                        }
+                                        let _ = send_event(
+                                            &sdk_out_tx,
+                                            json!({"kind":"agent_exited","name":name,"code":0,"signal":null}),
+                                        ).await;
+                                        tracing::info!(child = %name, "released worker via relaycast in broker mode");
+                                        eprintln!("[agent-relay] released worker '{}' via relaycast", name);
+                                    }
+                                    Err(error) => {
+                                        tracing::error!(child = %name, error = %error, "failed to release worker via relaycast");
+                                        eprintln!("[agent-relay] failed to release '{}': {}", name, error);
+                                    }
+                                }
+                                continue;
+                            }
+                            RelaycastAgentEvent::Spawn { ref name, ref cli } => {
+                                // Spawn is not supported in broker init mode — agents are managed by the SDK
+                                tracing::warn!(name = %name, cli = %cli, "ignoring spawn request in broker init mode");
+                                continue;
+                            }
+                        }
+                    }
+
                     if let Some(mapped) = map_ws_event(&ws_msg) {
                         if !dedup.insert_if_new(&mapped.event_id, Instant::now()) {
                             continue;
@@ -1348,21 +1396,40 @@ async fn run_listen(cmd: ListenCommand, telemetry: TelemetryClient) -> Result<()
         .agent_name
         .or_else(|| std::env::var("RELAY_AGENT_NAME").ok())
         .unwrap_or_else(|| "listener".to_string());
-    let channels = cmd
-        .channels
-        .or_else(|| std::env::var("RELAY_CHANNELS").ok())
-        .unwrap_or_else(|| "general".to_string());
-    let channel_list = channels_from_csv(&channels);
     let api_port = cmd.port;
+
+    // --- Auth & Relaycast connection ---
+    let runtime_cwd = std::env::current_dir()?;
+    let paths = ensure_runtime_paths(&runtime_cwd)?;
+
+    // Resolve channel list: --all fetches from Relaycast API, otherwise use --channels or default
+    let channel_list = if cmd.all {
+        let fetched = fetch_all_channels(&paths).await.unwrap_or_default();
+        if fetched.is_empty() {
+            eprintln!("[agent-relay] --all: no channels found, falling back to 'general'");
+            vec!["general".to_string()]
+        } else {
+            eprintln!(
+                "[agent-relay] --all: subscribing to {} channels",
+                fetched.len()
+            );
+            fetched
+        }
+    } else {
+        let channels = cmd
+            .channels
+            .or_else(|| std::env::var("RELAY_CHANNELS").ok())
+            .unwrap_or_else(|| "general".to_string());
+        channels_from_csv(&channels)
+    };
+
+    // Build CSV string for child agent env vars
+    let channels = channel_list.join(",");
 
     eprintln!(
         "[agent-relay] listen mode (agent: {}, channels: {:?}, api port: {})",
         requested_name, channel_list, api_port
     );
-
-    // --- Auth & Relaycast connection ---
-    let runtime_cwd = std::env::current_dir()?;
-    let paths = ensure_runtime_paths(&runtime_cwd)?;
 
     let relay = connect_relay(RelaySessionOptions {
         paths: &paths,
@@ -2614,6 +2681,42 @@ fn init_tracing() {
         .with_target(true)
         .finish();
     let _ = tracing::subscriber::set_global_default(subscriber);
+}
+
+/// Fetch all channel names from the Relaycast workspace API.
+async fn fetch_all_channels(paths: &RuntimePaths) -> Result<Vec<String>> {
+    let http_base = std::env::var("RELAYCAST_BASE_URL")
+        .ok()
+        .or_else(|| std::env::var("RELAY_BASE_URL").ok())
+        .unwrap_or_else(|| DEFAULT_RELAYCAST_BASE_URL.to_string());
+    let store = CredentialStore::new(paths.creds.clone());
+    let cached = store
+        .load()
+        .map_err(|_| anyhow::anyhow!("no cached credentials"))?;
+    let api_key = &cached.api_key;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{http_base}/v1/channels"))
+        .bearer_auth(api_key)
+        .send()
+        .await
+        .context("failed to fetch channels")?;
+
+    if !resp.status().is_success() {
+        anyhow::bail!("channels API returned {}", resp.status());
+    }
+    let body: Value = resp.json().await?;
+    let channels = body
+        .as_array()
+        .or_else(|| body.get("channels").and_then(Value::as_array))
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|ch| ch.get("name").and_then(Value::as_str).map(String::from))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Ok(channels)
 }
 
 fn channels_from_csv(raw: &str) -> Vec<String> {

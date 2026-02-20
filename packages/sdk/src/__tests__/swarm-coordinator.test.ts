@@ -528,6 +528,73 @@ describe('SwarmCoordinator', () => {
       expect(topology.edges.get('drone-2')).toContain('hive');
     });
 
+    it('should exclude non-interactive agents from message edges', () => {
+      const config = makeConfig({
+        swarm: { pattern: 'fan-out' },
+        agents: [
+          { name: 'leader', cli: 'claude', role: 'lead' },
+          { name: 'worker-1', cli: 'codex', interactive: false },
+          { name: 'worker-2', cli: 'claude' },
+        ],
+      });
+      const topology = coordinator.resolveTopology(config);
+      expect(topology.pattern).toBe('fan-out');
+      // leader should only message worker-2 (not worker-1 which is non-interactive)
+      expect(topology.edges.get('leader')).toEqual(['worker-2']);
+      // worker-1 should have empty edges (non-interactive)
+      expect(topology.edges.get('worker-1')).toEqual([]);
+      // worker-2 should only message leader
+      expect(topology.edges.get('worker-2')).toEqual(['leader']);
+      // All agents should still be in the topology
+      expect(topology.agents).toHaveLength(3);
+    });
+
+    it('should exclude non-interactive agents from DAG topology edges', () => {
+      const config = makeConfig({
+        swarm: { pattern: 'dag' },
+        agents: [
+          { name: 'leader', cli: 'claude', role: 'lead' },
+          { name: 'worker-1', cli: 'codex', interactive: false },
+          { name: 'worker-2', cli: 'claude' },
+        ],
+        workflows: [
+          {
+            name: 'wf',
+            steps: [
+              { name: 's1', agent: 'worker-1', task: 'x' },
+              { name: 's2', agent: 'worker-2', task: 'y', dependsOn: ['s1'] },
+              { name: 's3', agent: 'leader', task: 'z', dependsOn: ['s2'] },
+            ],
+          },
+        ],
+      });
+      const topology = coordinator.resolveTopology(config);
+      expect(topology.pattern).toBe('dag');
+      // worker-1 is non-interactive — should have empty edges even though s2 depends on s1
+      expect(topology.edges.get('worker-1')).toEqual([]);
+      // worker-2 should NOT have worker-1 as a target (non-interactive)
+      const worker2Targets = topology.edges.get('worker-2') ?? [];
+      expect(worker2Targets).not.toContain('worker-1');
+      // worker-2 should still point to leader
+      expect(worker2Targets).toContain('leader');
+    });
+
+    it('should handle all non-interactive agents gracefully', () => {
+      const config = makeConfig({
+        swarm: { pattern: 'fan-out' },
+        agents: [
+          { name: 'leader', cli: 'claude', role: 'lead' },
+          { name: 'worker-1', cli: 'codex', interactive: false },
+          { name: 'worker-2', cli: 'codex', interactive: false },
+        ],
+      });
+      const topology = coordinator.resolveTopology(config);
+      // leader is the only interactive agent, so it fans out to no one
+      expect(topology.edges.get('leader')).toEqual([]);
+      expect(topology.edges.get('worker-1')).toEqual([]);
+      expect(topology.edges.get('worker-2')).toEqual([]);
+    });
+
     it('should handle red-team with multiple attackers and defenders', () => {
       const config = makeConfig({
         swarm: { pattern: 'red-team' },
