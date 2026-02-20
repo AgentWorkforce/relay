@@ -1546,17 +1546,15 @@ export class WorkflowRunner {
       }
     }
 
-    } else {
-      // Direct system injection via human handle
-      if (this.relay) {
-        const human = this.relay.human({ name: 'workflow-runner' });
-        await human.sendMessage({
-          to: agent.name,
-          text: "You appear idle. If you've completed your task, output /exit. If still working, continue.",
-        }).catch(() => {
-          // Non-critical — don't break workflow
-        });
-      }
+    // Direct system injection via human handle
+    if (this.relay) {
+      const human = this.relay.human({ name: 'workflow-runner' });
+      await human.sendMessage({
+        to: agent.name,
+        text: "You appear idle. If you've completed your task, output /exit. If still working, continue.",
+      }).catch(() => {
+        // Non-critical — don't break workflow
+      });
     }
   }
 
