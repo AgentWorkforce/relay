@@ -253,7 +253,7 @@ Agent Relay is built from modular components that work together:
 
 1. **Zero modification**: Agents run unmodified CLI tools (Claude Code, Codex, etc.) in PTY sessions
 2. **MCP protocol**: Agents communicate via standard MCP tools — no custom SDK required inside agents
-3. **Framework-agnostic**: Works with CrewAI, LangGraph, AutoGen, or any agent framework via REST/WebSocket
+3. **Mix AI providers**: Combine Claude, GPT, and Gemini agents in a single workflow — each using their strengths
 4. **Workflow engine**: YAML workflows parsed and executed with dependency resolution, retries, and verification
 
 ---
