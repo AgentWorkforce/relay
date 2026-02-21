@@ -1,0 +1,116 @@
+# CLI Registry
+# Single source of truth for CLI tools, versions, and models.
+# Used by: TS SDK, Python SDK, relay-cloud, relay-dashboard
+#
+# To update: Edit this file, then run `npm run codegen:models`
+
+version: "1.0"
+
+# CLI tools with their versions and model configurations
+clis:
+  claude:
+    name: "Claude Code"
+    package: "@anthropic-ai/claude-code"
+    version: "1.0.24"
+    install: "npm install -g @anthropic-ai/claude-code"
+    models:
+      opus:
+        id: "opus"
+        description: "Claude Opus 4 - most capable, best for complex reasoning"
+        default: false
+      sonnet:
+        id: "sonnet"
+        description: "Claude Sonnet 4 - balanced performance and speed"
+        default: true
+      haiku:
+        id: "haiku"
+        description: "Claude Haiku - fastest, best for simple tasks"
+        default: false
+
+  codex:
+    name: "Codex CLI"
+    package: "@openai/codex"
+    version: "0.1.2504301707"
+    install: "npm install -g @openai/codex"
+    models:
+      codex_5_3:
+        id: "codex-5.3"
+        description: "Codex 5.3 - latest codex model"
+        default: true
+
+  gemini:
+    name: "Gemini CLI"
+    package: "@anthropic-ai/gemini-cli"
+    version: "0.1.17"
+    install: "npm install -g @google/gemini-cli"
+    models:
+      flash:
+        id: "gemini-2.0-flash"
+        description: "Gemini 2.0 Flash - fast and capable"
+        default: true
+      pro:
+        id: "gemini-2.0-pro"
+        description: "Gemini 2.0 Pro - most capable"
+        default: false
+
+  cursor:
+    name: "Cursor"
+    package: "cursor"
+    version: "0.48.6"
+    install: "Download from cursor.com"
+    models:
+      claude_sonnet:
+        id: "claude-sonnet"
+        description: "Claude Sonnet via Cursor"
+        default: true
+      gpt4o:
+        id: "gpt-4o"
+        description: "GPT-4o via Cursor"
+        default: false
+
+  aider:
+    name: "Aider"
+    package: "aider-chat"
+    version: "0.72.1"
+    install: "pip install aider-chat"
+    models: {}
+
+  goose:
+    name: "Goose"
+    package: "goose-ai"
+    version: "1.0.16"
+    install: "pip install goose-ai"
+    models: {}
+
+# Swarm patterns for multi-agent workflows
+swarm_patterns:
+  hub_spoke:
+    id: "hub-spoke"
+    description: "Central coordinator distributes tasks to workers"
+  dag:
+    id: "dag"
+    description: "Directed acyclic graph with dependencies"
+  fan_out:
+    id: "fan-out"
+    description: "Parallel execution across multiple agents"
+  pipeline:
+    id: "pipeline"
+    description: "Sequential processing through stages"
+  consensus:
+    id: "consensus"
+    description: "Agents reach agreement before proceeding"
+  mesh:
+    id: "mesh"
+    description: "Fully connected peer-to-peer communication"
+  handoff:
+    id: "handoff"
+    description: "Sequential handoff between agents"
+  cascade:
+    id: "cascade"
+    description: "Cascading delegation"
+  debate:
+    id: "debate"
+    description: "Agents debate to reach conclusion"
+  hierarchical:
+    id: "hierarchical"
+    description: "Tree-structured coordination"

@@ -7,6 +7,8 @@ export {
   GeminiModels,
   CursorModels,
   CLIs,
+  CLIVersions,
+  CLIRegistry,
   SwarmPatterns,
 } from "../models.js";
 export * from "./memory-db.js";
