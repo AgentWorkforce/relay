@@ -42,8 +42,6 @@ Open **http://localhost:3888** to spawn agents, view real-time status, and strea
 
 ## SDK Usage
 
-Install the SDK:
-
 ```bash
 npm install @agent-relay/sdk
 ```
@@ -51,51 +49,76 @@ npm install @agent-relay/sdk
 ### Agent-to-Agent Messaging
 
 ```typescript
-import { AgentRelay } from '@agent-relay/sdk';
+import { AgentRelay, Models } from '@agent-relay/sdk';
 
 const relay = new AgentRelay();
 
 // Spawn agents with different CLIs and models
-const claude = await relay.claude.spawn({
+const planner = await relay.claude.spawn({
   name: 'Planner',
-  model: 'claude-sonnet-4-20250514'
+  model: Models.Claude.OPUS
 });
 
-const codex = await relay.codex.spawn({
+const coder = await relay.codex.spawn({
   name: 'Coder',
-  model: 'o3'
+  model: Models.Codex.O3
 });
 
 // Send messages between agents
-await claude.sendMessage({ to: 'Coder', text: 'Implement the auth module' });
+await planner.sendMessage({ to: 'Coder', text: 'Implement the auth module' });
 
 // Listen for messages
 relay.onMessageReceived = (msg) => {
   console.log(`${msg.from} → ${msg.to}: ${msg.text}`);
 };
 
-// Clean up
 await relay.shutdown();
 ```
 
-### Workflows
+### Built-in Workflow Templates
 
-Run multi-agent workflows with dependency management:
+Run pre-configured multi-agent workflows:
 
 ```typescript
-import { workflow } from '@agent-relay/sdk/workflows';
+import { TemplateRegistry, WorkflowRunner } from '@agent-relay/sdk/workflows';
 
-const result = await workflow('feature-dev')
-  .agent('architect', { cli: 'claude', role: 'System architect', model: 'claude-sonnet-4-20250514' })
-  .agent('developer', { cli: 'codex', role: 'Developer', model: 'o3' })
-  .agent('reviewer', { cli: 'claude', role: 'Code reviewer' })
+const registry = new TemplateRegistry();
+const config = await registry.loadTemplate('feature-dev');
+
+const runner = new WorkflowRunner();
+const result = await runner.execute(config, undefined, {
+  task: 'Add WebSocket support to the API'
+});
+```
+
+**Built-in templates:**
+
+| Template           | Pattern    | Agents                              |
+| ------------------ | ---------- | ----------------------------------- |
+| `feature-dev`      | hub-spoke  | lead, planner, developer, reviewer  |
+| `bug-fix`          | dag        | investigator, fixer, verifier       |
+| `code-review`      | fan-out    | lead, reviewers (security, quality) |
+| `security-audit`   | pipeline   | scanner, analyzer, reporter         |
+| `refactor`         | dag        | analyzer, refactorer, tester        |
+| `documentation`    | fan-out    | writer, reviewer                    |
+
+### Custom Workflows
+
+Build workflows programmatically:
+
+```typescript
+import { workflow, Models } from '@agent-relay/sdk/workflows';
+
+const result = await workflow('my-pipeline')
+  .pattern('dag')
+  .agent('architect', { cli: 'claude', model: Models.Claude.OPUS, role: 'System architect' })
+  .agent('developer', { cli: 'codex', model: Models.Codex.O3, role: 'Developer' })
+  .agent('reviewer', { cli: 'claude', model: Models.Claude.SONNET, role: 'Code reviewer' })
   .step('design', { agent: 'architect', task: 'Design the API' })
   .step('implement', { agent: 'developer', task: 'Implement the design', dependsOn: ['design'] })
   .step('review', { agent: 'reviewer', task: 'Review the code', dependsOn: ['implement'] })
   .run();
 ```
-
-Built-in workflow templates: `feature-dev`, `bug-fix`, `code-review`, `security-audit`, `refactor`, `documentation`
 
 ---
 
