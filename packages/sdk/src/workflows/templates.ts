@@ -13,6 +13,13 @@ export const BUILT_IN_TEMPLATE_NAMES = [
   'security-audit',
   'refactor',
   'documentation',
+  // Legacy pure-agent versions (all steps are agent steps, no deterministic steps)
+  'feature-dev-legacy',
+  'bug-fix-legacy',
+  'code-review-legacy',
+  'security-audit-legacy',
+  'refactor-legacy',
+  'documentation-legacy',
 ] as const;
 
 export type BuiltInTemplateName = (typeof BUILT_IN_TEMPLATE_NAMES)[number];
@@ -409,13 +416,20 @@ export class TemplateRegistry {
         }
 
         for (const step of workflow.steps) {
-          if (
-            !isRecord(step) ||
-            typeof step.name !== 'string' ||
-            typeof step.agent !== 'string' ||
-            typeof step.task !== 'string'
-          ) {
+          if (!isRecord(step) || typeof step.name !== 'string') {
             throw new Error(`Template at ${source} contains an invalid workflow step`);
+          }
+
+          // Deterministic steps require type and command
+          if (step.type === 'deterministic') {
+            if (typeof step.command !== 'string') {
+              throw new Error(`Template at ${source} has deterministic step "${step.name}" without a command`);
+            }
+          } else {
+            // Agent steps (type is undefined or 'agent') require agent and task
+            if (typeof step.agent !== 'string' || typeof step.task !== 'string') {
+              throw new Error(`Template at ${source} has agent step "${step.name}" without agent or task`);
+            }
           }
         }
       }

@@ -171,7 +171,7 @@ export class WorkflowTrajectory {
     if (!this.trajectory.agents.some((a) => a.name === agent)) {
       this.trajectory.agents.push({
         name: agent,
-        role: step.agent,
+        role: step.agent ?? 'deterministic',
         joinedAt: new Date().toISOString(),
       });
     }

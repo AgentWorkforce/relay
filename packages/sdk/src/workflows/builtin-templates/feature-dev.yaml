@@ -1,6 +1,6 @@
 version: "1.0"
 name: feature-dev
-description: "Full feature development lifecycle with planning, implementation, review, and release."
+description: "Blueprint-style feature development with deterministic quality gates."
 swarm:
   pattern: hub-spoke
   maxConcurrency: 2
@@ -27,10 +27,18 @@ agents:
     role: "Reviews code quality and release risk"
 workflows:
   - name: feature-delivery
-    description: "Plan, implement, review, and finalize a feature request."
+    description: "Plan, implement, review, and finalize a feature request with quality gates."
     onError: retry
+    preflight:
+      - command: git status --porcelain
+        failIf: non-empty
+        description: "Ensure working directory is clean"
+      - command: npm run type-check 2>/dev/null || echo "skip"
+        description: "Run type checking if available"
     steps:
+      # Agent: Planning
       - name: plan
+        type: agent
         agent: planner
         task: |
           Analyze the feature request and produce a concrete implementation plan:
@@ -39,9 +47,18 @@ workflows:
         verification:
           type: output_contains
           value: PLAN_COMPLETE
-      - name: implement
-        agent: developer
+
+      # Deterministic: Create feature branch
+      - name: create-branch
+        type: deterministic
         dependsOn: [plan]
+        command: git checkout -b feature/{{branch-name}}
+
+      # Agent: Implementation
+      - name: implement
+        type: agent
+        agent: developer
+        dependsOn: [create-branch]
         task: |
           Implement the approved plan:
           {{steps.plan.output}}
@@ -49,18 +66,61 @@ workflows:
         verification:
           type: output_contains
           value: IMPLEMENTATION_COMPLETE
-      - name: review
-        agent: reviewer
+
+      # Deterministic: Lint
+      - name: lint
+        type: deterministic
         dependsOn: [implement]
+        command: npm run lint:fix 2>/dev/null || npm run lint 2>/dev/null || echo "No lint configured"
+
+      # Deterministic: Run tests
+      - name: test
+        type: deterministic
+        dependsOn: [lint]
+        command: npm test 2>/dev/null || echo "No tests configured"
+
+      # Agent: Fix any failures (with iteration limit)
+      - name: fix-failures
+        type: agent
+        agent: developer
+        dependsOn: [test]
+        task: |
+          Review test results and fix any failures. If all tests passed, output TESTS_PASSED.
+          Test output: {{steps.test.output}}
+        maxIterations: 2
+        verification:
+          type: output_contains
+          value: TESTS_PASSED
+
+      # Deterministic: Stage and commit
+      - name: commit
+        type: deterministic
+        dependsOn: [fix-failures]
+        command: git add -A && git commit -m "feat: {{steps.plan.output | first-line}}"
+
+      # Agent: Code review
+      - name: review
+        type: agent
+        agent: reviewer
+        dependsOn: [commit]
         task: |
           Review implementation quality, correctness, and test coverage:
           {{steps.implement.output}}
         verification:
           type: output_contains
           value: REVIEW_COMPLETE
-      - name: finalize
-        agent: lead
+
+      # Deterministic: Push to remote
+      - name: push
+        type: deterministic
         dependsOn: [review]
+        command: git push origin feature/{{branch-name}}
+
+      # Agent: Finalize
+      - name: finalize
+        type: agent
+        agent: lead
+        dependsOn: [push]
         task: |
           Summarize decisions and ship readiness for the feature.
         verification:

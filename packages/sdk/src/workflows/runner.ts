@@ -21,6 +21,7 @@ import type {
   AgentDefinition,
   ErrorHandlingConfig,
   IdleNudgeConfig,
+  PreflightCheck,
   RelayYamlConfig,
   SwarmPattern,
   VerificationCheck,
@@ -360,8 +361,20 @@ export class WorkflowRunner {
         throw new Error(`${source}: each step must be an object`);
       }
       const s = step as Record<string, unknown>;
-      if (typeof s.name !== 'string' || typeof s.agent !== 'string' || typeof s.task !== 'string') {
-        throw new Error(`${source}: each step must have "name", "agent", and "task" string fields`);
+      if (typeof s.name !== 'string') {
+        throw new Error(`${source}: each step must have a string "name" field`);
+      }
+
+      // Deterministic steps require type and command
+      if (s.type === 'deterministic') {
+        if (typeof s.command !== 'string') {
+          throw new Error(`${source}: deterministic step "${s.name}" must have a "command" field`);
+        }
+      } else {
+        // Agent steps (type undefined or 'agent') require agent and task
+        if (typeof s.agent !== 'string' || typeof s.task !== 'string') {
+          throw new Error(`${source}: agent step "${s.name}" must have "agent" and "task" string fields`);
+        }
       }
     }
 
@@ -421,7 +434,13 @@ export class WorkflowRunner {
     if (resolved.workflows) {
       for (const wf of resolved.workflows) {
         for (const step of wf.steps) {
-          step.task = this.interpolate(step.task, vars);
+          // Resolve variables in task (agent steps) and command (deterministic steps)
+          if (step.task) {
+            step.task = this.interpolate(step.task, vars);
+          }
+          if (step.command) {
+            step.command = this.interpolate(step.command, vars);
+          }
         }
       }
     }
@@ -543,13 +562,17 @@ export class WorkflowRunner {
     // Build step rows
     const stepStates = new Map<string, StepState>();
     for (const step of workflow.steps) {
+      // Handle both agent and deterministic steps
+      const isDeterministic = step.type === 'deterministic';
+
       const stepRow: WorkflowStepRow = {
         id: this.generateId(),
         runId,
         stepName: step.name,
-        agentName: step.agent,
+        agentName: isDeterministic ? null : (step.agent ?? null),
+        stepType: isDeterministic ? 'deterministic' : 'agent',
         status: 'pending',
-        task: step.task,
+        task: isDeterministic ? (step.command ?? '') : (step.task ?? ''),
         dependsOn: step.dependsOn ?? [],
         retryCount: 0,
         createdAt: now,
@@ -698,6 +721,11 @@ export class WorkflowRunner {
         agentMap.set(agent.name, agent);
       }
 
+      // Run preflight checks before any steps (skip on resume)
+      if (!isResume && workflow.preflight?.length) {
+        await this.runPreflightChecks(workflow.preflight, runId);
+      }
+
       await this.executeSteps(workflow, stepStates, agentMap, config.errorHandling, runId);
 
       const allCompleted = [...stepStates.values()].every(
@@ -840,7 +868,7 @@ export class WorkflowRunner {
 
           batchOutcomes.push({
             name: step.name,
-            agent: step.agent,
+            agent: step.agent ?? 'deterministic',
             status: 'failed',
             attempts: (state?.row.retryCount ?? 0) + 1,
             error,
@@ -858,7 +886,7 @@ export class WorkflowRunner {
         } else {
           batchOutcomes.push({
             name: step.name,
-            agent: step.agent,
+            agent: step.agent ?? 'deterministic',
             status: state?.row.status === 'completed' ? 'completed' : 'failed',
             attempts: (state?.row.retryCount ?? 0) + 1,
             output: state?.row.output,
@@ -901,7 +929,290 @@ export class WorkflowRunner {
     });
   }
 
+  /**
+   * Execute preflight checks before any workflow steps.
+   * All checks must pass or the workflow fails immediately.
+   */
+  private async runPreflightChecks(
+    checks: PreflightCheck[],
+    runId: string,
+  ): Promise<void> {
+    this.postToChannel(`Running ${checks.length} preflight check(s)...`);
+
+    for (const check of checks) {
+      this.checkAborted();
+
+      const description = check.description ?? check.command.slice(0, 50);
+      this.postToChannel(`**[preflight]** ${description}`);
+
+      try {
+        const output = await new Promise<string>((resolve, reject) => {
+          const child = cpSpawn('sh', ['-c', check.command], {
+            stdio: 'pipe',
+            cwd: this.cwd,
+            env: { ...process.env },
+          });
+
+          const stdoutChunks: string[] = [];
+          const stderrChunks: string[] = [];
+
+          // Wire abort signal
+          const abortSignal = this.abortController?.signal;
+          let abortHandler: (() => void) | undefined;
+          if (abortSignal && !abortSignal.aborted) {
+            abortHandler = () => {
+              child.kill('SIGTERM');
+            };
+            abortSignal.addEventListener('abort', abortHandler, { once: true });
+          }
+
+          // 30s timeout for preflight checks
+          const timer = setTimeout(() => {
+            child.kill('SIGTERM');
+            reject(new Error(`Preflight check timed out: ${description}`));
+          }, 30_000);
+
+          child.stdout?.on('data', (chunk: Buffer) => {
+            stdoutChunks.push(chunk.toString());
+          });
+
+          child.stderr?.on('data', (chunk: Buffer) => {
+            stderrChunks.push(chunk.toString());
+          });
+
+          child.on('close', (code) => {
+            clearTimeout(timer);
+            if (abortHandler && abortSignal) {
+              abortSignal.removeEventListener('abort', abortHandler);
+            }
+
+            if (abortSignal?.aborted) {
+              reject(new Error('Preflight check aborted'));
+              return;
+            }
+
+            // Non-zero exit code is a failure
+            if (code !== 0 && code !== null) {
+              const stderr = stderrChunks.join('');
+              reject(new Error(`Preflight check failed (exit ${code})${stderr ? `: ${stderr.slice(0, 200)}` : ''}`));
+              return;
+            }
+
+            resolve(stdoutChunks.join(''));
+          });
+
+          child.on('error', (err) => {
+            clearTimeout(timer);
+            if (abortHandler && abortSignal) {
+              abortSignal.removeEventListener('abort', abortHandler);
+            }
+            reject(new Error(`Preflight check error: ${err.message}`));
+          });
+        });
+
+        // Check failIf condition
+        if (check.failIf) {
+          const trimmedOutput = output.trim();
+          if (check.failIf === 'non-empty' && trimmedOutput.length > 0) {
+            throw new Error(`Preflight failed: output is non-empty\n${trimmedOutput.slice(0, 200)}`);
+          }
+          if (check.failIf === 'empty' && trimmedOutput.length === 0) {
+            throw new Error('Preflight failed: output is empty');
+          }
+          // Treat as regex pattern
+          if (check.failIf !== 'non-empty' && check.failIf !== 'empty') {
+            const regex = new RegExp(check.failIf);
+            if (regex.test(output)) {
+              throw new Error(`Preflight failed: output matches pattern "${check.failIf}"`);
+            }
+          }
+        }
+
+        // Check successIf condition
+        if (check.successIf) {
+          const regex = new RegExp(check.successIf);
+          if (!regex.test(output)) {
+            throw new Error(`Preflight failed: output does not match required pattern "${check.successIf}"`);
+          }
+        }
+
+        this.postToChannel(`**[preflight]** ${description} — passed`);
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        this.postToChannel(`**[preflight]** ${description} — FAILED: ${errorMsg}`);
+        throw new Error(`Preflight check failed: ${errorMsg}`);
+      }
+    }
+
+    this.postToChannel('All preflight checks passed');
+  }
+
+  /** Check if a step is deterministic (shell command) vs agent (LLM-powered). */
+  private isDeterministicStep(step: WorkflowStep): boolean {
+    return step.type === 'deterministic';
+  }
+
   private async executeStep(
+    step: WorkflowStep,
+    stepStates: Map<string, StepState>,
+    agentMap: Map<string, AgentDefinition>,
+    errorHandling: ErrorHandlingConfig | undefined,
+    runId: string,
+  ): Promise<void> {
+    // Branch: deterministic steps execute shell commands
+    if (this.isDeterministicStep(step)) {
+      return this.executeDeterministicStep(step, stepStates, runId);
+    }
+
+    // Agent step execution
+    return this.executeAgentStep(step, stepStates, agentMap, errorHandling, runId);
+  }
+
+  /**
+   * Execute a deterministic step (shell command).
+   * Fast, reliable, $0 LLM cost.
+   */
+  private async executeDeterministicStep(
+    step: WorkflowStep,
+    stepStates: Map<string, StepState>,
+    runId: string,
+  ): Promise<void> {
+    const state = stepStates.get(step.name);
+    if (!state) throw new Error(`Step state not found: ${step.name}`);
+
+    this.checkAborted();
+
+    // Mark step as running
+    state.row.status = 'running';
+    state.row.startedAt = new Date().toISOString();
+    await this.db.updateStep(state.row.id, {
+      status: 'running',
+      startedAt: state.row.startedAt,
+      updatedAt: new Date().toISOString(),
+    });
+    this.emit({ type: 'step:started', runId, stepName: step.name });
+    this.postToChannel(`**[${step.name}]** Started (deterministic)`);
+
+    // Resolve variables in the command (e.g., {{steps.plan.output}}, {{branch-name}})
+    const stepOutputContext = this.buildStepOutputContext(stepStates, runId);
+    let resolvedCommand = this.interpolateStepTask(step.command ?? '', stepOutputContext);
+
+    // Also resolve simple {{variable}} placeholders (already resolved in top-level config but safe to re-run)
+    resolvedCommand = resolvedCommand.replace(/\{\{([\w][\w.\-]*)\}\}/g, (_match, key: string) => {
+      if (key.startsWith('steps.')) return _match; // Already handled above
+      const value = this.resolveDotPath(key, stepOutputContext);
+      return value !== undefined ? String(value) : _match;
+    });
+
+    try {
+      const output = await new Promise<string>((resolve, reject) => {
+        const child = cpSpawn('sh', ['-c', resolvedCommand], {
+          stdio: 'pipe',
+          cwd: this.cwd,
+          env: { ...process.env },
+        });
+
+        const stdoutChunks: string[] = [];
+        const stderrChunks: string[] = [];
+
+        // Wire abort signal
+        const abortSignal = this.abortController?.signal;
+        let abortHandler: (() => void) | undefined;
+        if (abortSignal && !abortSignal.aborted) {
+          abortHandler = () => {
+            child.kill('SIGTERM');
+            setTimeout(() => child.kill('SIGKILL'), 5000);
+          };
+          abortSignal.addEventListener('abort', abortHandler, { once: true });
+        }
+
+        // Handle timeout
+        let timedOut = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        if (step.timeoutMs) {
+          timer = setTimeout(() => {
+            timedOut = true;
+            child.kill('SIGTERM');
+            setTimeout(() => child.kill('SIGKILL'), 5000);
+          }, step.timeoutMs);
+        }
+
+        child.stdout?.on('data', (chunk: Buffer) => {
+          stdoutChunks.push(chunk.toString());
+        });
+
+        child.stderr?.on('data', (chunk: Buffer) => {
+          stderrChunks.push(chunk.toString());
+        });
+
+        child.on('close', (code) => {
+          if (timer) clearTimeout(timer);
+          if (abortHandler && abortSignal) {
+            abortSignal.removeEventListener('abort', abortHandler);
+          }
+
+          if (abortSignal?.aborted) {
+            reject(new Error(`Step "${step.name}" aborted`));
+            return;
+          }
+
+          if (timedOut) {
+            reject(new Error(`Step "${step.name}" timed out after ${step.timeoutMs}ms`));
+            return;
+          }
+
+          const stdout = stdoutChunks.join('');
+          const stderr = stderrChunks.join('');
+
+          // Check exit code unless failOnError is explicitly false
+          const failOnError = step.failOnError !== false;
+          if (failOnError && code !== 0 && code !== null) {
+            reject(new Error(`Command failed with exit code ${code}${stderr ? `: ${stderr.slice(0, 500)}` : ''}`));
+            return;
+          }
+
+          resolve(step.captureOutput !== false ? stdout : `Command completed (exit code ${code ?? 0})`);
+        });
+
+        child.on('error', (err) => {
+          if (timer) clearTimeout(timer);
+          if (abortHandler && abortSignal) {
+            abortSignal.removeEventListener('abort', abortHandler);
+          }
+          reject(new Error(`Failed to execute command: ${err.message}`));
+        });
+      });
+
+      // Mark completed
+      state.row.status = 'completed';
+      state.row.output = output;
+      state.row.completedAt = new Date().toISOString();
+      await this.db.updateStep(state.row.id, {
+        status: 'completed',
+        output,
+        completedAt: state.row.completedAt,
+        updatedAt: new Date().toISOString(),
+      });
+
+      // Persist step output
+      await this.persistStepOutput(runId, step.name, output);
+
+      this.emit({ type: 'step:completed', runId, stepName: step.name, output });
+      this.postToChannel(
+        `**[${step.name}]** Completed (deterministic)\n${output.slice(0, 500)}${output.length > 500 ? '\n...(truncated)' : ''}`,
+      );
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      this.postToChannel(`**[${step.name}]** Failed: ${errorMsg}`);
+      await this.markStepFailed(state, errorMsg, runId);
+      throw new Error(`Step "${step.name}" failed: ${errorMsg}`);
+    }
+  }
+
+  /**
+   * Execute an agent step (LLM-powered).
+   */
+  private async executeAgentStep(
     step: WorkflowStep,
     stepStates: Map<string, StepState>,
     agentMap: Map<string, AgentDefinition>,
@@ -911,9 +1222,13 @@ export class WorkflowRunner {
     const state = stepStates.get(step.name);
     if (!state) throw new Error(`Step state not found: ${step.name}`);
 
-    const agentDef = agentMap.get(step.agent);
+    const agentName = step.agent;
+    if (!agentName) {
+      throw new Error(`Step "${step.name}" is missing required "agent" field`);
+    }
+    const agentDef = agentMap.get(agentName);
     if (!agentDef) {
-      throw new Error(`Agent "${step.agent}" not found in config`);
+      throw new Error(`Agent "${agentName}" not found in config`);
     }
 
     const maxRetries = step.retries ?? agentDef.constraints?.retries ?? errorHandling?.maxRetries ?? 0;
@@ -952,7 +1267,7 @@ export class WorkflowRunner {
 
         // Resolve step-output variables (e.g. {{steps.plan.output}}) at execution time
         const stepOutputContext = this.buildStepOutputContext(stepStates, runId);
-        let resolvedTask = this.interpolateStepTask(step.task, stepOutputContext);
+        let resolvedTask = this.interpolateStepTask(step.task ?? '', stepOutputContext);
 
         // If this is an interactive agent, append awareness of non-interactive workers
         // so the lead knows not to message them and to use step output chaining instead
@@ -1074,7 +1389,7 @@ export class WorkflowRunner {
     const logStream = createWriteStream(logPath, { flags: 'a' });
 
     // Register in workers.json with interactive: false metadata
-    this.registerWorker(agentName, agentDef.cli, step.task, undefined, false);
+    this.registerWorker(agentName, agentDef.cli, step.task ?? '', undefined, false);
 
     // Register agent in Relaycast for observability
     let stopHeartbeat: (() => void) | undefined;
@@ -1092,7 +1407,8 @@ export class WorkflowRunner {
     }
 
     // Post task assignment to channel for observability
-    const taskPreview = step.task.slice(0, 500) + (step.task.length > 500 ? '...' : '');
+    const taskText = step.task ?? '';
+    const taskPreview = taskText.slice(0, 500) + (taskText.length > 500 ? '...' : '');
     this.postToChannel(`**[${step.name}]** Assigned to \`${agentName}\` (non-interactive):\n${taskPreview}`);
 
     const stdoutChunks: string[] = [];
@@ -1107,7 +1423,7 @@ export class WorkflowRunner {
         });
 
         // Update workers.json with PID now that we have it
-        this.registerWorker(agentName, agentDef.cli, step.task, child.pid, false);
+        this.registerWorker(agentName, agentDef.cli, step.task ?? '', child.pid, false);
 
         // Wire abort signal so runner.abort() kills the child process
         const abortSignal = this.abortController?.signal;
@@ -1289,7 +1605,7 @@ export class WorkflowRunner {
       } catch {
         // Best-effort PID lookup
       }
-      this.registerWorker(agentName, agentDef.cli, step.task, workerPid);
+      this.registerWorker(agentName, agentDef.cli, step.task ?? '', workerPid);
 
       // Register the spawned agent in Relaycast for observability + start heartbeat
       if (this.relaycastApi) {
@@ -1313,7 +1629,8 @@ export class WorkflowRunner {
       }
 
       // Post task assignment to channel for observability
-      const taskPreview = step.task.slice(0, 500) + (step.task.length > 500 ? '...' : '');
+      const taskTextForPreview = step.task ?? '';
+      const taskPreview = taskTextForPreview.slice(0, 500) + (taskTextForPreview.length > 500 ? '...' : '');
       this.postToChannel(`**[${step.name}]** Assigned to \`${agent.name}\`:\n${taskPreview}`);
 
       // Register agent handle for hub-mediated nudging
@@ -1681,6 +1998,7 @@ export class WorkflowRunner {
     const agentToSteps = new Map<string, string[]>();
     for (const [stepName, state] of stepStates) {
       const agentName = state.row.agentName;
+      if (!agentName) continue; // Skip deterministic steps
       if (!agentToSteps.has(agentName)) agentToSteps.set(agentName, []);
       agentToSteps.get(agentName)!.push(stepName);
     }
@@ -1789,7 +2107,7 @@ export class WorkflowRunner {
     for (const [name, state] of stepStates) {
       outcomes.push({
         name,
-        agent: state.row.agentName,
+        agent: state.row.agentName ?? 'deterministic',
         status: state.row.status === 'completed' ? 'completed'
           : state.row.status === 'skipped' ? 'skipped'
           : 'failed',

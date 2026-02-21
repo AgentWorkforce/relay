@@ -238,6 +238,13 @@
         "description": {
           "type": "string"
         },
+        "preflight": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PreflightCheck"
+          },
+          "description": "Preflight checks that run before any steps. All must pass."
+        },
         "steps": {
           "type": "array",
           "items": {
@@ -252,11 +259,45 @@
         }
       }
     },
+    "PreflightCheck": {
+      "type": "object",
+      "required": ["command"],
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "Shell command to execute"
+        },
+        "failIf": {
+          "type": "string",
+          "description": "Fail if output matches: 'non-empty', 'empty', or a regex pattern"
+        },
+        "successIf": {
+          "type": "string",
+          "description": "Succeed only if output matches this condition"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of what this check validates"
+        }
+      }
+    },
     "WorkflowStep": {
+      "oneOf": [
+        { "$ref": "#/definitions/AgentWorkflowStep" },
+        { "$ref": "#/definitions/DeterministicWorkflowStep" }
+      ]
+    },
+    "AgentWorkflowStep": {
       "type": "object",
       "required": ["name", "agent", "task"],
       "additionalProperties": false,
       "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["agent"],
+          "description": "Step type (optional for agent steps, defaults to 'agent')"
+        },
         "name": {
           "type": "string",
           "description": "Unique step name within the workflow"
@@ -284,6 +325,50 @@
         "retries": {
           "type": "integer",
           "minimum": 0
+        },
+        "maxIterations": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum iterations for steps that may need to retry"
+        }
+      }
+    },
+    "DeterministicWorkflowStep": {
+      "type": "object",
+      "required": ["name", "type", "command"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["deterministic"],
+          "description": "Step type - must be 'deterministic' for shell command steps"
+        },
+        "name": {
+          "type": "string",
+          "description": "Unique step name within the workflow"
+        },
+        "command": {
+          "type": "string",
+          "description": "Shell command to execute. Supports {{variable}} interpolation."
+        },
+        "dependsOn": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Step names that must complete before this step runs"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failOnError": {
+          "type": "boolean",
+          "default": true,
+          "description": "Fail if command exit code is non-zero"
+        },
+        "captureOutput": {
+          "type": "boolean",
+          "default": true,
+          "description": "Capture stdout as step output for downstream steps"
         }
       }
     },

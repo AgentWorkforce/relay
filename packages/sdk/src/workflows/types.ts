@@ -113,24 +113,82 @@ export interface AgentConstraints {
 
 // ── Workflow definitions ────────────────────────────────────────────────────
 
+/** Preflight check that runs before any workflow steps. */
+export interface PreflightCheck {
+  /** Shell command to execute. */
+  command: string;
+  /** Fail if output matches this condition: "non-empty", "empty", or a regex pattern. */
+  failIf?: "non-empty" | "empty" | string;
+  /** Succeed only if output matches this condition. */
+  successIf?: string;
+  /** Human-readable description of what this check validates. */
+  description?: string;
+}
+
 /** A named workflow composed of sequential or parallel steps. */
 export interface WorkflowDefinition {
   name: string;
   description?: string;
+  /** Preflight checks that run before any steps. All must pass. */
+  preflight?: PreflightCheck[];
   steps: WorkflowStep[];
   onError?: "fail" | "skip" | "retry";
 }
 
-/** A single step within a workflow. */
+/** Step type: agent (LLM-powered) or deterministic (shell command). */
+export type WorkflowStepType = "agent" | "deterministic";
+
+/**
+ * A single step within a workflow.
+ *
+ * Steps can be either:
+ * - Agent steps (type: undefined or "agent"): Spawn an LLM agent to execute a task
+ * - Deterministic steps (type: "deterministic"): Execute a shell command
+ */
 export interface WorkflowStep {
+  /** Unique step name within the workflow. */
   name: string;
-  agent: string;
-  task: string;
+  /** Step type: "agent" (default) or "deterministic". */
+  type?: WorkflowStepType;
+  /** Step names that must complete before this step runs. */
   dependsOn?: string[];
-  verification?: VerificationCheck;
+  /** Timeout in milliseconds. */
   timeoutMs?: number;
+
+  // ── Agent step fields ──────────────────────────────────────────────────────
+  /** Name of the agent to execute this step (required for agent steps). */
+  agent?: string;
+  /** Task description for the agent (required for agent steps). */
+  task?: string;
+  /** Verification check to validate step output. */
+  verification?: VerificationCheck;
+  /** Number of retry attempts on failure. */
   retries?: number;
+  /** Maximum iterations for steps that may need to retry (e.g., fix-failures). */
+  maxIterations?: number;
+
+  // ── Deterministic step fields ──────────────────────────────────────────────
+  /** Shell command to execute (required for deterministic steps). */
+  command?: string;
+  /** Fail if command exit code is non-zero. Default: true. */
+  failOnError?: boolean;
+  /** Capture stdout as step output for downstream steps. Default: true. */
+  captureOutput?: boolean;
 }
+
+/** Type guard: Check if a step is a deterministic (shell command) step. */
+export function isDeterministicStep(step: WorkflowStep): boolean {
+  return step.type === "deterministic";
+}
+
+/** Type guard: Check if a step is an agent (LLM-powered) step. */
+export function isAgentStep(step: WorkflowStep): boolean {
+  return step.type !== "deterministic";
+}
+
+// Legacy type aliases for backward compatibility
+export type AgentWorkflowStep = WorkflowStep;
+export type DeterministicWorkflowStep = WorkflowStep;
 
 /** Verification check to validate a step's output. */
 export interface VerificationCheck {
@@ -211,8 +269,12 @@ export interface WorkflowStepRow {
   id: string;
   runId: string;
   stepName: string;
-  agentName: string;
+  /** Agent name for agent steps, null for deterministic steps. */
+  agentName: string | null;
+  /** Step type: agent or deterministic. */
+  stepType: WorkflowStepType;
   status: WorkflowStepStatus;
+  /** Task description for agent steps, command for deterministic steps. */
   task: string;
   dependsOn: string[];
   output?: string;

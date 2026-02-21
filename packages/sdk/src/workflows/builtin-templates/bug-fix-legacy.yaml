@@ -1,6 +1,6 @@
 version: "1.0"
 name: bug-fix
-description: "Blueprint-style bug investigation and remediation with validation gates."
+description: "Fast bug investigation and remediation workflow with validation gates."
 swarm:
   pattern: hub-spoke
   maxConcurrency: 2
@@ -29,16 +29,8 @@ workflows:
   - name: bug-remediation
     description: "Investigate root cause, patch safely, and verify no regressions."
     onError: retry
-    preflight:
-      - command: git status --porcelain
-        failIf: non-empty
-        description: "Ensure working directory is clean"
-      - command: npm test 2>/dev/null || echo "baseline"
-        description: "Capture baseline test state"
     steps:
-      # Agent: Investigate root cause
       - name: investigate
-        type: agent
         agent: investigator
         task: |
           Reproduce the issue, identify root cause, and provide a fix strategy:
@@ -46,18 +38,9 @@ workflows:
         verification:
           type: output_contains
           value: ROOT_CAUSE_IDENTIFIED
-
-      # Deterministic: Create fix branch
-      - name: create-branch
-        type: deterministic
-        dependsOn: [investigate]
-        command: git checkout -b fix/{{branch-name}}
-
-      # Agent: Implement the fix
       - name: patch
-        type: agent
         agent: fixer
-        dependsOn: [create-branch]
+        dependsOn: [investigate]
         task: |
           Implement the fix based on the investigation report:
           {{steps.investigate.output}}
@@ -65,55 +48,18 @@ workflows:
         verification:
           type: output_contains
           value: PATCH_APPLIED
-
-      # Deterministic: Run tests
-      - name: test
-        type: deterministic
-        dependsOn: [patch]
-        command: npm test
-
-      # Agent: Fix test failures if any (with iteration limit)
-      - name: fix-if-broken
-        type: agent
-        agent: fixer
-        dependsOn: [test]
-        task: |
-          Review test results. If tests failed, fix them. If all passed, output TESTS_PASSED.
-          Test output: {{steps.test.output}}
-        maxIterations: 2
-        verification:
-          type: output_contains
-          value: TESTS_PASSED
-
-      # Deterministic: Commit
-      - name: commit
-        type: deterministic
-        dependsOn: [fix-if-broken]
-        command: git add -A && git commit -m "fix: {{steps.investigate.output | first-line}}"
-
-      # Agent: Verify no regressions
       - name: regression-check
-        type: agent
         agent: verifier
-        dependsOn: [commit]
+        dependsOn: [patch]
         task: |
           Validate the patch for correctness and regression risk:
           {{steps.patch.output}}
         verification:
           type: output_contains
           value: VERIFICATION_COMPLETE
-
-      # Deterministic: Push to remote
-      - name: push
-        type: deterministic
-        dependsOn: [regression-check]
-        command: git push origin fix/{{branch-name}}
-
-      # Agent: Closeout
       - name: closeout
-        type: agent
         agent: lead
-        dependsOn: [push]
+        dependsOn: [regression-check]
         task: |
           Prepare final incident summary, residual risk, and deployment notes.
         verification:

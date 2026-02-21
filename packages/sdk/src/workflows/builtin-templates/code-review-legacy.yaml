@@ -1,6 +1,6 @@
 version: "1.0"
 name: code-review
-description: "Blueprint-style parallel code review with deterministic diff capture."
+description: "Parallel multi-reviewer code assessment with consolidated findings."
 swarm:
   pattern: fan-out
   maxConcurrency: 4
@@ -30,84 +30,43 @@ workflows:
   - name: parallel-review
     description: "Run focused reviews in parallel and synthesize final guidance."
     onError: fail
-    preflight:
-      - command: git diff --stat HEAD~1 2>/dev/null || git diff --stat 2>/dev/null || echo "No diff available"
-        description: "Check there are changes to review"
     steps:
-      # Deterministic: Capture diff for review
-      - name: capture-diff
-        type: deterministic
-        command: git diff HEAD~1 2>/dev/null || git diff 2>/dev/null || echo "No changes"
-        captureOutput: true
-
-      # Deterministic: Capture file list
-      - name: capture-files
-        type: deterministic
-        dependsOn: [capture-diff]
-        command: git diff --name-only HEAD~1 2>/dev/null || git diff --name-only 2>/dev/null || echo "No files"
-
-      # Agent: Prepare context
       - name: prepare-context
-        type: agent
         agent: lead
-        dependsOn: [capture-diff, capture-files]
         task: |
           Summarize change intent, impacted modules, and review priorities:
           {{task}}
-
-          Changed files: {{steps.capture-files.output}}
         verification:
           type: output_contains
           value: REVIEW_CONTEXT_READY
-
-      # Agent: Architecture review (parallel)
       - name: architecture-pass
-        type: agent
         agent: reviewer-architecture
         dependsOn: [prepare-context]
         task: |
           Review architecture, coupling, and long-term maintainability:
           {{steps.prepare-context.output}}
-
-          Diff:
-          {{steps.capture-diff.output}}
         verification:
           type: output_contains
           value: ARCH_REVIEW_COMPLETE
-
-      # Agent: Correctness review (parallel)
       - name: correctness-pass
-        type: agent
         agent: reviewer-correctness
         dependsOn: [prepare-context]
         task: |
           Review behavior, tests, and likely regression paths:
           {{steps.prepare-context.output}}
-
-          Diff:
-          {{steps.capture-diff.output}}
         verification:
           type: output_contains
           value: CORRECTNESS_REVIEW_COMPLETE
-
-      # Agent: Security review (parallel)
       - name: security-pass
-        type: agent
         agent: reviewer-security
         dependsOn: [prepare-context]
         task: |
           Review attack surface, secret handling, and input validation:
           {{steps.prepare-context.output}}
-
-          Diff:
-          {{steps.capture-diff.output}}
         verification:
           type: output_contains
           value: SECURITY_REVIEW_COMPLETE
-
-      # Agent: Consolidate findings
       - name: consolidate
-        type: agent
         agent: lead
         dependsOn: [architecture-pass, correctness-pass, security-pass]
         task: |

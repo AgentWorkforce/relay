@@ -137,7 +137,8 @@ const PATTERN_HEURISTICS: Array<{
     test: (c) =>
       Array.isArray(c.workflows) &&
       c.workflows.some((w) => {
-        const names = w.steps.map((s) => s.agent);
+        // Filter to only agent steps
+        const names = w.steps.filter((s) => s.agent).map((s) => s.agent!);
         return new Set(names).size === names.length && names.length > 2;
       }),
     pattern: 'pipeline',
@@ -553,8 +554,8 @@ export class SwarmCoordinator extends EventEmitter {
             id,
             runId,
             step.name,
-            step.agent,
-            step.task,
+            step.agent ?? null,
+            step.task ?? step.command ?? '',
             JSON.stringify(step.dependsOn ?? []),
             now,
           ],
@@ -740,6 +741,8 @@ export class SwarmCoordinator extends EventEmitter {
     const seen = new Set<string>();
     const order: string[] = [];
     for (const step of workflow.steps) {
+      // Skip deterministic steps (no agent)
+      if (!step.agent) continue;
       if (!seen.has(step.agent)) {
         seen.add(step.agent);
         order.push(step.agent);
@@ -769,13 +772,17 @@ export class SwarmCoordinator extends EventEmitter {
     const workflows = config.workflows ?? [];
 
     for (const wf of workflows) {
-      // Build step-name → agent-name mapping.
+      // Build step-name → agent-name mapping (skip deterministic steps)
       const stepAgent = new Map<string, string>();
       for (const step of wf.steps) {
-        stepAgent.set(step.name, step.agent);
+        if (step.agent) {
+          stepAgent.set(step.name, step.agent);
+        }
       }
 
       for (const step of wf.steps) {
+        // Skip deterministic steps
+        if (!step.agent) continue;
         if (!step.dependsOn?.length) continue;
         for (const dep of step.dependsOn) {
           const fromAgent = stepAgent.get(dep);

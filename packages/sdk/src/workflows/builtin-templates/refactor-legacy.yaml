@@ -1,6 +1,6 @@
 version: "1.0"
 name: refactor
-description: "Blueprint-style refactor workflow with deterministic quality gates."
+description: "Hierarchical refactor workflow for safe structural improvement."
 swarm:
   pattern: hierarchical
   maxConcurrency: 2
@@ -29,16 +29,8 @@ workflows:
   - name: refactor-execution
     description: "Analyze current system, design approach, refactor, and validate."
     onError: retry
-    preflight:
-      - command: git status --porcelain
-        failIf: non-empty
-        description: "Ensure working directory is clean"
-      - command: npm test 2>/dev/null || echo "baseline"
-        description: "Capture baseline test results"
     steps:
-      # Agent: Analyze current design
       - name: analyze
-        type: agent
         agent: architect
         task: |
           Analyze current design and identify refactor opportunities:
@@ -46,10 +38,7 @@ workflows:
         verification:
           type: output_contains
           value: ANALYSIS_COMPLETE
-
-      # Agent: Design refactor plan
       - name: design
-        type: agent
         agent: architect
         dependsOn: [analyze]
         task: |
@@ -58,18 +47,9 @@ workflows:
         verification:
           type: output_contains
           value: PLAN_COMPLETE
-
-      # Deterministic: Create refactor branch
-      - name: create-branch
-        type: deterministic
-        dependsOn: [design]
-        command: git checkout -b refactor/{{branch-name}}
-
-      # Agent: Execute refactor
       - name: refactor-code
-        type: agent
         agent: refactorer
-        dependsOn: [create-branch]
+        dependsOn: [design]
         task: |
           Execute the refactor plan while preserving behavior:
           {{steps.design.output}}
@@ -77,49 +57,18 @@ workflows:
         verification:
           type: output_contains
           value: REFACTOR_COMPLETE
-
-      # Deterministic: Run linting
-      - name: lint
-        type: deterministic
-        dependsOn: [refactor-code]
-        command: npm run lint:fix 2>/dev/null || npm run lint 2>/dev/null || echo "No lint configured"
-
-      # Deterministic: Run tests
-      - name: test
-        type: deterministic
-        dependsOn: [lint]
-        command: npm test
-
-      # Agent: Validate behavior parity
       - name: validate
-        type: agent
         agent: tester
-        dependsOn: [test]
+        dependsOn: [refactor-code]
         task: |
           Validate no regressions and ensure tests/quality checks pass:
           {{steps.refactor-code.output}}
-          Test results: {{steps.test.output}}
         verification:
           type: output_contains
           value: VALIDATION_COMPLETE
-
-      # Deterministic: Commit
-      - name: commit
-        type: deterministic
-        dependsOn: [validate]
-        command: git add -A && git commit -m "refactor: {{steps.design.output | first-line}}"
-
-      # Deterministic: Push
-      - name: push
-        type: deterministic
-        dependsOn: [commit]
-        command: git push origin refactor/{{branch-name}}
-
-      # Agent: Handoff
       - name: handoff
-        type: agent
         agent: lead
-        dependsOn: [push]
+        dependsOn: [validate]
         task: |
           Produce final refactor summary and open follow-up items.
         verification:

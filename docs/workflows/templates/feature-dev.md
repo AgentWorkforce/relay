@@ -4,7 +4,14 @@
 
 ## Overview
 
-Full feature development lifecycle with planning, implementation, review, and release. A lead engineer coordinates delivery through planning, development, and review phases.
+Blueprint-style feature development with deterministic quality gates. Combines agent intelligence for planning and implementation with deterministic shell commands for git operations, linting, and testing.
+
+## Step Types
+
+This template uses both step types:
+
+- **Agent steps** (blue): LLM-powered for planning, implementation, review
+- **Deterministic steps** (green): Shell commands for git, lint, test, commit
 
 ## Agents
 
@@ -18,18 +25,34 @@ Full feature development lifecycle with planning, implementation, review, and re
 ## Workflow Steps
 
 ```
-plan → implement → review → finalize
+[preflight] → plan → create-branch → implement → lint → test → fix-failures → commit → review → push → finalize
 ```
 
-1. **plan** (planner) — Analyze the feature request and produce implementation plan
-2. **implement** (developer) — Implement the approved plan
-3. **review** (reviewer) — Review implementation quality and test coverage
-4. **finalize** (lead) — Summarize decisions and ship readiness
+### Preflight Checks
+- `git status --porcelain` — Ensures clean working directory
+- `npm run type-check` — Runs type checking if available
+
+### Steps
+
+| Step | Type | Description |
+|------|------|-------------|
+| plan | agent | Analyze request, produce implementation plan |
+| create-branch | deterministic | `git checkout -b feature/{{branch-name}}` |
+| implement | agent | Implement the approved plan |
+| lint | deterministic | `npm run lint:fix` |
+| test | deterministic | `npm test` |
+| fix-failures | agent | Fix any test failures (max 2 iterations) |
+| commit | deterministic | `git add -A && git commit` |
+| review | agent | Review implementation quality |
+| push | deterministic | `git push origin feature/{{branch-name}}` |
+| finalize | agent | Summarize decisions and ship readiness |
 
 ## Usage
 
 ```bash
-agent-relay run --template feature-dev --task "Add user authentication with OAuth2"
+agent-relay run --template feature-dev \
+  --task "Add user authentication with OAuth2" \
+  --set branch-name=auth-oauth2
 ```
 
 ```typescript
@@ -41,6 +64,7 @@ const runner = new WorkflowRunner();
 
 await runner.execute(config, undefined, {
   task: "Add user authentication with OAuth2",
+  "branch-name": "auth-oauth2",
 });
 ```
 
@@ -49,6 +73,23 @@ await runner.execute(config, undefined, {
 - **maxConcurrency:** 2
 - **onError:** retry (max 2 retries, 5s delay)
 - **Barrier:** delivery-ready (waits for plan, implement, review)
+
+## Cost Comparison
+
+| Version | LLM Calls | Deterministic Steps |
+|---------|-----------|---------------------|
+| Blueprint (default) | 5 | 6 |
+| Legacy | 4 | 0 |
+
+The blueprint version saves ~30-40% on LLM costs while adding quality gates.
+
+## Legacy Version
+
+For pure-agent workflows without deterministic steps:
+
+```bash
+agent-relay run --template feature-dev-legacy --task "Add user auth"
+```
 
 ## Customization
 

@@ -59,6 +59,8 @@ agent-relay run --template feature-dev --task "Add user dashboard"
 
 ### relay.yaml
 
+Blueprint-style workflows combine **agent steps** (LLM-powered) with **deterministic steps** (shell commands) for faster, cheaper, more reliable execution:
+
 ```yaml
 version: "1.0"
 name: ship-feature
@@ -66,31 +68,43 @@ name: ship-feature
 agents:
   - name: planner
     cli: claude
-    model: opus
   - name: developer
     cli: codex
-  - name: reviewer
-    cli: claude
 
 workflows:
   - name: default
+    preflight:
+      - command: git status --porcelain
+        failIf: non-empty
     steps:
       - name: plan
         agent: planner
         task: "Create implementation plan for: {{task}}"
+      - name: create-branch
+        type: deterministic
+        command: git checkout -b feature/{{branch-name}}
+        dependsOn: [plan]
       - name: implement
         agent: developer
         task: "Implement: {{steps.plan.output}}"
-        dependsOn: [plan]
-      - name: review
-        agent: reviewer
-        task: "Review the implementation"
+        dependsOn: [create-branch]
+      - name: test
+        type: deterministic
+        command: npm test
         dependsOn: [implement]
+      - name: commit
+        type: deterministic
+        command: git add -A && git commit -m "feat: {{task}}"
+        dependsOn: [test]
 ```
+
+**Benefits:** Deterministic steps run instantly ($0 LLM cost), catch issues early with preflight checks, and git commands can't hallucinate.
 
 Also available as fluent builders in [TypeScript SDK](https://www.npmjs.com/package/@agent-relay/sdk) and [Python SDK](https://pypi.org/project/agent-relay/).
 
 ### Built-in Templates
+
+All templates now use blueprint-style hybrid workflows with deterministic quality gates. Add `-legacy` suffix for pure-agent versions.
 
 | Template         | Pattern      | Description                                      |
 | ---------------- | ------------ | ------------------------------------------------ |
