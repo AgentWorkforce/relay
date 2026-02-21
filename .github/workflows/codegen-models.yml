@@ -1,0 +1,57 @@
+name: Codegen Models
+
+on:
+  push:
+    paths:
+      - 'packages/shared/cli-registry.yaml'
+    branches:
+      - main
+      - 'feature/**'
+  pull_request:
+    paths:
+      - 'packages/shared/cli-registry.yaml'
+
+jobs:
+  codegen:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run codegen
+        run: npm run codegen:models
+
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --quiet packages/sdk/src/models.generated.ts packages/sdk-py/agent_relay/models.py; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit generated files
+        if: steps.changes.outputs.changed == 'true' && github.event_name == 'push'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add packages/sdk/src/models.generated.ts packages/sdk-py/agent_relay/models.py packages/sdk-py/agent_relay/__init__.py
+          git commit -m "chore: regenerate models from cli-registry.yaml [skip ci]"
+          git push
+
+      - name: Fail if changes not committed (PR check)
+        if: steps.changes.outputs.changed == 'true' && github.event_name == 'pull_request'
+        run: |
+          echo "::error::Generated models are out of sync with cli-registry.yaml. Run 'npm run codegen:models' and commit the changes."
+          exit 1

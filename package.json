@@ -139,6 +139,10 @@
     ],
     "*.{ts,tsx,json,md,mdx,yml,yaml}": [
       "prettier --write"
+    ],
+    "packages/shared/cli-registry.yaml": [
+      "npm run codegen:models",
+      "git add packages/sdk/src/models.generated.ts packages/sdk-py/agent_relay/models.py packages/sdk-py/agent_relay/__init__.py"
     ]
   },
   "keywords": [
