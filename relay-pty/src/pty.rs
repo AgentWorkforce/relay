@@ -326,8 +326,9 @@ impl AsyncPty {
         // Spawn reader thread (not async task, since PTY is sync)
         let reader_running = Arc::clone(&running);
         let reader_fd = master_fd;
+        let reader_child_pid = child_pid;
         std::thread::spawn(move || {
-            Self::reader_thread(reader_fd, reader_running, output_tx);
+            Self::reader_thread(reader_fd, reader_running, output_tx, reader_child_pid);
         });
 
         // Spawn writer thread
@@ -347,7 +348,7 @@ impl AsyncPty {
         }
     }
 
-    fn reader_thread(fd: RawFd, running: Arc<AtomicBool>, tx: mpsc::Sender<Vec<u8>>) {
+    fn reader_thread(fd: RawFd, running: Arc<AtomicBool>, tx: mpsc::Sender<Vec<u8>>, child_pid: Pid) {
         let mut buf = [0u8; 4096];
         loop {
             if !running.load(Ordering::SeqCst) {
@@ -368,6 +369,18 @@ impl AsyncPty {
                 Err(nix::errno::Errno::EAGAIN) => {
                     // No data available, wait a bit
                     std::thread::sleep(std::time::Duration::from_millis(10));
+
+                    // Check if child process has exited — PTY reads can return
+                    // EAGAIN indefinitely even after the child dies, so we must
+                    // also poll waitpid to detect exit reliably.
+                    match waitpid(child_pid, Some(WaitPidFlag::WNOHANG)) {
+                        Ok(WaitStatus::Exited(_, _))
+                        | Ok(WaitStatus::Signaled(_, _, _)) => {
+                            running.store(false, Ordering::SeqCst);
+                            break;
+                        }
+                        _ => {}
+                    }
                 }
                 Err(nix::errno::Errno::EIO) => {
                     // Child closed
