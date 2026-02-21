@@ -32,19 +32,13 @@ Swarm patterns define how agents coordinate and execute tasks. Choose the patter
 
 ## Built-in Templates
 
-Pre-configured workflows for common development tasks. Templates come in two flavors:
+Pre-configured workflows for common development tasks. Templates use **blueprint-style** hybrid workflows that combine **deterministic steps** (shell commands) with **agent steps** (LLM-powered).
 
-### Blueprint Templates (Default)
-
-Hybrid workflows that combine **deterministic steps** (shell commands) with **agent steps** (LLM-powered). Benefits:
+Benefits:
 - **Faster:** Git/lint/test steps run instantly (no agent spawn overhead)
 - **Cheaper:** Deterministic steps cost $0 in LLM calls
 - **More reliable:** Git commands can't hallucinate
 - **Shift left:** Preflight checks catch issues before agents spawn
-
-### Legacy Templates
-
-Pure-agent workflows where every step spawns an agent. Use `--template feature-dev-legacy` for backward compatibility.
 
 | Template | Pattern | Description |
 |----------|---------|-------------|
@@ -55,8 +49,6 @@ Pure-agent workflows where every step spawns an agent. Use `--template feature-d
 | [refactor](templates/refactor.md) | hierarchical | Analyze, plan, execute, and validate a refactor |
 | [documentation](templates/documentation.md) | handoff | Research, draft, review, and publish documentation |
 | [competitive](templates/competitive.md) | competitive | Independent implementations, compare, select winner |
-
-**Legacy versions:** Add `-legacy` suffix (e.g., `feature-dev-legacy`) for pure-agent workflows.
 
 ## Using Templates
 

@@ -68,6 +68,7 @@ name: ship-feature
 agents:
   - name: planner
     cli: claude
+    model: opus
   - name: developer
     cli: codex
 
@@ -104,7 +105,7 @@ Also available as fluent builders in [TypeScript SDK](https://www.npmjs.com/pack
 
 ### Built-in Templates
 
-All templates now use blueprint-style hybrid workflows with deterministic quality gates. Add `-legacy` suffix for pure-agent versions.
+All templates use blueprint-style hybrid workflows with deterministic quality gates.
 
 | Template         | Pattern      | Description                                      |
 | ---------------- | ------------ | ------------------------------------------------ |

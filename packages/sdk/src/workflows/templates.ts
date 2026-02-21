@@ -13,13 +13,6 @@ export const BUILT_IN_TEMPLATE_NAMES = [
   'security-audit',
   'refactor',
   'documentation',
-  // Legacy pure-agent versions (all steps are agent steps, no deterministic steps)
-  'feature-dev-legacy',
-  'bug-fix-legacy',
-  'code-review-legacy',
-  'security-audit-legacy',
-  'refactor-legacy',
-  'documentation-legacy',
 ] as const;
 
 export type BuiltInTemplateName = (typeof BUILT_IN_TEMPLATE_NAMES)[number];

@@ -74,22 +74,9 @@ await runner.execute(config, undefined, {
 - **onError:** retry (max 2 retries, 5s delay)
 - **Barrier:** delivery-ready (waits for plan, implement, review)
 
-## Cost Comparison
+## Cost Savings
 
-| Version | LLM Calls | Deterministic Steps |
-|---------|-----------|---------------------|
-| Blueprint (default) | 5 | 6 |
-| Legacy | 4 | 0 |
-
-The blueprint version saves ~30-40% on LLM costs while adding quality gates.
-
-## Legacy Version
-
-For pure-agent workflows without deterministic steps:
-
-```bash
-agent-relay run --template feature-dev-legacy --task "Add user auth"
-```
+Blueprint templates save ~30-40% on LLM costs by using deterministic steps for git, lint, and test operations while adding quality gates.
 
 ## Customization
 
