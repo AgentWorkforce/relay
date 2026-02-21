@@ -37,7 +37,7 @@ Generated from packages/shared/cli-registry.yaml
 Run: npm run codegen:models
 """
 
-from typing import Final
+from typing import Final, TypedDict, List
 
 
 `;
@@ -74,10 +74,38 @@ for (const [cli, config] of Object.entries(registry.clis)) {
     """${config.name} model identifiers."""
 `;
     for (const [model, modelConfig] of Object.entries(models)) {
+      const label = modelConfig.label || modelConfig.id;
       const defaultNote = modelConfig.default ? ' (default)' : '';
-      output += `    ${toSnakeCase(model)}: Final[str] = "${modelConfig.id}"  # ${modelConfig.description}${defaultNote}\n`;
+      output += `    ${toSnakeCase(model)}: Final[str] = "${modelConfig.id}"  # ${label}${defaultNote}\n`;
     }
     output += `
+
+`;
+  }
+}
+
+// Generate ModelOption TypedDict
+output += `class ModelOption(TypedDict):
+    """Model option for UI dropdowns."""
+    value: str
+    label: str
+
+
+`;
+
+// Generate model options per CLI
+for (const [cli, config] of Object.entries(registry.clis)) {
+  const snakeCli = toSnakeCase(cli);
+  const models = config.models || {};
+
+  if (Object.keys(models).length > 0) {
+    output += `${snakeCli}_MODEL_OPTIONS: Final[List[ModelOption]] = [
+`;
+    for (const [, modelConfig] of Object.entries(models)) {
+      const label = modelConfig.label || modelConfig.id;
+      output += `    {"value": "${modelConfig.id}", "label": "${label}"},\n`;
+    }
+    output += `]
 
 `;
   }
@@ -98,6 +126,22 @@ output += `
 
 `;
 
+// Generate combined ModelOptions class
+output += `class ModelOptions:
+    """All model options grouped by CLI tool (for UI dropdowns)."""
+`;
+for (const [cli, config] of Object.entries(registry.clis)) {
+  const pascalCli = toPascalCase(cli);
+  const snakeCli = toSnakeCase(cli);
+  const models = config.models || {};
+  if (Object.keys(models).length > 0) {
+    output += `    ${pascalCli} = ${snakeCli}_MODEL_OPTIONS\n`;
+  }
+}
+output += `
+
+`;
+
 // Generate swarm patterns
 output += `class SwarmPatterns:
     """Swarm patterns for multi-agent workflows."""
@@ -106,6 +150,20 @@ for (const [pattern, config] of Object.entries(registry.swarm_patterns)) {
   output += `    ${toSnakeCase(pattern)}: Final[str] = "${config.id}"  # ${config.description}\n`;
 }
 output += `
+
+`;
+
+// Generate default models
+output += `DEFAULT_MODELS: Final[dict] = {
+`;
+for (const [cli, config] of Object.entries(registry.clis)) {
+  const models = config.models || {};
+  const defaultModel = Object.values(models).find((m) => m.default);
+  if (defaultModel) {
+    output += `    "${cli}": "${defaultModel.id}",\n`;
+  }
+}
+output += `}
 
 `;
 
@@ -127,26 +185,31 @@ output += `}
 writeFileSync(outputPath, output);
 console.log(`Generated ${outputPath}`);
 
-// Also create __init__.py if it doesn't exist
+// Update __init__.py with new exports
 const initPath = join(outputDir, '__init__.py');
-if (!existsSync(initPath)) {
-  writeFileSync(initPath, `"""Agent Relay Python SDK."""
+writeFileSync(
+  initPath,
+  `"""Agent Relay Python SDK."""
 
 from .models import (
     CLIs,
     CLIVersions,
-    CLIRegistry,
+    CLI_REGISTRY,
+    DEFAULT_MODELS,
     Models,
+    ModelOptions,
     SwarmPatterns,
 )
 
 __all__ = [
     "CLIs",
     "CLIVersions",
-    "CLIRegistry",
+    "CLI_REGISTRY",
+    "DEFAULT_MODELS",
     "Models",
+    "ModelOptions",
     "SwarmPatterns",
 ]
-`);
-  console.log(`Generated ${initPath}`);
-}
+`
+);
+console.log(`Generated ${initPath}`);

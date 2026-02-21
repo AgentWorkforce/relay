@@ -29,14 +29,12 @@
  * ```
  */
 
+import type { SpeakOnTrigger } from '@agent-relay/config';
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export type SpeakOnTrigger =
-  | "ALL_MESSAGES"
-  | "EXPLICIT_ASK"
-  | "SESSION_END"
-  | "CODE_WRITTEN"
-  | "REVIEW_REQUEST";
+// Re-export from config to maintain backwards compatibility
+export type { SpeakOnTrigger };
 
 export interface ShadowConfig {
   primaryAgent: string;

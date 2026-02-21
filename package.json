@@ -129,6 +129,8 @@
     "format:check": "prettier --check .",
     "todo:scan": "bash scripts/todo-scan.sh",
     "codegen:models": "node packages/shared/codegen-ts.mjs && node packages/shared/codegen-py.mjs",
+    "check:cli-versions": "node scripts/check-cli-versions.mjs",
+    "update:cli-versions": "node scripts/check-cli-versions.mjs --update && npm run codegen:models",
     "codegen:models:ts": "node packages/shared/codegen-ts.mjs",
     "codegen:models:py": "node packages/shared/codegen-py.mjs",
     "prepare": "husky"

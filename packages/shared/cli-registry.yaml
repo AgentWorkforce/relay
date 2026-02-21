@@ -14,18 +14,16 @@ clis:
     version: "1.0.24"
     install: "npm install -g @anthropic-ai/claude-code"
     models:
-      opus:
-        id: "opus"
-        description: "Claude Opus 4 - most capable, best for complex reasoning"
-        default: false
       sonnet:
         id: "sonnet"
-        description: "Claude Sonnet 4 - balanced performance and speed"
+        label: "Sonnet"
         default: true
+      opus:
+        id: "opus"
+        label: "Opus"
       haiku:
         id: "haiku"
-        description: "Claude Haiku - fastest, best for simple tasks"
-        default: false
+        label: "Haiku"
 
   codex:
     name: "Codex CLI"
@@ -33,25 +31,42 @@ clis:
     version: "0.1.2504301707"
     install: "npm install -g @openai/codex"
     models:
-      codex_5_3:
-        id: "codex-5.3"
-        description: "Codex 5.3 - latest codex model"
+      gpt_5_2_codex:
+        id: "gpt-5.2-codex"
+        label: "GPT-5.2 Codex — Frontier agentic coding model"
         default: true
+      gpt_5_3_codex:
+        id: "gpt-5.3-codex"
+        label: "GPT-5.3 Codex — Latest frontier agentic coding model"
+      gpt_5_1_codex_max:
+        id: "gpt-5.1-codex-max"
+        label: "GPT-5.1 Codex Max — Deep and fast reasoning"
+      gpt_5_2:
+        id: "gpt-5.2"
+        label: "GPT-5.2 — Frontier model, knowledge & reasoning"
+      gpt_5_1_codex_mini:
+        id: "gpt-5.1-codex-mini"
+        label: "GPT-5.1 Codex Mini — Cheaper, faster"
 
   gemini:
     name: "Gemini CLI"
-    package: "@anthropic-ai/gemini-cli"
+    package: "@google/gemini-cli"
     version: "0.1.17"
     install: "npm install -g @google/gemini-cli"
     models:
-      flash:
-        id: "gemini-2.0-flash"
-        description: "Gemini 2.0 Flash - fast and capable"
+      gemini_3_pro_preview:
+        id: "gemini-3-pro-preview"
+        label: "Gemini 3 Pro Preview"
+      gemini_2_5_pro:
+        id: "gemini-2.5-pro"
+        label: "Gemini 2.5 Pro"
         default: true
-      pro:
-        id: "gemini-2.0-pro"
-        description: "Gemini 2.0 Pro - most capable"
-        default: false
+      gemini_2_5_flash:
+        id: "gemini-2.5-flash"
+        label: "Gemini 2.5 Flash"
+      gemini_2_5_flash_lite:
+        id: "gemini-2.5-flash-lite"
+        label: "Gemini 2.5 Flash Lite"
 
   cursor:
     name: "Cursor"
@@ -59,14 +74,70 @@ clis:
     version: "0.48.6"
     install: "Download from cursor.com"
     models:
-      claude_sonnet:
-        id: "claude-sonnet"
-        description: "Claude Sonnet via Cursor"
+      opus_4_5_thinking:
+        id: "opus-4.5-thinking"
+        label: "Claude 4.5 Opus (Thinking)"
         default: true
-      gpt4o:
-        id: "gpt-4o"
-        description: "GPT-4o via Cursor"
-        default: false
+      opus_4_5:
+        id: "opus-4.5"
+        label: "Claude 4.5 Opus"
+      sonnet_4_5:
+        id: "sonnet-4.5"
+        label: "Claude 4.5 Sonnet"
+      sonnet_4_5_thinking:
+        id: "sonnet-4.5-thinking"
+        label: "Claude 4.5 Sonnet (Thinking)"
+      gpt_5_2_codex:
+        id: "gpt-5.2-codex"
+        label: "GPT-5.2 Codex"
+      gpt_5_2_codex_high:
+        id: "gpt-5.2-codex-high"
+        label: "GPT-5.2 Codex High"
+      gpt_5_2_codex_low:
+        id: "gpt-5.2-codex-low"
+        label: "GPT-5.2 Codex Low"
+      gpt_5_2_codex_xhigh:
+        id: "gpt-5.2-codex-xhigh"
+        label: "GPT-5.2 Codex Extra High"
+      gpt_5_2_codex_fast:
+        id: "gpt-5.2-codex-fast"
+        label: "GPT-5.2 Codex Fast"
+      gpt_5_2_codex_high_fast:
+        id: "gpt-5.2-codex-high-fast"
+        label: "GPT-5.2 Codex High Fast"
+      gpt_5_2_codex_low_fast:
+        id: "gpt-5.2-codex-low-fast"
+        label: "GPT-5.2 Codex Low Fast"
+      gpt_5_2_codex_xhigh_fast:
+        id: "gpt-5.2-codex-xhigh-fast"
+        label: "GPT-5.2 Codex Extra High Fast"
+      gpt_5_1_codex_max:
+        id: "gpt-5.1-codex-max"
+        label: "GPT-5.1 Codex Max"
+      gpt_5_1_codex_max_high:
+        id: "gpt-5.1-codex-max-high"
+        label: "GPT-5.1 Codex Max High"
+      gpt_5_2:
+        id: "gpt-5.2"
+        label: "GPT-5.2"
+      gpt_5_2_high:
+        id: "gpt-5.2-high"
+        label: "GPT-5.2 High"
+      gpt_5_1_high:
+        id: "gpt-5.1-high"
+        label: "GPT-5.1 High"
+      gemini_3_pro:
+        id: "gemini-3-pro"
+        label: "Gemini 3 Pro"
+      gemini_3_flash:
+        id: "gemini-3-flash"
+        label: "Gemini 3 Flash"
+      composer_1:
+        id: "composer-1"
+        label: "Composer 1"
+      grok:
+        id: "grok"
+        label: "Grok"
 
   aider:
     name: "Aider"

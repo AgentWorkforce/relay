@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const registryPath = join(__dirname, 'cli-registry.yaml');
-const outputPath = join(__dirname, '../sdk/src/models.generated.ts');
+const outputPath = join(__dirname, '../config/src/cli-registry.generated.ts');
 
 const registry = parse(readFileSync(registryPath, 'utf8'));
 
@@ -26,9 +26,12 @@ function toConstantCase(str) {
 }
 
 let output = `/**
- * AUTO-GENERATED FILE - DO NOT EDIT
+ * CLI Registry - AUTO-GENERATED FILE - DO NOT EDIT
  * Generated from packages/shared/cli-registry.yaml
  * Run: npm run codegen:models
+ *
+ * This is the single source of truth for CLI tools, versions, and models.
+ * Other packages should import from @agent-relay/config.
  */
 
 `;
@@ -63,7 +66,7 @@ export type CLI = (typeof CLIs)[keyof typeof CLIs];
 
 `;
 
-// Generate models per CLI
+// Generate models per CLI (constants)
 for (const [cli, config] of Object.entries(registry.clis)) {
   const pascalCli = toPascalCase(cli);
   const models = config.models || {};
@@ -75,12 +78,42 @@ for (const [cli, config] of Object.entries(registry.clis)) {
 export const ${pascalCli}Models = {
 `;
     for (const [model, modelConfig] of Object.entries(models)) {
-      output += `  /** ${modelConfig.description}${modelConfig.default ? ' (default)' : ''} */\n`;
+      const description = modelConfig.label || modelConfig.description || modelConfig.id;
+      output += `  /** ${description}${modelConfig.default ? ' (default)' : ''} */\n`;
       output += `  ${toConstantCase(model)}: '${modelConfig.id}',\n`;
     }
     output += `} as const;
 
 export type ${pascalCli}Model = (typeof ${pascalCli}Models)[keyof typeof ${pascalCli}Models];
+
+`;
+  }
+}
+
+// Generate model options per CLI (for dashboard dropdowns)
+output += `/** Model option type for UI dropdowns */
+export interface ModelOption {
+  value: string;
+  label: string;
+}
+
+`;
+
+for (const [cli, config] of Object.entries(registry.clis)) {
+  const constantCli = toConstantCase(cli);
+  const models = config.models || {};
+
+  if (Object.keys(models).length > 0) {
+    output += `/**
+ * ${config.name} model options for UI dropdowns.
+ */
+export const ${constantCli}_MODEL_OPTIONS: ModelOption[] = [
+`;
+    for (const [, modelConfig] of Object.entries(models)) {
+      const label = modelConfig.label || modelConfig.id;
+      output += `  { value: '${modelConfig.id}', label: '${label}' },\n`;
+    }
+    output += `];
 
 `;
   }
@@ -95,7 +128,7 @@ output += `/**
  * import { Models } from '@agent-relay/sdk';
  *
  * await relay.claude.spawn({ model: Models.Claude.OPUS });
- * await relay.codex.spawn({ model: Models.Codex.CODEX_5_3 });
+ * await relay.codex.spawn({ model: Models.Codex.GPT_5_2_CODEX });
  * \`\`\`
  */
 export const Models = {
@@ -105,6 +138,33 @@ for (const [cli, config] of Object.entries(registry.clis)) {
   const models = config.models || {};
   if (Object.keys(models).length > 0) {
     output += `  ${pascalCli}: ${pascalCli}Models,\n`;
+  }
+}
+output += `} as const;
+
+`;
+
+// Generate combined ModelOptions object
+output += `/**
+ * All model options grouped by CLI tool (for UI dropdowns).
+ *
+ * @example
+ * \`\`\`typescript
+ * import { ModelOptions } from '@agent-relay/sdk';
+ *
+ * <select>
+ *   {ModelOptions.Claude.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+ * </select>
+ * \`\`\`
+ */
+export const ModelOptions = {
+`;
+for (const [cli, config] of Object.entries(registry.clis)) {
+  const pascalCli = toPascalCase(cli);
+  const constantCli = toConstantCase(cli);
+  const models = config.models || {};
+  if (Object.keys(models).length > 0) {
+    output += `  ${pascalCli}: ${constantCli}_MODEL_OPTIONS,\n`;
   }
 }
 output += `} as const;
@@ -123,6 +183,8 @@ for (const [pattern, config] of Object.entries(registry.swarm_patterns)) {
 }
 output += `} as const;
 
+// Note: SwarmPattern type is defined in workflows/types.ts to avoid duplication
+
 `;
 
 // Generate CLI info for relay-cloud
@@ -139,6 +201,23 @@ for (const [cli, config] of Object.entries(registry.clis)) {
     install: '${config.install}',
   },
 `;
+}
+output += `} as const;
+
+`;
+
+// Generate default model per CLI
+output += `/**
+ * Default model for each CLI tool.
+ */
+export const DefaultModels = {
+`;
+for (const [cli, config] of Object.entries(registry.clis)) {
+  const models = config.models || {};
+  const defaultModel = Object.values(models).find((m) => m.default);
+  if (defaultModel) {
+    output += `  ${cli}: '${defaultModel.id}',\n`;
+  }
 }
 output += `} as const;
 `;

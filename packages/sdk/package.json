@@ -75,6 +75,7 @@
     "typescript": "^5.7.3"
   },
   "dependencies": {
+    "@agent-relay/config": "2.3.14",
     "@relaycast/sdk": "^0.3.1",
     "yaml": "^2.7.0"
   }

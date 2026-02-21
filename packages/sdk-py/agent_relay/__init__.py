@@ -3,15 +3,19 @@
 from .models import (
     CLIs,
     CLIVersions,
-    CLIRegistry,
+    CLI_REGISTRY,
+    DEFAULT_MODELS,
     Models,
+    ModelOptions,
     SwarmPatterns,
 )
 
 __all__ = [
     "CLIs",
     "CLIVersions",
-    "CLIRegistry",
+    "CLI_REGISTRY",
+    "DEFAULT_MODELS",
     "Models",
+    "ModelOptions",
     "SwarmPatterns",
 ]
