@@ -137,19 +137,27 @@ agents:
 
     it('should reject missing version', () => {
       expect(() =>
-        runner.validateConfig({ name: 'x', swarm: { pattern: 'dag' }, agents: [{ name: 'a', cli: 'claude' }] }),
+        runner.validateConfig({
+          name: 'x',
+          swarm: { pattern: 'dag' },
+          agents: [{ name: 'a', cli: 'claude' }],
+        })
       ).toThrow('missing required field "version"');
     });
 
     it('should reject missing name', () => {
       expect(() =>
-        runner.validateConfig({ version: '1', swarm: { pattern: 'dag' }, agents: [{ name: 'a', cli: 'claude' }] }),
+        runner.validateConfig({
+          version: '1',
+          swarm: { pattern: 'dag' },
+          agents: [{ name: 'a', cli: 'claude' }],
+        })
       ).toThrow('missing required field "name"');
     });
 
     it('should reject empty agents array', () => {
       expect(() =>
-        runner.validateConfig({ version: '1', name: 'x', swarm: { pattern: 'dag' }, agents: [] }),
+        runner.validateConfig({ version: '1', name: 'x', swarm: { pattern: 'dag' }, agents: [] })
       ).toThrow('non-empty array');
     });
 
@@ -160,7 +168,7 @@ agents:
           name: 'x',
           swarm: { pattern: 'dag' },
           agents: [{ name: 'a' }],
-        }),
+        })
       ).toThrow('each agent must have a string "cli"');
     });
 
@@ -169,9 +177,7 @@ agents:
         workflows: [
           {
             name: 'wf',
-            steps: [
-              { name: 's1', agent: 'agent-a', task: 'do', dependsOn: ['nonexistent'] },
-            ],
+            steps: [{ name: 's1', agent: 'agent-a', task: 'do', dependsOn: ['nonexistent'] }],
           },
         ],
       });
@@ -199,9 +205,7 @@ agents:
   describe('resolveVariables', () => {
     it('should replace {{var}} in agent tasks', () => {
       const config = makeConfig({
-        agents: [
-          { name: 'a', cli: 'claude', task: 'Fix bug {{bugId}}' },
-        ],
+        agents: [{ name: 'a', cli: 'claude', task: 'Fix bug {{bugId}}' }],
       });
       const resolved = runner.resolveVariables(config, { bugId: '42' });
       expect(resolved.agents[0].task).toBe('Fix bug 42');
@@ -216,18 +220,14 @@ agents:
 
     it('should throw on unresolved variables', () => {
       const config = makeConfig({
-        agents: [
-          { name: 'a', cli: 'claude', task: 'Fix {{unknown}}' },
-        ],
+        agents: [{ name: 'a', cli: 'claude', task: 'Fix {{unknown}}' }],
       });
       expect(() => runner.resolveVariables(config, {})).toThrow('Unresolved variable: {{unknown}}');
     });
 
     it('should not mutate original config', () => {
       const config = makeConfig({
-        agents: [
-          { name: 'a', cli: 'claude', task: 'Fix {{id}}' },
-        ],
+        agents: [{ name: 'a', cli: 'claude', task: 'Fix {{id}}' }],
       });
       runner.resolveVariables(config, { id: '1' });
       expect(config.agents[0].task).toBe('Fix {{id}}');
@@ -248,9 +248,7 @@ agents:
 
     it('should throw when workflow not found', async () => {
       const config = makeConfig();
-      await expect(runner.execute(config, 'nonexistent')).rejects.toThrow(
-        'Workflow "nonexistent" not found',
-      );
+      await expect(runner.execute(config, 'nonexistent')).rejects.toThrow('Workflow "nonexistent" not found');
     });
 
     it('should throw when no workflows defined', async () => {
@@ -380,6 +378,112 @@ agents:
       const { cmd, args } = WorkflowRunner.buildNonInteractiveCommand('claude', 'Task', ['--model', 'opus']);
       expect(cmd).toBe('claude');
       expect(args).toEqual(['-p', 'Task', '--model', 'opus']);
+    });
+  });
+
+  // ── Dry run ─────────────────────────────────────────────────────────────
+
+  describe('dryRun', () => {
+    it('should compute correct waves for a simple DAG', () => {
+      const config = makeConfig();
+      const report = runner.dryRun(config);
+
+      expect(report.valid).toBe(true);
+      expect(report.errors).toHaveLength(0);
+      expect(report.totalSteps).toBe(2);
+      expect(report.estimatedWaves).toBe(2);
+      expect(report.waves[0].wave).toBe(1);
+      expect(report.waves[0].steps).toHaveLength(1);
+      expect(report.waves[0].steps[0].name).toBe('step-1');
+      expect(report.waves[1].wave).toBe(2);
+      expect(report.waves[1].steps).toHaveLength(1);
+      expect(report.waves[1].steps[0].name).toBe('step-2');
+    });
+
+    it('should compute parallel steps in the same wave', () => {
+      const config = makeConfig({
+        workflows: [
+          {
+            name: 'parallel',
+            steps: [
+              { name: 'a', agent: 'agent-a', task: 'Do A' },
+              { name: 'b', agent: 'agent-b', task: 'Do B' },
+              { name: 'c', agent: 'agent-a', task: 'Do C', dependsOn: ['a', 'b'] },
+            ],
+          },
+        ],
+      });
+
+      const report = runner.dryRun(config, 'parallel');
+
+      expect(report.valid).toBe(true);
+      expect(report.estimatedWaves).toBe(2);
+      expect(report.waves[0].steps).toHaveLength(2);
+      expect(report.waves[0].steps.map((s) => s.name).sort()).toEqual(['a', 'b']);
+      expect(report.waves[1].steps).toHaveLength(1);
+      expect(report.waves[1].steps[0].name).toBe('c');
+    });
+
+    it('should report agent step counts', () => {
+      const config = makeConfig();
+      const report = runner.dryRun(config);
+
+      const agentA = report.agents.find((a) => a.name === 'agent-a');
+      const agentB = report.agents.find((a) => a.name === 'agent-b');
+      expect(agentA?.stepCount).toBe(1);
+      expect(agentB?.stepCount).toBe(1);
+    });
+
+    it('should warn when step references unknown agent', () => {
+      const config = makeConfig({
+        workflows: [
+          {
+            name: 'default',
+            steps: [{ name: 'step-1', agent: 'nonexistent', task: 'Do stuff' }],
+          },
+        ],
+      });
+
+      const report = runner.dryRun(config);
+
+      expect(report.valid).toBe(true);
+      expect(report.warnings).toHaveLength(1);
+      expect(report.warnings[0]).toContain('nonexistent');
+    });
+
+    it('should warn when wave exceeds maxConcurrency', () => {
+      const config = makeConfig({
+        swarm: { pattern: 'dag', maxConcurrency: 1 },
+        workflows: [
+          {
+            name: 'default',
+            steps: [
+              { name: 'a', agent: 'agent-a', task: 'Do A' },
+              { name: 'b', agent: 'agent-b', task: 'Do B' },
+            ],
+          },
+        ],
+      });
+
+      const report = runner.dryRun(config);
+
+      expect(report.valid).toBe(true);
+      expect(report.warnings.some((w) => w.includes('maxConcurrency'))).toBe(true);
+    });
+
+    it('should return errors for invalid config', () => {
+      const report = runner.dryRun({} as any);
+
+      expect(report.valid).toBe(false);
+      expect(report.errors.length).toBeGreaterThan(0);
+    });
+
+    it('should return error when workflow not found', () => {
+      const config = makeConfig();
+      const report = runner.dryRun(config, 'nonexistent');
+
+      expect(report.valid).toBe(false);
+      expect(report.errors[0]).toContain('nonexistent');
     });
   });
 });

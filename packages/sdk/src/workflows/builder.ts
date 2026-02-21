@@ -4,7 +4,9 @@ import type { AgentRelayOptions } from '../relay.js';
 import type {
   AgentCli,
   AgentDefinition,
+  DryRunReport,
   ErrorHandlingConfig,
+  IdleNudgeConfig,
   RelayYamlConfig,
   SwarmPattern,
   VerificationCheck,
@@ -13,6 +15,7 @@ import type {
   WorkflowStep,
 } from './types.js';
 import { WorkflowRunner, type WorkflowEventListener, type VariableContext } from './runner.js';
+import { formatDryRunReport } from './dry-run-format.js';
 
 // ── Option types for the builder API ────────────────────────────────────────
 
@@ -25,6 +28,8 @@ export interface AgentOptions {
   maxTokens?: number;
   timeoutMs?: number;
   retries?: number;
+  /** Seconds of silence before considering the agent idle (for idle nudging). */
+  idleThresholdSecs?: number;
   /** When false, the agent runs as a non-interactive subprocess (no PTY, no relay messaging).
    *  Default: true. */
   interactive?: boolean;
@@ -56,6 +61,8 @@ export interface WorkflowRunOptions {
   relay?: AgentRelayOptions;
   /** Progress callback. */
   onEvent?: WorkflowEventListener;
+  /** Validate and print execution plan without spawning agents. */
+  dryRun?: boolean;
 }
 
 // ── WorkflowBuilder ─────────────────────────────────────────────────────────
@@ -82,6 +89,7 @@ export class WorkflowBuilder {
   private _maxConcurrency?: number;
   private _timeoutMs?: number;
   private _channel?: string;
+  private _idleNudge?: IdleNudgeConfig;
   private _agents: AgentDefinition[] = [];
   private _steps: WorkflowStep[] = [];
   private _errorHandling?: ErrorHandlingConfig;
@@ -120,6 +128,12 @@ export class WorkflowBuilder {
     return this;
   }
 
+  /** Configure idle agent detection and nudging for interactive agents. */
+  idleNudge(config: IdleNudgeConfig): this {
+    this._idleNudge = config;
+    return this;
+  }
+
   /** Add an agent definition. */
   agent(name: string, options: AgentOptions): this {
     const def: AgentDefinition = {
@@ -132,13 +146,20 @@ export class WorkflowBuilder {
     if (options.channels !== undefined) def.channels = options.channels;
     if (options.interactive !== undefined) def.interactive = options.interactive;
 
-    if (options.model !== undefined || options.maxTokens !== undefined ||
-        options.timeoutMs !== undefined || options.retries !== undefined) {
+    if (
+      options.model !== undefined ||
+      options.maxTokens !== undefined ||
+      options.timeoutMs !== undefined ||
+      options.retries !== undefined ||
+      options.idleThresholdSecs !== undefined
+    ) {
       def.constraints = {};
       if (options.model !== undefined) def.constraints.model = options.model;
       if (options.maxTokens !== undefined) def.constraints.maxTokens = options.maxTokens;
       if (options.timeoutMs !== undefined) def.constraints.timeoutMs = options.timeoutMs;
       if (options.retries !== undefined) def.constraints.retries = options.retries;
+      if (options.idleThresholdSecs !== undefined)
+        def.constraints.idleThresholdSecs = options.idleThresholdSecs;
     }
 
     this._agents.push(def);
@@ -199,6 +220,7 @@ export class WorkflowBuilder {
     if (this._maxConcurrency !== undefined) config.swarm.maxConcurrency = this._maxConcurrency;
     if (this._timeoutMs !== undefined) config.swarm.timeoutMs = this._timeoutMs;
     if (this._channel !== undefined) config.swarm.channel = this._channel;
+    if (this._idleNudge !== undefined) config.swarm.idleNudge = this._idleNudge;
     if (this._errorHandling !== undefined) config.errorHandling = this._errorHandling;
 
     return config;
@@ -210,13 +232,24 @@ export class WorkflowBuilder {
   }
 
   /** Build the config and execute it with the WorkflowRunner. */
-  async run(options: WorkflowRunOptions = {}): Promise<WorkflowRunRow> {
+  async run(options: WorkflowRunOptions & { dryRun: true }): Promise<DryRunReport>;
+  async run(options?: WorkflowRunOptions): Promise<WorkflowRunRow>;
+  async run(options: WorkflowRunOptions = {}): Promise<WorkflowRunRow | DryRunReport> {
     const config = this.toConfig();
 
     const runner = new WorkflowRunner({
       cwd: options.cwd,
       relay: options.relay,
     });
+
+    // Auto-detect DRY_RUN env var so existing scripts get dry-run for free
+    const isDryRun = options.dryRun ?? !!process.env.DRY_RUN;
+
+    if (isDryRun) {
+      const report = runner.dryRun(config, options.workflow, options.vars);
+      console.log(formatDryRunReport(report));
+      return report;
+    }
 
     if (options.onEvent) {
       runner.on(options.onEvent);

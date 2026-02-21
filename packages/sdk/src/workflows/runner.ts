@@ -19,6 +19,8 @@ import { InMemoryWorkflowDb } from './memory-db.js';
 import type {
   AgentCli,
   AgentDefinition,
+  DryRunReport,
+  DryRunWave,
   ErrorHandlingConfig,
   IdleNudgeConfig,
   PreflightCheck,
@@ -127,7 +129,10 @@ export class WorkflowRunner {
   /** Path to workers.json so `agents:kill` can find workflow-spawned agents */
   private readonly workersPath: string;
   /** In-memory tracking of active workers to avoid race conditions on workers.json */
-  private readonly activeWorkers = new Map<string, { cli: string; task: string; spawnedAt: number; pid?: number; logFile: string }>();
+  private readonly activeWorkers = new Map<
+    string,
+    { cli: string; task: string; spawnedAt: number; pid?: number; logFile: string }
+  >();
   /** Mutex for serializing workers.json file access */
   private workersFileLock: Promise<void> = Promise.resolve();
 
@@ -222,9 +227,7 @@ export class WorkflowRunner {
     });
 
     if (!res.ok) {
-      throw new Error(
-        `Failed to auto-create Relaycast workspace: ${res.status} ${await res.text()}`,
-      );
+      throw new Error(`Failed to auto-create Relaycast workspace: ${res.status} ${await res.text()}`);
     }
 
     const body = (await res.json()) as Record<string, any>;
@@ -249,7 +252,7 @@ export class WorkflowRunner {
         agent_name: null,
         updated_at: new Date().toISOString(),
       }),
-      { mode: 0o600 },
+      { mode: 0o600 }
     );
 
     this.relayApiKey = apiKey;
@@ -345,6 +348,142 @@ export class WorkflowRunner {
     }
   }
 
+  // ── Dry-run simulation ──────────────────────────────────────────────
+
+  /**
+   * Validate a workflow config and simulate execution waves without spawning agents.
+   * Returns a DryRunReport with DAG analysis, agent summary, and wave breakdown.
+   */
+  dryRun(config: RelayYamlConfig, workflowName?: string, vars?: VariableContext): DryRunReport {
+    const errors: string[] = [];
+    const warnings: string[] = [];
+
+    // 1. Validate config
+    let resolved: RelayYamlConfig;
+    try {
+      this.validateConfig(config);
+      resolved = vars ? this.resolveVariables(config, vars) : config;
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err));
+      return {
+        valid: false,
+        errors,
+        warnings,
+        name: (config as any)?.name ?? '<unknown>',
+        pattern: (config as any)?.swarm?.pattern ?? '<unknown>',
+        agents: [],
+        waves: [],
+        totalSteps: 0,
+        estimatedWaves: 0,
+      };
+    }
+
+    // 2. Find target workflow
+    const workflows = resolved.workflows ?? [];
+    const workflow = workflowName ? workflows.find((w) => w.name === workflowName) : workflows[0];
+
+    if (!workflow) {
+      errors.push(
+        workflowName ? `Workflow "${workflowName}" not found in config` : 'No workflows defined in config'
+      );
+      return {
+        valid: false,
+        errors,
+        warnings,
+        name: resolved.name,
+        description: resolved.description,
+        pattern: resolved.swarm.pattern,
+        agents: [],
+        waves: [],
+        totalSteps: 0,
+        estimatedWaves: 0,
+      };
+    }
+
+    // 3. Build agent map and validate step→agent references
+    const agentMap = new Map<string, AgentDefinition>();
+    for (const agent of resolved.agents) {
+      agentMap.set(agent.name, agent);
+    }
+
+    const stepAgentCounts = new Map<string, number>();
+    for (const step of workflow.steps) {
+      if (!agentMap.has(step.agent)) {
+        warnings.push(`Step "${step.name}" references unknown agent "${step.agent}"`);
+      }
+      stepAgentCounts.set(step.agent, (stepAgentCounts.get(step.agent) ?? 0) + 1);
+    }
+
+    // 4. Build agent summary
+    const agents = resolved.agents.map((a) => ({
+      name: a.name,
+      cli: a.cli,
+      role: a.role,
+      stepCount: stepAgentCounts.get(a.name) ?? 0,
+    }));
+
+    // 5. Simulate execution waves
+    const waves: DryRunWave[] = [];
+    const completed = new Set<string>();
+    const allSteps = [...workflow.steps];
+    let waveNum = 0;
+
+    while (completed.size < allSteps.length) {
+      const ready = allSteps.filter((step) => {
+        if (completed.has(step.name)) return false;
+        const deps = step.dependsOn ?? [];
+        return deps.every((dep) => completed.has(dep));
+      });
+
+      if (ready.length === 0) {
+        // Remaining steps are blocked — likely a cycle or unresolvable deps
+        const blocked = allSteps.filter((s) => !completed.has(s.name)).map((s) => s.name);
+        errors.push(`Blocked steps with unresolvable dependencies: ${blocked.join(', ')}`);
+        break;
+      }
+
+      waveNum++;
+      waves.push({
+        wave: waveNum,
+        steps: ready.map((s) => ({
+          name: s.name,
+          agent: s.agent,
+          dependsOn: s.dependsOn ?? [],
+        })),
+      });
+
+      for (const step of ready) {
+        completed.add(step.name);
+      }
+    }
+
+    // 6. Check maxConcurrency against wave widths
+    const maxConcurrency = resolved.swarm.maxConcurrency;
+    if (maxConcurrency !== undefined) {
+      for (const wave of waves) {
+        if (wave.steps.length > maxConcurrency) {
+          warnings.push(
+            `Wave ${wave.wave} has ${wave.steps.length} parallel steps but maxConcurrency is ${maxConcurrency}`
+          );
+        }
+      }
+    }
+
+    return {
+      valid: errors.length === 0,
+      errors,
+      warnings,
+      name: workflow.name,
+      description: workflow.description ?? resolved.description,
+      pattern: resolved.swarm.pattern,
+      agents,
+      waves,
+      totalSteps: workflow.steps.length,
+      maxConcurrency,
+      estimatedWaves: waves.length,
+    };
+  }
+
   private validateWorkflow(wf: unknown, source: string): void {
     if (typeof wf !== 'object' || wf === null) {
       throw new Error(`${source}: each workflow must be an object`);
@@ -403,7 +542,9 @@ export class WorkflowRunner {
 
     const dfs = (node: string): void => {
       if (inStack.has(node)) {
-        throw new Error(`${source}: workflow "${workflowName}" contains a dependency cycle involving "${node}"`);
+        throw new Error(
+          `${source}: workflow "${workflowName}" contains a dependency cycle involving "${node}"`
+        );
       }
       if (visited.has(node)) return;
       inStack.add(node);
@@ -525,20 +666,16 @@ export class WorkflowRunner {
   async execute(
     config: RelayYamlConfig,
     workflowName?: string,
-    vars?: VariableContext,
+    vars?: VariableContext
   ): Promise<WorkflowRunRow> {
     const resolved = vars ? this.resolveVariables(config, vars) : config;
     const workflows = resolved.workflows ?? [];
 
-    const workflow = workflowName
-      ? workflows.find((w) => w.name === workflowName)
-      : workflows[0];
+    const workflow = workflowName ? workflows.find((w) => w.name === workflowName) : workflows[0];
 
     if (!workflow) {
       throw new Error(
-        workflowName
-          ? `Workflow "${workflowName}" not found in config`
-          : 'No workflows defined in config',
+        workflowName ? `Workflow "${workflowName}" not found in config` : 'No workflows defined in config'
       );
     }
 
@@ -667,7 +804,7 @@ export class WorkflowRunner {
         await this.trajectory.start(
           workflow.name,
           workflow.steps.length,
-          `Resumed run: ${pendingCount} pending steps of ${workflow.steps.length} total`,
+          `Resumed run: ${pendingCount} pending steps of ${workflow.steps.length} total`
         );
       } else {
         // Analyze DAG for trajectory context on first run
@@ -675,8 +812,9 @@ export class WorkflowRunner {
         await this.trajectory.start(workflow.name, workflow.steps.length, dagInfo);
       }
 
-      const channel = config.swarm.channel
-        ?? `wf-${this.sanitizeChannelName(config.name || run.workflowName)}-${this.generateShortId()}`;
+      const channel =
+        config.swarm.channel ??
+        `wf-${this.sanitizeChannelName(config.name || run.workflowName)}-${this.generateShortId()}`;
       this.channel = channel;
       if (!config.swarm.channel) {
         config.swarm.channel = channel;
@@ -712,7 +850,7 @@ export class WorkflowRunner {
         this.postToChannel(`Workflow **${workflow.name}** resumed — ${pendingCount} pending steps`);
       } else {
         this.postToChannel(
-          `Workflow **${workflow.name}** started — ${workflow.steps.length} steps, pattern: ${config.swarm.pattern}`,
+          `Workflow **${workflow.name}** started — ${workflow.steps.length} steps, pattern: ${config.swarm.pattern}`
         );
       }
 
@@ -729,7 +867,7 @@ export class WorkflowRunner {
       await this.executeSteps(workflow, stepStates, agentMap, config.errorHandling, runId);
 
       const allCompleted = [...stepStates.values()].every(
-        (s) => s.row.status === 'completed' || s.row.status === 'skipped',
+        (s) => s.row.status === 'completed' || s.row.status === 'skipped'
       );
 
       if (allCompleted) {
@@ -757,9 +895,8 @@ export class WorkflowRunner {
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      const status: WorkflowRunStatus = !isResume && this.abortController?.signal.aborted
-        ? 'cancelled'
-        : 'failed';
+      const status: WorkflowRunStatus =
+        !isResume && this.abortController?.signal.aborted ? 'cancelled' : 'failed';
       await this.updateRunStatus(runId, status, errorMsg);
 
       if (status === 'cancelled') {
@@ -819,15 +956,19 @@ export class WorkflowRunner {
     stepStates: Map<string, StepState>,
     agentMap: Map<string, AgentDefinition>,
     errorHandling: ErrorHandlingConfig | undefined,
-    runId: string,
+    runId: string
   ): Promise<void> {
     const rawStrategy = errorHandling?.strategy ?? workflow.onError ?? 'fail-fast';
     // Map shorthand onError values to canonical strategy names.
     // 'retry' maps to 'fail-fast' so downstream steps are properly skipped after retries exhaust.
-    const strategy = rawStrategy === 'fail' ? 'fail-fast'
-      : rawStrategy === 'skip' ? 'continue'
-      : rawStrategy === 'retry' ? 'fail-fast'
-      : rawStrategy;
+    const strategy =
+      rawStrategy === 'fail'
+        ? 'fail-fast'
+        : rawStrategy === 'skip'
+          ? 'continue'
+          : rawStrategy === 'retry'
+            ? 'fail-fast'
+            : rawStrategy;
 
     // DAG-based execution: repeatedly find ready steps and run them in parallel
     while (true) {
@@ -847,9 +988,7 @@ export class WorkflowRunner {
       }
 
       const results = await Promise.allSettled(
-        readySteps.map((step) =>
-          this.executeStep(step, stepStates, agentMap, errorHandling, runId),
-        ),
+        readySteps.map((step) => this.executeStep(step, stepStates, agentMap, errorHandling, runId))
       );
 
       // Collect outcomes from this batch for convergence reflection
@@ -899,7 +1038,9 @@ export class WorkflowRunner {
       if (readySteps.length > 1 && this.trajectory?.shouldReflectOnConverge()) {
         const label = readySteps.map((s) => s.name).join(' + ');
         // Find steps that this batch unblocks
-        const completedNames = new Set(batchOutcomes.filter((o) => o.status === 'completed').map((o) => o.name));
+        const completedNames = new Set(
+          batchOutcomes.filter((o) => o.status === 'completed').map((o) => o.name)
+        );
         const unblocked = workflow.steps
           .filter((s) => s.dependsOn?.some((dep) => completedNames.has(dep)))
           .filter((s) => {
@@ -908,15 +1049,16 @@ export class WorkflowRunner {
           })
           .map((s) => s.name);
 
-        await this.trajectory.synthesizeAndReflect(label, batchOutcomes, unblocked.length > 0 ? unblocked : undefined);
+        await this.trajectory.synthesizeAndReflect(
+          label,
+          batchOutcomes,
+          unblocked.length > 0 ? unblocked : undefined
+        );
       }
     }
   }
 
-  private findReadySteps(
-    steps: WorkflowStep[],
-    stepStates: Map<string, StepState>,
-  ): WorkflowStep[] {
+  private findReadySteps(steps: WorkflowStep[], stepStates: Map<string, StepState>): WorkflowStep[] {
     return steps.filter((step) => {
       const state = stepStates.get(step.name);
       if (!state || state.row.status !== 'pending') return false;
@@ -1057,7 +1199,7 @@ export class WorkflowRunner {
     stepStates: Map<string, StepState>,
     agentMap: Map<string, AgentDefinition>,
     errorHandling: ErrorHandlingConfig | undefined,
-    runId: string,
+    runId: string
   ): Promise<void> {
     // Branch: deterministic steps execute shell commands
     if (this.isDeterministicStep(step)) {
@@ -1303,7 +1445,7 @@ export class WorkflowRunner {
 
         this.emit({ type: 'step:completed', runId, stepName: step.name, output });
         this.postToChannel(
-          `**[${step.name}]** Completed\n${output.slice(0, 500)}${output.length > 500 ? '\n...(truncated)' : ''}`,
+          `**[${step.name}]** Completed\n${output.slice(0, 500)}${output.length > 500 ? '\n...(truncated)' : ''}`
         );
         await this.trajectory?.stepCompleted(step, output, attempt + 1);
         return;
@@ -1317,11 +1459,13 @@ export class WorkflowRunner {
     await this.trajectory?.decide(
       `How to handle ${step.name} failure`,
       'exhausted',
-      `All ${maxRetries + 1} attempts failed: ${lastError ?? 'Unknown error'}`,
+      `All ${maxRetries + 1} attempts failed: ${lastError ?? 'Unknown error'}`
     );
     this.postToChannel(`**[${step.name}]** Failed: ${lastError ?? 'Unknown error'}`);
     await this.markStepFailed(state, lastError ?? 'Unknown error', runId);
-    throw new Error(`Step "${step.name}" failed after ${maxRetries} retries: ${lastError ?? 'Unknown error'}`);
+    throw new Error(
+      `Step "${step.name}" failed after ${maxRetries} retries: ${lastError ?? 'Unknown error'}`
+    );
   }
 
   /**
@@ -1331,7 +1475,7 @@ export class WorkflowRunner {
   static buildNonInteractiveCommand(
     cli: AgentCli,
     task: string,
-    extraArgs: string[] = [],
+    extraArgs: string[] = []
   ): { cmd: string; args: string[] } {
     switch (cli) {
       case 'claude':
@@ -1359,14 +1503,16 @@ export class WorkflowRunner {
   private async execNonInteractive(
     agentDef: AgentDefinition,
     step: WorkflowStep,
-    timeoutMs?: number,
+    timeoutMs?: number
   ): Promise<string> {
     const agentName = `${step.name}-${this.generateShortId()}`;
     const modelArgs = agentDef.constraints?.model ? ['--model', agentDef.constraints.model] : [];
 
     // Append strict deliverable enforcement — non-interactive agents MUST produce
     // clear, structured output since there's no opportunity for follow-up or clarification.
-    const taskWithDeliverable = step.task + '\n\n---\n' +
+    const taskWithDeliverable =
+      step.task +
+      '\n\n---\n' +
       'CRITICAL REQUIREMENT — YOU MUST FOLLOW THIS EXACTLY:\n' +
       'You are running in non-interactive mode. There is NO opportunity for follow-up, ' +
       'clarification, or additional input. Your stdout output is your ONLY deliverable.\n\n' +
@@ -1381,7 +1527,11 @@ export class WorkflowRunner {
       '- Skip steps or leave work incomplete\n' +
       '- Output only status messages without the actual deliverable content';
 
-    const { cmd, args } = WorkflowRunner.buildNonInteractiveCommand(agentDef.cli, taskWithDeliverable, modelArgs);
+    const { cmd, args } = WorkflowRunner.buildNonInteractiveCommand(
+      agentDef.cli,
+      taskWithDeliverable,
+      modelArgs
+    );
 
     // Open a log file for dashboard observability
     const logsDir = this.getWorkerLogsDir();
@@ -1394,13 +1544,15 @@ export class WorkflowRunner {
     // Register agent in Relaycast for observability
     let stopHeartbeat: (() => void) | undefined;
     if (this.relaycastApi) {
-      const agentClient = await this.relaycastApi.registerExternalAgent(
-        agentName,
-        `Non-interactive workflow agent for step "${step.name}" (${agentDef.cli})`,
-      ).catch((err) => {
-        console.warn(`[WorkflowRunner] Failed to register ${agentName} in Relaycast:`, err?.message ?? err);
-        return null;
-      });
+      const agentClient = await this.relaycastApi
+        .registerExternalAgent(
+          agentName,
+          `Non-interactive workflow agent for step "${step.name}" (${agentDef.cli})`
+        )
+        .catch((err) => {
+          console.warn(`[WorkflowRunner] Failed to register ${agentName} in Relaycast:`, err?.message ?? err);
+          return null;
+        });
       if (agentClient) {
         stopHeartbeat = this.relaycastApi.startHeartbeat(agentClient);
       }
@@ -1479,9 +1631,11 @@ export class WorkflowRunner {
 
           if (code !== 0 && code !== null) {
             const stderr = stderrChunks.join('');
-            reject(new Error(
-              `Step "${step.name}" exited with code ${code}${stderr ? `: ${stderr.slice(0, 500)}` : ''}`,
-            ));
+            reject(
+              new Error(
+                `Step "${step.name}" exited with code ${code}${stderr ? `: ${stderr.slice(0, 500)}` : ''}`
+              )
+            );
             return;
           }
 
@@ -1508,7 +1662,7 @@ export class WorkflowRunner {
   private async spawnAndWait(
     agentDef: AgentDefinition,
     step: WorkflowStep,
-    timeoutMs?: number,
+    timeoutMs?: number
   ): Promise<string> {
     // Branch: non-interactive agents run as simple subprocesses
     if (agentDef.interactive === false) {
@@ -1521,7 +1675,9 @@ export class WorkflowRunner {
 
     // Append self-termination instructions to the task
     let agentName = `${step.name}-${this.generateShortId()}`;
-    const taskWithExit = step.task + '\n\n---\n' +
+    const taskWithExit =
+      step.task +
+      '\n\n---\n' +
       'IMPORTANT: When you have fully completed this task, you MUST self-terminate by outputting ' +
       'the exact text "/exit" on its own line. Do not call any MCP tools to exit — just print /exit. ' +
       'Do not wait for further input — output /exit immediately after finishing.';
@@ -1601,7 +1757,7 @@ export class WorkflowRunner {
       let workerPid: number | undefined;
       try {
         const rawAgents = await this.relay!.listAgentsRaw();
-        workerPid = rawAgents.find(a => a.name === agentName)?.pid ?? undefined;
+        workerPid = rawAgents.find((a) => a.name === agentName)?.pid ?? undefined;
       } catch {
         // Best-effort PID lookup
       }
@@ -1609,13 +1765,15 @@ export class WorkflowRunner {
 
       // Register the spawned agent in Relaycast for observability + start heartbeat
       if (this.relaycastApi) {
-        const agentClient = await this.relaycastApi.registerExternalAgent(
-          agent.name,
-          `Workflow agent for step "${step.name}" (${agentDef.cli})`,
-        ).catch((err) => {
-          console.warn(`[WorkflowRunner] Failed to register ${agent.name} in Relaycast:`, err?.message ?? err);
-          return null;
-        });
+        const agentClient = await this.relaycastApi
+          .registerExternalAgent(agent.name, `Workflow agent for step "${step.name}" (${agentDef.cli})`)
+          .catch((err) => {
+            console.warn(
+              `[WorkflowRunner] Failed to register ${agent.name} in Relaycast:`,
+              err?.message ?? err
+            );
+            return null;
+          });
 
         // Keep the agent online in the dashboard while it's working
         if (agentClient) {
@@ -1648,9 +1806,7 @@ export class WorkflowRunner {
         if (step.verification?.type === 'file_exists') {
           const verifyPath = path.resolve(this.cwd, step.verification.value);
           if (existsSync(verifyPath)) {
-            this.postToChannel(
-              `**[${step.name}]** Agent idle after completing work — releasing`,
-            );
+            this.postToChannel(`**[${step.name}]** Agent idle after completing work — releasing`);
             await agent.release();
             // Fall through to read output below
           } else {
@@ -1701,8 +1857,14 @@ export class WorkflowRunner {
 
   /** Patterns where a hub agent coordinates spoke agents. */
   private static readonly HUB_PATTERNS = new Set<string>([
-    'fan-out', 'hub-spoke', 'hierarchical', 'map-reduce',
-    'scatter-gather', 'supervisor', 'saga', 'auction',
+    'fan-out',
+    'hub-spoke',
+    'hierarchical',
+    'map-reduce',
+    'scatter-gather',
+    'supervisor',
+    'saga',
+    'auction',
   ]);
 
   /**
@@ -1713,7 +1875,7 @@ export class WorkflowRunner {
     agent: Agent,
     agentDef: AgentDefinition,
     step: WorkflowStep,
-    timeoutMs?: number,
+    timeoutMs?: number
   ): Promise<'exited' | 'timeout' | 'released'> {
     const nudgeConfig = this.currentConfig?.swarm.idleNudge;
     if (!nudgeConfig) {
@@ -1763,7 +1925,7 @@ export class WorkflowRunner {
 
       if (result.result === 'timeout') {
         // Our wait timed out — check overall timeout
-        if (remaining !== undefined && (Date.now() - startTime) >= timeoutMs!) {
+        if (remaining !== undefined && Date.now() - startTime >= timeoutMs!) {
           return 'timeout';
         }
         // The idle event didn't fire within our wait window, loop again
@@ -1775,9 +1937,7 @@ export class WorkflowRunner {
         // Send nudge
         await this.nudgeIdleAgent(agent, agentDef, step);
         nudgeCount++;
-        this.postToChannel(
-          `**[${step.name}]** Agent \`${agent.name}\` idle — nudge #${nudgeCount} sent`,
-        );
+        this.postToChannel(`**[${step.name}]** Agent \`${agent.name}\` idle — nudge #${nudgeCount} sent`);
         this.emit({ type: 'step:nudged', runId: this.currentRunId ?? '', stepName: step.name, nudgeCount });
         // Continue loop — wait for next idle or exit
         continue;
@@ -1785,7 +1945,7 @@ export class WorkflowRunner {
 
       // Exhausted nudges — force-release
       this.postToChannel(
-        `**[${step.name}]** Agent \`${agent.name}\` still idle after ${nudgeCount} nudge(s) — force-releasing`,
+        `**[${step.name}]** Agent \`${agent.name}\` still idle after ${nudgeCount} nudge(s) — force-releasing`
       );
       this.emit({ type: 'step:force-released', runId: this.currentRunId ?? '', stepName: step.name });
       await agent.release();
@@ -1797,11 +1957,7 @@ export class WorkflowRunner {
    * Send a nudge to an idle agent. Uses hub-mediated nudge for hub patterns,
    * or direct system injection otherwise.
    */
-  private async nudgeIdleAgent(
-    agent: Agent,
-    agentDef: AgentDefinition,
-    step: WorkflowStep,
-  ): Promise<void> {
+  private async nudgeIdleAgent(agent: Agent, agentDef: AgentDefinition, step: WorkflowStep): Promise<void> {
     const hubAgent = this.resolveHubForNudge(agentDef);
 
     if (hubAgent) {
@@ -1820,12 +1976,14 @@ export class WorkflowRunner {
     // Direct system injection via human handle
     if (this.relay) {
       const human = this.relay.human({ name: 'workflow-runner' });
-      await human.sendMessage({
-        to: agent.name,
-        text: "You appear idle. If you've completed your task, output /exit. If still working, continue.",
-      }).catch(() => {
-        // Non-critical — don't break workflow
-      });
+      await human
+        .sendMessage({
+          to: agent.name,
+          text: "You appear idle. If you've completed your task, output /exit. If still working, continue.",
+        })
+        .catch(() => {
+          // Non-critical — don't break workflow
+        });
     }
   }
 
@@ -1867,9 +2025,7 @@ export class WorkflowRunner {
     switch (check.type) {
       case 'output_contains':
         if (!output.includes(check.value)) {
-          throw new Error(
-            `Verification failed for "${stepName}": output does not contain "${check.value}"`,
-          );
+          throw new Error(`Verification failed for "${stepName}": output does not contain "${check.value}"`);
         }
         break;
 
@@ -1879,9 +2035,7 @@ export class WorkflowRunner {
 
       case 'file_exists':
         if (!existsSync(path.resolve(this.cwd, check.value))) {
-          throw new Error(
-            `Verification failed for "${stepName}": file "${check.value}" does not exist`,
-          );
+          throw new Error(`Verification failed for "${stepName}": file "${check.value}" does not exist`);
         }
         break;
 
@@ -1893,11 +2047,7 @@ export class WorkflowRunner {
 
   // ── State helpers ─────────────────────────────────────────────────────
 
-  private async updateRunStatus(
-    runId: string,
-    status: WorkflowRunStatus,
-    error?: string,
-  ): Promise<void> {
+  private async updateRunStatus(runId: string, status: WorkflowRunStatus, error?: string): Promise<void> {
     const patch: Partial<WorkflowRunRow> = {
       status,
       updatedAt: new Date().toISOString(),
@@ -1928,7 +2078,7 @@ export class WorkflowRunner {
     failedStepName: string,
     allSteps: WorkflowStep[],
     stepStates: Map<string, StepState>,
-    runId: string,
+    runId: string
   ): Promise<void> {
     const queue = [failedStepName];
     const visited = new Set<string>();
@@ -1953,7 +2103,7 @@ export class WorkflowRunner {
             await this.trajectory?.decide(
               `Whether to skip ${step.name}`,
               'skip',
-              `Upstream dependency "${current}" failed`,
+              `Upstream dependency "${current}" failed`
             );
             queue.push(step.name);
           }
@@ -1989,7 +2139,7 @@ export class WorkflowRunner {
    */
   private buildNonInteractiveAwareness(
     agentMap: Map<string, AgentDefinition>,
-    stepStates: Map<string, StepState>,
+    stepStates: Map<string, StepState>
   ): string | undefined {
     const nonInteractive = [...agentMap.values()].filter((a) => a.interactive === false);
     if (nonInteractive.length === 0) return undefined;
@@ -2008,10 +2158,13 @@ export class WorkflowRunner {
       const stepRefs = steps.map((s) => `{{steps.${s}.output}}`).join(', ');
       return `- ${a.name} (${a.cli}) — will return output when complete${stepRefs ? `. Access via: ${stepRefs}` : ''}`;
     });
-    return '\n\n---\n' +
+    return (
+      '\n\n---\n' +
       'Note: The following agents are non-interactive workers and cannot receive messages:\n' +
-      lines.join('\n') + '\n' +
-      'Do NOT attempt to message these agents. Use the {{steps.<name>.output}} references above to access their results.';
+      lines.join('\n') +
+      '\n' +
+      'Do NOT attempt to message these agents. Use the {{steps.<name>.output}} references above to access their results.'
+    );
   }
 
   /** Post a message to the workflow channel. Fire-and-forget — never throws or blocks. */
@@ -2027,7 +2180,7 @@ export class WorkflowRunner {
     workflowName: string,
     outcomes: StepOutcome[],
     summary: string,
-    confidence: number,
+    confidence: number
   ): void {
     const completed = outcomes.filter((o) => o.status === 'completed');
     const skipped = outcomes.filter((o) => o.status === 'skipped');
@@ -2040,8 +2193,9 @@ export class WorkflowRunner {
       `Confidence: ${Math.round(confidence * 100)}%`,
       '',
       '### Steps',
-      ...completed.map((o) =>
-        `- **${o.name}** (${o.agent}) — passed${o.verificationPassed ? ' (verified)' : ''}${o.attempts > 1 ? ` after ${o.attempts} attempts` : ''}`,
+      ...completed.map(
+        (o) =>
+          `- **${o.name}** (${o.agent}) — passed${o.verificationPassed ? ' (verified)' : ''}${o.attempts > 1 ? ` after ${o.attempts} attempts` : ''}`
       ),
       ...skipped.map((o) => `- **${o.name}** — skipped`),
     ];
@@ -2057,11 +2211,7 @@ export class WorkflowRunner {
   }
 
   /** Post a failure report to the channel. */
-  private postFailureReport(
-    workflowName: string,
-    outcomes: StepOutcome[],
-    errorMsg: string,
-  ): void {
+  private postFailureReport(workflowName: string, outcomes: StepOutcome[], errorMsg: string): void {
     const completed = outcomes.filter((o) => o.status === 'completed');
     const failed = outcomes.filter((o) => o.status === 'failed');
     const skipped = outcomes.filter((o) => o.status === 'skipped');
@@ -2100,9 +2250,7 @@ export class WorkflowRunner {
 
   /** Collect step outcomes for trajectory synthesis. */
   private collectOutcomes(stepStates: Map<string, StepState>, steps?: WorkflowStep[]): StepOutcome[] {
-    const stepsWithVerification = new Set(
-      steps?.filter((s) => s.verification).map((s) => s.name) ?? [],
-    );
+    const stepsWithVerification = new Set(steps?.filter((s) => s.verification).map((s) => s.name) ?? []);
     const outcomes: StepOutcome[] = [];
     for (const [name, state] of stepStates) {
       outcomes.push({
@@ -2137,7 +2285,11 @@ export class WorkflowRunner {
 
   /** Sanitize a workflow name into a valid channel name. */
   private sanitizeChannelName(name: string): string {
-    return name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').slice(0, 32);
+    return name
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, '-')
+      .replace(/-+/g, '-')
+      .slice(0, 32);
   }
 
   /** Directory for persisted step outputs: .agent-relay/step-outputs/{runId}/ */
@@ -2167,9 +2319,7 @@ export class WorkflowRunner {
       const chunks = Math.ceil(cleaned.length / maxMsg);
       for (let i = 0; i < chunks; i++) {
         const slice = cleaned.slice(i * maxMsg, (i + 1) * maxMsg);
-        this.postToChannel(
-          `**[${stepName}] Output (${i + 1}/${chunks}):**\n\`\`\`\n${slice}\n\`\`\``,
-        );
+        this.postToChannel(`**[${stepName}] Output (${i + 1}/${chunks}):**\n\`\`\`\n${slice}\n\`\`\``);
       }
     }
   }
@@ -2193,7 +2343,13 @@ export class WorkflowRunner {
   }
 
   /** Register a spawned agent in workers.json so `agents:kill` can find it. */
-  private registerWorker(agentName: string, cli: string, task: string, pid?: number, interactive = true): void {
+  private registerWorker(
+    agentName: string,
+    cli: string,
+    task: string,
+    pid?: number,
+    interactive = true
+  ): void {
     // Track in memory first (no race condition)
     const workerEntry = {
       cli,

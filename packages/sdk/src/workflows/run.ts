@@ -1,6 +1,7 @@
 import type { AgentRelayOptions } from '../relay.js';
-import type { TrajectoryConfig, WorkflowRunRow } from './types.js';
+import type { DryRunReport, TrajectoryConfig, WorkflowRunRow } from './types.js';
 import { WorkflowRunner, type WorkflowEventListener, type VariableContext } from './runner.js';
+import { formatDryRunReport } from './dry-run-format.js';
 
 /**
  * Options for the `runWorkflow` convenience function.
@@ -18,6 +19,8 @@ export interface RunWorkflowOptions {
   onEvent?: WorkflowEventListener;
   /** Override trajectory config. Set to false to disable trajectory recording. */
   trajectories?: TrajectoryConfig | false;
+  /** Validate and show execution plan without running. */
+  dryRun?: boolean;
 }
 
 /**
@@ -33,22 +36,36 @@ export interface RunWorkflowOptions {
  */
 export async function runWorkflow(
   yamlPath: string,
-  options: RunWorkflowOptions = {},
-): Promise<WorkflowRunRow> {
+  options: RunWorkflowOptions & { dryRun: true }
+): Promise<DryRunReport>;
+export async function runWorkflow(yamlPath: string, options?: RunWorkflowOptions): Promise<WorkflowRunRow>;
+export async function runWorkflow(
+  yamlPath: string,
+  options: RunWorkflowOptions = {}
+): Promise<WorkflowRunRow | DryRunReport> {
   const runner = new WorkflowRunner({
     cwd: options.cwd,
     relay: options.relay,
   });
-
-  if (options.onEvent) {
-    runner.on(options.onEvent);
-  }
 
   const config = await runner.parseYamlFile(yamlPath);
 
   // Allow programmatic trajectory override
   if (options.trajectories !== undefined) {
     config.trajectories = options.trajectories;
+  }
+
+  // Auto-detect DRY_RUN env var so existing scripts get dry-run for free
+  const isDryRun = options.dryRun ?? !!process.env.DRY_RUN;
+
+  if (isDryRun) {
+    const report = runner.dryRun(config, options.workflow, options.vars);
+    console.log(formatDryRunReport(report));
+    return report;
+  }
+
+  if (options.onEvent) {
+    runner.on(options.onEvent);
   }
 
   return runner.execute(config, options.workflow, options.vars);

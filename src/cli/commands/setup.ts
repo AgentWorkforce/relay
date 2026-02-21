@@ -14,6 +14,7 @@ type RunInitOptions = {
 };
 type RunWorkflowOptions = {
   workflow?: string;
+  dryRun?: boolean;
 };
 type WorkflowRunResult = {
   status: string;
@@ -24,7 +25,7 @@ export interface SetupDependencies {
   runTelemetry: (action?: string) => Promise<void> | void;
   runYamlWorkflow: (
     filePath: string,
-    options: { workflow?: string; onEvent: (event: WorkflowEvent) => void }
+    options: { workflow?: string; dryRun?: boolean; onEvent: (event: WorkflowEvent) => void }
   ) => Promise<WorkflowRunResult>;
   runScriptWorkflow: (filePath: string) => void;
   log: (...args: unknown[]) => void;
@@ -64,9 +65,15 @@ function logWorkflowEvent(event: WorkflowEvent, log: (...args: unknown[]) => voi
 }
 async function runYamlWorkflowDefault(
   filePath: string,
-  options: { workflow?: string; onEvent: (event: WorkflowEvent) => void }
+  options: { workflow?: string; dryRun?: boolean; onEvent: (event: WorkflowEvent) => void }
 ): Promise<WorkflowRunResult> {
-  return await runWorkflow(filePath, options);
+  const result = await runWorkflow(filePath, options);
+  // DryRunReport has 'valid' instead of 'status'
+  if ('valid' in result) {
+    const report = result as unknown as { valid: boolean; errors: string[] };
+    return { status: report.valid ? 'dry-run' : 'failed', error: report.errors.join('; ') || undefined };
+  }
+  return result;
 }
 function runScriptFile(filePath: string): void {
   const resolved = path.resolve(filePath);
@@ -274,15 +281,25 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
     .description('Run a workflow file (YAML, TypeScript, or Python)')
     .argument('<file>', 'Path to workflow file (.yaml, .yml, .ts, or .py)')
     .option('-w, --workflow <name>', 'Run a specific workflow by name (default: first, YAML only)')
+    .option('--dry-run', 'Validate workflow and show execution plan without running')
     .action(async (filePath: string, options: RunWorkflowOptions) => {
       try {
         const ext = path.extname(filePath).toLowerCase();
         if (ext === '.yaml' || ext === '.yml') {
-          deps.log(`Running workflow from ${filePath}...`);
+          if (options.dryRun) {
+            deps.log(`Dry run: validating workflow from ${filePath}...`);
+          } else {
+            deps.log(`Running workflow from ${filePath}...`);
+          }
           const result = await deps.runYamlWorkflow(filePath, {
             workflow: options.workflow,
+            dryRun: options.dryRun,
             onEvent: (event: WorkflowEvent) => logWorkflowEvent(event, deps.log),
           });
+          if (options.dryRun) {
+            // Report was already printed by runWorkflow
+            return;
+          }
           if (result.status === 'completed') {
             deps.log('\nWorkflow completed successfully.');
           } else {
@@ -293,6 +310,9 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
         }
         if (ext === '.ts' || ext === '.tsx' || ext === '.py') {
           deps.log(`Running workflow script ${filePath}...`);
+          if (options.dryRun) {
+            process.env.DRY_RUN = 'true';
+          }
           deps.runScriptWorkflow(filePath);
           return;
         }

@@ -159,6 +159,12 @@ function resolveCliVersion(fileSystem: CoreFileSystem): string {
 }
 
 function findDashboardBinaryDefault(fileSystem: CoreFileSystem): string | null {
+  // Allow explicit override via env var (for local development)
+  const envOverride = process.env.RELAY_DASHBOARD_BINARY;
+  if (envOverride && fileSystem.existsSync(envOverride)) {
+    return envOverride;
+  }
+
   const binaryName = 'relay-dashboard-server';
   const homeDir = process.env.HOME || process.env.USERPROFILE || '';
 

@@ -80,6 +80,7 @@ function cleanupBrokerFiles(paths: CoreProjectPaths, deps: CoreDependencies): vo
 function getDashboardSpawnArgs(paths: CoreProjectPaths, port: number): string[] {
   return [
     '--integrated',
+    '--no-spawn',
     '--port',
     String(port),
     '--data-dir',
@@ -95,17 +96,69 @@ function startDashboard(paths: CoreProjectPaths, port: number, deps: CoreDepende
   const dashboardBinary = deps.findDashboardBinary();
   const args = getDashboardSpawnArgs(paths, port);
 
+  const spawnOpts = {
+    stdio: ['ignore', 'pipe', 'pipe'] as unknown,
+    env: deps.env,
+  };
+
+  let child: SpawnedProcess;
   if (dashboardBinary) {
-    return deps.spawnProcess(dashboardBinary, args, {
-      stdio: 'ignore',
-      env: deps.env,
-    });
+    // If the binary is a .js file (local dev), run it with node
+    if (dashboardBinary.endsWith('.js')) {
+      child = deps.spawnProcess('node', [dashboardBinary, ...args], spawnOpts);
+    } else {
+      child = deps.spawnProcess(dashboardBinary, args, spawnOpts);
+    }
+  } else {
+    child = deps.spawnProcess('npx', ['--yes', '@agent-relay/dashboard-server@latest', ...args], spawnOpts);
   }
 
-  return deps.spawnProcess('npx', ['--yes', '@agent-relay/dashboard-server@2.0.83-beta.0', ...args], {
-    stdio: 'ignore',
-    env: deps.env,
+  // Capture stderr for error reporting
+  const childAny = child as unknown as {
+    stderr?: { on?: (event: string, cb: (chunk: Buffer) => void) => void };
+    on?: (event: string, cb: (...args: unknown[]) => void) => void;
+  };
+  let stderrBuf = '';
+  childAny.stderr?.on?.('data', (chunk: Buffer) => {
+    stderrBuf += chunk.toString();
   });
+
+  // Report early crashes
+  childAny.on?.('exit', (...exitArgs: unknown[]) => {
+    const code = exitArgs[0] as number | null;
+    const signal = exitArgs[1] as string | null;
+    if (code !== null && code !== 0) {
+      deps.error(`Dashboard process exited with code ${code}`);
+      if (stderrBuf.trim()) {
+        deps.error(stderrBuf.trim().split('\n').slice(-5).join('\n'));
+      }
+    } else if (signal) {
+      deps.error(`Dashboard process killed by signal ${signal}`);
+    }
+  });
+
+  return child;
+}
+
+async function waitForDashboard(
+  port: number,
+  process: SpawnedProcess,
+  deps: Pick<CoreDependencies, 'warn'>
+): Promise<void> {
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    if (process.killed) {
+      deps.warn(`Warning: Dashboard process exited before becoming ready on port ${port}`);
+      return;
+    }
+    try {
+      const resp = await fetch(`http://localhost:${port}/health`);
+      if (resp.ok) return; // Dashboard is up
+    } catch {
+      // Not ready yet
+    }
+  }
+  deps.warn(`Warning: Dashboard not responding on port ${port} after 10s`);
 }
 
 async function shutdownUpResources(
@@ -161,6 +214,9 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     if (wantsDashboard) {
       dashboardProcess = startDashboard(paths, dashboardPort, deps);
       deps.log(`Dashboard: http://localhost:${dashboardPort}`);
+
+      // Verify the dashboard is actually reachable (non-blocking)
+      waitForDashboard(dashboardPort, dashboardProcess, deps).catch(() => {});
     }
 
     const teamsConfig = deps.loadTeamsConfig(paths.projectRoot);

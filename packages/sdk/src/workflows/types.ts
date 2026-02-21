@@ -58,30 +58,30 @@ export interface SwarmConfig {
 }
 
 export type SwarmPattern =
-  | "fan-out"
-  | "pipeline"
-  | "hub-spoke"
-  | "consensus"
-  | "mesh"
-  | "handoff"
-  | "cascade"
-  | "dag"
-  | "debate"
-  | "hierarchical"
+  | 'fan-out'
+  | 'pipeline'
+  | 'hub-spoke'
+  | 'consensus'
+  | 'mesh'
+  | 'handoff'
+  | 'cascade'
+  | 'dag'
+  | 'debate'
+  | 'hierarchical'
   // Additional patterns
-  | "map-reduce"
-  | "scatter-gather"
-  | "supervisor"
-  | "reflection"
-  | "red-team"
-  | "verifier"
-  | "auction"
-  | "escalation"
-  | "saga"
-  | "circuit-breaker"
-  | "blackboard"
-  | "swarm"
-  | "competitive";
+  | 'map-reduce'
+  | 'scatter-gather'
+  | 'supervisor'
+  | 'reflection'
+  | 'red-team'
+  | 'verifier'
+  | 'auction'
+  | 'escalation'
+  | 'saga'
+  | 'circuit-breaker'
+  | 'blackboard'
+  | 'swarm'
+  | 'competitive';
 
 // ── Agent definitions ───────────────────────────────────────────────────────
 
@@ -99,7 +99,7 @@ export interface AgentDefinition {
   interactive?: boolean;
 }
 
-export type AgentCli = "claude" | "codex" | "gemini" | "aider" | "goose" | "opencode" | "droid";
+export type AgentCli = 'claude' | 'codex' | 'gemini' | 'aider' | 'goose' | 'opencode' | 'droid';
 
 /** Resource and behavioral constraints for an agent. */
 export interface AgentConstraints {
@@ -132,7 +132,7 @@ export interface WorkflowDefinition {
   /** Preflight checks that run before any steps. All must pass. */
   preflight?: PreflightCheck[];
   steps: WorkflowStep[];
-  onError?: "fail" | "skip" | "retry";
+  onError?: 'fail' | 'skip' | 'retry';
 }
 
 /** Step type: agent (LLM-powered) or deterministic (shell command). */
@@ -192,7 +192,7 @@ export type DeterministicWorkflowStep = WorkflowStep;
 
 /** Verification check to validate a step's output. */
 export interface VerificationCheck {
-  type: "output_contains" | "exit_code" | "file_exists" | "custom";
+  type: 'output_contains' | 'exit_code' | 'file_exists' | 'custom';
   value: string;
   description?: string;
 }
@@ -203,7 +203,7 @@ export interface VerificationCheck {
 export interface CoordinationConfig {
   barriers?: Barrier[];
   votingThreshold?: number;
-  consensusStrategy?: "majority" | "unanimous" | "quorum";
+  consensusStrategy?: 'majority' | 'unanimous' | 'quorum';
 }
 
 /** A synchronization barrier that gates downstream work. */
@@ -217,7 +217,7 @@ export interface Barrier {
 
 /** Shared state configuration for workflows. */
 export interface StateConfig {
-  backend: "memory" | "redis" | "database";
+  backend: 'memory' | 'redis' | 'database';
   ttlMs?: number;
   namespace?: string;
 }
@@ -226,20 +226,38 @@ export interface StateConfig {
 
 /** Global error handling configuration. */
 export interface ErrorHandlingConfig {
-  strategy: "fail-fast" | "continue" | "retry";
+  strategy: 'fail-fast' | 'continue' | 'retry';
   maxRetries?: number;
   retryDelayMs?: number;
   notifyChannel?: string;
 }
 
+// ── Dry-run report types ────────────────────────────────────────────────
+
+/** A single execution wave in a dry-run simulation. */
+export interface DryRunWave {
+  wave: number;
+  steps: Array<{ name: string; agent: string; dependsOn: string[] }>;
+}
+
+/** Report produced by a dry-run validation of a workflow config. */
+export interface DryRunReport {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+  name: string;
+  description?: string;
+  pattern: string;
+  agents: Array<{ name: string; cli: string; role?: string; stepCount: number }>;
+  waves: DryRunWave[];
+  totalSteps: number;
+  maxConcurrency?: number;
+  estimatedWaves: number;
+}
+
 // ── Database row types ──────────────────────────────────────────────────────
 
-export type WorkflowRunStatus =
-  | "pending"
-  | "running"
-  | "completed"
-  | "failed"
-  | "cancelled";
+export type WorkflowRunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 /** Database row representing a workflow run. */
 export interface WorkflowRunRow {
@@ -257,12 +275,7 @@ export interface WorkflowRunRow {
   updatedAt: string;
 }
 
-export type WorkflowStepStatus =
-  | "pending"
-  | "running"
-  | "completed"
-  | "failed"
-  | "skipped";
+export type WorkflowStepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
 
 /** Database row representing a single workflow step execution. */
 export interface WorkflowStepRow {
