@@ -32,12 +32,8 @@ export type ClaudeModel = (typeof ClaudeModels)[keyof typeof ClaudeModels];
  * Codex (OpenAI) model identifiers.
  */
 export const CodexModels = {
-  /** OpenAI o3 - reasoning model */
-  O3: 'o3',
-  /** OpenAI o4-mini - smaller reasoning model */
-  O4_MINI: 'o4-mini',
-  /** GPT-4o - multimodal flagship */
-  GPT4O: 'gpt-4o',
+  /** Codex 5.3 - latest codex model */
+  CODEX_5_3: 'codex-5.3',
 } as const;
 
 export type CodexModel = (typeof CodexModels)[keyof typeof CodexModels];
@@ -55,6 +51,18 @@ export const GeminiModels = {
 export type GeminiModel = (typeof GeminiModels)[keyof typeof GeminiModels];
 
 /**
+ * Cursor model identifiers.
+ */
+export const CursorModels = {
+  /** Claude Sonnet via Cursor */
+  CLAUDE_SONNET: 'claude-sonnet',
+  /** GPT-4o via Cursor */
+  GPT4O: 'gpt-4o',
+} as const;
+
+export type CursorModel = (typeof CursorModels)[keyof typeof CursorModels];
+
+/**
  * All models grouped by CLI tool.
  *
  * @example
@@ -63,14 +71,16 @@ export type GeminiModel = (typeof GeminiModels)[keyof typeof GeminiModels];
  *
  * // Use with spawn
  * await relay.claude.spawn({ model: Models.Claude.OPUS });
- * await relay.codex.spawn({ model: Models.Codex.O3 });
+ * await relay.codex.spawn({ model: Models.Codex.CODEX_5_3 });
  * await relay.gemini.spawn({ model: Models.Gemini.FLASH });
+ * await relay.cursor.spawn({ model: Models.Cursor.CLAUDE_SONNET });
  * ```
  */
 export const Models = {
   Claude: ClaudeModels,
   Codex: CodexModels,
   Gemini: GeminiModels,
+  Cursor: CursorModels,
 } as const;
 
 /**
@@ -80,8 +90,36 @@ export const CLIs = {
   CLAUDE: 'claude',
   CODEX: 'codex',
   GEMINI: 'gemini',
+  CURSOR: 'cursor',
   AIDER: 'aider',
   GOOSE: 'goose',
 } as const;
 
 export type CLI = (typeof CLIs)[keyof typeof CLIs];
+
+/**
+ * Swarm patterns for multi-agent workflows.
+ * Use these constants when setting workflow patterns.
+ */
+export const SwarmPatterns = {
+  /** Central coordinator distributes tasks to workers */
+  HUB_SPOKE: 'hub-spoke',
+  /** Directed acyclic graph with dependencies */
+  DAG: 'dag',
+  /** Parallel execution across multiple agents */
+  FAN_OUT: 'fan-out',
+  /** Sequential processing through stages */
+  PIPELINE: 'pipeline',
+  /** Agents reach agreement before proceeding */
+  CONSENSUS: 'consensus',
+  /** Fully connected peer-to-peer communication */
+  MESH: 'mesh',
+  /** Sequential handoff between agents */
+  HANDOFF: 'handoff',
+  /** Cascading delegation */
+  CASCADE: 'cascade',
+  /** Agents debate to reach conclusion */
+  DEBATE: 'debate',
+  /** Tree-structured coordination */
+  HIERARCHICAL: 'hierarchical',
+} as const;

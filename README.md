@@ -61,7 +61,7 @@ const planner = await relay.claude.spawn({
 
 const coder = await relay.codex.spawn({
   name: 'Coder',
-  model: Models.Codex.O3
+  model: Models.Codex.CODEX_5_3
 });
 
 // Send messages between agents
@@ -75,50 +75,36 @@ relay.onMessageReceived = (msg) => {
 await relay.shutdown();
 ```
 
-### Built-in Workflow Templates
+### Multi-Agent Workflows
 
-Run pre-configured multi-agent workflows:
-
-```typescript
-import { TemplateRegistry, WorkflowRunner } from '@agent-relay/sdk/workflows';
-
-const registry = new TemplateRegistry();
-const config = await registry.loadTemplate('feature-dev');
-
-const runner = new WorkflowRunner();
-const result = await runner.execute(config, undefined, {
-  task: 'Add WebSocket support to the API'
-});
-```
-
-**Built-in templates:**
-
-| Template           | Pattern    | Agents                              |
-| ------------------ | ---------- | ----------------------------------- |
-| `feature-dev`      | hub-spoke  | lead, planner, developer, reviewer  |
-| `bug-fix`          | dag        | investigator, fixer, verifier       |
-| `code-review`      | fan-out    | lead, reviewers (security, quality) |
-| `security-audit`   | pipeline   | scanner, analyzer, reporter         |
-| `refactor`         | dag        | analyzer, refactorer, tester        |
-| `documentation`    | fan-out    | writer, reviewer                    |
-
-### Custom Workflows
-
-Build workflows programmatically:
+Build workflows with different swarm patterns:
 
 ```typescript
-import { workflow, Models } from '@agent-relay/sdk/workflows';
+import { workflow, Models, SwarmPatterns } from '@agent-relay/sdk/workflows';
 
-const result = await workflow('my-pipeline')
-  .pattern('dag')
-  .agent('architect', { cli: 'claude', model: Models.Claude.OPUS, role: 'System architect' })
-  .agent('developer', { cli: 'codex', model: Models.Codex.O3, role: 'Developer' })
-  .agent('reviewer', { cli: 'claude', model: Models.Claude.SONNET, role: 'Code reviewer' })
-  .step('design', { agent: 'architect', task: 'Design the API' })
-  .step('implement', { agent: 'developer', task: 'Implement the design', dependsOn: ['design'] })
-  .step('review', { agent: 'reviewer', task: 'Review the code', dependsOn: ['implement'] })
+// Hub-spoke: Lead coordinates workers
+const result = await workflow('feature-build')
+  .pattern(SwarmPatterns.HUB_SPOKE)
+  .agent('lead', { cli: 'claude', model: Models.Claude.OPUS, role: 'Coordinator' })
+  .agent('dev1', { cli: 'codex', model: Models.Codex.CODEX_5_3, role: 'Developer' })
+  .agent('dev2', { cli: 'cursor', model: Models.Cursor.CLAUDE_SONNET, role: 'Developer' })
+  .step('plan', { agent: 'lead', task: 'Break down the feature into tasks' })
+  .step('impl1', { agent: 'dev1', task: 'Implement backend', dependsOn: ['plan'] })
+  .step('impl2', { agent: 'dev2', task: 'Implement frontend', dependsOn: ['plan'] })
+  .step('review', { agent: 'lead', task: 'Review and merge', dependsOn: ['impl1', 'impl2'] })
   .run();
 ```
+
+**Swarm Patterns:**
+
+| Pattern       | Description                                    |
+| ------------- | ---------------------------------------------- |
+| `hub-spoke`   | Central coordinator distributes tasks          |
+| `dag`         | Directed acyclic graph with dependencies       |
+| `fan-out`     | Parallel execution across multiple agents      |
+| `pipeline`    | Sequential processing through stages           |
+| `consensus`   | Agents reach agreement before proceeding       |
+| `mesh`        | Fully connected peer-to-peer communication     |
 
 ---
 

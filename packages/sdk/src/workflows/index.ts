@@ -1,6 +1,14 @@
 export * from "./types.js";
 export * from "./runner.js";
-export { Models, ClaudeModels, CodexModels, GeminiModels, CLIs } from "../models.js";
+export {
+  Models,
+  ClaudeModels,
+  CodexModels,
+  GeminiModels,
+  CursorModels,
+  CLIs,
+  SwarmPatterns,
+} from "../models.js";
 export * from "./memory-db.js";
 export * from "./run.js";
 export * from "./builder.js";
