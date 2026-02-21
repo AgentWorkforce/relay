@@ -1,0 +1,328 @@
+---
+title: 'Cloud Execution'
+description: 'Run durable workflows 24/7 in isolated cloud sandboxes'
+---
+
+# Cloud Workflow Execution
+
+Run workflows in Agent Relay Cloud for durable, scalable, 24/7 execution. Each agent runs in its own isolated sandbox while still communicating with teammates.
+
+## Why Cloud Execution?
+
+| Feature | Local | Cloud |
+|---------|-------|-------|
+| Execution | Your machine | Cloud sandboxes |
+| Durability | Stops when you close terminal | Survives restarts, runs 24/7 |
+| Scaling | Limited by your machine | Auto-scales based on load |
+| Isolation | Shared environment | Each agent in own sandbox |
+| Team Access | Single user | Team collaboration |
+
+## Quick Start
+
+Add `--cloud` to any workflow command:
+
+```bash
+# Run workflow in the cloud
+agent-relay run workflow.yaml --cloud --task "Add user authentication"
+
+# Run a template in the cloud
+agent-relay run --template feature-dev --cloud --task "Build dashboard"
+```
+
+## How It Works
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Agent Relay Cloud                         │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐          │
+│  │  Sandbox 1  │  │  Sandbox 2  │  │  Sandbox 3  │          │
+│  │   Planner   │  │  Developer  │  │  Reviewer   │          │
+│  │   (Claude)  │  │   (Codex)   │  │   (Claude)  │          │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘          │
+│         │                │                │                  │
+│         └────────────────┼────────────────┘                  │
+│                          │                                   │
+│                   ┌──────┴──────┐                           │
+│                   │   Relaycast  │  ← Cross-sandbox messaging│
+│                   │   Channels   │                           │
+│                   └─────────────┘                            │
+└─────────────────────────────────────────────────────────────┘
+```
+
+1. **Isolated Sandboxes**: Each agent runs in a secure container with its own filesystem, git access, and dev tools
+2. **Cross-Sandbox Messaging**: Agents communicate via Relaycast channels despite isolation
+3. **Durable State**: Workflow state persists, survives restarts and failures
+4. **Auto-Scaling**: More sandboxes spin up as needed, scale down when idle
+
+## Programmatic Cloud Execution
+
+### TypeScript
+
+```typescript
+import { workflow, Models } from '@agent-relay/sdk/workflows';
+
+const result = await workflow('cloud-feature')
+  .pattern('hub-spoke')
+  .agent('lead', { cli: 'claude', model: Models.Claude.OPUS })
+  .agent('dev', { cli: 'codex', model: Models.Codex.CODEX_5_3 })
+  .step('plan', { agent: 'lead', task: 'Create plan' })
+  .step('implement', { agent: 'dev', task: 'Build it', dependsOn: ['plan'] })
+  .cloud()  // Run in cloud instead of locally
+  .run();
+
+console.log(result.cloudRunId);  // Track the cloud run
+```
+
+### Python
+
+```python
+from agent_relay import workflow, Models
+
+result = (
+    workflow("cloud-feature")
+    .pattern("hub-spoke")
+    .agent("lead", cli="claude", model=Models.Claude.OPUS)
+    .agent("dev", cli="codex", model=Models.Codex.CODEX_5_3)
+    .step("plan", agent="lead", task="Create plan")
+    .step("implement", agent="dev", task="Build it", depends_on=["plan"])
+    .cloud()  # Run in cloud instead of locally
+    .run()
+)
+
+print(result.cloud_run_id)  # Track the cloud run
+```
+
+## Monitoring Cloud Workflows
+
+### CLI
+
+```bash
+# List running cloud workflows
+agent-relay cloud workflows
+
+# Get status of a specific run
+agent-relay cloud workflow <run-id>
+
+# Stream logs from a cloud workflow
+agent-relay cloud logs <run-id> --follow
+
+# Cancel a running workflow
+agent-relay cloud cancel <run-id>
+```
+
+### Dashboard
+
+Open the cloud dashboard to monitor workflows in real-time:
+
+1. Go to [agent-relay.com/dashboard](https://agent-relay.com/dashboard)
+2. Navigate to **Workflows**
+3. View running workflows, logs, and step status
+
+## Sandbox Environment
+
+Each agent sandbox includes:
+
+- **Full dev environment**: Node.js, Python, Git, common CLI tools
+- **Persistent workspace**: Files persist across agent restarts
+- **Git access**: Clone and push to repositories (with credentials)
+- **Network access**: Make HTTP requests, install packages
+
+### Customizing Sandboxes
+
+Specify environment requirements in your workflow:
+
+```yaml
+agents:
+  - name: developer
+    cli: claude
+    environment:
+      nodeVersion: "20"
+      pythonVersion: "3.11"
+      packages:
+        - typescript
+        - pytest
+      repos:
+        - https://github.com/myorg/myrepo
+```
+
+## Durability & Recovery
+
+Cloud workflows are durable:
+
+- **Automatic checkpointing**: State saved after each step
+- **Crash recovery**: Workflows resume from last successful step
+- **Retry logic**: Failed steps retry automatically based on config
+- **Timeout handling**: Long-running steps gracefully timeout
+
+### Resuming Failed Workflows
+
+```bash
+# Resume a failed workflow from where it left off
+agent-relay cloud resume <run-id>
+```
+
+Programmatically:
+
+```typescript
+const runner = new CloudWorkflowRunner();
+await runner.resume(runId);
+```
+
+## Scheduling Workflows
+
+Run workflows on a schedule:
+
+```bash
+# Run every day at 9am
+agent-relay cloud schedule workflow.yaml --cron "0 9 * * *" --task "Daily review"
+
+# List scheduled workflows
+agent-relay cloud schedules
+
+# Cancel a schedule
+agent-relay cloud unschedule <schedule-id>
+```
+
+## Webhook Triggers
+
+Trigger workflows from external events:
+
+### GitHub Integration
+
+```yaml
+# cloud-config.yaml
+triggers:
+  - name: pr-review
+    source: github
+    events: [pull_request.opened]
+    workflow: code-review.yaml
+    vars:
+      pr: "{{event.pull_request.number}}"
+```
+
+When a PR is opened, the workflow runs automatically with the PR number.
+
+### Linear Integration
+
+```yaml
+triggers:
+  - name: issue-pickup
+    source: linear
+    events: [issue.assigned]
+    workflow: feature-dev.yaml
+    vars:
+      task: "{{event.issue.title}}"
+```
+
+### Slack Integration
+
+```yaml
+triggers:
+  - name: slack-command
+    source: slack
+    events: [app_mention]
+    workflow: assistant.yaml
+    vars:
+      request: "{{event.text}}"
+```
+
+## Team Collaboration
+
+Cloud workflows support team features:
+
+- **Shared visibility**: Team members see all workflow runs
+- **Role-based access**: Control who can run/cancel workflows
+- **Audit logs**: Track who ran what and when
+- **Notifications**: Get alerts on completion/failure via Slack/email
+
+### Inviting Team Members
+
+```bash
+agent-relay cloud team invite user@example.com --role member
+```
+
+## Pricing
+
+| Plan | Concurrent Workflows | Sandbox Hours/mo | Team Members |
+|------|---------------------|------------------|--------------|
+| Free | 1 | 10 | 1 |
+| Pro | 5 | 100 | 1 |
+| Team | 20 | 500 | 10 |
+| Enterprise | Unlimited | Unlimited | Unlimited |
+
+## Best Practices
+
+### 1. Use Verification Checks
+
+Ensure steps complete properly:
+
+```yaml
+steps:
+  - name: build
+    agent: developer
+    task: "Build the project"
+    verification:
+      type: output_contains
+      value: "BUILD_SUCCESS"
+```
+
+### 2. Set Appropriate Timeouts
+
+Cloud workflows should have timeouts:
+
+```yaml
+swarm:
+  timeoutMs: 3600000  # 1 hour global timeout
+
+steps:
+  - name: long-task
+    agent: worker
+    task: "Long running task"
+    timeoutMs: 1800000  # 30 min step timeout
+```
+
+### 3. Use Channels for Debugging
+
+Set a channel to watch agent communication:
+
+```yaml
+swarm:
+  channel: feature-123
+```
+
+Then stream the channel:
+
+```bash
+agent-relay cloud channel feature-123 --follow
+```
+
+### 4. Handle Secrets Properly
+
+Use cloud secrets instead of hardcoding:
+
+```bash
+# Set a secret
+agent-relay cloud secret set GITHUB_TOKEN
+
+# Reference in workflow
+```
+
+```yaml
+agents:
+  - name: developer
+    cli: claude
+    environment:
+      secrets:
+        - GITHUB_TOKEN
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Cloud Features" icon="cloud" href="/features/cloud">
+    Full cloud feature documentation.
+  </Card>
+  <Card title="Webhook Triggers" icon="webhook" href="/features/cloud#webhook-integrations">
+    Set up automated triggers.
+  </Card>
+</CardGroup>

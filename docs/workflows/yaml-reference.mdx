@@ -1,0 +1,411 @@
+---
+title: 'YAML Reference'
+description: 'Complete reference for relay.yaml workflow configuration'
+---
+
+# YAML Workflow Reference
+
+Define workflows declaratively in `relay.yaml` files. Great for version control, CI/CD, and sharing configurations.
+
+## Quick Start
+
+Create a `relay.yaml` file:
+
+```yaml
+version: "1.0"
+name: my-workflow
+
+agents:
+  - name: planner
+    cli: claude
+    model: opus
+  - name: developer
+    cli: codex
+
+workflows:
+  - name: default
+    steps:
+      - name: plan
+        agent: planner
+        task: "Create an implementation plan for: {{task}}"
+      - name: implement
+        agent: developer
+        task: "Implement: {{steps.plan.output}}"
+        dependsOn: [plan]
+```
+
+Run it:
+
+```bash
+agent-relay run relay.yaml --task "Add user authentication"
+```
+
+## Top-Level Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `version` | string | Yes | Schema version, always `"1.0"` |
+| `name` | string | Yes | Workflow name |
+| `description` | string | No | Human-readable description |
+| `swarm` | object | No | Global coordination settings |
+| `agents` | array | Yes | Agent definitions |
+| `workflows` | array | Yes | Workflow definitions |
+| `errorHandling` | object | No | Global error handling |
+| `state` | object | No | Shared state configuration |
+
+## Swarm Configuration
+
+```yaml
+swarm:
+  pattern: dag            # Coordination pattern
+  maxConcurrency: 3       # Max agents running in parallel
+  timeoutMs: 3600000      # Global timeout (1 hour)
+  channel: my-channel     # Relay channel for agent communication
+  idleNudge:              # Auto-nudge idle agents
+    nudgeAfterMs: 120000
+    escalateAfterMs: 120000
+    maxNudges: 1
+```
+
+### Available Patterns
+
+| Pattern | Description |
+|---------|-------------|
+| `dag` | Directed acyclic graph with dependencies (default) |
+| `fan-out` | All agents run in parallel |
+| `pipeline` | Sequential step chaining |
+| `hub-spoke` | Central hub coordinates spoke agents |
+| `consensus` | Agents vote on decisions |
+| `mesh` | Full communication graph |
+| `handoff` | Sequential agent handoffs |
+| `cascade` | Waterfall with phase gates |
+| `debate` | Agents propose and counter-argue |
+| `hierarchical` | Multi-level reporting structure |
+| `map-reduce` | Split, process in parallel, aggregate |
+| `scatter-gather` | Fan out, collect responses |
+| `supervisor` | Monitor agent monitors workers |
+| `reflection` | Output + critic feedback loop |
+| `verifier` | Producer + verifier validation |
+| `red-team` | Attacker vs defender |
+| `escalation` | Tier-based escalation |
+| `saga` | Distributed transactions with rollback |
+| `circuit-breaker` | Primary with fallback chain |
+
+## Agent Definition
+
+```yaml
+agents:
+  - name: backend           # Required: unique identifier
+    cli: claude             # Required: claude, codex, gemini, cursor, aider, goose
+    role: "Backend engineer"  # Optional: role description
+    constraints:
+      model: opus           # Optional: model to use
+      timeoutMs: 600000     # Optional: agent timeout
+      retries: 2            # Optional: retry count
+    interactive: true       # Optional: PTY mode (default: true)
+```
+
+### Supported CLIs
+
+| CLI | Description |
+|-----|-------------|
+| `claude` | Claude Code (Anthropic) |
+| `codex` | Codex CLI (OpenAI) |
+| `gemini` | Gemini CLI (Google) |
+| `cursor` | Cursor IDE |
+| `aider` | Aider coding assistant |
+| `goose` | Goose AI assistant |
+
+### Non-Interactive Agents
+
+For workers that just need to execute a task and return output:
+
+```yaml
+agents:
+  - name: worker
+    cli: codex
+    interactive: false    # Runs as subprocess, no PTY
+```
+
+Non-interactive agents run one-shot commands and capture stdout.
+
+## Workflow Definition
+
+```yaml
+workflows:
+  - name: build-and-test
+    onError: retry         # fail | skip | retry
+    steps:
+      - name: build-api
+        agent: backend
+        task: "Build the REST API endpoints"
+        verification:
+          type: output_contains
+          value: "BUILD_COMPLETE"
+        retries: 1
+
+      - name: write-tests
+        agent: tester
+        task: "Write tests for: {{steps.build-api.output}}"
+        dependsOn: [build-api]
+
+      - name: run-tests
+        agent: tester
+        task: "Run the test suite"
+        dependsOn: [write-tests]
+        verification:
+          type: exit_code
+          value: "0"
+```
+
+### Step Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Unique step identifier |
+| `agent` | string | Yes | Agent to run this step |
+| `task` | string | Yes | Task description |
+| `dependsOn` | array | No | Steps that must complete first |
+| `verification` | object | No | Completion check |
+| `retries` | number | No | Retry count on failure |
+| `timeoutMs` | number | No | Step timeout |
+
+### Verification Types
+
+| Type | Description |
+|------|-------------|
+| `output_contains` | Step output must contain the specified string |
+| `exit_code` | Agent must exit with the specified code |
+| `file_exists` | A file must exist after the step |
+| `custom` | No-op, handled externally |
+
+```yaml
+verification:
+  type: output_contains
+  value: "IMPLEMENTATION_COMPLETE"
+  description: "Agent must confirm completion"
+```
+
+## Template Variables
+
+Use `{{variable}}` for user-provided values and `{{steps.STEP_NAME.output}}` for previous step outputs:
+
+```yaml
+steps:
+  - name: plan
+    agent: planner
+    task: "Plan implementation for: {{task}}"     # User variable
+
+  - name: implement
+    agent: developer
+    dependsOn: [plan]
+    task: "Implement: {{steps.plan.output}}"      # Previous step output
+```
+
+Pass variables via CLI:
+
+```bash
+agent-relay run workflow.yaml --task "Add OAuth2 support"
+```
+
+Or programmatically:
+
+```typescript
+await runWorkflow("workflow.yaml", {
+  vars: { task: "Add OAuth2 support" },
+});
+```
+
+## Error Handling
+
+### Step-Level
+
+```yaml
+steps:
+  - name: risky-step
+    agent: worker
+    task: "Do something that might fail"
+    retries: 3          # Retry up to 3 times
+    timeoutMs: 300000   # 5 minute timeout
+```
+
+### Workflow-Level
+
+```yaml
+workflows:
+  - name: my-workflow
+    onError: retry      # fail | skip | retry
+    steps: [...]
+```
+
+| Value | Behavior |
+|-------|----------|
+| `fail` | Stop immediately, skip downstream steps |
+| `skip` | Skip downstream dependents, continue independent steps |
+| `retry` | Retry the step (falls back to fail after retries exhausted) |
+
+### Global
+
+```yaml
+errorHandling:
+  strategy: retry
+  maxRetries: 2
+  retryDelayMs: 5000
+  notifyChannel: alerts
+```
+
+## Coordination
+
+### Barriers
+
+Synchronization points that wait for specific steps:
+
+```yaml
+coordination:
+  barriers:
+    - name: all-reviews-done
+      waitFor: [review-arch, review-security, review-correctness]
+      timeoutMs: 900000
+  consensusStrategy: majority    # majority | unanimous | quorum
+```
+
+### Shared State
+
+```yaml
+state:
+  backend: memory    # memory | redis | database
+  ttlMs: 86400000
+  namespace: my-workflow
+```
+
+## Complete Example
+
+```yaml
+version: "1.0"
+name: feature-development
+description: "Full feature development workflow with review"
+
+swarm:
+  pattern: hub-spoke
+  maxConcurrency: 4
+  timeoutMs: 7200000  # 2 hours
+  channel: feature-dev
+
+agents:
+  - name: lead
+    cli: claude
+    role: "Technical lead - coordinates work and makes decisions"
+    constraints:
+      model: opus
+      retries: 2
+
+  - name: backend
+    cli: codex
+    role: "Backend developer - implements APIs and services"
+    constraints:
+      model: gpt-5.3-codex
+
+  - name: frontend
+    cli: claude
+    role: "Frontend developer - implements UI components"
+    constraints:
+      model: sonnet
+
+  - name: reviewer
+    cli: claude
+    role: "Code reviewer - ensures quality and best practices"
+    constraints:
+      model: opus
+
+workflows:
+  - name: default
+    onError: retry
+    steps:
+      - name: plan
+        agent: lead
+        task: |
+          Break down this feature into implementation tasks: {{task}}
+
+          Output a structured plan with:
+          1. Backend tasks
+          2. Frontend tasks
+          3. Integration points
+          4. Testing strategy
+
+      - name: backend-impl
+        agent: backend
+        task: "Implement backend based on: {{steps.plan.output}}"
+        dependsOn: [plan]
+        verification:
+          type: output_contains
+          value: "BACKEND_COMPLETE"
+        timeoutMs: 1800000  # 30 min
+
+      - name: frontend-impl
+        agent: frontend
+        task: "Implement frontend based on: {{steps.plan.output}}"
+        dependsOn: [plan]
+        verification:
+          type: output_contains
+          value: "FRONTEND_COMPLETE"
+        timeoutMs: 1800000
+
+      - name: review
+        agent: reviewer
+        task: |
+          Review the implementation:
+          - Backend: {{steps.backend-impl.output}}
+          - Frontend: {{steps.frontend-impl.output}}
+
+          Check for security issues, performance problems, and best practices.
+        dependsOn: [backend-impl, frontend-impl]
+
+      - name: finalize
+        agent: lead
+        task: |
+          Based on review feedback: {{steps.review.output}}
+
+          1. Address any issues
+          2. Create final commit
+          3. Output summary of changes
+        dependsOn: [review]
+        verification:
+          type: output_contains
+          value: "FEATURE_COMPLETE"
+
+errorHandling:
+  strategy: retry
+  maxRetries: 2
+  retryDelayMs: 10000
+  notifyChannel: feature-dev
+```
+
+## Running Workflows
+
+```bash
+# Run locally
+agent-relay run workflow.yaml --task "Add user authentication"
+
+# Run in cloud (durable, 24/7)
+agent-relay run workflow.yaml --cloud --task "Add user authentication"
+
+# Run a specific workflow from file
+agent-relay run workflow.yaml --workflow deploy
+
+# List built-in templates
+agent-relay templates
+
+# Run a template
+agent-relay run --template feature-dev --task "Add OAuth2"
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="TypeScript SDK" icon="js" href="/workflows/typescript-sdk">
+    Build workflows programmatically.
+  </Card>
+  <Card title="Swarm Patterns" icon="sitemap" href="/workflows/patterns/dag">
+    Learn about coordination patterns.
+  </Card>
+</CardGroup>
