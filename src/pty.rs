@@ -1,6 +1,9 @@
 use std::{
     io::{Read, Write},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     thread,
 };
 
@@ -13,6 +16,8 @@ pub struct PtySession {
     master: Box<dyn portable_pty::MasterPty>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send>>>,
+    child_pid: Option<u32>,
+    reaped: Arc<AtomicBool>,
 }
 
 impl PtySession {
@@ -42,6 +47,7 @@ impl PtySession {
             .slave
             .spawn_command(cmd)
             .context("failed to spawn wrapped command")?;
+        let child_pid = child.process_id();
 
         let mut reader = pair
             .master
@@ -73,6 +79,8 @@ impl PtySession {
                 master: pair.master,
                 writer: Arc::new(Mutex::new(writer)),
                 child: Arc::new(Mutex::new(child)),
+                child_pid,
+                reaped: Arc::new(AtomicBool::new(false)),
             },
             rx,
         ))
@@ -96,10 +104,83 @@ impl PtySession {
             .context("failed to resize pty")
     }
 
+    /// Check if the child process has exited without blocking.
+    /// Returns true if the child has exited (or was already reaped).
+    pub fn has_exited(&self) -> bool {
+        // Fast path: already known to be reaped.
+        if self.reaped.load(Ordering::Relaxed) {
+            return true;
+        }
+
+        // Try waitpid(WNOHANG) via portable-pty.
+        {
+            let mut child = self.child.lock();
+            match child.try_wait() {
+                Ok(Some(_status)) => {
+                    // Child exited and we successfully reaped it.
+                    tracing::info!(
+                        target = "agent_relay::worker::pty",
+                        pid = ?self.child_pid,
+                        "has_exited: try_wait returned Ok(Some) — child reaped"
+                    );
+                    self.reaped.store(true, Ordering::Relaxed);
+                    return true;
+                }
+                Ok(None) => {
+                    // Child still running according to waitpid.
+                }
+                Err(e) => {
+                    // ECHILD or other error — child was already reaped by
+                    // someone else (e.g. shutdown() or a signal handler).
+                    tracing::info!(
+                        target = "agent_relay::worker::pty",
+                        pid = ?self.child_pid,
+                        error = %e,
+                        "has_exited: try_wait returned Err — treating as exited"
+                    );
+                    self.reaped.store(true, Ordering::Relaxed);
+                    return true;
+                }
+            }
+        }
+
+        // Fallback: use kill(pid, 0) to check if the process still exists.
+        // This catches the case where waitpid is confused but the process
+        // is truly gone.
+        #[cfg(unix)]
+        if let Some(pid) = self.child_pid {
+            // SAFETY: kill with signal 0 doesn't send a signal, just checks existence.
+            let ret = unsafe { libc::kill(pid as libc::pid_t, 0) };
+            if ret == -1 {
+                let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+                if errno == libc::ESRCH {
+                    // No such process — child is gone.
+                    tracing::info!(
+                        target = "agent_relay::worker::pty",
+                        pid = pid,
+                        "has_exited: kill(0) returned ESRCH — process gone"
+                    );
+                    self.reaped.store(true, Ordering::Relaxed);
+                    return true;
+                }
+            }
+        }
+
+        // Log periodically when child appears alive (every call, but watchdog
+        // only calls every 5s so this won't flood).
+        tracing::trace!(
+            target = "agent_relay::worker::pty",
+            pid = ?self.child_pid,
+            "has_exited: child appears alive"
+        );
+        false
+    }
+
     pub fn shutdown(&self) -> Result<()> {
         let mut child = self.child.lock();
         let _ = child.kill();
         let _ = child.wait();
+        self.reaped.store(true, Ordering::Relaxed);
         Ok(())
     }
 }
@@ -128,6 +209,38 @@ mod tests {
         let (pty, _rx) = PtySession::spawn("sleep", &["1".into()], 24, 80).unwrap();
         assert!(pty.resize(40, 120).is_ok());
         let _ = pty.shutdown();
+    }
+
+    #[tokio::test]
+    async fn has_exited_detects_quick_exit() {
+        let (pty, _rx) = PtySession::spawn("true", &[], 24, 80).unwrap();
+        // `true` exits immediately. Give it a moment.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            pty.has_exited(),
+            "has_exited() should detect that `true` has exited; child_pid={:?}",
+            pty.child_pid
+        );
+    }
+
+    #[tokio::test]
+    async fn has_exited_false_while_running() {
+        let (pty, _rx) = PtySession::spawn("sleep", &["30".into()], 24, 80).unwrap();
+        assert!(
+            !pty.has_exited(),
+            "has_exited() should return false while child is running"
+        );
+        let _ = pty.shutdown();
+    }
+
+    #[tokio::test]
+    async fn has_exited_after_shutdown() {
+        let (pty, _rx) = PtySession::spawn("sleep", &["30".into()], 24, 80).unwrap();
+        let _ = pty.shutdown();
+        assert!(
+            pty.has_exited(),
+            "has_exited() should return true after shutdown"
+        );
     }
 
     #[tokio::test]

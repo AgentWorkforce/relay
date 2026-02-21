@@ -1288,6 +1288,58 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         "name": name,
                                         "reason": reason,
                                     })).await;
+                                } else if msg_type == "worker_exited" {
+                                    // PTY worker process is exiting — clean up and
+                                    // emit agent_exited so the SDK doesn't have to
+                                    // wait for the reap_exited polling cycle.
+                                    let code = value.get("payload")
+                                        .and_then(|p| p.get("code"))
+                                        .and_then(Value::as_i64)
+                                        .map(|c| c as i32);
+                                    let signal = value.get("payload")
+                                        .and_then(|p| p.get("signal"))
+                                        .and_then(Value::as_str)
+                                        .map(String::from);
+                                    tracing::info!(
+                                        agent = %name,
+                                        code = ?code,
+                                        signal = ?signal,
+                                        "worker_exited received — cleaning up"
+                                    );
+                                    // Remove from registry so reap_exited won't
+                                    // double-process this worker.
+                                    workers.workers.remove(&name);
+                                    workers.initial_tasks.remove(&name);
+                                    // Drop pending deliveries for this worker
+                                    let dropped = drop_pending_for_worker(&mut pending_deliveries, &name);
+                                    if dropped > 0 {
+                                        let _ = send_event(
+                                            &sdk_out_tx,
+                                            json!({
+                                                "kind": "delivery_dropped",
+                                                "name": name,
+                                                "count": dropped,
+                                                "reason": "worker_exited",
+                                            }),
+                                        ).await;
+                                    }
+                                    let _ = send_event(
+                                        &sdk_out_tx,
+                                        json!({
+                                            "kind": "agent_exited",
+                                            "name": name,
+                                            "code": code,
+                                            "signal": signal,
+                                        }),
+                                    ).await;
+                                    state.agents.remove(&name);
+                                    if let Err(error) = state.save(&paths.state) {
+                                        tracing::warn!(
+                                            path = %paths.state.display(),
+                                            error = %error,
+                                            "failed to persist broker state"
+                                        );
+                                    }
                                 }
                             }
                         }

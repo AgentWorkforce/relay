@@ -79,6 +79,12 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut verification_tick = tokio::time::interval(Duration::from_millis(200));
     verification_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+    // Watchdog: periodically check if child process is still alive.
+    // The PTY reader may not detect EOF on macOS when the child exits during
+    // extended thinking (no output). This ensures we don't hang forever.
+    let mut child_watchdog = tokio::time::interval(Duration::from_secs(5));
+    child_watchdog.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
     while running {
         tokio::select! {
             line = lines.next_line() => {
@@ -515,6 +521,23 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
             _ = sigwinch.recv() => {
                 if let Some((rows, cols)) = get_terminal_size() {
                     let _ = pty.resize(rows, cols);
+                }
+            }
+
+            // --- Child process watchdog ---
+            // Detects when the child exits but the PTY reader doesn't notice.
+            // Uses has_exited() which handles ECHILD (already reaped) and
+            // falls back to kill(pid, 0) on Unix.
+            _ = child_watchdog.tick() => {
+                if pty.has_exited() {
+                    tracing::info!(
+                        target = "agent_relay::worker::pty",
+                        "watchdog: child process exited"
+                    );
+                    let _ = send_frame(&out_tx, "agent_exit", None, json!({
+                        "reason": "child_exited",
+                    })).await;
+                    running = false;
                 }
             }
         }
