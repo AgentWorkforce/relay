@@ -4,11 +4,7 @@ import { Command } from 'commander';
 import { getProjectPaths } from '@agent-relay/config';
 import { generateAgentName } from '@agent-relay/utils';
 
-import {
-  createAgentRelayClient,
-  formatTableRow,
-  spawnAgentWithClient,
-} from '../lib/index.js';
+import { createAgentRelayClient, formatTableRow, spawnAgentWithClient } from '../lib/index.js';
 import type { HealthPayload } from '../lib/monitoring-health.js';
 
 type ExitFn = (code: number) => never;
@@ -34,12 +30,7 @@ interface MonitoringProfilerAgent {
 }
 
 export interface MonitoringProfilerRelay {
-  spawn(options: {
-    name: string;
-    cli: string;
-    args: string[];
-    channels: string[];
-  }): Promise<unknown>;
+  spawn(options: { name: string; cli: string; args: string[]; channels: string[] }): Promise<unknown>;
   listAgents(): Promise<MonitoringProfilerAgent[]>;
   release(name: string, reason: string): Promise<unknown>;
   shutdown(): Promise<unknown>;
@@ -97,9 +88,7 @@ function createDefaultProfilerRelay(options: ProfileRelayOptions): MonitoringPro
   };
 }
 
-function withDefaults(
-  overrides: Partial<MonitoringDependencies> = {}
-): MonitoringDependencies {
+function withDefaults(overrides: Partial<MonitoringDependencies> = {}): MonitoringDependencies {
   return {
     getProjectRoot: () => getProjectPaths().projectRoot,
     createMetricsClient: createDefaultMetricsClient,
@@ -147,104 +136,112 @@ export function registerMonitoringCommands(
   const deps = withDefaults(overrides);
 
   program
-    .command('metrics')
+    .command('metrics', { hidden: true })
     .description('Show agent memory metrics and resource usage')
     .option('--agent <name>', 'Show metrics for specific agent')
     .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
     .option('--json', 'Output as JSON')
     .option('--watch', 'Continuously update metrics')
     .option('--interval <ms>', 'Update interval for watch mode', '5000')
-    .action(async (options: { agent?: string; port?: string; json?: boolean; watch?: boolean; interval?: string }) => {
-      const fetchMetrics = async (): Promise<MetricsResponse> => {
-        const client = deps.createMetricsClient(deps.getProjectRoot());
-        try {
-          return await client.getMetrics(options.agent);
-        } catch (err: any) {
-          deps.error(`Failed to fetch metrics: ${err?.message || String(err)}`);
-          deps.exit(1);
-        } finally {
-          await client.shutdown().catch(() => undefined);
-        }
+    .action(
+      async (options: {
+        agent?: string;
+        port?: string;
+        json?: boolean;
+        watch?: boolean;
+        interval?: string;
+      }) => {
+        const fetchMetrics = async (): Promise<MetricsResponse> => {
+          const client = deps.createMetricsClient(deps.getProjectRoot());
+          try {
+            return await client.getMetrics(options.agent);
+          } catch (err: any) {
+            deps.error(`Failed to fetch metrics: ${err?.message || String(err)}`);
+            deps.exit(1);
+          } finally {
+            await client.shutdown().catch(() => undefined);
+          }
 
-        return { agents: [] };
-      };
+          return { agents: [] };
+        };
 
-      const displayMetrics = (data: MetricsResponse): void => {
-        let agents = data.agents;
+        const displayMetrics = (data: MetricsResponse): void => {
+          let agents = data.agents;
 
-        if (options.agent) {
-          agents = agents.filter((agent) => agent.name === options.agent);
-          if (agents.length === 0) {
-            deps.error(`Agent "${options.agent}" not found`);
+          if (options.agent) {
+            agents = agents.filter((agent) => agent.name === options.agent);
+            if (agents.length === 0) {
+              deps.error(`Agent "${options.agent}" not found`);
+              return;
+            }
+          }
+
+          if (options.json) {
+            deps.log(JSON.stringify({ agents }, null, 2));
             return;
           }
-        }
 
-        if (options.json) {
-          deps.log(JSON.stringify({ agents }, null, 2));
-          return;
-        }
+          if (options.watch) {
+            deps.clear();
+            deps.log(`Agent Metrics (updating every ${options.interval}ms)  [Ctrl+C to stop]`);
+            deps.log('');
+          }
 
-        if (options.watch) {
-          deps.clear();
-          deps.log(`Agent Metrics (updating every ${options.interval}ms)  [Ctrl+C to stop]`);
-          deps.log('');
-        }
+          if (agents.length === 0) {
+            deps.log('No agents with memory metrics.');
+            deps.log('Ensure agents are running.');
+            return;
+          }
 
-        if (agents.length === 0) {
-          deps.log('No agents with memory metrics.');
-          deps.log('Ensure agents are running.');
-          return;
-        }
+          deps.log('AGENT           PID      MEMORY      UPTIME');
+          deps.log('─'.repeat(55));
 
-        deps.log('AGENT           PID      MEMORY      UPTIME');
-        deps.log('─'.repeat(55));
+          for (const agent of agents) {
+            const uptime = formatUptime(agent.uptime_secs || 0);
+            deps.log(
+              formatTableRow([
+                { value: agent.name, width: 15 },
+                { value: agent.pid?.toString() || '-', width: 8 },
+                { value: formatBytes(agent.memory_bytes || 0), width: 11 },
+                { value: uptime },
+              ])
+            );
+          }
 
-        for (const agent of agents) {
-          const uptime = formatUptime(agent.uptime_secs || 0);
-          deps.log(
-            formatTableRow([
-              { value: agent.name, width: 15 },
-              { value: agent.pid?.toString() || '-', width: 8 },
-              { value: formatBytes(agent.memory_bytes || 0), width: 11 },
-              { value: uptime },
-            ])
-          );
-        }
-
-        if (!options.watch) {
-          deps.log('');
-          deps.log(`Total: ${agents.length} agent(s)`);
-        }
-      };
-
-      if (options.watch) {
-        const intervalMs = parseInt(options.interval || '5000', 10);
-
-        const update = async (): Promise<void> => {
-          try {
-            const data = await fetchMetrics();
-            displayMetrics(data);
-          } catch {
-            // fetchMetrics logs and exits.
+          if (!options.watch) {
+            deps.log('');
+            deps.log(`Total: ${agents.length} agent(s)`);
           }
         };
 
-        deps.onSignal('SIGINT', () => {
-          deps.log('\nStopped watching metrics.');
-          deps.exit(0);
-        });
+        if (options.watch) {
+          const intervalMs = parseInt(options.interval || '5000', 10);
 
-        await update();
-        deps.setRepeatingTimer(() => {
-          void update();
-        }, intervalMs);
-        return;
+          const update = async (): Promise<void> => {
+            try {
+              const data = await fetchMetrics();
+              displayMetrics(data);
+            } catch {
+              // fetchMetrics logs and exits.
+            }
+          };
+
+          deps.onSignal('SIGINT', () => {
+            deps.log('\nStopped watching metrics.');
+            deps.exit(0);
+          });
+
+          await update();
+          deps.setRepeatingTimer(() => {
+            void update();
+          }, intervalMs);
+          return;
+        }
+
+        const data = await fetchMetrics();
+        displayMetrics(data);
       }
-
-      const data = await fetchMetrics();
-      displayMetrics(data);
-    });
+    );
 
   program
     .command('health')
@@ -269,7 +266,8 @@ export function registerMonitoringCommands(
           return;
         }
 
-        const scoreColor = data.healthScore >= 80 ? '\x1b[32m' : data.healthScore >= 50 ? '\x1b[33m' : '\x1b[31m';
+        const scoreColor =
+          data.healthScore >= 80 ? '\x1b[32m' : data.healthScore >= 50 ? '\x1b[33m' : '\x1b[31m';
         const resetColor = '\x1b[0m';
 
         deps.log('');
@@ -324,11 +322,7 @@ export function registerMonitoringCommands(
           deps.log('  ─────────────────────────────────────────────────────────────');
           for (const alert of data.alerts.slice(0, 10)) {
             const icon =
-              alert.alertType === 'oom_imminent'
-                ? '🔴'
-                : alert.alertType === 'critical'
-                  ? '🟠'
-                  : '🟡';
+              alert.alertType === 'oom_imminent' ? '🔴' : alert.alertType === 'critical' ? '🟠' : '🟡';
             deps.log(`    ${icon} ${alert.agentName} - ${alert.alertType}`);
             deps.log(`      ${alert.message}`);
           }
@@ -357,7 +351,7 @@ export function registerMonitoringCommands(
     });
 
   program
-    .command('profile')
+    .command('profile', { hidden: true })
     .description('Run an agent with memory profiling enabled')
     .argument('<command...>', 'Command to profile')
     .option('-n, --name <name>', 'Agent name')

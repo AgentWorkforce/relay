@@ -102,7 +102,7 @@ function startDashboard(paths: CoreProjectPaths, port: number, deps: CoreDepende
     });
   }
 
-  return deps.spawnProcess('npx', ['--yes', '@agent-relay/dashboard-server', ...args], {
+  return deps.spawnProcess('npx', ['--yes', '@agent-relay/dashboard-server@2.0.83-beta.0', ...args], {
     stdio: 'ignore',
     env: deps.env,
   });

@@ -1512,6 +1512,11 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     });
     telemetry.shutdown();
 
+    // Mark broker agent offline in Relaycast before shutting down WS
+    if let Err(error) = relaycast_http.mark_offline().await {
+        tracing::warn!(error = %error, "failed to mark broker offline during shutdown");
+    }
+
     if let Err(error) = ws_control_tx.send(WsControl::Shutdown).await {
         tracing::warn!(error = %error, "failed to send ws shutdown signal");
     }

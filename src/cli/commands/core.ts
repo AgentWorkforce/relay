@@ -334,7 +334,7 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     );
 
   program
-    .command('version')
+    .command('version', { hidden: true })
     .description('Show version information')
     .action(() => {
       deps.log(`agent-relay v${deps.getVersion()}`);

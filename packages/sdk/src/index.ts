@@ -4,10 +4,15 @@ export * from './models.js';
 export {
   createRelaycastClient,
   RelaycastApi,
+  createWorkspaceReader,
   type CreateRelaycastClientOptions,
   type AgentClient,
   type RelaycastApiOptions,
   type RelaycastWorkspace,
+  type WorkspaceReader,
+  type RelaycastAgent,
+  type RelaycastChannel,
+  type RelaycastMessage,
 } from './relaycast.js';
 export * from './pty.js';
 export * from './relay.js';

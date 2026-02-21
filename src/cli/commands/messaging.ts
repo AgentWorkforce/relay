@@ -42,17 +42,15 @@ interface RelaycastInbox {
 
 export interface MessagingRelaycastClient {
   message(id: string): Promise<RelaycastMessage>;
-  messages(channel: string, options?: { limit?: number; before?: string; after?: string }): Promise<RelaycastMessage[]>;
+  messages(
+    channel: string,
+    options?: { limit?: number; before?: string; after?: string }
+  ): Promise<RelaycastMessage[]>;
   inbox(): Promise<RelaycastInbox>;
 }
 
 export interface MessagingBrokerClient {
-  sendMessage(input: {
-    to: string;
-    text: string;
-    from?: string;
-    threadId?: string;
-  }): Promise<unknown>;
+  sendMessage(input: { to: string; text: string; from?: string; threadId?: string }): Promise<unknown>;
   shutdown(): Promise<unknown>;
 }
 
@@ -73,15 +71,13 @@ function createDefaultClient(cwd: string): MessagingBrokerClient {
   return createAgentRelayClient({ cwd }) as unknown as MessagingBrokerClient;
 }
 
-async function createDefaultRelaycastClient(
-  options: { agentName: string }
-): Promise<MessagingRelaycastClient> {
+async function createDefaultRelaycastClient(options: {
+  agentName: string;
+}): Promise<MessagingRelaycastClient> {
   return createRelaycastClientSdk(options) as Promise<MessagingRelaycastClient>;
 }
 
-function withDefaults(
-  overrides: Partial<MessagingDependencies> = {}
-): MessagingDependencies {
+function withDefaults(overrides: Partial<MessagingDependencies> = {}): MessagingDependencies {
   return {
     getProjectRoot: () => getProjectPaths().projectRoot,
     createClient: createDefaultClient,
@@ -126,7 +122,7 @@ export function registerMessagingCommands(
     });
 
   program
-    .command('read')
+    .command('read', { hidden: true })
     .description('Read full message by ID (for truncated messages)')
     .argument('<id>', 'Message ID')
     .option('--storage <type>', 'Storage type override (jsonl, sqlite, memory)')
@@ -257,9 +253,7 @@ export function registerMessagingCommands(
         }
 
         const hasContent =
-          inbox.unread_channels.length > 0 ||
-          inbox.mentions.length > 0 ||
-          inbox.unread_dms.length > 0;
+          inbox.unread_channels.length > 0 || inbox.mentions.length > 0 || inbox.unread_dms.length > 0;
 
         if (!hasContent) {
           deps.log('Inbox is clear.');

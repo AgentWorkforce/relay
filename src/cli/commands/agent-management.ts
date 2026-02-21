@@ -238,7 +238,7 @@ export function registerAgentManagementCommands(
     );
 
   program
-    .command('broker-spawn')
+    .command('broker-spawn', { hidden: true })
     .description(
       'Spawn an agent from environment variables. Canonical entry point for cloud/sandbox spawning. ' +
         'Reads AGENT_NAME, AGENT_CLI, RELAY_API_KEY from env. Applies SDK-owned bypass flags automatically.'
@@ -267,7 +267,7 @@ export function registerAgentManagementCommands(
     });
 
   program
-    .command('agents')
+    .command('agents', { hidden: true })
     .description('List connected agents and spawned workers')
     .option('--all', 'Include internal/CLI agents')
     .option('--remote', 'Include agents from other linked machines (requires cloud link)')
@@ -347,7 +347,7 @@ export function registerAgentManagementCommands(
     });
 
   program
-    .command('agents:kill')
+    .command('agents:kill', { hidden: true })
     .description('Kill a spawned agent')
     .argument('<name>', 'Agent name')
     .option('--force', 'Skip graceful shutdown, kill immediately')

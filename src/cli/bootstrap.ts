@@ -116,7 +116,11 @@ function isEntrypoint(): boolean {
   if (!invocationPath) {
     return false;
   }
-  return path.resolve(invocationPath) === fileURLToPath(import.meta.url);
+  try {
+    return fs.realpathSync(invocationPath) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return path.resolve(invocationPath) === fileURLToPath(import.meta.url);
+  }
 }
 
 if (isEntrypoint()) {

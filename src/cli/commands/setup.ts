@@ -4,12 +4,7 @@ import readline from 'node:readline';
 import { execFileSync, spawn as spawnProcess } from 'node:child_process';
 import { Command } from 'commander';
 import { getProjectPaths } from '@agent-relay/config';
-import {
-  enableTelemetry,
-  disableTelemetry,
-  getStatus,
-  isDisabledByEnv,
-} from '@agent-relay/telemetry';
+import { enableTelemetry, disableTelemetry, getStatus, isDisabledByEnv } from '@agent-relay/telemetry';
 import { runWorkflow } from '@agent-relay/sdk/workflows';
 import type { WorkflowEvent } from '@agent-relay/sdk/workflows';
 type ExitFn = (code: number) => never;
@@ -44,9 +39,7 @@ interface SetupIo {
 function defaultExit(code: number): never {
   process.exit(code);
 }
-function withDefaults(
-  overrides: Partial<SetupDependencies> = {}
-): SetupDependencies {
+function withDefaults(overrides: Partial<SetupDependencies> = {}): SetupDependencies {
   const log = overrides.log ?? ((...args: unknown[]) => console.log(...args));
   const error = overrides.error ?? ((...args: unknown[]) => console.error(...args));
   const exit = overrides.exit ?? defaultExit;
@@ -251,13 +244,10 @@ function runTelemetryDefault(action: string | undefined, io: SetupIo): void {
   io.log('');
   io.log('Learn more: https://agent-relay.com/telemetry');
 }
-export function registerSetupCommands(
-  program: Command,
-  overrides: Partial<SetupDependencies> = {}
-): void {
+export function registerSetupCommands(program: Command, overrides: Partial<SetupDependencies> = {}): void {
   const deps = withDefaults(overrides);
   program
-    .command('init')
+    .command('init', { hidden: true })
     .description('First-time setup wizard - start broker')
     .option('-y, --yes', 'Accept all defaults (non-interactive)')
     .option('--skip-daemon', 'Skip broker startup prompt')
@@ -265,7 +255,7 @@ export function registerSetupCommands(
       await deps.runInit(options);
     });
   program
-    .command('setup')
+    .command('setup', { hidden: true })
     .description('Alias for "init" - first-time setup wizard')
     .option('-y, --yes', 'Accept all defaults')
     .option('--skip-daemon', 'Skip broker startup')

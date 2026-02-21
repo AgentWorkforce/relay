@@ -27,10 +27,6 @@ const expectedLeafCommands = [
   'health',
   'profile',
   'auth',
-  'cli-auth',
-  'codex-auth',
-  'claude-auth',
-  'cursor-auth',
   'init',
   'setup',
   'telemetry',
@@ -98,10 +94,6 @@ describe('bootstrap CLI', () => {
         'health',
         'profile',
         'auth',
-        'cli-auth',
-        'codex-auth',
-        'claude-auth',
-        'cursor-auth',
         'init',
         'setup',
         'telemetry',
@@ -115,7 +107,7 @@ describe('bootstrap CLI', () => {
     const program = createProgram();
     const leafCommandPaths = collectLeafCommandPaths(program);
 
-    expect(leafCommandPaths).toHaveLength(38);
+    expect(leafCommandPaths).toHaveLength(34);
     expect(leafCommandPaths).toEqual(expect.arrayContaining(expectedLeafCommands));
     expect(leafCommandPaths).not.toContain('create-agent');
   });

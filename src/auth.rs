@@ -233,8 +233,8 @@ impl AuthClient {
 
         let mut attempted_fresh_workspace = false;
         if candidates.is_empty() {
-            let ws_name = requested_name.unwrap_or("agent-relay");
-            let (workspace_id, api_key) = self.create_workspace(ws_name).await?;
+            let ws_name = format!("relay-{}", &Uuid::new_v4().to_string()[..8]);
+            let (workspace_id, api_key) = self.create_workspace(&ws_name).await?;
             workspace_id_hint = Some(workspace_id);
             candidates.push(("fresh", api_key));
             attempted_fresh_workspace = true;
@@ -263,8 +263,8 @@ impl AuthClient {
         }
 
         if !attempted_fresh_workspace {
-            let ws_name = requested_name.unwrap_or("agent-relay");
-            let (workspace_id, api_key) = self.create_workspace(ws_name).await?;
+            let ws_name = format!("relay-{}", &Uuid::new_v4().to_string()[..8]);
+            let (workspace_id, api_key) = self.create_workspace(&ws_name).await?;
             workspace_id_hint = Some(workspace_id);
             match self
                 .register_agent_with_workspace_key(&api_key, preferred_name, strict_name)

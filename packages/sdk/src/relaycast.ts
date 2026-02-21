@@ -1,11 +1,11 @@
-import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { RelayCast, RelayError, type AgentClient } from "@relaycast/sdk";
+import { randomBytes } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { RelayCast, RelayError, type AgentClient } from '@relaycast/sdk';
 
-export type { AgentClient } from "@relaycast/sdk";
+export type { AgentClient } from '@relaycast/sdk';
 
 // ── Simple function-based API (PR refactor) ─────────────────────────────────
 
@@ -22,22 +22,22 @@ export interface CreateRelaycastClientOptions {
  * with 409 conflict retry.
  */
 export async function createRelaycastClient(
-  options: CreateRelaycastClientOptions = {},
+  options: CreateRelaycastClientOptions = {}
 ): Promise<AgentClient> {
-  const baseUrl = options.baseUrl ?? process.env.RELAYCAST_BASE_URL ?? "https://api.relaycast.dev";
-  const cachePath = options.cachePath ?? join(homedir(), ".agent-relay", "relaycast.json");
-  const agentName = options.agentName ?? `sdk-${randomBytes(4).toString("hex")}`;
+  const baseUrl = options.baseUrl ?? process.env.RELAYCAST_BASE_URL ?? 'https://api.relaycast.dev';
+  const cachePath = options.cachePath ?? join(homedir(), '.agent-relay', 'relaycast.json');
+  const agentName = options.agentName ?? `sdk-${randomBytes(4).toString('hex')}`;
 
   // Resolve API key
   let apiKey = options.apiKey ?? process.env.RELAY_API_KEY;
   if (!apiKey) {
-    const raw = await readFile(cachePath, "utf-8");
+    const raw = await readFile(cachePath, 'utf-8');
     const creds = JSON.parse(raw);
     apiKey = creds.api_key;
   }
 
   if (!apiKey) {
-    throw new Error("Relaycast API key not found in options, RELAY_API_KEY, or cache file");
+    throw new Error('Relaycast API key not found in options, RELAY_API_KEY, or cache file');
   }
 
   const relay = new RelayCast({ apiKey, baseUrl });
@@ -46,11 +46,11 @@ export async function createRelaycastClient(
   let name = agentName;
   let registration;
   try {
-    registration = await relay.agents.register({ name, type: "agent" });
+    registration = await relay.agents.register({ name, type: 'agent' });
   } catch (err) {
-    if (err instanceof RelayError && err.code === "agent_already_exists") {
-      name = `${agentName}-${randomBytes(4).toString("hex")}`;
-      registration = await relay.agents.register({ name, type: "agent" });
+    if (err instanceof RelayError && err.code === 'agent_already_exists') {
+      name = `${agentName}-${randomBytes(4).toString('hex')}`;
+      registration = await relay.agents.register({ name, type: 'agent' });
     } else {
       throw err;
     }
@@ -82,7 +82,7 @@ export interface RelaycastApiOptions {
   agentName?: string;
 }
 
-const DEFAULT_BASE_URL = "https://api.relaycast.dev";
+const DEFAULT_BASE_URL = 'https://api.relaycast.dev';
 
 /**
  * Convenience wrapper around `@relaycast/sdk` that manages workspace
@@ -100,8 +100,8 @@ export class RelaycastApi {
     // Default to per-project cache (matches the relay daemon's storage) so
     // concurrent workflows from different repos never share credentials.
     // Falls back to the legacy global path when no project-local cache exists.
-    this.cachePath = options.cachePath ?? join(process.cwd(), ".agent-relay", "relaycast.json");
-    this.agentName = options.agentName ?? `sdk-${randomBytes(4).toString("hex")}`;
+    this.cachePath = options.cachePath ?? join(process.cwd(), '.agent-relay', 'relaycast.json');
+    this.agentName = options.agentName ?? `sdk-${randomBytes(4).toString('hex')}`;
     this.apiKeyOverride = options.apiKey;
   }
 
@@ -109,13 +109,10 @@ export class RelaycastApi {
    * Create a new Relaycast workspace. Returns the workspace ID and API key.
    * No authentication required — this is the bootstrap entry point.
    */
-  static async createWorkspace(
-    name: string,
-    baseUrl = DEFAULT_BASE_URL,
-  ): Promise<RelaycastWorkspace> {
+  static async createWorkspace(name: string, baseUrl = DEFAULT_BASE_URL): Promise<RelaycastWorkspace> {
     const res = await fetch(`${baseUrl}/v1/workspaces`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name }),
     });
     if (!res.ok) {
@@ -126,7 +123,7 @@ export class RelaycastApi {
     const workspaceId = data.workspace_id ?? data.id;
     const apiKey = data.api_key;
     if (!workspaceId || !apiKey) {
-      throw new Error("Workspace response missing workspace_id or api_key");
+      throw new Error('Workspace response missing workspace_id or api_key');
     }
     return { workspaceId, apiKey };
   }
@@ -139,14 +136,12 @@ export class RelaycastApi {
     if (process.env.RELAY_API_KEY) return process.env.RELAY_API_KEY;
 
     // Try per-project cache first, then fall back to global (deduplicated)
-    const globalPath = join(homedir(), ".agent-relay", "relaycast.json");
-    const candidates = this.cachePath === globalPath
-      ? [this.cachePath]
-      : [this.cachePath, globalPath];
+    const globalPath = join(homedir(), '.agent-relay', 'relaycast.json');
+    const candidates = this.cachePath === globalPath ? [this.cachePath] : [this.cachePath, globalPath];
     for (const cachePath of candidates) {
       if (!existsSync(cachePath)) continue;
       try {
-        const raw = await readFile(cachePath, "utf-8");
+        const raw = await readFile(cachePath, 'utf-8');
         const creds: RelaycastCredentials = JSON.parse(raw);
         if (creds.api_key) return creds.api_key;
       } catch {
@@ -154,9 +149,7 @@ export class RelaycastApi {
       }
     }
 
-    throw new Error(
-      `No Relaycast API key found (checked ${this.cachePath} and ${globalPath})`,
-    );
+    throw new Error(`No Relaycast API key found (checked ${this.cachePath} and ${globalPath})`);
   }
 
   /** Lazily register and return an authenticated AgentClient. */
@@ -170,11 +163,11 @@ export class RelaycastApi {
     let name = this.agentName;
     let registration;
     try {
-      registration = await relay.agents.register({ name, type: "agent" });
+      registration = await relay.agents.register({ name, type: 'agent' });
     } catch (err) {
-      if (err instanceof RelayError && err.code === "agent_already_exists") {
-        name = `${this.agentName}-${randomBytes(4).toString("hex")}`;
-        registration = await relay.agents.register({ name, type: "agent" });
+      if (err instanceof RelayError && err.code === 'agent_already_exists') {
+        name = `${this.agentName}-${randomBytes(4).toString('hex')}`;
+        registration = await relay.agents.register({ name, type: 'agent' });
       } else {
         throw err;
       }
@@ -198,7 +191,7 @@ export class RelaycastApi {
 
   /** Send to a target — prefixed with # for channel, otherwise DM. */
   async send(to: string, text: string): Promise<void> {
-    if (to.startsWith("#")) {
+    if (to.startsWith('#')) {
       await this.sendToChannel(to.slice(1), text);
     } else {
       await this.sendDm(to, text);
@@ -212,7 +205,7 @@ export class RelaycastApi {
       await agent.channels.create({ name, ...(topic ? { topic } : {}) });
     } catch (err) {
       // Ignore "already exists" errors
-      if (err instanceof RelayError && err.code === "channel_already_exists") {
+      if (err instanceof RelayError && err.code === 'channel_already_exists') {
         return;
       }
       throw err;
@@ -239,10 +232,10 @@ export class RelaycastApi {
     const apiKey = await this.resolveApiKey();
     const relay = new RelayCast({ apiKey, baseUrl: this.baseUrl });
     try {
-      const reg = await relay.agents.register({ name, type: "agent", ...(persona ? { persona } : {}) });
+      const reg = await relay.agents.register({ name, type: 'agent', ...(persona ? { persona } : {}) });
       return relay.as(reg.token);
     } catch (err) {
-      if (err instanceof RelayError && err.code === "agent_already_exists") {
+      if (err instanceof RelayError && err.code === 'agent_already_exists') {
         return null;
       }
       throw err;
@@ -264,7 +257,7 @@ export class RelaycastApi {
   /** Fetch message history from a channel. */
   async getMessages(
     channel: string,
-    opts?: { limit?: number; before?: string; after?: string },
+    opts?: { limit?: number; before?: string; after?: string }
   ): Promise<Array<{ id: string; agent_name: string; text: string; created_at: string }>> {
     const agent = await this.ensure();
     const messages = await agent.messages(channel, opts);
@@ -275,4 +268,67 @@ export class RelaycastApi {
       created_at: m.created_at,
     }));
   }
+}
+
+// ── Workspace reader (read-only, workspace-key auth) ─────────────────────────
+
+/** Agent as returned by the Relaycast API. */
+export interface RelaycastAgent {
+  id: string;
+  name: string;
+  type: string;
+  status: string;
+  persona: string | null;
+  last_seen: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
+/** Channel as returned by the Relaycast API. */
+export interface RelaycastChannel {
+  id: string;
+  name: string;
+  topic: string | null;
+  member_count: number;
+  created_at: string;
+  is_archived: boolean;
+}
+
+/** Message as returned by the Relaycast API. */
+export interface RelaycastMessage {
+  id: string;
+  agent_name: string;
+  text: string;
+  created_at: string;
+  reply_count?: number;
+  thread_id?: string;
+}
+
+/** Read-only workspace client for listing agents, channels, and messages. */
+export interface WorkspaceReader {
+  listAgents(): Promise<RelaycastAgent[]>;
+  listChannels(): Promise<RelaycastChannel[]>;
+  listMessages(channel: string, opts?: { limit?: number }): Promise<RelaycastMessage[]>;
+}
+
+/**
+ * Create a read-only workspace client using the workspace API key.
+ * Suitable for dashboards and monitoring tools that only need to read data.
+ */
+export function createWorkspaceReader(options: { apiKey: string; baseUrl?: string }): WorkspaceReader {
+  const baseUrl = options.baseUrl ?? process.env.RELAYCAST_BASE_URL ?? DEFAULT_BASE_URL;
+  const rc = new RelayCast({ apiKey: options.apiKey, baseUrl });
+  return {
+    async listAgents(): Promise<RelaycastAgent[]> {
+      const agents = await rc.agents.list();
+      return (agents ?? []) as RelaycastAgent[];
+    },
+    async listChannels(): Promise<RelaycastChannel[]> {
+      const channels = await rc.channels.list();
+      return (channels ?? []) as RelaycastChannel[];
+    },
+    async listMessages(channel: string, opts?: { limit?: number }): Promise<RelaycastMessage[]> {
+      const messages = await rc.messages.list(channel, opts);
+      return (messages ?? []) as RelaycastMessage[];
+    },
+  };
 }
