@@ -92,6 +92,12 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut child_watchdog = tokio::time::interval(Duration::from_secs(5));
     child_watchdog.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+    // No-output timeout: if we receive zero PTY output for this duration AND
+    // has_exited() still returns false, force exit. This is the ultimate
+    // safety net for macOS where both EOF detection and has_exited() can fail.
+    const NO_OUTPUT_EXIT_TIMEOUT: Duration = Duration::from_secs(120);
+    let mut last_pty_output_time = Instant::now();
+
     while running {
         tokio::select! {
             line = lines.next_line() => {
@@ -193,6 +199,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
             pty_output = pty_rx.recv() => {
                 match pty_output {
                     Some(chunk) => {
+                        last_pty_output_time = Instant::now();
+                        // Child is provably alive — reset the no-PID exit counter.
+                        pty.reset_no_pid_checks();
                         for response in terminal_query_parser.feed(&chunk) {
                             let _ = pty.write_all(response);
                         }
@@ -545,6 +554,25 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         "reason": "child_exited",
                     })).await;
                     running = false;
+                } else {
+                    // Safety net: if no PTY output for a long time and we
+                    // have no PID to verify, the child is very likely gone.
+                    // This catches the macOS case where has_exited() returns
+                    // false because it has no PID and try_wait is stuck.
+                    let silent_duration = last_pty_output_time.elapsed();
+                    if silent_duration >= NO_OUTPUT_EXIT_TIMEOUT {
+                        tracing::warn!(
+                            target = "agent_relay::worker::pty",
+                            silent_secs = silent_duration.as_secs(),
+                            "watchdog: no PTY output for {}s — forcing exit",
+                            silent_duration.as_secs()
+                        );
+                        let _ = send_frame(&out_tx, "agent_exit", None, json!({
+                            "reason": "no_output_timeout",
+                            "silent_secs": silent_duration.as_secs(),
+                        })).await;
+                        running = false;
+                    }
                 }
             }
         }

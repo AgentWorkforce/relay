@@ -21,6 +21,10 @@ pub struct PtySession {
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send>>>,
     child_pid: Option<u32>,
     reaped: Arc<AtomicBool>,
+    /// Counts consecutive watchdog checks where try_wait returned Ok(None)
+    /// AND we had no PID to verify with kill(0). After a threshold, we
+    /// assume the child is gone (macOS PTY quirk).
+    no_pid_alive_checks: std::sync::atomic::AtomicU32,
 }
 
 fn canonicalize_display(path: &Path) -> String {
@@ -121,6 +125,7 @@ impl PtySession {
                 child: Arc::new(Mutex::new(child)),
                 child_pid,
                 reaped: Arc::new(AtomicBool::new(false)),
+                no_pid_alive_checks: std::sync::atomic::AtomicU32::new(0),
             },
             rx,
         ))
@@ -146,13 +151,27 @@ impl PtySession {
 
     /// Check if the child process has exited without blocking.
     /// Returns true if the child has exited (or was already reaped).
+    ///
+    /// Uses three detection mechanisms:
+    /// 1. `try_wait()` (waitpid with WNOHANG)
+    /// 2. `kill(pid, 0)` to check process existence (Unix only)
+    /// 3. Consecutive no-PID fallback: if we never obtained a PID and try_wait
+    ///    keeps returning Ok(None), after several checks we assume the child
+    ///    is gone (works around a macOS PTY quirk where portable-pty's
+    ///    `process_id()` returns None and try_wait never transitions).
     pub fn has_exited(&self) -> bool {
+        // Number of consecutive no-PID Ok(None) checks before we declare
+        // the child gone. At 5s watchdog interval this is ~30s.
+        const NO_PID_THRESHOLD: u32 = 6;
+
         // Fast path: already known to be reaped.
         if self.reaped.load(Ordering::Relaxed) {
             return true;
         }
 
         // Try waitpid(WNOHANG) via portable-pty.
+        // Also re-query process_id() in case it becomes available after spawn.
+        let live_pid: Option<u32>;
         {
             let mut child = self.child.lock();
             match child.try_wait() {
@@ -182,13 +201,19 @@ impl PtySession {
                     return true;
                 }
             }
+            // Re-query PID from the child object (may succeed now even if it
+            // was None at spawn time on some platforms).
+            live_pid = child.process_id().or(self.child_pid);
         }
 
         // Fallback: use kill(pid, 0) to check if the process still exists.
         // This catches the case where waitpid is confused but the process
         // is truly gone.
         #[cfg(unix)]
-        if let Some(pid) = self.child_pid {
+        if let Some(pid) = live_pid {
+            // We have a PID, so reset the no-PID counter.
+            self.no_pid_alive_checks.store(0, Ordering::Relaxed);
+
             // SAFETY: kill with signal 0 doesn't send a signal, just checks existence.
             let ret = unsafe { libc::kill(pid as libc::pid_t, 0) };
             if ret == -1 {
@@ -204,16 +229,57 @@ impl PtySession {
                     return true;
                 }
             }
+
+            tracing::trace!(
+                target = "agent_relay::worker::pty",
+                pid = pid,
+                "has_exited: child appears alive"
+            );
+            return false;
         }
 
-        // Log periodically when child appears alive (every call, but watchdog
-        // only calls every 5s so this won't flood).
-        tracing::trace!(
-            target = "agent_relay::worker::pty",
-            pid = ?self.child_pid,
-            "has_exited: child appears alive"
-        );
+        // No PID available (portable-pty returned None both at spawn and now).
+        // try_wait said Ok(None), but on macOS this can be unreliable when the
+        // child was spawned through a PTY and the PID is unknown.
+        // Increment the counter; after NO_PID_THRESHOLD consecutive checks we
+        // assume the child is gone.
+        #[cfg(unix)]
+        {
+            let count = self.no_pid_alive_checks.fetch_add(1, Ordering::Relaxed) + 1;
+            tracing::debug!(
+                target = "agent_relay::worker::pty",
+                consecutive_checks = count,
+                threshold = NO_PID_THRESHOLD,
+                "has_exited: no PID available, try_wait says Ok(None)"
+            );
+            if count >= NO_PID_THRESHOLD {
+                tracing::warn!(
+                    target = "agent_relay::worker::pty",
+                    consecutive_checks = count,
+                    "has_exited: no PID and try_wait stuck at Ok(None) for {} checks — assuming child exited",
+                    count
+                );
+                self.reaped.store(true, Ordering::Relaxed);
+                return true;
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            tracing::trace!(
+                target = "agent_relay::worker::pty",
+                pid = ?live_pid,
+                "has_exited: child appears alive"
+            );
+        }
+
         false
+    }
+
+    /// Reset the no-PID alive check counter. Call this when PTY output is
+    /// received, proving the child is still alive regardless of PID availability.
+    pub fn reset_no_pid_checks(&self) {
+        self.no_pid_alive_checks.store(0, Ordering::Relaxed);
     }
 
     pub fn shutdown(&self) -> Result<()> {
