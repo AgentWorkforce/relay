@@ -64,8 +64,8 @@ pub struct BrokerCommandEvent {
     pub channel: String,
     /// Agent ID or name of the invoker.
     pub invoked_by: String,
-    /// Target command handler agent ID, when provided by Relaycast.
-    pub handler_agent_id: Option<String>,
+    /// Target command handler agent ID provided by Relaycast.
+    pub handler_agent_id: String,
     /// Structured parameters for the command.
     pub payload: BrokerCommandPayload,
 }

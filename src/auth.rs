@@ -5,9 +5,9 @@ use std::{
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use relaycast::{CreateAgentRequest, RelayCast, RelayCastOptions, RelayError};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,7 +116,6 @@ fn set_owner_only_permissions(_path: &Path) -> Result<()> {
 
 #[derive(Clone)]
 pub struct AuthClient {
-    http: reqwest::Client,
     base_url: String,
     store: CredentialStore,
 }
@@ -124,7 +123,6 @@ pub struct AuthClient {
 impl AuthClient {
     pub fn new(base_url: impl Into<String>, store: CredentialStore) -> Self {
         Self {
-            http: reqwest::Client::new(),
             base_url: base_url.into(),
             store,
         }
@@ -163,33 +161,24 @@ impl AuthClient {
         let api_key = normalize_workspace_key(&cached.api_key)
             .context("cached api_key is not a valid workspace key")?;
 
-        let response = self
-            .http
-            .post(format!(
-                "{}/v1/agents/{}/rotate-token",
-                self.base_url, agent_name
-            ))
-            .bearer_auth(&api_key)
-            .send()
-            .await?;
+        let relay = self
+            .relay_for_workspace_key(&api_key)
+            .context("failed to initialize relaycast client for token rotation")?;
 
-        if response.status() == StatusCode::NOT_FOUND {
-            tracing::info!(
-                target = "relay_broker::auth",
-                agent_name = %agent_name,
-                "agent not found during token rotation, falling back to re-registration"
-            );
-            return self.refresh_session(cached).await;
-        }
-
-        let response = response.error_for_status()?;
-        let body: Value = response.json().await?;
-        let data = body.get("data").unwrap_or(&body);
-        let token = data
-            .get("token")
-            .and_then(Value::as_str)
-            .context("rotate-token response missing token")?
-            .to_string();
+        let token = match relay.rotate_agent_token(agent_name).await {
+            Ok(rotated) => rotated.token,
+            Err(error) if is_not_found_relay_error(&error) => {
+                tracing::info!(
+                    target = "relay_broker::auth",
+                    agent_name = %agent_name,
+                    "agent not found during token rotation, falling back to re-registration"
+                );
+                return self.refresh_session(cached).await;
+            }
+            Err(error) => {
+                return Err(anyhow::Error::new(error)).context("failed to rotate relaycast token");
+            }
+        };
 
         let creds = CredentialCache {
             workspace_id: cached.workspace_id.clone(),
@@ -204,6 +193,11 @@ impl AuthClient {
             credentials: creds,
             token,
         })
+    }
+
+    fn relay_for_workspace_key(&self, workspace_key: &str) -> Result<RelayCast> {
+        RelayCast::new(RelayCastOptions::new(workspace_key).with_base_url(self.base_url.clone()))
+            .context("failed to initialize relaycast workspace client")
     }
 
     async fn startup_from_sources(
@@ -312,28 +306,10 @@ impl AuthClient {
     }
 
     async fn create_workspace(&self, name: &str) -> Result<(String, String)> {
-        let response = self
-            .http
-            .post(format!("{}/v1/workspaces", self.base_url))
-            .json(&json!({ "name": name }))
-            .send()
-            .await?
-            .error_for_status()?;
-
-        let body: Value = response.json().await?;
-        let data = body.get("data").unwrap_or(&body);
-        let workspace_id = data
-            .get("workspace_id")
-            .and_then(Value::as_str)
-            .or_else(|| data.get("id").and_then(Value::as_str))
-            .context("workspace create response missing workspace id")?
-            .to_string();
-        let api_key = data
-            .get("api_key")
-            .and_then(Value::as_str)
-            .context("workspace create response missing api_key")?
-            .to_string();
-        Ok((workspace_id, api_key))
+        let created = RelayCast::create_workspace(name, Some(&self.base_url))
+            .await
+            .context("failed creating relaycast workspace")?;
+        Ok((created.workspace_id, created.api_key))
     }
 
     async fn register_agent_with_workspace_key(
@@ -347,55 +323,36 @@ impl AuthClient {
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| format!("agent-{}", Uuid::new_v4().simple()));
 
-        loop {
-            let response = self
-                .http
-                .post(format!("{}/v1/agents", self.base_url))
-                .bearer_auth(workspace_key)
-                .json(&json!({
-                    "name": name,
-                    "type": "agent",
-                }))
-                .send()
-                .await?;
+        let relay = self.relay_for_workspace_key(workspace_key)?;
 
-            if response.status() == StatusCode::CONFLICT {
-                if strict_name {
-                    anyhow::bail!("agent name '{}' already exists", name);
+        loop {
+            let request = CreateAgentRequest {
+                name: name.clone(),
+                agent_type: Some("agent".to_string()),
+                persona: None,
+                metadata: None,
+            };
+
+            match relay.register_agent(request).await {
+                Ok(agent) => {
+                    return Ok((agent.id, agent.name, agent.token, None));
                 }
-                if !attempted_retry {
-                    attempted_retry = true;
-                    let suffix = Uuid::new_v4().simple().to_string();
-                    name = format!("{}-{}", name, &suffix[..8]);
-                    continue;
+                Err(error) if is_conflict_relay_error(&error) => {
+                    if strict_name {
+                        anyhow::bail!("agent name '{}' already exists", name);
+                    }
+                    if !attempted_retry {
+                        attempted_retry = true;
+                        let suffix = Uuid::new_v4().simple().to_string();
+                        name = format!("{}-{}", name, &suffix[..8]);
+                        continue;
+                    }
+                    return Err(anyhow::Error::new(error));
+                }
+                Err(error) => {
+                    return Err(anyhow::Error::new(error));
                 }
             }
-
-            let response = response.error_for_status()?;
-            let body: Value = response.json().await?;
-            let data = body.get("data").unwrap_or(&body);
-            let token = data
-                .get("token")
-                .and_then(Value::as_str)
-                .context("agent register response missing token")?
-                .to_string();
-            let agent_id = data
-                .get("id")
-                .and_then(Value::as_str)
-                .or_else(|| data.get("agent_id").and_then(Value::as_str))
-                .unwrap_or(&name)
-                .to_string();
-            let returned_name = data
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or(&name)
-                .to_string();
-            let workspace_id = data
-                .get("workspace_id")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned);
-
-            return Ok((agent_id, returned_name, token, workspace_id));
         }
     }
 
@@ -414,9 +371,42 @@ fn normalize_workspace_key(raw: &str) -> Option<String> {
 }
 
 fn is_auth_rejection(err: &anyhow::Error) -> bool {
+    relay_status(err)
+        .is_some_and(|status| status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN)
+}
+
+fn relay_status(err: &anyhow::Error) -> Option<StatusCode> {
+    if let Some(relay_err) = err.downcast_ref::<RelayError>() {
+        return match relay_err {
+            RelayError::Api { status, .. } => StatusCode::from_u16(*status).ok(),
+            RelayError::Http(http_err) => http_err.status(),
+            _ => None,
+        };
+    }
     err.downcast_ref::<reqwest::Error>()
         .and_then(reqwest::Error::status)
-        .is_some_and(|status| status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN)
+}
+
+fn is_conflict_relay_error(err: &RelayError) -> bool {
+    match err {
+        RelayError::Api { code, status, .. } => {
+            *status == StatusCode::CONFLICT.as_u16()
+                || matches!(code.as_str(), "agent_already_exists" | "name_taken")
+        }
+        RelayError::Http(http_err) => http_err.status() == Some(StatusCode::CONFLICT),
+        _ => false,
+    }
+}
+
+fn is_not_found_relay_error(err: &RelayError) -> bool {
+    match err {
+        RelayError::Api { code, status, .. } => {
+            *status == StatusCode::NOT_FOUND.as_u16()
+                || matches!(code.as_str(), "not_found" | "agent_not_found")
+        }
+        RelayError::Http(http_err) => http_err.status() == Some(StatusCode::NOT_FOUND),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -449,7 +439,7 @@ mod tests {
             when.method(POST).path("/v1/workspaces");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"workspace_id":"ws_new","api_key":"rk_live_new"}}"#);
+                .body(r#"{"ok":true,"data":{"workspace_id":"ws_new","api_key":"rk_live_new","created_at":"2026-02-21T00:00:00Z"}}"#);
         });
         let register = server.mock(|when, then| {
             when.method(POST)
@@ -457,7 +447,7 @@ mod tests {
                 .header("authorization", "Bearer rk_live_new");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"id":"a1","name":"lead","token":"at_live_1","workspace_id":"ws_new"}}"#);
+                .body(r#"{"ok":true,"data":{"id":"a1","name":"lead","token":"at_live_1","status":"online","created_at":"2026-02-21T00:00:00Z","workspace_id":"ws_new"}}"#);
         });
 
         let dir = tempdir().unwrap();
@@ -485,7 +475,7 @@ mod tests {
                 .header("authorization", "Bearer rk_live_cached");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"id":"a2","name":"lead","token":"at_live_2","workspace_id":"ws_cached"}}"#);
+                .body(r#"{"ok":true,"data":{"id":"a2","name":"lead","token":"at_live_2","status":"online","created_at":"2026-02-21T00:00:00Z","workspace_id":"ws_cached"}}"#);
         });
 
         let dir = tempdir().unwrap();
@@ -517,7 +507,7 @@ mod tests {
             when.method(POST).path("/v1/workspaces");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"workspace_id":"ws_boot","api_key":"rk_live_boot"}}"#);
+                .body(r#"{"ok":true,"data":{"workspace_id":"ws_boot","api_key":"rk_live_boot","created_at":"2026-02-21T00:00:00Z"}}"#);
         });
         let register = server.mock(|when, then| {
             when.method(POST)
@@ -525,7 +515,7 @@ mod tests {
                 .header("authorization", "Bearer rk_live_boot");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"id":"a3","name":"lead","token":"at_live_3"}}"#);
+                .body(r#"{"ok":true,"data":{"id":"a3","name":"lead","token":"at_live_3","status":"online","created_at":"2026-02-21T00:00:00Z"}}"#);
         });
 
         let dir = tempdir().unwrap();
@@ -553,7 +543,7 @@ mod tests {
                 .header("authorization", "Bearer rk_live_cached");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"id":"a4","name":"lead","token":"at_live_4","workspace_id":"ws_cached"}}"#);
+                .body(r#"{"ok":true,"data":{"id":"a4","name":"lead","token":"at_live_4","status":"online","created_at":"2026-02-21T00:00:00Z","workspace_id":"ws_cached"}}"#);
         });
 
         let dir = tempdir().unwrap();
@@ -584,13 +574,13 @@ mod tests {
                 .header("authorization", "Bearer rk_live_stale");
             then.status(401)
                 .header("content-type", "application/json")
-                .body(r#"{"error":"unauthorized"}"#);
+                .body(r#"{"ok":false,"error":{"code":"unauthorized","message":"unauthorized"}}"#);
         });
         let workspace = server.mock(|when, then| {
             when.method(POST).path("/v1/workspaces");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"workspace_id":"ws_new","api_key":"rk_live_new"}}"#);
+                .body(r#"{"ok":true,"data":{"workspace_id":"ws_new","api_key":"rk_live_new","created_at":"2026-02-21T00:00:00Z"}}"#);
         });
         let fresh_register = server.mock(|when, then| {
             when.method(POST)
@@ -598,7 +588,7 @@ mod tests {
                 .header("authorization", "Bearer rk_live_new");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"id":"a9","name":"lead","token":"at_live_9","workspace_id":"ws_new"}}"#);
+                .body(r#"{"ok":true,"data":{"id":"a9","name":"lead","token":"at_live_9","status":"online","created_at":"2026-02-21T00:00:00Z","workspace_id":"ws_new"}}"#);
         });
 
         let dir = tempdir().unwrap();
@@ -638,7 +628,7 @@ mod tests {
                 }));
             then.status(409)
                 .header("content-type", "application/json")
-                .body(r#"{"error":"name_taken"}"#);
+                .body(r#"{"ok":false,"error":{"code":"name_taken","message":"name taken"}}"#);
         });
 
         let dir = tempdir().unwrap();
@@ -677,7 +667,7 @@ mod tests {
                 }));
             then.status(409)
                 .header("content-type", "application/json")
-                .body(r#"{"error":"name_taken"}"#);
+                .body(r#"{"ok":false,"error":{"code":"name_taken","message":"name taken"}}"#);
         });
         let second_success = server.mock(|when, then| {
             when.method(POST)
@@ -686,7 +676,7 @@ mod tests {
                 .body_contains("\"name\":\"lead-");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"id":"a10","name":"lead-suffixed","token":"at_live_10","workspace_id":"ws_cached"}}"#);
+                .body(r#"{"ok":true,"data":{"id":"a10","name":"lead-suffixed","token":"at_live_10","status":"online","created_at":"2026-02-21T00:00:00Z","workspace_id":"ws_cached"}}"#);
         });
 
         let dir = tempdir().unwrap();
@@ -722,7 +712,7 @@ mod tests {
                 .header("authorization", "Bearer rk_live_cached");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"token":"at_live_rotated"}}"#);
+                .body(r#"{"ok":true,"data":{"name":"lead","token":"at_live_rotated"}}"#);
         });
 
         let dir = tempdir().unwrap();
@@ -755,7 +745,7 @@ mod tests {
                 .header("authorization", "Bearer rk_live_cached");
             then.status(404)
                 .header("content-type", "application/json")
-                .body(r#"{"error":"not_found"}"#);
+                .body(r#"{"ok":false,"error":{"code":"not_found","message":"agent not found"}}"#);
         });
         let register = server.mock(|when, then| {
             when.method(POST)
@@ -763,7 +753,7 @@ mod tests {
                 .header("authorization", "Bearer rk_live_cached");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"id":"a_new","name":"lead","token":"at_live_reregistered","workspace_id":"ws_cached"}}"#);
+                .body(r#"{"ok":true,"data":{"id":"a_new","name":"lead","token":"at_live_reregistered","status":"online","created_at":"2026-02-21T00:00:00Z","workspace_id":"ws_cached"}}"#);
         });
 
         let dir = tempdir().unwrap();

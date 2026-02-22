@@ -1,3 +1,4 @@
+use relaycast::WsEvent;
 use serde_json::{Map, Value};
 
 use crate::types::{
@@ -9,6 +10,10 @@ use crate::types::{
 ///
 /// Supports both current top-level events and older payload-wrapped events.
 pub fn map_ws_event(value: &Value) -> Option<InboundRelayEvent> {
+    if let Some(mapped) = map_ws_event_from_sdk(value) {
+        return Some(mapped);
+    }
+
     let event_type = value.get("type")?.as_str()?;
     let kind = parse_inbound_kind(event_type)?;
 
@@ -62,6 +67,10 @@ pub fn map_ws_event(value: &Value) -> Option<InboundRelayEvent> {
 /// Relaycast emits these when an agent invokes a registered slash command
 /// (e.g. `/spawn`, `/release`). The `parameters` field carries structured data.
 pub fn map_ws_broker_command(value: &Value) -> Option<BrokerCommandEvent> {
+    if let Some(mapped) = map_ws_broker_command_from_sdk(value) {
+        return Some(mapped);
+    }
+
     let event_type = value.get("type")?.as_str()?;
     if event_type != "command.invoked" {
         return None;
@@ -84,7 +93,7 @@ pub fn map_ws_broker_command(value: &Value) -> Option<BrokerCommandEvent> {
                 .get("handler")
                 .and_then(|handler| handler.get("id"))
                 .and_then(scalar_to_string)
-        });
+        })?;
 
     let params = value.get("parameters")?;
 
@@ -108,6 +117,126 @@ pub fn map_ws_broker_command(value: &Value) -> Option<BrokerCommandEvent> {
     })
 }
 
+fn map_ws_event_from_sdk(value: &Value) -> Option<InboundRelayEvent> {
+    let event: WsEvent = serde_json::from_value(value.clone()).ok()?;
+
+    match event {
+        WsEvent::MessageCreated(e) => Some(InboundRelayEvent {
+            event_id: e.message.id,
+            kind: InboundKind::MessageCreated,
+            from: e.message.agent_name,
+            sender_agent_id: value
+                .pointer("/message/agent_id")
+                .and_then(Value::as_str)
+                .map(String::from),
+            sender_kind: parse_sender_kind(value),
+            target: normalize_channel_name(&e.channel),
+            text: e.message.text,
+            thread_id: None,
+            priority: RelayPriority::P3,
+        }),
+        WsEvent::DmReceived(e) => Some(InboundRelayEvent {
+            event_id: e.message.id,
+            kind: InboundKind::DmReceived,
+            from: e.message.agent_name,
+            sender_agent_id: value
+                .pointer("/message/agent_id")
+                .and_then(Value::as_str)
+                .map(String::from),
+            sender_kind: parse_sender_kind(value),
+            target: e.conversation_id,
+            text: e.message.text,
+            thread_id: None,
+            priority: RelayPriority::P2,
+        }),
+        WsEvent::GroupDmReceived(e) => Some(InboundRelayEvent {
+            event_id: e.message.id,
+            kind: InboundKind::GroupDmReceived,
+            from: e.message.agent_name,
+            sender_agent_id: value
+                .pointer("/message/agent_id")
+                .and_then(Value::as_str)
+                .map(String::from),
+            sender_kind: parse_sender_kind(value),
+            target: e.conversation_id,
+            text: e.message.text,
+            thread_id: None,
+            priority: RelayPriority::P3,
+        }),
+        WsEvent::ThreadReply(e) => Some(InboundRelayEvent {
+            event_id: e.message.id,
+            kind: InboundKind::ThreadReply,
+            from: e.message.agent_name,
+            sender_agent_id: value
+                .pointer("/message/agent_id")
+                .and_then(Value::as_str)
+                .map(String::from),
+            sender_kind: parse_sender_kind(value),
+            target: "thread".to_string(),
+            text: e.message.text,
+            thread_id: Some(e.parent_id),
+            priority: RelayPriority::P3,
+        }),
+        WsEvent::AgentOnline(e) => {
+            let from = e.agent.name;
+            Some(InboundRelayEvent {
+                event_id: format!("presence-agent.online-{from}"),
+                kind: InboundKind::Presence,
+                from,
+                sender_agent_id: None,
+                sender_kind: SenderKind::Agent,
+                target: String::new(),
+                text: String::new(),
+                thread_id: None,
+                priority: RelayPriority::P4,
+            })
+        }
+        WsEvent::AgentOffline(e) => {
+            let from = e.agent.name;
+            Some(InboundRelayEvent {
+                event_id: format!("presence-agent.offline-{from}"),
+                kind: InboundKind::Presence,
+                from,
+                sender_agent_id: None,
+                sender_kind: SenderKind::Agent,
+                target: String::new(),
+                text: String::new(),
+                thread_id: None,
+                priority: RelayPriority::P4,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn map_ws_broker_command_from_sdk(value: &Value) -> Option<BrokerCommandEvent> {
+    let event: WsEvent = serde_json::from_value(value.clone()).ok()?;
+    let invoked = match event {
+        WsEvent::CommandInvoked(invoked) => invoked,
+        _ => return None,
+    };
+
+    let command_name = invoked.command.trim_start_matches('/');
+    let params = Value::Object(invoked.parameters?);
+    let payload = if command_name == "spawn" || command_name.starts_with("spawn-") {
+        let spawn: SpawnParams = serde_json::from_value(params).ok()?;
+        BrokerCommandPayload::Spawn(spawn)
+    } else if command_name == "release" || command_name.starts_with("release-") {
+        let release: ReleaseParams = serde_json::from_value(params).ok()?;
+        BrokerCommandPayload::Release(release)
+    } else {
+        return None;
+    };
+
+    Some(BrokerCommandEvent {
+        command: invoked.command,
+        channel: invoked.channel,
+        invoked_by: invoked.invoked_by,
+        handler_agent_id: invoked.handler_agent_id,
+        payload,
+    })
+}
+
 fn parse_inbound_kind(event_type: &str) -> Option<InboundKind> {
     match event_type {
         "message.created" | "message.received" | "message.new" => Some(InboundKind::MessageCreated),
@@ -118,6 +247,14 @@ fn parse_inbound_kind(event_type: &str) -> Option<InboundKind> {
             Some(InboundKind::Presence)
         }
         _ => None,
+    }
+}
+
+fn normalize_channel_name(raw: &str) -> String {
+    if raw.starts_with('#') {
+        raw.to_string()
+    } else {
+        format!("#{raw}")
     }
 }
 
@@ -667,6 +804,7 @@ mod tests {
             "command": "/spawn",
             "channel": "general",
             "invoked_by": "147298826957365248",
+            "handler_agent_id": "147305428879515648",
             "args": null,
             "parameters": {
                 "name": "Worker1",
@@ -679,7 +817,7 @@ mod tests {
         assert_eq!(cmd.command, "/spawn");
         assert_eq!(cmd.channel, "general");
         assert_eq!(cmd.invoked_by, "147298826957365248");
-        assert_eq!(cmd.handler_agent_id, None);
+        assert_eq!(cmd.handler_agent_id, "147305428879515648");
         assert_eq!(
             cmd.payload,
             crate::types::BrokerCommandPayload::Spawn(crate::types::SpawnParams {
@@ -697,6 +835,7 @@ mod tests {
             "command": "/release",
             "channel": "general",
             "invoked_by": "147298826957365248",
+            "handler_agent_id": "147305428879515648",
             "args": null,
             "parameters": {
                 "name": "Worker1"
@@ -719,6 +858,7 @@ mod tests {
             "command": "/spawn-19c4c7f8150",
             "channel": "general",
             "invoked_by": "147298826957365248",
+            "handler_agent_id": "147305428879515648",
             "parameters": {
                 "name": "Worker2",
                 "cli": "codex",
@@ -744,6 +884,7 @@ mod tests {
             "command": "/release-19c4c7f8150",
             "channel": "general",
             "invoked_by": "147298826957365248",
+            "handler_agent_id": "147305428879515648",
             "parameters": {
                 "name": "Worker2"
             }
@@ -773,7 +914,19 @@ mod tests {
         }))
         .expect("should map command.invoked handler agent id");
 
-        assert_eq!(cmd.handler_agent_id.as_deref(), Some("147305428879515648"));
+        assert_eq!(cmd.handler_agent_id, "147305428879515648");
+    }
+
+    #[test]
+    fn command_invoked_ignores_missing_handler_agent_id() {
+        assert!(map_ws_broker_command(&json!({
+            "type": "command.invoked",
+            "command": "/spawn",
+            "channel": "general",
+            "invoked_by": "123",
+            "parameters": { "name": "x", "cli": "y" }
+        }))
+        .is_none());
     }
 
     #[test]

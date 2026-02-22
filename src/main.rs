@@ -18,6 +18,7 @@ use helpers::{
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use relaycast::{RelayCast, RelayCastOptions, WsEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::{
@@ -3072,30 +3073,17 @@ async fn fetch_all_channels(paths: &RuntimePaths) -> Result<Vec<String>> {
     let cached = store
         .load()
         .map_err(|_| anyhow::anyhow!("no cached credentials"))?;
-    let api_key = &cached.api_key;
+    let relay = RelayCast::new(
+        RelayCastOptions::new(cached.api_key.clone()).with_base_url(http_base.clone()),
+    )
+    .context("failed to initialize relaycast client")?;
 
-    let client = reqwest::Client::new();
-    let resp = client
-        .get(format!("{http_base}/v1/channels"))
-        .bearer_auth(api_key)
-        .send()
+    let channels = relay
+        .list_channels(false)
         .await
         .context("failed to fetch channels")?;
 
-    if !resp.status().is_success() {
-        anyhow::bail!("channels API returned {}", resp.status());
-    }
-    let body: Value = resp.json().await?;
-    let channels = body
-        .as_array()
-        .or_else(|| body.get("channels").and_then(Value::as_array))
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|ch| ch.get("name").and_then(Value::as_str).map(String::from))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    Ok(channels)
+    Ok(channels.into_iter().map(|channel| channel.name).collect())
 }
 
 fn channels_from_csv(raw: &str) -> Vec<String> {
@@ -3116,6 +3104,30 @@ enum RelaycastAgentEvent {
 /// Parse a raw WS JSON value into a `RelaycastAgentEvent` if it matches
 /// `agent.spawn_requested` or `agent.release_requested`.
 fn parse_relaycast_agent_event(value: &serde_json::Value) -> Option<RelaycastAgentEvent> {
+    if let Ok(event) = serde_json::from_value::<WsEvent>(value.clone()) {
+        match event {
+            WsEvent::AgentSpawnRequested(ev) => {
+                let name = ev.agent.name.trim();
+                let cli = ev.agent.cli.trim();
+                if !name.is_empty() && !cli.is_empty() {
+                    return Some(RelaycastAgentEvent::Spawn {
+                        name: name.to_string(),
+                        cli: cli.to_string(),
+                    });
+                }
+            }
+            WsEvent::AgentReleaseRequested(ev) => {
+                let name = ev.agent.name.trim();
+                if !name.is_empty() {
+                    return Some(RelaycastAgentEvent::Release {
+                        name: name.to_string(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
     let event_type = value.get("type")?.as_str()?;
     let agent = value.get("agent")?;
 
@@ -3139,17 +3151,7 @@ fn parse_relaycast_agent_event(value: &serde_json::Value) -> Option<RelaycastAge
 }
 
 fn command_targets_self(cmd_event: &BrokerCommandEvent, self_agent_id: &str) -> bool {
-    match cmd_event.handler_agent_id.as_deref() {
-        Some(handler_id) => handler_id == self_agent_id,
-        None => {
-            tracing::warn!(
-                command = %cmd_event.command,
-                invoked_by = %cmd_event.invoked_by,
-                "command has no handler_agent_id; accepting by default (multi-broker setups should scope commands)"
-            );
-            true
-        }
-    }
+    cmd_event.handler_agent_id == self_agent_id
 }
 
 fn env_flag_enabled(name: &str) -> bool {
