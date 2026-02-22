@@ -345,6 +345,11 @@ pub(crate) async fn run_wrap(
     progress: bool,
     telemetry: TelemetryClient,
 ) -> Result<()> {
+    let (resolved_cli, inline_cli_args) = parse_cli_command(&cli_name)
+        .with_context(|| format!("invalid CLI command '{cli_name}'"))?;
+    let mut effective_cli_args = inline_cli_args;
+    effective_cli_args.extend(cli_args);
+
     let broker_start = Instant::now();
     let mut agent_spawn_count: u32 = 0;
     telemetry.track(TelemetryEvent::BrokerStart);
@@ -353,13 +358,13 @@ pub(crate) async fn run_wrap(
     #[allow(deprecated)]
     std::env::set_var("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION", "false");
 
-    let requested_name = std::env::var("RELAY_AGENT_NAME").unwrap_or_else(|_| cli_name.clone());
+    let requested_name = std::env::var("RELAY_AGENT_NAME").unwrap_or_else(|_| resolved_cli.clone());
     let channels = std::env::var("RELAY_CHANNELS").unwrap_or_else(|_| "general".to_string());
     let channel_list = channels_from_csv(&channels);
 
     eprintln!(
         "[agent-relay] wrapping {} (agent: {}, channels: {:?})",
-        cli_name, requested_name, channel_list
+        resolved_cli, requested_name, channel_list
     );
     eprintln!("[agent-relay] use RUST_LOG=debug for verbose logging");
 
@@ -400,8 +405,8 @@ pub(crate) async fn run_wrap(
 
     // --- Spawn CLI in PTY ---
     let (pty, mut pty_rx) = PtySession::spawn(
-        &cli_name,
-        &cli_args,
+        &resolved_cli,
+        &effective_cli_args,
         terminal_rows().unwrap_or(24),
         terminal_cols().unwrap_or(80),
     )?;

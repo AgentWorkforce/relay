@@ -1,5 +1,10 @@
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::{
+    ffi::OsStr,
+    path::Path,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
+use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 
 pub(crate) const ACTIVITY_WINDOW: Duration = Duration::from_secs(5);
@@ -7,6 +12,35 @@ pub(crate) const ACTIVITY_BUFFER_MAX_BYTES: usize = 16_000;
 pub(crate) const ACTIVITY_BUFFER_KEEP_BYTES: usize = 12_000;
 #[cfg(test)]
 pub(crate) const CLI_READY_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Parse a CLI command string into executable and embedded arguments.
+///
+/// Supports shell-style quoting, e.g.:
+/// - `claude --model haiku`
+/// - `codex --profile "my profile"`
+pub(crate) fn parse_cli_command(raw: &str) -> Result<(String, Vec<String>)> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("CLI command cannot be empty"));
+    }
+
+    let parts = shlex::split(trimmed)
+        .ok_or_else(|| anyhow!("invalid CLI command syntax (check quoting)"))?;
+    let (command, args) = parts
+        .split_first()
+        .ok_or_else(|| anyhow!("CLI command cannot be empty"))?;
+    Ok((command.to_string(), args.to_vec()))
+}
+
+/// Best-effort normalized CLI name for feature detection.
+/// If `cli` is a path, returns the executable file name.
+pub(crate) fn normalize_cli_name(cli: &str) -> String {
+    Path::new(cli)
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or(cli)
+        .to_string()
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum DeliveryOutcome {
@@ -1036,5 +1070,36 @@ mod tests {
     fn auto_suggestion_no_false_positive_on_partial_ansi() {
         // Has reverse video but not the dim pattern
         assert!(!is_auto_suggestion("\x1b[7msome text\x1b[27m normal text"));
+    }
+
+    // ==================== CLI command parsing ====================
+
+    #[test]
+    fn parse_cli_command_supports_inline_args() {
+        let (cli, args) = parse_cli_command("claude --model haiku").unwrap();
+        assert_eq!(cli, "claude");
+        assert_eq!(args, vec!["--model".to_string(), "haiku".to_string()]);
+    }
+
+    #[test]
+    fn parse_cli_command_supports_quotes() {
+        let (cli, args) = parse_cli_command("codex --profile \"my profile\"").unwrap();
+        assert_eq!(cli, "codex");
+        assert_eq!(
+            args,
+            vec!["--profile".to_string(), "my profile".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_cli_command_rejects_empty() {
+        let err = parse_cli_command("   ").unwrap_err().to_string();
+        assert!(err.contains("cannot be empty"));
+    }
+
+    #[test]
+    fn normalize_cli_name_uses_executable_for_paths() {
+        assert_eq!(normalize_cli_name("/usr/local/bin/claude"), "claude");
+        assert_eq!(normalize_cli_name("codex"), "codex");
     }
 }

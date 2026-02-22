@@ -78,18 +78,7 @@ function cleanupBrokerFiles(paths: CoreProjectPaths, deps: CoreDependencies): vo
 }
 
 function getDashboardSpawnArgs(paths: CoreProjectPaths, port: number): string[] {
-  return [
-    '--integrated',
-    '--no-spawn',
-    '--port',
-    String(port),
-    '--data-dir',
-    paths.dataDir,
-    '--team-dir',
-    paths.teamDir,
-    '--project-root',
-    paths.projectRoot,
-  ];
+  return ['--port', String(port), '--relay-url', 'http://localhost:3889', '--data-dir', paths.dataDir];
 }
 
 function startDashboard(paths: CoreProjectPaths, port: number, deps: CoreDependencies): SpawnedProcess {
@@ -132,7 +121,7 @@ function startDashboard(paths: CoreProjectPaths, port: number, deps: CoreDepende
       if (stderrBuf.trim()) {
         deps.error(stderrBuf.trim().split('\n').slice(-5).join('\n'));
       }
-    } else if (signal) {
+    } else if (signal && signal !== 'SIGINT' && signal !== 'SIGTERM') {
       deps.error(`Dashboard process killed by signal ${signal}`);
     }
   });
@@ -143,12 +132,15 @@ function startDashboard(paths: CoreProjectPaths, port: number, deps: CoreDepende
 async function waitForDashboard(
   port: number,
   process: SpawnedProcess,
-  deps: Pick<CoreDependencies, 'warn'>
+  deps: Pick<CoreDependencies, 'warn'>,
+  isShuttingDown: () => boolean
 ): Promise<void> {
   for (let i = 0; i < 20; i++) {
     await new Promise((r) => setTimeout(r, 500));
     if (process.killed) {
-      deps.warn(`Warning: Dashboard process exited before becoming ready on port ${port}`);
+      if (!isShuttingDown()) {
+        deps.warn(`Warning: Dashboard process exited before becoming ready on port ${port}`);
+      }
       return;
     }
     try {
@@ -158,7 +150,9 @@ async function waitForDashboard(
       // Not ready yet
     }
   }
-  deps.warn(`Warning: Dashboard not responding on port ${port} after 10s`);
+  if (!isShuttingDown()) {
+    deps.warn(`Warning: Dashboard not responding on port ${port} after 10s`);
+  }
 }
 
 async function shutdownUpResources(
@@ -205,18 +199,30 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   deps.fs.writeFileSync(brokerPidPath, String(deps.pid), 'utf-8');
 
   let dashboardProcess: SpawnedProcess | undefined;
+  let shuttingDown = false;
+  let sigintCount = 0;
+  let shutdownPromise: Promise<void> | undefined;
+  const shutdownOnce = async (): Promise<void> => {
+    if (!shutdownPromise) {
+      shuttingDown = true;
+      shutdownPromise = shutdownUpResources(relay, dashboardProcess, brokerPidPath, deps);
+    }
+    await shutdownPromise;
+  };
   try {
-    await relay.getStatus();
     deps.log(`Project: ${paths.projectRoot}`);
     deps.log('Mode: broker (stdio)');
-    deps.log('Broker started.');
 
     if (wantsDashboard) {
       dashboardProcess = startDashboard(paths, dashboardPort, deps);
+      deps.log('Broker started.');
       deps.log(`Dashboard: http://localhost:${dashboardPort}`);
 
       // Verify the dashboard is actually reachable (non-blocking)
-      waitForDashboard(dashboardPort, dashboardProcess, deps).catch(() => {});
+      waitForDashboard(dashboardPort, dashboardProcess, deps, () => shuttingDown).catch(() => {});
+    } else {
+      await relay.getStatus();
+      deps.log('Broker started.');
     }
 
     const teamsConfig = deps.loadTeamsConfig(paths.projectRoot);
@@ -224,36 +230,47 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       options.spawn === true ? true : options.spawn === false ? false : Boolean(teamsConfig?.autoSpawn);
 
     if (shouldSpawn && teamsConfig && teamsConfig.agents.length > 0) {
-      for (const agent of teamsConfig.agents) {
-        await relay.spawn({
-          name: agent.name,
-          cli: agent.cli,
-          channels: ['general'],
-          task: agent.task ?? '',
-          team: teamsConfig.team,
-        });
+      if (wantsDashboard) {
+        deps.warn('Warning: auto-spawn from teams.json is skipped when dashboard mode manages the broker');
+      } else {
+        for (const agent of teamsConfig.agents) {
+          await relay.spawn({
+            name: agent.name,
+            cli: agent.cli,
+            channels: ['general'],
+            task: agent.task ?? '',
+            team: teamsConfig.team,
+          });
+        }
       }
     } else if (options.spawn === true && !teamsConfig) {
       deps.warn('Warning: --spawn specified but no teams.json found');
     }
 
-    const shutdown = async () => {
-      await shutdownUpResources(relay, dashboardProcess, brokerPidPath, deps);
-    };
-
     deps.onSignal('SIGINT', async () => {
+      sigintCount += 1;
+      if (shuttingDown) {
+        if (sigintCount >= 2) {
+          deps.warn('Force exiting...');
+          deps.exit(130);
+        }
+        return;
+      }
       deps.log('\nStopping...');
-      await shutdown();
+      await shutdownOnce();
       deps.exit(0);
     });
     deps.onSignal('SIGTERM', async () => {
-      await shutdown();
+      if (shuttingDown) {
+        return;
+      }
+      await shutdownOnce();
       deps.exit(0);
     });
 
     await deps.holdOpen();
   } catch (err: unknown) {
-    await shutdownUpResources(relay, dashboardProcess, brokerPidPath, deps);
+    await shutdownOnce();
     const withCode = err as { code?: string };
     if (withCode.code === 'EADDRINUSE') {
       deps.error(`Dashboard port ${dashboardPort} is already in use.`);

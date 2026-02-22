@@ -25,8 +25,46 @@ import {
   type SpawnPtyInput,
   type SendMessageInput,
   type ListAgent,
-} from "./client.js";
-import type { BrokerEvent, BrokerStats, BrokerStatus, CrashInsightsResponse } from "./protocol.js";
+} from './client.js';
+import type { BrokerEvent, BrokerStats, BrokerStatus, CrashInsightsResponse } from './protocol.js';
+
+const WORKFLOW_BOOTSTRAP_TASK =
+  'You are connected to Agent Relay. Wait for relay messages and respond using Relaycast MCP tools.';
+
+const WORKFLOW_CONVENTIONS = [
+  'Messaging requirements:',
+  '- When you receive `Relay message from <sender> ...`, reply using `relay_send(to: "<sender>", message: "...")`.',
+  '- Send `ACK: ...` when you receive a task.',
+  '- Send `DONE: ...` when the task is complete.',
+  '- Do not reply only in terminal text; send the response via relay_send.',
+  '- Use relay_inbox() and relay_who() when context is missing.',
+].join('\n');
+
+function hasWorkflowConventions(task: string): boolean {
+  const lower = task.toLowerCase();
+  return lower.includes('relay_send(') || (lower.includes('ack:') && lower.includes('done:'));
+}
+
+function buildSpawnTask(
+  task: string | undefined,
+  includeWorkflowConventions: boolean | undefined
+): string | undefined {
+  const normalized = typeof task === 'string' ? task.trim() : '';
+
+  if (!includeWorkflowConventions) {
+    return normalized.length > 0 ? normalized : undefined;
+  }
+
+  if (normalized.length === 0) {
+    return `${WORKFLOW_BOOTSTRAP_TASK}\n\n${WORKFLOW_CONVENTIONS}`;
+  }
+
+  if (hasWorkflowConventions(normalized)) {
+    return normalized;
+  }
+
+  return `${normalized}\n\n${WORKFLOW_CONVENTIONS}`;
+}
 
 // ── Public types ────────────────────────────────────────────────────
 
@@ -92,10 +130,10 @@ export class RelayAdapter {
   constructor(opts: RelayAdapterOptions) {
     const clientOpts: AgentRelayClientOptions = {
       binaryPath: opts.binaryPath,
-      channels: opts.channels ?? ["general"],
+      channels: opts.channels ?? ['general'],
       cwd: opts.cwd,
       env: opts.env,
-      clientName: opts.clientName ?? "relay-adapter",
+      clientName: opts.clientName ?? 'relay-adapter',
     };
     this.client = new AgentRelayClient(clientOpts);
   }
@@ -124,8 +162,8 @@ export class RelayAdapter {
       const input: SpawnPtyInput = {
         name: req.name,
         cli: req.cli,
-        task: req.task,
-        channels: ["general"],
+        task: buildSpawnTask(req.task, req.includeWorkflowConventions),
+        channels: ['general'],
         model: req.model,
         cwd: req.cwd,
         team: req.team,
@@ -213,7 +251,7 @@ export class RelayAdapter {
    */
   async interruptAgent(name: string): Promise<boolean> {
     try {
-      await this.sendInput(name, "\x1b\x1b");
+      await this.sendInput(name, '\x1b\x1b');
       return true;
     } catch {
       return false;
@@ -226,7 +264,7 @@ export class RelayAdapter {
   async setModel(
     name: string,
     model: string,
-    opts?: { timeoutMs?: number },
+    opts?: { timeoutMs?: number }
   ): Promise<{ success: boolean; name: string; model: string }> {
     await this.start();
     return this.client.setModel(name, model, opts);

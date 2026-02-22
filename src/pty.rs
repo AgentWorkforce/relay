@@ -1,5 +1,8 @@
 use std::{
+    env,
+    ffi::OsString,
     io::{Read, Write},
+    path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -20,6 +23,42 @@ pub struct PtySession {
     reaped: Arc<AtomicBool>,
 }
 
+fn canonicalize_display(path: &Path) -> String {
+    std::fs::canonicalize(path)
+        .ok()
+        .and_then(|resolved| resolved.to_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| path.to_string_lossy().to_string())
+}
+
+fn resolve_command_path(command: &str) -> String {
+    // Already a path (absolute or relative): use as-is but resolve symlinks when possible.
+    if command.contains('/') || command.contains('\\') || command.starts_with('.') {
+        return canonicalize_display(Path::new(command));
+    }
+
+    let path_env = env::var_os("PATH")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            #[cfg(unix)]
+            {
+                OsString::from("/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin")
+            }
+            #[cfg(windows)]
+            {
+                OsString::from(r"C:\Windows\System32;C:\Windows")
+            }
+        });
+
+    for dir in env::split_paths(&path_env) {
+        let candidate = dir.join(command);
+        if candidate.is_file() {
+            return canonicalize_display(&candidate);
+        }
+    }
+
+    command.to_string()
+}
+
 impl PtySession {
     pub fn spawn(
         command: &str,
@@ -37,7 +76,8 @@ impl PtySession {
             })
             .context("failed to open pty")?;
 
-        let mut cmd = CommandBuilder::new(command);
+        let resolved_command = resolve_command_path(command);
+        let mut cmd = CommandBuilder::new(&resolved_command);
         cmd.cwd(std::env::current_dir().context("failed to get current directory")?);
         for arg in args {
             cmd.arg(arg);

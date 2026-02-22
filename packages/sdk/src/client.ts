@@ -610,21 +610,28 @@ function isExplicitPath(binaryPath: string): boolean {
 
 function resolveDefaultBinaryPath(): string {
   const brokerExe = process.platform === 'win32' ? 'agent-relay-broker.exe' : 'agent-relay-broker';
-
-  // 1. Check for bundled broker binary in SDK package (npm install)
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+
+  // 1. In a source checkout, prefer Cargo's release binary to avoid stale bundled
+  // copies when local dev rebuilds happen while broker processes are running.
+  const workspaceRelease = path.resolve(moduleDir, '..', '..', '..', 'target', 'release', brokerExe);
+  if (fs.existsSync(workspaceRelease)) {
+    return workspaceRelease;
+  }
+
+  // 2. Check for bundled broker binary in SDK package (npm install)
   const bundled = path.resolve(moduleDir, '..', 'bin', brokerExe);
   if (fs.existsSync(bundled)) {
     return bundled;
   }
 
-  // 2. Check for standalone broker binary in ~/.agent-relay/bin/ (install.sh)
+  // 3. Check for standalone broker binary in ~/.agent-relay/bin/ (install.sh)
   const homeDir = process.env.HOME || process.env.USERPROFILE || '';
   const standaloneBroker = path.join(homeDir, '.agent-relay', 'bin', brokerExe);
   if (fs.existsSync(standaloneBroker)) {
     return standaloneBroker;
   }
 
-  // 3. Fall back to agent-relay on PATH (may be Node CLI — will fail for broker ops)
+  // 4. Fall back to agent-relay on PATH (may be Node CLI — will fail for broker ops)
   return 'agent-relay';
 }

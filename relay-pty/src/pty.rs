@@ -348,7 +348,12 @@ impl AsyncPty {
         }
     }
 
-    fn reader_thread(fd: RawFd, running: Arc<AtomicBool>, tx: mpsc::Sender<Vec<u8>>, child_pid: Pid) {
+    fn reader_thread(
+        fd: RawFd,
+        running: Arc<AtomicBool>,
+        tx: mpsc::Sender<Vec<u8>>,
+        child_pid: Pid,
+    ) {
         let mut buf = [0u8; 4096];
         loop {
             if !running.load(Ordering::SeqCst) {
@@ -374,8 +379,7 @@ impl AsyncPty {
                     // EAGAIN indefinitely even after the child dies, so we must
                     // also poll waitpid to detect exit reliably.
                     match waitpid(child_pid, Some(WaitPidFlag::WNOHANG)) {
-                        Ok(WaitStatus::Exited(_, _))
-                        | Ok(WaitStatus::Signaled(_, _, _)) => {
+                        Ok(WaitStatus::Exited(_, _)) | Ok(WaitStatus::Signaled(_, _, _)) => {
                             running.store(false, Ordering::SeqCst);
                             break;
                         }

@@ -102,14 +102,14 @@ function createHarness(options?: {
     createRelay: options?.createRelay ?? vi.fn(() => relay),
     findDashboardBinary: vi.fn(() => '/usr/local/bin/relay-dashboard-server'),
     spawnProcess:
-      options?.spawnImpl ??
-      (vi.fn(() => spawnedProcess) as unknown as CoreDependencies['spawnProcess']),
+      options?.spawnImpl ?? (vi.fn(() => spawnedProcess) as unknown as CoreDependencies['spawnProcess']),
     execCommand: vi.fn(async () => ({ stdout: '', stderr: '' })),
     killProcess: options?.killImpl ?? vi.fn(() => undefined),
     fs,
     generateAgentName: vi.fn(() => 'AutoAgent'),
-    checkForUpdates:
-      vi.fn(async () => options?.checkForUpdatesResult ?? ({ updateAvailable: false, latestVersion: '1.2.3' })) as unknown as CoreDependencies['checkForUpdates'],
+    checkForUpdates: vi.fn(
+      async () => options?.checkForUpdatesResult ?? { updateAvailable: false, latestVersion: '1.2.3' }
+    ) as unknown as CoreDependencies['checkForUpdates'],
     getVersion: vi.fn(() => '1.2.3'),
     env: {},
     argv: ['node', '/tmp/agent-relay.js', 'up'],
@@ -182,7 +182,10 @@ describe('registerCoreCommands', () => {
       expect.arrayContaining(['--integrated', '--port', '4999']),
       expect.any(Object)
     );
-    expect(relay.getStatus).toHaveBeenCalledTimes(1);
+    const dashboardArgs = (deps.spawnProcess as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0][1] as string[];
+    expect(dashboardArgs).not.toContain('--no-spawn');
+    expect(relay.getStatus).toHaveBeenCalledTimes(0);
   });
 
   it('up auto-spawns agents from teams config', async () => {
@@ -196,7 +199,7 @@ describe('registerCoreCommands', () => {
       },
     });
 
-    const exitCode = await runCommand(program, ['up']);
+    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
 
     expect(exitCode).toBeUndefined();
     expect(relay.spawn).toHaveBeenCalledWith({
@@ -206,6 +209,26 @@ describe('registerCoreCommands', () => {
       task: 'Ship tests',
       team: 'platform',
     });
+  });
+
+  it('up skips teams auto-spawn when dashboard mode manages broker', async () => {
+    const relay = createRelayMock();
+    const { program, deps } = createHarness({
+      relay,
+      teamsConfig: {
+        team: 'platform',
+        autoSpawn: true,
+        agents: [{ name: 'WorkerA', cli: 'codex', task: 'Ship tests' }],
+      },
+    });
+
+    const exitCode = await runCommand(program, ['up']);
+
+    expect(exitCode).toBeUndefined();
+    expect(relay.spawn).toHaveBeenCalledTimes(0);
+    expect(deps.warn).toHaveBeenCalledWith(
+      'Warning: auto-spawn from teams.json is skipped when dashboard mode manages the broker'
+    );
   });
 
   it('up exits when dashboard port is already in use', async () => {
@@ -221,6 +244,56 @@ describe('registerCoreCommands', () => {
 
     expect(exitCode).toBe(1);
     expect(deps.error).toHaveBeenCalledWith('Dashboard port 3888 is already in use.');
+  });
+
+  it('up force exits on repeated SIGINT during hung shutdown and suppresses expected dashboard signal noise', async () => {
+    const relay = createRelayMock({
+      shutdown: vi.fn(() => new Promise(() => undefined)),
+    });
+    let dashboardExitHandler: ((...args: unknown[]) => void) | undefined;
+
+    const spawnedProcess = {
+      pid: 9001,
+      killed: false,
+      kill: vi.fn((signal?: NodeJS.Signals | number) => {
+        spawnedProcess.killed = true;
+        dashboardExitHandler?.(null, typeof signal === 'string' ? signal : null);
+      }),
+      unref: vi.fn(() => undefined),
+      on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
+        if (event === 'exit') {
+          dashboardExitHandler = cb;
+        }
+      }),
+      stderr: { on: vi.fn(() => undefined) },
+    } as unknown as SpawnedProcess;
+
+    const { program, deps } = createHarness({ relay, spawnedProcess });
+    const exitCode = await runCommand(program, ['up']);
+    expect(exitCode).toBeUndefined();
+
+    const onSignalMock = deps.onSignal as unknown as { mock: { calls: unknown[][] } };
+    const sigintHandler = onSignalMock.mock.calls.find((call) => call[0] === 'SIGINT')?.[1] as
+      | (() => Promise<void>)
+      | undefined;
+    expect(sigintHandler).toBeDefined();
+    const sigint = sigintHandler as () => Promise<void>;
+
+    void sigint();
+    await Promise.resolve();
+    await expect(sigint()).rejects.toMatchObject({ code: 130 });
+
+    expect(relay.shutdown).toHaveBeenCalledTimes(1);
+    expect(deps.exit).toHaveBeenCalledTimes(1);
+    expect(deps.warn).toHaveBeenCalledWith('Force exiting...');
+
+    const logCalls = (deps.log as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    expect(logCalls.filter((call) => call[0] === '\nStopping...')).toHaveLength(1);
+
+    const errorCalls = (deps.error as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    expect(
+      errorCalls.filter((call) => String(call[0]).includes('Dashboard process killed by signal'))
+    ).toHaveLength(0);
   });
 
   it('down stops broker and cleans stale files', async () => {
@@ -340,7 +413,12 @@ describe('registerCoreCommands', () => {
       createRelay: createRelay as unknown as CoreDependencies['createRelay'],
     });
 
-    const exitCode = await runCommand(program, ['bridge', '--architect=claude:sonnet', '/tmp/alpha', '/tmp/beta']);
+    const exitCode = await runCommand(program, [
+      'bridge',
+      '--architect=claude:sonnet',
+      '/tmp/alpha',
+      '/tmp/beta',
+    ]);
 
     expect(exitCode).toBeUndefined();
     expect(relayA.spawn).toHaveBeenCalledWith(

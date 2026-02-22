@@ -7,6 +7,8 @@ use tokio::{
     time::timeout,
 };
 
+use crate::helpers::parse_cli_command;
+
 #[cfg(unix)]
 use nix::{
     sys::signal::{kill, Signal},
@@ -47,9 +49,13 @@ impl Spawner {
 
         let exe = std::env::current_exe().unwrap_or_else(|_| "agent-relay-broker".into());
         let mut cmd = Command::new(exe);
+        let (resolved_cli, inline_cli_args) =
+            parse_cli_command(cli).with_context(|| format!("invalid CLI command '{cli}'"))?;
+        let mut combined_args = inline_cli_args;
+        combined_args.extend(extra_args.to_vec());
 
         // Wrap mode: `agent-relay-broker wrap <cli> <args...>`
-        cmd.arg("wrap").arg(cli);
+        cmd.arg("wrap").arg(&resolved_cli);
 
         // Inject MCP config for CLIs that support dynamic MCP configuration.
         let api_key = env_vars
@@ -61,13 +67,20 @@ impl Spawner {
             .find(|(k, _)| *k == "RELAY_BASE_URL")
             .map(|(_, v)| *v);
         let cwd = std::env::current_dir().unwrap_or_default();
-        let mcp_args =
-            configure_relaycast_mcp(cli, child_name, api_key, base_url, extra_args, &cwd).await?;
+        let mcp_args = configure_relaycast_mcp(
+            &resolved_cli,
+            child_name,
+            api_key,
+            base_url,
+            &combined_args,
+            &cwd,
+        )
+        .await?;
         for arg in &mcp_args {
             cmd.arg(arg);
         }
 
-        for arg in extra_args {
+        for arg in &combined_args {
             cmd.arg(arg);
         }
 

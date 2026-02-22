@@ -383,7 +383,11 @@ pub async fn configure_relaycast_mcp(
     existing_args: &[String],
     cwd: &Path,
 ) -> Result<Vec<String>> {
-    let cli_lower = cli.to_lowercase();
+    let cli_for_detection = Path::new(cli)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(cli);
+    let cli_lower = cli_for_detection.to_lowercase();
     let is_claude = cli_lower == "claude" || cli_lower.starts_with("claude:");
     let is_codex = cli_lower == "codex";
     let is_gemini = cli_lower == "gemini";

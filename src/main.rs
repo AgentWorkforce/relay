@@ -13,7 +13,7 @@ mod wrap;
 use helpers::{
     detect_bypass_permissions_prompt, detect_codex_model_prompt, detect_gemini_action_required,
     floor_char_boundary, format_injection, is_auto_suggestion, is_bypass_selection_menu,
-    is_in_editor_mode, strip_ansi, TerminalQueryParser,
+    is_in_editor_mode, normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
 };
 
 use anyhow::{Context, Result};
@@ -197,6 +197,16 @@ fn spawn_env_vars<'a>(
         ("RELAY_CHANNELS", channels),
         ("RELAY_STRICT_AGENT_NAME", "1"),
     ]
+}
+
+fn normalize_initial_task(task: Option<String>) -> Option<String> {
+    task.and_then(|value| {
+        if value.trim().is_empty() {
+            None
+        } else {
+            Some(value)
+        }
+    })
 }
 
 struct RelaySessionOptions<'a> {
@@ -524,27 +534,32 @@ impl WorkerRegistry {
         match spec.runtime {
             AgentRuntime::Pty => {
                 let cli = spec.cli.as_deref().context("pty runtime requires `cli`")?;
+                let (resolved_cli, inline_cli_args) = parse_cli_command(cli)
+                    .with_context(|| format!("invalid CLI command '{cli}'"))?;
+                let normalized_cli = normalize_cli_name(&resolved_cli);
+                let mut effective_args = inline_cli_args;
+                effective_args.extend(spec.args.clone());
+
                 command.arg("pty");
                 command.arg("--agent-name").arg(&spec.name);
                 if let Some(secs) = idle_threshold_secs {
                     command.arg("--idle-threshold-secs").arg(secs.to_string());
                 }
-                command.arg(cli);
+                command.arg(&resolved_cli);
 
                 // Auto-add bypass flags for CLIs that need them to run non-interactively.
                 // Each CLI has its own flag; we only add it if the user didn't already.
-                let cli_lower = cli.to_lowercase();
+                let cli_lower = normalized_cli.to_lowercase();
                 let is_claude = cli_lower == "claude" || cli_lower.starts_with("claude:");
                 let is_codex = cli_lower == "codex";
 
                 let bypass_flag: Option<&str> = if is_claude
-                    && !spec
-                        .args
+                    && !effective_args
                         .iter()
                         .any(|a| a.contains("dangerously-skip-permissions"))
                 {
                     Some("--dangerously-skip-permissions")
-                } else if is_codex && !spec.args.iter().any(|a| a.contains("full-auto")) {
+                } else if is_codex && !effective_args.iter().any(|a| a.contains("full-auto")) {
                     Some("--full-auto")
                 } else {
                     None
@@ -553,17 +568,17 @@ impl WorkerRegistry {
                 // Build MCP config args for CLIs that support dynamic MCP configuration.
                 let cwd = spec.cwd.as_deref().unwrap_or(".");
                 let mcp_args = configure_relaycast_mcp(
-                    cli,
+                    &resolved_cli,
                     &spec.name,
                     self.env_value("RELAY_API_KEY"),
                     self.env_value("RELAY_BASE_URL"),
-                    &spec.args,
+                    &effective_args,
                     Path::new(cwd),
                 )
                 .await?;
 
                 let has_extra =
-                    bypass_flag.is_some() || !spec.args.is_empty() || !mcp_args.is_empty();
+                    bypass_flag.is_some() || !effective_args.is_empty() || !mcp_args.is_empty();
                 if has_extra {
                     command.arg("--");
                     if let Some(flag) = bypass_flag {
@@ -572,7 +587,7 @@ impl WorkerRegistry {
                     for arg in &mcp_args {
                         command.arg(arg);
                     }
-                    for arg in &spec.args {
+                    for arg in &effective_args {
                         command.arg(arg);
                     }
                 }
@@ -740,10 +755,56 @@ impl WorkerRegistry {
         let names: Vec<String> = self.workers.keys().cloned().collect();
         let mut exited = Vec::new();
         for name in names {
-            let status = if let Some(handle) = self.workers.get_mut(&name) {
-                handle.child.try_wait()?
+            let (status, gone_via_kill0) = if let Some(handle) = self.workers.get_mut(&name) {
+                match handle.child.try_wait() {
+                    Ok(status) => {
+                        // try_wait returned Ok — check if process is gone via kill(0)
+                        // even when try_wait says None (still running).
+                        if status.is_none() {
+                            #[cfg(unix)]
+                            {
+                                if let Some(pid) = handle.child.id() {
+                                    let ret = unsafe { libc::kill(pid as libc::pid_t, 0) };
+                                    if ret == -1 {
+                                        let errno = std::io::Error::last_os_error()
+                                            .raw_os_error()
+                                            .unwrap_or(0);
+                                        if errno == libc::ESRCH {
+                                            tracing::info!(
+                                                worker = %name,
+                                                pid = pid,
+                                                "reap_exited: kill(0) says ESRCH — process gone"
+                                            );
+                                            (None, true)
+                                        } else {
+                                            (None, false)
+                                        }
+                                    } else {
+                                        (None, false)
+                                    }
+                                } else {
+                                    // No PID available — process was already reaped
+                                    (None, true)
+                                }
+                            }
+                            #[cfg(not(unix))]
+                            { (status, false) }
+                        } else {
+                            (status, false)
+                        }
+                    }
+                    Err(e) => {
+                        // ECHILD or similar — child already reaped elsewhere
+                        tracing::info!(
+                            worker = %name,
+                            error = %e,
+                            "reap_exited: try_wait error — treating as exited"
+                        );
+                        (None, true)
+                    }
+                }
             } else {
-                None
+                (None, false)
             };
             if let Some(status) = status {
                 let code = status.code();
@@ -757,6 +818,12 @@ impl WorkerRegistry {
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
                 exited.push((name, code, signal));
+            } else if gone_via_kill0 {
+                // Process is gone but try_wait didn't report it.
+                // Treat as exited with unknown exit code.
+                self.workers.remove(&name);
+                self.initial_tasks.remove(&name);
+                exited.push((name, None, None));
             }
         }
         Ok(exited)
@@ -2220,7 +2287,7 @@ async fn handle_sdk_frame(
             let name = payload.agent.name.clone();
 
             // Build the effective initial_task, injecting continuity context if continue_from is set.
-            let mut effective_task = payload.initial_task.clone();
+            let mut effective_task = normalize_initial_task(payload.initial_task.clone());
             if let Some(ref continue_from) = payload.continue_from {
                 let continuity_dir = continuity_dir(state_path);
                 let continuity_file = continuity_dir.join(format!("{}.json", continue_from));
@@ -2332,7 +2399,7 @@ async fn handle_sdk_frame(
                     ),
                     spec: Some(payload.agent.clone()),
                     restart_policy: payload.agent.restart_policy.clone(),
-                    initial_task: payload.initial_task.clone(),
+                    initial_task: effective_task.clone(),
                 },
             );
             state.save(state_path)?;
@@ -3495,8 +3562,8 @@ mod tests {
         channels_from_csv, continuity_dir, delivery_retry_interval, derive_ws_base_url_from_http,
         detect_bypass_permissions_prompt, drop_pending_for_worker, extract_mcp_message_ids,
         floor_char_boundary, format_injection, is_auto_suggestion, is_bypass_selection_menu,
-        is_in_editor_mode, normalize_channel, parse_relaycast_agent_event, strip_ansi,
-        PendingDelivery, RelaycastAgentEvent, TerminalQueryParser,
+        is_in_editor_mode, normalize_channel, normalize_initial_task, parse_relaycast_agent_event,
+        strip_ansi, PendingDelivery, RelaycastAgentEvent, TerminalQueryParser,
     };
 
     #[test]
@@ -3508,6 +3575,21 @@ mod tests {
     fn channel_normalization() {
         assert_eq!(normalize_channel("general"), "#general");
         assert_eq!(normalize_channel("#ops"), "#ops");
+    }
+
+    #[test]
+    fn normalize_initial_task_drops_empty_values() {
+        assert_eq!(normalize_initial_task(None), None);
+        assert_eq!(normalize_initial_task(Some(String::new())), None);
+        assert_eq!(normalize_initial_task(Some("   ".to_string())), None);
+    }
+
+    #[test]
+    fn normalize_initial_task_keeps_non_empty_values() {
+        assert_eq!(
+            normalize_initial_task(Some("Ship the patch".to_string())),
+            Some("Ship the patch".to_string())
+        );
     }
 
     #[test]
