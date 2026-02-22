@@ -283,9 +283,40 @@ impl PtySession {
     }
 
     pub fn shutdown(&self) -> Result<()> {
+        // If already reaped (by has_exited or try_wait), skip kill/wait
+        // to avoid blocking forever on waitpid for a non-existent child.
+        if self.reaped.load(Ordering::Relaxed) {
+            return Ok(());
+        }
         let mut child = self.child.lock();
         let _ = child.kill();
-        let _ = child.wait();
+        // Use try_wait instead of wait to avoid blocking if the child
+        // was already reaped between the check above and here.
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => {
+                // Child reaped or error (ECHILD) — done.
+            }
+            Ok(None) => {
+                // Child still running after kill — wait with a timeout.
+                // We give it 2 seconds; if it doesn't exit, move on.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(_)) | Err(_) => break,
+                        Ok(None) => {
+                            if std::time::Instant::now() >= deadline {
+                                tracing::warn!(
+                                    target = "agent_relay::worker::pty",
+                                    "shutdown: child did not exit within 2s after kill"
+                                );
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                        }
+                    }
+                }
+            }
+        }
         self.reaped.store(true, Ordering::Relaxed);
         Ok(())
     }
