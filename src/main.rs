@@ -788,7 +788,9 @@ impl WorkerRegistry {
                                 }
                             }
                             #[cfg(not(unix))]
-                            { (status, false) }
+                            {
+                                (status, false)
+                            }
                         } else {
                             (status, false)
                         }
