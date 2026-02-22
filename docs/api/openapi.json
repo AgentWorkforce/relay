@@ -27,12 +27,7 @@
           },
           "status": {
             "type": "string",
-            "enum": [
-              "online",
-              "idle",
-              "busy",
-              "offline"
-            ]
+            "enum": ["online", "idle", "busy", "offline"]
           },
           "lastSeen": {
             "type": "string"
@@ -136,10 +131,7 @@
             }
           }
         },
-        "required": [
-          "name",
-          "status"
-        ]
+        "required": ["name", "status"]
       },
       "AgentSummary": {
         "type": "object",
@@ -169,10 +161,7 @@
             }
           }
         },
-        "required": [
-          "agentName",
-          "lastUpdated"
-        ]
+        "required": ["agentName", "lastUpdated"]
       },
       "Message": {
         "type": "object",
@@ -223,23 +212,11 @@
                 "type": "string"
               }
             },
-            "required": [
-              "id",
-              "rootMessage",
-              "participantCount",
-              "messageCount",
-              "lastActivityAt"
-            ]
+            "required": ["id", "rootMessage", "participantCount", "messageCount", "lastActivityAt"]
           },
           "status": {
             "type": "string",
-            "enum": [
-              "unread",
-              "read",
-              "acked",
-              "sending",
-              "failed"
-            ]
+            "enum": ["unread", "read", "acked", "sending", "failed"]
           },
           "attachments": {
             "type": "array",
@@ -274,26 +251,14 @@
                   "type": "string"
                 }
               },
-              "required": [
-                "id",
-                "filename",
-                "mimeType",
-                "size",
-                "url"
-              ]
+              "required": ["id", "filename", "mimeType", "size", "url"]
             }
           },
           "channel": {
             "type": "string"
           }
         },
-        "required": [
-          "id",
-          "from",
-          "to",
-          "content",
-          "timestamp"
-        ]
+        "required": ["id", "from", "to", "content", "timestamp"]
       },
       "Session": {
         "type": "object",
@@ -327,20 +292,10 @@
           },
           "closedBy": {
             "type": "string",
-            "enum": [
-              "agent",
-              "disconnect",
-              "error"
-            ]
+            "enum": ["agent", "disconnect", "error"]
           }
         },
-        "required": [
-          "id",
-          "agentName",
-          "startedAt",
-          "messageCount",
-          "isActive"
-        ]
+        "required": ["id", "agentName", "startedAt", "messageCount", "isActive"]
       },
       "FleetServer": {
         "type": "object",
@@ -353,11 +308,7 @@
           },
           "status": {
             "type": "string",
-            "enum": [
-              "healthy",
-              "degraded",
-              "offline"
-            ]
+            "enum": ["healthy", "degraded", "offline"]
           },
           "agents": {
             "type": "array",
@@ -371,10 +322,7 @@
                   "type": "string"
                 }
               },
-              "required": [
-                "name",
-                "status"
-              ]
+              "required": ["name", "status"]
             }
           },
           "cpuUsage": {
@@ -424,13 +372,7 @@
             "type": "number"
           }
         },
-        "required": [
-          "totalAgents",
-          "onlineAgents",
-          "busyAgents",
-          "pendingDecisions",
-          "activeTasks"
-        ]
+        "required": ["totalAgents", "onlineAgents", "busyAgents", "pendingDecisions", "activeTasks"]
       },
       "TaskAssignment": {
         "type": "object",
@@ -449,22 +391,11 @@
           },
           "priority": {
             "type": "string",
-            "enum": [
-              "low",
-              "medium",
-              "high",
-              "critical"
-            ]
+            "enum": ["low", "medium", "high", "critical"]
           },
           "status": {
             "type": "string",
-            "enum": [
-              "pending",
-              "assigned",
-              "in_progress",
-              "completed",
-              "failed"
-            ]
+            "enum": ["pending", "assigned", "in_progress", "completed", "failed"]
           },
           "createdAt": {
             "type": "string"
@@ -479,15 +410,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "id",
-          "agentName",
-          "title",
-          "description",
-          "priority",
-          "status",
-          "createdAt"
-        ]
+        "required": ["id", "agentName", "title", "description", "priority", "status", "createdAt"]
       },
       "ApiDecision": {
         "type": "object",
@@ -519,29 +442,16 @@
                   "type": "string"
                 }
               },
-              "required": [
-                "id",
-                "label"
-              ]
+              "required": ["id", "label"]
             }
           },
           "urgency": {
             "type": "string",
-            "enum": [
-              "low",
-              "medium",
-              "high",
-              "critical"
-            ]
+            "enum": ["low", "medium", "high", "critical"]
           },
           "category": {
             "type": "string",
-            "enum": [
-              "approval",
-              "choice",
-              "input",
-              "confirmation"
-            ]
+            "enum": ["approval", "choice", "input", "confirmation"]
           },
           "createdAt": {
             "type": "string"
@@ -554,15 +464,7 @@
             "additionalProperties": {}
           }
         },
-        "required": [
-          "id",
-          "agentName",
-          "title",
-          "description",
-          "urgency",
-          "category",
-          "createdAt"
-        ]
+        "required": ["id", "agentName", "title", "description", "urgency", "category", "createdAt"]
       },
       "Decision": {
         "type": "object",
@@ -585,12 +487,7 @@
           },
           "type": {
             "type": "string",
-            "enum": [
-              "approval",
-              "choice",
-              "input",
-              "confirmation"
-            ]
+            "enum": ["approval", "choice", "input", "confirmation"]
           },
           "title": {
             "type": "string"
@@ -613,20 +510,12 @@
                   "type": "string"
                 }
               },
-              "required": [
-                "id",
-                "label"
-              ]
+              "required": ["id", "label"]
             }
           },
           "priority": {
             "type": "string",
-            "enum": [
-              "low",
-              "medium",
-              "high",
-              "critical"
-            ]
+            "enum": ["low", "medium", "high", "critical"]
           },
           "context": {
             "type": "object",
@@ -643,15 +532,7 @@
             ]
           }
         },
-        "required": [
-          "id",
-          "agentName",
-          "timestamp",
-          "type",
-          "title",
-          "description",
-          "priority"
-        ]
+        "required": ["id", "agentName", "timestamp", "type", "title", "description", "priority"]
       },
       "SendMessageRequest": {
         "type": "object",
@@ -672,10 +553,7 @@
             }
           }
         },
-        "required": [
-          "to",
-          "message"
-        ]
+        "required": ["to", "message"]
       },
       "SpawnAgentRequest": {
         "type": "object",
@@ -714,10 +592,7 @@
           },
           "shadowMode": {
             "type": "string",
-            "enum": [
-              "subagent",
-              "process"
-            ]
+            "enum": ["subagent", "process"]
           },
           "shadowOf": {
             "type": "string"
@@ -729,36 +604,22 @@
             "type": "array",
             "items": {
               "type": "string",
-              "enum": [
-                "SESSION_END",
-                "CODE_WRITTEN",
-                "REVIEW_REQUEST",
-                "EXPLICIT_ASK",
-                "ALL_MESSAGES"
-              ]
+              "enum": ["SESSION_END", "CODE_WRITTEN", "REVIEW_REQUEST", "EXPLICIT_ASK", "ALL_MESSAGES"]
             }
           },
           "shadowSpeakOn": {
             "type": "array",
             "items": {
               "type": "string",
-              "enum": [
-                "SESSION_END",
-                "CODE_WRITTEN",
-                "REVIEW_REQUEST",
-                "EXPLICIT_ASK",
-                "ALL_MESSAGES"
-              ]
+              "enum": ["SESSION_END", "CODE_WRITTEN", "REVIEW_REQUEST", "EXPLICIT_ASK", "ALL_MESSAGES"]
             }
           }
         },
-        "required": [
-          "name"
-        ]
+        "required": ["name"]
       },
       "SendInputRequest": {
         "type": "object",
-        "description": "Send input data to a spawned agent's PTY via the daemon's SEND_INPUT protocol message",
+        "description": "Send input data to a spawned agent's PTY via the broker's SEND_INPUT protocol message",
         "properties": {
           "name": {
             "type": "string",
@@ -769,10 +630,7 @@
             "description": "Input data to send to the agent's PTY"
           }
         },
-        "required": [
-          "name",
-          "data"
-        ]
+        "required": ["name", "data"]
       },
       "SendInputResponse": {
         "type": "object",
@@ -790,15 +648,11 @@
             "type": "string"
           }
         },
-        "required": [
-          "replyTo",
-          "success",
-          "name"
-        ]
+        "required": ["replyTo", "success", "name"]
       },
       "ListWorkersResponse": {
         "type": "object",
-        "description": "Response from the daemon's LIST_WORKERS protocol message",
+        "description": "Response from the broker's LIST_WORKERS protocol message",
         "properties": {
           "replyTo": {
             "type": "string"
@@ -830,22 +684,14 @@
                   "type": "number"
                 }
               },
-              "required": [
-                "name",
-                "cli",
-                "task",
-                "spawnedAt"
-              ]
+              "required": ["name", "cli", "task", "spawnedAt"]
             }
           },
           "error": {
             "type": "string"
           }
         },
-        "required": [
-          "replyTo",
-          "workers"
-        ]
+        "required": ["replyTo", "workers"]
       },
       "SpawnAgentResponse": {
         "type": "object",
@@ -860,10 +706,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "success",
-          "name"
-        ]
+        "required": ["success", "name"]
       },
       "CreateTaskRequest": {
         "type": "object",
@@ -879,19 +722,10 @@
           },
           "priority": {
             "type": "string",
-            "enum": [
-              "low",
-              "medium",
-              "high",
-              "critical"
-            ]
+            "enum": ["low", "medium", "high", "critical"]
           }
         },
-        "required": [
-          "agentName",
-          "title",
-          "priority"
-        ]
+        "required": ["agentName", "title", "priority"]
       },
       "CreateBeadRequest": {
         "type": "object",
@@ -907,19 +741,13 @@
           },
           "type": {
             "type": "string",
-            "enum": [
-              "task",
-              "bug",
-              "feature"
-            ]
+            "enum": ["task", "bug", "feature"]
           },
           "description": {
             "type": "string"
           }
         },
-        "required": [
-          "title"
-        ]
+        "required": ["title"]
       },
       "ActivityEvent": {
         "type": "object",
@@ -951,11 +779,7 @@
           },
           "actorType": {
             "type": "string",
-            "enum": [
-              "user",
-              "agent",
-              "system"
-            ]
+            "enum": ["user", "agent", "system"]
           },
           "title": {
             "type": "string"
@@ -968,14 +792,7 @@
             "additionalProperties": {}
           }
         },
-        "required": [
-          "id",
-          "type",
-          "timestamp",
-          "actor",
-          "actorType",
-          "title"
-        ]
+        "required": ["id", "type", "timestamp", "actor", "actorType", "title"]
       },
       "HistorySession": {
         "type": "object",
@@ -1009,21 +826,10 @@
           },
           "closedBy": {
             "type": "string",
-            "enum": [
-              "agent",
-              "disconnect",
-              "error"
-            ]
+            "enum": ["agent", "disconnect", "error"]
           }
         },
-        "required": [
-          "id",
-          "agentName",
-          "startedAt",
-          "duration",
-          "messageCount",
-          "isActive"
-        ]
+        "required": ["id", "agentName", "startedAt", "duration", "messageCount", "isActive"]
       },
       "HistoryMessage": {
         "type": "object",
@@ -1060,13 +866,7 @@
             "additionalProperties": {}
           }
         },
-        "required": [
-          "id",
-          "from",
-          "to",
-          "content",
-          "timestamp"
-        ]
+        "required": ["id", "from", "to", "content", "timestamp"]
       },
       "Conversation": {
         "type": "object",
@@ -1087,12 +887,7 @@
             "type": "number"
           }
         },
-        "required": [
-          "participants",
-          "lastMessage",
-          "lastTimestamp",
-          "messageCount"
-        ]
+        "required": ["participants", "lastMessage", "lastTimestamp", "messageCount"]
       },
       "HistoryStats": {
         "type": "object",
@@ -1138,18 +933,10 @@
             ]
           },
           "oldestMessageDate": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           }
         },
-        "required": [
-          "messageCount",
-          "sessionCount",
-          "activeSessions",
-          "uniqueAgents"
-        ]
+        "required": ["messageCount", "sessionCount", "activeSessions", "uniqueAgents"]
       },
       "FileSearchResponse": {
         "type": "object",
@@ -1169,11 +956,7 @@
                   "type": "boolean"
                 }
               },
-              "required": [
-                "path",
-                "name",
-                "isDirectory"
-              ]
+              "required": ["path", "name", "isDirectory"]
             }
           },
           "query": {
@@ -1183,11 +966,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "files",
-          "query",
-          "searchRoot"
-        ]
+        "required": ["files", "query", "searchRoot"]
       }
     },
     "parameters": {}

@@ -1,0 +1,10 @@
+{
+  "versionGroups": [
+    {
+      "label": "Internal packages should use same version",
+      "packages": ["**"],
+      "dependencies": ["@agent-relay/**"],
+      "policy": "sameRange"
+    }
+  ]
+}

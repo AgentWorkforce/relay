@@ -1,6 +1,6 @@
 ---
-title: "Core Concepts"
-description: "Understanding agents, messages, and the relay protocol"
+title: 'Core Concepts'
+description: 'Understanding agents, messages, and the relay protocol'
 ---
 
 This page explains the fundamental concepts behind Agent Relay. Understanding these will help you build effective multi-agent workflows.
@@ -38,7 +38,7 @@ An agent is any AI CLI tool (Claude, Codex, Gemini, etc.) wrapped by Agent Relay
                     +--------------+
 ```
 
-When an agent starts, it connects to the daemon and registers with its name. The daemon maintains this connection until the agent disconnects or is explicitly released.
+When an agent starts, it connects to the broker and registers with its name. The broker maintains this connection until the agent disconnects or is explicitly released.
 
 ### Agent Names
 
@@ -83,6 +83,7 @@ Messages are the core unit of communication between agents. Every message contai
     ```
 
     Only Bob receives this message.
+
   </Tab>
 
   <Tab title="Broadcasts">
@@ -93,6 +94,7 @@ Messages are the core unit of communication between agents. Every message contai
     ```
 
     Every agent in the network receives this message.
+
   </Tab>
 
   <Tab title="Channel Messages">
@@ -103,6 +105,7 @@ Messages are the core unit of communication between agents. Every message contai
     ```
 
     Only agents subscribed to `#frontend` receive this message.
+
   </Tab>
 </Tabs>
 
@@ -117,13 +120,13 @@ When an agent outputs a relay command, here is what happens:
 2. Wrapper detects pattern, extracts message
            |
            v
-3. Wrapper sends SEND envelope to daemon
+3. Wrapper sends SEND envelope to broker
            |
            v
-4. Daemon looks up "Bob" in registry
+4. Broker looks up "Bob" in registry
            |
            v
-5. Daemon sends DELIVER envelope to Bob's wrapper
+5. Broker sends DELIVER envelope to Bob's wrapper
            |
            v
 6. Bob's wrapper waits for idle state
@@ -147,9 +150,9 @@ Long messages are truncated in the terminal display. Use the message ID to read 
 agent-relay read abc123
 ```
 
-## The Daemon
+## The Broker
 
-The daemon is the central message broker that routes all communication between agents.
+The broker is the central message broker that routes all communication between agents.
 
 ### Responsibilities
 
@@ -162,7 +165,7 @@ The daemon is the central message broker that routes all communication between a
 
 ```
                     +------------------+
-                    |     Daemon       |
+                    |     Broker       |
                     +--------+---------+
                              |
          +-------------------+-------------------+
@@ -176,33 +179,33 @@ The daemon is the central message broker that routes all communication between a
 
 ### Connection Management
 
-The daemon maintains persistent connections with each agent via Unix domain sockets. Key features:
+The broker maintains persistent connections with each agent via Unix domain sockets. Key features:
 
 - **Heartbeat** - PING/PONG every 5 seconds to detect dead connections
 - **Reconnection** - Automatic reconnect with exponential backoff (100ms to 30s)
 - **State Machine** - Connections follow strict states: CONNECTING -> HANDSHAKING -> ACTIVE -> CLOSED
 
-### Starting the Daemon
+### Starting the Broker
 
 ```bash
-# Start daemon with dashboard
+# Start broker with dashboard
 agent-relay up
 
 # Check status
 agent-relay status
 
-# Stop daemon
+# Stop broker
 agent-relay down
 ```
 
-The daemon creates these files in `/tmp/agent-relay/`:
+The broker creates these files in `/tmp/agent-relay/`:
 
-| File | Purpose |
-|------|---------|
-| `relay.sock` | Unix domain socket for agent connections |
-| `relay.sock.pid` | Process ID file |
-| `messages.sqlite` | Message history database |
-| `agents.json` | Current agent registry |
+| File              | Purpose                                  |
+| ----------------- | ---------------------------------------- |
+| `relay.sock`      | Unix domain socket for agent connections |
+| `relay.sock.pid`  | Process ID file                          |
+| `messages.sqlite` | Message history database                 |
+| `agents.json`     | Current agent registry                   |
 
 ## Projects and Namespaces
 
@@ -238,7 +241,7 @@ This ensures complete isolation between projects even when running multiple rela
 
 ## Bridging
 
-Bridging connects multiple project daemons together, enabling cross-project communication.
+Bridging connects multiple project brokers together, enabling cross-project communication.
 
 ```
 +------------------+          +------------------+
@@ -249,7 +252,7 @@ Bridging connects multiple project daemons together, enabling cross-project comm
 |  +------------+  |          |  +------------+  |
 |  | Bob        |  |  Bridge  |  | Eve        |  |
 |  +------------+  | <------> |  +------------+  |
-|  | Daemon A   |  |          |  | Daemon B   |  |
+|  | Broker A   |  |          |  | Broker B   |  |
 +------------------+          +------------------+
 ```
 
@@ -263,11 +266,11 @@ When bridged, agents can message across projects using the `project:agent` forma
 
 Special targets for bridged networks:
 
-| Target | Description |
-|--------|-------------|
-| `project:agent` | Specific agent in specific project |
-| `project:*` | Broadcast to all agents in a project |
-| `*:*` | Broadcast to all agents in all bridged projects |
+| Target          | Description                                     |
+| --------------- | ----------------------------------------------- |
+| `project:agent` | Specific agent in specific project              |
+| `project:*`     | Broadcast to all agents in a project            |
+| `*:*`           | Broadcast to all agents in all bridged projects |
 
 ## Session Continuity
 
@@ -324,28 +327,28 @@ Every message follows this structure:
 
 ```typescript
 interface Envelope {
-  v: number;           // Protocol version (1)
-  type: MessageType;   // HELLO, SEND, DELIVER, etc.
-  id: string;          // Unique message ID
-  ts: number;          // Timestamp (milliseconds)
-  from?: string;       // Sender name
-  to?: string;         // Recipient or "*" for broadcast
-  topic?: string;      // Optional channel
-  payload: object;     // Type-specific content
+  v: number; // Protocol version (1)
+  type: MessageType; // HELLO, SEND, DELIVER, etc.
+  id: string; // Unique message ID
+  ts: number; // Timestamp (milliseconds)
+  from?: string; // Sender name
+  to?: string; // Recipient or "*" for broadcast
+  topic?: string; // Optional channel
+  payload: object; // Type-specific content
 }
 ```
 
 ### Message Types
 
-| Type | Direction | Purpose |
-|------|-----------|---------|
-| `HELLO` | Client -> Daemon | Initiate handshake |
-| `WELCOME` | Daemon -> Client | Confirm connection |
-| `SEND` | Client -> Daemon | Send a message |
-| `DELIVER` | Daemon -> Client | Deliver a message |
-| `ACK` | Both | Acknowledge receipt |
-| `PING/PONG` | Both | Heartbeat |
-| `BYE` | Both | Graceful disconnect |
+| Type        | Direction        | Purpose             |
+| ----------- | ---------------- | ------------------- |
+| `HELLO`     | Client -> Broker | Initiate handshake  |
+| `WELCOME`   | Broker -> Client | Confirm connection  |
+| `SEND`      | Client -> Broker | Send a message      |
+| `DELIVER`   | Broker -> Client | Deliver a message   |
+| `ACK`       | Both             | Acknowledge receipt |
+| `PING/PONG` | Both             | Heartbeat           |
+| `BYE`       | Both             | Graceful disconnect |
 
 ## Next Steps
 

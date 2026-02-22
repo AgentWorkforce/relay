@@ -15,9 +15,9 @@ npm install @agent-relay/sdk
 
 ## Quick Start
 
-### Standalone Mode (No Daemon Required)
+### Standalone Mode (No Broker Required)
 
-The simplest way to get started - creates an in-process daemon automatically:
+The simplest way to get started - creates an in-process broker automatically:
 
 ```typescript
 import { createRelay } from '@agent-relay/sdk';
@@ -30,9 +30,9 @@ bob.onMessage = (from, { body }) => console.log(`${from}: ${body}`);
 alice.sendMessage('Bob', 'Hello!');
 ```
 
-### With External Daemon (Node.js)
+### With External Broker (Node.js)
 
-Connect to a running daemon via Unix socket:
+Connect to a running broker via Unix socket:
 
 ```typescript
 import { RelayClient } from '@agent-relay/sdk';
@@ -81,19 +81,19 @@ new RelayClient(config?: Partial<ClientConfig>)
 
 **ClientConfig:**
 
-| Property | Type | Description | Default |
-|----------|------|-------------|---------|
-| `socketPath` | `string` | Unix socket path | Auto-discovered or `/tmp/agent-relay.sock` |
-| `agentName` | `string` | Agent identifier | `'agent'` |
-| `entityType` | `'agent' \| 'user'` | Entity type | `'agent'` |
-| `cli` | `string` | CLI identifier (claude, codex, etc.) | None |
-| `task` | `string` | Task description | None |
-| `workingDirectory` | `string` | Working directory | None |
-| `quiet` | `boolean` | Suppress console logging | `false` |
-| `reconnect` | `boolean` | Auto-reconnect on disconnect | `true` |
-| `maxReconnectAttempts` | `number` | Max retry attempts | `10` |
-| `reconnectDelayMs` | `number` | Initial retry delay (ms) | `1000` |
-| `reconnectMaxDelayMs` | `number` | Max retry delay (ms) | `30000` |
+| Property               | Type                | Description                          | Default                                    |
+| ---------------------- | ------------------- | ------------------------------------ | ------------------------------------------ |
+| `socketPath`           | `string`            | Unix socket path                     | Auto-discovered or `/tmp/agent-relay.sock` |
+| `agentName`            | `string`            | Agent identifier                     | `'agent'`                                  |
+| `entityType`           | `'agent' \| 'user'` | Entity type                          | `'agent'`                                  |
+| `cli`                  | `string`            | CLI identifier (claude, codex, etc.) | None                                       |
+| `task`                 | `string`            | Task description                     | None                                       |
+| `workingDirectory`     | `string`            | Working directory                    | None                                       |
+| `quiet`                | `boolean`           | Suppress console logging             | `false`                                    |
+| `reconnect`            | `boolean`           | Auto-reconnect on disconnect         | `true`                                     |
+| `maxReconnectAttempts` | `number`            | Max retry attempts                   | `10`                                       |
+| `reconnectDelayMs`     | `number`            | Initial retry delay (ms)             | `1000`                                     |
+| `reconnectMaxDelayMs`  | `number`            | Max retry delay (ms)                 | `30000`                                    |
 
 ### Properties
 
@@ -108,7 +108,7 @@ client.currentSessionId: string // Session ID (after connection)
 ### Connection Methods
 
 ```typescript
-// Connect to daemon
+// Connect to broker
 await client.connect(): Promise<void>
 
 // Disconnect gracefully
@@ -169,23 +169,23 @@ client.respond(
 
 **RequestOptions:**
 
-| Property | Type | Description | Default |
-|----------|------|-------------|---------|
-| `timeout` | `number` | Timeout in milliseconds | `30000` |
-| `data` | `Record<string, unknown>` | Structured data to include | None |
-| `thread` | `string` | Thread identifier | None |
-| `kind` | `PayloadKind` | Message kind | `'message'` |
+| Property  | Type                      | Description                | Default     |
+| --------- | ------------------------- | -------------------------- | ----------- |
+| `timeout` | `number`                  | Timeout in milliseconds    | `30000`     |
+| `data`    | `Record<string, unknown>` | Structured data to include | None        |
+| `thread`  | `string`                  | Thread identifier          | None        |
+| `kind`    | `PayloadKind`             | Message kind               | `'message'` |
 
 **RequestResponse:**
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `from` | `string` | Sender of the response |
-| `body` | `string` | Response body text |
-| `data` | `Record<string, unknown>` | Structured data from response |
-| `correlationId` | `string` | Correlation ID used |
-| `thread` | `string` | Thread identifier |
-| `payload` | `SendPayload` | Full payload |
+| Property        | Type                      | Description                   |
+| --------------- | ------------------------- | ----------------------------- |
+| `from`          | `string`                  | Sender of the response        |
+| `body`          | `string`                  | Response body text            |
+| `data`          | `Record<string, unknown>` | Structured data from response |
+| `correlationId` | `string`                  | Correlation ID used           |
+| `thread`        | `string`                  | Thread identifier             |
+| `payload`       | `SendPayload`             | Full payload                  |
 
 **Example:**
 
@@ -211,7 +211,7 @@ client.onMessage = (from, payload, messageId, meta) => {
 
 ### Spawn Operations
 
-Spawn and manage agents via the daemon:
+Spawn and manage agents via the broker:
 
 ```typescript
 // Spawn a new agent
@@ -244,14 +244,14 @@ const readyInfo = await client.waitForAgentReady(
 
 **SpawnResult:**
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `success` | `boolean` | Whether spawn succeeded |
-| `name` | `string` | Agent name |
-| `pid` | `number` | Process ID |
-| `error` | `string` | Error message if failed |
-| `ready` | `boolean` | Whether agent is ready (if `waitForReady` was true) |
-| `readyInfo` | `AgentReadyPayload` | Ready details (if `waitForReady` was true) |
+| Property    | Type                | Description                                         |
+| ----------- | ------------------- | --------------------------------------------------- |
+| `success`   | `boolean`           | Whether spawn succeeded                             |
+| `name`      | `string`            | Agent name                                          |
+| `pid`       | `number`            | Process ID                                          |
+| `error`     | `string`            | Error message if failed                             |
+| `ready`     | `boolean`           | Whether agent is ready (if `waitForReady` was true) |
+| `readyInfo` | `AgentReadyPayload` | Ready details (if `waitForReady` was true)          |
 
 **Example with readiness:**
 
@@ -358,7 +358,7 @@ client.unbindAsShadow(primaryAgent: string): boolean
 
 ### Consensus Methods
 
-Distributed decision-making across agents. **Note:** Consensus requires an external daemon - it's not available in standalone mode.
+Distributed decision-making across agents. **Note:** Consensus requires an external broker - it's not available in standalone mode.
 
 ```typescript
 // Create a consensus proposal
@@ -370,33 +370,33 @@ client.vote(options: VoteOptions): boolean
 
 **CreateProposalOptions:**
 
-| Property | Type | Description | Default |
-|----------|------|-------------|---------|
-| `title` | `string` | Proposal title | Required |
-| `description` | `string` | Proposal description | Required |
-| `participants` | `string[]` | Agents who can vote | Required |
-| `consensusType` | `ConsensusType` | Voting method | `'majority'` |
-| `timeoutMs` | `number` | Vote timeout | None |
-| `quorum` | `number` | Minimum votes required | None |
-| `threshold` | `number` | Required agreement ratio | None |
+| Property        | Type            | Description              | Default      |
+| --------------- | --------------- | ------------------------ | ------------ |
+| `title`         | `string`        | Proposal title           | Required     |
+| `description`   | `string`        | Proposal description     | Required     |
+| `participants`  | `string[]`      | Agents who can vote      | Required     |
+| `consensusType` | `ConsensusType` | Voting method            | `'majority'` |
+| `timeoutMs`     | `number`        | Vote timeout             | None         |
+| `quorum`        | `number`        | Minimum votes required   | None         |
+| `threshold`     | `number`        | Required agreement ratio | None         |
 
 **ConsensusType values:**
 
-| Type | Description |
-|------|-------------|
-| `majority` | >50% agreement (default) |
+| Type            | Description                                  |
+| --------------- | -------------------------------------------- |
+| `majority`      | >50% agreement (default)                     |
 | `supermajority` | >=2/3 agreement (configurable via threshold) |
-| `unanimous` | 100% agreement required |
-| `weighted` | Votes weighted by role/expertise |
-| `quorum` | Minimum participation + majority |
+| `unanimous`     | 100% agreement required                      |
+| `weighted`      | Votes weighted by role/expertise             |
+| `quorum`        | Minimum participation + majority             |
 
 **VoteOptions:**
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `proposalId` | `string` | The proposal ID to vote on |
-| `value` | `string` | Vote value: `'approve'`, `'reject'`, or `'abstain'` |
-| `reason` | `string` | Optional reason for vote |
+| Property     | Type     | Description                                         |
+| ------------ | -------- | --------------------------------------------------- |
+| `proposalId` | `string` | The proposal ID to vote on                          |
+| `value`      | `string` | Vote value: `'approve'`, `'reject'`, or `'abstain'` |
+| `reason`     | `string` | Optional reason for vote                            |
 
 **Example:**
 
@@ -427,7 +427,7 @@ client.onMessage = (from, payload) => {
 
 ### Logging Methods
 
-Stream logs to the daemon for dashboard display:
+Stream logs to the broker for dashboard display:
 
 ```typescript
 // Send log output
@@ -451,16 +451,16 @@ client.sendAck(payload: AckPayload): boolean
 
 **AckPayload:**
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `ack_id` | `string` | The message ID being acknowledged |
-| `seq` | `number` | Sequence number |
+| Property        | Type     | Description                                |
+| --------------- | -------- | ------------------------------------------ |
+| `ack_id`        | `string` | The message ID being acknowledged          |
+| `seq`           | `number` | Sequence number                            |
 | `correlationId` | `string` | Optional correlation ID for sync messaging |
 
 ### Query Operations
 
 ```typescript
-// Get daemon status
+// Get broker status
 const status = await client.getStatus(): Promise<StatusResponsePayload>
 
 // Get inbox messages
@@ -558,31 +558,32 @@ new BrowserRelayClient(config: BrowserClientConfig)
 
 **BrowserClientConfig:**
 
-| Property | Type | Description | Default |
-|----------|------|-------------|---------|
-| `agentName` | `string` | Agent identifier | Required |
-| `entityType` | `'agent' \| 'user'` | Entity type | `'agent'` |
-| `cli` | `string` | CLI identifier | None |
-| `displayName` | `string` | Display name for users | None |
-| `avatarUrl` | `string` | Avatar URL for users | None |
-| `quiet` | `boolean` | Suppress console logging | `false` |
-| `reconnect` | `boolean` | Auto-reconnect on disconnect | `true` |
-| `maxReconnectAttempts` | `number` | Max retry attempts | `10` |
-| `reconnectDelayMs` | `number` | Initial retry delay (ms) | `1000` |
-| `reconnectMaxDelayMs` | `number` | Max retry delay (ms) | `30000` |
-| `transport` | `AutoTransportOptions` | Transport configuration | None |
-| `transportInstance` | `Transport` | Pre-configured transport | None |
+| Property               | Type                   | Description                  | Default   |
+| ---------------------- | ---------------------- | ---------------------------- | --------- |
+| `agentName`            | `string`               | Agent identifier             | Required  |
+| `entityType`           | `'agent' \| 'user'`    | Entity type                  | `'agent'` |
+| `cli`                  | `string`               | CLI identifier               | None      |
+| `displayName`          | `string`               | Display name for users       | None      |
+| `avatarUrl`            | `string`               | Avatar URL for users         | None      |
+| `quiet`                | `boolean`              | Suppress console logging     | `false`   |
+| `reconnect`            | `boolean`              | Auto-reconnect on disconnect | `true`    |
+| `maxReconnectAttempts` | `number`               | Max retry attempts           | `10`      |
+| `reconnectDelayMs`     | `number`               | Initial retry delay (ms)     | `1000`    |
+| `reconnectMaxDelayMs`  | `number`               | Max retry delay (ms)         | `30000`   |
+| `transport`            | `AutoTransportOptions` | Transport configuration      | None      |
+| `transportInstance`    | `Transport`            | Pre-configured transport     | None      |
 
 <Note>
-When using `transportInstance`, auto-reconnection is **not supported** because the SDK cannot recreate an externally-provided transport. Use `transport` options instead, or handle reconnection manually.
+  When using `transportInstance`, auto-reconnection is **not supported** because the SDK cannot recreate an
+  externally-provided transport. Use `transport` options instead, or handle reconnection manually.
 </Note>
 
 ### Transport Options
 
 ```typescript
 interface AutoTransportOptions {
-  wsUrl?: string;        // WebSocket URL (e.g., 'wss://relay.example.com/ws')
-  socketPath?: string;   // Unix socket path (Node.js only)
+  wsUrl?: string; // WebSocket URL (e.g., 'wss://relay.example.com/ws')
+  socketPath?: string; // Unix socket path (Node.js only)
   connectTimeout?: number;
 }
 ```
@@ -621,15 +622,15 @@ client.sendChannelMessage('#general', 'Hi everyone!');
 
 `BrowserRelayClient` has most of the same API as `RelayClient`, but with some differences:
 
-| Feature | RelayClient | BrowserRelayClient |
-|---------|-------------|-------------------|
-| Transport | Unix socket | WebSocket |
-| Spawn/Release | Yes | No |
-| Query operations | Yes | No |
-| Log streaming | Yes | Yes |
-| Channels | Yes | Yes |
-| Shadow binding | Yes | Yes |
-| Request/Response | Yes | Yes |
+| Feature          | RelayClient | BrowserRelayClient |
+| ---------------- | ----------- | ------------------ |
+| Transport        | Unix socket | WebSocket          |
+| Spawn/Release    | Yes         | No                 |
+| Query operations | Yes         | No                 |
+| Log streaming    | Yes         | Yes                |
+| Channels         | Yes         | Yes                |
+| Shadow binding   | Yes         | Yes                |
+| Request/Response | Yes         | Yes                |
 
 ---
 
@@ -732,7 +733,7 @@ const env = detectEnvironment();
 
 ## Standalone Relay
 
-For simple use cases, create an in-process daemon:
+For simple use cases, create an in-process broker:
 
 ```typescript
 import { createRelay, createPair, type Relay } from '@agent-relay/sdk';
@@ -746,10 +747,10 @@ const relay = await createRelay(config?: RelayConfig): Promise<Relay>
 
 **RelayConfig:**
 
-| Property | Type | Description | Default |
-|----------|------|-------------|---------|
-| `socketPath` | `string` | Custom socket path | Auto-generated |
-| `quiet` | `boolean` | Suppress logging | `true` |
+| Property     | Type      | Description        | Default        |
+| ------------ | --------- | ------------------ | -------------- |
+| `socketPath` | `string`  | Custom socket path | Auto-generated |
+| `quiet`      | `boolean` | Suppress logging   | `true`         |
 
 **Relay:**
 
@@ -794,7 +795,7 @@ alice.sendMessage('Bob', 'Hello!');
 
 ## Discovery
 
-The SDK includes utilities for discovering daemon sockets and cloud workspaces.
+The SDK includes utilities for discovering broker sockets and cloud workspaces.
 
 ```typescript
 import {
@@ -810,7 +811,7 @@ import {
 ### Socket Discovery
 
 ```typescript
-// Find the daemon socket for current directory
+// Find the broker socket for current directory
 const result = discoverSocket();
 // { socketPath: '/tmp/relay/abc123/agent-relay.sock', source: 'project' }
 
@@ -846,7 +847,7 @@ The SDK exports specific error types for better error handling:
 ```typescript
 import {
   RelayError,
-  DaemonNotRunningError,
+  BrokerNotRunningError,
   AgentNotFoundError,
   TimeoutError,
   ConnectionError,
@@ -865,8 +866,8 @@ const client = new RelayClient({ agentName: 'MyAgent' });
 try {
   await client.connect();
 } catch (err) {
-  if (err instanceof DaemonNotRunningError) {
-    console.log('Start the daemon with: agent-relay up');
+  if (err instanceof BrokerNotRunningError) {
+    console.log('Start the broker with: agent-relay up');
   } else if (err instanceof TimeoutError) {
     console.log('Connection timed out');
   } else {
@@ -910,12 +911,7 @@ import {
 For low-level protocol work:
 
 ```typescript
-import {
-  encodeFrame,
-  encodeFrameLegacy,
-  FrameParser,
-  MAX_FRAME_BYTES,
-} from '@agent-relay/sdk';
+import { encodeFrame, encodeFrameLegacy, FrameParser, MAX_FRAME_BYTES } from '@agent-relay/sdk';
 
 // Encode envelope to frame
 const frame = encodeFrameLegacy(envelope);
@@ -1021,6 +1017,6 @@ client.joinChannel('#status');
 ## See Also
 
 - [Electron Integration](/guides/electron-integration) - Using the SDK in Electron apps
-- [API Reference](/reference/api) - Full API including Daemon class
+- [API Reference](/reference/api) - Full API including Broker class
 - [Protocol Reference](/reference/protocol) - Wire protocol details
 - [Spawning](/features/spawning) - Agent lifecycle management

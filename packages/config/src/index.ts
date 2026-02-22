@@ -10,3 +10,4 @@ export * from './cloud-config.js';
 export * from './project-namespace.js';
 export * from './schemas.js';
 export * from './relay-file-writer.js';
+export * from './cli-registry.generated.js';

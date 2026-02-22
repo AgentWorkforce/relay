@@ -34,7 +34,7 @@ agent-relay run --template refactor --task "Extract payment logic into separate 
 ```
 
 ```typescript
-import { TemplateRegistry, WorkflowRunner } from "@agent-relay/broker-sdk/workflows";
+import { TemplateRegistry, WorkflowRunner } from "@agent-relay/sdk/workflows";
 
 const registry = new TemplateRegistry();
 const config = await registry.loadTemplate("refactor");

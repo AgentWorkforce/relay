@@ -9,7 +9,7 @@
 import {
   AgentRelayClient,
   type BrokerEvent,
-} from "@agent-relay/broker-sdk";
+} from "@agent-relay/sdk";
 import { resolveBinaryPath, randomName } from "../benchmarks/harness.js";
 
 const WORKER_COUNT = 3;

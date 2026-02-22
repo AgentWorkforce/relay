@@ -10,6 +10,7 @@ This guide covers integrating the @agent-relay/sdk into Electron applications, a
 ## Overview
 
 Electron applications have a split architecture:
+
 - **Main Process**: Node.js environment with full system access
 - **Renderer Process**: Chromium environment (web context, sandboxed)
 - **Preload Script**: Bridge between main and renderer with controlled API exposure
@@ -21,7 +22,7 @@ The @agent-relay/sdk uses `node:net` for Unix socket communication, which is onl
 ```
 +------------------+    IPC    +------------------+    Socket    +------------------+
 |  Renderer        | <-------> |  Main Process    | <----------> |  Agent Relay     |
-|  (React/Vue/etc) |           |  (RelayClient)   |              |  Daemon          |
+|  (React/Vue/etc) |           |  (RelayClient)   |              |  Broker          |
 +------------------+           +------------------+              +------------------+
         ^                              ^
         |                              |
@@ -185,106 +186,141 @@ export function registerRelayIPC(): void {
   });
 
   // Send message
-  ipcMain.handle('relay:sendMessage', async (event, to: string, body: string, options?: {
-    kind?: 'message' | 'action' | 'result' | 'status';
-    data?: Record<string, unknown>;
-    thread?: string;
-  }) => {
-    if (!relayClient || !isConnected) {
-      return { success: false, error: 'Not connected' };
-    }
+  ipcMain.handle(
+    'relay:sendMessage',
+    async (
+      event,
+      to: string,
+      body: string,
+      options?: {
+        kind?: 'message' | 'action' | 'result' | 'status';
+        data?: Record<string, unknown>;
+        thread?: string;
+      }
+    ) => {
+      if (!relayClient || !isConnected) {
+        return { success: false, error: 'Not connected' };
+      }
 
-    try {
-      const sent = relayClient.sendMessage(
-        to,
-        body,
-        options?.kind ?? 'message',
-        options?.data,
-        options?.thread
-      );
-      return { success: sent };
-    } catch (error) {
-      return { success: false, error: String(error) };
+      try {
+        const sent = relayClient.sendMessage(
+          to,
+          body,
+          options?.kind ?? 'message',
+          options?.data,
+          options?.thread
+        );
+        return { success: sent };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
     }
-  });
+  );
 
   // Send and wait for ACK
-  ipcMain.handle('relay:sendAndWait', async (event, to: string, body: string, options?: {
-    timeoutMs?: number;
-    kind?: 'message' | 'action' | 'result' | 'status';
-    data?: Record<string, unknown>;
-    thread?: string;
-  }) => {
-    if (!relayClient || !isConnected) {
-      return { success: false, error: 'Not connected' };
-    }
+  ipcMain.handle(
+    'relay:sendAndWait',
+    async (
+      event,
+      to: string,
+      body: string,
+      options?: {
+        timeoutMs?: number;
+        kind?: 'message' | 'action' | 'result' | 'status';
+        data?: Record<string, unknown>;
+        thread?: string;
+      }
+    ) => {
+      if (!relayClient || !isConnected) {
+        return { success: false, error: 'Not connected' };
+      }
 
-    try {
-      const ack = await relayClient.sendAndWait(to, body, {
-        timeoutMs: options?.timeoutMs ?? 30000,
-        kind: options?.kind,
-        data: options?.data,
-        thread: options?.thread,
-      });
-      return { success: true, ack };
-    } catch (error) {
-      return { success: false, error: String(error) };
+      try {
+        const ack = await relayClient.sendAndWait(to, body, {
+          timeoutMs: options?.timeoutMs ?? 30000,
+          kind: options?.kind,
+          data: options?.data,
+          thread: options?.thread,
+        });
+        return { success: true, ack };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
     }
-  });
+  );
 
   // Broadcast
-  ipcMain.handle('relay:broadcast', async (event, body: string, options?: {
-    kind?: 'message' | 'action' | 'result' | 'status';
-    data?: Record<string, unknown>;
-  }) => {
-    if (!relayClient || !isConnected) {
-      return { success: false, error: 'Not connected' };
-    }
+  ipcMain.handle(
+    'relay:broadcast',
+    async (
+      event,
+      body: string,
+      options?: {
+        kind?: 'message' | 'action' | 'result' | 'status';
+        data?: Record<string, unknown>;
+      }
+    ) => {
+      if (!relayClient || !isConnected) {
+        return { success: false, error: 'Not connected' };
+      }
 
-    try {
-      const sent = relayClient.broadcast(body, options?.kind ?? 'message', options?.data);
-      return { success: sent };
-    } catch (error) {
-      return { success: false, error: String(error) };
+      try {
+        const sent = relayClient.broadcast(body, options?.kind ?? 'message', options?.data);
+        return { success: sent };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
     }
-  });
+  );
 
   // List agents
-  ipcMain.handle('relay:listAgents', async (event, options?: {
-    includeIdle?: boolean;
-    project?: string;
-  }) => {
-    if (!relayClient || !isConnected) {
-      return { success: false, error: 'Not connected', agents: [] };
-    }
+  ipcMain.handle(
+    'relay:listAgents',
+    async (
+      event,
+      options?: {
+        includeIdle?: boolean;
+        project?: string;
+      }
+    ) => {
+      if (!relayClient || !isConnected) {
+        return { success: false, error: 'Not connected', agents: [] };
+      }
 
-    try {
-      const agents = await relayClient.listAgents(options);
-      return { success: true, agents };
-    } catch (error) {
-      return { success: false, error: String(error), agents: [] };
+      try {
+        const agents = await relayClient.listAgents(options);
+        return { success: true, agents };
+      } catch (error) {
+        return { success: false, error: String(error), agents: [] };
+      }
     }
-  });
+  );
 
   // Spawn agent
-  ipcMain.handle('relay:spawn', async (event, options: {
-    name: string;
-    cli: string;
-    task?: string;
-    cwd?: string;
-    team?: string;
-  }) => {
-    if (!relayClient || !isConnected) {
-      return { success: false, error: 'Not connected' };
-    }
+  ipcMain.handle(
+    'relay:spawn',
+    async (
+      event,
+      options: {
+        name: string;
+        cli: string;
+        task?: string;
+        cwd?: string;
+        team?: string;
+      }
+    ) => {
+      if (!relayClient || !isConnected) {
+        return { success: false, error: 'Not connected' };
+      }
 
-    try {
-      const result = await relayClient.spawn(options);
-      return { success: result.success, ...result };
-    } catch (error) {
-      return { success: false, error: String(error) };
+      try {
+        const result = await relayClient.spawn(options);
+        return { success: result.success, ...result };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
     }
-  });
+  );
 
   // Release agent
   ipcMain.handle('relay:release', async (event, name: string) => {
@@ -327,22 +363,30 @@ export function registerRelayIPC(): void {
     }
   });
 
-  ipcMain.handle('relay:sendChannelMessage', async (event, channel: string, body: string, options?: {
-    thread?: string;
-    mentions?: string[];
-    data?: Record<string, unknown>;
-  }) => {
-    if (!relayClient || !isConnected) {
-      return { success: false, error: 'Not connected' };
-    }
+  ipcMain.handle(
+    'relay:sendChannelMessage',
+    async (
+      event,
+      channel: string,
+      body: string,
+      options?: {
+        thread?: string;
+        mentions?: string[];
+        data?: Record<string, unknown>;
+      }
+    ) => {
+      if (!relayClient || !isConnected) {
+        return { success: false, error: 'Not connected' };
+      }
 
-    try {
-      const sent = relayClient.sendChannelMessage(channel, body, options);
-      return { success: sent };
-    } catch (error) {
-      return { success: false, error: String(error) };
+      try {
+        const sent = relayClient.sendChannelMessage(channel, body, options);
+        return { success: sent };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
     }
-  });
+  );
 
   // Health and metrics
   ipcMain.handle('relay:getHealth', async () => {
@@ -379,12 +423,7 @@ Wire up the relay service in your main entry point:
 
 ```typescript
 import { app, BrowserWindow } from 'electron';
-import {
-  initializeRelay,
-  disconnectRelay,
-  destroyRelay,
-  registerRelayIPC,
-} from './relay-service';
+import { initializeRelay, disconnectRelay, destroyRelay, registerRelayIPC } from './relay-service';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -418,7 +457,7 @@ app.whenReady().then(async () => {
   });
 
   if (!connected) {
-    console.warn('Relay daemon not available - relay features disabled');
+    console.warn('Relay broker not available - relay features disabled');
   }
 });
 
@@ -502,15 +541,9 @@ export interface RelayAPI {
   release: (name: string) => Promise<{ success: boolean; error?: string }>;
 
   // Channels
-  joinChannel: (
-    channel: string,
-    displayName?: string
-  ) => Promise<{ success: boolean; error?: string }>;
+  joinChannel: (channel: string, displayName?: string) => Promise<{ success: boolean; error?: string }>;
 
-  leaveChannel: (
-    channel: string,
-    reason?: string
-  ) => Promise<{ success: boolean; error?: string }>;
+  leaveChannel: (channel: string, reason?: string) => Promise<{ success: boolean; error?: string }>;
 
   sendChannelMessage: (
     channel: string,
@@ -524,9 +557,7 @@ export interface RelayAPI {
 
   // Health
   getHealth: () => Promise<{ success: boolean; health?: unknown; error?: string }>;
-  getMetrics: (
-    agentName?: string
-  ) => Promise<{ success: boolean; metrics?: unknown; error?: string }>;
+  getMetrics: (agentName?: string) => Promise<{ success: boolean; metrics?: unknown; error?: string }>;
 
   // Event listeners
   onMessage: (
@@ -540,17 +571,10 @@ export interface RelayAPI {
   ) => () => void;
 
   onChannelMessage: (
-    callback: (data: {
-      from: string;
-      channel: string;
-      body: string;
-      envelope: unknown;
-    }) => void
+    callback: (data: { from: string; channel: string; body: string; envelope: unknown }) => void
   ) => () => void;
 
-  onStateChange: (
-    callback: (data: { state: string; connected: boolean }) => void
-  ) => () => void;
+  onStateChange: (callback: (data: { state: string; connected: boolean }) => void) => () => void;
 
   onError: (callback: (data: { message: string }) => void) => () => void;
 }
@@ -562,12 +586,9 @@ contextBridge.exposeInMainWorld('relay', {
   getState: () => ipcRenderer.invoke('relay:getState'),
 
   // Messaging
-  sendMessage: (to, body, options) =>
-    ipcRenderer.invoke('relay:sendMessage', to, body, options),
-  sendAndWait: (to, body, options) =>
-    ipcRenderer.invoke('relay:sendAndWait', to, body, options),
-  broadcast: (body, options) =>
-    ipcRenderer.invoke('relay:broadcast', body, options),
+  sendMessage: (to, body, options) => ipcRenderer.invoke('relay:sendMessage', to, body, options),
+  sendAndWait: (to, body, options) => ipcRenderer.invoke('relay:sendAndWait', to, body, options),
+  broadcast: (body, options) => ipcRenderer.invoke('relay:broadcast', body, options),
 
   // Agent discovery
   listAgents: (options) => ipcRenderer.invoke('relay:listAgents', options),
@@ -577,10 +598,8 @@ contextBridge.exposeInMainWorld('relay', {
   release: (name) => ipcRenderer.invoke('relay:release', name),
 
   // Channels
-  joinChannel: (channel, displayName) =>
-    ipcRenderer.invoke('relay:joinChannel', channel, displayName),
-  leaveChannel: (channel, reason) =>
-    ipcRenderer.invoke('relay:leaveChannel', channel, reason),
+  joinChannel: (channel, displayName) => ipcRenderer.invoke('relay:joinChannel', channel, displayName),
+  leaveChannel: (channel, reason) => ipcRenderer.invoke('relay:leaveChannel', channel, reason),
   sendChannelMessage: (channel, body, options) =>
     ipcRenderer.invoke('relay:sendChannelMessage', channel, body, options),
 
@@ -739,16 +758,13 @@ export function useRelay() {
     return result.agents;
   }, []);
 
-  const spawnAgent = useCallback(
-    async (options: Parameters<typeof window.relay.spawn>[0]) => {
-      const result = await window.relay.spawn(options);
-      if (!result.success) {
-        setError(result.error ?? 'Failed to spawn agent');
-      }
-      return result;
-    },
-    []
-  );
+  const spawnAgent = useCallback(async (options: Parameters<typeof window.relay.spawn>[0]) => {
+    const result = await window.relay.spawn(options);
+    if (!result.success) {
+      setError(result.error ?? 'Failed to spawn agent');
+    }
+    return result;
+  }, []);
 
   const releaseAgent = useCallback(async (name: string) => {
     const result = await window.relay.release(name);
@@ -790,16 +806,7 @@ import React, { useState, useEffect } from 'react';
 import { useRelay } from '../hooks/useRelay';
 
 export function RelayPanel() {
-  const {
-    connected,
-    state,
-    messages,
-    error,
-    sendMessage,
-    listAgents,
-    spawnAgent,
-    clearError,
-  } = useRelay();
+  const { connected, state, messages, error, sendMessage, listAgents, spawnAgent, clearError } = useRelay();
 
   const [agents, setAgents] = useState<unknown[]>([]);
   const [recipient, setRecipient] = useState('');
@@ -860,11 +867,7 @@ export function RelayPanel() {
 
       <div className="send-message">
         <h3>Send Message</h3>
-        <input
-          placeholder="Recipient"
-          value={recipient}
-          onChange={(e) => setRecipient(e.target.value)}
-        />
+        <input placeholder="Recipient" value={recipient} onChange={(e) => setRecipient(e.target.value)} />
         <textarea
           placeholder="Message"
           value={messageBody}
@@ -948,7 +951,7 @@ app.on('activate', async () => {
 
 ### Graceful Degradation
 
-Handle the case where the relay daemon is not running:
+Handle the case where the relay broker is not running:
 
 ```typescript
 // In main process
@@ -956,7 +959,7 @@ export async function initializeRelayWithFallback(config: RelayConfig): Promise<
   try {
     const connected = await initializeRelay(config);
     if (!connected) {
-      console.warn('[Relay] Daemon not available - running in offline mode');
+      console.warn('[Relay] Broker not available - running in offline mode');
       return false;
     }
     return true;
@@ -982,11 +985,7 @@ async function sendIfConnected(to: string, body: string) {
 The SDK has built-in reconnection, but you can add application-level retry:
 
 ```typescript
-async function sendWithRetry(
-  to: string,
-  body: string,
-  maxRetries = 3
-): Promise<boolean> {
+async function sendWithRetry(to: string, body: string, maxRetries = 3): Promise<boolean> {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     const result = await window.relay.sendMessage(to, body);
     if (result.success) return true;
@@ -1008,8 +1007,8 @@ Always use context isolation (default in Electron 12+):
 ```typescript
 new BrowserWindow({
   webPreferences: {
-    contextIsolation: true,  // Required
-    nodeIntegration: false,  // Keep disabled
+    contextIsolation: true, // Required
+    nodeIntegration: false, // Keep disabled
     preload: path.join(__dirname, 'preload.js'),
   },
 });
@@ -1122,7 +1121,7 @@ beforeEach(() => {
 
 ### Integration Tests
 
-For integration tests, start the relay daemon and real Electron app:
+For integration tests, start the relay broker and real Electron app:
 
 ```typescript
 import { _electron as electron } from 'playwright';
@@ -1152,7 +1151,7 @@ Key points for Electron integration:
 3. **Preload script**: Expose a clean API via `contextBridge.exposeInMainWorld()`
 4. **Event forwarding**: Forward relay events to renderer via `webContents.send()`
 5. **Lifecycle management**: Disconnect on app quit, destroy on final exit
-6. **Error handling**: Gracefully handle daemon unavailability
+6. **Error handling**: Gracefully handle broker unavailability
 7. **Security**: Use context isolation, validate inputs, verify senders
 
 See the [Maestro integration](https://github.com/agentworkforce/relay/tree/main/integrations/maestro) for a complete real-world example.

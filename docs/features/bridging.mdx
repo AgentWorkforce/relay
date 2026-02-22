@@ -1,11 +1,11 @@
 ---
-title: "Multi-Project Bridging"
-description: "Connect agents across multiple projects for cross-project orchestration"
+title: 'Multi-Project Bridging'
+description: 'Connect agents across multiple projects for cross-project orchestration'
 ---
 
 # Multi-Project Bridging
 
-Bridge mode connects multiple agent-relay daemons, enabling agents in different projects to communicate with each other. This is ideal for monorepo architectures, microservices, or distributed teams.
+Bridge mode connects multiple agent-relay brokers, enabling agents in different projects to communicate with each other. This is ideal for monorepo architectures, microservices, or distributed teams.
 
 ## Why Bridge Projects?
 
@@ -27,8 +27,8 @@ Bridge mode connects multiple agent-relay daemons, enabling agents in different 
 ## Quick Start
 
 <Steps>
-  <Step title="Start daemons in each project">
-    Each project needs its own daemon running:
+  <Step title="Start brokers in each project">
+    Each project needs its own broker running:
 
     ```bash
     # Terminal 1: Frontend project
@@ -39,6 +39,7 @@ Bridge mode connects multiple agent-relay daemons, enabling agents in different 
     cd ~/projects/backend
     agent-relay up
     ```
+
   </Step>
   <Step title="Start the bridge">
     Connect the projects with the bridge command:
@@ -46,19 +47,15 @@ Bridge mode connects multiple agent-relay daemons, enabling agents in different 
     ```bash
     agent-relay bridge ~/projects/frontend ~/projects/backend
     ```
+
   </Step>
   <Step title="Send cross-project messages">
     Agents can now message across projects using the project prefix:
 
-    ```bash
-    cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/cross << 'EOF'
-    TO: backend:ApiDeveloper
-
-    The frontend needs a new endpoint for user preferences.
-    EOF
+    ```typescript
+    relay_send(to: "backend:ApiDeveloper", message: "The frontend needs a new endpoint for user preferences.")
     ```
 
-    Then: `->relay-file:cross`
   </Step>
 </Steps>
 
@@ -77,6 +74,7 @@ agent-relay bridge ~/frontend ~/backend ~/shared-libs
 ```
 
 Output:
+
 ```
 Bridge Mode - Multi-Project Orchestration
 ----------------------------------------
@@ -91,45 +89,42 @@ Bridging 3 projects:
 Connected to all projects.
 
 Cross-project messaging:
-  ->relay:frontend:AgentName message
-  ->relay:backend:lead message
+  relay_send(to: "frontend:AgentName", message: "...")
+  relay_send(to: "backend:lead", message: "...")
 ```
 
 ## Cross-Project Messaging Format
 
 When bridged, agents use a project-prefixed address format:
 
-```
-TO: project-id:AgentName
+```typescript
+relay_send(to: "project-id:AgentName", message: "...")
 ```
 
 ### Examples
 
-| Target | Description |
-|--------|-------------|
+| Target              | Description                                        |
+| ------------------- | -------------------------------------------------- |
 | `frontend:Designer` | Message the Designer agent in the frontend project |
-| `backend:lead` | Message the lead agent in the backend project |
-| `frontend:*` | Broadcast to all agents in the frontend project |
-| `*:*` | Broadcast to all agents in all projects |
+| `backend:lead`      | Message the lead agent in the backend project      |
+| `frontend:*`        | Broadcast to all agents in the frontend project    |
+| `*:*`               | Broadcast to all agents in all projects            |
 
 ### Sending Cross-Project Messages
 
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/msg << 'EOF'
-TO: backend:ApiDeveloper
-
-Please add a new endpoint: GET /api/users/preferences
-Should return { theme, language, notifications } for the authenticated user.
-EOF
+```typescript
+relay_send(
+  to: "backend:ApiDeveloper",
+  message: "Please add a new endpoint: GET /api/users/preferences\nShould return { theme, language, notifications } for the authenticated user."
+)
 ```
-
-Then: `->relay-file:msg`
 
 ## Bridge Configuration
 
 For persistent setups, create a bridge configuration file:
 
 **~/.agent-relay/bridge.json**
+
 ```json
 {
   "projects": [
@@ -157,12 +152,12 @@ agent-relay bridge
 
 ### Configuration Options
 
-| Field | Description | Default |
-|-------|-------------|---------|
-| `id` | Project identifier (used in messaging) | Directory name |
-| `path` | Absolute path to the project | Required |
-| `leadName` | Name of the lead agent | `Dashboard` |
-| `cli` | Default CLI tool for the project | `claude` |
+| Field      | Description                            | Default        |
+| ---------- | -------------------------------------- | -------------- |
+| `id`       | Project identifier (used in messaging) | Directory name |
+| `path`     | Absolute path to the project           | Required       |
+| `leadName` | Name of the lead agent                 | `Dashboard`    |
+| `cli`      | Default CLI tool for the project       | `claude`       |
 
 ## CLI Override
 
@@ -238,19 +233,16 @@ Bridge logs show reconnection status:
 
 <AccordionGroup>
   <Accordion title="Bridge fails to connect">
-    1. Verify daemons are running in each project: `agent-relay status`
-    2. Check socket files exist: `ls /tmp/agent-relay-*.sock`
-    3. Ensure no firewall blocking local sockets
+    1. Verify brokers are running in each project: `agent-relay status` 2. Check socket files exist: `ls
+    /tmp/agent-relay-*.sock` 3. Ensure no firewall blocking local sockets
   </Accordion>
   <Accordion title="Messages not delivered cross-project">
-    1. Confirm bridge is connected to both projects
-    2. Verify the target project ID is correct
-    3. Check the target agent is registered in that project
+    1. Confirm bridge is connected to both projects 2. Verify the target project ID is correct 3. Check the
+    target agent is registered in that project
   </Accordion>
   <Accordion title="Bridge keeps disconnecting">
-    1. Check project daemon logs for errors
-    2. Verify no resource constraints on the system
-    3. Use `--watch` mode for automatic recovery: `agent-relay up --watch`
+    1. Check project broker logs for errors 2. Verify no resource constraints on the system 3. Use `--watch`
+    mode for automatic recovery: `agent-relay up --watch`
   </Accordion>
 </AccordionGroup>
 
@@ -266,7 +258,7 @@ Bridge logs show reconnection status:
             |                |                |
     +-------v------+  +------v-------+  +----v---------+
     |  Frontend    |  |  Backend     |  |  Shared      |
-    |  Daemon      |  |  Daemon      |  |  Libs Daemon |
+    |  Broker      |  |  Broker      |  |  Libs Broker |
     |  (socket)    |  |  (socket)    |  |  (socket)    |
     +-------+------+  +------+-------+  +------+-------+
             |                |                 |
@@ -276,4 +268,4 @@ Bridge logs show reconnection status:
     +--------------+  +--------------+  +--------------+
 ```
 
-The bridge client connects to each project's daemon via Unix sockets and routes messages between them based on the project prefix in the address.
+The bridge client connects to each project's broker via Unix sockets and routes messages between them based on the project prefix in the address.

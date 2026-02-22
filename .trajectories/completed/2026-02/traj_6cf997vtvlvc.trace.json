@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "id": "trace_pq7hj8kfq6bq",
+  "timestamp": "2026-02-10T12:06:55.145Z",
+  "trajectory": "traj_6cf997vtvlvc",
+  "files": [
+    {
+      "path": ".github/workflows/publish.yml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 255,
+              "end_line": 265,
+              "revision": "72f45182956c3198a80c97158cae2a88f4c3871f"
+            },
+            {
+              "start_line": 277,
+              "end_line": 287,
+              "revision": "72f45182956c3198a80c97158cae2a88f4c3871f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".trajectories/active/traj_6cf997vtvlvc.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 46,
+              "revision": "72f45182956c3198a80c97158cae2a88f4c3871f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".trajectories/index.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "agent",
+            "model": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "72f45182956c3198a80c97158cae2a88f4c3871f"
+            },
+            {
+              "start_line": 218,
+              "end_line": 229,
+              "revision": "72f45182956c3198a80c97158cae2a88f4c3871f"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

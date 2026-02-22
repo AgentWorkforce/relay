@@ -1,0 +1,103 @@
+name: Build Broker Binary
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/build-broker-binary.yml'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v3.0.0, latest)'
+        required: false
+        default: 'latest'
+        type: string
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact: agent-relay-broker-linux-x86_64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            artifact: agent-relay-broker-linux-aarch64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install musl tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu
+            # Install aarch64 musl cross-compiler
+            curl -fsSL https://musl.cc/aarch64-linux-musl-cross.tgz | sudo tar -xz -C /opt
+            echo "/opt/aarch64-linux-musl-cross/bin" >> $GITHUB_PATH
+          fi
+
+      - name: Build static binary
+        run: |
+          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc
+            export CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc
+          fi
+          RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target ${{ matrix.target }} --bin agent-relay-broker
+          strip target/${{ matrix.target }}/release/agent-relay-broker 2>/dev/null || \
+            aarch64-linux-musl-strip target/${{ matrix.target }}/release/agent-relay-broker 2>/dev/null || true
+
+      - name: Verify static linking
+        run: |
+          file target/${{ matrix.target }}/release/agent-relay-broker
+          # Ensure no dynamic glibc dependency
+          ldd target/${{ matrix.target }}/release/agent-relay-broker 2>&1 | grep -q "not a dynamic" || \
+            echo "Warning: binary may have dynamic dependencies"
+
+      - name: Rename artifact
+        run: cp target/${{ matrix.target }}/release/agent-relay-broker ${{ matrix.artifact }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    name: Upload to Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || 'latest' }}
+          name: Broker Binary ${{ inputs.tag || 'latest' }}
+          body: |
+            Statically-linked broker binaries (musl, no glibc dependency).
+            Built from commit ${{ github.sha }}.
+          files: artifacts/*
+          prerelease: ${{ inputs.tag == '' || inputs.tag == 'latest' }}
+          make_latest: false

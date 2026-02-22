@@ -35,7 +35,7 @@ agent-relay run --template competitive --task "Design caching layer for API"
 ```
 
 ```typescript
-import { TemplateRegistry, WorkflowRunner } from "@agent-relay/broker-sdk/workflows";
+import { TemplateRegistry, WorkflowRunner } from "@agent-relay/sdk/workflows";
 
 const registry = new TemplateRegistry();
 const config = await registry.loadTemplate("competitive");

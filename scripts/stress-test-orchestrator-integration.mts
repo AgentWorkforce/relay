@@ -32,10 +32,13 @@ if (JSON_OUTPUT_EARLY) {
   // Suppress utils logger (daemon, router, etc.) - must be set before module imports
   process.env.AGENT_RELAY_LOG_LEVEL = 'ERROR';
 
-  // Configure the resiliency logger to not output to console
-  // IMPORTANT: Import directly from logger.js to avoid loading other modules that create loggers
-  const { configure } = await import('../packages/resiliency/dist/logger.js');
-  configure({ console: false, level: 'fatal' });
+  // Configure the resiliency logger to not output to console (if available)
+  try {
+    const { configure } = await import('../packages/resiliency/dist/logger.js');
+    configure({ console: false, level: 'fatal' });
+  } catch {
+    // resiliency package not available — logger suppression via env var only
+  }
 }
 
 // ============================================================================

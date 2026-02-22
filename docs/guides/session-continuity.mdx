@@ -11,10 +11,10 @@ Agent Relay's continuity system helps agents maintain context across sessions, e
 
 The continuity system consists of two components:
 
-| Component | Purpose | Persistence |
-|-----------|---------|-------------|
-| **Ledger** | Current session state (task, progress, decisions) | Ephemeral (overwritten each session) |
-| **Handoff** | Cross-session transfer document | Permanent (searchable history) |
+| Component   | Purpose                                           | Persistence                          |
+| ----------- | ------------------------------------------------- | ------------------------------------ |
+| **Ledger**  | Current session state (task, progress, decisions) | Ephemeral (overwritten each session) |
+| **Handoff** | Cross-session transfer document                   | Permanent (searchable history)       |
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -45,40 +45,19 @@ The continuity system consists of two components:
 ## Saving State
 
 <Steps>
-  <Step title="Write continuity file">
+  <Step title="Save continuity state">
     Save your current state when:
     - Before long-running operations (builds, tests)
     - When switching task areas
     - Every 15-20 minutes of active work
     - Before ending a session
 
-    ```bash
-    cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/continuity << 'EOF'
-    KIND: continuity
-    ACTION: save
+    Use the `relay_send` MCP tool with a continuity action:
 
-    Current task: Implementing user authentication
-    Completed:
-    - User model created
-    - JWT utility functions
-    - Password hashing with bcrypt
-
-    In progress:
-    - Login endpoint (70% complete)
-
-    Key decisions:
-    - Using refresh tokens for session management
-    - Bcrypt with cost factor 12
-    - JWT expires in 15 minutes
-
-    Files:
-    - src/auth/user.ts
-    - src/auth/jwt.ts
-    - src/api/routes/login.ts (in progress)
-    EOF
+    ```
+    relay_send(to: "system", message: "KIND: continuity\nACTION: save\n\nCurrent task: Implementing user authentication\nCompleted:\n- User model created\n- JWT utility functions\n- Password hashing with bcrypt\n\nIn progress:\n- Login endpoint (70% complete)\n\nKey decisions:\n- Using refresh tokens for session management\n- Bcrypt with cost factor 12\n- JWT expires in 15 minutes\n\nFiles:\n- src/auth/user.ts\n- src/auth/jwt.ts\n- src/api/routes/login.ts (in progress)")
     ```
 
-    Then output: `->relay-file:continuity`
   </Step>
 
   <Step title="Verify save">
@@ -87,6 +66,7 @@ The continuity system consists of two components:
     ```bash
     agent-relay continuity status
     ```
+
   </Step>
 </Steps>
 
@@ -102,19 +82,23 @@ Context loads automatically when an agent starts. The agent sees:
 **Current Task:** Implementing user authentication
 
 **Completed:**
+
 - User model created
 - JWT utility functions
 - Password hashing with bcrypt
 
 **In Progress:**
+
 - Login endpoint (70% complete)
 
 **Key Decisions:**
+
 - Using refresh tokens for session management
 - Bcrypt with cost factor 12
 - JWT expires in 15 minutes
 
 **Files:**
+
 - src/auth/user.ts
 - src/auth/jwt.ts
 - src/api/routes/login.ts (in progress)
@@ -124,14 +108,9 @@ Context loads automatically when an agent starts. The agent sees:
 
 Request context manually during a session:
 
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/load << 'EOF'
-KIND: continuity
-ACTION: load
-EOF
 ```
-
-Then: `->relay-file:load`
+relay_send(to: "system", message: "KIND: continuity\nACTION: load")
+```
 
 ## Creating Handoffs
 
@@ -146,55 +125,21 @@ Handoffs are permanent records created when work transitions between sessions or
 
 ### Handoff structure
 
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/handoff << 'EOF'
-KIND: continuity
-ACTION: handoff
-
-Summary: User authentication system implemented
-
-Completed work:
-- User model with email/password
-- JWT authentication with refresh tokens
-- Login, logout, and register endpoints
-- Password reset flow with email verification
-- Rate limiting on auth endpoints
-
-Next steps:
-- Add OAuth providers (Google, GitHub)
-- Implement session management dashboard
-- Add 2FA support
-
-Key decisions:
-- Refresh tokens stored in httpOnly cookies (security)
-- 15-minute JWT expiry with 7-day refresh (balance)
-- Bcrypt cost factor 12 (security vs performance)
-
-Files to know:
-- src/auth/ - Core authentication logic
-- src/api/routes/auth.ts - Endpoints
-- src/middleware/auth.ts - JWT verification
-- tests/auth/ - Test suite
-
-Learnings:
-- JWT refresh race condition when multiple tabs open
-- Bcrypt is CPU-intensive, consider worker threads for high load
-EOF
 ```
-
-Then: `->relay-file:handoff`
+relay_send(to: "system", message: "KIND: continuity\nACTION: handoff\n\nSummary: User authentication system implemented\n\nCompleted work:\n- User model with email/password\n- JWT authentication with refresh tokens\n- Login, logout, and register endpoints\n- Password reset flow with email verification\n- Rate limiting on auth endpoints\n\nNext steps:\n- Add OAuth providers (Google, GitHub)\n- Implement session management dashboard\n- Add 2FA support\n\nKey decisions:\n- Refresh tokens stored in httpOnly cookies (security)\n- 15-minute JWT expiry with 7-day refresh (balance)\n- Bcrypt cost factor 12 (security vs performance)\n\nFiles to know:\n- src/auth/ - Core authentication logic\n- src/api/routes/auth.ts - Endpoints\n- src/middleware/auth.ts - JWT verification\n- tests/auth/ - Test suite\n\nLearnings:\n- JWT refresh race condition when multiple tabs open\n- Bcrypt is CPU-intensive, consider worker threads for high load")
+```
 
 ### Handoff triggers
 
 Handoffs are created automatically on:
 
-| Trigger | When |
-|---------|------|
-| `trajectory_complete` | When `trail complete` is called |
-| `context_limit` | When context is approaching token limit |
-| `session_end` | Normal session termination |
-| `crash` | Unexpected agent termination |
-| `manual` | Explicit handoff request |
+| Trigger               | When                                    |
+| --------------------- | --------------------------------------- |
+| `trajectory_complete` | When `trail complete` is called         |
+| `context_limit`       | When context is approaching token limit |
+| `session_end`         | Normal session termination              |
+| `crash`               | Unexpected agent termination            |
+| `manual`              | Explicit handoff request                |
 
 ## Resume Tokens
 
@@ -225,19 +170,12 @@ agent-relay continuity list
 
 Flag items that need future verification:
 
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/uncertain << 'EOF'
-KIND: continuity
-ACTION: uncertain
-
-API rate limit handling might not cover all edge cases.
-Need to verify behavior under sustained load.
-EOF
+```
+relay_send(to: "system", message: "KIND: continuity\nACTION: uncertain\n\nAPI rate limit handling might not cover all edge cases.\nNeed to verify behavior under sustained load.")
 ```
 
-Then: `->relay-file:uncertain`
-
 Uncertain items are:
+
 - Prefixed with `UNCONFIRMED:` in context
 - Highlighted for future agents
 - Available for searching
@@ -246,16 +184,9 @@ Uncertain items are:
 
 Find relevant context from past sessions:
 
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/search << 'EOF'
-KIND: continuity
-ACTION: search
-
-Query: WebSocket authentication
-EOF
 ```
-
-Then: `->relay-file:search`
+relay_send(to: "system", message: "KIND: continuity\nACTION: search\n\nQuery: WebSocket authentication")
+```
 
 Response:
 
@@ -263,10 +194,12 @@ Response:
 ## Search Results: "WebSocket authentication"
 
 ### Handoff: Real-time notifications (2 days ago)
+
 Agent: FeatureWorker
 Summary: WebSocket server with JWT authentication
 
 Key decisions:
+
 - Token passed via query param on connect
 - Validate on connection, reject if invalid
 - No re-auth during connection (close + reconnect)
@@ -274,6 +207,7 @@ Key decisions:
 Files: src/ws/auth.ts, src/ws/server.ts
 
 ### Handoff: API security review (1 week ago)
+
 Agent: Security
 Summary: Authentication mechanisms audit
 
@@ -287,40 +221,32 @@ Relevant: WebSocket auth should validate same as REST
 <CardGroup cols={2}>
 
 <Card title="Current State" icon="location-dot">
-- Active task description
-- Completion percentage
-- Blockers or waiting items
+  - Active task description - Completion percentage - Blockers or waiting items
 </Card>
 
 <Card title="Decisions Made" icon="gavel">
-- Technical choices with reasoning
-- Tradeoffs considered
-- Alternatives rejected
+  - Technical choices with reasoning - Tradeoffs considered - Alternatives rejected
 </Card>
 
 <Card title="File Context" icon="file-code">
-- Files currently being modified
-- Key files for the task
-- Test files to run
+  - Files currently being modified - Key files for the task - Test files to run
 </Card>
 
 <Card title="Next Steps" icon="forward">
-- Immediate next action
-- Remaining work items
-- Dependencies on others
+  - Immediate next action - Remaining work items - Dependencies on others
 </Card>
 
 </CardGroup>
 
 ### Save frequency guidelines
 
-| Activity | Save Frequency |
-|----------|----------------|
-| Active coding | Every 15-20 minutes |
-| Before builds/tests | Always |
-| Task switching | Always |
-| End of work session | Always |
-| After major decision | Immediately |
+| Activity             | Save Frequency      |
+| -------------------- | ------------------- |
+| Active coding        | Every 15-20 minutes |
+| Before builds/tests  | Always              |
+| Task switching       | Always              |
+| End of work session  | Always              |
+| After major decision | Immediately         |
 
 ### Handoff quality checklist
 
@@ -343,12 +269,9 @@ Continuity works with the trajectory system (trail) for richer history:
     ```
   </Step>
 
-  <Step title="Record decisions during work">
-    ```bash
-    trail decision "Using JWT with refresh tokens" \
-      --reasoning "Stateless auth, better scaling"
-    ```
-  </Step>
+<Step title="Record decisions during work">
+  ```bash trail decision "Using JWT with refresh tokens" \ --reasoning "Stateless auth, better scaling" ```
+</Step>
 
   <Step title="Complete with summary">
     ```bash
@@ -358,6 +281,7 @@ Continuity works with the trajectory system (trail) for richer history:
     ```
 
     This automatically creates a handoff with trajectory context.
+
   </Step>
 </Steps>
 
@@ -388,11 +312,8 @@ agent-relay continuity cleanup --days 30
 # Check if continuity data exists
 agent-relay continuity show <agent-name>
 
-# Manually trigger load
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/load << 'EOF'
-KIND: continuity
-ACTION: load
-EOF
+# Manually trigger load via MCP tool:
+# relay_send(to: "system", message: "KIND: continuity\nACTION: load")
 ```
 
 ### Handoff not created on crash
@@ -404,6 +325,7 @@ agent-relay agents:logs <agent-name> --since crash
 ```
 
 Auto-save might have failed if:
+
 - Agent exited too quickly
 - Disk was full
 - Permissions issue on continuity directory
@@ -411,6 +333,7 @@ Auto-save might have failed if:
 ### Large context causing issues
 
 If context is too large:
+
 - Use more frequent handoffs to summarize
 - Focus ledger on current task only
 - Search for specific context instead of loading all

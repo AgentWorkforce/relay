@@ -270,7 +270,11 @@ impl Injector {
 fn is_relay_echo(output: &str) -> bool {
     output.lines().all(|line| {
         let trimmed = line.trim();
-        trimmed.is_empty() || trimmed.starts_with("Relay message from ")
+        trimmed.is_empty()
+            || trimmed.starts_with("Relay message from ")
+            || trimmed.starts_with("<system-reminder>")
+            || trimmed.starts_with("</system-reminder>")
+            || trimmed.contains("mcp__relaycast__")  // MCP hint lines
     })
 }
 
@@ -373,9 +377,21 @@ mod tests {
 
     #[test]
     fn test_is_relay_echo() {
+        // Plain relay messages
         assert!(is_relay_echo("Relay message from Alice [abc]: Hi\n"));
         assert!(is_relay_echo("\nRelay message from Bob [def]: Yo\n\n"));
+
+        // System-reminder wrapped messages (new format)
+        assert!(is_relay_echo("<system-reminder>\nThis message was delivered via Relaycast MCP. Reply using mcp__relaycast__post_message (for channels) or mcp__relaycast__send_dm (for direct messages) tools.\n</system-reminder>\n\nRelay message from Alice [abc]: Hi\n"));
+
+        // Individual system-reminder components
+        assert!(is_relay_echo("<system-reminder>"));
+        assert!(is_relay_echo("</system-reminder>"));
+        assert!(is_relay_echo("Reply using mcp__relaycast__post_message tools."));
+
+        // Non-relay output
         assert!(!is_relay_echo("Some other output\n"));
+        assert!(!is_relay_echo("Agent is thinking..."));
     }
 
     #[test]

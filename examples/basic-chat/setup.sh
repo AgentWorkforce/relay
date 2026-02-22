@@ -1,6 +1,6 @@
 #!/bin/bash
 # Basic Chat Setup Script
-# Creates file-based inboxes for two agents to chat
+# Sets up two agents for a chat using agent-relay MCP tools
 
 set -e
 
@@ -12,13 +12,9 @@ echo "Setting up basic chat in: $DATA_DIR"
 echo "Agents: $AGENT1, $AGENT2"
 echo ""
 
-# Create inbox directories
+# Create agent directories
 mkdir -p "$DATA_DIR/$AGENT1"
 mkdir -p "$DATA_DIR/$AGENT2"
-
-# Create empty inboxes
-touch "$DATA_DIR/$AGENT1/inbox.md"
-touch "$DATA_DIR/$AGENT2/inbox.md"
 
 # Create instruction files
 cat > "$DATA_DIR/$AGENT1/INSTRUCTIONS.md" << EOF
@@ -28,21 +24,16 @@ You're participating in a chat with $AGENT2 using agent-relay.
 
 ## How to send messages
 
-Write to $AGENT2's inbox:
-\`\`\`bash
-agent-relay inbox-write -t $AGENT2 -f $AGENT1 -m "Your message" -d $DATA_DIR
+Use the MCP tool:
+\`\`\`
+relay_send(to: "$AGENT2", message: "Your message")
 \`\`\`
 
 ## How to check for messages
 
-Read your inbox:
-\`\`\`bash
-agent-relay inbox-read -n $AGENT1 -d $DATA_DIR --clear
+Use the MCP tool:
 \`\`\`
-
-Or wait for messages (blocking):
-\`\`\`bash
-agent-relay inbox-poll -n $AGENT1 -d $DATA_DIR --clear
+relay_inbox()
 \`\`\`
 
 ## Start the conversation
@@ -57,21 +48,16 @@ You're participating in a chat with $AGENT1 using agent-relay.
 
 ## How to send messages
 
-Write to $AGENT1's inbox:
-\`\`\`bash
-agent-relay inbox-write -t $AGENT1 -f $AGENT2 -m "Your message" -d $DATA_DIR
+Use the MCP tool:
+\`\`\`
+relay_send(to: "$AGENT1", message: "Your message")
 \`\`\`
 
 ## How to check for messages
 
-Read your inbox:
-\`\`\`bash
-agent-relay inbox-read -n $AGENT2 -d $DATA_DIR --clear
+Use the MCP tool:
 \`\`\`
-
-Or wait for messages (blocking):
-\`\`\`bash
-agent-relay inbox-poll -n $AGENT2 -d $DATA_DIR --clear
+relay_inbox()
 \`\`\`
 
 ## Wait for $AGENT1's message

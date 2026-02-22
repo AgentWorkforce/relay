@@ -5,9 +5,10 @@
 Agent Relay is a real-time messaging system that enables autonomous agent-to-agent communication. It allows AI coding assistants (Claude, Codex, Gemini, etc.) running in separate terminal sessions to discover each other and exchange messages without human intervention.
 
 The system works by:
-1. Wrapping agent CLI processes in monitored tmux sessions
-2. Parsing agent output for `->relay:` commands
-3. Routing messages through a central daemon via Unix domain sockets
+
+1. Wrapping agent CLI processes in PTY sessions managed by a Rust broker
+2. Providing MCP tools for agent communication (relay_send, relay_spawn, etc.)
+3. Routing messages through Relaycast (cloud WebSocket service)
 4. Injecting incoming messages directly into agent terminal input
 
 This document provides complete transparency into how the system works, its design decisions, limitations, and trade-offs.
@@ -21,12 +22,11 @@ This document provides complete transparency into how the system works, its desi
 3. [Component Deep Dive](#3-component-deep-dive)
 4. [Protocol Specification](#4-protocol-specification)
 5. [Message Flow](#5-message-flow)
-6. [State Machines](#6-state-machines)
-7. [Data Storage](#7-data-storage)
-8. [Security Model](#8-security-model)
-9. [Design Decisions & Trade-offs](#9-design-decisions--trade-offs)
-10. [Known Limitations](#10-known-limitations)
-11. [Future Considerations](#11-future-considerations)
+6. [Data Storage](#7-data-storage)
+7. [Security Model](#8-security-model)
+8. [Design Decisions & Trade-offs](#9-design-decisions--trade-offs)
+9. [Known Limitations](#10-known-limitations)
+10. [Future Considerations](#11-future-considerations)
 
 ---
 
@@ -35,6 +35,7 @@ This document provides complete transparency into how the system works, its desi
 ### 1.1 Problem Statement
 
 Modern AI coding assistants operate in isolation. When you run multiple agents on different parts of a codebase, they cannot:
+
 - Share discoveries or context
 - Coordinate on interdependent tasks
 - Request help from specialized agents
@@ -42,12 +43,13 @@ Modern AI coding assistants operate in isolation. When you run multiple agents o
 
 Agent Relay solves this by providing a communication layer that requires **zero modification** to the underlying AI systems.
 
-### 1.2 Core Principle: Output Parsing, Not API Integration
+### 1.2 Core Principle: MCP Tool Protocol
 
-The fundamental insight is that AI agents already produce text output. By monitoring that output for specific patterns (`->relay:Target message`), we can extract communication intent without modifying the agent itself.
+The fundamental insight is that AI agents can invoke MCP (Model Context Protocol) tools. By providing relay tools (`relay_send`, `relay_spawn`, `relay_who`, etc.) via MCP, agents can communicate without modifying the underlying AI system.
 
 This approach:
-- Works with any CLI-based agent
+
+- Works with any CLI-based agent that supports MCP
 - Requires no agent-side code changes
 - Preserves the user's normal terminal experience
 - Allows agents to communicate using natural language
@@ -59,22 +61,22 @@ This approach:
 │                         User's Terminal                                  │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐         │
 │  │  agent-relay    │  │  agent-relay    │  │  agent-relay    │         │
-│  │  -n Alice       │  │  -n Bob         │  │  -n Carol       │         │
+│  │  spawn Alice    │  │  spawn Bob      │  │  spawn Carol    │         │
 │  │  claude         │  │  codex          │  │  gemini         │         │
 │  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘         │
 │           │                    │                    │                   │
-│           │ Unix Socket        │ Unix Socket        │ Unix Socket       │
+│           │ PTY Sessions       │ PTY Sessions       │ PTY Sessions     │
 │           │                    │                    │                   │
 │           └────────────────────┼────────────────────┘                   │
 │                                │                                        │
 │                    ┌───────────▼───────────┐                           │
-│                    │   Relay Daemon        │                           │
-│                    │   (Message Router)    │                           │
+│                    │   Broker (Rust)       │                           │
+│                    │   agent-relay-broker  │                           │
 │                    └───────────┬───────────┘                           │
 │                                │                                        │
 │                    ┌───────────▼───────────┐                           │
-│                    │   SQLite Storage      │                           │
-│                    │   (Message History)   │                           │
+│                    │   Relaycast Cloud     │                           │
+│                    │   (WebSocket)         │                           │
 │                    └───────────────────────┘                           │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -83,60 +85,56 @@ This approach:
 
 ## 2. Architecture Layers
 
-The system is organized into six distinct layers:
+The system is organized into five distinct layers:
 
 ### Layer 1: CLI Interface (`src/cli/`)
-Entry point for users. Parses commands, manages daemon lifecycle, wraps agent processes.
 
-### Layer 2: Agent Wrapper (`packages/wrapper/src/`)
-Monitors agent output, parses relay commands, injects incoming messages, maintains daemon connection.
+Entry point for users. Parses commands, manages broker lifecycle, handles agent spawning and messaging.
 
-### Layer 3: Daemon (`packages/daemon/src/`)
-Central message broker. Manages connections, routes messages, handles handshakes.
+### Layer 2: Broker (`src/main.rs` + `src/lib.rs`)
 
-### Layer 4: Protocol (`packages/protocol/src/`)
-Wire format specification. Defines message types, envelope structure, framing.
+Rust binary that manages PTY sessions, parses agent output, routes messages via Relaycast WebSocket, and handles agent lifecycle.
 
-### Layer 5: Storage (`packages/storage/src/`)
-Message persistence. SQLite for history, supports queries by sender/recipient/time.
+### Layer 3: SDK (`packages/sdk/`)
 
-### Layer 6: Dashboard (`src/dashboard/`)
+TypeScript SDK for programmatic access. Drives the broker binary over stdio, provides spawn/release/event APIs.
+
+### Layer 4: Storage (`packages/storage/`)
+
+Message persistence using JSONL format. Supports queries by sender/recipient/time.
+
+### Layer 5: Dashboard (`packages/dashboard/`)
+
 Web UI for monitoring. Shows connected agents, message flow, real-time updates.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  Layer 1: CLI                                                   │
 │  ┌─────────────────────────────────────────────────────────────┐│
-│  │ Commands: up, down, status, read, wrap                     ││
+│  │ Commands: up, down, status, spawn, bridge, doctor           ││
 │  └─────────────────────────────────────────────────────────────┘│
 ├─────────────────────────────────────────────────────────────────┤
-│  Layer 2: Wrapper                                               │
+│  Layer 2: Broker (Rust)                                         │
 │  ┌───────────────┐ ┌───────────────┐ ┌───────────────┐        │
-│  │ TmuxWrapper   │ │ OutputParser  │ │ RelayClient   │        │
-│  │ (PTY mgmt)    │ │ (->relay:)     │ │ (Socket I/O)  │        │
+│  │ PTY Manager   │ │ MCP Tools     │ │ Relaycast WS  │        │
+│  │ (Agent mgmt)  │ │ (relay_send)  │ │ (Routing)     │        │
 │  └───────────────┘ └───────────────┘ └───────────────┘        │
 ├─────────────────────────────────────────────────────────────────┤
-│  Layer 3: Daemon                                                │
+│  Layer 3: SDK                                                   │
 │  ┌───────────────┐ ┌───────────────┐ ┌───────────────┐        │
-│  │ Server        │ │ Connection    │ │ Router        │        │
-│  │ (Lifecycle)   │ │ (State M/C)   │ │ (Routing)     │        │
+│  │ Client        │ │ Workflows     │ │ Relay Adapter │        │
+│  │ (Stdio I/O)   │ │ (DAG runner)  │ │ (High-level)  │        │
 │  └───────────────┘ └───────────────┘ └───────────────┘        │
 ├─────────────────────────────────────────────────────────────────┤
-│  Layer 4: Protocol                                              │
+│  Layer 4: Storage                                               │
 │  ┌───────────────┐ ┌───────────────┐                          │
-│  │ Types         │ │ Framing       │                          │
-│  │ (Envelopes)   │ │ (Wire format) │                          │
-│  └───────────────┘ └───────────────┘                          │
-├─────────────────────────────────────────────────────────────────┤
-│  Layer 5: Storage                                               │
-│  ┌───────────────┐ ┌───────────────┐                          │
-│  │ Adapter       │ │ SQLite        │                          │
+│  │ Adapter       │ │ JSONL         │                          │
 │  │ (Interface)   │ │ (Persistence) │                          │
 │  └───────────────┘ └───────────────┘                          │
 ├─────────────────────────────────────────────────────────────────┤
-│  Layer 6: Dashboard                                             │
+│  Layer 5: Dashboard                                             │
 │  ┌───────────────┐ ┌───────────────┐                          │
-│  │ Express       │ │ WebSocket     │                          │
+│  │ Next.js       │ │ WebSocket     │                          │
 │  │ (REST API)    │ │ (Real-time)   │                          │
 │  └───────────────┘ └───────────────┘                          │
 └─────────────────────────────────────────────────────────────────┘
@@ -146,50 +144,57 @@ Web UI for monitoring. Shows connected agents, message flow, real-time updates.
 
 ## 3. Component Deep Dive
 
-### 3.1 TmuxWrapper (`packages/wrapper/src/tmux-wrapper.ts`)
+### 3.1 Broker (`src/main.rs`)
 
-The TmuxWrapper is the most complex component. It bridges the gap between agent output and the relay system.
+The broker is a Rust binary (`agent-relay-broker`) that serves as the core runtime. It has several subcommands:
 
-#### Architecture
+- **`init`** — Starts as a broker hub, connecting to Relaycast and managing spawned agents via stdio protocol
+- **`pty`** — Wraps a single CLI in a PTY session with message injection
+- **`headless`** — Runs a provider (Claude, etc.) in headless/API mode
+- **`listen`** — Connects to Relaycast WebSocket for monitoring without wrapping a CLI
+- **`wrap`** — Internal command used by the SDK to wrap a CLI in a PTY with passthrough
+
+#### PTY Session Management
+
+The broker uses native PTY sessions (via `portable-pty`) instead of tmux:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                      TmuxWrapper                                 │
+│                      Broker Process                               │
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────┐  │
-│  │                   tmux session                            │  │
+│  │                   PTY Session                             │  │
 │  │  ┌────────────────────────────────────────────────────┐  │  │
 │  │  │              Agent Process (claude, etc.)          │  │  │
 │  │  │                                                    │  │  │
 │  │  │  Output: "I'll send a message to Bob"             │  │  │
-│  │  │  Output: "->relay:Bob Can you review auth.ts?"     │  │  │
+│  │  │  MCP call: relay_send(to: "Bob", message: "...")   │  │  │
 │  │  │                                                    │  │  │
 │  │  └────────────────────────────────────────────────────┘  │  │
 │  └──────────────────────────────────────────────────────────┘  │
 │                              │                                  │
-│                              │ capture-pane (every 200ms)       │
+│                              │ PTY output streaming              │
 │                              ▼                                  │
 │  ┌──────────────────────────────────────────────────────────┐  │
-│  │  OutputParser                                             │  │
-│  │  - Strip ANSI codes                                       │  │
-│  │  - Join continuation lines                                │  │
-│  │  - Extract ->relay: commands                               │  │
+│  │  MCP Tool Handler                                         │  │
+│  │  - Process MCP tool invocations from agents               │  │
+│  │  - Parse relay_send, relay_spawn, etc.                    │  │
 │  │  - Deduplicate (hash-based)                               │  │
 │  └──────────────────────────────────────────────────────────┘  │
 │                              │                                  │
 │                              ▼                                  │
 │  ┌──────────────────────────────────────────────────────────┐  │
-│  │  RelayClient                                              │  │
-│  │  - Connect to daemon                                      │  │
-│  │  - Send SEND envelope                                     │  │
-│  │  - Receive DELIVER envelope                               │  │
+│  │  Relaycast WebSocket                                      │  │
+│  │  - Send message to Relaycast cloud                        │  │
+│  │  - Receive messages from other agents                     │  │
+│  │  - Handle workspace authentication                        │  │
 │  └──────────────────────────────────────────────────────────┘  │
 │                              │                                  │
 │                              ▼                                  │
 │  ┌──────────────────────────────────────────────────────────┐  │
 │  │  Message Injection                                        │  │
-│  │  - Wait for idle (1.5s no output)                         │  │
-│  │  - tmux send-keys "Relay message from X: ..."             │  │
+│  │  - Wait for agent idle (configurable threshold)           │  │
+│  │  - Write to PTY stdin: "Relay message from X [id]: ..."   │  │
 │  │  - Press Enter                                            │  │
 │  └──────────────────────────────────────────────────────────┘  │
 │                                                                  │
@@ -198,399 +203,168 @@ The TmuxWrapper is the most complex component. It bridges the gap between agent 
 
 #### Key Implementation Details
 
-**1. Silent Background Polling**
-```typescript
-// Poll every 200ms, capture scrollback
-const { stdout } = await execAsync(
-  `tmux capture-pane -t ${sessionName} -p -J -S - 2>/dev/null`
-);
-```
-The `-J` flag joins wrapped lines. The `-S -` captures full scrollback history.
+**1. PTY-Based Agent Wrapping**
+The broker uses `portable-pty` for cross-platform PTY management, replacing the previous tmux-based approach. This eliminates the tmux dependency and provides more direct control over agent I/O.
 
 **2. ANSI Stripping**
-```typescript
-// Remove escape codes for pattern matching
-return str.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
-```
+Output is stripped of ANSI escape codes before pattern matching to handle terminal formatting.
 
-**3. Continuation Line Joining**
-When TUIs wrap long lines, `->relay:` commands can span multiple lines:
-```
-->relay:Bob This is a very long message that gets
-    wrapped by the terminal and continues here
-```
-The wrapper joins these back together.
+**3. MCP Tool Protocol**
+Agents communicate by invoking MCP tools (e.g., `relay_send`, `relay_spawn`, `relay_who`). The broker processes these tool calls and routes messages accordingly.
 
 **4. Message Deduplication**
-Uses a permanent hash set to prevent re-sending the same message:
-```typescript
-const msgHash = `${cmd.to}:${cmd.body}`;
-if (this.sentMessageHashes.has(msgHash)) return;
-this.sentMessageHashes.add(msgHash);
+Uses a hash-based dedup cache to prevent re-sending the same message:
+
+```rust
+let dedup = DedupCache::new();
+// Messages are hashed and checked before routing
 ```
 
 **5. Idle Detection for Injection**
-Waits 1.5 seconds after last output before injecting to avoid interrupting the agent:
-```typescript
-const timeSinceOutput = Date.now() - this.lastOutputTime;
-if (timeSinceOutput < 1500) {
-  setTimeout(() => this.checkForInjectionOpportunity(), 500);
-  return;
-}
-```
+Configurable idle threshold (default 30s) before injecting messages. The broker monitors agent output and waits for silence before delivering incoming messages.
 
 **6. CLI-Specific Handling**
-Different CLIs need different injection strategies:
-- **Claude/Codex**: Direct `send-keys` with literal text
-- **Gemini**: Uses `printf` because Gemini interprets input as shell commands
+Different CLIs need different injection strategies. The broker handles CLI-specific quirks for Claude, Codex, Gemini, Aider, and Goose.
 
-### 3.2 OutputParser (`packages/wrapper/src/parser.ts`)
+### 3.2 SDK (`packages/sdk/`)
 
-Extracts relay commands from agent output.
-
-#### Supported Formats
-
-**1. Inline Format (Primary)**
-```
-->relay:AgentName Your message here
-->relay:* Broadcast to everyone
-@thinking:AgentName Share reasoning (not displayed to user)
-```
-
-**2. Block Format (Structured)**
-```
-[[RELAY]]{"to":"Agent","type":"message","body":"content","data":{}}[[/RELAY]]
-```
-
-#### Pattern Matching
-
-The parser handles real-world terminal output complexity:
+The TypeScript SDK provides programmatic access to the broker:
 
 ```typescript
-// Allow common input prefixes: >, $, %, #, bullets, etc.
-const INLINE_RELAY = /^(?:\s*(?:[>$%#→➜›»●•◦‣⁃\-*⏺◆◇○□■]\s*)*)?->relay:(\S+)\s+(.+)$/;
+import { AgentRelayClient } from '@agent-relay/sdk';
+
+// Start broker and connect
+const client = await AgentRelayClient.start({ env: process.env });
+
+// Spawn agents in PTY sessions
+await client.spawnPty({ name: 'Worker', cli: 'claude', channels: ['general'] });
+
+// Listen for events
+client.on('event', (event) => console.log(event));
+
+// Clean up
+await client.release('Worker');
+await client.shutdown();
 ```
 
-This matches:
-- `->relay:Bob hello` (plain)
-- `  ->relay:Bob hello` (indented)
-- `> ->relay:Bob hello` (quoted)
-- `- ->relay:Bob hello` (bullet point)
-- `⏺ ->relay:Bob hello` (Claude's bullet)
+The SDK communicates with the broker via stdio using a JSON-based request/response protocol.
 
-#### Code Fence Awareness
-
-The parser ignores content inside code fences to prevent false positives:
-```typescript
-if (CODE_FENCE.test(stripped)) {
-  this.inCodeFence = !this.inCodeFence;
-}
-if (this.inCodeFence) {
-  return { command: null, output: line };
-}
-```
-
-### 3.3 Daemon Server (`packages/daemon/src/server.ts`)
-
-The central message broker.
-
-#### Lifecycle
-
-```
-1. Start
-   └── Clean up stale socket file
-   └── Create Unix domain socket
-   └── Set permissions (0o600 - owner only)
-   └── Write PID file
-   └── Initialize storage adapter
-
-2. Accept Connection
-   └── Create Connection object
-   └── Wait for HELLO
-   └── Send WELCOME
-   └── Register with Router
-
-3. Route Messages
-   └── Receive SEND from connection
-   └── Look up target in Router
-   └── Create DELIVER envelope
-   └── Send to target connection
-   └── Persist to storage
-
-4. Stop
-   └── Close all connections
-   └── Remove socket file
-   └── Remove PID file
-   └── Close storage
-```
-
-#### agents.json Updates
-
-The daemon maintains an `agents.json` file for dashboard consumption:
-```typescript
-private writeAgentsFile(): void {
-  const agents = this.router.getAgents().map(name => ({
-    name,
-    cli: connection?.cli,
-    connectedAt: new Date().toISOString(),
-  }));
-  fs.writeFileSync(agentsPath, JSON.stringify({ agents }, null, 2));
-}
-```
-
-### 3.4 Connection State Machine (`packages/daemon/src/connection.ts`)
-
-Each client connection follows a strict state machine:
-
-```
-                    ┌─────────────┐
-                    │ CONNECTING  │
-                    └──────┬──────┘
-                           │
-                           ▼
-                    ┌─────────────┐
-          ┌─────────│ HANDSHAKING │─────────┐
-          │         └──────┬──────┘         │
-          │                │                │
-          │ error          │ HELLO/WELCOME  │ error
-          │                ▼                │
-          │         ┌─────────────┐         │
-          │         │   ACTIVE    │─────────┤
-          │         └──────┬──────┘         │
-          │                │                │
-          │                │ BYE/error      │
-          │                ▼                │
-          │         ┌─────────────┐         │
-          └────────▶│  CLOSING    │◀────────┘
-                    └──────┬──────┘
-                           │
-                           ▼
-                    ┌─────────────┐
-                    │   CLOSED    │
-                    └─────────────┘
-```
-
-#### Heartbeat Mechanism
-
-The daemon sends PING every 5 seconds. If no PONG within 10 seconds, connection is terminated:
-```typescript
-if (now - this.lastPongReceived > this.config.heartbeatMs * 2) {
-  this.handleError(new Error('Heartbeat timeout'));
-}
-```
-
-### 3.5 Router (`packages/daemon/src/router.ts`)
-
-Manages agent registry and message routing.
-
-#### Routing Logic
+#### High-Level API (`AgentRelay`)
 
 ```typescript
-route(from: RoutableConnection, envelope: Envelope<SendPayload>): void {
-  const to = envelope.to;
+import { AgentRelay } from '@agent-relay/sdk';
 
-  if (to === '*') {
-    // Broadcast to all (except sender)
-    this.broadcast(senderName, envelope, topic);
-  } else if (to) {
-    // Direct message
-    this.sendDirect(senderName, to, envelope);
-  }
-}
+const relay = new AgentRelay();
+
+// Idle detection
+relay.onAgentIdle = ({ name, idleSecs }) => {
+  console.log(`${name} idle for ${idleSecs}s`);
+};
+
+const agent = await relay.spawnPty({
+  name: 'Worker',
+  cli: 'claude',
+  channels: ['general'],
+  idleThresholdSecs: 30,
+});
+
+await agent.waitForIdle(120_000);
+await relay.shutdown();
 ```
 
-#### Topic Subscriptions
+### 3.3 Relaycast Cloud
 
-Agents can subscribe to topics for filtered broadcasts:
-```typescript
-// Agent subscribes
-router.subscribe('Alice', 'code-review');
+Messages are routed through Relaycast, a cloud WebSocket service:
 
-// Later, broadcast only reaches topic subscribers
-envelope.topic = 'code-review';
-router.route(connection, envelope); // Only goes to subscribed agents
-```
+- Workspace-based isolation (each project gets a workspace)
+- Agent registration and presence
+- Channel-based messaging
+- Direct messages and threading
+- Persistent message history
 
-#### Sequence Numbers
+### 3.4 Workflow Engine (`packages/sdk/src/workflows/`)
 
-Each message gets a sequence number per (topic, peer) stream for ordering:
-```typescript
-getNextSeq(topic: string, peer: string): number {
-  const key = `${topic}:${peer}`;
-  const seq = (this.sequences.get(key) ?? 0) + 1;
-  this.sequences.set(key, seq);
-  return seq;
-}
-```
+The SDK includes a DAG-based workflow runner for multi-step agent coordination:
 
-### 3.6 RelayClient (`packages/wrapper/src/client.ts`)
-
-Client-side daemon connection with automatic reconnection.
-
-#### State Machine
-
-```
-┌──────────────┐
-│ DISCONNECTED │◀────────────────────────────────┐
-└──────┬───────┘                                 │
-       │ connect()                               │
-       ▼                                         │
-┌──────────────┐                                 │
-│  CONNECTING  │─────error──────────────────────▶│
-└──────┬───────┘                                 │
-       │ socket connected                        │
-       ▼                                         │
-┌──────────────┐                                 │
-│ HANDSHAKING  │─────error──────────────────────▶│
-└──────┬───────┘                                 │
-       │ WELCOME received                        │
-       ▼                                         │
-┌──────────────┐         ┌─────────┐            │
-│    READY     │◀───────▶│ BACKOFF │────────────┘
-└──────────────┘         └─────────┘
-       │                      ▲
-       │ disconnect           │ reconnect
-       └──────────────────────┘
-```
-
-#### Reconnection Strategy
-
-Exponential backoff with jitter:
-```typescript
-const jitter = Math.random() * 0.3 + 0.85; // 0.85 - 1.15
-const delay = Math.min(this.reconnectDelay * jitter, 30000);
-this.reconnectDelay *= 2; // Exponential growth
-```
-
-Starting at 100ms, max 30 seconds, up to 10 attempts.
+- Define workflows as YAML templates or programmatically via `WorkflowBuilder`
+- Steps can have dependencies, creating a directed acyclic graph
+- Built-in templates for common patterns: code review, bug fix, feature development
+- Step output chaining via `{{steps.X.output}}` template syntax
 
 ---
 
 ## 4. Protocol Specification
 
-### 4.1 Wire Format
+### 4.1 MCP Tool Protocol
 
-Messages use a simple length-prefixed framing:
+Agents communicate by invoking MCP tools provided by the broker:
 
-```
-┌─────────────────┬─────────────────────────────────┐
-│  Length (4B)    │  JSON Payload (UTF-8)           │
-│  Big-endian     │  (up to 1 MiB)                  │
-└─────────────────┴─────────────────────────────────┘
-```
+| Tool                           | Description                           |
+| ------------------------------ | ------------------------------------- |
+| `relay_send(to, message)`      | Send a message to an agent or channel |
+| `relay_spawn(name, cli, task)` | Spawn a worker agent                  |
+| `relay_release(name)`          | Release a worker agent                |
+| `relay_who()`                  | List connected agents                 |
+| `relay_inbox()`                | Check incoming messages               |
+| `relay_status()`               | Check connection status               |
 
-Example frame:
-```
-Header: 0x00 0x00 0x00 0x3A  (58 bytes)
-Payload: {"v":1,"type":"HELLO","id":"abc","ts":1234,"payload":{...}}
-```
+Special `to` values for `relay_send`:
+| Value | Behavior |
+|-------|----------|
+| `AgentName` | Direct message |
+| `*` | Broadcast to all |
+| `#channel` | Channel message |
 
-### 4.2 Envelope Structure
+### 4.2 Broker Stdio Protocol
 
-Every message follows this structure:
+The SDK communicates with the broker binary via JSON-line stdio:
 
-```typescript
-interface Envelope<T = unknown> {
-  v: number;           // Protocol version (always 1)
-  type: MessageType;   // Message type
-  id: string;          // UUID, unique per sender
-  ts: number;          // Unix timestamp (milliseconds)
-  from?: string;       // Sender name (set by daemon)
-  to?: string | '*';   // Recipient or broadcast
-  topic?: string;      // Optional topic/channel
-  payload: T;          // Type-specific payload
-}
+**Requests** (SDK → Broker):
+
+```json
+{ "id": "uuid", "method": "spawn_pty", "params": { "name": "Worker", "cli": "claude" } }
 ```
 
-### 4.3 Message Types
+**Responses** (Broker → SDK):
 
-| Type | Direction | Purpose |
-|------|-----------|---------|
-| `HELLO` | Client → Daemon | Initiate handshake, identify agent |
-| `WELCOME` | Daemon → Client | Confirm session, provide config |
-| `SEND` | Client → Daemon | Send message to another agent |
-| `DELIVER` | Daemon → Client | Deliver message from another agent |
-| `ACK` | Both | Acknowledge message receipt |
-| `NACK` | Both | Negative acknowledgment |
-| `PING` | Daemon → Client | Heartbeat check |
-| `PONG` | Client → Daemon | Heartbeat response |
-| `ERROR` | Daemon → Client | Error notification |
-| `BUSY` | Daemon → Client | Backpressure signal |
-| `SUBSCRIBE` | Client → Daemon | Subscribe to topic |
-| `UNSUBSCRIBE` | Client → Daemon | Unsubscribe from topic |
-| `BYE` | Both | Graceful disconnect |
-
-### 4.4 Handshake Flow
-
-```
-Client                              Daemon
-  │                                   │
-  │────────── HELLO ─────────────────▶│
-  │  {                                │
-  │    agent: "Alice",                │
-  │    cli: "claude",                 │
-  │    capabilities: {                │
-  │      ack: true,                   │
-  │      resume: true,                │
-  │      max_inflight: 256,           │
-  │      supports_topics: true        │
-  │    }                              │
-  │  }                                │
-  │                                   │
-  │◀───────── WELCOME ────────────────│
-  │  {                                │
-  │    session_id: "...",             │
-  │    resume_token: "...",           │
-  │    server: {                      │
-  │      max_frame_bytes: 1048576,    │
-  │      heartbeat_ms: 5000           │
-  │    }                              │
-  │  }                                │
-  │                                   │
-  │         [Connection ACTIVE]       │
-  │                                   │
+```json
+{ "id": "uuid", "result": { "ok": true } }
 ```
 
-### 4.5 Message Delivery Flow
+**Events** (Broker → SDK):
 
-```
-Alice                    Daemon                    Bob
-  │                        │                        │
-  │──── SEND ─────────────▶│                        │
-  │  {                     │                        │
-  │    to: "Bob",          │                        │
-  │    payload: {          │                        │
-  │      kind: "message",  │                        │
-  │      body: "Hello!"    │                        │
-  │    }                   │                        │
-  │  }                     │                        │
-  │                        │                        │
-  │                        │────── DELIVER ────────▶│
-  │                        │  {                     │
-  │                        │    from: "Alice",      │
-  │                        │    payload: {...},     │
-  │                        │    delivery: {         │
-  │                        │      seq: 1,           │
-  │                        │      session_id: "..." │
-  │                        │    }                   │
-  │                        │  }                     │
-  │                        │                        │
-  │                        │◀─────── ACK ───────────│
-  │                        │  { ack_id: "...",      │
-  │                        │    seq: 1 }            │
-  │                        │                        │
+```json
+{ "event": "agent_idle", "data": { "name": "Worker", "idle_secs": 30 } }
 ```
 
-### 4.6 Payload Kinds
+### 4.3 Spawn/Release Protocol
 
-Messages can have different semantic kinds:
+```
+# Spawn
+KIND: spawn
+NAME: WorkerName
+CLI: claude
 
-| Kind | Purpose |
-|------|---------|
-| `message` | General communication |
-| `action` | Request to perform a task |
-| `state` | Status update |
-| `thinking` | Shared reasoning (for transparency) |
+Task description here.
+
+# Release
+KIND: release
+NAME: WorkerName
+```
+
+### 4.4 Message Delivery
+
+```
+Alice (Agent)          Broker              Relaycast           Bob (Agent)
+  │                      │                    │                    │
+  │── relay_send() ─────▶│                    │                    │
+  │                      │── WebSocket msg ──▶│                    │
+  │                      │                    │── WebSocket msg ──▶│ (Bob's broker)
+  │                      │                    │                    │
+  │                      │                    │      inject into PTY
+  │                      │                    │     "Relay message  │
+  │                      │                    │      from Alice..." │
+```
 
 ---
 
@@ -600,218 +374,70 @@ Messages can have different semantic kinds:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ 1. AGENT OUTPUT                                                         │
-│    Agent (Claude) produces text: "->relay:Bob Can you review auth.ts?"   │
+│ 1. AGENT INVOKES MCP TOOL                                               │
+│    Agent calls: relay_send(to: "Bob", message: "Can you review auth.ts?")│
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ 2. TMUX CAPTURE                                                         │
-│    TmuxWrapper polls: `tmux capture-pane -t session -p -J -S -`         │
-│    Retrieves full scrollback buffer                                     │
+│ 2. BROKER PROCESSES TOOL CALL                                           │
+│    Broker receives MCP tool invocation                                  │
+│    Deduplication check (hash-based)                                     │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ 3. OUTPUT PARSING                                                       │
-│    OutputParser:                                                        │
-│    - Strips ANSI escape codes                                           │
-│    - Joins continuation lines                                           │
-│    - Matches /^->relay:(\S+)\s+(.+)$/                                    │
-│    - Returns: { to: "Bob", body: "Can you review auth.ts?" }           │
+│ 4. RELAYCAST ROUTING                                                    │
+│    Broker sends message via WebSocket to Relaycast cloud                │
+│    Relaycast routes to Bob's workspace/channel                          │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ 4. DEDUPLICATION CHECK                                                  │
-│    Hash: "Bob:Can you review auth.ts?"                                  │
-│    If seen before → skip                                                │
-│    If new → add to hash set, continue                                   │
+│ 5. BOB'S BROKER RECEIVES                                                │
+│    WebSocket delivers message to Bob's broker                           │
+│    Message queued for injection                                         │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ 5. RELAY CLIENT SEND                                                    │
-│    Creates SEND envelope:                                               │
-│    {                                                                    │
-│      v: 1, type: "SEND", id: "uuid", ts: 1234567890,                   │
-│      to: "Bob",                                                         │
-│      payload: { kind: "message", body: "Can you review auth.ts?" }     │
-│    }                                                                    │
-│    Encodes with 4-byte length prefix, writes to socket                  │
+│ 6. IDLE DETECTION + INJECTION                                           │
+│    Wait for idle threshold (no output from Bob's agent)                 │
+│    Write to PTY stdin: "Relay message from Alice [abc12345]:            │
+│                         Can you review auth.ts?"                        │
+│    Press Enter                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ 6. DAEMON RECEIVES                                                      │
-│    Connection.handleData() → FrameParser.push() → processFrame()        │
-│    Validates state is ACTIVE, forwards to Router                        │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│ 7. ROUTER PROCESSES                                                     │
-│    router.route(connection, envelope):                                  │
-│    - Looks up "Bob" in agents map                                       │
-│    - Creates DELIVER envelope with sequence number                      │
-│    - Sends to Bob's connection                                          │
-│    - Persists to SQLite storage                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│ 8. BOB'S CLIENT RECEIVES                                                │
-│    RelayClient.handleDeliver():                                         │
-│    - Sends ACK back to daemon                                           │
-│    - Calls onMessage callback                                           │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│ 9. MESSAGE QUEUED                                                       │
-│    TmuxWrapper.handleIncomingMessage():                                 │
-│    - Adds to messageQueue                                               │
-│    - Schedules injection check                                          │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│ 10. IDLE DETECTION                                                      │
-│     Wait for 1.5 seconds of no output from Bob's agent                  │
-│     If still active output → retry in 500ms                             │
-│     If idle → proceed to injection                                      │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│ 11. MESSAGE INJECTION                                                   │
-│     tmux send-keys -t session -l "Relay message from Alice [abc12345]:  │
-│                                   Can you review auth.ts?"              │
-│     tmux send-keys -t session Enter                                     │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│ 12. BOB'S AGENT RECEIVES                                                │
-│     The message appears as user input in Bob's terminal                 │
-│     Bob's agent (Codex) processes it as a new message                   │
+│ 7. BOB'S AGENT PROCESSES                                                │
+│    The message appears as user input in Bob's PTY                       │
+│    Bob's agent processes it as a new message                            │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 5.2 Broadcast Flow
 
-When sending to `->relay:*`:
+When sending to `TO: *`:
 
 ```
-Alice                    Daemon                    Bob, Carol, Dave
+Alice                    Relaycast                  Bob, Carol, Dave
   │                        │                        │
-  │──── SEND ─────────────▶│                        │
+  │──── message ──────────▶│                        │
   │  { to: "*", ... }      │                        │
   │                        │                        │
-  │                        │──── DELIVER ──────────▶│ Bob
-  │                        │──── DELIVER ──────────▶│ Carol
-  │                        │──── DELIVER ──────────▶│ Dave
+  │                        │──── deliver ──────────▶│ Bob
+  │                        │──── deliver ──────────▶│ Carol
+  │                        │──── deliver ──────────▶│ Dave
   │                        │                        │
   │                        │ (Alice excluded)       │
 ```
 
 ---
 
-## 6. State Machines
+## 6. Data Storage
 
-### 6.1 Connection State Machine (Daemon-side)
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                                                                 │
-│  CONNECTING ─────────────▶ HANDSHAKING ─────────────▶ ACTIVE   │
-│       │                         │                        │      │
-│       │                         │                        │      │
-│       │         ┌───────────────┴────────────────────────┤      │
-│       │         │                                        │      │
-│       │         ▼                                        ▼      │
-│       │      ERROR ──────────────────────────────────▶ CLOSED  │
-│       │                                                  ▲      │
-│       │                                                  │      │
-│       └──────────────────────────────────────────────────┘      │
-│                                                                 │
-│  Transitions:                                                   │
-│  - CONNECTING → HANDSHAKING: Socket accepted                    │
-│  - HANDSHAKING → ACTIVE: Valid HELLO received, WELCOME sent     │
-│  - HANDSHAKING → ERROR: Invalid HELLO or timeout                │
-│  - ACTIVE → CLOSING: BYE received or sent                       │
-│  - ACTIVE → ERROR: Protocol error or heartbeat timeout          │
-│  - CLOSING → CLOSED: Socket closed                              │
-│  - ERROR → CLOSED: Cleanup complete                             │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### 6.2 Client State Machine (Wrapper-side)
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                                                                 │
-│                      ┌────────────────┐                         │
-│                      │  DISCONNECTED  │◀──────────┐             │
-│                      └───────┬────────┘           │             │
-│                              │ connect()          │             │
-│                              ▼                    │             │
-│                      ┌────────────────┐           │             │
-│            ┌─────────│  CONNECTING   │───────────┤             │
-│            │         └───────┬────────┘           │             │
-│            │                 │ connected          │             │
-│            │                 ▼                    │             │
-│            │         ┌────────────────┐           │             │
-│            │ error   │  HANDSHAKING  │───────────┤             │
-│            │         └───────┬────────┘           │             │
-│            │                 │ WELCOME            │             │
-│            │                 ▼                    │             │
-│            │         ┌────────────────┐           │             │
-│            │         │     READY      │           │             │
-│            │         └───────┬────────┘           │             │
-│            │                 │ disconnect         │             │
-│            │                 ▼                    │             │
-│            │         ┌────────────────┐           │             │
-│            └────────▶│    BACKOFF    │───────────┘             │
-│                      └────────────────┘   max attempts         │
-│                              │                                  │
-│                              │ timer expires                    │
-│                              └──────▶ (retry connect())         │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### 6.3 Parser State Machine
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                                                                 │
-│  ┌─────────────┐          ┌─────────────┐                      │
-│  │   NORMAL    │◀────────▶│  IN_FENCE   │                      │
-│  │             │   ```    │             │                      │
-│  └──────┬──────┘          └─────────────┘                      │
-│         │                                                       │
-│         │ [[RELAY]]                                             │
-│         ▼                                                       │
-│  ┌─────────────┐                                               │
-│  │  IN_BLOCK   │──── [[/RELAY]] ────▶ Parse JSON, emit command │
-│  │             │                                               │
-│  └─────────────┘                                               │
-│                                                                 │
-│  State Tracking:                                                │
-│  - inCodeFence: boolean - ignore ->relay inside code fences    │
-│  - inBlock: boolean - buffering [[RELAY]]...[[/RELAY]]         │
-│  - blockBuffer: string - accumulated block content             │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 7. Data Storage
-
-### 7.1 Storage Architecture
+### 6.1 Storage Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -828,75 +454,25 @@ Alice                    Daemon                    Bob, Carol, Dave
               │               │               │
               ▼               ▼               ▼
        ┌───────────┐   ┌───────────┐   ┌───────────┐
-       │  SQLite   │   │  Memory   │   │ PostgreSQL│
-       │  Adapter  │   │  Adapter  │   │ (Planned) │
+       │  JSONL    │   │  Memory   │   │   DLQ     │
+       │  Adapter  │   │  Adapter  │   │  Adapter  │
        └───────────┘   └───────────┘   └───────────┘
 ```
 
-### 7.2 SQLite Schema
-
-```sql
-CREATE TABLE messages (
-  id TEXT PRIMARY KEY,           -- UUID
-  ts INTEGER NOT NULL,           -- Unix timestamp (ms)
-  sender TEXT NOT NULL,          -- Sender agent name
-  recipient TEXT NOT NULL,       -- Recipient agent name
-  topic TEXT,                    -- Optional topic
-  kind TEXT NOT NULL,            -- message/action/state/thinking
-  body TEXT NOT NULL,            -- Message content
-  data TEXT,                     -- JSON blob for structured data
-  delivery_seq INTEGER,          -- Sequence number for ordering
-  delivery_session_id TEXT,      -- Session that received it
-  session_id TEXT                -- Sender's session
-);
-
--- Performance indexes
-CREATE INDEX idx_messages_ts ON messages(ts);
-CREATE INDEX idx_messages_sender ON messages(sender);
-CREATE INDEX idx_messages_recipient ON messages(recipient);
-CREATE INDEX idx_messages_topic ON messages(topic);
-```
-
-**WAL Mode**: Enabled for better concurrent access.
-
-### 7.3 Storage Locations
+### 6.2 File Locations
 
 ```
-/tmp/agent-relay/{projectId}/
-├── relay.sock          # Unix domain socket
-├── relay.sock.pid      # Daemon PID file
-├── messages.sqlite     # Message database
-├── agents.json         # Connected agents (for dashboard)
-└── team/
-    └── {agentName}/
-        └── inbox.md    # File-based inbox (optional)
+.agent-relay/
+├── credentials/             # Auth tokens
+├── state.json               # Broker state (agents, channels)
+└── pending/                 # Pending deliveries
 ```
-
-### 7.4 Project Namespace Isolation
-
-Each project gets isolated storage based on project root hash:
-
-```typescript
-function getProjectId(projectRoot: string): string {
-  const hash = crypto.createHash('sha256');
-  hash.update(projectRoot);
-  return hash.digest('hex').substring(0, 12);
-}
-```
-
-Project roots are detected by looking for markers:
-- `.git`
-- `package.json`
-- `Cargo.toml`
-- `go.mod`
-- `pyproject.toml`
-- `.agent-relay`
 
 ---
 
-## 8. Security Model
+## 7. Security Model
 
-### 8.1 Trust Boundaries
+### 7.1 Trust Boundaries
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -906,244 +482,167 @@ Project roots are detected by looking for markers:
 │  │                 User's Terminal Session                   │  │
 │  │                                                           │  │
 │  │  Agents run with user's permissions                       │  │
-│  │  Socket permissions: 0o600 (owner only)                   │  │
-│  │  No network exposure                                      │  │
+│  │  Broker authenticates via Relaycast API keys              │  │
+│  │  WebSocket connection is TLS-encrypted                    │  │
 │  │                                                           │  │
 │  └──────────────────────────────────────────────────────────┘  │
 │                                                                 │
-│  Assumptions:                                                   │
-│  - All agents on the machine are trusted                        │
-│  - No authentication between agents                             │
-│  - Any process that can access the socket can send messages     │
-│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │                 Relaycast Cloud                            │  │
+│  │                                                           │  │
+│  │  Workspace isolation via API keys                         │  │
+│  │  Agent registration and authentication                    │  │
+│  │  Message persistence and routing                          │  │
+│  │                                                           │  │
+│  └──────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 8.2 Current Security Properties
+### 7.2 Current Security Properties
 
-| Property | Status | Notes |
-|----------|--------|-------|
-| Local-only communication | ✅ | Unix socket, no network |
-| Socket permissions | ✅ | 0o600 (owner read/write only) |
-| No authentication | ⚠️ | Any local process can connect |
-| No encryption | ⚠️ | Messages in plaintext on socket |
-| No message signing | ⚠️ | Sender identity trusted |
-| Rate limiting | ❌ | Not implemented |
-| Message validation | ⚠️ | Basic field presence checks only |
-
-### 8.3 Threat Model
-
-**In Scope:**
-- Local process isolation (handled by Unix socket permissions)
-- Preventing accidental message loops (deduplication)
-- Graceful handling of malformed messages
-
-**Out of Scope (Explicitly Not Protected Against):**
-- Malicious local processes with same user permissions
-- Message spoofing by compromised agents
-- Denial of service from local processes
-- Data exfiltration through relay messages
-
-### 8.4 Security Recommendations
-
-For sensitive environments:
-1. Run agents under separate user accounts
-2. Use filesystem ACLs for additional socket protection
-3. Monitor message logs for anomalies
-4. Consider adding TLS for socket encryption (not currently implemented)
+| Property               | Status | Notes                           |
+| ---------------------- | ------ | ------------------------------- |
+| Workspace isolation    | ✅     | Separate API keys per workspace |
+| TLS encryption         | ✅     | WebSocket over TLS to Relaycast |
+| Agent authentication   | ✅     | API key + agent registration    |
+| Local file permissions | ✅     | Outbox/inbox owned by user      |
+| Rate limiting          | ⚠️     | Server-side via Relaycast       |
+| Message validation     | ⚠️     | Basic field presence checks     |
 
 ---
 
-## 9. Design Decisions & Trade-offs
+## 8. Design Decisions & Trade-offs
 
-### 9.1 Why Output Parsing Instead of API Integration?
+### 8.1 Why a Rust Broker Instead of Node.js Daemon?
 
-**Decision**: Parse agent stdout for `->relay:` patterns instead of modifying agent code.
-
-**Rationale**:
-- Works with any CLI agent without modification
-- No vendor lock-in or API dependencies
-- Agents naturally produce text - leverage this
-- Users see exactly what agents communicate
-
-**Trade-offs**:
-- ❌ Parsing is inherently fragile (ANSI codes, line wrapping)
-- ❌ Can miss messages in edge cases
-- ❌ No structured validation of message content
-- ✅ Zero changes to Claude, Codex, or other agents
-- ✅ Transparent - users see `->relay:` in agent output
-
-### 9.2 Why Tmux Instead of Direct PTY?
-
-**Decision**: Wrap agents in tmux sessions rather than implementing our own PTY handling.
+**Decision**: Replace the Node.js daemon with a Rust binary.
 
 **Rationale**:
-- Tmux provides mature terminal emulation
-- Users can detach/reattach to sessions
-- Scrollback buffer capture is reliable
-- Mouse scroll and copy/paste work naturally
+
+- Single binary distribution — no Node.js runtime required
+- Lower memory footprint and faster startup
+- Native PTY support via `portable-pty`
+- Better concurrency model for managing multiple agents
 
 **Trade-offs**:
-- ❌ Dependency on tmux installation
-- ❌ Slightly more complex setup
-- ❌ Platform limitations (tmux on Windows requires WSL)
-- ✅ Battle-tested terminal handling
-- ✅ User can interact with raw session if needed
 
-### 9.3 Why Unix Sockets Instead of TCP?
+- ❌ Requires cross-compilation for multiple platforms
+- ❌ Harder to prototype new features quickly
+- ✅ Zero runtime dependencies for users
+- ✅ Sub-millisecond message handling
+- ✅ Single binary install via curl
 
-**Decision**: Use Unix domain sockets for daemon communication.
+### 8.2 Why PTY Instead of Tmux?
+
+**Decision**: Use native PTY sessions instead of tmux.
 
 **Rationale**:
-- No network exposure by default
-- Filesystem permissions for access control
-- Lower overhead than TCP
-- Natural fit for single-machine communication
+
+- Eliminates tmux as a dependency
+- More direct control over agent I/O
+- Works on platforms without tmux
+- Better process lifecycle management
 
 **Trade-offs**:
-- ❌ No remote agent communication (by design)
-- ❌ Platform-specific (Windows support limited)
-- ✅ Security through file permissions
-- ✅ No port conflicts
 
-### 9.4 Why Inject Messages as User Input?
+- ❌ Users cannot detach/reattach to agent sessions directly
+- ✅ No dependency installation required
+- ✅ Cross-platform (including Windows)
+- ✅ More reliable output capture
 
-**Decision**: Inject incoming messages by typing them into the agent's terminal.
+### 8.3 Why MCP Tools Instead of Output Parsing?
+
+**Decision**: Use MCP tools (`relay_send()`, `relay_spawn()`, etc.) instead of inline output parsing (`->relay:Target message`).
 
 **Rationale**:
-- Agents treat messages as natural user requests
-- No modification to agent input handling
-- Works with any CLI agent
+
+- Native integration with AI agent tool-calling capabilities
+- Structured parameters with type safety
+- No line-wrapping or ANSI code issues
+- Works reliably across all MCP-compatible CLIs
 
 **Trade-offs**:
-- ❌ Timing-sensitive (must wait for agent idle)
-- ❌ Can interrupt agent mid-thought
-- ❌ Long messages get truncated
-- ✅ Universal compatibility
-- ✅ Natural conversational flow
 
-### 9.5 Why File-Based Inbox as Backup?
+- ❌ Requires MCP-compatible CLI
+- ✅ No parsing ambiguity
+- ✅ Supports multi-line messages naturally
+- ✅ Structured parameters and return values
+- ✅ Single-step invocation (no file write + trigger)
 
-**Decision**: Optionally write messages to `inbox.md` file in addition to terminal injection.
+### 8.4 Why Relaycast Cloud Instead of Local Sockets?
+
+**Decision**: Route messages through Relaycast cloud WebSocket service.
 
 **Rationale**:
-- Agents can read inbox at their convenience
-- Survives terminal buffer overflow
-- Provides message history
-- Some agents read files more reliably than terminal input
+
+- Cross-machine agent communication
+- Persistent message history
+- Workspace management and agent presence
+- Dashboard integration
 
 **Trade-offs**:
-- ❌ Agents must be instructed to check inbox
-- ❌ Delayed message processing
-- ✅ No message loss
-- ✅ Works even if injection fails
 
-### 9.6 Why SQLite for Storage?
-
-**Decision**: Use SQLite for message persistence.
-
-**Rationale**:
-- Zero configuration
-- Single file, easy to back up
-- Fast enough for message volume
-- WAL mode handles concurrent access
-
-**Trade-offs**:
-- ❌ Not suitable for distributed deployment
-- ❌ Limited query capabilities vs. full database
-- ✅ No external dependencies
-- ✅ Works offline
+- ❌ Requires internet connection
+- ❌ Introduces cloud dependency
+- ✅ Cross-machine and cross-project messaging
+- ✅ Persistent history and search
+- ✅ Team collaboration features
 
 ---
 
-## 10. Known Limitations
+## 9. Known Limitations
 
-### 10.1 Message Delivery Reliability
+### 9.1 Message Delivery Reliability
 
-| Issue | Impact | Mitigation |
-|-------|--------|------------|
-| Messages can be lost if agent is busy | Medium | Idle detection, file inbox |
-| No delivery confirmation to sender | Medium | ACK exists but not surfaced |
-| Dedup memory grows unbounded | Low | Restart periodically |
+| Issue                                 | Impact | Mitigation                          |
+| ------------------------------------- | ------ | ----------------------------------- |
+| Messages can be lost if agent is busy | Medium | Idle detection, retry logic         |
+| WebSocket disconnection               | Medium | Automatic reconnection with backoff |
+| Dedup cache memory growth             | Low    | Cache size limits                   |
 
-### 10.2 Terminal Handling
+### 9.2 Platform Support
 
-| Issue | Impact | Mitigation |
-|-------|--------|------------|
-| ANSI codes can confuse parser | Low | Aggressive stripping |
-| Long messages truncated | Medium | Show truncation notice |
-| Line wrapping breaks patterns | Medium | Continuation line joining |
-| Code fences can hide commands | Low | Fence state tracking |
+| Platform | Status     | Notes                        |
+| -------- | ---------- | ---------------------------- |
+| Linux    | ✅ Full    | Primary development platform |
+| macOS    | ✅ Full    | Well tested                  |
+| Windows  | ⚠️ Partial | PTY support varies           |
 
-### 10.3 Timing Issues
+### 9.3 Scalability
 
-| Issue | Impact | Mitigation |
-|-------|--------|------------|
-| Injection can interrupt agent | Medium | 1.5s idle wait |
-| Polling has 200ms latency | Low | Acceptable for most use cases |
-| Race between poll and injection | Low | Queue-based injection |
-
-### 10.4 Platform Support
-
-| Platform | Status | Notes |
-|----------|--------|-------|
-| Linux | ✅ Full | Primary development platform |
-| macOS | ✅ Full | Well tested |
-| Windows | ⚠️ Partial | Requires WSL for tmux |
-
-### 10.5 Scalability
-
-| Metric | Current Limit | Notes |
-|--------|---------------|-------|
-| Concurrent agents | ~50 | Limited by daemon resources |
-| Message rate | ~100/sec | SQLite bottleneck |
-| Message size | 1 MiB | Protocol limit |
-| Storage retention | Unbounded | No automatic cleanup |
+| Metric            | Current Limit | Notes                            |
+| ----------------- | ------------- | -------------------------------- |
+| Concurrent agents | ~50           | Limited by broker resources      |
+| Message rate      | High          | Limited by Relaycast rate limits |
+| Message size      | ~1 MiB        | Practical limit                  |
 
 ---
 
-## 11. Future Considerations
+## 10. Future Considerations
 
-### 11.1 Potential Enhancements
+### 10.1 Potential Enhancements
 
 **Reliability**:
-- Persistent session resume tokens
-- Guaranteed delivery with retry
-- Message acknowledgment surfacing
 
-**Security**:
-- Agent authentication tokens
-- Message signing
-- Encrypted socket communication
-
-**Scalability**:
-- PostgreSQL storage adapter
-- Multiple daemon instances
-- Message queue integration
+- Guaranteed delivery with acknowledgment
+- Persistent local queue for offline operation
+- Message ordering guarantees
 
 **Features**:
-- Agent discovery protocol
+
 - Typed message schemas
 - Priority queues
-- Message threading
+- Advanced workflow patterns
 
-### 11.2 Architectural Evolution
-
-The current architecture is intentionally simple. Future evolution might include:
+### 10.2 Architectural Evolution
 
 ```
 Current:
-  Agent ──▶ Tmux ──▶ Parser ──▶ Socket ──▶ Daemon ──▶ Socket ──▶ Agent
+  Agent ──▶ MCP Tools ──▶ Broker ──▶ Relaycast WS ──▶ Agent
 
-Future (hypothetical):
-  Agent ──▶ Native SDK ──▶ gRPC ──▶ Message Broker ──▶ gRPC ──▶ Agent
-                                         │
-                                         ▼
-                                   Distributed
-                                    Storage
+The MCP tool protocol with Rust broker has proven effective for
+the target use case of multi-agent coordination across any CLI tool.
 ```
-
-However, the output-parsing approach has proven remarkably effective for the target use case of local multi-agent coordination.
 
 ---
 
@@ -1152,51 +651,56 @@ However, the output-parsing approach has proven remarkably effective for the tar
 ```
 agent-relay/
 ├── src/
+│   ├── main.rs                  # Broker entry point (init, pty, listen, wrap)
+│   ├── lib.rs                   # Library exports (auth, dedup, protocol, etc.)
+│   ├── spawner.rs               # Agent spawning and process management
+│   ├── config.rs                # Configuration handling
+│   ├── protocol.rs              # Protocol types and envelope definitions
+│   ├── snippets.rs              # Agent instruction snippets and MCP config
 │   ├── cli/
-│   │   └── index.ts              # CLI entry point, command handling
-│   ├── daemon/
-│   │   ├── server.ts             # Daemon lifecycle, socket listener
-│   │   ├── connection.ts         # Connection state machine
-│   │   ├── router.ts             # Message routing logic
-│   │   └── index.ts
-│   ├── wrapper/
-│   │   ├── tmux-wrapper.ts       # Tmux session management
-│   │   ├── client.ts             # Daemon client connection
-│   │   ├── parser.ts             # Output parsing (->relay:)
-│   │   ├── inbox.ts              # File-based inbox
-│   │   └── index.ts
-│   ├── protocol/
-│   │   ├── types.ts              # Envelope and payload types
-│   │   ├── framing.ts            # Wire format encoding
-│   │   └── index.ts
-│   ├── storage/
-│   │   ├── adapter.ts            # Storage interface
-│   │   └── sqlite-adapter.ts     # SQLite implementation
-│   ├── dashboard/
-│   │   ├── server.ts             # Express + WebSocket server
-│   │   ├── start.ts              # Dashboard startup
-│   │   └── public/               # Static assets
-│   ├── utils/
-│   │   ├── project-namespace.ts  # Multi-project isolation
-│   │   └── name-generator.ts     # Random agent names
-│   └── index.ts                  # Package exports
-├── package.json
-├── tsconfig.json
-├── CLAUDE.md                     # Agent instructions
-└── ARCHITECTURE.md               # This document
+│   │   ├── bootstrap.ts         # CLI entry point, command registration
+│   │   ├── commands/
+│   │   │   ├── core.ts          # up, down, status, spawn, bridge
+│   │   │   ├── agent-management.ts  # Agent CRUD operations
+│   │   │   ├── messaging.ts     # send, read, inbox commands
+│   │   │   ├── cloud.ts         # Cloud link, status, agents
+│   │   │   ├── monitoring.ts    # Logs, health, metrics
+│   │   │   ├── auth.ts          # Login, logout, SSH key auth
+│   │   │   ├── setup.ts         # Install, setup commands
+│   │   │   └── doctor.ts        # Diagnostic command
+│   │   └── lib/                 # Shared CLI utilities
+│   └── index.ts                 # Package exports
+├── packages/
+│   ├── sdk/                     # TypeScript SDK (broker client, workflows)
+│   ├── acp-bridge/              # ACP protocol bridge for editors
+│   ├── config/                  # Configuration loading
+│   ├── hooks/                   # Hook system for events
+│   ├── storage/                 # Message persistence (JSONL)
+│   ├── utils/                   # Shared utilities
+│   ├── telemetry/               # Usage analytics
+│   ├── trajectory/              # Work trajectory tracking
+│   ├── user-directory/          # Agent directory management
+│   ├── memory/                  # Agent memory persistence
+│   └── policy/                  # Policy enforcement
+├── Cargo.toml                   # Rust dependencies
+├── package.json                 # Node.js dependencies
+├── CLAUDE.md                    # Agent instructions
+└── ARCHITECTURE.md              # This document
 ```
 
 ---
 
 ## Appendix B: Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AGENT_RELAY_DASHBOARD_PORT` | 3888 | Dashboard HTTP port |
-| `AGENT_RELAY_STORAGE_TYPE` | sqlite | Storage backend (sqlite/memory) |
-| `AGENT_RELAY_STORAGE_PATH` | (auto) | SQLite database path |
-| `AGENT_RELAY_STORAGE_URL` | - | PostgreSQL URL (future) |
-| `AGENT_RELAY_DEBUG` | false | Enable debug logging |
+| Variable                     | Default                     | Description                                |
+| ---------------------------- | --------------------------- | ------------------------------------------ |
+| `AGENT_RELAY_DASHBOARD_PORT` | 3888                        | Dashboard HTTP port                        |
+| `RELAY_AGENT_NAME`           | -                           | Agent name for broker registration         |
+| `RELAY_API_KEY`              | -                           | Relaycast workspace API key                |
+| `RELAY_BASE_URL`             | `https://api.relaycast.dev` | Relaycast API base URL                     |
+| `RELAY_CHANNELS`             | `general`                   | Comma-separated channel list               |
+| `AGENT_RELAY_DEBUG`          | false                       | Enable debug logging                       |
+| `RUST_LOG`                   | -                           | Rust log level (uses `tracing-subscriber`) |
 
 ---
 
@@ -1205,41 +709,38 @@ agent-relay/
 ### Starting the System
 
 ```bash
-# Start daemon (required first)
-agent-relay up
+# Start broker + dashboard
+agent-relay up --dashboard
 
-# Start agents
-agent-relay -n Alice claude
-agent-relay -n Bob claude
+# Spawn agents
+agent-relay spawn Alice claude "Your task here"
+agent-relay spawn Bob codex "Another task"
 ```
 
-### Agent Communication
+### Agent Communication (MCP Tools)
 
 ```
-# Direct message
-->relay:Bob Please review the auth module
+# Send a direct message
+relay_send(to: "Bob", message: "Please review the auth module")
 
-# Broadcast
-->relay:* I've finished the database migration
-
-# Structured (block format)
-[[RELAY]]{"to":"Bob","type":"action","body":"Run tests"}[[/RELAY]]
+# Broadcast to all agents
+relay_send(to: "*", message: "I've finished the database migration")
 ```
 
 ### Troubleshooting
 
 ```bash
-# Check daemon status
+# Check broker status
 agent-relay status
 
-# Read truncated message
-agent-relay read <message-id>
+# Run diagnostics
+agent-relay doctor
 
 # View logs
-# (Daemon logs to stdout, wrapper logs to stderr)
+RUST_LOG=debug agent-relay up
 ```
 
 ---
 
-*Document generated for agent-relay v1.0.7*
-*Last updated: 2025*
+_Document updated for agent-relay v2.x (Rust broker architecture)_
+_Last updated: 2026_

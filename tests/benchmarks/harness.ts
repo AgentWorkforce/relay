@@ -11,7 +11,7 @@ import path from "node:path";
 import {
   AgentRelayClient,
   type BrokerEvent,
-} from "@agent-relay/broker-sdk";
+} from "@agent-relay/sdk";
 
 export const QUICK = process.argv.includes("--quick");
 

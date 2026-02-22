@@ -16,7 +16,7 @@ import {
   encodeFrameLegacy,
   FrameParser,
   PROTOCOL_VERSION,
-} from '@agent-relay/protocol';
+} from './legacy-protocol.js';
 
 /**
  * Common return type aliases to ensure consistency between SDK and MCP

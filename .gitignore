@@ -43,6 +43,9 @@ pnpm-debug.log*
 .tmp/
 .tmp-*/
 
+# Git worktrees (development only)
+.worktrees/
+
 # Coverage output
 coverage/
 .npm-cache

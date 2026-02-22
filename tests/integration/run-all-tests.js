@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 /**
- * Comprehensive Test Runner for SDK and MCP Tests
+ * Comprehensive Test Runner for SDK Integration Tests
  *
  * Runs all tests with specified CLI types (claude, codex, or both)
  *
  * Usage:
- *   node tests/run-all-tests.js [--cli=claude|codex|both] [--type=sdk|mcp|both]
+ *   node tests/run-all-tests.js [--cli=claude|codex|both]
  *
  * Examples:
- *   node tests/run-all-tests.js --cli=claude --type=mcp
- *   node tests/run-all-tests.js --cli=both --type=both
+ *   node tests/run-all-tests.js --cli=claude
+ *   node tests/run-all-tests.js --cli=both
  *   node tests/run-all-tests.js --cli=codex
  *
  * Prerequisites:
@@ -28,8 +28,6 @@ const projectRoot = resolve(__dirname, '../..');
 // Parse command line arguments
 const args = process.argv.slice(2);
 let cliTypes = ['claude']; // default
-let testTypes = ['both']; // default
-
 for (const arg of args) {
   if (arg.startsWith('--cli=')) {
     const value = arg.split('=')[1];
@@ -41,43 +39,10 @@ for (const arg of args) {
       console.error(`Invalid CLI: ${value}. Must be one of: claude, codex, gemini, both`);
       process.exit(1);
     }
-  } else if (arg.startsWith('--type=')) {
-    const value = arg.split('=')[1];
-    if (value === 'both') {
-      testTypes = ['sdk', 'mcp'];
-    } else if (['sdk', 'mcp'].includes(value)) {
-      testTypes = [value];
-    } else {
-      console.error(`Invalid type: ${value}. Must be one of: sdk, mcp, both`);
-      process.exit(1);
-    }
   }
 }
 
 // Define test suites
-const mcpTests = [
-  { file: 'mcp/06-mcp-connect.js', name: 'MCP Connect' },
-  { file: 'mcp/07-mcp-message.js', name: 'MCP Message' },
-  { file: 'mcp/08-mcp-receive.js', name: 'MCP Receive' },
-  { file: 'mcp/09-mcp-spawn-release.js', name: 'MCP Spawn/Release' },
-  { file: 'mcp/10-mcp-multi-worker.js', name: 'MCP Multi-Worker' },
-  { file: 'mcp/11-mcp-broadcast.js', name: 'MCP Broadcast' },
-  { file: 'mcp/12-mcp-multi-claude.js', name: 'MCP Multi-Agent' },
-  { file: 'mcp/13-mcp-negotiation.js', name: 'MCP Negotiation' },
-  { file: 'mcp/14-mcp-orchestration.js', name: 'MCP Orchestration' },
-  { file: 'mcp/15-mcp-send-cli.js', name: 'MCP Send CLI' },
-  { file: 'mcp/16-mcp-channels.js', name: 'MCP Channels' },
-  { file: 'mcp/17-mcp-await-response.js', name: 'MCP Await Response' },
-  { file: 'mcp/18-mcp-consensus.js', name: 'MCP Consensus' },
-  { file: 'mcp/19-mcp-pubsub.js', name: 'MCP Pub/Sub' },
-  { file: 'mcp/20-mcp-shadow.js', name: 'MCP Shadow Agents' },
-  { file: 'mcp/21-mcp-health-metrics.js', name: 'MCP Health & Metrics' },
-  { file: 'mcp/22-mcp-threads.js', name: 'MCP Threads' },
-  { file: 'mcp/23-mcp-error-handling.js', name: 'MCP Error Handling' },
-  { file: 'mcp/24-mcp-continuity.js', name: 'MCP Continuity' },
-  { file: 'mcp/25-mcp-socket-discovery.js', name: 'MCP Socket Discovery' },
-];
-
 const sdkTests = [
   { file: 'sdk/01-connect.js', name: 'SDK Connect' },
   { file: 'sdk/02-send-message.js', name: 'SDK Send Message' },
@@ -148,22 +113,14 @@ async function main() {
   console.log('=== Agent Relay Test Suite ===');
   console.log(`${'='.repeat(60)}`);
   console.log(`\nCLI Types: ${cliTypes.join(', ')}`);
-  console.log(`Test Types: ${testTypes.join(', ')}`);
   console.log(`\nStarting at: ${new Date().toISOString()}\n`);
 
   const testsToRun = [];
 
   // Build test queue
   for (const cli of cliTypes) {
-    if (testTypes.includes('sdk') || testTypes.includes('both')) {
-      for (const test of sdkTests) {
-        testsToRun.push({ ...test, cli });
-      }
-    }
-    if (testTypes.includes('mcp') || testTypes.includes('both')) {
-      for (const test of mcpTests) {
-        testsToRun.push({ ...test, cli });
-      }
+    for (const test of sdkTests) {
+      testsToRun.push({ ...test, cli });
     }
   }
 

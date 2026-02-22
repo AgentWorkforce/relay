@@ -4,21 +4,11 @@ Advanced features for session continuity and trajectory tracking.
 
 ## Session Continuity
 
-Save your state for session recovery using file-based format (same as messaging):
+Use `relay_send` with a continuity message to save state for session recovery:
 
-```bash
-cat > $AGENT_RELAY_OUTBOX/continuity << 'EOF'
-KIND: continuity
-ACTION: save
-
-Current task: Implementing user authentication
-Completed: User model, JWT utils
-In progress: Login endpoint
-Key decisions: Using refresh tokens
-Files: src/auth/*.ts
-EOF
 ```
-Then: `->relay-file:continuity`
+relay_send(to: "system", message: "KIND: continuity\nACTION: save\n\nCurrent task: Implementing user authentication\nCompleted: User model, JWT utils\nIn progress: Login endpoint")
+```
 
 ### When to Save
 
@@ -26,32 +16,6 @@ Then: `->relay-file:continuity`
 - When switching task areas
 - Every 15-20 minutes of active work
 - Before ending session
-
-### Load Previous Context
-
-Context auto-loads on startup. To manually request:
-
-```bash
-cat > $AGENT_RELAY_OUTBOX/load << 'EOF'
-KIND: continuity
-ACTION: load
-EOF
-```
-Then: `->relay-file:load`
-
-### Mark Uncertainties
-
-Flag items needing future verification:
-
-```bash
-cat > $AGENT_RELAY_OUTBOX/uncertain << 'EOF'
-KIND: continuity
-ACTION: uncertain
-
-API rate limit handling unclear
-EOF
-```
-Then: `->relay-file:uncertain`
 
 ## Work Trajectories
 
@@ -87,15 +51,14 @@ trail abandon --reason "Blocked by missing credentials"
 
 ## Cross-Project Messaging
 
-In bridge mode, use `project:agent` format:
+In bridge mode, use `project:agent` format with `relay_send`:
 
 ```
-TO: frontend:Designer
-
-Please update the login UI.
+relay_send(to: "frontend:Designer", message: "Please update the login UI.")
 ```
 
 Special targets:
+
 - `project:lead` - Lead agent of that project
 - `project:*` - Broadcast to project
 - `*:*` - Broadcast to all projects

@@ -1,0 +1,25 @@
+{
+  "id": "traj_v2ibbtt7kmsl",
+  "version": 1,
+  "task": {
+    "title": "Wave 1 review: RustWorker + SDKWorker migration verification"
+  },
+  "status": "completed",
+  "startedAt": "2026-02-18T08:58:17.101Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/agent-workforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "72cac787203e9fc9a69de6cf5e5a305406bd31b7",
+    "endRef": "72cac787203e9fc9a69de6cf5e5a305406bd31b7"
+  },
+  "completedAt": "2026-02-18T09:01:06.833Z",
+  "retrospective": {
+    "summary": "Reviewed Wave 1 migration; found protocol mismatch + clippy and integration test blockers",
+    "approach": "Standard approach",
+    "confidence": 0.87
+  }
+}

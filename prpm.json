@@ -27,6 +27,24 @@
       ]
     },
     {
+      "name": "adding-swarm-patterns",
+      "version": "1.0.0",
+      "description": "Use when implementing custom swarm coordination patterns for multi-agent systems - covers pattern design, implementation strategies, and integration with existing agent orchestration",
+      "format": "claude",
+      "subtype": "skill",
+      "tags": [
+        "swarm-patterns",
+        "multi-agent",
+        "orchestration",
+        "coordination",
+        "architecture",
+        "workflow-design"
+      ],
+      "files": [
+        ".claude/skills/adding-swarm-patterns/SKILL.md"
+      ]
+    },
+    {
       "name": "writing-agent-relay-workflows",
       "version": "1.0.0",
       "description": "Use when building multi-agent workflows with the relay broker-sdk - covers the WorkflowBuilder API, DAG step dependencies, agent definitions, step output chaining via {{steps.X.output}}, verification gates, dedicated channels, swarm patterns, error handling, and event listeners",

@@ -33,7 +33,7 @@ agent-relay run --template bug-fix --task "Users getting 500 error on login"
 ```
 
 ```typescript
-import { TemplateRegistry, WorkflowRunner } from "@agent-relay/broker-sdk/workflows";
+import { TemplateRegistry, WorkflowRunner } from "@agent-relay/sdk/workflows";
 
 const registry = new TemplateRegistry();
 const config = await registry.loadTemplate("bug-fix");

@@ -1,6 +1,11 @@
 # Rust Conventions
 
-This rule applies to all Rust files in `src/` and `tests/`.
+This rule applies to all Rust files in `relay-pty/src/` and `tests/`.
+
+## Binary
+
+- The Rust binary is `agent-relay-broker` (internal broker engine)
+- NEVER confuse with `agent-relay` (the TypeScript CLI)
 
 ## Error Handling
 
@@ -34,7 +39,7 @@ This rule applies to all Rust files in `src/` and `tests/`.
 
 - `lib.rs` re-exports public modules
 - `main.rs` contains CLI entry point and runtime orchestration
-- One concern per module (e.g., `auth.rs`, `dedup.rs`, `scheduler.rs`)
+- One concern per module (e.g., `inject.rs`, `parser.rs`, `queue.rs`)
 
 ## Dependencies
 
@@ -52,4 +57,4 @@ This rule applies to all Rust files in `src/` and `tests/`.
 
 - Use `serde` derive macros for JSON serialization
 - Use `#[serde(rename_all = "snake_case")]` for enum variants
-- Protocol types must match the TypeScript SDK definitions in `packages/broker-sdk/src/protocol.ts`
+- Protocol types must match the TypeScript SDK definitions in `packages/sdk/src/protocol.ts`

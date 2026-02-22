@@ -1,6 +1,6 @@
 ---
-title: "Introduction"
-description: "Real-time messaging between AI agents. Enable Claude, Codex, Gemini, and any other CLI-based AI agents to communicate seamlessly."
+title: 'Introduction'
+description: 'Real-time messaging between AI agents. Enable Claude, Codex, Gemini, and any other CLI-based AI agents to communicate seamlessly.'
 ---
 
 Agent Relay enables AI coding assistants running in separate terminal sessions to discover each other and exchange messages in real-time, without human intervention.
@@ -30,11 +30,11 @@ Agent Relay solves this by providing a communication layer that requires **zero 
 
 ## How It Works
 
-Agent Relay monitors agent output for special patterns like `->relay:Bob Hello!` and routes messages through a central daemon. Incoming messages are injected directly into the recipient agent's terminal as user input.
+Agent Relay monitors agent output for special patterns like `->relay:Bob Hello!` and routes messages through a central broker. Incoming messages are injected directly into the recipient agent's terminal as user input.
 
 ```
 +------------------+     +------------------+     +------------------+
-|  Agent Alice     |     |   Relay Daemon   |     |  Agent Bob       |
+|  Agent Alice     |     |   Relay Broker   |     |  Agent Bob       |
 |  (Claude)        |     |   (Message       |     |  (Codex)         |
 |                  |     |    Broker)       |     |                  |
 |  Outputs:        |     |                  |     |  Receives:       |
@@ -88,21 +88,21 @@ Agent Relay consists of three main components:
 |                    Unix Domain Socket                                |
 |                             |                                        |
 |                   +---------+---------+                              |
-|                   |   Relay Daemon    |                              |
+|                   |   Relay Broker    |                              |
 |                   |  (Message Router) |                              |
 |                   +---------+---------+                              |
 |                             |                                        |
 |            +----------------+----------------+                       |
 |            |                                 |                       |
 |   +--------+--------+               +--------+--------+              |
-|   | JSONL Storage   |               |    Dashboard    |              |
-|   | (Message        |               |   localhost:    |              |
-|   |  History)       |               |      3888       |              |
+|   |    Relaycast    |               |    Dashboard    |              |
+|   |  (REST/WS API)  |               |   localhost:    |              |
+|   |                 |               |      3888       |              |
 |   +-----------------+               +-----------------+              |
 +---------------------------------------------------------------------+
 ```
 
-**Daemon** - Central message broker that routes messages between agents via Unix domain sockets.
+**Broker** - Central message router that routes messages between agents via Unix domain sockets.
 
 **Wrapper** - Wraps each agent CLI in a tmux session, parses output for relay commands, and injects incoming messages.
 
@@ -133,11 +133,11 @@ Agent Relay consists of three main components:
 
 ## Supported Platforms
 
-| Platform | Status | Notes |
-|----------|--------|-------|
-| Linux | Full support | Primary development platform |
-| macOS | Full support | Well tested |
-| Windows | Partial | Requires WSL for tmux |
+| Platform | Status       | Notes                        |
+| -------- | ------------ | ---------------------------- |
+| Linux    | Full support | Primary development platform |
+| macOS    | Full support | Well tested                  |
+| Windows  | Partial      | Requires WSL for tmux        |
 
 ## Next Steps
 

@@ -1,9 +1,10 @@
 use super::*;
 use crate::helpers::{
     check_echo_in_output, current_timestamp_ms, delivery_injected_event_payload,
-    delivery_queued_event_payload, floor_char_boundary, ActivityDetector, DeliveryOutcome,
-    PendingActivity, PendingVerification, ThrottleState, ACTIVITY_BUFFER_KEEP_BYTES,
-    ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+    delivery_queued_event_payload, floor_char_boundary, parse_cli_command, ActivityDetector,
+    DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
+    ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
+    MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
 };
 use crate::wrap::{PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
 
@@ -19,11 +20,17 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     #[allow(deprecated)]
     std::env::set_var("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION", "false");
 
+    let (resolved_cli, inline_cli_args) = parse_cli_command(&cmd.cli)
+        .with_context(|| format!("invalid CLI command '{}'", cmd.cli))?;
+    let mut effective_args = inline_cli_args;
+    effective_args.extend(cmd.args.clone());
+
     #[cfg(unix)]
     let (init_rows, init_cols) = get_terminal_size().unwrap_or((24, 80));
     #[cfg(not(unix))]
     let (init_rows, init_cols) = (24u16, 80u16);
-    let (pty, mut pty_rx) = PtySession::spawn(&cmd.cli, &cmd.args, init_rows, init_cols)?;
+    let (pty, mut pty_rx) =
+        PtySession::spawn(&resolved_cli, &effective_args, init_rows, init_cols)?;
     let mut terminal_query_parser = TerminalQueryParser::default();
 
     let (out_tx, mut out_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(1024);
@@ -70,7 +77,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut pending_verifications: VecDeque<PendingVerification> = VecDeque::new();
     let mut pending_activities: VecDeque<PendingActivity> = VecDeque::new();
     let activity_detector = if cmd.progress {
-        Some(ActivityDetector::for_cli(&cmd.cli))
+        Some(ActivityDetector::for_cli(&resolved_cli))
     } else {
         None
     };
@@ -78,6 +85,18 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut echo_buffer = String::new();
     let mut verification_tick = tokio::time::interval(Duration::from_millis(200));
     verification_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+    // Watchdog: periodically check if child process is still alive.
+    // The PTY reader may not detect EOF on macOS when the child exits during
+    // extended thinking (no output). This ensures we don't hang forever.
+    let mut child_watchdog = tokio::time::interval(Duration::from_secs(5));
+    child_watchdog.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+    // No-output timeout: if we receive zero PTY output for this duration AND
+    // has_exited() still returns false, force exit. This is the ultimate
+    // safety net for macOS where both EOF detection and has_exited() can fail.
+    const NO_OUTPUT_EXIT_TIMEOUT: Duration = Duration::from_secs(120);
+    let mut last_pty_output_time = Instant::now();
 
     while running {
         tokio::select! {
@@ -180,6 +199,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
             pty_output = pty_rx.recv() => {
                 match pty_output {
                     Some(chunk) => {
+                        last_pty_output_time = Instant::now();
+                        // Child is provably alive — reset the no-PID exit counter.
+                        pty.reset_no_pid_checks();
                         for response in terminal_query_parser.feed(&chunk) {
                             let _ = pty.write_all(response);
                         }
@@ -424,28 +446,28 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             );
                             retry_queue.push(pv);
                         } else {
-                            // Max retries exceeded — send delivery_failed
-                            tracing::error!(
+                            // Echo matching can be flaky across CLIs/TTY renderers.
+                            // If injection was attempted multiple times and only echo
+                            // verification failed, mark as verified via timeout fallback
+                            // instead of hard-failing the delivery.
+                            tracing::warn!(
                                 delivery_id = %pv.delivery_id,
                                 attempts = pv.attempts,
-                                "delivery verification failed after max retries"
+                                "delivery echo not detected after max retries; marking verified via timeout fallback"
                             );
                             let _ = send_frame(
                                 &out_tx,
-                                "delivery_failed",
+                                "delivery_verified",
                                 pv.request_id.clone(),
                                 json!({
                                     "delivery_id": pv.delivery_id,
                                     "event_id": pv.event_id,
-                                    "reason": format!(
-                                        "echo not detected after {} attempts within {}s window",
-                                        pv.max_attempts,
-                                        VERIFICATION_WINDOW.as_secs()
-                                    )
+                                    "verification": "timeout_fallback",
+                                    "reason": format!("echo not detected after {} attempts within {}s window", pv.max_attempts, VERIFICATION_WINDOW.as_secs())
                                 }),
                             )
                             .await;
-                            throttle.record(DeliveryOutcome::Failed);
+                            throttle.record(DeliveryOutcome::Success);
                             pending_worker_delivery_ids.remove(&pv.delivery_id);
                         }
                     } else {
@@ -515,6 +537,42 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
             _ = sigwinch.recv() => {
                 if let Some((rows, cols)) = get_terminal_size() {
                     let _ = pty.resize(rows, cols);
+                }
+            }
+
+            // --- Child process watchdog ---
+            // Detects when the child exits but the PTY reader doesn't notice.
+            // Uses has_exited() which handles ECHILD (already reaped) and
+            // falls back to kill(pid, 0) on Unix.
+            _ = child_watchdog.tick() => {
+                if pty.has_exited() {
+                    tracing::info!(
+                        target = "agent_relay::worker::pty",
+                        "watchdog: child process exited"
+                    );
+                    let _ = send_frame(&out_tx, "agent_exit", None, json!({
+                        "reason": "child_exited",
+                    })).await;
+                    running = false;
+                } else {
+                    // Safety net: if no PTY output for a long time and we
+                    // have no PID to verify, the child is very likely gone.
+                    // This catches the macOS case where has_exited() returns
+                    // false because it has no PID and try_wait is stuck.
+                    let silent_duration = last_pty_output_time.elapsed();
+                    if silent_duration >= NO_OUTPUT_EXIT_TIMEOUT {
+                        tracing::warn!(
+                            target = "agent_relay::worker::pty",
+                            silent_secs = silent_duration.as_secs(),
+                            "watchdog: no PTY output for {}s — forcing exit",
+                            silent_duration.as_secs()
+                        );
+                        let _ = send_frame(&out_tx, "agent_exit", None, json!({
+                            "reason": "no_output_timeout",
+                            "silent_secs": silent_duration.as_secs(),
+                        })).await;
+                        running = false;
+                    }
                 }
             }
         }

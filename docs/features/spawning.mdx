@@ -1,6 +1,6 @@
 ---
-title: "Worker Spawning"
-description: "Spawn and manage worker agents programmatically from your lead agent"
+title: 'Worker Spawning'
+description: 'Spawn and manage worker agents programmatically from your lead agent'
 ---
 
 # Worker Spawning
@@ -9,126 +9,87 @@ Lead agents can spawn and release worker agents dynamically. Workers run as sepa
 
 ## Quick Start
 
-Spawn a worker agent using the file-based protocol:
+Spawn a worker agent using the MCP tool:
 
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
-KIND: spawn
-NAME: Worker1
-CLI: claude
-
-Implement the user authentication module using JWT tokens.
-EOF
+```typescript
+relay_spawn(name: "Worker1", cli: "claude", task: "Implement the user authentication module using JWT tokens.")
 ```
 
-Then output: `->relay-file:spawn`
-
-<Note>
-The filename is always `spawn` (not `spawn-agentname`). Spawn one agent at a time and wait for confirmation before spawning the next.
-</Note>
+<Note>Spawn one agent at a time and wait for confirmation before spawning the next.</Note>
 
 ## Spawn Protocol
 
-### Message Format
+### MCP Tool Format
 
+```typescript
+relay_spawn(
+  name: "AgentName",
+  cli: "claude",
+  task: "Task description for the worker."
+)
 ```
-KIND: spawn
-NAME: AgentName
-CLI: cli-tool
 
-Task description for the worker.
-```
+### Required Parameters
 
-### Required Headers
-
-| Header | Description |
-|--------|-------------|
-| `KIND` | Must be `spawn` |
-| `NAME` | Unique name for the worker (PascalCase recommended) |
-| `CLI` | CLI tool to use: `claude`, `codex`, `gemini`, `cursor` |
-
-### Task Description
-
-Everything after the blank line becomes the initial task message sent to the worker.
+| Parameter | Description                                            |
+| --------- | ------------------------------------------------------ |
+| `name`    | Unique name for the worker (PascalCase recommended)    |
+| `cli`     | CLI tool to use: `claude`, `codex`, `gemini`, `cursor` |
+| `task`    | Initial task message sent to the worker                |
 
 ## Supported CLI Tools
 
-| CLI | Command | Notes |
-|-----|---------|-------|
-| `claude` | Claude CLI | Adds `--dangerously-skip-permissions` automatically |
-| `codex` | OpenAI Codex | Adds `--dangerously-bypass-approvals-and-sandbox` |
-| `gemini` | Google Gemini | Adds `--yolo` for auto-accept |
-| `cursor` | Cursor Agent | Maps to `agent` command, adds `--force` |
+| CLI      | Command       | Notes                                               |
+| -------- | ------------- | --------------------------------------------------- |
+| `claude` | Claude CLI    | Adds `--dangerously-skip-permissions` automatically |
+| `codex`  | OpenAI Codex  | Adds `--dangerously-bypass-approvals-and-sandbox`   |
+| `gemini` | Google Gemini | Adds `--yolo` for auto-accept                       |
+| `cursor` | Cursor Agent  | Maps to `agent` command, adds `--force`             |
 
 ## Spawning Examples
 
 ### Basic Worker
 
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
-KIND: spawn
-NAME: FrontendDev
-CLI: claude
-
-Build the login page component with:
-- Email and password fields
-- Remember me checkbox
-- Forgot password link
-- Form validation
-EOF
+```typescript
+relay_spawn(
+  name: "FrontendDev",
+  cli: "claude",
+  task: "Build the login page component with:\n- Email and password fields\n- Remember me checkbox\n- Forgot password link\n- Form validation"
+)
 ```
-
-Then: `->relay-file:spawn`
 
 ### Specialized Worker
 
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
-KIND: spawn
-NAME: CodeReviewer
-CLI: claude
-
-Review all TypeScript files in src/ for:
-- Type safety issues
-- Error handling gaps
-- Performance concerns
-Report findings with file paths and line numbers.
-EOF
+```typescript
+relay_spawn(
+  name: "CodeReviewer",
+  cli: "claude",
+  task: "Review all TypeScript files in src/ for:\n- Type safety issues\n- Error handling gaps\n- Performance concerns\nReport findings with file paths and line numbers."
+)
 ```
-
-Then: `->relay-file:spawn`
 
 ## Releasing Workers
 
 When a worker completes its task, release it to free resources:
 
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/release << 'EOF'
-KIND: release
-NAME: Worker1
-EOF
+```typescript
+relay_release(name: "Worker1")
 ```
-
-Then: `->relay-file:release`
 
 ### Release All Workers
 
 Release all spawned workers at once:
 
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/release-all << 'EOF'
-KIND: release
-NAME: *
-EOF
+```typescript
+relay_release(name: "*")
 ```
-
-Then: `->relay-file:release-all`
 
 ## Role-Based Agents
 
 Define agent profiles in `.claude/agents/` for consistent configurations:
 
 **`.claude/agents/reviewer.md`**
+
 ```markdown
 ---
 model: sonnet
@@ -136,6 +97,7 @@ role: reviewer
 ---
 
 You are a code reviewer focused on:
+
 - Code quality and best practices
 - Security vulnerabilities
 - Performance optimizations
@@ -143,17 +105,16 @@ You are a code reviewer focused on:
 
 When spawning, use the agent profile name:
 
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
-KIND: spawn
-NAME: Reviewer
-CLI: claude
-
-Review the authentication module for security issues.
-EOF
+```typescript
+relay_spawn(
+  name: "Reviewer",
+  cli: "claude",
+  task: "Review the authentication module for security issues."
+)
 ```
 
 The spawner automatically loads the matching profile and applies:
+
 - Model selection (`--model sonnet`)
 - Agent configuration (`--agent reviewer`)
 - Role-specific system prompts
@@ -161,12 +122,12 @@ The spawner automatically loads the matching profile and applies:
 ### Agent Profile Format
 
 **`.claude/agents/<name>.md`**
+
 ```yaml
 ---
 model: opus | sonnet | haiku
 role: planner | worker | reviewer | lead | shadow
 ---
-
 Agent-specific instructions and context.
 ```
 
@@ -175,6 +136,7 @@ Agent-specific instructions and context.
 Define your agent team in `teams.json` for auto-spawning:
 
 **`.relay/teams.json`**
+
 ```json
 {
   "team": "development",
@@ -216,24 +178,12 @@ agent-relay up --spawn
 ## Worker Lifecycle
 
 <Steps>
-  <Step title="Spawn Request">
-    Lead agent writes spawn file and outputs trigger.
-  </Step>
-  <Step title="Process Creation">
-    Relay creates PTY process with CLI and relay instructions.
-  </Step>
-  <Step title="Registration">
-    Worker sends HELLO to daemon and registers (up to 30s).
-  </Step>
-  <Step title="Task Delivery">
-    Initial task message is sent after registration completes.
-  </Step>
-  <Step title="Work Phase">
-    Worker operates autonomously, communicating via relay.
-  </Step>
-  <Step title="Release">
-    Lead releases worker or worker exits naturally.
-  </Step>
+  <Step title="Spawn Request">Lead agent calls `relay_spawn()` MCP tool.</Step>
+  <Step title="Process Creation">Relay creates PTY process with CLI and relay instructions.</Step>
+  <Step title="Registration">Worker sends HELLO to broker and registers (up to 30s).</Step>
+  <Step title="Task Delivery">Initial task message is sent after registration completes.</Step>
+  <Step title="Work Phase">Worker operates autonomously, communicating via relay.</Step>
+  <Step title="Release">Lead releases worker via `relay_release()` or worker exits naturally.</Step>
 </Steps>
 
 ## CLI Commands
@@ -281,12 +231,12 @@ curl -X POST http://localhost:3888/api/release \
 
 Worker counts are limited based on your plan:
 
-| Plan | Max Agents |
-|------|------------|
-| Free | 3 |
-| Pro | 10 |
-| Team | 25 |
-| Enterprise | Unlimited |
+| Plan       | Max Agents |
+| ---------- | ---------- |
+| Free       | 3          |
+| Pro        | 10         |
+| Team       | 25         |
+| Enterprise | Unlimited  |
 
 The spawner returns an error when the limit is reached:
 
@@ -336,21 +286,15 @@ Policy denied: Lead cannot spawn agent with name AdminBot
 
 <AccordionGroup>
   <Accordion title="Worker fails to register">
-    The spawner waits up to 30 seconds for registration. Check:
-    1. CLI tool is installed and authenticated
-    2. No errors in worker logs: `agent-relay agents:logs WorkerName`
-    3. Daemon is running: `agent-relay status`
+    The spawner waits up to 30 seconds for registration. Check: 1. CLI tool is installed and authenticated 2.
+    No errors in worker logs: `agent-relay agents:logs WorkerName` 3. Broker is running: `agent-relay status`
   </Accordion>
   <Accordion title="Task not delivered to worker">
-    Tasks are sent after registration completes. If the task is missing:
-    1. Verify dashboard port is set correctly
-    2. Check worker logs for errors
-    3. Send the task manually via messaging
+    Tasks are sent after registration completes. If the task is missing: 1. Verify dashboard port is set
+    correctly 2. Check worker logs for errors 3. Send the task manually via messaging
   </Accordion>
   <Accordion title="Workers crash immediately">
-    Common causes:
-    1. CLI not authenticated (run `claude` or `codex` manually first)
-    2. Missing permissions (check `--dangerously-skip-permissions`)
-    3. Resource constraints (memory/CPU limits)
+    Common causes: 1. CLI not authenticated (run `claude` or `codex` manually first) 2. Missing permissions
+    (check `--dangerously-skip-permissions`) 3. Resource constraints (memory/CPU limits)
   </Accordion>
 </AccordionGroup>

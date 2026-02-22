@@ -250,7 +250,8 @@ impl RelaycastHttpClient {
         }
     }
 
-    /// Register an agent and obtain a bearer token for subsequent API calls.
+    /// Register the broker agent via the spawn endpoint (which rotates the token
+    /// if the agent already exists, avoiding ghost duplicates).
     async fn ensure_token(&self) -> Result<String> {
         {
             let guard = self.agent_token.lock();
@@ -259,14 +260,17 @@ impl RelaycastHttpClient {
             }
         }
 
-        let url = format!("{}/v1/agents", self.base_url);
+        // Use /v1/agents/spawn instead of /v1/agents — spawn rotates the token
+        // on conflict rather than returning 409, preventing ghost Broker-* agents.
+        let url = format!("{}/v1/agents/spawn", self.base_url);
         let res = self
             .http
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&serde_json::json!({
                 "name": self.agent_name,
-                "type": "agent"
+                "cli": "broker",
+                "task": "relay broker engine"
             }))
             .send()
             .await?;
@@ -274,43 +278,46 @@ impl RelaycastHttpClient {
         let status = res.status();
         let body: Value = res.json().await?;
 
-        // On 409 conflict, try with a suffixed name
-        let token = if status == reqwest::StatusCode::CONFLICT {
-            let suffix = rand::thread_rng().gen_range(1000..9999u32);
-            let fallback_name = format!("{}-{}", self.agent_name, suffix);
-            let res2 = self
-                .http
-                .post(&url)
-                .header("Authorization", format!("Bearer {}", self.api_key))
-                .json(&serde_json::json!({
-                    "name": fallback_name,
-                    "type": "agent"
-                }))
-                .send()
-                .await?;
-            let body2: Value = res2.json().await?;
-            body2
-                .pointer("/data/token")
-                .or_else(|| body2.get("token"))
-                .and_then(Value::as_str)
-                .map(String::from)
-                .ok_or_else(|| anyhow::anyhow!("no token in register response"))?
-        } else if !status.is_success() {
+        if !status.is_success() {
             anyhow::bail!(
-                "relaycast register failed ({}): {}",
+                "relaycast spawn/register failed ({}): {}",
                 status,
                 serde_json::to_string(&body).unwrap_or_default()
             );
-        } else {
-            body.pointer("/data/token")
-                .or_else(|| body.get("token"))
-                .and_then(Value::as_str)
-                .map(String::from)
-                .ok_or_else(|| anyhow::anyhow!("no token in register response"))?
-        };
+        }
+
+        let token = body
+            .pointer("/data/token")
+            .or_else(|| body.get("token"))
+            .and_then(Value::as_str)
+            .map(String::from)
+            .ok_or_else(|| anyhow::anyhow!("no token in spawn response"))?;
 
         *self.agent_token.lock() = Some(token.clone());
         Ok(token)
+    }
+
+    /// Mark the broker agent as offline via the release endpoint.
+    /// Called during graceful shutdown to prevent ghost agents in the dashboard.
+    pub async fn mark_offline(&self) -> Result<()> {
+        let url = format!("{}/v1/agents/release", self.base_url);
+        let res = self
+            .http
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .json(&serde_json::json!({
+                "name": self.agent_name
+            }))
+            .send()
+            .await?;
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            tracing::warn!(status = %status, "failed to mark broker offline: {}", body);
+        } else {
+            tracing::info!(agent = %self.agent_name, "marked broker agent offline");
+        }
+        Ok(())
     }
 
     /// Send a direct message to a named agent via the Relaycast REST API.
@@ -350,6 +357,75 @@ impl RelaycastHttpClient {
             anyhow::bail!("relaycast send_to_channel failed ({}): {}", status, body);
         }
         Ok(())
+    }
+
+    /// Fetch recent DM history for an agent via the Relaycast REST API.
+    pub async fn get_dms(&self, agent: &str, limit: usize) -> Result<Vec<Value>> {
+        let token = self.ensure_token().await?;
+        let url = format!("{}/v1/dm/{}?limit={}", self.base_url, agent, limit);
+        let res = self
+            .http
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            tracing::warn!(status = %status, "relaycast get_dms failed: {}", body);
+            return Ok(vec![]);
+        }
+        let body: Value = res.json().await?;
+        // Try common response shapes: { data: { messages: [...] } } or { messages: [...] } or [...]
+        let messages = body
+            .pointer("/data/messages")
+            .or_else(|| body.get("messages"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_else(|| {
+                if body.is_array() {
+                    body.as_array().cloned().unwrap_or_default()
+                } else {
+                    vec![]
+                }
+            });
+        Ok(messages)
+    }
+
+    /// Fetch recent message history from a channel via the Relaycast REST API.
+    pub async fn get_channel_messages(&self, channel: &str, limit: usize) -> Result<Vec<Value>> {
+        let token = self.ensure_token().await?;
+        let ch = channel.strip_prefix('#').unwrap_or(channel);
+        let url = format!(
+            "{}/v1/channels/{}/messages?limit={}",
+            self.base_url, ch, limit
+        );
+        let res = self
+            .http
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            tracing::warn!(status = %status, "relaycast get_channel_messages failed: {}", body);
+            return Ok(vec![]);
+        }
+        let body: Value = res.json().await?;
+        let messages = body
+            .pointer("/data/messages")
+            .or_else(|| body.get("messages"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_else(|| {
+                if body.is_array() {
+                    body.as_array().cloned().unwrap_or_default()
+                } else {
+                    vec![]
+                }
+            });
+        Ok(messages)
     }
 
     /// Smart send: routes to channel or DM based on `#` prefix.

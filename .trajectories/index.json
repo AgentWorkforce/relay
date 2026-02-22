@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-02-19T07:42:35.142Z",
+  "lastUpdated": "2026-02-21T22:27:46.216Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -309,6 +309,104 @@
       "startedAt": "2026-02-18T13:05:09.363Z",
       "completedAt": "2026-02-19T07:42:34.942Z",
       "path": "/Users/khaliqgant/Projects/agent-workforce/relay/.trajectories/completed/2026-02/traj_cg4ihv6ph68u.json"
+    },
+    "traj_fglv6fwrbagr": {
+      "title": "Analyze and TDD-split src/cli/index.ts command modules",
+      "status": "completed",
+      "startedAt": "2026-02-20T07:52:22.271Z",
+      "completedAt": "2026-02-20T07:57:07.411Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_fglv6fwrbagr.json"
+    },
+    "traj_dasagzf65w2w": {
+      "title": "Rename Rust binary to agent-relay-broker and clean up TS CLI legacy patterns",
+      "status": "completed",
+      "startedAt": "2026-02-20T07:58:55.411Z",
+      "completedAt": "2026-02-20T08:26:07.381Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_dasagzf65w2w.json"
+    },
+    "traj_u3ia2nsb2tsc": {
+      "title": "Workstream C Phase C1: extract shared CLI helpers",
+      "status": "completed",
+      "startedAt": "2026-02-20T08:26:17.649Z",
+      "completedAt": "2026-02-20T08:26:17.764Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_u3ia2nsb2tsc.json"
+    },
+    "traj_8ccax0ehyq47": {
+      "title": "Wave 2 CLI split: extract cloud commands",
+      "status": "completed",
+      "startedAt": "2026-02-20T08:36:11.679Z",
+      "completedAt": "2026-02-20T08:41:19.268Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_8ccax0ehyq47.json"
+    },
+    "traj_5mb7h27aareq": {
+      "title": "Wave 2 CLI split: monitoring/auth/setup modules",
+      "status": "completed",
+      "startedAt": "2026-02-20T08:45:59.070Z",
+      "completedAt": "2026-02-20T08:46:07.087Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_5mb7h27aareq.json"
+    },
+    "traj_rwffmnpl2qn3": {
+      "title": "Fix Wave 2 CLI command review issues",
+      "status": "completed",
+      "startedAt": "2026-02-20T08:53:17.907Z",
+      "completedAt": "2026-02-20T09:07:40.330Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_rwffmnpl2qn3.json"
+    },
+    "traj_uyk94w5k2m6r": {
+      "title": "Wave 3 extract core CLI commands with DI and tests",
+      "status": "completed",
+      "startedAt": "2026-02-20T09:09:02.119Z",
+      "completedAt": "2026-02-20T09:18:35.176Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_uyk94w5k2m6r.json"
+    },
+    "traj_w852m8eq19mb": {
+      "title": "Remove create-agent and migrate spawnPty calls to broker-sdk",
+      "status": "completed",
+      "startedAt": "2026-02-20T09:27:06.829Z",
+      "completedAt": "2026-02-20T09:35:31.369Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_w852m8eq19mb.json"
+    },
+    "traj_oepivdurgun8": {
+      "title": "Fix workflow runner review blockers and high-priority issues",
+      "status": "completed",
+      "startedAt": "2026-02-20T09:54:20.990Z",
+      "completedAt": "2026-02-20T10:01:21.142Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_oepivdurgun8.json"
+    },
+    "traj_hakny9al4dsm": {
+      "title": "Fix CLI refactor blockers/high-priority issues",
+      "status": "completed",
+      "startedAt": "2026-02-20T10:07:54.852Z",
+      "completedAt": "2026-02-20T10:08:15.644Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_hakny9al4dsm.json"
+    },
+    "traj_5ywc1iyepar1": {
+      "title": "Rename broker-sdk package to sdk and remove sdk-ts",
+      "status": "completed",
+      "startedAt": "2026-02-20T10:37:48.827Z",
+      "completedAt": "2026-02-20T10:46:44.245Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_5ywc1iyepar1.json"
+    },
+    "traj_sgvc6cssfokn": {
+      "title": "Rename Rust binary to agent-relay-broker and clean up TS CLI legacy patterns",
+      "status": "completed",
+      "startedAt": "2026-02-20T10:51:47.859Z",
+      "completedAt": "2026-02-21T21:14:38.067Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_sgvc6cssfokn.json"
+    },
+    "traj_dnxtht96w13o": {
+      "title": "Make doctor tolerant of missing better-sqlite3",
+      "status": "completed",
+      "startedAt": "2026-02-10T12:22:01.414Z",
+      "completedAt": "2026-02-21T22:17:36.952Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_dnxtht96w13o.json"
+    },
+    "traj_j9xqvaxrf6fb": {
+      "title": "Align broker lifecycle dashboard args to broker HTTP listen :3889",
+      "status": "completed",
+      "startedAt": "2026-02-21T22:24:39.375Z",
+      "completedAt": "2026-02-21T22:27:46.138Z",
+      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/completed/2026-02/traj_j9xqvaxrf6fb.json"
     }
   }
 }

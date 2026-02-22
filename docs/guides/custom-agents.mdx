@@ -43,16 +43,18 @@ You are a code review specialist. Your purpose is to...
 ## Core Principles
 
 ### 1. Prioritize Blocking Issues
+
 - Security vulnerabilities first
 - Correctness bugs second
-...
+  ...
 
 ## Review Checklist
 
 ### Security (Critical)
+
 - [ ] No hardcoded secrets
 - [ ] Input validation
-...
+      ...
 ```
 
 ## Frontmatter Options
@@ -61,33 +63,33 @@ The YAML frontmatter at the top of the file configures the agent:
 
 ```yaml
 ---
-name: reviewer              # Agent identifier (required)
+name: reviewer # Agent identifier (required)
 description: Code review... # Short description for selection
-model: sonnet               # Model to use (haiku, sonnet, opus)
-tools: Read, Grep, Glob     # Allowed tools
-skills: using-agent-relay   # Skills to load
-role: reviewer              # Role type (affects prompt composition)
+model: sonnet # Model to use (haiku, sonnet, opus)
+tools: Read, Grep, Glob # Allowed tools
+skills: using-agent-relay # Skills to load
+role: reviewer # Role type (affects prompt composition)
 ---
 ```
 
 ### Available Options
 
-| Option | Required | Description |
-|--------|----------|-------------|
-| `name` | Yes | Unique identifier for the agent |
-| `description` | No | Human-readable description |
-| `model` | No | Model selection (haiku, sonnet, opus). Default: sonnet |
-| `tools` | No | Comma-separated list of allowed tools |
-| `skills` | No | Skills to inject into agent context |
-| `role` | No | Role type for prompt composition |
+| Option        | Required | Description                                            |
+| ------------- | -------- | ------------------------------------------------------ |
+| `name`        | Yes      | Unique identifier for the agent                        |
+| `description` | No       | Human-readable description                             |
+| `model`       | No       | Model selection (haiku, sonnet, opus). Default: sonnet |
+| `tools`       | No       | Comma-separated list of allowed tools                  |
+| `skills`      | No       | Skills to inject into agent context                    |
+| `role`        | No       | Role type for prompt composition                       |
 
 ### Model Selection
 
-| Model | Best For | Cost |
-|-------|----------|------|
-| `haiku` | Simple tasks, quick decisions, coordination | Low |
-| `sonnet` | General coding, review, debugging | Medium |
-| `opus` | Complex architecture, difficult debugging | High |
+| Model    | Best For                                    | Cost   |
+| -------- | ------------------------------------------- | ------ |
+| `haiku`  | Simple tasks, quick decisions, coordination | Low    |
+| `sonnet` | General coding, review, debugging           | Medium |
+| `opus`   | Complex architecture, difficult debugging   | High   |
 
 ## Creating Custom Agents
 
@@ -99,17 +101,10 @@ role: reviewer              # Role type (affects prompt composition)
     ```
   </Step>
 
-  <Step title="Define frontmatter">
-    ```yaml
-    ---
-    name: security-auditor
-    description: Security-focused code review and vulnerability assessment
-    model: sonnet
-    tools: Read, Grep, Glob, Bash
-    skills: using-agent-relay
-    ---
-    ```
-  </Step>
+<Step title="Define frontmatter">
+  ```yaml --- name: security-auditor description: Security-focused code review and vulnerability assessment
+  model: sonnet tools: Read, Grep, Glob, Bash skills: using-agent-relay --- ```
+</Step>
 
   <Step title="Write the agent prompt">
     ```markdown
@@ -156,6 +151,7 @@ role: reviewer              # Role type (affects prompt composition)
     4. **Impact**: What could happen
     5. **Fix**: How to remediate
     ```
+
   </Step>
 
   <Step title="Use the agent">
@@ -186,34 +182,32 @@ tasks to specialists and keep work moving.
 ## Core Principles
 
 ### 1. Delegate, Don't Do
+
 - Quick investigation only (2-3 minutes max)
 - Never write significant code yourself
 - Trust your specialists
 
 ### 2. Decide Fast
+
 - Make decisions in under 30 seconds
 - Ask ONE clarifying question, then decide
 - "Good enough" beats perfect
 
 ## When to Spawn Workers
 
-| Situation | Action |
-|-----------|--------|
+| Situation                | Action           |
+| ------------------------ | ---------------- |
 | Deep implementation work | Spawn specialist |
-| Code review needed | Spawn reviewer |
-| Tests required | Spawn tester |
-| Quick question | Handle yourself |
+| Code review needed       | Spawn reviewer   |
+| Tests required           | Spawn tester     |
+| Quick question           | Handle yourself  |
 
 ## Communication
 
 Always ACK incoming messages immediately:
 
-\`\`\`bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/ack << 'EOF'
-TO: Sender
-
-ACK: [Brief description of task received]
-EOF
+\`\`\`
+relay_send(to: "Sender", message: "ACK: [Brief description of task received]")
 \`\`\`
 
 Report progress regularly. Release workers when done.
@@ -241,12 +235,12 @@ You write comprehensive, maintainable test suites.
 
 ## Coverage Guidelines
 
-| Priority | What to Test |
-|----------|--------------|
+| Priority | What to Test                 |
+| -------- | ---------------------------- |
 | Critical | Business logic, calculations |
-| High | API endpoints, auth |
-| Medium | UI components, forms |
-| Low | Simple getters/setters |
+| High     | API endpoints, auth          |
+| Medium   | UI components, forms         |
+| Low      | Simple getters/setters       |
 
 ## Test Naming
 
@@ -266,15 +260,18 @@ it('works')
 
 \`\`\`
 **Test Plan:**
+
 - [List of scenarios to cover]
 
 **Files Created:**
+
 - path/to/test.ts - [description]
 
 **Coverage:**
+
 - Functions: X/Y covered
 - Edge cases: [list]
-\`\`\`
+  \`\`\`
 ```
 
 ### Architect
@@ -295,12 +292,15 @@ You design systems and make technical decisions.
 ## Core Principles
 
 ### 1. Understand Before Designing
+
 Know the requirements (functional and non-functional)
 
 ### 2. Tradeoffs Are Explicit
+
 Every decision has costs and benefits. Document both.
 
 ### 3. Design for Change
+
 - Identify what's likely to change
 - Isolate volatility behind interfaces
 
@@ -314,21 +314,27 @@ Every decision has costs and benefits. Document both.
 ## Output: Architecture Decision Record
 
 \`\`\`markdown
+
 # ADR-001: [Title]
 
 ## Status
+
 [Proposed | Accepted | Deprecated]
 
 ## Context
+
 [What motivates this decision?]
 
 ## Decision
+
 [What are we doing?]
 
 ## Consequences
+
 [What becomes easier/harder?]
 
 ## Alternatives Considered
+
 [What else was evaluated?]
 \`\`\`
 ```
@@ -389,20 +395,9 @@ agent-relay -n MyReviewer claude --agent reviewer
 
 ### From Another Agent
 
-```bash
-cat > /tmp/relay-outbox/$AGENT_RELAY_NAME/spawn << 'EOF'
-KIND: spawn
-NAME: Reviewer
-CLI: claude --agent reviewer
-
-Please review the changes in src/auth/:
-- Focus on security implications
-- Check error handling
-- Verify test coverage
-EOF
 ```
-
-Then: `->relay-file:spawn`
+relay_spawn(name: "Reviewer", cli: "claude --agent reviewer", task: "Please review the changes in src/auth/:\n- Focus on security implications\n- Check error handling\n- Verify test coverage")
+```
 
 ## Best Practices
 
@@ -411,31 +406,31 @@ Then: `->relay-file:spawn`
 <CardGroup cols={2}>
 
 <Card title="Single Responsibility" icon="bullseye">
-Each agent should have one clear purpose. Don't create "do everything" agents.
+  Each agent should have one clear purpose. Don't create "do everything" agents.
 </Card>
 
 <Card title="Clear Boundaries" icon="border-all">
-Define what the agent should and shouldn't do. Include explicit "don'ts".
+  Define what the agent should and shouldn't do. Include explicit "don'ts".
 </Card>
 
 <Card title="Actionable Output" icon="list-check">
-Specify the expected output format so results are consistent and usable.
+  Specify the expected output format so results are consistent and usable.
 </Card>
 
 <Card title="Communication Protocol" icon="comments">
-Include how the agent should communicate (ACK, DONE, relay usage).
+  Include how the agent should communicate (ACK, DONE, relay usage).
 </Card>
 
 </CardGroup>
 
 ### Model Selection Guidelines
 
-| Use Haiku | Use Sonnet | Use Opus |
-|-----------|------------|----------|
+| Use Haiku          | Use Sonnet     | Use Opus             |
+| ------------------ | -------------- | -------------------- |
 | Coordination tasks | General coding | Complex architecture |
-| Simple decisions | Code review | Difficult debugging |
-| Message routing | Test writing | Security audits |
-| Status tracking | Documentation | Novel problems |
+| Simple decisions   | Code review    | Difficult debugging  |
+| Message routing    | Test writing   | Security audits      |
+| Status tracking    | Documentation  | Novel problems       |
 
 ### Organizing Agents
 
@@ -480,6 +475,7 @@ For consistent agents across projects:
 ### Community
 
 Share useful agent definitions:
+
 - Document the use case clearly
 - Include example usage
 - Test across different scenarios
