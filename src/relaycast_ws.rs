@@ -2,10 +2,9 @@ use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
-use rand::Rng;
 use relaycast::{
     AgentClient, MessageListQuery, RelayCast, RelayCastOptions, ReleaseAgentRequest,
-    SpawnAgentRequest,
+    SpawnAgentRequest, WsLifecycleEvent,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -57,7 +56,7 @@ impl RelaycastWsClient {
         mut control_rx: mpsc::Receiver<WsControl>,
         events: EventEmitter,
     ) {
-        let mut attempt = 0u32;
+        const INITIAL_RETRY_DELAY: Duration = Duration::from_secs(2);
         let mut has_connected = false;
 
         loop {
@@ -71,8 +70,14 @@ impl RelaycastWsClient {
                         error = %error,
                         "failed to construct relaycast ws client"
                     );
-                    attempt += 1;
-                    tokio::time::sleep(reconnect_delay(attempt)).await;
+                    tokio::select! {
+                        _ = tokio::time::sleep(INITIAL_RETRY_DELAY) => {}
+                        ctrl = control_rx.recv() => {
+                            if matches!(ctrl, Some(WsControl::Shutdown) | None) {
+                                return;
+                            }
+                        }
+                    }
                     continue;
                 }
             };
@@ -85,54 +90,25 @@ impl RelaycastWsClient {
                         "connected"
                     };
                     has_connected = true;
-                    events.emit("connection", json!({"status": status}));
-                    let _ = inbound_tx
-                        .send(json!({
-                            "type":"broker.connection",
-                            "payload":{"status": status}
-                        }))
-                        .await;
-                    attempt = 0;
+                    emit_connection_status(&events, &inbound_tx, status).await;
 
+                    let mut connected = true;
                     let channels = self.active_subscriptions();
                     if !channels.is_empty() {
-                        match agent.subscribe_channels(channels.clone()).await {
-                            Ok(()) => {
-                                for channel in &channels {
-                                    let _ = inbound_tx
-                                        .send(json!({
-                                            "type":"broker.channel_join",
-                                            "payload":{"channel":channel}
-                                        }))
-                                        .await;
-                                }
-                            }
-                            Err(error) => {
-                                tracing::warn!(
-                                    target = "relay_broker::ws",
-                                    error = %error,
-                                    "batched channel subscribe failed; falling back to per-channel subscribe"
-                                );
-                                for channel in &channels {
-                                    match agent.subscribe_channels(vec![channel.clone()]).await {
-                                        Ok(()) => {
-                                            let _ = inbound_tx
-                                                .send(json!({
-                                                    "type":"broker.channel_join",
-                                                    "payload":{"channel":channel}
-                                                }))
-                                                .await;
-                                        }
-                                        Err(error) => {
-                                            tracing::warn!(
-                                                target = "relay_broker::ws",
-                                                channel = %channel,
-                                                error = %error,
-                                                "failed to subscribe channel"
-                                            );
-                                        }
-                                    }
-                                }
+                        if let Err(error) = agent.subscribe_channels(channels.clone()).await {
+                            tracing::warn!(
+                                target = "relay_broker::ws",
+                                error = %error,
+                                "failed to subscribe channels"
+                            );
+                        } else {
+                            for channel in &channels {
+                                let _ = inbound_tx
+                                    .send(json!({
+                                        "type":"broker.channel_join",
+                                        "payload":{"channel":channel}
+                                    }))
+                                    .await;
                             }
                         }
                     }
@@ -146,7 +122,6 @@ impl RelaycastWsClient {
                                 "failed to subscribe to relaycast events"
                             );
                             agent.disconnect().await;
-                            attempt += 1;
                             if let Err(error) = self.refresh_token().await {
                                 tracing::warn!(
                                     target = "relay_broker::ws",
@@ -154,7 +129,34 @@ impl RelaycastWsClient {
                                     "token refresh failed"
                                 );
                             }
-                            tokio::time::sleep(reconnect_delay(attempt)).await;
+                            tokio::select! {
+                                _ = tokio::time::sleep(INITIAL_RETRY_DELAY) => {}
+                                ctrl = control_rx.recv() => {
+                                    if matches!(ctrl, Some(WsControl::Shutdown) | None) {
+                                        return;
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                    };
+                    let mut lifecycle_rx = match agent.subscribe_lifecycle() {
+                        Ok(rx) => rx,
+                        Err(error) => {
+                            tracing::warn!(
+                                target = "relay_broker::ws",
+                                error = %error,
+                                "failed to subscribe to relaycast lifecycle events"
+                            );
+                            agent.disconnect().await;
+                            tokio::select! {
+                                _ = tokio::time::sleep(INITIAL_RETRY_DELAY) => {}
+                                ctrl = control_rx.recv() => {
+                                    if matches!(ctrl, Some(WsControl::Shutdown) | None) {
+                                        return;
+                                    }
+                                }
+                            }
                             continue;
                         }
                     };
@@ -198,6 +200,66 @@ impl RelaycastWsClient {
                                     }
                                 }
                             }
+                            lifecycle_event = lifecycle_rx.recv() => {
+                                match lifecycle_event {
+                                    Ok(WsLifecycleEvent::Open) => {
+                                        if !connected {
+                                            connected = true;
+                                            has_connected = true;
+                                            emit_connection_status(&events, &inbound_tx, "reconnected").await;
+                                        }
+                                    }
+                                    Ok(WsLifecycleEvent::Close) => {
+                                        if connected {
+                                            connected = false;
+                                            emit_connection_status(&events, &inbound_tx, "disconnected").await;
+                                        }
+                                    }
+                                    Ok(WsLifecycleEvent::Reconnecting { attempt }) => {
+                                        tracing::debug!(
+                                            target = "relay_broker::ws",
+                                            attempt,
+                                            "relaycast websocket reconnecting"
+                                        );
+                                    }
+                                    Ok(WsLifecycleEvent::Error(error)) => {
+                                        tracing::warn!(
+                                            target = "relay_broker::ws",
+                                            error = %error,
+                                            "relaycast websocket lifecycle error"
+                                        );
+                                        match self.refresh_token().await {
+                                            Ok(()) => {
+                                                let token = self.token.lock().clone();
+                                                if let Err(error) = agent.set_token(token).await {
+                                                    tracing::warn!(
+                                                        target = "relay_broker::ws",
+                                                        error = %error,
+                                                        "failed to update websocket token after refresh"
+                                                    );
+                                                }
+                                            }
+                                            Err(error) => {
+                                                tracing::warn!(
+                                                    target = "relay_broker::ws",
+                                                    error = %error,
+                                                    "token refresh failed"
+                                                );
+                                            }
+                                        }
+                                    }
+                                    Err(RecvError::Lagged(skipped)) => {
+                                        tracing::warn!(
+                                            target = "relay_broker::ws",
+                                            skipped,
+                                            "dropped lagged lifecycle events"
+                                        );
+                                    }
+                                    Err(RecvError::Closed) => {
+                                        break;
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -217,19 +279,18 @@ impl RelaycastWsClient {
                 }
             }
 
-            events.emit("connection", json!({"status":"disconnected"}));
-            let _ = inbound_tx
-                .send(json!({
-                    "type":"broker.connection",
-                    "payload":{"status":"disconnected"}
-                }))
-                .await;
-
-            attempt += 1;
             if let Err(error) = self.refresh_token().await {
                 tracing::warn!(target = "relay_broker::ws", error = %error, "token refresh failed");
             }
-            tokio::time::sleep(reconnect_delay(attempt)).await;
+            emit_connection_status(&events, &inbound_tx, "disconnected").await;
+            tokio::select! {
+                _ = tokio::time::sleep(INITIAL_RETRY_DELAY) => {}
+                ctrl = control_rx.recv() => {
+                    if matches!(ctrl, Some(WsControl::Shutdown) | None) {
+                        return;
+                    }
+                }
+            }
         }
     }
 
@@ -240,6 +301,20 @@ impl RelaycastWsClient {
         *self.creds.lock() = refreshed.credentials;
         Ok(())
     }
+}
+
+async fn emit_connection_status(
+    events: &EventEmitter,
+    inbound_tx: &mpsc::Sender<Value>,
+    status: &str,
+) {
+    events.emit("connection", json!({ "status": status }));
+    let _ = inbound_tx
+        .send(json!({
+            "type":"broker.connection",
+            "payload":{"status": status}
+        }))
+        .await;
 }
 
 /// HTTP client for publishing messages to the Relaycast REST API.
@@ -450,26 +525,9 @@ where
         .collect()
 }
 
-pub fn reconnect_delay(attempt: u32) -> Duration {
-    let base_ms = (1_000u64).saturating_mul(2u64.saturating_pow(attempt.saturating_sub(1)));
-    let bounded = base_ms.min(30_000);
-    let jitter = rand::thread_rng().gen_range(0..=250);
-    Duration::from_millis(bounded + jitter)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{reconnect_delay, RelaycastHttpClient};
-
-    #[test]
-    fn backoff_with_jitter_stays_bounded() {
-        let d1 = reconnect_delay(1);
-        let d10 = reconnect_delay(10);
-        assert!(d1.as_millis() >= 1000);
-        assert!(d1.as_millis() <= 1250);
-        assert!(d10.as_millis() >= 30_000);
-        assert!(d10.as_millis() <= 30_250);
-    }
+    use super::RelaycastHttpClient;
 
     #[test]
     fn http_client_constructs_with_correct_fields() {

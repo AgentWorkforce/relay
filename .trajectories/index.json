@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-02-20T10:51:47.879Z",
+  "lastUpdated": "2026-02-21T16:49:12.480Z",
   "trajectories": {
     "traj_1b1dj40sl6jl": {
       "title": "Revert aggressive retry logic in relay-pty-orchestrator",
@@ -389,9 +389,17 @@
     },
     "traj_sgvc6cssfokn": {
       "title": "Rename Rust binary to agent-relay-broker and clean up TS CLI legacy patterns",
-      "status": "active",
+      "status": "completed",
       "startedAt": "2026-02-20T10:51:47.859Z",
-      "path": "/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/.trajectories/active/traj_sgvc6cssfokn.json"
+      "completedAt": "2026-02-21T16:41:20.673Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-02/traj_sgvc6cssfokn.json"
+    },
+    "traj_dnxtht96w13o": {
+      "title": "Make doctor tolerant of missing better-sqlite3",
+      "status": "completed",
+      "startedAt": "2026-02-10T12:22:01.414Z",
+      "completedAt": "2026-02-21T16:49:12.107Z",
+      "path": "/Users/will/Projects/relay/.trajectories/completed/2026-02/traj_dnxtht96w13o.json"
     }
   }
 }

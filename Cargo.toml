@@ -25,7 +25,7 @@ portable-pty = "0.8"
 rand = "0.8"
 regex = "1.11"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-relaycast = "0.2.4"
+relaycast = "0.2.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
