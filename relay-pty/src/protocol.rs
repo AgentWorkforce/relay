@@ -299,6 +299,8 @@ pub struct QueuedMessage {
     pub from: String,
     /// Message body
     pub body: String,
+    /// Target (agent name, channel like "#general", or "*" for broadcast)
+    pub to: Option<String>,
     /// Priority (lower = higher priority)
     pub priority: i32,
     /// Retry count
@@ -313,10 +315,16 @@ impl QueuedMessage {
             id,
             from,
             body,
+            to: None,
             priority,
             retries: 0,
             queued_at: std::time::Instant::now(),
         }
+    }
+
+    pub fn with_to(mut self, to: String) -> Self {
+        self.to = Some(to);
+        self
     }
 
     /// Format as relay message for injection with escalating urgency based on retry count.
@@ -329,30 +337,100 @@ impl QueuedMessage {
     /// - Attempt 1 (retries=0): "Relay message from..."
     /// - Attempt 2 (retries=1): "[RETRY] Relay message from..."
     /// - Attempt 3+ (retries>=2): "[URGENT - PLEASE ACKNOWLEDGE] Relay message from..."
+    ///
+    /// Messages are wrapped with a system-reminder to guide agents to respond via MCP tools.
+    /// The reminder is customized based on whether the message is to a channel or direct.
+    /// If the body already contains a system-reminder, no additional wrapper is added.
     pub fn format_for_injection(&self) -> String {
+        // Check if body already has a system-reminder wrapper (avoid double-wrapping)
+        if self.body.starts_with("<system-reminder>") {
+            return self.body.clone();
+        }
+
         // Check if body is already formatted (from Node.js buildInjectionString)
         // This prevents double-wrapping with "Relay message from..."
-        if self.body.starts_with("Relay message from ") {
+        let relay_msg = if self.body.starts_with("Relay message from ") {
             // Already formatted - just apply retry prefixes if needed
-            return match self.retries {
+            match self.retries {
                 0 => self.body.clone(),
                 1 => format!("[RETRY] {}", self.body),
                 _ => format!("[URGENT - PLEASE ACKNOWLEDGE] {}", self.body),
-            };
-        }
+            }
+        } else {
+            // Not pre-formatted - apply full formatting
+            let short_id = &self.id[..self.id.len().min(7)];
+            let base_msg = format!(
+                "Relay message from {} [{}]: {}",
+                self.from, short_id, self.body
+            );
 
-        // Not pre-formatted - apply full formatting
-        let short_id = &self.id[..self.id.len().min(7)];
-        let base_msg = format!(
-            "Relay message from {} [{}]: {}",
-            self.from, short_id, self.body
-        );
+            match self.retries {
+                0 => base_msg,
+                1 => format!("[RETRY] {}", base_msg),
+                _ => format!("[URGENT - PLEASE ACKNOWLEDGE] {}", base_msg),
+            }
+        };
 
-        match self.retries {
-            0 => base_msg,
-            1 => format!("[RETRY] {}", base_msg),
-            _ => format!("[URGENT - PLEASE ACKNOWLEDGE] {}", base_msg),
+        // Build context-aware system-reminder based on target
+        let mcp_hint = self.build_mcp_reply_hint(&relay_msg);
+
+        // Wrap with system-reminder to guide agents to use MCP tools for replies
+        format!(
+            "<system-reminder>\n{}\n</system-reminder>\n\n{}",
+            mcp_hint, relay_msg
+        )
+    }
+
+    /// Build the MCP reply hint based on target (channel vs DM)
+    fn build_mcp_reply_hint(&self, relay_msg: &str) -> String {
+        // Try to determine target from `to` field first, then parse from body
+        let target = self.to.as_deref().or_else(|| self.extract_channel_from_body(relay_msg));
+
+        match target {
+            Some(channel) if channel.starts_with('#') => {
+                format!(
+                    "This message was delivered via Relaycast MCP to channel {}. Reply using mcp__relaycast__post_message with channel: \"{}\".",
+                    channel, channel.trim_start_matches('#')
+                )
+            }
+            Some(channel) if channel == "*" => {
+                "This message was delivered via Relaycast MCP as a broadcast. Reply using mcp__relaycast__post_message to respond to the appropriate channel.".to_string()
+            }
+            Some(sender) => {
+                format!(
+                    "This message was delivered via Relaycast MCP. Reply to {} using mcp__relaycast__send_dm.",
+                    sender
+                )
+            }
+            None => {
+                // Fallback: check if body contains channel hint [#channel]
+                if let Some(channel) = self.extract_channel_from_body(relay_msg) {
+                    format!(
+                        "This message was delivered via Relaycast MCP to channel {}. Reply using mcp__relaycast__post_message with channel: \"{}\".",
+                        channel, channel.trim_start_matches('#')
+                    )
+                } else {
+                    // Generic hint when we can't determine context
+                    format!(
+                        "This message was delivered via Relaycast MCP. Reply to {} using mcp__relaycast__send_dm (for direct messages) or mcp__relaycast__post_message (for channels).",
+                        self.from
+                    )
+                }
+            }
         }
+    }
+
+    /// Extract channel name from body if it contains [#channel] pattern
+    fn extract_channel_from_body(&self, body: &str) -> Option<&str> {
+        // Look for [#channel] pattern in the body
+        // Example: "Relay message from Alice [abc123] [#general]: Hello"
+        if let Some(start) = body.find("[#") {
+            if let Some(end) = body[start..].find(']') {
+                let channel = &body[start + 1..start + end];
+                return Some(channel);
+            }
+        }
+        None
     }
 }
 
@@ -443,7 +521,9 @@ mod tests {
             0,
         );
         let formatted = msg.format_for_injection();
-        assert_eq!(formatted, "Relay message from Bob [abc1234]: Test message");
+        assert!(formatted.contains("<system-reminder>"));
+        assert!(formatted.contains("mcp__relaycast__post_message"));
+        assert!(formatted.contains("Relay message from Bob [abc1234]: Test message"));
     }
 
     #[test]
@@ -469,32 +549,26 @@ mod tests {
             0,
         );
 
-        // First attempt (retries=0) - no prefix
-        assert_eq!(
-            msg.format_for_injection(),
-            "Relay message from Alice [abc1234]: Important task"
-        );
+        // First attempt (retries=0) - no prefix, has system-reminder
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("<system-reminder>"));
+        assert!(formatted.contains("Relay message from Alice [abc1234]: Important task"));
+        assert!(!formatted.contains("[RETRY]"));
 
         // Second attempt (retries=1) - RETRY prefix
         msg.retries = 1;
-        assert_eq!(
-            msg.format_for_injection(),
-            "[RETRY] Relay message from Alice [abc1234]: Important task"
-        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("[RETRY] Relay message from Alice [abc1234]: Important task"));
 
         // Third attempt (retries=2) - URGENT prefix
         msg.retries = 2;
-        assert_eq!(
-            msg.format_for_injection(),
-            "[URGENT - PLEASE ACKNOWLEDGE] Relay message from Alice [abc1234]: Important task"
-        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("[URGENT - PLEASE ACKNOWLEDGE] Relay message from Alice [abc1234]: Important task"));
 
         // Fourth attempt (retries=3) - still URGENT
         msg.retries = 3;
-        assert_eq!(
-            msg.format_for_injection(),
-            "[URGENT - PLEASE ACKNOWLEDGE] Relay message from Alice [abc1234]: Important task"
-        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("[URGENT - PLEASE ACKNOWLEDGE] Relay message from Alice [abc1234]: Important task"));
     }
 
     #[test]
@@ -508,11 +582,12 @@ mod tests {
             0,
         );
 
-        // Should return body as-is (no double-wrapping)
-        assert_eq!(
-            msg.format_for_injection(),
-            "Relay message from Alice [abc12345]: Hello world"
-        );
+        // Should include system-reminder but not double-wrap the relay message
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("<system-reminder>"));
+        assert!(formatted.contains("Relay message from Alice [abc12345]: Hello world"));
+        // Should NOT have double "Relay message from"
+        assert_eq!(formatted.matches("Relay message from").count(), 1);
     }
 
     #[test]
@@ -524,18 +599,15 @@ mod tests {
             0,
         );
 
-        // Retry should prepend to pre-formatted body
+        // Retry should prepend to pre-formatted body (with system-reminder wrapper)
         msg.retries = 1;
-        assert_eq!(
-            msg.format_for_injection(),
-            "[RETRY] Relay message from Alice [abc12345]: Hello world"
-        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("<system-reminder>"));
+        assert!(formatted.contains("[RETRY] Relay message from Alice [abc12345]: Hello world"));
 
         msg.retries = 2;
-        assert_eq!(
-            msg.format_for_injection(),
-            "[URGENT - PLEASE ACKNOWLEDGE] Relay message from Alice [abc12345]: Hello world"
-        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("[URGENT - PLEASE ACKNOWLEDGE] Relay message from Alice [abc12345]: Hello world"));
     }
 
     // =========================================================================
@@ -552,10 +624,9 @@ mod tests {
             0,
         );
         // Should preserve thread hint, not double-wrap
-        assert_eq!(
-            msg.format_for_injection(),
-            "Relay message from Alice [abc12345] [thread:task-123]: Please review"
-        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("Relay message from Alice [abc12345] [thread:task-123]: Please review"));
+        assert_eq!(formatted.matches("Relay message from").count(), 1);
     }
 
     #[test]
@@ -567,10 +638,8 @@ mod tests {
             "Relay message from Lead [abc12345] [!!]: URGENT task".to_string(),
             0,
         );
-        assert_eq!(
-            msg.format_for_injection(),
-            "Relay message from Lead [abc12345] [!!]: URGENT task"
-        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("Relay message from Lead [abc12345] [!!]: URGENT task"));
     }
 
     #[test]
@@ -582,10 +651,8 @@ mod tests {
             "Relay message from Lead [abc12345] [!]: Important task".to_string(),
             0,
         );
-        assert_eq!(
-            msg.format_for_injection(),
-            "Relay message from Lead [abc12345] [!]: Important task"
-        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("Relay message from Lead [abc12345] [!]: Important task"));
     }
 
     #[test]
@@ -597,10 +664,8 @@ mod tests {
             "Relay message from Alice [abc12345] [#general]: Hello team".to_string(),
             0,
         );
-        assert_eq!(
-            msg.format_for_injection(),
-            "Relay message from Alice [abc12345] [#general]: Hello team"
-        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("Relay message from Alice [abc12345] [#general]: Hello team"));
     }
 
     #[test]
@@ -612,10 +677,8 @@ mod tests {
             "Relay message from Lead [abc12345] [#general]: Broadcast message".to_string(),
             0,
         );
-        assert_eq!(
-            msg.format_for_injection(),
-            "Relay message from Lead [abc12345] [#general]: Broadcast message"
-        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("Relay message from Lead [abc12345] [#general]: Broadcast message"));
     }
 
     #[test]
@@ -628,10 +691,8 @@ mod tests {
                 .to_string(),
             0,
         );
-        assert_eq!(
-            msg.format_for_injection(),
-            "Relay message from Lead [abc12345] [thread:proj-1] [!!] [#dev]: Critical fix needed"
-        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("Relay message from Lead [abc12345] [thread:proj-1] [!!] [#dev]: Critical fix needed"));
     }
 
     #[test]
@@ -644,10 +705,9 @@ mod tests {
             0,
         );
         // Should preserve the displayed sender (john_doe), not wrap with Dashboard
-        assert_eq!(
-            msg.format_for_injection(),
-            "Relay message from john_doe [abc12345]: Task from dashboard"
-        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("Relay message from john_doe [abc12345]: Task from dashboard"));
+        assert_eq!(formatted.matches("Relay message from").count(), 1);
     }
 
     #[test]
@@ -659,10 +719,8 @@ mod tests {
             "Relay message from system [init-123]: Agent initialized".to_string(),
             0,
         );
-        assert_eq!(
-            msg.format_for_injection(),
-            "Relay message from system [init-123]: Agent initialized"
-        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("Relay message from system [init-123]: Agent initialized"));
     }
 
     // =========================================================================
@@ -679,10 +737,8 @@ mod tests {
             0,
         );
         // Should wrap normally since it doesn't match exact prefix
-        assert_eq!(
-            msg.format_for_injection(),
-            "Relay message from Bob [xyz7890]: Relay message fromAlice: not formatted correctly"
-        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("Relay message from Bob [xyz7890]: Relay message fromAlice: not formatted correctly"));
     }
 
     #[test]
@@ -694,10 +750,8 @@ mod tests {
             "relay message from Alice: lowercase".to_string(),
             0,
         );
-        assert_eq!(
-            msg.format_for_injection(),
-            "Relay message from Bob [xyz7890]: relay message from Alice: lowercase"
-        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("Relay message from Bob [xyz7890]: relay message from Alice: lowercase"));
     }
 
     #[test]
@@ -709,10 +763,8 @@ mod tests {
             "I saw a Relay message from Alice earlier".to_string(),
             0,
         );
-        assert_eq!(
-            msg.format_for_injection(),
-            "Relay message from Bob [xyz7890]: I saw a Relay message from Alice earlier"
-        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("Relay message from Bob [xyz7890]: I saw a Relay message from Alice earlier"));
     }
 
     #[test]
@@ -724,10 +776,8 @@ mod tests {
             "User said: \"Relay message from Alice [abc]: test\"".to_string(),
             0,
         );
-        assert_eq!(
-            msg.format_for_injection(),
-            "Relay message from Bob [xyz7890]: User said: \"Relay message from Alice [abc]: test\""
-        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("Relay message from Bob [xyz7890]: User said: \"Relay message from Alice [abc]: test\""));
     }
 
     // =========================================================================
@@ -737,10 +787,8 @@ mod tests {
     #[test]
     fn test_empty_body() {
         let msg = QueuedMessage::new("xyz7890".to_string(), "Bob".to_string(), "".to_string(), 0);
-        assert_eq!(
-            msg.format_for_injection(),
-            "Relay message from Bob [xyz7890]: "
-        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("Relay message from Bob [xyz7890]: "));
     }
 
     #[test]
@@ -752,10 +800,8 @@ mod tests {
             "Line 1\nLine 2\nLine 3".to_string(),
             0,
         );
-        assert_eq!(
-            msg.format_for_injection(),
-            "Relay message from Bob [xyz7890]: Line 1\nLine 2\nLine 3"
-        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("Relay message from Bob [xyz7890]: Line 1\nLine 2\nLine 3"));
     }
 
     #[test]
@@ -766,10 +812,8 @@ mod tests {
             "Hello 你好 مرحبا 🚀".to_string(),
             0,
         );
-        assert_eq!(
-            msg.format_for_injection(),
-            "Relay message from Bob [xyz7890]: Hello 你好 مرحبا 🚀"
-        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("Relay message from Bob [xyz7890]: Hello 你好 مرحبا 🚀"));
     }
 
     #[test]
@@ -780,10 +824,8 @@ mod tests {
             "Special: <>&\"'`$(){}[]|\\".to_string(),
             0,
         );
-        assert_eq!(
-            msg.format_for_injection(),
-            "Relay message from Bob [xyz7890]: Special: <>&\"'`$(){}[]|\\"
-        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("Relay message from Bob [xyz7890]: Special: <>&\"'`$(){}[]|\\"));
     }
 
     #[test]
@@ -796,7 +838,8 @@ mod tests {
             0,
         );
         let formatted = msg.format_for_injection();
-        assert!(formatted.starts_with("Relay message from Bob [xyz7890]: "));
+        assert!(formatted.contains("<system-reminder>"));
+        assert!(formatted.contains("Relay message from Bob [xyz7890]: "));
         assert!(formatted.ends_with(&long_body));
     }
 
@@ -810,8 +853,10 @@ mod tests {
             preformatted.clone(),
             0,
         );
-        // Should return as-is without double-wrapping
-        assert_eq!(msg.format_for_injection(), preformatted);
+        // Should contain preformatted message without double-wrapping
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains(&preformatted));
+        assert_eq!(formatted.matches("Relay message from").count(), 1);
     }
 
     #[test]
@@ -822,10 +867,8 @@ mod tests {
             "Task complete".to_string(),
             0,
         );
-        assert_eq!(
-            msg.format_for_injection(),
-            "Relay message from worker_1 [xyz7890]: Task complete"
-        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("Relay message from worker_1 [xyz7890]: Task complete"));
     }
 
     #[test]
@@ -836,10 +879,8 @@ mod tests {
             "Status update".to_string(),
             0,
         );
-        assert_eq!(
-            msg.format_for_injection(),
-            "Relay message from Agent42 [xyz7890]: Status update"
-        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("Relay message from Agent42 [xyz7890]: Status update"));
     }
 
     #[test]
@@ -851,10 +892,8 @@ mod tests {
             "Short ID".to_string(),
             0,
         );
-        assert_eq!(
-            msg.format_for_injection(),
-            "Relay message from Bob [abc]: Short ID"
-        );
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("Relay message from Bob [abc]: Short ID"));
     }
 
     #[test]
@@ -868,9 +907,82 @@ mod tests {
             0,
         );
         // Should preserve Alice as the displayed sender
-        assert_eq!(
-            msg.format_for_injection(),
-            "Relay message from Alice [orig123]: Original message"
+        let formatted = msg.format_for_injection();
+        assert!(formatted.contains("Relay message from Alice [orig123]: Original message"));
+        assert_eq!(formatted.matches("Relay message from").count(), 1);
+    }
+
+    #[test]
+    fn test_system_reminder_mcp_hint_dm() {
+        // Direct message should hint to use send_dm
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Alice".to_string(),
+            "Hello there".to_string(),
+            0,
         );
+        let formatted = msg.format_for_injection();
+
+        // Should have system-reminder wrapper
+        assert!(formatted.starts_with("<system-reminder>"));
+        assert!(formatted.contains("</system-reminder>"));
+
+        // Should mention MCP tools and sender for replying
+        assert!(formatted.contains("mcp__relaycast__send_dm"));
+        assert!(formatted.contains("Relaycast MCP"));
+        assert!(formatted.contains("Alice")); // Should mention who to reply to
+
+        // Relay message should come after the system-reminder
+        assert!(formatted.contains("\n\nRelay message from Alice [xyz7890]: Hello there"));
+    }
+
+    #[test]
+    fn test_system_reminder_mcp_hint_channel_from_to() {
+        // Channel message with explicit `to` field
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Alice".to_string(),
+            "Hello team".to_string(),
+            0,
+        ).with_to("#general".to_string());
+        let formatted = msg.format_for_injection();
+
+        // Should mention the specific channel
+        assert!(formatted.contains("#general"));
+        assert!(formatted.contains("mcp__relaycast__post_message"));
+        assert!(formatted.contains("channel: \"general\""));
+    }
+
+    #[test]
+    fn test_system_reminder_mcp_hint_channel_from_body() {
+        // Channel hint parsed from pre-formatted body
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Alice".to_string(),
+            "Relay message from Alice [abc12345] [#dev]: Build failed".to_string(),
+            0,
+        );
+        let formatted = msg.format_for_injection();
+
+        // Should detect #dev channel from body
+        assert!(formatted.contains("#dev"));
+        assert!(formatted.contains("mcp__relaycast__post_message"));
+        assert!(formatted.contains("channel: \"dev\""));
+    }
+
+    #[test]
+    fn test_system_reminder_broadcast() {
+        // Broadcast message
+        let msg = QueuedMessage::new(
+            "xyz7890".to_string(),
+            "Lead".to_string(),
+            "Announcement".to_string(),
+            0,
+        ).with_to("*".to_string());
+        let formatted = msg.format_for_injection();
+
+        // Should mention broadcast
+        assert!(formatted.contains("broadcast"));
+        assert!(formatted.contains("mcp__relaycast__post_message"));
     }
 }

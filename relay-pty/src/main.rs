@@ -699,10 +699,15 @@ async fn main() -> Result<()> {
                     // If agent is producing meaningful output, reset auto-Enter retry count
                     // This means the agent is working and not stuck
                     // Skip reset for relay message echoes (those don't indicate the agent is working)
+                    // Also skip system-reminder wrappers that now surround relay messages
                     let clean_text = strip_ansi(&text);
                     let is_relay_echo = clean_text.lines().all(|line| {
                         let trimmed = line.trim();
-                        trimmed.is_empty() || trimmed.starts_with("Relay message from ")
+                        trimmed.is_empty()
+                            || trimmed.starts_with("Relay message from ")
+                            || trimmed.starts_with("<system-reminder>")
+                            || trimmed.starts_with("</system-reminder>")
+                            || trimmed.contains("mcp__relaycast__")
                     });
                     if !is_relay_echo && clean_text.len() > 10 {
                         // Meaningful output - agent is working, reset retry count
